@@ -1,0 +1,11 @@
+Run:
+
+```bash
+DEVSTATUS_AGENT=1 python3 ~/.claude/scripts/dev_status.py render
+```
+
+Display stdout verbatim — do not narrate, do not reformat. `DEVSTATUS_AGENT=1` suppresses the agent-only `item-map:` line at the source, so stdout is just the dashboard; there's nothing to filter.
+
+If a natural-language reference ("mark 3 done", "work on 2") needs resolving into a slug, that needs the item-map — run a *separate* `render` **without** `DEVSTATUS_AGENT` for that ({{INSTRUCTIONS_REF}} Backlog section already requires this fresh, non-quiet render immediately before any numeric `--if-rev` mutation, to guard against staleness). That call's output is for your own resolution use only — never quote it to the user, same as before this env var existed.
+
+Mutating commands (`start`, `done`, `update`, `review`, `approve`, `reject`) also default to `DEVSTATUS_AGENT=1`, per {{INSTRUCTIONS_REF}} Backlog section — their stderr resolution echo (e.g. `[done] 3 → <slug>: Build email.py...`) is suppressed the same way. Numbers shift as items change, so after running one, find the mutated item's own line in the freshly rendered dashboard body (still fully visible — quiet mode only drops the item-map/echo lines, never the dashboard itself) and confirm its summary and section match the item the user meant. If they don't, revert (`update <slug> '{"status": "open"}'` or similar), re-render, and ask. For `start`/`done` that same `update <slug> '{"status": "open"}'` revert still applies; if a `review`/`approve`/`reject` resolved to the wrong item, there is no direct revert: `approve`'s status change isn't a plain field patch and re-running `update` on `status` is refused for in-review items too. Ask the user how to proceed rather than attempting an automatic fix.

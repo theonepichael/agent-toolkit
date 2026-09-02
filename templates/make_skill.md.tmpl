@@ -1,0 +1,31 @@
+Work through these steps in order. Don't draft the skill body before step 1 is decided.
+
+## 1. Trigger — decide how it starts
+
+{{TRIGGER_SECTION}}
+
+## 2. Structure — steps, then reference
+
+- The body is a **procedure**: numbered/ordered steps in imperative voice, addressed to the agent.
+{{STRUCTURE_REF_NOTE}}
+- Keep the body under ~50 lines. If it branches into genuinely different workflows, split into separate skills instead of one branching monster — smaller skills also hide the end goal, which stops the agent from rushing past planning/questioning steps. (Splitting isn't the only way: grill-me gets the same effect inside one skill by forbidding plan-writing until every question is decided. Don't split a skill that demonstrably works.)
+
+## 3. Steering — make it stick
+
+- Use dense, industry-standard terms that carry priors ("vertical slice", "copy-once", "idempotent") instead of paragraphs of description. Pick words that *name the behavior you want*: the agent repeats them in its thinking and output, and every repetition re-anchors it on that behavior — that echo loop is what step 4 listens for.
+- State the failure mode you're preventing as a direct instruction ("Pass the integer directly — do not look up the slug").
+{{STEERING_WIDGET_NOTE}}
+
+## 4. Verify in a fresh session
+
+{{VERIFY_PROBE}}
+
+## 5. Plumbing (house convention)
+
+{{PLUMBING_STEPS}}
+
+## 6. Pruning (every revision, not just creation)
+
+- **Single source of truth**: never restate what {{INSTRUCTIONS_REF_BARE}} or another skill already says — point to it.
+- **Remove sediment**: delete references to scripts, paths, or behaviors that no longer exist.
+- **Deletion test**: if a paragraph looks decorative, remove it and rerun the step-4 probe. Identical behavior → it was a no-op; keep it deleted.

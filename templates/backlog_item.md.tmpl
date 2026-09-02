@@ -1,0 +1,124 @@
+{{OPENING_PARAGRAPH}}
+
+## 1. Resolve
+{{STEP1_BODY}}
+
+## 2. Start
+{{STEP2_BODY}}
+
+## 3. Branch
+related_files names exactly one project repo → worktree it per {{INSTRUCTIONS_REF}} Git section: `git -C <repo> worktree add ../<repo-name>-<slug> -b <slug>`. Reuse a worktree this session already made for this item instead of a second one. Multiple repos, or none: ask which repo — never guess.
+
+## 4. Baseline
+Run that repo's test suite (or the most relevant targeted subset) in the fresh worktree before touching anything ({{INSTRUCTIONS_REF}} "Baseline tests before starting code work").
+
+## 5. Spec or plan
+{{STEP5_BODY}}
+
+### Architecture capture (new modules only)
+
+If the artifact's related_files point into a module with no
+`docs/architecture/{module-slug}.md` yet in the target repo — a genuinely
+new module, not routine work in an existing one; judgment call, ask if
+unclear — run one more pass before continuing: draft a 300–600 word doc
+covering the module's boundary/responsibility (one paragraph), key
+interfaces it exposes or consumes, explicit non-goals, and known
+unknowns/deferred decisions. Save it to `docs/architecture/{module-slug}.md`
+in the target repo (project documentation, not `~/.claude/data/grill/`) and
+reference it from the spec/plan. A later item touching the same module cites
+the existing doc instead of repeating this pass — check for it first.
+
+### Gate classification
+
+Once the spec/plan is recorded (and after architecture capture, if it ran),
+classify its concrete implementation steps: **mechanical** (a rote,
+unambiguous transformation — no interpretation needed) or **judgment**
+(interprets a requirement, makes a design choice, or has ambiguous
+acceptance criteria). If any step is judgment, set the item's gate before
+continuing:
+
+```bash
+python3 ~/.claude/scripts/dev_status.py gate-set <slug|N> '{"required": true, "criteria": ["<short imperative criterion per judgment step>", "..."]}'
+```
+
+If every step is mechanical, leave the gate unset (inert by default) —
+don't call `gate-set` for a step breakdown with no judgment calls in it.
+
+## 6. Critique
+{{STEP6_BODY}}
+
+## 7. Handoff
+{{STEP7_BODY}}
+
+## 8. Red, green
+{{STEP8_BODY}}
+
+## 9. Verify
+Run the full suite (and lint, if present) in the worktree and show the output — "should work" is not verification ({{INSTRUCTIONS_REF_BARE}}).
+
+## 10. Gate: commit
+{{STEP10_BODY}}
+
+## 11. Gate: commit-then-land
+{{STEP11_BODY}}
+
+**`git worktree remove` fails with "Directory not empty"?** A dev server
+(or other long-running process) launched against this worktree during step
+9 — e.g. via the `run` skill's smoke-check pattern — can outlive the port
+kill that pattern documents: killing the port's listener doesn't always
+reap a wrapper's child process (a `bun run dev` parent whose `node .../next
+dev` child keeps the worktree as its cwd). `git worktree remove` then fails
+partway, and can strip the worktree's git-admin metadata (it drops out of
+`git worktree list`) while leaving the directory on disk — a second
+`remove` won't find it. Find what's still holding it open with `lsof +D
+<worktree-path>`, `kill` those exact PIDs (never a broad `pkill -f` — it
+can match unrelated processes, including the agent's own), then remove the
+orphaned directory directly (`rm -rf <worktree-path>`) and retry
+`git branch -d`.
+
+## 12. Close
+{{STEP12_BODY}}
+
+---
+
+## `--auto` mode
+
+Runs the per-item procedure above end to end with minimal live input — the
+user has explicitly asked for unattended execution. Steps 10 (commit) and 11
+(merge/push/cleanup) always stay live, per item, no exception: {{INSTRUCTIONS_REF}}
+commit-approval rule holds even mid-pipeline. Steps not called out below run
+exactly as written above.
+
+{{AUTO_INVOCATION}}
+
+1. **Step 3 (Branch)** — repo ambiguity (multiple named, or none) can't be
+   guessed. Skip the item, queue an end-of-run digest entry noting why, and
+   continue the batch.
+2. **Step 4 (Baseline)** — a truly trivial failing baseline (a one-liner,
+   no investigation needed) still folds in per {{INSTRUCTIONS_REF}} existing
+   exception. Anything needing real investigation: draft the backlog-item
+   `add` JSON for it, queue it in the digest (never add silently), skip
+   implementing on top of a broken baseline, and move to the next item.
+3. {{AUTO_STEP5_SPEC}}
+4. **Step 6 (Critique)** — no ask either way, per the updated step 6 rule:
+   runs unconditionally when a gate was set, skipped when the item is
+   all-mechanical.
+5. **Step 7 (Handoff)** — always resolves to "same session, now," no ask —
+   no dispatch to a cheaper session or model.
+6. **Steps 8–9 (Red/green, Verify)** — on failure, retry up to 2 times
+   before giving up. Still failing: skip the item, queue a digest entry
+   describing the failure, and continue the batch.
+7. **Proactive-capture protocols** — every "offer, never do silently"
+   trigger from {{INSTRUCTIONS_REF_BARE}} that would otherwise fire mid-run (baseline-
+   failure backlog offers, proactive backlog capture, pending-item
+   tracking, rejected-idea capture) queues into the digest instead.
+8. **Steps 10–11** — unchanged, always live, per item, exactly as written
+   above.
+9. **Step 12 (Close)** — unchanged; `review`/`approve`/`gate-pass` is
+   already agent-performed self-verification against stored gate criteria,
+   not a user-facing ask.
+
+**End of run.** When the queue is exhausted (or the single item completes),
+show a dashboard-style summary of every item processed — done, skipped
+(with reason), or failed after retries — then walk the accumulated digest:
+{{AUTO_END_BLOCK}}

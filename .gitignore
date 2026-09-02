@@ -1,0 +1,9 @@
+.DS_Store
+*.bak
+*.bak.*
+.secrets
+__pycache__/
+.ruff_cache/
+*.bundle
+.claude/settings.local.json
+/local/

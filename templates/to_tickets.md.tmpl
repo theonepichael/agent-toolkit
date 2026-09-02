@@ -1,0 +1,12 @@
+{{OPENING_LINE}}
+
+1. Take the plan/spec (argument, or in-scope conversation) as input.
+2. Break it into tracer-bullet vertical slices: each a shippable, independently valuable unit. Apply an expand–contract exception for wide mechanical refactors — one slice to add the new path alongside the old, one to migrate call sites, one to remove the old path — rather than one unreviewable monolith ticket.
+3. Draft each slice's ticket fields and its `blocked_by` edges — any slice from this batch or any existing backlog slug it depends on, regardless of where that dependency appears in the batch you're drafting. Batch order in the file doesn't need to be topological — the runner computes its own execution order from the edges — but draft in a natural reading order (earlier slices first) for the user reviewing it next.
+4. Show the full slice list with its dependency edges and stop for explicit user confirmation before writing the batch file or invoking the runner — never create tickets silently. {{STEP4_CONFIRM_MECHANISM}} If the user asks to reorder/merge/split slices, redraft and re-show. Cap this at 3 redraft cycles (matching `second-opinion`'s convergence cap); if still unresolved after 3, ask the user to either hand-edit the drafted batch directly or escalate to `grill-me` for alignment on the breakdown, rather than looping further.
+5. On confirmation, write the confirmed batch to `~/.claude/data/to-tickets/<topic-slug>-tickets-batch.json` (its own directory — never `~/.claude/data/grill/`, which `grill.py` globs as its private session store and cannot tolerate a non-session file landing in) and {{RUNNER_INVOKE}} Never `mkdir -p` that directory first — {{RUNNER_MKDIR_OWNER}} creates it on every invocation, so just write the file.
+6. If the runner reports a cycle or an unknown-external-slug failure, that means step 3's edges were wrong — redraft the batch (does not count against the step-4 redraft cap, which is about user-requested changes, not a validation bug) and re-run.
+7. If interrupted mid-run (crash, denied permission), {{RESUME_MECHANISM}} the runner's own state file (not agent memory or re-derivation) is what makes this safe to repeat; nothing about resuming is your responsibility beyond re-running the same command.
+8. Report the created slugs and dependency graph back to the user, dashboard-style, once the runner completes (its own summary output is sufficient to relay).
+
+{{SHELL_SAFETY_NOTE}}

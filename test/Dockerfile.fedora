@@ -1,0 +1,12 @@
+FROM fedora:43
+
+RUN dnf install -y -q \
+        sudo zsh curl git ca-certificates python3 diffutils \
+    && dnf clean all
+
+RUN useradd -m -s /usr/bin/zsh tester \
+    && echo 'tester ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/tester \
+    && chmod 0440 /etc/sudoers.d/tester
+
+USER tester
+WORKDIR /home/tester

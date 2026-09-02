@@ -1,0 +1,127 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 ~/.claude/scripts/dev_status.py:*)",
+      "Bash(python3 ~/.claude/scripts/grill.py:*)",
+      "Bash(python3 ~/.claude/scripts/second_opinion.py:*)"
+    ],
+    "deny": [
+      "Bash(python3 ~/.claude/scripts/dev_status.py prune:*)"
+    ],
+    "ask": [
+      "Bash(git commit)",
+      "Bash(git commit *)"
+    ]
+  },
+  "model": "claude-sonnet-5",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/scripts/guard_rails.py --harness claude"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '.tool_response.filePath // .tool_input.file_path // empty' | { read -r f; [ -n \"$f\" ] || exit 0; case \"$f\" in *.py) ;; *) exit 0 ;; esac; d=$(dirname \"$f\"); while [ \"$d\" != \"/\" ] && [ ! -f \"$d/pyproject.toml\" ]; do d=$(dirname \"$d\"); done; [ -f \"$d/pyproject.toml\" ] || exit 0; ( cd \"$d\" && uv run ruff check --fix \"$f\" >/dev/null 2>&1; uv run ruff format \"$f\" >/dev/null 2>&1 ); } || true"
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "idle_prompt|permission_prompt",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/scripts/notify.py --harness 'Claude' --title 'Claude Code' --message 'Waiting for input' --type waiting_for_input"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/scripts/notify.py --harness 'Claude' --title 'Claude Code' --message 'Task completed' --type completed"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/scripts/dev_status.py render 2>&1 || echo '[dev_status] render failed — run /dashboard to debug'"
+          },
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/scripts/grill.py pending-plan --consume"
+          },
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/scripts/dotfiles_sync_check.py 2>/dev/null"
+          },
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/scripts/settings_seed_drift_check.py"
+          },
+          {
+            "type": "command",
+            "command": "timeout 5s python3 ~/.claude/scripts/harness_discovery_check.py check --hook || echo '[harness-discovery] checker failed — run it manually'"
+          },
+          {
+            "type": "command",
+            "command": "timeout 20s python3 ~/.claude/scripts/link_drift_check.py check 2>/dev/null"
+          },
+          {
+            "type": "command",
+            "command": "if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then echo; echo 'recent commits:'; git log -n 5 --oneline; fi"
+          },
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/scripts/watchcommit_activity.py 2>/dev/null"
+          },
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/scripts/opencode_skills_sync_activity.py 2>/dev/null"
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '/home/yanil/.claude/hooks/herdr-agent-state.sh' session",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "python3 ~/.claude/scripts/statusline.py",
+    "refreshInterval": 60
+  },
+  "tui": "fullscreen",
+  "voice": {
+    "enabled": true,
+    "mode": "hold"
+  },
+  "skipDangerousModePermissionPrompt": true,
+  "theme": "light-daltonized",
+  "agentPushNotifEnabled": true
+}

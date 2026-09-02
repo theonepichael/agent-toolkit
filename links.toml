@@ -1,0 +1,607 @@
+# links.toml — the agent-toolkit symlink table read by install.py.
+# Managed harness targets across macOS, Linux, and WSL.
+
+# ── shell helpers ────────────────────────────────────────────────────────
+
+[[link]]
+src = "shell/agent-tools.zsh"
+dest = "~/.agent-tools.zsh"
+
+# ── Claude Code wiring ───────────────────────────────────────────────────
+
+[[link]]
+src = "claude/global-instructions.md"
+dest = "~/.claude/CLAUDE.md"
+harness = "claude"
+
+[[link]]
+src = "claude/commands/dashboard.md"
+dest = "~/.claude/commands/dashboard.md"
+harness = "claude"
+
+[[link]]
+src = "claude/commands/grill-me.md"
+dest = "~/.claude/commands/grill-me.md"
+harness = "claude"
+
+[[link]]
+src = "claude/commands/make-skill.md"
+dest = "~/.claude/commands/make-skill.md"
+harness = "claude"
+
+[[link]]
+src = "claude/commands/standup.md"
+dest = "~/.claude/commands/standup.md"
+harness = "claude"
+
+[[link]]
+src = "claude/commands/second-opinion.md"
+dest = "~/.claude/commands/second-opinion.md"
+harness = "claude"
+
+[[link]]
+src = "claude/commands/spec.md"
+dest = "~/.claude/commands/spec.md"
+harness = "claude"
+
+[[link]]
+src = "claude/commands/to-tickets.md"
+dest = "~/.claude/commands/to-tickets.md"
+harness = "claude"
+
+[[link]]
+src = "claude/commands/skill-map.md"
+dest = "~/.claude/commands/skill-map.md"
+harness = "claude"
+
+[[link]]
+src = "claude/commands/draft-voice.md"
+dest = "~/.claude/commands/draft-voice.md"
+harness = "claude"
+
+[[link]]
+src = "claude/commands/backlog-item.md"
+dest = "~/.claude/commands/backlog-item.md"
+harness = "claude"
+
+[[link]]
+src = "claude/commands/analyze-sessions.md"
+dest = "~/.claude/commands/analyze-sessions.md"
+harness = "claude"
+
+[[link]]
+src = "claude/output-styles/ConciseSTE.md"
+dest = "~/.claude/output-styles/ConciseSTE.md"
+harness = "claude"
+
+[[link]]
+src = "claude/global-instructions.md"
+dest = "~/.copilot/copilot-instructions.md"
+harness = "copilot"
+
+[[link]]
+src = "claude/global-instructions.md"
+dest = "~/.gemini/GEMINI.md"
+harness = "agy"
+
+[[link]]
+src = "claude/global-instructions.md"
+dest = "~/.pi/agent/AGENTS.md"
+harness = "pi"
+
+# ── shared scripts ───────────────────────────────────────────────────────
+
+[[link]]
+src = "claude/icons"
+dest = "~/.claude/icons"
+
+[[link]]
+src = "claude/scripts/dev_status.py"
+dest = "~/.claude/scripts/dev_status.py"
+
+[[link]]
+src = "claude/scripts/cli_common.py"
+dest = "~/.claude/scripts/cli_common.py"
+
+[[link]]
+src = "claude/scripts/llm_backends.py"
+dest = "~/.claude/scripts/llm_backends.py"
+
+[[link]]
+src = "claude/scripts/dev_status_sync.py"
+dest = "~/.claude/scripts/dev_status_sync.py"
+profile_exclude = ["work"]
+
+[[link]]
+src = "claude/scripts/to_tickets_runner.py"
+dest = "~/.claude/scripts/to_tickets_runner.py"
+
+[[link]]
+src = "claude/scripts/gen_shell_completion.py"
+dest = "~/.claude/scripts/gen_shell_completion.py"
+
+[[link]]
+src = "claude/scripts/gen_interfaces.py"
+dest = "~/.claude/scripts/gen_interfaces.py"
+
+[[link]]
+src = "claude/scripts/gen_second_opinion.py"
+dest = "~/.claude/scripts/gen_second_opinion.py"
+
+[[link]]
+src = "claude/scripts/gen_skills.py"
+dest = "~/.claude/scripts/gen_skills.py"
+
+[[link]]
+src = "claude/scripts/gen_skills_params.py"
+dest = "~/.claude/scripts/gen_skills_params.py"
+
+[[link]]
+src = "claude/scripts/grill.py"
+dest = "~/.claude/scripts/grill.py"
+
+[[link]]
+src = "claude/scripts/second_opinion.py"
+dest = "~/.claude/scripts/second_opinion.py"
+
+[[link]]
+src = "claude/scripts/standup.py"
+dest = "~/.claude/scripts/standup.py"
+
+[[link]]
+src = "claude/scripts/standup_adapters.py"
+dest = "~/.claude/scripts/standup_adapters.py"
+
+[[link]]
+src = "claude/scripts/dotfiles_sync_check.py"
+dest = "~/.claude/scripts/dotfiles_sync_check.py"
+
+[[link]]
+src = "claude/scripts/settings_seed_drift_check.py"
+dest = "~/.claude/scripts/settings_seed_drift_check.py"
+
+[[link]]
+src = "claude/scripts/harness_discovery_check.py"
+dest = "~/.claude/scripts/harness_discovery_check.py"
+
+[[link]]
+src = "claude/scripts/link_drift_check.py"
+dest = "~/.claude/scripts/link_drift_check.py"
+
+[[link]]
+src = "claude/scripts/vitals_promotion.py"
+dest = "~/.claude/scripts/vitals_promotion.py"
+
+[[link]]
+src = "claude/scripts/notify.py"
+dest = "~/.claude/scripts/notify.py"
+
+[[link]]
+src = "claude/scripts/analyze_sessions.py"
+dest = "~/.claude/scripts/analyze_sessions.py"
+
+[[link]]
+src = "claude/scripts/guard_rails.py"
+dest = "~/.claude/scripts/guard_rails.py"
+
+[[link]]
+src = "claude/scripts/statusline.py"
+dest = "~/.claude/scripts/statusline.py"
+
+# ── GitHub Copilot CLI wiring ────────────────────────────────────────────
+
+[[link]]
+src = "claude/global-instructions.md"
+dest = "~/.copilot/copilot-instructions.md"
+harness = "copilot"
+
+[[link]]
+src = "copilot/hooks/session-start.json"
+dest = "~/.copilot/hooks/session-start.json"
+harness = "copilot"
+platform = "mac"
+
+[[link]]
+src = "copilot/hooks/session-start.json"
+dest = "~/.copilot/hooks/session-start.json"
+harness = "copilot"
+platform = "linux"
+
+[[link]]
+src = "copilot/hooks/post-tool-use.json"
+dest = "~/.copilot/hooks/post-tool-use.json"
+harness = "copilot"
+platform = "mac"
+
+[[link]]
+src = "copilot/hooks/post-tool-use.json"
+dest = "~/.copilot/hooks/post-tool-use.json"
+harness = "copilot"
+platform = "linux"
+
+[[link]]
+src = "copilot/hooks/pre-tool-use.json"
+dest = "~/.copilot/hooks/pre-tool-use.json"
+harness = "copilot"
+platform = "mac"
+
+[[link]]
+src = "copilot/hooks/pre-tool-use.json"
+dest = "~/.copilot/hooks/pre-tool-use.json"
+harness = "copilot"
+platform = "linux"
+
+[[link]]
+src = "copilot/hooks/agent-stop.json"
+dest = "~/.copilot/hooks/agent-stop.json"
+harness = "copilot"
+platform = "mac"
+
+[[link]]
+src = "copilot/hooks/agent-stop.json"
+dest = "~/.copilot/hooks/agent-stop.json"
+harness = "copilot"
+platform = "linux"
+
+[[link]]
+src = "copilot/skills/dashboard/SKILL.md"
+dest = "~/.copilot/skills/dashboard/SKILL.md"
+harness = "copilot"
+
+[[link]]
+src = "copilot/skills/standup/SKILL.md"
+dest = "~/.copilot/skills/standup/SKILL.md"
+harness = "copilot"
+
+[[link]]
+src = "copilot/skills/second-opinion/SKILL.md"
+dest = "~/.copilot/skills/second-opinion/SKILL.md"
+harness = "copilot"
+
+[[link]]
+src = "copilot/skills/grill-me/SKILL.md"
+dest = "~/.copilot/skills/grill-me/SKILL.md"
+harness = "copilot"
+
+[[link]]
+src = "copilot/skills/make-skill/SKILL.md"
+dest = "~/.copilot/skills/make-skill/SKILL.md"
+harness = "copilot"
+
+[[link]]
+src = "copilot/skills/backlog-item/SKILL.md"
+dest = "~/.copilot/skills/backlog-item/SKILL.md"
+harness = "copilot"
+
+[[link]]
+src = "copilot/skills/spec/SKILL.md"
+dest = "~/.copilot/skills/spec/SKILL.md"
+harness = "copilot"
+
+[[link]]
+src = "copilot/skills/to-tickets/SKILL.md"
+dest = "~/.copilot/skills/to-tickets/SKILL.md"
+harness = "copilot"
+
+[[link]]
+src = "copilot/skills/analyze-sessions/SKILL.md"
+dest = "~/.copilot/skills/analyze-sessions/SKILL.md"
+harness = "copilot"
+
+[[link]]
+src = "copilot/aliases.zsh"
+dest = "~/.copilot_aliases"
+harness = "copilot"
+
+# ── opencode ─────────────────────────────────────────────────────────────
+
+[[link]]
+src = "opencode/tui.json"
+dest = "~/.config/opencode/tui.json"
+harness = "opencode"
+
+[[link]]
+src = "opencode/command/dashboard.md"
+dest = "~/.config/opencode/commands/dashboard.md"
+harness = "opencode"
+
+[[link]]
+src = "opencode/command/grill-me.md"
+dest = "~/.config/opencode/commands/grill-me.md"
+harness = "opencode"
+
+[[link]]
+src = "opencode/command/make-skill.md"
+dest = "~/.config/opencode/commands/make-skill.md"
+harness = "opencode"
+
+[[link]]
+src = "opencode/command/second-opinion.md"
+dest = "~/.config/opencode/commands/second-opinion.md"
+harness = "opencode"
+
+[[link]]
+src = "opencode/command/spec.md"
+dest = "~/.config/opencode/commands/spec.md"
+harness = "opencode"
+
+[[link]]
+src = "opencode/command/to-tickets.md"
+dest = "~/.config/opencode/commands/to-tickets.md"
+harness = "opencode"
+
+[[link]]
+src = "opencode/command/standup.md"
+dest = "~/.config/opencode/commands/standup.md"
+harness = "opencode"
+
+[[link]]
+src = "opencode/command/backlog-item.md"
+dest = "~/.config/opencode/commands/backlog-item.md"
+harness = "opencode"
+
+[[link]]
+src = "opencode/skills/grill-me/SKILL.md"
+dest = "~/.config/opencode/skills/grill-me/SKILL.md"
+harness = "opencode"
+
+[[link]]
+src = "opencode/skills/second-opinion/SKILL.md"
+dest = "~/.config/opencode/skills/second-opinion/SKILL.md"
+harness = "opencode"
+
+[[link]]
+src = "opencode/skills/spec/SKILL.md"
+dest = "~/.config/opencode/skills/spec/SKILL.md"
+harness = "opencode"
+
+[[link]]
+src = "opencode/skills/analyze-sessions/SKILL.md"
+dest = "~/.config/opencode/skills/analyze-sessions/SKILL.md"
+harness = "opencode"
+
+[[link]]
+src = "opencode/plugin/ruff-format-on-edit.ts"
+dest = "~/.config/opencode/plugin/ruff-format-on-edit.ts"
+harness = "opencode"
+
+[[link]]
+src = "opencode/plugin/notify.ts"
+dest = "~/.config/opencode/plugin/notify.ts"
+harness = "opencode"
+
+[[link]]
+src = "opencode/plugin/guard-rails.ts"
+dest = "~/.config/opencode/plugin/guard-rails.ts"
+harness = "opencode"
+
+# ── agy (Google Antigravity CLI) ─────────────────────────────────────────
+
+[[link]]
+src = "claude/global-instructions.md"
+dest = "~/.gemini/GEMINI.md"
+harness = "agy"
+
+[[link]]
+src = "agy/skills/dashboard/SKILL.md"
+dest = "~/.gemini/antigravity-cli/skills/dashboard/SKILL.md"
+harness = "agy"
+
+[[link]]
+src = "agy/skills/standup/SKILL.md"
+dest = "~/.gemini/antigravity-cli/skills/standup/SKILL.md"
+harness = "agy"
+
+[[link]]
+src = "agy/skills/second-opinion/SKILL.md"
+dest = "~/.gemini/antigravity-cli/skills/second-opinion/SKILL.md"
+harness = "agy"
+
+[[link]]
+src = "agy/skills/grill-me/SKILL.md"
+dest = "~/.gemini/antigravity-cli/skills/grill-me/SKILL.md"
+harness = "agy"
+
+[[link]]
+src = "agy/skills/spec/SKILL.md"
+dest = "~/.gemini/antigravity-cli/skills/spec/SKILL.md"
+harness = "agy"
+
+[[link]]
+src = "agy/skills/to-tickets/SKILL.md"
+dest = "~/.gemini/antigravity-cli/skills/to-tickets/SKILL.md"
+harness = "agy"
+
+[[link]]
+src = "agy/skills/make-skill/SKILL.md"
+dest = "~/.gemini/antigravity-cli/skills/make-skill/SKILL.md"
+harness = "agy"
+
+[[link]]
+src = "agy/skills/backlog-item/SKILL.md"
+dest = "~/.gemini/antigravity-cli/skills/backlog-item/SKILL.md"
+harness = "agy"
+
+[[link]]
+src = "agy/skills/analyze-sessions/SKILL.md"
+dest = "~/.gemini/antigravity-cli/skills/analyze-sessions/SKILL.md"
+harness = "agy"
+
+[[link]]
+src = "agy/hooks.json"
+dest = "~/.gemini/config/hooks.json"
+harness = "agy"
+
+[[link]]
+src = "agy/hooks/agy-elapsed.js"
+dest = "~/.claude/hooks/agy-elapsed.js"
+harness = "agy"
+
+# ── Pi ───────────────────────────────────────────────────────────────────
+
+[[link]]
+src = "claude/global-instructions.md"
+dest = "~/.pi/agent/AGENTS.md"
+harness = "pi"
+
+[[link]]
+src = "pi/prompts/dashboard.md"
+dest = "~/.pi/agent/prompts/dashboard.md"
+harness = "pi"
+
+[[link]]
+src = "pi/prompts/grill-me.md"
+dest = "~/.pi/agent/prompts/grill-me.md"
+harness = "pi"
+
+[[link]]
+src = "pi/prompts/make-skill.md"
+dest = "~/.pi/agent/prompts/make-skill.md"
+harness = "pi"
+
+[[link]]
+src = "pi/prompts/second-opinion.md"
+dest = "~/.pi/agent/prompts/second-opinion.md"
+harness = "pi"
+
+[[link]]
+src = "pi/prompts/spec.md"
+dest = "~/.pi/agent/prompts/spec.md"
+harness = "pi"
+
+[[link]]
+src = "pi/prompts/standup.md"
+dest = "~/.pi/agent/prompts/standup.md"
+harness = "pi"
+
+[[link]]
+src = "pi/prompts/backlog-item.md"
+dest = "~/.pi/agent/prompts/backlog-item.md"
+harness = "pi"
+
+[[link]]
+src = "pi/prompts/to-tickets.md"
+dest = "~/.pi/agent/prompts/to-tickets.md"
+harness = "pi"
+
+[[link]]
+src = "pi/prompts/analyze-sessions.md"
+dest = "~/.pi/agent/prompts/analyze-sessions.md"
+harness = "pi"
+
+[[link]]
+src = "pi/extensions/permission-gate.ts"
+dest = "~/.pi/agent/extensions/permission-gate.ts"
+harness = "pi"
+
+[[link]]
+src = "pi/extensions/ruff-format-on-edit.ts"
+dest = "~/.pi/agent/extensions/ruff-format-on-edit.ts"
+harness = "pi"
+
+[[link]]
+src = "pi/extensions/guard-rails.ts"
+dest = "~/.pi/agent/extensions/guard-rails.ts"
+harness = "pi"
+
+[[link]]
+src = "pi/extensions/trust-session.ts"
+dest = "~/.pi/agent/extensions/trust-session.ts"
+harness = "pi"
+
+[[link]]
+src = "pi/extensions/dev-status-tool.ts"
+dest = "~/.pi/agent/extensions/dev-status-tool.ts"
+harness = "pi"
+
+[[link]]
+src = "pi/extensions/compaction-backlog-sync.ts"
+dest = "~/.pi/agent/extensions/compaction-backlog-sync.ts"
+harness = "pi"
+
+[[link]]
+src = "pi/extensions/pending-plan-surface.ts"
+dest = "~/.pi/agent/extensions/pending-plan-surface.ts"
+harness = "pi"
+
+[[link]]
+src = "pi/extensions/custom-footer.ts"
+dest = "~/.pi/agent/extensions/custom-footer.ts"
+harness = "pi"
+
+[[link]]
+src = "pi/extensions/vitals-promotion-tool.ts"
+dest = "~/.pi/agent/extensions/vitals-promotion-tool.ts"
+harness = "pi"
+
+[[link]]
+src = "pi/extensions/to-tickets-tool.ts"
+dest = "~/.pi/agent/extensions/to-tickets-tool.ts"
+harness = "pi"
+
+[[link]]
+src = "pi/extensions/standup-tool.ts"
+dest = "~/.pi/agent/extensions/standup-tool.ts"
+harness = "pi"
+
+[[link]]
+src = "pi/extensions/second-opinion-tool.ts"
+dest = "~/.pi/agent/extensions/second-opinion-tool.ts"
+harness = "pi"
+
+[[link]]
+src = "pi/extensions/grill-tool.ts"
+dest = "~/.pi/agent/extensions/grill-tool.ts"
+harness = "pi"
+
+[[link]]
+src = "pi/extensions/herdr-blocked-bridge.ts"
+dest = "~/.pi/agent/extensions/herdr-blocked-bridge.ts"
+harness = "pi"
+
+[[link]]
+src = "pi/extensions/question-tool.ts"
+dest = "~/.pi/agent/extensions/question-tool.ts"
+harness = "pi"
+
+[[link]]
+src = "pi/extensions/philosophy-header.ts"
+dest = "~/.pi/agent/extensions/philosophy-header.ts"
+harness = "pi"
+
+[[link]]
+src = "pi/extensions/delegate-tool.ts"
+dest = "~/.pi/agent/extensions/delegate-tool.ts"
+harness = "pi"
+
+[[link]]
+src = "pi/extensions/swarm-tool.ts"
+dest = "~/.pi/agent/extensions/swarm-tool.ts"
+harness = "pi"
+
+[[link]]
+src = "pi/extensions/exit-alias.ts"
+dest = "~/.pi/agent/extensions/exit-alias.ts"
+harness = "pi"
+
+[[link]]
+src = "pi/extensions/notify.ts"
+dest = "~/.pi/agent/extensions/notify.ts"
+harness = "pi"
+
+[[link]]
+src = "pi/skills"
+dest = "~/.pi/agent/skills"
+harness = "pi"
+dir = true
+
+# ── exclusive directories (audited by --check-links) ─────────────────────
+
+[[managed_dir]]
+dest = "~/.claude/scripts"
+
+
+[[managed_dir]]
+dest = "~/.pi/agent/extensions"
+ignore = ["herdr-agent-state.ts"]
+

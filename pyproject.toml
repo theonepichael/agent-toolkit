@@ -1,0 +1,34 @@
+[project]
+name = "dotfiles-tools"
+version = "0.0.0"
+requires-python = ">=3.12"
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["test", "claude/scripts"]
+markers = [
+    "allow_real_subprocess: permits real subprocess.Popen/subprocess.run calls in this test",
+    "allow_production_paths: restores the real HOME (instead of the session sandbox) for this test",
+    "live_backends: launches real backend CLIs and spends real API calls; deselected by default",
+]
+# The live isolation canaries cost an API call each and depend on an upstream
+# gateway that stalls intermittently, so they never run in a normal pass. Opt
+# in with: uv run pytest test/test_backend_isolation_live.py -m live_backends
+addopts = "-m 'not live_backends' -n auto"
+
+[tool.ruff]
+extend-exclude = ["**/test_*.py", "test/"]
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "UP", "SIM", "I", "PIE", "ISC", "FURB", "TRY", "ANN"]
+ignore = ["DTZ011", "DTZ005", "PLW1510", "BLE001", "E501", "TRY003"]
+
+[dependency-groups]
+dev = [
+    "pytest==9.1.1",
+    "pytest-xdist>=3.8.0",
+    "ruff==0.16.2",
+]

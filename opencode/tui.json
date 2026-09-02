@@ -1,0 +1,6 @@
+{
+  "$schema": "https://opencode.ai/tui.json",
+  "keybinds": {
+    "session_toggle_generic_tool_output": "ctrl+o"
+  }
+}

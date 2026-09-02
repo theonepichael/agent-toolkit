@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "hooks": {
+    "postToolUse": [
+      {
+        "type": "command",
+        "matcher": "create|edit",
+        "bash": "jq -r '.toolArgs | fromjson | .path // empty' | { read -r f; [ -n \"$f\" ] || exit 0; case \"$f\" in *.py) ;; *) exit 0 ;; esac; d=$(dirname \"$f\"); while [ \"$d\" != \"/\" ] && [ ! -f \"$d/pyproject.toml\" ]; do d=$(dirname \"$d\"); done; [ -f \"$d/pyproject.toml\" ] || exit 0; ( cd \"$d\" && uv run ruff format \"$f\" >/dev/null 2>&1 && uv run ruff check --fix \"$f\" >/dev/null 2>&1 ); } || true",
+        "timeoutSec": 15
+      }
+    ]
+  }
+}

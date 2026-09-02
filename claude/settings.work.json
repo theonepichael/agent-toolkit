@@ -1,0 +1,81 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 ~/.claude/scripts/dev_status.py:*)",
+      "Bash(python3 ~/.claude/scripts/grill.py:*)"
+    ],
+    "deny": [
+      "Bash(python3 ~/.claude/scripts/dev_status.py prune:*)"
+    ],
+    "ask": [
+      "Bash(git commit)",
+      "Bash(git commit *)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/scripts/guard_rails.py --harness claude"
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "idle_prompt|permission_prompt",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/scripts/notify.py --harness 'Claude' --title 'Claude Code' --message 'Waiting for input' --type waiting_for_input"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/scripts/notify.py --harness 'Claude' --title 'Claude Code' --message 'Task completed' --type completed"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/scripts/dev_status.py render 2>&1 || echo '[dev_status] render failed — run /dashboard to debug'"
+          },
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/scripts/grill.py pending-plan --consume"
+          },
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/scripts/dotfiles_sync_check.py 2>/dev/null"
+          },
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/scripts/settings_seed_drift_check.py 2>/dev/null"
+          }
+        ]
+      }
+    ]
+  },
+  "tui": "fullscreen",
+  "voice": {
+    "enabled": true,
+    "mode": "hold"
+  },
+  "theme": "light-daltonized",
+  "statusLine": {
+    "type": "command",
+    "command": "python3 ~/.claude/scripts/statusline.py"
+  }
+}
