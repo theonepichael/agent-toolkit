@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 
 class NotConfiguredError(Exception):
@@ -45,10 +45,12 @@ class CalEvent:
     is_recurring: bool
 
 
+@runtime_checkable
 class IssueTrackerAdapter(Protocol):
     def get_assigned_items(self) -> list[Item]: ...
 
 
+@runtime_checkable
 class ChatAdapter(Protocol):
     def get_relevant_messages(self, since: date) -> list[Message]: ...
 
@@ -57,6 +59,7 @@ class ChatAdapter(Protocol):
     ) -> list[Message]: ...
 
 
+@runtime_checkable
 class EmailAdapter(Protocol):
     def get_correspondence(self, since: date) -> list[Message]: ...
 
@@ -65,6 +68,7 @@ class EmailAdapter(Protocol):
     ) -> list[Message]: ...
 
 
+@runtime_checkable
 class CalendarAdapter(Protocol):
     def get_calendar_events(self, days: list[date]) -> list[CalEvent]: ...
 
@@ -91,6 +95,85 @@ class StubChatAdapter:
             "chat adapter not configured — confirm Slack vs Teams at "
             "work, then implement ChatAdapter here"
         )
+
+
+class OutlookEmailAdapter:
+    """Email adapter communicating with Outlook on Windows host via PowerShell COM."""
+
+    def get_correspondence(self, since: date) -> list[Message]:
+        try:
+            import outlook_email
+
+            emails = outlook_email.get_recent_correspondence(since=since)
+            messages = []
+            for item in emails:
+                sender_name = str(item.get("sender_name") or "")
+                sender_email = str(item.get("sender_email") or "")
+                author = (
+                    f"{sender_name} <{sender_email}>".strip()
+                    if sender_email
+                    else sender_name
+                )
+                subject = str(item.get("subject") or "")
+                preview = str(item.get("body_preview") or "")
+                text = f"{subject}: {preview}".strip(": ")
+                entry_id = str(item.get("entry_id") or "")
+                timestamp = str(item.get("received_time") or "")
+                messages.append(
+                    Message(
+                        author=author,
+                        text=text,
+                        permalink=f"outlook:{entry_id}" if entry_id else "",
+                        timestamp=timestamp,
+                        channel_or_thread=subject,
+                    )
+                )
+        except Exception as exc:
+            raise NotConfiguredError(f"Outlook email adapter error: {exc}") from exc
+        else:
+            return messages
+
+    def get_thread_updates(
+        self, pending_items: list[dict[str, object]]
+    ) -> list[Message]:
+        try:
+            import outlook_email
+
+            updates: list[Message] = []
+            for item in pending_items:
+                ref = item.get("source_ref")
+                subject = ""
+                if isinstance(ref, dict):
+                    subject = str(ref.get("subject") or "")
+                if not subject:
+                    continue
+                emails = outlook_email.search_emails(query=subject, limit=5)
+                for email in emails:
+                    sender_name = str(email.get("sender_name") or "")
+                    sender_email = str(email.get("sender_email") or "")
+                    author = (
+                        f"{sender_name} <{sender_email}>".strip()
+                        if sender_email
+                        else sender_name
+                    )
+                    email_subject = str(email.get("subject") or "")
+                    preview = str(email.get("body_preview") or "")
+                    text = f"{email_subject}: {preview}".strip(": ")
+                    entry_id = str(email.get("entry_id") or "")
+                    timestamp = str(email.get("received_time") or "")
+                    updates.append(
+                        Message(
+                            author=author,
+                            text=text,
+                            permalink=f"outlook:{entry_id}" if entry_id else "",
+                            timestamp=timestamp,
+                            channel_or_thread=email_subject,
+                        )
+                    )
+        except Exception as exc:
+            raise NotConfiguredError(f"Outlook email adapter error: {exc}") from exc
+        else:
+            return updates
 
 
 class StubEmailAdapter:
@@ -121,6 +204,6 @@ class StubCalendarAdapter:
 ADAPTERS: dict[str, object] = {
     "issue_tracker": StubIssueTrackerAdapter(),
     "chat": StubChatAdapter(),
-    "email": StubEmailAdapter(),
+    "email": OutlookEmailAdapter(),
     "calendar": StubCalendarAdapter(),
 }

@@ -49,6 +49,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`link_drift_check.py`](#claudescriptslinkdriftcheckpy) | SessionStart hook + CLI: flag when a managed symlink on this machine no longer points where links.toml says it should. |
 | [`llm_backends.py`](#claudescriptsllmbackendspy) | llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, opencode, pi, copilot). Extracted from second_opinion.py so dev_status.py's recap generation can reuse the same process-lifecycle handling (timeouts, process-group kills, opencode JSON-event parsing) with its own timeout and model choices, without duplicating it. |
 | [`notify.py`](#claudescriptsnotifypy) | Cross-platform agent notification dispatcher. |
+| [`outlook_email.py`](#claudescriptsoutlookemailpy) | outlook_email.py — CLI tool and agent interface for Windows Outlook via PowerShell COM. |
 | [`second_opinion.py`](#claudescriptssecondopinionpy) | second_opinion.py — one-shot adversarial critique of a plan from a non-Claude backend. Single-round by design: the multi-round loop, plan revision, and convergence judgment all require LLM reasoning and live in prose instructions, not here. |
 | [`settings_seed_drift_check.py`](#claudescriptssettingsseeddriftcheckpy) | SessionStart hook + CLI: detect (and optionally fix) drift between the live ``~/.claude/settings.json`` / ``~/.config/opencode/opencode.jsonc`` / (under WSL) the Windows-side VS Code ``settings.json`` and ``keybindings.json`` and their seeds in the dotfiles repo. |
 | [`standup.py`](#claudescriptsstanduppy) | standup.py — /standup skill CLI: local data gathering. |
@@ -741,6 +742,46 @@ Cross-platform agent notification dispatcher.
   - `build_parser() -> argparse.ArgumentParser`
 - Tested by: `claude/scripts/test_notify.py`
 
+### `claude/scripts/outlook_email.py`
+
+outlook_email.py — CLI tool and agent interface for Windows Outlook via PowerShell COM.
+
+- Installed at: `~/.claude/scripts/outlook_email.py` (all harnesses)
+- Entrypoint: executable, `#!/usr/bin/env python3`
+- CLI (`argparse`): Outlook email tool via PowerShell COM automation.
+- Subcommands:
+  - `search [--query <QUERY>] [--sender <SENDER>] [--since <SINCE>] [--limit <LIMIT>] [--json]` — Search emails
+    - `--query/-q` — Search text in subject or body
+    - `--sender/-s` — Sender name or email
+    - `--since` — Filter since date (YYYY-MM-DD)
+    - `--limit` — Max results (default: 20)
+    - `--json` — Output JSON
+  - `draft --to <TO> [--cc <CC>] --subject <SUBJECT> --body <BODY> [--no-display] [--json]` — Create an email draft
+    - `--to` — Recipient email (required)
+    - `--cc` — CC recipient email
+    - `--subject` — Email subject (required)
+    - `--body` — Email body text (required)
+    - `--no-display` — Do not pop modal window
+    - `--json` — Output JSON
+  - `get --id <ID> [--json]` — Get email details by EntryID
+    - `--id` — Outlook EntryID (required)
+    - `--json` — Output JSON
+  - `recent [--since <SINCE>] [--limit <LIMIT>] [--json]` — Fetch recent correspondence
+    - `--since` — Filter since date (YYYY-MM-DD)
+    - `--limit` — Max results (default: 30)
+    - `--json` — Output JSON
+- Exceptions:
+  - `class OutlookError(Exception)` — Raised when Outlook COM automation or PowerShell execution fails.
+- Public functions:
+  - `find_powershell() -> str` — Locate powershell.exe or pwsh.exe on the system.
+  - `run_powershell_script(script: str, timeout: float = 20.0, runner: Callable[[str], str] | None = None) -> str` — Execute a PowerShell script block and return its raw stdout string.
+  - `run_powershell_json(script: str, timeout: float = 20.0, runner: Callable[[str], str] | None = None) -> dict[str, object]` — Execute a PowerShell script and parse the returned JSON payload.
+  - `search_emails(query: str | None = None, sender: str | None = None, since: date | None = None, folder: int = 6, limit: int = 20, runner: Callable[[str], str] | None = None) -> list[dict[str, object]]` — Search Outlook emails in the specified folder matching criteria.
+  - `create_draft(to: str, subject: str, body: str, cc: str | None = None, display: bool = True, runner: Callable[[str], str] | None = None) -> dict[str, object]` — Create a draft email in Outlook and optionally display inspector modal.
+  - `get_email(entry_id: str, runner: Callable[[str], str] | None = None) -> dict[str, object]` — Retrieve detailed email content by EntryID.
+  - `get_recent_correspondence(since: date | None = None, limit: int = 50, runner: Callable[[str], str] | None = None) -> list[dict[str, object]]` — Retrieve recent emails received in Inbox.
+- Tested by: `claude/scripts/test_outlook_email.py`
+
 ### `claude/scripts/second_opinion.py`
 
 second_opinion.py — one-shot adversarial critique of a plan from a non-Claude backend. Single-round by design: the multi-round loop, plan revision, and convergence judgment all require LLM reasoning and live in prose instructions, not here.
@@ -846,6 +887,7 @@ standup_adapters.py — provider-agnostic adapter interfaces for /standup.
 - Installed at: `~/.claude/scripts/standup_adapters.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI: none (library module).
+- Depends on: `outlook_email.py`
 - Exceptions:
   - `class NotConfiguredError(Exception)` — Raised by a stub adapter — no concrete implementation exists yet.
 - Public classes:
@@ -858,9 +900,10 @@ standup_adapters.py — provider-agnostic adapter interfaces for /standup.
   - `class CalendarAdapter(Protocol)`
   - `class StubIssueTrackerAdapter`
   - `class StubChatAdapter`
+  - `class OutlookEmailAdapter` — Email adapter communicating with Outlook on Windows host via PowerShell COM.
   - `class StubEmailAdapter`
   - `class StubCalendarAdapter`
-- Tested by: `claude/scripts/test_gen_interfaces.py`
+- Tested by: `claude/scripts/test_gen_interfaces.py`, `claude/scripts/test_outlook_email.py`
 
 ### `claude/scripts/statusline.py`
 
