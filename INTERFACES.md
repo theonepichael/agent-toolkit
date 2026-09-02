@@ -49,6 +49,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`link_drift_check.py`](#claudescriptslinkdriftcheckpy) | SessionStart hook + CLI: flag when a managed symlink on this machine no longer points where links.toml says it should. |
 | [`llm_backends.py`](#claudescriptsllmbackendspy) | llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, opencode, pi, copilot). Extracted from second_opinion.py so dev_status.py's recap generation can reuse the same process-lifecycle handling (timeouts, process-group kills, opencode JSON-event parsing) with its own timeout and model choices, without duplicating it. |
 | [`notify.py`](#claudescriptsnotifypy) | Cross-platform agent notification dispatcher. |
+| [`outlook_calendar.py`](#claudescriptsoutlookcalendarpy) | outlook_calendar.py — CLI tool and agent interface for Windows Outlook Calendar via PowerShell COM. |
 | [`outlook_email.py`](#claudescriptsoutlookemailpy) | outlook_email.py — CLI tool and agent interface for Windows Outlook via PowerShell COM. |
 | [`second_opinion.py`](#claudescriptssecondopinionpy) | second_opinion.py — one-shot adversarial critique of a plan from a non-Claude backend. Single-round by design: the multi-round loop, plan revision, and convergence judgment all require LLM reasoning and live in prose instructions, not here. |
 | [`settings_seed_drift_check.py`](#claudescriptssettingsseeddriftcheckpy) | SessionStart hook + CLI: detect (and optionally fix) drift between the live ``~/.claude/settings.json`` / ``~/.config/opencode/opencode.jsonc`` / (under WSL) the Windows-side VS Code ``settings.json`` and ``keybindings.json`` and their seeds in the dotfiles repo. |
@@ -742,6 +743,33 @@ Cross-platform agent notification dispatcher.
   - `build_parser() -> argparse.ArgumentParser`
 - Tested by: `claude/scripts/test_notify.py`
 
+### `claude/scripts/outlook_calendar.py`
+
+outlook_calendar.py — CLI tool and agent interface for Windows Outlook Calendar via PowerShell COM.
+
+- Installed at: `~/.claude/scripts/outlook_calendar.py` (all harnesses)
+- Entrypoint: executable, `#!/usr/bin/env python3`
+- CLI (`argparse`): Outlook Calendar tool via PowerShell COM automation.
+- Subcommands:
+  - `list [--since <SINCE>] [--until <UNTIL>] [--days <DAYS>] [--limit <LIMIT>] [--json]` — List calendar events
+    - `--since` — Start date (YYYY-MM-DD)
+    - `--until` — End date (YYYY-MM-DD)
+    - `--days` — Number of days from since/today
+    - `--limit` — Max results (default: 50)
+    - `--json` — Output JSON
+  - `get --id <ID> [--json]` — Get appointment details by EntryID
+    - `--id` — Outlook EntryID (required)
+    - `--json` — Output JSON
+- Exceptions:
+  - `class OutlookCalendarError(Exception)` — Raised when Outlook Calendar COM automation or PowerShell execution fails.
+- Public functions:
+  - `find_powershell() -> str` — Locate powershell.exe or pwsh.exe on the system.
+  - `run_powershell_script(script: str, timeout: float = 20.0, runner: Callable[[str], str] | None = None) -> str` — Execute a PowerShell script block and return its raw stdout string.
+  - `run_powershell_json(script: str, timeout: float = 20.0, runner: Callable[[str], str] | None = None) -> dict[str, object]` — Execute a PowerShell script and parse the returned JSON payload.
+  - `get_calendar_events_range(start_date: date | None = None, end_date: date | None = None, limit: int = 50, runner: Callable[[str], str] | None = None) -> list[dict[str, object]]` — Query Outlook calendar appointments within a bounded date range.
+  - `get_appointment(entry_id: str, runner: Callable[[str], str] | None = None) -> dict[str, object]` — Retrieve appointment details by EntryID.
+- Tested by: `claude/scripts/test_outlook_calendar.py`
+
 ### `claude/scripts/outlook_email.py`
 
 outlook_email.py — CLI tool and agent interface for Windows Outlook via PowerShell COM.
@@ -887,7 +915,7 @@ standup_adapters.py — provider-agnostic adapter interfaces for /standup.
 - Installed at: `~/.claude/scripts/standup_adapters.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI: none (library module).
-- Depends on: `outlook_email.py`
+- Depends on: `outlook_calendar.py`, `outlook_email.py`
 - Exceptions:
   - `class NotConfiguredError(Exception)` — Raised by a stub adapter — no concrete implementation exists yet.
 - Public classes:
@@ -902,8 +930,9 @@ standup_adapters.py — provider-agnostic adapter interfaces for /standup.
   - `class StubChatAdapter`
   - `class OutlookEmailAdapter` — Email adapter communicating with Outlook on Windows host via PowerShell COM.
   - `class StubEmailAdapter`
+  - `class OutlookCalendarAdapter` — Calendar adapter communicating with Outlook on Windows host via PowerShell COM.
   - `class StubCalendarAdapter`
-- Tested by: `claude/scripts/test_gen_interfaces.py`, `claude/scripts/test_outlook_email.py`
+- Tested by: `claude/scripts/test_gen_interfaces.py`, `claude/scripts/test_outlook_calendar.py`, `claude/scripts/test_outlook_email.py`
 
 ### `claude/scripts/statusline.py`
 

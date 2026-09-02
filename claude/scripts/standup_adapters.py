@@ -192,6 +192,41 @@ class StubEmailAdapter:
         )
 
 
+class OutlookCalendarAdapter:
+    """Calendar adapter communicating with Outlook on Windows host via PowerShell COM."""
+
+    def get_calendar_events(self, days: list[date]) -> list[CalEvent]:
+        if not days:
+            return []
+        try:
+            import outlook_calendar
+
+            min_day = min(days)
+            max_day = max(days)
+            raw_events = outlook_calendar.get_calendar_events_range(
+                start_date=min_day, end_date=max_day
+            )
+
+            # Match events that start on one of the requested days
+            day_set = {d.isoformat() for d in days}
+            events: list[CalEvent] = []
+            for item in raw_events:
+                start_str = str(item.get("start") or "")
+                start_day = start_str[:10]
+                if start_day in day_set:
+                    events.append(
+                        CalEvent(
+                            title=str(item.get("title") or ""),
+                            start=start_str,
+                            is_recurring=bool(item.get("is_recurring", False)),
+                        )
+                    )
+        except Exception as exc:
+            raise NotConfiguredError(f"Outlook calendar adapter error: {exc}") from exc
+        else:
+            return events
+
+
 class StubCalendarAdapter:
     def get_calendar_events(self, days: list[date]) -> list[CalEvent]:
         raise NotConfiguredError(
@@ -205,5 +240,5 @@ ADAPTERS: dict[str, object] = {
     "issue_tracker": StubIssueTrackerAdapter(),
     "chat": StubChatAdapter(),
     "email": OutlookEmailAdapter(),
-    "calendar": StubCalendarAdapter(),
+    "calendar": OutlookCalendarAdapter(),
 }

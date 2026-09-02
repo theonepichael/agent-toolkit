@@ -156,6 +156,11 @@ dest = "~/.claude/scripts/standup_adapters.py"
 src = "claude/scripts/outlook_email.py"
 dest = "~/.claude/scripts/outlook_email.py"
 
+[[link]]
+src = "claude/scripts/outlook_calendar.py"
+dest = "~/.claude/scripts/outlook_calendar.py"
+
+
 
 [[link]]
 src = "claude/scripts/dotfiles_sync_check.py"
