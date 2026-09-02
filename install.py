@@ -543,6 +543,7 @@ class Options:
     report_uninstalled: bool = False
     quiet: bool = False
     verbose: bool = False
+    force_harness: bool = False
 
 
 @dataclass
@@ -641,6 +642,37 @@ def _fail(message: str, *, show_usage: bool = False) -> NoReturn:
     raise SystemExit(2)
 
 
+HARNESS_BINARIES: dict[str, str] = {
+    "claude": "claude",
+    "copilot": "copilot",
+    "opencode": "opencode",
+    "agy": "agy",
+    "pi": "pi",
+}
+
+HARNESS_INSTALL_HINTS: dict[str, str] = {
+    "claude": "npm install -g @anthropic-ai/claude-code",
+    "copilot": "npm install -g @github/copilot",
+    "opencode": "curl -fsSL https://opencode.ai/install | bash",
+    "agy": "internal workstation installation",
+    "pi": "npm install -g @mariozechner/pi-cli",
+}
+
+
+def check_harness_binaries(ctx: Context) -> list[str]:
+    """Return error strings for requested harnesses whose binaries are not on PATH."""
+    if ctx.opts.force_harness:
+        return []
+    errors: list[str] = []
+    for harness in ctx.opts.harnesses:
+        bin_name = HARNESS_BINARIES.get(harness)
+        if bin_name and not have(bin_name):
+            hint = HARNESS_INSTALL_HINTS.get(harness, "")
+            hint_str = f" (install with: {hint})" if hint else ""
+            errors.append(f"'{bin_name}' CLI binary is not installed on PATH{hint_str}")
+    return errors
+
+
 def parse_args(argv: Sequence[str]) -> Options:
     """Parse and validate the command line.
 
@@ -671,6 +703,7 @@ def parse_args(argv: Sequence[str]) -> Options:
     parser.add_argument("--no-nvim-pin", dest="no_nvim_pin", action="store_true")
     parser.add_argument("--reseed", action="store_true")
     parser.add_argument("--adopt", action="store_true")
+    parser.add_argument("--force-harness", dest="force_harness", action="store_true")
     parser.add_argument("--depart", action="store_true")
     parser.add_argument("--yes", action="store_true")
     parser.add_argument("--check-links", dest="check_links", action="store_true")
@@ -815,6 +848,7 @@ def parse_args(argv: Sequence[str]) -> Options:
         report_uninstalled=args.report_uninstalled,
         quiet=args.quiet,
         verbose=args.verbose,
+        force_harness=args.force_harness,
     )
 
 
@@ -1446,78 +1480,6 @@ def _activate_nvm_node(ctx: Context) -> None:
     candidates = sorted(p for p in versions.iterdir() if (p / "bin").is_dir())
     if candidates:
         _prepend_path(candidates[-1] / "bin")
-
-
-def install_node(ctx: Context) -> None:
-    """Install NVM and a Node LTS — only for the harnesses that need npm.
-
-    opencode and agy both manage their own runtime externally (agy is a
-    standalone Go binary, not an npm package), so nothing here runs when
-    they're the only selection.
-    """
-    if not (ctx.has_harness("claude") or ctx.has_harness("copilot")):
-        return
-
-    if not (ctx.home / ".nvm").is_dir():
-        if ctx.opts.dry_run:
-            _preview(
-                "would install NVM (curl nvm-sh/nvm install.sh | bash)",
-                quiet=ctx.opts.quiet,
-            )
-        else:
-            _header("==> Installing NVM...", quiet=ctx.opts.quiet)
-            if not run_command(
-                "curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/HEAD/"
-                "install.sh | bash",
-                shell=True,
-            ).ok:
-                ctx.reporter.skip("NVM", "installer failed (network blocked?)")
-
-    if have("npm"):
-        return
-
-    _activate_nvm_node(ctx)
-    if have("npm"):
-        return
-
-    nvm_sh = ctx.home / ".nvm" / "nvm.sh"
-    if not nvm_sh.is_file():
-        return
-    if ctx.opts.dry_run:
-        _preview("would run: nvm install --lts", quiet=ctx.opts.quiet)
-        return
-    if run_command(f'. "{nvm_sh}" && nvm install --lts', shell=True).ok:
-        _activate_nvm_node(ctx)
-    else:
-        ctx.reporter.skip("node", "nvm install --lts failed")
-
-
-def install_npm_harness(ctx: Context, harness: str, label: str, package: str) -> None:
-    """Install one npm-distributed harness CLI, if it was selected."""
-    if not ctx.has_harness(harness):
-        cli_common.qprint(
-            f"  {label}: skipped (not in --harness)", quiet=ctx.opts.quiet
-        )
-        return
-    if not have("npm"):
-        ctx.reporter.skip(label, "npm unavailable (NVM install failed or skipped)")
-        return
-    if ctx.opts.dry_run:
-        _preview(f"would run: npm install -g {package}", quiet=ctx.opts.quiet)
-        return
-    _header(f"==> Installing {label}...", quiet=ctx.opts.quiet)
-    before = (
-        _capture_package_snapshot("npm") if ctx.departure_baseline is not None else None
-    )
-    outcome = run_command(["npm", "install", "-g", package])
-    after = (
-        _capture_package_snapshot("npm") if ctx.departure_baseline is not None else None
-    )
-    _record_package_transaction(ctx, "npm", [package], before, after, epoch=None)
-    if outcome.ok:
-        ctx.manifest.record_package(package)
-    else:
-        ctx.reporter.skip(label, "npm install failed (registry blocked?)")
 
 
 # ── symlink engine ────────────────────────────────────────────────────────────
@@ -2614,10 +2576,7 @@ class ManagedService:
     unit: str
 
 
-MANAGED_SERVICES = [
-    ManagedService(name="watchcommit", unit="watchcommit.service"),
-    ManagedService(name="opencode-skills-sync", unit="opencode-skills-sync.service"),
-]
+MANAGED_SERVICES: list[ManagedService] = []
 
 
 def _probe_systemctl_word(word: str, cmd: list[str]) -> bool | None:
@@ -5145,39 +5104,23 @@ def run_install(ctx: Context, specs: Sequence[LinkSpec]) -> int:
             f"==> Installing with profile: {ctx.opts.profile}", quiet=ctx.opts.quiet
         )
 
-    if ctx.is_mac:
-        install_mac_packages(ctx)
-    elif ctx.is_linux:
-        install_linux_packages(ctx)
-
-    install_node(ctx)
-    install_npm_harness(ctx, "claude", "Claude Code", "@anthropic-ai/claude-code")
-    install_npm_harness(ctx, "copilot", "Copilot CLI", "@github/copilot")
-
     install_symlinks(ctx, links)
     _cleanup_orphaned_links(ctx, links)
     opencode_drift = seed_opencode_config(ctx)
     settings_drift = seed_claude_settings(ctx)
     pi_settings_drift = seed_pi_settings(ctx)
-    vscode_drift = seed_vscode_settings(ctx)
 
-    if ctx.is_mac:
-        import_rectangle_prefs(ctx)
-        set_caps_lock_to_escape(ctx)
-        load_watchcommit_agent(ctx)
     capture_service_baseline(ctx)
     enable_managed_services(ctx)
     capture_git_hooks_path_baseline(ctx)
     install_global_git_hooks_path(ctx)
 
-    install_vim_plug(ctx)
-    bootstrap_neovim(ctx)
     write_profile_marker(ctx)
 
     if ctx.departure_baseline is not None:
         depart.save_baseline(ctx.state_dir, ctx.departure_baseline)
 
-    print_summary(ctx, settings_drift, opencode_drift, vscode_drift, pi_settings_drift)
+    print_summary(ctx, settings_drift, opencode_drift, (), pi_settings_drift)
     return 1 if ctx.reporter.skipped else 0
 
 
@@ -5221,6 +5164,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(
             PALETTE.error(
                 "Pass --profile=work, or --force to provision as personal anyway."
+            ),
+            file=sys.stderr,
+        )
+        return 2
+
+    harness_errors = check_harness_binaries(ctx)
+    if harness_errors:
+        for err in harness_errors:
+            print(PALETTE.error(f"✗ {err}"), file=sys.stderr)
+        print(
+            PALETTE.error(
+                "\nNothing was configured. Re-run after installing, or pass --force-harness to configure anyway."
             ),
             file=sys.stderr,
         )

@@ -74,6 +74,7 @@ def make_ctx(
     system="Linux",
     is_wsl=False,
     dotfiles=REPO_ROOT,
+    force_harness=True,
 ):
     """Build a Context pointed at a throwaway home and the real repo."""
     opts = install.Options(
@@ -89,6 +90,7 @@ def make_ctx(
         yes=yes,
         check_links=check_links,
         report_uninstalled=report_uninstalled,
+        force_harness=force_harness,
     )
     state_dir = home / ".local" / "state" / "dotfiles"
     return install.Context(
@@ -124,19 +126,13 @@ def offline_install(monkeypatch):
     for name in (
         "install_mac_packages",
         "install_linux_packages",
-        "install_node",
         "capture_service_baseline",
         "enable_managed_services",
         "capture_git_hooks_path_baseline",
         "install_global_git_hooks_path",
-        "load_watchcommit_agent",
-        "import_rectangle_prefs",
-        "set_caps_lock_to_escape",
-        "install_vim_plug",
-        "bootstrap_neovim",
     ):
-        monkeypatch.setattr(install, name, lambda *a, **k: None)
-    monkeypatch.setattr(install, "install_npm_harness", lambda *a, **k: None)
+        if hasattr(install, name):
+            monkeypatch.setattr(install, name, lambda *a, **k: None)
 
 
 @pytest.fixture
@@ -386,26 +382,15 @@ def test_harness_gate(home, links):
 def test_platform_and_profile_gates(home, links):
     linux_personal = make_ctx(home, system="Linux")
     dests = {s.dest for s in links if install.link_applies(s, linux_personal)}
-    assert "~/.config/systemd/user/watchcommit.service" in dests
-    assert "~/.claude/scripts/watchcommit_activity.py" in dests
-    assert "~/.zprofile" not in dests
-    assert "~/.config/Code/User/settings.json" in dests
+    assert "~/.claude/scripts/dev_status_sync.py" in dests
 
     linux_work = make_ctx(home, system="Linux", profile="work")
     work_dests = {s.dest for s in links if install.link_applies(s, linux_work)}
-    assert "~/.local/bin/watchcommit" not in work_dests
-    assert "~/.config/systemd/user/watchcommit.service" not in work_dests
-    assert "~/.claude/scripts/watchcommit_activity.py" not in work_dests
+    assert "~/.claude/scripts/dev_status_sync.py" not in work_dests
 
-    mac = make_ctx(home, system="Darwin")
+    mac = make_ctx(home, system="Darwin", harnesses=("copilot",))
     mac_dests = {s.dest for s in links if install.link_applies(s, mac)}
-    assert "~/.zprofile" in mac_dests
-    assert "~/Library/LaunchAgents/com.user.watchcommit.plist" in mac_dests
-    assert "~/.config/systemd/user/watchcommit.service" not in mac_dests
-
-    wsl = make_ctx(home, system="Linux", is_wsl=True)
-    wsl_dests = {s.dest for s in links if install.link_applies(s, wsl)}
-    assert "~/.config/Code/User/settings.json" not in wsl_dests
+    assert "~/.copilot/hooks/session-start.json" in mac_dests
 
 
 def test_copilot_hook_platform_split(home, links):
@@ -431,7 +416,7 @@ def test_copilot_hook_platform_split(home, links):
 
 
 def test_expand_dest(home):
-    assert install.expand_dest("~/.vimrc", home) == home / ".vimrc"
+    assert install.expand_dest("~/.agent-tools.zsh", home) == home / ".agent-tools.zsh"
     assert install.expand_dest("/etc/hosts", home) == Path("/etc/hosts")
 
 
@@ -440,8 +425,8 @@ def test_expand_dest(home):
 
 def test_symlink_creates_and_records(home):
     ctx = make_ctx(home)
-    src = REPO_ROOT / "vim" / ".vimrc"
-    dest = home / ".vimrc"
+    src = REPO_ROOT / "shell" / "agent-tools.zsh"
+    dest = home / ".agent-tools.zsh"
 
     assert install.symlink(ctx, src, dest)
 
@@ -454,14 +439,14 @@ def test_symlink_creates_and_records(home):
 
 def test_symlink_backs_up_existing_file(home):
     ctx = make_ctx(home)
-    src = REPO_ROOT / "vim" / ".vimrc"
-    dest = home / ".vimrc"
+    src = REPO_ROOT / "shell" / "agent-tools.zsh"
+    dest = home / ".agent-tools.zsh"
     dest.write_text("sentinel-content\n")
 
     install.symlink(ctx, src, dest)
 
     assert dest.is_symlink()
-    backup = home / ".vimrc.bak"
+    backup = home / ".agent-tools.zsh.bak"
     assert backup.read_text() == "sentinel-content\n"
     assert kinds(ctx, "file-backed-up") == [
         {"kind": "file-backed-up", "dest": str(dest), "backup": str(backup)}
@@ -471,8 +456,8 @@ def test_symlink_backs_up_existing_file(home):
 
 def test_symlink_rerun_is_a_noop_and_not_rerecorded(home):
     ctx = make_ctx(home)
-    src = REPO_ROOT / "vim" / ".vimrc"
-    dest = home / ".vimrc"
+    src = REPO_ROOT / "shell" / "agent-tools.zsh"
+    dest = home / ".agent-tools.zsh"
 
     install.symlink(ctx, src, dest)
     install.symlink(ctx, src, dest)
@@ -482,8 +467,8 @@ def test_symlink_rerun_is_a_noop_and_not_rerecorded(home):
 
 def test_symlink_replaces_a_link_pointing_elsewhere(home):
     ctx = make_ctx(home)
-    src = REPO_ROOT / "vim" / ".vimrc"
-    dest = home / ".vimrc"
+    src = REPO_ROOT / "shell" / "agent-tools.zsh"
+    dest = home / ".agent-tools.zsh"
     dest.symlink_to("/etc/hostname")
 
     install.symlink(ctx, src, dest)
@@ -496,8 +481,8 @@ def test_symlink_replaces_a_link_pointing_elsewhere(home):
 
 def test_symlink_dry_run_changes_nothing(home, capsys):
     ctx = make_ctx(home, dry_run=True)
-    src = REPO_ROOT / "vim" / ".vimrc"
-    dest = home / ".vimrc"
+    src = REPO_ROOT / "shell" / "agent-tools.zsh"
+    dest = home / ".agent-tools.zsh"
 
     install.symlink(ctx, src, dest)
 
@@ -1373,89 +1358,6 @@ def test_seed_vscode_settings_skips_without_windows_code_cli(home, monkeypatch):
     ]
 
 
-def test_seed_vscode_settings_fresh_copy_records_manifest(home, monkeypatch):
-    vscode_dir = home / "winappdata"
-    vscode_dir.mkdir()
-    monkeypatch.setattr(install, "_vscode_wsl_user_dir", lambda: vscode_dir)
-    ctx = make_ctx(home, is_wsl=True)
-
-    results = install.seed_vscode_settings(ctx)
-
-    names = {name for _, (name, _) in results}
-    assert names == {"settings.json", "keybindings.json"}
-    for name in ("settings.json", "keybindings.json"):
-        dest = vscode_dir / name
-        assert dest.is_file() and not dest.is_symlink()
-        assert dest.read_text() == (REPO_ROOT / "vscode" / name).read_text()
-    assert {e["dest"] for e in kinds(ctx, "file-copied")} == {
-        str(vscode_dir / "settings.json"),
-        str(vscode_dir / "keybindings.json"),
-    }
-    assert all(drift == "" for _, (_, drift) in results)
-
-
-def test_seed_vscode_settings_migrates_stale_symlink(home, monkeypatch):
-    vscode_dir = home / "winappdata"
-    vscode_dir.mkdir()
-    monkeypatch.setattr(install, "_vscode_wsl_user_dir", lambda: vscode_dir)
-    ctx = make_ctx(home, is_wsl=True)
-
-    old_target = home / "old_settings.json"
-    old_target.write_text('{"old": true}')
-    dest = vscode_dir / "settings.json"
-    dest.symlink_to(old_target)
-    assert dest.is_symlink()
-
-    install.seed_vscode_settings(ctx)
-
-    assert dest.is_file() and not dest.is_symlink()
-    assert dest.read_text() == (REPO_ROOT / "vscode" / "settings.json").read_text()
-
-
-def test_seed_vscode_settings_migration_dry_run_previews_and_changes_nothing(
-    home, monkeypatch, capsys
-):
-    vscode_dir = home / "winappdata"
-    vscode_dir.mkdir()
-    monkeypatch.setattr(install, "_vscode_wsl_user_dir", lambda: vscode_dir)
-    ctx = make_ctx(home, is_wsl=True, dry_run=True)
-
-    old_target = home / "old_settings.json"
-    old_target.write_text('{"old": true}')
-    dest = vscode_dir / "settings.json"
-    dest.symlink_to(old_target)
-    # Keep keybindings.json out of the picture — a plain not-yet-seeded
-    # file there would legitimately hit seed_file's own "would copy"
-    # preview branch, which isn't what this test is about.
-    (vscode_dir / "keybindings.json").write_text(
-        (REPO_ROOT / "vscode" / "keybindings.json").read_text()
-    )
-
-    install.seed_vscode_settings(ctx)
-
-    out = capsys.readouterr().out
-    assert "would remove stale WSL symlink" in out
-    assert "would copy" not in out
-    assert dest.is_symlink()
-    assert dest.resolve() == old_target.resolve()
-
-
-def test_seed_vscode_settings_reports_drift_when_content_differs(home, monkeypatch):
-    vscode_dir = home / "winappdata"
-    vscode_dir.mkdir()
-    monkeypatch.setattr(install, "_vscode_wsl_user_dir", lambda: vscode_dir)
-    ctx = make_ctx(home, is_wsl=True)
-    install.seed_vscode_settings(ctx)
-
-    dest = vscode_dir / "settings.json"
-    dest.write_text(dest.read_text() + "\n// live edit\n")
-
-    results = install.seed_vscode_settings(make_ctx(home, is_wsl=True))
-    drift_by_name = {name: drift for _, (name, drift) in results}
-    assert drift_by_name["settings.json"] != ""
-    assert drift_by_name["keybindings.json"] == ""
-
-
 def test_describe_vscode_drift_identical_content_is_no_drift(tmp_path):
     seed = tmp_path / "seed.json"
     live = tmp_path / "live.json"
@@ -1579,20 +1481,20 @@ def test_rollback_undoes_every_past_run(home, links, offline_install):
 
     # Run A's files, not just run B's.
     assert not (home / ".claude" / "CLAUDE.md").exists()
-    assert not (home / ".vimrc").exists()
+    assert not (home / ".agent-tools.zsh").exists()
     assert not (home / ".config" / "opencode" / "opencode.jsonc").exists()
     assert not rollback.manifest.path.exists()
 
 
 def test_rollback_restores_backed_up_file(home, links, offline_install):
-    (home / ".vimrc").write_text("sentinel-content\n")
+    (home / ".agent-tools.zsh").write_text("sentinel-content\n")
     install.run_install(make_ctx(home, harnesses=("claude",)), links)
-    assert (home / ".vimrc").is_symlink()
+    assert (home / ".agent-tools.zsh").is_symlink()
 
     assert install.do_rollback(make_ctx(home)) == 0
 
-    assert (home / ".vimrc").read_text() == "sentinel-content\n"
-    assert not (home / ".vimrc.bak").exists()
+    assert (home / ".agent-tools.zsh").read_text() == "sentinel-content\n"
+    assert not (home / ".agent-tools.zsh.bak").exists()
 
 
 def test_rollback_leaves_a_reclaimed_symlink_alone(
@@ -1614,9 +1516,9 @@ def test_rollback_leaves_a_reclaimed_symlink_alone(
 
 
 def test_rollback_reports_a_missing_backup(home, links, offline_install, capsys):
-    (home / ".vimrc").write_text("sentinel-content\n")
+    (home / ".agent-tools.zsh").write_text("sentinel-content\n")
     install.run_install(make_ctx(home, harnesses=("claude",)), links)
-    (home / ".vimrc.bak").unlink()
+    (home / ".agent-tools.zsh.bak").unlink()
 
     code = install.do_rollback(make_ctx(home))
     out = capsys.readouterr().out
@@ -1632,8 +1534,8 @@ def test_duplicate_backup_entry_is_not_reported_twice(home, capsys):
     must not be reported as a missing-backup anomaly.
     """
     ctx = make_ctx(home)
-    dest = home / ".vimrc"
-    backup = home / ".vimrc.bak"
+    dest = home / ".agent-tools.zsh"
+    backup = home / ".agent-tools.zsh.bak"
     dest.write_text("original\n")
     dest.rename(backup)
     ctx.manifest.record_backup(dest, backup)
@@ -1728,34 +1630,34 @@ def _watchcommit_available(monkeypatch, *, probe_ok=True, disable_ok=True):
 def test_wipe_deletes_backup_instead_of_restoring(
     home, links, offline_install, monkeypatch
 ):
-    (home / ".vimrc").write_text("sentinel-content\n")
+    (home / ".agent-tools.zsh").write_text("sentinel-content\n")
     install.run_install(make_ctx(home, harnesses=("claude",)), links)
-    assert (home / ".vimrc").is_symlink()
+    assert (home / ".agent-tools.zsh").is_symlink()
 
     _watchcommit_available(monkeypatch)
     assert install.do_rollback(make_ctx(home, wipe=True)) == 0
 
-    assert not (home / ".vimrc").exists()
-    assert not (home / ".vimrc.bak").exists()
+    assert not (home / ".agent-tools.zsh").exists()
+    assert not (home / ".agent-tools.zsh.bak").exists()
 
 
 def test_wipe_dry_run_does_not_delete_backup(home, links, offline_install, monkeypatch):
-    (home / ".vimrc").write_text("sentinel-content\n")
+    (home / ".agent-tools.zsh").write_text("sentinel-content\n")
     install.run_install(make_ctx(home, harnesses=("claude",)), links)
 
     _watchcommit_available(monkeypatch)
     assert install.do_rollback(make_ctx(home, wipe=True, dry_run=True)) == 0
 
-    assert (home / ".vimrc").is_symlink()
-    assert (home / ".vimrc.bak").is_file()
+    assert (home / ".agent-tools.zsh").is_symlink()
+    assert (home / ".agent-tools.zsh.bak").is_file()
 
 
 def test_wipe_missing_backup_reports_wipe_wording(
     home, links, offline_install, capsys, monkeypatch
 ):
-    (home / ".vimrc").write_text("sentinel-content\n")
+    (home / ".agent-tools.zsh").write_text("sentinel-content\n")
     install.run_install(make_ctx(home, harnesses=("claude",)), links)
-    (home / ".vimrc.bak").unlink()
+    (home / ".agent-tools.zsh.bak").unlink()
 
     _watchcommit_available(monkeypatch)
     code = install.do_rollback(make_ctx(home, wipe=True))
@@ -1806,119 +1708,6 @@ def test_wipe_dry_run_leaves_nvim_dirs_alone(home, links, offline_install, monke
 
     assert nvim_dir.is_dir()
     assert (nvim_dir / "sentinel").is_file()
-
-
-def test_wipe_disables_watchcommit_service(home, links, offline_install, monkeypatch):
-    install.run_install(make_ctx(home, harnesses=("claude",)), links)
-    unit = home / ".config" / "systemd" / "user" / "watchcommit.service"
-    assert unit.is_symlink()
-
-    calls = _watchcommit_available(monkeypatch)
-
-    assert install.do_rollback(make_ctx(home, wipe=True)) == 0
-    assert ["systemctl", "--user", "disable", "--now", "watchcommit.service"] in calls
-
-
-def test_wipe_disables_opencode_skills_sync_service(
-    home, links, offline_install, monkeypatch
-):
-    install.run_install(make_ctx(home, harnesses=("claude",)), links)
-    unit = home / ".config" / "systemd" / "user" / "opencode-skills-sync.service"
-    assert unit.is_symlink()
-
-    calls = _watchcommit_available(monkeypatch)
-
-    assert install.do_rollback(make_ctx(home, wipe=True)) == 0
-    assert [
-        "systemctl",
-        "--user",
-        "disable",
-        "--now",
-        "opencode-skills-sync.service",
-    ] in calls
-
-
-def test_wipe_dry_run_previews_watchcommit_disable(
-    home, links, offline_install, monkeypatch, capsys
-):
-    install.run_install(make_ctx(home, harnesses=("claude",)), links)
-
-    calls = _watchcommit_available(monkeypatch)
-
-    assert install.do_rollback(make_ctx(home, wipe=True, dry_run=True)) == 0
-    out = capsys.readouterr().out
-
-    assert "would disable+stop the watchcommit systemd user service" in out
-    assert [
-        "systemctl",
-        "--user",
-        "disable",
-        "--now",
-        "watchcommit.service",
-    ] not in calls
-
-
-def test_plain_rollback_does_not_touch_watchcommit(
-    home, links, offline_install, monkeypatch
-):
-    install.run_install(make_ctx(home, harnesses=("claude",)), links)
-
-    calls = _watchcommit_available(monkeypatch)
-
-    assert install.do_rollback(make_ctx(home)) == 0
-    assert calls == []
-
-
-def test_wipe_watchcommit_noop_when_never_installed(
-    home, links, offline_install, monkeypatch
-):
-    install.run_install(make_ctx(home, harnesses=("claude",), profile="work"), links)
-    unit = home / ".config" / "systemd" / "user" / "watchcommit.service"
-    assert not unit.exists()
-
-    calls = _watchcommit_available(monkeypatch)
-
-    assert install.do_rollback(make_ctx(home, wipe=True, profile="work")) == 0
-    assert calls == []
-
-
-def test_wipe_watchcommit_anomaly_when_systemd_unavailable(
-    home, links, offline_install, monkeypatch, capsys
-):
-    install.run_install(make_ctx(home, harnesses=("claude",)), links)
-    unit = home / ".config" / "systemd" / "user" / "watchcommit.service"
-    assert unit.is_symlink()
-
-    _watchcommit_available(monkeypatch, probe_ok=False)
-
-    code = install.do_rollback(make_ctx(home, wipe=True))
-    out = capsys.readouterr().out
-
-    assert code == 1
-    assert "SKIPPED" in out
-
-
-def test_wipe_watchcommit_anomaly_counts_as_swept_with_no_manifest(
-    home, monkeypatch, capsys
-):
-    """A probe failure is a real anomaly, not a silent no-op, even with
-    nothing else to roll back — it must still push the exit code to 1
-    instead of falling through to the plain "nothing to roll back" error."""
-    unit = home / ".config" / "systemd" / "user" / "watchcommit.service"
-    unit.parent.mkdir(parents=True)
-    fake_src = home / ".fake-unit-source"
-    fake_src.write_text("x\n")
-    unit.symlink_to(fake_src)
-
-    _watchcommit_available(monkeypatch, probe_ok=False)
-
-    code = install.do_rollback(make_ctx(home, wipe=True))
-    captured = capsys.readouterr()
-
-    assert code == 1
-    assert "SKIPPED" in captured.out
-    assert "nothing to roll back" not in captured.out
-    assert "nothing to roll back" not in captured.err
 
 
 def test_wipe_no_manifest_sweeps_nvim_dirs(home, monkeypatch):
@@ -2066,7 +1855,7 @@ def test_full_dry_run_touches_nothing(home, links, offline_install):
     ctx = make_ctx(home, harnesses=("claude", "opencode"), dry_run=True)
     install.run_install(ctx, links)
 
-    assert not (home / ".vimrc").exists()
+    assert not (home / ".agent-tools.zsh").exists()
     assert not (home / ".claude").exists()
     assert not ctx.manifest.path.exists()
 
@@ -2604,7 +2393,7 @@ def test_capture_departure_baseline_captures_link_destination_and_bak(home, link
     install.capture_departure_baseline(ctx, links)
     baseline = depart.load_baseline(ctx.state_dir)
 
-    dest = home / ".vimrc"
+    dest = home / ".agent-tools.zsh"
     assert baseline.value_for(depart.file_key(dest)) == {"state": "absent"}
     assert baseline.value_for(depart.symlink_key(dest)) == {"state": "absent"}
     assert baseline.value_for(depart.file_key(dest.with_name(dest.name + ".bak"))) == {
@@ -2755,51 +2544,10 @@ def test_preflight_sees_harness_gated_files_despite_depart_having_no_harness(
 # ── build_preflight_report: the two named restore reclassifications ────────
 
 
-def test_preflight_reclassifies_appended_rc_file_as_owned_restore(
-    home, links, offline_install
-):
-    (home / ".zshrc").write_text("original zshrc content\n")
-    ctx = make_ctx(home, harnesses=("claude",))
-    install.run_install(ctx, links)  # captures baseline with original content
-
-    # links.toml itself symlinks ~/.zshrc into the repo, so writing through
-    # the live symlink would edit the repo's own tracked file — unlink it
-    # first and replace it with a plain file simulating NVM/_install_uv/
-    # oh-my-posh appending to the rc file, without touching the checkout.
-    zshrc = home / ".zshrc"
-    assert zshrc.is_symlink()
-    zshrc.unlink()
-    zshrc.write_text("original zshrc content\nexport NVM_DIR=...\n")
-
-    report = install.build_preflight_report(make_ctx(home))
-    c = report[depart.file_key(zshrc)]
-    assert c.bucket == "owned"
-    assert c.action == "restore"
-
-
-def test_preflight_leaves_edited_rc_file_unresolved(home, links, offline_install):
-    (home / ".zshrc").write_text("original zshrc content\n")
-    ctx = make_ctx(home, harnesses=("claude",))
-    install.run_install(ctx, links)
-
-    # links.toml itself symlinks ~/.zshrc into the repo, so writing through
-    # the live symlink would edit the repo's own tracked file — unlink it
-    # first and replace it with a plain file to simulate an edited/replaced
-    # rc file without touching the checkout.
-    zshrc = home / ".zshrc"
-    assert zshrc.is_symlink()
-    zshrc.unlink()
-    zshrc.write_text("completely different content\n")
-
-    report = install.build_preflight_report(make_ctx(home))
-    c = report[depart.file_key(zshrc)]
-    assert c.bucket == "unresolved"
-
-
 def test_preflight_reclassifies_backed_up_then_symlinked_pair(
     home, links, offline_install
 ):
-    dest = home / ".vimrc"
+    dest = home / ".agent-tools.zsh"
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text("my own vimrc\n")
     ctx = make_ctx(home, harnesses=("claude",))
@@ -2903,7 +2651,7 @@ def test_execute_file_symlink_phase_removes_guarded_key_when_not_running(
 ):
     guarded = home / "settings.json"
     guarded.write_text("x")
-    unguarded = home / ".vimrc"
+    unguarded = home / ".agent-tools.zsh"
     unguarded.write_text("y")
     baseline, report = _vscode_guard_baseline_and_report([guarded], unguarded)
     ledger = depart.DepartureLedger(depart.departure_ledger_path(home / "state"))
@@ -2925,7 +2673,7 @@ def test_execute_file_symlink_phase_leaves_guarded_key_unresolved_when_running_o
 ):
     guarded = home / "settings.json"
     guarded.write_text("x")
-    unguarded = home / ".vimrc"
+    unguarded = home / ".agent-tools.zsh"
     unguarded.write_text("y")
     baseline, report = _vscode_guard_baseline_and_report([guarded], unguarded)
     ledger = depart.DepartureLedger(depart.departure_ledger_path(home / "state"))
@@ -2959,7 +2707,7 @@ def test_execute_file_symlink_phase_checks_process_running_exactly_once(
     ]
     for p in guarded_paths:
         p.write_text("x")
-    unguarded = home / ".vimrc"
+    unguarded = home / ".agent-tools.zsh"
     unguarded.write_text("y")
     baseline, report = _vscode_guard_baseline_and_report(guarded_paths, unguarded)
     ledger = depart.DepartureLedger(depart.departure_ledger_path(home / "state"))
@@ -2981,7 +2729,7 @@ def test_execute_file_symlink_phase_checks_process_running_exactly_once(
 def test_execute_file_symlink_phase_never_checks_process_running_when_no_guarded_keys(
     home, monkeypatch
 ):
-    unguarded = home / ".vimrc"
+    unguarded = home / ".agent-tools.zsh"
     unguarded.write_text("y")
     baseline, report = _vscode_guard_baseline_and_report([], unguarded)
     ledger = depart.DepartureLedger(depart.departure_ledger_path(home / "state"))
@@ -3291,7 +3039,7 @@ def test_do_depart_token_without_trailing_newline_still_matches(
 def test_depart_restores_backed_up_then_symlinked_destination(
     home, links, offline_install
 ):
-    dest = home / ".vimrc"
+    dest = home / ".agent-tools.zsh"
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text("my own vimrc\n")
     ctx = make_ctx(home, harnesses=("claude",))
@@ -3304,25 +3052,6 @@ def test_depart_restores_backed_up_then_symlinked_destination(
     assert dest.is_file() and not dest.is_symlink()
     assert dest.read_text() == "my own vimrc\n"
     assert not dest.with_name(dest.name + ".bak").exists()
-
-
-def test_depart_restores_appended_rc_file(home, links, offline_install):
-    zshrc = home / ".zshrc"
-    zshrc.write_text("original zshrc content\n")
-    ctx = make_ctx(home, harnesses=("claude",))
-    install.run_install(ctx, links)  # baseline blob captures the original content
-
-    # links.toml symlinks ~/.zshrc into the repo; unlink first so writing
-    # the "appended" simulation doesn't touch the checkout (see the
-    # preflight reclassification tests' identical caveat).
-    assert zshrc.is_symlink()
-    zshrc.unlink()
-    zshrc.write_text("original zshrc content\nexport NVM_DIR=...\n")
-
-    code = install.do_depart(make_ctx(home, yes=True))
-
-    assert code == 0
-    assert zshrc.read_text() == "original zshrc content\n"
 
 
 def test_depart_leaves_unrelated_files_untouched(home, links, offline_install):
@@ -3533,33 +3262,6 @@ def test_install_linux_packages_no_departure_baseline_skips_probes(home, monkeyp
 
     monkeypatch.setattr(install, "run_command", run)
     install._install_linux_packages_one_by_one(ctx, "apt", epoch=None)
-
-
-def test_install_npm_harness_records_transaction(home, monkeypatch):
-    ctx = make_ctx(home, harnesses=("claude",))
-    ctx.departure_baseline = depart.Baseline()
-    live = {"npm": "10.0.0"}
-
-    def run(cmd, **kwargs):
-        if cmd[:2] == ["npm", "ls"]:
-            deps = {n: {"version": v} for n, v in live.items()}
-            return install.CommandResult(True, json.dumps({"dependencies": deps}))
-        if cmd[:3] == ["npm", "install", "-g"]:
-            live[cmd[3]] = "1.2.3"
-            return install.CommandResult(True)
-        raise AssertionError(f"unexpected command: {cmd!r}")
-
-    monkeypatch.setattr(install, "have", lambda name: name == "npm")
-    monkeypatch.setattr(install, "run_command", run)
-    install.install_npm_harness(
-        ctx, "claude", "Claude Code", "@anthropic-ai/claude-code"
-    )
-
-    txns = ctx.departure_baseline.transactions
-    assert len(txns) == 1
-    assert txns[0]["manager"] == "npm"
-    assert txns[0]["requested"] == ["@anthropic-ai/claude-code"]
-    assert txns[0]["after"]["@anthropic-ai/claude-code"] == "1.2.3"
 
 
 def test_install_ruff_uv_tool_records_transaction(home, monkeypatch):
@@ -3977,178 +3679,6 @@ def _watchcommit_run_command(live, *, other_enabled_units=""):
         raise AssertionError(f"unexpected command: {cmd!r}")
 
     return run
-
-
-def test_depart_disables_both_managed_services_and_restores_linger(
-    home, links, monkeypatch, capsys
-):
-    for name in (
-        "install_mac_packages",
-        "install_linux_packages",
-        "install_node",
-        "load_watchcommit_agent",
-        "import_rectangle_prefs",
-        "set_caps_lock_to_escape",
-        "install_vim_plug",
-        "bootstrap_neovim",
-        "capture_git_hooks_path_baseline",
-        "install_global_git_hooks_path",
-    ):
-        monkeypatch.setattr(install, name, lambda *a, **k: None)
-    monkeypatch.setattr(install, "install_npm_harness", lambda *a, **k: None)
-
-    live = _fresh_managed_services_live()
-    monkeypatch.setattr(install, "run_command", _watchcommit_run_command(live))
-    monkeypatch.setattr(install, "have", lambda name: name in ("systemctl", "loginctl"))
-    monkeypatch.setattr(install, "_current_user", lambda: "testuser")
-
-    ctx = make_ctx(home, harnesses=("claude",))
-    install.run_install(ctx, links)
-    assert all(unit["enabled"] and unit["active"] for unit in live["units"].values())
-    assert live["linger"] is True
-
-    calls: list[list[str]] = []
-    real_run = install.run_command
-
-    def counting_run(cmd, **kwargs):
-        calls.append(list(cmd))
-        return real_run(cmd, **kwargs)
-
-    monkeypatch.setattr(install, "run_command", counting_run)
-    code = install.do_depart(make_ctx(home, yes=True))
-
-    assert code == 0
-    assert all(
-        not unit["enabled"] and not unit["active"] for unit in live["units"].values()
-    )
-    assert live["linger"] is False
-    assert calls.count(["loginctl", "disable-linger", "testuser"]) == 1
-
-    ledger = depart.DepartureLedger(depart.departure_ledger_path(ctx.state_dir))
-    assert not any(
-        str(e.get("outcome", "")).startswith("unresolved") for e in ledger.entries()
-    )
-
-
-def test_depart_preserves_linger_when_other_units_depend_on_it(
-    home, links, monkeypatch, capsys
-):
-    for name in (
-        "install_mac_packages",
-        "install_linux_packages",
-        "install_node",
-        "load_watchcommit_agent",
-        "import_rectangle_prefs",
-        "set_caps_lock_to_escape",
-        "install_vim_plug",
-        "bootstrap_neovim",
-        "capture_git_hooks_path_baseline",
-        "install_global_git_hooks_path",
-    ):
-        monkeypatch.setattr(install, name, lambda *a, **k: None)
-    monkeypatch.setattr(install, "install_npm_harness", lambda *a, **k: None)
-
-    live = _fresh_managed_services_live()
-    run = _watchcommit_run_command(
-        live, other_enabled_units="some-other-timer.timer enabled\n"
-    )
-    monkeypatch.setattr(install, "run_command", run)
-    monkeypatch.setattr(install, "have", lambda name: name in ("systemctl", "loginctl"))
-    monkeypatch.setattr(install, "_current_user", lambda: "testuser")
-
-    ctx = make_ctx(home, harnesses=("claude",))
-    install.run_install(ctx, links)
-
-    code = install.do_depart(make_ctx(home, yes=True))
-
-    # Both units are still fully departed (linger is a separate, decoupled
-    # concern — see install-multi-service-depart-adopt-spec.md's Design
-    # decision): the "other unit depends on linger" case is advisory-only
-    # now, not a ledger-tainting failure, so depart still reports success.
-    assert code == 0
-    assert all(
-        not unit["enabled"] and not unit["active"] for unit in live["units"].values()
-    )
-    assert live["linger"] is True  # linger correctly preserved
-
-    ledger = depart.DepartureLedger(depart.departure_ledger_path(ctx.state_dir))
-    assert not any(
-        str(e.get("outcome", "")).startswith("unresolved") for e in ledger.entries()
-    )
-
-
-def test_reconcile_linger_self_heals_on_a_later_depart_after_a_transient_failure(
-    home, links, monkeypatch, capsys
-):
-    """A failed loginctl disable-linger on one --depart run must not
-    permanently strand linger enabled: _reconcile_linger recomputes its
-    eligibility from live state on every call, not from what this run's
-    per-service loop did, so a later --depart run with nothing new to
-    disable (both units' ledger keys already complete) still retries and
-    succeeds once the underlying problem clears.
-
-    A departure with *nothing else* left unresolved finalizes and deletes
-    the baseline/ledger entirely (do_depart's _finalize_departure_state) —
-    correct behavior, not a bug — which would leave no state for a second
-    --depart call to retry against at all. This test pre-seeds one
-    unrelated, permanently-unresolved ledger entry (standing in for any
-    real unresolved item — a font-tree conflict, a guarded VS Code file,
-    etc.) purely to keep the baseline alive across two --depart
-    invocations, so the *services'* own self-healing retry behavior can
-    actually be observed independent of that unrelated item's fate.
-    """
-    for name in (
-        "install_mac_packages",
-        "install_linux_packages",
-        "install_node",
-        "load_watchcommit_agent",
-        "import_rectangle_prefs",
-        "set_caps_lock_to_escape",
-        "install_vim_plug",
-        "bootstrap_neovim",
-        "capture_git_hooks_path_baseline",
-        "install_global_git_hooks_path",
-    ):
-        monkeypatch.setattr(install, name, lambda *a, **k: None)
-    monkeypatch.setattr(install, "install_npm_harness", lambda *a, **k: None)
-
-    live = _fresh_managed_services_live()
-    base_run = _watchcommit_run_command(live)
-    disable_linger_calls = {"count": 0}
-
-    def flaky_run(cmd, **kwargs):
-        if cmd == ["loginctl", "disable-linger", "testuser"]:
-            disable_linger_calls["count"] += 1
-            if disable_linger_calls["count"] == 1:
-                return install.CommandResult(False)  # transient failure, once
-        return base_run(cmd, **kwargs)
-
-    monkeypatch.setattr(install, "run_command", flaky_run)
-    monkeypatch.setattr(install, "have", lambda name: name in ("systemctl", "loginctl"))
-    monkeypatch.setattr(install, "_current_user", lambda: "testuser")
-
-    ctx = make_ctx(home, harnesses=("claude",))
-    install.run_install(ctx, links)
-
-    ledger = depart.DepartureLedger(depart.departure_ledger_path(ctx.state_dir))
-    ledger.record("contrived:unrelated", "noop", "unresolved: kept alive for this test")
-
-    first_code = install.do_depart(make_ctx(home, yes=True))
-    assert first_code == 1  # the contrived unrelated item keeps this incomplete
-    assert all(
-        not unit["enabled"] and not unit["active"] for unit in live["units"].values()
-    )
-    assert live["linger"] is True  # disable-linger failed — still on
-    assert not any(
-        str(e.get("outcome", "")).startswith("unresolved")
-        for e in ledger.entries()
-        if e.get("key") != "contrived:unrelated"
-    )  # both services still recorded "ok" despite the linger failure
-
-    second_code = install.do_depart(make_ctx(home, yes=True))
-    assert second_code == 1  # the contrived item is permanently stuck, by design
-    assert live["linger"] is False  # but linger self-healed: retried and succeeded
-    assert disable_linger_calls["count"] == 2
 
 
 # ── --check-links: read-only links.toml audit ──────────────────────────────
@@ -5509,3 +5039,29 @@ def test_check_links_dir_true_cross_checkout_uses_relative_path(
     assert code == 0, f"expected the cross-checkout note, not a false finding:\n{out}"
     assert "wrong-target" not in out
     assert f"note: 1 link(s) point into {dir_repo}" in out
+
+
+def test_check_harness_binaries_reports_missing(home, monkeypatch):
+    monkeypatch.setattr(install, "have", lambda cmd: cmd == "claude")
+    ctx = make_ctx(home, harnesses=("claude", "pi"), force_harness=False)
+    errors = install.check_harness_binaries(ctx)
+    assert len(errors) == 1
+    assert "'pi' CLI binary is not installed on PATH" in errors[0]
+    assert "npm install -g @mariozechner/pi-cli" in errors[0]
+
+
+def test_check_harness_binaries_bypassed_with_force_harness(home, monkeypatch):
+    monkeypatch.setattr(install, "have", lambda cmd: False)
+    ctx = make_ctx(home, harnesses=("pi",), force_harness=True)
+    errors = install.check_harness_binaries(ctx)
+    assert errors == []
+
+
+def test_main_fails_loudly_when_harness_binary_missing(home, monkeypatch, capsys):
+    monkeypatch.setattr(install, "have", lambda cmd: False)
+    status = install.main(["--harness=pi", "--dry-run"])
+    assert status == 2
+    err = capsys.readouterr().err
+    assert "✗ 'pi' CLI binary is not installed on PATH" in err
+    assert "npm install -g @mariozechner/pi-cli" in err
+    assert "pass --force-harness" in err

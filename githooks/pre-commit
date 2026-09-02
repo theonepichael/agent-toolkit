@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# Block a commit that leaves a generated skill/command doc stale relative to
+# its template (gen_skills.py: dashboard/grill-me/backlog-item/make-skill;
+# gen_second_opinion.py: second-opinion), or that lets a skill/command doc
+# drift from the backing script's real CLI contract (dev_status.py/grill.py/
+# standup.py and any other script gen_interfaces.py discovers), or that
+# leaves INTERFACES.md itself stale. gen_skills.py/gen_second_opinion.py run
+# first so a forgotten regeneration reports as that, not as a confusing
+# downstream CLI-contract-drift error from gen_interfaces.py reading stale
+# generated content. See claude/scripts/gen_interfaces.py --check for its
+# two distinct exit codes (1 = stale file, 3 = doc drift).
+set -uo pipefail
+
+# opencode-skills-live is a dedicated worktree (scripts/opencode_skills_sync.py)
+# that holds a raw, uncurated mirror of live opencode skills for loss
+# protection only -- never source code, never meant to be symlinked via
+# links.toml or to match any generated-doc template. None of the checks
+# below are meaningful there, so skip them entirely on that branch rather
+# than teaching each generator about a mirror path it has no real stake in.
+branch="$(git rev-parse --abbrev-ref HEAD)"
+if [ "$branch" = "opencode-skills-live" ]; then
+    exit 0
+fi
+
+repo_root="$(git rev-parse --show-toplevel)"
+
+# Path resolution: this lib lives under githooks-global/, a different
+# directory than this script, so $(dirname "$0")-relative sourcing would
+# resolve to the wrong place -- use repo_root instead, same as every other
+# path below.
+source "$repo_root/githooks-global/lib/no-commit-on-main.sh"
+refuse_if_protected_branch || exit $?
+
+output="$(python3 "$repo_root/claude/scripts/gen_skills.py" --check --repo-root "$repo_root" 2>&1)"
+status=$?
+if [ "$status" -ne 0 ]; then
+    echo "$output" >&2
+    echo "" >&2
+    echo "pre-commit: a generated skill doc is stale -- run gen_skills.py, then re-stage and commit." >&2
+    exit "$status"
+fi
+
+output="$(python3 "$repo_root/claude/scripts/gen_second_opinion.py" --check --repo-root "$repo_root" 2>&1)"
+status=$?
+if [ "$status" -ne 0 ]; then
+    echo "$output" >&2
+    echo "" >&2
+    echo "pre-commit: a generated second-opinion doc is stale -- run gen_second_opinion.py, then re-stage and commit." >&2
+    exit "$status"
+fi
+
+output="$(python3 "$repo_root/claude/scripts/gen_interfaces.py" --check --repo-root "$repo_root" 2>&1)"
+status=$?
+
+if [ "$status" -eq 0 ]; then
+    exit 0
+fi
+
+echo "$output" >&2
+echo "" >&2
+case "$status" in
+    1) echo "pre-commit: INTERFACES.md is stale -- run the command above, then re-stage and commit." >&2 ;;
+    3) echo "pre-commit: a skill/command doc drifted from its script's real CLI contract -- edit the doc(s) named above." >&2 ;;
+esac
+exit "$status"

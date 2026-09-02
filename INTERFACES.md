@@ -49,7 +49,6 @@ House style for these interfaces is in `STYLE.md`.
 | [`link_drift_check.py`](#claudescriptslinkdriftcheckpy) | SessionStart hook + CLI: flag when a managed symlink on this machine no longer points where links.toml says it should. |
 | [`llm_backends.py`](#claudescriptsllmbackendspy) | llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, opencode, pi, copilot). Extracted from second_opinion.py so dev_status.py's recap generation can reuse the same process-lifecycle handling (timeouts, process-group kills, opencode JSON-event parsing) with its own timeout and model choices, without duplicating it. |
 | [`notify.py`](#claudescriptsnotifypy) | Cross-platform agent notification dispatcher. |
-| [`opencode_skills_sync_activity.py`](#claudescriptsopencodeskillssyncactivitypy) | Print opencode-skills-sync's pause state and last known snapshot commit, so a session can tell whether the daemon is running and how current its mirror is -- mirrors watchcommit_activity.py's SessionStart banner role. |
 | [`second_opinion.py`](#claudescriptssecondopinionpy) | second_opinion.py — one-shot adversarial critique of a plan from a non-Claude backend. Single-round by design: the multi-round loop, plan revision, and convergence judgment all require LLM reasoning and live in prose instructions, not here. |
 | [`settings_seed_drift_check.py`](#claudescriptssettingsseeddriftcheckpy) | SessionStart hook + CLI: detect (and optionally fix) drift between the live ``~/.claude/settings.json`` / ``~/.config/opencode/opencode.jsonc`` / (under WSL) the Windows-side VS Code ``settings.json`` and ``keybindings.json`` and their seeds in the dotfiles repo. |
 | [`standup.py`](#claudescriptsstanduppy) | standup.py — /standup skill CLI: local data gathering. |
@@ -57,7 +56,6 @@ House style for these interfaces is in `STYLE.md`.
 | [`statusline.py`](#claudescriptsstatuslinepy) | Claude Code status line: render the model name and a color-coded context window usage bar with the used percentage, from the JSON session payload Claude Code pipes to this script on stdin. |
 | [`to_tickets_runner.py`](#claudescriptstoticketsrunnerpy) | to_tickets_runner.py — create a linked batch of dev_status.py backlog items from a confirmed vertical-slice/tracer-bullet ticket breakdown. |
 | [`vitals_promotion.py`](#claudescriptsvitalspromotionpy) | vitals-promotion.py — mechanical vitals-promotion pass over grill session data. |
-| [`watchcommit_activity.py`](#claudescriptswatchcommitactivitypy) | Print watchcommit's last known background pull/commit/push, so a session (or wc-status) can tell daemon-driven git state changes from manual ones instead of only seeing a clean/up-to-date working tree. |
 
 ### `claude/scripts/analyze_sessions.py`
 
@@ -743,17 +741,6 @@ Cross-platform agent notification dispatcher.
   - `build_parser() -> argparse.ArgumentParser`
 - Tested by: `claude/scripts/test_notify.py`
 
-### `claude/scripts/opencode_skills_sync_activity.py`
-
-Print opencode-skills-sync's pause state and last known snapshot commit, so a session can tell whether the daemon is running and how current its mirror is -- mirrors watchcommit_activity.py's SessionStart banner role.
-
-- Installed at: `~/.claude/scripts/opencode_skills_sync_activity.py` (not on work)
-- Entrypoint: executable, `#!/usr/bin/env python3`
-- CLI: none (library module).
-- Public functions:
-  - `report(dest_worktree: Path) -> str`
-- Tested by: `claude/scripts/test_opencode_skills_sync_activity.py`
-
 ### `claude/scripts/second_opinion.py`
 
 second_opinion.py — one-shot adversarial critique of a plan from a non-Claude backend. Single-round by design: the multi-round loop, plan revision, and convergence judgment all require LLM reasoning and live in prose instructions, not here.
@@ -958,19 +945,6 @@ vitals-promotion.py — mechanical vitals-promotion pass over grill session data
   - `print_report(report: Report, apply: bool, quiet: bool = False) -> None`
 - Tested by: `claude/scripts/test_vitals_promotion.py`
 
-### `claude/scripts/watchcommit_activity.py`
-
-Print watchcommit's last known background pull/commit/push, so a session (or wc-status) can tell daemon-driven git state changes from manual ones instead of only seeing a clean/up-to-date working tree.
-
-- Installed at: `~/.claude/scripts/watchcommit_activity.py` (not on work)
-- Entrypoint: executable, `#!/usr/bin/env python3`
-- CLI: none (library module).
-- Environment: `XDG_STATE_HOME`
-- Filesystem constants:
-  - `STATE_DIR = Path(os.environ.get('XDG_STATE_HOME', str(Path.home() / '.local' / 'state'))) / 'watchcommit'`
-  - `ACTIVITY_STATE_FILE = STATE_DIR / 'last-activity.json'`
-- Tested by: nothing
-
 ---
 
 ## 2. Skill and command surface
@@ -1149,6 +1123,7 @@ install.py — dotfiles + AI-harness provisioner for macOS and Linux/WSL.
   - `--no-nvim-pin`
   - `--reseed`
   - `--adopt`
+  - `--force-harness`
   - `--depart`
   - `--yes`
   - `--check-links`
@@ -1172,13 +1147,12 @@ install.py — dotfiles + AI-harness provisioner for macOS and Linux/WSL.
   - `color_enabled(stream: object) -> bool` — Return whether ANSI codes should be emitted to ``stream``.
   - `detect_wsl(system: str) -> bool` — Return whether this is a WSL kernel (as opposed to native Linux).
   - `build_context(opts: Options, dotfiles: Path | None = None) -> Context` — Assemble a :class:`Context` for a real run on this machine.
+  - `check_harness_binaries(ctx: Context) -> list[str]` — Return error strings for requested harnesses whose binaries are not on PATH.
   - `parse_args(argv: Sequence[str]) -> Options` — Parse and validate the command line.
   - `run_command(cmd: Sequence[str] | str, *, shell: bool = False, capture: bool = False) -> CommandResult` — Run an external command, returning success rather than raising.
   - `have(executable: str) -> bool` — Return whether ``executable`` is on PATH.
   - `install_mac_packages(ctx: Context) -> None` — Bootstrap Homebrew if needed, then install the formulae and casks.
   - `install_linux_packages(ctx: Context) -> None` — Install everything the Linux/WSL branch owns: distro packages and extras.
-  - `install_node(ctx: Context) -> None` — Install NVM and a Node LTS — only for the harnesses that need npm.
-  - `install_npm_harness(ctx: Context, harness: str, label: str, package: str) -> None` — Install one npm-distributed harness CLI, if it was selected.
   - `load_links(path: Path) -> list[LinkSpec]` — Parse ``links.toml`` into an ordered list of link specs.
   - `load_managed_dirs(path: Path) -> list[ManagedDirSpec]` — Parse the ``[[managed_dir]]`` rows declaring directories we own exclusively.
   - `link_applies(spec: LinkSpec, ctx: Context) -> bool` — Return whether ``spec`` should be linked for this run's machine/options.
