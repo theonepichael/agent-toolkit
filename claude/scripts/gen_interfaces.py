@@ -79,7 +79,7 @@ import cli_common
 
 HARNESS_DIRS = ("claude", "copilot", "opencode", "agy", "pi")
 SCRIPTS_DIR = "claude/scripts"
-ROOT_ENTRYPOINTS = ("install.py", "depart.py")
+ROOT_ENTRYPOINTS = ("install.py", "depart.py", "scripts/sync_from_dotfiles.py")
 OUTPUT_NAME = "INTERFACES.md"
 
 PREAMBLE = """\
