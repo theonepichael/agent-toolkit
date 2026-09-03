@@ -1130,6 +1130,7 @@ are copy-once seeds for exactly that reason.
 | `pi/extensions/grill-tool.ts` | `~/.pi/agent/extensions/grill-tool.ts` (pi) |
 | `pi/extensions/guard-rails.ts` | `~/.pi/agent/extensions/guard-rails.ts` (pi) |
 | `pi/extensions/herdr-blocked-bridge.ts` | `~/.pi/agent/extensions/herdr-blocked-bridge.ts` (pi) |
+| `pi/extensions/model-picker.ts` | `~/.pi/agent/extensions/model-picker.ts` (pi) |
 | `pi/extensions/notify.ts` | `~/.pi/agent/extensions/notify.ts` (pi) |
 | `pi/extensions/pending-plan-surface.ts` | `~/.pi/agent/extensions/pending-plan-surface.ts` (pi) |
 | `pi/extensions/permission-gate.ts` | `~/.pi/agent/extensions/permission-gate.ts` (pi) |
@@ -1159,6 +1160,7 @@ are copy-once seeds for exactly that reason.
 | `pi/test/grill-tool.test.ts` | not symlinked by `links.toml` |
 | `pi/test/guard-rails.test.ts` | not symlinked by `links.toml` |
 | `pi/test/herdr-blocked-bridge.test.ts` | not symlinked by `links.toml` |
+| `pi/test/model-picker.test.ts` | not symlinked by `links.toml` |
 | `pi/test/notify.test.ts` | not symlinked by `links.toml` |
 | `pi/test/pending-plan-surface.test.ts` | not symlinked by `links.toml` |
 | `pi/test/permission-gate.test.ts` | not symlinked by `links.toml` |
