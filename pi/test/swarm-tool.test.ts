@@ -1,11 +1,15 @@
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { isValidAckToken } from "../extensions/permission-gate";
 import registerSwarmTools, {
-  ackMatches,
   activeWorkerCount,
+  classifyTimeoutProbe,
+  deadlineStopDetail,
+  elapsedWorkingMs,
+  foldWorkingSegment,
+  formatDuration,
+  workerWorktreePath,
   buildAgentGetArgv,
   buildAgentListArgv,
   buildAgentPromptArgv,
@@ -14,16 +18,18 @@ import registerSwarmTools, {
   buildAgentStartArgv,
   buildAgentWaitArgv,
   buildPaneCloseArgv,
-  buildPaneRenameArgv,
-  buildPaneLayoutArgv,
-  buildPaneSplitArgv,
+  buildTabCloseArgv,
+  buildTabCreateArgv,
+  buildTabListArgv,
+  buildWorkerCloseArgv,
   canOpenNewPane,
   canSpawnNew,
   classifyWaitResult,
-  MIN_WORKER_PANE_COLS,
-  MIN_WORKER_PANE_ROWS,
-  parseCurrentPaneRect,
-  planSplits,
+  findTabByLabel,
+  itemPaths,
+  parseReadyItems,
+  parseTabCreate,
+  selectSchedulable,
   loadState,
   looksTruncated,
   matchOption,
@@ -39,9 +45,8 @@ import registerSwarmTools, {
   saveState,
   spawnBudget,
   statePath,
-  trustAckToken,
   waitResultDetail,
-  WORKER_TRUST_COMMAND,
+  WORKER_UNATTENDED_ENV,
   type SwarmState,
   type WorkerRecord,
 } from "../extensions/swarm-tool";
@@ -77,6 +82,7 @@ function makeWorker(overrides: Partial<WorkerRecord> = {}): WorkerRecord {
     agent: "run1-w1",
     slug: "iron-lb-example",
     paneId: "w1:pA",
+    tabId: "w1:tA",
     lifecycle: "active",
     ...overrides,
   };
@@ -92,30 +98,93 @@ describe("nextAgentId", () => {
     expect(nextAgentId("run1", 12)).toBe("run1-w12");
     expect(nextAgentId("run1", 1, "fix-bug")).toBe("run1-w1-fix-bug");
     expect(nextAgentId("run1", 1, "a-very-long-backlog-item-slug-name-that-exceeds-limits")).toBe(
-      "run1-w1-a-very-long-backlog-item",
+      "run1-w1-name-that-exceeds-limits",
     );
     expect(
       nextAgentId("run1", 1, "a-very-long-backlog-item-slug-name-that-exceeds-limits").length,
     ).toBeLessThanOrEqual(32);
   });
+
+  test("strips a known project prefix even when no truncation is needed", () => {
+    expect(nextAgentId("r1", 1, "meta-fix-bug")).toBe("r1-w1-fix-bug");
+    expect(nextAgentId("r1", 1, "work-fix-bug")).toBe("r1-w1-fix-bug");
+  });
+
+  test("truncates from the slug's head, so the distinguishing tail survives", () => {
+    expect(nextAgentId("shakedown1", 3, "meta-second-opinion-copilot-model-pool")).toBe(
+      "shakedown1-w3-copilot-model-pool",
+    );
+  });
+
+  test("two slugs sharing a project prefix produce visibly different names", () => {
+    const a = nextAgentId("shakedown1", 1, "meta-second-opinion-copilot-argv");
+    const b = nextAgentId("shakedown1", 2, "meta-second-opinion-pi-size-guard");
+    expect(a).toBe("shakedown1-w1-inion-copilot-argv");
+    expect(b).toBe("shakedown1-w2-nion-pi-size-guard");
+    expect(a).not.toBe(b);
+    expect(a.length).toBeLessThanOrEqual(32);
+    expect(b.length).toBeLessThanOrEqual(32);
+  });
+
+  test("strips the longest matching prefix", () => {
+    expect(nextAgentId("r1", 1, "iron-lb-some-fancy-long-item-slug-here-ok")).toBe(
+      "r1-w1-ncy-long-item-slug-here-ok",
+    );
+  });
+
+  test("strips exactly ONE prefix, never both", () => {
+    // Reducing over PROJECT_PREFIXES and stripping each match in turn would
+    // take `meta-` and then `work-` off this slug and leave `double-prefix`,
+    // silently dropping a segment that tells items apart.
+    expect(nextAgentId("r1", 1, "meta-work-double-prefix")).toBe("r1-w1-work-double-prefix");
+  });
+
+  test("a slug that is exactly a prefix leaves no dangling separator", () => {
+    expect(nextAgentId("run1", 1, "meta-")).toBe("run1-w1");
+  });
+
+  test("a pathological runId longer than the cap still yields a 32-char name", () => {
+    const id = nextAgentId("a".repeat(40), 1, "meta-x");
+    expect(id.length).toBeLessThanOrEqual(32);
+    expect(id).toBe("a".repeat(32));
+  });
 });
 
 describe("herdr argv builders", () => {
-  test("pane rename: pane id and label", () => {
-    expect(buildPaneRenameArgv("w1:pA", "my-slug")).toEqual(["pane", "rename", "w1:pA", "my-slug"]);
-  });
-
-  test("pane split: current pane, direction, cwd, no-focus", () => {
-    expect(buildPaneSplitArgv("right", "/repo")).toEqual([
-      "pane",
-      "split",
-      "--current",
-      "--direction",
-      "right",
+  test("tab create: cwd, slug label, unattended env, and never steals the human's focus", () => {
+    expect(buildTabCreateArgv("/repo", "my-slug")).toEqual([
+      "tab",
+      "create",
       "--cwd",
       "/repo",
+      "--label",
+      "my-slug",
+      "--env",
+      "PI_AGENT_UNATTENDED=1",
       "--no-focus",
     ]);
+  });
+
+  test("tab close: the tab id", () => {
+    expect(buildTabCloseArgv("w1:tN")).toEqual(["tab", "close", "w1:tN"]);
+  });
+
+  test("tearing a worker down closes the tab it owns", () => {
+    expect(buildWorkerCloseArgv(makeWorker({ paneId: "w1:pA", tabId: "w1:tA" }))).toEqual([
+      "tab",
+      "close",
+      "w1:tA",
+    ]);
+  });
+
+  test("a worker restored from a pre-tabs state file is still closed by its pane", () => {
+    // Workers used to live in panes split out of the orchestrator's own, so a
+    // state file written by that version carries no tabId. Closing its tab is
+    // not an option and skipping the close would leak a live pi into a pane
+    // nothing polls, so the pane close stays reachable for exactly this case.
+    const legacy = makeWorker({ paneId: "w1:pA" });
+    delete legacy.tabId;
+    expect(buildWorkerCloseArgv(legacy)).toEqual(["pane", "close", "w1:pA"]);
   });
 
   test("agent start: kind pi, targets the given pane", () => {
@@ -131,6 +200,41 @@ describe("herdr argv builders", () => {
       "--timeout",
       "30000",
     ]);
+  });
+
+  test("agent start: a model is handed to pi after the -- separator, not to herdr", () => {
+    // herdr's usage is `agent start <NAME> --kind <KIND> --pane <ID> [OPTIONS]
+    // [-- [AGENT_ARG]...]`, so everything for pi has to sit after `--`.
+    // Without the separator herdr would reject --model as its own unknown flag.
+    const argv = buildAgentStartArgv("run1-w1", "w1:pB", "opencode-go/glm-5.3-flash");
+    expect(argv).toEqual([
+      "agent",
+      "start",
+      "run1-w1",
+      "--kind",
+      "pi",
+      "--pane",
+      "w1:pB",
+      "--timeout",
+      "30000",
+      "--",
+      "--model",
+      "opencode-go/glm-5.3-flash",
+    ]);
+  });
+
+  test("agent start: no model means today's argv exactly, separator included", () => {
+    // Omitted must stay byte-identical to the pre-change command: an empty
+    // trailing `--` is a different command line and pi parses it differently.
+    const argv = buildAgentStartArgv("run1-w1", "w1:pB", undefined);
+    expect(argv).not.toContain("--");
+    expect(argv).not.toContain("--model");
+    expect(argv).toEqual(buildAgentStartArgv("run1-w1", "w1:pB"));
+  });
+
+  test("agent start: the model is one discrete argv element, never shell-interpolated", () => {
+    const argv = buildAgentStartArgv("run1-w1", "w1:pB", "provider/model with space");
+    expect(argv[argv.length - 1]).toBe("provider/model with space");
   });
 
   test("agent prompt: prompt is a discrete argv element, never shell-interpolated", () => {
@@ -837,6 +941,7 @@ describe("swarm_poll execute() wiring", () => {
       agent: "execrun-w1",
       slug: "some-item",
       paneId: "w1:pZ",
+      tabId: "w1:tZ",
       lifecycle: "active",
     };
     const state: SwarmState = { runId, concurrency: 2, nextCounter: 1, workers: [worker] };
@@ -876,8 +981,8 @@ describe("swarm_poll execute() wiring", () => {
     return { runId, poll, stub };
   }
 
-  const paneCloses = (stub: { calls: ExecCall[] }) =>
-    stub.calls.filter((c) => c.argv[0] === "pane" && c.argv[1] === "close");
+  const workerCloses = (stub: { calls: ExecCall[] }) =>
+    stub.calls.filter((c) => c.argv[0] === "tab" && c.argv[1] === "close");
 
   test("a blocked settle keeps the pane open and parks the worker at awaiting_relay", async () => {
     const { runId, poll, stub } = setup(realWaitEnvelope("blocked", "execrun-w1", "w1:pZ"));
@@ -888,7 +993,7 @@ describe("swarm_poll execute() wiring", () => {
 
     expect(res.details.events.map((e) => e.kind)).toEqual(["blocked"]);
     // The load-bearing assertions: the relay target must survive.
-    expect(paneCloses(stub)).toHaveLength(0);
+    expect(workerCloses(stub)).toHaveLength(0);
     const persisted = loadState(runId, dir);
     expect(persisted?.workers).toHaveLength(1);
     expect(persisted?.workers[0]?.lifecycle).toBe("awaiting_relay");
@@ -906,11 +1011,17 @@ describe("swarm_poll execute() wiring", () => {
     )) as { details: { events: { kind: string }[] } };
 
     expect(res.details.events.map((e) => e.kind)).toEqual(["error"]);
-    expect(paneCloses(stub)).toHaveLength(1);
+    expect(workerCloses(stub)).toHaveLength(1);
     expect(loadState(runId, dir)?.workers).toHaveLength(0);
   });
 
-  test("a genuine herdr timeout closes the pane and drops the worker", async () => {
+  // Was: "a genuine herdr timeout closes the pane and drops the worker".
+  // That pinned the bug. An elapsed wait means nothing settled in the window,
+  // not that the worker died, so it now provokes a liveness probe -- and this
+  // fixture's `agent get` reports `blocked`, i.e. the worker settled during
+  // the race between the wait giving up and the probe landing. The settle
+  // wins, and the relay target survives.
+  test("a wait timeout whose probe finds the worker blocked parks it, closing nothing", async () => {
     const stderr = JSON.stringify({
       error: { code: "timeout", message: "timed out waiting for agent status" },
       id: "cli:agent:wait",
@@ -921,9 +1032,11 @@ describe("swarm_poll execute() wiring", () => {
       ...(["call-1", { runId, timeoutMs: 1000 }, undefined] as unknown as never[]),
     )) as { details: { events: { kind: string }[] } };
 
-    expect(res.details.events.map((e) => e.kind)).toEqual(["timed_out"]);
-    expect(paneCloses(stub)).toHaveLength(1);
-    expect(loadState(runId, dir)?.workers).toHaveLength(0);
+    expect(res.details.events.map((e) => e.kind)).toEqual(["blocked"]);
+    expect(workerCloses(stub)).toHaveLength(0);
+    const persisted = loadState(runId, dir);
+    expect(persisted?.workers).toHaveLength(1);
+    expect(persisted?.workers[0]?.lifecycle).toBe("awaiting_relay");
   });
 
   test("an idle settle finishes the worker and frees its pane", async () => {
@@ -934,7 +1047,7 @@ describe("swarm_poll execute() wiring", () => {
     )) as { details: { events: { kind: string }[] } };
 
     expect(res.details.events.map((e) => e.kind)).toEqual(["finished"]);
-    expect(paneCloses(stub)).toHaveLength(1);
+    expect(workerCloses(stub)).toHaveLength(1);
     expect(loadState(runId, dir)?.workers).toHaveLength(0);
   });
 
@@ -956,7 +1069,7 @@ describe("swarm_poll execute() wiring", () => {
     )) as { details: { events: { kind: string; detail?: string }[] } };
 
     expect(res.details.events.map((e) => e.kind)).toEqual(["error"]);
-    expect(paneCloses(stub)).toHaveLength(1);
+    expect(workerCloses(stub)).toHaveLength(1);
     expect(loadState(runId, dir)?.workers).toHaveLength(0);
   });
 });
@@ -994,71 +1107,20 @@ describe("swarm_poll execute() wiring", () => {
 // bounded sliding window of rendered rows (see permission-gate.ts).
 // ---------------------------------------------------------------------------
 
-describe("trustAckToken", () => {
-  test("is a valid ack token, carries the agent id, and never repeats", () => {
-    const a = trustAckToken("bootrun-w1-some-item");
-    const b = trustAckToken("bootrun-w1-some-item");
-    expect(isValidAckToken(a)).toBe(true);
-    expect(a.startsWith("bootrun-w1-some-item")).toBe(true);
-    // The random suffix is what makes a stale ack harmless: a zombie worker
-    // from a crashed run cannot write the path this spawn is polling.
-    expect(a).not.toBe(b);
-  });
-
-  test("normalizes an agent id that strays outside the token charset", () => {
-    expect(isValidAckToken(trustAckToken("run/1 w:1"))).toBe(true);
-  });
-});
-
-describe("ackMatches", () => {
-  test("accepts only a complete ack carrying this spawn's exact token", () => {
-    expect(ackMatches(JSON.stringify({ token: "tok-abcd1234" }), "tok-abcd1234")).toBe(true);
-  });
-
-  test("another worker's ack does not satisfy this one", () => {
-    expect(ackMatches(JSON.stringify({ token: "other-abcd1234" }), "tok-abcd1234")).toBe(false);
-  });
-
-  test("a partial or shapeless file is not confirmation", () => {
-    expect(ackMatches('{"token":"tok-abcd12', "tok-abcd1234")).toBe(false);
-    expect(ackMatches("", "tok-abcd1234")).toBe(false);
-    expect(ackMatches(JSON.stringify({}), "tok-abcd1234")).toBe(false);
-    expect(ackMatches(JSON.stringify({ token: 7 }), "tok-abcd1234")).toBe(false);
-  });
-});
-
 describe("swarm_spawn worker bootstrap", () => {
   let dir: string;
-  let ackDir: string;
   let priorStateDir: string | undefined;
-  let priorAckDir: string | undefined;
-  let priorTimeout: string | undefined;
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "swarm-spawn-boot-"));
-    ackDir = mkdtempSync(join(tmpdir(), "swarm-spawn-ack-"));
     priorStateDir = process.env.PI_SWARM_STATE_DIR;
-    priorAckDir = process.env.PI_PERMISSION_GATE_ACK_DIR;
-    priorTimeout = process.env.PI_SWARM_TRUST_ACK_TIMEOUT_MS;
     process.env.PI_SWARM_STATE_DIR = dir;
-    // Both the writing side (permission-gate.ts) and the polling side
-    // (swarm-tool.ts) resolve through this, so a test can keep the whole
-    // handshake off the real ~/.pi.
-    process.env.PI_PERMISSION_GATE_ACK_DIR = ackDir;
-    process.env.PI_SWARM_TRUST_ACK_TIMEOUT_MS = "600";
   });
 
   afterEach(() => {
-    for (const [k, v] of [
-      ["PI_SWARM_STATE_DIR", priorStateDir],
-      ["PI_PERMISSION_GATE_ACK_DIR", priorAckDir],
-      ["PI_SWARM_TRUST_ACK_TIMEOUT_MS", priorTimeout],
-    ] as const) {
-      if (v === undefined) delete process.env[k];
-      else process.env[k] = v;
-    }
+    if (priorStateDir === undefined) delete process.env.PI_SWARM_STATE_DIR;
+    else process.env.PI_SWARM_STATE_DIR = priorStateDir;
     rmSync(dir, { recursive: true, force: true });
-    rmSync(ackDir, { recursive: true, force: true });
   });
 
   function stubFor(respond: (argv: string[]) => { code: number; stdout: string; stderr: string }) {
@@ -1069,11 +1131,13 @@ describe("swarm_spawn worker bootstrap", () => {
     return { spawn, stub };
   }
 
-  const paneSplitOk = (argv: string[]) =>
-    argv[0] === "pane" && argv[1] === "split"
+  const tabCreateOk = (argv: string[]) =>
+    argv[0] === "tab" && argv[1] === "create"
       ? {
           code: 0,
-          stdout: JSON.stringify({ result: { pane: { pane_id: "w1:pN" } } }),
+          stdout: JSON.stringify({
+            result: { root_pane: { pane_id: "w1:pN" }, tab: { tab_id: "w1:tN" } },
+          }),
           stderr: "",
         }
       : { code: 0, stdout: "", stderr: "" };
@@ -1081,8 +1145,8 @@ describe("swarm_spawn worker bootstrap", () => {
   const prompts = (stub: { calls: ExecCall[] }) =>
     stub.calls.filter((c) => c.argv[0] === "agent" && c.argv[1] === "prompt");
 
-  const paneCloses = (stub: { calls: ExecCall[] }) =>
-    stub.calls.filter((c) => c.argv[0] === "pane" && c.argv[1] === "close");
+  const workerCloses = (stub: { calls: ExecCall[] }) =>
+    stub.calls.filter((c) => c.argv[0] === "tab" && c.argv[1] === "close");
 
   const PANE_TEXT = "worker log: pi started, gate never came down";
 
@@ -1094,23 +1158,8 @@ describe("swarm_spawn worker bootstrap", () => {
         ? { code: 0, stdout: PANE_TEXT, stderr: "" }
         : respond(argv);
 
-  const isTrustPrompt = (argv: string[]) =>
-    argv[0] === "agent" && argv[1] === "prompt" && (argv[3] ?? "").startsWith(WORKER_TRUST_COMMAND);
-
-  const tokenOf = (argv: string[]) => (argv[3] ?? "").slice(WORKER_TRUST_COMMAND.length + 1);
-
-  /** Stands in for a real worker: applies the command and writes its own ack, exactly as permission-gate.ts does. */
-  const respondingWorker =
-    (opts: { writeAck?: (token: string) => void } = {}) =>
-    (argv: string[]) => {
-      if (isTrustPrompt(argv)) {
-        const token = tokenOf(argv);
-        if (opts.writeAck) opts.writeAck(token);
-        else writeFileSync(join(ackDir, `${token}.json`), JSON.stringify({ token }));
-        return { code: 0, stdout: "", stderr: "" };
-      }
-      return paneSplitOk(argv);
-    };
+  const isItemPrompt = (argv: string[]) =>
+    argv[0] === "agent" && argv[1] === "prompt" && (argv[3] ?? "").startsWith("/backlog-item");
 
   const spawnItems = (spawn: { execute: (...a: never[]) => Promise<unknown> }, items: string[]) =>
     spawn.execute(
@@ -1141,7 +1190,7 @@ describe("swarm_spawn worker bootstrap", () => {
     }>;
 
   test("two concurrent spawns for one runId cannot exceed the cap between them", async () => {
-    const { spawn } = stubFor(respondingWorker());
+    const { spawn } = stubFor(tabCreateOk);
 
     const [first, second] = await Promise.all([
       spawnRun(spawn, "racerun", ["a1", "a2"], 2),
@@ -1157,7 +1206,7 @@ describe("swarm_spawn worker bootstrap", () => {
   // cap has no room for comes back as skipped, so the orchestrator can see its
   // items were not lost.
   test("the second concurrent spawn reports its items rather than losing them", async () => {
-    const { spawn } = stubFor(respondingWorker());
+    const { spawn } = stubFor(tabCreateOk);
 
     const [first, second] = await Promise.all([
       spawnRun(spawn, "accounted", ["a1", "a2"], 2),
@@ -1179,10 +1228,10 @@ describe("swarm_spawn worker bootstrap", () => {
   test("a spawn that throws does not wedge the run's queue", async () => {
     let explode = true;
     const { spawn } = stubFor((argv) => {
-      if (explode && argv[0] === "pane" && argv[1] === "split") {
-        throw new Error("herdr fell over mid-split");
+      if (explode && argv[0] === "tab" && argv[1] === "create") {
+        throw new Error("herdr fell over mid-create");
       }
-      return respondingWorker()(argv);
+      return tabCreateOk(argv);
     });
 
     await spawnRun(spawn, "wedged", ["a1"], 2).catch(() => undefined);
@@ -1192,22 +1241,32 @@ describe("swarm_spawn worker bootstrap", () => {
     expect(after.details.spawned).toHaveLength(1);
   });
 
-  test("turns the bash permission gate off before handing the worker its item", async () => {
-    const { spawn, stub } = stubFor(respondingWorker());
+  // The gates settle themselves from the tab's environment, before pi starts.
+  // This replaced a prompt-plus-acknowledgement handshake that could only ever
+  // cover one of the two gates, and left a window in which a worker held real
+  // work while still armed.
+  test("the worker's tab carries the unattended environment", async () => {
+    const { spawn, stub } = stubFor(tabCreateOk);
     await spawnOne(spawn);
 
-    const sent = prompts(stub).map((c) => c.argv[3] ?? "");
-    // Order is load-bearing: the gate must be down before any work starts,
-    // or the worker stalls on its first non-allowlisted bash call.
-    expect(sent).toHaveLength(2);
-    expect(sent[0]?.startsWith("/permission-gate-disable ")).toBe(true);
-    expect(sent[1]).toBe("/backlog-item --auto some-item");
+    const create = stub.calls.find((c) => c.argv[0] === "tab" && c.argv[1] === "create");
+    expect(create?.argv).toContain("--env");
+    expect(create?.argv).toContain(WORKER_UNATTENDED_ENV);
   });
 
-  // THE REGRESSION. Pre-fix this worker was reported in `failed` as
-  // permission_gate_not_disabled, because `--wait` cannot succeed against a
-  // client-side slash command that never enters the working state.
-  test("a worker whose gate does come down is spawned, not discarded", async () => {
+  test("the worker is sent its item and nothing else", async () => {
+    const { spawn, stub } = stubFor(tabCreateOk);
+    await spawnOne(spawn);
+
+    // Exactly one prompt. A second one would mean something is still being
+    // negotiated over the wire that the environment should have settled.
+    expect(prompts(stub).map((c) => c.argv[3] ?? "")).toEqual(["/backlog-item --auto some-item"]);
+  });
+
+  // THE REGRESSION, kept because the constraint outlives the handshake that
+  // exposed it: `--wait` cannot succeed against a prompt that produces no
+  // observed lifecycle change, and a spawn must not read that as failure.
+  test("a healthy worker is spawned, not discarded on a --wait artefact", async () => {
     const { spawn, stub } = stubFor((argv) =>
       // Real herdr's answer to `agent prompt ... --wait` here: exit 1,
       // agent_prompt_stalled, captured live on 2026-09-02.
@@ -1222,7 +1281,7 @@ describe("swarm_spawn worker bootstrap", () => {
               },
             }),
           }
-        : respondingWorker()(argv),
+        : tabCreateOk(argv),
     );
 
     const res = await spawnOne(spawn);
@@ -1234,25 +1293,6 @@ describe("swarm_spawn worker bootstrap", () => {
     expect(prompts(stub).some((c) => c.argv.includes("--wait"))).toBe(false);
   });
 
-  test("a confirmed ack file is deleted, so the directory does not accumulate", async () => {
-    const { spawn } = stubFor(respondingWorker());
-    await spawnOne(spawn);
-    expect(readdirSync(ackDir)).toEqual([]);
-  });
-
-  test("an ack that never arrives fails as permission_gate_not_disabled", async () => {
-    const { spawn, stub } = stubFor(withPaneText(respondingWorker({ writeAck: () => {} })));
-
-    const res = await spawnOne(spawn);
-
-    expect(res.details.spawned).toHaveLength(0);
-    expect(res.details.failed[0]?.reason).toContain("permission_gate_not_disabled");
-    // Every post-split failure, not just a failed agent start, leaves the
-    // pane's text on the record and the pane itself closed.
-    expect(res.details.failed[0]?.reason).toContain(PANE_TEXT);
-    expect(paneCloses(stub)).toHaveLength(1);
-  });
-
   // An orchestrator only ever reads `content`. Confirmed live on 2026-09-02:
   // a real swarm_spawn failure returned its detail in `details`, and the
   // model's very next turn reported "no per-item failure details were
@@ -1260,13 +1300,19 @@ describe("swarm_spawn worker bootstrap", () => {
   // orchestrator to act differently per reason, so the classification has to
   // travel in the text or that instruction is unfollowable.
   test("a failure's classification reaches the content text, not just details", async () => {
-    const { spawn } = stubFor(withPaneText(respondingWorker({ writeAck: () => {} })));
+    const { spawn } = stubFor(
+      withPaneText((argv) =>
+        argv[0] === "agent" && argv[1] === "start"
+          ? { code: 1, stdout: "", stderr: '{"error":{"code":"agent_not_ready"}}' }
+          : tabCreateOk(argv),
+      ),
+    );
 
     const res = await spawnOne(spawn);
     const text = res.content.map((c) => c.text).join("\n");
 
     expect(text).toContain("some-item");
-    expect(text).toContain("permission_gate_not_disabled");
+    expect(text).toContain("agent_not_ready");
     // The pane capture deliberately stays behind in `details`: at
     // PANE_CAPTURE_CHARS per failure, a whole batch of them would flood the
     // orchestrator's context with terminal dumps to no purpose.
@@ -1274,67 +1320,23 @@ describe("swarm_spawn worker bootstrap", () => {
     expect(res.details.failed[0]?.reason).toContain(PANE_TEXT);
   });
 
-  // A submission failure (agent_not_found, herdr down) is a different defect
-  // from a gate that would not come down, and must not wear its name.
-  test("an undeliverable trust prompt fails as agent_prompt_failed, not as a gate failure", async () => {
+  // The item prompt is the only thing sent over the wire now, so an
+  // undeliverable one is the only prompt-level spawn failure left.
+  test("an undeliverable item prompt fails as agent_prompt_stalled", async () => {
     const { spawn, stub } = stubFor(
       withPaneText((argv) =>
-        isTrustPrompt(argv)
+        isItemPrompt(argv)
           ? { code: 1, stdout: "", stderr: '{"error":{"code":"agent_not_found"}}' }
-          : paneSplitOk(argv),
+          : tabCreateOk(argv),
       ),
     );
 
     const res = await spawnOne(spawn);
 
-    expect(res.details.failed[0]?.reason).toContain("agent_prompt_failed");
-    expect(res.details.failed[0]?.reason).not.toContain("permission_gate_not_disabled");
+    expect(res.details.failed[0]?.reason).toContain("agent_prompt_stalled");
     expect(res.details.failed[0]?.reason).toContain("agent_not_found");
     expect(res.details.failed[0]?.reason).toContain(PANE_TEXT);
-    expect(paneCloses(stub)).toHaveLength(1);
-    // and it never went on to hand the worker real work
-    expect(prompts(stub)).toHaveLength(1);
-  });
-
-  test("one worker's ack cannot satisfy another worker's check", async () => {
-    let first: string | null = null;
-    const { spawn } = stubFor(
-      respondingWorker({
-        writeAck: (token) => {
-          // Only the first worker ever acks; the second's poll must not be
-          // satisfied by a file sitting in the shared directory.
-          if (first === null) {
-            first = token;
-            writeFileSync(join(ackDir, `${token}.json`), JSON.stringify({ token }));
-          }
-        },
-      }),
-    );
-
-    const res = await spawnItems(spawn, ["item-a", "item-b"]);
-
-    expect(res.details.spawned).toHaveLength(1);
-    expect(res.details.failed).toHaveLength(1);
-    expect(res.details.failed[0]?.reason).toContain("permission_gate_not_disabled");
-  });
-
-  test("a partially written ack is not confirmation, but the completed one is", async () => {
-    const timers: Timer[] = [];
-    const { spawn } = stubFor(
-      respondingWorker({
-        writeAck: (token) => {
-          const path = join(ackDir, `${token}.json`);
-          writeFileSync(path, '{"token":"' + token.slice(0, 4));
-          timers.push(setTimeout(() => writeFileSync(path, JSON.stringify({ token })), 150));
-        },
-      }),
-    );
-
-    const res = await spawnOne(spawn);
-    for (const t of timers) clearTimeout(t);
-
-    expect(res.details.failed).toEqual([]);
-    expect(res.details.spawned).toHaveLength(1);
+    expect(workerCloses(stub)).toHaveLength(1);
   });
 
   // A pane's terminal text is the only record of an early worker crash --
@@ -1349,14 +1351,14 @@ describe("swarm_spawn worker bootstrap", () => {
       if (argv[0] === "pane" && argv[1] === "read") {
         return { code: 0, stdout: "pi: terminal too narrow, exiting", stderr: "" };
       }
-      return paneSplitOk(argv);
+      return tabCreateOk(argv);
     });
 
     const res = await spawnOne(spawn);
 
     expect(res.details.failed[0]?.reason).toContain("agent_not_ready");
     expect(res.details.failed[0]?.reason).toContain("pi: terminal too narrow");
-    expect(paneCloses(stub)).toHaveLength(1);
+    expect(workerCloses(stub)).toHaveLength(1);
   });
 
   test("a capture that itself fails leaves the original failure reason intact", async () => {
@@ -1367,14 +1369,14 @@ describe("swarm_spawn worker bootstrap", () => {
       if (argv[0] === "pane" && argv[1] === "read") {
         return { code: 1, stdout: "", stderr: "pane is gone" };
       }
-      return paneSplitOk(argv);
+      return tabCreateOk(argv);
     });
 
     const res = await spawnOne(spawn);
 
     // A capture problem never replaces the root cause.
     expect(res.details.failed[0]?.reason).toContain("agent_not_ready");
-    expect(paneCloses(stub)).toHaveLength(1);
+    expect(workerCloses(stub)).toHaveLength(1);
   });
 
   test("the pane capture is bounded, so one failure cannot flood the digest", async () => {
@@ -1385,7 +1387,7 @@ describe("swarm_spawn worker bootstrap", () => {
       if (argv[0] === "pane" && argv[1] === "read") {
         return { code: 0, stdout: "x".repeat(PANE_CAPTURE_CHARS * 3), stderr: "" };
       }
-      return paneSplitOk(argv);
+      return tabCreateOk(argv);
     });
 
     const res = await spawnOne(spawn);
@@ -1401,8 +1403,8 @@ describe("swarm_spawn worker bootstrap", () => {
   test("a herdr call that throws is still captured, attributed, and its pane closed", async () => {
     const { spawn, stub } = stubFor(
       withPaneText((argv) => {
-        if (isTrustPrompt(argv)) throw new Error("herdr socket closed");
-        return paneSplitOk(argv);
+        if (isItemPrompt(argv)) throw new Error("herdr socket closed");
+        return tabCreateOk(argv);
       }),
     );
 
@@ -1411,11 +1413,276 @@ describe("swarm_spawn worker bootstrap", () => {
     expect(res.details.failed[0]?.slug).toBe("some-item");
     expect(res.details.failed[0]?.reason).toContain("herdr socket closed");
     expect(res.details.failed[0]?.reason).toContain(PANE_TEXT);
-    expect(paneCloses(stub)).toHaveLength(1);
+    expect(workerCloses(stub)).toHaveLength(1);
   });
 
   // Cleanup that fails is still cleanup: the reason it was cleaning up after
   // has to survive it.
+  /** Stubs dev_status.py's `ready` alongside a healthy tab create. */
+  const withReady = (items: { id: string; paths?: string[] }[]) => (argv: string[]) =>
+    argv[0] === "ready" || argv[1] === "ready" || argv.includes("ready")
+      ? {
+          code: 0,
+          stdout: JSON.stringify(
+            items.map((i) => ({
+              id: i.id,
+              related_files: (i.paths ?? []).map((path) => ({ path })),
+            })),
+          ),
+          stderr: "",
+        }
+      : tabCreateOk(argv);
+
+  test("with a prefix and no items, it selects from the READY queue itself", async () => {
+    const { spawn, stub } = stubFor(withReady([{ id: "meta-a" }, { id: "meta-b" }]));
+
+    const res = (await spawn.execute(
+      ...(["call-1", { runId: "selfsel", prefix: "meta-", concurrency: 2 }] as unknown as never[]),
+    )) as { details: { spawned: { slug: string }[] } };
+
+    expect(res.details.spawned.map((w) => w.slug)).toEqual(["meta-a", "meta-b"]);
+    // and it asked dev_status rather than being told
+    const ask = stub.calls.find((c) => c.argv.includes("ready"));
+    expect(ask?.argv).toContain("--prefix");
+    expect(ask?.argv).toContain("meta-");
+  });
+
+  test("two ready items editing the same file do not spawn together, and the loser is named in the text", async () => {
+    const { spawn } = stubFor(
+      withReady([
+        { id: "meta-a", paths: ["/repo/pi/extensions/swarm-tool.ts"] },
+        { id: "meta-b", paths: ["/repo/pi/extensions/swarm-tool.ts"] },
+      ]),
+    );
+
+    const res = (await spawn.execute(
+      ...(["call-1", { runId: "overlap", prefix: "meta-", concurrency: 3 }] as unknown as never[]),
+    )) as {
+      content: { text: string }[];
+      details: { spawned: { slug: string }[]; deferred: { slug: string }[] };
+    };
+
+    expect(res.details.spawned.map((w) => w.slug)).toEqual(["meta-a"]);
+    expect(res.details.deferred.map((d) => d.slug)).toEqual(["meta-b"]);
+    // The orchestrator only ever reads `content`, so a deferral invisible
+    // there is an item silently dropped from the run.
+    const text = res.content.map((c) => c.text).join("\n");
+    expect(text).toContain("meta-b");
+    expect(text).toContain("deferred");
+    expect(text).toContain("swarm-tool.ts");
+  });
+
+  // The second wave has to see what the first wave's workers claimed, which
+  // is why the paths live on the worker record rather than being re-derived.
+  test("a later wave defers a candidate that collides with a worker still running", async () => {
+    // Concurrency 2, not 1, and the distinction is the whole test: at 1 the
+    // second wave has zero headroom, so meta-b is skipped for the cap before
+    // the overlap check ever runs -- an assertion that would pass with path
+    // collision detection removed entirely.
+    const { spawn } = stubFor(
+      withReady([
+        { id: "meta-a", paths: ["/repo/shared.ts"] },
+        { id: "meta-b", paths: ["/repo/shared.ts"] },
+      ]),
+    );
+
+    await spawn.execute(
+      ...(["call-1", { runId: "wave", prefix: "meta-", concurrency: 2 }] as unknown as never[]),
+    );
+    const second = (await spawn.execute(
+      ...(["call-2", { runId: "wave", prefix: "meta-", concurrency: 2 }] as unknown as never[]),
+    )) as { details: { spawned: unknown[]; deferred: { slug: string }[]; skipped: string[] } };
+
+    expect(second.details.spawned).toHaveLength(0);
+    expect(second.details.skipped).toEqual([]);
+    expect(second.details.deferred.map((d) => d.slug)).toEqual(["meta-b"]);
+  });
+
+  // THE RETRY LOOP, found on a live run rather than here: a worker whose tab
+  // was closed left its item exactly as it found it -- READY, because it died
+  // before reaching `dev_status.py start` -- so the very next wave selected
+  // and spawned that same item again. Unbounded, and flatly against
+  // swarm_poll's own promise that a failed worker is never silently retried.
+  // The stub is what hid it: a fixed `ready` list cannot express an item
+  // coming back, so this test drives the real sequence instead.
+  test("an item whose worker died is not selected again by a later wave", async () => {
+    const { spawn, stub } = stubFor(withReady([{ id: "meta-a" }, { id: "meta-b" }]));
+
+    const first = (await spawn.execute(
+      ...(["c1", { runId: "noretry", prefix: "meta-", concurrency: 1 }] as unknown as never[]),
+    )) as { details: { spawned: { slug: string; agent: string }[] } };
+    expect(first.details.spawned.map((w) => w.slug)).toEqual(["meta-a"]);
+
+    // meta-a's worker dies. A fresh tool instance reloads the run from disk
+    // and reconciles it against herdr's live agent list -- which the stub
+    // answers empty -- so the dead worker is dropped exactly as it would be
+    // after a restart. dev_status still reports meta-a as READY.
+    const { spawn: spawn2, stub: stub2 } = stubFor(withReady([{ id: "meta-a" }, { id: "meta-b" }]));
+    const second = (await spawn2.execute(
+      ...(["c2", { runId: "noretry", prefix: "meta-", concurrency: 1 }] as unknown as never[]),
+    )) as { details: { spawned: { slug: string }[] } };
+
+    // meta-b, never meta-a again.
+    expect(second.details.spawned.map((w) => w.slug)).toEqual(["meta-b"]);
+    const label = (calls: ExecCall[]) =>
+      calls
+        .filter((c) => c.argv[0] === "tab" && c.argv[1] === "create")
+        .map((c) => c.argv[c.argv.indexOf("--label") + 1]);
+    expect(label(stub.calls)).toEqual(["meta-a"]);
+    expect(label(stub2.calls)).toEqual(["meta-b"]);
+  });
+
+  test("naming an item explicitly still retries it -- that is the caller asking", async () => {
+    // The guard is on automatic selection only. A human who names a slug
+    // after reading the digest means it.
+    const { spawn } = stubFor(withReady([{ id: "meta-a" }]));
+
+    await spawn.execute(
+      ...(["c1", { runId: "explicit", prefix: "meta-", concurrency: 1 }] as unknown as never[]),
+    );
+    const { spawn: spawn2 } = stubFor(withReady([{ id: "meta-a" }]));
+    const again = (await spawn2.execute(
+      ...(["c2", { runId: "explicit", items: ["meta-a"], concurrency: 1 }] as unknown as never[]),
+    )) as { details: { spawned: { slug: string }[] } };
+
+    expect(again.details.spawned.map((w) => w.slug)).toEqual(["meta-a"]);
+  });
+
+  test("a deferred item is not treated as attempted, so a later wave still takes it", async () => {
+    // Deferring is not trying. An item held back for overlap was never handed
+    // to anyone, and becoming schedulable later is the whole point.
+    const { spawn } = stubFor(
+      withReady([
+        { id: "meta-a", paths: ["/repo/s.ts"] },
+        { id: "meta-b", paths: ["/repo/s.ts"] },
+      ]),
+    );
+
+    const first = (await spawn.execute(
+      ...(["c1", { runId: "defnotatt", prefix: "meta-", concurrency: 3 }] as unknown as never[]),
+    )) as { details: { deferred: { slug: string }[] } };
+    expect(first.details.deferred.map((d) => d.slug)).toEqual(["meta-b"]);
+
+    const { spawn: spawn2 } = stubFor(
+      withReady([
+        { id: "meta-a", paths: ["/repo/s.ts"] },
+        { id: "meta-b", paths: ["/repo/s.ts"] },
+      ]),
+    );
+    const second = (await spawn2.execute(
+      ...(["c2", { runId: "defnotatt", prefix: "meta-", concurrency: 3 }] as unknown as never[]),
+    )) as { details: { spawned: { slug: string }[] } };
+    expect(second.details.spawned.map((w) => w.slug)).toEqual(["meta-b"]);
+  });
+
+  // A lock timeout or a broken dev_status.py yields zero candidates, which is
+  // byte-identical to a drained queue: "Spawned 0 worker(s)". The orchestrator
+  // would end the run and never report the items it silently left behind.
+  test("a failed READY query stops the run instead of looking like an empty queue", async () => {
+    const { spawn } = stubFor((argv) =>
+      argv.includes("ready")
+        ? { code: 1, stdout: "", stderr: "Traceback: could not acquire backlog lock" }
+        : tabCreateOk(argv),
+    );
+
+    await expect(
+      spawn.execute(
+        ...(["c1", { runId: "readyfail", prefix: "meta-", concurrency: 2 }] as unknown as never[]),
+      ),
+    ).rejects.toThrow(/could not acquire backlog lock/);
+  });
+
+  test("a slug repeated in an explicit items list spawns one worker, not two", async () => {
+    // Two workers on one item means two worktrees racing each other's commits.
+    // Nothing else catches it: an item with no related_files collides with
+    // nothing, itself included.
+    const { spawn } = stubFor(withReady([{ id: "meta-a" }]));
+
+    const res = (await spawn.execute(
+      ...([
+        "c1",
+        { runId: "dupes", items: ["meta-a", "meta-a"], concurrency: 3 },
+      ] as unknown as never[]),
+    )) as { details: { spawned: { slug: string }[] } };
+
+    expect(res.details.spawned.map((w) => w.slug)).toEqual(["meta-a"]);
+  });
+
+  test("neither items nor prefix is refused rather than swarming every project at once", async () => {
+    const { spawn } = stubFor(tabCreateOk);
+
+    await expect(
+      spawn.execute(...(["call-1", { runId: "unscoped", concurrency: 2 }] as unknown as never[])),
+    ).rejects.toThrow(/items.*prefix|prefix.*items/i);
+  });
+
+  // THE ORPHAN. `tab create` exiting 0 with output that will not parse has
+  // already created a tab, and the id needed to close it was in exactly the
+  // response that could not be read. Every other post-create failure goes
+  // through failWithTab and is cleaned up; this one had nothing to clean up
+  // with, and a live tab nobody polls is the leak that turned two failed runs
+  // into six orphans on 2026-09-02.
+  test("an unparseable tab create recovers the tab by its label and closes it", async () => {
+    const { spawn, stub } = stubFor((argv) => {
+      if (argv[0] === "tab" && argv[1] === "create") {
+        return { code: 0, stdout: "{not json at all", stderr: "" };
+      }
+      if (argv[0] === "tab" && argv[1] === "list") {
+        return {
+          code: 0,
+          stdout: JSON.stringify({
+            result: {
+              tabs: [
+                { tab_id: "w1:t1", label: "1" },
+                { tab_id: "w1:tOrphan", label: "some-item" },
+              ],
+            },
+          }),
+          stderr: "",
+        };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    });
+
+    const res = await spawnOne(spawn);
+
+    expect(res.details.failed[0]?.slug).toBe("some-item");
+    expect(res.details.failed[0]?.reason).toContain("could not parse tab create response");
+    expect(workerCloses(stub).map((c) => c.argv[2])).toEqual(["w1:tOrphan"]);
+  });
+
+  test("an ambiguous label closes nothing and says a tab needs closing by hand", async () => {
+    // Two tabs carry the label, or none does. Guessing which to close risks
+    // closing a tab the human opened, so the honest move is to name the leak
+    // and leave it -- herdr's own guidance is not to close what you did not
+    // create, and this path cannot prove which one that is.
+    const { spawn, stub } = stubFor((argv) => {
+      if (argv[0] === "tab" && argv[1] === "create") {
+        return { code: 0, stdout: "{not json at all", stderr: "" };
+      }
+      if (argv[0] === "tab" && argv[1] === "list") {
+        return {
+          code: 0,
+          stdout: JSON.stringify({
+            result: {
+              tabs: [
+                { tab_id: "w1:tA", label: "some-item" },
+                { tab_id: "w1:tB", label: "some-item" },
+              ],
+            },
+          }),
+          stderr: "",
+        };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    });
+
+    const res = await spawnOne(spawn);
+
+    expect(res.details.failed[0]?.reason).toContain("close it by hand");
+    expect(workerCloses(stub)).toHaveLength(0);
+  });
+
   test("a pane close that throws does not throw away the failure reason", async () => {
     const { spawn } = stubFor((argv) => {
       if (argv[0] === "agent" && argv[1] === "start") {
@@ -1423,8 +1690,8 @@ describe("swarm_spawn worker bootstrap", () => {
       }
       if (argv[0] === "pane" && argv[1] === "read")
         return { code: 0, stdout: PANE_TEXT, stderr: "" };
-      if (argv[0] === "pane" && argv[1] === "close") throw new Error("pane already gone");
-      return paneSplitOk(argv);
+      if (argv[0] === "tab" && argv[1] === "close") throw new Error("tab already gone");
+      return tabCreateOk(argv);
     });
 
     const res = await spawnOne(spawn);
@@ -1435,160 +1702,95 @@ describe("swarm_spawn worker bootstrap", () => {
   });
 });
 
-describe("planSplits", () => {
-  // herdr's measured split arithmetic (2026-09-02, herdr 0.8.2): `--ratio R`
-  // leaves the pane being split at R of its size and gives the new pane the
-  // rest. 168 columns split at 1/3 yields 56 and 112.
-  const applyPlan = (
-    start: { width: number; height: number },
-    steps: ReturnType<typeof planSplits>["steps"],
-  ) => {
-    let remainder = { ...start };
-    const created: { width: number; height: number }[] = [];
-    for (const step of steps) {
-      if (step.direction === "right") {
-        const kept = Math.floor(remainder.width * step.ratio);
-        created.push({ width: remainder.width - kept, height: remainder.height });
-        remainder = { width: remainder.width - kept, height: remainder.height };
-      } else {
-        const kept = Math.floor(remainder.height * step.ratio);
-        created.push({ width: remainder.width, height: remainder.height - kept });
-        remainder = { width: remainder.width, height: remainder.height - kept };
-      }
-    }
-    return created;
-  };
-
-  test("three workers on a 168x38 layout get even panes, not 21 columns", () => {
-    // The shipped `i % 2` code split `--current` every time, so a 168-column
-    // tab produced 21-column workers. Observed live 2026-09-02.
-    const plan = planSplits({ width: 168, height: 38 }, ["a", "b", "c"]);
-    expect(plan.rejected).toEqual([]);
-    expect(plan.steps).toHaveLength(3);
-    expect(plan.steps.every((s) => s.direction === "right")).toBe(true);
-    expect(plan.steps.map((s) => s.rect!.width)).toEqual([42, 42, 42]);
+describe("parseTabCreate", () => {
+  // Verbatim shape of a real `herdr tab create --cwd ... --label ... --no-focus`
+  // response, herdr 0.8.2, captured 2026-09-02. The two ids the swarm needs sit
+  // in different objects: the pane to start an agent in, the tab to close later.
+  const REAL_TAB_CREATE = JSON.stringify({
+    id: "cli:tab:create",
+    result: {
+      root_pane: {
+        agent_status: "unknown",
+        cwd: "/home/yanil/dotfiles",
+        focused: false,
+        pane_id: "w1:p2W",
+        revision: 0,
+        scroll: { max_offset_from_bottom: 0, offset_from_bottom: 0, viewport_rows: 38 },
+        tab_id: "w1:tN",
+        terminal_id: "term_65a871a75f6c053",
+        workspace_id: "w1",
+      },
+      tab: {
+        agent_status: "unknown",
+        focused: false,
+        label: "tabexp",
+        number: 21,
+        pane_count: 1,
+        tab_id: "w1:tN",
+        workspace_id: "w1",
+      },
+      type: "tab_created",
+    },
   });
 
-  test("the planned ratios really do produce the predicted panes", () => {
-    const start = { width: 168, height: 38 };
-    const plan = planSplits(start, ["a", "b", "c"]);
-    const widths = applyPlan(start, plan.steps).map((r) => r.width);
-    // Every worker pane ends at one equal share, and the orchestrator keeps one.
-    expect(widths).toEqual([126, 84, 42]);
-    expect(widths[widths.length - 1]).toBe(42);
+  test("reads the root pane id and the tab id out of a real response", () => {
+    expect(parseTabCreate(REAL_TAB_CREATE)).toEqual({ paneId: "w1:p2W", tabId: "w1:tN" });
   });
 
-  test("falls back to splitting down when side-by-side would go under the floor", () => {
-    // A narrow orchestrator pane: 84 / 4 = 21 columns, under the floor, but
-    // splitting down keeps the full width.
-    const plan = planSplits({ width: 84, height: 40 }, ["a", "b", "c"]);
-    expect(plan.rejected).toEqual([]);
-    expect(plan.steps.every((s) => s.direction === "down")).toBe(true);
-    expect(plan.steps.every((s) => s.rect!.width === 84)).toBe(true);
+  test("returns undefined rather than a half-identified worker when either id is missing", () => {
+    // A worker recorded with a pane but no tab can be started and never closed,
+    // which is exactly the orphan-pane class this change is meant to end.
+    const noTab = JSON.stringify({ result: { root_pane: { pane_id: "w1:p2W" } } });
+    const noPane = JSON.stringify({ result: { tab: { tab_id: "w1:tN" } } });
+    expect(parseTabCreate(noTab)).toBeUndefined();
+    expect(parseTabCreate(noPane)).toBeUndefined();
   });
 
-  test("spawns fewer workers rather than none when only some fit", () => {
-    // 130 columns fits two workers at 43 each (130/3) but not three at 32
-    // (130/4), and 38 rows will not take a four-way downward split either.
-    const plan = planSplits({ width: 130, height: 38 }, ["a", "b", "c"]);
-    expect(plan.steps.map((s) => s.slug)).toEqual(["a", "b"]);
-    expect(plan.steps.every((s) => s.direction === "right")).toBe(true);
-    expect(plan.steps.map((s) => s.rect!.width)).toEqual([43, 43]);
-    expect(plan.rejected.map((r) => r.slug)).toEqual(["c"]);
-    expect(plan.rejected[0]!.reason).toContain("pane_too_narrow");
-  });
-
-  test("rejects every slug, with the numbers, when nothing fits", () => {
-    const plan = planSplits({ width: 30, height: 6 }, ["a", "b"]);
-    expect(plan.steps).toEqual([]);
-    expect(plan.rejected.map((r) => r.slug)).toEqual(["a", "b"]);
-    for (const r of plan.rejected) {
-      expect(r.reason).toContain("pane_too_narrow");
-      expect(r.reason).toContain("30x6");
-    }
-  });
-
-  test("no planned pane is ever under the floor it was planned against", () => {
-    for (const width of [40, 60, 84, 100, 168, 240]) {
-      for (const height of [10, 24, 38, 60]) {
-        for (const n of [1, 2, 3, 4, 5]) {
-          const slugs = Array.from({ length: n }, (_, i) => `s${i}`);
-          const plan = planSplits({ width, height }, slugs);
-          for (const step of plan.steps) {
-            expect(step.rect!.width).toBeGreaterThanOrEqual(MIN_WORKER_PANE_COLS);
-            expect(step.rect!.height).toBeGreaterThanOrEqual(MIN_WORKER_PANE_ROWS);
-          }
-          expect(plan.steps.length + plan.rejected.length).toBe(n);
-        }
-      }
-    }
-  });
-
-  test("plans even splits unguarded when herdr cannot report the layout", () => {
-    // A missing rect must not stop the swarm: even splits are still better
-    // than halving one pane per worker, so the floor is simply not applied.
-    const plan = planSplits(undefined, ["a", "b", "c"]);
-    expect(plan.rejected).toEqual([]);
-    expect(plan.steps.map((s) => s.slug)).toEqual(["a", "b", "c"]);
-    expect(plan.steps.every((s) => s.direction === "right")).toBe(true);
-    expect(plan.steps.every((s) => s.rect === undefined)).toBe(true);
-    expect(plan.steps.map((s) => s.ratio)).toEqual([1 / 4, 1 / 3, 1 / 2]);
-  });
-
-  test("an empty queue plans nothing", () => {
-    expect(planSplits({ width: 168, height: 38 }, [])).toEqual({ steps: [], rejected: [] });
+  test("returns undefined on unparseable output instead of throwing", () => {
+    expect(parseTabCreate("not json")).toBeUndefined();
+    expect(parseTabCreate("{}")).toBeUndefined();
+    expect(parseTabCreate("")).toBeUndefined();
   });
 });
 
-describe("buildPaneLayoutArgv / parseCurrentPaneRect", () => {
-  test("asks herdr for the current pane's layout", () => {
-    expect(buildPaneLayoutArgv()).toEqual(["pane", "layout", "--current"]);
+describe("buildTabListArgv / findTabByLabel", () => {
+  const listing = (labels: [string, string][]) =>
+    JSON.stringify({ result: { tabs: labels.map(([tab_id, label]) => ({ tab_id, label })) } });
+
+  test("tab list takes no arguments", () => {
+    expect(buildTabListArgv()).toEqual(["tab", "list"]);
   });
 
-  test("picks the rect of the pane the orchestrator is actually in", () => {
-    // Verbatim shape from `herdr pane layout --current` (herdr 0.8.2).
-    const stdout = JSON.stringify({
-      id: "cli:pane:layout",
-      result: {
-        layout: {
-          area: { height: 38, width: 168, x: 32, y: 1 },
-          focused_pane_id: "w1:pOther",
-          panes: [
-            { focused: false, pane_id: "w1:pMine", rect: { height: 38, width: 84, x: 32, y: 1 } },
-            { focused: true, pane_id: "w1:pOther", rect: { height: 38, width: 84, x: 116, y: 1 } },
-          ],
-          splits: [],
-          tab_id: "w1:t1",
-          workspace_id: "w1",
-        },
-        type: "pane_layout",
-      },
-    });
-    // HERDR_PANE_ID names the orchestrator's pane, which need not be focused.
-    expect(parseCurrentPaneRect(stdout, "w1:pMine")).toEqual({ width: 84, height: 38 });
-  });
-
-  test("falls back to the focused pane when the id is unknown", () => {
-    const stdout = JSON.stringify({
-      result: {
-        layout: {
-          focused_pane_id: "w1:pB",
-          panes: [
-            { pane_id: "w1:pA", rect: { height: 10, width: 20, x: 0, y: 0 } },
-            { pane_id: "w1:pB", rect: { height: 38, width: 168, x: 0, y: 0 } },
-          ],
-        },
-      },
-    });
-    expect(parseCurrentPaneRect(stdout, undefined)).toEqual({ width: 168, height: 38 });
-  });
-
-  test("returns undefined rather than guessing when the shape is unrecognized", () => {
-    expect(parseCurrentPaneRect("not json", "w1:pA")).toBeUndefined();
-    expect(parseCurrentPaneRect("{}", "w1:pA")).toBeUndefined();
+  test("finds a tab when exactly one carries the label", () => {
     expect(
-      parseCurrentPaneRect(JSON.stringify({ result: { layout: { panes: [] } } }), "w1:pA"),
+      findTabByLabel(
+        listing([
+          ["w1:t1", "1"],
+          ["w1:tX", "my-slug"],
+        ]),
+        "my-slug",
+      ),
+    ).toBe("w1:tX");
+  });
+
+  test("refuses to guess when the label is ambiguous or absent", () => {
+    // Closing the wrong tab is worse than reporting a leak, and a duplicate
+    // label cannot say which one this spawn created.
+    expect(
+      findTabByLabel(
+        listing([
+          ["w1:tA", "dup"],
+          ["w1:tB", "dup"],
+        ]),
+        "dup",
+      ),
     ).toBeUndefined();
+    expect(findTabByLabel(listing([["w1:t1", "1"]]), "missing")).toBeUndefined();
+  });
+
+  test("returns undefined on unparseable output instead of throwing", () => {
+    expect(findTabByLabel("not json", "x")).toBeUndefined();
+    expect(findTabByLabel("{}", "x")).toBeUndefined();
   });
 });
 
@@ -1611,6 +1813,7 @@ describe("swarm_resolve_blocked execute() wiring", () => {
   const RUN = "resolverun";
   const AGENT = "resolverun-w1";
   const PANE = "w1:pZ";
+  const TAB = "w1:tZ";
 
   /**
    * Stands in for herdr's own `agent wait`: returns the agent once it reaches
@@ -1641,6 +1844,7 @@ describe("swarm_resolve_blocked execute() wiring", () => {
       agent: AGENT,
       slug: "some-item",
       paneId: PANE,
+      tabId: TAB,
       lifecycle: "awaiting_relay",
     };
     saveState({ runId: RUN, concurrency: 2, nextCounter: 1, workers: [worker] }, dir);
@@ -1755,8 +1959,8 @@ describe("swarm_resolve_blocked execute() wiring", () => {
     });
   });
 
-  const paneCloses = (stub: { calls: ExecCall[] }) =>
-    stub.calls.filter((c) => c.argv[0] === "pane" && c.argv[1] === "close");
+  const workerCloses = (stub: { calls: ExecCall[] }) =>
+    stub.calls.filter((c) => c.argv[0] === "tab" && c.argv[1] === "close");
 
   // THE REGRESSION. A worker that answers correctly resumes its turn and
   // enters `working`. Pre-fix the verify asked only for idle/done/blocked, so
@@ -1771,7 +1975,7 @@ describe("swarm_resolve_blocked execute() wiring", () => {
 
     expect(res.details.relayFailed).toBe(false);
     expect(res.content[0]?.text).toContain("back in the active pool");
-    expect(paneCloses(stub)).toHaveLength(0);
+    expect(workerCloses(stub)).toHaveLength(0);
     const persisted = loadState(RUN, dir);
     expect(persisted?.workers[0]?.lifecycle).toBe("active");
   });
@@ -1801,7 +2005,7 @@ describe("swarm_resolve_blocked execute() wiring", () => {
     expect(res.details.relayFailed).toBe(true);
     // Dropping the worker from state without closing its pane leaves a live
     // pi in an orphan pane that nothing will ever poll or clean up.
-    expect(paneCloses(stub)).toHaveLength(1);
+    expect(workerCloses(stub)).toHaveLength(1);
     expect(loadState(RUN, dir)?.workers).toHaveLength(0);
   });
 
@@ -1835,14 +2039,14 @@ describe("swarm_resolve_blocked execute() wiring", () => {
     const res = await run(resolve);
 
     expect(res.details.relayFailed).toBe(true);
-    expect(paneCloses(stub)).toHaveLength(1);
+    expect(workerCloses(stub)).toHaveLength(1);
     expect(loadState(RUN, dir)?.workers).toHaveLength(0);
   });
 
   test("a pane close that fails does not mask the relay failure", async () => {
     const { resolve } = setup((argv) => {
       if (argv[0] === "agent" && argv[1] === "wait") return waitLike("blocked")(argv);
-      if (argv[0] === "pane" && argv[1] === "close") throw new Error("pane already gone");
+      if (argv[0] === "tab" && argv[1] === "close") throw new Error("tab already gone");
       return undefined;
     });
 
@@ -1885,6 +2089,7 @@ describe("swarm_poll and workers parked at awaiting_relay", () => {
             agent: "relayrun-w1",
             slug: "stuck-item",
             paneId: "w1:pQ",
+            tabId: "w1:tQ",
             lifecycle: "awaiting_relay",
           },
         ],
@@ -1922,5 +2127,838 @@ describe("swarm_poll and workers parked at awaiting_relay", () => {
     expect(text).not.toBe("No active workers to poll.");
     expect(text).toContain("relayrun-w1");
     expect(text).toContain("swarm_resolve_blocked");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// swarm_poll's blocking wait: abort, and the drain race.
+//
+// When nothing is queued, swarm_poll parks on a promise that only a worker's
+// `agent wait` can settle -- 30 minutes by default. Two things went wrong
+// there. The tool call's abort signal was passed to every herdr call AFTER
+// the wait but not to the wait itself, so an aborted poll never returned and
+// its resolver stayed in the run's waiter list forever. And when an event
+// finally arrived it woke EVERY queued waiter at once, while the first to run
+// drained the queue with splice(0) -- so any concurrent poll woke to an empty
+// queue and reported "no events" for a run that was in fact making progress.
+// ---------------------------------------------------------------------------
+
+describe("swarm_poll blocking wait", () => {
+  let dir: string;
+  let priorStateDir: string | undefined;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "swarm-poll-wait-"));
+    priorStateDir = process.env.PI_SWARM_STATE_DIR;
+    process.env.PI_SWARM_STATE_DIR = dir;
+  });
+
+  afterEach(() => {
+    if (priorStateDir === undefined) delete process.env.PI_SWARM_STATE_DIR;
+    else process.env.PI_SWARM_STATE_DIR = priorStateDir;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** A stub whose `agent wait` answers only when the test says so. */
+  function setup(runId: string, agents: string[]) {
+    const workers = agents.map((agent, i) => ({
+      agent,
+      slug: `item-${i}`,
+      paneId: `w1:p${i}`,
+      tabId: `w1:t${i}`,
+      lifecycle: "active" as const,
+    }));
+    saveState({ runId, concurrency: agents.length, nextCounter: agents.length, workers }, dir);
+
+    const settle = new Map<string, (r: { code: number; stdout: string; stderr: string }) => void>();
+    const calls: ExecCall[] = [];
+    const tools = new Map<string, { execute: (...a: never[]) => Promise<unknown> }>();
+    const pi = {
+      exec(_cmd: string, argv: string[]) {
+        calls.push({ argv });
+        if (argv[0] === "agent" && argv[1] === "list") {
+          return Promise.resolve({
+            code: 0,
+            stdout: JSON.stringify({
+              result: {
+                agents: workers.map((w) => ({
+                  agent: "pi",
+                  agent_status: "working",
+                  name: w.agent,
+                  pane_id: w.paneId,
+                })),
+              },
+            }),
+            stderr: "",
+          });
+        }
+        if (argv[0] === "agent" && argv[1] === "wait") {
+          // Held open until the test resolves it, the way a real worker's
+          // 30-minute wait is held open until that worker settles.
+          return new Promise((resolve) => settle.set(argv[2]!, resolve));
+        }
+        return Promise.resolve({ code: 0, stdout: "", stderr: "" });
+      },
+      registerTool(def: { name: string; execute: (...a: never[]) => Promise<unknown> }) {
+        tools.set(def.name, def);
+      },
+    };
+    registerSwarmTools(pi as unknown as Parameters<typeof registerSwarmTools>[0]);
+    const poll = tools.get("swarm_poll");
+    if (!poll) throw new Error("swarm_poll was never registered");
+
+    const finish = async (agent: string, status: string) => {
+      // The stub's wait promise is only created once armWait has run, which
+      // happens inside the poll call after its own awaits, so wait for the
+      // registration rather than assuming a fixed number of microtasks.
+      for (let i = 0; i < 200 && !settle.has(agent); i++) {
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      if (!settle.has(agent)) throw new Error(`no wait ever armed for ${agent}`);
+      settle.get(agent)!({
+        code: 0,
+        stdout: realWaitEnvelope(status, agent, "w1:p0"),
+        stderr: "",
+      });
+    };
+
+    return { poll, calls, finish };
+  }
+
+  const runPoll = (
+    poll: { execute: (...a: never[]) => Promise<unknown> },
+    runId: string,
+    signal?: AbortSignal,
+  ) =>
+    poll.execute(
+      ...(["call", { runId, timeoutMs: 1000 }, signal] as unknown as never[]),
+    ) as Promise<{ content: { text: string }[]; details: { events: { kind: string }[] } }>;
+
+  test("an aborted poll settles instead of hanging on a promise nothing resolves", async () => {
+    const { poll } = setup("abortrun", ["abortrun-w1"]);
+    const controller = new AbortController();
+
+    const pending = runPoll(poll, "abortrun", controller.signal);
+    // Let the poll reach its wait before aborting, so this exercises the
+    // blocking path rather than the already-aborted shortcut.
+    await Promise.resolve();
+    controller.abort();
+
+    const res = await Promise.race([
+      pending,
+      new Promise<"hung">((r) => setTimeout(() => r("hung"), 2000)),
+    ]);
+
+    expect(res).not.toBe("hung");
+    expect((res as { details: { events: unknown[] } }).details.events).toEqual([]);
+    expect((res as { content: { text: string }[] }).content[0]?.text).toContain("aborted");
+  });
+
+  test("a poll already aborted before it waits returns rather than parking", async () => {
+    const { poll } = setup("prerun", ["prerun-w1"]);
+    const controller = new AbortController();
+    controller.abort();
+
+    const res = await Promise.race([
+      runPoll(poll, "prerun", controller.signal),
+      new Promise<"hung">((r) => setTimeout(() => r("hung"), 2000)),
+    ]);
+
+    expect(res).not.toBe("hung");
+  });
+
+  // THE DRAIN RACE. Both polls wake on the first event; whichever loses the
+  // splice(0) must go back to waiting, not report an empty run.
+  test("a poll that loses the drain race waits for the next event instead of reporting none", async () => {
+    const { poll, finish } = setup("racerun", ["racerun-w1", "racerun-w2"]);
+
+    const first = runPoll(poll, "racerun");
+    const second = runPoll(poll, "racerun");
+
+    await finish("racerun-w1", "idle");
+    await finish("racerun-w2", "idle");
+
+    const results = await Promise.race([
+      Promise.all([first, second]),
+      new Promise<"hung">((r) => setTimeout(() => r("hung"), 3000)),
+    ]);
+
+    expect(results).not.toBe("hung");
+    const [a, b] = results as { details: { events: { kind: string }[] } }[];
+    // Two events, two polls, one each -- and crucially neither poll reports
+    // an empty list while the run still had an event coming.
+    expect(a!.details.events.length + b!.details.events.length).toBe(2);
+    expect(a!.details.events).not.toEqual([]);
+    expect(b!.details.events).not.toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scheduling: which items may run together, and what tops the pool back up.
+//
+// Two items that edit the same file cannot run concurrently -- their worktrees
+// diverge and the second merge conflicts. That collision is not hypothetical:
+// meta-swarm-trust-ack-fail-open and meta-swarm-poll-abort-and-orphan-pane
+// both edit swarm-tool.ts and had to be held out of the same batch by hand.
+// The signal was already in every item's related_files; nothing read it.
+//
+// READY is computed, not stored -- an item becomes ready the moment its last
+// blocker is approved -- so a fixed items[] taken at call time goes stale as
+// soon as a worker finishes. dev_status.py's `ready` reports the bucket it
+// already builds for the dashboard, so the blocker walk is never reimplemented
+// here.
+// ---------------------------------------------------------------------------
+
+describe("parseReadyItems / itemPaths", () => {
+  test("reads the id and related_files of each ready item", () => {
+    const stdout = JSON.stringify([
+      { id: "a", related_files: [{ path: "/repo/x.ts" }, { path: "/repo/y.ts" }] },
+      { id: "b", related_files: [] },
+    ]);
+    const items = parseReadyItems(stdout);
+    expect(items.map((i) => i.id)).toEqual(["a", "b"]);
+    expect(itemPaths(items[0]!)).toEqual(["/repo/x.ts", "/repo/y.ts"]);
+    expect(itemPaths(items[1]!)).toEqual([]);
+  });
+
+  test("an item with no related_files has no paths, rather than throwing", () => {
+    // Plenty of real items carry related_files: [] or omit it entirely. Such
+    // an item constrains nothing and is constrained by nothing.
+    expect(itemPaths({ id: "a" })).toEqual([]);
+    expect(itemPaths({ id: "a", related_files: [{}] })).toEqual([]);
+  });
+
+  test("returns an empty list on unparseable output instead of throwing", () => {
+    expect(parseReadyItems("not json")).toEqual([]);
+    expect(parseReadyItems("{}")).toEqual([]);
+    expect(parseReadyItems("")).toEqual([]);
+  });
+});
+
+describe("selectSchedulable", () => {
+  const item = (id: string, ...paths: string[]) => ({
+    id,
+    related_files: paths.map((path) => ({ path })),
+  });
+
+  test("two items touching the same file do not go into one wave", () => {
+    const res = selectSchedulable(
+      [item("a", "/r/shared.ts"), item("b", "/r/shared.ts"), item("c", "/r/other.ts")],
+      [],
+      3,
+    );
+    expect(res.slugs).toEqual(["a", "c"]);
+    expect(res.deferred.map((d) => d.slug)).toEqual(["b"]);
+    expect(res.deferred[0]?.reason).toContain("/r/shared.ts");
+  });
+
+  test("an item overlapping a worker already running is deferred too", () => {
+    const res = selectSchedulable([item("a", "/r/live.ts")], ["/r/live.ts"], 3);
+    expect(res.slugs).toEqual([]);
+    expect(res.deferred.map((d) => d.slug)).toEqual(["a"]);
+  });
+
+  test("a directory and a file inside it count as overlapping", () => {
+    // An item scoped to a whole module collides with one scoped to a file in
+    // it, even though the two strings differ.
+    const res = selectSchedulable([item("a", "/r/pkg"), item("b", "/r/pkg/deep/file.ts")], [], 3);
+    expect(res.slugs).toEqual(["a"]);
+    expect(res.deferred.map((d) => d.slug)).toEqual(["b"]);
+  });
+
+  test("a directory written with a trailing slash still contains its files", () => {
+    // "/r/pkg/" + "/" builds "/r/pkg//", which nothing inside it starts with.
+    const res = selectSchedulable([item("a", "/r/pkg/"), item("b", "/r/pkg/deep/f.ts")], [], 3);
+    expect(res.slugs).toEqual(["a"]);
+    expect(res.deferred.map((d) => d.slug)).toEqual(["b"]);
+  });
+
+  test("a path that merely shares a name prefix is not an overlap", () => {
+    // "/r/pkg" must not swallow "/r/pkg-other" -- that is string prefixing,
+    // not containment, and it would defer unrelated work forever.
+    const res = selectSchedulable([item("a", "/r/pkg"), item("b", "/r/pkg-other/f.ts")], [], 3);
+    expect(res.slugs).toEqual(["a", "b"]);
+    expect(res.deferred).toEqual([]);
+  });
+
+  test("items past the headroom are skipped for the cap, not deferred for overlap", () => {
+    // The two are different facts and the orchestrator acts differently on
+    // them: a capped item is coming next wave regardless, a deferred one is
+    // waiting on a specific worker to finish.
+    const res = selectSchedulable([item("a", "/r/1"), item("b", "/r/2"), item("c", "/r/3")], [], 2);
+    expect(res.slugs).toEqual(["a", "b"]);
+    expect(res.skipped).toEqual(["c"]);
+    expect(res.deferred).toEqual([]);
+  });
+
+  test("items with no related_files never block each other", () => {
+    const res = selectSchedulable([item("a"), item("b"), item("c")], ["/r/live.ts"], 3);
+    expect(res.slugs).toEqual(["a", "b", "c"]);
+  });
+
+  // TERMINATION. A deferred item must always become schedulable eventually,
+  // or a top-up loop spins forever on a queue it can never drain.
+  test("with nothing running, the first candidate is always schedulable", () => {
+    const res = selectSchedulable([item("a", "/r/s.ts"), item("b", "/r/s.ts")], [], 3);
+    expect(res.slugs).toEqual(["a"]);
+    // ...and once a finishes, b has nothing left to collide with.
+    const next = selectSchedulable([item("b", "/r/s.ts")], [], 3);
+    expect(next.slugs).toEqual(["b"]);
+  });
+
+  test("zero headroom selects nothing and defers nothing", () => {
+    const res = selectSchedulable([item("a", "/r/1")], [], 0);
+    expect(res.slugs).toEqual([]);
+    expect(res.deferred).toEqual([]);
+    expect(res.skipped).toEqual(["a"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// An elapsed `herdr agent wait` is a check-in, not a death certificate.
+//
+// The live failure: a worker several minutes into a real item -- item
+// claimed, worktree created, spec written -- had its tab closed and was
+// dropped from state the moment swarm_poll's wait deadline elapsed. It was
+// not stuck. `agent wait` is a wait deadline, not a liveness check, so
+// "nothing settled in the window" is exactly what a healthy worker doing
+// several minutes of work looks like.
+//
+// These drive the registered tool's real execute() against a stubbed
+// ExtensionAPI whose `agent wait` answers differently on each call, which is
+// what lets a re-arm be observed at all.
+// ---------------------------------------------------------------------------
+
+/** herdr's own timeout envelope: JSON on stderr, nonzero exit (confirmed live). */
+const HERDR_TIMEOUT_STDERR = JSON.stringify({
+  error: { code: "timeout", message: "timed out waiting for agent status" },
+  id: "cli:agent:wait",
+});
+
+describe("swarm_poll: an elapsed wait is a check-in, not a death certificate", () => {
+  let dir: string;
+  let priorStateDir: string | undefined;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "swarm-checkin-"));
+    priorStateDir = process.env.PI_SWARM_STATE_DIR;
+    process.env.PI_SWARM_STATE_DIR = dir;
+  });
+
+  afterEach(() => {
+    if (priorStateDir === undefined) delete process.env.PI_SWARM_STATE_DIR;
+    else process.env.PI_SWARM_STATE_DIR = priorStateDir;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  type Result = { code: number; stdout: string; stderr: string };
+
+  /**
+   * Seeds one active worker plus a QUEUE of `agent wait` results, one per
+   * call, so a re-arm is observable: the whole point is that the second call
+   * happens at all.
+   */
+  function setupQueued(waits: Result[], probe: Result, overrides: Partial<WorkerRecord> = {}) {
+    const runId = "checkin";
+    const worker: WorkerRecord = {
+      agent: "checkin-w1",
+      slug: "some-item",
+      paneId: "w1:pZ",
+      tabId: "w1:tZ",
+      cwd: "/home/yanil/dotfiles",
+      workingSinceMs: Date.now(),
+      lifecycle: "active",
+      ...overrides,
+    };
+    const state: SwarmState = { runId, concurrency: 2, nextCounter: 1, workers: [worker] };
+    saveState(state, dir);
+
+    let waitCall = 0;
+    const stub = makeStubPi((argv) => {
+      const [a, b] = argv;
+      if (a === "agent" && b === "list") {
+        return {
+          code: 0,
+          stdout: realAgentListEnvelope({
+            agent: "pi",
+            agent_status: "working",
+            name: "checkin-w1",
+            pane_id: "w1:pZ",
+          }),
+          stderr: "",
+        };
+      }
+      if (a === "agent" && b === "wait") {
+        const next = waits[Math.min(waitCall, waits.length - 1)];
+        waitCall += 1;
+        return next as Result;
+      }
+      if (a === "agent" && b === "get") return probe;
+      if (a === "agent" && b === "read") {
+        return { code: 0, stdout: "Commit these changes?\n> Yes\n  No\n", stderr: "" };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    });
+
+    registerSwarmTools(stub.pi as unknown as Parameters<typeof registerSwarmTools>[0]);
+    const poll = stub.tools.get("swarm_poll");
+    if (!poll) throw new Error("swarm_poll was never registered");
+    return { runId, poll, stub, waitCalls: () => waitCall };
+  }
+
+  const closes = (stub: { calls: { argv: string[] }[] }) =>
+    stub.calls.filter((c) => c.argv[0] === "tab" && c.argv[1] === "close");
+
+  test("a still-working worker is re-armed and reported, never closed", async () => {
+    const { runId, poll, stub, waitCalls } = setupQueued(
+      [
+        { code: 1, stdout: "", stderr: HERDR_TIMEOUT_STDERR },
+        { code: 0, stdout: realWaitEnvelope("idle", "checkin-w1", "w1:pZ"), stderr: "" },
+      ],
+      { code: 0, stdout: realWaitEnvelope("working", "checkin-w1", "w1:pZ"), stderr: "" },
+    );
+
+    const res = (await poll.execute(
+      ...([
+        "call-1",
+        { runId, timeoutMs: 1000, workerDeadlineMs: 4 * 60 * 60 * 1000 },
+        undefined,
+      ] as unknown as never[]),
+    )) as { details: { events: { kind: string }[] } };
+
+    // The load-bearing assertions: the worker survives its own wait deadline.
+    expect(res.details.events.map((e) => e.kind)).toEqual(["still_working"]);
+    expect(closes(stub)).toHaveLength(0);
+    const persisted = loadState(runId, dir);
+    expect(persisted?.workers).toHaveLength(1);
+    expect(persisted?.workers[0]?.lifecycle).toBe("active");
+    // A second wait was armed -- without it the worker is alive but unwatched.
+    expect(waitCalls()).toBe(2);
+  });
+
+  test("the check-in carries its number and elapsed working time, not a bare label", async () => {
+    const { runId, poll } = setupQueued(
+      [
+        { code: 1, stdout: "", stderr: HERDR_TIMEOUT_STDERR },
+        { code: 0, stdout: realWaitEnvelope("idle", "checkin-w1", "w1:pZ"), stderr: "" },
+      ],
+      { code: 0, stdout: realWaitEnvelope("working", "checkin-w1", "w1:pZ"), stderr: "" },
+      { workingSinceMs: Date.now() - 90 * 60 * 1000, checkIns: 3 },
+    );
+
+    const res = (await poll.execute(
+      ...([
+        "call-1",
+        { runId, timeoutMs: 1000, workerDeadlineMs: 4 * 60 * 60 * 1000 },
+        undefined,
+      ] as unknown as never[]),
+    )) as { content: { text: string }[]; details: { events: { checkIn?: number }[] } };
+
+    // "still working" eight times says nothing; "check-in 4, 1h30m of a 4h
+    // budget" is the thing a human can act on before the budget stops it.
+    expect(res.details.events[0]?.checkIn).toBe(4);
+    expect(res.content[0]?.text).toContain("check-in 4");
+    expect(res.content[0]?.text).toContain("1h30m");
+    // Persisted, so a restart does not report "check-in 1" against hours.
+    expect(loadState(runId, dir)?.workers[0]?.checkIns).toBe(4);
+  });
+
+  test("past its budget, a confirmed-live worker IS stopped -- and the report can be acted on", async () => {
+    const { runId, poll, stub } = setupQueued(
+      [{ code: 1, stdout: "", stderr: HERDR_TIMEOUT_STDERR }],
+      { code: 0, stdout: realWaitEnvelope("working", "checkin-w1", "w1:pZ"), stderr: "" },
+      { workingSinceMs: Date.now() - 5 * 60 * 60 * 1000 },
+    );
+
+    const res = (await poll.execute(
+      ...([
+        "call-1",
+        { runId, timeoutMs: 1000, workerDeadlineMs: 4 * 60 * 60 * 1000 },
+        undefined,
+      ] as unknown as never[]),
+    )) as { details: { events: { kind: string; detail?: string }[] } };
+
+    expect(res.details.events.map((e) => e.kind)).toEqual(["timed_out"]);
+    expect(closes(stub)).toHaveLength(1);
+    expect(loadState(runId, dir)?.workers).toHaveLength(0);
+    // The four things that had to be cleaned up by hand after the live run.
+    const detail = res.details.events[0]?.detail ?? "";
+    expect(detail).toContain("/home/yanil/dotfiles-some-item");
+    expect(detail).toContain("in-progress with a live claim");
+    expect(detail).toContain("still reported working");
+  });
+
+  test("a stop whose probe never answered says so, instead of claiming the worker was working", async () => {
+    // pi.exec resolves on abort with a coerced exit 0 and empty stdout, which
+    // is what an abandoned probe looks like from the result alone.
+    const { runId, poll, stub } = setupQueued(
+      [{ code: 1, stdout: "", stderr: HERDR_TIMEOUT_STDERR }],
+      { code: 1, stdout: "", stderr: '{"error":{"code":"internal","message":"herdr is down"}}' },
+      { workingSinceMs: Date.now() - 5 * 60 * 60 * 1000 },
+    );
+
+    const res = (await poll.execute(
+      ...([
+        "call-1",
+        { runId, timeoutMs: 1000, workerDeadlineMs: 4 * 60 * 60 * 1000 },
+        undefined,
+      ] as unknown as never[]),
+    )) as { details: { events: { kind: string; detail?: string }[] } };
+
+    expect(res.details.events.map((e) => e.kind)).toEqual(["timed_out"]);
+    expect(closes(stub)).toHaveLength(1);
+    const detail = res.details.events[0]?.detail ?? "";
+    expect(detail).toContain("could NOT be verified");
+    expect(detail).toContain("herdr is down");
+    expect(detail).not.toContain("still reported working");
+  });
+
+  test("an agent herdr no longer knows is closed as error, not mislabelled a timeout", async () => {
+    const { runId, poll, stub } = setupQueued(
+      [{ code: 1, stdout: "", stderr: HERDR_TIMEOUT_STDERR }],
+      {
+        code: 1,
+        stdout: "",
+        stderr: JSON.stringify({
+          error: { code: "agent_not_found", message: "agent target checkin-w1 not found" },
+        }),
+      },
+    );
+
+    const res = (await poll.execute(
+      ...(["call-1", { runId, timeoutMs: 1000 }, undefined] as unknown as never[]),
+    )) as { details: { events: { kind: string; detail?: string }[] } };
+
+    expect(res.details.events.map((e) => e.kind)).toEqual(["error"]);
+    expect(closes(stub)).toHaveLength(1);
+    // The PROBE's reason, not the wait's -- the wait only ever said "timeout",
+    // which explains nothing about why the probe failed.
+    expect(res.details.events[0]?.detail).toContain("agent_not_found");
+  });
+
+  test("a finished settle costs no probe at all -- only a timeout provokes one", async () => {
+    const { runId, poll, stub } = setupQueued(
+      [{ code: 0, stdout: realWaitEnvelope("idle", "checkin-w1", "w1:pZ"), stderr: "" }],
+      { code: 0, stdout: realWaitEnvelope("working", "checkin-w1", "w1:pZ"), stderr: "" },
+    );
+
+    const res = (await poll.execute(
+      ...(["call-1", { runId, timeoutMs: 1000 }, undefined] as unknown as never[]),
+    )) as { details: { events: { kind: string }[] } };
+
+    expect(res.details.events.map((e) => e.kind)).toEqual(["finished"]);
+    expect(stub.calls.filter((c) => c.argv[0] === "agent" && c.argv[1] === "get")).toHaveLength(0);
+  });
+
+  test("a close that fails still drains the batch and still frees the wait slot", async () => {
+    // The drain loop used to call herdr bare here: a rejected close threw out
+    // of the loop, abandoning every event after it and leaving those workers
+    // un-dropped with their entries held.
+    const runId = "closefail";
+    const worker: WorkerRecord = {
+      agent: "closefail-w1",
+      slug: "some-item",
+      paneId: "w1:pZ",
+      tabId: "w1:tZ",
+      lifecycle: "active",
+    };
+    saveState({ runId, concurrency: 2, nextCounter: 1, workers: [worker] }, dir);
+
+    const stub = makeStubPi((argv) => {
+      const [a, b] = argv;
+      if (a === "tab" && b === "close") throw new Error("herdr socket closed");
+      if (a === "agent" && b === "list") {
+        return {
+          code: 0,
+          stdout: realAgentListEnvelope({
+            agent: "pi",
+            agent_status: "idle",
+            name: "closefail-w1",
+            pane_id: "w1:pZ",
+          }),
+          stderr: "",
+        };
+      }
+      if (a === "agent" && b === "wait") {
+        return { code: 0, stdout: realWaitEnvelope("idle", "closefail-w1", "w1:pZ"), stderr: "" };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    });
+    registerSwarmTools(stub.pi as unknown as Parameters<typeof registerSwarmTools>[0]);
+    const poll = stub.tools.get("swarm_poll");
+    if (!poll) throw new Error("swarm_poll was never registered");
+
+    const res = (await poll.execute(
+      ...(["call-1", { runId, timeoutMs: 1000 }, undefined] as unknown as never[]),
+    )) as { details: { events: { kind: string }[] } };
+
+    expect(res.details.events.map((e) => e.kind)).toEqual(["finished"]);
+    expect(loadState(runId, dir)?.workers).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// classifyTimeoutProbe: fail open, but bounded by the budget.
+// ---------------------------------------------------------------------------
+
+describe("classifyTimeoutProbe", () => {
+  const probe = (over: Partial<Parameters<typeof classifyTimeoutProbe>[0]> = {}) => ({
+    code: 0,
+    stdout: "",
+    stderr: "",
+    abandoned: false,
+    ...over,
+  });
+  const live = (status: string) => probe({ stdout: realWaitEnvelope(status, "w1", "w1:p1") });
+  const HOUR = 60 * 60 * 1000;
+
+  test("a positively-gone agent is the ONLY nonzero exit that closes a worker", () => {
+    const gone = probe({
+      code: 1,
+      stderr: JSON.stringify({ error: { code: "agent_not_found", message: "no such agent" } }),
+    });
+    expect(classifyTimeoutProbe(gone, 0, HOUR)).toEqual({ disposition: "event", kind: "error" });
+  });
+
+  test("a transient nonzero exit re-arms -- killing on a failed CHECK is the bug, one layer down", () => {
+    const flaky = probe({ code: 1, stderr: '{"error":{"code":"internal","message":"boom"}}' });
+    expect(classifyTimeoutProbe(flaky, 0, HOUR)).toEqual({ disposition: "rearm" });
+  });
+
+  test("an unparseable stderr on a nonzero exit re-arms rather than guessing", () => {
+    expect(classifyTimeoutProbe(probe({ code: 1, stderr: "segfault" }), 0, HOUR)).toEqual({
+      disposition: "rearm",
+    });
+  });
+
+  test("an abandoned probe re-arms: we gave up on the check, learning nothing about the worker", () => {
+    // pi.exec RESOLVES on abort with a coerced exit 0 and empty stdout, so
+    // without the flag this is indistinguishable from "no recognizable
+    // status" -- and that case must never close a live worker.
+    expect(classifyTimeoutProbe(probe({ abandoned: true }), 0, HOUR)).toEqual({
+      disposition: "rearm",
+    });
+  });
+
+  test("a settle that raced the probe wins: blocked and idle/done are reported, not overridden", () => {
+    expect(classifyTimeoutProbe(live("blocked"), 0, HOUR)).toEqual({
+      disposition: "event",
+      kind: "blocked",
+    });
+    expect(classifyTimeoutProbe(live("idle"), 0, HOUR)).toEqual({
+      disposition: "event",
+      kind: "finished",
+    });
+    expect(classifyTimeoutProbe(live("done"), 0, HOUR)).toEqual({
+      disposition: "event",
+      kind: "finished",
+    });
+  });
+
+  test("a working worker inside its budget re-arms", () => {
+    expect(classifyTimeoutProbe(live("working"), HOUR - 1, HOUR)).toEqual({
+      disposition: "rearm",
+    });
+  });
+
+  test("an unrecognized live status is treated as alive, not invented into a death", () => {
+    expect(classifyTimeoutProbe(live("hibernating"), 0, HOUR)).toEqual({ disposition: "rearm" });
+  });
+
+  test("past the budget, a confirmed-live worker is stopped and SAYS it was confirmed", () => {
+    expect(classifyTimeoutProbe(live("working"), HOUR, HOUR)).toEqual({
+      disposition: "event",
+      kind: "timed_out",
+      livenessConfirmed: true,
+    });
+  });
+
+  test("the budget bounds INCONCLUSIVE outcomes too -- otherwise the worst worker runs forever", () => {
+    // A worker wedged badly enough that agent get itself cannot answer would
+    // re-arm until someone killed the orchestrator by hand.
+    for (const p of [
+      probe({ abandoned: true }),
+      probe({ code: 1, stderr: '{"error":{"code":"internal"}}' }),
+      probe({ code: 0, stdout: "{}" }),
+    ]) {
+      expect(classifyTimeoutProbe(p, HOUR, HOUR)).toEqual({
+        disposition: "event",
+        kind: "timed_out",
+        livenessConfirmed: false,
+      });
+    }
+  });
+
+  test("a worker with no computable elapsed time is never deliberately stopped", () => {
+    expect(classifyTimeoutProbe(live("working"), null, 0)).toEqual({ disposition: "rearm" });
+    expect(classifyTimeoutProbe(probe({ abandoned: true }), null, 0)).toEqual({
+      disposition: "rearm",
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Working-time accounting. The budget is per ITEM, not per segment, and the
+// arithmetic must survive an unstamped legacy record and a backwards clock.
+// ---------------------------------------------------------------------------
+
+describe("working-time accounting", () => {
+  const w = (over: Partial<WorkerRecord> = {}): WorkerRecord => ({
+    agent: "a1",
+    slug: "s",
+    paneId: "p",
+    lifecycle: "active",
+    ...over,
+  });
+
+  test("a record with neither timestamp has no computable elapsed time", () => {
+    expect(elapsedWorkingMs(w(), 1000)).toBeNull();
+  });
+
+  test("completed segments and the open one are summed", () => {
+    expect(elapsedWorkingMs(w({ accumulatedWorkingMs: 500, workingSinceMs: 100 }), 400)).toBe(800);
+  });
+
+  test("an accumulator with no open segment still counts -- a parked worker's time is not lost", () => {
+    expect(elapsedWorkingMs(w({ accumulatedWorkingMs: 500 }), 400)).toBe(500);
+  });
+
+  test("a backwards clock step clamps to zero rather than reversing the accounting", () => {
+    expect(elapsedWorkingMs(w({ accumulatedWorkingMs: 500, workingSinceMs: 900 }), 400)).toBe(500);
+  });
+
+  test("folding an unstamped legacy record adds nothing -- never NaN", () => {
+    // Reachable: a blocked settle needs no probe, so a legacy record can park
+    // before any check-in has stamped it. `undefined + number` would be NaN,
+    // and NaN >= deadline is false, so such a worker would re-arm forever.
+    const worker = w();
+    foldWorkingSegment(worker, 1000);
+    expect(worker.accumulatedWorkingMs ?? 0).toBe(0);
+    expect(Number.isNaN(worker.accumulatedWorkingMs ?? 0)).toBe(false);
+  });
+
+  test("the budget is per item: work either side of a relay accumulates", () => {
+    const worker = w({ workingSinceMs: 0 });
+    foldWorkingSegment(worker, 3000); // worked 3000 before blocking
+    expect(worker.workingSinceMs).toBeUndefined();
+    worker.workingSinceMs = 10_000; // resumed after a human answered
+    expect(elapsedWorkingMs(worker, 11_000)).toBe(4000); // 3000 + 1000, not 1000
+  });
+
+  test("folding is idempotent, so a double-park costs nothing", () => {
+    const worker = w({ workingSinceMs: 0 });
+    foldWorkingSegment(worker, 3000);
+    foldWorkingSegment(worker, 9000);
+    expect(worker.accumulatedWorkingMs).toBe(3000);
+  });
+
+  test("formatDuration reads as a person would say it", () => {
+    expect(formatDuration(45 * 60 * 1000)).toBe("45m");
+    expect(formatDuration(3 * 60 * 60 * 1000 + 31 * 60 * 1000)).toBe("3h31m");
+    expect(formatDuration(0)).toBe("0m");
+  });
+});
+
+describe("deliberate-stop reporting", () => {
+  const worker: WorkerRecord = {
+    agent: "a1",
+    slug: "some-item",
+    paneId: "p",
+    cwd: "/home/yanil/dotfiles",
+    lifecycle: "active",
+  };
+
+  test("the worktree is derived as a sibling of the repo, per the repo convention", () => {
+    expect(workerWorktreePath("/home/yanil/dotfiles", "some-item")).toBe(
+      "/home/yanil/dotfiles-some-item",
+    );
+  });
+
+  test("a record predating cwd tracking yields no path rather than a guessed one", () => {
+    expect(workerWorktreePath(undefined, "some-item")).toBeNull();
+  });
+
+  test("a confirmed-live stop says the worker was working, and names the recovery path", () => {
+    const detail = deadlineStopDetail(worker, 4 * 60 * 60 * 1000, { livenessConfirmed: true });
+    expect(detail).toContain("still reported working");
+    expect(detail).toContain("/home/yanil/dotfiles-some-item");
+    expect(detail).toContain("in-progress with a live claim");
+  });
+
+  test("an unverified stop does NOT claim the worker was working, and carries the probe's reason", () => {
+    // Reporting these two identically would repeat this tool's own root
+    // complaint: a wrong outcome label becomes the story the orchestrator
+    // tells the human.
+    const detail = deadlineStopDetail(worker, 4 * 60 * 60 * 1000, {
+      livenessConfirmed: false,
+      probeDetail: "the liveness probe did not answer within 15000 ms and was abandoned",
+    });
+    expect(detail).not.toContain("still reported working");
+    expect(detail).toContain("could NOT be verified");
+    expect(detail).toContain("abandoned");
+    expect(detail).toContain("/home/yanil/dotfiles-some-item");
+  });
+
+  test("with no cwd, the report says the path is unavailable rather than inventing one", () => {
+    const detail = deadlineStopDetail({ ...worker, cwd: undefined }, 1000, {
+      livenessConfirmed: true,
+    });
+    expect(detail).toContain("git worktree list");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A pinned worker model reaches `herdr agent start` and is recorded.
+//
+// Before this, buildAgentStartArgv emitted no agent args at all, so every
+// worker silently took pi's default and no digest could say which model did
+// the work. The plumbing existed at both ends -- herdr forwards everything
+// after `--`, and pi --model takes a provider/id -- it was simply never wired.
+// ---------------------------------------------------------------------------
+
+describe("swarm_spawn model passthrough", () => {
+  test("the model lands after the separator, so herdr forwards it instead of rejecting it", () => {
+    const argv = buildAgentStartArgv("run1-w1", "w1:pB", "opencode-go/glm-5.3-flash");
+    const sep = argv.indexOf("--");
+    expect(sep).toBeGreaterThan(-1);
+    // Everything herdr parses must precede the separator...
+    expect(argv.slice(0, sep)).toContain("--pane");
+    expect(argv.slice(0, sep)).not.toContain("--model");
+    // ...and everything for pi must follow it, in order.
+    expect(argv.slice(sep)).toEqual(["--", "--model", "opencode-go/glm-5.3-flash"]);
+  });
+
+  test("an omitted model changes nothing about the command", () => {
+    expect(buildAgentStartArgv("run1-w1", "w1:pB")).toEqual([
+      "agent",
+      "start",
+      "run1-w1",
+      "--kind",
+      "pi",
+      "--pane",
+      "w1:pB",
+      "--timeout",
+      "30000",
+    ]);
+  });
+
+  test("a WorkerRecord can carry the model it was started on", () => {
+    // The field is what lets a digest answer "what did the work". Optional,
+    // because a record written before this existed simply took the default.
+    const pinned: WorkerRecord = {
+      agent: "run1-w1",
+      slug: "s",
+      paneId: "p",
+      model: "opencode-go/glm-5.3-flash",
+      lifecycle: "active",
+    };
+    expect(pinned.model).toBe("opencode-go/glm-5.3-flash");
+    const unpinned: WorkerRecord = {
+      agent: "run1-w2",
+      slug: "s2",
+      paneId: "p2",
+      lifecycle: "active",
+    };
+    expect(unpinned.model).toBeUndefined();
   });
 });

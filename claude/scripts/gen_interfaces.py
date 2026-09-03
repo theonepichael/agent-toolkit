@@ -1712,7 +1712,11 @@ def check_contract_fingerprints(
                 kind="mismatch",
                 message=(
                     f"[gen_interfaces] contract drift — `{script}`'s CLI behavior "
-                    f"changed; re-read {docs_text}, then run `gen_interfaces.py "
+                    f"changed. The docs below are where to START re-reading, not "
+                    f"a list of known-wrong files: {docs_text}. Check the "
+                    "script's non-doc consumers too — extension tool wrappers "
+                    "that mirror its CLI (e.g. pi/extensions/dev-status-tool.ts) "
+                    "and other scripts importing it. Then run `gen_interfaces.py "
                     f"--update-fingerprints`:\n{detail}"
                 ),
             )

@@ -151,6 +151,8 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `list [--status <STATUS>] [--raw]` — grouped backlog table (--raw for tab-separated output)
     - `--status` — only show items with this status (choices computed at runtime)
     - `--raw` — machine-readable TSV (id\tstatus\tsummary) instead of the table
+  - `ready [--prefix <PREFIX>]` — print the READY bucket as JSON (open, unblocked, full records)
+    - `--prefix` — only items whose slug starts with this (e.g. meta-)
   - `show <slug|N>` — print full JSON for an item
   - `add '{"id": "my-slug", "summary": "...", "priority": "high"}'` — append a new item (id required in JSON)
   - `update <slug|N> '{"field": "value", "priority": "high"}' [--if-rev <N>]` — merge JSON patch into an item
@@ -254,7 +256,7 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `read_journal_entries(within_hours: float | None = None, *, verbose: bool = False) -> list[dict[str, object]]` — Read journal entries, optionally filtered to the last ``within_hours``.
   - `confirm_resolution(cmd: str, arg: str | int, item: BacklogItem | PendingItem, summary_key: str = 'summary', *, quiet: bool = False) -> None` — Echo what a mutating command resolved to, so misresolution is visible.
   - `build_parser() -> argparse.ArgumentParser` — Build the full argument parser for every subcommand.
-- Subcommand handlers: `cmd_internal_regen`, `cmd_recap`, `cmd_render`, `cmd_list`, `cmd_show`, `cmd_add`, `cmd_update`, `cmd_start`, `cmd_done`, `cmd_review`, `cmd_approve`, `cmd_reject`, `cmd_gate_set`, `cmd_gate_pass`, `cmd_run`, `cmd_runs`, `cmd_backfill_gate`, `cmd_rename`, `cmd_block`, `cmd_unblock`, `cmd_out_of_scope_add`, `cmd_out_of_scope_link`, `cmd_out_of_scope_unlink`, `cmd_out_of_scope_remove`, `cmd_out_of_scope_list`, `cmd_out_of_scope_show`, `cmd_pending_add`, `cmd_pending_update`, `cmd_pending_list`, `cmd_remove`, `cmd_prune`
+- Subcommand handlers: `cmd_internal_regen`, `cmd_recap`, `cmd_render`, `cmd_ready`, `cmd_list`, `cmd_show`, `cmd_add`, `cmd_update`, `cmd_start`, `cmd_done`, `cmd_review`, `cmd_approve`, `cmd_reject`, `cmd_gate_set`, `cmd_gate_pass`, `cmd_run`, `cmd_runs`, `cmd_backfill_gate`, `cmd_rename`, `cmd_block`, `cmd_unblock`, `cmd_out_of_scope_add`, `cmd_out_of_scope_link`, `cmd_out_of_scope_unlink`, `cmd_out_of_scope_remove`, `cmd_out_of_scope_list`, `cmd_out_of_scope_show`, `cmd_pending_add`, `cmd_pending_update`, `cmd_pending_list`, `cmd_remove`, `cmd_prune`
 - Tested by: `claude/scripts/test_dev_status.py`, `claude/scripts/test_dev_status_sync.py`, `claude/scripts/test_to_tickets_runner.py`
 
 ### `claude/scripts/dev_status_sync.py`
@@ -430,7 +432,7 @@ gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources.
   - `anchor(relpath: str) -> str` — Return the GitHub heading anchor for a module section.
   - `default_repo_root() -> Path` — Return the repo root inferred from this script's real location.
 - Subcommand handlers: `cmd_function_name`
-- Tested by: `claude/scripts/test_gen_interfaces.py`
+- Tested by: `claude/scripts/test_gen_interfaces.py`, `test/test_dev_status_tool_action_coverage.py`
 
 ### `claude/scripts/gen_second_opinion.py`
 
@@ -695,6 +697,8 @@ llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, open
   - `class IsolationError(RuntimeError)` — A backend cannot be invoked because it does not meet the contract.
   - `class BackendError(Exception)` — A backend was invoked but failed (timeout or nonzero exit).
   - `class BackendTimeoutError(BackendError)` — A backend call failed because every attempt (initial + retries) timed out -- the specific silent-stall failure mode instrumentation exists to measure, distinct from a normal nonzero-exit or empty-output failure.
+  - `class BackendPayloadSizeError(BackendError)` — A backend call was rejected before invocation because the payload exceeds the maximum size known to work reliably for that backend.
+  - `class BackendModelPolicyError(BackendError)` — A backend rejected a model because the ACCOUNT cannot select models through the model flag -- an entitlement failure, not a bad model id.
 - Public functions:
   - `containment_available() -> bool` — Whether OS containment can actually be established on this host.
   - `daemon_listening(backend: str) -> bool` — Whether a daemon belonging to ``backend`` currently holds a listening socket.
@@ -833,6 +837,7 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
 - Public functions:
   - `build_prompt(plan_text: str, focus_hints: str | None) -> str` — Build the critique prompt, optionally inserting plan-specific focus hints.
   - `die(msg: str) -> NoReturn` — Print an error to stderr, prefixed for this script, and exit with status 1.
+  - `sanitize_plan_text(plan_text: str) -> tuple[str, int]` — Strip ephemeral review debris headers/sections from a plan.
   - `resolve_plan_text(arg: str) -> str` — Resolve a CLI argument to plan text: a file's contents, or the arg itself.
   - `run_agy(prompt: str, *, model_index: int | None = None) -> str` — Run the ``agy`` backend and return its critique text.
   - `run_opencode(prompt: str, *, model_index: int | None = None) -> str` — Run the ``opencode`` backend's adversary agent and return its critique text.

@@ -87,6 +87,8 @@ Add this line to your `~/.zshrc` (or `~/.bashrc`):
 | **Antigravity (AGY)** | `~/.gemini/GEMINI.md` | `~/.gemini/antigravity-cli/skills/` | `~/.gemini/config/hooks.json` |
 | **Pi** | `~/.pi/agent/AGENTS.md` | `~/.pi/agent/prompts/` | `~/.pi/agent/extensions/` |
 
+**Structured choices in Pi.** Pi has no *built-in* multi-choice prompt, but the bundled `question-tool.ts` extension supplies a `question` tool for interactive sessions. It is a hard error in headless `-p`/JSON modes and absent when Pi is launched with `--no-extensions`, so the ported skills route enumerable judgment calls to the `question` tool and fall back to plain conversational text only where it is genuinely unavailable.
+
 ---
 
 ## Development & Verification

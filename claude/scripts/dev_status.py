@@ -118,6 +118,7 @@ DEFAULT_CLAIM_TTL_SECONDS = 2 * 60 * 60  # 2 hours
 SUBCOMMANDS = (
     "render",
     "list",
+    "ready",
     "show",
     "add",
     "update",
@@ -2798,6 +2799,36 @@ def cmd_render(args: argparse.Namespace) -> None:
     render(items, pending_items, rev=rev, dispatch=True)
 
 
+def cmd_ready(args: argparse.Namespace) -> None:
+    """Handle ``ready``: print the READY bucket as a JSON array of full records.
+
+    READY is *computed*, never stored — an item is ready when it is open and
+    :func:`effective_blockers` returns nothing for it, which walks the blocker
+    graph transitively on every call. A caller that wants that set has to
+    either ask this script or reimplement the walk, and a second
+    implementation would drift the moment the graph rules changed. So this
+    exposes the bucket :func:`_render_order` already builds for the dashboard,
+    rather than leaving each consumer to derive it.
+
+    Full records, not ids: the caller this exists for (``swarm_spawn``'s
+    scheduler, via ``pi/extensions/swarm-tool.ts``) needs ``related_files`` to
+    tell whether two items would edit the same file, and a second round-trip
+    per item to fetch that would be both slower and racier.
+
+    Pure — same contract as :func:`cmd_render`, no writes, safe to call on a
+    loop while workers are running.
+    """
+    with backlog_lock():
+        items = load_items()
+        rev = load_rev()
+    print(f"# rev={rev}", file=sys.stderr)
+
+    _in_progress, ready, _blocked, _in_review, _done = _render_order(items)
+    if args.prefix:
+        ready = [item for item in ready if item["id"].startswith(args.prefix)]
+    print(json.dumps(ready, indent=2))
+
+
 def cmd_list(args: argparse.Namespace) -> None:
     """Handle ``list``: print grouped, aligned backlog sections by default.
 
@@ -4408,6 +4439,7 @@ def _add_if_rev_arg(parser: argparse.ArgumentParser, id_name: str = "id") -> Non
 dispatch: dict[str, Callable[[argparse.Namespace], None]] = {
     "render": cmd_render,
     "list": cmd_list,
+    "ready": cmd_ready,
     "show": cmd_show,
     "add": cmd_add,
     "update": cmd_update,
@@ -4524,6 +4556,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--raw",
         action="store_true",
         help="machine-readable TSV (id\\tstatus\\tsummary) instead of the table",
+    )
+
+    p = sub.add_parser(
+        "ready",
+        help="print the READY bucket as JSON (open, unblocked, full records)",
+        parents=[verbosity_parent],
+    )
+    p.add_argument(
+        "--prefix",
+        default=None,
+        help="only items whose slug starts with this (e.g. meta-)",
     )
 
     p = sub.add_parser(

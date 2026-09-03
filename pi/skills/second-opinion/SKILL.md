@@ -23,20 +23,25 @@ optionally scoped with `focusFile` and `modelIndex`. Never run
 (`SECOND_OPINION_AGY_MODEL_POOL` / `_PI_MODEL_POOL` / `_OPENCODE_MODEL_POOL` /
 `_COPILOT_MODEL_POOL`, set by the user, not this skill) — round 1 of the loop
 below is index 0, round 2 is index 1, etc. All four backends share the same
-indexed-pool contract. An explicit index selects the pool entry for that call
-even when a single-model override (`SECOND_OPINION_<BACKEND>_MODEL`) is also
-set; without `--model-index` the single override (or the backend default)
-applies. An explicit index is a hard error if the selected backend's pool is
-unset/empty or the index is out of range — it no longer silently falls back.
-Because of that, don't assume a pool is configured: pass `--model-index` every
-round as before, but if that call exits nonzero with a `--model-index ...
-requires ... POOL ...` configuration error (not a backend-failure message),
-retry that same round's call once, identical except omitting `--model-index` —
-this is the safe, always-valid fallback (single-model override or backend
-default), not a skipped round. See the loop below for exactly where this retry
-sits. If only some backends are pool-configured, automatic selection stops on
-the first priority candidate with a pool config error; use `--backend
-<configured-backend>` to target a working one.
+indexed-pool contract. Copilot-specific tier note: copilot's `--model` flag
+requires a GitHub Copilot Pro or Enterprise plan, so `_COPILOT_MODEL_POOL` only
+works on an account with that entitlement — on a free tier, leave it unset so
+copilot uses its default model; a set pool there fails with an entitlement
+error naming the variable, not a bad-id error. An explicit index selects the
+pool entry for that call even when a single-model override
+(`SECOND_OPINION_<BACKEND>_MODEL`) is also set; without `--model-index` the
+single override (or the backend default) applies. An explicit index is a hard
+error if the selected backend's pool is unset/empty or the index is out of
+range — it no longer silently falls back. Because of that, don't assume a pool
+is configured: pass `--model-index` every round as before, but if that call
+exits nonzero with a `--model-index ... requires ... POOL ...` configuration
+error (not a backend-failure message), retry that same round's call once,
+identical except omitting `--model-index` — this is the safe, always-valid
+fallback (single-model override or backend default), not a skipped round. See
+the loop below for exactly where this retry sits. If only some backends are
+pool-configured, automatic selection stops on the first priority candidate with
+a pool config error; use `--backend <configured-backend>` to target a working
+one.
 
 ## Resolving the target plan
 
@@ -128,11 +133,14 @@ loop:
 
     current_plan = revise current_plan yourself, addressing
                    valid points from the critique. For any point you
-                   reject, append a brief "Rejected feedback" note to
+                   reject, append a brief 1-2 sentence note under a
+                   trailing "## Rejected Feedback" header in
                    current_plan stating what was suggested and why —
-                   the reviewer is called statelessly each round, so
-                   without this it will just repeat the same rejected
-                   suggestion instead of engaging with your reasoning.
+                   never quote entire critique paragraphs or debate at
+                   length. The reviewer is called statelessly each
+                   round, so without this it will just repeat the same
+                   rejected suggestion instead of engaging with your
+                   reasoning.
     prior_critique = critique
     round += 1
 
@@ -154,10 +162,14 @@ a separate critique-notes file, written to `<current_plan without its
 extension>-critique-notes.md` (e.g.
 `~/.claude/data/grill/<topic-slug>-plan-critique-notes.md`) — a round-by-round
 record of what was raised each round, what changed in response, and the
-rejected-feedback rationale. Then rewrite each affected step in the plan itself
-to state the final decision plainly, as if it had been correct from the start,
-and drop any trailing per-round changelog section. Downstream tooling
-(`dev_status.py` `related_files`, a future executor session, `grill.py
+rejected-feedback rationale. `second_opinion.py` automatically strips
+recognized ephemeral process headers (`## Critique History`, `## Review
+History`, `## Round-by-Round Notes`, `## Rejected Feedback`) before sending
+payloads to backends to conserve payload bandwidth, but the saved plan file
+itself must still be cleaned up manually. Then rewrite each affected step in
+the plan itself to state the final decision plainly, as if it had been correct
+from the start, and drop any trailing per-round changelog section. Downstream
+tooling (`dev_status.py` `related_files`, a future executor session, `grill.py
 plan_path`) reads the plan file as *the* plan — the critique history is a
 companion artifact, not inline noise in it.
 

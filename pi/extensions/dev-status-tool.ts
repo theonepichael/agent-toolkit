@@ -16,6 +16,7 @@ const DEV_STATUS_PATH = join(homedir(), ".claude", "scripts", "dev_status.py");
 const ACTIONS = [
   "render",
   "list",
+  "ready",
   "show",
   "add",
   "update",
@@ -55,6 +56,7 @@ export type Field =
   | "feedback"
   | "status"
   | "raw"
+  | "prefix"
   | "apply"
   | "force"
   | "allowMain"
@@ -74,6 +76,7 @@ interface ActionFields {
 const ACTION_FIELDS: Record<Action, ActionFields> = {
   render: { allowed: [], required: [] },
   list: { allowed: ["status", "raw"], required: [] },
+  ready: { allowed: ["prefix"], required: [] },
   show: { allowed: ["slug"], required: ["slug"] },
   add: { allowed: ["patch"], required: ["patch"] },
   update: { allowed: ["slug", "patch"], required: ["slug", "patch"] },
@@ -152,6 +155,7 @@ export interface DevStatusParams {
   feedback?: string;
   status?: string;
   raw?: boolean;
+  prefix?: string;
   apply?: boolean;
   force?: boolean;
   allowMain?: boolean;
@@ -209,6 +213,8 @@ export function buildArgv(action: Action, params: DevStatusParams): string[] {
   switch (action) {
     case "render":
       return ["render"];
+    case "ready":
+      return ["ready", ...(params.prefix ? ["--prefix", params.prefix] : [])];
     case "list":
       return [
         "list",
@@ -305,7 +311,7 @@ export default function (pi: ExtensionAPI) {
     promptSnippet: "Read or mutate the personal backlog/pending store",
     promptGuidelines: [
       "Never invoke dev_status.py via bash, for any reason, including a plain read like listing pending items or checking status -- always use dev_status instead. This applies to every action, not just ones a slash command already told you to use dev_status for.",
-      "dev_status covers everything dev_status.py's CLI does: render, list, show, add, update, start, done, review, approve, reject, gate_set, gate_pass, run, runs, backfill_gate, rename, remove, block, unblock, prune, recap, pending_add, pending_update, pending_list, and the out_of_scope_* actions. If you're about to compose a `python3 ~/.claude/scripts/dev_status.py ...` bash command for any of these, use dev_status with the matching action instead.",
+      "dev_status covers everything dev_status.py's CLI does: render, list, ready, show, add, update, start, done, review, approve, reject, gate_set, gate_pass, run, runs, backfill_gate, rename, remove, block, unblock, prune, recap, pending_add, pending_update, pending_list, and the out_of_scope_* actions. If you're about to compose a `python3 ~/.claude/scripts/dev_status.py ...` bash command for any of these, use dev_status with the matching action instead.",
       "dev_status's patch field is a plain object, not a JSON string -- never hand-encode it.",
       'dev_status refuses a numeric slug on any mutating action -- call action: "show" first to resolve a numeric position to its real slug.',
       "start refuses to run from a main/master checkout (worktree guard) or when the item is actively claimed by another live session (claim collision) -- pass allowMain or force respectively to override, or claimedBy to correct a wrong auto-detected harness name.",
@@ -338,6 +344,11 @@ export default function (pi: ExtensionAPI) {
       feedback: Type.Optional(Type.String({ description: "reject: rejection feedback text." })),
       status: Type.Optional(Type.String({ description: "list: filter by status." })),
       raw: Type.Optional(Type.Boolean({ description: "list: machine-readable TSV output." })),
+      prefix: Type.Optional(
+        Type.String({
+          description: 'ready: only items whose slug starts with this, e.g. "meta-".',
+        }),
+      ),
       apply: Type.Optional(
         Type.Boolean({ description: "backfill_gate: write changes instead of a dry run." }),
       ),

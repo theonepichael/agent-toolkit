@@ -72,16 +72,34 @@ COPIES = (
 )
 
 
+def missing_markers(rel_path: str, text: str) -> list[str]:
+    """Return the contract markers absent from one copy's ``text``.
+
+    Shared with ``claude/scripts/test_gen_second_opinion.py``'s end-to-end
+    check so the marker logic has one source of truth.
+
+    Markers are matched whitespace-insensitively: gen_second_opinion.py
+    reflows every prose paragraph with textwrap.fill, so any phrase can be
+    split across a line break depending on unrelated wording elsewhere in
+    the paragraph. Matching on collapsed whitespace checks the contract
+    wording itself, not where the wrapper happened to break a line.
+    """
+    index_markers = MODEL_INDEX_MARKERS.get(rel_path, DEFAULT_MODEL_INDEX_MARKERS)
+    grill_markers = GRILL_LOOKUP_MARKERS.get(rel_path, DEFAULT_GRILL_LOOKUP_MARKERS)
+    flat_text = " ".join(text.split())
+    return [
+        m
+        for m in (*REQUIRED_MARKERS, *index_markers, *grill_markers)
+        if " ".join(m.split()) not in flat_text
+    ]
+
+
 @pytest.mark.parametrize("rel_path", COPIES)
 def test_second_opinion_copy_carries_contract(rel_path: str) -> None:
     path = REPO_ROOT / rel_path
     assert path.exists(), f"missing second-opinion copy: {rel_path}"
     text = path.read_text(encoding="utf-8")
-    index_markers = MODEL_INDEX_MARKERS.get(rel_path, DEFAULT_MODEL_INDEX_MARKERS)
-    grill_markers = GRILL_LOOKUP_MARKERS.get(rel_path, DEFAULT_GRILL_LOOKUP_MARKERS)
-    missing = [
-        m for m in (*REQUIRED_MARKERS, *index_markers, *grill_markers) if m not in text
-    ]
+    missing = missing_markers(rel_path, text)
     assert not missing, (
         f"{rel_path} is missing second-opinion contract markers: {missing}"
     )

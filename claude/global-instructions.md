@@ -25,10 +25,14 @@ decision points like `grill.py`'s Q&A loop.
 When a step specifically needs the user to pick among 2–4 concrete,
 enumerable options, state the recommendation first. In harnesses with a
 structured multi-choice prompt (Claude Code's `AskUserQuestion`, opencode's
-`question` tool), use it, labeling the recommendation "(Recommended)". In
-harnesses without one (Copilot CLI, agy, Pi), state the options in plain
-conversational text with the same recommendation, and wait for a plain-text
-reply — never design a step around a UI widget a harness doesn't have.
+`question` tool, and Pi's `question` tool — the last supplied by this repo
+as an extension, loaded unless the session was started with
+`--no-extensions`, and a hard error rather than a silent fallback in
+headless `-p`/JSON modes, where plain text genuinely is the only option),
+use it, labeling the recommendation "(Recommended)". In harnesses without
+one (Copilot CLI, agy), state the options in plain conversational text with
+the same recommendation, and wait for a plain-text reply — never design a
+step around a UI widget a harness doesn't have.
 
 For genuinely open-ended questions, ask in plain text regardless of harness:
 state the question directly, give your recommended answer with brief

@@ -169,6 +169,81 @@ def test_opencode_context_is_containment_dependent() -> None:
     )
 
 
+# ── the prompt binds to its flag, never trails the isolation flags ──────
+
+
+# Vendors whose _base carries a prompt flag that consumes the next token as
+# its value, verified against the vendors' own help output:
+#   copilot: "-p, --prompt <text>  Execute a prompt in non-interactive mode"
+#   agy:     "--print takes the next argument as its prompt value" (recorded
+#            2026-08-31 in the descriptor comment)
+# Deliberately absent: pi's "-p, --print" is a boolean MODE flag ("process
+# prompt and exit") and its prompt trails as a positional -- the same token,
+# opposite semantics, which is exactly why this is a per-vendor table and not
+# a generic flag-name heuristic.
+_VALUE_TAKING_PROMPT_FLAGS: dict[str, str] = {
+    "copilot": "-p",
+    "agy": "--print",
+}
+
+
+@pytest.mark.parametrize("backend", sorted(_VALUE_TAKING_PROMPT_FLAGS))
+def test_value_taking_prompt_flag_binds_the_prompt(
+    backend: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression (2026-09-02): copilot's -p/--prompt takes its text as the
+    flag's VALUE, so the built argv must place the prompt immediately after
+    it. The pre-fix _base was ["copilot", "-p", "--silent"], -p swallowed
+    --silent as its value, and the bare trailing prompt was rejected with
+    'Invalid command format'.
+
+    Asserted on the BUILT ARGV, not on a successful call -- a call had been
+    failing for every copilot review, and a check that merely confirms the
+    flags are present passes against the broken order.
+    """
+    flag = _VALUE_TAKING_PROMPT_FLAGS[backend]
+    base = llm_backends.BACKEND_ISOLATION[backend]["_base"]
+    assert flag in base, (
+        f"{backend}: {flag} no longer in _base -- re-verify the vendor flag "
+        "semantics before dropping the prompt-binding contract"
+    )
+
+    spec = llm_backends.BACKEND_ISOLATION[backend]
+    if any(
+        spec[c] is llm_backends.OS_CONTAINED for c in llm_backends.ISOLATION_CLAUSES
+    ):
+        # A contained backend wraps the command under unshare; the probe is
+        # a real subprocess the sandbox blocks, so stub the answer.
+        monkeypatch.setattr(llm_backends, "containment_available", lambda: True)
+    # opencode is a daemon backend; the ss probe is a real subprocess too.
+    monkeypatch.setattr(llm_backends, "daemon_listening", lambda b: False)
+
+    cmd = llm_backends.build_isolated_command(backend, "the prompt", model=None)
+
+    assert cmd[cmd.index(flag) + 1] == "the prompt"
+    assert cmd.count("the prompt") == 1, "prompt must not be duplicated"
+
+
+@pytest.mark.parametrize("backend", sorted(llm_backends.BACKEND_ISOLATION))
+def test_built_argv_contains_prompt_exactly_once(
+    backend: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every backend's built argv must carry the prompt text exactly once --
+    a duplicated or missing prompt means the builder and the descriptor
+    disagree about where the prompt goes."""
+    spec = llm_backends.BACKEND_ISOLATION[backend]
+    if any(
+        spec[c] is llm_backends.OS_CONTAINED for c in llm_backends.ISOLATION_CLAUSES
+    ):
+        monkeypatch.setattr(llm_backends, "containment_available", lambda: True)
+    # opencode is a daemon backend; the ss probe is a real subprocess too.
+    monkeypatch.setattr(llm_backends, "daemon_listening", lambda b: False)
+
+    cmd = llm_backends.build_isolated_command(backend, "the prompt", model=None)
+
+    assert cmd.count("the prompt") == 1
+
+
 # ── eligibility reporting ─────────────────────────────────────────────────
 
 
@@ -258,7 +333,7 @@ def test_no_eligible_backend_is_an_isolation_error_not_a_backend_error(
     """Nothing eligible is a capability failure and must be reported as one --
     conflating it with 'everything was tried and failed' would hide that the
     cause is an unmet contract, not a flaky gateway."""
-    monkeypatch.setattr(llm_backends, "eligible_backends", lambda: [])
+    monkeypatch.setattr(llm_backends, "eligible_backends", list)
     # eligibility_report() is consulted to build the reason string, and it
     # probes containment with a real subprocess the conftest guard blocks.
     monkeypatch.setattr(llm_backends, "containment_available", lambda: False)

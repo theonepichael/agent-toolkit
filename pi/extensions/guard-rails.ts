@@ -4,11 +4,45 @@ import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 
 let enabled = true;
 
-// Exported so trust-session.ts can flip this gate alongside
-// permission-gate.ts's without reaching into module-private state.
-export function setGuardRailsEnabled(value: boolean): void {
-  enabled = value;
+/**
+ * True when no human is watching this session -- a swarm worker in its own
+ * herdr tab, spawned with `--env PI_AGENT_UNATTENDED=1`.
+ *
+ * This does NOT disable guard-rails. It changes what the two interactive
+ * confirmations do, and nothing else: `rm -rf` and `sudo` are BLOCKED instead
+ * of asked about. Every other rule here -- protected-path writes, the
+ * git-commit-on-main worktree policy, the shared guard verdicts -- stays
+ * armed exactly as in an attended session.
+ *
+ * Blocking is what an unanswerable question should resolve to. Before this,
+ * a worker reaching either dialog waited on a human who had not been told to
+ * look, while herdr still reported it as working; the run stopped making
+ * progress with no signal (observed live, 2026-09-02). A refusal the agent
+ * can read is both safer and more useful than a dialog nobody answers. It is
+ * the same conclusion the `!ctx.hasUI` branches below already reach, for the
+ * same reason.
+ *
+ * Read from the environment here rather than imported from permission-gate.ts:
+ * pi loads each extension separately, and a value shared across extension
+ * files does not reliably reach the loaded instance -- proven live on
+ * 2026-09-02, when /trust-session called both gates' exported setters and
+ * neither loaded gate observed the change.
+ */
+export function isUnattended(): boolean {
+  return process.env.PI_AGENT_UNATTENDED === "1";
 }
+
+/** Read-only view of the gate, so a caller (or a test) can confirm its state. */
+export function isGuardRailsEnabled(): boolean {
+  return enabled;
+}
+
+// No exported setter on purpose. One used to live here ("Exported so
+// trust-session.ts can flip this gate") -- but pi evaluates every extension
+// in its own jiti registry, so trust-session's imported setter ran against a
+// private copy and the loaded gate never saw the flip: /trust-session
+// reported success while changing nothing (proven live 2026-09-02).
+// Cross-extension toggling now arrives over the shared event bus below.
 
 export function isDangerousRm(command: string): boolean {
   const rmMatches = command.matchAll(/\brm\s+([^;&|`$()]+)/gi);
@@ -179,6 +213,16 @@ async function sharedBashGuard(
 }
 
 export default function (pi: ExtensionAPI) {
+  // /trust-session and /trust-session-off broadcast here (see their comment
+  // for why the channel name is a duplicated literal rather than an import).
+  // The listener mutates the same module-level `enabled` the tool_call
+  // handler reads. Malformed payloads are ignored: a wrong shape must never
+  // silently disarm (or spuriously re-arm) the gate.
+  pi.events.on("session-trust-changed", (data) => {
+    const trusted = (data as { trusted?: unknown } | null | undefined)?.trusted;
+    if (typeof trusted === "boolean") enabled = !trusted;
+  });
+
   pi.on("tool_call", async (event, ctx) => {
     if (!enabled) return undefined;
 
@@ -188,10 +232,12 @@ export default function (pi: ExtensionAPI) {
 
       // rm -rf confirmation gate
       if (isDangerousRm(command)) {
-        if (!ctx.hasUI) {
+        if (!ctx.hasUI || isUnattended()) {
           return {
             block: true,
-            reason: "rm -rf blocked (no UI for confirmation in headless mode)",
+            reason: isUnattended()
+              ? "rm -rf blocked: no human is watching this session to confirm it"
+              : "rm -rf blocked (no UI for confirmation in headless mode)",
           };
         }
         const ok = await ctx.ui.confirm("⚠️ rm -rf", `Allow destructive command?\n\n  ${command}`);
@@ -202,10 +248,12 @@ export default function (pi: ExtensionAPI) {
 
       // sudo confirmation gate
       if (/\bsudo\b/i.test(command)) {
-        if (!ctx.hasUI) {
+        if (!ctx.hasUI || isUnattended()) {
           return {
             block: true,
-            reason: "sudo blocked (no UI for confirmation in headless mode)",
+            reason: isUnattended()
+              ? "sudo blocked: no human is watching this session to confirm it"
+              : "sudo blocked (no UI for confirmation in headless mode)",
           };
         }
         const ok = await ctx.ui.confirm("⚠️ sudo", `Allow privileged command?\n\n  ${command}`);
