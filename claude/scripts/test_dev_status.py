@@ -5464,6 +5464,69 @@ class RunEvidenceTestCase(BacklogTestCase):
         self.assertNotIn("# runs:", err.getvalue())
 
 
+class ReadyCommandTests(BacklogTestCase):
+    """`ready` reports the computed READY bucket as JSON.
+
+    It exists so a consumer -- swarm_spawn's scheduler, in
+    pi/extensions/swarm-tool.ts -- never has to reimplement the blocker walk.
+    READY is derived, not stored, so a second implementation would drift the
+    moment the graph rules changed.
+    """
+
+    def _ready(self, **kwargs):
+        out, err = io.StringIO(), io.StringIO()
+        with patch("sys.stdout", out), patch("sys.stderr", err):
+            dev_status.cmd_ready(_args(**kwargs))
+        return json.loads(out.getvalue())
+
+    def test_ready_excludes_blocked_and_non_open_items(self):
+        self.write_items(
+            [
+                make_item("a-ready"),
+                make_item("b-blocked", blocked_by=["a-ready"]),
+                make_item("c-done", status="done"),
+                make_item("d-progress", status="in-progress"),
+            ]
+        )
+        self.assertEqual([i["id"] for i in self._ready()], ["a-ready"])
+
+    def test_ready_includes_an_item_whose_blocker_is_done(self):
+        # The cascade this exists for: approving a blocker makes its
+        # dependents ready with no further write anywhere.
+        self.write_items(
+            [
+                make_item("a-done", status="done"),
+                make_item("b-was-blocked", blocked_by=["a-done"]),
+            ]
+        )
+        self.assertEqual([i["id"] for i in self._ready()], ["b-was-blocked"])
+
+    def test_ready_returns_full_records_including_related_files(self):
+        # related_files is the whole point for the scheduler: it is how two
+        # items that would edit the same file are told apart from two that
+        # would not.
+        item = make_item("a-ready")
+        item["related_files"] = [{"path": "/repo/x.ts", "note": "n"}]
+        self.write_items([item])
+        self.assertEqual(
+            self._ready()[0]["related_files"], [{"path": "/repo/x.ts", "note": "n"}]
+        )
+
+    def test_ready_prefix_filters_by_slug(self):
+        self.write_items([make_item("meta-a"), make_item("iron-lb-b")])
+        self.assertEqual([i["id"] for i in self._ready(prefix="meta-")], ["meta-a"])
+
+    def test_ready_is_pure(self):
+        # Safe to call on a loop while workers are running.
+        self.write_items([make_item("a-ready")])
+        self._ready()
+        self.assertEqual(self.read_rev(), 0)
+
+    def test_ready_on_an_empty_backlog_is_an_empty_list(self):
+        self.write_items([])
+        self.assertEqual(self._ready(), [])
+
+
 # ── arg helper ────────────────────────────────────────────────────────────────
 
 
@@ -5473,6 +5536,7 @@ class _args:
     if_rev = None  # default; argparse always sets --if-rev (default None)
     status = None  # default; argparse sets --status (default None) for `list`
     raw = False  # default; argparse sets --raw (default False) for `list`
+    prefix = None  # default; argparse sets --prefix (default None) for `ready`
     apply = False  # default; argparse sets --apply (default False) for backfill-gate
     force = False  # default; argparse sets --force (required) for `prune`
     allow_main = False

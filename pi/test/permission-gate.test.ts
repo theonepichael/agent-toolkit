@@ -1,15 +1,10 @@
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import permissionGate, {
+  agentUnattendedByEnv,
   classify,
+  initialGateEnabled,
   isPermissionGateEnabled,
-  isValidAckToken,
   patternToRegExp,
-  permissionGateAckDir,
-  permissionGateAckPath,
-  setPermissionGateEnabled,
 } from "../extensions/permission-gate";
 
 describe("patternToRegExp", () => {
@@ -73,105 +68,42 @@ describe("classify", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Ack tokens.
+// Unattended sessions.
 //
-// swarm_spawn cannot confirm from the terminal buffer that a worker's
-// /permission-gate-disable took effect: `agent read --source recent` is a
-// bounded sliding window of rendered rows, so a redraw can rewrite it and a
-// stale notice can sit in it from an earlier command. The worker instead
-// writes a small acknowledgement file the orchestrator polls for. The
-// command takes an opaque token, never a path -- a pi session's input is not
-// always the user (model output, a pasted block, repo content read into
-// context all reach a slash command), so a caller-supplied path would be
-// write-anywhere-the-user-can.
+// A swarm worker runs in a herdr tab nobody is watching, so ctx.ui.confirm is
+// a question addressed to no one -- the worker waits forever while herdr still
+// reports it as working. swarm-tool.ts therefore creates each worker tab with
+// `--env PI_AGENT_UNATTENDED=1` and this gate starts disabled, replacing the
+// slash-command-plus-acknowledgement-file handshake that used to talk it down
+// after the fact.
+//
+// What these tests can and cannot prove is worth being exact about, because
+// the mechanism they replace shipped green and did not work. They prove the
+// DECISION: given an environment, is the gate armed. They cannot prove the
+// WIRING -- `let enabled = initialGateEnabled()` runs once at module load, and
+// bun test cannot re-run a module initialiser per case. That half is verified
+// by running a real pi in a real unattended tab, which is exactly the step
+// that caught /trust-session reporting success while changing nothing.
 // ---------------------------------------------------------------------------
 
-describe("isValidAckToken", () => {
-  test("accepts the documented charset and length band", () => {
-    expect(isValidAckToken("abcd1234")).toBe(true);
-    expect(isValidAckToken("run1-w1-slug_9aF")).toBe(true);
-    expect(isValidAckToken("a".repeat(64))).toBe(true);
+describe("agentUnattendedByEnv / initialGateEnabled", () => {
+  test('exactly "1" means unattended, and the gate starts down', () => {
+    expect(agentUnattendedByEnv({ PI_AGENT_UNATTENDED: "1" })).toBe(true);
+    expect(initialGateEnabled({ PI_AGENT_UNATTENDED: "1" })).toBe(false);
   });
 
-  test("rejects anything shorter, longer, or outside the charset", () => {
-    expect(isValidAckToken("short7c")).toBe(false);
-    expect(isValidAckToken("a".repeat(65))).toBe(false);
-    expect(isValidAckToken("")).toBe(false);
+  test("anything else leaves the gate armed -- it fails closed", () => {
+    // A wrong value must never silently disarm the gate, so none of the
+    // near-misses a person would plausibly write are accepted.
+    for (const value of ["0", "", "true", "yes", "01", " 1", "1 ", "TRUE"]) {
+      expect(agentUnattendedByEnv({ PI_AGENT_UNATTENDED: value })).toBe(false);
+      expect(initialGateEnabled({ PI_AGENT_UNATTENDED: value })).toBe(true);
+    }
   });
 
-  test("rejects every shape of filesystem path, so no input can steer a write", () => {
-    // The whole point of an opaque token: traversal and absolute paths are
-    // not sanitized, they are unrepresentable.
-    expect(isValidAckToken("../../etc/passwd")).toBe(false);
-    expect(isValidAckToken("/home/yanil/.pi/config.json")).toBe(false);
-    expect(isValidAckToken("sub/dir/token")).toBe(false);
-    expect(isValidAckToken("tok en1234")).toBe(false);
-    expect(isValidAckToken("token.json")).toBe(false);
-  });
-});
-
-describe("permission gate ack file", () => {
-  let dir: string;
-  let priorAckDir: string | undefined;
-
-  beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "permgate-ack-"));
-    // Keeps every ack write off the real ~/.pi (test/AGENTS.md).
-    priorAckDir = process.env.PI_PERMISSION_GATE_ACK_DIR;
-    process.env.PI_PERMISSION_GATE_ACK_DIR = dir;
-  });
-
-  afterEach(() => {
-    if (priorAckDir === undefined) delete process.env.PI_PERMISSION_GATE_ACK_DIR;
-    else process.env.PI_PERMISSION_GATE_ACK_DIR = priorAckDir;
-    rmSync(dir, { recursive: true, force: true });
-    setPermissionGateEnabled(true);
-  });
-
-  test("the ack path lives under the extension-owned directory, named by token", () => {
-    expect(permissionGateAckDir()).toBe(dir);
-    expect(permissionGateAckPath("abcd1234")).toBe(join(dir, "abcd1234.json"));
-  });
-
-  test("disabling with a token writes the token and a timestamp", () => {
-    setPermissionGateEnabled(false, { ackToken: "run1-w1-abcd" });
-
-    const parsed = JSON.parse(readFileSync(permissionGateAckPath("run1-w1-abcd"), "utf8")) as {
-      token: string;
-      disabled_at: string;
-    };
-    expect(parsed.token).toBe("run1-w1-abcd");
-    expect(Number.isNaN(Date.parse(parsed.disabled_at))).toBe(false);
-    expect(isPermissionGateEnabled()).toBe(false);
-  });
-
-  test("no temp file is left behind, so a poller never sees a partial write", () => {
-    setPermissionGateEnabled(false, { ackToken: "run1-w1-abcd" });
-    expect(readdirSync(dir)).toEqual(["run1-w1-abcd.json"]);
-  });
-
-  test("the ack directory is created if it does not exist yet", () => {
-    const nested = join(dir, "not", "there", "yet");
-    process.env.PI_PERMISSION_GATE_ACK_DIR = nested;
-    setPermissionGateEnabled(false, { ackToken: "run1-w1-abcd" });
-    expect(existsSync(join(nested, "run1-w1-abcd.json"))).toBe(true);
-  });
-
-  // The interactive path is unchanged: /trust-session and a bare
-  // /permission-gate-disable have no caller waiting on a confirmation.
-  test("disabling without a token writes nothing at all", () => {
-    setPermissionGateEnabled(false);
-    expect(readdirSync(dir)).toEqual([]);
-    expect(isPermissionGateEnabled()).toBe(false);
-  });
-
-  // Fail closed. Disabling while discarding the bad argument would leave a
-  // worker unprotected AND unsupervised -- bash running unconfirmed while
-  // the orchestrator waits out a deadline for an ack that never comes.
-  test("a malformed token leaves the gate armed and writes nothing", () => {
-    expect(() => setPermissionGateEnabled(false, { ackToken: "../escape" })).toThrow();
-    expect(isPermissionGateEnabled()).toBe(true);
-    expect(readdirSync(dir)).toEqual([]);
+  test("an ordinary interactive session, with the variable absent, is armed", () => {
+    expect(agentUnattendedByEnv({})).toBe(false);
+    expect(initialGateEnabled({})).toBe(true);
   });
 });
 
@@ -189,20 +121,13 @@ type Handler = (
 ) => Promise<void>;
 
 describe("/permission-gate-disable", () => {
-  let dir: string;
-  let priorAckDir: string | undefined;
-
-  beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "permgate-cmd-"));
-    priorAckDir = process.env.PI_PERMISSION_GATE_ACK_DIR;
-    process.env.PI_PERMISSION_GATE_ACK_DIR = dir;
-  });
-
-  afterEach(() => {
-    if (priorAckDir === undefined) delete process.env.PI_PERMISSION_GATE_ACK_DIR;
-    else process.env.PI_PERMISSION_GATE_ACK_DIR = priorAckDir;
-    rmSync(dir, { recursive: true, force: true });
-    setPermissionGateEnabled(true);
+  afterEach(async () => {
+    // Re-arm through the gate's own enable command -- the same path a real
+    // session uses. There is no exported setter to call here on purpose: an
+    // exported setter was how /trust-session flipped private module copies
+    // for months while reporting success (see the extension's comment).
+    const commands = loadCommands();
+    await commands["permission-gate-enable"]!.handler("", { ui: { notify: () => {} } });
   });
 
   function loadCommands() {
@@ -212,6 +137,7 @@ describe("/permission-gate-disable", () => {
       registerCommand: (name: string, opts: { description: string; handler: Handler }) => {
         commands[name] = opts;
       },
+      events: { emit: () => {}, on: () => () => {} },
     } as unknown as Parameters<typeof permissionGate>[0]);
     return commands;
   }
@@ -224,45 +150,36 @@ describe("/permission-gate-disable", () => {
     };
   }
 
-  // Interactive use is unchanged: nobody is waiting on a confirmation.
-  test("with no argument it disables the gate and writes nothing", async () => {
+  test("disables the gate and says so", async () => {
     const { ctx, notices } = makeCtx();
     await loadCommands()["permission-gate-disable"]!.handler("", ctx);
 
     expect(isPermissionGateEnabled()).toBe(false);
-    expect(readdirSync(dir)).toEqual([]);
     expect(notices[0]?.level).toBe("warning");
   });
 
-  test("with a token it disables the gate and leaves that token's ack behind", async () => {
+  test("/permission-gate-enable re-arms it", async () => {
     const { ctx } = makeCtx();
-    await loadCommands()["permission-gate-disable"]!.handler(" run1-w1-abcd ", ctx);
-
-    expect(isPermissionGateEnabled()).toBe(false);
-    expect(readdirSync(dir)).toEqual(["run1-w1-abcd.json"]);
-  });
-
-  test("a path-shaped argument leaves the gate armed, writes nothing, and says so", async () => {
-    const { ctx, notices } = makeCtx();
-    await loadCommands()["permission-gate-disable"]!.handler("/home/yanil/.pi/settings.json", ctx);
+    const commands = loadCommands();
+    await commands["permission-gate-disable"]!.handler("", ctx);
+    await commands["permission-gate-enable"]!.handler("", ctx);
 
     expect(isPermissionGateEnabled()).toBe(true);
-    expect(readdirSync(dir)).toEqual([]);
-    expect(notices[0]?.level).toBe("error");
-    expect(notices[0]?.message).toContain("NOT disabled");
   });
 
-  // Not an undocumented positional -- pi's RegisteredCommand has no separate
-  // argument-hint field, so the description is the only place it can be named.
-  test("the registered description names the optional token", () => {
-    expect(loadCommands()["permission-gate-disable"]!.description).toContain("token");
+  // The command took an optional ack token while swarm_spawn had to talk the
+  // gate down over a prompt and then confirm it had worked. The environment
+  // now settles it before pi starts, so an argument here would be a silently
+  // ignored positional on a security-adjacent command.
+  test("takes no argument, and its description promises none", async () => {
+    const { ctx } = makeCtx();
+    const commands = loadCommands();
+    await commands["permission-gate-disable"]!.handler("some-stray-argument", ctx);
+
+    expect(isPermissionGateEnabled()).toBe(false);
+    expect(commands["permission-gate-disable"]!.description).not.toContain("token");
   });
 });
-
-// ---------------------------------------------------------------------------
-// Chained and substituted commands (the allowlist is per-segment, not a
-// prefix glob over the raw command).
-// ---------------------------------------------------------------------------
 
 describe("classify: chained commands", () => {
   test("an allowed prefix can no longer carry a chained payload", () => {

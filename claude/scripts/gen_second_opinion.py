@@ -501,10 +501,13 @@ argument-hint: [plan file or text]
         # echoes the same $ARGUMENTS convention as the opening sentence
         # above, 2026-08-30
         target_source_echo="inline `$ARGUMENTS` text",
-        # no structured multi-choice widget for Pi is confirmed from
-        # research so far; plain text per the shared instructions file's
-        # harnesses-without-a-widget convention, same as copilot/agy,
-        # 2026-08-30
+        # Pi has no built-in question/select tool (docs/usage.md's built-in
+        # list is read/bash/powershell/edit/write/grep/find/ls), but this
+        # repo ships one as an extension (`question-tool.ts`); the text
+        # below defers to the shared instructions file's convention, which
+        # points Pi at the `question` tool interactively and at plain text
+        # only where the tool is genuinely absent (-ne sessions, headless
+        # -p/JSON modes), 2026-09-02
         ask_choose_overwrite=(
             "apply the shared instructions file's convention for asking the "
             "user to choose: overwrite (recommended) or leave as-is"
@@ -581,9 +584,10 @@ description: "Send a plan to a non-Claude model for adversarial critique, then i
         # echoes the same user-typed/pasted convention as the opening
         # sentence above, 2026-09-01
         target_source_echo="pasted text",
-        # no structured multi-choice widget for Pi is confirmed from
-        # research so far; plain text per the shared instructions file's
-        # harnesses-without-a-widget convention, 2026-09-01
+        # same as pi/prompts/second-opinion.md above: Pi's built-in tools
+        # carry no question/select widget, but this repo's question-tool.ts
+        # extension supplies one, and the shared instructions file's
+        # convention now points Pi at it interactively, 2026-09-02
         ask_choose_overwrite=(
             "apply the shared instructions file's convention for asking the "
             "user to choose: overwrite (recommended) or leave as-is"

@@ -53,7 +53,13 @@ Env vars
                                       --model-index selects the pool
                                       regardless.
   SECOND_OPINION_COPILOT_MODEL_POOL   same, for the copilot backend and
-                                      SECOND_OPINION_COPILOT_MODEL.
+                                      SECOND_OPINION_COPILOT_MODEL. copilot's
+                                      --model flag requires a GitHub Copilot Pro
+                                      or Enterprise plan: on a free tier no id
+                                      works and the call fails with an
+                                      entitlement error naming this variable --
+                                      leave the pool unset there so copilot
+                                      uses its default.
   SECOND_OPINION_TIMEOUT_SECONDS    default per-backend timeout in seconds (default 120)
   SECOND_OPINION_AGY_TIMEOUT_SECONDS      override the timeout for agy calls only
   SECOND_OPINION_PI_TIMEOUT_SECONDS       override the timeout for pi calls only
@@ -313,6 +319,10 @@ Be specific and concrete:
 - What did the author miss or assume without justification?
 - Where do you disagree, and why?
 - Is there a simpler approach?
+
+Keep critiques focused and concise: do not emit full replacement implementations,
+long code listings, or boilerplate rewrites. Critique mechanisms, invariants,
+interfaces, and failure modes directly in prose.
 {focus_section}
 If the plan is genuinely solid, say so briefly — but don't pad
 agreement with praise. Skip preamble.
@@ -351,6 +361,86 @@ def die(msg: str) -> NoReturn:
     """Print an error to stderr, prefixed for this script, and exit with status 1."""
     print(f"[second_opinion] {msg}", file=sys.stderr)
     sys.exit(1)
+
+
+PROCESS_SCAFFOLDING_HEADERS: tuple[str, ...] = (
+    "critique notes",
+    "critique history",
+    "review history",
+    "round-by-round notes",
+    "rejected feedback",
+    "adversarial review notes",
+)
+
+
+def sanitize_plan_text(plan_text: str) -> tuple[str, int]:
+    """Strip ephemeral review debris headers/sections from a plan.
+
+    Uses a line-by-line state machine respecting markdown code blocks so code
+    or comments matching whitelisted headings are never stripped. When a
+    whitelisted process heading at level L (e.g. ``## Rejected Feedback`` or
+    ``# Critique notes — ...``) is encountered, lines are omitted until the
+    next heading of level <= L (or EOF).
+
+    Returns:
+        A tuple of ``(sanitized_text, bytes_saved)`` where bytes_saved is the
+        difference in UTF-8 encoded byte count.
+    """
+    lines = plan_text.splitlines(keepends=True)
+    kept_lines: list[str] = []
+    in_code_block = False
+    fence_char = ""
+    stripping_level: int | None = None
+
+    for line in lines:
+        stripped = line.strip()
+        # Track fenced code blocks (``` or ~~~)
+        if stripped.startswith(("```", "~~~")):
+            char = stripped[0]
+            if not in_code_block:
+                in_code_block = True
+                fence_char = char
+            elif fence_char == char:
+                in_code_block = False
+                fence_char = ""
+
+            if stripping_level is None:
+                kept_lines.append(line)
+            continue
+
+        if in_code_block:
+            if stripping_level is None:
+                kept_lines.append(line)
+            continue
+
+        # Check for markdown heading outside code blocks
+        if stripped.startswith("#"):
+            hashes, _, title = stripped.partition(" ")
+            if hashes and set(hashes) == {"#"}:
+                level = len(hashes)
+                clean_title = title.strip().lower()
+                if stripping_level is not None and level <= stripping_level:
+                    stripping_level = None
+
+                # Match if title starts with any whitelisted process prefix
+                # (e.g., "critique notes — ...", "critique history: ...", "rejected feedback")
+                if any(
+                    clean_title == prefix
+                    or clean_title.startswith(
+                        (f"{prefix}:", f"{prefix} —", f"{prefix} -")
+                    )
+                    for prefix in PROCESS_SCAFFOLDING_HEADERS
+                ):
+                    stripping_level = level
+                    continue
+
+        if stripping_level is None:
+            kept_lines.append(line)
+
+    sanitized = "".join(kept_lines)
+    orig_bytes = len(plan_text.encode("utf-8"))
+    sanitized_bytes = len(sanitized.encode("utf-8"))
+    return sanitized, max(0, orig_bytes - sanitized_bytes)
 
 
 def resolve_plan_text(arg: str) -> str:
@@ -628,6 +718,12 @@ def cmd_review(args: argparse.Namespace) -> None:
             die("no backend available — install one of: " + ", ".join(BACKEND_PRIORITY))
 
     plan_text = resolve_plan_text(args.plan)
+    plan_text, bytes_saved = sanitize_plan_text(plan_text)
+    if bytes_saved > 0:
+        print(
+            f"[second_opinion] stripped inline review debris from plan ({bytes_saved} bytes saved)",
+            file=sys.stderr,
+        )
     focus_hints = None
     if args.focus_file:
         focus_path = Path(args.focus_file).expanduser()
@@ -638,7 +734,8 @@ def cmd_review(args: argparse.Namespace) -> None:
 
     model_index = getattr(args, "model_index", None)
     verbose = getattr(args, "verbose", False)
-    failures = []
+    failures: list[str] = []
+    size_rule_outs: list[llm_backends.BackendPayloadSizeError] = []
     for backend in candidates:
         _vprint_pool_choice(backend, model_index, verbose=verbose)
         if model_index is not None:
@@ -648,6 +745,8 @@ def cmd_review(args: argparse.Namespace) -> None:
         try:
             critique = BACKEND_RUNNERS[backend](prompt, model_index=model_index)
         except BackendError as exc:
+            if isinstance(exc, llm_backends.BackendPayloadSizeError):
+                size_rule_outs.append(exc)
             cli_common.vprint(
                 f"[second_opinion] {backend_label(backend, model_index=model_index)} "
                 f"failed: {exc}",
@@ -659,6 +758,12 @@ def cmd_review(args: argparse.Namespace) -> None:
         print(critique)
         return
 
+    if size_rule_outs and len(size_rule_outs) == len(candidates):
+        prompt_bytes = len(prompt.encode())
+        die(
+            f"all backends ruled out by payload size ({prompt_bytes} bytes) — "
+            + "; ".join(failures)
+        )
     die("all backends failed — " + "; ".join(failures))
 
 

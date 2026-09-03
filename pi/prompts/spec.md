@@ -19,7 +19,7 @@ Fill in what you can from $ARGUMENTS and context already in scope (files read, p
 
 ## 2. Fill gaps — ask, don't guess
 
-For each field you can't confidently fill, ask one at a time. Pi has no built-in question/select tool (only `read`, `bash`, `powershell`, `edit`, `write`, `grep`, `find`, `ls` — `docs/usage.md`): even when the plausible answers are enumerable (2–4 real options), state them in plain text with your recommendation first and wait for a plain-text reply. When the question is genuinely open-ended, state it directly, give your recommended answer with brief reasoning, and wait for the response. Skip fields already unambiguous from context — a trivial task doesn't need all eight interrogated.
+For each field you can't confidently fill, ask one at a time. Use the `question` tool for an enumerable choice (2–4 real options), your recommendation as the first option labeled "(Recommended)" — Pi ships no built-in question/select tool (only `read`, `bash`, `powershell`, `edit`, `write`, `grep`, `find`, `ls` — `docs/usage.md`), but `question-tool.ts` in this repo supplies one, loaded unless the session was started with `-ne`; it is a hard error (not a silent fallback) in headless `-p`/JSON modes, since there's no UI to prompt through there, so state the choice in plain text with your recommendation instead when running headless. When the question is genuinely open-ended, state it directly, give your recommended answer with brief reasoning, and wait for the response. Skip fields already unambiguous from context — a trivial task doesn't need all eight interrogated.
 
 ## 3. Escalate real decisions — don't resolve them here
 

@@ -99,6 +99,18 @@ describe("buildArgv", () => {
     expect(buildArgv("list", { action: "list" })).toEqual(["list"]);
   });
 
+  test("ready, with and without a prefix", () => {
+    // The tool has to cover this: its own guidelines forbid composing a
+    // `python3 dev_status.py ...` bash command for anything the tool does, so
+    // an action missing here is one a pi session cannot reach at all.
+    expect(buildArgv("ready", { action: "ready" })).toEqual(["ready"]);
+    expect(buildArgv("ready", { action: "ready", prefix: "meta-" })).toEqual([
+      "ready",
+      "--prefix",
+      "meta-",
+    ]);
+  });
+
   test("slug actions", () => {
     expect(buildArgv("show", { action: "show", slug: "abc" })).toEqual(["show", "abc"]);
     expect(buildArgv("gate_pass", { action: "gate_pass", slug: "abc" })).toEqual([

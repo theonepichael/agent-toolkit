@@ -29,7 +29,7 @@ Ask (or infer and confirm): model-invoked, user-invoked, or both?
 
 - Use dense, industry-standard terms that carry priors ("vertical slice", "copy-once", "idempotent") instead of paragraphs of description. Pick words that *name the behavior you want*: the agent repeats them in its thinking and output, and every repetition re-anchors it on that behavior — that echo loop is what step 4 listens for.
 - State the failure mode you're preventing as a direct instruction ("Pass the integer directly — do not look up the slug").
-- Pi's built-in tools are `read`, `bash`, `powershell`, `edit`, `write`, `grep`, `find`, `ls` (`docs/usage.md`) — no built-in question/select tool among them, and Pi's own design principles rule out built-in permission popups or plan mode too. Any step that needs a multi-choice decision from the user must be written as plain conversational text: state the question, give a recommendation, wait for a plain-text reply.
+- Any step that needs a multi-choice decision from the user should phrase it as a plain conversational question: state the question, give a recommendation, wait for a plain-text reply. These skills are also read by agy, which at present exposes no structured-choice widget, so a multi-choice ask must not depend on a widget only Pi has — this repo's `question-tool.ts` extension is Pi-only; plain text is the portable form.
 
 ## 4. Verify in a fresh session
 

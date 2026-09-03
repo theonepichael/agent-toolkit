@@ -104,11 +104,13 @@ critique adds nothing to a rote transformation.
 
 ## 7. Handoff
 Decide who implements the plan — ask if it isn't already obvious from the
-conversation, in plain conversational text with a stated recommendation (Pi
-has no built-in question/select tool — `docs/usage.md` lists only `read`,
-`bash`, `powershell`, `edit`, `write`, `grep`, `find`, `ls` among its
-built-ins — so state the options, recommend one, then stop and wait for an
-actual reply):
+conversation. This is a judgment call over enumerable options, so ask with
+the `question` tool and state your recommendation first, exactly as steps 10
+and 11 do. Pi ships no built-in question/select tool — `docs/usage.md` lists
+only `read`, `bash`, `powershell`, `edit`, `write`, `grep`, `find`, `ls` —
+but `question-tool.ts` in this repo supplies one, and it is loaded unless
+the session was started with `-ne`. Falling back to plain text is correct
+only in a session where that tool is genuinely absent:
 
 - **Same session, now.** Trivial/small item → go to step 8 immediately.
 - **Fresh Pi session.** Use the `grill` tool's `mark_pending_execution`
@@ -153,11 +155,17 @@ approval, recommended option first (e.g. "Yes, commit (Recommended)" / "No,
 don't commit"), per CLAUDE.md's judgment-call convention. No exceptions for
 being mid-pipeline, and no exception for code an external executor wrote
 (CLAUDE.md). Use `question`, not plain text: its interactive prompt is what
-herdr's pi integration reports as agent state `blocked`
-(`question-tool.ts` emits `herdr:blocked` around it) — asking in plain text
-instead ends the turn like normal completion does, leaving this gate
+herdr's pi integration reports as agent state `blocked` — asking in plain
+text instead ends the turn like normal completion does, leaving this gate
 indistinguishable from the agent simply finishing, to anything watching
 over herdr's socket API (`--swarm` mode's relay, in particular).
+
+`herdr-blocked-bridge.ts` is what raises that state, not the question tool
+itself: it listens to pi's own `ui_prompt_start`/`ui_prompt_end` events, so
+every blocking prompt reports `blocked` without each call site having to
+remember to emit anything. The consequence worth knowing: a session started
+with `-ne`/`--no-extensions` has no bridge and no herdr integration, so
+nothing it does will ever report `blocked`.
 
 ## 11. Gate: commit-then-land
 On approval, commit (conventional format) — this gate is never bundled with
@@ -267,65 +275,82 @@ confirming or declining each in turn.
 
 Runs the READY queue concurrently instead of one item at a time — `N`
 recursive pi workers (default 3, from `--swarm=N`), each in its own herdr
-pane, each running its own `/backlog-item --auto <slug>`. Requires
+tab, each running its own `/backlog-item --auto <slug>`. Requires
 `HERDR_ENV=1` (this session must itself be running inside a herdr-managed
 pane); if it isn't, say so and stop rather than falling back to `--auto`
 silently. Full design: `~/.claude/data/grill/2026-09-01-pi-side-agent-swarm-orchestratio-plan.md`.
 
-Queue selection is identical to `--auto`'s no-slug batch mode: every READY
-item, in dashboard order, fixed at the start of the run. `--swarm` never
-takes a single-item target (see the invocation note above).
+Queue selection is delegated to `swarm_spawn`. Pass it a `prefix` scoping
+the run (`meta-` for tooling work, `iron-lb-` for that project, and so on)
+rather than a fixed list of slugs: it re-reads the READY set from
+`dev_status.py` on every call, so an item unblocked by a worker that just
+finished is picked up on the next spawn without you naming it. A `prefix` is
+required when you do not pass `items` — selecting from the whole READY queue
+unscoped would pull unrelated projects into one run. `--swarm` never takes a
+single-item target (see the invocation note above).
 
 Uses the `swarm_spawn`, `swarm_poll`, and `swarm_resolve_blocked` tools
 (`pi/extensions/swarm-tool.ts`) — never hand-compose `herdr` bash commands
 for this; the tools own argv safety (a human's relay answer is never
 shell-interpolated), state persistence across a crash/restart, and the
-concurrency/pane-cap accounting.
+concurrency-cap accounting.
 
 1. Pick a `runId` for this invocation (e.g. a short timestamp-based slug)
-   and call `swarm_spawn` with the full READY queue and the concurrency —
-   it spawns up to the cap, reporting any items skipped (cap) or failed to
-   spawn. Each worker is sent `/permission-gate-disable` before its item, so
-   `permission-gate.ts`'s bash confirmation can't strand it: a worker runs
-   in a TUI pane, so the gate's `ctx.ui.confirm` would wait on a human
-   nobody has told to look, while `agent_status` stays `working` and
-   `swarm_poll` reads it as progress. `guard-rails.ts` deliberately stays
-   armed — workers still cannot write into a repo's main checkout.
+   and call `swarm_spawn` with the run's `prefix` and the concurrency — it
+   spawns up to the cap, reporting any items skipped (cap), deferred (file
+   overlap) or failed to spawn.
 
-   The gate is confirmed by the worker's own acknowledgement file, not by
-   reading its terminal: `swarm_spawn` mints a per-worker token, passes it
-   to the command, and polls for the file the worker writes under
-   `permission-gate.ts`'s own ack directory. A terminal read cannot answer
-   this — herdr's `recent` source is a bounded window of rendered rows, so a
-   redraw or a stale notice from an earlier command produces a false
-   confirmation or a false failure. Two spawn failures follow from it, and
-   they mean different things:
+   **Deferred is not skipped.** Two items whose `related_files` name the same
+   file are never spawned into the same wave: each worker gets its own
+   worktree, so the second to merge would conflict. A deferred item is still
+   owed and becomes schedulable once the worker it collided with finishes; a
+   skipped one was only held back by the concurrency cap and is coming next
+   wave regardless. Both are named in the tool's result text. Each worker's tab is created with `PI_AGENT_UNATTENDED=1` in its
+   environment, so both gate extensions settle themselves at pi's module
+   load, before the worker can be handed anything. Nothing is negotiated
+   over the wire and there is no acknowledgement to wait for.
 
-   - **`permission_gate_not_disabled`** — the prompt was delivered but no
-     acknowledgement arrived within the deadline. Report the item in the
-     digest, leave it READY, and do not re-spawn it within the same call.
-   - **`agent_prompt_failed`** — the prompt could not be delivered at all.
-     For one worker, report it and carry on with the rest of the batch. If
-     **every** worker in the batch fails this way, that is a herdr-level
-     fault: stop the run and report, rather than spawning into the same
-     fault repeatedly.
+   The two gates read that variable and reach deliberately different
+   conclusions. `permission-gate.ts` starts disabled: its ask tier is
+   everything outside a narrow allowlist, and a worker that cannot run tests
+   or git is useless. `guard-rails.ts` stays fully armed and instead
+   **blocks** its two interactive confirmations — `rm -rf` and `sudo` are
+   refused with a reason the worker can read, rather than raising a dialog
+   nobody will answer. Every other guard-rails rule, including the
+   protected-path writes and the git-commit-on-main worktree policy, applies
+   to a worker exactly as it would to you.
+
+   So a worker that tries `rm -rf` gets a clean refusal it can report,
+   instead of stalling forever while `agent_status` still reads `working`
+   and `swarm_poll` reads that as progress. If an item genuinely needs one of
+   those commands, that is a human's job, not a thing to route around.
+
+   Two spawn failures are worth telling apart:
+
+   - **`agent_not_ready`** — the tab was created but pi never became ready
+     for input in it. The tab's captured output is on the failure reason and
+     usually says why.
+   - **`agent_prompt_stalled`** — the item could not be delivered to a worker
+     that was ready.
+
+   For one worker, either means: report it, leave the item READY, and carry
+   on with the rest of the batch. If **every** worker in the batch fails the
+   same way, that is a herdr-level fault: stop the run and report, rather
+   than spawning into the same fault repeatedly.
 
    Each failure names its reason in the tool's own result text, which is what
-   the two rules above key off. The worker pane's captured output is recorded
+   the rule above keys off. The worker pane's captured output is recorded
    alongside it but is not in that text — read it back from the run's record
    when diagnosing, rather than expecting it inline. Every failure after a
-   pane exists closes that pane, so a failed round leaves no orphan panes to
-   subdivide the layout for the next one.
+   tab exists closes that tab, so a failed round leaves no orphan workers
+   behind.
 
-   Worker panes are carved from the orchestrator's own pane in equal shares,
-   so N workers each get roughly a (N+1)th of it rather than the half-of-a-half
-   that repeated splitting used to produce. When even shares would leave panes
-   too cramped to read a diff in, the batch is trimmed to what fits and the
-   remainder is reported as `pane_too_narrow`, naming the pane size and the
-   split count. That is a property of the geometry, not of the item: re-spawning
-   it into the same pane will fail identically, so report it, leave the item
-   READY, and either widen the pane or run the swarm from a full-width tab
-   before trying again.
+   Each worker gets its own herdr tab, not a slice of the orchestrator's
+   pane. A tab's root pane is the full terminal size however many tabs are
+   open, so the batch is never trimmed for want of width and the concurrency
+   you ask for is the concurrency you get. Nothing is reported as too narrow
+   any more; a spawn failure now always names a herdr-level or worker-level
+   fault rather than the geometry.
 2. Loop: call `swarm_poll`. It blocks until at least one worker settles and
    returns every event that settled in that window (usually one,
    occasionally more — process all of them before polling again):
@@ -339,10 +364,12 @@ concurrency/pane-cap accounting.
      when one is warranted (e.g. recommending approval when the diff looks
      clean). Mirror the worker's own listed options where it has them, and
      keep a free-text escape so an answer that matches nothing is still
-     possible. Same reason as steps 10 and 11: `question` emits
-     `herdr:blocked`, so this orchestrator's own pane registers as `blocked`
-     while it waits on the human. Asking in plain text ends the turn, which
-     leaves the orchestrator reporting `idle` — indistinguishable from a
+     possible. Same reason as steps 10 and 11: raising a `question` puts this
+     orchestrator's own pane into herdr's `blocked` state while it waits on
+     the human — `herdr-blocked-bridge.ts` reports it from pi's own
+     `ui_prompt_start`, so it holds for any blocking prompt, not just this
+     tool. Asking in plain text ends the turn, which leaves the orchestrator
+     reporting `idle` — indistinguishable from a
      finished run to anything watching over herdr's socket, including the
      user, who then has to hunt through panes to discover a relay is even
      pending (confirmed live, 2026-09-02: a relayed commit gate sat unseen
@@ -364,20 +391,63 @@ concurrency/pane-cap accounting.
      calling `swarm_resolve_blocked`, or surfacing `needs_manual:`) before
      moving to the next event in the same batch; never stack multiple relay
      questions into one message.
-   - **`finished`** / **`timed_out`** — record the outcome for the
-     end-of-run digest (approved / flagged / timed out); the tool has
-     already closed that worker's pane and freed its slot. `swarm_poll`
-     itself spawns the next READY item into a new pane when there's queue
-     left and the cap has headroom — no separate `swarm_spawn` call needed
-     mid-run.
-3. Repeat step 2 until `swarm_poll` reports no active workers and the
-   digest accounts for the whole queue. "No active workers" on its own is
+   - **`still_working`** — a check-in, **not an outcome**. The worker's wait
+     window elapsed, it was confirmed alive and still inside its working-time
+     budget, and a fresh wait is already armed. Three things follow, and each
+     is a separate way to get this wrong: it frees **no** concurrency slot,
+     so it is never a cue to call `swarm_spawn`; its item stays in the active
+     working set rather than the accounted-for one; and it is never a row in
+     the end-of-run summary. The event names its check-in number and the
+     working time so far against the budget (e.g. "check-in 7, 3h31m of a 4h
+     budget") — relay that to the user when it is worth their attention, then
+     simply poll again. An elapsed wait against a live worker used to close
+     its tab and drop it; it now produces this and nothing else.
+   - **`finished`** / **`timed_out`** / **`error`** — record the outcome for
+     the end-of-run digest (approved / flagged / stopped on budget / failed);
+     all three have already closed that worker's tab and freed its slot, and
+     none is ever silently retried. A freed slot is the cue to call
+     `swarm_spawn` again with the same `runId` and `prefix`: that re-reads
+     READY, so a worker that just unblocked two items causes those items to
+     be picked up without anyone naming them. The three are deliberately
+     different and must not be reported as one:
+     - `timed_out` means the worker exceeded its whole-item **working-time
+       budget** and was stopped deliberately — not that a wait deadline
+       elapsed, which is now merely a check-in. Its item is probably still
+       `in-progress` with a live claim and its worktree survives on disk, so
+       the event carries the worktree path and the recovery commands: relay
+       that detail verbatim rather than reporting the worker as having
+       misbehaved. The detail also says whether the worker's liveness was
+       **confirmed** before it was stopped, or whether the liveness probe
+       failed and the stop rests on the budget alone — never report the
+       second as though it were the first.
+     - `error` means the agent is positively gone (herdr reported
+       `agent_not_found`), it crashed, or the wait itself failed, and carries
+       the raw reason after the kind. A *transient* failure of the liveness
+       check is not an error and never appears here: it re-arms, because
+       killing a healthy worker on an inconclusive signal is the defect this
+       tool was fixed for.
+
+     **`swarm_poll` does not spawn anything.** It arms waits, drains events
+     and closes finished workers' tabs; that is all. When an event frees a
+     slot and the READY queue still has items, call `swarm_spawn` again
+     yourself for the next batch. A run that skips this processes only the
+     first N items of its queue and then stops, leaving the rest silently
+     unaccounted for.
+
+     A `swarm_poll` that returns saying it was **aborted** is not an outcome
+     for the digest: its workers were left untouched and are still running,
+     so poll again rather than treating the run as finished.
+3. Repeat steps 1 and 2 — spawn, poll, spawn again — until `swarm_spawn`
+   reports nothing left to spawn, `swarm_poll` reports no active workers, and
+   the digest accounts for the whole queue. A spawn that returns zero
+   spawned while naming deferred items is not the end of the run: poll the
+   workers still running, then spawn again once one of them finishes. "No active workers" on its own is
    not the end of the run: when workers are still parked awaiting a relay,
    `swarm_poll` names them and the answer each is waiting on is still owed —
    resolve those with `swarm_resolve_blocked` before treating the queue as
-   drained, or the run ends with a live worker holding an open pane.
+   drained, or the run ends with a live worker holding an open tab.
 4. **End of run** — same shape as `--auto`'s: a dashboard-style summary of
-   every item (done, flagged, timed out), then walk any accumulated
+   every item (done, flagged, stopped on budget, failed), then walk any accumulated
    proactive-capture digest entries exactly as `--auto`'s own end-of-run
    step does.
 

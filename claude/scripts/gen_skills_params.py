@@ -1701,11 +1701,13 @@ description: "Decompose a plan or spec into multiple linked dev_status.py backlo
             "conversation."
         ),
         "STEP4_CONFIRM_MECHANISM": (
-            "State the options in plain text with your recommendation, and "
-            "wait for the user's reply, or use the `question` tool when "
-            "running interactively — it is a hard error (not a silent "
-            "fallback) in headless `-p`/JSON modes, since there's no UI to "
-            "prompt through there."
+            "Ask with the `question` tool, your recommendation first — Pi "
+            "ships no built-in question/select tool, but this repo's "
+            "`question-tool.ts` extension supplies one, loaded unless the "
+            "session was started with `--no-extensions`. It is a hard error "
+            "(not a silent fallback) in headless `-p`/JSON modes, since "
+            "there's no UI to prompt through there, so asking in plain text "
+            "is correct only in a session where the tool is genuinely absent."
         ),
         "RUNNER_INVOKE": (
             "call the `to_tickets` tool with action `run` and that path as "

@@ -156,14 +156,7 @@ class EndToEndTests(unittest.TestCase):
 
         for relpath in docs_test.COPIES:
             text = (REPO_ROOT / relpath).read_text(encoding="utf-8")
-            index_markers = docs_test.MODEL_INDEX_MARKERS.get(
-                relpath, docs_test.DEFAULT_MODEL_INDEX_MARKERS
-            )
-            grill_markers = docs_test.GRILL_LOOKUP_MARKERS.get(
-                relpath, docs_test.DEFAULT_GRILL_LOOKUP_MARKERS
-            )
-            markers = (*docs_test.REQUIRED_MARKERS, *index_markers, *grill_markers)
-            missing = [m for m in markers if m not in text]
+            missing = docs_test.missing_markers(relpath, text)
             self.assertFalse(missing, f"{relpath} missing markers: {missing}")
 
 

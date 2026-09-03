@@ -72,7 +72,9 @@ NOT_APPLICABLE = object()
 # so a backend added without a complete descriptor is unbuildable, instead of
 # depending on whoever adds it remembering to handle every clause.
 #
-# "_base" is the command prefix; the prompt is appended last by the builder.
+# "_base" is the command prefix; the builder appends the prompt last unless
+# the descriptor sets _prompt_follows_base (a prompt flag that consumes the
+# next token as its value -- see copilot/agy).
 # Every mechanism below was verified by running it — see the plan artifact at
 # ~/.claude/data/grill/2026-08-31-meta-second-opinion-backend-isol-plan.md.
 BACKEND_ISOLATION: dict[str, dict[str, object]] = {
@@ -94,7 +96,15 @@ BACKEND_ISOLATION: dict[str, dict[str, object]] = {
     # to deny writes on its own, but "happens to" is not a mechanism — the
     # contract requires a declared one.
     "copilot": {
-        "_base": ["copilot", "-p", "--silent"],
+        # copilot's -p/--prompt takes the next argument as its prompt value,
+        # so the prompt binds to the flag rather than trailing the command —
+        # -p must be last in _base, and the isolation flags follow the
+        # prompt. The old shape ["copilot", "-p", "--silent"] made -p
+        # swallow --silent and left the prompt as a bare positional copilot
+        # rejects. Verified against copilot --help: flags after the -p value
+        # are parsed normally.
+        "_base": ["copilot", "--silent", "-p"],
+        "_prompt_follows_base": True,
         "tools_execution": ["--deny-tool=write", "--deny-tool=shell"],
         "tools_reach": NOT_APPLICABLE,
         "skills": ["--deny-tool=write", "--deny-tool=shell"],
@@ -487,6 +497,44 @@ class BackendTimeoutError(BackendError):
     """
 
 
+class BackendPayloadSizeError(BackendError):
+    """A backend call was rejected before invocation because the payload
+    exceeds the maximum size known to work reliably for that backend.
+
+    A strict BackendError subclass: callers treating all failures generically
+    catch this unchanged, while callers reporting rule-outs distinguish it.
+    """
+
+
+class BackendModelPolicyError(BackendError):
+    """A backend rejected a model because the ACCOUNT cannot select models
+    through the model flag -- an entitlement failure, not a bad model id.
+
+    Concretely (copilot): GitHub Copilot's ``--model`` flag requires a Pro
+    or Enterprise plan. On a free tier EVERY id is rejected with vendor
+    wording ('Model X from --model flag is not available') that describes an
+    entitlement problem in the language of a bad-id problem -- which is why
+    it read as a wrong pool and cost two misdiagnoses (2026-09-03). The
+    re-raised message states the real cause and, for copilot, names the
+    per-machine pool variable to unset.
+
+    A strict BackendError subclass: every existing ``except BackendError``
+    call site keeps catching this unchanged, while callers reporting
+    rule-outs distinguish it.
+    """
+
+
+# The minimal stable fragment of copilot's entitlement-rejection wording.
+# Deliberately not the vendor's full sentence: they can reword the rest, and
+# a reworded message must degrade to a plain BackendError, never
+# mis-classify -- which is also why there is no retry-without-model fallback
+# keyed on this text.
+_COPILOT_MODEL_POLICY_MARKER = "from --model flag is not available"
+
+
+PI_MAX_PROMPT_BYTES = 14000
+
+
 def available_backends() -> list[str]:
     """Return the backends in :data:`BACKEND_PRIORITY` that are on ``PATH``."""
     return [b for b in BACKEND_PRIORITY if shutil.which(b)]
@@ -809,10 +857,32 @@ def run_copilot(prompt: str, *, model: str | None, timeout: float) -> str:
     implicit default routing (no ``--model`` flag at all) works. Callers
     should leave ``model`` unset/empty unless their account is confirmed to
     allow explicit model selection.
+
+    A failure whose text carries the vendor's entitlement fragment
+    (:data:`_COPILOT_MODEL_POLICY_MARKER`) is re-raised as
+    :class:`BackendModelPolicyError` stating the true cause -- the flag
+    needs a Pro or Enterprise plan, so no model id works -- and the pool
+    variables to unset on a free-tier machine. No retry without the model:
+    keying a fallback on vendor error text they can reword would turn a
+    working backend into a silent regression.
     """
     cmd = build_isolated_command("copilot", prompt, model=model)
     with _track_backend_call("copilot", model, prompt):
-        return run_backend_command(cmd, timeout)
+        try:
+            return run_backend_command(cmd, timeout)
+        except BackendError as exc:
+            if _COPILOT_MODEL_POLICY_MARKER in str(exc):
+                raise BackendModelPolicyError(
+                    "copilot cannot select a model: the --model flag requires "
+                    "a GitHub Copilot Pro or Enterprise plan, so no model id "
+                    "works on this account's tier -- the rejection is an "
+                    "entitlement failure, not a bad model id. Vendor wording: "
+                    f"{exc}. On a free-tier machine, unset "
+                    "SECOND_OPINION_COPILOT_MODEL_POOL (and "
+                    "SECOND_OPINION_COPILOT_MODEL) to let copilot use its "
+                    "implicit default routing."
+                ) from exc
+            raise
 
 
 _DEFAULT_PI_PROVIDER = "opencode-go"
@@ -845,12 +915,22 @@ def run_pi(prompt: str, *, model: str | None, timeout: float) -> str:
     wasted wall time (120s -> 240s) before falling through to the next
     backend, with no expected gain in success rate. Small prompts (<1KB)
     succeed in ~3s, so this only bites realistic-sized review prompts.
+    Prompts over :data:`PI_MAX_PROMPT_BYTES` (14000 bytes) are refused
+    immediately to avoid waiting for deterministic timeouts.
 
     Raises:
+        BackendPayloadSizeError: If ``prompt`` exceeds :data:`PI_MAX_PROMPT_BYTES`.
         BackendError: If the process exits nonzero or produces no output
             (via :func:`run_backend_command`), or the output is dominated by
             leaked tool-call markup (via :func:`_raise_on_emitted_tool_call`).
     """
+    prompt_bytes = len(prompt.encode())
+    if prompt_bytes > PI_MAX_PROMPT_BYTES:
+        raise BackendPayloadSizeError(
+            f"prompt size ({prompt_bytes} bytes) exceeds pi limit "
+            f"({PI_MAX_PROMPT_BYTES} bytes); pi's opencode-go gateway "
+            f"deterministically stalls on larger payloads"
+        )
     cmd = build_isolated_command("pi", prompt, model=model)
     with _track_backend_call("pi", model, prompt):
         text = run_backend_command(cmd, timeout)

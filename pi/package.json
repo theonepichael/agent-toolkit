@@ -3,6 +3,7 @@
   "private": true,
   "scripts": {
     "test": "bun test",
+    "test:clean": "env -u PI_AGENT_UNATTENDED bun test",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint extensions test",
     "format": "prettier --write extensions test",

@@ -1,6 +1,3 @@
-import { mkdirSync, renameSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 
@@ -281,94 +278,79 @@ export function classify(command: string): Verdict {
   return "ask";
 }
 
-let enabled = true;
-
-// ---------------------------------------------------------------------------
-// Acknowledgement files.
-//
-// swarm-tool.ts's swarm_spawn has to know whether a worker's
-// /permission-gate-disable actually took effect before it hands that worker
-// real work. It cannot learn that from the worker's terminal: herdr documents
-// `agent read --source recent` as the last 80 rendered rows, so every read is
-// a bounded sliding window -- a TUI redraw rewrites it rather than appending,
-// a stale notice from an earlier command can already be sitting in it, and
-// repeated identical lines align at the wrong offset. Every one of those
-// yields either a false confirmation or a false failure. So the worker states
-// the fact itself, in a file, and the orchestrator polls for it.
-//
-// The command takes an OPAQUE TOKEN, never a path, and this extension owns
-// the directory. A pi session's input is not always the user -- model output,
-// a pasted block, or repo content read into context all reach a slash command
-// -- so a caller-supplied path would be write-anywhere-the-user-can, and an
-// "absolute and ends in .json" check is close to no protection when so much
-// tooling keeps its config in a user-owned .json. A token plus a directory
-// this extension picks removes traversal, clobbering, and stray directory
-// creation by construction.
-// ---------------------------------------------------------------------------
-
-const ACK_TOKEN_PATTERN = /^[A-Za-z0-9_-]{8,64}$/;
+/**
+ * Whether this pi session runs with no human watching it.
+ *
+ * A swarm worker lives in a herdr tab nobody is looking at, so a confirmation
+ * dialog there is a question addressed to no one -- the worker waits forever
+ * while `agent_status` still reads "working". So the gate is never armed in
+ * such a session, rather than armed and then talked down: swarm-tool.ts
+ * spawns each worker tab with `herdr tab create --env PI_AGENT_UNATTENDED=1`,
+ * and this is read at module load, before the first tool_call can arrive.
+ *
+ * This replaces a slash-command handshake (a token, an acknowledgement file,
+ * a poll and a deadline) that had to prove the gate came down after the fact.
+ * There is nothing to prove now: no prompt to deliver, nothing to time out,
+ * and no window in which a worker has been handed work while still armed.
+ *
+ * What "unattended" means is each gate's own decision, and the two differ on
+ * purpose. Here it means allow: this gate's "ask" tier is everything outside
+ * a narrow allowlist, and a worker that cannot run tests or git is no worker
+ * at all. That is also exactly what the swarm already did by sending
+ * /permission-gate-disable, so it is not a new grant. guard-rails.ts reaches
+ * the opposite conclusion for the commands it guards -- it blocks them rather
+ * than asking -- and keeps every one of its non-interactive rules armed.
+ *
+ * It fails closed. Anything but exactly "1" -- unset, empty, "0", "true" --
+ * leaves the gate armed, so an ordinary interactive session is unaffected and
+ * a typo in the variable name cannot silently disarm anything.
+ *
+ * Read here rather than shared from one module: pi loads each extension
+ * separately, and a value imported across extension files does not reliably
+ * reach the loaded instance (see guard-rails.ts, which reads the same
+ * variable for itself).
+ */
+export function agentUnattendedByEnv(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.PI_AGENT_UNATTENDED === "1";
+}
 
 /**
- * Fixed, well-known ack location, resolved per call rather than captured at
- * module load -- the env override is what lets a test point both the writing
- * and the polling side at a disposable directory (test/AGENTS.md).
+ * The gate's state at module load, as a function so it can be tested.
+ *
+ * The read happens once, at load, rather than per tool_call: an explicit
+ * /permission-gate-enable must be able to re-arm the gate even in an
+ * unattended session, which a per-call environment check would silently
+ * override.
  */
-export function permissionGateAckDir(): string {
-  return (
-    process.env.PI_PERMISSION_GATE_ACK_DIR ?? join(homedir(), ".pi", "agent", "permission-gate-ack")
-  );
+export function initialGateEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return !agentUnattendedByEnv(env);
 }
 
-export function permissionGateAckPath(token: string): string {
-  return join(permissionGateAckDir(), `${token}.json`);
-}
+let enabled = initialGateEnabled();
 
-export function isValidAckToken(token: string): boolean {
-  return ACK_TOKEN_PATTERN.test(token);
-}
-
-/** Read-only view of the gate, so a caller (or a test) can confirm a rejected token left it armed. */
+/** Read-only view of the gate, so a caller (or a test) can confirm its state. */
 export function isPermissionGateEnabled(): boolean {
   return enabled;
 }
 
-/**
- * Exported so trust-session.ts can flip this gate alongside guard-rails.ts's
- * without reaching into module-private state.
- *
- * `ackToken` is opt-in and lives here rather than in the slash handler, so
- * there is exactly one programmatic path for turning the gate off -- not a
- * terminal path that writes acks and a library path that quietly does not.
- * A malformed token throws BEFORE `enabled` is touched: disabling anyway
- * would leave the caller unprotected (bash unconfirmed) and unsupervised (an
- * orchestrator waiting out a deadline for an ack that can never arrive), so
- * this fails closed.
- *
- * trust-session.ts deliberately passes no token. That is not a second meaning
- * for "the gate is off" -- an ack answers "did the caller who asked for this
- * get confirmation", and an interactive /trust-session has no caller waiting.
- */
-export function setPermissionGateEnabled(value: boolean, opts: { ackToken?: string } = {}): void {
-  const token = opts.ackToken;
-  if (token !== undefined && !isValidAckToken(token)) {
-    throw new Error(
-      `invalid permission-gate ack token (expected 8-64 chars of A-Z a-z 0-9 _ -): ${token}`,
-    );
-  }
-  enabled = value;
-  if (token !== undefined) writeAck(token);
-}
-
-/** Writes to a temp file and renames, so a poller observes the file only once it is complete. */
-function writeAck(token: string): void {
-  const path = permissionGateAckPath(token);
-  mkdirSync(permissionGateAckDir(), { recursive: true });
-  const tmp = `${path}.tmp`;
-  writeFileSync(tmp, JSON.stringify({ token, disabled_at: new Date().toISOString() }));
-  renameSync(tmp, path);
-}
+// No exported setter on purpose. One used to live here ("Exported so
+// trust-session.ts can flip this gate") -- but pi evaluates every extension
+// in its own jiti registry, so trust-session's imported setter ran against a
+// private copy and the loaded gate never saw the flip: /trust-session
+// reported success while changing nothing (proven live 2026-09-02).
+// Cross-extension toggling now arrives over the shared event bus below.
 
 export default function (pi: ExtensionAPI) {
+  // /trust-session and /trust-session-off broadcast here (see their comment
+  // for why the channel name is a duplicated literal rather than an import).
+  // The listener mutates the same module-level `enabled` the tool_call
+  // handler reads. Malformed payloads are ignored: a wrong shape must never
+  // silently disarm (or spuriously re-arm) the gate.
+  pi.events.on("session-trust-changed", (data) => {
+    const trusted = (data as { trusted?: unknown } | null | undefined)?.trusted;
+    if (typeof trusted === "boolean") enabled = !trusted;
+  });
+
   pi.on("tool_call", async (event, ctx) => {
     if (!enabled) return undefined;
     if (!isToolCallEventType("bash", event)) return;
@@ -397,21 +379,10 @@ export default function (pi: ExtensionAPI) {
     if (!ok) return { block: true, reason: "Blocked by user" };
   });
 
-  // The optional token is named in the description because pi's
-  // RegisteredCommand has no separate argument-hint field -- an undocumented
-  // positional on a security-adjacent command is how a typo turns into a
-  // half-applied command.
   pi.registerCommand("permission-gate-disable", {
-    description:
-      "Disable the bash permission-gate for this session (trust mode). Optional [token]: write an acknowledgement file for a caller waiting on confirmation (8-64 chars, A-Z a-z 0-9 _ -).",
-    handler: async (args, ctx) => {
-      const token = args.trim();
-      try {
-        setPermissionGateEnabled(false, token === "" ? {} : { ackToken: token });
-      } catch (e) {
-        ctx.ui.notify(`Permission gate NOT disabled: ${String(e)}`, "error");
-        return;
-      }
+    description: "Disable the bash permission-gate for this session (trust mode)",
+    handler: async (_args, ctx) => {
+      enabled = false;
       ctx.ui.notify("Permission gate disabled — all bash commands run unconfirmed", "warning");
     },
   });
@@ -419,7 +390,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("permission-gate-enable", {
     description: "Re-enable the bash permission-gate",
     handler: async (_args, ctx) => {
-      setPermissionGateEnabled(true);
+      enabled = true;
       ctx.ui.notify("Permission gate enabled", "info");
     },
   });

@@ -15,7 +15,7 @@ Fill in what you can from $ARGUMENTS and context already in scope (files read, p
 - **Objective** — one sentence: what exists when this is done.
 - **Context** — what the agent needs to know: existing code, conventions, prior decisions.
 - **Inputs** — data, files, tools, assumptions in bounds.
-- **Output format** — the literal shape of the deliverable: file structure, schema, API.
+- **Output format** — the literal shape of the deliverable: file structure, schema, API contracts (signatures, types, and invariants — never full function/class implementations).
 - **Constraints** — what to avoid: new deps, paid APIs, style rules.
 - **Evaluation criteria** — how correctness gets judged.
 - **Edge cases** — what could go wrong or fall through.
