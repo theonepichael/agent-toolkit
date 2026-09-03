@@ -105,11 +105,11 @@ AGY_EXPECTED_FILENAMES: frozenset[str] = frozenset()
 
 # Fallback paths tried before reporting UNVERIFIABLE (Linux/WSL only).
 _FALLBACK_PATHS: dict[str, list[str]] = {
-    "claude": ["/home/yanil/.local/bin/claude"],
-    "opencode": ["/home/yanil/.opencode/bin/opencode"],
-    "pi": ["/home/yanil/.npm-global/bin/pi"],
-    "copilot": ["/home/yanil/.npm-global/bin/copilot"],
-    "agy": ["/home/yanil/.local/bin/agy"],
+    "claude": ["~/.local/bin/claude"],
+    "opencode": ["~/.opencode/bin/opencode"],
+    "pi": ["~/.npm-global/bin/pi"],
+    "copilot": ["~/.npm-global/bin/copilot"],
+    "agy": ["~/.local/bin/agy"],
 }
 
 _LOAD_BEARING: tuple[str, ...] = ("claude", "opencode")
@@ -161,7 +161,10 @@ def resolve_binary(name: str) -> Path | None:
     if found:
         return Path(found).resolve()
     for fallback in _FALLBACK_PATHS.get(name, []):
-        p = Path(fallback)
+        try:
+            p = Path(fallback).expanduser()
+        except RuntimeError:
+            continue
         if p.is_file():
             return p.resolve()
     return None
