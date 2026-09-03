@@ -381,19 +381,6 @@ harness name if it's ever wrong. The claim clears itself when the item
 leaves `in-progress`. The dashboard's IN PROGRESS section shows the
 claiming harness in brackets, e.g. `[claude]`.
 
-#### Cross-machine sync
-
-The backlog/pending store is per-machine by default. If the user wants it
-reconciled with another machine's store, use
-`python3 ~/.claude/scripts/dev_status_sync.py sync` (add `--dry-run` to
-preview, or `status` to check divergence without merging) — a desktop-
-initiated bidirectional merge over SSH. This is a manual, occasional
-operation, not part of the normal add/update/done loop above. `sync` also
-transfers the `~/.claude/data/grill/` artifact files referenced by items'
-`related_files` (specs, grill plans, critique notes) via `rsync`, so those
-references don't dangle on the other machine; pass `--no-artifacts` to skip,
-and `--rsync-io-timeout` to bound each rsync call.
-
 ### Pending Items
 
 When helping the user send an email/message that expects a reply, or take an

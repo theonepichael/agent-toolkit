@@ -8,8 +8,7 @@ script. This script owns only the mechanical part: computing a safe
 execution order from each ticket's ``blocked_by`` edges, creating the
 backlog items in that order, and making a partial run safely resumable.
 
-Imports ``dev_status`` directly (see ``dev_status_sync.py`` for the same
-precedent) rather than shelling out to its CLI — no subprocess, no shell
+Imports ``dev_status`` directly rather than shelling out to its CLI — no subprocess, no shell
 string, no CLI output to parse.
 
 Usage
@@ -37,7 +36,7 @@ State file
 Files read/written
   Reads the batch file and its state file. Writes/reads the same
   ``dev_status.py`` backlog store (``~/.claude/data/backlog/``) that
-  ``dev_status.py`` itself and ``dev_status_sync.py`` use, via
+  ``dev_status.py`` itself uses, via
   ``dev_status``'s own primitives (``backlog_lock``, ``load_items``,
   ``save_items``, ``append_journal_event``). Also creates
   ``~/.claude/data/to-tickets/`` on every invocation (see

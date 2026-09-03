@@ -77,6 +77,63 @@ Add this line to your `~/.zshrc` (or `~/.bashrc`):
 
 ---
 
+## What you supply vs. what the toolkit creates
+
+The toolkit never asks you to configure anything before it runs — but a few
+scripts read state from outside this repo, and knowing which of those paths
+the toolkit **creates**, which it **expects**, and which are **optional** is
+the difference between a working install and silent fallbacks.
+
+### Paths
+
+| Path | Status | What it holds |
+| :--- | :--- | :--- |
+| `~/.claude/data/` | **Created on first use** by `dev_status.py` | The backlog/pending store (`backlog.json`, journal, out-of-scope concepts). Per-user by construction — it lives in your home, not in the repo. Hardcoded location: `Path.home() / ".claude" / "data"`; there is no `XDG_DATA_HOME` support. |
+| `~/.claude/data/grill/` | **Created on first use** by `grill.py` and `second_opinion.py` | Spec, plan, and critique artifacts written by the `/spec`, `/grill-me`, and `/second-opinion` skills. Same hardcoded base path as above. |
+| `~/.claude/data/to-tickets/` | **Created on first use** by `to_tickets_runner.py` | Batch files drafted by the `/to-tickets` skill. |
+| `~/.secrets` (or wherever you keep shell env) | **Expected, user-supplied — never created by the installer** | This machine's `SECOND_OPINION_*` model pools live here. The toolkit itself never opens this file — it reads environment variables, however you set them. |
+
+### Environment variables (all optional)
+
+`second_opinion.py`'s model pools are configured entirely through the
+environment. Every variable below is optional — unset means the backend
+picks its own default model — but if you want pool rotation or pinned
+models, these are the contract:
+
+| Variable | Purpose | Unset behavior |
+| :--- | :--- | :--- |
+| `SECOND_OPINION_AGY_MODEL` | Force the agy backend's model | Built-in default (`Gemini 3.7 Flash (High)`) |
+| `SECOND_OPINION_AGY_MODEL_POOL` | Comma-separated agy pool for `--model-index` rotation | agy falls back to the single override or its built-in default |
+| `SECOND_OPINION_PI_MODEL` / `_PI_MODEL_POOL` | Same contract for the pi backend | pi's own default for the `opencode-go` provider |
+| `SECOND_OPINION_OPENCODE_MODEL` / `_OPENCODE_MODEL_POOL` | Same contract for the opencode backend | opencode's live config |
+| `SECOND_OPINION_COPILOT_MODEL` / `_COPILOT_MODEL_POOL` | Same contract for the copilot backend | copilot's implicit default routing |
+| `SECOND_OPINION_TIMEOUT_SECONDS` (+ per-backend `_<BACKEND>_TIMEOUT_SECONDS`) | Per-call timeout budget in seconds | 120 (hard ceiling 300) |
+
+Two things worth knowing before you copy someone else's pool values:
+
+- **Copilot's `--model` flag requires a GitHub Copilot Pro or Enterprise
+  plan.** On a free tier, every pooled model id is rejected with `Model X
+  from --model flag is not available` — that wording describes an
+  entitlement failure, not a wrong id. The script re-raises it as an
+  entitlement error telling you to unset the copilot pool; on a free-tier
+  account, leave `SECOND_OPINION_COPILOT_MODEL_POOL` unset.
+- **A missing pool is announced, not silent.** A review whose dispatched
+  backend has no pool and no single-model override prints a one-line stderr
+  notice naming the variable, where to set it, and a realistic example
+  (suppressed by `--quiet`). The run still proceeds with the backend's
+  default model — the notice is there so an unconfigured machine says so
+  instead of quietly degrading.
+
+Example pool configuration (in `~/.zshrc`, or a sourced secrets file such
+as `~/.secrets`):
+
+```zsh
+export SECOND_OPINION_AGY_MODEL_POOL="Gemini 3.7 Flash (High),Gemini 3.7 Pro (High)"
+export SECOND_OPINION_PI_MODEL_POOL="opencode-go/glm-5.2,opencode-go/glm-5.3-flash"
+```
+
+---
+
 ## Harness Setup Notes
 
 | Harness | Primary Config | Skills / Prompts Path | Extensions / Hooks |

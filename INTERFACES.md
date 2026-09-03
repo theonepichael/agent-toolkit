@@ -36,7 +36,6 @@ House style for these interfaces is in `STYLE.md`.
 | [`analyze_sessions.py`](#claudescriptsanalyzesessionspy) | analyze_sessions.py — multi-harness session analysis tool. |
 | [`cli_common.py`](#claudescriptsclicommonpy) | Shared CLI helpers used across dotfiles scripts. |
 | [`dev_status.py`](#claudescriptsdevstatuspy) | dev_status.py v2 — slug IDs, structured dependency graph, pure render. |
-| [`dev_status_sync.py`](#claudescriptsdevstatussyncpy) | dev_status_sync.py — cross-machine sync for dev_status.py's backlog/pending store. |
 | [`dotfiles_sync_check.py`](#claudescriptsdotfilessynccheckpy) | SessionStart hook: flag when the dotfiles repo has drifted from the last commit bundled over to a GitHub-blocked work machine. |
 | [`gen_interfaces.py`](#claudescriptsgeninterfacespy) | gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources. |
 | [`gen_second_opinion.py`](#claudescriptsgensecondopinionpy) | gen_second_opinion.py — regenerate the second-opinion skill copies (one per harness, named in HARNESS_TABLE) from one canonical template. |
@@ -257,66 +256,7 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `confirm_resolution(cmd: str, arg: str | int, item: BacklogItem | PendingItem, summary_key: str = 'summary', *, quiet: bool = False) -> None` — Echo what a mutating command resolved to, so misresolution is visible.
   - `build_parser() -> argparse.ArgumentParser` — Build the full argument parser for every subcommand.
 - Subcommand handlers: `cmd_internal_regen`, `cmd_recap`, `cmd_render`, `cmd_ready`, `cmd_list`, `cmd_show`, `cmd_add`, `cmd_update`, `cmd_start`, `cmd_done`, `cmd_review`, `cmd_approve`, `cmd_reject`, `cmd_gate_set`, `cmd_gate_pass`, `cmd_run`, `cmd_runs`, `cmd_backfill_gate`, `cmd_rename`, `cmd_block`, `cmd_unblock`, `cmd_out_of_scope_add`, `cmd_out_of_scope_link`, `cmd_out_of_scope_unlink`, `cmd_out_of_scope_remove`, `cmd_out_of_scope_list`, `cmd_out_of_scope_show`, `cmd_pending_add`, `cmd_pending_update`, `cmd_pending_list`, `cmd_remove`, `cmd_prune`
-- Tested by: `claude/scripts/test_dev_status.py`, `claude/scripts/test_dev_status_sync.py`, `claude/scripts/test_to_tickets_runner.py`
-
-### `claude/scripts/dev_status_sync.py`
-
-dev_status_sync.py — cross-machine sync for dev_status.py's backlog/pending store.
-
-- Installed at: `~/.claude/scripts/dev_status_sync.py` (not on work)
-- Entrypoint: executable, `#!/usr/bin/env python3`
-- CLI (`argparse`): Cross-machine sync for dev_status.py's backlog/pending store.
-  - `--quiet/-q`
-  - `--verbose/-v`
-  - `--host` — SSH alias for the remote machine
-  - `--remote-script`
-  - `--local-user`
-  - `--remote-user`
-  - `--user-map` — JSON object overriding the default username->home-dir map
-  - `--lock-timeout` (default: 10.0)
-  - `--ssh-timeout` (default: 20.0)
-  - `--max-retries` (default: 3)
-- Subcommands:
-  - `sync [--dry-run] [--no-artifacts] [--rsync-io-timeout <seconds>]` — merge against the other machine
-    - `--no-artifacts` — skip grill/ artifact transfer (metadata-only sync)
-    - `--rsync-io-timeout` — rsync I/O timeout (defaults to --ssh-timeout)
-  - `status` — report divergence without merging
-  - `export` — internal: dump local store+rev as JSON
-  - `import --if-rev <N>` — internal: write a merged store from stdin
-    - `--if-rev` (required)
-- Environment: `LOGNAME`, `USER`
-- Explicit exit codes: `1`, `2`
-- Depends on: `cli_common.py`, `dev_status.py`
-- Exceptions:
-  - `class SyncFatalError(Exception)` — A non-retryable sync failure.
-  - `class SyncRetryableError(Exception)` — A retryable sync condition (stale rev, lock timeout, SSH hiccup).
-- Public classes:
-  - `class SyncComputation`
-- Public functions:
-  - `local_lock(timeout: float) -> Iterator[None]` — Hold this machine's exclusive backlog lock, polling with a deadline.
-  - `load_sync_base(local_schema: dict[str, object]) -> tuple[list[dict[str, object]] | None, list[dict[str, object]] | None]` — Load ``_sync-base.json``, per-store, treating a schema-stale store as absent.
-  - `save_sync_base(local_schema: dict[str, object], items: list[dict[str, object]], pending: list[dict[str, object]]) -> None` — Atomically persist the post-sync state as the new base snapshot.
-  - `rewrite_related_files_paths(item: dict[str, object], from_home: str, to_home: str) -> dict[str, object]` — Rewrite a leading ``from_home`` prefix on ``related_files.path`` entries.
-  - `rewrite_paths_list(items: list[dict[str, object]], from_home: str, to_home: str) -> list[dict[str, object]]` — Apply :func:`rewrite_related_files_paths` across a whole store.
-  - `collect_artifact_paths(items: list[dict[str, object]], home: str) -> list[Path]` — Return distinct, sorted artifact paths to transfer for ``items``.
-  - `remote_has_rsync(host: str, ssh_timeout: float) -> bool` — Preflight: is ``rsync`` available on the remote over SSH?
-  - `push_artifacts(host: str, items: list[dict[str, object]], local_home: str, remote_home: str, ssh_timeout: float, rsync_io_timeout: float, *, quiet: bool, dry_run: bool) -> tuple[int, int]` — Push local ``grill/`` artifacts to ``host``.
-  - `pull_artifacts(host: str, items: list[dict[str, object]], local_home: str, remote_home: str, ssh_timeout: float, rsync_io_timeout: float, *, quiet: bool, dry_run: bool) -> tuple[int, int]` — Pull ``grill/`` artifacts from ``host`` to local.
-  - `assert_artifact_contract(merged: list[dict[str, object]], local_home: str) -> None` — Guard the path-form contract: merged is in *local* form.
-  - `warn_nonlocal_related_paths(items: list[dict[str, object]], local_home: str) -> None` — Warn once if a merged ``grill/`` path was excluded by the resolve guard.
-  - `artifact_preview(merged: list[dict[str, object]], local_home: str, remote_home: str, host: str, *, quiet: bool) -> None` — Print the would-transfer artifact set (no network I/O).
-  - `merge_item(item_id: str, base_item: dict[str, object] | None, local_item: dict[str, object] | None, remote_item: dict[str, object] | None, store: str) -> tuple[dict[str, object] | None, dict[str, object] | None]` — Run the per-item 3-way merge (cases 0-6 of the plan).
-  - `merge_store(base_list: list[dict[str, object]] | None, local_list: list[dict[str, object]], remote_list: list[dict[str, object]], store: str) -> tuple[list[dict[str, object]], list[dict[str, object]]]` — Merge one store (items.json or pending_items.json) across all ids.
-  - `merge_runs(local_runs: list[dict[str, object]], remote_runs: list[dict[str, object]]) -> list[dict[str, object]]` — Union two run-evidence lists by ``run_id`` — the runs.jsonl merge rule.
-  - `compute_sync(base_items: list[dict[str, object]] | None, base_pending: list[dict[str, object]] | None, local_items: list[dict[str, object]], local_pending: list[dict[str, object]], remote_items: list[dict[str, object]], remote_pending: list[dict[str, object]], *, local_runs: list[dict[str, object]] | None = None, remote_runs: list[dict[str, object]] | None = None) -> SyncComputation` — Run the full merge: per-store 3-way merge, then graph integrity, then write-need.
-  - `local_commit(local_schema: dict[str, object], result: SyncComputation, local_items_raw: list[dict[str, object]], local_pending_raw: list[dict[str, object]], base_items: list[dict[str, object]] | None, base_pending: list[dict[str, object]] | None, host: str | None = None) -> int | None` — Perform the three independently-conditioned writes, in crash-safe order.
-  - `ssh_run(host: str, remote_script: str, remote_args: list[str], ssh_timeout: float, input_bytes: bytes | None = None) -> bytes` — Run ``remote_script`` on ``host`` over SSH, bounded against a hung network.
-  - `ssh_export(host: str, remote_script: str, ssh_timeout: float) -> dict[str, object]`
-  - `ssh_import(host: str, remote_script: str, ssh_timeout: float, items: list[dict[str, object]], pending: list[dict[str, object]], runs: list[dict[str, object]], schema: dict[str, object], if_rev: int) -> None`
-  - `print_diff(result: SyncComputation, local_items: list[dict[str, object]], local_pending: list[dict[str, object]], remote_items: list[dict[str, object]], remote_pending: list[dict[str, object]], local_rev: int, remote_rev: int, header: str, quiet: bool = False) -> None`
-  - `build_parser() -> argparse.ArgumentParser`
-- Subcommand handlers: `cmd_export`, `cmd_import`, `cmd_status`, `cmd_sync`
-- Tested by: `claude/scripts/test_dev_status_sync.py`
+- Tested by: `claude/scripts/test_dev_status.py`, `claude/scripts/test_to_tickets_runner.py`
 
 ### `claude/scripts/dotfiles_sync_check.py`
 

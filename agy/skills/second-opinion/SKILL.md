@@ -46,7 +46,12 @@ fallback (single-model override or backend default), not a skipped round. See
 the loop below for exactly where this retry sits. If only some backends are
 pool-configured, automatic selection stops on the first priority candidate with
 a pool config error; use `--backend <configured-backend>` to target a working
-one.
+one. On a machine with no pool at all for the dispatched backend, the script
+itself prints a one-line stderr notice (suppressed by `--quiet`) naming the
+absent pool variable, where to set it, and a realistic example — the run still
+proceeds with the backend's default model, so nothing to act on unless you want
+pool rotation. See the toolkit README's "What you supply vs. what the toolkit
+creates" section for the full config contract.
 
 ## Resolving the target plan
 
@@ -123,7 +128,17 @@ loop:
                                                             # no pool configured
                                                             # for this backend,
                                                             # not an error to
-                                                            # surface to the user
+                                                            # surface to the
+                                                            # user — the script
+                                                            # itself prints a
+                                                            # stderr notice
+                                                            # (suppressed by
+                                                            # --quiet) naming
+                                                            # the pool var and
+                                                            # an example; the
+                                                            # run still falls
+                                                            # back to the
+                                                            # default model
     show "Round N critique" + critique in chat
 
     if round > 1 and critique raises nothing substantively

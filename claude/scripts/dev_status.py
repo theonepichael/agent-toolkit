@@ -1967,8 +1967,7 @@ def read_journal_entries(
     """Read journal entries, optionally filtered to the last ``within_hours``.
 
     Read without holding :func:`backlog_lock` — appends are serialized
-    elsewhere (under the lock, or under a briefly-acquired one from
-    ``dev_status_sync.py``), but a concurrent append can still expose a
+    elsewhere (under the lock), but a concurrent append can still expose a
     trailing partial line on the final read. A ``JSONDecodeError`` on that
     last line is silently skipped (the writer just hasn't finished); the
     same failure on any earlier line is real corruption and is surfaced as

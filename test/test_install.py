@@ -329,9 +329,8 @@ def test_every_claude_script_has_a_links_entry(links):
 
 
 def test_no_test_file_has_a_links_entry(links):
-    """The inverse of the coverage rule above: three test files
-    (test_dev_status.py, test_dev_status_sync.py, test_vitals_promotion.py)
-    had accumulated links.toml entries with no functional reason -- nothing
+    """The inverse of the coverage rule above: some test files had
+    accumulated links.toml entries with no functional reason -- nothing
     in the repo ever invokes a test via the deployed ~/.claude/scripts/
     path, only via ``python3 test_X.py`` inside the checkout. Removed as
     unnecessary state; this guards against the pattern creeping back."""
@@ -382,11 +381,13 @@ def test_harness_gate(home, links):
 def test_platform_and_profile_gates(home, links):
     linux_personal = make_ctx(home, system="Linux")
     dests = {s.dest for s in links if install.link_applies(s, linux_personal)}
-    assert "~/.claude/scripts/dev_status_sync.py" in dests
+    assert "~/.claude/scripts/dev_status.py" in dests
 
     linux_work = make_ctx(home, system="Linux", profile="work")
     work_dests = {s.dest for s in links if install.link_applies(s, linux_work)}
-    assert "~/.claude/scripts/dev_status_sync.py" not in work_dests
+    # The work profile still gets every shared script; its only exclusions
+    # were the (now-removed) personal sync endpoint.
+    assert "~/.claude/scripts/dev_status.py" in work_dests
 
     mac = make_ctx(home, system="Darwin", harnesses=("copilot",))
     mac_dests = {s.dest for s in links if install.link_applies(s, mac)}

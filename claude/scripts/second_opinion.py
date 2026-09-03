@@ -74,6 +74,13 @@ Env vars
 
 Files read: <plan-file-or-text> (if a path), --focus-file. Nothing written.
 
+Absent-config notice: a review whose dispatched backend has no model pool
+and no single-model override configured (both env vars unset) prints a
+one-line stderr notice saying so, naming the pool var, where to set it, and
+a realistic example — suppressed by --quiet. The run still proceeds with the
+backend's default model. See README.md's "What you supply vs. what the
+toolkit creates" section for the full supplied-vs-created contract.
+
 Exit codes: 0 success; 1 any failure (no backend available, all backends failed,
 bad --focus-file, unknown subcommand).
 
@@ -219,6 +226,61 @@ def _resolve_pooled_model(
     if pool:
         return pool[0]
     return None
+
+
+# Realistic example pool values for the absent-config notice, per backend.
+# Illustrative, not prescriptive: the notice shows what a pool line looks
+# like, it doesn't recommend specific ids.
+_EXAMPLE_POOL_VALUES = {
+    "agy": "Gemini 3.7 Flash (High),Gemini 3.7 Pro (High)",
+    "pi": "opencode-go/glm-5.2,opencode-go/glm-5.3-flash",
+    "opencode": "opencode-go/glm-5.2,opencode-go/glm-5.3-flash",
+    "copilot": "claude-sonnet-4.5,gpt-5",
+}
+
+
+def _absent_pool_config(backend: str, env: Mapping[str, str] | None = None) -> bool:
+    """Return True when ``backend`` would fall back to its default model.
+
+    True exactly when neither the backend's pool var nor its single-override
+    var is set (whitespace-only counts as unset) — the "no config at all"
+    state the absent-config notice announces. A backend outside
+    :data:`_POOL_ENV_VARS` is never "absent-configured". Pure: reads ``env``
+    when given (a plain dict in tests) and ``os.environ`` otherwise.
+    """
+    if backend not in _POOL_ENV_VARS:
+        return False
+    pool_var, single_var = _POOL_ENV_VARS[backend]
+    return not _env_stripped(single_var, env) and not _parse_pool(pool_var, env)
+
+
+def _default_fallback_notice(backend: str) -> str:
+    """Build the one-line absent-config announcement for ``backend``.
+
+    Names the absent pool var, where to set it (shell env — a shell rc file
+    or a sourced secrets file), and a realistic example line, so an
+    unconfigured machine says so instead of silently using the backend's
+    default model. The copilot variant also states the tier requirement:
+    copilot's ``--model`` flag needs a Pro or Enterprise plan, and a free-
+    tier rejection reads like a wrong model id (see
+    ``llm_backends.BackendModelPolicyError``).
+    """
+    pool_var, single_var = _POOL_ENV_VARS[backend]
+    example = _EXAMPLE_POOL_VALUES.get(backend, "model-a,model-b")
+    msg = (
+        f"[second_opinion] {backend}: no model pool configured ({pool_var} and "
+        f"{single_var} both unset) — falling back to the backend's default "
+        f"model. Set {pool_var} in your shell environment (e.g. ~/.zshrc or a "
+        f"sourced secrets file such as ~/.secrets); example: "
+        f'export {pool_var}="{example}"'
+    )
+    if backend == "copilot":
+        msg += (
+            " Note: copilot's --model flag requires a GitHub Copilot Pro or "
+            "Enterprise plan — on a free tier, every pooled id is rejected as "
+            "an entitlement failure."
+        )
+    return msg
 
 
 def _validate_model_index(
@@ -734,6 +796,7 @@ def cmd_review(args: argparse.Namespace) -> None:
 
     model_index = getattr(args, "model_index", None)
     verbose = getattr(args, "verbose", False)
+    quiet = getattr(args, "quiet", False)
     failures: list[str] = []
     size_rule_outs: list[llm_backends.BackendPayloadSizeError] = []
     for backend in candidates:
@@ -742,6 +805,12 @@ def cmd_review(args: argparse.Namespace) -> None:
             err = _validate_model_index(backend, model_index, os.environ)
             if err:
                 die(err)
+        # Absent-config announcement (decided 2026-09-03): emitted at the
+        # dispatch point — never inside the model-resolution helpers — so
+        # --help, validation, and pre-flight paths stay silent, and only a
+        # backend actually about to run can announce its default fallback.
+        if not quiet and _absent_pool_config(backend):
+            print(_default_fallback_notice(backend), file=sys.stderr)
         try:
             critique = BACKEND_RUNNERS[backend](prompt, model_index=model_index)
         except BackendError as exc:

@@ -1191,6 +1191,90 @@ class CmdReviewTests(unittest.TestCase):
         self.assertEqual(captured["model"], "gpt-4")
 
 
+class DefaultFallbackNoticeTests(unittest.TestCase):
+    """The absent-config contract (decided 2026-09-03): a review that falls
+    back to a backend's default model announces it on stderr, names the pool
+    var, where to set it, and a realistic example; --quiet suppresses it; any
+    configured pool or single override keeps it silent."""
+
+    def _run_review(
+        self, backend: str, argv_env: dict[str, str], ns_kwargs: dict | None = None
+    ) -> tuple[str, str]:
+        out, err = io.StringIO(), io.StringIO()
+        with (
+            patch.dict(os.environ, argv_env, clear=True),
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(
+                second_opinion,
+                "BACKEND_RUNNERS",
+                {backend: lambda p, model_index=None: "critique text"},
+            ),
+            patch("sys.stdout", out),
+            patch("sys.stderr", err),
+        ):
+            second_opinion.cmd_review(
+                ns(plan="my plan", backend=backend, **(ns_kwargs or {}))
+            )
+        return out.getvalue(), err.getvalue()
+
+    def test_49a_default_fallback_announces_pool_var_where_and_example(self) -> None:
+        _, err = self._run_review("agy", {})
+        self.assertIn("SECOND_OPINION_AGY_MODEL_POOL", err)
+        self.assertIn("default model", err)
+        self.assertIn("export SECOND_OPINION_AGY_MODEL_POOL=", err)
+        self.assertIn("~/.zshrc", err)
+
+    def test_49b_configured_pool_is_silent(self) -> None:
+        _, err = self._run_review(
+            "agy", {"SECOND_OPINION_AGY_MODEL_POOL": "Gemini 3.7 Flash (High)"}
+        )
+        self.assertNotIn("no model pool configured", err)
+
+    def test_49c_single_override_is_silent(self) -> None:
+        _, err = self._run_review(
+            "pi", {"SECOND_OPINION_PI_MODEL": "opencode-go/glm-5.2"}
+        )
+        self.assertNotIn("no model pool configured", err)
+
+    def test_49d_quiet_suppresses_the_notice(self) -> None:
+        _, err = self._run_review("pi", {}, {"quiet": True})
+        self.assertNotIn("no model pool configured", err)
+
+    def test_49e_copilot_notice_names_tier_requirement(self) -> None:
+        _, err = self._run_review("copilot", {})
+        self.assertIn("Pro or Enterprise", err)
+
+    def test_49f_each_dispatched_backend_gets_its_own_notice(self) -> None:
+        out, err = io.StringIO(), io.StringIO()
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(
+                second_opinion,
+                "BACKEND_RUNNERS",
+                {
+                    "agy": lambda p, model_index=None: (_ for _ in ()).throw(
+                        second_opinion.BackendError("agy broke")
+                    ),
+                    "pi": lambda p, model_index=None: "critique text",
+                },
+            ),
+            patch("sys.stdout", out),
+            patch("sys.stderr", err),
+        ):
+            second_opinion.cmd_review(ns(plan="my plan"))
+        err = err.getvalue()
+        self.assertIn("SECOND_OPINION_AGY_MODEL_POOL", err)
+        self.assertIn("SECOND_OPINION_PI_MODEL_POOL", err)
+
+    def test_49g_absent_pool_config_helper_is_pure(self) -> None:
+        env = {"SECOND_OPINION_PI_MODEL_POOL": "m1"}
+        self.assertFalse(second_opinion._absent_pool_config("pi", env))
+        self.assertTrue(second_opinion._absent_pool_config("pi", {}))
+        self.assertTrue(second_opinion._absent_pool_config("copilot", {}))
+        self.assertFalse(second_opinion._absent_pool_config("not-a-backend", {}))
+
+
 class DieTests(unittest.TestCase):
     def test_47_die_prints_prefixed_message_and_exits_1(self) -> None:
         err = io.StringIO()

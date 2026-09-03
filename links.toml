@@ -108,11 +108,6 @@ src = "claude/scripts/llm_backends.py"
 dest = "~/.claude/scripts/llm_backends.py"
 
 [[link]]
-src = "claude/scripts/dev_status_sync.py"
-dest = "~/.claude/scripts/dev_status_sync.py"
-profile_exclude = ["work"]
-
-[[link]]
 src = "claude/scripts/to_tickets_runner.py"
 dest = "~/.claude/scripts/to_tickets_runner.py"
 
