@@ -11,35 +11,38 @@ halfway.
 
 ## The state today
 
-Upstream dotfiles is the working repository. Changes land there first and are
-reconciled into this one by hand. That reconciliation is the problem, not a
-detail: it has to re-derive, every time, which files belong here, which are
-personal and must not ship, and which have diverged in both places.
+Upstream dotfiles is the working repository; changes land there first. Until
+2026-09-03 that meant reconciling this repo by hand every time — re-deriving,
+per pass, which files belong here, which are personal and must not ship, and
+which have diverged in both places. A reconciliation pass completed that day
+was stale again within hours: three further upstream commits the same day put
+this repo behind, because closing the gap had been a manual act that nothing
+repeated.
 
-The consequence is measurable rather than theoretical. A reconciliation pass
-was completed on 2026-09-03, and three further upstream commits the same day
-put this repo behind again — missing a backlog prefix scheme, a delegation
-script, a new command, and a safety guard in the swarm tooling. The gap
-reopened within hours of being closed, because closing it was a manual act
-that nothing repeats.
+Item 1 below (`scripts/sync_from_dotfiles.py`) fixes that mechanism, not just
+that one gap — reconciliation is now a repeatable command with the blocklist,
+conflict-set derivation, and classification rule encoded as code, so the next
+sync doesn't re-derive any of it by hand. The repo still lags upstream between
+runs (nothing runs the sync automatically), which is why item 5 still exists:
+a sync immediately before cutover, using the now-cheap tool, is what makes the
+final reconciliation accurate at the moment it matters.
 
 ## The order, and why it is this order
 
-### 1. Make reconciliation a command, not a project
+### 1. Make reconciliation a command, not a project — DONE (2026-09-03)
 
-**Do this first.** Everything after it is safer once it is done, and nothing
-after it is safe while it is not.
+`scripts/sync_from_dotfiles.py` encodes the file blocklist, the conflict-set
+derivation, and the classification rule as code, so they no longer live in
+whoever happens to be running the sync that week. It reports by default and
+requires `--apply` to write, and it tracks its own last-synced state in
+`scripts/.sync-state.json` so the next run doesn't need a hand-verified
+starting point.
 
-Today the sync is a throwaway script rewritten per pass, so the file
-blocklist, the conflict set, and the rule for classifying a changed file all
-live in whoever is doing it. Encode them as data in a maintained tool that
-lives here — this repo is the thing being synced *into*, and a coworker
-cloning it has no dotfiles checkout to run the tool from.
-
-The reason this is first: the three items below take real time, and upstream
-does not stop while they are worked. Without a repeatable sync, the repo drifts
-underneath the migration and the final pre-cutover reconciliation becomes a
-large, risky, hand-audited diff instead of one command.
+The reason this went first: the three items below take real time, and
+upstream does not stop while they are worked. Without a repeatable sync, the
+repo would drift underneath the migration and the final pre-cutover
+reconciliation would be a large, risky, hand-audited diff instead of one
+command (see item 5).
 
 ### 2. Split the shared instructions from the personal ones
 
@@ -53,17 +56,28 @@ arguably shareable, a per-machine path is not, and several sections sit
 between. Decide the boundary deliberately and record the reasoning, because
 the next person to add a section needs the rule, not just the outcome.
 
-### 3. Publish the repository
+### 3. Publish the repository — remote and scan DONE, coworker access still pending
 
-The split exists so coworkers can clone this. Right now there is no remote, so
-that is unreachable and the whole exercise has no payoff.
+The split exists so coworkers can clone this. A private GitHub remote
+(`github.com/theonepichael/agent-toolkit`) now exists, with zero collaborators
+added yet.
 
-The work here is mostly not the remote itself. It is a secret scan across the
-**full history** to be pushed — not the working tree, and not the era of the
-initial snapshot. History carries everything ever committed, and this repo's
-history was imported wholesale.
+The work here was mostly not the remote itself — it was a secret scan across
+the **full history** pushed, not just the working tree or the initial
+snapshot's era, since history carries everything ever committed and this
+repo's history was imported wholesale. That scan (gitleaks, full history) came
+back clean. A separate hardcoded-path audit of the working tree, done as part
+of the same pass, was not clean — it found this-machine-specific paths in
+three files that would have silently misbehaved for a coworker; those are
+fixed, with a regression test added so the class doesn't recur.
 
-Independent of items 1 and 2; can be done alongside either.
+Remaining before a coworker actually gets in: a scratch-clone install
+verification (done, two harnesses), the onboarding entry point (this file and
+the README, being brought current now), and then adding named collaborators —
+deliberately last, since two more coworker-facing issues turned up mid-audit
+(`atk-pi-prompts-dotfiles-refs`) and should land first.
+
+Independent of items 1 and 2; was done alongside both.
 
 ### 4. Write the handover order and its rollback — last before cutover
 

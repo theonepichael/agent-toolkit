@@ -7,9 +7,11 @@ A modular, multi-harness platform for AI agent workflows and paired development 
 - **Google Antigravity (AGY)** (Google DeepMind)
 - **Pi** (Lightweight extensible terminal assistant)
 
-> **Status: not yet independent.** This repository began as a snapshot of a
-> personal dotfiles repo, which is still where harness work lands first. It is
-> reconciled here by hand and drifts between passes. See
+> **Status: not yet independent, but no longer manual.** This repository
+> began as a snapshot of a personal dotfiles repo, which is still where
+> harness work lands first — reconciliation is now
+> `scripts/sync_from_dotfiles.py`, a repeatable command, not a hand-derived
+> diff. A private GitHub remote exists; coworker access isn't open yet. See
 > [MIGRATION.md](MIGRATION.md) for what remains and the order it must be done
 > in.
 
