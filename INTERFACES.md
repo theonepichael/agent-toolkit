@@ -1304,6 +1304,44 @@ Pristine-state departure mode: baseline capture and ownership tracking.
   - `classify_gitconfig(recorded: dict[str, object] | None, live: dict[str, object], managed_value: str) -> Classification` — Classify a single global git config key this installer manages.
 - Tested by: `test/test_depart.py`, `test/test_depart_transactions.py`, `test/test_install.py`
 
+### `scripts/sync_from_dotfiles.py`
+
+sync_from_dotfiles.py — replay dotfiles' harness changes onto this toolkit.
+
+- Installed at: not symlinked by `links.toml`
+- Entrypoint: not executable, `#!/usr/bin/env python3`
+- CLI (`argparse`): replay dotfiles' harness changes onto this toolkit
+  - `--apply` — derive, verify, and apply the sync (default: report/diff only)
+  - `--since` — override the stored dotfiles BASE (first run, or recovery)
+  - `--dotfiles-path` — path to the dotfiles checkout (default: ~/dotfiles)
+  - `--quiet/-q`
+  - `--verbose/-v`
+- Filesystem constants:
+  - `REPO_ROOT = Path(__file__).resolve().parent.parent`
+  - `DEFAULT_DOTFILES_PATH = Path.home() / 'dotfiles'`
+- Explicit exit codes: `1`, `2`
+- Public functions:
+  - `state_path(repo_root: Path) -> Path` — Return the path to the committed sync-state marker.
+  - `load_state(repo_root: Path) -> dict[str, object] | None` — Load the sync-state marker, or None if this repo has never synced.
+  - `write_state(repo_root: Path, *, dotfiles_sha: str, toolkit_commit: str | None) -> None` — Record a successful sync as the new BASE for the next run.
+  - `run_git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]` — Run a git command in ``repo``, capturing output as text.
+  - `changed_paths(repo: Path, base: str, tip: str) -> frozenset[str]` — Return every path git reports as changed between two refs.
+  - `path_exists_at(repo: Path, ref: str, path: str) -> bool` — Return whether ``path`` exists in ``repo`` at ``ref``.
+  - `read_at(repo: Path, ref: str, path: str) -> bytes` — Return the raw bytes of ``path`` in ``repo`` at ``ref``.
+  - `resolve_head(repo: Path) -> str` — Return the current HEAD commit of ``repo``.
+  - `root_commit(repo: Path) -> str` — Return the earliest commit reachable from HEAD in ``repo``.
+  - `resolve_toolkit_anchor(repo_root: Path, state: dict[str, object] | None) -> str` — Toolkit-side anchor for conflict-set math.
+  - `git_add(repo_root: Path, paths: Sequence[str]) -> None` — Stage the given repo-relative paths.
+  - `write_copies(repo_root: Path, dotfiles_path: Path, tip: str, paths: Sequence[str]) -> None` — Write each path's byte-identical content from dotfiles@tip into the repo.
+  - `run_generator_sweep(repo_root: Path, sweep: Sequence[str], *, quiet: bool, verbose: bool) -> None` — Run every generator in ``sweep`` so copied artifacts describe this repo.
+  - `apply_sync(repo_root: Path, dotfiles_path: Path, tip: str, plain_copies: Sequence[str], handled: Sequence[str], base: str, *, generator_sweep: Sequence[str] = GENERATOR_SWEEP, quiet: bool = False, verbose: bool = False) -> None` — Write copies, apply handled conflicts, sweep, then record new state.
+  - `compute_copy_set(dotfiles_changed: frozenset[str]) -> frozenset[str]` — Paths to replay onto the toolkit: everything dotfiles changed, minus the deliberate-deletion blocklist and the dotfiles-only exclude list.
+  - `compute_conflict_set(dotfiles_changed: frozenset[str], toolkit_changed: frozenset[str]) -> frozenset[str]` — Paths both sides changed since the last sync — never assumed, always derived.
+  - `classify_conflict(path: str) -> str` — Classify one conflict path: "generated_artifact", "handled", or "unclassified" (category 4 — stop and hand-resolve, the safe default).
+  - `verify_invariants(dotfiles_path: Path, base: str, tip: str, copy_set: frozenset[str]) -> list[str]` — Check the invariants that must hold before any write.
+  - `build_parser() -> argparse.ArgumentParser` — Build the argument parser.
+- Tested by: `scripts/test_sync_from_dotfiles.py`
+
 ---
 
 ## 5. Skill/command doc contract coverage
