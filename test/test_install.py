@@ -24,6 +24,12 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "claude" / "scripts"))
 
+# Matches install.py's own build_context()/Context.state_dir -- "agent-toolkit",
+# not "dotfiles", so this repo's manifest never collides with dotfiles' own
+# ~/.local/state/dotfiles/history.jsonl (see install.py's build_context
+# docstring comment for the orphan-cleanup collision this prevents).
+STATE_DIR_NAME = "agent-toolkit"
+
 
 import settings_seed_drift_check  # noqa: E402 — must follow sys.path.insert above
 
@@ -92,7 +98,7 @@ def make_ctx(
         report_uninstalled=report_uninstalled,
         force_harness=force_harness,
     )
-    state_dir = home / ".local" / "state" / "dotfiles"
+    state_dir = home / ".local" / "state" / STATE_DIR_NAME
     return install.Context(
         dotfiles=dotfiles,
         home=home,
@@ -1760,7 +1766,7 @@ def test_wipe_no_manifest_dry_run_and_nothing_to_sweep_still_errors(
 
 def test_wipe_removes_empty_state_dir(home, links, offline_install, monkeypatch):
     install.run_install(make_ctx(home, harnesses=("claude",)), links)
-    state_dir = home / ".local" / "state" / "dotfiles"
+    state_dir = home / ".local" / "state" / STATE_DIR_NAME
     assert state_dir.is_dir()
 
     _watchcommit_available(monkeypatch)
@@ -1773,7 +1779,7 @@ def test_wipe_dry_run_previews_empty_state_dir_removal(
     home, links, offline_install, monkeypatch, capsys
 ):
     install.run_install(make_ctx(home, harnesses=("claude",)), links)
-    state_dir = home / ".local" / "state" / "dotfiles"
+    state_dir = home / ".local" / "state" / STATE_DIR_NAME
 
     _watchcommit_available(monkeypatch)
     assert install.do_rollback(make_ctx(home, wipe=True, dry_run=True)) == 0
@@ -1785,7 +1791,7 @@ def test_wipe_dry_run_previews_empty_state_dir_removal(
 
 def test_plain_rollback_leaves_state_dir_even_if_empty(home, links, offline_install):
     install.run_install(make_ctx(home, harnesses=("claude",)), links)
-    state_dir = home / ".local" / "state" / "dotfiles"
+    state_dir = home / ".local" / "state" / STATE_DIR_NAME
 
     assert install.do_rollback(make_ctx(home)) == 0
 
@@ -3082,12 +3088,12 @@ def _seed_installed_font_tree(home, *, record: bool):
     (font_dir / "JetBrainsMono-Regular.ttf").write_bytes(b"installer font")
     (font_dir / ".nerd-fonts-version").write_text("3.4.0\n")
 
-    baseline = depart.load_baseline(home / ".local" / "state" / "dotfiles") or (
+    baseline = depart.load_baseline(home / ".local" / "state" / STATE_DIR_NAME) or (
         depart.Baseline()
     )
     if record:
         depart.record_installed_tree(baseline, font_dir)
-    depart.save_baseline(home / ".local" / "state" / "dotfiles", baseline)
+    depart.save_baseline(home / ".local" / "state" / STATE_DIR_NAME, baseline)
     return font_dir
 
 
@@ -4848,6 +4854,86 @@ def test_plain_install_auto_removes_orphaned_symlink_and_prints_it(
     assert ctx.display(dest) in out
 
 
+def test_build_context_uses_the_agent_toolkit_state_directory(monkeypatch, tmp_path):
+    """Direct regression test for build_context() itself, not just a
+    simulated scenario: the manifest-scoping test below constructs its own
+    Manifest objects and never calls build_context(), so it would not
+    catch a regression that re-hardcoded "dotfiles" back into
+    build_context() specifically while leaving Context.state_dir's
+    derivation intact. This test closes that gap by calling the real
+    function."""
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setattr(install.Path, "home", classmethod(lambda cls: fake_home))
+
+    ctx = install.build_context(install.Options(harnesses=("claude",)))
+
+    assert (
+        ctx.manifest.path
+        == fake_home / ".local" / "state" / "agent-toolkit" / "history.jsonl"
+    )
+    assert ctx.state_dir == fake_home / ".local" / "state" / "agent-toolkit"
+    assert "dotfiles" not in str(ctx.manifest.path)
+
+
+def test_orphan_cleanup_does_not_delete_a_different_repos_manifest_entries(
+    home, dir_repo, offline_install, capsys
+):
+    """Regression: agent-toolkit's install must never orphan-clean a symlink
+    another repo's install (a different state directory) recorded.
+
+    Reproduces the real bug directly: install.py's build_context() and
+    Context.state_dir used to both hardcode "dotfiles" as the state
+    directory name, so agent-toolkit's install and dotfiles' install wrote
+    to the SAME manifest (~/.local/state/dotfiles/history.jsonl). Every
+    plain install runs orphan-cleanup, which deletes any manifest-recorded
+    symlink the CURRENT repo's own links.toml doesn't produce -- so
+    agent-toolkit's install treated dotfiles' personal-only symlinks
+    (recorded in that shared manifest) as its own stale orphans and
+    deleted them, with no warning under --quiet. Proven live against a
+    real scratch HOME during this item's investigation: fresh install of
+    dotfiles (4 personal-only scripts present), then agent-toolkit
+    installed on top, all 4 silently gone.
+
+    This test simulates the two repos with two Manifest objects at
+    different state directories (matching install.py's real, now-fixed
+    "agent-toolkit" vs. dotfiles' own "dotfiles" naming) rather than two
+    real checkouts, and proves the destination the "other repo" manifest
+    recorded survives a plain install run that doesn't know about it.
+    """
+    other_repo_state_dir = home / ".local" / "state" / "dotfiles"
+    other_repo_manifest = install.Manifest(
+        other_repo_state_dir / "history.jsonl", dry_run=False
+    )
+    other_repo_dest = home / ".claude" / "scripts" / "dev_status_sync.py"
+    other_repo_dest.parent.mkdir(parents=True, exist_ok=True)
+    other_repo_src = dir_repo / "local" / "other-repo-only.py"
+    other_repo_src.parent.mkdir(parents=True, exist_ok=True)
+    other_repo_src.write_text("# belongs to the other repo\n")
+    other_repo_dest.symlink_to(other_repo_src)
+    other_repo_manifest.record_symlink(other_repo_dest, other_repo_src)
+    assert other_repo_dest.is_symlink(), "fixture setup: the other repo's link exists"
+
+    # This repo's own install: state_dir defaults to STATE_DIR_NAME
+    # ("agent-toolkit"), a different directory than other_repo_state_dir
+    # ("dotfiles") -- the actual fix under test. Its own links.toml (here,
+    # an empty spec list) has no entry for other_repo_dest at all.
+    ctx = dir_repo_ctx(home, dir_repo)
+    assert ctx.manifest.path.parent != other_repo_state_dir, (
+        "fixture bug: this test requires the two manifests to live in "
+        "different directories to mean anything"
+    )
+    capsys.readouterr()
+    install.run_install(ctx, [])
+    out = capsys.readouterr().out
+
+    assert other_repo_dest.is_symlink(), (
+        "a different repo's manifest entry must never be orphan-cleaned "
+        "by this repo's own install"
+    )
+    assert "dev_status_sync.py" not in out
+
+
 def test_auto_cleanup_leaves_broken_source_entries_alone(
     home, dir_repo, offline_install
 ):
@@ -5066,3 +5152,4 @@ def test_main_fails_loudly_when_harness_binary_missing(home, monkeypatch, capsys
     assert "✗ 'pi' CLI binary is not installed on PATH" in err
     assert "npm install -g @mariozechner/pi-cli" in err
     assert "pass --force-harness" in err
+

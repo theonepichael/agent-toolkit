@@ -19,7 +19,12 @@ from pathlib import Path
 import cli_common
 
 REPO = Path(__file__).resolve().parents[2]
-STATE_DIR = Path.home() / ".local" / "state" / "dotfiles"
+# "agent-toolkit", matching install.py's own state directory for this
+# repo -- this script's own bundling-drift marker must not be written into
+# dotfiles' state directory (~/.local/state/dotfiles/), the same
+# cross-repo confusion install.py's manifest-scoping fix eliminated
+# elsewhere.
+STATE_DIR = Path.home() / ".local" / "state" / "agent-toolkit"
 MARKER = STATE_DIR / "last-bundled-commit"
 
 

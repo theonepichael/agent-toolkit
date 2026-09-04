@@ -274,7 +274,7 @@ SessionStart hook: flag when the dotfiles repo has drifted from the last commit 
     - `sha` — commit to record (defaults to HEAD) (nargs: ?)
 - Filesystem constants:
   - `REPO = Path(__file__).resolve().parents[2]`
-  - `STATE_DIR = Path.home() / '.local' / 'state' / 'dotfiles'`
+  - `STATE_DIR = Path.home() / '.local' / 'state' / 'agent-toolkit'`
   - `MARKER = STATE_DIR / 'last-bundled-commit'`
 - Explicit exit codes: `1`
 - Depends on: `cli_common.py`
@@ -821,7 +821,7 @@ SessionStart hook + CLI: detect (and optionally fix) drift between the live ``~/
 - Filesystem constants:
   - `HOME = Path.home()`
   - `DOTFILES = Path(__file__).resolve().parents[2]`
-  - `PROFILE_MARKER = HOME / '.local' / 'state' / 'dotfiles' / 'profile'`
+  - `PROFILE_MARKER = HOME / '.local' / 'state' / 'agent-toolkit' / 'profile'`
 - Depends on: `cli_common.py`
 - Exceptions:
   - `class DriftCheckError(Exception)` — Raised when drift checking can't proceed (parse failure, not a missing file).

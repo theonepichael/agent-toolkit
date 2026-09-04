@@ -619,6 +619,23 @@ dir = true
 
 [[managed_dir]]
 dest = "~/.claude/scripts"
+# dotfiles keeps symlinking these personal-only/dotfiles-authored scripts
+# into this same directory permanently -- never moving to agent-toolkit, so
+# this exclusive-directory audit must not flag them as foreign. Same
+# precedent as herdr-agent-state.ts below (a legitimate third party in an
+# otherwise-exclusive directory). gen_core_instructions.py is CLAUDE.md's
+# own generator for CORE_INSTRUCTIONS.md -- authored and run from dotfiles,
+# the finished file synced into agent-toolkit by sync_from_dotfiles.py, per
+# this repo's own CLAUDE.md -- found via a live scratch-HOME --check-links
+# run during this item's verification, not part of the original 4-script
+# investigation.
+ignore = [
+    "dev_status_sync.py",
+    "watchcommit_activity.py",
+    "herdr_delegate.py",
+    "opencode_skills_sync_activity.py",
+    "gen_core_instructions.py",
+]
 
 
 [[managed_dir]]
