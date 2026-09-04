@@ -235,7 +235,7 @@ OPENCODE_COSMETIC_KEYS: frozenset[str] = frozenset({"$schema", "agent"})
 # over preserving live-only entries.
 OPENCODE_BYPASS_PATTERNS: tuple[str, ...] = ("xargs *", "awk *")
 
-PROFILE_MARKER = HOME / ".local" / "state" / "dotfiles" / "profile"
+PROFILE_MARKER = HOME / ".local" / "state" / "agent-toolkit" / "profile"
 
 
 class DriftCheckError(Exception):

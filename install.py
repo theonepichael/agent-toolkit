@@ -13,9 +13,12 @@ Two properties from the shell version are load-bearing and preserved here:
   collected by :class:`Reporter` and printed loudly in the end-of-run
   summary; the exit code is 1 if anything was skipped, 0 otherwise.
 * **Every file mutation is recorded** to an append-only history log
-  (``~/.local/state/dotfiles/history.jsonl``) that never gets truncated, so
-  ``--rollback`` reverses *every* run ever recorded, not just the most
-  recent one. Packages are reported but never uninstalled.
+  (``~/.local/state/agent-toolkit/history.jsonl`` -- a directory of its own,
+  distinct from dotfiles' ``~/.local/state/dotfiles/``, so this repo's
+  orphan-cleanup never treats dotfiles' still-wanted symlinks as its own
+  stale entries) that never gets truncated, so ``--rollback`` reverses
+  *every* run ever recorded, not just the most recent one. Packages are
+  reported but never uninstalled.
 
 The dotfile symlink table itself lives in ``links.toml`` next to this file,
 not in code — see that file's header for the per-entry schema.
@@ -565,8 +568,20 @@ class Context:
 
     @property
     def state_dir(self) -> Path:
-        """Where the history log and profile marker live."""
-        return self.home / ".local" / "state" / "dotfiles"
+        """Where the history log and profile marker live.
+
+        Derived from the manifest's own path rather than re-hardcoding the
+        directory name a second time -- two independent literals here and
+        in ``build_context`` previously had to be kept in sync by hand,
+        exactly the kind of duplication that let this directory's name
+        drift out of agreement with itself. Invariant this relies on:
+        every ``Manifest`` this codebase constructs lives directly inside
+        the state directory (``state_dir / "history.jsonl"``, never
+        nested deeper or pointed elsewhere) -- confirmed true of every
+        real call site as of this writing; a future caller that breaks
+        this invariant would silently corrupt ``state_dir`` too.
+        """
+        return self.manifest.path.parent
 
     @property
     def profile_marker(self) -> Path:
@@ -610,7 +625,20 @@ def build_context(opts: Options, dotfiles: Path | None = None) -> Context:
     root = dotfiles or Path(__file__).resolve().parent
     home = Path.home()
     system = platform.system()
-    state_dir = home / ".local" / "state" / "dotfiles"
+    # "agent-toolkit", not "dotfiles" -- both repos' install.py write a
+    # symlink-creation manifest under this directory, and orphan-cleanup
+    # (install_symlinks' _cleanup_orphaned_links, run on every plain
+    # install) deletes any manifest-recorded symlink this repo's own
+    # links.toml doesn't produce. A shared state directory means each
+    # repo's install treats the OTHER repo's still-wanted symlinks as its
+    # own stale orphans and deletes them -- reproduced directly: a fresh
+    # machine with dotfiles installed, then agent-toolkit installed on top,
+    # loses dotfiles' personal-only scripts (dev_status_sync.py,
+    # watchcommit_activity.py, herdr_delegate.py,
+    # opencode_skills_sync_activity.py) with no warning under --quiet.
+    # Giving agent-toolkit its own state directory makes this permanently
+    # impossible, not just during a one-time cutover.
+    state_dir = home / ".local" / "state" / "agent-toolkit"
     return Context(
         dotfiles=root,
         home=home,
