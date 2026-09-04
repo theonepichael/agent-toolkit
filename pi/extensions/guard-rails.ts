@@ -3,6 +3,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 
 let enabled = true;
+let effectiveCwd: string | null = null;
 
 /**
  * True when no human is watching this session -- a swarm worker in its own
@@ -35,6 +36,15 @@ export function isUnattended(): boolean {
 /** Read-only view of the gate, so a caller (or a test) can confirm its state. */
 export function isGuardRailsEnabled(): boolean {
   return enabled;
+}
+
+/** Read-only view of the effective cwd tracked from cwd-change events. */
+export function getGuardEffectiveCwd(): string | null {
+  return effectiveCwd;
+}
+
+export function resetGuardEffectiveCwd(): void {
+  effectiveCwd = null;
 }
 
 // No exported setter on purpose. One used to live here ("Exported so
@@ -223,8 +233,16 @@ export default function (pi: ExtensionAPI) {
     if (typeof trusted === "boolean") enabled = !trusted;
   });
 
+  pi.events.on("cwd-change", (data) => {
+    const next = (data as { cwd?: unknown } | null | undefined)?.cwd;
+    if (typeof next === "string" && next.length > 0) {
+      effectiveCwd = next;
+    }
+  });
+
   pi.on("tool_call", async (event, ctx) => {
     if (!enabled) return undefined;
+    const activeCwd = effectiveCwd ?? ctx.cwd;
 
     // Bash guard rails
     if (isToolCallEventType("bash", event)) {
@@ -263,7 +281,7 @@ export default function (pi: ExtensionAPI) {
       }
 
       // git commit on main/master — worktree policy
-      const gitCommit = getGitCommitTarget(command, ctx.cwd);
+      const gitCommit = getGitCommitTarget(command, activeCwd);
       if (gitCommit.isCommit) {
         const branch = await currentGitBranch(pi, gitCommit.cwd);
         if (branch === "main" || branch === "master") {
@@ -274,7 +292,7 @@ export default function (pi: ExtensionAPI) {
         }
       }
 
-      const bashVerdict = await sharedBashGuard(pi, ctx.cwd, command);
+      const bashVerdict = await sharedBashGuard(pi, activeCwd, command);
       if (bashVerdict?.decision === "deny") {
         return { block: true, reason: bashVerdict.reason ?? "Blocked by guard-rails" };
       }

@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { getGitCommitTarget, isDangerousRm, isProtectedPath } from "../extensions/guard-rails";
+import guardRailsExtension, {
+  getGitCommitTarget,
+  getGuardEffectiveCwd,
+  isDangerousRm,
+  isProtectedPath,
+  resetGuardEffectiveCwd,
+} from "../extensions/guard-rails";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 describe("isDangerousRm", () => {
   test("flags rm with both recursive and force (combined short flags)", () => {
@@ -189,5 +196,44 @@ describe("getGitCommitTarget", () => {
       isCommit: true,
       cwd: "/repo",
     });
+  });
+});
+
+describe("guard-rails cwd-change integration", () => {
+  test("updates effective cwd when cwd-change event is emitted", () => {
+    resetGuardEffectiveCwd();
+    expect(getGuardEffectiveCwd()).toBeNull();
+
+    const eventListeners = new Map<string, ((data: any) => void)[]>();
+    const mockPi = {
+      events: {
+        on: (name: string, handler: (data: any) => void) => {
+          const list = eventListeners.get(name) ?? [];
+          list.push(handler);
+          eventListeners.set(name, list);
+        },
+      },
+      on: () => {},
+      registerCommand: () => {},
+    } as unknown as ExtensionAPI;
+
+    guardRailsExtension(mockPi);
+
+    const cwdChangeHandlers = eventListeners.get("cwd-change");
+    expect(cwdChangeHandlers).toBeDefined();
+    expect(cwdChangeHandlers?.length).toBe(1);
+
+    cwdChangeHandlers![0]({ cwd: "/new/worktree/dir" });
+    expect(getGuardEffectiveCwd()).toBe("/new/worktree/dir");
+
+    // Invalid payloads are safely ignored
+    cwdChangeHandlers![0]({ cwd: "" });
+    expect(getGuardEffectiveCwd()).toBe("/new/worktree/dir");
+
+    cwdChangeHandlers![0]({ cwd: 123 });
+    expect(getGuardEffectiveCwd()).toBe("/new/worktree/dir");
+
+    resetGuardEffectiveCwd();
+    expect(getGuardEffectiveCwd()).toBeNull();
   });
 });

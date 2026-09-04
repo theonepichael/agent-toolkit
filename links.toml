@@ -610,6 +610,11 @@ dest = "~/.pi/agent/extensions/model-picker.ts"
 harness = "pi"
 
 [[link]]
+src = "pi/extensions/cwd.ts"
+dest = "~/.pi/agent/extensions/cwd.ts"
+harness = "pi"
+
+[[link]]
 src = "pi/skills"
 dest = "~/.pi/agent/skills"
 harness = "pi"
