@@ -9,8 +9,14 @@ dest = "~/.agent-tools.zsh"
 
 # ── Claude Code wiring ───────────────────────────────────────────────────
 
+# All 4 entries below (and the copilot/agy/pi ones further down) source
+# CORE_INSTRUCTIONS.md, not global-instructions.md -- dotfiles' own links.toml
+# sources global-instructions.md instead (the composed core+personal file).
+# This is intentional, permanent divergence, not something to revert to
+# match dotfiles: agent-toolkit never had global-instructions.md at all
+# after this split.
 [[link]]
-src = "claude/global-instructions.md"
+src = "claude/CORE_INSTRUCTIONS.md"
 dest = "~/.claude/CLAUDE.md"
 harness = "claude"
 
@@ -75,17 +81,17 @@ dest = "~/.claude/output-styles/ConciseSTE.md"
 harness = "claude"
 
 [[link]]
-src = "claude/global-instructions.md"
+src = "claude/CORE_INSTRUCTIONS.md"
 dest = "~/.copilot/copilot-instructions.md"
 harness = "copilot"
 
 [[link]]
-src = "claude/global-instructions.md"
+src = "claude/CORE_INSTRUCTIONS.md"
 dest = "~/.gemini/GEMINI.md"
 harness = "agy"
 
 [[link]]
-src = "claude/global-instructions.md"
+src = "claude/CORE_INSTRUCTIONS.md"
 dest = "~/.pi/agent/AGENTS.md"
 harness = "pi"
 
@@ -200,7 +206,7 @@ dest = "~/.claude/scripts/statusline.py"
 # ── GitHub Copilot CLI wiring ────────────────────────────────────────────
 
 [[link]]
-src = "claude/global-instructions.md"
+src = "claude/CORE_INSTRUCTIONS.md"
 dest = "~/.copilot/copilot-instructions.md"
 harness = "copilot"
 
@@ -387,7 +393,7 @@ harness = "opencode"
 # ── agy (Google Antigravity CLI) ─────────────────────────────────────────
 
 [[link]]
-src = "claude/global-instructions.md"
+src = "claude/CORE_INSTRUCTIONS.md"
 dest = "~/.gemini/GEMINI.md"
 harness = "agy"
 
@@ -449,7 +455,7 @@ harness = "agy"
 # ── Pi ───────────────────────────────────────────────────────────────────
 
 [[link]]
-src = "claude/global-instructions.md"
+src = "claude/CORE_INSTRUCTIONS.md"
 dest = "~/.pi/agent/AGENTS.md"
 harness = "pi"
 

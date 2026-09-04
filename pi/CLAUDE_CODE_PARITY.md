@@ -16,7 +16,7 @@ install, not from search-engine summaries.
 - **Global instructions file: `~/.pi/agent/AGENTS.md`, with `CLAUDE.md` read
   as a fallback name** (`docs/usage.md`'s Context Files section: "Pi loads
   `AGENTS.md` or `CLAUDE.md` at startup from: `~/.pi/agent/AGENTS.md` for
-  global instructions..."). `links.toml` symlinks `claude/global-instructions.md`
+  global instructions..."). `links.toml` symlinks `claude/CORE_INSTRUCTIONS.md`
   to this path (as `AGENTS.md`, not `CLAUDE.md` — do not shadow `AGENTS.md` with a
   same-directory `CLAUDE.md`; when both are considered for a directory the
   doc names `AGENTS.md` first). No frontmatter support — always active,
@@ -451,7 +451,7 @@ section less useful, not more.
   real logic worth covering.
 - **`philosophy-header.ts`** — replaces Pi's startup header with a wordmark
   and one of six taglines quoted from this repo's own `STYLE.md` and
-  `claude/global-instructions.md`, picked once per session; `/builtin-header` restores
+  `claude/CORE_INSTRUCTIONS.md`, picked once per session; `/builtin-header` restores
   the stock one. It imports only a type, so no `pi.exec`, no filesystem, no
   network, and `ctx.mode !== "tui"` makes it inert in print, RPC and JSON
   modes.

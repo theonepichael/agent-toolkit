@@ -44,17 +44,17 @@ repo would drift underneath the migration and the final pre-cutover
 reconciliation would be a large, risky, hand-audited diff instead of one
 command (see item 5).
 
-### 2. Split the shared instructions from the personal ones
+### 2. Split the shared instructions from the personal ones — DONE (2026-09-03)
 
-The toolkit currently ships a personal global-instructions file verbatim.
-Some of it is genuinely shareable workflow. Some is personal policy, and some
-is specific to one machine. Nobody else can adopt the toolkit until that
-boundary exists and is written down.
-
-The classification is not mechanical at the margins — a git worktree policy is
-arguably shareable, a per-machine path is not, and several sections sit
-between. Decide the boundary deliberately and record the reasoning, because
-the next person to add a section needs the rule, not just the outcome.
+The toolkit now ships `claude/CORE_INSTRUCTIONS.md` — the shareable workflow
+content only, symlinked directly to every harness with no generation step
+of its own. Personal policy and machine-specific content (the repo-prefix
+table's concrete values, cross-machine sync, the personal-project git
+bundling preference, the watchcommit auto-commit guard) moved to dotfiles'
+own `claude/personal-overlay.md`, composed with `CORE_INSTRUCTIONS.md` by a
+new `claude/scripts/gen_core_instructions.py` into the
+`claude/global-instructions.md` dotfiles actually symlinks out — never
+synced to agent-toolkit (`scripts/sync_from_dotfiles.py`'s `EXCLUDE`).
 
 ### 3. Publish the repository — remote and scan DONE, coworker access still pending
 

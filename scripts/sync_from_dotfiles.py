@@ -94,7 +94,16 @@ BLOCKED_MODULES: tuple[str, ...] = (
 )
 
 # dotfiles-only paths this toolkit deliberately never carries.
-EXCLUDE: tuple[str, ...] = ("CHANGELOG.md",)
+EXCLUDE: tuple[str, ...] = (
+    "CHANGELOG.md",
+    # This machine's personal-policy overlay and the dotfiles-only generator
+    # that composes it with claude/CORE_INSTRUCTIONS.md into
+    # claude/global-instructions.md -- agent-toolkit has no overlay to
+    # compose against and symlinks CORE_INSTRUCTIONS.md directly instead.
+    "claude/personal-overlay.md",
+    "claude/scripts/gen_core_instructions.py",
+    "claude/scripts/test_gen_core_instructions.py",
+)
 
 # Generator outputs: never copy these from dotfiles even when they conflict.
 # The toolkit's own generator sweep (GENERATOR_SWEEP, below) is authoritative
