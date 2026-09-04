@@ -245,6 +245,8 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `build_index(items: list[BacklogItem]) -> BacklogIndex` — Build a slug → item lookup for ``items``.
   - `effective_blockers(item: BacklogItem, index: BacklogIndex) -> list[str]` — Return ``item``'s ``blocked_by`` slugs whose referent isn't done.
   - `detect_cycle(start: str, new_dep: str, index: BacklogIndex) -> bool` — Check whether adding ``new_dep`` as a blocker of ``start`` would cycle.
+  - `prefix_of(slug: str) -> str` — The slug's prefix, preferring the longest known one.
+  - `is_worker_safe(prefix: str) -> bool` — Whether a swarm worker may be handed items under this prefix.
   - `resolve_id(arg: str, items: list[BacklogItem], pending_items: list[PendingItem]) -> tuple[str, str]` — Resolve a display number or slug to a ``(kind, slug)`` pair.
   - `require_kind(cmd: str, arg: str, kind: str, expected: str) -> None` — Exit with a helpful message if ``kind`` doesn't match ``expected``.
   - `enforce_rev_guard(cmd: str, id_arg: str, if_rev_arg: int | None, current_rev: int, items: list[BacklogItem], pending_items: list[PendingItem]) -> None` — Refuse a numeric-id mutation that lacks a fresh ``--if-rev``.
@@ -1353,7 +1355,7 @@ sync_from_dotfiles.py — replay dotfiles' harness changes onto this toolkit.
   - `compute_copy_set(dotfiles_changed: frozenset[str]) -> frozenset[str]` — Paths to replay onto the toolkit: everything dotfiles changed, minus the deliberate-deletion blocklist and the dotfiles-only exclude list.
   - `compute_conflict_set(dotfiles_changed: frozenset[str], toolkit_changed: frozenset[str]) -> frozenset[str]` — Paths both sides changed since the last sync — never assumed, always derived.
   - `classify_conflict(path: str) -> str` — Classify one conflict path: "generated_artifact", "handled", or "unclassified" (category 4 — stop and hand-resolve, the safe default).
-  - `verify_invariants(dotfiles_path: Path, base: str, tip: str, copy_set: frozenset[str]) -> list[str]` — Check the invariants that must hold before any write.
+  - `verify_invariants(dotfiles_path: Path, base: str, tip: str, copy_set: frozenset[str], plain_copies: Sequence[str]) -> list[str]` — Check the invariants that must hold before any write.
   - `build_parser() -> argparse.ArgumentParser` — Build the argument parser.
 - Tested by: `scripts/test_sync_from_dotfiles.py`
 

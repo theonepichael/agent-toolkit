@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -112,6 +112,13 @@ const DEFAULT_WAIT_TIMEOUT_MS = 30 * 60 * 1000;
  * forever, holding its slot until someone killed the orchestrator by hand.
  */
 const DEFAULT_WORKER_DEADLINE_MS = 4 * 60 * 60 * 1000;
+
+// How long a worker may sit at awaiting_relay before the poll says so out
+// loud. Not a stop: a relay answered at minute 31 is still worth having, and
+// killing the worker would destroy finished work over a slow human. It is
+// purely a signal, so the run cannot go quiet with a pane nobody was told
+// about.
+const DEFAULT_RELAY_STALL_MS = 30 * 60 * 1000;
 /**
  * How long the liveness probe may take before it is abandoned as
  * inconclusive. Short, because `agent get` is a local socket round-trip --
@@ -205,6 +212,33 @@ export interface WorkerRecord {
    * not be reasoned about or reproduced after the fact.
    */
   model?: string;
+  /**
+   * Epoch ms this worker parked at `awaiting_relay`, cleared when it resumes.
+   *
+   * Separate from `workingSinceMs` on purpose: that clock stops here, so
+   * without this one a parked worker has no clock at all. See
+   * `stalledRelayWorkers`.
+   */
+  awaitingRelaySinceMs?: number;
+  /**
+   * The last relay answer that failed to match, if one did.
+   *
+   * Without it a failed resolve left no trace: the worker stayed at
+   * awaiting_relay and the next poll reported an ordinary unanswered relay,
+   * indistinguishable from one nobody had tried yet. That is exactly how the
+   * 2026-09-03 stall formed and went unnoticed.
+   */
+  lastResolveFailure?: { answer: string; reason: string; at: number };
+  /**
+   * Mid-flight corrections sent to this worker.
+   *
+   * On the record so the end-of-run digest can say an item's premises changed
+   * under a worker and when. The raw `herdr agent prompt` this replaces left
+   * no trace: the run state had no idea an item had been amended, and the
+   * orchestrator went on polling a worker whose instructions had been
+   * rewritten underneath it.
+   */
+  amendments?: Amendment[];
   lifecycle: WorkerLifecycle;
 }
 
@@ -294,6 +328,23 @@ type SpawnOutcome =
  */
 export type PollEventKind = "blocked" | "finished" | "timed_out" | "error" | "still_working";
 
+/**
+ * Whether a blocked worker's prompt is one the swarm can answer.
+ *
+ * Detection of blocked-ness is already class-wide -- herdr-blocked-bridge.ts
+ * listens to pi's ui_prompt_start, which fires for every blocking `ctx.ui.*`
+ * prompt -- but ANSWERING is not. `swarm_resolve_blocked` drives
+ * question-tool.ts's numbered picker by arrow key, and nothing else. A
+ * guard-rails `rm -rf` confirmation, a `/compact` select, or any pi built-in
+ * prompt parks the worker just the same, and the orchestrator had no way to
+ * tell the two apart: both simply appeared as `blocked`.
+ *
+ * So an unattended batch that hit a non-picker prompt stopped making progress
+ * with no signal naming the pane or the reason (observed live 2026-09-02,
+ * cleared by a human send-keys).
+ */
+export type BlockClass = "answerable" | "needs_human";
+
 export interface PollEvent {
   kind: PollEventKind;
   agent: string;
@@ -301,6 +352,9 @@ export interface PollEvent {
   paneId: string;
   rawPrompt?: string; // blocked only
   truncated?: boolean; // blocked only
+  blockClass?: BlockClass; // blocked only
+  options?: string[]; // blocked only -- the worker's REAL rendered labels
+  captures?: CaptureOffer[]; // finished only -- offers the worker queued instead of asking
   detail?: string; // timed_out/error only -- the raw herdr error detail, for an honest digest
   elapsedMs?: number; // still_working only -- working time so far, against the budget
   checkIn?: number; // still_working only -- 1-based, so "check-in 7 of a 4h budget" is sayable
@@ -312,6 +366,91 @@ export interface PollEvent {
 
 export function statePath(runId: string, stateDir: string = herdrStateDir()): string {
   return join(stateDir, `swarm-${runId}.json`);
+}
+
+/**
+ * A queued proactive-capture offer a worker wants recorded.
+ *
+ * `kind` mirrors CLAUDE.md's own protocols so the orchestrator can present
+ * each offer the way its protocol specifies: a backlog `add`, a
+ * `pending add`, or an `out-of-scope add`.
+ */
+export interface CaptureOffer {
+  kind: string;
+  id: string;
+  summary: string;
+}
+
+/**
+ * Where a worker writes the capture offers it wants the orchestrator to ask
+ * about, keyed by slug rather than agent id.
+ *
+ * By slug because the tab -- and therefore the env var naming this path --
+ * is created before an agent id exists, and a slug is unique within a run
+ * anyway (an item spawns once).
+ *
+ * The slug is reduced to its basename and stripped of anything outside
+ * `[A-Za-z0-9._-]`, so a crafted slug cannot walk out of the state dir.
+ */
+export function capturePath(
+  runId: string,
+  slug: string,
+  stateDir: string = herdrStateDir(),
+): string {
+  const safeRun = runId.replace(/[^A-Za-z0-9._-]/g, "_");
+  const safeSlug = (slug.split("/").pop() ?? "").replace(/[^A-Za-z0-9._-]/g, "_");
+  return join(stateDir, `swarm-${safeRun}-capture-${safeSlug}.json`);
+}
+
+/**
+ * Read a worker's queued capture offers, CONSUMING the file.
+ *
+ * Consumed because this is called as the worker finishes, immediately before
+ * its tab is closed and its record dropped. A file left behind would be
+ * re-read by a later poll with no worker left to attribute it to, and the
+ * human would be asked the same questions twice.
+ *
+ * Anything unreadable -- absent, malformed, wrong shape -- yields no offers
+ * rather than throwing. This runs inside swarm_poll's drain loop, where an
+ * exception would abandon every event queued behind it; losing a housekeeping
+ * offer is a far smaller harm than losing a worker's outcome.
+ */
+export function readCaptureOffers(
+  runId: string,
+  slug: string,
+  stateDir: string = herdrStateDir(),
+): CaptureOffer[] {
+  const path = capturePath(runId, slug, stateDir);
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch {
+    return [];
+  }
+  try {
+    rmSync(path, { force: true });
+  } catch {
+    // Best effort. A file we could read but not delete is better reported
+    // once than not at all.
+  }
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    const offers =
+      parsed && typeof parsed === "object" && "offers" in parsed
+        ? (parsed as { offers: unknown }).offers
+        : null;
+    if (!Array.isArray(offers)) return [];
+    return offers.flatMap((o): CaptureOffer[] => {
+      if (!o || typeof o !== "object") return [];
+      const rec = o as Record<string, unknown>;
+      const kind = typeof rec.kind === "string" ? rec.kind : "";
+      const id = typeof rec.id === "string" ? rec.id : "";
+      const summary = typeof rec.summary === "string" ? rec.summary : "";
+      return kind && id ? [{ kind, id, summary }] : [];
+    });
+  } catch {
+    return [];
+  }
 }
 
 export function loadState(runId: string, stateDir: string = herdrStateDir()): SwarmState | null {
@@ -440,7 +579,7 @@ export function nextAgentId(runId: string, counter: number, slug?: string): stri
  * reason there is no trust prompt to send afterwards -- see
  * WORKER_UNATTENDED_ENV.
  */
-export function buildTabCreateArgv(cwd: string, label: string): string[] {
+export function buildTabCreateArgv(cwd: string, label: string, captureFile?: string): string[] {
   return [
     "tab",
     "create",
@@ -450,8 +589,100 @@ export function buildTabCreateArgv(cwd: string, label: string): string[] {
     label,
     "--env",
     WORKER_UNATTENDED_ENV,
+    // A second --env, not a replacement: the worker needs both, and the
+    // unattended flag is what settles its gates at module load.
+    ...(captureFile ? ["--env", `PI_SWARM_CAPTURE_FILE=${captureFile}`] : []),
     "--no-focus",
   ];
+}
+
+/**
+ * Classify a blocked worker's captured pane as answerable or not.
+ *
+ * The test is exactly what `swarm_resolve_blocked` can actually drive: a
+ * question-tool picker that `parsePicker` recognises. That is deliberate --
+ * the classifier must never claim answerable for something the relay would
+ * then fail on, so it reuses the same parser rather than a looser heuristic
+ * of its own.
+ *
+ * An absent or empty capture is `needs_human`, not `answerable`. The read
+ * failed or the pane was empty, and guessing answerable would send arrow
+ * keys at a prompt nobody has read.
+ *
+ * This does NOT teach the relay to answer confirm dialogs. Approving
+ * arbitrary bash on a human's behalf is what the gate exists to prevent;
+ * `parsePicker` refusing them is correct and stays. The point here is only
+ * to say WHICH kind of block this is, so the orchestrator can relay one and
+ * escalate the other instead of treating every block alike.
+ */
+export function classifyBlock(rawPrompt: string | undefined): BlockClass {
+  if (!rawPrompt) return "needs_human";
+  return parsePicker(rawPrompt).options.length > 0 ? "answerable" : "needs_human";
+}
+
+/**
+ * Workers parked awaiting a relay for longer than `stallMs`.
+ *
+ * A SECOND clock, deliberately separate from the working-time budget. That
+ * budget measures time a worker spends WORKING and is folded shut the moment
+ * it parks, precisely so hours spent waiting on a human are never charged
+ * against it -- charging them would stop a worker at the instant its relay
+ * was finally answered. The consequence is that a parked worker is otherwise
+ * completely unbounded, which is the gap this closes: the budget bounds a
+ * worker that is working, this bounds one waiting on a human who may never
+ * come.
+ *
+ * An `active` worker is never stalled here however long it has run -- that is
+ * the budget's business, and double-reporting it would make a busy worker
+ * look stuck.
+ *
+ * A parked record with no stamp is not reported. Such a record was written
+ * before this existed, and inventing a stall for it would fire a spurious
+ * escalation on the first poll after an upgrade. The caller stamps it
+ * instead, so it is bounded from that moment on.
+ */
+/**
+ * The option labels a blocked worker is really rendering.
+ *
+ * `swarm_resolve_blocked` matches an answer against these exact strings, read
+ * fresh off the pane -- so an orchestrator that composes its OWN labels for
+ * the human ("Merge, push, clean up" for a worker showing "Leave it
+ * unlanded") produces an answer that matches nothing. The resolve returns
+ * needs_manual, the worker is never moved off awaiting_relay, and the run
+ * strands with no message explaining why.
+ *
+ * Putting them on the event is what lets the orchestrator mirror them
+ * structurally instead of reading them out of prose and retyping them. Three
+ * of four workers in one run stranded this way on 2026-09-03; the one that
+ * did not was the one where the orchestrator had just been corrected by hand,
+ * and the correction did not survive to the next worker.
+ */
+export function pickerLabels(rawPrompt: string | undefined): string[] {
+  if (!rawPrompt) return [];
+  return parsePicker(rawPrompt).options.map((o) => o.label);
+}
+
+/** Record a relay answer that matched no listed option, so a later poll can say so. */
+export function noteResolveFailure(
+  worker: WorkerRecord,
+  answer: string,
+  reason: string,
+  now: number,
+): void {
+  worker.lastResolveFailure = { answer, reason, at: now };
+}
+
+export function stalledRelayWorkers(
+  workers: WorkerRecord[],
+  now: number,
+  stallMs: number,
+): WorkerRecord[] {
+  return workers.filter(
+    (w) =>
+      w.lifecycle === "awaiting_relay" &&
+      w.awaitingRelaySinceMs !== undefined &&
+      now - w.awaitingRelaySinceMs >= stallMs,
+  );
 }
 
 export function buildTabCloseArgv(tabId: string): string[] {
@@ -485,6 +716,16 @@ export function buildReadyArgv(prefix?: string): string[] {
 /** One READY item, as much of it as scheduling needs. */
 export interface ReadyItem {
   id: string;
+  /**
+   * Whether a worker may be given this item, as reported by
+   * `dev_status.py ready`.
+   *
+   * Deliberately `unknown` rather than `boolean | undefined`: the value comes
+   * from a JSON payload this module does not control, and the check below
+   * requires an explicit `true`, so anything else -- absent, null, a string --
+   * lands in the same fail-closed branch.
+   */
+  worker_safe?: unknown;
   related_files?: { path?: unknown }[];
 }
 
@@ -528,6 +769,16 @@ export interface SelectionResult {
   deferred: { slug: string; reason: string }[];
   /** Held back only because the concurrency cap was already full. */
   skipped: string[];
+  /**
+   * Never schedulable: a worker must not take this item at all.
+   *
+   * A third category on purpose. `skipped` is coming next wave regardless and
+   * `deferred` is waiting on a named worker, so both end when a worker
+   * finishes -- but a refused item is owed nothing and will never be spawned.
+   * Folding it into either would leave the orchestrator polling for a worker
+   * that was never started, on a queue that cannot drain.
+   */
+  refused: { slug: string; reason: string }[];
 }
 
 /**
@@ -558,6 +809,7 @@ export function selectSchedulable(
   const slugs: string[] = [];
   const deferred: { slug: string; reason: string }[] = [];
   const skipped: string[] = [];
+  const refused: { slug: string; reason: string }[] = [];
   const taken = [...takenPaths];
 
   const seen = new Set<string>();
@@ -568,6 +820,23 @@ export function selectSchedulable(
     // worktree, racing each other's commits.
     if (seen.has(candidate.id)) continue;
     seen.add(candidate.id);
+    // Before the cap and before the collision check: a refused item must never
+    // be reported as skipped, which would promise it a later wave that will
+    // never take it, nor as deferred, which would promise it a worker.
+    if (candidate.worker_safe !== true) {
+      refused.push({
+        slug: candidate.id,
+        reason:
+          candidate.worker_safe === false
+            ? "the backlog reports this item is not worker-safe -- its prefix " +
+              "names the harness repo, or is unrecognised. A worker would be " +
+              "editing the code it is running. Work it in a normal session."
+            : "dev_status.py ready reported no worker_safe field for this " +
+              "item, so eligibility is unknown and it is refused rather than " +
+              "assumed safe. Update the installed dev_status.py.",
+      });
+      continue;
+    }
     if (slugs.length >= headroom) {
       skipped.push(candidate.id);
       continue;
@@ -585,7 +854,7 @@ export function selectSchedulable(
     taken.push(...paths);
   }
 
-  return { slugs, deferred, skipped };
+  return { slugs, deferred, skipped, refused };
 }
 
 export function buildTabListArgv(): string[] {
@@ -707,6 +976,37 @@ export function buildAgentStartArgv(agentId: string, paneId: string, model?: str
  * will answer a dialog here", which is simply true of a swarm worker.
  */
 export const WORKER_UNATTENDED_ENV = "PI_AGENT_UNATTENDED=1";
+
+/**
+ * The entire payload of an amend. Fixed, and deliberately carries no
+ * correction text.
+ *
+ * The correction lives in the backlog store, edited there before this is
+ * sent. The moment this channel carries content instead, the store stops
+ * being the single source of truth and the two can disagree -- a worker
+ * acting on a message while `show` says something else is worse than the
+ * problem being solved. So there is no parameter to smuggle content through:
+ * a caller who wants to change the work changes the item.
+ *
+ * On 2026-09-03 a worker was several minutes into an item whose stored
+ * premise was wrong -- it was reasoning carefully toward a fix that would
+ * have broken the user's work machine. The correction went through three raw
+ * `herdr agent prompt` calls. It worked, but only because a human happened
+ * to be watching, and the run recorded none of it.
+ */
+export const AMEND_INSTRUCTION =
+  "STOP and re-read your backlog item before doing anything else: run " +
+  "`python3 ~/.claude/scripts/dev_status.py show <your slug>` and read the " +
+  "whole record fresh. Its context or next_steps have been corrected since " +
+  "you started, so any plan you formed from the earlier version may now be " +
+  "wrong. Reconcile what you have already done against the updated record, " +
+  "and say plainly what changes as a result before continuing.";
+
+/** One recorded mid-flight correction of a worker's item. */
+export interface Amendment {
+  at: number;
+  by: string;
+}
 
 /**
  * `--wait` blocks until the agent settles, so a follow-up prompt can't land
@@ -1448,6 +1748,7 @@ export default function (pi: ExtensionAPI) {
      */
     timeoutMs: number;
     deadlineMs: number;
+    stallMs: number;
   }
 
   const runtimes = new Map<string, RunRuntime>();
@@ -1462,6 +1763,7 @@ export default function (pi: ExtensionAPI) {
         spawnChain: Promise.resolve(),
         timeoutMs: DEFAULT_WAIT_TIMEOUT_MS,
         deadlineMs: DEFAULT_WORKER_DEADLINE_MS,
+        stallMs: DEFAULT_RELAY_STALL_MS,
       };
       runtimes.set(runId, rt);
     }
@@ -1825,7 +2127,10 @@ export default function (pi: ExtensionAPI) {
         // share to divide, no batch to trim, because every tab starts at the
         // full terminal size regardless of how many already exist.
         for (const slug of toSpawn) {
-          const result = await herdr(pi, buildTabCreateArgv(process.cwd(), slug));
+          const result = await herdr(
+            pi,
+            buildTabCreateArgv(process.cwd(), slug, capturePath(typed.runId, slug)),
+          );
           if (result.code !== 0) {
             tabs.push({
               slug,
@@ -1901,12 +2206,14 @@ export default function (pi: ExtensionAPI) {
 
         const skipped = selection.skipped;
         const deferred = selection.deferred;
+        const refused = selection.refused;
 
         const parts = [
           `Spawned ${spawned.length} worker(s)`,
           `${failed.length} failed to spawn`,
           `${skipped.length} skipped (cap)`,
           `${deferred.length} deferred (file overlap)`,
+          `${refused.length} refused (not worker-safe)`,
         ];
         const lines = [`${parts.join(", ")}.`];
         for (const f of failed) lines.push(`- ${f.slug}: ${reasonHeadline(f.reason)}`);
@@ -1914,15 +2221,27 @@ export default function (pi: ExtensionAPI) {
         // orchestrator has to know they are still owed, and no provider
         // adapter reads `details`.
         for (const d of deferred) lines.push(`- ${d.slug}: deferred -- ${d.reason}`);
+        // Refused items are named for the same reason deferred ones are -- no
+        // provider adapter reads `details` -- but they mean the opposite thing,
+        // so the wording must not invite another wave.
+        for (const r of refused) lines.push(`- ${r.slug}: refused -- ${r.reason}`);
         if (spawned.length === 0 && deferred.length > 0) {
           lines.push(
             "Nothing spawned but items remain: poll the running workers, then call swarm_spawn again once one finishes.",
+          );
+        } else if (spawned.length === 0 && refused.length > 0) {
+          // Terminal, not a retry. Refused items never become schedulable, so
+          // an orchestrator that polled and re-spawned here would loop on a
+          // queue that cannot drain.
+          lines.push(
+            "Nothing spawned and the remaining items are refused, not waiting: they are never schedulable by a worker. " +
+              "This is the end of the swarm phase for this prefix -- report them as needing a normal session rather than polling or spawning again.",
           );
         }
 
         return {
           content: [{ type: "text", text: lines.join("\n") }],
-          details: { spawned, failed, skipped, deferred },
+          details: { spawned, failed, skipped, deferred, refused },
         };
       });
     },
@@ -1949,6 +2268,11 @@ export default function (pi: ExtensionAPI) {
           description: `How long one herdr wait runs before the poller checks in on a worker -- a CHECK-IN INTERVAL, not a kill deadline. A worker still working when it elapses is probed, waited on again, and reported as still_working; nothing is closed. A wait already running keeps the value it started with, and the next check-in picks up the current one. Default ${DEFAULT_WAIT_TIMEOUT_MS}.`,
         }),
       ),
+      relayStallMs: Type.Optional(
+        Type.Number({
+          description: `How long a worker may sit at awaiting_relay before the poll names it as needing a human, in ms. A signal, never a stop -- the worker keeps its pane and its work. Its own clock, separate from workerDeadlineMs, which measures WORKING time and is stopped while a worker is parked. Default ${DEFAULT_RELAY_STALL_MS}.`,
+        }),
+      ),
       workerDeadlineMs: Type.Optional(
         Type.Number({
           description: `The whole-item budget for one worker, measured in WORKING time -- time parked awaiting a relay does not count. A worker still going past it is stopped deliberately and reported as timed_out, with its worktree path and the item's likely in-progress claim, so nothing is lost silently. Only ever observed at a check-in, so a worker can run up to one timeoutMs past it. Default ${DEFAULT_WORKER_DEADLINE_MS}.`,
@@ -1956,11 +2280,28 @@ export default function (pi: ExtensionAPI) {
       ),
     }),
     async execute(_toolCallId, params, signal) {
-      const typed = params as { runId: string; timeoutMs?: number; workerDeadlineMs?: number };
+      const typed = params as {
+        runId: string;
+        timeoutMs?: number;
+        workerDeadlineMs?: number;
+        relayStallMs?: number;
+      };
       const state = await getOrInitState(typed.runId, DEFAULT_CONCURRENCY);
       const rt = getRuntime(typed.runId);
       rt.timeoutMs = typed.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS;
       rt.deadlineMs = typed.workerDeadlineMs ?? DEFAULT_WORKER_DEADLINE_MS;
+      rt.stallMs = typed.relayStallMs ?? DEFAULT_RELAY_STALL_MS;
+
+      // Stamp any parked worker written before this clock existed, rather
+      // than leaving it unbounded forever. Stamping now means it is measured
+      // from this poll instead of from whenever it really parked -- late, but
+      // bounded, which is the whole point.
+      const stampNow = Date.now();
+      for (const w of state.workers) {
+        if (w.lifecycle === "awaiting_relay" && w.awaitingRelaySinceMs === undefined) {
+          w.awaitingRelaySinceMs = stampNow;
+        }
+      }
 
       const active = state.workers.filter((w) => w.lifecycle === "active");
       for (const w of active) armWait(rt, w);
@@ -1973,12 +2314,53 @@ export default function (pi: ExtensionAPI) {
         // it is blocked on the orchestrator, not on herdr, so a wait would
         // never fire and the poll below would hang on a promise nothing
         // resolves. Naming it instead is what lets the run continue.
+        // Re-reconcile HERE, warm. reconcileState already drops records whose
+        // agent is gone, but only on a cold load -- a warm orchestrator never
+        // re-reads, so a worker that finished and vanished stayed listed as
+        // awaiting a relay forever. That is not cosmetic: awaiting_relay is
+        // excluded from activeWorkerCount but INCLUDED in openPaneCount, so
+        // stranded records eat the pane soft cap while contributing nothing,
+        // and dispatch stops for a reason no message explains. Three of four
+        // workers in the 2026-09-03 harness2 run ended this way and a human
+        // had to find it from a dashboard in another pane.
+        //
+        // This is exactly the right moment: nothing is active, so the
+        // distinction between "genuinely waiting on a human" and "dead record"
+        // is the only thing that matters, and a live agent is never dropped.
+        const relistResult = await herdr(pi, buildAgentListArgv(), signal);
+        let goneNote = "";
+        if (relistResult.code === 0) {
+          const liveNow = parseAgentListIds(relistResult.stdout);
+          const { state: pruned, dropped } = reconcileState(state, liveNow);
+          if (dropped.length) {
+            state.workers = pruned.workers;
+            // A dropped worker must not keep a wait slot: its agent is
+            // gone, so nothing will ever settle that arm.
+            for (const w of dropped) rt.inFlight.delete(w.agent);
+            persist(state);
+            goneNote = ` ${dropped.length} stale record(s) cleared -- their agents are gone from herdr, so they were finished or dead, not waiting: ${dropped
+              .map((w) => `${w.agent} (${w.slug})`)
+              .join(", ")}.`;
+          }
+        }
+
         const awaitingRelay = state.workers.filter((w) => w.lifecycle === "awaiting_relay");
-        const text = awaitingRelay.length
-          ? `No active workers to poll. ${awaitingRelay.length} worker(s) awaiting a relay -- answer each with swarm_resolve_blocked before polling again: ${awaitingRelay
-              .map((w) => `${w.agent} (${w.slug}, pane ${w.paneId})`)
-              .join(", ")}.`
-          : "No active workers to poll.";
+        const stalledHere = stalledRelayWorkers(state.workers, Date.now(), rt.stallMs);
+        const stalledAgents = new Set(stalledHere.map((w) => w.agent));
+        const describe = (w: WorkerRecord) =>
+          `${w.agent} (${w.slug}, pane ${w.paneId})` +
+          (stalledAgents.has(w.agent)
+            ? ` -- STALLED, over ${formatDuration(rt.stallMs)} with no answer`
+            : "") +
+          (w.lastResolveFailure
+            ? ` -- a previous answer ${JSON.stringify(w.lastResolveFailure.answer)} failed to land (${w.lastResolveFailure.reason}); re-read the pane and answer with its EXACT rendered label`
+            : "");
+        const text =
+          (awaitingRelay.length
+            ? `No active workers to poll. ${awaitingRelay.length} worker(s) awaiting a relay -- answer each with swarm_resolve_blocked before polling again: ${awaitingRelay
+                .map(describe)
+                .join(", ")}.`
+            : "No active workers to poll.") + goneNote;
         return {
           content: [{ type: "text", text }],
           details: { events: [] as PollEvent[] },
@@ -2036,12 +2418,25 @@ export default function (pi: ExtensionAPI) {
           // The clock pauses here. Hours spent waiting on a human are not
           // hours the worker spent working, and charging them to the budget
           // would stop a worker at the moment its relay was finally answered.
-          foldWorkingSegment(worker, Date.now());
+          event.blockClass = classifyBlock(event.rawPrompt);
+          event.options = pickerLabels(event.rawPrompt);
+          const parkedAt = Date.now();
+          foldWorkingSegment(worker, parkedAt);
+          // The relay clock starts exactly where the working clock stops.
+          worker.awaitingRelaySinceMs = parkedAt;
           worker.lifecycle = "awaiting_relay";
         } else if (event.kind === "still_working") {
           // Alive, inside its budget, and already re-armed by the settle
           // handler. Nothing to close, no slot freed -- it is a check-in.
         } else {
+          // Read the worker's queued capture offers BEFORE dropping it. The
+          // record is deleted on the next line and the tab closes with it, so
+          // this is the last moment anything can be attributed to this item.
+          // Carrying them here is what lets the orchestrator ask the human
+          // once for the whole run instead of once per worker: a worker no
+          // longer holds a concurrency slot open through a relay round trip
+          // per housekeeping offer.
+          event.captures = readCaptureOffers(state.runId, worker.slug);
           // closeWorker, not a bare herdr call: a close that rejects must not
           // throw out of this loop and abandon every event after it in the
           // same batch. Its own comment states the rule -- a cleanup problem
@@ -2052,24 +2447,142 @@ export default function (pi: ExtensionAPI) {
       }
       persist(state);
 
+      const stalled = stalledRelayWorkers(state.workers, Date.now(), rt.stallMs);
+      const stalledNote = stalled.length
+        ? `\n\n${stalled.length} worker(s) have been awaiting a relay for over ${formatDuration(rt.stallMs)} and are not progressing -- each needs a human answer in its own pane: ${stalled
+            .map((w) => `${w.agent} (${w.slug}, pane ${w.paneId})`)
+            .join(", ")}.`
+        : "";
+
       return {
         content: [
           {
             type: "text",
-            text: events
-              .map((e) => {
-                if (e.kind === "blocked") {
-                  return `${e.slug} (${e.agent}) is blocked${e.truncated ? " -- content may be truncated, inspect pane " + e.paneId + " directly" : ""}:\n${e.rawPrompt}`;
-                }
-                if (e.kind === "still_working") {
-                  return `${e.slug} (${e.agent}) still_working -- check-in ${e.checkIn}, ${formatDuration(e.elapsedMs ?? 0)} of working time so far against a ${formatDuration(rt.deadlineMs)} budget. Nothing settled and no slot was freed; poll again.`;
-                }
-                return `${e.slug} (${e.agent}) ${e.kind}${e.detail ? `: ${e.detail}` : ""}`;
-              })
-              .join("\n\n"),
+            text:
+              events
+                .map((e) => {
+                  if (e.kind === "blocked") {
+                    // The class goes in the text, not in `details`: no provider
+                    // adapter in @earendil-works/pi-ai reads details, so a
+                    // classification put there would be invisible to the very
+                    // model that has to act on it.
+                    const verdict =
+                      e.blockClass === "answerable"
+                        ? "answerable -- a question-tool picker, so answer it with swarm_resolve_blocked"
+                        : `needs_human -- NOT a question-tool picker, so swarm_resolve_blocked cannot drive it. Relay the prompt below to the user verbatim and tell them to answer in pane ${e.paneId} themselves`;
+                    // The labels are quoted verbatim and called out as such,
+                    // because swarm_resolve_blocked matches on these exact
+                    // strings. An orchestrator that relays a paraphrase of them
+                    // produces an answer matching nothing, and the worker is
+                    // never moved off awaiting_relay.
+                    const labels = (e.options ?? []).length
+                      ? `\nRelay these option labels to the user VERBATIM -- swarm_resolve_blocked matches on these exact strings, so a paraphrase strands the worker: ${(e.options ?? []).map((l) => JSON.stringify(l)).join(", ")}`
+                      : "";
+                    return `${e.slug} (${e.agent}, pane ${e.paneId}) is blocked [${verdict}]${e.truncated ? " -- content may be truncated, inspect the pane directly" : ""}:\n${e.rawPrompt}${labels}`;
+                  }
+                  if (e.kind === "still_working") {
+                    return `${e.slug} (${e.agent}) still_working -- check-in ${e.checkIn}, ${formatDuration(e.elapsedMs ?? 0)} of working time so far against a ${formatDuration(rt.deadlineMs)} budget. Nothing settled and no slot was freed; poll again.`;
+                  }
+                  const captures = (e.captures ?? []).length
+                    ? `\n  Queued capture offers from this worker -- do NOT ask about them now; fold them into your single end-of-run digest walk: ${(
+                        e.captures ?? []
+                      )
+                        .map((c) => `[${c.kind}] ${c.id} -- ${c.summary}`)
+                        .join("; ")}`
+                    : "";
+                  return `${e.slug} (${e.agent}) ${e.kind}${e.detail ? `: ${e.detail}` : ""}${captures}`;
+                })
+                .join("\n\n") + stalledNote,
           },
         ],
         details: { events },
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: "swarm_amend",
+    label: "Swarm amend",
+    description:
+      "Tell a running worker its backlog item has been corrected, so it re-reads the item before continuing.",
+    promptSnippet: "Tell a swarm worker to re-read its corrected item",
+    promptGuidelines: [
+      "Edit the item FIRST with dev_status.py, then call this. It sends a fixed instruction to re-read the item and carries no correction text of its own -- deliberately, so the backlog store stays the single source of truth. There is no parameter for the correction because a message and a store that disagree is worse than the problem being fixed.",
+      "Only reaches a worker that is actively working. `herdr agent prompt` refuses an agent that is already blocked, so a worker parked at a gate is reported as amend_refused: -- answer it with swarm_resolve_blocked instead, or let it finish and pick the item up again afterwards.",
+      "Every outcome leads with its own marker word -- amended:, amend_refused: or amend_failed: -- and names the agent and slug, so branch on that word.",
+      "Delivery is not synchronised with the worker's turn boundary, and cannot be: pi has no such checkpoint exposed over herdr. A prompt that lands mid-turn arrives as the worker's next input, which is fine while it is still planning and is a rewrite of finished work if it is not. So amend early, and treat a worker deep into an item as a candidate for stopping rather than correcting.",
+      "The amendment is recorded on the run state, so the end-of-run digest can say the item was corrected mid-flight and when.",
+    ],
+    parameters: Type.Object({
+      runId: Type.String({ description: "The run whose worker is being amended." }),
+      agent: Type.String({
+        description: "The worker's agent id, or its item slug -- either resolves.",
+      }),
+    }),
+    async execute(_callId: string, params: unknown, signal?: AbortSignal) {
+      const typed = params as { runId: string; agent: string };
+      const state = await getOrInitState(typed.runId, DEFAULT_CONCURRENCY);
+      const worker =
+        state.workers.find((w) => w.agent === typed.agent) ??
+        state.workers.find((w) => w.slug === typed.agent);
+
+      if (!worker) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `amend_failed: no worker in run ${typed.runId} matches "${typed.agent}" by agent id or slug. Active workers: ${
+                state.workers.map((w) => `${w.agent} (${w.slug})`).join(", ") || "none"
+              }.`,
+            },
+          ],
+          details: { amended: false, slug: "", paneId: "" },
+        };
+      }
+
+      if (worker.lifecycle !== "active") {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                `amend_refused: ${worker.agent} (${worker.slug}, pane ${worker.paneId}) is parked at a gate, ` +
+                "and herdr agent prompt refuses a blocked agent -- nothing was sent. Answer it with " +
+                "swarm_resolve_blocked first, then amend, or amend after it finishes and pick the item up again.",
+            },
+          ],
+          details: { amended: false, slug: worker.slug, paneId: worker.paneId },
+        };
+      }
+
+      const result = await herdr(pi, buildAgentPromptArgv(worker.agent, AMEND_INSTRUCTION), signal);
+      if (result.code !== 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `amend_failed: ${worker.agent} (${worker.slug}) -- herdr agent prompt exited ${result.code}: ${result.stderr || result.stdout}`,
+            },
+          ],
+          details: { amended: false, slug: worker.slug, paneId: worker.paneId },
+        };
+      }
+
+      worker.amendments = [...(worker.amendments ?? []), { at: Date.now(), by: "swarm_amend" }];
+      persist(state);
+
+      return {
+        content: [
+          {
+            type: "text",
+            text:
+              `amended: ${worker.agent} (${worker.slug}, pane ${worker.paneId}) was told to re-read its item. ` +
+              "Nothing confirms it has done so -- the instruction lands as its next input, which is a correction " +
+              "while it is still planning and a rewrite of finished work if it is not. Watch its next poll event, " +
+              "and say in the end-of-run digest that this item was amended mid-flight.",
+          },
+        ],
+        details: { amended: true, slug: worker.slug, paneId: worker.paneId },
       };
     },
   });
@@ -2083,6 +2596,7 @@ export default function (pi: ExtensionAPI) {
     promptGuidelines: [
       "answer is matched against the blocked worker's currently rendered option labels (re-read fresh, not from a stale raw_prompt) -- pass the user's own words, not a paraphrase, so the match is against what they actually said.",
       "herdr agent prompt refuses a blocked agent outright -- this tool drives the picker via arrow-key navigation instead, the only way to answer it.",
+      "When you relay a blocked worker's gate to the user, quote the worker's OWN listed option labels verbatim -- the poll result prints them for exactly this. Never compose your own wording for them, however much clearer it reads: swarm_resolve_blocked matches the answer against the labels the worker is really rendering, so a paraphrased option matches nothing, the resolve returns needs_manual, and the worker is left at awaiting_relay consuming a pane slot while the run reports it as simply unanswered.",
       "Every outcome leads with its own marker word -- resolved:, needs_manual:, or relay_failed: -- and names the agent, its item slug and its pane, so branch on that word. If answer matches no listed option (or matches more than one ambiguously), the result is needs_manual: instead of a guess; relay it back to the user verbatim, pane and listed option labels included, rather than retrying blindly.",
       "Verifies the worker actually left `blocked` within a short window after submitting; if it didn't (pane closed, still stuck), the item is marked relay_failed rather than silently treated as resolved.",
       "Re-checks the target's pane_id against what it was spawned into immediately before sending any keys -- if herdr's agent-name-to-pane mapping ever drifted, this is what catches it (a stale mapping would make read/match agree with the wrong pane too, so this is a second, independent identity check, not a repeat of the read). A mismatch is reported as needs_manual: and sends nothing.",
@@ -2128,7 +2642,9 @@ export default function (pi: ExtensionAPI) {
             {
               type: "text",
               text:
-                `needs_manual: could not match "${typed.answer}" to exactly one listed option for ` +
+                (noteResolveFailure(worker, typed.answer, "no listed option matched", Date.now()),
+                persist(state),
+                `needs_manual: could not match "${typed.answer}" to exactly one listed option for `) +
                 `${typed.agent} (${worker.slug}, pane ${worker.paneId}). Listed options: ` +
                 `${optionList || "(none parsed)"}. Attach directly ` +
                 `(herdr agent attach ${typed.agent}) or retry with text matching one option's ` +
@@ -2151,7 +2667,9 @@ export default function (pi: ExtensionAPI) {
             {
               type: "text",
               text:
-                `needs_manual: ${typed.agent} (${worker.slug})'s pane identity no longer matches ` +
+                (noteResolveFailure(worker, typed.answer, "pane identity mismatch", Date.now()),
+                persist(state),
+                `needs_manual: ${typed.agent} (${worker.slug})'s pane identity no longer matches `) +
                 `pane ${worker.paneId}, what it was spawned into -- refusing to send keys rather ` +
                 `than risk hitting the wrong pane. Attach directly ` +
                 `(herdr agent attach ${typed.agent}) to answer it by hand.`,
@@ -2246,6 +2764,11 @@ export default function (pi: ExtensionAPI) {
       // moves -- a future path back to active that forgets this would
       // silently charge a worker for the hours it spent waiting on a human.
       worker.workingSinceMs = Date.now();
+      // The relay clock stops where the working clock restarts, so a worker
+      // answered and later re-blocked is measured from its NEW park, not its
+      // first one.
+      worker.awaitingRelaySinceMs = undefined;
+      worker.lastResolveFailure = undefined;
       worker.lifecycle = "active";
       persist(state);
       return {

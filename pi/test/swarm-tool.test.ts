@@ -4,6 +4,11 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import registerSwarmTools, {
   activeWorkerCount,
+  AMEND_INSTRUCTION,
+  capturePath,
+  classifyBlock,
+  noteResolveFailure,
+  pickerLabels,
   classifyTimeoutProbe,
   deadlineStopDetail,
   elapsedWorkingMs,
@@ -29,7 +34,9 @@ import registerSwarmTools, {
   itemPaths,
   parseReadyItems,
   parseTabCreate,
+  readCaptureOffers,
   selectSchedulable,
+  stalledRelayWorkers,
   loadState,
   looksTruncated,
   matchOption,
@@ -1123,8 +1130,34 @@ describe("swarm_spawn worker bootstrap", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  // These tests name their items explicitly and never cared what `ready`
+  // returned, so the stubs answered it with empty stdout. That is no longer a
+  // neutral answer: swarm_spawn looks each named slug up in the READY records
+  // and an item it cannot find has unknown eligibility, which now fails closed.
+  // Answering with the slugs these tests actually use keeps them describing
+  // bootstrap mechanics rather than accidentally exercising the guard -- which
+  // has its own block below. All are stamped worker-safe because the prefix
+  // rule is not what is under test here.
+  const BOOTSTRAP_SLUGS = ["some-item", "a1", "a2", "b1", "b2", "meta-a"];
+  const readyStub = () => ({
+    code: 0,
+    stdout: JSON.stringify(
+      BOOTSTRAP_SLUGS.map((id) => ({ id, worker_safe: true, related_files: [] })),
+    ),
+    stderr: "",
+  });
+
   function stubFor(respond: (argv: string[]) => { code: number; stdout: string; stderr: string }) {
-    const stub = makeStubPi(respond);
+    const withReady = (argv: string[]) => {
+      const answer = respond(argv);
+      // Only a SUCCESSFUL empty answer is substituted: one test makes `ready`
+      // fail on purpose to prove the run stops rather than reading as a
+      // drained queue, and overriding that would erase what it checks.
+      return argv.includes("ready") && answer.code === 0 && answer.stdout === ""
+        ? readyStub()
+        : answer;
+    };
+    const stub = makeStubPi(withReady);
     registerSwarmTools(stub.pi as unknown as Parameters<typeof registerSwarmTools>[0]);
     const spawn = stub.tools.get("swarm_spawn");
     if (!spawn) throw new Error("swarm_spawn was never registered");
@@ -1424,8 +1457,13 @@ describe("swarm_spawn worker bootstrap", () => {
       ? {
           code: 0,
           stdout: JSON.stringify(
+            // `worker_safe: true` mirrors what dev_status.py's `ready` now
+            // stamps on an ordinary item. Without it these fixtures describe a
+            // payload no real `ready` produces, and every item would be
+            // refused -- which is the guard working, not the bootstrap failing.
             items.map((i) => ({
               id: i.id,
+              worker_safe: true,
               related_files: (i.paths ?? []).map((path) => ({ path })),
             })),
           ),
@@ -2336,8 +2374,12 @@ describe("parseReadyItems / itemPaths", () => {
 });
 
 describe("selectSchedulable", () => {
+  // `worker_safe: true` is what dev_status.py's `ready` now stamps on an
+  // ordinary item. The helper carries it so these tests keep describing a
+  // normal queue; the eligibility block below covers its absence.
   const item = (id: string, ...paths: string[]) => ({
     id,
+    worker_safe: true,
     related_files: paths.map((path) => ({ path })),
   });
 
@@ -2960,5 +3002,469 @@ describe("swarm_spawn model passthrough", () => {
       lifecycle: "active",
     };
     expect(unpinned.model).toBeUndefined();
+  });
+});
+
+// A guard-rails `warn rm -rf` confirmation, as it renders in a worker's pane.
+// Deliberately NOT a question-tool picker: no `1.`-numbered option list, no
+// `>` marker, no picker footer. This is the shape that used to park a worker
+// at awaiting_relay indistinguishably from an answerable one.
+const GUARD_RAILS_CONFIRM_OUTPUT = `
+ guard-rails
+
+ This command contains \`rm -rf\`. Run it anyway?
+
+ [y/N]
+`;
+
+describe("classifyBlock", () => {
+  test("a real picker capture is answerable", () => {
+    expect(classifyBlock(REAL_PICKER_OUTPUT)).toBe("answerable");
+  });
+
+  test("a guard-rails confirm capture needs a human", () => {
+    expect(classifyBlock(GUARD_RAILS_CONFIRM_OUTPUT)).toBe("needs_human");
+  });
+
+  test("the two land in different buckets -- the whole point of the item", () => {
+    expect(classifyBlock(REAL_PICKER_OUTPUT)).not.toBe(classifyBlock(GUARD_RAILS_CONFIRM_OUTPUT));
+  });
+
+  test("scrollback holding a numbered plan is not mistaken for an answerable picker", () => {
+    // parsePicker already refuses this (non-contiguous / no real footer);
+    // classifyBlock must not soften that into a false `answerable`, which
+    // would send arrow keys computed from a fabricated index.
+    expect(classifyBlock(PICKER_BELOW_A_NUMBERED_PLAN)).toBe("answerable");
+  });
+
+  test("an unread or empty pane needs a human rather than defaulting to answerable", () => {
+    expect(classifyBlock(undefined)).toBe("needs_human");
+    expect(classifyBlock("")).toBe("needs_human");
+  });
+});
+
+describe("stalledRelayWorkers", () => {
+  const STALL = 30 * 60 * 1000;
+
+  test("a worker parked past the stall deadline is reported", () => {
+    const w = makeWorker({ agent: "w1", lifecycle: "awaiting_relay" });
+    w.awaitingRelaySinceMs = 1_000;
+    expect(stalledRelayWorkers([w], 1_000 + STALL, STALL).map((x) => x.agent)).toEqual(["w1"]);
+  });
+
+  test("a worker parked inside the deadline is not", () => {
+    const w = makeWorker({ agent: "w1", lifecycle: "awaiting_relay" });
+    w.awaitingRelaySinceMs = 1_000;
+    expect(stalledRelayWorkers([w], 1_000 + STALL - 1, STALL)).toEqual([]);
+  });
+
+  test("an ACTIVE worker is never stalled, however long it has been working", () => {
+    // The working budget owns that case, and it is deliberately a different
+    // clock: this one must not double-report a worker that is simply busy.
+    const w = makeWorker({ agent: "w1", lifecycle: "active" });
+    w.awaitingRelaySinceMs = 1_000;
+    expect(stalledRelayWorkers([w], 1_000 + STALL * 10, STALL)).toEqual([]);
+  });
+
+  test("a parked worker with no stamp is not reported, so an upgrade cannot fabricate a stall", () => {
+    const w = makeWorker({ agent: "w1", lifecycle: "awaiting_relay" });
+    expect(stalledRelayWorkers([w], Date.now(), STALL)).toEqual([]);
+  });
+});
+
+describe("pickerLabels", () => {
+  test("returns the worker's real rendered labels, in order", () => {
+    expect(pickerLabels(REAL_PICKER_OUTPUT)).toEqual(["OK", "Cancel", "Something else (type it)"]);
+  });
+
+  test("a non-picker prompt yields no labels rather than invented ones", () => {
+    expect(pickerLabels(GUARD_RAILS_CONFIRM_OUTPUT)).toEqual([]);
+    expect(pickerLabels(undefined)).toEqual([]);
+  });
+});
+
+describe("noteResolveFailure", () => {
+  test("records the attempted answer and why it failed", () => {
+    const w = makeWorker({ agent: "w1", lifecycle: "awaiting_relay" });
+    noteResolveFailure(w, "Merge, push, clean up", "no listed option matched", 5_000);
+    expect(w.lastResolveFailure).toEqual({
+      answer: "Merge, push, clean up",
+      reason: "no listed option matched",
+      at: 5_000,
+    });
+  });
+
+  test("a later failure replaces the earlier one, so the report is current", () => {
+    const w = makeWorker({ agent: "w1", lifecycle: "awaiting_relay" });
+    noteResolveFailure(w, "first", "a", 1);
+    noteResolveFailure(w, "second", "b", 2);
+    expect(w.lastResolveFailure?.answer).toBe("second");
+  });
+});
+
+describe("a stranded awaiting_relay record is reconciled on a warm poll", () => {
+  let dir: string;
+  let priorStateDir: string | undefined;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "swarm-strand-"));
+    priorStateDir = process.env.PI_SWARM_STATE_DIR;
+    process.env.PI_SWARM_STATE_DIR = dir;
+  });
+
+  afterEach(() => {
+    if (priorStateDir === undefined) delete process.env.PI_SWARM_STATE_DIR;
+    else process.env.PI_SWARM_STATE_DIR = priorStateDir;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  // Three of four workers in the 2026-09-03 harness2 run ended awaiting_relay
+  // with their agents already gone. reconcileState drops such records, but only
+  // on a COLD load -- a warm orchestrator never re-reads, so the run reported
+  // unanswered relays forever and could not spawn (awaiting_relay is excluded
+  // from activeWorkerCount but INCLUDED in openPaneCount). A human found it
+  // from a dashboard in another pane.
+  test("the second poll drops a worker whose agent has vanished, and says so", async () => {
+    const runId = "strandrun";
+    saveState(
+      {
+        runId,
+        concurrency: 2,
+        nextCounter: 1,
+        workers: [
+          {
+            agent: "strandrun-w1",
+            slug: "stranded-item",
+            paneId: "w1:pQ",
+            tabId: "w1:tQ",
+            lifecycle: "awaiting_relay",
+          },
+        ],
+      },
+      dir,
+    );
+
+    let agentAlive = true;
+    const stub = makeStubPi((argv) =>
+      argv[0] === "agent" && argv[1] === "list"
+        ? {
+            code: 0,
+            stdout: agentAlive
+              ? realAgentListEnvelope(UNNAMED_CLAUDE_ENTRY, {
+                  agent: "pi",
+                  agent_status: "idle",
+                  name: "strandrun-w1",
+                  pane_id: "w1:pA",
+                })
+              : realAgentListEnvelope(UNNAMED_CLAUDE_ENTRY),
+            stderr: "",
+          }
+        : { code: 0, stdout: "", stderr: "" },
+    );
+    registerSwarmTools(stub.pi as unknown as Parameters<typeof registerSwarmTools>[0]);
+    const poll = stub.tools.get("swarm_poll");
+    if (!poll) throw new Error("swarm_poll was never registered");
+
+    // Poll once while the agent is live: the record is legitimately awaiting.
+    const first = (await poll.execute(
+      ...(["c1", { runId, timeoutMs: 1000 }, undefined] as unknown as never[]),
+    )) as { content: { type: string; text: string }[] };
+    expect(first.content.map((c) => c.text).join("\n")).toContain("strandrun-w1");
+
+    // The worker's agent goes away. The run is now WARM -- getOrInitState
+    // returns the cached state and never re-lists.
+    agentAlive = false;
+    const second = (await poll.execute(
+      ...(["c2", { runId, timeoutMs: 1000 }, undefined] as unknown as never[]),
+    )) as { content: { type: string; text: string }[] };
+    const text = second.content.map((c) => c.text).join("\n");
+
+    expect(text).not.toContain("swarm_resolve_blocked");
+    expect(text.toLowerCase()).toContain("gone");
+    expect(loadState(runId, dir)?.workers ?? []).toEqual([]);
+  });
+});
+
+describe("worker capture offers travel to the orchestrator", () => {
+  let dir: string;
+  let priorStateDir: string | undefined;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "swarm-capture-"));
+    priorStateDir = process.env.PI_SWARM_STATE_DIR;
+    process.env.PI_SWARM_STATE_DIR = dir;
+  });
+
+  afterEach(() => {
+    if (priorStateDir === undefined) delete process.env.PI_SWARM_STATE_DIR;
+    else process.env.PI_SWARM_STATE_DIR = priorStateDir;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("the spawned tab is told where to write its offers", () => {
+    const argv = buildTabCreateArgv("/repo", "my-slug", "/state/swarm-r1-capture-my-slug.json");
+    expect(argv).toContain("PI_SWARM_CAPTURE_FILE=/state/swarm-r1-capture-my-slug.json");
+    // The unattended env must survive alongside it, not be replaced.
+    expect(argv).toContain("PI_AGENT_UNATTENDED=1");
+  });
+
+  test("omitting the capture path leaves the argv exactly as it was", () => {
+    expect(buildTabCreateArgv("/repo", "my-slug")).toEqual([
+      "tab",
+      "create",
+      "--cwd",
+      "/repo",
+      "--label",
+      "my-slug",
+      "--env",
+      "PI_AGENT_UNATTENDED=1",
+      "--no-focus",
+    ]);
+  });
+
+  test("offers are read back and the file is consumed, so a re-poll cannot double-report", () => {
+    const path = capturePath("r1", "my-slug", dir);
+    writeFileSync(
+      path,
+      JSON.stringify({
+        offers: [
+          { kind: "backlog", id: "meta-thing", summary: "a thing worth doing" },
+          { kind: "out-of-scope", id: "some-concept", summary: "declined outright" },
+        ],
+      }),
+      "utf8",
+    );
+    const first = readCaptureOffers("r1", "my-slug", dir);
+    expect(first).toHaveLength(2);
+    expect(first[0]?.kind).toBe("backlog");
+    expect(first[0]?.id).toBe("meta-thing");
+    // Consumed: the worker's tab is closed and its record dropped right
+    // after this, so a file left behind would be re-reported by any later
+    // poll with no worker to attribute it to.
+    expect(readCaptureOffers("r1", "my-slug", dir)).toEqual([]);
+  });
+
+  test("a worker that queued nothing yields no offers rather than an error", () => {
+    expect(readCaptureOffers("r1", "never-wrote", dir)).toEqual([]);
+  });
+
+  test("a malformed capture file is ignored rather than crashing the poll", () => {
+    writeFileSync(capturePath("r1", "bad", dir), "{not json", "utf8");
+    expect(readCaptureOffers("r1", "bad", dir)).toEqual([]);
+  });
+
+  test("a slug that could escape the state dir cannot", () => {
+    const path = capturePath("r1", "../../etc/passwd", dir);
+    expect(path.startsWith(dir)).toBe(true);
+    expect(path).not.toContain("..");
+  });
+});
+
+describe("AMEND_INSTRUCTION", () => {
+  test("tells the worker to re-read its item, and carries no correction text", () => {
+    expect(AMEND_INSTRUCTION).toContain("dev_status.py show");
+    // The whole design rests on this: the moment the channel carries the
+    // correction itself, the backlog store stops being the single source of
+    // truth and the two can disagree. The instruction is fixed for that
+    // reason -- there is no parameter to smuggle content through.
+    expect(AMEND_INSTRUCTION.length).toBeLessThan(600);
+  });
+});
+
+describe("swarm_amend", () => {
+  let dir: string;
+  let priorStateDir: string | undefined;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "swarm-amend-"));
+    priorStateDir = process.env.PI_SWARM_STATE_DIR;
+    process.env.PI_SWARM_STATE_DIR = dir;
+  });
+
+  afterEach(() => {
+    if (priorStateDir === undefined) delete process.env.PI_SWARM_STATE_DIR;
+    else process.env.PI_SWARM_STATE_DIR = priorStateDir;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function seed(runId: string, lifecycle: "active" | "awaiting_relay") {
+    saveState(
+      {
+        runId,
+        concurrency: 2,
+        nextCounter: 1,
+        workers: [
+          {
+            agent: `${runId}-w1`,
+            slug: "some-item",
+            paneId: "w1:pA",
+            tabId: "w1:tA",
+            lifecycle,
+          },
+        ],
+      },
+      dir,
+    );
+  }
+
+  function register(handler: (argv: string[]) => { code: number; stdout: string; stderr: string }) {
+    const stub = makeStubPi(handler);
+    registerSwarmTools(stub.pi as unknown as Parameters<typeof registerSwarmTools>[0]);
+    const amend = stub.tools.get("swarm_amend");
+    if (!amend) throw new Error("swarm_amend was never registered");
+    return { stub, amend };
+  }
+
+  const liveList = (runId: string) =>
+    realAgentListEnvelope(UNNAMED_CLAUDE_ENTRY, {
+      agent: "pi",
+      agent_status: "working",
+      name: `${runId}-w1`,
+      pane_id: "w1:pA",
+    });
+
+  test("sends the fixed re-read instruction to an active worker and records it", async () => {
+    const runId = "amendrun";
+    seed(runId, "active");
+    const sent: string[][] = [];
+    const { amend } = register((argv) => {
+      sent.push(argv);
+      if (argv[0] === "agent" && argv[1] === "list")
+        return { code: 0, stdout: liveList(runId), stderr: "" };
+      return { code: 0, stdout: "", stderr: "" };
+    });
+
+    const res = (await amend.execute(
+      ...(["c1", { runId, agent: `${runId}-w1` }, undefined] as unknown as never[]),
+    )) as { content: { type: string; text: string }[] };
+    const text = res.content.map((c) => c.text).join("\n");
+
+    const prompts = sent.filter((a) => a[0] === "agent" && a[1] === "prompt");
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toContain(AMEND_INSTRUCTION);
+    expect(text).toContain("amended:");
+
+    // Recorded on the run, so the end-of-run digest can say an item's
+    // premises changed under a worker mid-flight -- the correction that
+    // went through a raw herdr prompt left no trace at all.
+    const saved = loadState(runId, dir);
+    expect(saved?.workers[0]?.amendments?.length).toBe(1);
+  });
+
+  test("refuses a worker parked at a gate rather than sending into a refusal", async () => {
+    // herdr agent prompt refuses a blocked agent outright, so an amend
+    // cannot reach one. The answer for that case is swarm_resolve_blocked,
+    // and saying so beats a confusing wire error.
+    const runId = "blockedrun";
+    seed(runId, "awaiting_relay");
+    const sent: string[][] = [];
+    const { amend } = register((argv) => {
+      sent.push(argv);
+      if (argv[0] === "agent" && argv[1] === "list")
+        return { code: 0, stdout: liveList(runId), stderr: "" };
+      return { code: 0, stdout: "", stderr: "" };
+    });
+
+    const res = (await amend.execute(
+      ...(["c1", { runId, agent: `${runId}-w1` }, undefined] as unknown as never[]),
+    )) as { content: { type: string; text: string }[] };
+    const text = res.content.map((c) => c.text).join("\n");
+
+    expect(text).toContain("amend_refused:");
+    expect(text).toContain("swarm_resolve_blocked");
+    expect(sent.filter((a) => a[1] === "prompt")).toHaveLength(0);
+  });
+
+  test("an unknown target is reported, not silently ignored", async () => {
+    const runId = "amendrun";
+    seed(runId, "active");
+    const { amend } = register((argv) =>
+      argv[0] === "agent" && argv[1] === "list"
+        ? { code: 0, stdout: liveList(runId), stderr: "" }
+        : { code: 0, stdout: "", stderr: "" },
+    );
+    const res = (await amend.execute(
+      ...(["c1", { runId, agent: "nobody" }, undefined] as unknown as never[]),
+    )) as { content: { type: string; text: string }[] };
+    expect(res.content.map((c) => c.text).join("\n")).toContain("amend_failed:");
+  });
+
+  test("the worker can be named by slug as well as agent id", async () => {
+    const runId = "amendrun";
+    seed(runId, "active");
+    const sent: string[][] = [];
+    const { amend } = register((argv) => {
+      sent.push(argv);
+      if (argv[0] === "agent" && argv[1] === "list")
+        return { code: 0, stdout: liveList(runId), stderr: "" };
+      return { code: 0, stdout: "", stderr: "" };
+    });
+    const res = (await amend.execute(
+      ...(["c1", { runId, agent: "some-item" }, undefined] as unknown as never[]),
+    )) as { content: { type: string; text: string }[] };
+    expect(res.content.map((c) => c.text).join("\n")).toContain("amended:");
+    expect(sent.filter((a) => a[1] === "prompt")).toHaveLength(1);
+  });
+});
+
+describe("selectSchedulable eligibility", () => {
+  const safe = (id: string, ...paths: string[]) => ({
+    id,
+    worker_safe: true,
+    related_files: paths.map((path) => ({ path })),
+  });
+  const unsafe = (id: string) => ({ id, worker_safe: false, related_files: [] });
+  const unstamped = (id: string) => ({ id, related_files: [] });
+
+  test("an item the backlog marks unsafe is refused, not spawned", () => {
+    const res = selectSchedulable([unsafe("meta-a"), safe("atk-b")], [], 3);
+    expect(res.slugs).toEqual(["atk-b"]);
+    expect(res.refused.map((r) => r.slug)).toEqual(["meta-a"]);
+  });
+
+  test("a refused item is neither deferred nor skipped", () => {
+    // The three mean different things to the orchestrator: skipped is coming
+    // next wave, deferred waits on a named worker, refused is never coming.
+    const res = selectSchedulable([unsafe("meta-a")], [], 3);
+    expect(res.deferred).toEqual([]);
+    expect(res.skipped).toEqual([]);
+    expect(res.refused).toHaveLength(1);
+  });
+
+  test("refusal is decided before the concurrency cap", () => {
+    // With no headroom a refused item must still read as refused; reporting it
+    // as skipped would promise it a later wave that will never take it.
+    const res = selectSchedulable([unsafe("meta-a")], [], 0);
+    expect(res.refused.map((r) => r.slug)).toEqual(["meta-a"]);
+    expect(res.skipped).toEqual([]);
+  });
+
+  test("an item with no worker_safe field fails CLOSED", () => {
+    // pi/AGENTS.md documents testing an in-progress extension with `pi -e`
+    // against the INSTALLED dev_status.py, so new TypeScript running against
+    // an older Python is the normal development path. A guard that silently
+    // switches itself off there is worse than no guard.
+    const res = selectSchedulable([unstamped("atk-a")], [], 3);
+    expect(res.slugs).toEqual([]);
+    expect(res.refused).toHaveLength(1);
+    expect(res.refused[0]!.reason).toContain("worker_safe");
+  });
+
+  test("refusal wins over a file collision, since it is the permanent one", () => {
+    const res = selectSchedulable([unsafe("meta-a")], [], 3);
+    expect(res.refused).toHaveLength(1);
+    expect(res.deferred).toEqual([]);
+  });
+
+  test("a clean queue is untouched by the guard", () => {
+    const res = selectSchedulable([safe("atk-a"), safe("iron-lb-b")], [], 3);
+    expect(res.slugs).toEqual(["atk-a", "iron-lb-b"]);
+    expect(res.refused).toEqual([]);
+  });
+
+  test("every candidate refused yields an empty wave, not an empty queue", () => {
+    const res = selectSchedulable([unsafe("meta-a"), unsafe("meta-b")], [], 3);
+    expect(res.slugs).toEqual([]);
+    expect(res.refused).toHaveLength(2);
   });
 });

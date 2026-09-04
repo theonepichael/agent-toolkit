@@ -223,7 +223,7 @@ class SyntheticRepoIntegrationTests(unittest.TestCase):
         # entry is reported stale here -- this throwaway repo has none of
         # them. That noise is expected; assert the actual path under test
         # raised no problem of its own.
-        problems = sfd.verify_invariants(self.dotfiles, base, tip, copy_set)
+        problems = sfd.verify_invariants(self.dotfiles, base, tip, copy_set, copy_set)
         self.assertFalse([p for p in problems if "shared/new_thing.py" in p], problems)
 
     @pytest.mark.allow_real_subprocess
@@ -233,7 +233,9 @@ class SyntheticRepoIntegrationTests(unittest.TestCase):
         # exists to catch.
         base = git(self.dotfiles, "rev-parse", "HEAD").strip()
         tip = base
-        problems = sfd.verify_invariants(self.dotfiles, base, tip, frozenset())
+        problems = sfd.verify_invariants(
+            self.dotfiles, base, tip, frozenset(), frozenset()
+        )
         self.assertTrue(any("BLOCKLIST entry" in p for p in problems), problems)
 
     @pytest.mark.allow_real_subprocess
@@ -247,7 +249,7 @@ class SyntheticRepoIntegrationTests(unittest.TestCase):
 
         dotfiles_changed = sfd.changed_paths(self.dotfiles, base, tip)
         copy_set = sfd.compute_copy_set(dotfiles_changed)
-        problems = sfd.verify_invariants(self.dotfiles, base, tip, copy_set)
+        problems = sfd.verify_invariants(self.dotfiles, base, tip, copy_set, copy_set)
         self.assertTrue(any("missing from dotfiles" in p for p in problems), problems)
 
     @pytest.mark.allow_real_subprocess
@@ -268,9 +270,50 @@ class SyntheticRepoIntegrationTests(unittest.TestCase):
         dotfiles_changed = sfd.changed_paths(self.dotfiles, base, tip)
         copy_set = sfd.compute_copy_set(dotfiles_changed)
         self.assertEqual(copy_set, frozenset({"claude/scripts/uses_it.py"}))
-        problems = sfd.verify_invariants(self.dotfiles, base, tip, copy_set)
+        problems = sfd.verify_invariants(self.dotfiles, base, tip, copy_set, copy_set)
         self.assertTrue(
             any("references blocklisted module" in p for p in problems), problems
+        )
+
+    @pytest.mark.allow_real_subprocess
+    def test_verify_invariants_ignores_a_blocked_module_reference_outside_plain_copies(
+        self,
+    ) -> None:
+        """Regression test: a conflict path (e.g. a generated artifact or a
+        hand-resolved file) that happens to mention a blocklisted module
+        name must NOT block the run, because it is never blind-copied --
+        only ``plain_copies`` (``copy_set - conflict_set``) is. Before the
+        fix, this check ran over the full ``copy_set``, so dotfiles' own
+        legitimate self-references to its personal-only scripts inside its
+        generated docs (INTERFACES.md, links.toml) made every real run
+        refuse to proceed at all."""
+        commit_file(
+            self.dotfiles,
+            "claude/scripts/watchcommit_activity.py",
+            "def record(): ...\n",
+        )
+        base = git(self.dotfiles, "rev-parse", "HEAD").strip()
+        commit_file(
+            self.dotfiles,
+            "INTERFACES.md",
+            "mentions watchcommit_activity in prose\n",
+        )
+        tip = git(self.dotfiles, "rev-parse", "HEAD").strip()
+
+        dotfiles_changed = sfd.changed_paths(self.dotfiles, base, tip)
+        copy_set = sfd.compute_copy_set(dotfiles_changed)
+        self.assertEqual(copy_set, frozenset({"INTERFACES.md"}))
+
+        # INTERFACES.md is a conflict path here (it's in the copy_set but
+        # excluded from plain_copies -- simulating that the toolkit side
+        # also changed it, or that it is always regenerated rather than
+        # blind-copied).
+        plain_copies: frozenset[str] = frozenset()
+        problems = sfd.verify_invariants(
+            self.dotfiles, base, tip, copy_set, plain_copies
+        )
+        self.assertFalse(
+            [p for p in problems if "references blocklisted module" in p], problems
         )
 
     @pytest.mark.allow_real_subprocess

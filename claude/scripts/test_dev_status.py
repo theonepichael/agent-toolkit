@@ -65,6 +65,12 @@ def make_item(
     return item
 
 
+# The reminder's own wording. Silence assertions key on this rather than on a
+# bare prefix substring: `render` also writes an `item-map:` line to stderr that
+# contains the slug, so `assertNotIn("atk-", ...)` matches that instead.
+_PREFIX_MARKER = "carries the prefix"
+
+
 class BacklogTestCase(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
@@ -4547,6 +4553,152 @@ class BacklogTestCase(unittest.TestCase):
         self.assertEqual(args.oos_cmd, "add")
         self.assertEqual(args.concept_slug, "skip-thing")
         self.assertEqual(args.reason_file, "/tmp/r.txt")
+
+    def _add(self, slug, paths, quiet=False):
+        payload = {
+            "id": slug,
+            "summary": "x",
+            "related_files": [{"path": p, "note": "n"} for p in paths],
+        }
+        err = io.StringIO()
+        with patch("sys.stderr", err):
+            dev_status.cmd_add(_args(json=json.dumps(payload), quiet=quiet))
+        return err.getvalue()
+
+    def test_p1_reminder_fires_on_mismatched_prefix(self):
+        with patch.object(
+            dev_status, "_repo_name_for_path", return_value="agent-toolkit"
+        ):
+            err = self._add("meta-some-toolkit-thing", ["/w/agent-toolkit/README.md"])
+        self.assertIn("meta-some-toolkit-thing", err)
+        self.assertIn("agent-toolkit", err)
+        self.assertIn("atk-", err)
+
+    def test_p2_silent_when_prefix_matches(self):
+        with patch.object(
+            dev_status, "_repo_name_for_path", return_value="agent-toolkit"
+        ):
+            err = self._add("atk-some-toolkit-thing", ["/w/agent-toolkit/README.md"])
+        self.assertNotIn(_PREFIX_MARKER, err)
+
+    def test_p3_silent_for_multi_segment_prefix_that_matches(self):
+        # `iron-lb-` must not be read as the prefix `iron-`; a naive
+        # split("-")[0] would report a false mismatch on every iron-lb item.
+        with patch.object(
+            dev_status, "_repo_name_for_path", return_value="iron-logbook"
+        ):
+            err = self._add("iron-lb-wearable-card", ["/w/iron-logbook/app/page.tsx"])
+        self.assertNotIn(_PREFIX_MARKER, err)
+
+    def test_p4_silent_without_related_files(self):
+        err = self._add("meta-no-files", [])
+        self.assertNotIn(_PREFIX_MARKER, err)
+
+    def test_p5_silent_when_paths_span_two_repos(self):
+        names = iter(["agent-toolkit", "dotfiles"])
+        with patch.object(
+            dev_status, "_repo_name_for_path", side_effect=lambda _p: next(names)
+        ):
+            err = self._add(
+                "meta-cross-repo", ["/w/agent-toolkit/x", "/home/u/dotfiles/y"]
+            )
+        self.assertNotIn(_PREFIX_MARKER, err)
+
+    def test_p6_silent_when_repo_is_unmapped(self):
+        with patch.object(
+            dev_status, "_repo_name_for_path", return_value="some-other-repo"
+        ):
+            err = self._add("meta-unmapped", ["/w/some-other-repo/x"])
+        self.assertNotIn(_PREFIX_MARKER, err)
+
+    def test_p7_quiet_does_not_suppress_it(self):
+        # Deliberately unlike _blocker_check_reminder and
+        # _out_of_scope_check_reminder. Every agent passes DEVSTATUS_AGENT=1,
+        # and an agent is the only caller that ever adds an item, so a reminder
+        # silenced by quiet would be invisible to its entire audience.
+        with patch.dict(os.environ, {"DEVSTATUS_AGENT": "1"}):
+            with patch.object(
+                dev_status, "_repo_name_for_path", return_value="agent-toolkit"
+            ):
+                err = self._add(
+                    "meta-quiet-probe", ["/w/agent-toolkit/README.md"], quiet=True
+                )
+        self.assertIn("atk-", err)
+
+    def test_p8_reminder_does_not_block_the_add(self):
+        with patch.object(
+            dev_status, "_repo_name_for_path", return_value="agent-toolkit"
+        ):
+            self._add("meta-still-added", ["/w/agent-toolkit/README.md"])
+        slugs = [i["id"] for i in self.read_items()]
+        self.assertIn("meta-still-added", slugs)
+
+    def test_p9_repo_name_resolves_via_git_common_dir(self):
+        # --show-toplevel returns the WORKTREE root, whose basename misses the
+        # map; --git-common-dir returns <main-repo>/.git, whose parent is the
+        # real repo. Verified live 2026-09-03 from inside a worktree.
+        fake = MagicMock(returncode=0, stdout="/home/u/dotfiles/.git\n")
+        with patch.object(dev_status.subprocess, "run", return_value=fake) as run:
+            name = dev_status._repo_name_for_path(
+                "/home/u/dotfiles-some-slug/claude/x.py"
+            )
+        self.assertEqual("dotfiles", name)
+        argv = run.call_args[0][0]
+        self.assertIn("--git-common-dir", argv)
+        self.assertNotIn("--show-toplevel", argv)
+
+    def test_p10_repo_name_is_none_when_git_fails(self):
+        fake = MagicMock(returncode=128, stdout="")
+        with patch.object(dev_status.subprocess, "run", return_value=fake):
+            self.assertIsNone(dev_status._repo_name_for_path("/not/a/repo/x.py"))
+
+    def test_ws1_prefix_of_prefers_the_longest_known_prefix(self):
+        self.assertEqual(dev_status.prefix_of("iron-lb-wearable-card"), "iron-lb")
+        self.assertEqual(dev_status.prefix_of("atk-publish-remote"), "atk")
+
+    def test_ws2_project_prefixes_are_worker_safe(self):
+        self.assertTrue(dev_status.is_worker_safe("atk"))
+        self.assertTrue(dev_status.is_worker_safe("iron-lb"))
+
+    def test_ws3_the_harness_prefix_is_not_worker_safe(self):
+        harness = dev_status.REPO_PREFIXES[dev_status.HARNESS_REPO]
+        self.assertFalse(dev_status.is_worker_safe(harness))
+
+    def test_ws4_unknown_prefixes_are_unsafe_not_safe(self):
+        # A whitelist, deliberately. `pi-` and `dotfiles-` are real prefixes in
+        # the store, both dotfiles work, and an unsafe-only-if-meta rule classed
+        # them as swarmable. `work-` has its own policy and must never swarm.
+        for prefix in ("pi", "dotfiles", "work", "brand-new-project"):
+            self.assertFalse(
+                dev_status.is_worker_safe(prefix), f"{prefix}- should not be swarmable"
+            )
+
+    def test_ws5_ready_reports_worker_safe_per_item(self):
+        self.write_items(
+            [
+                make_item("atk-a"),
+                make_item("meta-b"),
+                make_item("iron-lb-c"),
+            ]
+        )
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            dev_status.cmd_ready(_args(prefix=None))
+        by_id = {i["id"]: i for i in json.loads(out.getvalue())}
+        self.assertIs(by_id["atk-a"]["worker_safe"], True)
+        self.assertIs(by_id["meta-b"]["worker_safe"], False)
+        self.assertIs(by_id["iron-lb-c"]["worker_safe"], True)
+
+    def test_ws6_ready_reports_worker_safe_on_every_item(self):
+        # swarm-tool.ts fails closed on a missing field, so an item without it
+        # would be refused rather than skipped -- silently halving a wave.
+        self.write_items([make_item("atk-a"), make_item("meta-b")])
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            dev_status.cmd_ready(_args(prefix=None))
+        for item in json.loads(out.getvalue()):
+            self.assertIn("worker_safe", item, item["id"])
+
 
 
 # Every env var _detect_harness consults, in its documented resolution order.

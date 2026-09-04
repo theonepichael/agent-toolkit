@@ -1294,6 +1294,182 @@ def _render_order(items: list[BacklogItem]) -> RenderOrder:
     return in_progress, ready, blocked, in_review, done
 
 
+HARNESS_REPO = "dotfiles"
+"""The repo holding the harness itself.
+
+Named rather than assumed so anything needing "is this the harness?" -- a
+swarm deciding whether an item is safe for a worker, say -- derives it from
+one place instead of hardcoding the prefix a second time.
+"""
+
+REPO_PREFIXES: dict[str, str] = {
+    "iron-logbook": "iron-lb",
+    "agent-toolkit": "atk",
+    "dotfiles": "meta",
+    "ai-job-hunter-pro": "ajhp",
+}
+"""Repo directory name -> the slug prefix items targeting it should carry.
+
+A prefix names the repo an item targets, so a swarm scoped by prefix has an
+unambiguous signal for which items a worker may safely take: ``atk-`` work is
+ordinary code, while ``meta-`` work edits the harness the worker is itself
+running. ``meta-`` is the established name dotfiles goes by rather than a
+literal directory name -- the safety property needs the mapping to be
+one-to-one, which it is, not the label to be literal.
+
+Keyed on the repo's directory name, never an absolute path: this script also
+ships in agent-toolkit, where a hardcoded ``/home/<user>/...`` would be exactly
+the undocumented machine-dependent coupling that install contract removed.
+"""
+
+
+WORKER_SAFE_PREFIXES: frozenset[str] = frozenset(
+    prefix for repo, prefix in REPO_PREFIXES.items() if repo != HARNESS_REPO
+)
+"""Prefixes a swarm worker may be given items under.
+
+A whitelist, not a blacklist. An unknown prefix is unsafe: `pi-` and
+`dotfiles-` are both real prefixes in the store and both name dotfiles work, so
+an "unsafe only if `meta-`" rule classed the harness's own backlog as
+swarmable. `work-` has its own policy and must never reach a swarm either.
+Defaulting unknown to unsafe makes a new project explicitly opt in by being
+added to :data:`REPO_PREFIXES`, which is one edit in one place.
+"""
+
+
+def prefix_of(slug: str) -> str:
+    """The slug's prefix, preferring the longest known one.
+
+    ``iron-lb-x`` is ``iron-lb``, not the ``iron`` a split on the first dash
+    would give.
+    """
+    for known in sorted(REPO_PREFIXES.values(), key=len, reverse=True):
+        if slug.startswith(f"{known}-"):
+            return known
+    return slug.split("-")[0]
+
+
+def is_worker_safe(prefix: str) -> bool:
+    """Whether a swarm worker may be handed items under this prefix.
+
+    The harness's own prefix is unsafe because a worker would be editing the
+    code it is running. Everything unrecognised is unsafe too -- see
+    :data:`WORKER_SAFE_PREFIXES`.
+
+    This is the single source of truth for the fact, in Python and beyond:
+    ``cmd_ready`` stamps it onto every emitted item so ``swarm_spawn`` in
+    ``pi/extensions/swarm-tool.ts`` can read it without a second copy of the
+    scheme in TypeScript.
+    """
+    return prefix in WORKER_SAFE_PREFIXES
+
+
+def _repo_name_for_path(path: str) -> str | None:
+    """Resolve a file path to the directory name of the git repo containing it.
+
+    Uses ``--git-common-dir`` rather than ``--show-toplevel`` on purpose. Inside
+    a worktree, ``--show-toplevel`` returns the *worktree* root, whose basename
+    is ``<repo>-<slug>`` and matches nothing in :data:`REPO_PREFIXES`; since
+    every item is worked in a worktree per the repo's Git policy, that would
+    fail on essentially every add. ``--git-common-dir`` returns the main repo's
+    ``.git``, whose parent is the real repo (verified live 2026-09-03).
+
+    Returns ``None`` whenever the answer is not certain -- no such directory,
+    git missing or failing, empty output. Callers treat ``None`` as "say
+    nothing", never as a finding.
+    """
+    start: Path | None = None
+    candidate = Path(path)
+    if candidate.is_dir():
+        start = candidate
+    else:
+        for ancestor in candidate.parents:
+            if ancestor.is_dir():
+                start = ancestor
+                break
+    if start is None:
+        return None
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(start),
+                "rev-parse",
+                "--path-format=absolute",
+                "--git-common-dir",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    common = result.stdout.strip()
+    if not common:
+        return None
+    return Path(common).parent.name or None
+
+
+def _prefix_check_reminder(
+    item: BacklogItem,
+    *,
+    cmd: str,
+    err: TextIO | None = None,
+) -> None:
+    """Warn when an item's prefix disagrees with the repo its files live in.
+
+    Advisory only: it never blocks the add and never changes an exit code. It
+    speaks only when certain -- exactly one repo resolved, that repo mapped,
+    and the prefix genuinely different. Silence is the default, so a printed
+    line is always a positive finding.
+
+    Deliberately takes no ``quiet`` parameter, unlike
+    :func:`_blocker_check_reminder` and :func:`_out_of_scope_check_reminder`
+    beside it. Agents always pass ``DEVSTATUS_AGENT=1``, and an agent is the
+    only caller that ever adds an item, so a reminder silenced by quiet mode
+    would be invisible to its entire audience. It does reach the agent:
+    ``pi/extensions/dev-status-tool.ts`` folds stderr into the tool result on
+    success and throws only on a nonzero exit.
+    """
+    stream = err if err is not None else sys.stderr
+    slug = str(item.get("id", ""))
+    if not slug:
+        return
+
+    names: set[str] = set()
+    for entry in item.get("related_files", []):
+        if not isinstance(entry, Mapping):
+            continue
+        raw = str(entry.get("path", "")).strip()
+        if not raw:
+            continue
+        resolved = _repo_name_for_path(raw)
+        if resolved:
+            names.add(resolved)
+    if len(names) != 1:
+        return
+
+    repo = names.pop()
+    expected = REPO_PREFIXES.get(repo)
+    if expected is None or slug.startswith(f"{expected}-"):
+        return
+
+    # Longest-first: `iron-lb-x` must report `iron-lb-`, not the `iron-` that a
+    # split on the first dash would produce.
+    actual = prefix_of(slug)
+    print(
+        f"[{cmd}] {slug} carries the prefix '{actual}-', but its related_files "
+        f"are in {repo}, whose prefix is '{expected}-'. A prefix names the "
+        f"target repo so a swarm can scope itself safely. Rename with: "
+        f"dev_status.py rename {slug} {expected}-<rest-of-slug>",
+        file=stream,
+    )
+
+
 def _blocker_check_reminder(
     items: list[BacklogItem],
     exclude_slug: str | None,
@@ -2825,7 +3001,15 @@ def cmd_ready(args: argparse.Namespace) -> None:
     _in_progress, ready, _blocked, _in_review, _done = _render_order(items)
     if args.prefix:
         ready = [item for item in ready if item["id"].startswith(args.prefix)]
-    print(json.dumps(ready, indent=2))
+    # Stamped here rather than derived by each consumer: swarm_spawn lives in
+    # TypeScript and cannot import this module, and a second copy of the prefix
+    # scheme there would drift the moment REPO_PREFIXES changed. Every item
+    # carries it, because the consumer fails closed on a missing field.
+    stamped = [
+        {**item, "worker_safe": is_worker_safe(prefix_of(str(item["id"])))}
+        for item in ready
+    ]
+    print(json.dumps(stamped, indent=2))
 
 
 def cmd_list(args: argparse.Namespace) -> None:
@@ -3057,6 +3241,7 @@ def cmd_add(args: argparse.Namespace) -> None:
     _maybe_dispatch_recap_regen()
     _blocker_check_reminder(items, slug, cmd="add", quiet=args.quiet)
     _out_of_scope_check_reminder("add", quiet=args.quiet)
+    _prefix_check_reminder(item, cmd="add")
 
 
 def cmd_update(args: argparse.Namespace) -> None:
