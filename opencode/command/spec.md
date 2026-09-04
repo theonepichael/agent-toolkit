@@ -46,6 +46,6 @@ Once verification passes (or is stopped-and-reported), ask via the `question` to
 
 ## 7. Plumbing (house convention)
 
-1. File lives at `~/dotfiles/opencode/command/spec.md`.
+1. File lives at the repo's `opencode/command/spec.md`.
 2. Add a `[[link]]` entry (`src = "opencode/command/spec.md"`, `dest = "~/.config/opencode/commands/spec.md"`, `harness = "opencode"`) in `links.toml` next to the existing ones.
 3. Conventional commit, scope `opencode`: `feat`.

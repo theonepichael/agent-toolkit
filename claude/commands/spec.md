@@ -49,7 +49,7 @@ Once verification passes (or is stopped-and-reported), ask via AskUserQuestion: 
 
 ## 7. Plumbing (house convention)
 
-1. File lives at `~/dotfiles/claude/commands/spec.md`.
+1. File lives at the repo's `claude/commands/spec.md`.
 2. Add a `[[link]]` entry (`src = "claude/commands/spec.md"`, `dest = "~/.claude/commands/spec.md"`, `harness = "claude"`) in `links.toml` next to the existing ones.
-3. Create the live symlink now: `ln -s ~/dotfiles/claude/commands/spec.md ~/.claude/commands/spec.md`.
+3. Create the live symlink now: `ln -s "$(git rev-parse --show-toplevel)/claude/commands/spec.md" "~/.claude/commands/spec.md"`.
 4. Conventional commit, scope `claude`: `feat`.

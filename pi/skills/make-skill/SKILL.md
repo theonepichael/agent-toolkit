@@ -16,7 +16,7 @@ Ask (or infer and confirm): model-invoked, user-invoked, or both?
 ## 2. Structure — steps, then reference
 
 - The body is a **procedure**: numbered/ordered steps in imperative voice, addressed to the agent.
-- Supporting material (schemas, long examples, lookup tables) does NOT go in the body. Pi implements the Agent Skills standard, whose documented subdirectory for this is `references/` (not `ref/` — this repo's claude/copilot convention). Put it in `~/dotfiles/pi/skills/<skill>/references/<topic>.md` and point to it from the step that needs it. Reference files need their own symlink lines (step 5).
+- Supporting material (schemas, long examples, lookup tables) does NOT go in the body. Pi implements the Agent Skills standard, whose documented subdirectory for this is `references/` (not `ref/` — this repo's claude/copilot convention). Put it in the repo's `pi/skills/<skill>/references/<topic>.md` and point to it from the step that needs it. Reference files need their own symlink lines (step 5).
 - Keep the body under ~50 lines. If it branches into genuinely different workflows, split into separate skills instead of one branching monster — smaller skills also hide the end goal, which stops the agent from rushing past planning/questioning steps. (Splitting isn't the only way: grill-me gets the same effect inside one skill by forbidding plan-writing until every question is decided. Don't split a skill that demonstrably works.)
 
 ## 3. Steering — make it stick
@@ -36,7 +36,7 @@ step needs splitting or stronger steering — not more prose.
 
 ## 5. Plumbing (house convention)
 
-1. File lives at `~/dotfiles/pi/skills/<name>/SKILL.md` (same for any reference files, under `~/dotfiles/pi/skills/<name>/references/`). `pi/skills` is already wired into `links.toml` as one `dir = true` row and into `pi/settings.json`'s `skills` array — a new file under it needs no new `links.toml` row of its own, just the file.
+1. File lives at the repo's `pi/skills/<name>/SKILL.md` (same for any reference files, under the repo's `pi/skills/<name>/references/`). `pi/skills` is already wired into `links.toml` as one `dir = true` row and into `pi/settings.json`'s `skills` array — a new file under it needs no new `links.toml` row of its own, just the file.
 2. If this skill should also be shared with agy (a skill agy itself should offer, not just Pi), author it at `agy/skills/<name>/SKILL.md` instead and follow agy's own plumbing steps — Pi still falls back to `agy/skills/` (`pi/settings.json`) for anything not under `pi/skills/`.
 3. Conventional commit, scope `pi` (or `agy`, if authored there instead): `feat` for a new skill, `refactor`/`docs` for revisions.
 

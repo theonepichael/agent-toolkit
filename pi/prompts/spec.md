@@ -45,6 +45,6 @@ Once verification passes (or is stopped-and-reported), ask in plain text with a 
 
 ## 7. Plumbing (house convention)
 
-1. File lives at `~/dotfiles/pi/prompts/spec.md`.
+1. File lives at the repo's `pi/prompts/spec.md`.
 2. Add a `[[link]]` entry (`src = "pi/prompts/spec.md"`, `dest = "~/.pi/agent/prompts/spec.md"`, `harness = "pi"`) in `links.toml` next to the existing ones.
 3. Conventional commit, scope `pi`: `feat`.
