@@ -26,7 +26,7 @@ over-specifying trigger phrases.
 ## 2. Structure — steps, then reference
 
 - The body is a **procedure**: numbered/ordered steps in imperative voice, addressed to the agent.
-- Supporting material (schemas, long examples, lookup tables) does NOT go in the body. Put it in `~/dotfiles/copilot/skills/<skill>/ref/<topic>.md` and point to it from the step that needs it. Reference files need their own symlink lines (step 5).
+- Supporting material (schemas, long examples, lookup tables) does NOT go in the body. Put it in the repo's `copilot/skills/<skill>/ref/<topic>.md` and point to it from the step that needs it. Reference files need their own symlink lines (step 5).
 - Keep the body under ~50 lines. If it branches into genuinely different workflows, split into separate skills instead of one branching monster — smaller skills also hide the end goal, which stops the agent from rushing past planning/questioning steps. (Splitting isn't the only way: grill-me gets the same effect inside one skill by forbidding plan-writing until every question is decided. Don't split a skill that demonstrably works.)
 
 ## 3. Steering — make it stick
@@ -46,9 +46,9 @@ splitting or stronger steering — not more prose.
 
 ## 5. Plumbing (house convention)
 
-1. File lives at `~/dotfiles/copilot/skills/<name>/SKILL.md` (same for any ref files, under `~/dotfiles/copilot/skills/<name>/ref/`).
+1. File lives at the repo's `copilot/skills/<name>/SKILL.md` (same for any ref files, under the repo's `copilot/skills/<name>/ref/`).
 2. Add a `[[link]]` entry (`src = "copilot/skills/<name>/SKILL.md"`, `dest = "~/.copilot/skills/<name>/SKILL.md"`, `harness = "copilot"`) in `links.toml` next to the existing ones (same for any ref files).
-3. Create the live symlink now: `ln -s ~/dotfiles/copilot/skills/<name>/SKILL.md ~/.copilot/skills/<name>/SKILL.md`.
+3. Create the live symlink now: `ln -s "$(git rev-parse --show-toplevel)/copilot/skills/<name>/SKILL.md" "~/.copilot/skills/<name>/SKILL.md"`.
 4. Conventional commit, scope `copilot`: `feat` for a new skill, `refactor`/`docs` for revisions.
 
 ## 6. Pruning (every revision, not just creation)

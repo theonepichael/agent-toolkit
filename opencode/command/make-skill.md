@@ -30,9 +30,9 @@ Probe with headless runs: `opencode -p '<a real trigger phrase>'` for model-invo
 
 ## 5. Plumbing (house convention)
 
-1. Create the repo file at `~/dotfiles/opencode/skills/<name>/SKILL.md` with frontmatter (`name`, `description`) and the skill body.
+1. Create the repo file at the repo's `opencode/skills/<name>/SKILL.md` with frontmatter (`name`, `description`) and the skill body.
 2. Add a `[[link]]` entry (`src = "opencode/skills/<name>/SKILL.md"`, `dest = "~/.config/opencode/skills/<name>/SKILL.md"`, `harness = "opencode"`) in `links.toml` next to the existing ones.
-3. Create the live symlink now: `ln -s ~/dotfiles/opencode/skills/<name>/SKILL.md ~/.config/opencode/skills/<name>/SKILL.md`.
+3. Create the live symlink now: `ln -s "$(git rev-parse --show-toplevel)/opencode/skills/<name>/SKILL.md" "~/.config/opencode/skills/<name>/SKILL.md"`.
    Discovery is automatic — opencode picks up any `SKILL.md` under `~/.config/opencode/skills/` with no enabling config — but a skill dropped straight into the live path without steps 1–2 won't reproduce on other machines. The repo file + `links.toml` entry is what makes it reproducible; discovery alone is not reproducibility.
 4. Conventional commit, scope `skills`: `feat` for a new skill, `refactor`/`docs` for revisions.
 

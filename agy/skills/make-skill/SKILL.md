@@ -21,7 +21,7 @@ real transcripts).
 ## 2. Structure — steps, then reference
 
 - The body is a **procedure**: numbered/ordered steps in imperative voice, addressed to the agent.
-- Supporting material (schemas, long examples, lookup tables) does NOT go in the body. agy's own docs specify a `references/` subdirectory for this (not `ref/` — matches agy's documented skill-folder convention, distinct from this repo's `claude`/`copilot` naming). Put it in `~/dotfiles/agy/skills/<skill>/references/<topic>.md` and point to it from the step that needs it. Reference files need their own symlink lines (step 5).
+- Supporting material (schemas, long examples, lookup tables) does NOT go in the body. agy's own docs specify a `references/` subdirectory for this (not `ref/` — matches agy's documented skill-folder convention, distinct from this repo's `claude`/`copilot` naming). Put it in the repo's `agy/skills/<skill>/references/<topic>.md` and point to it from the step that needs it. Reference files need their own symlink lines (step 5).
 - Keep the body under ~50 lines. If it branches into genuinely different workflows, split into separate skills instead of one branching monster — smaller skills also hide the end goal, which stops the agent from rushing past planning/questioning steps. (Splitting isn't the only way: grill-me gets the same effect inside one skill by forbidding plan-writing until every question is decided. Don't split a skill that demonstrably works.)
 
 ## 3. Steering — make it stick
@@ -36,9 +36,9 @@ Probe with `agy -p '<a real trigger phrase>'` (confirmed non-interactive print-m
 
 ## 5. Plumbing (house convention)
 
-1. File lives at `~/dotfiles/agy/skills/<name>/SKILL.md` (same for any reference files, under `~/dotfiles/agy/skills/<name>/references/`).
+1. File lives at the repo's `agy/skills/<name>/SKILL.md` (same for any reference files, under the repo's `agy/skills/<name>/references/`).
 2. Add a `[[link]]` entry (`src = "agy/skills/<name>/SKILL.md"`, `dest = "~/.gemini/antigravity-cli/skills/<name>/SKILL.md"`, `harness = "agy"`) in `links.toml` next to the existing ones (same for any reference files).
-3. Create the live symlink now: `ln -s ~/dotfiles/agy/skills/<name>/SKILL.md ~/.gemini/antigravity-cli/skills/<name>/SKILL.md`.
+3. Create the live symlink now: `ln -s "$(git rev-parse --show-toplevel)/agy/skills/<name>/SKILL.md" "~/.gemini/antigravity-cli/skills/<name>/SKILL.md"`.
 4. Conventional commit, scope `agy`: `feat` for a new skill, `refactor`/`docs` for revisions.
 
 ## 6. Pruning (every revision, not just creation)

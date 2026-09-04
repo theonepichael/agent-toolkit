@@ -21,6 +21,49 @@ harness-specific fact directly instead.
 Requires Python 3.12+.
 """
 
+from repo_identity import REPO_IDENTITY
+
+# ── per-repo phrasing helpers ──────────────────────────────────────────────
+#
+# The one class of content that must differ between the dotfiles and
+# agent-toolkit copies of this otherwise-shared file: where a human editing
+# a generated skill doc should go make that edit. dotfiles has a fixed,
+# long-standing, single-user clone path (~/dotfiles); agent-toolkit does not
+# (coworkers clone it wherever they like, and install.py never regenerates
+# these docs at clone time -- see AGENTS.md/README.md), so its phrasing must
+# be self-locating rather than a second baked-in absolute path.
+#
+# edit_root()/symlink_cmd() return a self-contained markdown fragment,
+# backticks included -- a call site embeds the return value directly, never
+# wrapping it in its own backticks (dotfiles' literal-path form and
+# agent-toolkit's "the repo's `X`" prose form need different backtick
+# placement relative to the surrounding sentence, so the placement has to
+# travel with the value, not live at the call site). probe_add_dir() returns
+# a bare value with no backticks of its own, since its one call site already
+# wraps a whole `--add-dir <value>` command in a single pair of backticks.
+
+
+def edit_root(relpath: str) -> str:
+    """Return self-contained "where to edit this file" markdown."""
+    if REPO_IDENTITY == "dotfiles":
+        return f"`~/dotfiles/{relpath}`"
+    return f"the repo's `{relpath}`"
+
+
+def symlink_cmd(relpath: str, dest: str) -> str:
+    """Return a self-contained, copy-pasteable `ln -s` command."""
+    if REPO_IDENTITY == "dotfiles":
+        return f"`ln -s ~/dotfiles/{relpath} {dest}`"
+    return f'`ln -s "$(git rev-parse --show-toplevel)/{relpath}" "{dest}"`'
+
+
+def probe_add_dir() -> str:
+    """Return the bare --add-dir flag argument for claude's headless probe."""
+    if REPO_IDENTITY == "dotfiles":
+        return "~/dotfiles"
+    return '"$(git rev-parse --show-toplevel)"'
+
+
 DASHBOARD_PARAMS: dict[str, dict[str, str]] = {
     "claude": {
         "FRONTMATTER": """\
@@ -1146,17 +1189,17 @@ Ask (or infer and confirm): model-invoked, user-invoked, or both?
         "STRUCTURE_REF_NOTE": (
             "- Supporting material (schemas, long examples, lookup tables) does "
             "NOT go in the body. Put it in "
-            "`~/dotfiles/claude/commands/ref/<skill>-<topic>.md` and point to it "
+            f"{edit_root('claude/commands/ref/<skill>-<topic>.md')} and point to it "
             'from the step that needs it: "Read `~/.claude/commands/ref/...` '
             'when X." Reference files need their own symlink lines (step 5).'
         ),
         "STEERING_WIDGET_NOTE": "",
-        "VERIFY_PROBE": """\
-Probe with headless runs: `claude -p '<a real trigger phrase>'` for model-invoke, `claude -p '/<name> <args>'` for behavior. Pass `--add-dir ~/dotfiles` when the probe must read a skill file — the headless sandbox won't follow the `~/.claude/commands` symlinks otherwise. Check the output (and reasoning, if visible) repeats your leading words back. If the agent skips a step, that step needs splitting or stronger steering — not more prose.""",
-        "PLUMBING_STEPS": """\
-1. File lives at `~/dotfiles/claude/commands/<name>.md`.
+        "VERIFY_PROBE": f"""\
+Probe with headless runs: `claude -p '<a real trigger phrase>'` for model-invoke, `claude -p '/<name> <args>'` for behavior. Pass `--add-dir {probe_add_dir()}` when the probe must read a skill file — the headless sandbox won't follow the `~/.claude/commands` symlinks otherwise. Check the output (and reasoning, if visible) repeats your leading words back. If the agent skips a step, that step needs splitting or stronger steering — not more prose.""",
+        "PLUMBING_STEPS": f"""\
+1. File lives at {edit_root("claude/commands/<name>.md")}.
 2. Add a `[[link]]` entry (`src = "claude/commands/<name>.md"`, `dest = "~/.claude/commands/<name>.md"`, `harness = "claude"`) in `links.toml` next to the existing ones (same for any ref files).
-3. Create the live symlink now: `ln -s ~/dotfiles/claude/commands/<name>.md ~/.claude/commands/<name>.md`.
+3. Create the live symlink now: {symlink_cmd("claude/commands/<name>.md", "~/.claude/commands/<name>.md")}.
 4. Conventional commit, scope `claude`: `feat` for a new skill, `refactor`/`docs` for revisions.""",
     },
     "copilot": {
@@ -1183,7 +1226,7 @@ over-specifying trigger phrases.""",
         "STRUCTURE_REF_NOTE": (
             "- Supporting material (schemas, long examples, lookup tables) does "
             "NOT go in the body. Put it in "
-            "`~/dotfiles/copilot/skills/<skill>/ref/<topic>.md` and point to it "
+            f"{edit_root('copilot/skills/<skill>/ref/<topic>.md')} and point to it "
             "from the step that needs it. Reference files need their own symlink "
             "lines (step 5)."
         ),
@@ -1203,10 +1246,10 @@ Probe with `copilot -p '<a real trigger phrase>' --allow-all-tools`
 direct user-typed invocation. Check the output (and reasoning, if visible)
 repeats your leading words back. If the agent skips a step, that step needs
 splitting or stronger steering — not more prose.""",
-        "PLUMBING_STEPS": """\
-1. File lives at `~/dotfiles/copilot/skills/<name>/SKILL.md` (same for any ref files, under `~/dotfiles/copilot/skills/<name>/ref/`).
+        "PLUMBING_STEPS": f"""\
+1. File lives at {edit_root("copilot/skills/<name>/SKILL.md")} (same for any ref files, under {edit_root("copilot/skills/<name>/ref/")}).
 2. Add a `[[link]]` entry (`src = "copilot/skills/<name>/SKILL.md"`, `dest = "~/.copilot/skills/<name>/SKILL.md"`, `harness = "copilot"`) in `links.toml` next to the existing ones (same for any ref files).
-3. Create the live symlink now: `ln -s ~/dotfiles/copilot/skills/<name>/SKILL.md ~/.copilot/skills/<name>/SKILL.md`.
+3. Create the live symlink now: {symlink_cmd("copilot/skills/<name>/SKILL.md", "~/.copilot/skills/<name>/SKILL.md")}.
 4. Conventional commit, scope `copilot`: `feat` for a new skill, `refactor`/`docs` for revisions.""",
     },
     "opencode": {
@@ -1229,10 +1272,10 @@ Ask (or infer and confirm): model-invoked, user-invoked, or both?
         "STEERING_WIDGET_NOTE": "",
         "VERIFY_PROBE": """\
 Probe with headless runs: `opencode -p '<a real trigger phrase>'` for model-invoke, `opencode -p '/<name> <args>'` for behavior. Check the output (and reasoning, if visible) repeats your leading words back. If the agent skips a step, that step needs splitting or stronger steering — not more prose.""",
-        "PLUMBING_STEPS": """\
-1. Create the repo file at `~/dotfiles/opencode/skills/<name>/SKILL.md` with frontmatter (`name`, `description`) and the skill body.
+        "PLUMBING_STEPS": f"""\
+1. Create the repo file at {edit_root("opencode/skills/<name>/SKILL.md")} with frontmatter (`name`, `description`) and the skill body.
 2. Add a `[[link]]` entry (`src = "opencode/skills/<name>/SKILL.md"`, `dest = "~/.config/opencode/skills/<name>/SKILL.md"`, `harness = "opencode"`) in `links.toml` next to the existing ones.
-3. Create the live symlink now: `ln -s ~/dotfiles/opencode/skills/<name>/SKILL.md ~/.config/opencode/skills/<name>/SKILL.md`.
+3. Create the live symlink now: {symlink_cmd("opencode/skills/<name>/SKILL.md", "~/.config/opencode/skills/<name>/SKILL.md")}.
    Discovery is automatic — opencode picks up any `SKILL.md` under `~/.config/opencode/skills/` with no enabling config — but a skill dropped straight into the live path without steps 1–2 won't reproduce on other machines. The repo file + `links.toml` entry is what makes it reproducible; discovery alone is not reproducibility.
 4. Conventional commit, scope `skills`: `feat` for a new skill, `refactor`/`docs` for revisions.""",
     },
@@ -1258,7 +1301,7 @@ real transcripts).""",
             "subdirectory for this (not `ref/` — matches agy's documented "
             "skill-folder convention, distinct from this repo's "
             "`claude`/`copilot` naming). Put it in "
-            "`~/dotfiles/agy/skills/<skill>/references/<topic>.md` and point to "
+            f"{edit_root('agy/skills/<skill>/references/<topic>.md')} and point to "
             "it from the step that needs it. Reference files need their own "
             "symlink lines (step 5)."
         ),
@@ -1277,10 +1320,10 @@ real transcripts).""",
             "step, that step needs splitting or stronger steering — not more "
             "prose."
         ),
-        "PLUMBING_STEPS": """\
-1. File lives at `~/dotfiles/agy/skills/<name>/SKILL.md` (same for any reference files, under `~/dotfiles/agy/skills/<name>/references/`).
+        "PLUMBING_STEPS": f"""\
+1. File lives at {edit_root("agy/skills/<name>/SKILL.md")} (same for any reference files, under {edit_root("agy/skills/<name>/references/")}).
 2. Add a `[[link]]` entry (`src = "agy/skills/<name>/SKILL.md"`, `dest = "~/.gemini/antigravity-cli/skills/<name>/SKILL.md"`, `harness = "agy"`) in `links.toml` next to the existing ones (same for any reference files).
-3. Create the live symlink now: `ln -s ~/dotfiles/agy/skills/<name>/SKILL.md ~/.gemini/antigravity-cli/skills/<name>/SKILL.md`.
+3. Create the live symlink now: {symlink_cmd("agy/skills/<name>/SKILL.md", "~/.gemini/antigravity-cli/skills/<name>/SKILL.md")}.
 4. Conventional commit, scope `agy`: `feat` for a new skill, `refactor`/`docs` for revisions.""",
     },
     "pi": {
@@ -1299,7 +1342,7 @@ Ask (or infer and confirm): model-invoked, user-invoked, or both?
             "NOT go in the body. Pi implements the Agent Skills standard, whose "
             "documented subdirectory for this is `references/` (not `ref/` — "
             "this repo's claude/copilot convention). Put it in "
-            "`~/dotfiles/pi/skills/<skill>/references/<topic>.md` and point to "
+            f"{edit_root('pi/skills/<skill>/references/<topic>.md')} and point to "
             "it from the step that needs it. Reference files need their own "
             "symlink lines (step 5)."
         ),
@@ -1311,8 +1354,8 @@ registers every discovered skill as a `/skill:<name>` command —
 `docs/skills.md`'s "Skill Commands"). Check the output (and reasoning, if
 visible) repeats your leading words back. If the agent skips a step, that
 step needs splitting or stronger steering — not more prose.""",
-        "PLUMBING_STEPS": """\
-1. File lives at `~/dotfiles/pi/skills/<name>/SKILL.md` (same for any reference files, under `~/dotfiles/pi/skills/<name>/references/`). `pi/skills` is already wired into `links.toml` as one `dir = true` row and into `pi/settings.json`'s `skills` array — a new file under it needs no new `links.toml` row of its own, just the file.
+        "PLUMBING_STEPS": f"""\
+1. File lives at {edit_root("pi/skills/<name>/SKILL.md")} (same for any reference files, under {edit_root("pi/skills/<name>/references/")}). `pi/skills` is already wired into `links.toml` as one `dir = true` row and into `pi/settings.json`'s `skills` array — a new file under it needs no new `links.toml` row of its own, just the file.
 2. If this skill should also be shared with agy (a skill agy itself should offer, not just Pi), author it at `agy/skills/<name>/SKILL.md` instead and follow agy's own plumbing steps — Pi still falls back to `agy/skills/` (`pi/settings.json`) for anything not under `pi/skills/`.
 3. Conventional commit, scope `pi` (or `agy`, if authored there instead): `feat` for a new skill, `refactor`/`docs` for revisions.""",
     },
@@ -1362,10 +1405,10 @@ allowed-tools: [Read, Glob, Grep, Write, AskUserQuestion, "Bash(python3 ~/.claud
             "result and the spec's Objective — does it satisfy the letter "
             "while missing the intent? — rather than self-grading."
         ),
-        "PLUMBING_STEPS": """\
-1. File lives at `~/dotfiles/claude/commands/spec.md`.
+        "PLUMBING_STEPS": f"""\
+1. File lives at {edit_root("claude/commands/spec.md")}.
 2. Add a `[[link]]` entry (`src = "claude/commands/spec.md"`, `dest = "~/.claude/commands/spec.md"`, `harness = "claude"`) in `links.toml` next to the existing ones.
-3. Create the live symlink now: `ln -s ~/dotfiles/claude/commands/spec.md ~/.claude/commands/spec.md`.
+3. Create the live symlink now: {symlink_cmd("claude/commands/spec.md", "~/.claude/commands/spec.md")}.
 4. Conventional commit, scope `claude`: `feat`.""",
     },
     "opencode": {
@@ -1417,8 +1460,8 @@ description: "Turn a vague coding task into a structured specification (objectiv
             "`/second-opinion`'s `second_opinion.py review` loop only if "
             "`adversary` is erroring or unavailable."
         ),
-        "PLUMBING_STEPS": """\
-1. File lives at `~/dotfiles/opencode/command/spec.md`.
+        "PLUMBING_STEPS": f"""\
+1. File lives at {edit_root("opencode/command/spec.md")}.
 2. Add a `[[link]]` entry (`src = "opencode/command/spec.md"`, `dest = "~/.config/opencode/commands/spec.md"`, `harness = "opencode"`) in `links.toml` next to the existing ones.
 3. Conventional commit, scope `opencode`: `feat`.""",
     },
@@ -1483,8 +1526,8 @@ description: "Turn a vague coding task into a structured specification (objectiv
             "does — this always goes through the shared `second_opinion.py` "
             "critique loop instead."
         ),
-        "PLUMBING_STEPS": """\
-1. File lives at `~/dotfiles/pi/skills/spec/SKILL.md`. `pi/skills` is already wired into `links.toml` as one `dir = true` row and into `pi/settings.json`'s `skills` array — a new file under it needs no new `links.toml` row of its own, just the file.
+        "PLUMBING_STEPS": f"""\
+1. File lives at {edit_root("pi/skills/spec/SKILL.md")}. `pi/skills` is already wired into `links.toml` as one `dir = true` row and into `pi/settings.json`'s `skills` array — a new file under it needs no new `links.toml` row of its own, just the file.
 2. Conventional commit, scope `pi`: `feat`.""",
     },
 }
@@ -1524,6 +1567,7 @@ propose adding it per CLAUDE.md's pending-item protocol.
 numbering (visible via `/dashboard`) also works, but its numbers shift as
 items change, so prefer the slug here since `standup.py`'s `fetch` output
 already gives you it directly.""",
+        "EDIT_ROOT": edit_root("claude/scripts/standup_adapters.py"),
     },
     "opencode": {
         "FRONTMATTER": """\
@@ -1577,6 +1621,7 @@ already gives you it directly.
 `kind` is one of `email`, `chat`, `approval`. `source_ref` is a structured
 object appropriate to the kind (e.g. `{"to", "subject", "sent_date"}` for
 email) — not a free-text string.""",
+        "EDIT_ROOT": edit_root("claude/scripts/standup_adapters.py"),
     },
     "pi": {
         "FRONTMATTER": """\
@@ -1627,6 +1672,7 @@ If the `dev_status` tool is genuinely unavailable, fall back to bash —
 `kind` is one of `email`, `chat`, `approval`. `source_ref` is a structured
 object appropriate to the kind (e.g. `{"to", "subject", "sent_date"}` for
 email) — not a free-text string.""",
+        "EDIT_ROOT": edit_root("claude/scripts/standup_adapters.py"),
     },
 }
 

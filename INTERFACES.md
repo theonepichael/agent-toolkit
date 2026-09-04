@@ -50,6 +50,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`notify.py`](#claudescriptsnotifypy) | Cross-platform agent notification dispatcher. |
 | [`outlook_calendar.py`](#claudescriptsoutlookcalendarpy) | outlook_calendar.py — CLI tool and agent interface for Windows Outlook Calendar via PowerShell COM. |
 | [`outlook_email.py`](#claudescriptsoutlookemailpy) | outlook_email.py — CLI tool and agent interface for Windows Outlook via PowerShell COM. |
+| [`repo_identity.py`](#claudescriptsrepoidentitypy) | repo_identity.py — which repo this checkout is. |
 | [`second_opinion.py`](#claudescriptssecondopinionpy) | second_opinion.py — one-shot adversarial critique of a plan from a non-Claude backend. Single-round by design: the multi-round loop, plan revision, and convergence judgment all require LLM reasoning and live in prose instructions, not here. |
 | [`settings_seed_drift_check.py`](#claudescriptssettingsseeddriftcheckpy) | SessionStart hook + CLI: detect (and optionally fix) drift between the live ``~/.claude/settings.json`` / ``~/.config/opencode/opencode.jsonc`` / (under WSL) the Windows-side VS Code ``settings.json`` and ``keybindings.json`` and their seeds in the dotfiles repo. |
 | [`standup.py`](#claudescriptsstanduppy) | standup.py — /standup skill CLI: local data gathering. |
@@ -473,6 +474,11 @@ gen_skills_params.py — per-(skill, harness) content tables for gen_skills.py.
 - Installed at: `~/.claude/scripts/gen_skills_params.py` (all harnesses)
 - Entrypoint: not executable, no shebang
 - CLI: none (library module).
+- Depends on: `repo_identity.py`
+- Public functions:
+  - `edit_root(relpath: str) -> str` — Return self-contained "where to edit this file" markdown.
+  - `symlink_cmd(relpath: str, dest: str) -> str` — Return a self-contained, copy-pasteable `ln -s` command.
+  - `probe_add_dir() -> str` — Return the bare --add-dir flag argument for claude's headless probe.
 - Tested by: `claude/scripts/test_gen_skills.py`
 
 ### `claude/scripts/grill.py`
@@ -753,6 +759,15 @@ outlook_email.py — CLI tool and agent interface for Windows Outlook via PowerS
   - `get_email(entry_id: str, runner: Callable[[str], str] | None = None) -> dict[str, object]` — Retrieve detailed email content by EntryID.
   - `get_recent_correspondence(since: date | None = None, limit: int = 50, runner: Callable[[str], str] | None = None) -> list[dict[str, object]]` — Retrieve recent emails received in Inbox.
 - Tested by: `claude/scripts/test_outlook_email.py`
+
+### `claude/scripts/repo_identity.py`
+
+repo_identity.py — which repo this checkout is.
+
+- Installed at: `~/.claude/scripts/repo_identity.py` (all harnesses)
+- Entrypoint: not executable, `#!/usr/bin/env python3`
+- CLI: none (library module).
+- Tested by: `claude/scripts/test_gen_skills.py`
 
 ### `claude/scripts/second_opinion.py`
 
