@@ -1,9 +1,7 @@
 # CLAUDE.md
 
 <!-- Shared with ~/.copilot/copilot-instructions.md and ~/.gemini/GEMINI.md (same
-     symlink target). Gmail/Calendar/Drive MCP servers are deliberately not
-     configured under Copilot CLI, per the --work profile's
-     no-personal-data-on-work-hardware rule — intentional, not a gap. -->
+     symlink target). -->
 
 ## Planning Gate
 
@@ -107,11 +105,11 @@ If the baseline itself has failures unrelated to the work at hand:
 
 Write at info level, not debug level. Once a rule in this file (or one
 established earlier in the session) fires, apply it without re-citing the
-rationale: the bundled merge/push/cleanup offer for a personal project
-doesn't need "per your dotfiles policy for personal projects" attached each
-time, a worktree creation doesn't need "per the worktree-first policy," and
-a verification run doesn't need "rather than trusting the self-report" —
-the action itself shows the policy being followed.
+rationale: a bundled merge/push/cleanup offer for a personal project
+doesn't need its policy re-cited each time, a worktree creation doesn't
+need "per the worktree-first policy," and a verification run doesn't need
+"rather than trusting the self-report" — the action itself shows the
+policy being followed.
 
 Don't narrate routine, expected steps the tool call already makes visible
 ("Now let's run the tests", "Now marking the backlog item done", "Now
@@ -135,13 +133,27 @@ When the user says "add this as a backlog item" or a variation of it, run:
 python3 ~/.claude/scripts/dev_status.py add '{"id": "<prefix-slug>", "summary": "<concise title>", "category": "<bug|feature|chore|research>", "context": "<what was happening>", "next_steps": "<what to pick up from>", "related_files": [{"path": "<abs path>", "note": "<note>"}]}'
 ```
 
-The `id` field is **required**. Use a kebab-case slug with a project prefix:
-- `ajhp-` for ai-job-hunter-pro items
-- `meta-` for tooling / infrastructure items
-- `work-` for day-job items — this is also what `/standup`'s
-  `work_backlog_prefixes` config filters on; keep the two in sync if the
-  prefix ever changes
-- other prefixes as appropriate for the project
+The `id` field is **required**. Use a kebab-case slug whose prefix names the
+**repo the work targets** — not the mood of the work. Define your own
+prefix table, one entry per repo you track backlog items for, kept 1:1
+(each repo gets exactly one prefix, each prefix maps to exactly one repo)
+— e.g. a repo named `my-app` might use `myapp-`. This applies to whichever
+repo you're currently working in, including this toolkit itself: if you're
+tracking agent-toolkit's own backlog with `dev_status.py`, pick a prefix
+for it too, the same as any other repo — don't assume one is already
+defined for you.
+
+Why the repo and not the topic: a swarm scopes its queue by prefix, and pi's
+`--swarm[=N]` requires one because selecting the whole READY queue unscoped
+pulls unrelated projects into a single run. So the prefix is load-bearing for
+safety. An item touching two repos at once is not made safe by any single
+prefix — pick one repo's prefix as the deliberate catch-all for cross-repo
+work in your own table, and never hand those items to a swarm worker.
+
+`add` prints a reminder when a new item's prefix disagrees with the repo its
+`related_files` live in. It never blocks the add, and — unlike the other
+reminders there — it is **not** silenced by `DEVSTATUS_AGENT=1`, since an agent
+is the only caller that ever adds an item.
 
 Infer all fields from the current conversation.
 Only include files actually relevant to picking up the work later.
@@ -218,7 +230,7 @@ none get dropped silently. (This closes the gap between noticing something and a
 it — it can't make you notice something you never put into words in the first place.)
 
 Protocol: draft the full add JSON yourself, then offer it as one line —
-``Add to backlog? `ajhp-<slug>` — <summary>`` — and run the add only on confirmation.
+``Add to backlog? `<prefix>-<slug>` — <summary>`` — and run the add only on confirmation.
 At most one offer per distinct item; if declined, don't re-offer it.
 
 #### Proactive capture: rejected ideas
@@ -311,13 +323,13 @@ misresolution-check protocol still applies (verify against the mutated
 item's line in the displayed dashboard, since the old stderr echo is
 suppressed under this env var).
 
-If the item's work touched a real project repo (not this dotfiles repo) and
-left actual file changes, offer to commit — and if the repo has a remote,
-offer to push too — once the work is verified and ready. Offer, never commit
-or push silently, same as every other git action in this file. Scope the
-offered commit to the files this item actually touched, not a blanket
-`git add -A` — especially relevant if the repo has other uncommitted changes
-sitting alongside this item's work.
+If the item's work touched a real project repo and left actual file
+changes, offer to commit — and if the repo has a remote, offer to push too
+— once the work is verified and ready. Offer, never commit or push
+silently, same as every other git action in this file. Scope the offered
+commit to the files this item actually touched, not a blanket `git add -A`
+— especially relevant if the repo has other uncommitted changes sitting
+alongside this item's work.
 
 #### Plans and deliverables get a path on record
 
@@ -411,10 +423,9 @@ used for backlog capture.
 
 - Use conventional commits: `type(scope): description` — types: `feat`, `fix`, `refactor`, `chore`, `docs`, `test`, `perf`, `ci`
 - Never commit directly to `main`/`master`, in any repo. Before starting new
-  work — this dotfiles repo included, regardless of whether the checkout is
-  currently clean or dirty, and even in solo sessions with no concurrent
-  activity — create a fresh worktree for it rather than branching in the
-  existing checkout:
+  work — regardless of whether the checkout is currently clean or dirty,
+  and even in solo sessions with no concurrent activity — create a fresh
+  worktree for it rather than branching in the existing checkout:
 
   ```bash
   git -C <repo> worktree add ../<repo-name>-<slug> -b <slug>
@@ -446,17 +457,6 @@ used for backlog capture.
 - Committing itself always needs its own explicit confirmation — never
   commit, in any repo or worktree, without asking first and getting a yes,
   no exceptions for being mid-pipeline or in auto-mode.
-- For the user's own personal projects only (this dotfiles repo, personal
-  side projects under their own accounts — never a day-job/work repo, a
-  `work-`-prefixed backlog item, a work-profile machine, or anything
-  ambiguous): once a commit is in and the work is tested/verified, the
-  follow-on sequence — merge to main locally, push to the remote, clean up
-  (remove the worktree, delete the merged branch) — is what the user almost
-  always wants next, so offer it as one bundled question ("merge to main,
-  push, and clean up the worktree?") instead of asking separately at each
-  step. For anything work-related, or when it's unclear which category a
-  repo falls into, default to the safer path: keep merge and push as
-  separate, individually-confirmed asks — never bundle.
 
 ## Test Hygiene
 
@@ -484,18 +484,6 @@ that can't be made to fail first isn't verifying anything.
   writer mid-run and abort it partway through mutating state — this has
   already happened and cost live symlinks. Redirect to a file and read the
   file instead.
-- On a machine running watchcommit (personal, non-work), wrap any command
-  you run yourself that deliberately leaves a watched repo (`~/dotfiles`)
-  in a broken or temporary state on purpose — a test/demo script proving a
-  staleness check works, a deliberate mid-refactor pause, anything the user
-  hasn't reviewed yet — in `wc-guard <command>` (`scripts/wc-guard`,
-  installed to `~/.local/bin/wc-guard`). Without it, watchcommit's 90s poll
-  can auto-commit and auto-push the broken state to `main` before anyone
-  reviews it, with an LLM-written commit message that makes the breakage
-  look intentional — this already happened once (commit `cd0bad8`, fixed
-  forward in `60401d2`). A plain edit you intend to keep doesn't need the
-  wrapper; this is specifically for state that is deliberately, temporarily
-  wrong.
 
 ## Scripts
 

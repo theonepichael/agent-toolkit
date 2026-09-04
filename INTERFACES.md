@@ -1045,7 +1045,7 @@ are copy-once seeds for exactly that reason.
 
 | Source | Installed at |
 | --- | --- |
-| `claude/global-instructions.md` | `~/.claude/CLAUDE.md` (claude), `~/.copilot/copilot-instructions.md` (copilot), `~/.gemini/GEMINI.md` (agy), `~/.pi/agent/AGENTS.md` (pi) |
+| `claude/CORE_INSTRUCTIONS.md` | `~/.claude/CLAUDE.md` (claude), `~/.copilot/copilot-instructions.md` (copilot), `~/.gemini/GEMINI.md` (agy), `~/.pi/agent/AGENTS.md` (pi) |
 | `claude/icons/agy.png` | not symlinked by `links.toml` |
 | `claude/icons/claude.png` | not symlinked by `links.toml` |
 | `claude/icons/copilot.png` | not symlinked by `links.toml` |

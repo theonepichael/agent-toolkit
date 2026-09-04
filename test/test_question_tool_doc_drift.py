@@ -4,7 +4,7 @@
 ``question`` tool for interactive Pi sessions. Several repo files were
 written before it landed and still claim the opposite -- that Pi has no
 structured-choice mechanism and so must ask enumerable questions in plain
-text. `claude/global-instructions.md` is read by every harness (symlinked to
+text. `claude/CORE_INSTRUCTIONS.md` is read by every harness (symlinked to
 each harness's instruction file), so the stale claim was the worst offender;
 the hand-maintained `pi/prompts/*.md` ports repeated it.
 
@@ -37,7 +37,7 @@ def _read(relpath: str) -> str:
 
 
 def test_global_instructions_do_not_list_pi_without_a_widget() -> None:
-    text = _read("claude/global-instructions.md")
+    text = _read("claude/CORE_INSTRUCTIONS.md")
     section = re.search(r"### Judgment calls.*?(?=\n### |\Z)", text, re.DOTALL).group(0)
 
     without = re.search(r"harnesses\s+without\s+one\s+\(([^)]*)\)", section)

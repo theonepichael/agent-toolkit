@@ -18,7 +18,7 @@ slash invocation of skills now exists; the §3 invocation claim from the
   Official docs: "The agent automatically consults and enforces your global
   constraints located at `~/.gemini/GEMINI.md`." No frontmatter support —
   always active, unlike skills' progressive disclosure. `install.sh` symlinks
-  `claude/global-instructions.md` straight to this path, same pattern as
+  `claude/CORE_INSTRUCTIONS.md` straight to this path, same pattern as
   `~/.copilot/copilot-instructions.md`.
 - **Global skills path: `~/.gemini/antigravity-cli/skills/<name>/SKILL.md`.**
   This is the *current* path — it moved from a *legacy* `~/.gemini/skills/`

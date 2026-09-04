@@ -21,7 +21,7 @@ the locally-installed CLI surface, except where noted.
 - **Global rules file (CLAUDE.md-equivalent): `~/.copilot/copilot-instructions.md`.**
   Official docs (*Adding custom instructions*): "`$HOME/.copilot/copilot-instructions.md`
   — User-level instructions that apply across repositories." `links.toml`
-  symlinks `claude/global-instructions.md` straight to this path. Always
+  symlinks `claude/CORE_INSTRUCTIONS.md` straight to this path. Always
   active, no frontmatter.
   - The same docs page also auto-discovers `AGENTS.md`, `CLAUDE.md`, and
     `GEMINI.md` "in the standard locations" (repo root → cwd walk), so
