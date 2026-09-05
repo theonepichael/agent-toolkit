@@ -32,18 +32,27 @@ change when the binary changes, and the README table is version-pinned, so
 is no longer verified. ``probe`` is the semantic verifier: it rebuilds the
 fixture and asks each harness which tokens are in its context.
 
-No state files anywhere — the README pin itself is the state. This removes
-cache corruption, write races, and notification-suppression traps in one
-move.
+The ``--version`` spawn is the hook's dominant cost, so the measurement is
+memoized in a small cache file under the XDG cache dir
+(``$XDG_CACHE_HOME`` or ``~/.cache``). Each entry is keyed on the harness
+name plus the binary's resolved path, mtime and size, so a binary that
+changed — the exact thing this check exists to catch — always invalidates
+its entry and forces a fresh spawn. On a hit no subprocess runs at all; the
+cached version is compared against the pin exactly as a fresh measurement
+would be. The cache is purely an optimization: it never suppresses or
+alters output, and any read/write problem degrades silently to the
+uncached behavior. The README pin itself remains the state; the drift note
+prints every run while a mismatch stands, cached or not.
 
 Subcommands
 -----------
-    check   resolve the load-bearing harness binaries, run ``--version``,
-            and compare against the pinned constants. Silent when versions
-            match. Prints a one-line note naming harness, installed
-            version, pinned version, and the affected row when they differ.
-            The note prints every run while the mismatch stands —
-            deliberate nag, not one-shot suppression.
+    check   resolve the load-bearing harness binaries, run ``--version``
+            (memoized in a binary-identity-keyed cache so an unchanged
+            binary is not re-spawned), and compare against the pinned
+            constants. Silent when versions match. Prints a one-line note
+            naming harness, installed version, pinned version, and the
+            affected row when they differ. The note prints every run while
+            the mismatch stands — deliberate nag, not one-shot suppression.
     probe   rebuild the audit fixture in a temp directory, drive each
             harness non-interactively, extract token names from the
             response, and compare against expectation constants. Prints a
@@ -69,6 +78,8 @@ Flags
 from __future__ import annotations
 
 import argparse
+import contextlib
+import json
 import os
 import re
 import shutil
@@ -219,6 +230,83 @@ def run_version(
 
 # ── check (hook tier) ────────────────────────────────────────────────────────
 
+# The ``--version`` spawn dominates the hook's runtime, so measurements are
+# memoized under the XDG cache dir. Entries are keyed on the binary's
+# identity (resolved path + mtime + size): a changed binary — the exact
+# thing this check exists to catch — always invalidates its entry and
+# forces a fresh spawn. The cache is purely an optimization; every
+# read/write problem degrades silently to the uncached behavior.
+_CACHE_REPO_DIRNAME: str = "agent-toolkit"
+_CACHE_FILENAME: str = "harness-discovery-version-cache.json"
+
+
+def _cache_path() -> Path:
+    """Resolve the cache file path at call time — honoring
+    ``$XDG_CACHE_HOME`` (tests redirect it there), falling back to
+    ``~/.cache``, under this repo's own directory name."""
+    root = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
+    return Path(root) / _CACHE_REPO_DIRNAME / _CACHE_FILENAME
+
+
+def _stat_key(binary: Path) -> tuple[str, int, int] | None:
+    """Return the ``(resolved_path, mtime_ns, size)`` identity of
+    ``binary``, or ``None`` when it cannot be stat'ed (uncacheable)."""
+    try:
+        st = binary.stat()
+    except OSError:
+        return None
+    return (str(binary), st.st_mtime_ns, st.st_size)
+
+
+def _parsed_entry(entry: object) -> tuple[tuple[str, int, int], str] | None:
+    """Parse one cache entry into ``(stat_key, version)``, or ``None`` when
+    malformed (treated as a cache miss)."""
+    if not isinstance(entry, dict):
+        return None
+    path = entry.get("path")
+    mtime_ns = entry.get("mtime_ns")
+    size = entry.get("size")
+    version = entry.get("version")
+    if not (
+        isinstance(path, str)
+        and isinstance(mtime_ns, int)
+        and isinstance(size, int)
+        and isinstance(version, str)
+    ):
+        return None
+    return (path, mtime_ns, size), version
+
+
+def _read_cache(path: Path) -> dict[str, object]:
+    """Load the cache file, or an empty dict on any read/parse problem —
+    a corrupt cache degrades to the uncached behavior, never a crash."""
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_cache(path: Path, entries: dict[str, object]) -> None:
+    """Atomically replace the cache file (temp file + rename) so concurrent
+    session starts cannot corrupt it. Best-effort: any OSError is swallowed
+    — an unwritable cache must never break the check."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(
+            dir=path.parent, prefix=f"{path.name}.", suffix=".tmp"
+        )
+        try:
+            with os.fdopen(fd, "w") as handle:
+                json.dump(entries, handle)
+            os.replace(tmp, path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
+            raise
+    except OSError:
+        pass
+
 
 def _check_one(
     name: str,
@@ -226,6 +314,7 @@ def _check_one(
     quiet: bool = False,
     verbose: bool = False,
     run_command: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    cache: dict[str, object] | None = None,
 ) -> tuple[str | None, bool]:
     """Check one harness. Return ``(note_or_none, is_error)``.
 
@@ -233,15 +322,44 @@ def _check_one(
     version differs from the pin, or ``None`` when they match (or the binary
     is missing). ``is_error`` is ``True`` only when ``--version`` itself
     failed (not a mismatch).
+
+    ``cache``, when given, memoizes the ``--version`` measurement keyed on
+    the binary's stat identity: a hit answers the pin comparison without
+    spawning any subprocess, a miss spawns as today and refreshes the
+    entry. Cache failures degrade to the uncached spawn.
     """
     binary = resolve_binary(name)
     if binary is None:
         _vprint(f"{name}: binary not found — UNVERIFIABLE", verbose=verbose)
         return None, False
-    try:
-        installed = run_version(name, binary, run_command=run_command)
-    except HarnessCheckError as exc:
-        return f"[{name}] {exc}", True
+    key = _stat_key(binary)
+    cached_version: str | None = None
+    if key is not None and cache is not None:
+        parsed = _parsed_entry(cache.get(name))
+        if parsed is not None and parsed[0] == key:
+            cached_version = parsed[1]
+            _vprint(
+                f"{name}: version cache hit ({cached_version})",
+                verbose=verbose,
+            )
+    if cached_version is not None:
+        installed = cached_version
+    else:
+        try:
+            installed = run_version(name, binary, run_command=run_command)
+        except HarnessCheckError as exc:
+            return f"[{name}] {exc}", True
+        if key is not None and cache is not None:
+            cache[name] = {
+                "path": key[0],
+                "mtime_ns": key[1],
+                "size": key[2],
+                "version": installed,
+            }
+            _vprint(
+                f"{name}: version cache miss — measured {installed}",
+                verbose=verbose,
+            )
     if installed == pinned:
         _vprint(f"{name}: {installed} matches pinned {pinned}", verbose=verbose)
         return None, False
@@ -265,7 +383,12 @@ def cmd_check(
 
     Silent when versions match. Prints a note on mismatch. Returns 0 for
     clean/noted, 1 for internal error, 2 for attention under ``--strict``.
+    The ``--version`` probes are memoized in the version cache (keyed on
+    binary identity) so an unchanged binary is not re-spawned.
     """
+    cache_path = _cache_path()
+    cache = _read_cache(cache_path)
+    fresh = dict(cache)
     notes: list[str] = []
     errors: list[str] = []
     for name in _LOAD_BEARING:
@@ -274,12 +397,20 @@ def cmd_check(
             "opencode": OPENCODE_PINNED_VERSION,
         }[name]
         note, is_error = _check_one(
-            name, pinned, quiet=quiet, verbose=verbose, run_command=run_command
+            name,
+            pinned,
+            quiet=quiet,
+            verbose=verbose,
+            run_command=run_command,
+            cache=fresh,
         )
         if is_error:
             errors.append(note or f"[{name}] internal error")
         elif note:
             notes.append(note)
+
+    if fresh != cache:
+        _write_cache(cache_path, fresh)
 
     if errors:
         # In --hook mode, print a crash note so a broken checker is

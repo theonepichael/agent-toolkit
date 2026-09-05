@@ -604,7 +604,7 @@ SessionStart hook + CLI: detect when a harness's instruction-file discovery beha
     - `--strict` — exit 2 when a version mismatch is noted (default: exit 0)
   - `probe [--harness {claude,opencode,pi,copilot,agy}]` — on-demand live semantic verification (~10-15 API calls)
     - `--harness` — probe a single harness instead of all five (choices: claude, opencode, pi, copilot, agy)
-- Environment: `OPENCODE_PROBE_MODEL`
+- Environment: `OPENCODE_PROBE_MODEL`, `XDG_CACHE_HOME`
 - Depends on: `cli_common.py`
 - Exceptions:
   - `class HarnessCheckError(Exception)` — Raised when a harness check can't proceed (subprocess failure, not a missing binary).
@@ -1111,6 +1111,7 @@ are copy-once seeds for exactly that reason.
 | `pi/prompts/dashboard.md` | `~/.pi/agent/prompts/dashboard.md` (pi) |
 | `pi/prompts/grill-me.md` | `~/.pi/agent/prompts/grill-me.md` (pi) |
 | `pi/prompts/make-skill.md` | `~/.pi/agent/prompts/make-skill.md` (pi) |
+| `pi/prompts/recap.md` | `~/.pi/agent/prompts/recap.md` (pi) |
 | `pi/prompts/second-opinion.md` | `~/.pi/agent/prompts/second-opinion.md` (pi) |
 | `pi/prompts/spec.md` | `~/.pi/agent/prompts/spec.md` (pi) |
 | `pi/prompts/standup.md` | `~/.pi/agent/prompts/standup.md` (pi) |

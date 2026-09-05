@@ -10,10 +10,12 @@ mocked. Tests that genuinely shell out carry
 """
 
 import io
+import json
+import os
 import sys
 import tempfile
 import unittest
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from unittest.mock import patch
 
@@ -315,6 +317,176 @@ class ProbeTestCase(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("pi", output)
         self.assertNotIn("claude", output)
+
+
+def counting_run_factory(
+    versions: dict[str, str],
+    counter: dict[str, int],
+) -> Callable[..., object]:
+    """Return a fake ``subprocess.run`` that counts ``--version`` spawns."""
+
+    def fake_run(cmd: Sequence[str], **kwargs: object) -> object:
+        if "--version" in cmd:
+            counter["version"] += 1
+            name = Path(cmd[0]).name
+            return _make_result(stdout=versions.get(name, "0.0.0") + "\n")
+        counter["other"] += 1
+        return _make_result()
+
+    return fake_run
+
+
+class VersionCacheTestCase(unittest.TestCase):
+    """Regression tests for the version-probe cache.
+
+    The binaries are real temp-dir files (so mtime/size are stat-able and
+    changeable) and the cache file is redirected into a throwaway
+    ``XDG_CACHE_HOME`` — never the real ``~/.cache``.
+    """
+
+    DRIFTED_VERSIONS = {"claude": "2.1.999", "opencode": "1.19.999"}
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.bin_dir = Path(tmp.name) / "bin"
+        self.bin_dir.mkdir()
+        self.cache_dir = Path(tmp.name) / "cache"
+        self.cache_dir.mkdir()
+        env = patch.dict(os.environ, {"XDG_CACHE_HOME": str(self.cache_dir)})
+        env.start()
+        self.addCleanup(env.stop)
+        resolve = patch.object(hdc, "resolve_binary", self._fake_binary)
+        resolve.start()
+        self.addCleanup(resolve.stop)
+
+    def _fake_binary(self, name: str) -> Path:
+        path = self.bin_dir / name
+        if not path.exists():
+            path.write_text(f"#!/bin/sh\necho {name}-fake\n")
+        return path
+
+    def _cache_file(self) -> Path:
+        return hdc._cache_path()
+
+    def _run_check(
+        self,
+        counter: dict[str, int],
+        *,
+        hook: bool = False,
+        strict: bool = False,
+    ) -> tuple[int, str]:
+        fake = counting_run_factory(self.DRIFTED_VERSIONS, counter)
+        out = io.StringIO()
+        err = io.StringIO()
+        with patch("sys.stdout", out), patch("sys.stderr", err):
+            code = hdc.cmd_check(
+                hook=hook, strict=strict, quiet=False, run_command=fake
+            )
+        return code, out.getvalue() + err.getvalue()
+
+    def test_cache_hit_skips_subprocess_spawn(self) -> None:
+        """A warm cache must answer the pin comparison without spawning any
+        subprocess, and must still print the same mismatch notes."""
+        first: dict[str, int] = {"version": 0, "other": 0}
+        code1, out1 = self._run_check(first)
+        self.assertEqual(code1, 0)
+        self.assertEqual(first["version"], 2)
+        self.assertTrue(self._cache_file().exists())
+
+        second: dict[str, int] = {"version": 0, "other": 0}
+        code2, out2 = self._run_check(second)
+        self.assertEqual(code2, 0)
+        self.assertEqual(second["version"], 0)
+        self.assertEqual(out2, out1)
+
+    def test_cache_miss_spawns_and_writes_entry(self) -> None:
+        """A cold cache spawns as today and persists a per-harness entry
+        carrying the measured version and the binary key."""
+        counter: dict[str, int] = {"version": 0, "other": 0}
+        code, _ = self._run_check(counter)
+        self.assertEqual(code, 0)
+        self.assertEqual(counter["version"], 2)
+
+        data = json.loads(self._cache_file().read_text())
+        for name in ("claude", "opencode"):
+            entry = data[name]
+            binary = self.bin_dir / name
+            st = binary.stat()
+            self.assertEqual(entry["version"], self.DRIFTED_VERSIONS[name])
+            self.assertEqual(entry["path"], str(binary))
+            self.assertEqual(entry["mtime_ns"], st.st_mtime_ns)
+            self.assertEqual(entry["size"], st.st_size)
+
+    def test_changed_mtime_invalidates_and_respawns(self) -> None:
+        """A binary whose mtime moved must never be answered from cache."""
+        warm: dict[str, int] = {"version": 0, "other": 0}
+        self._run_check(warm)
+        self.assertEqual(warm["version"], 2)
+
+        later = self.bin_dir.joinpath("claude").stat().st_mtime_ns + 60_000_000_000
+        os.utime(self.bin_dir / "claude", ns=(later, later))
+
+        again: dict[str, int] = {"version": 0, "other": 0}
+        code, _ = self._run_check(again)
+        # Only the changed binary respawns; opencode is still a cache hit.
+        self.assertEqual(again["version"], 1)
+        self.assertEqual(code, 0)
+        data = json.loads(self._cache_file().read_text())
+        self.assertEqual(data["claude"]["mtime_ns"], later)
+
+    def test_changed_size_invalidates_and_respawns(self) -> None:
+        """A binary whose size changed (mtime restored to the cached value)
+        must never be answered from cache."""
+        warm: dict[str, int] = {"version": 0, "other": 0}
+        self._run_check(warm)
+        self.assertEqual(warm["version"], 2)
+
+        binary = self.bin_dir / "opencode"
+        st = binary.stat()
+        binary.write_text(binary.read_text() + "# size-only change\n")
+        os.utime(binary, ns=(st.st_mtime_ns, st.st_mtime_ns))
+
+        again: dict[str, int] = {"version": 0, "other": 0}
+        code, _ = self._run_check(again)
+        # Size moved while mtime stayed at the cached value: the size part
+        # of the key alone must force a fresh spawn (and only for that
+        # binary — claude is still a cache hit).
+        self.assertEqual(again["version"], 1)
+        self.assertEqual(code, 0)
+        data = json.loads(self._cache_file().read_text())
+        self.assertEqual(data["opencode"]["size"], binary.stat().st_size)
+
+    def test_corrupt_cache_file_degrades_safely(self) -> None:
+        """A corrupt/unreadable cache file must degrade to the uncached
+        behavior — spawn, note as usual, and rewrite a valid cache. Never
+        crash the hook."""
+        cases = ["{{{ not json", json.dumps(["wrong", "shape"]), ""]
+        for payload in cases:
+            with self.subTest(payload=payload):
+                cache_file = self._cache_file()
+                cache_file.parent.mkdir(parents=True, exist_ok=True)
+                cache_file.write_text(payload)
+                counter: dict[str, int] = {"version": 0, "other": 0}
+                code, _ = self._run_check(counter, hook=True)
+                self.assertEqual(code, 0)
+                self.assertEqual(counter["version"], 2)
+                data = json.loads(cache_file.read_text())
+                self.assertIn("claude", data)
+
+    def test_unwritable_cache_dir_degrades_safely(self) -> None:
+        """If the cache directory cannot be created or written, the check
+        must still run to completion with today's exact output contract."""
+        blocker = self.cache_dir.parent / "blocker"
+        blocker.write_text("not a directory\n")
+        env = patch.dict(os.environ, {"XDG_CACHE_HOME": str(blocker)})
+        env.start()
+        self.addCleanup(env.stop)
+        counter: dict[str, int] = {"version": 0, "other": 0}
+        code, output = self._run_check(counter, hook=True)
+        self.assertEqual(code, 0)
+        self.assertEqual(counter["version"], 2)
+        self.assertIn("claude", output)
 
 
 class VersionExtractionTestCase(unittest.TestCase):
