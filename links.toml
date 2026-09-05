@@ -80,6 +80,14 @@ src = "claude/commands/analyze-sessions.md"
 dest = "~/.claude/commands/analyze-sessions.md"
 harness = "claude"
 
+# Generated from templates/swarm.md.tmpl (gen_skills.py SWARM_PARAMS). The
+# toolkit's own generated copy superseded dotfiles' hand-authored original --
+# the swarm/herdr source-of-truth verdict leaves this repo as sole author.
+[[link]]
+src = "claude/commands/swarm.md"
+dest = "~/.claude/commands/swarm.md"
+harness = "claude"
+
 [[link]]
 src = "claude/output-styles/ConciseSTE.md"
 dest = "~/.claude/output-styles/ConciseSTE.md"
