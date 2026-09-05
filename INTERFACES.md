@@ -1088,7 +1088,7 @@ the file existing in the repo; the description is the canonical
   - Installed at: `~/.claude/commands/standup.md` (claude)
 - **`/swarm`** — Hand READY backlog items to pi agents running in herdr tabs — a real fan-out across the queue by default, or a single item when one is named. Use when the user says 'swarm', 'swarm the backlog', 'hand this to pi', 'give <item> to a pi agent', or 'delegate to a pi worker'. Requires HERDR_ENV=1; says so and stops otherwise.
   - Source: `claude/commands/swarm.md`
-  - Installed at: not symlinked by `links.toml`
+  - Installed at: `~/.claude/commands/swarm.md` (claude)
 - **`/to-tickets`** — Decompose a plan or spec into multiple linked dev_status.py backlog items — vertical-slice/tracer-bullet tickets joined by blocked_by edges — after confirming the breakdown with the user. Use when the user wants a plan broken into tickets, wants a spec turned into backlog items, or invokes /to-tickets.
   - Source: `claude/commands/to-tickets.md`
   - Installed at: `~/.claude/commands/to-tickets.md` (claude)

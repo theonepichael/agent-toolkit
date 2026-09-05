@@ -360,6 +360,23 @@ def test_claude_script_links_use_correct_dest(links):
             assert spec.dest == f"~/.claude/scripts/{name}", spec.src
 
 
+def test_every_claude_command_has_a_links_entry(links):
+    """The command-dir twin of test_every_claude_script_has_a_links_entry.
+    swarm.md shipped as a generated command with no links.toml entry while
+    dotfiles still linked its hand-authored original -- the toolkit's copy
+    was silently never installable, one of the two half-owned states the
+    swarm/herdr source-of-truth verdict cleaned up. Every generated command
+    must be linked, or it exists only in the checkout."""
+    linked_srcs = {spec.src for spec in links}
+    commands = sorted((REPO_ROOT / "claude" / "commands").glob("*.md"))
+    missing = [
+        p.name for p in commands if f"claude/commands/{p.name}" not in linked_srcs
+    ]
+    assert not missing, (
+        f"claude/commands commands missing a links.toml entry: {missing}"
+    )
+
+
 def test_links_reject_unknown_key(tmp_path):
     bad = tmp_path / "links.toml"
     bad.write_text('[[link]]\nsrc = "a"\ndest = "~/a"\nharnes = "claude"\n')

@@ -66,6 +66,24 @@ import cli_common  # noqa: E402 — sibling dir inserted above
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DOTFILES_PATH = Path.home() / "dotfiles"
 
+# Source-of-truth verdict (2026-09-04): this repo is authoritative for
+# claude/commands/swarm.md (generated from templates/swarm.md.tmpl via
+# gen_skills.py SWARM_PARAMS) and claude/scripts/herdr_delegate.py; the
+# dotfiles-side originals are deleted under this verdict, so any
+# dotfiles-side change to either path is an error to route back to this
+# repo, never a delta to merge. One-transition note for the sync run whose
+# BASE..TIP first contains dotfiles' deletion commit: verify_invariants()
+# flags three paths with the "in copy_set but missing from dotfiles@TIP"
+# invariant below — the two files above plus dotfiles' own
+# test/test_herdr_delegate.py — and the correct fix at that moment is to
+# add all three to BLOCKLIST for exactly that sync; once the run succeeds
+# and .sync-state.json's BASE is at or past the deletion commit, remove
+# the entries again -- the stale-entry guard checks existence at
+# dotfiles@BASE, so leaving them in makes the NEXT run fail. Adding them
+# pre-emptively (while dotfiles still has the files at today's BASE) would
+# trip that same guard, which is why BLOCKLIST carries no entry for them
+# yet.
+#
 # Category-B: deletions made deliberately when the toolkit snapshot was cut.
 # Hand-maintained, not derived — which deletions were *deliberate* is intent,
 # and a diff cannot express intent. verify_invariants() is the guard against
