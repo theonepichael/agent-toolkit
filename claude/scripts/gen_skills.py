@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""gen_skills.py — regenerate the dashboard/grill-me/backlog-item/make-skill/
-spec/standup/to-tickets skill copies from one template per skill, plus a
-shared per-harness capability table. dashboard/grill-me/backlog-item/
-make-skill cover all 5 harnesses (claude, copilot, opencode, agy, pi);
-spec/standup/to-tickets cover only claude/opencode/pi — see
-`SKILL_HARNESSES` below and AGENTS.md's "Harness maintenance tiers" section
+"""gen_skills.py — regenerate the dashboard/recap/grill-me/backlog-item/
+make-skill/spec/standup/to-tickets skill copies from one template per
+skill, plus a shared per-harness capability table. dashboard/recap/
+grill-me/backlog-item/make-skill cover all 5 harnesses (claude, copilot,
+opencode, agy, pi); spec/standup/to-tickets cover only claude/opencode/pi —
+see `SKILL_HARNESSES` below and AGENTS.md's "Harness maintenance tiers" section
 for why copilot/agy stop getting new generated skills.
 
 The first 4 skills used to live as hand-forked copies, one per harness, with
@@ -15,7 +15,7 @@ SessionStart hook — that are factually wrong for Pi, which has both).
 spec/standup/to-tickets had the same drift for Pi specifically
 (`meta-pi-residual-skill-drift`). This script replaces those copies with
 generated output: one body template per skill
-(`templates/{dashboard,grill_me,backlog_item,make_skill,spec,standup,to_tickets}.md.tmpl`)
+(`templates/{dashboard,recap,grill_me,backlog_item,make_skill,spec,standup,to_tickets}.md.tmpl`)
 plus the shared `CAPABILITY_TABLE` below, mirroring
 `gen_second_opinion.py`'s generator/--check/--stdout shape for the
 second-opinion skill (which this script does not touch — a separate,
@@ -40,9 +40,9 @@ Usage:
 
 Flags: --check, --stdout, --repo-root <path>, --quiet/-q, --verbose/-v.
 Env vars: none.
-Files read: <repo>/templates/{dashboard,grill_me,backlog_item,make_skill,spec,standup,to_tickets}.md.tmpl.
-Files written: the 29 (skill, harness) copies named in OUTPUT_PATHS —
-4 skills x 5 harnesses (20) plus 3 skills x 3 harnesses (9), per
+Files read: <repo>/templates/{dashboard,recap,grill_me,backlog_item,make_skill,spec,standup,to_tickets}.md.tmpl.
+Files written: the 34 (skill, harness) copies named in OUTPUT_PATHS —
+5 skills x 5 harnesses (25) plus 3 skills x 3 harnesses (9), per
 `SKILL_HARNESSES` (skipped by --check and --stdout).
 Exit codes: 0 success; 1 --check found stale output; 2 bad usage.
 
@@ -59,6 +59,7 @@ import cli_common
 
 SKILLS = (
     "dashboard",
+    "recap",
     "grill-me",
     "backlog-item",
     "make-skill",
@@ -76,6 +77,7 @@ HARNESSES = ("claude", "copilot", "opencode", "agy", "pi")
 _ACTIVE_TIER = ("claude", "opencode", "pi")
 SKILL_HARNESSES: dict[str, tuple[str, ...]] = {
     "dashboard": HARNESSES,
+    "recap": HARNESSES,
     "grill-me": HARNESSES,
     "backlog-item": HARNESSES,
     "make-skill": HARNESSES,
@@ -86,6 +88,7 @@ SKILL_HARNESSES: dict[str, tuple[str, ...]] = {
 
 TEMPLATE_PATHS: dict[str, str] = {
     "dashboard": "templates/dashboard.md.tmpl",
+    "recap": "templates/recap.md.tmpl",
     "grill-me": "templates/grill_me.md.tmpl",
     "backlog-item": "templates/backlog_item.md.tmpl",
     "make-skill": "templates/make_skill.md.tmpl",
@@ -100,6 +103,11 @@ OUTPUT_PATHS: dict[tuple[str, str], str] = {
     ("dashboard", "opencode"): "opencode/command/dashboard.md",
     ("dashboard", "agy"): "agy/skills/dashboard/SKILL.md",
     ("dashboard", "pi"): "pi/skills/dashboard/SKILL.md",
+    ("recap", "claude"): "claude/commands/recap.md",
+    ("recap", "copilot"): "copilot/skills/recap/SKILL.md",
+    ("recap", "opencode"): "opencode/command/recap.md",
+    ("recap", "agy"): "agy/skills/recap/SKILL.md",
+    ("recap", "pi"): "pi/skills/recap/SKILL.md",
     ("grill-me", "claude"): "claude/commands/grill-me.md",
     ("grill-me", "copilot"): "copilot/skills/grill-me/SKILL.md",
     ("grill-me", "opencode"): "opencode/command/grill-me.md",

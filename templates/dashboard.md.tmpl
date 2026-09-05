@@ -1,4 +1,12 @@
-Run:
+If invoked with `recap` (e.g. `/dashboard recap`), run the recap command instead, display stdout verbatim, and stop:
+
+```bash
+DEVSTATUS_AGENT=1 python3 ~/.claude/scripts/dev_status.py recap
+```
+
+(pass `--refresh` if requested).
+
+Otherwise, run:
 
 ```bash
 DEVSTATUS_AGENT=1 python3 ~/.claude/scripts/dev_status.py render

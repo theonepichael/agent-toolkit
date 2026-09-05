@@ -6,8 +6,8 @@ Three kinds of coverage:
   against a tiny fixture template (mirrors test_gen_second_opinion.py's
   RenderBodyTests).
 - `CapabilityFixtureTests` — one fixture per (skill, harness) pair covered
-  by `SKILL_HARNESSES` (20 for the 4 skills on all 5 harnesses, plus 9 for
-  spec/standup/to-tickets on claude/opencode/pi only — 29 total), hand-written
+  by `SKILL_HARNESSES` (25 for the 5 skills on all 5 harnesses, plus 9 for
+  spec/standup/to-tickets on claude/opencode/pi only — 34 total), hand-written
   from each skill's real, already-verified per-harness facts (copilot/
   opencode/agy/pi's own CLAUDE_CODE_PARITY.md docs, or pi/prompts/*.md's
   already-verified Pi-specific wording for spec/standup/to-tickets), not
@@ -20,7 +20,7 @@ Three kinds of coverage:
   the drift class that produced `meta-pi-skill-content-mismatch` in the
   first place.
 - `EndToEndTests` — asserts the real templates + CAPABILITY_TABLE render
-  to exactly the 29 files currently committed, so a forgotten regeneration
+  to exactly the 34 files currently committed, so a forgotten regeneration
   fails the suite instead of drifting quietly.
 """
 
@@ -102,6 +102,34 @@ class CapabilityFixtureTests(unittest.TestCase):
         self.assertIn("name: dashboard", text)
         self.assertNotIn("SessionStart", text)
         self.assertIn("the shared instructions file's Backlog section", text)
+
+    # -- recap ------------------------------------------------------------
+
+    def test_recap_claude(self) -> None:
+        text = self._render("recap", "claude")
+        self.assertIn("name: recap", text)
+        self.assertIn("dev_status.py recap", text)
+
+    def test_recap_copilot(self) -> None:
+        text = self._render("recap", "copilot")
+        self.assertIn("allowed-tools: shell", text)
+        self.assertIn("name: recap", text)
+        self.assertIn("dev_status.py recap", text)
+
+    def test_recap_opencode(self) -> None:
+        text = self._render("recap", "opencode")
+        self.assertNotIn("\nname:", text.split("---", 2)[1])
+        self.assertIn("dev_status.py recap", text)
+
+    def test_recap_agy(self) -> None:
+        text = self._render("recap", "agy")
+        self.assertIn("name: recap", text)
+        self.assertIn("dev_status.py recap", text)
+
+    def test_recap_pi(self) -> None:
+        text = self._render("recap", "pi")
+        self.assertIn("name: recap", text)
+        self.assertIn("dev_status.py recap", text)
 
     # -- grill-me -----------------------------------------------------------
 
@@ -265,9 +293,9 @@ class CapabilityFixtureTests(unittest.TestCase):
 class EndToEndTests(unittest.TestCase):
     """Assert the real templates + params render to exactly what's committed."""
 
-    def test_all_29_copies_are_up_to_date(self) -> None:
+    def test_all_34_copies_are_up_to_date(self) -> None:
         rendered = gs.render_all(REPO_ROOT, SKILL_PARAMS)
-        self.assertEqual(len(rendered), 29)
+        self.assertEqual(len(rendered), 34)
         stale = []
         for relpath, text in rendered.items():
             on_disk = (REPO_ROOT / relpath).read_text(encoding="utf-8")

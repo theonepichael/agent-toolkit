@@ -102,6 +102,44 @@ description: "surfaces backlog and pending items as a dashboard. use when the us
     },
 }
 
+RECAP_PARAMS: dict[str, dict[str, str]] = {
+    "claude": {
+        "FRONTMATTER": """\
+---
+name: recap
+description: "prints a friendly prose recap of recent activity. use when the user says 'recap', 'what did we do', 'catch me up', 'summary of recent work', or any variant of requesting a recap."
+---""",
+    },
+    "copilot": {
+        "FRONTMATTER": """\
+---
+name: recap
+description: "prints a friendly prose recap of recent activity. use when the user says 'recap', 'what did we do', 'catch me up', 'summary of recent work', or any variant of requesting a recap."
+allowed-tools: shell
+---""",
+    },
+    "opencode": {
+        "FRONTMATTER": """\
+---
+description: "prints a friendly prose recap of recent activity. use when the user says 'recap', 'what did we do', 'catch me up', 'summary of recent work', or any variant of requesting a recap."
+---""",
+    },
+    "agy": {
+        "FRONTMATTER": """\
+---
+name: recap
+description: "prints a friendly prose recap of recent activity. use when the user says 'recap', 'what did we do', 'catch me up', 'summary of recent work', or any variant of requesting a recap."
+---""",
+    },
+    "pi": {
+        "FRONTMATTER": """\
+---
+name: recap
+description: "prints a friendly prose recap of recent activity. use when the user says 'recap', 'what did we do', 'catch me up', 'summary of recent work', or any variant of requesting a recap."
+---""",
+    },
+}
+
 GRILL_ME_PARAMS: dict[str, dict[str, str]] = {
     "claude": {
         "FRONTMATTER": """\
@@ -1776,6 +1814,7 @@ description: "Decompose a plan or spec into multiple linked dev_status.py backlo
 
 SKILL_PARAMS: dict[str, dict[str, dict[str, str]]] = {
     "dashboard": DASHBOARD_PARAMS,
+    "recap": RECAP_PARAMS,
     "grill-me": GRILL_ME_PARAMS,
     "backlog-item": BACKLOG_ITEM_PARAMS,
     "make-skill": MAKE_SKILL_PARAMS,

@@ -1,0 +1,14 @@
+---
+description: "prints a friendly prose recap of recent activity. use when the user says 'recap', 'what did we do', 'catch me up', 'summary of recent work', or any variant of requesting a recap."
+---
+Call the `dev_status` tool with `action: "recap"`. If invoked with `--refresh` or if the user asks to refresh/regenerate the recap, pass `refresh: true`. This is the only step — do not run a bash command for this, the tool is always available in a normal session and handles it directly with no permission prompt.
+
+Display its returned text verbatim — do not narrate, do not reformat.
+
+Bash fallback, only if the `dev_status` tool is truly missing from your tool list (e.g. the session was started with `--no-extensions`) — run:
+
+```bash
+DEVSTATUS_AGENT=1 python3 ~/.claude/scripts/dev_status.py recap
+```
+
+(append `--refresh` if requested). Display stdout verbatim — do not narrate, do not reformat.

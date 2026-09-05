@@ -1,7 +1,9 @@
 ---
 description: "surfaces backlog and pending items as a dashboard. use when the user says 'dashboard', 'what's pending', 'show backlog', 'where we at', 'what am i working on', 'open items', or any variant of checking current work status."
 ---
-Call the `dev_status` tool with `action: "render"`. This is the only step — do not run a bash command for this, the tool is always available in a normal session and handles it directly with no permission prompt.
+If invoked with `recap` (e.g. `/dashboard recap`), call the `dev_status` tool with `action: "recap"` (pass `refresh: true` if `--refresh` was specified), display the returned text verbatim, and stop. (Bash fallback if `dev_status` tool is missing: `DEVSTATUS_AGENT=1 python3 ~/.claude/scripts/dev_status.py recap` [with `--refresh` if requested]).
+
+Otherwise, call the `dev_status` tool with `action: "render"`. This is the only step — do not run a bash command for this, the tool is always available in a normal session and handles it directly with no permission prompt.
 
 Display its returned text verbatim — do not narrate, do not reformat. The tool always runs with `DEVSTATUS_AGENT=1`, so the item-map line is already suppressed; there's nothing to filter.
 

@@ -40,7 +40,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`gen_interfaces.py`](#claudescriptsgeninterfacespy) | gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources. |
 | [`gen_second_opinion.py`](#claudescriptsgensecondopinionpy) | gen_second_opinion.py — regenerate the second-opinion skill copies (one per harness, named in HARNESS_TABLE) from one canonical template. |
 | [`gen_shell_completion.py`](#claudescriptsgenshellcompletionpy) | Generate a zsh `#compdef` completion file for a harness CLI. |
-| [`gen_skills.py`](#claudescriptsgenskillspy) | gen_skills.py — regenerate the dashboard/grill-me/backlog-item/make-skill/ spec/standup/to-tickets skill copies from one template per skill, plus a shared per-harness capability table. dashboard/grill-me/backlog-item/ make-skill cover all 5 harnesses (claude, copilot, opencode, agy, pi); spec/standup/to-tickets cover only claude/opencode/pi — see `SKILL_HARNESSES` below and AGENTS.md's "Harness maintenance tiers" section for why copilot/agy stop getting new generated skills. |
+| [`gen_skills.py`](#claudescriptsgenskillspy) | gen_skills.py — regenerate the dashboard/recap/grill-me/backlog-item/ make-skill/spec/standup/to-tickets skill copies from one template per skill, plus a shared per-harness capability table. dashboard/recap/ grill-me/backlog-item/make-skill cover all 5 harnesses (claude, copilot, opencode, agy, pi); spec/standup/to-tickets cover only claude/opencode/pi — see `SKILL_HARNESSES` below and AGENTS.md's "Harness maintenance tiers" section for why copilot/agy stop getting new generated skills. |
 | [`gen_skills_params.py`](#claudescriptsgenskillsparamspy) | gen_skills_params.py — per-(skill, harness) content tables for gen_skills.py. |
 | [`grill.py`](#claudescriptsgrillpy) | grill.py — grill-me session state CLI. All session mutations go through here. |
 | [`guard_rails.py`](#claudescriptsguardrailspy) | Pre-tool guard shared by every harness: refuse a write into a repository's main checkout while a backlog item for that repository is in progress, warn when the current worktree's base has fallen behind ``origin/main``, and (Bash, Claude Code only) deny the git-native ways to defeat the no-commit-on-main git hook (``githooks/pre-commit`` / ``githooks-global/pre-commit``). |
@@ -447,7 +447,7 @@ Generate a zsh `#compdef` completion file for a harness CLI.
 
 ### `claude/scripts/gen_skills.py`
 
-gen_skills.py — regenerate the dashboard/grill-me/backlog-item/make-skill/ spec/standup/to-tickets skill copies from one template per skill, plus a shared per-harness capability table. dashboard/grill-me/backlog-item/ make-skill cover all 5 harnesses (claude, copilot, opencode, agy, pi); spec/standup/to-tickets cover only claude/opencode/pi — see `SKILL_HARNESSES` below and AGENTS.md's "Harness maintenance tiers" section for why copilot/agy stop getting new generated skills.
+gen_skills.py — regenerate the dashboard/recap/grill-me/backlog-item/ make-skill/spec/standup/to-tickets skill copies from one template per skill, plus a shared per-harness capability table. dashboard/recap/ grill-me/backlog-item/make-skill cover all 5 harnesses (claude, copilot, opencode, agy, pi); spec/standup/to-tickets cover only claude/opencode/pi — see `SKILL_HARNESSES` below and AGENTS.md's "Harness maintenance tiers" section for why copilot/agy stop getting new generated skills.
 
 - Installed at: `~/.claude/scripts/gen_skills.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
@@ -995,6 +995,7 @@ the file existing in the repo; the description is the canonical
 | `/draft-voice` | yes | — | — | — | — |
 | `/grill-me` | yes | yes | yes | yes | yes |
 | `/make-skill` | yes | yes | yes | yes | yes |
+| `/recap` | yes | yes | yes | yes | yes |
 | `/second-opinion` | yes | yes | yes | yes | yes |
 | `/skill-map` | yes | — | — | — | — |
 | `/spec` | yes | yes | yes | yes | yes |
@@ -1019,6 +1020,9 @@ the file existing in the repo; the description is the canonical
 - **`/make-skill`** — Author or revise a Claude Code skill (slash command) using a trigger/structure/steering/pruning rubric. Use when the user wants to create a new skill, improve or simplify an existing one, or complains a skill isn't triggering or isn't being followed.
   - Source: `claude/commands/make-skill.md`
   - Installed at: `~/.claude/commands/make-skill.md` (claude)
+- **`/recap`** — prints a friendly prose recap of recent activity. use when the user says 'recap', 'what did we do', 'catch me up', 'summary of recent work', or any variant of requesting a recap.
+  - Source: `claude/commands/recap.md`
+  - Installed at: `~/.claude/commands/recap.md` (claude)
 - **`/second-opinion`** — Send a plan to a non-Claude model for adversarial critique, then iterate — revise, re-send, repeat — until the critique stops surfacing anything new or a round cap is hit. Use when the user wants a second opinion, an outside critique, or to stress-test a plan against a different model.
   - Source: `claude/commands/second-opinion.md`
   - Installed at: `~/.claude/commands/second-opinion.md` (claude)
@@ -1387,23 +1391,28 @@ named doc, not regenerating this file.
 | --- | --- |
 | `agy/skills/backlog-item/SKILL.md` | OK |
 | `agy/skills/dashboard/SKILL.md` | OK |
+| `agy/skills/recap/SKILL.md` | OK |
 | `agy/skills/second-opinion/SKILL.md` | OK |
 | `agy/skills/standup/SKILL.md` | OK |
 | `claude/commands/backlog-item.md` | OK |
 | `claude/commands/dashboard.md` | OK |
+| `claude/commands/recap.md` | OK |
 | `claude/commands/second-opinion.md` | OK |
 | `claude/commands/standup.md` | OK |
 | `copilot/skills/backlog-item/SKILL.md` | OK |
 | `copilot/skills/dashboard/SKILL.md` | OK |
+| `copilot/skills/recap/SKILL.md` | OK |
 | `copilot/skills/second-opinion/SKILL.md` | OK |
 | `copilot/skills/standup/SKILL.md` | OK |
 | `opencode/command/backlog-item.md` | OK |
 | `opencode/command/dashboard.md` | OK |
+| `opencode/command/recap.md` | OK |
 | `opencode/command/second-opinion.md` | OK |
 | `opencode/command/standup.md` | OK |
 | `opencode/skills/second-opinion/SKILL.md` | OK |
 | `pi/skills/backlog-item/SKILL.md` | OK |
 | `pi/skills/dashboard/SKILL.md` | OK |
+| `pi/skills/recap/SKILL.md` | OK |
 | `pi/skills/second-opinion/SKILL.md` | OK |
 | `pi/skills/standup/SKILL.md` | OK |
 
@@ -1510,10 +1519,11 @@ new one, `--check` catches it the same as any other stale content.
 | --- | --- |
 | `/analyze-sessions` | — |
 | `/backlog-item` | `dashboard`, `grill-me`, `second-opinion`, `spec` |
-| `/dashboard` | — |
+| `/dashboard` | `recap` |
 | `/draft-voice` | — |
 | `/grill-me` | `second-opinion`, `spec` |
 | `/make-skill` | `grill-me` |
+| `/recap` | — |
 | `/second-opinion` | — |
 | `/skill-map` | — |
 | `/spec` | `backlog-item`, `grill-me`, `second-opinion` |

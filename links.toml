@@ -26,6 +26,11 @@ dest = "~/.claude/commands/dashboard.md"
 harness = "claude"
 
 [[link]]
+src = "claude/commands/recap.md"
+dest = "~/.claude/commands/recap.md"
+harness = "claude"
+
+[[link]]
 src = "claude/commands/grill-me.md"
 dest = "~/.claude/commands/grill-me.md"
 harness = "claude"
@@ -264,6 +269,11 @@ dest = "~/.copilot/skills/dashboard/SKILL.md"
 harness = "copilot"
 
 [[link]]
+src = "copilot/skills/recap/SKILL.md"
+dest = "~/.copilot/skills/recap/SKILL.md"
+harness = "copilot"
+
+[[link]]
 src = "copilot/skills/standup/SKILL.md"
 dest = "~/.copilot/skills/standup/SKILL.md"
 harness = "copilot"
@@ -318,6 +328,11 @@ harness = "opencode"
 [[link]]
 src = "opencode/command/dashboard.md"
 dest = "~/.config/opencode/commands/dashboard.md"
+harness = "opencode"
+
+[[link]]
+src = "opencode/command/recap.md"
+dest = "~/.config/opencode/commands/recap.md"
 harness = "opencode"
 
 [[link]]
@@ -403,6 +418,11 @@ dest = "~/.gemini/antigravity-cli/skills/dashboard/SKILL.md"
 harness = "agy"
 
 [[link]]
+src = "agy/skills/recap/SKILL.md"
+dest = "~/.gemini/antigravity-cli/skills/recap/SKILL.md"
+harness = "agy"
+
+[[link]]
 src = "agy/skills/standup/SKILL.md"
 dest = "~/.gemini/antigravity-cli/skills/standup/SKILL.md"
 harness = "agy"
@@ -462,6 +482,11 @@ harness = "pi"
 [[link]]
 src = "pi/prompts/dashboard.md"
 dest = "~/.pi/agent/prompts/dashboard.md"
+harness = "pi"
+
+[[link]]
+src = "pi/prompts/recap.md"
+dest = "~/.pi/agent/prompts/recap.md"
 harness = "pi"
 
 [[link]]
