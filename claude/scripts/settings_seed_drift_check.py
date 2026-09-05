@@ -298,7 +298,18 @@ def _vscode_wsl_user_dir() -> Path | None:
         The ``.../AppData/Roaming/Code/User`` directory, or None if no
         Windows-side ``code`` CLI is on PATH.
     """
-    code_bin = shutil.which("code")
+    # Fast path: check PATH directories containing '/mnt/' and 'Code' first
+    # to avoid slow full-PATH traversal across dozens of Windows dirs under WSL.
+    path_env = os.environ.get("PATH", "")
+    code_bin: str | None = None
+    for d in path_env.split(":"):
+        if "/mnt/" in d and ("VS Code" in d or "Code" in d):
+            cand = Path(d) / "code"
+            if cand.is_file():
+                code_bin = str(cand)
+                break
+    if not code_bin:
+        code_bin = shutil.which("code")
     if not code_bin:
         return None
     parts = Path(code_bin).parts

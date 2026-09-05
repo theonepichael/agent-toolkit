@@ -7,11 +7,15 @@ directory, so the tool stays testable on a machine that has never run
 """
 
 import io
+import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -58,6 +62,15 @@ TWO_BUCKET_REPORT = """==> links.toml audit (read-only)
 
 
 class CheckTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmpdir = Path(tempfile.mkdtemp(prefix="test-link-drift-check-"))
+        self._env_patch = patch.dict(os.environ, {"XDG_CACHE_HOME": str(self.tmpdir)})
+        self._env_patch.start()
+
+    def tearDown(self) -> None:
+        self._env_patch.stop()
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
     def test_clean_machine_prints_nothing(self) -> None:
         self.assertEqual(check_output(0, CLEAN_REPORT), "")
 
@@ -105,6 +118,80 @@ class CheckTests(unittest.TestCase):
         buffer = io.StringIO()
         with redirect_stdout(buffer):
             ldc.cmd_check(run_command=timeout)
+        self.assertEqual(buffer.getvalue(), "")
+
+
+class CacheTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmpdir = Path(tempfile.mkdtemp(prefix="test-link-drift-cache-"))
+        self.cache_dir = self.tmpdir / "cache"
+        self.cache_file = (
+            self.cache_dir / "agent-toolkit" / "link-drift-check-cache.json"
+        )
+        self._env_patch = patch.dict(
+            os.environ, {"XDG_CACHE_HOME": str(self.cache_dir)}
+        )
+        self._env_patch.start()
+
+    def tearDown(self) -> None:
+        self._env_patch.stop()
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_cache_roundtrip_avoids_second_audit(self) -> None:
+        audit_calls = 0
+
+        def counting_audit(
+            *_args: object, **_kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
+            nonlocal audit_calls
+            audit_calls += 1
+            return subprocess.CompletedProcess(
+                args=["install.py"], returncode=0, stdout=CLEAN_REPORT, stderr=""
+            )
+
+        buffer1 = io.StringIO()
+        with redirect_stdout(buffer1):
+            ldc.cmd_check(run_command=counting_audit)
+        self.assertEqual(audit_calls, 1)
+
+        buffer2 = io.StringIO()
+        with redirect_stdout(buffer2):
+            ldc.cmd_check(run_command=counting_audit)
+        # Second run should hit cache and not call audit
+        self.assertEqual(audit_calls, 1)
+
+    def test_cache_drift_report_replayed_without_rerunning_audit(self) -> None:
+        audit_calls = 0
+
+        def counting_drift_audit(
+            *_args: object, **_kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
+            nonlocal audit_calls
+            audit_calls += 1
+            return subprocess.CompletedProcess(
+                args=["install.py"], returncode=1, stdout=DRIFT_REPORT, stderr=""
+            )
+
+        buffer1 = io.StringIO()
+        with redirect_stdout(buffer1):
+            ldc.cmd_check(run_command=counting_drift_audit)
+        self.assertEqual(audit_calls, 1)
+        self.assertIn("wrong-target (1)", buffer1.getvalue())
+
+        buffer2 = io.StringIO()
+        with redirect_stdout(buffer2):
+            ldc.cmd_check(run_command=counting_drift_audit)
+        # Second run should hit cache and replay output
+        self.assertEqual(audit_calls, 1)
+        self.assertIn("wrong-target (1)", buffer2.getvalue())
+
+    def test_corrupted_cache_falls_back_gracefully(self) -> None:
+        self.cache_file.parent.mkdir(parents=True, exist_ok=True)
+        self.cache_file.write_text("not json!!!")
+
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            ldc.cmd_check(run_command=fake_audit(0, CLEAN_REPORT))
         self.assertEqual(buffer.getvalue(), "")
 
 

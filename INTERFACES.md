@@ -662,6 +662,7 @@ SessionStart hook + CLI: flag when a managed symlink on this machine no longer p
   - `--verbose/-v`
 - Subcommands:
   - `check` — print a line per drifted bucket (default)
+- Environment: `XDG_CACHE_HOME`
 - Filesystem constants:
   - `REPO = Path(__file__).resolve().parents[2]`
 - Depends on: `cli_common.py`
@@ -856,6 +857,7 @@ SessionStart hook + CLI: detect (and optionally fix) drift between the live ``~/
   - `fix`
   - `sync-to-seed [--dotfiles-root <DOTFILES_ROOT>]`
   - `push-vscode [--dotfiles-root <DOTFILES_ROOT>] [--yes]`
+- Environment: `PATH`
 - Filesystem constants:
   - `HOME = Path.home()`
   - `DOTFILES = Path(__file__).resolve().parents[2]`
