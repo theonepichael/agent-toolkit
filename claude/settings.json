@@ -63,49 +63,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ~/.claude/scripts/dev_status.py render 2>&1 || echo '[dev_status] render failed — run /dashboard to debug'"
-          },
-          {
-            "type": "command",
-            "command": "python3 ~/.claude/scripts/grill.py pending-plan --consume"
-          },
-          {
-            "type": "command",
-            "command": "python3 ~/.claude/scripts/dotfiles_sync_check.py 2>/dev/null"
-          },
-          {
-            "type": "command",
-            "command": "python3 ~/.claude/scripts/settings_seed_drift_check.py"
-          },
-          {
-            "type": "command",
-            "command": "timeout 5s python3 ~/.claude/scripts/harness_discovery_check.py check --hook || echo '[harness-discovery] checker failed — run it manually'"
-          },
-          {
-            "type": "command",
-            "command": "timeout 20s python3 ~/.claude/scripts/link_drift_check.py check 2>/dev/null"
-          },
-          {
-            "type": "command",
-            "command": "if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then echo; echo 'recent commits:'; git log -n 5 --oneline; fi"
-          },
-          {
-            "type": "command",
-            "command": "python3 ~/.claude/scripts/watchcommit_activity.py 2>/dev/null"
-          },
-          {
-            "type": "command",
-            "command": "python3 ~/.claude/scripts/opencode_skills_sync_activity.py 2>/dev/null"
-          }
-        ]
-      },
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ~/.claude/hooks/herdr-agent-state.sh session",
-            "timeout": 10
+            "command": "python3 ~/.claude/scripts/sessionstart_checks.py",
+            "timeout": 45
           }
         ]
       }

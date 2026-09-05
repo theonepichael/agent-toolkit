@@ -53,6 +53,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`outlook_email.py`](#claudescriptsoutlookemailpy) | outlook_email.py — CLI tool and agent interface for Windows Outlook via PowerShell COM. |
 | [`repo_identity.py`](#claudescriptsrepoidentitypy) | repo_identity.py — which repo this checkout is. |
 | [`second_opinion.py`](#claudescriptssecondopinionpy) | second_opinion.py — one-shot adversarial critique of a plan from a non-Claude backend. Single-round by design: the multi-round loop, plan revision, and convergence judgment all require LLM reasoning and live in prose instructions, not here. |
+| [`sessionstart_checks.py`](#claudescriptssessionstartcheckspy) | sessionstart_checks.py — run the SessionStart context checks concurrently. |
 | [`settings_seed_drift_check.py`](#claudescriptssettingsseeddriftcheckpy) | SessionStart hook + CLI: detect (and optionally fix) drift between the live ``~/.claude/settings.json`` / ``~/.config/opencode/opencode.jsonc`` / (under WSL) the Windows-side VS Code ``settings.json`` and ``keybindings.json`` and their seeds in the dotfiles repo. |
 | [`standup.py`](#claudescriptsstanduppy) | standup.py — /standup skill CLI: local data gathering. |
 | [`standup_adapters.py`](#claudescriptsstandupadapterspy) | standup_adapters.py — provider-agnostic adapter interfaces for /standup. |
@@ -842,6 +843,17 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
   - `ensure_data_dir() -> None` — Create ``DATA_DIR`` if it is missing.
 - Subcommand handlers: `cmd_detect`, `cmd_review`
 - Tested by: `claude/scripts/test_second_opinion.py`
+
+### `claude/scripts/sessionstart_checks.py`
+
+sessionstart_checks.py — run the SessionStart context checks concurrently.
+
+- Installed at: `~/.claude/scripts/sessionstart_checks.py` (all harnesses)
+- Entrypoint: not executable, `#!/usr/bin/env python3`
+- CLI: none (library module).
+- Public functions:
+  - `run_checks(checks: list[tuple[str, int]] | None = None) -> str` — Run all checks concurrently, returning their outputs concatenated in the original list order — not completion order — so the session-start context stays stable and reviewable run over run.
+- Tested by: `claude/scripts/test_sessionstart_checks.py`
 
 ### `claude/scripts/settings_seed_drift_check.py`
 
