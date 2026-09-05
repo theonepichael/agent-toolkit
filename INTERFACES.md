@@ -1081,6 +1081,7 @@ are copy-once seeds for exactly that reason.
 | `pi/bun.lock` | not symlinked by `links.toml` |
 | `pi/extensions/compaction-backlog-sync.ts` | `~/.pi/agent/extensions/compaction-backlog-sync.ts` (pi) |
 | `pi/extensions/custom-footer.ts` | `~/.pi/agent/extensions/custom-footer.ts` (pi) |
+| `pi/extensions/cwd.ts` | `~/.pi/agent/extensions/cwd.ts` (pi) |
 | `pi/extensions/delegate-tool.ts` | `~/.pi/agent/extensions/delegate-tool.ts` (pi) |
 | `pi/extensions/dev-status-tool.ts` | `~/.pi/agent/extensions/dev-status-tool.ts` (pi) |
 | `pi/extensions/exit-alias.ts` | `~/.pi/agent/extensions/exit-alias.ts` (pi) |
@@ -1112,6 +1113,7 @@ are copy-once seeds for exactly that reason.
 | `pi/prompts/to-tickets.md` | `~/.pi/agent/prompts/to-tickets.md` (pi) |
 | `pi/settings.json` | not symlinked by `links.toml` |
 | `pi/test/compaction-backlog-sync.test.ts` | not symlinked by `links.toml` |
+| `pi/test/cwd.test.ts` | not symlinked by `links.toml` |
 | `pi/test/delegate-tool.test.ts` | not symlinked by `links.toml` |
 | `pi/test/dev-status-tool.test.ts` | not symlinked by `links.toml` |
 | `pi/test/grill-tool.test.ts` | not symlinked by `links.toml` |
