@@ -2,6 +2,7 @@
 """Tests for dev_status.py v2. Run with: python3 test_dev_status.py"""
 
 import fcntl
+import inspect
 import io
 import json
 import os
@@ -71,7 +72,7 @@ def make_item(
 _PREFIX_MARKER = "carries the prefix"
 
 
-class BacklogTestCase(unittest.TestCase):
+class BacklogFixture(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
         self.data_dir = Path(self.tmpdir) / "backlog"
@@ -132,6 +133,27 @@ class BacklogTestCase(unittest.TestCase):
             p.stop()
         shutil.rmtree(self.tmpdir)
 
+    def write_items(self, items):
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        data = {"schema_version": 2, "items": items}
+        self.items_file.write_text(json.dumps(data, indent=2))
+
+    def write_pending(self, pending_items):
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        data = {"schema_version": 1, "items": pending_items}
+        self.pending_file.write_text(json.dumps(data, indent=2))
+
+    def read_items(self):
+        return dev_status.load_items()
+
+    def read_rev(self):
+        return dev_status.load_rev()
+
+    def _item_by_id(self, slug):
+        return {i["id"]: i for i in self.read_items()}[slug]
+
+
+class BacklogTestCase(BacklogFixture):
     def test_backlog_lock_reentrant_same_thread_does_not_deadlock(self):
         # Regression: flock(2) is per-open-file-description, not per-process, so a
         # nested `with backlog_lock()` in the same thread used to block forever
@@ -153,22 +175,6 @@ class BacklogTestCase(unittest.TestCase):
         t.join(timeout=10)
         self.assertFalse(t.is_alive(), "backlog_lock nested re-entry deadlocked")
         self.assertTrue(seen.get("inner"), f"unexpected lock outcome: {seen}")
-
-    def write_items(self, items):
-        self.data_dir.mkdir(parents=True, exist_ok=True)
-        data = {"schema_version": 2, "items": items}
-        self.items_file.write_text(json.dumps(data, indent=2))
-
-    def write_pending(self, pending_items):
-        self.data_dir.mkdir(parents=True, exist_ok=True)
-        data = {"schema_version": 1, "items": pending_items}
-        self.pending_file.write_text(json.dumps(data, indent=2))
-
-    def read_items(self):
-        return dev_status.load_items()
-
-    def read_rev(self):
-        return dev_status.load_rev()
 
     # ── 1: add with valid slug succeeds ──────────────────────────────────────
 
@@ -2659,9 +2665,6 @@ class BacklogTestCase(unittest.TestCase):
 
     # ── in-review state: review / approve / reject ────────────────────────────
 
-    def _item_by_id(self, slug):
-        return {i["id"]: i for i in self.read_items()}[slug]
-
     def test_40a_review_happy_path(self):
         self.write_items([make_item("rv-item", status="in-progress")])
         out, err = io.StringIO(), io.StringIO()
@@ -4616,13 +4619,15 @@ class BacklogTestCase(unittest.TestCase):
         # _out_of_scope_check_reminder. Every agent passes DEVSTATUS_AGENT=1,
         # and an agent is the only caller that ever adds an item, so a reminder
         # silenced by quiet would be invisible to its entire audience.
-        with patch.dict(os.environ, {"DEVSTATUS_AGENT": "1"}):
-            with patch.object(
+        with (
+            patch.dict(os.environ, {"DEVSTATUS_AGENT": "1"}),
+            patch.object(
                 dev_status, "_repo_name_for_path", return_value="agent-toolkit"
-            ):
-                err = self._add(
-                    "meta-quiet-probe", ["/w/agent-toolkit/README.md"], quiet=True
-                )
+            ),
+        ):
+            err = self._add(
+                "meta-quiet-probe", ["/w/agent-toolkit/README.md"], quiet=True
+            )
         self.assertIn("atk-", err)
 
     def test_p8_reminder_does_not_block_the_add(self):
@@ -4700,7 +4705,6 @@ class BacklogTestCase(unittest.TestCase):
             self.assertIn("worker_safe", item, item["id"])
 
 
-
 # Every env var _detect_harness consults, in its documented resolution order.
 _HARNESS_ENV_VARS = (
     "DEVSTATUS_HARNESS",
@@ -4731,7 +4735,7 @@ def _only_harness_env(**active: str) -> dict[str, str]:
     return env
 
 
-class ClaimMarkerAndWorktreeGuardTestCase(BacklogTestCase):
+class ClaimMarkerAndWorktreeGuardTestCase(BacklogFixture):
     def test_detect_harness(self):
         self.assertEqual(dev_status._detect_harness("custom"), "custom")
         with patch.dict(os.environ, _only_harness_env(DEVSTATUS_HARNESS="my-env")):
@@ -5074,7 +5078,7 @@ class ClaimMarkerAndWorktreeGuardTestCase(BacklogTestCase):
 # ── gate-pass run evidence (runs.jsonl, run/runs subcommands) ─────────────────
 
 
-class RunEvidenceTestCase(BacklogTestCase):
+class RunEvidenceTestCase(BacklogFixture):
     """gate-pass must require recorded run evidence, not self-attestation.
 
     Covers the ``runs.jsonl`` sidecar, the ``run``/``runs`` subcommands,
@@ -5616,7 +5620,7 @@ class RunEvidenceTestCase(BacklogTestCase):
         self.assertNotIn("# runs:", err.getvalue())
 
 
-class ReadyCommandTests(BacklogTestCase):
+class ReadyCommandTests(BacklogFixture):
     """`ready` reports the computed READY bucket as JSON.
 
     It exists so a consumer -- swarm_spawn's scheduler, in
@@ -5677,6 +5681,39 @@ class ReadyCommandTests(BacklogTestCase):
     def test_ready_on_an_empty_backlog_is_an_empty_list(self):
         self.write_items([])
         self.assertEqual(self._ready(), [])
+
+
+class FixtureSplitGuardTests(unittest.TestCase):
+    """Guard the BacklogFixture / BacklogTestCase split.
+
+    BacklogTestCase once held both the fixture (setUp/tearDown/write_items/…)
+    and its own 301 tests while three subclasses inherited it purely to reuse
+    the fixture — re-running all 301 parent tests under each subclass and
+    inflating the suite ~3.5x. The split keeps the tests only in
+    BacklogTestCase; these guards stop the pattern from silently returning.
+    """
+
+    def test_fixture_base_holds_no_test_methods(self):
+        leaked = [
+            name
+            for name, value in vars(BacklogFixture).items()
+            if name.startswith("test_") and callable(value)
+        ]
+        self.assertEqual(leaked, [])
+
+    def test_nothing_else_subclasses_the_test_holder(self):
+        # The original bug, precisely: classes inheriting BacklogTestCase to
+        # reuse its fixture, re-running all of its tests as a side effect.
+        # Fixture reuse must go through BacklogFixture; inheriting the test
+        # holder is always a mistake.
+        offenders = [
+            name
+            for name, cls in globals().items()
+            if inspect.isclass(cls)
+            and cls is not BacklogTestCase
+            and issubclass(cls, BacklogTestCase)
+        ]
+        self.assertEqual(offenders, [])
 
 
 # ── arg helper ────────────────────────────────────────────────────────────────
