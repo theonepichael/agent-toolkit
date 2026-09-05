@@ -7,7 +7,8 @@ Three kinds of coverage:
   RenderBodyTests).
 - `CapabilityFixtureTests` — one fixture per (skill, harness) pair covered
   by `SKILL_HARNESSES` (25 for the 5 skills on all 5 harnesses, plus 9 for
-  spec/standup/to-tickets on claude/opencode/pi only — 34 total), hand-written
+  spec/standup/to-tickets on claude/opencode/pi, plus 2 for swarm on
+  claude/copilot — 36 total), hand-written
   from each skill's real, already-verified per-harness facts (copilot/
   opencode/agy/pi's own CLAUDE_CODE_PARITY.md docs, or pi/prompts/*.md's
   already-verified Pi-specific wording for spec/standup/to-tickets), not
@@ -20,7 +21,7 @@ Three kinds of coverage:
   the drift class that produced `meta-pi-skill-content-mismatch` in the
   first place.
 - `EndToEndTests` — asserts the real templates + CAPABILITY_TABLE render
-  to exactly the 34 files currently committed, so a forgotten regeneration
+  to exactly the 36 files currently committed, so a forgotten regeneration
   fails the suite instead of drifting quietly.
 """
 
@@ -62,7 +63,7 @@ class RenderBodyTests(unittest.TestCase):
 
 
 class CapabilityFixtureTests(unittest.TestCase):
-    """One method per (skill, harness) pair — 20 total."""
+    """One method per (skill, harness) pair — 31 total."""
 
     def _render(self, skill: str, harness: str) -> str:
         template_text = (REPO_ROOT / gs.TEMPLATE_PATHS[skill]).read_text(
@@ -289,13 +290,34 @@ class CapabilityFixtureTests(unittest.TestCase):
         self.assertIn("`to_tickets` tool", text)
         self.assertNotIn("python3 ~/.claude/scripts/to_tickets_runner.py run", text)
 
+    # -- swarm --------------------------------------------------------------
+
+    def test_swarm_claude(self) -> None:
+        text = self._render("swarm", "claude")
+        self.assertIn("name: swarm", text)
+        self.assertIn("HERDR_ENV=1", text)
+        self.assertIn("herdr_delegate.py", text)
+        # claude keeps the widget-based ask mechanism, verbatim from the
+        # hand-authored copy this output replaces.
+        self.assertIn("AskUserQuestion", text)
+
+    def test_swarm_copilot(self) -> None:
+        text = self._render("swarm", "copilot")
+        self.assertIn("allowed-tools: shell", text)
+        self.assertIn("HERDR_ENV=1", text)
+        self.assertIn("herdr_delegate.py", text)
+        # copilot has no structured-choice widget: the ask is a plain-text
+        # numbered list, recommendation first.
+        self.assertIn("ask in plain text", text)
+        self.assertNotIn("AskUserQuestion", text)
+
 
 class EndToEndTests(unittest.TestCase):
     """Assert the real templates + params render to exactly what's committed."""
 
-    def test_all_34_copies_are_up_to_date(self) -> None:
+    def test_all_36_copies_are_up_to_date(self) -> None:
         rendered = gs.render_all(REPO_ROOT, SKILL_PARAMS)
-        self.assertEqual(len(rendered), 34)
+        self.assertEqual(len(rendered), 36)
         stale = []
         for relpath, text in rendered.items():
             on_disk = (REPO_ROOT / relpath).read_text(encoding="utf-8")

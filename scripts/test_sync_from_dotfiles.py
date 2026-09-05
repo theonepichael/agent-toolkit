@@ -30,6 +30,17 @@ class ComputeCopySetTests(unittest.TestCase):
         changed = frozenset({"a.py", sfd.BLOCKLIST[0], sfd.EXCLUDE[0], "b.py"})
         self.assertEqual(sfd.compute_copy_set(changed), frozenset({"a.py", "b.py"}))
 
+    def test_excludes_the_post_cutover_watchcommit_dotfiles_only_paths(self) -> None:
+        # dotfiles' 11c827b added these two files after the toolkit snapshot
+        # was cut; the toolkit deliberately never carries them. Without the
+        # EXCLUDE entries the copy set tries to blind-copy them (and the
+        # BLOCKED_MODULES content check then rejects scripts/watchcommit.py
+        # for referencing watchcommit_activity).
+        changed = frozenset(
+            {"scripts/watchcommit.py", "test/test_no_commit_on_main.py"}
+        )
+        self.assertEqual(sfd.compute_copy_set(changed), frozenset())
+
     def test_is_derived_from_the_diff_not_a_fixed_list(self) -> None:
         changed = frozenset({"some/brand/new/path.py"})
         self.assertEqual(sfd.compute_copy_set(changed), changed)

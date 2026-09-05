@@ -103,6 +103,12 @@ EXCLUDE: tuple[str, ...] = (
     "claude/personal-overlay.md",
     "claude/scripts/gen_core_instructions.py",
     "claude/scripts/test_gen_core_instructions.py",
+    # watchcommit itself and its githooks-global test -- dotfiles-side files
+    # first added post-cutover (11c827b) that this toolkit never carries.
+    # (The companion githooks fix in the same commit,
+    # githooks-global/lib/no-commit-on-main.sh, IS shared and syncs.)
+    "scripts/watchcommit.py",
+    "test/test_no_commit_on_main.py",
 )
 
 # Generator outputs: never copy these from dotfiles even when they conflict.

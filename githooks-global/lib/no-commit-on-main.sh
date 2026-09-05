@@ -4,11 +4,27 @@
 # shell has already run, so it cannot be fooled by how the commit command
 # was obfuscated (bash -c, a heredoc fed to sh, a mid-word backslash) --
 # unlike a PreToolUse hook that has to parse the command string before the
-# shell ever sees it. See meta-git-commit-main-guard-mechanism's spec for
-# the bypasses this replaces.
+# shell ever sees it. It replaces an earlier PreToolUse shell-parser guard,
+# whose bypasses (quoting tricks, heredocs) this structural check closes.
+#
+# One sanctioned exception: the watchcommit daemon (scripts/watchcommit.py).
+# Its whole job is loss-protection auto-commits of the watched repo, and its
+# design commits straight to main -- it predates this guard and is the
+# reason the watched dotfiles repo stays backed up at all. It sets
+# WATCHCOMMIT_DAEMON=1 in its own process env at startup, which git passes
+# down to this hook, so only the daemon's process tree opens the bypass;
+# every human or agent commit on main stays blocked. Exact-value match:
+# WATCHCOMMIT_DAEMON=0 (or any other value) bypasses nothing.
 
 refuse_if_protected_branch() {
     local branch
+
+    # The watchcommit daemon's sanctioned bypass — see the header comment.
+    # Checked first, before any branch resolution: the daemon is the one
+    # caller for which this guard must always be a no-op.
+    if [ "${WATCHCOMMIT_DAEMON:-}" = "1" ]; then
+        return 0
+    fi
 
     # symbolic-ref, not rev-parse --abbrev-ref: on an unborn branch (a
     # brand-new repo before its first commit) rev-parse --abbrev-ref HEAD

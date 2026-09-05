@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """gen_skills.py — regenerate the dashboard/recap/grill-me/backlog-item/
-make-skill/spec/standup/to-tickets skill copies from one template per
+make-skill/spec/standup/to-tickets/swarm skill copies from one template per
 skill, plus a shared per-harness capability table. dashboard/recap/
 grill-me/backlog-item/make-skill cover all 5 harnesses (claude, copilot,
-opencode, agy, pi); spec/standup/to-tickets cover only claude/opencode/pi —
-see `SKILL_HARNESSES` below and AGENTS.md's "Harness maintenance tiers" section
-for why copilot/agy stop getting new generated skills.
+opencode, agy, pi); spec/standup/to-tickets cover only claude/opencode/pi;
+swarm covers only claude/copilot (user-directed; pi already owns the
+orchestration surface) — see `SKILL_HARNESSES` below and AGENTS.md's
+"Harness maintenance tiers" section for why copilot/agy stop getting new
+generated skills.
 
 The first 4 skills used to live as hand-forked copies, one per harness, with
 no mechanism keeping them in sync (see `meta-pi-skill-content-mismatch`'s
@@ -15,7 +17,7 @@ SessionStart hook — that are factually wrong for Pi, which has both).
 spec/standup/to-tickets had the same drift for Pi specifically
 (`meta-pi-residual-skill-drift`). This script replaces those copies with
 generated output: one body template per skill
-(`templates/{dashboard,recap,grill_me,backlog_item,make_skill,spec,standup,to_tickets}.md.tmpl`)
+(`templates/{dashboard,recap,grill_me,backlog_item,make_skill,spec,standup,to_tickets,swarm}.md.tmpl`)
 plus the shared `CAPABILITY_TABLE` below, mirroring
 `gen_second_opinion.py`'s generator/--check/--stdout shape for the
 second-opinion skill (which this script does not touch — a separate,
@@ -40,10 +42,11 @@ Usage:
 
 Flags: --check, --stdout, --repo-root <path>, --quiet/-q, --verbose/-v.
 Env vars: none.
-Files read: <repo>/templates/{dashboard,recap,grill_me,backlog_item,make_skill,spec,standup,to_tickets}.md.tmpl.
-Files written: the 34 (skill, harness) copies named in OUTPUT_PATHS —
-5 skills x 5 harnesses (25) plus 3 skills x 3 harnesses (9), per
-`SKILL_HARNESSES` (skipped by --check and --stdout).
+Files read: <repo>/templates/{dashboard,recap,grill_me,backlog_item,make_skill,spec,standup,to_tickets,swarm}.md.tmpl.
+Files written: the 36 (skill, harness) copies named in OUTPUT_PATHS —
+5 skills x 5 harnesses (25), 3 skills x 3 harnesses (9), plus swarm x
+{claude, copilot} (2), per `SKILL_HARNESSES` (skipped by --check and
+--stdout).
 Exit codes: 0 success; 1 --check found stale output; 2 bad usage.
 
 Requires Python 3.12+.
@@ -66,6 +69,7 @@ SKILLS = (
     "spec",
     "standup",
     "to-tickets",
+    "swarm",
 )
 HARNESSES = ("claude", "copilot", "opencode", "agy", "pi")
 
@@ -73,7 +77,13 @@ HARNESSES = ("claude", "copilot", "opencode", "agy", "pi")
 # the full HARNESSES tuple except spec/standup/to-tickets, which cover only
 # claude/opencode/pi -- per AGENTS.md's "Harness maintenance tiers": copilot
 # and agy are best-effort and not proactively extended with new generated
-# skills (meta-pi-residual-skill-drift's scope decision).
+# skills (meta-pi-residual-skill-drift's scope decision). swarm deviates the
+# other way -- claude/copilot only, user-directed: copilot was explicitly
+# requested, opencode was not, and pi already owns the swarm orchestration
+# surface (pi/prompts/backlog-item.md's --swarm[=N] section plus
+# pi/extensions/swarm-tool.ts), so a pi copy would be exactly the
+# "second copy is a second thing to drift" problem swarm.md's own closing
+# section warns against.
 _ACTIVE_TIER = ("claude", "opencode", "pi")
 SKILL_HARNESSES: dict[str, tuple[str, ...]] = {
     "dashboard": HARNESSES,
@@ -84,6 +94,7 @@ SKILL_HARNESSES: dict[str, tuple[str, ...]] = {
     "spec": _ACTIVE_TIER,
     "standup": _ACTIVE_TIER,
     "to-tickets": _ACTIVE_TIER,
+    "swarm": ("claude", "copilot"),
 }
 
 TEMPLATE_PATHS: dict[str, str] = {
@@ -95,6 +106,7 @@ TEMPLATE_PATHS: dict[str, str] = {
     "spec": "templates/spec.md.tmpl",
     "standup": "templates/standup.md.tmpl",
     "to-tickets": "templates/to_tickets.md.tmpl",
+    "swarm": "templates/swarm.md.tmpl",
 }
 
 OUTPUT_PATHS: dict[tuple[str, str], str] = {
@@ -132,6 +144,8 @@ OUTPUT_PATHS: dict[tuple[str, str], str] = {
     ("to-tickets", "claude"): "claude/commands/to-tickets.md",
     ("to-tickets", "opencode"): "opencode/command/to-tickets.md",
     ("to-tickets", "pi"): "pi/skills/to-tickets/SKILL.md",
+    ("swarm", "claude"): "claude/commands/swarm.md",
+    ("swarm", "copilot"): "copilot/skills/swarm/SKILL.md",
 }
 
 # A line that is nothing but one `{{TOKEN}}` -- see render_body.

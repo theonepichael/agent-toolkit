@@ -249,6 +249,18 @@
     "subcommand show: print session (or one decision) as JSON",
     "subcommand verdict: record a verification verdict"
   ],
+  "herdr_delegate.py": [
+    "arg launch --cwd: \u2014 working directory",
+    "arg launch --model: \u2014 model passed through to pi after a bare --",
+    "arg launch --prefix: \u2014 queue scope, required with --swarm",
+    "arg launch --slug: \u2014 single item for one unattended worker",
+    "arg launch --swarm: \u2014 fan out across N workers",
+    "exit codes: 1",
+    "handler launch: Create a tab, start pi in it, and hand it its prompt.",
+    "handler plan: Print the READY queue grouped by prefix, as JSON. No side effects.",
+    "subcommand launch: start a pi worker or orchestrator",
+    "subcommand plan: READY queue grouped by prefix, as JSON"
+  ],
   "second_opinion.py": [
     "arg (top-level) --quiet/-q: ",
     "arg (top-level) --verbose/-v: ",

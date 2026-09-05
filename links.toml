@@ -115,6 +115,10 @@ src = "claude/scripts/dev_status_impl.py"
 dest = "~/.claude/scripts/dev_status_impl.py"
 
 [[link]]
+src = "claude/scripts/herdr_delegate.py"
+dest = "~/.claude/scripts/herdr_delegate.py"
+
+[[link]]
 src = "claude/scripts/cli_common.py"
 dest = "~/.claude/scripts/cli_common.py"
 
@@ -661,12 +665,12 @@ dest = "~/.claude/scripts"
 # own generator for CORE_INSTRUCTIONS.md -- authored and run from dotfiles,
 # the finished file synced into agent-toolkit by sync_from_dotfiles.py, per
 # this repo's own CLAUDE.md -- found via a live scratch-HOME --check-links
-# run during this item's verification, not part of the original 4-script
-# investigation.
+# run during that item's verification, not part of the original 4-script
+# investigation. (herdr_delegate.py was on this list until this item moved
+# it into agent-toolkit proper -- it now has its own [[link]] above.)
 ignore = [
     "dev_status_sync.py",
     "watchcommit_activity.py",
-    "herdr_delegate.py",
     "opencode_skills_sync_activity.py",
     "gen_core_instructions.py",
 ]

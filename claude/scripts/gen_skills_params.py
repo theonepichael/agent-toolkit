@@ -1812,6 +1812,46 @@ description: "Decompose a plan or spec into multiple linked dev_status.py backlo
     },
 }
 
+SWARM_PARAMS: dict[str, dict[str, str]] = {
+    "claude": {
+        "FRONTMATTER": """\
+---
+name: swarm
+description: "Hand READY backlog items to pi agents running in herdr tabs — a real fan-out across the queue by default, or a single item when one is named. Use when the user says 'swarm', 'swarm the backlog', 'hand this to pi', 'give <item> to a pi agent', or 'delegate to a pi worker'. Requires HERDR_ENV=1; says so and stops otherwise."
+---""",
+        # Transcribed verbatim from the hand-authored dotfiles copy this
+        # generated output replaces (ff05d19) -- byte-for-byte, so the
+        # generated claude/commands/swarm.md differs from that original by
+        # the do-not-edit marker only.
+        "SWARM_SCOPE_ASK": """\
+Otherwise **ask via AskUserQuestion**, one option per worker-safe prefix,
+labelled with its real count, recommending the first row (the plan already
+orders the largest worker-safe prefix first). Never pick a prefix silently —
+the user asked for a swarm, not for a guess about which project.""",
+    },
+    "copilot": {
+        "FRONTMATTER": """\
+---
+name: swarm
+description: "Hand READY backlog items to pi agents running in herdr tabs — a real fan-out across the queue by default, or a single item when one is named. Use when the user says 'swarm', 'swarm the backlog', 'hand this to pi', 'give <item> to a pi agent', or 'delegate to a pi worker'. Requires HERDR_ENV=1; says so and stops otherwise."
+allowed-tools: shell
+---""",
+        # Same mechanics adaptation as every copilot params entry: no
+        # AskUserQuestion widget -- the ask goes out as a plain-text numbered
+        # list with the recommendation first (the shared instructions file's
+        # convention). Everything else in the body is harness-neutral: the
+        # herdr/pi command surface and the HERDR_ENV preflight are identical,
+        # and the unattended-worker env mechanics belong to pi's
+        # permission-gate.ts, not to the launching harness.
+        "SWARM_SCOPE_ASK": """\
+Otherwise ask in plain text, listing the worker-safe prefixes together in
+the same message, numbered, each labelled with its real count and stating
+your recommendation first (the plan already orders the largest worker-safe
+prefix first). Never pick a prefix silently — the user asked for a swarm,
+not for a guess about which project.""",
+    },
+}
+
 SKILL_PARAMS: dict[str, dict[str, dict[str, str]]] = {
     "dashboard": DASHBOARD_PARAMS,
     "recap": RECAP_PARAMS,
@@ -1821,4 +1861,5 @@ SKILL_PARAMS: dict[str, dict[str, dict[str, str]]] = {
     "spec": SPEC_PARAMS,
     "standup": STANDUP_PARAMS,
     "to-tickets": TO_TICKETS_PARAMS,
+    "swarm": SWARM_PARAMS,
 }
