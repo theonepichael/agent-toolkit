@@ -430,7 +430,7 @@ class HandlerMatchingTests(unittest.TestCase):
         """Empirical check behind the spec's design: every leaf subcommand
         across the 4 in-scope scripts resolves to a real cmd_<path> handler."""
         for name in ("dev_status.py", "grill.py", "second_opinion.py", "standup.py"):
-            source = (REPO_ROOT / gi.SCRIPTS_DIR / name).read_text(encoding="utf-8")
+            _, source = gi.resolve_script_source(REPO_ROOT / gi.SCRIPTS_DIR / name)
             tree = ast.parse(source)
             cli = gi.extract_cli(tree, gi.first_paragraph(ast.get_docstring(tree)))
             assert cli is not None
@@ -898,7 +898,7 @@ class RealSourceTests(unittest.TestCase):
     """Parse the actual scripts — the drift these tests exist to catch."""
 
     def spec_for(self, name: str) -> gi.CliSpec:
-        source = (REPO_ROOT / gi.SCRIPTS_DIR / name).read_text(encoding="utf-8")
+        _, source = gi.resolve_script_source(REPO_ROOT / gi.SCRIPTS_DIR / name)
         tree = ast.parse(source)
         spec = gi.extract_cli(tree, gi.first_paragraph(ast.get_docstring(tree)))
         assert spec is not None
@@ -1371,9 +1371,20 @@ class GeneratedDocumentTests(unittest.TestCase):
     @pytest.mark.allow_real_subprocess
     def test_document_has_every_module_section(self) -> None:
         document = gi.build_document(REPO_ROOT)
-        for module in (REPO_ROOT / gi.SCRIPTS_DIR).glob("*.py"):
-            if module.name.startswith("test_"):
-                continue
+        script_dir = REPO_ROOT / gi.SCRIPTS_DIR
+        modules = sorted(
+            path
+            for path in script_dir.glob("*.py")
+            if not path.name.startswith("test_")
+        )
+        impl_names = set()
+        for path in modules:
+            resolved, _ = gi.resolve_script_source(path)
+            if resolved != path:
+                impl_names.add(resolved.name)
+        for module in modules:
+            if module.name in impl_names:
+                continue  # thin-launcher impl: documented via its launcher's entry
             self.assertIn(f"### `claude/scripts/{module.name}`", document)
         for name in gi.ROOT_ENTRYPOINTS:
             self.assertIn(f"### `{name}`", document)

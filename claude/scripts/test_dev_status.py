@@ -18,6 +18,8 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent))
 import dev_status
 import llm_backends
@@ -5740,6 +5742,95 @@ class _args:
 
     def __init__(self, **kwargs):
         self.__dict__.update(kwargs)
+
+
+# ── launcher ↔ impl binding ──────────────────────────────────────────────────
+
+
+class ThinLauncherTests(unittest.TestCase):
+    """The properties the dev_status.py launcher↔impl split leans on.
+
+    dev_status.py is a thin launcher over dev_status_impl.py: run as a
+    script it calls dev_status_impl.main(); imported as a module it rebinds
+    ``sys.modules["dev_status"]`` to the impl module object. The binding is
+    load-bearing for every consumer that does ``import dev_status`` and then
+    patches module globals (DATA_DIR & friends) — the patch must reach the
+    exact module whose ``__dict__`` the implementation reads as its globals.
+    """
+
+    def test_import_binds_the_impl_module(self):
+
+        self.assertIs(sys.modules["dev_status"], sys.modules["dev_status_impl"])
+        self.assertEqual(dev_status.__name__, "dev_status_impl")
+        self.assertTrue(
+            Path(dev_status.__file__).name == "dev_status_impl.py",
+            f"import dev_status resolved to {dev_status.__file__}, not the impl module",
+        )
+
+    def test_patched_module_global_reaches_impl_functions(self):
+        # Constraint-1 proof: patch.object(dev_status, "ITEMS_FILE", x) must
+        # land in the module whose globals load_items() reads, not in a dead
+        # launcher module object.
+        import dev_status_impl
+
+        with tempfile.TemporaryDirectory() as tmp:
+            items_file = Path(tmp) / "items.json"
+            items_file.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "items": [
+                            make_item(
+                                "patch-visibility-check", summary="seen via patch"
+                            )
+                        ],
+                    }
+                )
+            )
+            with patch.object(dev_status, "ITEMS_FILE", items_file):
+                loaded = dev_status.load_items()
+                self.assertEqual(loaded, dev_status_impl.load_items())
+        self.assertEqual([item["id"] for item in loaded], ["patch-visibility-check"])
+
+    @pytest.mark.allow_real_subprocess
+    def test_launcher_cli_matches_impl_cli(self):
+        # Runs this repo's own dev_status.py / dev_status_impl.py with --help
+        # and a bogus subcommand under the sandboxed HOME — both only parse
+        # argv, neither touches the store. --help output must match modulo the
+        # prog basename, and exit codes must be identical.
+        scripts = Path(__file__).parent
+        launcher = scripts / "dev_status.py"
+        impl = scripts / "dev_status_impl.py"
+
+        def run(script, *argv):
+            return subprocess.run(
+                [sys.executable, str(script), *argv],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+        launcher_help = run(launcher, "--help")
+        impl_help = run(impl, "--help")
+        self.assertEqual(launcher_help.returncode, 0)
+        self.assertEqual(impl_help.returncode, 0)
+        # argparse wraps its help to the prog name's width, so compare with
+        # whitespace collapsed: same flags, subcommands, and help text, free
+        # of layout drift from the differing prog basenames.
+        normalize = lambda text: re.sub(r"\s+", " ", text).strip()  # noqa: E731
+        self.assertEqual(
+            normalize(impl_help.stdout.replace("dev_status_impl", "dev_status")),
+            normalize(launcher_help.stdout),
+        )
+
+        launcher_bogus = run(launcher, "definitely-not-a-subcommand")
+        impl_bogus = run(impl, "definitely-not-a-subcommand")
+        self.assertEqual(launcher_bogus.returncode, 2)
+        self.assertEqual(launcher_bogus.returncode, impl_bogus.returncode)
+        self.assertEqual(
+            normalize(impl_bogus.stderr.replace("dev_status_impl", "dev_status")),
+            normalize(launcher_bogus.stderr),
+        )
 
 
 if __name__ == "__main__":

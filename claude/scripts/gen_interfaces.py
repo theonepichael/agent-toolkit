@@ -82,6 +82,12 @@ SCRIPTS_DIR = "claude/scripts"
 ROOT_ENTRYPOINTS = ("install.py", "depart.py", "scripts/sync_from_dotfiles.py")
 OUTPUT_NAME = "INTERFACES.md"
 
+# A thin launcher names its implementation module with this module-level
+# assignment; see :func:`resolve_script_source`.
+_IMPL_MODULE_RE = re.compile(
+    r'^_IMPL_MODULE\s*=\s*"([A-Za-z_][A-Za-z0-9_]*)"', re.MULTILINE
+)
+
 PREAMBLE = """\
 Scope: `claude/`, `copilot/`, `opencode/`, `agy/`, `pi/`, the shared scripts under
 `claude/scripts/` that `links.toml` installs into `~/.claude/scripts/`, and the
@@ -1079,6 +1085,23 @@ def find_tests(module: Path, repo_root: Path) -> list[str]:
     return sorted(found)
 
 
+def resolve_script_source(path: Path) -> tuple[Path, str]:
+    """Resolve the source that documents ``path``, following a thin launcher.
+
+    A launcher script keeps its identity — its path, shebang, executable
+    bit, ``links.toml`` entry, and test coverage — but none of the
+    interface facts; those live in the sibling implementation module it
+    names with a module-level ``_IMPL_MODULE = "<stem>"`` assignment.
+    Scripts without the marker resolve to themselves.
+    """
+    source = path.read_text(encoding="utf-8")
+    match = _IMPL_MODULE_RE.search(source)
+    if match is None:
+        return path, source
+    impl_path = path.parent / f"{match.group(1)}.py"
+    return impl_path, impl_path.read_text(encoding="utf-8")
+
+
 def analyze_module(
     path: Path,
     repo_root: Path,
@@ -1086,8 +1109,8 @@ def analyze_module(
     links: LinkTable,
 ) -> ModuleInterface:
     """Parse one script and collect every statically visible interface fact."""
-    source = path.read_text(encoding="utf-8")
-    tree = ast.parse(source, filename=str(path))
+    source_path, source = resolve_script_source(path)
+    tree = ast.parse(source, filename=str(source_path))
     module_doc = ast.get_docstring(tree) or ""
     relpath = path.relative_to(repo_root).as_posix()
     cli = extract_cli(tree, first_paragraph(module_doc))
@@ -1634,11 +1657,22 @@ def load_contract_fingerprints(repo_root: Path) -> dict[str, list[str]]:
 
 
 def load_repo_modules(repo_root: Path, links: LinkTable) -> list[ModuleInterface]:
-    """Parse every shared script under ``SCRIPTS_DIR`` into a ``ModuleInterface``."""
+    """Parse every shared script under ``SCRIPTS_DIR`` into a ``ModuleInterface``.
+
+    A thin launcher's implementation module (the sibling named by the
+    launcher's ``_IMPL_MODULE`` marker) is followed from the launcher's
+    entry rather than documented as its own script.
+    """
     script_dir = repo_root / SCRIPTS_DIR
-    modules_paths = sorted(
+    all_paths = sorted(
         path for path in script_dir.glob("*.py") if not path.name.startswith("test_")
     )
+    impl_followed: set[str] = set()
+    for path in all_paths:
+        resolved, _ = resolve_script_source(path)
+        if resolved != path:
+            impl_followed.add(resolved.name)
+    modules_paths = [path for path in all_paths if path.name not in impl_followed]
     siblings = {path.stem for path in script_dir.glob("*.py")}
     return [analyze_module(path, repo_root, siblings, links) for path in modules_paths]
 

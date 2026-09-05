@@ -346,6 +346,7 @@ gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources.
   - `render_link_targets(targets: list[LinkTarget]) -> str` — Render a source's install destinations as one comma-joined phrase.
   - `read_frontmatter(path: Path) -> dict[str, str]` — Read a markdown file's leading ``---`` frontmatter as flat key/value pairs.
   - `find_tests(module: Path, repo_root: Path) -> list[str]` — Find test modules covering ``module``, by filename and by import.
+  - `resolve_script_source(path: Path) -> tuple[Path, str]` — Resolve the source that documents ``path``, following a thin launcher.
   - `analyze_module(path: Path, repo_root: Path, siblings: set[str], links: LinkTable) -> ModuleInterface` — Parse one script and collect every statically visible interface fact.
   - `inline(text: str) -> str` — Flatten text to a single line safe to drop into a markdown bullet.
   - `render_cli(module: ModuleInterface, lines: list[str]) -> None` — Append the CLI section for one module.

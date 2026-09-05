@@ -259,7 +259,7 @@ def allowlist_problems(
 
 def real_cli_leaves() -> set[tuple[str, ...]]:
     """Leaf subcommand paths of dev_status.py, via gen_interfaces' parser."""
-    source = DEV_STATUS_PATH.read_text(encoding="utf-8")
+    _, source = gi.resolve_script_source(DEV_STATUS_PATH)
     tree = ast.parse(source)
     spec = gi.extract_cli(tree, ast.get_docstring(tree) or "")
     assert spec is not None, (
