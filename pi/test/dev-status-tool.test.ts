@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import {
+import devStatusExtension, {
   assertFields,
   assertNotNumericIdentity,
   buildArgv,
@@ -217,3 +217,55 @@ describe("buildArgv", () => {
 // exported type shape without needing a live Pi session.
 const _typeSurface: DevStatusParams = { action: "render" };
 void _typeSurface;
+
+describe("devStatusExtension execute", () => {
+  test("passes restored cwd from branch to pi.exec", async () => {
+    let capturedOptions: any;
+    let toolDef: any;
+    const mockPi = {
+      registerTool: (_def: any) => {
+        toolDef = _def;
+      },
+      exec: async (_cmd: string, _argv: string[], options: any) => {
+        capturedOptions = options;
+        return { code: 0, stdout: "ok", stderr: "" };
+      },
+    } as any;
+    devStatusExtension(mockPi);
+
+    const mockCtx = {
+      cwd: "/launch/dir",
+      sessionManager: {
+        getBranch: () => [{ type: "custom", customType: "cwd-change", data: { cwd: "/tmp" } }],
+      },
+    } as any;
+
+    await toolDef.execute("call-1", { action: "render" }, undefined, undefined, mockCtx);
+    expect(capturedOptions.cwd).toBe("/tmp");
+  });
+
+  test("falls back to ctx.cwd when branch has no cwd-change entries", async () => {
+    let capturedOptions: any;
+    let toolDef: any;
+    const mockPi = {
+      registerTool: (_def: any) => {
+        toolDef = _def;
+      },
+      exec: async (_cmd: string, _argv: string[], options: any) => {
+        capturedOptions = options;
+        return { code: 0, stdout: "ok", stderr: "" };
+      },
+    } as any;
+    devStatusExtension(mockPi);
+
+    const mockCtx = {
+      cwd: "/launch/dir",
+      sessionManager: {
+        getBranch: () => [],
+      },
+    } as any;
+
+    await toolDef.execute("call-2", { action: "render" }, undefined, undefined, mockCtx);
+    expect(capturedOptions.cwd).toBe("/launch/dir");
+  });
+});

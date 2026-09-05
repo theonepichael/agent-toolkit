@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { assertFields, buildArgv, type GrillParams } from "../extensions/grill-tool";
+import grillExtension, {
+  assertFields,
+  buildArgv,
+  type GrillParams,
+} from "../extensions/grill-tool";
 
 describe("assertFields", () => {
   test("new requires a payload carrying a topic", () => {
@@ -206,5 +210,57 @@ describe("buildArgv", () => {
       expect(argv.length, `action ${action}`).toBeGreaterThan(0);
       expect(argv[0], `action ${action}`).not.toContain("_");
     }
+  });
+});
+
+describe("grillExtension execute", () => {
+  test("passes restored cwd from branch to pi.exec", async () => {
+    let capturedOptions: any;
+    let toolDef: any;
+    const mockPi = {
+      registerTool: (_def: any) => {
+        toolDef = _def;
+      },
+      exec: async (_cmd: string, _argv: string[], options: any) => {
+        capturedOptions = options;
+        return { code: 0, stdout: "ok", stderr: "" };
+      },
+    } as any;
+    grillExtension(mockPi);
+
+    const mockCtx = {
+      cwd: "/launch/dir",
+      sessionManager: {
+        getBranch: () => [{ type: "custom", customType: "cwd-change", data: { cwd: "/tmp" } }],
+      },
+    } as any;
+
+    await toolDef.execute("call-1", { action: "list" }, undefined, undefined, mockCtx);
+    expect(capturedOptions.cwd).toBe("/tmp");
+  });
+
+  test("falls back to ctx.cwd when branch has no cwd-change entries", async () => {
+    let capturedOptions: any;
+    let toolDef: any;
+    const mockPi = {
+      registerTool: (_def: any) => {
+        toolDef = _def;
+      },
+      exec: async (_cmd: string, _argv: string[], options: any) => {
+        capturedOptions = options;
+        return { code: 0, stdout: "ok", stderr: "" };
+      },
+    } as any;
+    grillExtension(mockPi);
+
+    const mockCtx = {
+      cwd: "/launch/dir",
+      sessionManager: {
+        getBranch: () => [],
+      },
+    } as any;
+
+    await toolDef.execute("call-2", { action: "list" }, undefined, undefined, mockCtx);
+    expect(capturedOptions.cwd).toBe("/launch/dir");
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { assertFields, buildArgv } from "../extensions/standup-tool";
+import standupExtension, { assertFields, buildArgv } from "../extensions/standup-tool";
 
 describe("assertFields", () => {
   test("fetch needs nothing", () => {
@@ -36,5 +36,57 @@ describe("buildArgv", () => {
       "--date",
       "2026-08-30",
     ]);
+  });
+});
+
+describe("standupExtension execute", () => {
+  test("passes restored cwd from branch to pi.exec", async () => {
+    let capturedOptions: any;
+    let toolDef: any;
+    const mockPi = {
+      registerTool: (_def: any) => {
+        toolDef = _def;
+      },
+      exec: async (_cmd: string, _argv: string[], options: any) => {
+        capturedOptions = options;
+        return { code: 0, stdout: "ok", stderr: "" };
+      },
+    } as any;
+    standupExtension(mockPi);
+
+    const mockCtx = {
+      cwd: "/launch/dir",
+      sessionManager: {
+        getBranch: () => [{ type: "custom", customType: "cwd-change", data: { cwd: "/tmp" } }],
+      },
+    } as any;
+
+    await toolDef.execute("call-1", { action: "fetch" }, undefined, undefined, mockCtx);
+    expect(capturedOptions.cwd).toBe("/tmp");
+  });
+
+  test("falls back to ctx.cwd when branch has no cwd-change entries", async () => {
+    let capturedOptions: any;
+    let toolDef: any;
+    const mockPi = {
+      registerTool: (_def: any) => {
+        toolDef = _def;
+      },
+      exec: async (_cmd: string, _argv: string[], options: any) => {
+        capturedOptions = options;
+        return { code: 0, stdout: "ok", stderr: "" };
+      },
+    } as any;
+    standupExtension(mockPi);
+
+    const mockCtx = {
+      cwd: "/launch/dir",
+      sessionManager: {
+        getBranch: () => [],
+      },
+    } as any;
+
+    await toolDef.execute("call-2", { action: "fetch" }, undefined, undefined, mockCtx);
+    expect(capturedOptions.cwd).toBe("/launch/dir");
   });
 });

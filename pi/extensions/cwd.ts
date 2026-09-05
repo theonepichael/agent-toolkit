@@ -66,7 +66,10 @@ export function getOriginalCwd(): string {
   return originalCwd;
 }
 
-export function getEffectiveCwd(): string {
+export function getEffectiveCwd(ctx?: ExtensionContext): string {
+  if (ctx) {
+    return restoreCwdFromBranch(ctx, ctx.cwd);
+  }
   return effectiveCwd;
 }
 
@@ -142,9 +145,12 @@ function resolveSearchDir(
   let searchDir: string;
   let partialName: string;
   if (isTrailingSlash || expanded === "" || expanded === ".") {
-    let dirPath = expanded.slice(0, -1) || ".";
-    dirPath = expandTilde(dirPath);
-    searchDir = isAbsolute(dirPath) ? dirPath : resolve(baseCwd, dirPath);
+    const trimmed = expanded.replace(/\/+$/, "");
+    if (trimmed === "") {
+      searchDir = isTrailingSlash ? "/" : baseCwd;
+    } else {
+      searchDir = isAbsolute(trimmed) ? trimmed : resolve(baseCwd, trimmed);
+    }
     partialName = "";
   } else {
     searchDir = isAbsolute(expanded)
@@ -178,18 +184,19 @@ function listMatchingDirs(searchDir: string, partialName: string): string[] | nu
 
 function buildCompletionValue(name: string, searchDir: string, prefix: string): string {
   const expanded = expandTilde(prefix || "");
+  let value: string;
   if (isAbsolute(expanded) || prefix.startsWith("~")) {
-    let value = join(searchDir, name);
+    value = join(searchDir, name);
     if (prefix.startsWith("~") && process.env.HOME) {
       value = value.replace(new RegExp(`^${escapeRegex(process.env.HOME)}`), "~");
     }
-    return value;
+  } else if (expanded.endsWith("/")) {
+    value = prefix + name;
+  } else {
+    const dirPart = dirname(prefix || "");
+    value = dirPart === "." ? name : join(dirPart, name);
   }
-  if (expanded.endsWith("/")) {
-    return prefix + name;
-  }
-  const dirPart = dirname(prefix || "");
-  return dirPart === "." ? name : join(dirPart, name);
+  return value.endsWith("/") ? value : `${value}/`;
 }
 
 export function getDirectoryCompletions(
@@ -202,7 +209,7 @@ export function getDirectoryCompletions(
   const matches = listMatchingDirs(searchDir, partialName);
   if (!matches || matches.length === 0) return null;
   return matches.map((name) => ({
-    label: name,
+    label: name.endsWith("/") ? name : `${name}/`,
     value: buildCompletionValue(name, searchDir, prefix),
   }));
 }

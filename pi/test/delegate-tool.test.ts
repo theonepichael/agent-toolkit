@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import {
+import delegateExtension, {
   assertFields,
   buildArgv,
   extractFinalText,
@@ -166,5 +166,100 @@ describe("extractFinalText", () => {
 
   test("empty output yields an explicit marker, never an empty string", () => {
     expect(extractFinalText("opencode", "")).toMatch(/no output/i);
+  });
+});
+
+describe("delegateExtension execute", () => {
+  test("passes restored cwd from branch to pi.exec when cwd omitted", async () => {
+    let capturedOptions: any;
+    let toolDef: any;
+    const mockPi = {
+      registerTool: (_def: any) => {
+        toolDef = _def;
+      },
+      exec: async (_cmd: string, _argv: string[], options: any) => {
+        capturedOptions = options;
+        return { code: 0, stdout: '{"response":"done"}', stderr: "" };
+      },
+    } as any;
+    delegateExtension(mockPi);
+
+    const mockCtx = {
+      cwd: "/launch/dir",
+      sessionManager: {
+        getBranch: () => [{ type: "custom", customType: "cwd-change", data: { cwd: "/tmp" } }],
+      },
+    } as any;
+
+    await toolDef.execute(
+      "call-1",
+      { harness: "agy", prompt: "hello" },
+      undefined,
+      undefined,
+      mockCtx,
+    );
+    expect(capturedOptions.cwd).toBe("/tmp");
+  });
+
+  test("resolves relative cwd against restored cwd from branch", async () => {
+    let capturedOptions: any;
+    let toolDef: any;
+    const mockPi = {
+      registerTool: (_def: any) => {
+        toolDef = _def;
+      },
+      exec: async (_cmd: string, _argv: string[], options: any) => {
+        capturedOptions = options;
+        return { code: 0, stdout: '{"response":"done"}', stderr: "" };
+      },
+    } as any;
+    delegateExtension(mockPi);
+
+    const mockCtx = {
+      cwd: "/launch/dir",
+      sessionManager: {
+        getBranch: () => [{ type: "custom", customType: "cwd-change", data: { cwd: "/tmp" } }],
+      },
+    } as any;
+
+    await toolDef.execute(
+      "call-2",
+      { harness: "agy", prompt: "hello", cwd: "subdir" },
+      undefined,
+      undefined,
+      mockCtx,
+    );
+    expect(capturedOptions.cwd).toBe("/tmp/subdir");
+  });
+
+  test("falls back to ctx.cwd when branch has no cwd-change entries", async () => {
+    let capturedOptions: any;
+    let toolDef: any;
+    const mockPi = {
+      registerTool: (_def: any) => {
+        toolDef = _def;
+      },
+      exec: async (_cmd: string, _argv: string[], options: any) => {
+        capturedOptions = options;
+        return { code: 0, stdout: '{"response":"done"}', stderr: "" };
+      },
+    } as any;
+    delegateExtension(mockPi);
+
+    const mockCtx = {
+      cwd: "/launch/dir",
+      sessionManager: {
+        getBranch: () => [],
+      },
+    } as any;
+
+    await toolDef.execute(
+      "call-3",
+      { harness: "agy", prompt: "hello" },
+      undefined,
+      undefined,
+      mockCtx,
+    );
+    expect(capturedOptions.cwd).toBe("/launch/dir");
   });
 });

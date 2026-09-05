@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
+import { getEffectiveCwd } from "./cwd";
 
 // Registers `delegate` -- hand a task to another harness's CLI and get back
 // only its conclusion, with the full transcript on disk.
@@ -253,7 +254,7 @@ export default function (pi: ExtensionAPI) {
         }),
       ),
     }),
-    async execute(_toolCallId, params, signal) {
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       const typed = params as DelegateParams;
 
       assertFields(typed);
@@ -264,11 +265,18 @@ export default function (pi: ExtensionAPI) {
         `${typed.harness}-${randomUUID().slice(0, 8)}.log`,
       );
 
+      const effectiveCwd = ctx ? getEffectiveCwd(ctx) : undefined;
+      const resolvedCwd = typed.cwd
+        ? effectiveCwd
+          ? resolve(effectiveCwd, typed.cwd)
+          : typed.cwd
+        : effectiveCwd;
+
       const started = Date.now();
       const result = await pi.exec(command, argv, {
         signal,
         timeout: (typed.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS) * 1000,
-        ...(typed.cwd ? { cwd: typed.cwd } : {}),
+        ...(resolvedCwd ? { cwd: resolvedCwd } : {}),
       });
       const seconds = Math.round((Date.now() - started) / 1000);
 

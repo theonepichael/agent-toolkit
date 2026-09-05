@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
+import { getEffectiveCwd } from "./cwd";
 
 // Wraps claude/scripts/second_opinion.py, following the pattern set by
 // dev-status-tool.ts (see ~/.claude/data/grill/pi-tool-dev-status-spec.md).
@@ -131,14 +132,18 @@ export default function (pi: ExtensionAPI) {
         }),
       ),
     }),
-    async execute(_toolCallId, params, signal) {
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       const typed = params as SecondOpinionParams;
 
       assertFields(typed.action, typed);
 
       const argv = buildArgv(typed.action, typed);
+      const cwd = ctx ? getEffectiveCwd(ctx) : undefined;
 
-      const result = await pi.exec("python3", [SECOND_OPINION_PATH, ...argv], { signal });
+      const result = await pi.exec("python3", [SECOND_OPINION_PATH, ...argv], {
+        signal,
+        ...(cwd ? { cwd } : {}),
+      });
 
       if (result.code !== 0) {
         throw new Error(

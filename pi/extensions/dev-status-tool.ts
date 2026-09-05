@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
+import { getEffectiveCwd } from "./cwd";
 
 // Wraps claude/scripts/dev_status.py -- see
 // ~/.claude/data/grill/pi-tool-dev-status-spec.md for the full design and
@@ -388,13 +389,14 @@ export default function (pi: ExtensionAPI) {
         }),
       ),
     }),
-    async execute(_toolCallId, params, signal) {
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       const typed = params as DevStatusParams;
 
       assertNotNumericIdentity(typed.action, typed);
       assertFields(typed.action, typed);
 
       const argv = buildArgv(typed.action, typed);
+      const cwd = ctx ? getEffectiveCwd(ctx) : undefined;
 
       // pi.exec's ExecOptions has no `env` field (confirmed against the
       // real, installed dist/core/exec.d.ts -- {signal?, timeout?, cwd?}
@@ -403,7 +405,7 @@ export default function (pi: ExtensionAPI) {
       const result = await pi.exec(
         "env",
         ["DEVSTATUS_AGENT=1", "python3", DEV_STATUS_PATH, ...argv],
-        { signal },
+        { signal, ...(cwd ? { cwd } : {}) },
       );
 
       if (result.code !== 0) {

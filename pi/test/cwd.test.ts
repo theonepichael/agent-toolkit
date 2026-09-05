@@ -6,6 +6,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import cwdExtension, {
   bashSingleQuote,
   expandTilde,
+  getDirectoryCompletions,
   getEffectiveCwd,
   getOriginalCwd,
   resetEffectiveCwd,
@@ -267,5 +268,62 @@ describe("cwdExtension tool_call interception & slash command", () => {
     // When no branch entries match
     const emptyCtx = { sessionManager: { getBranch: () => [] } } as any;
     expect(restoreCwdFromBranch(emptyCtx, "/fallback")).toBe("/fallback");
+  });
+
+  test("getEffectiveCwd with ctx restores from branch or falls back to ctx.cwd", () => {
+    const validDir = subDir;
+    const mockCtx = {
+      cwd: "/initial/launch",
+      sessionManager: {
+        getBranch: () => [{ type: "custom", customType: "cwd-change", data: { cwd: validDir } }],
+      },
+    } as any;
+
+    expect(getEffectiveCwd(mockCtx)).toBe(validDir);
+
+    const emptyCtx = {
+      cwd: "/initial/launch",
+      sessionManager: { getBranch: () => [] },
+    } as any;
+
+    expect(getEffectiveCwd(emptyCtx)).toBe("/initial/launch");
+  });
+
+  describe("getDirectoryCompletions", () => {
+    test("root '/' completion resolves root directories, not baseCwd", () => {
+      const completions = getDirectoryCompletions("/", tempDir);
+      expect(completions).not.toBeNull();
+      // Should not contain tempDir's entries
+      expect(completions!.some((c) => c.value.includes("pi-cwd-test-"))).toBe(false);
+      // Should contain root directories like /etc/, /usr/, or /home/
+      expect(
+        completions!.some(
+          (c) => c.value === "/home/" || c.value === "/etc/" || c.value === "/usr/",
+        ),
+      ).toBe(true);
+      // Directory labels should have trailing slashes
+      expect(completions!.every((c) => c.label.endsWith("/"))).toBe(true);
+    });
+
+    test("trailing slash on directory with subdirectories returns children with trailing slashes", () => {
+      const childDir = join(subDir, "child");
+      mkdirSync(childDir);
+
+      const completions = getDirectoryCompletions("subdir/", tempDir);
+      expect(completions).not.toBeNull();
+      expect(completions!).toContainEqual({
+        label: "child/",
+        value: "subdir/child/",
+      });
+    });
+
+    test("trailing slash on leaf directory with no subdirectories returns null (completion done, avoids loop)", () => {
+      const leafDir = join(tempDir, "leaf");
+      mkdirSync(leafDir);
+      writeFileSync(join(leafDir, "file.txt"), "leaf-content");
+
+      const completions = getDirectoryCompletions("leaf/", tempDir);
+      expect(completions).toBeNull();
+    });
   });
 });
