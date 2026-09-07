@@ -132,7 +132,13 @@ class StatePoller:
             )
 
 
-def create_app(config: Config, herdr: HerdrClient) -> web.Application:
+def create_app(
+    config: Config, herdr: HerdrClient, version: str = "unknown"
+) -> web.Application:
+    """`version` is surfaced on /api/health so a deploy that only updates one
+    half (bridge restarted but Fedora's static PWA assets left stale, or vice
+    versa) is visible at a glance instead of only reproducible by hitting a
+    live symptom."""
     token = load_token(config.token_path)
 
     async def check_auth(request: web.Request) -> web.StreamResponse | None:
@@ -219,7 +225,7 @@ def create_app(config: Config, herdr: HerdrClient) -> web.Application:
             herdr_ok = True
         except HerdrError:
             herdr_ok = False
-        return web.json_response({"ok": True, "herdr": herdr_ok})
+        return web.json_response({"ok": True, "herdr": herdr_ok, "version": version})
 
     async def events(request: web.Request) -> web.StreamResponse:
         if len(poller.subscribers) >= config.sse_client_cap:

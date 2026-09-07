@@ -1,0 +1,33 @@
+# herdr remote — Caddy site on the Fedora box (theon@fedora).
+# Install as /etc/caddy/Caddyfile.d/herdr-remote.caddyfile (the main
+# Caddyfile only `import`s that glob — any other extension loads silently
+# as nothing, no error, the site just never serves). Serves the PWA static
+# assets unauthenticated (they contain no secrets — the token is entered at
+# runtime) and proxies /api/* to the workstation bridge over the tailnet.
+# Auth is enforced by the bridge itself (single enforcement point — see the
+# grill decision record), so Caddy does none here.
+#
+# SSE must not be buffered at the proxy: flush_interval -1 disables Caddy's
+# response buffering.
+#
+# `bind 127.0.0.1` matters beyond restricting the socket to loopback: an
+# address key with a host part ("127.0.0.1:8766") makes Caddy match on the
+# Host header rather than just the port, so any real client whose Host
+# isn't literally "127.0.0.1:8766" (every real request, including
+# tailscale's) would otherwise silently fall through to no matching site —
+# a 200 with an empty body, no error logged anywhere.
+:8766 {
+	bind 127.0.0.1
+	root * /var/www/herdr-remote
+
+	handle /api/* {
+		reverse_proxy http://100.86.58.36:8765 {
+			flush_interval -1
+		}
+	}
+
+	handle {
+		try_files {path} /index.html
+		file_server
+	}
+}

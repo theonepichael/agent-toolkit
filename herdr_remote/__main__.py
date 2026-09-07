@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import subprocess
 import sys
 from pathlib import Path
 
@@ -19,6 +20,25 @@ from .config import ConfigError, generate_token, load_config, load_token
 from .herdr_client import HerdrClient
 
 log = logging.getLogger("herdr_remote.main")
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _repo_version() -> str:
+    """Best-effort git sha for /api/health — a fresh checkout without a .git
+    dir (or without git installed) degrades to "unknown" rather than
+    crashing the bridge over a diagnostic feature."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=True,
+        )
+        return result.stdout.strip() or "unknown"
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -52,7 +72,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     herdr = HerdrClient(config.socket_path)
-    app = create_app(config, herdr)
+    app = create_app(config, herdr, version=_repo_version())
     log.info(
         "bridge listening on %s:%s (herdr socket %s)",
         config.bind_host,

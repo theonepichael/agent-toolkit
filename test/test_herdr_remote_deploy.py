@@ -15,6 +15,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 SERVICE = REPO_ROOT / "herdr_remote" / "deploy" / "herdr-remote-bridge.service"
 README = REPO_ROOT / "herdr_remote" / "deploy" / "README.md"
+DEPLOY_SH = REPO_ROOT / "herdr_remote" / "deploy" / "deploy.sh"
 
 TOOLKIT = "%h/Workspace/agent-toolkit"
 
@@ -51,3 +52,30 @@ def test_readme_gen_token_commands_are_cwd_independent() -> None:
     for cmd in module_runs:
         assert "--directory" in cmd, f"cwd-dependent: {cmd.strip()}"
         assert "--project" not in cmd, f"cwd-dependent: {cmd.strip()}"
+
+
+def test_deploy_script_restarts_and_verifies_the_workstation_bridge() -> None:
+    # A deploy that only syncs the Fedora-side PWA assets (and leaves the
+    # workstation bridge running old code) is the exact bug this guards
+    # against: both halves must move together, in one script run.
+    text = DEPLOY_SH.read_text()
+    assert "systemctl --user restart herdr-remote-bridge.service" in text
+    assert "/api/health" in text
+    assert re.search(r"^\s*exit 1\s*$", text, re.MULTILINE), (
+        "deploy.sh must fail loudly if the bridge does not come back healthy"
+    )
+    # /api/health is authed like every other /api/* route (only static
+    # assets are not) — a health check without a bearer token always 401s.
+    health_calls = [ln for ln in text.splitlines() if "curl" in ln and "HEALTH" in ln]
+    assert health_calls
+    assert all("Authorization" in ln for ln in health_calls), health_calls
+
+
+def test_deploy_script_installs_caddy_snippet_with_loadable_extension() -> None:
+    # Caddy's main Caddyfile only imports Caddyfile.d/*.caddyfile — a
+    # snippet installed with any other extension loads silently as nothing,
+    # no error, the site just never serves.
+    text = DEPLOY_SH.read_text()
+    installs = re.findall(r"Caddyfile\.d/[\w.-]+", text)
+    assert installs, "deploy.sh lost its Caddyfile.d install target"
+    assert all(name.endswith(".caddyfile") for name in installs), installs
