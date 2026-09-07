@@ -106,6 +106,11 @@ BLOCKLIST: tuple[str, ...] = (
     "shell/.poshtheme.omp.json",
     "test/test_shell_decoupling.py",
     "test/test_watchcommit_repo_default.py",
+    # Removed deliberately in cdd9d54 together with dev_status_sync.py
+    # itself (the sync of dev_status into the toolkit was retired); the
+    # toolkit-side removal is intentional, so dotfiles' continued edits
+    # to its own copy must never be replayed here.
+    "claude/scripts/test_dev_status_sync.py",
 )
 
 # Modules/files a copied path must not reference at TIP — catches a copy
@@ -135,6 +140,11 @@ EXCLUDE: tuple[str, ...] = (
     # githooks-global/lib/no-commit-on-main.sh, IS shared and syncs.)
     "scripts/watchcommit.py",
     "test/test_no_commit_on_main.py",
+    # Tests dotfiles' own links.toml coverage for claude/commands/ --
+    # never in this toolkit's history; the toolkit covers its own command
+    # links in its own suite. Dotfiles-only by construction, not a
+    # toolkit-side deletion.
+    "test/test_claude_command_links.py",
 )
 
 # Paths that exist at the same relative path in BOTH checkouts with
