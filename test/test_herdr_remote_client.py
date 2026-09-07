@@ -13,8 +13,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 import pytest  # noqa: E402
-from herdr_remote.herdr_client import HerdrClient, HerdrError  # noqa: E402
 
+from herdr_remote.herdr_client import HerdrClient, HerdrError  # noqa: E402
 from test.fake_herdr import FakeHerdrServer, sample_agents  # noqa: E402
 
 
@@ -30,7 +30,8 @@ async def test_call_sends_envelope_and_parses_result(fake_server):
     client = HerdrClient(fake_server.socket_path)
     result = await client.call("agent.list", {})
     assert result["type"] == "agent_list"
-    assert [a["name"] for a in result["agents"]] == ["worker-one", "worker-two"]
+    pi_names = [a["name"] for a in result["agents"] if a["agent"] == "pi"]
+    assert pi_names == ["worker-one", "worker-two"]
     assert fake_server.requests == [
         {"id": client.last_id, "method": "agent.list", "params": {}}
     ]
@@ -49,7 +50,7 @@ async def test_read_returns_recent_output(fake_server):
     result = await client.call(
         "agent.read", {"target": "worker-one", "source": "recent"}
     )
-    assert result["text"] == "output of worker-one"
+    assert result["read"]["text"] == "output of worker-one"
 
 
 async def test_read_unknown_agent_is_not_found(fake_server):

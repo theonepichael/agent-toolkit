@@ -107,9 +107,46 @@ async def test_agents_lists_live_herdr_state(client):
     resp = await client.get("/api/agents", headers=AUTH)
     assert resp.status == 200
     body = await resp.json()
-    names = [a["name"] for a in body["agents"]]
-    assert names == ["worker-one", "worker-two"]
-    assert body["agents"][0]["agent_status"] == "working"
+    by_name = {a["name"]: a for a in body["agents"] if a["agent"] == "pi"}
+    assert set(by_name) == {"worker-one", "worker-two"}
+    assert by_name["worker-one"]["agent_status"] == "working"
+
+
+async def test_agents_with_no_herdr_name_get_unique_ids(client):
+    # claude-type agents have no herdr `name` at all; before the fix, both
+    # fell back to the literal string "claude" and collided.
+    resp = await client.get("/api/agents", headers=AUTH)
+    body = await resp.json()
+    claude_agents = [a for a in body["agents"] if a["agent"] == "claude"]
+    assert len(claude_agents) == 2
+    assert all(
+        a["name"] == "claude" for a in claude_agents
+    )  # display collides, id must not
+    ids = {a["id"] for a in claude_agents}
+    assert len(ids) == 2
+    assert ids == {"w9:p1", "w9:p2"}
+
+
+async def test_read_and_prompt_disambiguate_same_type_agents(client):
+    # Before the fix, both claude-type agents resolved to the same target
+    # ("claude") and every read/prompt against either one was ambiguous.
+    r1 = await client.get("/api/agents/w9:p1/read", headers=AUTH)
+    r2 = await client.get("/api/agents/w9:p2/read", headers=AUTH)
+    assert r1.status == 200
+    assert r2.status == 200
+    body1 = await r1.json()
+    body2 = await r2.json()
+    assert body1["output"] == "output of w9:p1"
+    assert body2["output"] == "output of w9:p2"
+
+    resp = await client.post(
+        "/api/agents/w9:p2/prompt", headers=AUTH, json={"text": "hi"}
+    )
+    assert resp.status == 200  # w9:p2 is idle
+    resp = await client.post(
+        "/api/agents/w9:p1/prompt", headers=AUTH, json={"text": "hi"}
+    )
+    assert resp.status == 409  # w9:p1 is working — proves it's a distinct target
 
 
 async def test_agent_read_returns_output(client):
@@ -172,7 +209,8 @@ async def test_sse_initial_state_then_change_then_keepalive(client, fake_server)
 
     name, data = await _next_sse_event(resp)
     assert name == "state"
-    assert [a["name"] for a in data["agents"]] == ["worker-one", "worker-two"]
+    pi_names = [a["name"] for a in data["agents"] if a["agent"] == "pi"]
+    assert pi_names == ["worker-one", "worker-two"]
 
     # A status change on the fake herdr must produce a fresh state event.
     fake_server.set_status("worker-one", "idle")
