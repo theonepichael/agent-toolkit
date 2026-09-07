@@ -146,8 +146,7 @@ usage: ./install.sh --harness=<claude,copilot,opencode,agy,pi>[,...] [--profile=
               --rollback concern (reverses every run recorded in the
               history file, not just the most recent one) or manual cleanup.
   --profile   personal (default) or work. Controls machine-level concerns:
-              excludes every personal-only managed service (watchcommit,
-              opencode-skills-sync), excludes personal API-key setup, seeds
+              excludes personal API-key setup, seeds
               tightened settings where a profile-specific variant exists
               (settings.work.json), and excludes opencode entirely — it is
               never installed on a work machine, regardless of --harness.
@@ -174,7 +173,7 @@ usage: ./install.sh --harness=<claude,copilot,opencode,agy,pi>[,...] [--profile=
               ~/.local/opt/neovim, what _install_neovim_fallback uses), or
               --wipe deletes it along with everything else here. Packages
               are still never touched. Excludes the
-              macOS watchcommit launchd agent, Rectangle preferences, and
+              macOS Rectangle preferences and
               the Caps Lock→Escape remap — no clean filesystem-delete
               equivalent for those. Requires --rollback.
   --force     override the work-profile guard on a machine previously
@@ -1887,11 +1886,6 @@ def install_symlinks(
     """
     _header("==> Symlinking dotfiles...", quiet=ctx.opts.quiet)
 
-    if ctx.opts.profile == "work":
-        cli_common.qprint(
-            "  watchcommit: excluded (work profile)", quiet=ctx.opts.quiet
-        )
-
     for src, dest, _rel, applicable in links:
         if not applicable:
             continue
@@ -2801,20 +2795,6 @@ def _current_user() -> str:
     return os.environ.get("USER") or os.environ.get("LOGNAME") or ""
 
 
-def load_watchcommit_agent(ctx: Context) -> None:
-    """(Re)load watchcommit's launchd agent (macOS, non-work)."""
-    if ctx.opts.profile == "work":
-        return
-    plist = ctx.home / "Library" / "LaunchAgents" / "com.user.watchcommit.plist"
-    if ctx.opts.dry_run:
-        _preview("would (re)load watchcommit launchd agent", quiet=ctx.opts.quiet)
-        return
-    _header("==> Loading watchcommit launchd agent...", quiet=ctx.opts.quiet)
-    run_command(["launchctl", "unload", str(plist)], capture=True)
-    if not run_command(["launchctl", "load", str(plist)]).ok:
-        ctx.reporter.skip("watchcommit agent", "launchctl load failed")
-
-
 # ── macOS extras ──────────────────────────────────────────────────────────────
 
 
@@ -3607,10 +3587,10 @@ def print_summary(
         print("  - Open Karabiner-Elements → grant Input Monitoring + Accessibility")
         print("  - Open Rectangle → grant Accessibility permission")
     # No claude-login line here: watchcommit — the consumer that line was
-    # written for — is dotfiles-only (empty MANAGED_SERVICES above,
-    # load_watchcommit_agent never called), so agent-toolkit's install has
-    # nothing that auto-consumes claude credentials. Any other repo whose
-    # install needs a login step prints its own manual step.
+    # written for — is dotfiles-only (empty MANAGED_SERVICES above, and
+    # this repo carries no watchcommit loader at all), so agent-toolkit's
+    # install has nothing that auto-consumes claude credentials. Any other
+    # repo whose install needs a login step prints its own manual step.
     if ctx.opts.profile == "work":
         print("  - ~/.secrets is sourced if present — for work-issued tokens only;")
         print("    do NOT put a personal ANTHROPIC_API_KEY on this machine")

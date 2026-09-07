@@ -12,6 +12,7 @@ still owns the slow tier: real package managers, real service enablement.
 Requires Python 3.12+.
 """
 
+import inspect
 import io
 import json
 import os
@@ -5171,7 +5172,6 @@ def test_main_fails_loudly_when_harness_binary_missing(home, monkeypatch, capsys
     assert "pass --force-harness" in err
 
 
-
 # ── print_summary's manual steps (watchcommit manual-step leak) ──────────────
 
 
@@ -5191,3 +5191,35 @@ def test_manual_steps_never_name_watchcommit(home, capsys):
         assert "Manual steps:" in out, f"summary broken for {profile}"
         assert "watchcommit" not in out, f"watchcommit named for {profile}"
         assert "claude login" not in out, f"claude-login step for {profile}"
+
+
+def test_symlink_step_output_never_names_watchcommit(home, capsys):
+    """install_symlinks must not print a watchcommit exclusion line.
+
+    The work-profile branch carried 'watchcommit: excluded (work
+    profile)' from the dotfiles snapshot, but this repo never installs
+    watchcommit (empty MANAGED_SERVICES, scripts pruned per
+    sync_from_dotfiles' BLOCKLIST/EXCLUDE) — claiming to exclude it is
+    the same leak class as the manual-step message above.
+    """
+    for profile in ("personal", "work"):
+        ctx = make_ctx(home, harnesses=("claude",), profile=profile)
+        install.install_symlinks(ctx, [])
+        out = capsys.readouterr().out
+        assert "watchcommit" not in out, f"watchcommit named for {profile}"
+
+
+def test_no_watchcommit_named_callables_on_install_module():
+    """No install-module callable may carry a watchcommit name.
+
+    load_watchcommit_agent (macOS launchd loader) shipped as dead code —
+    defined but never called, because watchcommit is dotfiles-only. The
+    guard keeps any successor remnant out: a watchcommit-named function
+    here has no caller by construction.
+    """
+    watchcommit_fns = [
+        name
+        for name, obj in vars(install).items()
+        if inspect.isfunction(obj) and "watchcommit" in name.lower()
+    ]
+    assert watchcommit_fns == [], f"watchcommit-named callables: {watchcommit_fns}"
