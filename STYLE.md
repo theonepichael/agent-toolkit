@@ -27,7 +27,7 @@ CLI ergonomics
 Config & secrets
 - Config: JSON, under the owning tool's data directory — e.g. ~/.claude/data/standup/config.json, with backlog state in ~/.claude/data/backlog/. Harness settings stay in their tool-owned files (~/.claude/settings.json, ~/.config/opencode/opencode.jsonc).
 - Prefer JSON over YAML for new config: the standard library parses JSON, and YAML would pull in a third-party dependency the harness rule above forbids.
-- XDG paths where a tool writes transient state: honor $XDG_STATE_HOME, falling back to ~/.local/state (see scripts/watchcommit.py).
+- XDG paths where a tool writes transient state: honor $XDG_STATE_HOME, falling back to ~/.local/state.
 - Precedence: CLI flags > ENV vars > per-user config > system defaults.
 - Secrets: Must never be committed. Use environment variables or system vaults. Add checks in code and tests to avoid accidental logging of secrets. See `.github/SECRET_CHECK.md` for the full handling checklist.
 
