@@ -174,30 +174,45 @@ class CapabilityFixtureTests(unittest.TestCase):
         self.assertIn("AskUserQuestion", text)
         self.assertIn("Cheaper Claude session", text)
         self.assertIn("opencode/GLM-5.2", text)
+        self.assertIn("If the item is already in-progress: STOP immediately", text)
+        self.assertIn("Never attempt a manual PID liveness check", text)
+        self.assertNotIn("If not already in-progress:", text)
 
     def test_backlog_item_copilot(self) -> None:
         text = self._render("backlog-item", "copilot")
         self.assertIn("Cheaper Copilot session", text)
         self.assertIn("A cheaper Copilot model, same machine", text)
         self.assertNotIn("AskUserQuestion", text)
+        self.assertIn("If the item is already in-progress: STOP immediately", text)
+        self.assertIn("Never attempt a manual PID liveness check", text)
+        self.assertNotIn("If not already in-progress:", text)
 
     def test_backlog_item_opencode(self) -> None:
         text = self._render("backlog-item", "opencode")
         self.assertIn("Fresh opencode session", text)
         self.assertIn("`question` tool", text)
         self.assertNotIn("AskUserQuestion", text)
+        self.assertIn("If the item is already in-progress: STOP immediately", text)
+        self.assertIn("Never attempt a manual PID liveness check", text)
+        self.assertNotIn("If not already in-progress:", text)
 
     def test_backlog_item_agy(self) -> None:
         text = self._render("backlog-item", "agy")
         self.assertIn("Cheaper agy session", text)
         self.assertIn("suspend-and-return", text)
         self.assertIn("has no structured multi-choice widget", text)
+        self.assertIn("If the item is already in-progress: STOP immediately", text)
+        self.assertIn("Never attempt a manual PID liveness check", text)
+        self.assertNotIn("If not already in-progress:", text)
 
     def test_backlog_item_pi(self) -> None:
         text = self._render("backlog-item", "pi")
         self.assertIn("Fresh Pi session", text)
         self.assertIn("`delegate` tool", text)
         self.assertIn("dev_status` tool", text)
+        self.assertIn("If the item is already in-progress: STOP immediately", text)
+        self.assertIn("Never attempt a manual PID liveness check", text)
+        self.assertNotIn("If not already in-progress:", text)
 
     # -- make-skill -------------------------------------------------------
 

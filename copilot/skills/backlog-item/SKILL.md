@@ -37,7 +37,17 @@ resolves correctly; a fresh Copilot session's ambient cwd is not guaranteed
 to be the repo root.
 
 ## 2. Start
-If not already in-progress: `dev_status.py start <slug|N>` (`--if-rev <N>` for numeric ids). On a main/master checkout, `start` now refuses (worktree guard) — do step 3 first, then run `start` from inside the fresh worktree.
+If the item is already in-progress: STOP immediately — do not proceed to
+step 3 or touch any worktree. Report the existing claim details (`claimed_by`
+harness, PID, and timestamp from `show`) to the user and ask how to proceed.
+Never attempt a manual PID liveness check (e.g. `ps -p <pid>`) to decide
+whether to take over — `dev_status start`'s claim-collision refusal is the
+authoritative enforcement path, and `--force` (`-f`) is used only on explicit
+user instruction.
+
+Otherwise (item is open): run `dev_status.py start <slug|N>` (`--if-rev <N>`
+for numeric ids). On a main/master checkout, `start` now refuses (worktree
+guard) — do step 3 first, then run `start` from inside the fresh worktree.
 
 ## 3. Branch
 related_files names exactly one project repo → worktree it per the shared instructions file's Git section: `git -C <repo> worktree add ../<repo-name>-<slug> -b <slug>`. Reuse a worktree this session already made for this item instead of a second one. Multiple repos, or none: ask which repo — never guess.

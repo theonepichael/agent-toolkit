@@ -42,7 +42,19 @@ non-quiet `render` immediately before each mutating call to read the
 current rev for `--if-rev` (CLAUDE.md's Backlog section).
 
 ## 2. Start
-If not already in-progress: call the `dev_status` tool with `action: "start", slug: "<resolved slug>"` (or the bash fallback named in step 1). On a main/master checkout, `start` now refuses (worktree guard), and the typed tool has no `--allow-main` escape hatch — do step 3 first, then run `start` from inside the fresh worktree.
+If the item is already in-progress: STOP immediately — do not proceed to
+step 3 or touch any worktree. Report the existing claim details (`claimed_by`
+harness, PID, and timestamp from `show`) to the user and ask how to proceed.
+Never attempt a manual PID liveness check (e.g. `ps -p <pid>`) to decide
+whether to take over — `dev_status start`'s claim-collision refusal is the
+authoritative enforcement path, and `--force` (`-f`) is used only on explicit
+user instruction.
+
+Otherwise (item is open): call the `dev_status` tool with `action: "start",
+slug: "<resolved slug>"` (or the bash fallback named in step 1). On a
+main/master checkout, `start` now refuses (worktree guard), and the typed tool
+has no `--allow-main` escape hatch — do step 3 first, then run `start` from
+inside the fresh worktree.
 
 ## 3. Branch
 related_files names exactly one project repo → worktree it per the shared instructions file's Git section: `git -C <repo> worktree add ../<repo-name>-<slug> -b <slug>`. Reuse a worktree this session already made for this item instead of a second one. Multiple repos, or none: ask which repo — never guess.

@@ -482,12 +482,18 @@ grill plan (`~/.claude/data/grill/<slug>-plan.md`) or a spec
 are already done — skip to step 8. Worktree already has
 implemented, uncommitted changes (e.g. handed back from an external
 executor)? Skip straight to step 9.""",
-        "STEP2_BODY": (
-            "If not already in-progress: `dev_status.py start <slug|N>` "
-            "(`--if-rev <N>` for numeric ids). On a main/master checkout, "
-            "`start` now refuses (worktree guard) — do step 3 first, then run "
-            "`start` from inside the fresh worktree."
-        ),
+        "STEP2_BODY": """\
+If the item is already in-progress: STOP immediately — do not proceed to
+step 3 or touch any worktree. Report the existing claim details (`claimed_by`
+harness, PID, and timestamp from `show`) to the user and ask how to proceed.
+Never attempt a manual PID liveness check (e.g. `ps -p <pid>`) to decide
+whether to take over — `dev_status start`'s claim-collision refusal is the
+authoritative enforcement path, and `--force` (`-f`) is used only on explicit
+user instruction.
+
+Otherwise (item is open): run `dev_status.py start <slug|N>` (`--if-rev <N>`
+for numeric ids). On a main/master checkout, `start` now refuses (worktree
+guard) — do step 3 first, then run `start` from inside the fresh worktree.""",
         "STEP5_BODY": """\
 Delegate to the `spec` skill (Skill tool) with the item's context/next_steps
 as the task. Let it draft and save the spec end-to-end (its steps 1–4) —
@@ -616,12 +622,18 @@ the absolute path from `related_files` — resolve that path explicitly and
 work there, not the root checkout. Do not assume `cd ../<repo-name>-<slug>`
 resolves correctly; a fresh Copilot session's ambient cwd is not guaranteed
 to be the repo root.""",
-        "STEP2_BODY": (
-            "If not already in-progress: `dev_status.py start <slug|N>` "
-            "(`--if-rev <N>` for numeric ids). On a main/master checkout, "
-            "`start` now refuses (worktree guard) — do step 3 first, then run "
-            "`start` from inside the fresh worktree."
-        ),
+        "STEP2_BODY": """\
+If the item is already in-progress: STOP immediately — do not proceed to
+step 3 or touch any worktree. Report the existing claim details (`claimed_by`
+harness, PID, and timestamp from `show`) to the user and ask how to proceed.
+Never attempt a manual PID liveness check (e.g. `ps -p <pid>`) to decide
+whether to take over — `dev_status start`'s claim-collision refusal is the
+authoritative enforcement path, and `--force` (`-f`) is used only on explicit
+user instruction.
+
+Otherwise (item is open): run `dev_status.py start <slug|N>` (`--if-rev <N>`
+for numeric ids). On a main/master checkout, `start` now refuses (worktree
+guard) — do step 3 first, then run `start` from inside the fresh worktree.""",
         "STEP5_BODY": """\
 Now use the `spec` skill with the item's context/next_steps as the task.
 Let it run through drafting and saving end-to-end (its steps 1–4) —
@@ -791,12 +803,18 @@ or a spec (`~/.claude/data/grill/<slug>-spec.md`)? Planning and critique
 (steps 5–6) are already done — skip to step 8. Worktree already has
 implemented, uncommitted changes (e.g. handed back from an external
 executor)? Skip straight to step 9.""",
-        "STEP2_BODY": (
-            "If not already in-progress: `dev_status.py start $ARGUMENTS` "
-            "(`--if-rev <N>` for numeric ids). On a main/master checkout, "
-            "`start` now refuses (worktree guard) — do step 3 first, then run "
-            "`start` from inside the fresh worktree."
-        ),
+        "STEP2_BODY": """\
+If the item is already in-progress: STOP immediately — do not proceed to
+step 3 or touch any worktree. Report the existing claim details (`claimed_by`
+harness, PID, and timestamp from `show`) to the user and ask how to proceed.
+Never attempt a manual PID liveness check (e.g. `ps -p <pid>`) to decide
+whether to take over — `dev_status start`'s claim-collision refusal is the
+authoritative enforcement path, and `--force` (`-f`) is used only on explicit
+user instruction.
+
+Otherwise (item is open): run `dev_status.py start $ARGUMENTS` (`--if-rev <N>`
+for numeric ids). On a main/master checkout, `start` now refuses (worktree
+guard) — do step 3 first, then run `start` from inside the fresh worktree.""",
         "STEP5_BODY": """\
 Load the `spec` skill via opencode's native skill tool
 (`skill({ name: "spec" })`) with the item's context/next_steps as the task.
@@ -916,12 +934,18 @@ implemented, uncommitted changes (e.g. handed back from an external
 executor)? Skip straight to step 9. `next_steps` starts with "Resume
 backlog-item at step N" (a return pointer left by an earlier suspend, see
 step 5–6)? That step N is where to resume, not step 1's normal dispatch.""",
-        "STEP2_BODY": (
-            "If not already in-progress: `dev_status.py start <slug|N>` "
-            "(`--if-rev <N>` for numeric ids). On a main/master checkout, "
-            "`start` now refuses (worktree guard) — do step 3 first, then run "
-            "`start` from inside the fresh worktree."
-        ),
+        "STEP2_BODY": """\
+If the item is already in-progress: STOP immediately — do not proceed to
+step 3 or touch any worktree. Report the existing claim details (`claimed_by`
+harness, PID, and timestamp from `show`) to the user and ask how to proceed.
+Never attempt a manual PID liveness check (e.g. `ps -p <pid>`) to decide
+whether to take over — `dev_status start`'s claim-collision refusal is the
+authoritative enforcement path, and `--force` (`-f`) is used only on explicit
+user instruction.
+
+Otherwise (item is open): run `dev_status.py start <slug|N>` (`--if-rev <N>`
+for numeric ids). On a main/master checkout, `start` now refuses (worktree
+guard) — do step 3 first, then run `start` from inside the fresh worktree.""",
         "STEP5_BODY": """\
 Delegate to the spec skill with the item's context/next_steps as the task.
 Let it draft and save the spec end-to-end (its steps 1–4) — including its
@@ -1097,14 +1121,20 @@ the session was started with `--no-extensions`), fall back to
 other step below — in that fallback path only, a numeric id needs a fresh,
 non-quiet `render` immediately before each mutating call to read the
 current rev for `--if-rev` (CLAUDE.md's Backlog section).""",
-        "STEP2_BODY": (
-            "If not already in-progress: call the `dev_status` tool with "
-            '`action: "start", slug: "<resolved slug>"` (or the bash fallback '
-            "named in step 1). On a main/master checkout, `start` now refuses "
-            "(worktree guard), and the typed tool has no `--allow-main` "
-            "escape hatch — do step 3 first, then run `start` from inside the "
-            "fresh worktree."
-        ),
+        "STEP2_BODY": """\
+If the item is already in-progress: STOP immediately — do not proceed to
+step 3 or touch any worktree. Report the existing claim details (`claimed_by`
+harness, PID, and timestamp from `show`) to the user and ask how to proceed.
+Never attempt a manual PID liveness check (e.g. `ps -p <pid>`) to decide
+whether to take over — `dev_status start`'s claim-collision refusal is the
+authoritative enforcement path, and `--force` (`-f`) is used only on explicit
+user instruction.
+
+Otherwise (item is open): call the `dev_status` tool with `action: "start",
+slug: "<resolved slug>"` (or the bash fallback named in step 1). On a
+main/master checkout, `start` now refuses (worktree guard), and the typed tool
+has no `--allow-main` escape hatch — do step 3 first, then run `start` from
+inside the fresh worktree.""",
         "STEP5_BODY": """\
 Load the `spec` skill via `/skill:spec` with the item's context/next_steps
 as the task. Let it draft and save the spec end-to-end (its steps 1–4) —
