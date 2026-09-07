@@ -3966,6 +3966,83 @@ class BacklogTestCase(BacklogFixture):
         self.assertLessEqual(len(result), dev_status.RECAP_MAX_CHARS + 1)
         self.assertTrue(result.endswith("…"))
 
+    def test_r31b_normalize_truncates_at_last_sentence_boundary(self):
+        first = "A" * 100 + ". "
+        second = "B" * 100 + ". "
+        third = "C" * 250 + "."
+        text = first + second + third
+        self.assertGreater(len(text), dev_status.RECAP_MAX_CHARS)
+        result = dev_status._normalize_recap_text(text)
+        self.assertEqual(result, (first + second).rstrip())
+        self.assertLessEqual(len(result), dev_status.RECAP_MAX_CHARS)
+        self.assertFalse(result.endswith("…"))
+
+    def test_r31c_normalize_no_boundary_falls_back_to_ellipsis(self):
+        text = "動" * 500
+        result = dev_status._normalize_recap_text(text)
+        self.assertEqual(result, text[: dev_status.RECAP_MAX_CHARS] + "…")
+
+    def test_r31d_normalize_abbreviation_not_a_boundary(self):
+        # "e.g." lands after RECAP_MIN_KEEP but must not be cut; the earlier
+        # real sentence boundary is under RECAP_MIN_KEEP, so the result is
+        # the hard cut + ellipsis fallback.
+        text = "First sentence. " + "M" * 180 + " e.g. " + "z" * 300
+        result = dev_status._normalize_recap_text(text)
+        self.assertEqual(result, text[: dev_status.RECAP_MAX_CHARS].rstrip() + "…")
+
+    def test_r31e_normalize_initials_not_a_boundary(self):
+        text = "First sentence. " + "N" * 180 + " by J. K. " + "z" * 300
+        result = dev_status._normalize_recap_text(text)
+        self.assertEqual(result, text[: dev_status.RECAP_MAX_CHARS].rstrip() + "…")
+
+    def test_r31f_normalize_decimal_and_version_not_a_boundary(self):
+        text = "First sentence. " + "P" * 180 + " fixed 3.14 in v1.2.3 " + "z" * 300
+        result = dev_status._normalize_recap_text(text)
+        self.assertEqual(result, text[: dev_status.RECAP_MAX_CHARS].rstrip() + "…")
+
+    def test_r31g_normalize_boundary_exactly_at_budget_edge(self):
+        # Punctuation at the final in-budget character: the whole first
+        # "sentence" fits exactly, so it is kept without an ellipsis.
+        text = "a" * 399 + ". " + "b" * 50
+        result = dev_status._normalize_recap_text(text)
+        self.assertEqual(result, "a" * 399 + ".")
+
+    def test_r31h_normalize_degenerate_boundary_falls_back_to_ellipsis(self):
+        # The only boundary keeps 3 chars (< RECAP_MIN_KEEP) -- a tiny recap
+        # is a worse failure than a mid-sentence cut, so fall back.
+        text = "Hi. " + "r" * 500
+        result = dev_status._normalize_recap_text(text)
+        self.assertEqual(result, text[: dev_status.RECAP_MAX_CHARS].rstrip() + "…")
+
+    def test_r31i_normalize_invariants_sweep(self):
+        inputs = [
+            "x" * 500,
+            "動" * 500,
+            "Hi. " + "r" * 500,
+            "A" * 100 + ". " + "B" * 100 + ". " + "C" * 250 + ".",
+            "First sentence. " + "M" * 180 + " e.g. " + "z" * 300,
+            "First sentence. " + "N" * 180 + " by J. K. " + "z" * 300,
+            "First sentence. " + "P" * 180 + " fixed 3.14 in v1.2.3 " + "z" * 300,
+            "a" * 399 + ". " + "b" * 50,
+            "a" * 399 + ". " + "b" * 50 + ". Done! Last?",
+            "Short recap.",
+            "Done! " * 150,
+            "No terminator at all " + "w" * 500,
+            "All caps END. " + "q" * 250 + ". That is it.",
+        ]
+        for text in inputs:
+            with self.subTest(text=text[:40]):
+                result = dev_status._normalize_recap_text(text)
+                self.assertLessEqual(
+                    len(result), dev_status.RECAP_MAX_CHARS + 1
+                )  # ellipsis may add one char
+                if result.endswith("…"):
+                    # hard cut keeps at most the budget
+                    self.assertLessEqual(len(result), dev_status.RECAP_MAX_CHARS + 1)
+                else:
+                    self.assertLessEqual(len(result), dev_status.RECAP_MAX_CHARS)
+                    self.assertTrue(result.endswith((".", "!", "?")))
+
     def test_r32_run_recap_regen_caches_empty_normalized_result(self):
         self._seed_recent_journal()
         with (

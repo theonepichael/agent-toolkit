@@ -59,6 +59,10 @@ RECAP_TTL_SECONDS = 30 * 60
 RECAP_STALE_MAX_HOURS = 24
 RECAP_DISPATCH_WINDOW_HOURS = 48
 RECAP_MAX_CHARS = 400
+# Sentence-boundary truncation refuses to cut a boundary that would keep less
+# than this much of the budget (a 3-char recap from "Hi." + a long run-on is a
+# worse failure than a mid-sentence cut -- fall back to the hard cut instead).
+RECAP_MIN_KEEP = RECAP_MAX_CHARS // 2
 RECAP_TIMEOUT_SECONDS = float(os.environ.get("DEVSTATUS_RECAP_TIMEOUT_SECONDS", "60"))
 RECAP_AGY_MODEL = os.environ.get("DEVSTATUS_RECAP_AGY_MODEL", "Gemini 3.6 Flash (High)")
 
@@ -2604,6 +2608,66 @@ def _build_recap_prompt(changelog: str, buckets: str, completed: str) -> str:
     )
 
 
+# Tokens whose trailing '.' does not end a sentence: common abbreviations and
+# initials. Heuristic by design -- when in doubt, we do not cut.
+_RECAP_ABBREV_TOKENS = frozenset(
+    {
+        "e.g",
+        "i.e",
+        "etc",
+        "vs",
+        "dr",
+        "mr",
+        "mrs",
+        "ms",
+        "prof",
+        "sr",
+        "jr",
+        "st",
+        "inc",
+        "ltd",
+        "fig",
+        "no",
+        "approx",
+    }
+)
+
+
+def _recap_is_abbrev_boundary(text: str, dot: int) -> bool:
+    """True when the '.' at *dot* is abbreviation/initial, not a sentence end."""
+    start = dot
+    while start > 0 and not text[start - 1].isspace():
+        start -= 1
+    token = text[start:dot]
+    if token.lower() in _RECAP_ABBREV_TOKENS:
+        return True
+    return len(token) == 1 and token.isalpha() and token.isupper()
+
+
+def _recap_last_sentence_cut(text: str, budget: int, min_keep: int) -> int | None:
+    """Index just past the last acceptable sentence boundary within *budget*.
+
+    A boundary is one of ``.!?`` followed by whitespace. A ``.`` whose
+    preceding token is an abbreviation or a single leading-uppercase initial
+    (see :func:`_recap_is_abbrev_boundary`) is not a boundary; ``!`` and ``?``
+    are never blocklist-guarded. A boundary that would keep fewer than
+    *min_keep* characters is rejected as degenerate. Returns ``None`` when no
+    acceptable boundary exists (CJK, run-on text, all-degenerate boundaries).
+    """
+    last: int | None = None
+    for i, ch in enumerate(text[:budget]):
+        if ch not in ".!?":
+            continue
+        if i + 1 >= len(text) or not text[i + 1].isspace():
+            continue
+        if ch == "." and _recap_is_abbrev_boundary(text, i):
+            continue
+        if i + 1 < min_keep:
+            continue
+        last = i + 1
+    return last
+
+
 _RECAP_MARKDOWN_RE = re.compile(r"[*_`#>~]")
 _RECAP_EMOJI_RE = re.compile(
     "[\U0001f300-\U0001faff\U00002600-\U000027bf\U0001f1e6-\U0001f1ff]+"
@@ -2614,15 +2678,21 @@ def _normalize_recap_text(raw: str) -> str:
     """Defensively normalize a backend's raw recap output.
 
     No rejection path -- strips markdown markers and emoji, collapses
-    whitespace, and truncates to :data:`RECAP_MAX_CHARS`. An empty result
-    after normalization is a legitimate outcome, cached by the caller (see
+    whitespace, and truncates to :data:`RECAP_MAX_CHARS`. An over-budget text
+    is cut at the last sentence boundary within the budget (see
+    :func:`_recap_last_sentence_cut`); when no acceptable boundary exists it
+    falls back to a hard cut plus an ellipsis. An empty result after
+    normalization is a legitimate outcome, cached by the caller (see
     :func:`_save_recap_cache`), not an error.
     """
     text = _RECAP_EMOJI_RE.sub("", raw)
     text = _RECAP_MARKDOWN_RE.sub("", text)
     text = re.sub(r"\s+", " ", text).strip()
     if len(text) > RECAP_MAX_CHARS:
-        text = text[:RECAP_MAX_CHARS].rstrip() + "…"
+        cut = _recap_last_sentence_cut(text, RECAP_MAX_CHARS, RECAP_MIN_KEEP)
+        if cut is not None:
+            return text[:cut]
+        return text[:RECAP_MAX_CHARS].rstrip() + "…"
     return text
 
 
