@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>herdr remote</title>
+    <meta name="theme-color" content="#131518" />
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="icon" href="icon-192.png" />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div id="token-gate" class="gate hidden">
+      <h1>herdr remote</h1>
+      <p>Paste the bridge token (see ~/.config/herdr-bridge/ on the workstation).</p>
+      <input id="token-input" type="password" autocomplete="off" placeholder="bridge token" />
+      <button id="token-save">Connect</button>
+      <p id="token-error" class="error hidden"></p>
+    </div>
+    <header id="topbar" class="hidden">
+      <span id="conn-state" class="conn conn-off">connecting</span>
+      <h1>herdr remote</h1>
+    </header>
+    <main id="agents" class="hidden"></main>
+    <section id="detail" class="hidden">
+      <button id="back">← agents</button>
+      <h2 id="detail-name"></h2>
+      <pre id="detail-output">loading…</pre>
+      <form id="prompt-form">
+        <textarea id="prompt-text" rows="3" placeholder="prompt…"></textarea>
+        <button type="submit">Send prompt</button>
+      </form>
+      <p id="prompt-error" class="error hidden"></p>
+    </section>
+    <script src="app.js"></script>
+  </body>
+</html>

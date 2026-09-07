@@ -1,0 +1,15 @@
+[Unit]
+Description=herdr remote-control bridge (HTTP+SSE in front of the herdr socket)
+# The tailnet presence comes from the Windows host (WSL2), so there is no
+# tailscaled unit to order against on this side; the bridge's own bounded
+# bind retry covers the interface coming up.
+After=network-online.target
+
+[Service]
+# %h is systemd's home specifier for user units — no hardcoded path.
+ExecStart=%h/.local/bin/uv run --project %h/Workspace/agent-toolkit python -m herdr_remote serve
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
