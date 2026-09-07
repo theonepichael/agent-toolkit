@@ -26,7 +26,9 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-# Frozen pre-move dest set (28 script links + the managed_dir audit entry).
+# Frozen dest set (30 script links + the managed_dir audit entry), updated
+# in lockstep with each deliberate new agent-scripts/ addition -- a drift
+# here must be an intentional edit to this list, never a silent add/remove.
 # agent-toolkit's links.toml must keep exactly these dests pointing at
 # ~/.claude/scripts; the runtime path is permanent (see the migration-cutover
 # item's out-of-scope record: XDG relocation rejected).
@@ -52,6 +54,7 @@ FROZEN_SCRIPT_DESTS = frozenset(
         "notify.py",
         "outlook_calendar.py",
         "outlook_email.py",
+        "refresh_guidance.py",
         "repo_identity.py",
         "second_opinion.py",
         "sessionstart_checks.py",
@@ -121,7 +124,7 @@ def test_links_toml_srcs_live_in_agent_scripts() -> None:
         if isinstance(entry.get("src"), str)
         and "~/.claude/scripts" in str(entry.get("dest", ""))
     ]
-    assert len(script_links) == 29, f"expected 29 script links, got {len(script_links)}"
+    assert len(script_links) == 30, f"expected 30 script links, got {len(script_links)}"
     bad = [
         entry["src"]
         for entry in script_links
