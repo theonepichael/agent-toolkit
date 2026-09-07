@@ -466,7 +466,9 @@ class SettingsSeedDriftCheckTestCase(unittest.TestCase):
 
     def test_fix_hooks_dropped_when_seed_has_none(self) -> None:
         # seed has no hooks key; live has hooks → drop live's hooks
-        # (wholesale: live becomes seed's hooks, which is empty).
+        # (wholesale: live becomes seed's hooks, which is empty). Live's
+        # hooks carry no SessionStart groups, so the weakened-seed refusal
+        # (see below) does not fire — the pinned drop behavior holds.
         self.write_settings_seed({"permissions": {"allow": []}})
         self.write_live_settings(
             {"permissions": {"allow": []}, "hooks": {"StaleDrift": []}}
@@ -474,6 +476,222 @@ class SettingsSeedDriftCheckTestCase(unittest.TestCase):
         self.run_fix()
         repaired = self.load_live_settings()
         self.assertNotIn("hooks", repaired)
+
+    # ── cmd_fix: weakened-seed refusal for hooks (2026-09-04 incident) ──
+
+    # The 22:23:17 shape: the seed (committed at 35fc7f7) had lost the
+    # matcher-'*' herdr SessionStart group while live still had it, and a
+    # concurrent `fix` wholesale-overwrote live hooks from the corrupted
+    # seed — propagating the loss and silencing the drift alarm.
+    HERDR_STAR_GROUP = {
+        "matcher": "*",
+        "hooks": [{"type": "command", "command": "herdr sessionstart"}],
+    }
+    SESSION_PATH_GROUP = {
+        "matcher": "session-path",
+        "hooks": [{"type": "command", "command": "echo path"}],
+    }
+
+    def _capture_fix_both_streams(self) -> tuple[str, str, int]:
+        out = io.StringIO()
+        err = io.StringIO()
+        with patch("sys.stdout", out), patch("sys.stderr", err):
+            code = ssdc.cmd_fix()
+        return out.getvalue(), err.getvalue(), code
+
+    def test_fix_refuses_hooks_when_seed_lost_a_sessionstart_group(self) -> None:
+        # Seed missing the matcher-'*' group live still has → refuse the
+        # wholesale overwrite: live hooks byte-identical, loud warning.
+        self.write_settings_seed(
+            {
+                "permissions": {"allow": []},
+                "hooks": {"SessionStart": [self.SESSION_PATH_GROUP]},
+            }
+        )
+        live_hooks = {"SessionStart": [self.SESSION_PATH_GROUP, self.HERDR_STAR_GROUP]}
+        self.write_live_settings({"permissions": {"allow": []}, "hooks": live_hooks})
+        out, err, code = self._capture_fix_both_streams()
+        self.assertEqual(code, 0)
+        self.assertEqual(self.load_live_settings()["hooks"], live_hooks)
+        self.assertIn("refus", out.lower())
+        self.assertIn("'*'", out)
+        # _print_loud: the warning survives both a 2>/dev/null hook wiring
+        # and stdout-only capture.
+        self.assertIn("refus", err.lower())
+        self.assertIn("sync-to-seed", out)
+
+    def test_fix_refusal_is_hooks_scoped_permissions_still_repaired(self) -> None:
+        # The refusal covers hooks only; permissions drift alongside it is
+        # still repaired and backed up, and exit stays 0.
+        self.write_settings_seed(
+            {
+                "permissions": {"allow": ["Bash(SEED)"]},
+                "hooks": {"SessionStart": [self.SESSION_PATH_GROUP]},
+            }
+        )
+        live_hooks = {"SessionStart": [self.HERDR_STAR_GROUP]}
+        self.write_live_settings(
+            {"permissions": {"allow": ["Bash(LIVE)"]}, "hooks": live_hooks}
+        )
+        out, _err, code = self._capture_fix_both_streams()
+        self.assertEqual(code, 0)
+        repaired = self.load_live_settings()
+        self.assertEqual(repaired["hooks"], live_hooks)
+        self.assertIn("Bash(SEED)", repaired["permissions"]["allow"])  # type: ignore[index]
+        self.assertIn("repaired", out)
+        backups = list((self.home / ".claude").glob("settings.json.bak.*"))
+        self.assertEqual(len(backups), 1)
+
+    def test_fix_refuses_when_multiple_matchers_lost(self) -> None:
+        # Multiset loss across several matchers: both are named.
+        group_a = {
+            "matcher": "a",
+            "hooks": [{"type": "command", "command": "a"}],
+        }
+        self.write_settings_seed(
+            {"permissions": {"allow": []}, "hooks": {"SessionStart": [group_a]}}
+        )
+        live_hooks = {
+            "SessionStart": [group_a, self.HERDR_STAR_GROUP, self.SESSION_PATH_GROUP]
+        }
+        self.write_live_settings({"permissions": {"allow": []}, "hooks": live_hooks})
+        out, _err, _code = self._capture_fix_both_streams()
+        self.assertEqual(self.load_live_settings()["hooks"], live_hooks)
+        self.assertIn("'*'", out)
+        self.assertIn("'session-path'", out)
+
+    def test_fix_refuses_on_mixed_divergence(self) -> None:
+        # Seed dropped group B but added group C: the loss of B alone must
+        # trigger refusal — a plain strict-subset test would miss it.
+        group_b = {
+            "matcher": "b",
+            "hooks": [{"type": "command", "command": "b"}],
+        }
+        group_c = {
+            "matcher": "c",
+            "hooks": [{"type": "command", "command": "c"}],
+        }
+        self.write_settings_seed(
+            {
+                "permissions": {"allow": []},
+                "hooks": {"SessionStart": [self.SESSION_PATH_GROUP, group_c]},
+            }
+        )
+        live_hooks = {"SessionStart": [self.SESSION_PATH_GROUP, group_b]}
+        self.write_live_settings({"permissions": {"allow": []}, "hooks": live_hooks})
+        out, _err, _code = self._capture_fix_both_streams()
+        self.assertEqual(self.load_live_settings()["hooks"], live_hooks)
+        self.assertIn("'b'", out)
+
+    def test_fix_refuses_when_seed_sessionstart_malformed(self) -> None:
+        # Structural corruption counts as zero groups → refuse.
+        self.write_settings_seed(
+            {"permissions": {"allow": []}, "hooks": {"SessionStart": "oops"}}
+        )
+        live_hooks = {"SessionStart": [self.HERDR_STAR_GROUP]}
+        self.write_live_settings({"permissions": {"allow": []}, "hooks": live_hooks})
+        out, _err, _code = self._capture_fix_both_streams()
+        self.assertEqual(self.load_live_settings()["hooks"], live_hooks)
+        self.assertIn("refus", out.lower())
+
+    def test_fix_still_overwrites_when_live_hooks_not_a_dict(self) -> None:
+        # Live's hooks isn't countable — nothing to lose, today's
+        # wholesale overwrite proceeds.
+        self.write_settings_seed(
+            {
+                "permissions": {"allow": []},
+                "hooks": {"SessionStart": [self.HERDR_STAR_GROUP]},
+            }
+        )
+        self.write_live_settings(
+            {"permissions": {"allow": []}, "hooks": ["not-a-dict"]}
+        )
+        _out, _err, _code = self._capture_fix_both_streams()
+        repaired = self.load_live_settings()
+        self.assertEqual(repaired["hooks"], {"SessionStart": [self.HERDR_STAR_GROUP]})
+
+    def test_fix_still_overwrites_when_counts_equal_contents_differ(self) -> None:
+        # Wrapper-collapse shape: same matcher counts, differing contents —
+        # contents are deliberately not compared (per the commit guard), so
+        # the overwrite proceeds.
+        seed_group = {
+            "matcher": "*",
+            "hooks": [{"type": "command", "command": "collapsed-wrapper"}],
+        }
+        self.write_settings_seed(
+            {"permissions": {"allow": []}, "hooks": {"SessionStart": [seed_group]}}
+        )
+        live_hooks = {"SessionStart": [self.HERDR_STAR_GROUP]}
+        self.write_live_settings({"permissions": {"allow": []}, "hooks": live_hooks})
+        _out, _err, _code = self._capture_fix_both_streams()
+        self.assertEqual(
+            self.load_live_settings()["hooks"], {"SessionStart": [seed_group]}
+        )
+
+    def test_fix_still_overwrites_in_restore_direction(self) -> None:
+        # Seed has a group live lacks — the core fix job — overwrite
+        # proceeds (live gains the lost group back).
+        self.write_settings_seed(
+            {
+                "permissions": {"allow": []},
+                "hooks": {
+                    "SessionStart": [self.SESSION_PATH_GROUP, self.HERDR_STAR_GROUP]
+                },
+            }
+        )
+        self.write_live_settings(
+            {
+                "permissions": {"allow": []},
+                "hooks": {"SessionStart": [self.SESSION_PATH_GROUP]},
+            }
+        )
+        _out, _err, _code = self._capture_fix_both_streams()
+        self.assertEqual(
+            self.load_live_settings()["hooks"],
+            {"SessionStart": [self.SESSION_PATH_GROUP, self.HERDR_STAR_GROUP]},
+        )
+
+    def test_sync_still_mirrors_intentional_live_side_removal(self) -> None:
+        # Reverse direction stays wholesale: live deliberately dropped the
+        # matcher-'*' group → sync-to-seed mirrors the removal into the
+        # seed (the weakened-seed refusal must never fire live->seed).
+        self.write_settings_seed(
+            {
+                "permissions": {"allow": []},
+                "hooks": {
+                    "SessionStart": [self.SESSION_PATH_GROUP, self.HERDR_STAR_GROUP]
+                },
+            }
+        )
+        self.write_live_settings(
+            {
+                "permissions": {"allow": []},
+                "hooks": {"SessionStart": [self.SESSION_PATH_GROUP]},
+            }
+        )
+        out, code = self.run_sync()
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            self.load_settings_seed()["hooks"],
+            {"SessionStart": [self.SESSION_PATH_GROUP]},
+        )
+        self.assertIn("mirrored from live", out)
+
+    def test_refusal_fires_even_when_only_null_matcher_group_lost(self) -> None:
+        # Groups with a missing/null matcher count under None, same as the
+        # commit guard.
+        no_matcher_group = {"hooks": [{"type": "command", "command": "startup"}]}
+        self.write_settings_seed(
+            {
+                "permissions": {"allow": []},
+                "hooks": {"SessionStart": [self.SESSION_PATH_GROUP]},
+            }
+        )
+        live_hooks = {"SessionStart": [self.SESSION_PATH_GROUP, no_matcher_group]}
+        self.write_live_settings({"permissions": {"allow": []}, "hooks": live_hooks})
+        out, _err, _code = self._capture_fix_both_streams()
+        self.assertEqual(self.load_live_settings()["hooks"], live_hooks)
+        self.assertIn("(no matcher)", out)
 
     def test_fix_creates_backup(self) -> None:
         self.write_settings_seed({"permissions": {"allow": ["Bash(SEED)"]}})

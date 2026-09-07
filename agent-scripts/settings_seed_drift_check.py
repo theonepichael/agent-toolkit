@@ -94,7 +94,17 @@ Subcommands
               stripped from live even under additive policy.
             * ``hooks``: wholesale-overwrite from seed (hooks are not
               live-modified by approval flows, so any divergence is
-              genuine drift).
+              genuine drift) — **except** when the seed's SessionStart
+              hook groups are a weakened version of live's (the seed is
+              missing, in count, any matcher group the live file has —
+              counted as a multiset per matcher, malformed seed structure
+              counting as zero). That shape is more plausibly a corrupted
+              seed (a lossy rewrite, the 2026-09-04 incident) than an
+              intentional removal, so fix refuses the overwrite, prints a
+              loud warning, and leaves live hooks unchanged. Intentional
+              seed-side removals go through sync-to-seed (the live->seed
+              direction) instead. The refusal is hooks-scoped: other
+              repairs proceed and the exit code stays 0.
             * Any key that exists in both but differs in a way that isn't
               one of the above is *flag-and-skip*: printed, not touched.
 
@@ -640,6 +650,64 @@ def _merge_permissions_additive(
     return new, applied, skipped
 
 
+def _sessionstart_group_counts(config: dict[str, object]) -> dict[object, int] | None:
+    """Count SessionStart hook groups per matcher value in a settings
+    document. Missing/null matcher (and a non-dict group) counts under
+    ``None``.
+
+    # vendored, keep in sync with seed_hook_subset_guard's
+    # _sessionstart_matcher_counts — same loss semantics, different
+    # direction: the guard compares HEAD vs staged at commit time; this
+    # compares seed vs live at fix time. Vendored rather than imported for
+    # the same leaf-hook reason as the install.py block above: this module
+    # is a SessionStart hook that must not gain import dependencies that
+    # can silently no-op it.
+
+    Return ``None`` when the structure isn't countable (``hooks`` or
+    ``SessionStart`` missing or of the wrong type) — the caller treats
+    that as "no group evidence either way".
+    """
+    hooks = config.get("hooks")
+    if not isinstance(hooks, dict):
+        return None
+    groups = hooks.get("SessionStart", [])
+    if not isinstance(groups, list):
+        return None
+    counts: dict[object, int] = {}
+    for group in groups:
+        matcher = group.get("matcher") if isinstance(group, dict) else None
+        key = matcher if matcher is None else str(matcher)
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def _hooks_weakened_seed(seed: dict[str, object], live: dict[str, object]) -> list[str]:
+    """Return descriptions of SessionStart hook groups the seed is missing
+    that live has (``[]`` when none — the seed is not weakened).
+
+    A seed whose ``hooks``/``SessionStart`` is malformed counts as zero
+    groups: corruption can take structural as well as content form, and a
+    wholesale overwrite would wipe live's valid groups either way. The
+    check is a multiset comparison, not a set subset, so a seed that also
+    *added* a group still refuses when it lost another (mixed divergence).
+    Contents inside a group are deliberately not compared — same boundary
+    as seed_hook_subset_guard (wrapper-collapse refactors are an approved
+    shape).
+    """
+    seed_counts = _sessionstart_group_counts(seed) or {}
+    live_counts = _sessionstart_group_counts(live)
+    if not live_counts:
+        return []
+    lost = []
+    for matcher in sorted(live_counts, key=lambda m: (m is not None, str(m))):
+        have = seed_counts.get(matcher, 0)
+        want = live_counts[matcher]
+        if have < want:
+            name = "(no matcher)" if matcher is None else f"matcher {matcher!r}"
+            lost.append(f"{name}: seed has {have}, live has {want}")
+    return lost
+
+
 def _hooks_fix(
     seed: dict[str, object], live: dict[str, object]
 ) -> tuple[object | None, str]:
@@ -651,7 +719,11 @@ def _hooks_fix(
     means "overwrite live's hooks with this from seed".
 
     hooks are wholesale (not additive) because they are not live-modified
-    by approval flows — any divergence is genuine drift.
+    by approval flows — any divergence is genuine drift. The one
+    exception is decided by the caller (:func:`_hooks_weakened_seed` in
+    ``_fix_settings_file``): a seed that is *missing* SessionStart groups
+    live still has looks corrupted (a lossy rewrite), and overwriting
+    live from it would propagate the loss — see _fix_settings_file.
     """
     seed_has_hooks = "hooks" in seed
     seed_hooks = seed.get("hooks")
@@ -904,14 +976,34 @@ def _fix_settings_file(live_path: Path, seed_path: Path, quiet: bool = False) ->
             if new_perm != live_perm:
                 live["permissions"] = new_perm
 
-    # hooks: wholesale
-    new_hooks, hook_desc = _hooks_fix(seed, live)
-    if new_hooks is not None:
-        if new_hooks == {}:
-            live.pop("hooks", None)
-        else:
-            live["hooks"] = new_hooks  # type: ignore[assignment]
-        applied.append(hook_desc)
+    # hooks: wholesale from seed — except when the seed itself looks
+    # corrupted. A seed missing SessionStart groups the live file has is
+    # more plausibly a lossy rewrite of the seed than an intentional
+    # removal (whose channel is sync-to-seed, live->seed), and fix must
+    # not propagate the loss into live — the 2026-09-04 22:23:17 incident
+    # did exactly that. The refusal is hooks-scoped: other repairs below
+    # proceed, and exit stays 0 (the printed warning is the signal; the
+    # residual hooks drift keeps `check` alarming until a human resolves
+    # the seed).
+    lost_groups = _hooks_weakened_seed(seed, live)
+    if lost_groups:
+        _print_loud(
+            f"settings_seed_drift_check: REFUSING to overwrite live hooks in "
+            f"{live_path}: the seed ({seed_path}) is missing SessionStart hook "
+            f"group(s) the live file has ({'; '.join(lost_groups)}).\n"
+            "  The seed looks corrupted (a lossy rewrite may have propagated it). "
+            "Repair the seed (git restore it in the dotfiles repo), or — if "
+            "live's extra group(s) are intentional — run `sync-to-seed` to "
+            "forward them into the seed. Live hooks left unchanged."
+        )
+    else:
+        new_hooks, hook_desc = _hooks_fix(seed, live)
+        if new_hooks is not None:
+            if new_hooks == {}:
+                live.pop("hooks", None)
+            else:
+                live["hooks"] = new_hooks  # type: ignore[assignment]
+            applied.append(hook_desc)
 
     # Other non-cosmetic top-level keys are NOT auto-fixed — only
     # permissions and hooks are critical-and-repairable. Anything else
@@ -1291,7 +1383,12 @@ def cmd_fix(quiet: bool = False) -> int:
     holds settings in memory for the session's lifetime and serializes its
     in-memory state (not a fresh read-merge-write) on every approval, so a
     mid-session fix gets silently clobbered on the next approval and
-    SessionStart never re-fires."""
+    SessionStart never re-fires.
+
+    Exit-code contract: 0 also when a hooks repair was REFUSED
+    (weakened-seed guard) but other repairs applied — the loud warning is
+    the signal, not the exit code; the refused hooks drift keeps `check`
+    alarming until the seed is repaired."""
     n = _sessions_active()
     if n > 0:
         _print_loud(
