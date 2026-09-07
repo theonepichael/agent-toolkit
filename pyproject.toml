@@ -2,12 +2,16 @@
 name = "agent-toolkit"
 version = "0.0.0"
 requires-python = ">=3.12"
+dependencies = [
+    "aiohttp>=3.14.3",
+]
 
 [tool.uv]
 package = false
 
 [tool.pytest.ini_options]
 testpaths = ["test", "agent-scripts", "scripts"]
+asyncio_mode = "auto"
 markers = [
     "allow_real_subprocess: permits real subprocess.Popen/subprocess.run calls in this test",
     "allow_production_paths: restores the real HOME (instead of the session sandbox) for this test",
@@ -29,6 +33,7 @@ ignore = ["DTZ011", "DTZ005", "PLW1510", "BLE001", "E501", "TRY003"]
 [dependency-groups]
 dev = [
     "pytest==9.1.1",
+    "pytest-asyncio>=1.4.0",
     "pytest-xdist>=3.8.0",
     "ruff==0.16.2",
 ]
