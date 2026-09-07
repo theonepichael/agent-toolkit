@@ -262,7 +262,7 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `confirm_resolution(cmd: str, arg: str | int, item: BacklogItem | PendingItem, summary_key: str = 'summary', *, quiet: bool = False) -> None` — Echo what a mutating command resolved to, so misresolution is visible.
   - `build_parser() -> argparse.ArgumentParser` — Build the full argument parser for every subcommand.
 - Subcommand handlers: `cmd_internal_regen`, `cmd_recap`, `cmd_render`, `cmd_ready`, `cmd_list`, `cmd_show`, `cmd_add`, `cmd_update`, `cmd_start`, `cmd_done`, `cmd_review`, `cmd_approve`, `cmd_reject`, `cmd_gate_set`, `cmd_gate_pass`, `cmd_run`, `cmd_runs`, `cmd_backfill_gate`, `cmd_rename`, `cmd_block`, `cmd_unblock`, `cmd_out_of_scope_add`, `cmd_out_of_scope_link`, `cmd_out_of_scope_unlink`, `cmd_out_of_scope_remove`, `cmd_out_of_scope_list`, `cmd_out_of_scope_show`, `cmd_pending_add`, `cmd_pending_update`, `cmd_pending_list`, `cmd_remove`, `cmd_prune`
-- Tested by: `agent-scripts/test_dev_status.py`, `agent-scripts/test_to_tickets_runner.py`
+- Tested by: `agent-scripts/test_dev_status.py`, `agent-scripts/test_sweep_dead_claims.py`, `agent-scripts/test_to_tickets_runner.py`
 
 ### `agent-scripts/dotfiles_sync_check.py`
 

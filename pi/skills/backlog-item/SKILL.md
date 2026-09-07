@@ -24,7 +24,9 @@ mode` section.
 ## 1. Resolve
 Call the `dev_status` tool with `action: "show", slug: "<slug|N>"` (works
 whether the identifier is a real slug or a numeric position — `show` is
-read-only). Its response's `id` field is this item's real slug — use that
+read-only except for the dead-claim sweep: a dead session's stale claim on
+any in-progress item it sees is reverted to open, live claims are never
+touched). Its response's `id` field is this item's real slug — use that
 resolved slug for every remaining step below (every mutating `dev_status`
 action refuses a numeric slug outright). Read the full record — never start
 from the dashboard's one-line summary (CLAUDE.md). Empty

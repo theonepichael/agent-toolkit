@@ -719,6 +719,12 @@ class BacklogTestCase(BacklogFixture):
                 "cmd_pending_add",
                 "cmd_pending_update",
                 "cmd_prune",
+                # Read paths with one conditional write: the claim-liveness
+                # sweep saves (bump-then-save) only when it actually reverts
+                # a dead claim; nothing is written when every claim is alive.
+                "cmd_render",
+                "cmd_list",
+                "cmd_show",
             },
         )
 
