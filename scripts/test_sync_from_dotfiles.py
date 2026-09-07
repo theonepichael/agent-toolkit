@@ -41,6 +41,25 @@ class ComputeCopySetTests(unittest.TestCase):
         )
         self.assertEqual(sfd.compute_copy_set(changed), frozenset())
 
+    def test_excludes_never_synced_repo_specific_paths(self) -> None:
+        # The same relative path exists in BOTH checkouts with intentionally
+        # different content (AGENTS.md-style directory docs, each repo's own
+        # README/config/tests) — blind-copying dotfiles' version would
+        # clobber the toolkit's diverged copy, so it is never replayed.
+        changed = frozenset(
+            {
+                "claude/scripts/AGENTS.md",
+                "test/AGENTS.md",
+                "some/new/dir/AGENTS.md",
+                "README.md",
+                "links.toml",
+                "shared_new_code.py",
+            }
+        )
+        self.assertEqual(
+            sfd.compute_copy_set(changed), frozenset({"shared_new_code.py"})
+        )
+
     def test_is_derived_from_the_diff_not_a_fixed_list(self) -> None:
         changed = frozenset({"some/brand/new/path.py"})
         self.assertEqual(sfd.compute_copy_set(changed), changed)
@@ -66,11 +85,96 @@ class ComputeConflictSetTests(unittest.TestCase):
     def test_never_a_fixed_expected_value(self) -> None:
         # A repeatable tool's conflict set changes every run -- assert the
         # math, not a memorized 3-file answer from one historical run.
-        dotfiles_changed = frozenset({"README.md", "links.toml", "new_thing.py"})
-        toolkit_changed = frozenset({"README.md", "unrelated_toolkit_file.py"})
+        # (README.md is a never-synced repo-specific path now, so the
+        # fixture uses a neutral shared path.)
+        dotfiles_changed = frozenset({"config.toml", "links.toml", "new_thing.py"})
+        toolkit_changed = frozenset({"config.toml", "unrelated_toolkit_file.py"})
         self.assertEqual(
             sfd.compute_conflict_set(dotfiles_changed, toolkit_changed),
-            frozenset({"README.md"}),
+            frozenset({"config.toml"}),
+        )
+
+    def test_subtracts_never_synced_repo_specific_paths(self) -> None:
+        # A repo-specific doc changed on both sides is not a conflict to
+        # hand-resolve: it never replays in either direction, so both sets
+        # subtract it before the intersection survives.
+        dotfiles_changed = frozenset(
+            {"AGENTS.md", "test/AGENTS.md", "deep/dir/AGENTS.md", "shared.py"}
+        )
+        toolkit_changed = frozenset({"AGENTS.md", "deep/dir/AGENTS.md", "shared.py"})
+        self.assertEqual(
+            sfd.compute_conflict_set(dotfiles_changed, toolkit_changed),
+            frozenset({"shared.py"}),
+        )
+
+
+class FindUnclassifiedDivergencesTests(unittest.TestCase):
+    """The pure core of the same-path divergence derivation."""
+
+    def test_flags_a_same_path_divergence_with_no_classification(self) -> None:
+        diverged = {"brand/new/dir/NOTES.md"}
+        self.assertEqual(
+            sfd.find_unclassified_divergences(
+                diverged,
+                {"brand/new/dir/NOTES.md", "in_sync.py"},
+                lambda p: p in diverged,
+            ),
+            ["brand/new/dir/NOTES.md"],
+        )
+
+    def test_an_agents_md_in_a_new_directory_is_never_synced(self) -> None:
+        # `*/AGENTS.md` covers a directory doc added to a brand-new
+        # directory — the point of pattern (not exact-path) membership.
+        self.assertEqual(
+            sfd.find_unclassified_divergences(
+                {"brand/new/dir/AGENTS.md"},
+                {"brand/new/dir/AGENTS.md"},
+                lambda _p: True,
+            ),
+            [],
+        )
+
+    def test_a_divergence_in_the_never_synced_set_is_classified(self) -> None:
+        diverged = {"claude/scripts/AGENTS.md", "README.md", "links.toml"}
+        self.assertEqual(
+            sfd.find_unclassified_divergences(
+                diverged, diverged, lambda p: p in diverged
+            ),
+            [],
+        )
+
+    def test_a_divergence_matching_generated_artifact_patterns_is_classified(
+        self,
+    ) -> None:
+        # INTERFACES.md diverges by construction (each repo's sweep emits
+        # its own) and is owned by GENERATED_ARTIFACT_PATTERNS.
+        self.assertEqual(
+            sfd.find_unclassified_divergences(
+                {"INTERFACES.md"}, {"INTERFACES.md"}, lambda _p: True
+            ),
+            [],
+        )
+
+    def test_a_divergence_with_a_registered_handler_is_classified(self) -> None:
+        sfd.CONFLICT_HANDLERS["fixture/handled.txt"] = lambda *_args: None
+        try:
+            self.assertEqual(
+                sfd.find_unclassified_divergences(
+                    {"fixture/handled.txt"}, {"fixture/handled.txt"}, lambda _p: True
+                ),
+                [],
+            )
+        finally:
+            del sfd.CONFLICT_HANDLERS["fixture/handled.txt"]
+
+    def test_an_in_sync_path_is_never_flagged(self) -> None:
+        self.assertEqual(
+            sfd.find_unclassified_divergences(
+                {"same.py", "never_synced/AGENTS.md"},
+                {"same.py", "never_synced/AGENTS.md"},
+                lambda _p: False,
+            ),
+            [],
         )
 
 
@@ -372,6 +476,195 @@ class SyntheticRepoIntegrationTests(unittest.TestCase):
         assert state is not None
         self.assertEqual(state["last_synced_dotfiles_sha"], tip)
         self.assertIsNone(state["toolkit_commit"])
+
+
+class VerifyInvariantsDivergenceTests(SyntheticRepoIntegrationTests):
+    """The same-path divergence check over plain copies.
+
+    A plain copy is safe to blind-copy iff the toolkit's copy is exactly
+    dotfiles@BASE's (clean delta replay) or is a genuinely new file
+    (absent from the toolkit AND from dotfiles@BASE). Anything else is
+    pre-anchor divergence or an unclassified deletion — flagged before
+    any write, never silently clobbered or resurrected.
+    """
+
+    def commit_shared_diverged(self) -> tuple[str, str]:
+        """dotfiles and toolkit both carry a common path; toolkit's copy
+        diverged from the shared lineage before the anchor."""
+        commit_file(self.dotfiles, "docs/shared.md", "lineage version\n")
+        base = git(self.dotfiles, "rev-parse", "HEAD").strip()
+        commit_file(self.dotfiles, "docs/shared.md", "lineage version + delta\n")
+        tip = git(self.dotfiles, "rev-parse", "HEAD").strip()
+        commit_file(self.toolkit, "docs/shared.md", "toolkit's own diverged copy\n")
+        return base, tip
+
+    @pytest.mark.allow_real_subprocess
+    def test_flags_pre_anchor_divergence_on_a_plain_copy(self) -> None:
+        base, tip = self.commit_shared_diverged()
+        changed = sfd.changed_paths(self.dotfiles, base, tip)
+        copy_set = sfd.compute_copy_set(changed)
+        self.assertEqual(copy_set, frozenset({"docs/shared.md"}))
+        problems = sfd.verify_invariants(
+            self.dotfiles, base, tip, copy_set, copy_set, toolkit_root=self.toolkit
+        )
+        self.assertTrue(
+            any(
+                "diverged from the sync lineage" in p and "docs/shared.md" in p
+                for p in problems
+            ),
+            problems,
+        )
+
+    @pytest.mark.allow_real_subprocess
+    def test_plain_copy_with_clean_lineage_is_not_flagged(self) -> None:
+        # The toolkit's copy is exactly dotfiles@BASE's — the pending
+        # dotfiles delta replays cleanly, no divergence.
+        commit_file(self.dotfiles, "docs/clean.md", "lineage version\n")
+        commit_file(self.toolkit, "docs/clean.md", "lineage version\n")
+        base = git(self.dotfiles, "rev-parse", "HEAD").strip()
+        commit_file(self.dotfiles, "docs/clean.md", "lineage + delta\n")
+        tip = git(self.dotfiles, "rev-parse", "HEAD").strip()
+        problems = sfd.verify_invariants(
+            self.dotfiles,
+            base,
+            tip,
+            frozenset({"docs/clean.md"}),
+            frozenset({"docs/clean.md"}),
+            toolkit_root=self.toolkit,
+        )
+        self.assertFalse([p for p in problems if "docs/clean.md" in p], problems)
+
+    @pytest.mark.allow_real_subprocess
+    def test_flags_an_unclassified_deletion_never_resurrects(self) -> None:
+        # The toolkit deleted the path while dotfiles edited it: treating
+        # "toolkit lacks it" as a new file would silently resurrect it.
+        commit_file(self.dotfiles, "docs/deleted_toolkit_side.md", "lineage\n")
+        base = git(self.dotfiles, "rev-parse", "HEAD").strip()
+        commit_file(self.dotfiles, "docs/deleted_toolkit_side.md", "lineage + delta\n")
+        tip = git(self.dotfiles, "rev-parse", "HEAD").strip()
+        problems = sfd.verify_invariants(
+            self.dotfiles,
+            base,
+            tip,
+            frozenset({"docs/deleted_toolkit_side.md"}),
+            frozenset({"docs/deleted_toolkit_side.md"}),
+            toolkit_root=self.toolkit,
+        )
+        self.assertTrue(
+            any(
+                "unclassified deletion" in p and "deleted_toolkit_side.md" in p
+                for p in problems
+            ),
+            problems,
+        )
+
+    @pytest.mark.allow_real_subprocess
+    def test_genuinely_new_file_in_both_repos_is_safe(self) -> None:
+        # dotfiles created the path after BASE and the toolkit never had it:
+        # a clean new-file copy, no divergence, no deletion.
+        base = git(self.dotfiles, "rev-parse", "HEAD").strip()
+        commit_file(self.dotfiles, "docs/brand_new.md", "dotfiles new file\n")
+        tip = git(self.dotfiles, "rev-parse", "HEAD").strip()
+        problems = sfd.verify_invariants(
+            self.dotfiles,
+            base,
+            tip,
+            frozenset({"docs/brand_new.md"}),
+            frozenset({"docs/brand_new.md"}),
+            toolkit_root=self.toolkit,
+        )
+        self.assertFalse([p for p in problems if "brand_new.md" in p], problems)
+
+    @pytest.mark.allow_real_subprocess
+    def test_flags_independent_creation_without_a_clean_lineage(self) -> None:
+        # The path exists in both trees but was absent from dotfiles@BASE:
+        # no lineage to compare against, so blind-copying is a clobber risk.
+        base = git(self.dotfiles, "rev-parse", "HEAD").strip()
+        commit_file(self.dotfiles, "docs/independent.md", "dotfiles' new file\n")
+        tip = git(self.dotfiles, "rev-parse", "HEAD").strip()
+        commit_file(self.toolkit, "docs/independent.md", "toolkit's own file\n")
+        problems = sfd.verify_invariants(
+            self.dotfiles,
+            base,
+            tip,
+            frozenset({"docs/independent.md"}),
+            frozenset({"docs/independent.md"}),
+            toolkit_root=self.toolkit,
+        )
+        self.assertTrue(
+            any(
+                "diverged from the sync lineage" in p and "independent.md" in p
+                for p in problems
+            ),
+            problems,
+        )
+
+    @pytest.mark.allow_real_subprocess
+    def test_generated_artifact_divergence_is_skipped_silently(self) -> None:
+        # A generated artifact diverges by construction (each repo's sweep
+        # emits its own); the sweep regenerates it, so no flag.
+        base, _ = self.commit_shared_diverged()
+        commit_file(self.dotfiles, "INTERFACES.md", "dotfiles' generated copy\n")
+        commit_file(self.toolkit, "INTERFACES.md", "toolkit's generated copy\n")
+        tip = git(self.dotfiles, "rev-parse", "HEAD").strip()
+        changed = frozenset({"INTERFACES.md"})
+        problems = sfd.verify_invariants(
+            self.dotfiles, base, tip, changed, changed, toolkit_root=self.toolkit
+        )
+        self.assertFalse([p for p in problems if "INTERFACES.md" in p], problems)
+
+
+class RealCheckoutDerivationTests(unittest.TestCase):
+    """Derives the never-synced classification against the REAL checkouts.
+
+    This is the "caught at test time, not by a live sync halt" guard: any
+    new same-path file whose toolkit@ANCHOR content differs from
+    dotfiles@BASE and that carries no classification reds this test long
+    before a sync run would blind-copy over it.
+    """
+
+    @pytest.mark.allow_real_subprocess
+    def test_every_settled_same_path_divergence_is_classified(self) -> None:
+        state = sfd.load_state(sfd.REPO_ROOT)
+        assert state is not None, "sync state file must be committed"
+        base = state["last_synced_dotfiles_sha"]
+        assert isinstance(base, str)
+        anchor = sfd.resolve_toolkit_anchor(sfd.REPO_ROOT, state)
+
+        dotfiles_files = {
+            line
+            for line in sfd.run_git(
+                sfd.DEFAULT_DOTFILES_PATH, "ls-files"
+            ).stdout.splitlines()
+            if line
+        }
+        toolkit_files = {
+            line
+            for line in sfd.run_git(sfd.REPO_ROOT, "ls-files").stdout.splitlines()
+            if line
+        }
+        common = dotfiles_files & toolkit_files
+
+        def diverged(path: str) -> bool:
+            if not sfd.path_exists_at(sfd.DEFAULT_DOTFILES_PATH, base, path):
+                return True  # no clean lineage to compare against
+            dotfiles_blob = sfd.read_at(sfd.DEFAULT_DOTFILES_PATH, base, path)
+            toolkit_blob = sfd.read_at(sfd.REPO_ROOT, anchor, path)
+            return dotfiles_blob != toolkit_blob
+
+        unclassified = sfd.find_unclassified_divergences(common, common, diverged)
+        self.assertEqual(
+            unclassified,
+            [],
+            "unclassified same-path divergence(s) between the real checkouts: "
+            f"{unclassified}. For each path, either (a) the divergence is "
+            "intentional (AGENTS.md-style directory docs, each repo's own "
+            "README/config/tests) — add it to NEVER_SYNCED_REPO_SPECIFIC; "
+            "(b) a mechanical delta rule applies — register a "
+            "CONFLICT_HANDLERS entry per that registry's once-by-hand "
+            "policy; or (c) the divergence is this item's own pending "
+            "work — commit/resolve it before this derivation can pass.",
+        )
 
 
 if __name__ == "__main__":
