@@ -1180,6 +1180,36 @@ export function classifyWaitResult(
 }
 
 /**
+ * What swarm_poll's blocked-state resync pass does with a parked
+ * (`awaiting_relay`) record's `herdr agent get` result.
+ *
+ * A parked record has NO wait armed, so if its gate was answered out-of-band
+ * -- direct pane keys, not `swarm_resolve_blocked` -- or its agent exited,
+ * nothing will ever produce an event for it and the record outlives its
+ * worker: deferring new spawns on its "held" worktree, burning a pane-cap
+ * slot, and reporting an unanswered relay nobody is waiting on. Resync
+ * re-derives the truth from live herdr instead of trusting the record.
+ *
+ * `drop` fires only on the one code that positively means gone (the same
+ * rule `classifyTimeoutProbe` applies); `unpark` fires only on the KNOWN
+ * non-blocked statuses, never "status != blocked" in general -- a future
+ * herdr status like `paused` must not be handed a transition into a state
+ * the worker's wait cannot settle. Everything else keeps the record exactly
+ * as it was: fail open, an inconclusive check never mutates a worker.
+ */
+export type ResyncVerdict = { action: "drop" } | { action: "unpark" } | { action: "keep" };
+
+export function classifyResyncGet(exitCode: number, stdout: string, stderr: string): ResyncVerdict {
+  if (exitCode !== 0) {
+    const code = parseHerdrJson(stderr)?.error?.code;
+    return code === "agent_not_found" ? { action: "drop" } : { action: "keep" };
+  }
+  const status = parseHerdrJson(stdout)?.result?.agent?.agent_status;
+  if (status === "working" || status === "idle" || status === "done") return { action: "unpark" };
+  return { action: "keep" };
+}
+
+/**
  * What swarm_poll does with a worker whose wait window elapsed.
  *
  * `rearm` emits no event at all beyond the check-in; `event` is a real
@@ -2348,6 +2378,80 @@ export default function (pi: ExtensionAPI) {
       rt.deadlineMs = typed.workerDeadlineMs ?? DEFAULT_WORKER_DEADLINE_MS;
       rt.stallMs = typed.relayStallMs ?? DEFAULT_RELAY_STALL_MS;
 
+      // Blocked-state resync. A parked (awaiting_relay) record has no wait
+      // armed, so if its gate was answered out-of-band -- direct pane keys,
+      // not swarm_resolve_blocked -- or its agent exited, NOTHING will ever
+      // produce an event for it: the run defers new items on file overlap
+      // with its "held" worktree and burns a pane-cap slot on a worker that
+      // is long gone. The 2026-09-07 full atk run lost several poll cycles
+      // this way and only unstuck when a human told the orchestrator both
+      // workers were already done. Re-derive each parked worker's state from
+      // live herdr instead of trusting the record, so an out-of-band answer
+      // or a dead worker is detected HERE, on every poll, with no nudge.
+      //
+      // Active records are deliberately out of scope: their waits already
+      // self-heal (agent_not_found -> error event -> close), and a warm drop
+      // on a transient herdr hiccup would be exactly the "killed on an
+      // inconclusive signal" bug this file exists to prevent. Fail open
+      // throughout: an inconclusive get changes nothing.
+      const parkedNow = state.workers.filter((w) => w.lifecycle === "awaiting_relay");
+      const resyncNotes: string[] = [];
+      if (parkedNow.length > 0) {
+        // Parked workers are bounded by the pane soft cap, but serial local
+        // round-trips would still buy nothing -- fire the gets together.
+        const gets = await Promise.all(
+          parkedNow.map(async (worker) => {
+            try {
+              const r = await herdr(pi, buildAgentGetArgv(worker.agent), signal);
+              return { worker, verdict: classifyResyncGet(r.code, r.stdout, r.stderr) };
+            } catch {
+              // A thrown get is as inconclusive as an unparseable one.
+              return { worker, verdict: { action: "keep" as const } };
+            }
+          }),
+        );
+        const resumedAt = Date.now();
+        for (const { worker, verdict } of gets) {
+          if (verdict.action === "drop") {
+            // Emit the terminal event and let the EXISTING drain loop below
+            // own the whole teardown -- capture offers, closeWorker, record
+            // removal, persist. Resync itself mutates nothing: one owner per
+            // lifecycle transition, no split-brain double close. The detail
+            // says the outcome was INFERRED, not observed -- a vanished
+            // worker finished its item, or it died; the orchestrator should
+            // verify the item either way.
+            rt.inFlight.delete(worker.agent);
+            rt.pendingEvents.push({
+              kind: "finished",
+              agent: worker.agent,
+              slug: worker.slug,
+              paneId: worker.paneId,
+              detail:
+                "resync: agent gone from herdr while its record said awaiting_relay -- " +
+                "its gate was likely answered out-of-band (direct pane keys) and the " +
+                "worker has since finished or exited; outcome inferred, not observed. " +
+                "Verify the item's state before treating it as complete.",
+            });
+          } else if (verdict.action === "unpark") {
+            // The same clock moves swarm_resolve_blocked's resume makes: the
+            // working clock restarts (accumulated segments were folded at
+            // park, so this is a segment restart, not a budget reset) and the
+            // relay clock clears. Arming happens in the active-arm loop just
+            // below; a wait on an already-idle/done agent settles
+            // immediately, and this poll blocks on waitForEvent, so the
+            // finished event lands in THIS poll call.
+            worker.workingSinceMs = resumedAt;
+            worker.awaitingRelaySinceMs = undefined;
+            worker.lastResolveFailure = undefined;
+            worker.lifecycle = "active";
+            resyncNotes.push(
+              `${worker.agent} (${worker.slug}) was parked awaiting a relay, but herdr now reports it unblocked -- resumed tracking as active.`,
+            );
+          }
+        }
+        if (resyncNotes.length > 0) persist(state);
+      }
+
       // Stamp any parked worker written before this clock existed, rather
       // than leaving it unbounded forever. Stamping now means it is measured
       // from this poll instead of from whenever it really parked -- late, but
@@ -2509,6 +2613,7 @@ export default function (pi: ExtensionAPI) {
             .map((w) => `${w.agent} (${w.slug}, pane ${w.paneId})`)
             .join(", ")}.`
         : "";
+      const resyncNote = resyncNotes.length ? `\n\n${resyncNotes.join(" ")}` : "";
 
       return {
         content: [
@@ -2548,7 +2653,9 @@ export default function (pi: ExtensionAPI) {
                     : "";
                   return `${e.slug} (${e.agent}) ${e.kind}${e.detail ? `: ${e.detail}` : ""}${captures}`;
                 })
-                .join("\n\n") + stalledNote,
+                .join("\n\n") +
+              stalledNote +
+              resyncNote,
           },
         ],
         details: { events },
