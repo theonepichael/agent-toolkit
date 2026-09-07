@@ -7,6 +7,9 @@ After=network-online.target
 
 [Service]
 # %h is systemd's home specifier for user units — no hardcoded path.
+# [tool.uv] package = false, so python -m herdr_remote only resolves with
+# the process cwd at the repo root; uv run --project does not cd there.
+WorkingDirectory=%h/Workspace/agent-toolkit
 ExecStart=%h/.local/bin/uv run --project %h/Workspace/agent-toolkit python -m herdr_remote serve
 Restart=on-failure
 RestartSec=5

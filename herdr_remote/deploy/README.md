@@ -21,8 +21,8 @@ assets_dir = "$HOME/Workspace/agent-toolkit/herdr_remote/pwa"
 bind_host = "0.0.0.0"
 bind_port = 8765
 EOF
-uv run --project ~/Workspace/agent-toolkit python -m herdr_remote gen-token
-# user unit (adjust --project path to wherever the toolkit lives)
+uv run --directory ~/Workspace/agent-toolkit python -m herdr_remote gen-token
+# user unit (adjust --directory path to wherever the toolkit lives)
 mkdir -p ~/.config/systemd/user
 cp herdr_remote/deploy/herdr-remote-bridge.service ~/.config/systemd/user/
 systemctl --user daemon-reload
@@ -56,7 +56,9 @@ token, install to home screen, watch agent statuses, send a prompt.
 ## Rotate the token
 
 ```zsh
-uv run --project ~/Workspace/agent-toolkit python -m herdr_remote gen-token
+# --directory cds into the repo: python -m herdr_remote only resolves with
+# the repo root as cwd (package = false; --project alone does not cd there)
+uv run --directory ~/Workspace/agent-toolkit python -m herdr_remote gen-token
 systemctl --user restart herdr-remote-bridge.service
 ```
 
