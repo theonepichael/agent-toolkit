@@ -1426,10 +1426,12 @@ sync_from_dotfiles.py — replay dotfiles' harness changes onto this toolkit.
   - `write_copies(repo_root: Path, dotfiles_path: Path, tip: str, paths: Sequence[str]) -> None` — Write each path's byte-identical content from dotfiles@tip into the repo.
   - `run_generator_sweep(repo_root: Path, sweep: Sequence[str], *, quiet: bool, verbose: bool) -> None` — Run every generator in ``sweep`` so copied artifacts describe this repo.
   - `apply_sync(repo_root: Path, dotfiles_path: Path, tip: str, plain_copies: Sequence[str], handled: Sequence[str], base: str, *, generator_sweep: Sequence[str] = GENERATOR_SWEEP, quiet: bool = False, verbose: bool = False) -> None` — Write copies, apply handled conflicts, sweep, then record new state.
-  - `compute_copy_set(dotfiles_changed: frozenset[str]) -> frozenset[str]` — Paths to replay onto the toolkit: everything dotfiles changed, minus the deliberate-deletion blocklist and the dotfiles-only exclude list.
+  - `match_never_synced(path: str) -> bool` — Whether ``path`` is never synced between the two checkouts.
+  - `compute_copy_set(dotfiles_changed: frozenset[str]) -> frozenset[str]` — Paths to replay onto the toolkit: everything dotfiles changed, minus the deliberate-deletion blocklist, the dotfiles-only exclude list, and the never-synced repo-specific paths (same relative path in both checkouts, intentionally different content — copying one over the other would clobber).
   - `compute_conflict_set(dotfiles_changed: frozenset[str], toolkit_changed: frozenset[str]) -> frozenset[str]` — Paths both sides changed since the last sync — never assumed, always derived.
+  - `find_unclassified_divergences(common_paths: Iterable[str], diverged_paths: Iterable[str], diverged: Callable[[str], bool]) -> list[str]` — Same-path divergences between the two checkouts with no classification.
   - `classify_conflict(path: str) -> str` — Classify one conflict path: "generated_artifact", "handled", or "unclassified" (category 4 — stop and hand-resolve, the safe default).
-  - `verify_invariants(dotfiles_path: Path, base: str, tip: str, copy_set: frozenset[str], plain_copies: Sequence[str]) -> list[str]` — Check the invariants that must hold before any write.
+  - `verify_invariants(dotfiles_path: Path, base: str, tip: str, copy_set: frozenset[str], plain_copies: Sequence[str], toolkit_root: Path = REPO_ROOT) -> list[str]` — Check the invariants that must hold before any write.
   - `build_parser() -> argparse.ArgumentParser` — Build the argument parser.
 - Tested by: `scripts/test_sync_from_dotfiles.py`
 

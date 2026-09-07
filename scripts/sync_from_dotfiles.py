@@ -10,6 +10,14 @@ for the full design rationale (why ``BLOCKLIST`` and the conflict
 classification rule live here as code, why this lives at ``scripts/`` and
 not ``claude/scripts/``).
 
+Same-path repo-specific docs (``NEVER_SYNCED_REPO_SPECIFIC``) are never
+replayed in either direction — the toolkit's copy of each is intentionally
+different from dotfiles' — and verify_invariants() additionally derives
+any *other* same-path divergence from the sync lineage before any write,
+so an unregistered divergence stops the run with guidance instead of a
+blind copy clobbering toolkit-side content (or the incidental
+BLOCKED_MODULES check halting with the wrong message).
+
 Replays the range ``BASE..TIP`` of dotfiles' history onto this repo:
 
 - ``BASE`` is read from ``scripts/.sync-state.json``'s
@@ -55,7 +63,7 @@ import fnmatch
 import json
 import subprocess
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -127,6 +135,37 @@ EXCLUDE: tuple[str, ...] = (
     # githooks-global/lib/no-commit-on-main.sh, IS shared and syncs.)
     "scripts/watchcommit.py",
     "test/test_no_commit_on_main.py",
+)
+
+# Paths that exist at the same relative path in BOTH checkouts with
+# intentionally different content -- AGENTS.md-style directory docs, each
+# repo's own README/STYLE/config/installer/tests (the toolkit's tiny diffs
+# in CORE_INSTRUCTIONS/test/AGENTS/STYLE are its claude/scripts/ →
+# agent-scripts/ rename propagated through prose). A dotfiles change to one
+# is never replayed onto this toolkit: port a wanted change by hand, as its
+# own decision. fnmatch patterns over the whole repo-relative path (`*`
+# crosses `/`, same mechanism as GENERATED_ARTIFACT_PATTERNS), so they match
+# whole names, never substrings. Distinct from EXCLUDE, which holds
+# dotfiles-only paths absent from this toolkit -- do not merge the two sets.
+# Classification is not left to memory alone: verify_invariants() derives
+# same-path divergence from the sync lineage before any write, and
+# scripts/test_sync_from_dotfiles.py's RealCheckoutDerivationTests derives
+# it against the real checkouts at test time.
+NEVER_SYNCED_REPO_SPECIFIC: tuple[str, ...] = (
+    "AGENTS.md",
+    "*/AGENTS.md",
+    "README.md",
+    "STYLE.md",
+    "claude/CORE_INSTRUCTIONS.md",
+    "claude/settings.json",
+    "githooks/pre-commit",
+    "install.py",
+    "links.toml",
+    "opencode/opencode.jsonc",
+    "pyproject.toml",
+    "test/test_install.py",
+    "test/test_lint.py",
+    "uv.lock",
 )
 
 # Generator outputs: never copy these from dotfiles even when they conflict.
@@ -348,17 +387,67 @@ def apply_sync(
 # ── pure set math and classification ────────────────────────────────────────
 
 
+def match_never_synced(path: str) -> bool:
+    """Whether ``path`` is never synced between the two checkouts."""
+    return any(fnmatch.fnmatch(path, pattern) for pattern in NEVER_SYNCED_REPO_SPECIFIC)
+
+
 def compute_copy_set(dotfiles_changed: frozenset[str]) -> frozenset[str]:
     """Paths to replay onto the toolkit: everything dotfiles changed, minus
-    the deliberate-deletion blocklist and the dotfiles-only exclude list."""
-    return dotfiles_changed - frozenset(BLOCKLIST) - frozenset(EXCLUDE)
+    the deliberate-deletion blocklist, the dotfiles-only exclude list, and
+    the never-synced repo-specific paths (same relative path in both
+    checkouts, intentionally different content — copying one over the other
+    would clobber)."""
+    return (
+        dotfiles_changed
+        - frozenset(BLOCKLIST)
+        - frozenset(EXCLUDE)
+        - {p for p in dotfiles_changed if match_never_synced(p)}
+    )
 
 
 def compute_conflict_set(
     dotfiles_changed: frozenset[str], toolkit_changed: frozenset[str]
 ) -> frozenset[str]:
-    """Paths both sides changed since the last sync — never assumed, always derived."""
-    return dotfiles_changed & toolkit_changed
+    """Paths both sides changed since the last sync — never assumed, always
+    derived. Never-synced repo-specific paths are subtracted first: they
+    replay in neither direction, so both sides touching one is not a
+    conflict to hand-resolve."""
+    return (dotfiles_changed & toolkit_changed) - {
+        p for p in dotfiles_changed if match_never_synced(p)
+    }
+
+
+def find_unclassified_divergences(
+    common_paths: Iterable[str],
+    diverged_paths: Iterable[str],
+    diverged: Callable[[str], bool],
+) -> list[str]:
+    """Same-path divergences between the two checkouts with no classification.
+
+    ``common_paths`` are the relative paths present in both trees;
+    ``diverged_paths`` are the candidates to test; ``diverged(path)``
+    reports whether that path's content actually differs between the two
+    repos' compared states (the derivation decides which states those are
+    — see verify_invariants() for the write-time lineage rule and
+    RealCheckoutDerivationTests for the settled-anchor rule). A path that
+    diverges but is neither in NEVER_SYNCED_REPO_SPECIFIC, nor matched by
+    GENERATED_ARTIFACT_PATTERNS, nor registered in CONFLICT_HANDLERS is
+    returned — the caller surfaces it with guidance instead of letting a
+    future sync blind-copy over it."""
+    return [
+        path
+        for path in sorted(set(common_paths) & set(diverged_paths))
+        if diverged(path)
+        and not (
+            match_never_synced(path)
+            or any(
+                fnmatch.fnmatch(path, pattern)
+                for pattern in GENERATED_ARTIFACT_PATTERNS
+            )
+            or path in CONFLICT_HANDLERS
+        )
+    ]
 
 
 def classify_conflict(path: str) -> str:
@@ -377,6 +466,7 @@ def verify_invariants(
     tip: str,
     copy_set: frozenset[str],
     plain_copies: Sequence[str],
+    toolkit_root: Path = REPO_ROOT,
 ) -> list[str]:
     """Check the invariants that must hold before any write. Empty means clean.
 
@@ -391,6 +481,18 @@ def verify_invariants(
     legitimate self-references to a blocklisted module inside those files
     (its own generated docs describing its own personal-only scripts) must
     not block a run that will never actually copy that content in.
+
+    The same-path divergence check is also over ``plain_copies`` only: a
+    plain copy is safe to blind-copy iff the toolkit's copy is exactly
+    dotfiles@BASE's (clean delta replay — the copy replays the pending
+    dotfiles delta) or is a genuinely new file (absent from the toolkit
+    AND from dotfiles@BASE). Anything else is pre-anchor divergence —
+    toolkit-side content a ``toolkit_changed`` diff can never see — or an
+    unclassified deletion (the toolkit deleted the path while dotfiles
+    edited it); both stop the run with guidance instead of silently
+    clobbering or resurrecting. Generated artifacts are skipped
+    silently: they diverge by construction (each repo's sweep emits its
+    own) and are regenerated after any copy.
     """
     problems: list[str] = []
     for entry in BLOCKLIST:
@@ -405,6 +507,7 @@ def verify_invariants(
                 f"{path!r} is in copy_set but missing from dotfiles@{tip} — "
                 "looks like a deletion; add it to BLOCKLIST or EXCLUDE if deliberate"
             )
+    toolkit_head = resolve_head(toolkit_root)
     for path in sorted(plain_copies):
         if not path_exists_at(dotfiles_path, tip, path):
             continue  # already reported as a deletion above
@@ -416,6 +519,30 @@ def verify_invariants(
                     f"{path!r} references blocklisted module {module!r} "
                     f"at dotfiles@{tip}"
                 )
+        if any(
+            fnmatch.fnmatch(path, pattern) for pattern in GENERATED_ARTIFACT_PATTERNS
+        ):
+            continue  # regenerated by the sweep; diverges by construction
+        in_dotfiles_base = path_exists_at(dotfiles_path, base, path)
+        in_toolkit_head = path_exists_at(toolkit_root, toolkit_head, path)
+        if not in_toolkit_head:
+            if in_dotfiles_base:
+                problems.append(
+                    f"{path!r} is missing from the toolkit but exists in "
+                    f"dotfiles@{base} — an unclassified deletion; add it to "
+                    "BLOCKLIST if deliberate — never blind-copy it back"
+                )
+            continue  # genuinely new file in dotfiles: clean copy
+        if not in_dotfiles_base or read_at(dotfiles_path, base, path) != read_at(
+            toolkit_root, toolkit_head, path
+        ):
+            problems.append(
+                f"{path!r} diverged from the sync lineage: the toolkit's copy "
+                f"differs from dotfiles@{base}, so blind-copying dotfiles@{tip} "
+                "over it would clobber toolkit-side content — add it to "
+                "NEVER_SYNCED_REPO_SPECIFIC if the divergence is intentional, "
+                "register a CONFLICT_HANDLERS rule, or hand-resolve"
+            )
     return problems
 
 
@@ -516,8 +643,20 @@ def main() -> None:
         p for p, c in classifications.items() if c == "generated_artifact"
     )
     handled = sorted(p for p, c in classifications.items() if c == "handled")
+    never_synced = sorted(p for p in dotfiles_changed if match_never_synced(p))
 
     cli_common.qprint(f"[sync_from_dotfiles] BASE={base} TIP={tip}", quiet=args.quiet)
+    if never_synced:
+        cli_common.qprint(
+            "[sync_from_dotfiles] repo-specific, never synced: this toolkit's "
+            "copy of each path below is intentionally different from dotfiles'; "
+            "a wanted dotfiles-side change is ported by hand, not replayed",
+            quiet=args.quiet,
+        )
+        for path in never_synced:
+            cli_common.qprint(
+                f"  skip (repo-specific, never synced): {path}", quiet=args.quiet
+            )
     cli_common.qprint(
         f"[sync_from_dotfiles] copy_set: {len(copy_set)} path(s) "
         f"({len(plain_copies)} plain, {len(generated)} generated-artifact, "
