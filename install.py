@@ -3606,14 +3606,14 @@ def print_summary(
         print("  - Log out and back in for Caps Lock → Escape to take effect")
         print("  - Open Karabiner-Elements → grant Input Monitoring + Accessibility")
         print("  - Open Rectangle → grant Accessibility permission")
+    # No claude-login line here: watchcommit — the consumer that line was
+    # written for — is dotfiles-only (empty MANAGED_SERVICES above,
+    # load_watchcommit_agent never called), so agent-toolkit's install has
+    # nothing that auto-consumes claude credentials. Any other repo whose
+    # install needs a login step prints its own manual step.
     if ctx.opts.profile == "work":
         print("  - ~/.secrets is sourced if present — for work-issued tokens only;")
         print("    do NOT put a personal ANTHROPIC_API_KEY on this machine")
-    elif ctx.has_harness("claude"):
-        print(
-            "  - Run 'claude login' if you haven't, so watchcommit can "
-            "generate commit messages"
-        )
     if ctx.is_linux:
         print("  - Restart your shell to pick up the new config")
 

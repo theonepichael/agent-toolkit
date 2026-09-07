@@ -5170,3 +5170,24 @@ def test_main_fails_loudly_when_harness_binary_missing(home, monkeypatch, capsys
     assert "npm install -g @mariozechner/pi-cli" in err
     assert "pass --force-harness" in err
 
+
+
+# ── print_summary's manual steps (watchcommit manual-step leak) ──────────────
+
+
+def test_manual_steps_never_name_watchcommit(home, capsys):
+    """agent-toolkit does not ship watchcommit, so its summary must not.
+
+    The dotfiles-side install.py legitimately tells the user to run
+    'claude login' so watchcommit can generate commit messages -- this
+    repo's snapshot carried the line even though watchcommit itself is
+    dotfiles-only (empty MANAGED_SERVICES, load_watchcommit_agent never
+    called, scripts pruned per sync_from_dotfiles' BLOCKLIST/EXCLUDE).
+    """
+    for profile in ("personal", "work"):
+        ctx = make_ctx(home, harnesses=("claude",), profile=profile)
+        install.print_summary(ctx, ("", ""), ("", ""))
+        out = capsys.readouterr().out
+        assert "Manual steps:" in out, f"summary broken for {profile}"
+        assert "watchcommit" not in out, f"watchcommit named for {profile}"
+        assert "claude login" not in out, f"claude-login step for {profile}"
