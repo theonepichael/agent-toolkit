@@ -1494,6 +1494,30 @@ describe("swarm_spawn worker bootstrap", () => {
     expect(shapes).toEqual(["0/2", "2/0"]);
   });
 
+  // herdr_delegate.py's restart mode discovers the runId to resume by
+  // matching this field exactly, so a scoped run must stamp it on the state
+  // it persists. (Items-only runs have no prefix and omit the field.)
+  test("a scoped run persists its prefix for restart discovery", async () => {
+    const { spawn } = stubFor(tabCreateOk);
+
+    await spawn.execute(
+      ...([
+        "call-1",
+        { runId: "scoped", prefix: "atk-", items: ["some-item"], concurrency: 1 },
+      ] as unknown as never[]),
+    );
+
+    expect(loadState("scoped", dir)?.prefix).toBe("atk-");
+  });
+
+  test("an items-only run omits the prefix field", async () => {
+    const { spawn } = stubFor(tabCreateOk);
+
+    await spawnRun(spawn, "unscoped", ["some-item"], 1);
+
+    expect(loadState("unscoped", dir)?.prefix).toBeUndefined();
+  });
+
   // The whole run funnels through one chain, so a spawn that throws must
   // still release it -- otherwise one bad call wedges every later spawn for
   // that runId forever.

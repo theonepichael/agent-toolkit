@@ -634,6 +634,13 @@ Launch pi agents in herdr tabs to work backlog items.
     - `--prefix` — queue scope, required with --swarm
     - `--model` — model passed through to pi after a bare --
     - `--cwd` — working directory
+  - `restart [--swarm <SWARM>] [--prefix <PREFIX>] [--run-id <RUN_ID>] [--model <MODEL>] [--cwd <CWD>]` — close a live swarm orchestrator's tab, relaunch it, resume the same run
+    - `--swarm` — fan out across N workers
+    - `--prefix` — queue scope, required with --swarm
+    - `--run-id` — runId to resume; discovered from persisted state when omitted
+    - `--model` — model passed through to pi after a bare --
+    - `--cwd` — working directory
+- Environment: `PI_SWARM_STATE_DIR`
 - Filesystem constants:
   - `DEV_STATUS = Path(__file__).parent / 'dev_status.py'`
 - Explicit exit codes: `1`
@@ -645,12 +652,26 @@ Launch pi agents in herdr tabs to work backlog items.
   - `check_launchable(*, slug: str | None = None, prefix: str | None = None) -> None` — Refuse a launch that targets the harness's own repo.
   - `group_by_prefix(slugs: list[str]) -> list[dict[str, object]]` — Group slugs by prefix, worker-safe prefixes first, then largest first.
   - `build_tab_argv(*, cwd: str, label: str) -> list[str]` — `herdr tab create` argv.
+  - `agent_name_for(label: str) -> str` — The herdr agent name derived from a tab label.
+  - `build_tab_list_argv() -> list[str]` — `herdr tab list` argv.
+  - `build_agent_list_argv() -> list[str]` — `herdr agent list` argv.
   - `build_agent_start_argv(*, name: str, pane: str, model: str | None) -> list[str]` — `herdr agent start` argv, with any model passed through after a bare ``--``.
   - `worker_prompt(slug: str) -> str` — One worker, one item, unattended.
   - `orchestrator_prompt(concurrency: int) -> str` — One orchestrator; `swarm_spawn` owns the fan-out from here.
+  - `orchestrator_resume_prompt(concurrency: int, run_id: str, prefix: str) -> str` — One orchestrator, resuming an interrupted run.
+  - `validate_run_id(run_id: str) -> str` — Refuse a runId the delegate cannot safely pass through.
+  - `swarm_state_dir() -> Path` — Where swarm-tool.ts persists per-runId state (same override, same default).
+  - `state_matches_prefix(state: object, prefix: str) -> bool` — Whether one parsed state file belongs to a run scoped to ``prefix``.
+  - `discover_run_id(prefix: str) -> str` — The runId of the newest state file belonging to ``prefix``.
+  - `resolve_resume_run_id(prefix: str, run_id: str | None) -> str` — The runId a restart will resume.
+  - `parse_tab_list(listing: dict[str, object]) -> list[dict[str, object]]` — Tabs out of a `herdr tab list` envelope; [] on anything unexpected.
+  - `live_tab_ids_with_label(label: str) -> list[str]` — Ids of every live tab carrying exactly ``label``.
+  - `parse_agent_names(listing: dict[str, object]) -> list[str]` — Agent names out of a `herdr agent list` envelope; [] on anything unexpected.
+  - `wait_agent_deregistered(name: str) -> None` — Poll until no live agent carries ``name``, bounded; refuse if it persists.
+  - `spawn_in_new_tab(*, cwd: str, label: str, prompt: str, model: str | None) -> dict[str, object]` — Create a tab, start pi in it, and hand it its prompt.
   - `ready_slugs() -> list[str]` — Slugs currently in READY, straight from ``dev_status.py ready``.
   - `herdr(argv: list[str]) -> dict[str, object]` — Run a herdr command and return its parsed JSON result.
-- Subcommand handlers: `cmd_plan`, `cmd_launch`
+- Subcommand handlers: `cmd_plan`, `cmd_launch`, `cmd_restart`
 - Tested by: `agent-scripts/test_herdr_delegate.py`
 
 ### `agent-scripts/link_drift_check.py`

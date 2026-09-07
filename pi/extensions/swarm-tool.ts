@@ -307,6 +307,19 @@ export interface SwarmState {
    * run has attempted nothing it can prove, which is the old behaviour.
    */
   attempted?: string[];
+  /**
+   * The slug prefix this run was scoped to, stamped when a fresh state is
+   * initialized and carried through every save.
+   *
+   * herdr_delegate.py's `restart` mode discovers the runId to resume by
+   * matching this field exactly against the prefix it was invoked with.
+   * Legacy files written before the field existed fall back to matching
+   * worker/`attempted` slugs -- a substring-prefix collision could fool the
+   * scan (e.g. a hypothetical `auth` prefix inside `auth-api-` slugs), which
+   * is why the exact field exists rather than the scan alone. Optional for
+   * the same reason every other field added here is: old state files on disk.
+   */
+  prefix?: string;
 }
 
 /** One item's outcome from the spawn loop: a live worker, or a reason it never became one. */
@@ -1778,13 +1791,26 @@ export default function (pi: ExtensionAPI) {
   }
 
   /** Loads state, reconciling against herdr's live truth only on a cold load (state wasn't already in this process's memory) -- avoids a herdr round-trip on every call once a run is warm. */
-  async function getOrInitState(runId: string, concurrency: number): Promise<SwarmState> {
+  async function getOrInitState(
+    runId: string,
+    concurrency: number,
+    prefix?: string,
+  ): Promise<SwarmState> {
     const cached = activeRuns.get(runId);
     if (cached) return cached;
 
     const loaded = loadState(runId);
     if (!loaded) {
-      const fresh: SwarmState = { runId, concurrency, nextCounter: 0, workers: [] };
+      // The prefix rides along when the caller scoped the run, so a later
+      // herdr_delegate.py restart can discover this runId by exact field
+      // match instead of reverse-engineering it from slug naming.
+      const fresh: SwarmState = {
+        runId,
+        concurrency,
+        nextCounter: 0,
+        workers: [],
+        ...(prefix !== undefined ? { prefix } : {}),
+      };
       activeRuns.set(runId, fresh);
       return fresh;
     }
@@ -2160,7 +2186,11 @@ export default function (pi: ExtensionAPI) {
       // be one step, or a second caller measures a pool this one is about to
       // fill. See withSpawnLock.
       return withSpawnLock(typed.runId, async () => {
-        const state = await getOrInitState(typed.runId, typed.concurrency ?? DEFAULT_CONCURRENCY);
+        const state = await getOrInitState(
+          typed.runId,
+          typed.concurrency ?? DEFAULT_CONCURRENCY,
+          typed.prefix,
+        );
 
         // dev_status.py owns what READY means -- it is computed from the
         // blocker graph on every call, so an item becomes ready the moment its

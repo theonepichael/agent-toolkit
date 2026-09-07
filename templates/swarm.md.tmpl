@@ -47,6 +47,22 @@ python3 ~/.claude/scripts/herdr_delegate.py launch --swarm <N> --prefix <prefix>
 --swarm=N`; `swarm_spawn` owns the fan-out from there. Default `N` to 3 unless
 the user says otherwise.
 
+Mid-run, after orchestrator-side code has just landed (a `swarm-tool.ts` or
+`backlog-item.md` fix), the running orchestrator is still the old one. Restart
+it in place instead of hand-closing and hand-resuming:
+
+```bash
+python3 ~/.claude/scripts/herdr_delegate.py restart --swarm <N> --prefix <prefix> [--run-id <runId>] [--model <model>]
+```
+
+It closes the orchestrator's tab (never the workers'), relaunches it, and
+prompts it with `/backlog-item --swarm=N resume <runId> --prefix <prefix>` so
+it picks up the same run's persisted state instead of starting fresh. The
+runId comes from `--run-id` when given, otherwise from the newest persisted
+state file matching the prefix; with nothing resumable the command refuses
+rather than silently launching a fresh run — pass `--run-id` or use `launch`
+explicitly when a fresh start is what you want.
+
 Picking a model: check `pi --list-models <pattern>` before concluding one is
 unavailable. A model can resolve for pi while being absent from
 `~/.pi/agent/models.json`, because the fetched catalog in `models-store.json`

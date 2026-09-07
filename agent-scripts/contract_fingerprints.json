@@ -255,11 +255,18 @@
     "arg launch --prefix: \u2014 queue scope, required with --swarm",
     "arg launch --slug: \u2014 single item for one unattended worker",
     "arg launch --swarm: \u2014 fan out across N workers",
+    "arg restart --cwd: \u2014 working directory",
+    "arg restart --model: \u2014 model passed through to pi after a bare --",
+    "arg restart --prefix: \u2014 queue scope, required with --swarm",
+    "arg restart --run-id: \u2014 runId to resume; discovered from persisted state when omitted",
+    "arg restart --swarm: \u2014 fan out across N workers",
     "exit codes: 1",
     "handler launch: Create a tab, start pi in it, and hand it its prompt.",
     "handler plan: Print the READY queue grouped by prefix, as JSON. No side effects.",
+    "handler restart: Close a live swarm orchestrator's tab, relaunch it, and prompt it to resume. Ordered so nothing destructive happens before everything checkable has passed: the runId is resolved and validated first, so a failure there leaves the running orchestrator untouched. Workers are never touched -- only the orchestrator's own tab is a close candidate.",
     "subcommand launch: start a pi worker or orchestrator",
-    "subcommand plan: READY queue grouped by prefix, as JSON"
+    "subcommand plan: READY queue grouped by prefix, as JSON",
+    "subcommand restart: close a live swarm orchestrator's tab, relaunch it, resume the same run"
   ],
   "second_opinion.py": [
     "arg (top-level) --quiet/-q: ",

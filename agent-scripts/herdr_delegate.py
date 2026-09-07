@@ -30,6 +30,8 @@ Usage:
     herdr_delegate.py plan
     herdr_delegate.py launch --slug <slug> [--model <model>]
     herdr_delegate.py launch --swarm <N> --prefix <prefix> [--model <model>]
+    herdr_delegate.py restart --swarm <N> --prefix <prefix> [--run-id <runId>]
+                              [--model <model>]
 """
 
 from __future__ import annotations
@@ -37,8 +39,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 # Deliberately NOT .resolve()'d: post meta-agent-toolkit-migration-cutover,
@@ -135,6 +139,28 @@ def build_tab_argv(*, cwd: str, label: str) -> list[str]:
     ]
 
 
+def agent_name_for(label: str) -> str:
+    """The herdr agent name derived from a tab label.
+
+    ONE helper on purpose: launch's start, restart's deregistration poll and
+    restart's relaunch all claim the same name, and deriving it three ways
+    would let a future sanitization change move one of them and not the
+    others -- the poll would wait on a name nothing claims, or relaunch into
+    a name it just certified free.
+    """
+    return label.replace("_", "-")[:32]
+
+
+def build_tab_list_argv() -> list[str]:
+    """`herdr tab list` argv."""
+    return ["tab", "list"]
+
+
+def build_agent_list_argv() -> list[str]:
+    """`herdr agent list` argv."""
+    return ["agent", "list"]
+
+
 def build_agent_start_argv(*, name: str, pane: str, model: str | None) -> list[str]:
     """`herdr agent start` argv, with any model passed through after a bare ``--``."""
     argv = ["agent", "start", name, "--kind", "pi", "--pane", pane]
@@ -151,6 +177,203 @@ def worker_prompt(slug: str) -> str:
 def orchestrator_prompt(concurrency: int) -> str:
     """One orchestrator; `swarm_spawn` owns the fan-out from here."""
     return f"/backlog-item --swarm={concurrency}"
+
+
+def orchestrator_resume_prompt(concurrency: int, run_id: str, prefix: str) -> str:
+    """One orchestrator, resuming an interrupted run.
+
+    Single line, deliberately: pi's prompt templates take arguments from the
+    command line itself, and extra prose after a slash command is not a
+    documented mechanism. Everything `resume` means lives in
+    pi/prompts/backlog-item.md's --swarm section; this only has to match what
+    that parser accepts.
+    """
+    return f"/backlog-item --swarm={concurrency} resume {run_id} --prefix {prefix}"
+
+
+RUN_ID_PATTERN = re.compile(r"[A-Za-z0-9._-]+")
+RUN_ID_MAX_LEN = 64
+
+
+def validate_run_id(run_id: str) -> str:
+    """Refuse a runId the delegate cannot safely pass through.
+
+    swarm-tool.ts's ``statePath`` joins the runId into a state filename
+    unsanitized, so a crafted value is stopped here rather than trusted
+    downstream.
+    """
+    if (
+        not run_id
+        or len(run_id) > RUN_ID_MAX_LEN
+        or not RUN_ID_PATTERN.fullmatch(run_id)
+    ):
+        raise RefusedError(
+            f"--run-id must be non-empty, at most {RUN_ID_MAX_LEN} chars, and "
+            f"only [A-Za-z0-9._-] (got {run_id!r})"
+        )
+    return run_id
+
+
+def swarm_state_dir() -> Path:
+    """Where swarm-tool.ts persists per-runId state (same override, same default)."""
+    override = os.environ.get("PI_SWARM_STATE_DIR")
+    if override:
+        return Path(override)
+    return Path.home() / ".pi" / "agent" / "state"
+
+
+def state_matches_prefix(state: object, prefix: str) -> bool:
+    """Whether one parsed state file belongs to a run scoped to ``prefix``.
+
+    Exact field first -- swarm-tool.ts stamps ``prefix`` on fresh state --
+    with a slug-scan fallback for files written before the field existed. A
+    file with a DIFFERENT prefix field never matches by slug luck: the field
+    is the deliberate answer, the scan is only for legacy files that lack it.
+    """
+    if not isinstance(state, dict):
+        return False
+    recorded = state.get("prefix")
+    if recorded is not None:
+        return recorded == prefix
+    slugs: list[object] = []
+    workers = state.get("workers")
+    if isinstance(workers, list):
+        slugs += [w.get("slug") for w in workers if isinstance(w, dict)]
+    attempted = state.get("attempted")
+    if isinstance(attempted, list):
+        slugs += attempted
+    return any(isinstance(s, str) and s.startswith(f"{prefix}-") for s in slugs)
+
+
+def discover_run_id(prefix: str) -> str:
+    """The runId of the newest state file belonging to ``prefix``.
+
+    Refuses rather than falling back to a fresh run: a restart that cannot
+    name the run it is resuming must not silently launch a new one -- the
+    previous run's workers are deliberately still alive, and a fresh runId
+    would neither adopt nor reconcile them. The refusal names the two
+    deliberate exits instead (explicit --run-id, or launch for a conscious
+    fresh start).
+    """
+    state_dir = swarm_state_dir()
+    if not state_dir.is_dir():
+        raise RefusedError(
+            f"no swarm state dir at {state_dir}, so there is no run to resume. "
+            "Pass --run-id explicitly, or use launch for a deliberate fresh start."
+        )
+    files = sorted(
+        state_dir.glob("swarm-*.json"), key=lambda p: p.stat().st_mtime, reverse=True
+    )
+    skipped: list[str] = []
+    for path in files:
+        try:
+            state: object = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError, ValueError):
+            skipped.append(path.name)
+            continue
+        if state_matches_prefix(state, prefix):
+            run_id = ""
+            if isinstance(state, dict):
+                candidate = state.get("runId")
+                if isinstance(candidate, str):
+                    run_id = candidate
+            if not run_id:
+                run_id = path.stem.removeprefix("swarm-")
+            return run_id
+    detail = f" ({len(skipped)} unparseable, e.g. {skipped[0]})" if skipped else ""
+    raise RefusedError(
+        f"no swarm state file matches prefix '{prefix}'{detail}, so there is no "
+        "run to resume. Pass --run-id explicitly, or use launch for a deliberate "
+        "fresh start."
+    )
+
+
+def resolve_resume_run_id(prefix: str, run_id: str | None) -> str:
+    """The runId a restart will resume. Explicit always wins; discovery next."""
+    if run_id is not None:
+        return validate_run_id(run_id)
+    return discover_run_id(prefix)
+
+
+def parse_tab_list(listing: dict[str, object]) -> list[dict[str, object]]:
+    """Tabs out of a `herdr tab list` envelope; [] on anything unexpected."""
+    result = listing.get("result") if isinstance(listing, dict) else None
+    tabs = result.get("tabs") if isinstance(result, dict) else None
+    if not isinstance(tabs, list):
+        return []
+    return [t for t in tabs if isinstance(t, dict)]
+
+
+def live_tab_ids_with_label(label: str) -> list[str]:
+    """Ids of every live tab carrying exactly ``label``.
+
+    Exact equality, never a prefix match: launch created the label verbatim,
+    so the contract is exact, and a prefix match could swallow a human's
+    differently-suffixed tab.
+    """
+    listing = herdr(build_tab_list_argv())
+    return [
+        str(t["tab_id"])
+        for t in parse_tab_list(listing)
+        if t.get("label") == label and isinstance(t.get("tab_id"), str)
+    ]
+
+
+def parse_agent_names(listing: dict[str, object]) -> list[str]:
+    """Agent names out of a `herdr agent list` envelope; [] on anything unexpected."""
+    result = listing.get("result") if isinstance(listing, dict) else None
+    agents = result.get("agents") if isinstance(result, dict) else None
+    if not isinstance(agents, list):
+        return []
+    return [
+        a["name"]
+        for a in agents
+        if isinstance(a, dict) and isinstance(a.get("name"), str)
+    ]
+
+
+RESTART_DEREGISTER_POLLS = 20
+RESTART_DEREGISTER_INTERVAL_S = 0.25
+
+
+def wait_agent_deregistered(name: str) -> None:
+    """Poll until no live agent carries ``name``, bounded; refuse if it persists.
+
+    A just-closed tab's agent may take a moment to unregister, and relaunching
+    into a still-registered name fails with agent_name_taken. Exhaustion is a
+    refusal naming the recovery -- retry restart (idempotent: it finds zero
+    tabs and relaunches once the name frees) or attach manually -- not a
+    silent relaunch attempt.
+    """
+    for _ in range(RESTART_DEREGISTER_POLLS):
+        listing = herdr(build_agent_list_argv())
+        if name not in parse_agent_names(listing):
+            return
+        time.sleep(RESTART_DEREGISTER_INTERVAL_S)
+    raise RefusedError(
+        f"agent '{name}' is still registered after its tab closed. Retry "
+        f"`restart` (it relaunches once the name frees) or attach manually: "
+        f"herdr agent attach {name}"
+    )
+
+
+def spawn_in_new_tab(
+    *, cwd: str, label: str, prompt: str, model: str | None
+) -> dict[str, object]:
+    """Create a tab, start pi in it, and hand it its prompt.
+
+    The one launch sequence, shared by `launch` and `restart` so the two
+    cannot drift apart.
+    """
+    created = herdr(build_tab_argv(cwd=cwd, label=label))
+    result = created["result"]
+    pane = result["root_pane"]["pane_id"]  # type: ignore[index]
+    tab = result["tab"]["tab_id"]  # type: ignore[index]
+
+    name = agent_name_for(label)
+    herdr(build_agent_start_argv(name=name, pane=pane, model=model))
+    herdr(["agent", "prompt", name, prompt])
+    return {"tab": tab, "pane": pane, "agent": name, "prompt": prompt}
 
 
 def ready_slugs() -> list[str]:
@@ -199,15 +422,47 @@ def cmd_launch(args: argparse.Namespace) -> None:
         label = f"swarm-{args.prefix}"
         prompt = orchestrator_prompt(args.swarm)
 
-    created = herdr(build_tab_argv(cwd=args.cwd, label=label))
-    result = created["result"]
-    pane = result["root_pane"]["pane_id"]  # type: ignore[index]
-    tab = result["tab"]["tab_id"]  # type: ignore[index]
+    print(
+        json.dumps(
+            spawn_in_new_tab(cwd=args.cwd, label=label, prompt=prompt, model=args.model)
+        )
+    )
 
-    name = label.replace("_", "-")[:32]
-    herdr(build_agent_start_argv(name=name, pane=pane, model=args.model))
-    herdr(["agent", "prompt", name, prompt])
-    print(json.dumps({"tab": tab, "pane": pane, "agent": name, "prompt": prompt}))
+
+def cmd_restart(args: argparse.Namespace) -> None:
+    """Close a live swarm orchestrator's tab, relaunch it, and prompt it to resume.
+
+    Ordered so nothing destructive happens before everything checkable has
+    passed: the runId is resolved and validated first, so a failure there
+    leaves the running orchestrator untouched. Workers are never touched --
+    only the orchestrator's own tab is a close candidate.
+    """
+    require_herdr_env(os.environ)
+    check_launchable(prefix=args.prefix)
+    label = f"swarm-{args.prefix}"
+
+    run_id = resolve_resume_run_id(args.prefix, args.run_id)
+
+    matches = live_tab_ids_with_label(label)
+    if len(matches) > 1:
+        raise RefusedError(
+            f"{len(matches)} live tabs carry the label '{label}' ({', '.join(matches)}); "
+            "refusing to guess which one is the orchestrator. Close all but one by "
+            "hand, then retry."
+        )
+    closed_tab: str | None = None
+    if matches:
+        closed_tab = matches[0]
+        herdr(["tab", "close", closed_tab])
+        wait_agent_deregistered(agent_name_for(label))
+
+    prompt = orchestrator_resume_prompt(args.swarm, run_id, args.prefix)
+    summary = spawn_in_new_tab(
+        cwd=args.cwd, label=label, prompt=prompt, model=args.model
+    )
+    summary["closed_tab"] = closed_tab
+    summary["resumed"] = run_id
+    print(json.dumps(summary))
 
 
 def main() -> None:
@@ -230,12 +485,35 @@ def main() -> None:
     launch.add_argument("--cwd", default=os.getcwd(), help="working directory")
     launch.set_defaults(func=cmd_launch)
 
+    restart = sub.add_parser(
+        "restart",
+        help="close a live swarm orchestrator's tab, relaunch it, resume the same run",
+    )
+    restart.add_argument("--swarm", type=int, help="fan out across N workers")
+    restart.add_argument("--prefix", help="queue scope, required with --swarm")
+    restart.add_argument(
+        "--run-id", help="runId to resume; discovered from persisted state when omitted"
+    )
+    restart.add_argument("--model", help="model passed through to pi after a bare --")
+    restart.add_argument("--cwd", default=os.getcwd(), help="working directory")
+    restart.set_defaults(func=cmd_restart)
+
     args = parser.parse_args()
     if args.command == "launch":
         if bool(args.slug) == bool(args.swarm):
             parser.error("pass exactly one of --slug or --swarm")
         if args.swarm and not args.prefix:
             parser.error("--swarm requires --prefix; an unscoped queue mixes projects")
+    if args.command == "restart":
+        if not args.swarm:
+            parser.error("--swarm is required for restart")
+        if not args.prefix:
+            parser.error("--swarm requires --prefix; an unscoped queue mixes projects")
+        if args.run_id is not None:
+            try:
+                args.run_id = validate_run_id(args.run_id)
+            except RefusedError as exc:
+                parser.error(str(exc))
     try:
         args.func(args)
     except RefusedError as exc:

@@ -10,9 +10,11 @@ slug or an integer N. If `--auto` was given, skip straight to the `--auto
 mode` section at the end of this file instead of running the numbered steps
 live. If `--swarm`/`--swarm=N` was given, skip straight to the `--swarm[=N]
 mode` section instead — it does not take a single-item target; `--swarm
-<slug>` is a usage error, ask the user whether they meant `--auto <slug>`.
-Otherwise, if the remaining target is empty, ask the user which item — never
-guess. Every
+<slug>` is a usage error, ask the user whether they meant `--auto <slug>`. A
+`resume <runId> --prefix <prefix>` tail (sent by `herdr_delegate.py
+restart`) also selects `--swarm` mode and additionally carries a resume
+directive — see that section's step 1. Otherwise, if the remaining target
+is empty, ask the user which item — never guess. Every
 user-approval gate below (`## 10`, `## 11`) stops and waits for the user —
 never collapse two gates into one approval. Distinct from those: the item's
 own `gate` field in `dev_status.py` (step 5, step 12) is a judgment-step
@@ -329,6 +331,21 @@ concurrency-cap accounting.
    and call `swarm_spawn` with the run's `prefix` and the concurrency — it
    spawns up to the cap, reporting any items skipped (cap), deferred (file
    overlap) or failed to spawn.
+
+   **Resume.** If the invocation carried `resume <runId> --prefix <prefix>`
+   (sent by `herdr_delegate.py restart`, which closed and relaunched this
+   orchestrator), do not pick a fresh runId: call `swarm_spawn` and
+   `swarm_poll` with that exact runId and prefix. `getOrInitState` loads the
+   persisted state for that runId, reconciles it against herdr's live agent
+   list (workers that survived the restart are adopted and re-waited; dead
+   ones are dropped and reported), and `attempted` keeps already-tried items
+   from being re-selected. Spawn with the given prefix exactly as passed —
+   it is the slug-head form (e.g. `atk`), which `swarm_spawn` and
+   `dev_status.py ready --prefix` both accept. Resuming an unknown runId
+   degrades safely: `getOrInitState` falls through to a fresh state under
+   that id, so a mistyped resume behaves as a fresh run with a known id.
+   Say in your first turn that you are resuming `<runId>` rather than
+   starting fresh.
 
    **Deferred is not skipped.** Two items whose `related_files` name the same
    file are never spawned into the same wave: each worker gets its own
