@@ -3192,6 +3192,64 @@ def _backlog_mutation(
 # ── subcommand handlers ───────────────────────────────────────────────────────
 
 
+def _sweep_dead_claims(items: list[BacklogItem]) -> list[str]:
+    """Revert in-progress claims whose owning process is confirmed dead.
+
+    The claim-liveness check in :func:`_check_claim_collision` runs only
+    when a *new* ``start`` is attempted on the exact claimed item, so a dead
+    session's claim otherwise sits dashboard-visible as IN PROGRESS until a
+    fresh start attempt or the full claim TTL elapses. The read paths
+    (``render``/``list``/``show``) call this sweep so the reversion that
+    used to need a manual ``update <slug> '{"status": "open"}'` happens
+    proactively.
+
+    Scope, mirroring :func:`_check_claim_collision`'s own ordering:
+
+    - Only ``status == "in-progress"`` items with a dict ``claimed_by``.
+    - Only same-machine claims (``machine_id`` matches); cross-machine
+      claims cannot be PID-checked and stay TTL-governed.
+    - The owner anchor is authoritative: ``owner_pid`` dead → claim dead
+      (falling back to the ephemeral ``pid`` only when ``owner_pid`` is
+      absent), exactly like the takeover path in ``start``.
+
+    Mutates ``items`` in place for every reverted claim and returns one
+    human-readable notice string per reversion (empty list = nothing
+    changed); the caller persists and bumps the rev only when notices came
+    back. Notices carry the claim's forensics (harness, dead PID,
+    ``claimed_at``) since dropping ``claimed_by`` loses that context.
+    """
+    current_machine = machine_id()
+    notices: list[str] = []
+    for item in items:
+        if item.get("status") != "in-progress":
+            continue
+        claim = item.get("claimed_by")
+        if not isinstance(claim, dict):
+            continue
+        if str(claim.get("machine_id", "")) != current_machine:
+            continue
+        claim_harness = str(claim.get("harness", "unknown"))
+        claim_pid = (
+            int(claim.get("pid") or 0) if str(claim.get("pid", "")).isdigit() else 0
+        )
+        claim_owner_pid = (
+            int(claim.get("owner_pid"))
+            if str(claim.get("owner_pid", "")).isdigit()
+            else 0
+        )
+        owner_pid = claim_owner_pid if claim_owner_pid > 0 else claim_pid
+        if owner_pid <= 0 or _is_pid_alive(owner_pid):
+            continue
+        claimed_at = str(claim.get("claimed_at") or "")
+        notices.append(
+            f"[sweep] {item.get('id', '?')} claim by {claim_harness} "
+            f"(PID {owner_pid}, claimed {claimed_at}) is dead; reverted to open."
+        )
+        item["status"] = "open"
+        item.pop("claimed_by", None)
+    return notices
+
+
 def cmd_render(args: argparse.Namespace) -> None:
     """Handle ``render``: print the dashboard with no other side effects.
 
@@ -3203,11 +3261,23 @@ def cmd_render(args: argparse.Namespace) -> None:
     released — agents run a bare ``render`` before every numeric mutation to
     fetch the rev for ``--if-rev``, so this path must stay instant and never
     hold the lock across a possible recap-regen spawn.
+
+    One exception to "no other side effects": the claim-liveness sweep
+    (:func:`_sweep_dead_claims`) runs under the lock and, when a claim is
+    actually reverted, persists the items and bumps the rev before it is
+    read — so the printed rev stays self-consistent with the mutated store.
+    Nothing is written when every claim is alive.
     """
     with backlog_lock():
         items = load_items()
         pending_items = load_pending()
+        notices = _sweep_dead_claims(items)
+        if notices:
+            bump_rev()
+            save_items(items)
         rev = load_rev()
+    for notice in notices:
+        print(notice, file=sys.stderr)
     render(items, pending_items, rev=rev, dispatch=True)
 
 
@@ -3265,11 +3335,19 @@ def cmd_list(args: argparse.Namespace) -> None:
 
     Reads items + pending + rev under :func:`backlog_lock` (same rationale
     as :func:`cmd_render`; pending is needed only for stable numbering).
+    The claim-liveness sweep runs under the same lock, before the rev is
+    read — see :func:`_sweep_dead_claims`.
     """
     with backlog_lock():
         items = load_items()
         pending_items = load_pending()
+        notices = _sweep_dead_claims(items)
+        if notices:
+            bump_rev()
+            save_items(items)
         rev = load_rev()
+    for notice in notices:
+        print(notice, file=sys.stderr)
     print(f"# rev={rev}", file=sys.stderr)
 
     if args.raw:
@@ -3347,10 +3425,15 @@ def cmd_show(args: argparse.Namespace) -> None:
     """Handle ``show``: print the full JSON record for one item.
 
     Reads items + pending + rev under :func:`backlog_lock` (same rationale
-    as :func:`cmd_render`).
+    as :func:`cmd_render`). The claim-liveness sweep runs under the same
+    lock, before the rev is read — see :func:`_sweep_dead_claims`.
     """
     with backlog_lock():
         items = load_items()
+        notices = _sweep_dead_claims(items)
+        if notices:
+            bump_rev()
+            save_items(items)
         pending_items = load_pending()
         kind, slug = resolve_id(args.id, items, pending_items)
         index: dict[str, object] = (
@@ -3363,6 +3446,8 @@ def cmd_show(args: argparse.Namespace) -> None:
             print(f"[show] not found: {slug}", file=sys.stderr)
             sys.exit(1)
         print(f"# rev={load_rev()}", file=sys.stderr)
+        for notice in notices:
+            print(notice, file=sys.stderr)
         if kind == "backlog":
             runs = load_runs(slug)
             if runs:
