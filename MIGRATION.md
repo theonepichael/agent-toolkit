@@ -1,9 +1,14 @@
 # MIGRATION.md — what remains before this toolkit stands on its own
 
-This repository is not yet independent. It began as a snapshot taken from a
-personal dotfiles repository on 2026-09-02, and that dotfiles repository is
-still where the harness work actually happens. Until the remaining work below
-is done, this repo is a copy that drifts, not a source.
+**Update 2026-09-07: the cutover (item 5) has run for real.** This repo
+began as a snapshot taken from a personal dotfiles repository on
+2026-09-02; as of today, the personal machine that authored both repos
+installs its shared harness tooling from *this* repository, not dotfiles
+-- verified via both repos' `install.py --check-links` reporting clean.
+The sections below are kept as the historical record of how that happened
+and what remains (coworker access, item 3) -- see "What done looks like"
+for the exact final shape, which differs slightly from what this file
+originally described as done-criteria.
 
 This file records what is left and, more importantly, **the order**, because
 the order is not obvious and getting it wrong is what strands a migration
@@ -79,7 +84,7 @@ deliberately last, since two more coworker-facing issues turned up mid-audit
 
 Independent of items 1 and 2; was done alongside both.
 
-### 4. Write the handover order and its rollback — last before cutover
+### 4. Write the handover order and its rollback — DONE (2026-09-03, executed 2026-09-07)
 
 The cutover swaps ownership of roughly 114 symlinks on a live machine. Doing
 that with no written step order and no tested rollback is how a machine ends
@@ -98,19 +103,45 @@ Three things must exist before the cutover runs:
 This goes last of the four because it describes the cutover, and the cutover's
 shape depends on decisions made in items 1 through 3.
 
-### 5. Sync once, then cut over
+Order and rollback settled in the `meta-agent-toolkit-handover-safety` grill
+session (2026-09-03, plan at
+`~/.claude/data/grill/2026-09-03-meta-agent-toolkit-handover-safe-plan.md`)
+and round-trip tested on a scratch HOME that same day. What that plan's
+verification did **not** cover, because it hadn't happened yet: a real
+`install-with-agent-toolkit.sh` run always runs dotfiles' installer second to
+reassert the 4 personal-overlay destinations, and dotfiles' own orphan-cleanup
+had no guard against deleting a destination another repo's installer had just
+claimed in the same run. Both gaps surfaced only when item 5 actually executed
+live on 2026-09-07 (`meta-agent-toolkit-wrapper-enforcement` and its follow-on
+orphan-cleanup fix, both repos) — see those items' commits for the fix and a
+new regression test each. The scratch-HOME test proved the *symlink-ownership*
+handover safe; it did not exercise the wrapper script or its second-install
+reassert step, which is exactly where both incidents lived.
 
-Run the tool from item 1 to bring this repo current, then perform the cutover
-using the order from item 4. The sync immediately beforehand is the point of
-item 1 existing: it makes the final reconciliation cheap enough to do at the
-last possible moment, when it is most accurate.
+### 5. Sync once, then cut over — DONE (2026-09-07)
+
+Ran `install-with-agent-toolkit.sh` for real on the machine that authors both
+repos. Both repos' `install.py --check-links` report clean. Collaborator
+access (item 3) is still the one open item.
 
 ## What done looks like
 
 The local machine's harness config resolves to this repository rather than to
-dotfiles, the old harness trees are gone from dotfiles rather than duplicated,
-a coworker can clone this repo and install it without access to anything
-personal, and the reconciliation tool has no upstream left to reconcile from.
+dotfiles for every destination except the 4 that are supposed to keep
+resolving to dotfiles' composed `global-instructions.md` (`~/.claude/CLAUDE.md`
+and its copilot/gemini/pi equivalents) — that's the personal-overlay design,
+not an unfinished cutover, and `install-with-agent-toolkit.sh` is what makes
+it durable across future installs, not just this one. The old harness trees
+are gone from dotfiles rather than duplicated, except for what's still a
+genuine dependency there (install.py's own repo-local script imports,
+one-time config seeds, and the personal-overlay composition itself) — `git
+log` on `pi/`, `copilot/`, `agy/`, and the pruned parts of `claude/`
+in dotfiles shows the 2026-09-04 deletion commit for the full picture.
+`sync_from_dotfiles.py` keeps one narrow, permanent, and deliberate upstream
+relationship — `CORE_INSTRUCTIONS.md` is authored in dotfiles and synced in —
+which is the intended final shape, not a leftover. What's still open: a
+coworker cloning this repo can't yet get in, since no collaborators are added
+(item 3).
 
 ## A note on why this file exists
 
