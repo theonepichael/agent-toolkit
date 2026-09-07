@@ -340,6 +340,27 @@ class EndToEndTests(unittest.TestCase):
                 stale.append(relpath)
         self.assertEqual(stale, [], f"stale (run gen_skills.py): {stale}")
 
+    def test_pi_plumbing_steps_claim_no_settings_json_skills_array(self) -> None:
+        """Regression: the generated pi make-skill/spec plumbing steps
+        claimed an active pi/settings.json ``skills`` array and an
+        agy/skills fallback that this repo's actual pi/settings.json does
+        not have (no skills key at all). Pi discovers skills via its
+        default always-on scan of ~/.pi/agent/skills/, which links.toml's
+        ``dir = true`` row for pi/skills symlinks straight to -- no
+        fallback exists.
+        """
+        for skill in ("make-skill", "spec"):
+            text = gs.render_one(
+                skill,
+                "pi",
+                (REPO_ROOT / gs.TEMPLATE_PATHS[skill]).read_text(encoding="utf-8"),
+                SKILL_PARAMS[skill]["pi"],
+            )
+            self.assertNotIn("pi/settings.json", text, skill)
+            self.assertNotIn("falls back", text, skill)
+            self.assertIn("dir = true", text, skill)
+            self.assertIn("~/.pi/agent/skills/", text, skill)
+
     def test_every_output_path_has_the_marker(self) -> None:
         rendered = gs.render_all(REPO_ROOT, SKILL_PARAMS)
         for relpath, text in rendered.items():
@@ -413,10 +434,15 @@ class RepoIdentityTests(unittest.TestCase):
 
     def test_dotfiles_identity_reproduces_pre_fix_spec_pi_text(self) -> None:
         text = self._render_with_repo_identity("dotfiles", "spec", "pi")
+        # The links.toml wiring claim is identity-independent: dotfiles'
+        # pi tree was pruned into agent-toolkit (its own "prune harness
+        # trees" commit), so the old ``pi/settings.json`` skills-array
+        # clause was stale for both identities and was dropped
+        # unconditionally. Only the self-locating path phrasing differs.
         self.assertIn(
             "1. File lives at `~/dotfiles/pi/skills/spec/SKILL.md`. `pi/skills` "
-            "is already wired into `links.toml` as one `dir = true` row and "
-            "into `pi/settings.json`'s `skills` array",
+            "is already wired into `links.toml` as one `dir = true` row, "
+            "symlinked straight to `~/.pi/agent/skills/`",
             text,
         )
 
