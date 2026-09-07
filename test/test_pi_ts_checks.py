@@ -2,11 +2,14 @@
 """Pi extension TS tooling gate: runs the bun-based checks in pi/ so they're
 exercised by the repo's normal pytest run.
 
-Skips (never fails) when the environment can't run them: bun missing from
-PATH, or pi/node_modules incomplete (an interrupted `bun install` leaves a
-partial tree that a directory-existence check would miss — hence the
-per-tool marker check). With all tools installed as local devDependencies
-and the markers present, bunx never network-fetches.
+Skips only when bun is missing from PATH. When bun exists but
+pi/node_modules is incomplete (an interrupted `bun install` leaves a partial
+tree that a directory-existence check would miss — hence the per-tool marker
+check), the gate FAILS with the install instruction instead of skipping: a
+fresh git worktree never has node_modules (untracked, unshared across
+worktrees), and a skip there silently hides this gate from worktree-based
+baselines. With all tools installed as local devDependencies and the markers
+present, bunx never network-fetches.
 
 Each stage is a separate subtest so one failing stage doesn't hide the
 others; failure messages carry the captured stdout AND stderr so pytest
@@ -54,8 +57,10 @@ def test_pi_ts_stage(stage: str, subtests) -> None:
     if _bun_missing():
         pytest.skip("bun not installed")
     if _node_modules_incomplete():
-        pytest.skip(
-            "run bun install in pi/ (missing tool markers in pi/node_modules/.bin)"
+        pytest.fail(
+            "run bun install in pi/ (missing tool markers in "
+            "pi/node_modules/.bin) — the gate fails rather than skips so a "
+            "fresh worktree's silent skip can't hide it from a baseline"
         )
 
     with subtests.test(msg=stage):

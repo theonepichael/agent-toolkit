@@ -1147,6 +1147,7 @@ are copy-once seeds for exactly that reason.
 | `pi/CLAUDE.md` | not symlinked by `links.toml` |
 | `pi/CLAUDE_CODE_PARITY.md` | not symlinked by `links.toml` |
 | `pi/bun.lock` | not symlinked by `links.toml` |
+| `pi/bunfig.toml` | not symlinked by `links.toml` |
 | `pi/extensions/compaction-backlog-sync.ts` | `~/.pi/agent/extensions/compaction-backlog-sync.ts` (pi) |
 | `pi/extensions/custom-footer.ts` | `~/.pi/agent/extensions/custom-footer.ts` (pi) |
 | `pi/extensions/cwd.ts` | `~/.pi/agent/extensions/cwd.ts` (pi) |
@@ -1187,6 +1188,7 @@ are copy-once seeds for exactly that reason.
 | `pi/test/dev-status-tool.test.ts` | not symlinked by `links.toml` |
 | `pi/test/grill-tool.test.ts` | not symlinked by `links.toml` |
 | `pi/test/guard-rails.test.ts` | not symlinked by `links.toml` |
+| `pi/test/helpers/sanitize-test-env.ts` | not symlinked by `links.toml` |
 | `pi/test/herdr-blocked-bridge.test.ts` | not symlinked by `links.toml` |
 | `pi/test/model-picker.test.ts` | not symlinked by `links.toml` |
 | `pi/test/notify.test.ts` | not symlinked by `links.toml` |
@@ -1198,6 +1200,7 @@ are copy-once seeds for exactly that reason.
 | `pi/test/second-opinion-tool.test.ts` | not symlinked by `links.toml` |
 | `pi/test/standup-tool.test.ts` | not symlinked by `links.toml` |
 | `pi/test/swarm-tool.test.ts` | not symlinked by `links.toml` |
+| `pi/test/test-env.test.ts` | not symlinked by `links.toml` |
 | `pi/test/to-tickets-tool.test.ts` | not symlinked by `links.toml` |
 | `pi/test/toggle-check.test.ts` | not symlinked by `links.toml` |
 | `pi/test/vitals-promotion-tool.test.ts` | not symlinked by `links.toml` |
