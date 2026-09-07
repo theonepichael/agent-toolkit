@@ -4870,6 +4870,17 @@ def _find_orphaned_links(
     been removed from links.toml, so its recorded destination is not an
     orphan — reporting it as one would be a false positive on every
     cross-platform machine, or on a run scoped to a different harness.
+
+    A destination whose *live* target no longer matches what this repo's
+    manifest recorded creating is not orphaned — it's claimed. Some other
+    tool (most commonly another repo's own installer, sharing this same
+    destination) has already repointed it, and unlinking it here would
+    delete that tool's live symlink, not ours. 2026-09-07: dotfiles'
+    orphan-cleanup deleted three ~/.claude/scripts/*.py symlinks
+    agent-toolkit's installer had just created moments earlier in the same
+    install-with-agent-toolkit.sh run, because this check didn't exist —
+    _rollback_symlink already guards the equivalent case before removing
+    anything; this mirrors that same guard here.
     """
     known = {dest for _src, dest, _rel, _applicable in links}
     orphans: list[Path] = []
@@ -4884,6 +4895,9 @@ def _find_orphaned_links(
         # A dest that no longer exists needs no report: a past --rollback,
         # or the user, already cleaned it up.
         if not _is_symlink(dest) and not _path_exists(dest):
+            continue
+        recorded_src = str(entry.get("src", ""))
+        if _is_symlink(dest) and recorded_src and os.readlink(dest) != recorded_src:
             continue
         orphans.append(dest)
     return orphans

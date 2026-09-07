@@ -5246,6 +5246,40 @@ def test_auto_cleanup_leaves_broken_source_entries_alone(
     ]
 
 
+def test_auto_cleanup_never_deletes_a_destination_another_tool_has_claimed(
+    home, offline_install
+):
+    """2026-09-07 incident: install-with-agent-toolkit.sh runs agent-toolkit's
+    installer first, then dotfiles' second. When dotfiles' own links.toml no
+    longer produces a destination agent-toolkit's installer just claimed
+    moments earlier in the same run, orphan-cleanup must leave that live
+    symlink alone -- it belongs to whoever claimed it, not to a stale
+    manifest history. Same fix on this side of the split: agent-toolkit's
+    own orphan-cleanup must be equally safe in the reverse direction."""
+    src = REPO_ROOT / "shell" / "agent-tools.zsh"
+    dest_rel = "~/.claude/scripts/some-shared-script.py"
+    specs = [install.LinkSpec(src="shell/agent-tools.zsh", dest=dest_rel)]
+    ctx = make_ctx(home)
+    install.run_install(ctx, specs)
+    dest = home / ".claude" / "scripts" / "some-shared-script.py"
+    assert dest.is_symlink()
+    assert Path(str(dest.readlink())) == src
+
+    # Simulate another repo's installer claiming this destination for
+    # itself, in between two runs of this repo's own installer.
+    other_src = REPO_ROOT / "install.py"
+    dest.unlink()
+    dest.symlink_to(other_src)
+
+    # This repo's links.toml no longer declares the destination at all.
+    install.run_install(ctx, [])
+
+    assert dest.is_symlink(), "claimed destination must survive orphan-cleanup"
+    assert Path(str(dest.readlink())) == other_src, (
+        "orphan-cleanup must not touch a destination another tool has claimed"
+    )
+
+
 def test_auto_cleanup_survives_a_different_harness_selected(
     home, dir_repo, offline_install
 ):
