@@ -53,6 +53,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`outlook_email.py`](#claudescriptsoutlookemailpy) | outlook_email.py — CLI tool and agent interface for Windows Outlook via PowerShell COM. |
 | [`repo_identity.py`](#claudescriptsrepoidentitypy) | repo_identity.py — which repo this checkout is. |
 | [`second_opinion.py`](#claudescriptssecondopinionpy) | second_opinion.py — one-shot adversarial critique of a plan from a non-Claude backend. Single-round by design: the multi-round loop, plan revision, and convergence judgment all require LLM reasoning and live in prose instructions, not here. |
+| [`seed_hook_subset_guard.py`](#claudescriptsseedhooksubsetguardpy) | seed_hook_subset_guard.py — refuse a commit that drops a seed's SessionStart hook groups. |
 | [`sessionstart_checks.py`](#claudescriptssessionstartcheckspy) | sessionstart_checks.py — run the SessionStart context checks concurrently. |
 | [`settings_seed_drift_check.py`](#claudescriptssettingsseeddriftcheckpy) | SessionStart hook + CLI: detect (and optionally fix) drift between the live ``~/.claude/settings.json`` / ``~/.config/opencode/opencode.jsonc`` / (under WSL) the Windows-side VS Code ``settings.json`` and ``keybindings.json`` and their seeds in the dotfiles repo. |
 | [`standup.py`](#claudescriptsstanduppy) | standup.py — /standup skill CLI: local data gathering. |
@@ -843,6 +844,18 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
   - `ensure_data_dir() -> None` — Create ``DATA_DIR`` if it is missing.
 - Subcommand handlers: `cmd_detect`, `cmd_review`
 - Tested by: `claude/scripts/test_second_opinion.py`
+
+### `claude/scripts/seed_hook_subset_guard.py`
+
+seed_hook_subset_guard.py — refuse a commit that drops a seed's SessionStart hook groups.
+
+- Installed at: `~/.claude/scripts/seed_hook_subset_guard.py` (all harnesses)
+- Entrypoint: not executable, `#!/usr/bin/env python3`
+- CLI (`argparse`): refuse a commit that drops a seed's SessionStart hook groups
+  - `--repo-root` — repository root (default: git's toplevel of the cwd)
+- Public functions:
+  - `check_path(repo_root: Path, path: str) -> tuple[str | None, str | None]` — Return ``(failure_message, skip_note)`` for one seed path — exactly one is non-None.
+- Tested by: `test/test_seed_hook_subset_guard.py`
 
 ### `claude/scripts/sessionstart_checks.py`
 

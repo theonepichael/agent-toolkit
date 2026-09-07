@@ -127,6 +127,10 @@ src = "claude/scripts/sessionstart_checks.py"
 dest = "~/.claude/scripts/sessionstart_checks.py"
 
 [[link]]
+src = "claude/scripts/seed_hook_subset_guard.py"
+dest = "~/.claude/scripts/seed_hook_subset_guard.py"
+
+[[link]]
 src = "claude/scripts/herdr_delegate.py"
 dest = "~/.claude/scripts/herdr_delegate.py"
 

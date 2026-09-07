@@ -31,6 +31,18 @@ repo_root="$(git rev-parse --show-toplevel)"
 source "$repo_root/githooks-global/lib/no-commit-on-main.sh"
 refuse_if_protected_branch || exit $?
 
+# Refuse a commit whose staged seed loses SessionStart hook groups relative to
+# HEAD (the lossy-rewrite race that once committed a seed without its
+# matcher-'*' herdr group). SEED_HOOK_ALLOW_DROP=1 skips this one check for
+# an intentional drop; --no-verify would also disable the checks below and
+# no-commit-on-main, so the env var is the escape hatch to reach for.
+output="$(python3 "$repo_root/claude/scripts/seed_hook_subset_guard.py" --repo-root "$repo_root" 2>&1)"
+status=$?
+if [ "$status" -ne 0 ]; then
+    echo "$output" >&2
+    exit "$status"
+fi
+
 output="$(python3 "$repo_root/claude/scripts/gen_skills.py" --check --repo-root "$repo_root" 2>&1)"
 status=$?
 if [ "$status" -ne 0 ]; then

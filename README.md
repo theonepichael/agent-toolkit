@@ -20,7 +20,8 @@ A modular, multi-harness platform for AI agent workflows and paired development 
 ## Features & Capabilities
 
 - **Unified Core Workflows**: Standardized slash commands and skills across harnesses (`/grill-me` for design alignment, `/second-opinion` for architectural critique, `/spec` for structured specifications, `/backlog-item` for gated TDD lifecycle, `/standup` for daily progress synthesis, `/dashboard` for work tracking).
-- **Automated Guard Rails**: Pre-tool hooks and git pre-commit hooks that prevent committing directly to `main` and protect active task checkouts.
+- **Automated Guard Rails**: Pre-tool hooks and git pre-commit hooks that prevent committing directly to `main` and protect active task checkouts (see [Git hooks](#git-hooks)).
+- **Seed Rewrite Guard**: A pre-commit check refuses a commit whose staged seed would lose SessionStart hook groups relative to HEAD — the lossy-rewrite race that once committed a seed without its matcher-`*` herdr group. Intentional drops use `SEED_HOOK_ALLOW_DROP=1`, never `--no-verify`.
 - **Auto-Formatting on Tool Use**: Automatic Ruff formatting/lint fixing on Python edits.
 - **Shell Completions & Environment Helpers**: Portable `shell/agent-tools.zsh` providing completions, PATH setup, and harness aliases.
 - **Cross-Harness Code Generation**: Generators keep documentation (`INTERFACES.md`) and prompt templates (`templates/*.tmpl`) in sync across all 5 harnesses.
@@ -43,6 +44,20 @@ System tools:
 - **Python 3.12+**
 - **Git**
 - Optional: `uv` (recommended for test execution), `bun` / `node` (for Pi TypeScript extensions)
+
+### Git hooks
+
+The repo ships `githooks/pre-commit` (no-commit-on-main, a seed SessionStart-subset guard, and the generated-doc checks), but git reads the hook path from config, which cannot be a committed file — wire it once per clone (worktrees of the clone inherit it):
+
+```bash
+git config core.hooksPath githooks
+```
+
+To commit an intentional SessionStart hook-group drop without disabling the rest of the hook:
+
+```bash
+SEED_HOOK_ALLOW_DROP=1 git commit ...
+```
 
 ---
 
