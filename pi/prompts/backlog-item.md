@@ -263,11 +263,41 @@ procedure below across the queue.
 
 **End of run.** When the queue is exhausted (or the single item completes),
 show a dashboard-style summary of every item processed — done, skipped
-(with reason), or failed after retries — then walk the accumulated digest
-in one pass, asking in plain text for each queued item exactly as its
-originating CLAUDE.md protocol specifies (a backlog `add`, a
-`pending add`, an `out-of-scope add`), stating a recommendation first and
-confirming or declining each in turn.
+(with reason), or failed after retries — then run the digest-offer check
+below, and only then surface the accumulated digest:
+
+**Digest-offer check — mandatory, before the run may be reported
+finished.** A digest entry that exists only in this session's context is
+a finding that dies with the session: in a swarm worker, ending the turn
+to "ask in plain text" is indistinguishable from finishing, so the entry
+never reaches the orchestrator's relay and a manual end-of-run audit
+becomes the only backstop (the 2026-09-07 full atk run lost two real
+findings this way and recovered them only by that audit). Which branch
+applies is decided by one environment variable:
+
+- **`PI_SWARM_CAPTURE_FILE` set** — this session is a swarm worker, and
+  the plain-text walk cannot work here. Write every queued digest entry
+  to that file, verbatim as this shape:
+
+  ```json
+  {"offers": [{"kind": "backlog", "id": "<slug>", "summary": "<one line>"}]}
+  ```
+
+  `kind` mirrors the CLAUDE.md protocol each entry would otherwise have
+  been offered under: `backlog` for a backlog `add`, `pending` for a
+  pending-item `add`, `out-of-scope` for a rejected concept; `id` is the
+  slug (or concept slug); `summary` is the one-line offer text. Write the
+  file only when there is at least one entry — an absent file already
+  means "nothing to offer" downstream. Do NOT also ask the entries in
+  plain text: the orchestrator reads this file when the worker settles
+  and owns the single end-of-run ask for the whole run. Before ending,
+  re-check every queued entry against the file — refuse to report the
+  item finished with a queued-but-unwritten entry still pending.
+- **Unset** — this is an ordinary attended `--auto` session: walk the
+  digest in one pass, asking in plain text for each queued item exactly
+  as its originating CLAUDE.md protocol specifies (a backlog `add`, a
+  `pending add`, an `out-of-scope add`), stating a recommendation first
+  and confirming or declining each in turn.
 
 ---
 
@@ -449,7 +479,15 @@ concurrency-cap accounting.
 4. **End of run** — same shape as `--auto`'s: a dashboard-style summary of
    every item (done, flagged, stopped on budget, failed), then walk any accumulated
    proactive-capture digest entries exactly as `--auto`'s own end-of-run
-   step does.
+   step does. Two ways those entries reach you, and both must make the
+   walk: a worker running the `--auto` procedure above queues its own
+   findings into its capture file (`PI_SWARM_CAPTURE_FILE`, the
+   digest-offer check) rather than asking in its own pane — where nobody
+   could answer — so they arrive attached to its terminal event as
+   `captures`; the orchestrator's own findings accumulate as usual. The
+   dashboard-vs-memory audit stays a backstop, not the primary path: a
+   capture offer is never dropped because the item it came from looked
+   finished.
 
 Steps 10 and 11's live-approval requirement is never bypassed in this mode
 — it is *how* the blocked-event relay above works, not an exception to it.
