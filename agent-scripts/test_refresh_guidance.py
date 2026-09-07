@@ -186,6 +186,39 @@ class DiscoveryTestCase(unittest.TestCase):
         self.assertIn("widget.py", scripts)
         self.assertNotIn("test_widget.py", scripts)
 
+    def _make_code_dir(self, name: str, count: int) -> None:
+        (self.repo / name).mkdir()
+        for i in range(count):
+            (self.repo / name / f"module_{i}.py").write_text(f"# {i}\n")
+
+    def test_flags_undocumented_code_directory_over_threshold(self) -> None:
+        self._make_code_dir("bigdir", 5)
+        _commit_all(self.repo, "add bigdir")
+        found = rg.discover_undocumented_dirs(self.repo, threshold=5)
+        self.assertEqual([d.directory for d in found], ["bigdir"])
+        self.assertEqual(found[0].file_count, 5)
+
+    def test_under_threshold_not_flagged(self) -> None:
+        self._make_code_dir("smalldir", 4)
+        _commit_all(self.repo, "add smalldir")
+        found = rg.discover_undocumented_dirs(self.repo, threshold=5)
+        self.assertEqual(found, [])
+
+    def test_directory_with_agents_md_not_flagged(self) -> None:
+        self._make_code_dir("docdir", 5)
+        (self.repo / "docdir" / "AGENTS.md").write_text("# docdir\n")
+        _commit_all(self.repo, "add docdir")
+        found = rg.discover_undocumented_dirs(self.repo, threshold=5)
+        self.assertEqual(found, [])
+
+    def test_non_code_directory_not_flagged(self) -> None:
+        (self.repo / "assets").mkdir()
+        for i in range(6):
+            (self.repo / "assets" / f"icon_{i}.png").write_text("fake")
+        _commit_all(self.repo, "add assets")
+        found = rg.discover_undocumented_dirs(self.repo, threshold=5)
+        self.assertEqual(found, [])
+
 
 class CrossRepoScriptsTestCase(unittest.TestCase):
     """A bare `dev_status.py`-style citation in a dotfiles-shaped repo must

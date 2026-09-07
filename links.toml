@@ -80,6 +80,11 @@ src = "claude/commands/analyze-sessions.md"
 dest = "~/.claude/commands/analyze-sessions.md"
 harness = "claude"
 
+[[link]]
+src = "claude/commands/refresh-guidance.md"
+dest = "~/.claude/commands/refresh-guidance.md"
+harness = "claude"
+
 # Generated from templates/swarm.md.tmpl (gen_skills.py SWARM_PARAMS). The
 # toolkit's own generated copy superseded dotfiles' hand-authored original --
 # the swarm/herdr source-of-truth verdict leaves this repo as sole author.
@@ -419,6 +424,11 @@ dest = "~/.config/opencode/skills/analyze-sessions/SKILL.md"
 harness = "opencode"
 
 [[link]]
+src = "opencode/skills/refresh-guidance/SKILL.md"
+dest = "~/.config/opencode/skills/refresh-guidance/SKILL.md"
+harness = "opencode"
+
+[[link]]
 src = "opencode/plugin/ruff-format-on-edit.ts"
 dest = "~/.config/opencode/plugin/ruff-format-on-edit.ts"
 harness = "opencode"
@@ -555,6 +565,11 @@ harness = "pi"
 [[link]]
 src = "pi/prompts/analyze-sessions.md"
 dest = "~/.pi/agent/prompts/analyze-sessions.md"
+harness = "pi"
+
+[[link]]
+src = "pi/prompts/refresh-guidance.md"
+dest = "~/.pi/agent/prompts/refresh-guidance.md"
 harness = "pi"
 
 [[link]]

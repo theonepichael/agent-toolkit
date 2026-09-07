@@ -171,7 +171,7 @@ def test_no_dead_repo_path_references() -> None:
     # additionally exempted line-wise below. Everything else is a dead
     # repo-path reference.
     pattern = re.compile(r"(?<!\.)(?<!dotfiles/)claude/scripts")
-    dotfiles_relpath_line = re.compile(r"dotfiles_relpath\s*=")
+    dotfiles_side_line = re.compile(r"dotfiles_relpath\s*=|# dotfiles-repo-relative")
     offenders: list[tuple[Path, int]] = []
     for path in _tracked_files():
         if path in TEXT_SWEEP_ALLOWLIST:
@@ -184,8 +184,12 @@ def test_no_dead_repo_path_references() -> None:
         except UnicodeDecodeError:
             continue  # binary
         for lineno, line in enumerate(text.splitlines(), start=1):
-            if dotfiles_relpath_line.search(line):
-                continue  # kwarg names a dotfiles-side path by contract
+            if dotfiles_side_line.search(line):
+                # kwarg or trailing marker comment names a dotfiles-side path
+                # by contract -- refresh_guidance.py's DocSetConfig.script_dirs
+                # for the "dotfiles" doc-set is the same shape, marked inline
+                # rather than exempting the whole file.
+                continue
             if pattern.search(line):
                 offenders.append((path, lineno))
     assert not offenders, (

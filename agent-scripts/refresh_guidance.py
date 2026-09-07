@@ -108,7 +108,8 @@ class DocSetConfig:
     """When True, script discovery also indexes `agent-scripts/*.py` under
     the resolved agent-toolkit root (see :data:`DEFAULT_AGENT_TOOLKIT_ROOT`),
     the same `AGENT_TOOLKIT_PATH` convention `scripts/install-with-agent-
-    toolkit.sh` and `claude/scripts/test_dev_status_sync.py` already use.
+    toolkit.sh` and `dotfiles/claude/scripts/test_dev_status_sync.py`
+    already use.
     Real, evidence-based need: post-cutover, dotfiles' own docs legitimately
     cite `dev_status.py`/`second_opinion.py`/etc. bare, meaning "the shared
     tool, now hosted in agent-toolkit" -- without this, every one of those
@@ -166,7 +167,7 @@ DOC_SETS: dict[str, DocSetConfig] = {
     ),
     "dotfiles": DocSetConfig(
         fixed_docs=("README.md", "STYLE.md", "CHANGELOG.md"),
-        script_dirs=("claude/scripts", "scripts"),
+        script_dirs=("claude/scripts", "scripts"),  # dotfiles-repo-relative
         cross_repo_scripts=True,
     ),
 }
@@ -210,6 +211,55 @@ def discover_agents_md(repo_root: Path) -> list[str]:
         if path.is_file():
             found.append(rel.as_posix())
     return sorted(found)
+
+
+UNDOCUMENTED_DIR_THRESHOLD = 5
+_CODE_EXTENSIONS = (".py", ".ts", ".sh")
+
+
+@dataclass
+class UndocumentedDir:
+    directory: str
+    file_count: int
+
+
+def discover_undocumented_dirs(
+    repo_root: Path, threshold: int = UNDOCUMENTED_DIR_THRESHOLD
+) -> list[UndocumentedDir]:
+    """Flag a top-level directory that looks complex enough to warrant its
+    own `AGENTS.md` but doesn't have one -- the inverse signal from the rest
+    of this module: not "this existing doc is stale" but "no one has
+    written a doc for this yet." Purely a suggestion for a human to weigh;
+    never creates anything.
+
+    Scoped to top-level directories only (repo_root's immediate children),
+    matching how this repo's own `AGENTS.md` files are actually placed
+    (`test/`, `agent-scripts/`, `pi/` -- never a nested subdirectory) rather
+    than recursing into every directory in the tree. A directory qualifies
+    when it holds at least ``threshold`` tracked files (recursively) and at
+    least one is a code file (`.py`/`.ts`/`.sh`) -- a directory of pure
+    assets or generated output isn't the kind of thing that accumulates
+    conventions worth documenting.
+    """
+    tracked = _tracked_files(repo_root) or []
+    tracked_set = set(tracked)
+    by_top: dict[str, list[str]] = {}
+    for relpath in tracked:
+        parts = Path(relpath).parts
+        if len(parts) < 2:
+            continue  # a repo-root file, not inside any directory
+        by_top.setdefault(parts[0], []).append(relpath)
+
+    results: list[UndocumentedDir] = []
+    for top, files in sorted(by_top.items()):
+        if top in _SKIP_DIRS or f"{top}/AGENTS.md" in tracked_set:
+            continue
+        if len(files) < threshold:
+            continue
+        if not any(f.endswith(_CODE_EXTENSIONS) for f in files):
+            continue
+        results.append(UndocumentedDir(directory=top, file_count=len(files)))
+    return results
 
 
 def discover_basename_index(repo_root: Path) -> dict[str, list[str]]:
@@ -634,6 +684,7 @@ class SectionStatus:
 class CheckResult:
     findings: list[Finding]
     sections: list[SectionStatus]
+    undocumented_dirs: list[UndocumentedDir]
 
 
 def run_check(
@@ -702,7 +753,10 @@ def run_check(
                 )
             )
 
-    return CheckResult(findings=findings, sections=sections)
+    undocumented_dirs = discover_undocumented_dirs(repo_root)
+    return CheckResult(
+        findings=findings, sections=sections, undocumented_dirs=undocumented_dirs
+    )
 
 
 def render_report(result: CheckResult, doc_set_name: str) -> str:
@@ -732,6 +786,16 @@ def render_report(result: CheckResult, doc_set_name: str) -> str:
             )
         else:
             lines.append(f"  {key}: never reviewed — no git history available")
+
+    lines.append("")
+    lines.append(f"Undocumented directories ({len(result.undocumented_dirs)}):")
+    if not result.undocumented_dirs:
+        lines.append("  none")
+    else:
+        for entry in sorted(result.undocumented_dirs, key=lambda d: -d.file_count):
+            lines.append(
+                f"  {entry.directory}/ — {entry.file_count} tracked files, has code, no AGENTS.md"
+            )
 
     return "\n".join(lines) + "\n"
 
@@ -808,32 +872,31 @@ def cmd_mark_reviewed(
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Audit hand-authored, agent-facing docs for mechanically-"
-        "checkable stale references and per-section human-review staleness."
-    )
-    # --quiet/-v and --repo-root/--doc-set are defined once, on every leaf
-    # subcommand parser only (via these shared `parents=` parsers) -- never
-    # on `parser` itself. See dev_status_impl.py's build_parser() for the
-    # full rationale.
-    verbosity_parent = argparse.ArgumentParser(add_help=False)
-    cli_common.add_verbosity_args(verbosity_parent)
+def _add_doc_set_args(parser: argparse.ArgumentParser) -> None:
+    """Add `--repo-root`/`--doc-set`/`--agent-toolkit-root` to ``parser``.
 
-    doc_set_parent = argparse.ArgumentParser(add_help=False)
-    doc_set_parent.add_argument(
+    Called once per leaf subcommand rather than shared via `parents=`, so
+    `gen_interfaces.py`'s static extraction attaches these to each
+    subcommand's own argument list (the same `_add_id_arg`-style helper
+    pattern `dev_status_impl.py` uses) -- a `parents=`-shared parser's
+    `add_argument` calls land on `CliSpec.options` (top-level) instead,
+    which `validate_invocation` never consults once a subcommand path has
+    matched, so a doc example combining a subcommand with one of these
+    flags would read as using an "unknown flag" that's actually real.
+    """
+    parser.add_argument(
         "--repo-root",
         type=Path,
         default=DEFAULT_REPO_ROOT,
         help="repo root to scan (default: this checkout)",
     )
-    doc_set_parent.add_argument(
+    parser.add_argument(
         "--doc-set",
         choices=sorted(DOC_SETS),
         default="agent-toolkit",
         help="which per-repo doc-set config to use (default: agent-toolkit)",
     )
-    doc_set_parent.add_argument(
+    parser.add_argument(
         "--agent-toolkit-root",
         type=Path,
         default=DEFAULT_AGENT_TOOLKIT_ROOT,
@@ -842,19 +905,34 @@ def build_parser() -> argparse.ArgumentParser:
         "$AGENT_TOOLKIT_PATH or ~/Workspace/agent-toolkit)",
     )
 
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Audit hand-authored, agent-facing docs for mechanically-"
+        "checkable stale references and per-section human-review staleness."
+    )
+    # --quiet/-v and --repo-root/--doc-set are defined once, on every leaf
+    # subcommand parser only (via this shared `parents=` parser) -- never on
+    # `parser` itself. See dev_status_impl.py's build_parser() for the full
+    # rationale.
+    verbosity_parent = argparse.ArgumentParser(add_help=False)
+    cli_common.add_verbosity_args(verbosity_parent)
+
     subparsers = parser.add_subparsers(dest="subcommand")
 
-    subparsers.add_parser(
+    check_parser = subparsers.add_parser(
         "check",
         help="scan the configured doc-set and print a findings + staleness report (default)",
-        parents=[verbosity_parent, doc_set_parent],
+        parents=[verbosity_parent],
     )
+    _add_doc_set_args(check_parser)
 
     mark_parser = subparsers.add_parser(
         "mark-reviewed",
         help="record human sign-off that one doc's `## <heading>` section is current",
-        parents=[verbosity_parent, doc_set_parent],
+        parents=[verbosity_parent],
     )
+    _add_doc_set_args(mark_parser)
     mark_parser.add_argument("doc", help="repo-relative doc path, e.g. AGENTS.md")
     mark_parser.add_argument("heading", help="exact `## <heading>` text")
     mark_parser.add_argument(
