@@ -2356,6 +2356,77 @@ describe("swarm_resolve_blocked execute() wiring", () => {
     expect(res.details.relayFailed).toBe(true);
     expect(res.content[0]?.text).toContain("did not resume");
   });
+
+  // THE REGRESSION. Both relay_failed paths drop the worker record and close
+  // its tab. A worker that queued digest offers before its relay failed lost
+  // them with the record -- readCaptureOffers was only wired into swarm_poll's
+  // finish path. The file on disk is the unit under test: seeded before the
+  // call, asserted consumed after.
+  const seedCaptures = () =>
+    writeFileSync(
+      capturePath(RUN, "some-item", dir),
+      JSON.stringify({
+        offers: [{ kind: "backlog", id: "meta-thing", summary: "a thing worth doing" }],
+      }),
+      "utf8",
+    );
+
+  test("a send-keys failure harvests the worker's queued capture offers before teardown", async () => {
+    seedCaptures();
+    const { resolve } = setup((argv) =>
+      argv[0] === "agent" && argv[1] === "send-keys"
+        ? { code: 1, stdout: "", stderr: "send-keys refused" }
+        : undefined,
+    );
+
+    const res = await run(resolve);
+
+    expect(res.details.relayFailed).toBe(true);
+    const details = res.details as {
+      relayFailed: boolean;
+      captures?: { kind: string; id: string; summary: string }[];
+    };
+    expect(details.captures).toEqual([
+      { kind: "backlog", id: "meta-thing", summary: "a thing worth doing" },
+    ]);
+    const text = res.content.map((c) => c.text).join("\n");
+    expect(text).toContain("meta-thing");
+    // Consumed, and the post-close re-delete caught any late re-creation.
+    expect(readCaptureOffers(RUN, "some-item", dir)).toEqual([]);
+  });
+
+  test("a verify-timeout relay failure harvests the worker's queued capture offers before teardown", async () => {
+    seedCaptures();
+    const { resolve } = setup((argv) =>
+      argv[0] === "agent" && argv[1] === "wait" ? waitLike("blocked")(argv) : undefined,
+    );
+
+    const res = await run(resolve);
+
+    expect(res.details.relayFailed).toBe(true);
+    const details = res.details as {
+      relayFailed: boolean;
+      captures?: { kind: string; id: string; summary: string }[];
+    };
+    expect(details.captures).toEqual([
+      { kind: "backlog", id: "meta-thing", summary: "a thing worth doing" },
+    ]);
+    const text = res.content.map((c) => c.text).join("\n");
+    expect(text).toContain("meta-thing");
+    expect(readCaptureOffers(RUN, "some-item", dir)).toEqual([]);
+  });
+
+  test("a relay failure with no queued captures leaves the result text free of capture framing", async () => {
+    const { resolve } = setup((argv) =>
+      argv[0] === "agent" && argv[1] === "wait" ? waitLike("blocked")(argv) : undefined,
+    );
+
+    const res = await run(resolve);
+
+    expect(res.details.relayFailed).toBe(true);
+    const text = res.content.map((c) => c.text).join("\n");
+    expect(text).not.toContain("Queued capture offers");
+  });
 });
 
 describe("swarm_poll and workers parked at awaiting_relay", () => {
