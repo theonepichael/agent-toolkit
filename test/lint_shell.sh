@@ -8,10 +8,9 @@ REPO="$(cd "$HERE/.." && pwd)"
 
 files=(
   "$REPO/install.sh"
-  "$REPO/scripts/export_for_print.sh"
-  "$REPO/scripts/export_for_print_trimmed.sh"
   "$REPO/test/run.sh"
   "$REPO/test/scenarios.sh"
+  "$REPO/test/lint_shell.sh"
 )
 
 printf '%s\n' "Running shellcheck --severity=warning..."

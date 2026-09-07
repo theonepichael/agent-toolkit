@@ -156,6 +156,10 @@ NEVER_SYNCED_REPO_SPECIFIC: tuple[str, ...] = (
     "*/AGENTS.md",
     "README.md",
     "STYLE.md",
+    # Its in-scope file list is per-repo: dotfiles' names
+    # scripts/export_for_print*.sh, which this toolkit deliberately never
+    # carried, so its list is maintained here by hand (and it self-lists).
+    "test/lint_shell.sh",
     "claude/CORE_INSTRUCTIONS.md",
     "claude/settings.json",
     "githooks/pre-commit",
