@@ -1377,6 +1377,31 @@ export interface ParsedPicker {
 
 const OPTION_LINE = /^\s*(>)?\s*(\d+)\.\s+(.+?)\s*$/;
 const OTHER_OPTION_LABEL = "Something else (type it)";
+
+/**
+ * question-tool.ts renders each option with a 2-visible-column prefix ("> " highlighted,
+ * "  " not) and wraps the label at renderWidth - 2, continuation lines carrying a 2-space
+ * prefix; descriptions (and their continuations) carry a 5-space prefix. In a narrow worker
+ * pane the LABEL wraps too, and a capture that keeps only the first line collapses two
+ * options that share their first word ("Merge + push + cleanup (Recommended)" and
+ * "Merge and push only" both became "Merge" on 2026-09-07) -- unresolvable for matchOption.
+ * Continuations are therefore reattached, keyed off the option line's own number column
+ * (the char offset of its \\d+, with the marker counted as its 2 visible columns -- captures
+ * are ANSI-stripped, so chars are columns). Both "  1. X" and "> 1. X" put the number at
+ * column 2, and a globally padded capture shifts number and continuations equally, so the
+ * baseline is relative, never an absolute indent. Descriptions start exactly 3 columns past
+ * the number (5 - 2), so anything at or beyond baseline + 3 is skipped.
+ */
+const DESCRIPTION_COLUMN_OFFSET = 3;
+/**
+ * A line that still SMELLS like an option but fails OPTION_LINE -- a multi-select picker's
+ * toggled row ("[x] 2. Push only") is the live case -- must never be appended to the
+ * previous option's label as if it were a wrapped continuation. Today's parser skipped it
+ * and the broken numbering degraded the window to needs_manual; appending would instead
+ * corrupt a neighboring label, which is a worse way to fail. Skip it, keep the state, and
+ * let contiguity refuse the window as before.
+ */
+const SMELLS_LIKE_OPTION = /^\d+\.\s/;
 /**
  * question-tool.ts's picker closes with one of exactly three hint lines --
  * select, multi-select, and the free-text edit mode -- and wraps the whole
@@ -1433,11 +1458,28 @@ export function parsePicker(content: string): ParsedPicker {
 
   const options: RenderedOption[] = [];
   const selected: number[] = [];
+  // Visible column of the active option's number -- 2 for both "  1. X" and "> 1. X"; see
+  // DESCRIPTION_COLUMN_OFFSET's comment for why it is measured per option line.
+  let baseline = 0;
   for (const line of lines.slice(opening + 1, footer)) {
     const m = OPTION_LINE.exec(line);
-    if (!m) continue;
-    options.push({ index: Number(m[2]), label: m[3]! });
-    if (m[1] === ">") selected.push(Number(m[2]));
+    if (m) {
+      options.push({ index: Number(m[2]), label: m[3]! });
+      if (m[1] === ">") selected.push(Number(m[2]));
+      baseline = line.indexOf(m[2]!);
+      continue;
+    }
+    if (options.length === 0) continue;
+    const trimmed = line.trim();
+    if (!trimmed) continue; // a blank line never detaches a continuation from its option
+    const indent = line.length - line.trimStart().length;
+    if (indent >= baseline + DESCRIPTION_COLUMN_OFFSET || SMELLS_LIKE_OPTION.test(trimmed)) {
+      // A description line (or its continuations), or something that smells like a
+      // mis-rendered option row: skipped, state kept -- never part of a label.
+      continue;
+    }
+    const last = options[options.length - 1]!;
+    last.label = `${last.label} ${trimmed}`;
   }
 
   // render() numbers options `${i + 1}`, so a real picker's indices are always
@@ -1499,6 +1541,20 @@ export function matchOption(
 
   const partial = candidates.filter((o) => containsAsWord(o.label.toLowerCase(), needle));
   if (partial.length === 1) return partial[0]!;
+
+  // Whitespace-insensitive last pass, for labels that only the reassembly path can produce:
+  // wrapTextWithAnsi hard-breaks a word wider than the pane ("(Recommended)" ->
+  // "(Recommended" + ")"), and single-space joining freezes the break in ("Commit
+  // (Recommended )"), so neither the exact nor the word-bounded pass can pair the true label
+  // text with the reassembled one. Word boundaries do not survive whitespace removal
+  // ("stop here" -> "stophere"), so this pass is plain substring containment -- the
+  // MIN_PARTIAL_ANSWER floor above gates it exactly like the fragment pass, and it still
+  // counts candidates and refuses ambiguity like every other pass.
+  const strippedNeedle = needle.replace(/\s+/g, "");
+  const stripped = candidates.filter((o) =>
+    o.label.toLowerCase().replace(/\s+/g, "").includes(strippedNeedle),
+  );
+  if (stripped.length === 1) return stripped[0]!;
 
   return null;
 }

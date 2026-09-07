@@ -378,6 +378,244 @@ const NARROW_PANE_PICKER = `
 ───────────────────────────────────────
 ~/dotfiles (main)`;
 
+// Reconstructed from the 2026-09-07 swarm run's live mangle: a real worker pane's land-gate
+// picker whose option LABELS (not just descriptions) wrapped across lines. Today's parser
+// kept only each label's first line, so "Merge + push + cleanup (Recommended)" and
+// "Merge and push only" both collapsed to "Merge" and matchOption saw two identical
+// candidates -> needs_manual twice.
+const WRAPPED_LABEL_PICKER = `
+───────────────────────────────────────
+ Land
+ Merge these changes to main, push
+ the branch, and clean up the
+ worktree when the gate passes?
+
+> 1. Merge + push + cleanup
+  (Recommended)
+     merge locally, push to the
+     remote, remove the worktree
+  2. Merge and push only
+     merge and push but keep the
+     worktree in place
+  3. Something else (type it)
+     Answer in your own words instead.
+
+ ↑↓ navigate • Enter to select • Esc to
+ cancel
+───────────────────────────────────────`;
+
+// A label wrapping over 3+ lines must reassemble fully, not just one continuation deep.
+const THREE_LINE_LABEL_PICKER = `
+───────────────────────────────────────
+ Sweep
+ Close out the whole swarm run now
+ that every item has settled?
+
+  1. Merge to main and push and
+  remove the worktree and delete
+  the local branch afterwards
+     merge, push, remove worktree,
+     delete branch
+> 2. Stop here
+     leave everything uncommitted
+
+ ↑↓ navigate • Enter to select • Esc to
+ cancel
+───────────────────────────────────────`;
+
+// A blank line inside the option block must not detach a continuation from its option.
+const BLANK_LINE_BETWEEN_PICKER = WRAPPED_LABEL_PICKER.replace(
+  `> 1. Merge + push + cleanup\n  (Recommended)`,
+  `> 1. Merge + push + cleanup\n\n  (Recommended)`,
+);
+
+// Same picker, every content line shifted right by a global 4-space padding (the way herdr
+// pane borders or nested layout could indent a capture). The rules and footer stay at
+// column 0 -- they are what PICKER_RULE/PICKER_FOOTER anchor on, and a capture that padded
+// those too yields no anchors and degrades to needs_manual, which is today's behavior.
+const PADDED_PICKER = WRAPPED_LABEL_PICKER.replace(/^[ ](?=[^ ])/gm, "    ").replace(/^─/gm, "─");
+
+// wrapTextWithAnsi hard-breaks a word wider than the pane: at a narrow width,
+// "(Recommended)" splits into "(Recommended" + ")" on its own continuation line. The
+// reassembled label keeps the break as a space ("Commit (Recommended )"), which only the
+// whitespace-insensitive match pass can pair with the true label.
+const HARDWRAPPED_WORD_PICKER = `
+──────────────────────────────────────
+ Land
+ Commit these changes right now?
+
+> 1. Commit
+  (Recommended
+  )
+     Commit the current changes
+     right away.
+  2. Stop here
+     Leave uncommitted
+
+ ↑↓ navigate • Enter to select • Esc
+ cancel
+──────────────────────────────────────`;
+
+// A description line that happens to start with digits+period parses as an option line
+// (OPTION_LINE's ^\\s* consumes any indent -- that predates this fix), so the numbering
+// breaks and the whole window must collapse to needs_manual rather than guess.
+const DIGIT_LED_DESCRIPTION_PICKER = `
+───────────────────────────────────────
+ Land
+ Merge these changes to main?
+
+> 1. Merge now
+     2. something that looks numbered
+  2. Stop here
+     Leave uncommitted
+
+ ↑↓ navigate • Enter to select • Esc to
+ cancel
+───────────────────────────────────────`;
+
+// A multi-select picker with a toggled option renders "[x] 1. Label" -- no match for
+// OPTION_LINE, but the leading "[x]" means it must never be appended to the previous
+// option's label as a continuation either.
+const TOGGLED_MULTISELECT_PICKER = `
+───────────────────────────────────────
+ Land
+ Which of these should land?
+
+> 1. Merge + push
+  [x] 2. Push only
+     push but skip the cleanup
+  3. Something else (type it)
+     Answer in your own words instead.
+
+ ↑↓ navigate • Space to toggle • Enter
+ cancel
+───────────────────────────────────────`;
+
+// The parser must not mistake a description line for a label continuation: the description
+// prefix is 5 columns, 3 past the number column, and its continuations keep that indent.
+const DIGIT_MID_DESCRIPTION_PICKER = WRAPPED_LABEL_PICKER.replace(
+  "     merge locally, push to the",
+  "     3 merges locally, push the",
+);
+
+describe("parsePicker wrapped option labels", () => {
+  test("reassembles a label wrapped onto its own continuation line", () => {
+    const parsed = parsePicker(WRAPPED_LABEL_PICKER);
+    expect(parsed.options.map((o) => o.label)).toEqual([
+      "Merge + push + cleanup (Recommended)",
+      "Merge and push only",
+      "Something else (type it)",
+    ]);
+    expect(parsed.selectedIndex).toBe(1);
+  });
+
+  test("a label wrapping over 3+ lines reassembles fully", () => {
+    const parsed = parsePicker(THREE_LINE_LABEL_PICKER);
+    expect(parsed.options.map((o) => o.label)).toEqual([
+      "Merge to main and push and remove the worktree and delete the local branch afterwards",
+      "Stop here",
+    ]);
+    expect(parsed.selectedIndex).toBe(2);
+  });
+
+  test("descriptions never leak into a reassembled label", () => {
+    const parsed = parsePicker(WRAPPED_LABEL_PICKER);
+    expect(parsed.options[0]!.label).not.toContain("merge locally");
+    expect(parsed.options[1]!.label).not.toContain("worktree");
+  });
+
+  test("a blank line between an option and its continuation does not detach them", () => {
+    const parsed = parsePicker(BLANK_LINE_BETWEEN_PICKER);
+    expect(parsed.options[0]!.label).toBe("Merge + push + cleanup (Recommended)");
+  });
+
+  test("a globally padded capture still parses with relative baselines", () => {
+    const parsed = parsePicker(PADDED_PICKER);
+    expect(parsed.options.map((o) => o.label)).toEqual([
+      "Merge + push + cleanup (Recommended)",
+      "Merge and push only",
+      "Something else (type it)",
+    ]);
+    expect(parsed.selectedIndex).toBe(1);
+  });
+
+  test("a digit-led description line still collapses the window to needs_manual", () => {
+    expect(parsePicker(DIGIT_LED_DESCRIPTION_PICKER).options).toEqual([]);
+  });
+
+  test("a toggled multi-select option line is never appended as a continuation", () => {
+    // "[x] 2. Push only" can't be an option (no OPTION_LINE match) and must not corrupt
+    // option 1's label either -- the window degrades, it does not guess.
+    const parsed = parsePicker(TOGGLED_MULTISELECT_PICKER);
+    expect(parsed.options).toEqual([]);
+  });
+
+  test("a digit mid-description does not get mistaken for an option's continuation", () => {
+    // "     3 merges locally, ..." sits at the description indent; its leading "3" must not
+    // make the line a label continuation, and the description text must stay out of labels.
+    const parsed = parsePicker(DIGIT_MID_DESCRIPTION_PICKER);
+    expect(parsed.options.map((o) => o.label)).toEqual([
+      "Merge + push + cleanup (Recommended)",
+      "Merge and push only",
+      "Something else (type it)",
+    ]);
+  });
+});
+
+describe("matchOption wrapped labels", () => {
+  const wrapped = parsePicker(WRAPPED_LABEL_PICKER).options;
+
+  test("the full wrapped label answer matches the reassembled option exactly", () => {
+    expect(matchOption("merge + push + cleanup (recommended)", wrapped)?.index).toBe(1);
+    expect(matchOption("Merge and push only", wrapped)?.index).toBe(2);
+  });
+
+  test("a first-word answer shared by two reassembled labels stays ambiguous", () => {
+    // THE 2026-09-07 FAILURE. Both labels start with "Merge"; today's parser collapsed both
+    // to "Merge" and matchOption saw two identical candidates. With reassembly the labels
+    // differ, but a bare "Merge" still matches both as a word -> null, never a guess.
+    expect(matchOption("Merge", wrapped)).toBeNull();
+  });
+
+  test("the free-text escape is never auto-selected on a wrapped picker", () => {
+    expect(matchOption("Something else (type it)", wrapped)).toBeNull();
+  });
+
+  test("a hard-broken word matches via the whitespace-insensitive pass", () => {
+    const parsed = parsePicker(HARDWRAPPED_WORD_PICKER);
+    expect(parsed.options[0]!.label).toBe("Commit (Recommended )");
+    expect(matchOption("Commit (Recommended)", parsed.options)?.index).toBe(1);
+  });
+
+  test("labels identical after whitespace removal stay ambiguous", () => {
+    // A hard-broken capture can reassemble two labels that strip to the same string; the
+    // answer then reaches neither the exact nor the word-bounded pass, and the stripped pass
+    // must refuse the ambiguity rather than return the first. (An answer equal to one label
+    // outright never reaches this pass -- the exact match wins first, correctly.)
+    const dupes = [
+      { index: 1, label: "Reopenitem" },
+      { index: 2, label: "Reopen  item" },
+    ];
+    expect(matchOption("reopen item", dupes)).toBeNull();
+  });
+
+  test("short answers below MIN_PARTIAL_ANSWER never reach the stripped pass", () => {
+    expect(matchOption("no", wrapped)).toBeNull();
+    expect(matchOption("in", wrapped)).toBeNull();
+  });
+
+  test("the stripped pass respects word-char boundaries the way the fragment pass does", () => {
+    // "erge" inside both "Merge ..." labels -- ambiguous, so null either way; but against a
+    // single-candidate list it must still match (the accepted looser-path tradeoff).
+    expect(matchOption("erge", wrapped)).toBeNull();
+    const single = [
+      { index: 1, label: "Merge now" },
+      { index: 2, label: "Stop here" },
+    ];
+    expect(matchOption("erge", single)?.index).toBe(1);
+  });
+});
+
 describe("parsePicker anchoring", () => {
   // THE DEFECT. OPTION_LINE matched any numbered line in the 500 lines of
   // scrollback `agent read` returns, with no anchor to the live picker, so a
