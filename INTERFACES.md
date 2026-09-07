@@ -51,6 +51,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`notify.py`](#agentscriptsnotifypy) | Cross-platform agent notification dispatcher. |
 | [`outlook_calendar.py`](#agentscriptsoutlookcalendarpy) | outlook_calendar.py — CLI tool and agent interface for Windows Outlook Calendar via PowerShell COM. |
 | [`outlook_email.py`](#agentscriptsoutlookemailpy) | outlook_email.py — CLI tool and agent interface for Windows Outlook via PowerShell COM. |
+| [`refresh_guidance.py`](#agentscriptsrefreshguidancepy) | refresh_guidance.py — audit-by-inspection for hand-authored, agent-facing docs. |
 | [`repo_identity.py`](#agentscriptsrepoidentitypy) | repo_identity.py — which repo this checkout is. |
 | [`second_opinion.py`](#agentscriptssecondopinionpy) | second_opinion.py — one-shot adversarial critique of a plan from a non-Claude backend. Single-round by design: the multi-round loop, plan revision, and convergence judgment all require LLM reasoning and live in prose instructions, not here. |
 | [`seed_hook_subset_guard.py`](#agentscriptsseedhooksubsetguardpy) | seed_hook_subset_guard.py — refuse a commit that drops a seed's SessionStart hook groups. |
@@ -822,6 +823,61 @@ outlook_email.py — CLI tool and agent interface for Windows Outlook via PowerS
   - `get_recent_correspondence(since: date | None = None, limit: int = 50, runner: Callable[[str], str] | None = None) -> list[dict[str, object]]` — Retrieve recent emails received in Inbox.
 - Tested by: `agent-scripts/test_outlook_email.py`
 
+### `agent-scripts/refresh_guidance.py`
+
+refresh_guidance.py — audit-by-inspection for hand-authored, agent-facing docs.
+
+- Installed at: `~/.claude/scripts/refresh_guidance.py` (all harnesses)
+- Entrypoint: not executable, `#!/usr/bin/env python3`
+- CLI (`argparse`): Audit hand-authored, agent-facing docs for mechanically-checkable stale references and per-section human-review staleness.
+  - `--quiet/-q`
+  - `--verbose/-v`
+- Subcommands:
+  - `check [--repo-root <REPO_ROOT>] [--doc-set <DOC_SET>] [--agent-toolkit-root <AGENT_TOOLKIT_ROOT>]` — scan the configured doc-set and print a findings + staleness report (default)
+    - `--repo-root` — repo root to scan (default: this checkout)
+    - `--doc-set` — which per-repo doc-set config to use (default: agent-toolkit) (choices computed at runtime; default: agent-toolkit)
+    - `--agent-toolkit-root` — agent-toolkit checkout used to resolve cross-repo script citations for doc-sets with cross_repo_scripts set (default: $AGENT_TOOLKIT_PATH or ~/Workspace/agent-toolkit)
+  - `mark-reviewed [--repo-root <REPO_ROOT>] [--doc-set <DOC_SET>] [--agent-toolkit-root <AGENT_TOOLKIT_ROOT>] <doc> <heading> [--commit <COMMIT>] [--date <DATE>]` — record human sign-off that one doc's `## <heading>` section is current
+    - `--repo-root` — repo root to scan (default: this checkout)
+    - `--doc-set` — which per-repo doc-set config to use (default: agent-toolkit) (choices computed at runtime; default: agent-toolkit)
+    - `--agent-toolkit-root` — agent-toolkit checkout used to resolve cross-repo script citations for doc-sets with cross_repo_scripts set (default: $AGENT_TOOLKIT_PATH or ~/Workspace/agent-toolkit)
+    - `doc` — repo-relative doc path, e.g. AGENTS.md
+    - `heading` — exact `## <heading>` text
+    - `--commit` — commit sha to record (default: current HEAD)
+    - `--date` — YYYY-MM-DD to record (default: today)
+- Environment: `AGENT_TOOLKIT_PATH`
+- Filesystem constants:
+  - `DEFAULT_REPO_ROOT = Path(__file__).resolve().parents[1]`
+  - `DEFAULT_AGENT_TOOLKIT_ROOT = Path(os.environ.get('AGENT_TOOLKIT_PATH', str(Path.home() / 'Workspace' / 'agent-toolkit')))`
+- Explicit exit codes: `2`
+- Depends on: `cli_common.py`, `gen_interfaces.py`
+- Public classes:
+  - `class DocSetConfig` — What to scan for one repo: fixed docs, plus where its scripts live.
+  - `class UndocumentedDir`
+  - `class Section` — One `##` heading's line range.
+  - `class Claim`
+  - `class Finding`
+  - `class SectionStatus`
+  - `class CheckResult`
+- Public functions:
+  - `discover_agents_md(repo_root: Path) -> list[str]` — Return every tracked `AGENTS.md`'s repo-relative path, sorted.
+  - `discover_undocumented_dirs(repo_root: Path, threshold: int = UNDOCUMENTED_DIR_THRESHOLD) -> list[UndocumentedDir]` — Flag a top-level directory that looks complex enough to warrant its own `AGENTS.md` but doesn't have one -- the inverse signal from the rest of this module: not "this existing doc is stale" but "no one has written a doc for this yet." Purely a suggestion for a human to weigh; never creates anything.
+  - `discover_basename_index(repo_root: Path) -> dict[str, list[str]]` — Map every tracked file's basename to its repo-relative path(s).
+  - `discovered_docs(repo_root: Path, doc_set: DocSetConfig) -> list[str]` — Union of the doc-set's fixed docs (only those present) and every auto-discovered `AGENTS.md` -- a fixed doc absent from this repo (e.g.
+  - `discover_scripts(repo_root: Path, doc_set: DocSetConfig, agent_toolkit_root: Path | None = None) -> dict[str, Path]` — Map every script basename under the doc-set's script directories (plus its root entrypoints) to its path -- the universe of scripts a command citation can legitimately name.
+  - `classify_span(text: str, known_scripts: set[str]) -> tuple[str, str, list[str], str | None, str | None] | None` — Classify one code-span's text as a path or command claim, or None if it isn't claim-shaped at all (a bare flag, an env var name, a glob pattern, a generic shell command with no known script in it, ...).
+  - `parse_document(doc_relpath: str, text: str, known_scripts: set[str]) -> tuple[list[Section], list[Claim]]` — One pass over a doc's lines: track `##` headings and fenced-code state together, so a `## `-looking line inside a fenced example is never mistaken for a real section boundary.
+  - `check_path_claim(claim: Claim, repo_root: Path, basename_index: dict[str, list[str]]) -> str | None` — Verify a path claim's file/dir exists, and -- when it carries a `#fragment` -- that a matching `##` heading exists in the target doc.
+  - `check_command_claim(claim: Claim, scripts: dict[str, Path], cli_cache: dict[Path, gen_interfaces.CliSpec | None], repo_root: Path, basename_index: dict[str, list[str]]) -> str | None` — Verify a command claim's script exists and its cited flags/subcommands are real, by reusing `gen_interfaces`'s own argparse extraction and invocation validator -- the same machinery it uses to keep INTERFACES.md honest, rather than a second implementation of argparse introspection.
+  - `git_blame_range(repo_root: Path, doc: str, start_line: int, end_line: int) -> tuple[str | None, str | None]` — Last commit (short sha, date) that touched a section's line range, via `git log -L` -- the secondary staleness signal for a section with no review-state entry yet.
+  - `load_state(repo_root: Path, doc_set: DocSetConfig) -> dict[str, dict[str, str]]`
+  - `save_state(repo_root: Path, doc_set: DocSetConfig, state: dict[str, dict[str, str]]) -> None`
+  - `run_check(repo_root: Path, doc_set_name: str, agent_toolkit_root: Path = DEFAULT_AGENT_TOOLKIT_ROOT) -> CheckResult`
+  - `render_report(result: CheckResult, doc_set_name: str) -> str`
+  - `build_parser() -> argparse.ArgumentParser`
+- Subcommand handlers: `cmd_check`, `cmd_mark_reviewed`
+- Tested by: `agent-scripts/test_refresh_guidance.py`
+
 ### `agent-scripts/repo_identity.py`
 
 repo_identity.py — which repo this checkout is.
@@ -1080,6 +1136,7 @@ the file existing in the repo; the description is the canonical
 | `/grill-me` | yes | yes | yes | yes | yes |
 | `/make-skill` | yes | yes | yes | yes | yes |
 | `/recap` | yes | yes | yes | yes | yes |
+| `/refresh-guidance` | yes | — | yes | — | yes |
 | `/second-opinion` | yes | yes | yes | yes | yes |
 | `/skill-map` | yes | — | — | — | — |
 | `/spec` | yes | yes | yes | yes | yes |
@@ -1108,6 +1165,9 @@ the file existing in the repo; the description is the canonical
 - **`/recap`** — prints a friendly prose recap of recent activity. use when the user says 'recap', 'what did we do', 'catch me up', 'summary of recent work', or any variant of requesting a recap.
   - Source: `claude/commands/recap.md`
   - Installed at: `~/.claude/commands/recap.md` (claude)
+- **`/refresh-guidance`** — Audit this repo's hand-authored, agent-facing docs (AGENTS.md, README.md, STYLE.md, CHANGELOG.md, etc.) for mechanically-broken citations — dead file paths, dead command/flag references — and surface which `##` sections haven't had a human-confirmed review in a while. Use when the user says 'refresh guidance', 'audit the docs', 'check the docs for staleness', 'run refresh-guidance', or asks which doc sections need review.
+  - Source: `claude/commands/refresh-guidance.md`
+  - Installed at: `~/.claude/commands/refresh-guidance.md` (claude)
 - **`/second-opinion`** — Send a plan to a non-Claude model for adversarial critique, then iterate — revise, re-send, repeat — until the critique stops surfacing anything new or a round cap is hit. Use when the user wants a second opinion, an outside critique, or to stress-test a plan against a different model.
   - Source: `claude/commands/second-opinion.md`
   - Installed at: `~/.claude/commands/second-opinion.md` (claude)
@@ -1198,6 +1258,7 @@ are copy-once seeds for exactly that reason.
 | `pi/prompts/grill-me.md` | `~/.pi/agent/prompts/grill-me.md` (pi) |
 | `pi/prompts/make-skill.md` | `~/.pi/agent/prompts/make-skill.md` (pi) |
 | `pi/prompts/recap.md` | `~/.pi/agent/prompts/recap.md` (pi) |
+| `pi/prompts/refresh-guidance.md` | `~/.pi/agent/prompts/refresh-guidance.md` (pi) |
 | `pi/prompts/second-opinion.md` | `~/.pi/agent/prompts/second-opinion.md` (pi) |
 | `pi/prompts/spec.md` | `~/.pi/agent/prompts/spec.md` (pi) |
 | `pi/prompts/standup.md` | `~/.pi/agent/prompts/standup.md` (pi) |
@@ -1510,7 +1571,9 @@ named doc, not regenerating this file.
 
 | Doc | Status |
 | --- | --- |
+| `claude/commands/refresh-guidance.md` | OK |
 | `claude/commands/skill-map.md` | OK |
+| `opencode/skills/refresh-guidance/SKILL.md` | OK |
 
 ### `grill.py`
 
@@ -1546,6 +1609,13 @@ named doc, not regenerating this file.
 | --- | --- |
 | `claude/commands/swarm.md` | OK |
 | `copilot/skills/swarm/SKILL.md` | OK |
+
+### `refresh_guidance.py`
+
+| Doc | Status |
+| --- | --- |
+| `claude/commands/refresh-guidance.md` | OK |
+| `opencode/skills/refresh-guidance/SKILL.md` | OK |
 
 ### `second_opinion.py`
 
@@ -1621,6 +1691,7 @@ new one, `--check` catches it the same as any other stale content.
 | `/grill-me` | `second-opinion`, `spec` |
 | `/make-skill` | `grill-me` |
 | `/recap` | — |
+| `/refresh-guidance` | — |
 | `/second-opinion` | — |
 | `/skill-map` | — |
 | `/spec` | `backlog-item`, `grill-me`, `second-opinion` |

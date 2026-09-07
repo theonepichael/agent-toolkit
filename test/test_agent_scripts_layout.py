@@ -26,7 +26,9 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-# Frozen pre-move dest set (28 script links + the managed_dir audit entry).
+# Frozen dest set (30 script links + the managed_dir audit entry), updated
+# in lockstep with each deliberate new agent-scripts/ addition -- a drift
+# here must be an intentional edit to this list, never a silent add/remove.
 # agent-toolkit's links.toml must keep exactly these dests pointing at
 # ~/.claude/scripts; the runtime path is permanent (see the migration-cutover
 # item's out-of-scope record: XDG relocation rejected).
@@ -52,6 +54,7 @@ FROZEN_SCRIPT_DESTS = frozenset(
         "notify.py",
         "outlook_calendar.py",
         "outlook_email.py",
+        "refresh_guidance.py",
         "repo_identity.py",
         "second_opinion.py",
         "sessionstart_checks.py",
@@ -121,7 +124,7 @@ def test_links_toml_srcs_live_in_agent_scripts() -> None:
         if isinstance(entry.get("src"), str)
         and "~/.claude/scripts" in str(entry.get("dest", ""))
     ]
-    assert len(script_links) == 29, f"expected 29 script links, got {len(script_links)}"
+    assert len(script_links) == 30, f"expected 30 script links, got {len(script_links)}"
     bad = [
         entry["src"]
         for entry in script_links
@@ -168,7 +171,7 @@ def test_no_dead_repo_path_references() -> None:
     # additionally exempted line-wise below. Everything else is a dead
     # repo-path reference.
     pattern = re.compile(r"(?<!\.)(?<!dotfiles/)claude/scripts")
-    dotfiles_relpath_line = re.compile(r"dotfiles_relpath\s*=")
+    dotfiles_side_line = re.compile(r"dotfiles_relpath\s*=|# dotfiles-repo-relative")
     offenders: list[tuple[Path, int]] = []
     for path in _tracked_files():
         if path in TEXT_SWEEP_ALLOWLIST:
@@ -181,8 +184,12 @@ def test_no_dead_repo_path_references() -> None:
         except UnicodeDecodeError:
             continue  # binary
         for lineno, line in enumerate(text.splitlines(), start=1):
-            if dotfiles_relpath_line.search(line):
-                continue  # kwarg names a dotfiles-side path by contract
+            if dotfiles_side_line.search(line):
+                # kwarg or trailing marker comment names a dotfiles-side path
+                # by contract -- refresh_guidance.py's DocSetConfig.script_dirs
+                # for the "dotfiles" doc-set is the same shape, marked inline
+                # rather than exempting the whole file.
+                continue
             if pattern.search(line):
                 offenders.append((path, lineno))
     assert not offenders, (
