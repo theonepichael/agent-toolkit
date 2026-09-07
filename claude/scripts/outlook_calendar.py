@@ -131,8 +131,8 @@ def get_calendar_events_range(
     start_str = effective_start.strftime("%Y-%m-%d 00:00:00")
     end_str = effective_end.strftime("%Y-%m-%d 23:59:59")
     dasl_filter = (
-        f'@SQL="urn:schemas:calendar:dtstart" >= \'{start_str}\' '
-        f'AND "urn:schemas:calendar:dtstart" <= \'{end_str}\''
+        f"@SQL=\"urn:schemas:calendar:dtstart\" >= '{start_str}' "
+        f"AND \"urn:schemas:calendar:dtstart\" <= '{end_str}'"
     )
     b64_dasl = _b64(dasl_filter)
 
