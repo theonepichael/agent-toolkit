@@ -10,7 +10,7 @@ never as a side effect of an unrelated task.
    resolve the current repo root with `git rev-parse --show-toplevel` and
    map it to a doc-set: `agent-toolkit` if the root is named `agent-toolkit`
    (or has an `agent-scripts/` directory), `dotfiles` if it's the dotfiles
-   checkout (or has `claude/scripts/gen_interfaces.py`). Neither match? Tell
+   checkout (or has `dotfiles/claude/scripts/gen_interfaces.py`). Neither match? Tell
    the user this tool only has config for `agent-toolkit`/`dotfiles` and
    stop — don't guess a doc-set.
 
