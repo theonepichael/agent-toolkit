@@ -466,6 +466,22 @@ export function readCaptureOffers(
   }
 }
 
+/**
+ * Renders harvested capture offers for a tool result's text, in the same
+ * shape swarm_poll attaches them to a finished event. Shared by swarm_poll
+ * and swarm_resolve_blocked so the two surfaces cannot drift.
+ *
+ * Zero offers render as an empty string: a worker that queued nothing must
+ * not change the output it always produced.
+ */
+export function renderCaptureOffers(offers: CaptureOffer[]): string {
+  if (offers.length === 0) return "";
+  return (
+    "\n  Queued capture offers from this worker -- do NOT ask about them now; fold them into your single end-of-run digest walk: " +
+    offers.map((c) => `[${c.kind}] ${c.id} -- ${c.summary}`).join("; ")
+  );
+}
+
 export function loadState(runId: string, stateDir: string = herdrStateDir()): SwarmState | null {
   const path = statePath(runId, stateDir);
   if (!existsSync(path)) return null;
@@ -1670,6 +1686,42 @@ export default function (pi: ExtensionAPI) {
   }
 
   /**
+   * Drops a worker for good: harvests its queued capture offers FIRST (the
+   * consuming read -- the record is gone right after, so nothing could ever
+   * attribute a file left behind to the item), closes its pane/tab, then
+   * removes the record and persists. Shared by swarm_poll's finish-path
+   * teardown and swarm_resolve_blocked's relay_failed paths, so read-then-
+   * close has exactly one implementation and its two former copies cannot
+   * drift.
+   *
+   * Read BEFORE close because that is the drain loop's proven order and the
+   * documented contract; on the verify-timeout path a worker that actually
+   * resumed could append after the read, which is accepted -- losing a
+   * housekeeping offer is the smaller harm, and a file re-created in that
+   * window is re-deleted after the close rather than orphaned on disk with no
+   * record left to ever clean it up.
+   *
+   * Mutates `state` in place and returns the offers; callers must not retain
+   * the filtered worker afterwards.
+   */
+  async function teardownAndHarvestWorker(
+    state: SwarmState,
+    worker: WorkerRecord,
+    signal?: AbortSignal,
+  ): Promise<CaptureOffer[]> {
+    const offers = readCaptureOffers(state.runId, worker.slug);
+    await closeWorker(worker, signal);
+    try {
+      rmSync(capturePath(state.runId, worker.slug), { force: true });
+    } catch {
+      // Best effort -- see readCaptureOffers' own post-read delete.
+    }
+    state.workers = state.workers.filter((w) => w.agent !== worker.agent);
+    persist(state);
+    return offers;
+  }
+
+  /**
    * Finds and closes the tab a failed `tab create` left behind, returning its
    * id when it could be identified and closed.
    *
@@ -2626,13 +2678,7 @@ export default function (pi: ExtensionAPI) {
           // once for the whole run instead of once per worker: a worker no
           // longer holds a concurrency slot open through a relay round trip
           // per housekeeping offer.
-          event.captures = readCaptureOffers(state.runId, worker.slug);
-          // closeWorker, not a bare herdr call: a close that rejects must not
-          // throw out of this loop and abandon every event after it in the
-          // same batch. Its own comment states the rule -- a cleanup problem
-          // never replaces the outcome being reported.
-          await closeWorker(worker, signal);
-          state.workers = state.workers.filter((w) => w.agent !== worker.agent);
+          event.captures = await teardownAndHarvestWorker(state, worker, signal);
         }
       }
       persist(state);
@@ -2674,13 +2720,7 @@ export default function (pi: ExtensionAPI) {
                   if (e.kind === "still_working") {
                     return `${e.slug} (${e.agent}) still_working -- check-in ${e.checkIn}, ${formatDuration(e.elapsedMs ?? 0)} of working time so far against a ${formatDuration(rt.deadlineMs)} budget. Nothing settled and no slot was freed; poll again.`;
                   }
-                  const captures = (e.captures ?? []).length
-                    ? `\n  Queued capture offers from this worker -- do NOT ask about them now; fold them into your single end-of-run digest walk: ${(
-                        e.captures ?? []
-                      )
-                        .map((c) => `[${c.kind}] ${c.id} -- ${c.summary}`)
-                        .join("; ")}`
-                    : "";
+                  const captures = renderCaptureOffers(e.captures ?? []);
                   return `${e.slug} (${e.agent}) ${e.kind}${e.detail ? `: ${e.detail}` : ""}${captures}`;
                 })
                 .join("\n\n") +
@@ -2883,22 +2923,34 @@ export default function (pi: ExtensionAPI) {
         signal,
       );
       if (keysResult.code !== 0) {
-        await closeWorker(worker, signal);
-        state.workers = state.workers.filter((w) => w.agent !== typed.agent);
-        persist(state);
+        // Relay failed, but the worker's queued capture offers must not die
+        // with its record -- harvest before the teardown this helper does.
+        const captures = await teardownAndHarvestWorker(state, worker, signal);
+        // Typed with captures optional so every branch's details share one
+        // shape and registerTool's inference does not split on the key.
+        const details: {
+          relayFailed: boolean;
+          needsManual: boolean;
+          slug: string;
+          paneId: string;
+          captures?: CaptureOffer[];
+        } = {
+          relayFailed: true,
+          needsManual: false,
+          slug: worker.slug,
+          paneId: worker.paneId,
+          captures,
+        };
         return {
           content: [
             {
               type: "text",
-              text: `relay_failed: could not send navigation keys to ${typed.agent}: ${keysResult.stderr || keysResult.stdout}`,
+              text:
+                `relay_failed: could not send navigation keys to ${typed.agent}: ${keysResult.stderr || keysResult.stdout}` +
+                renderCaptureOffers(captures),
             },
           ],
-          details: {
-            relayFailed: true,
-            needsManual: false,
-            slug: worker.slug,
-            paneId: worker.paneId,
-          },
+          details,
         };
       }
 
@@ -2932,22 +2984,33 @@ export default function (pi: ExtensionAPI) {
       );
 
       if (verify.code !== 0) {
-        await closeWorker(worker, signal);
-        state.workers = state.workers.filter((w) => w.agent !== typed.agent);
-        persist(state);
+        // Same harvest-before-teardown as the send-keys branch: a worker that
+        // answered and is mid-turn queued its offers to a file only this call
+        // can ever attribute.
+        const captures = await teardownAndHarvestWorker(state, worker, signal);
+        const details: {
+          relayFailed: boolean;
+          needsManual: boolean;
+          slug: string;
+          paneId: string;
+          captures?: CaptureOffer[];
+        } = {
+          relayFailed: true,
+          needsManual: false,
+          slug: worker.slug,
+          paneId: worker.paneId,
+          captures,
+        };
         return {
           content: [
             {
               type: "text",
-              text: `relay_failed: ${typed.agent} did not resume within ${RESOLVE_VERIFY_TIMEOUT_MS} ms after "${target.label}" was submitted.`,
+              text:
+                `relay_failed: ${typed.agent} did not resume within ${RESOLVE_VERIFY_TIMEOUT_MS} ms after "${target.label}" was submitted.` +
+                renderCaptureOffers(captures),
             },
           ],
-          details: {
-            relayFailed: true,
-            needsManual: false,
-            slug: worker.slug,
-            paneId: worker.paneId,
-          },
+          details,
         };
       }
 
