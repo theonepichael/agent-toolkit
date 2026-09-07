@@ -53,6 +53,7 @@ import registerSwarmTools, {
   spawnBudget,
   statePath,
   waitResultDetail,
+  classifyResyncGet,
   WORKER_UNATTENDED_ENV,
   type SwarmState,
   type WorkerRecord,
@@ -3704,5 +3705,267 @@ describe("selectSchedulable eligibility", () => {
     const res = selectSchedulable([unsafe("meta-a"), unsafe("meta-b")], [], 3);
     expect(res.slugs).toEqual([]);
     expect(res.refused).toHaveLength(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Blocked-state resync: swarm_poll re-derives each parked (awaiting_relay)
+// worker's true state from live herdr instead of trusting its own last-known
+// bookkeeping. A gate answered out-of-band -- direct pane keys, not
+// swarm_resolve_blocked -- leaves the record parked with NO wait armed, so
+// nothing ever produces an event for it: the run defers new items on file
+// overlap with its "held" worktrees and burns a pane-cap slot on a worker
+// that is long gone. The 2026-09-07 full atk run lost multiple poll cycles to
+// exactly this and only unstuck when a human re-polled by hand.
+// ---------------------------------------------------------------------------
+
+describe("classifyResyncGet", () => {
+  const envelope = (status: string) =>
+    JSON.stringify({ result: { agent: { agent_status: status } } });
+
+  test("a still-blocked agent keeps the record parked", () => {
+    expect(classifyResyncGet(0, envelope("blocked"), "")).toEqual({ action: "keep" });
+  });
+
+  test("each known unblocked status unparks the record", () => {
+    expect(classifyResyncGet(0, envelope("working"), "")).toEqual({ action: "unpark" });
+    expect(classifyResyncGet(0, envelope("idle"), "")).toEqual({ action: "unpark" });
+    expect(classifyResyncGet(0, envelope("done"), "")).toEqual({ action: "unpark" });
+  });
+
+  test("an unknown status keeps the record parked -- never act on a guess", () => {
+    // A future herdr status (paused, starting, ...) must not be handed a
+    // transition into a state the worker's wait cannot settle.
+    expect(classifyResyncGet(0, envelope("paused"), "")).toEqual({ action: "keep" });
+  });
+
+  test("an unparseable exit-0 body is inconclusive, so keep", () => {
+    expect(classifyResyncGet(0, "", "")).toEqual({ action: "keep" });
+  });
+
+  test("agent_not_found is the one error that positively means gone", () => {
+    expect(
+      classifyResyncGet(1, "", JSON.stringify({ error: { code: "agent_not_found" } })),
+    ).toEqual({ action: "drop" });
+  });
+
+  test("any other nonzero exit is inconclusive, so keep", () => {
+    expect(classifyResyncGet(1, "", JSON.stringify({ error: { code: "timeout" } }))).toEqual({
+      action: "keep",
+    });
+    expect(classifyResyncGet(1, "", "not json")).toEqual({ action: "keep" });
+  });
+});
+
+describe("swarm_poll blocked-state resync", () => {
+  let dir: string;
+  let priorStateDir: string | undefined;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "swarm-resync-"));
+    priorStateDir = process.env.PI_SWARM_STATE_DIR;
+    process.env.PI_SWARM_STATE_DIR = dir;
+  });
+
+  afterEach(() => {
+    if (priorStateDir === undefined) delete process.env.PI_SWARM_STATE_DIR;
+    else process.env.PI_SWARM_STATE_DIR = priorStateDir;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  type Result = { code: number; stdout: string; stderr: string };
+  const GET_ENVELOPE = (status: string) =>
+    JSON.stringify({ result: { agent: { agent_status: status } } });
+  const GONE: Result = {
+    code: 1,
+    stdout: "",
+    stderr: JSON.stringify({ error: { code: "agent_not_found" } }),
+  };
+  const WAIT_TIMEOUT: Result = {
+    code: 1,
+    stdout: "",
+    stderr: JSON.stringify({ error: { code: "timeout" } }),
+  };
+
+  /** Seeds one parked worker and returns a wired swarm_poll with configurable herdr responses. */
+  function setup(opts: { runId: string; get: Result; wait?: Result; listAlive?: boolean }) {
+    const worker: WorkerRecord = {
+      agent: `${opts.runId}-w1`,
+      slug: "resync-item",
+      paneId: "w1:pZ",
+      tabId: "w1:tZ",
+      lifecycle: "awaiting_relay",
+      awaitingRelaySinceMs: Date.now() - 60_000,
+    };
+    saveState({ runId: opts.runId, concurrency: 2, nextCounter: 1, workers: [worker] }, dir);
+
+    const stub = makeStubPi((argv) => {
+      const [a, b] = argv;
+      if (a === "agent" && b === "get") return opts.get;
+      if (a === "agent" && b === "wait") {
+        return opts.wait ?? { code: 0, stdout: "", stderr: "" };
+      }
+      if (a === "agent" && b === "list") {
+        return {
+          code: 0,
+          stdout:
+            opts.listAlive === false
+              ? realAgentListEnvelope(UNNAMED_CLAUDE_ENTRY)
+              : realAgentListEnvelope(UNNAMED_CLAUDE_ENTRY, {
+                  agent: "pi",
+                  agent_status: "blocked",
+                  name: `${opts.runId}-w1`,
+                  pane_id: "w1:pZ",
+                }),
+          stderr: "",
+        };
+      }
+      if (a === "agent" && b === "read") {
+        return { code: 0, stdout: "Commit?\n> Yes\n  No\n", stderr: "" };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    });
+    registerSwarmTools(stub.pi as unknown as Parameters<typeof registerSwarmTools>[0]);
+    const poll = stub.tools.get("swarm_poll");
+    if (!poll) throw new Error("swarm_poll was never registered");
+    return { poll, stub };
+  }
+
+  const execute = (poll: { execute: (...a: never[]) => Promise<unknown> }, runId: string) =>
+    poll.execute(
+      ...(["c1", { runId, timeoutMs: 1000 }, undefined] as unknown as never[]),
+    ) as Promise<{
+      content: { type: string; text: string }[];
+      details: { events: { kind: string; detail?: string }[] };
+    }>;
+
+  test("a parked worker whose agent is gone is finished-and-closed by the next poll", async () => {
+    const runId = "resyncgone";
+    const { poll, stub } = setup({ runId, get: GONE });
+
+    const res = await execute(poll, runId);
+
+    expect(res.details.events.map((e) => e.kind)).toEqual(["finished"]);
+    // The outcome was INFERRED, not observed -- the detail must say so.
+    expect(res.details.events[0]?.detail).toContain("resync");
+    expect(res.details.events[0]?.detail).toContain("inferred");
+    // The drain loop owns the teardown: captures read, pane closed, record dropped.
+    expect(stub.calls.filter((c) => c.argv[0] === "tab" && c.argv[1] === "close")).toHaveLength(1);
+    expect(loadState(runId, dir)?.workers).toEqual([]);
+  });
+
+  test("a parked worker whose agent resumed working is unparked and re-armed", async () => {
+    const runId = "resyncwork";
+    // get reports `working` (the gate was answered, the worker went back to
+    // work) and the re-armed wait then settles `done` -- the worker finished
+    // its item while the record still said parked. An instantly-timing-out
+    // wait would re-arm in a tight loop against this stub, so the wait
+    // settles for real instead.
+    const { poll, stub } = setup({
+      runId,
+      get: { code: 0, stdout: GET_ENVELOPE("working"), stderr: "" },
+      wait: { code: 0, stdout: realWaitEnvelope("done", "resyncwork-w1", "w1:pZ"), stderr: "" },
+    });
+
+    const res = await execute(poll, runId);
+
+    // The finished event could ONLY come from a wait, and a parked worker has
+    // no wait -- arming one is the unpark path's doing.
+    expect(res.details.events.map((e) => e.kind)).toEqual(["finished"]);
+    expect(res.content.map((c) => c.text).join("\n")).toContain("resumed tracking");
+    const waitCalls = stub.calls.filter((c) => c.argv[0] === "agent" && c.argv[1] === "wait");
+    expect(waitCalls).toHaveLength(1);
+    expect(stub.calls.filter((c) => c.argv[0] === "tab" && c.argv[1] === "close")).toHaveLength(1);
+    expect(loadState(runId, dir)?.workers).toEqual([]);
+  });
+
+  test("a parked worker answered out-of-band and already idle finishes in the same poll", async () => {
+    const runId = "resyncidle";
+    const { poll, stub } = setup({
+      runId,
+      get: { code: 0, stdout: GET_ENVELOPE("idle"), stderr: "" },
+      wait: { code: 0, stdout: realWaitEnvelope("idle", "resyncidle-w1", "w1:pZ"), stderr: "" },
+    });
+
+    const res = await execute(poll, runId);
+
+    // swarm_poll blocks on waitForEvent, so the immediate settle lands in
+    // this same call -- not "the next poll tick".
+    expect(res.details.events.map((e) => e.kind)).toEqual(["finished"]);
+    expect(res.content.map((c) => c.text).join("\n")).toContain("resumed tracking");
+    expect(stub.calls.filter((c) => c.argv[0] === "tab" && c.argv[1] === "close")).toHaveLength(1);
+    expect(loadState(runId, dir)?.workers).toEqual([]);
+  });
+
+  test("a parked worker still reporting blocked is untouched", async () => {
+    const runId = "resyncblocked";
+    const { poll, stub } = setup({
+      runId,
+      get: { code: 0, stdout: GET_ENVELOPE("blocked"), stderr: "" },
+    });
+
+    const res = await execute(poll, runId);
+
+    expect(res.content.map((c) => c.text).join("\n")).toContain("swarm_resolve_blocked");
+    expect(stub.calls.filter((c) => c.argv[0] === "tab" && c.argv[1] === "close")).toHaveLength(0);
+    const persisted = loadState(runId, dir)?.workers[0];
+    expect(persisted?.lifecycle).toBe("awaiting_relay");
+    expect(persisted?.awaitingRelaySinceMs).toBeNumber();
+  });
+
+  test("an inconclusive agent get leaves the parked record untouched", async () => {
+    const runId = "resyncjunk";
+    const { poll, stub } = setup({ runId, get: { code: 1, stdout: "", stderr: "not json" } });
+
+    const res = await execute(poll, runId);
+
+    expect(res.content.map((c) => c.text).join("\n")).toContain("swarm_resolve_blocked");
+    expect(stub.calls.filter((c) => c.argv[0] === "tab" && c.argv[1] === "close")).toHaveLength(0);
+    expect(loadState(runId, dir)?.workers[0]?.lifecycle).toBe("awaiting_relay");
+  });
+
+  test("an active worker is handled by its wait chain, never by resync", async () => {
+    const runId = "chainactive";
+    const worker: WorkerRecord = {
+      agent: `${runId}-w1`,
+      slug: "active-item",
+      paneId: "w1:pZ",
+      tabId: "w1:tZ",
+      workingSinceMs: Date.now(),
+      lifecycle: "active",
+    };
+    saveState({ runId, concurrency: 2, nextCounter: 1, workers: [worker] }, dir);
+    const stub = makeStubPi((argv) => {
+      const [a, b] = argv;
+      if (a === "agent" && b === "wait") return WAIT_TIMEOUT;
+      // The liveness probe finds the agent gone -- but through the WAIT
+      // chain, not resync, so the outcome must be `error`, not a resynced
+      // `finished`.
+      if (a === "agent" && b === "get") return GONE;
+      if (a === "agent" && b === "list") {
+        // Cold-load reconcile prunes against this; an empty list would drop
+        // the worker before its wait ever armed.
+        return {
+          code: 0,
+          stdout: realAgentListEnvelope(UNNAMED_CLAUDE_ENTRY, {
+            agent: "pi",
+            agent_status: "working",
+            name: `${runId}-w1`,
+            pane_id: "w1:pZ",
+          }),
+          stderr: "",
+        };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    });
+    registerSwarmTools(stub.pi as unknown as Parameters<typeof registerSwarmTools>[0]);
+    const poll = stub.tools.get("swarm_poll");
+    if (!poll) throw new Error("swarm_poll was never registered");
+
+    const res = await execute(poll, runId);
+
+    expect(res.details.events.map((e) => e.kind)).toEqual(["error"]);
+    expect(res.content.map((c) => c.text).join("\n")).not.toContain("resync");
+    expect(loadState(runId, dir)?.workers).toEqual([]);
   });
 });
