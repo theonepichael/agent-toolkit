@@ -41,7 +41,7 @@ class FakeHerdrServer:
 
     def set_status(self, name: str, status: str) -> None:
         for agent in self.agents:
-            if agent["name"] == name:
+            if agent.get("name") == name:
                 agent["agent_status"] = status
                 agent["state_change_seq"] += 1
         self.status_changed.set()
@@ -104,8 +104,14 @@ class FakeHerdrServer:
             return {
                 "id": req.get("id", ""),
                 "result": {
-                    "type": "agent_read",
-                    "text": f"output of {params['target']}",
+                    "type": "pane_read",
+                    "read": {
+                        "pane_id": params["target"],
+                        "source": params["source"],
+                        "text": f"output of {params['target']}",
+                        "revision": 0,
+                        "truncated": False,
+                    },
                 },
             }
         if method == "agent.prompt":
@@ -163,8 +169,11 @@ class FakeHerdrServer:
         }
 
     def _find(self, target: str) -> dict[str, Any] | None:
+        # Mirrors _summarize()'s id priority (pane_id > tab_id > name): a
+        # claude-type agent has no `name` at all, so callers must be able to
+        # address it by pane_id.
         for agent in self.agents:
-            if agent["name"] == target:
+            if target in (agent.get("pane_id"), agent.get("tab_id"), agent.get("name")):
                 return agent
         return None
 
@@ -198,5 +207,26 @@ def sample_agents() -> list[dict[str, Any]]:
             "cwd": "/home/yanil/Workspace",
             "terminal_title": "π - Workspace",
             "state_change_seq": 2,
+        },
+        # claude-type agents: herdr gives these no `name` field at all (unlike
+        # pi agents), and two concurrent sessions is the common case, not an
+        # edge case — same tab, different panes, mirrors production.
+        {
+            "agent": "claude",
+            "agent_status": "working",
+            "tab_id": "w9:t1",
+            "pane_id": "w9:p1",
+            "cwd": "/home/yanil/Workspace",
+            "terminal_title": "claude one",
+            "state_change_seq": 3,
+        },
+        {
+            "agent": "claude",
+            "agent_status": "idle",
+            "tab_id": "w9:t1",
+            "pane_id": "w9:p2",
+            "cwd": "/home/yanil/Workspace",
+            "terminal_title": "claude two",
+            "state_change_seq": 4,
         },
     ]

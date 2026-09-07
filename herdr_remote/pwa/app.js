@@ -13,6 +13,7 @@ const $ = (id) => document.getElementById(id);
 
 let token = localStorage.getItem(TOKEN_KEY) || "";
 let agents = [];
+let currentDetailId = null;
 
 function headers() {
   return { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
@@ -58,7 +59,7 @@ function renderAgents() {
       <span class="name">${escapeHtml(agent.name)}</span>
       <span class="status">${escapeHtml(agent.agent_status)}</span>
       <span class="meta">${escapeHtml(agent.title || agent.agent)}</span>`;
-    card.onclick = () => openDetail(agent.name);
+    card.onclick = () => openDetail(agent.id);
     root.appendChild(card);
   }
   if (!agents.length) root.innerHTML = "<p class='meta'>No agents right now.</p>";
@@ -70,9 +71,10 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
-async function openDetail(name) {
-  showDetail(name);
-  const resp = await api(`/api/agents/${encodeURIComponent(name)}/read`);
+async function openDetail(id) {
+  const agent = agents.find((a) => a.id === id);
+  showDetail(id, agent);
+  const resp = await api(`/api/agents/${encodeURIComponent(id)}/read`);
   if (!resp.ok) {
     $("detail-output").textContent = `read failed: ${resp.status}`;
     return;
@@ -81,19 +83,20 @@ async function openDetail(name) {
   $("detail-output").textContent = body.output || "(no recent output)";
 }
 
-function showDetail(name) {
+function showDetail(id, agent) {
+  currentDetailId = id;
   $("agents").classList.add("hidden");
-  $("detail-name").textContent = name;
+  $("detail-name").textContent = agent ? agent.title || agent.name : id;
   $("prompt-error").classList.add("hidden");
   $("detail").classList.remove("hidden");
 }
 
 async function sendPrompt(event) {
   event.preventDefault();
-  const name = $("detail-name").textContent;
+  const id = currentDetailId;
   const text = $("prompt-text").value.trim();
   if (!text) return;
-  const resp = await api(`/api/agents/${encodeURIComponent(name)}/prompt`, {
+  const resp = await api(`/api/agents/${encodeURIComponent(id)}/prompt`, {
     method: "POST",
     body: JSON.stringify({ text }),
   });

@@ -33,8 +33,17 @@ STATIC_PREFIX = ""  # assets are served at "/" — the API owns "/api/*"
 
 
 def _summarize(agent: dict[str, Any]) -> dict[str, Any]:
-    """Project a herdr agent record onto the fields the PWA renders."""
+    """Project a herdr agent record onto the fields the PWA renders.
+
+    `id` is the routing/RPC-target key and must be unique per agent instance.
+    herdr only gives pi agents a real `name` — claude agents have none, so
+    falling back to `name` (like `agent`, the display type) collides whenever
+    more than one claude session is running, which is the common case, not
+    an edge case. `pane_id` is unique per agent instance for every agent
+    type and is a valid herdr RPC target (verified against a live socket).
+    """
     return {
+        "id": agent.get("pane_id") or agent.get("tab_id") or agent.get("name") or "",
         "name": agent.get("name") or agent.get("agent") or "",
         "agent": agent.get("agent", ""),
         "agent_status": agent.get("agent_status", "unknown"),
@@ -116,7 +125,7 @@ class StatePoller:
             await self.herdr.call(
                 "agent.wait",
                 {
-                    "target": agent["name"],
+                    "target": agent["id"],
                     "until": until,
                     "timeout_ms": self.timeout_ms,
                 },
@@ -163,7 +172,7 @@ def create_app(config: Config, herdr: HerdrClient) -> web.Application:
             return web.json_response({"error": exc.message}, status=502)
 
     async def agent_read(request: web.Request) -> web.Response:
-        name = request.match_info["name"]
+        agent_id = request.match_info["id"]
         try:
             lines = int(request.query.get("lines", config.read_lines_default))
         except ValueError:
@@ -171,15 +180,17 @@ def create_app(config: Config, herdr: HerdrClient) -> web.Application:
         lines = max(1, min(lines, config.read_lines_max))
         try:
             result = await herdr.call(
-                "agent.read", {"target": name, "source": "recent", "lines": lines}
+                "agent.read", {"target": agent_id, "source": "recent", "lines": lines}
             )
         except HerdrError as exc:
             status = 404 if exc.code == "not_found" else 502
             return web.json_response({"error": exc.message}, status=status)
-        return web.json_response({"output": result.get("text", "")})
+        # herdr nests the text under result.read.text, not result.text.
+        text = result.get("read", {}).get("text", "")
+        return web.json_response({"output": text})
 
     async def agent_prompt(request: web.Request) -> web.Response:
-        name = request.match_info["name"]
+        agent_id = request.match_info["id"]
         try:
             body = await request.json()
         except Exception:  # noqa: BLE001 — malformed body is a client error
@@ -190,7 +201,7 @@ def create_app(config: Config, herdr: HerdrClient) -> web.Application:
                 {"error": "text must be a non-empty string"}, status=400
             )
         try:
-            await herdr.call("agent.prompt", {"target": name, "text": text})
+            await herdr.call("agent.prompt", {"target": agent_id, "text": text})
         except HerdrError as exc:
             status = (
                 404
@@ -250,8 +261,8 @@ def create_app(config: Config, herdr: HerdrClient) -> web.Application:
         await resp.write(b"")
 
     app.router.add_get("/api/agents", agents)
-    app.router.add_get("/api/agents/{name}/read", agent_read)
-    app.router.add_post("/api/agents/{name}/prompt", agent_prompt)
+    app.router.add_get("/api/agents/{id}/read", agent_read)
+    app.router.add_post("/api/agents/{id}/prompt", agent_prompt)
     app.router.add_get("/api/health", health)
     app.router.add_get("/api/events", events)
 
