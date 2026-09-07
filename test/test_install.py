@@ -16,6 +16,7 @@ import inspect
 import io
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -529,7 +530,200 @@ def test_symlink_directory_source(home):
     assert not (src / "nvim").exists()
 
 
-# ── copy-once seeds and drift ─────────────────────────────────────────────────
+def test_symlink_repoints_directory_symlink_without_nesting(home, tmp_path):
+    """Repointing a dest that is a symlink to a directory replaces the link
+    itself — rename(2) never follows symlinks, so the old target directory
+    is untouched and nothing is created inside it."""
+    ctx = make_ctx(home)
+    old_dir = tmp_path / "old-config"
+    new_dir = tmp_path / "new-config"
+    old_dir.mkdir()
+    new_dir.mkdir()
+    (old_dir / "sentinel").write_text("old\n")
+    dest = home / ".config" / "tool"
+
+    install.symlink(ctx, old_dir, dest)
+    install.symlink(ctx, new_dir, dest)
+
+    assert dest.is_symlink()
+    assert Path(str(dest.readlink())) == new_dir
+    assert (old_dir / "sentinel").exists()
+    assert not (new_dir / "sentinel").exists()
+
+
+def test_symlink_repoints_broken_symlink(home, tmp_path):
+    """A dangling symlink is repointed through the same path — is_symlink()
+    routes it, exists() never gates it, and no backup entry is recorded."""
+    ctx = make_ctx(home)
+    src = REPO_ROOT / "shell" / "agent-tools.zsh"
+    dest = home / ".agent-tools.zsh"
+    dest.symlink_to(tmp_path / "gone" / "missing-file")
+
+    assert install.symlink(ctx, src, dest)
+
+    assert Path(str(dest.readlink())) == src
+    assert kinds(ctx, "file-backed-up") == []
+
+
+def test_symlink_leaves_no_temp_litter_on_success(home):
+    ctx = make_ctx(home)
+    src = REPO_ROOT / "shell" / "agent-tools.zsh"
+    other = home / "other.zsh"
+    other.write_text("# other\n")
+    dest = home / ".agent-tools.zsh"
+
+    install.symlink(ctx, src, dest)
+    install.symlink(ctx, other, dest)  # repoint
+
+    assert dest.is_symlink()
+    assert list(dest.parent.glob(".*.tmp-*")) == []
+
+
+def test_symlink_leaves_no_temp_litter_on_failure(home, monkeypatch):
+    ctx = make_ctx(home)
+    src = REPO_ROOT / "shell" / "agent-tools.zsh"
+    other = home / "other.zsh"
+    other.write_text("# other\n")
+    dest = home / ".agent-tools.zsh"
+    install.symlink(ctx, src, dest)
+
+    def _boom(src, dst, **kwargs):
+        raise OSError("simulated replace failure")
+
+    monkeypatch.setattr(os, "replace", _boom)
+    assert not install.symlink(ctx, other, dest)
+    monkeypatch.undo()
+
+    # The old link is untouched by the failed repoint, and no temp litter.
+    assert Path(str(dest.readlink())) == src
+    assert list(dest.parent.glob(".*.tmp-*")) == []
+
+
+def test_symlink_moves_a_real_directory_aside(home):
+    """A real directory sitting where a link belongs is moved to .bak, then
+    linked — the pre-existing behavior, preserved by the atomic path."""
+    ctx = make_ctx(home)
+    src = REPO_ROOT / "nvim"
+    dest = home / ".config" / "nvim"
+    dest.mkdir(parents=True)
+    (dest / "user-file").write_text("keep me\n")
+
+    assert install.symlink(ctx, src, dest)
+
+    backup = home / ".config" / "nvim.bak"
+    assert dest.is_symlink()
+    assert (backup / "user-file").read_text() == "keep me\n"
+    assert len(kinds(ctx, "file-backed-up")) == 1
+
+
+# ── atomic relink under concurrent readers ────────────────────────────────────
+
+
+_READER_SCRIPT = """
+import os, stat, sys
+
+dest, stop = sys.argv[1], sys.argv[2]
+errors = []
+targets = set()
+while not os.path.exists(stop):
+    try:
+        st = os.lstat(dest)            # directory entry: the link itself
+        if stat.S_ISLNK(st.st_mode):
+            targets.add(os.readlink(dest))
+        os.stat(dest)                  # dereference: what a hook runner resolves
+    except OSError as e:
+        errors.append(repr(e))
+print("targets", *sorted(targets))
+print("errors", len(errors))
+for e in errors[:5]:
+    print(e)
+"""
+
+
+def _run_reader(home, dest):
+    """Start a subprocess reader loop; returns (proc, stop_file_path).
+
+    A subprocess rather than a thread: the GIL can serialize a thread-based
+    reader's Python loop enough to mask the unlink window this test exists
+    to catch.
+    """
+    script = home / "_reader.py"
+    script.write_text(_READER_SCRIPT)
+    stop = home / "_reader.stop"
+    proc = subprocess.Popen(
+        [sys.executable, str(script), str(dest), str(stop)],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    return proc, stop
+
+
+@pytest.mark.allow_real_subprocess
+def test_symlink_relink_never_drops_the_dest(home, tmp_path):
+    """A concurrent reader never observes the dest missing across repoints.
+
+    This is the regression test for the live-session breakage: a harness
+    hook runner resolving ~/.claude/scripts/guard_rails.py while a land
+    gate repoints the link must only ever see the old or the new target —
+    never ENOENT from the unlink-first window the old code had.
+    """
+    ctx = make_ctx(home)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    src_a = repo / "script-a.py"
+    src_b = repo / "script-b.py"
+    src_a.write_text("# a\n")
+    src_b.write_text("# b\n")
+    dest = home / ".claude" / "scripts" / "guard_rails.py"
+
+    install.symlink(ctx, src_a, dest)
+    proc, stop = _run_reader(home, dest)
+    try:
+        for i in range(300):
+            install.symlink(ctx, src_b if i % 2 else src_a, dest)
+    finally:
+        stop.write_text("stop\n")
+        out, _ = proc.communicate(timeout=30)
+
+    seen_targets = []
+    error_count = -1
+    for line in out.splitlines():
+        if line.startswith("targets"):
+            seen_targets = line.split()[1:]
+        if line.startswith("errors"):
+            error_count = int(line.split()[1])
+
+    assert error_count == 0, out
+    assert sorted(seen_targets) == [str(src_a), str(src_b)]
+
+
+@pytest.mark.allow_real_subprocess
+def test_symlink_real_file_backup_never_drops_the_dest(home, tmp_path):
+    """The real-file backup path (copy2 + atomic replace) also leaves no
+    window: a reader holding open stat/readlink across the backup sees the
+    dest continuously."""
+    ctx = make_ctx(home)
+    src = REPO_ROOT / "shell" / "agent-tools.zsh"
+    dest = home / ".agent-tools.zsh"
+    dest.write_text("sentinel\n")
+
+    proc, stop = _run_reader(home, dest)
+    try:
+        install.symlink(ctx, src, dest)
+    finally:
+        stop.write_text("stop\n")
+        out, _ = proc.communicate(timeout=30)
+
+    error_count = -1
+    for line in out.splitlines():
+        if line.startswith("errors"):
+            error_count = int(line.split()[1])
+    assert error_count == 0, out
+    assert dest.is_symlink()
+    assert (home / ".agent-tools.zsh.bak").read_text() == "sentinel\n"
+
+
+# ── copy-once seeds and drift ───────────────────────────────────────────────────
 
 
 def test_settings_seed_copied_once_then_reports_drift(home):

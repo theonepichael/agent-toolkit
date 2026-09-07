@@ -48,6 +48,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from typing import NoReturn
+from uuid import uuid4
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "agent-scripts"))
 
@@ -1813,7 +1814,15 @@ def symlink(ctx: Context, src: Path, dest: Path) -> bool:
     if dest.exists() and not was_link:
         backup = dest.with_name(dest.name + ".bak")
         try:
-            shutil.move(str(dest), str(backup))
+            if dest.is_dir():
+                shutil.move(str(dest), str(backup))
+            else:
+                # Copy, never move: dest stays continuously present while
+                # the backup is made, so a concurrent reader (e.g. a hook
+                # runner resolving a script under this path) never sees
+                # the file vanish — the following replace below is the
+                # only mutation dest ever sees.
+                shutil.copy2(dest, backup)
         except (OSError, shutil.Error):
             ctx.reporter.skip(f"symlink {dest}", "could not back up existing file")
             return False
@@ -1821,12 +1830,29 @@ def symlink(ctx: Context, src: Path, dest: Path) -> bool:
         print(f"  Backing up {dest} → {backup}")
 
     try:
-        # Unlink first rather than relying on an atomic replace: `ln -sf`
-        # onto an existing symlink-to-a-directory would create the new link
-        # *inside* that directory instead of replacing it.
-        if dest.is_symlink() or dest.exists():
-            dest.unlink()
-        dest.symlink_to(src)
+        # Atomic placement: build the link under a dot-prefixed,
+        # entropy-suffixed name in the same directory, then rename it over
+        # the dest. rename(2) never follows symlinks in either argument, so
+        # this replaces an existing link in one step — including a symlink
+        # to a directory, which is replaced rather than descended into —
+        # and never leaves dest missing between operations. The old
+        # unlink-then-symlink_to dance had exactly the window this closes:
+        # during a repoint of ~28 live ~/.claude/scripts/* links, every
+        # active harness session on the machine could observe (and fail
+        # hard on) a missing guard_rails.py for the duration.
+        # The old comment's `ln -sf`-into-a-directory concern doesn't
+        # apply: that was an artifact of unlink-first ordering, not of
+        # rename — and fresh creations need no special case either, since
+        # rename onto a nonexistent dest is a plain create.
+        temp = dest.parent / f".{dest.name}.tmp-{os.getpid()}-{uuid4().hex}"
+        try:
+            os.symlink(str(src), temp)
+            os.replace(temp, dest)
+        finally:
+            # After a successful replace the temp path no longer exists
+            # (it *is* dest now); missing_ok covers that and the
+            # failure paths alike.
+            temp.unlink(missing_ok=True)
     except OSError:
         ctx.reporter.skip(f"symlink {dest}", "ln failed")
         return False
