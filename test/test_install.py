@@ -530,6 +530,79 @@ def test_symlink_directory_source(home):
     assert not (src / "nvim").exists()
 
 
+def test_install_symlinks_skips_core_instructions_when_dotfiles_present_unwrapped(
+    home, monkeypatch, capsys
+):
+    """The 2026-09-07 incident: a direct, unwrapped run must not clobber
+    dotfiles' composed global-instructions.md on a machine that has both
+    repos checked out."""
+    monkeypatch.delenv("AGENT_TOOLKIT_INSTALL_WRAPPER", raising=False)
+    (home / "dotfiles").mkdir()
+    ctx = make_ctx(home)
+    src = REPO_ROOT / "claude" / "CORE_INSTRUCTIONS.md"
+    dest = home / ".claude" / "CLAUDE.md"
+    links = [(src, dest, "claude/CORE_INSTRUCTIONS.md", True)]
+
+    install.install_symlinks(ctx, links)
+
+    assert not dest.exists()
+    assert ctx.reporter.skipped
+    assert "install-with-agent-toolkit.sh" in ctx.reporter.skipped[0]
+    assert "dotfiles" in capsys.readouterr().out.lower()
+
+
+def test_install_symlinks_claims_core_instructions_via_wrapper_marker(
+    home, monkeypatch
+):
+    """install-with-agent-toolkit.sh sets the marker before invoking this
+    installer -- that run must claim the destination normally."""
+    monkeypatch.setenv("AGENT_TOOLKIT_INSTALL_WRAPPER", "1")
+    (home / "dotfiles").mkdir()
+    ctx = make_ctx(home)
+    src = REPO_ROOT / "claude" / "CORE_INSTRUCTIONS.md"
+    dest = home / ".claude" / "CLAUDE.md"
+    links = [(src, dest, "claude/CORE_INSTRUCTIONS.md", True)]
+
+    install.install_symlinks(ctx, links)
+
+    assert dest.is_symlink()
+    assert not ctx.reporter.skipped
+
+
+def test_install_symlinks_claims_core_instructions_when_dotfiles_absent(
+    home, monkeypatch
+):
+    """A coworker machine with no dotfiles checkout has nothing to defer
+    to -- agent-toolkit's own CORE_INSTRUCTIONS.md is correct there."""
+    monkeypatch.delenv("AGENT_TOOLKIT_INSTALL_WRAPPER", raising=False)
+    assert not (home / "dotfiles").exists()
+    ctx = make_ctx(home)
+    src = REPO_ROOT / "claude" / "CORE_INSTRUCTIONS.md"
+    dest = home / ".claude" / "CLAUDE.md"
+    links = [(src, dest, "claude/CORE_INSTRUCTIONS.md", True)]
+
+    install.install_symlinks(ctx, links)
+
+    assert dest.is_symlink()
+    assert not ctx.reporter.skipped
+
+
+def test_install_symlinks_unaffected_for_other_destinations(home, monkeypatch):
+    """Every other shared destination is claimed directly and
+    unconditionally, even with dotfiles present and unwrapped."""
+    monkeypatch.delenv("AGENT_TOOLKIT_INSTALL_WRAPPER", raising=False)
+    (home / "dotfiles").mkdir()
+    ctx = make_ctx(home)
+    src = REPO_ROOT / "shell" / "agent-tools.zsh"
+    dest = home / ".agent-tools.zsh"
+    links = [(src, dest, "shell/agent-tools.zsh", True)]
+
+    install.install_symlinks(ctx, links)
+
+    assert dest.is_symlink()
+    assert not ctx.reporter.skipped
+
+
 def test_symlink_repoints_directory_symlink_without_nesting(home, tmp_path):
     """Repointing a dest that is a symlink to a directory replaces the link
     itself — rename(2) never follows symlinks, so the old target directory

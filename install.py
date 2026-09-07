@@ -1899,6 +1899,41 @@ def _vscode_wsl_user_dir() -> Path | None:
     return win_user_dir / "AppData" / "Roaming" / "Code" / "User"
 
 
+# The links.toml src whose 4 destinations (~/.claude/CLAUDE.md and its
+# copilot/gemini/pi equivalents) dotfiles recomposes with a personal overlay
+# on any machine that has both repos checked out.
+_PERSONAL_OVERLAY_SRC_REL = "claude/CORE_INSTRUCTIONS.md"
+
+
+def _personal_overlay_unwrapped(ctx: Context, rel: str) -> bool:
+    """True if installing ``rel`` here would clobber dotfiles' composed file.
+
+    Guards exactly the ``CORE_INSTRUCTIONS.md`` destinations against a
+    direct, unwrapped agent-toolkit install silently overwriting dotfiles'
+    composed ``global-instructions.md`` (``CORE_INSTRUCTIONS.md`` +
+    ``personal-overlay.md``) on a machine that has both repos checked out.
+    ``dotfiles/scripts/install-with-agent-toolkit.sh`` sets
+    ``AGENT_TOOLKIT_INSTALL_WRAPPER=1`` before invoking this installer, then
+    re-runs dotfiles' own installer right after to reassert the composed
+    file — see that script's own comment for the incident this fixes
+    (2026-09-07: a swarm worker's direct, unwrapped `install.py` run dropped
+    the user's personal-policy content from every harness on this machine).
+
+    Every other shared destination is unaffected by this check — agent-
+    toolkit keeps claiming those directly and unconditionally.
+
+    Checks ``ctx.home`` rather than ``Path.home()`` — Context always carries
+    its home explicitly so tests never touch the real machine; calling
+    ``Path.home()`` here would silently break that for every test exercising
+    this destination.
+    """
+    if rel != _PERSONAL_OVERLAY_SRC_REL:
+        return False
+    if os.environ.get("AGENT_TOOLKIT_INSTALL_WRAPPER") == "1":
+        return False
+    return (ctx.home / "dotfiles").is_dir()
+
+
 def install_symlinks(
     ctx: Context, links: Sequence[tuple[Path, Path, str, bool]]
 ) -> None:
@@ -1912,8 +1947,17 @@ def install_symlinks(
     """
     _header("==> Symlinking dotfiles...", quiet=ctx.opts.quiet)
 
-    for src, dest, _rel, applicable in links:
+    for src, dest, rel, applicable in links:
         if not applicable:
+            continue
+        if _personal_overlay_unwrapped(ctx, rel):
+            ctx.reporter.skip(
+                f"symlink {dest}",
+                "dotfiles is present and composes this file with a personal "
+                "overlay -- run dotfiles/scripts/install-with-agent-toolkit.sh "
+                "instead of install.py directly, or set "
+                "AGENT_TOOLKIT_INSTALL_WRAPPER=1 to override",
+            )
             continue
         symlink(ctx, src, dest)
 

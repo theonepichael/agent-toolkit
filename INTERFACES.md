@@ -1260,7 +1260,7 @@ install.py — dotfiles + AI-harness provisioner for macOS and Linux/WSL.
   - `--check-links`
   - `--report-uninstalled`
   - `-h/--help`
-- Environment: `LOGNAME`, `NO_COLOR`, `PATH`, `TERM`, `USER`, `WSL_DISTRO_NAME`
+- Environment: `AGENT_TOOLKIT_INSTALL_WRAPPER`, `LOGNAME`, `NO_COLOR`, `PATH`, `TERM`, `USER`, `WSL_DISTRO_NAME`
 - Filesystem constants:
   - `GLOBAL_GIT_HOOKS_PATH_KEY = 'core.hooksPath'`
 - Explicit exit codes: `0`, `2`
