@@ -35,6 +35,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import subprocess
@@ -205,7 +206,19 @@ def cmd_launch(args: argparse.Namespace) -> None:
     tab = result["tab"]["tab_id"]  # type: ignore[index]
 
     name = label.replace("_", "-")[:32]
-    herdr(build_agent_start_argv(name=name, pane=pane, model=args.model))
+    try:
+        herdr(build_agent_start_argv(name=name, pane=pane, model=args.model))
+    except RefusedError:
+        # No agent is running in the freshly created tab, and herdr leaves
+        # pane cleanup to the caller on this failure -- so if we do nothing,
+        # the tab leaks as a contentless, unknown-status pane (seen after a
+        # failed 2026-09-07 swarm launch). Close it best-effort and surface
+        # the original launch error either way. A failed `agent prompt` is
+        # NOT this case: there the agent did start, the tab holds a live
+        # agent, and closing the tab would kill it.
+        with contextlib.suppress(RefusedError):
+            herdr(["tab", "close", tab])
+        raise
     herdr(["agent", "prompt", name, prompt])
     print(json.dumps({"tab": tab, "pane": pane, "agent": name, "prompt": prompt}))
 
