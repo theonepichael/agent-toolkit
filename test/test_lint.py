@@ -19,3 +19,15 @@ def test_ruff_check_passes() -> None:
         check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.allow_real_subprocess
+def test_ruff_format_check_passes() -> None:
+    result = subprocess.run(
+        ["uv", "run", "ruff", "format", "--check", "."],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
