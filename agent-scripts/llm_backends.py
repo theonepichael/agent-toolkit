@@ -533,6 +533,17 @@ _COPILOT_MODEL_POLICY_MARKER = "from --model flag is not available"
 
 
 PI_MAX_PROMPT_BYTES = 14000
+GLOBAL_MAX_PROMPT_BYTES = 100_000
+
+
+def check_prompt_size(prompt: str, max_bytes: int = GLOBAL_MAX_PROMPT_BYTES) -> None:
+    """Raise :class:`BackendPayloadSizeError` if ``prompt`` exceeds ``max_bytes``."""
+    prompt_bytes = len(prompt.encode())
+    if prompt_bytes > max_bytes:
+        raise BackendPayloadSizeError(
+            f"prompt size ({prompt_bytes} bytes) exceeds command-line argument limit "
+            f"({max_bytes} bytes)"
+        )
 
 
 def available_backends() -> list[str]:
@@ -683,6 +694,8 @@ def _run_command(
     """
     global _active_process
     attempt = 0
+    # Sanitize environment: omit variables > 32KB to protect total ARG_MAX budget
+    env = {k: v for k, v in os.environ.items() if len(k) + len(v) <= 32768}
     while True:
         try:
             proc = subprocess.Popen(
@@ -692,6 +705,7 @@ def _run_command(
                 stderr=subprocess.PIPE,
                 text=True,
                 start_new_session=True,
+                env=env,
             )
         except OSError as e:
             # e.g. the backend vanished from PATH between `shutil.which` and
@@ -837,6 +851,7 @@ def run_agy(prompt: str, *, model: str, timeout: float) -> str:
     :func:`_track_backend_call`, entered only after the isolated command is
     built, so an IsolationError is never logged as an attempt.
     """
+    check_prompt_size(prompt)
     cmd = build_isolated_command("agy", prompt, model=model)
     with _track_backend_call("agy", model, prompt):
         return run_backend_command(cmd, timeout)
@@ -866,6 +881,7 @@ def run_copilot(prompt: str, *, model: str | None, timeout: float) -> str:
     keying a fallback on vendor error text they can reword would turn a
     working backend into a silent regression.
     """
+    check_prompt_size(prompt)
     cmd = build_isolated_command("copilot", prompt, model=model)
     with _track_backend_call("copilot", model, prompt):
         try:
@@ -924,6 +940,7 @@ def run_pi(prompt: str, *, model: str | None, timeout: float) -> str:
             (via :func:`run_backend_command`), or the output is dominated by
             leaked tool-call markup (via :func:`_raise_on_emitted_tool_call`).
     """
+    check_prompt_size(prompt)
     prompt_bytes = len(prompt.encode())
     if prompt_bytes > PI_MAX_PROMPT_BYTES:
         raise BackendPayloadSizeError(
@@ -1103,6 +1120,7 @@ def run_opencode(prompt: str, *, model: str | None, timeout: float) -> str:
     the practical mitigation (drops the practical failure rate to roughly
     4-10%).
     """
+    check_prompt_size(prompt)
     cmd = build_isolated_command("opencode", prompt, model=model)
     with _track_backend_call("opencode", model, prompt):
         _, stdout, stderr = _run_command(cmd, timeout, retries=1)

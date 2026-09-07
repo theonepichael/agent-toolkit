@@ -714,6 +714,7 @@ llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, open
   - `daemon_listening(backend: str) -> bool` — Whether a daemon belonging to ``backend`` currently holds a listening socket.
   - `build_isolated_command(backend: str, prompt: str, *, model: str | None) -> list[str]` — Build the only command any caller may run for ``backend``.
   - `eligibility_report() -> dict[str, dict[str, object]]` — Per-backend presence and contract eligibility, with a reason when not.
+  - `check_prompt_size(prompt: str, max_bytes: int = GLOBAL_MAX_PROMPT_BYTES) -> None` — Raise :class:`BackendPayloadSizeError` if ``prompt`` exceeds ``max_bytes``.
   - `available_backends() -> list[str]` — Return the backends in :data:`BACKEND_PRIORITY` that are on ``PATH``.
   - `eligible_backends() -> list[str]` — Backends that are installed AND meet the isolation contract, in priority order.
   - `resolve_backend() -> str | None` — Return the highest-priority eligible backend, or ``None`` if none is.

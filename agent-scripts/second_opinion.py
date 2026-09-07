@@ -116,6 +116,8 @@ BACKEND_PRIORITY = llm_backends.BACKEND_PRIORITY
 # grill.py's DATA_DIR by test_second_opinion.py's DataDirSelfEnsureTests.
 DATA_DIR = Path.home() / ".claude" / "data" / "grill"
 
+MAX_FOCUS_FILE_BYTES = 8192
+
 _MAX_BACKEND_TIMEOUT_SECONDS = 300  # the previous global default, now a hard ceiling
 
 
@@ -633,6 +635,7 @@ def run_opencode(prompt: str, *, model_index: int | None = None) -> str:
         "SECOND_OPINION_OPENCODE_MODEL",
         model_index,
     )
+    llm_backends.check_prompt_size(prompt)
     # Built by llm_backends, not here. This function used to assemble its own
     # argv, which is how it ended up as the only invocation path in the repo
     # carrying the adversary agent while every other one ran unisolated.
@@ -791,15 +794,59 @@ def cmd_review(args: argparse.Namespace) -> None:
         focus_path = Path(args.focus_file).expanduser()
         if not focus_path.is_file():
             die(f"--focus-file not found: {focus_path}")
-        focus_hints = focus_path.read_text()
+        raw_focus = focus_path.read_text(encoding="utf-8")
+        raw_bytes = raw_focus.encode("utf-8")
+        if len(raw_bytes) > MAX_FOCUS_FILE_BYTES:
+            truncated = raw_bytes[:MAX_FOCUS_FILE_BYTES].decode(
+                "utf-8", errors="ignore"
+            )
+            actual_truncated_bytes = len(truncated.encode("utf-8"))
+            print(
+                f"[second_opinion] warning: --focus-file '{args.focus_file}' "
+                f"exceeds {MAX_FOCUS_FILE_BYTES} bytes; truncated to {actual_truncated_bytes} bytes",
+                file=sys.stderr,
+            )
+            focus_hints = truncated
+        else:
+            focus_hints = raw_focus
     prompt = build_prompt(plan_text, focus_hints)
+    prompt_bytes = len(prompt.encode("utf-8"))
 
     model_index = getattr(args, "model_index", None)
     verbose = getattr(args, "verbose", False)
     quiet = getattr(args, "quiet", False)
     failures: list[str] = []
     size_rule_outs: list[llm_backends.BackendPayloadSizeError] = []
+
+    if prompt_bytes > llm_backends.GLOBAL_MAX_PROMPT_BYTES:
+        for backend in candidates:
+            exc = llm_backends.BackendPayloadSizeError(
+                f"prompt size ({prompt_bytes} bytes) exceeds command-line argument limit "
+                f"({llm_backends.GLOBAL_MAX_PROMPT_BYTES} bytes)"
+            )
+            size_rule_outs.append(exc)
+            failures.append(f"{backend}: {exc}")
+        die(
+            f"all backends ruled out by payload size ({prompt_bytes} bytes) — "
+            + "; ".join(failures)
+        )
+
     for backend in candidates:
+        if backend == "pi" and prompt_bytes > llm_backends.PI_MAX_PROMPT_BYTES:
+            exc = llm_backends.BackendPayloadSizeError(
+                f"prompt size ({prompt_bytes} bytes) exceeds pi limit "
+                f"({llm_backends.PI_MAX_PROMPT_BYTES} bytes); pi's opencode-go gateway "
+                f"deterministically stalls on larger payloads"
+            )
+            size_rule_outs.append(exc)
+            cli_common.vprint(
+                f"[second_opinion] {backend_label(backend, model_index=model_index)} "
+                f"skipped: {exc}",
+                verbose=verbose,
+            )
+            failures.append(f"{backend}: {exc}")
+            continue
+
         _vprint_pool_choice(backend, model_index, verbose=verbose)
         if model_index is not None:
             err = _validate_model_index(backend, model_index, os.environ)
@@ -828,7 +875,6 @@ def cmd_review(args: argparse.Namespace) -> None:
         return
 
     if size_rule_outs and len(size_rule_outs) == len(candidates):
-        prompt_bytes = len(prompt.encode())
         die(
             f"all backends ruled out by payload size ({prompt_bytes} bytes) — "
             + "; ".join(failures)

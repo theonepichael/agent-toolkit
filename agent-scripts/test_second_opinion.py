@@ -1681,5 +1681,131 @@ class DataDirSelfEnsureTests(unittest.TestCase):
         self.assertTrue(self.data_dir.is_dir())
 
 
+class FocusFileTruncationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmpdir = tempfile.mkdtemp()
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmpdir)
+
+    def test_focus_file_exceeding_max_bytes_is_truncated_with_warning(self) -> None:
+        focus_path = Path(self.tmpdir) / "huge-focus.md"
+        focus_path.write_text("x" * 12000)
+        captured_prompt = []
+        err = io.StringIO()
+        with (
+            patch("shutil.which", return_value="/usr/bin/agy"),
+            patch.object(
+                second_opinion,
+                "BACKEND_RUNNERS",
+                {
+                    "agy": lambda p, model_index=None: (
+                        captured_prompt.append(p) or "critique"
+                    )
+                },
+            ),
+            patch("sys.stderr", err),
+        ):
+            second_opinion.cmd_review(
+                ns(plan="plan text", focus_file=str(focus_path), backend="agy")
+            )
+        self.assertEqual(len(captured_prompt), 1)
+        self.assertIn("warning: --focus-file", err.getvalue())
+        self.assertIn("exceeds 8192 bytes; truncated to 8192 bytes", err.getvalue())
+        # The hints embedded in prompt should have exactly 8192 'x's
+        self.assertIn("x" * 8192, captured_prompt[0])
+        self.assertNotIn("x" * 8193, captured_prompt[0])
+
+    def test_focus_file_within_limit_is_not_truncated(self) -> None:
+        focus_path = Path(self.tmpdir) / "normal-focus.md"
+        focus_path.write_text("short hints")
+        captured_prompt = []
+        err = io.StringIO()
+        with (
+            patch("shutil.which", return_value="/usr/bin/agy"),
+            patch.object(
+                second_opinion,
+                "BACKEND_RUNNERS",
+                {
+                    "agy": lambda p, model_index=None: (
+                        captured_prompt.append(p) or "critique"
+                    )
+                },
+            ),
+            patch("sys.stderr", err),
+        ):
+            second_opinion.cmd_review(
+                ns(plan="plan text", focus_file=str(focus_path), backend="agy")
+            )
+        self.assertEqual(len(captured_prompt), 1)
+        self.assertNotIn("warning: --focus-file", err.getvalue())
+        self.assertIn("short hints", captured_prompt[0])
+
+
+class PayloadSizePreflightTests(unittest.TestCase):
+    def test_preflight_skips_pi_when_prompt_exceeds_14000(self) -> None:
+        plan = "p" * 15000
+        pi_called = []
+        agy_called = []
+        with (
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(
+                second_opinion,
+                "available_backends",
+                return_value=["pi", "agy"],
+            ),
+            patch.object(
+                second_opinion,
+                "BACKEND_RUNNERS",
+                {
+                    "pi": lambda p, model_index=None: (
+                        pi_called.append(p) or "pi critique"
+                    ),
+                    "agy": lambda p, model_index=None: (
+                        agy_called.append(p) or "agy critique"
+                    ),
+                },
+            ),
+            patch("sys.stdout", io.StringIO()),
+        ):
+            second_opinion.cmd_review(ns(plan=plan, backend=None))
+        self.assertEqual(pi_called, [])
+        self.assertEqual(len(agy_called), 1)
+
+    def test_explicit_backend_pi_fails_when_prompt_exceeds_14000(self) -> None:
+        plan = "p" * 15000
+        err = io.StringIO()
+        with (
+            patch("shutil.which", return_value="/usr/bin/pi"),
+            patch.object(
+                second_opinion,
+                "BACKEND_RUNNERS",
+                {"pi": lambda p, model_index=None: "ok"},
+            ),
+            self.assertRaises(SystemExit) as cm,
+            patch("sys.stderr", err),
+        ):
+            second_opinion.cmd_review(ns(plan=plan, backend="pi"))
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("exceeds pi limit (14000 bytes)", err.getvalue())
+
+    def test_all_backends_ruled_out_when_prompt_exceeds_global_limit(self) -> None:
+        plan = "p" * 105000
+        err = io.StringIO()
+        with (
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(
+                second_opinion,
+                "available_backends",
+                return_value=["agy", "copilot"],
+            ),
+            self.assertRaises(SystemExit) as cm,
+            patch("sys.stderr", err),
+        ):
+            second_opinion.cmd_review(ns(plan=plan, backend=None))
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("all backends ruled out by payload size", err.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

@@ -1006,5 +1006,48 @@ class OpencodeToolUseEventsTests(unittest.TestCase):
         self.assertEqual(llm_backends._opencode_tool_use_events(events), [])
 
 
+class GlobalMaxPromptBytesTests(_ContainmentStubbed):
+    def test_oversized_prompt_rejected_before_spawning_across_backends(self) -> None:
+        oversized = "a" * (llm_backends.GLOBAL_MAX_PROMPT_BYTES + 1)
+        for backend, runner in [
+            ("agy", lambda: llm_backends.run_agy(oversized, model="m", timeout=60)),
+            (
+                "copilot",
+                lambda: llm_backends.run_copilot(oversized, model=None, timeout=60),
+            ),
+            ("pi", lambda: llm_backends.run_pi(oversized, model=None, timeout=60)),
+        ]:
+            with self.subTest(backend=backend):
+                with (
+                    patch.object(llm_backends, "build_isolated_command") as mock_build,
+                    patch.object(llm_backends, "run_backend_command") as mock_run,
+                    self.assertRaises(llm_backends.BackendPayloadSizeError) as cm,
+                ):
+                    runner()
+                mock_build.assert_not_called()
+                mock_run.assert_not_called()
+                err_msg = str(cm.exception)
+                self.assertIn(str(len(oversized.encode())), err_msg)
+                self.assertIn(str(llm_backends.GLOBAL_MAX_PROMPT_BYTES), err_msg)
+
+
+class RunCommandEnvSanitizationTests(unittest.TestCase):
+    def test_run_command_sanitizes_huge_env_vars(self) -> None:
+        huge_val = "x" * 40000
+        with (
+            patch.dict(os.environ, {"HUGE_BLOB": huge_val, "NORMAL_VAR": "normal"}),
+            patch("subprocess.Popen") as mock_popen,
+        ):
+            mock_proc = mock_popen.return_value
+            mock_proc.communicate.return_value = ("stdout", "stderr")
+            mock_proc.returncode = 0
+            llm_backends._run_command(["echo", "hi"], timeout=10)
+            mock_popen.assert_called_once()
+            passed_env = mock_popen.call_args.kwargs.get("env")
+            self.assertIsNotNone(passed_env)
+            self.assertNotIn("HUGE_BLOB", passed_env)
+            self.assertEqual(passed_env.get("NORMAL_VAR"), "normal")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)
