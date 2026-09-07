@@ -47,7 +47,7 @@ from pathlib import Path
 
 import cli_common
 
-REPO = Path(__file__).resolve().parents[2]
+REPO = Path(__file__).resolve().parents[1]
 AUDIT_TIMEOUT_SECONDS = 15
 
 # Audit cache configuration. Memoizing the audit result keyed on the

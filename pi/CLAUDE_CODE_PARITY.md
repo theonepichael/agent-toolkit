@@ -76,7 +76,7 @@ install, not from search-engine summaries.
 All 8 files from `opencode/command/*.md` (`dashboard`, `grill-me`,
 `make-skill`, `second-opinion`, `spec`, `standup`, `backlog-item`,
 `to-tickets`) ported 2026-08-30. `second-opinion.md` is machine-generated
-by `claude/scripts/gen_second_opinion.py` from `templates/second_opinion.md.tmpl`
+by `agent-scripts/gen_second_opinion.py` from `templates/second_opinion.md.tmpl`
 — never hand-edit it; edit the template or `gen_second_opinion.py`'s
 `HARNESS_TABLE` entry for `pi/prompts/second-opinion.md` and regenerate.
 `dashboard.md`, `standup.md`, and `to-tickets.md` ported with no
@@ -262,7 +262,7 @@ on the specific lines the model touched.
 ### `dev-status-tool.ts`
 
 Registers `dev_status` — a single `pi.registerTool()` custom tool wrapping
-every `claude/scripts/dev_status.py` subcommand with a typed schema
+every `agent-scripts/dev_status.py` subcommand with a typed schema
 (`StringEnum` action + optional identity/patch/flag fields), so Pi's
 prompt templates can call it directly instead of composing a raw bash
 string. Full design history (3 rounds of `/second-opinion` critique, two
@@ -544,7 +544,7 @@ keys), same pattern as Claude Code's `~/.claude/settings.json` +
 `pi/extensions/guard-rails.ts` keeps its own `rm -rf`, `sudo`,
 protected-path and `git commit` guards — those need `ctx.ui.confirm()`,
 which a subprocess cannot do — and gains a write/edit branch that calls
-`claude/scripts/guard_rails.py`, the single source of truth for the
+`agent-scripts/guard_rails.py`, the single source of truth for the
 main-checkout and stale-base rules across all five harnesses.
 
 A `deny` becomes `{block: true, reason}`; a `warn` becomes

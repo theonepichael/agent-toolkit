@@ -43,10 +43,16 @@ from repo_identity import REPO_IDENTITY
 # wraps a whole `--add-dir <value>` command in a single pair of backticks.
 
 
-def edit_root(relpath: str) -> str:
-    """Return self-contained "where to edit this file" markdown."""
+def edit_root(relpath: str, dotfiles_relpath: str | None = None) -> str:
+    """Return self-contained "where to edit this file" markdown.
+
+    ``dotfiles_relpath`` covers files whose repo-side location diverges
+    between the two identities — e.g. the shared scripts moved to
+    ``agent-scripts/`` in agent-toolkit while the dotfiles checkout keeps
+    its own copies under ``~/dotfiles/claude/scripts/``.
+    """
     if REPO_IDENTITY == "dotfiles":
-        return f"`~/dotfiles/{relpath}`"
+        return f"`~/dotfiles/{dotfiles_relpath or relpath}`"
     return f"the repo's `{relpath}`"
 
 
@@ -1635,7 +1641,10 @@ propose adding it per CLAUDE.md's pending-item protocol.
 numbering (visible via `/dashboard`) also works, but its numbers shift as
 items change, so prefer the slug here since `standup.py`'s `fetch` output
 already gives you it directly.""",
-        "EDIT_ROOT": edit_root("claude/scripts/standup_adapters.py"),
+        "EDIT_ROOT": edit_root(
+            "agent-scripts/standup_adapters.py",
+            dotfiles_relpath="claude/scripts/standup_adapters.py",
+        ),
     },
     "opencode": {
         "FRONTMATTER": """\
@@ -1689,7 +1698,10 @@ already gives you it directly.
 `kind` is one of `email`, `chat`, `approval`. `source_ref` is a structured
 object appropriate to the kind (e.g. `{"to", "subject", "sent_date"}` for
 email) — not a free-text string.""",
-        "EDIT_ROOT": edit_root("claude/scripts/standup_adapters.py"),
+        "EDIT_ROOT": edit_root(
+            "agent-scripts/standup_adapters.py",
+            dotfiles_relpath="claude/scripts/standup_adapters.py",
+        ),
     },
     "pi": {
         "FRONTMATTER": """\
@@ -1740,7 +1752,10 @@ If the `dev_status` tool is genuinely unavailable, fall back to bash —
 `kind` is one of `email`, `chat`, `approval`. `source_ref` is a structured
 object appropriate to the kind (e.g. `{"to", "subject", "sent_date"}` for
 email) — not a free-text string.""",
-        "EDIT_ROOT": edit_root("claude/scripts/standup_adapters.py"),
+        "EDIT_ROOT": edit_root(
+            "agent-scripts/standup_adapters.py",
+            dotfiles_relpath="claude/scripts/standup_adapters.py",
+        ),
     },
 }
 

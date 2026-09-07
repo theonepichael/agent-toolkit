@@ -59,7 +59,7 @@ from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "claude" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))
 
 import cli_common  # noqa: E402 — sibling dir inserted above
 

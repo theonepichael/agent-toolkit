@@ -1,15 +1,15 @@
 # INTERFACES.md
 
 Scope: `claude/`, `copilot/`, `opencode/`, `agy/`, `pi/`, the shared scripts under
-`claude/scripts/` that `links.toml` installs into `~/.claude/scripts/`, and the
+`agent-scripts/` that `links.toml` installs into `~/.claude/scripts/`, and the
 repo-root installer entrypoints those harnesses are provisioned by.
 
 **This file is generated. Do not edit it by hand — your edits will be
 overwritten.** Regenerate it after changing any harness script:
 
 ```bash
-python3 claude/scripts/gen_interfaces.py           # rewrite this file
-python3 claude/scripts/gen_interfaces.py --check   # exit 1 if it is stale
+python3 agent-scripts/gen_interfaces.py           # rewrite this file
+python3 agent-scripts/gen_interfaces.py --check   # exit 1 if it is stale
 ```
 
 Everything below is extracted statically, with `ast`, `tomllib`, and a small
@@ -29,40 +29,40 @@ House style for these interfaces is in `STYLE.md`.
 
 ---
 
-## 1. Shared scripts (`claude/scripts/`)
+## 1. Shared scripts (`agent-scripts/`)
 
 | Module | Purpose |
 | --- | --- |
-| [`analyze_sessions.py`](#claudescriptsanalyzesessionspy) | analyze_sessions.py — multi-harness session analysis tool. |
-| [`cli_common.py`](#claudescriptsclicommonpy) | Shared CLI helpers used across dotfiles scripts. |
-| [`dev_status.py`](#claudescriptsdevstatuspy) | dev_status.py v2 — slug IDs, structured dependency graph, pure render. |
-| [`dotfiles_sync_check.py`](#claudescriptsdotfilessynccheckpy) | SessionStart hook: flag when the dotfiles repo has drifted from the last commit bundled over to a GitHub-blocked work machine. |
-| [`gen_interfaces.py`](#claudescriptsgeninterfacespy) | gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources. |
-| [`gen_second_opinion.py`](#claudescriptsgensecondopinionpy) | gen_second_opinion.py — regenerate the second-opinion skill copies (one per harness, named in HARNESS_TABLE) from one canonical template. |
-| [`gen_shell_completion.py`](#claudescriptsgenshellcompletionpy) | Generate a zsh `#compdef` completion file for a harness CLI. |
-| [`gen_skills.py`](#claudescriptsgenskillspy) | gen_skills.py — regenerate the dashboard/recap/grill-me/backlog-item/ make-skill/spec/standup/to-tickets/swarm skill copies from one template per skill, plus a shared per-harness capability table. dashboard/recap/ grill-me/backlog-item/make-skill cover all 5 harnesses (claude, copilot, opencode, agy, pi); spec/standup/to-tickets cover only claude/opencode/pi; swarm covers only claude/copilot (user-directed; pi already owns the orchestration surface) — see `SKILL_HARNESSES` below and AGENTS.md's "Harness maintenance tiers" section for why copilot/agy stop getting new generated skills. |
-| [`gen_skills_params.py`](#claudescriptsgenskillsparamspy) | gen_skills_params.py — per-(skill, harness) content tables for gen_skills.py. |
-| [`grill.py`](#claudescriptsgrillpy) | grill.py — grill-me session state CLI. All session mutations go through here. |
-| [`guard_rails.py`](#claudescriptsguardrailspy) | Pre-tool guard shared by every harness: refuse a write into a repository's main checkout while a backlog item for that repository is in progress, warn when the current worktree's base has fallen behind ``origin/main``, and (Bash, Claude Code only) deny the git-native ways to defeat the no-commit-on-main git hook (``githooks/pre-commit`` / ``githooks-global/pre-commit``). |
-| [`harness_discovery_check.py`](#claudescriptsharnessdiscoverycheckpy) | SessionStart hook + CLI: detect when a harness's instruction-file discovery behavior may have drifted from the version-pinned facts in README.md. |
-| [`herdr_delegate.py`](#claudescriptsherdrdelegatepy) | Launch pi agents in herdr tabs to work backlog items. |
-| [`link_drift_check.py`](#claudescriptslinkdriftcheckpy) | SessionStart hook + CLI: flag when a managed symlink on this machine no longer points where links.toml says it should. |
-| [`llm_backends.py`](#claudescriptsllmbackendspy) | llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, opencode, pi, copilot). Extracted from second_opinion.py so dev_status.py's recap generation can reuse the same process-lifecycle handling (timeouts, process-group kills, opencode JSON-event parsing) with its own timeout and model choices, without duplicating it. |
-| [`notify.py`](#claudescriptsnotifypy) | Cross-platform agent notification dispatcher. |
-| [`outlook_calendar.py`](#claudescriptsoutlookcalendarpy) | outlook_calendar.py — CLI tool and agent interface for Windows Outlook Calendar via PowerShell COM. |
-| [`outlook_email.py`](#claudescriptsoutlookemailpy) | outlook_email.py — CLI tool and agent interface for Windows Outlook via PowerShell COM. |
-| [`repo_identity.py`](#claudescriptsrepoidentitypy) | repo_identity.py — which repo this checkout is. |
-| [`second_opinion.py`](#claudescriptssecondopinionpy) | second_opinion.py — one-shot adversarial critique of a plan from a non-Claude backend. Single-round by design: the multi-round loop, plan revision, and convergence judgment all require LLM reasoning and live in prose instructions, not here. |
-| [`seed_hook_subset_guard.py`](#claudescriptsseedhooksubsetguardpy) | seed_hook_subset_guard.py — refuse a commit that drops a seed's SessionStart hook groups. |
-| [`sessionstart_checks.py`](#claudescriptssessionstartcheckspy) | sessionstart_checks.py — run the SessionStart context checks concurrently. |
-| [`settings_seed_drift_check.py`](#claudescriptssettingsseeddriftcheckpy) | SessionStart hook + CLI: detect (and optionally fix) drift between the live ``~/.claude/settings.json`` / ``~/.config/opencode/opencode.jsonc`` / (under WSL) the Windows-side VS Code ``settings.json`` and ``keybindings.json`` and their seeds in the dotfiles repo. |
-| [`standup.py`](#claudescriptsstanduppy) | standup.py — /standup skill CLI: local data gathering. |
-| [`standup_adapters.py`](#claudescriptsstandupadapterspy) | standup_adapters.py — provider-agnostic adapter interfaces for /standup. |
-| [`statusline.py`](#claudescriptsstatuslinepy) | Claude Code status line: render the model name and a color-coded context window usage bar with the used percentage, from the JSON session payload Claude Code pipes to this script on stdin. |
-| [`to_tickets_runner.py`](#claudescriptstoticketsrunnerpy) | to_tickets_runner.py — create a linked batch of dev_status.py backlog items from a confirmed vertical-slice/tracer-bullet ticket breakdown. |
-| [`vitals_promotion.py`](#claudescriptsvitalspromotionpy) | vitals-promotion.py — mechanical vitals-promotion pass over grill session data. |
+| [`analyze_sessions.py`](#agentscriptsanalyzesessionspy) | analyze_sessions.py — multi-harness session analysis tool. |
+| [`cli_common.py`](#agentscriptsclicommonpy) | Shared CLI helpers used across dotfiles scripts. |
+| [`dev_status.py`](#agentscriptsdevstatuspy) | dev_status.py v2 — slug IDs, structured dependency graph, pure render. |
+| [`dotfiles_sync_check.py`](#agentscriptsdotfilessynccheckpy) | SessionStart hook: flag when the dotfiles repo has drifted from the last commit bundled over to a GitHub-blocked work machine. |
+| [`gen_interfaces.py`](#agentscriptsgeninterfacespy) | gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources. |
+| [`gen_second_opinion.py`](#agentscriptsgensecondopinionpy) | gen_second_opinion.py — regenerate the second-opinion skill copies (one per harness, named in HARNESS_TABLE) from one canonical template. |
+| [`gen_shell_completion.py`](#agentscriptsgenshellcompletionpy) | Generate a zsh `#compdef` completion file for a harness CLI. |
+| [`gen_skills.py`](#agentscriptsgenskillspy) | gen_skills.py — regenerate the dashboard/recap/grill-me/backlog-item/ make-skill/spec/standup/to-tickets/swarm skill copies from one template per skill, plus a shared per-harness capability table. dashboard/recap/ grill-me/backlog-item/make-skill cover all 5 harnesses (claude, copilot, opencode, agy, pi); spec/standup/to-tickets cover only claude/opencode/pi; swarm covers only claude/copilot (user-directed; pi already owns the orchestration surface) — see `SKILL_HARNESSES` below and AGENTS.md's "Harness maintenance tiers" section for why copilot/agy stop getting new generated skills. |
+| [`gen_skills_params.py`](#agentscriptsgenskillsparamspy) | gen_skills_params.py — per-(skill, harness) content tables for gen_skills.py. |
+| [`grill.py`](#agentscriptsgrillpy) | grill.py — grill-me session state CLI. All session mutations go through here. |
+| [`guard_rails.py`](#agentscriptsguardrailspy) | Pre-tool guard shared by every harness: refuse a write into a repository's main checkout while a backlog item for that repository is in progress, warn when the current worktree's base has fallen behind ``origin/main``, and (Bash, Claude Code only) deny the git-native ways to defeat the no-commit-on-main git hook (``githooks/pre-commit`` / ``githooks-global/pre-commit``). |
+| [`harness_discovery_check.py`](#agentscriptsharnessdiscoverycheckpy) | SessionStart hook + CLI: detect when a harness's instruction-file discovery behavior may have drifted from the version-pinned facts in README.md. |
+| [`herdr_delegate.py`](#agentscriptsherdrdelegatepy) | Launch pi agents in herdr tabs to work backlog items. |
+| [`link_drift_check.py`](#agentscriptslinkdriftcheckpy) | SessionStart hook + CLI: flag when a managed symlink on this machine no longer points where links.toml says it should. |
+| [`llm_backends.py`](#agentscriptsllmbackendspy) | llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, opencode, pi, copilot). Extracted from second_opinion.py so dev_status.py's recap generation can reuse the same process-lifecycle handling (timeouts, process-group kills, opencode JSON-event parsing) with its own timeout and model choices, without duplicating it. |
+| [`notify.py`](#agentscriptsnotifypy) | Cross-platform agent notification dispatcher. |
+| [`outlook_calendar.py`](#agentscriptsoutlookcalendarpy) | outlook_calendar.py — CLI tool and agent interface for Windows Outlook Calendar via PowerShell COM. |
+| [`outlook_email.py`](#agentscriptsoutlookemailpy) | outlook_email.py — CLI tool and agent interface for Windows Outlook via PowerShell COM. |
+| [`repo_identity.py`](#agentscriptsrepoidentitypy) | repo_identity.py — which repo this checkout is. |
+| [`second_opinion.py`](#agentscriptssecondopinionpy) | second_opinion.py — one-shot adversarial critique of a plan from a non-Claude backend. Single-round by design: the multi-round loop, plan revision, and convergence judgment all require LLM reasoning and live in prose instructions, not here. |
+| [`seed_hook_subset_guard.py`](#agentscriptsseedhooksubsetguardpy) | seed_hook_subset_guard.py — refuse a commit that drops a seed's SessionStart hook groups. |
+| [`sessionstart_checks.py`](#agentscriptssessionstartcheckspy) | sessionstart_checks.py — run the SessionStart context checks concurrently. |
+| [`settings_seed_drift_check.py`](#agentscriptssettingsseeddriftcheckpy) | SessionStart hook + CLI: detect (and optionally fix) drift between the live ``~/.claude/settings.json`` / ``~/.config/opencode/opencode.jsonc`` / (under WSL) the Windows-side VS Code ``settings.json`` and ``keybindings.json`` and their seeds in the dotfiles repo. |
+| [`standup.py`](#agentscriptsstanduppy) | standup.py — /standup skill CLI: local data gathering. |
+| [`standup_adapters.py`](#agentscriptsstandupadapterspy) | standup_adapters.py — provider-agnostic adapter interfaces for /standup. |
+| [`statusline.py`](#agentscriptsstatuslinepy) | Claude Code status line: render the model name and a color-coded context window usage bar with the used percentage, from the JSON session payload Claude Code pipes to this script on stdin. |
+| [`to_tickets_runner.py`](#agentscriptstoticketsrunnerpy) | to_tickets_runner.py — create a linked batch of dev_status.py backlog items from a confirmed vertical-slice/tracer-bullet ticket breakdown. |
+| [`vitals_promotion.py`](#agentscriptsvitalspromotionpy) | vitals-promotion.py — mechanical vitals-promotion pass over grill session data. |
 
-### `claude/scripts/analyze_sessions.py`
+### `agent-scripts/analyze_sessions.py`
 
 analyze_sessions.py — multi-harness session analysis tool.
 
@@ -125,9 +125,9 @@ analyze_sessions.py — multi-harness session analysis tool.
   - `load_all_records(harness: str = 'all', since_dt: datetime | None = None, until_dt: datetime | None = None, cwd_filter: str | None = None, model_filter: str | None = None, session_filter: str | None = None, *, include_subagents: bool = True, pi_dir: Path | None = None, claude_dir: Path | None = None, opencode_db: Path | None = None, copilot_db: Path | None = None, agy_dir: Path | None = None) -> list[SessionRecord]`
   - `build_parser() -> argparse.ArgumentParser`
 - Subcommand handlers: `cmd_cost`, `cmd_prompts`, `cmd_search`
-- Tested by: `claude/scripts/test_analyze_sessions.py`
+- Tested by: `agent-scripts/test_analyze_sessions.py`
 
-### `claude/scripts/cli_common.py`
+### `agent-scripts/cli_common.py`
 
 Shared CLI helpers used across dotfiles scripts.
 
@@ -138,9 +138,9 @@ Shared CLI helpers used across dotfiles scripts.
   - `add_verbosity_args(parser: argparse.ArgumentParser) -> None` — Add mutually-exclusive --quiet/-q and --verbose/-v flags to a parser.
   - `vprint(msg: str, *, verbose: bool, file: TextIO | None = None) -> None` — Print a diagnostic message when verbose mode is enabled.
   - `qprint(msg: str, *, quiet: bool, file: TextIO | None = None) -> None` — Print a message unless quiet mode is enabled.
-- Tested by: `claude/scripts/test_cli_common.py`
+- Tested by: `agent-scripts/test_cli_common.py`
 
-### `claude/scripts/dev_status.py`
+### `agent-scripts/dev_status.py`
 
 dev_status.py v2 — slug IDs, structured dependency graph, pure render.
 
@@ -262,9 +262,9 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `confirm_resolution(cmd: str, arg: str | int, item: BacklogItem | PendingItem, summary_key: str = 'summary', *, quiet: bool = False) -> None` — Echo what a mutating command resolved to, so misresolution is visible.
   - `build_parser() -> argparse.ArgumentParser` — Build the full argument parser for every subcommand.
 - Subcommand handlers: `cmd_internal_regen`, `cmd_recap`, `cmd_render`, `cmd_ready`, `cmd_list`, `cmd_show`, `cmd_add`, `cmd_update`, `cmd_start`, `cmd_done`, `cmd_review`, `cmd_approve`, `cmd_reject`, `cmd_gate_set`, `cmd_gate_pass`, `cmd_run`, `cmd_runs`, `cmd_backfill_gate`, `cmd_rename`, `cmd_block`, `cmd_unblock`, `cmd_out_of_scope_add`, `cmd_out_of_scope_link`, `cmd_out_of_scope_unlink`, `cmd_out_of_scope_remove`, `cmd_out_of_scope_list`, `cmd_out_of_scope_show`, `cmd_pending_add`, `cmd_pending_update`, `cmd_pending_list`, `cmd_remove`, `cmd_prune`
-- Tested by: `claude/scripts/test_dev_status.py`, `claude/scripts/test_to_tickets_runner.py`
+- Tested by: `agent-scripts/test_dev_status.py`, `agent-scripts/test_to_tickets_runner.py`
 
-### `claude/scripts/dotfiles_sync_check.py`
+### `agent-scripts/dotfiles_sync_check.py`
 
 SessionStart hook: flag when the dotfiles repo has drifted from the last commit bundled over to a GitHub-blocked work machine.
 
@@ -278,7 +278,7 @@ SessionStart hook: flag when the dotfiles repo has drifted from the last commit 
   - `mark [<sha>]` — record the given (or current HEAD) commit as last-bundled
     - `sha` — commit to record (defaults to HEAD) (nargs: ?)
 - Filesystem constants:
-  - `REPO = Path(__file__).resolve().parents[2]`
+  - `REPO = Path(__file__).resolve().parents[1]`
   - `STATE_DIR = Path.home() / '.local' / 'state' / 'agent-toolkit'`
   - `MARKER = STATE_DIR / 'last-bundled-commit'`
 - Explicit exit codes: `1`
@@ -287,9 +287,9 @@ SessionStart hook: flag when the dotfiles repo has drifted from the last commit 
   - `git(*args: str) -> str | None`
   - `build_parser() -> argparse.ArgumentParser`
 - Subcommand handlers: `cmd_check`, `cmd_mark`
-- Tested by: `claude/scripts/test_dotfiles_sync_check.py`
+- Tested by: `agent-scripts/test_dotfiles_sync_check.py`
 
-### `claude/scripts/gen_interfaces.py`
+### `agent-scripts/gen_interfaces.py`
 
 gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources.
 
@@ -379,9 +379,9 @@ gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources.
   - `anchor(relpath: str) -> str` — Return the GitHub heading anchor for a module section.
   - `default_repo_root() -> Path` — Return the repo root inferred from this script's real location.
 - Subcommand handlers: `cmd_function_name`
-- Tested by: `claude/scripts/test_gen_interfaces.py`, `test/test_dev_status_tool_action_coverage.py`
+- Tested by: `agent-scripts/test_gen_interfaces.py`, `test/test_dev_status_tool_action_coverage.py`
 
-### `claude/scripts/gen_second_opinion.py`
+### `agent-scripts/gen_second_opinion.py`
 
 gen_second_opinion.py — regenerate the second-opinion skill copies (one per harness, named in HARNESS_TABLE) from one canonical template.
 
@@ -406,9 +406,9 @@ gen_second_opinion.py — regenerate the second-opinion skill copies (one per ha
   - `check_contract_shape(repo_root: Path, template_text: str) -> list[str]` — Return problems where a CONTRACT_TOKENS entry is missing from the template.
   - `check_row_comments(repo_root: Path) -> list[str]` — Return problems where a HARNESS_TABLE keyword argument has no comment on the line immediately above it.
   - `default_repo_root() -> Path` — Return the repo root inferred from this script's real location.
-- Tested by: `claude/scripts/test_gen_second_opinion.py`
+- Tested by: `agent-scripts/test_gen_second_opinion.py`
 
-### `claude/scripts/gen_shell_completion.py`
+### `agent-scripts/gen_shell_completion.py`
 
 Generate a zsh `#compdef` completion file for a harness CLI.
 
@@ -447,9 +447,9 @@ Generate a zsh `#compdef` completion file for a harness CLI.
   - `needs_function(node: Node) -> bool`
   - `emit_zsh(root: Node, cli: str) -> str`
   - `generate(spec: HarnessSpec, *, verbose: bool = False) -> str | None`
-- Tested by: `claude/scripts/test_gen_shell_completion.py`
+- Tested by: `agent-scripts/test_gen_shell_completion.py`
 
-### `claude/scripts/gen_skills.py`
+### `agent-scripts/gen_skills.py`
 
 gen_skills.py — regenerate the dashboard/recap/grill-me/backlog-item/ make-skill/spec/standup/to-tickets/swarm skill copies from one template per skill, plus a shared per-harness capability table. dashboard/recap/ grill-me/backlog-item/make-skill cover all 5 harnesses (claude, copilot, opencode, agy, pi); spec/standup/to-tickets cover only claude/opencode/pi; swarm covers only claude/copilot (user-directed; pi already owns the orchestration surface) — see `SKILL_HARNESSES` below and AGENTS.md's "Harness maintenance tiers" section for why copilot/agy stop getting new generated skills.
 
@@ -471,9 +471,9 @@ gen_skills.py — regenerate the dashboard/recap/grill-me/backlog-item/ make-ski
   - `render_one(skill: str, harness: str, template_text: str, params: dict) -> str` — Render one (skill, harness) pair's complete file.
   - `render_all(repo_root: Path, skill_params: dict[str, dict[str, dict]]) -> dict[str, str]` — Render every (skill, harness) pair, keyed by its repo-relative output path.
   - `default_repo_root() -> Path` — Return the repo root inferred from this script's real location.
-- Tested by: `claude/scripts/test_gen_skills.py`
+- Tested by: `agent-scripts/test_gen_skills.py`
 
-### `claude/scripts/gen_skills_params.py`
+### `agent-scripts/gen_skills_params.py`
 
 gen_skills_params.py — per-(skill, harness) content tables for gen_skills.py.
 
@@ -482,12 +482,12 @@ gen_skills_params.py — per-(skill, harness) content tables for gen_skills.py.
 - CLI: none (library module).
 - Depends on: `repo_identity.py`
 - Public functions:
-  - `edit_root(relpath: str) -> str` — Return self-contained "where to edit this file" markdown.
+  - `edit_root(relpath: str, dotfiles_relpath: str | None = None) -> str` — Return self-contained "where to edit this file" markdown.
   - `symlink_cmd(relpath: str, dest: str) -> str` — Return a self-contained, copy-pasteable `ln -s` command.
   - `probe_add_dir() -> str` — Return the bare --add-dir flag argument for claude's headless probe.
-- Tested by: `claude/scripts/test_gen_skills.py`
+- Tested by: `agent-scripts/test_gen_skills.py`
 
-### `claude/scripts/grill.py`
+### `agent-scripts/grill.py`
 
 grill.py — grill-me session state CLI. All session mutations go through here.
 
@@ -555,9 +555,9 @@ grill.py — grill-me session state CLI. All session mutations go through here.
   - `frontier(session: Session) -> DecisionList` — Return every open decision whose dependencies are all resolved.
   - `render_markdown(session: Session) -> str` — Render a session's status as a Markdown document.
 - Subcommand handlers: `cmd_new`, `cmd_ask`, `cmd_decide`, `cmd_revise`, `cmd_rm`, `cmd_verdict`, `cmd_plan`, `cmd_mark_pending_execution`, `cmd_pending_plan`, `cmd_next`, `cmd_frontier`, `cmd_render`, `cmd_list`, `cmd_show`
-- Tested by: `claude/scripts/test_grill.py`, `claude/scripts/test_second_opinion.py`, `claude/scripts/test_to_tickets_runner.py`
+- Tested by: `agent-scripts/test_grill.py`, `agent-scripts/test_second_opinion.py`, `agent-scripts/test_to_tickets_runner.py`
 
-### `claude/scripts/guard_rails.py`
+### `agent-scripts/guard_rails.py`
 
 Pre-tool guard shared by every harness: refuse a write into a repository's main checkout while a backlog item for that repository is in progress, warn when the current worktree's base has fallen behind ``origin/main``, and (Bash, Claude Code only) deny the git-native ways to defeat the no-commit-on-main git hook (``githooks/pre-commit`` / ``githooks-global/pre-commit``).
 
@@ -591,9 +591,9 @@ Pre-tool guard shared by every harness: refuse a write into a repository's main 
   - `parse_payload(harness: str, payload: object) -> Request | None` — Normalize a harness's native hook payload.
   - `render(harness: str | None, verdict: Verdict) -> tuple[str, int]` — Shape a verdict into the harness's own reply.
   - `build_parser() -> argparse.ArgumentParser`
-- Tested by: `claude/scripts/test_guard_rails.py`, `test/test_guard_rails_topology.py`
+- Tested by: `agent-scripts/test_guard_rails.py`, `test/test_guard_rails_topology.py`
 
-### `claude/scripts/harness_discovery_check.py`
+### `agent-scripts/harness_discovery_check.py`
 
 SessionStart hook + CLI: detect when a harness's instruction-file discovery behavior may have drifted from the version-pinned facts in README.md.
 
@@ -617,9 +617,9 @@ SessionStart hook + CLI: detect when a harness's instruction-file discovery beha
   - `run_version(name: str, binary: Path, run_command: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run) -> str` — Run ``<binary> --version`` and return the extracted version string.
   - `build_parser() -> argparse.ArgumentParser`
 - Subcommand handlers: `cmd_check`, `cmd_probe`
-- Tested by: `claude/scripts/test_harness_discovery_check.py`
+- Tested by: `agent-scripts/test_harness_discovery_check.py`
 
-### `claude/scripts/herdr_delegate.py`
+### `agent-scripts/herdr_delegate.py`
 
 Launch pi agents in herdr tabs to work backlog items.
 
@@ -651,9 +651,9 @@ Launch pi agents in herdr tabs to work backlog items.
   - `ready_slugs() -> list[str]` — Slugs currently in READY, straight from ``dev_status.py ready``.
   - `herdr(argv: list[str]) -> dict[str, object]` — Run a herdr command and return its parsed JSON result.
 - Subcommand handlers: `cmd_plan`, `cmd_launch`
-- Tested by: `claude/scripts/test_herdr_delegate.py`
+- Tested by: `agent-scripts/test_herdr_delegate.py`
 
-### `claude/scripts/link_drift_check.py`
+### `agent-scripts/link_drift_check.py`
 
 SessionStart hook + CLI: flag when a managed symlink on this machine no longer points where links.toml says it should.
 
@@ -666,14 +666,14 @@ SessionStart hook + CLI: flag when a managed symlink on this machine no longer p
   - `check` — print a line per drifted bucket (default)
 - Environment: `XDG_CACHE_HOME`
 - Filesystem constants:
-  - `REPO = Path(__file__).resolve().parents[2]`
+  - `REPO = Path(__file__).resolve().parents[1]`
 - Depends on: `cli_common.py`
 - Public functions:
   - `build_parser() -> argparse.ArgumentParser`
 - Subcommand handlers: `cmd_check`
-- Tested by: `claude/scripts/test_link_drift_check.py`
+- Tested by: `agent-scripts/test_link_drift_check.py`
 
-### `claude/scripts/llm_backends.py`
+### `agent-scripts/llm_backends.py`
 
 llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, opencode, pi, copilot). Extracted from second_opinion.py so dev_status.py's recap generation can reuse the same process-lifecycle handling (timeouts, process-group kills, opencode JSON-event parsing) with its own timeout and model choices, without duplicating it.
 
@@ -700,9 +700,9 @@ llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, open
   - `run_copilot(prompt: str, *, model: str | None, timeout: float) -> str` — Run the ``copilot`` backend and return its text output.
   - `run_pi(prompt: str, *, model: str | None, timeout: float) -> str` — Run Pi's headless mode and return its text output.
   - `run_opencode(prompt: str, *, model: str | None, timeout: float) -> str` — Run opencode's default agent (no ``--agent`` override) and return its text output.
-- Tested by: `claude/scripts/test_dev_status.py`, `claude/scripts/test_gen_interfaces.py`, `claude/scripts/test_llm_backends.py`, `claude/scripts/test_second_opinion.py`, `test/test_backend_isolation.py`, `test/test_backend_isolation_live.py`
+- Tested by: `agent-scripts/test_dev_status.py`, `agent-scripts/test_gen_interfaces.py`, `agent-scripts/test_llm_backends.py`, `agent-scripts/test_second_opinion.py`, `test/test_backend_isolation.py`, `test/test_backend_isolation_live.py`
 
-### `claude/scripts/notify.py`
+### `agent-scripts/notify.py`
 
 Cross-platform agent notification dispatcher.
 
@@ -720,7 +720,7 @@ Cross-platform agent notification dispatcher.
   - `--type` — notification event type (default: completed) (choices: completed, waiting_for_input, error; default: completed)
 - Environment: `TMUX`, `WSL_DISTRO_NAME`, `WSL_INTEROP`
 - Filesystem constants:
-  - `ICONS_DIR = Path(__file__).resolve().parent.parent / 'icons'`
+  - `ICONS_DIR = Path(__file__).resolve().parent.parent / 'claude' / 'icons'`
 - Depends on: `cli_common.py`
 - Public functions:
   - `is_wsl() -> bool` — Detect whether running inside Windows Subsystem for Linux.
@@ -732,9 +732,9 @@ Cross-platform agent notification dispatcher.
   - `send_terminal_osc(title: str, message: str, verbose: bool = False) -> bool` — Emit OSC 777 and OSC 9 escape sequences to the controlling TTY.
   - `dispatch_notification(title: str, message: str, harness: str | None = None, icon: str | None = None, urgency: str = 'normal', event_type: str = 'completed', verbose: bool = False) -> None` — Route notification to terminal OSC and appropriate OS bridge with icon.
   - `build_parser() -> argparse.ArgumentParser`
-- Tested by: `claude/scripts/test_notify.py`
+- Tested by: `agent-scripts/test_notify.py`
 
-### `claude/scripts/outlook_calendar.py`
+### `agent-scripts/outlook_calendar.py`
 
 outlook_calendar.py — CLI tool and agent interface for Windows Outlook Calendar via PowerShell COM.
 
@@ -759,9 +759,9 @@ outlook_calendar.py — CLI tool and agent interface for Windows Outlook Calenda
   - `run_powershell_json(script: str, timeout: float = 20.0, runner: Callable[[str], str] | None = None) -> dict[str, object]` — Execute a PowerShell script and parse the returned JSON payload.
   - `get_calendar_events_range(start_date: date | None = None, end_date: date | None = None, limit: int = 50, runner: Callable[[str], str] | None = None) -> list[dict[str, object]]` — Query Outlook calendar appointments within a bounded date range.
   - `get_appointment(entry_id: str, runner: Callable[[str], str] | None = None) -> dict[str, object]` — Retrieve appointment details by EntryID.
-- Tested by: `claude/scripts/test_outlook_calendar.py`
+- Tested by: `agent-scripts/test_outlook_calendar.py`
 
-### `claude/scripts/outlook_email.py`
+### `agent-scripts/outlook_email.py`
 
 outlook_email.py — CLI tool and agent interface for Windows Outlook via PowerShell COM.
 
@@ -799,18 +799,18 @@ outlook_email.py — CLI tool and agent interface for Windows Outlook via PowerS
   - `create_draft(to: str, subject: str, body: str, cc: str | None = None, display: bool = True, runner: Callable[[str], str] | None = None) -> dict[str, object]` — Create a draft email in Outlook and optionally display inspector modal.
   - `get_email(entry_id: str, runner: Callable[[str], str] | None = None) -> dict[str, object]` — Retrieve detailed email content by EntryID.
   - `get_recent_correspondence(since: date | None = None, limit: int = 50, runner: Callable[[str], str] | None = None) -> list[dict[str, object]]` — Retrieve recent emails received in Inbox.
-- Tested by: `claude/scripts/test_outlook_email.py`
+- Tested by: `agent-scripts/test_outlook_email.py`
 
-### `claude/scripts/repo_identity.py`
+### `agent-scripts/repo_identity.py`
 
 repo_identity.py — which repo this checkout is.
 
 - Installed at: `~/.claude/scripts/repo_identity.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI: none (library module).
-- Tested by: `claude/scripts/test_gen_skills.py`
+- Tested by: `agent-scripts/test_gen_skills.py`
 
-### `claude/scripts/second_opinion.py`
+### `agent-scripts/second_opinion.py`
 
 second_opinion.py — one-shot adversarial critique of a plan from a non-Claude backend. Single-round by design: the multi-round loop, plan revision, and convergence judgment all require LLM reasoning and live in prose instructions, not here.
 
@@ -843,9 +843,9 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
   - `build_parser() -> argparse.ArgumentParser` — Build the full argument parser for every subcommand.
   - `ensure_data_dir() -> None` — Create ``DATA_DIR`` if it is missing.
 - Subcommand handlers: `cmd_detect`, `cmd_review`
-- Tested by: `claude/scripts/test_second_opinion.py`
+- Tested by: `agent-scripts/test_second_opinion.py`
 
-### `claude/scripts/seed_hook_subset_guard.py`
+### `agent-scripts/seed_hook_subset_guard.py`
 
 seed_hook_subset_guard.py — refuse a commit that drops a seed's SessionStart hook groups.
 
@@ -857,7 +857,7 @@ seed_hook_subset_guard.py — refuse a commit that drops a seed's SessionStart h
   - `check_path(repo_root: Path, path: str) -> tuple[str | None, str | None]` — Return ``(failure_message, skip_note)`` for one seed path — exactly one is non-None.
 - Tested by: `test/test_seed_hook_subset_guard.py`
 
-### `claude/scripts/sessionstart_checks.py`
+### `agent-scripts/sessionstart_checks.py`
 
 sessionstart_checks.py — run the SessionStart context checks concurrently.
 
@@ -866,9 +866,9 @@ sessionstart_checks.py — run the SessionStart context checks concurrently.
 - CLI: none (library module).
 - Public functions:
   - `run_checks(checks: list[tuple[str, int]] | None = None) -> str` — Run all checks concurrently, returning their outputs concatenated in the original list order — not completion order — so the session-start context stays stable and reviewable run over run.
-- Tested by: `claude/scripts/test_sessionstart_checks.py`
+- Tested by: `agent-scripts/test_sessionstart_checks.py`
 
-### `claude/scripts/settings_seed_drift_check.py`
+### `agent-scripts/settings_seed_drift_check.py`
 
 SessionStart hook + CLI: detect (and optionally fix) drift between the live ``~/.claude/settings.json`` / ``~/.config/opencode/opencode.jsonc`` / (under WSL) the Windows-side VS Code ``settings.json`` and ``keybindings.json`` and their seeds in the dotfiles repo.
 
@@ -885,7 +885,7 @@ SessionStart hook + CLI: detect (and optionally fix) drift between the live ``~/
 - Environment: `PATH`
 - Filesystem constants:
   - `HOME = Path.home()`
-  - `DOTFILES = Path(__file__).resolve().parents[2]`
+  - `DOTFILES = Path(__file__).resolve().parents[1]`
   - `PROFILE_MARKER = HOME / '.local' / 'state' / 'agent-toolkit' / 'profile'`
 - Depends on: `cli_common.py`
 - Exceptions:
@@ -901,9 +901,9 @@ SessionStart hook + CLI: detect (and optionally fix) drift between the live ``~/
   - `opencode_drift(seed: Path, live: Path) -> str` — Return a drift description for opencode.jsonc non-cosmetic keys, or "".
   - `vscode_drift(seed: Path, live: Path) -> str` — Describe how a live VS Code settings.json/keybindings.json diverged from its seed, or "" if there's nothing to compare or nothing drifted.
 - Subcommand handlers: `cmd_check`, `cmd_fix`, `cmd_sync_to_seed`, `cmd_push_vscode`
-- Tested by: `claude/scripts/test_settings_seed_drift_check.py`, `test/test_install.py`
+- Tested by: `agent-scripts/test_settings_seed_drift_check.py`, `test/test_install.py`
 
-### `claude/scripts/standup.py`
+### `agent-scripts/standup.py`
 
 standup.py — /standup skill CLI: local data gathering.
 
@@ -931,9 +931,9 @@ standup.py — /standup skill CLI: local data gathering.
   - `git_commits(repos: list[str], since_days: int) -> tuple[list[dict[str, str]], list[dict[str, str]]]`
   - `backlog_items(prefixes: list[str], recent_done_days: int) -> tuple[list[dict[str, object]], list[dict[str, object]], list[dict[str, object]], list[dict[str, str]]]`
 - Subcommand handlers: `cmd_fetch`
-- Tested by: `claude/scripts/test_standup.py`
+- Tested by: `agent-scripts/test_standup.py`
 
-### `claude/scripts/standup_adapters.py`
+### `agent-scripts/standup_adapters.py`
 
 standup_adapters.py — provider-agnostic adapter interfaces for /standup.
 
@@ -957,9 +957,9 @@ standup_adapters.py — provider-agnostic adapter interfaces for /standup.
   - `class StubEmailAdapter`
   - `class OutlookCalendarAdapter` — Calendar adapter communicating with Outlook on Windows host via PowerShell COM.
   - `class StubCalendarAdapter`
-- Tested by: `claude/scripts/test_gen_interfaces.py`, `claude/scripts/test_outlook_calendar.py`, `claude/scripts/test_outlook_email.py`
+- Tested by: `agent-scripts/test_gen_interfaces.py`, `agent-scripts/test_outlook_calendar.py`, `agent-scripts/test_outlook_email.py`
 
-### `claude/scripts/statusline.py`
+### `agent-scripts/statusline.py`
 
 Claude Code status line: render the model name and a color-coded context window usage bar with the used percentage, from the JSON session payload Claude Code pipes to this script on stdin.
 
@@ -967,9 +967,9 @@ Claude Code status line: render the model name and a color-coded context window 
 - Entrypoint: executable, `#!/usr/bin/env python3`
 - CLI: none (library module).
 - Explicit exit codes: `0`
-- Tested by: `claude/scripts/test_statusline.py`
+- Tested by: `agent-scripts/test_statusline.py`
 
-### `claude/scripts/to_tickets_runner.py`
+### `agent-scripts/to_tickets_runner.py`
 
 to_tickets_runner.py — create a linked batch of dev_status.py backlog items from a confirmed vertical-slice/tracer-bullet ticket breakdown.
 
@@ -998,9 +998,9 @@ to_tickets_runner.py — create a linked batch of dev_status.py backlog items fr
   - `run(batch_path: Path) -> list[str]` — Create every ticket in ``batch_path``'s batch, resuming if interrupted before.
   - `build_parser() -> argparse.ArgumentParser`
 - Subcommand handlers: `cmd_run`
-- Tested by: `claude/scripts/test_to_tickets_runner.py`
+- Tested by: `agent-scripts/test_to_tickets_runner.py`
 
-### `claude/scripts/vitals_promotion.py`
+### `agent-scripts/vitals_promotion.py`
 
 vitals-promotion.py — mechanical vitals-promotion pass over grill session data.
 
@@ -1040,7 +1040,7 @@ vitals-promotion.py — mechanical vitals-promotion pass over grill session data
   - `supersede_reason(record: VitalsRecord, lookup: dict[DecisionKey, Decision]) -> str | None` — Return why ``record`` should be superseded, or None if it's still valid.
   - `run(data_dir: Path, apply: bool) -> Report`
   - `print_report(report: Report, apply: bool, quiet: bool = False) -> None`
-- Tested by: `claude/scripts/test_vitals_promotion.py`
+- Tested by: `agent-scripts/test_vitals_promotion.py`
 
 ---
 
@@ -1125,9 +1125,6 @@ are copy-once seeds for exactly that reason.
 | `claude/icons/opencode.png` | not symlinked by `links.toml` |
 | `claude/icons/pi.png` | not symlinked by `links.toml` |
 | `claude/output-styles/ConciseSTE.md` | `~/.claude/output-styles/ConciseSTE.md` (claude) |
-| `claude/scripts/AGENTS.md` | not symlinked by `links.toml` |
-| `claude/scripts/CLAUDE.md` | not symlinked by `links.toml` |
-| `claude/scripts/contract_fingerprints.json` | not symlinked by `links.toml` |
 | `claude/settings.json` | not symlinked by `links.toml` |
 | `claude/settings.work.json` | not symlinked by `links.toml` |
 | `copilot/CLAUDE_CODE_PARITY.md` | not symlinked by `links.toml` |

@@ -22,7 +22,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO_ROOT / "claude" / "scripts"))
+sys.path.insert(0, str(REPO_ROOT / "agent-scripts"))
 
 import seed_hook_subset_guard as guard  # noqa: E402
 
@@ -367,7 +367,7 @@ def test_guard_is_fast(tmp_path: Path) -> None:
 def test_wired_hook_refuses_lossy_commit(tmp_path: Path) -> None:
     """A commit through the repo's real githooks/pre-commit is refused on the
     incident shape. The gen_* checks later in the hook are never reached here
-    (the guard exits first), so a throwaway repo without claude/scripts is
+    (the guard exits first), so a throwaway repo without agent-scripts is
     enough; the hook's pass path is exercised by every wired commit in the
     real checkout instead."""
     repo = _init_repo(tmp_path)
@@ -384,8 +384,8 @@ def test_wired_hook_refuses_lossy_commit(tmp_path: Path) -> None:
     (repo / "githooks" / "pre-commit").chmod(0o755)
     # The hook sources its guard from the repo itself, so the temp repo needs
     # the script too.
-    (repo / "claude" / "scripts").mkdir(parents=True)
-    (repo / "claude" / "scripts" / "seed_hook_subset_guard.py").write_text(
+    (repo / "agent-scripts").mkdir(parents=True)
+    (repo / "agent-scripts" / "seed_hook_subset_guard.py").write_text(
         Path(guard.__file__).read_text()
     )
 

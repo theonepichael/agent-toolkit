@@ -19,7 +19,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).parent))
 import settings_seed_drift_check as ssdc
 
-REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # ── committed seed key coverage (class guard) — expectation sets ────────────
 # Deliberately hardcoded, not derived from ssdc.SETTINGS_COSMETIC_KEYS /

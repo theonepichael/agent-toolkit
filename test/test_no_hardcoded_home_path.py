@@ -3,7 +3,7 @@
 
 Regression test for a bug class found while auditing agent-toolkit before
 its first publish: agy/hooks.json, claude/settings.json, and
-claude/scripts/harness_discovery_check.py all hardcoded this maintainer's
+agent-scripts/harness_discovery_check.py all hardcoded this maintainer's
 own /home/yanil path, which would silently misbehave (a dead hook, an inert
 fallback table) on a coworker's machine. See
 ~/.claude/data/grill/2026-09-03-atk-publish-remote-hardcoded-paths-plan.md
@@ -23,7 +23,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # Fixture/example paths in test data are not live config -- excluded.
 # Verified: git pathspec ":!test" excludes only the test/ directory tree by
 # prefix, not any path merely containing the substring "test" --
-# claude/scripts/test_dev_status.py, for example, still matches a grep
+# agent-scripts/test_dev_status.py, for example, still matches a grep
 # scoped with this exclusion.
 #
 # pi/CLAUDE_CODE_PARITY.md:128 is a deliberate exemption, not a fixture: it
@@ -90,7 +90,7 @@ class NoHardcodedHomePathTests(unittest.TestCase):
 # the files a coworker reads to find out where to edit something, and
 # dotfiles is never the right answer for agent-toolkit's own copy.
 #
-# claude/scripts/gen_skills_params.py (the generator SOURCE) is deliberately
+# agent-scripts/gen_skills_params.py (the generator SOURCE) is deliberately
 # not in this list, even though it's exactly the file this item fixed: its
 # per-repo phrasing helpers (edit_root/symlink_cmd/probe_add_dir) legitimately
 # embed the literal string "~/dotfiles" as dotfiles' own correct value in

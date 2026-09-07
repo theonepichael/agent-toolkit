@@ -74,7 +74,7 @@ def test_pi_keeps_its_own_interactive_guards() -> None:
 @pytest.mark.parametrize(
     "src_path",
     [
-        "claude/scripts/guard_rails.py",
+        "agent-scripts/guard_rails.py",
         "copilot/hooks/pre-tool-use.json",
         "opencode/plugin/guard-rails.ts",
     ],
@@ -86,8 +86,8 @@ def test_new_files_are_linked_into_place(src_path: str) -> None:
 
 
 def test_the_guard_script_is_stdlib_only() -> None:
-    """claude/scripts/ has to run on a machine that never ran `uv sync`."""
-    src = (REPO_ROOT / "claude/scripts/guard_rails.py").read_text()
+    """agent-scripts/ has to run on a machine that never ran `uv sync`."""
+    src = (REPO_ROOT / "agent-scripts/guard_rails.py").read_text()
     imports = [
         line.split()[1].split(".")[0]
         for line in src.splitlines()

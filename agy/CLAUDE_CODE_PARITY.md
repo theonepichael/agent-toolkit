@@ -212,7 +212,7 @@ without confirming against the actual installed binary's
 ## Pre-tool guard (`PreToolUse`)
 
 `agy/hooks.json` gains a `worktree-guard` hook set calling
-`claude/scripts/guard_rails.py --harness agy`, matching
+`agent-scripts/guard_rails.py --harness agy`, matching
 `write_to_file|replace_file_content`.
 
 **Verified live 2026-09-01**: the write was denied and agy surfaced the

@@ -1,4 +1,4 @@
-# claude/scripts/ — agent notes
+# agent-scripts/ — agent notes
 
 The shared workflow tools. Every harness in this repo — Claude Code,
 Copilot, opencode, agy, Pi — calls these same paths through
@@ -20,8 +20,8 @@ argparse definitions. When an interface changes, fix the docstring and the
 argparse definition — never `INTERFACES.md` itself — then regenerate:
 
 ```sh
-python3 claude/scripts/gen_interfaces.py           # rewrite
-python3 claude/scripts/gen_interfaces.py --check   # 1 = stale, 3 = doc drift
+python3 agent-scripts/gen_interfaces.py           # rewrite
+python3 agent-scripts/gen_interfaces.py --check   # 1 = stale, 3 = doc drift
 ```
 
 `githooks/pre-commit` runs `--check` and blocks the commit on either exit

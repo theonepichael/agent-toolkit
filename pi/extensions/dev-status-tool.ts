@@ -5,7 +5,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { getEffectiveCwd } from "./cwd";
 
-// Wraps claude/scripts/dev_status.py -- see
+// Wraps agent-scripts/dev_status.py -- see
 // ~/.claude/data/grill/pi-tool-dev-status-spec.md for the full design and
 // ~/.claude/data/grill/pi-tool-dev-status-spec-critique-notes.md for why
 // the numeric-identity handling below looks the way it does (two earlier

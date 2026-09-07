@@ -114,7 +114,7 @@ class DotfilesSyncCheckDefaultRootTestCase(unittest.TestCase):
         # transfer workflow produces). It must be derived from the script's
         # own location instead, same convention install.py already uses.
         script_path = Path(dotfiles_sync_check.__file__).resolve()
-        expected_root = script_path.parents[2]
+        expected_root = script_path.parents[1]
         self.assertEqual(dotfiles_sync_check.REPO, expected_root)
 
 

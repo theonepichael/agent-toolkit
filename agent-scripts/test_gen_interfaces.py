@@ -27,7 +27,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent))
 import gen_interfaces as gi
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def parse(source: str) -> ast.Module:
@@ -831,12 +831,12 @@ class LinkTableTests(unittest.TestCase):
         table = self.load(
             """
             [[link]]
-            src = "claude/scripts/watchcommit_activity.py"
+            src = "agent-scripts/watchcommit_activity.py"
             dest = "~/.claude/scripts/watchcommit_activity.py"
             profile_exclude = ["work"]
             """
         )
-        target = table["claude/scripts/watchcommit_activity.py"][0]
+        target = table["agent-scripts/watchcommit_activity.py"][0]
         self.assertEqual(target.gates, ["not on work"])
 
     def test_missing_links_file_is_empty(self) -> None:
@@ -851,7 +851,7 @@ class LinkTableTests(unittest.TestCase):
 
 class AssetFilterTests(unittest.TestCase):
     def test_build_output_and_dotfiles_are_excluded(self) -> None:
-        self.assertTrue(gi.is_generated_artifact("claude/scripts/__pycache__/x.pyc"))
+        self.assertTrue(gi.is_generated_artifact("agent-scripts/__pycache__/x.pyc"))
         self.assertTrue(gi.is_generated_artifact("claude/.DS_Store"))
         self.assertFalse(gi.is_generated_artifact("copilot/aliases.zsh"))
 
@@ -891,7 +891,7 @@ class AssetFilterTests(unittest.TestCase):
     def test_tracked_files_lists_this_repo(self) -> None:
         tracked = gi.tracked_files(REPO_ROOT)
         assert tracked is not None
-        self.assertIn("claude/scripts/gen_interfaces.py", tracked)
+        self.assertIn("agent-scripts/gen_interfaces.py", tracked)
 
 
 class RealSourceTests(unittest.TestCase):
@@ -1385,7 +1385,7 @@ class GeneratedDocumentTests(unittest.TestCase):
         for module in modules:
             if module.name in impl_names:
                 continue  # thin-launcher impl: documented via its launcher's entry
-            self.assertIn(f"### `claude/scripts/{module.name}`", document)
+            self.assertIn(f"### `agent-scripts/{module.name}`", document)
         for name in gi.ROOT_ENTRYPOINTS:
             self.assertIn(f"### `{name}`", document)
 

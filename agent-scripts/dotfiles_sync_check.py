@@ -18,7 +18,7 @@ from pathlib import Path
 
 import cli_common
 
-REPO = Path(__file__).resolve().parents[2]
+REPO = Path(__file__).resolve().parents[1]
 # "agent-toolkit", matching install.py's own state directory for this
 # repo -- this script's own bundling-drift marker must not be written into
 # dotfiles' state directory (~/.local/state/dotfiles/), the same

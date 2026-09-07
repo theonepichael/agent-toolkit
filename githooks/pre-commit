@@ -7,7 +7,7 @@
 # leaves INTERFACES.md itself stale. gen_skills.py/gen_second_opinion.py run
 # first so a forgotten regeneration reports as that, not as a confusing
 # downstream CLI-contract-drift error from gen_interfaces.py reading stale
-# generated content. See claude/scripts/gen_interfaces.py --check for its
+# generated content. See agent-scripts/gen_interfaces.py --check for its
 # two distinct exit codes (1 = stale file, 3 = doc drift).
 set -uo pipefail
 
@@ -36,14 +36,14 @@ refuse_if_protected_branch || exit $?
 # matcher-'*' herdr group). SEED_HOOK_ALLOW_DROP=1 skips this one check for
 # an intentional drop; --no-verify would also disable the checks below and
 # no-commit-on-main, so the env var is the escape hatch to reach for.
-output="$(python3 "$repo_root/claude/scripts/seed_hook_subset_guard.py" --repo-root "$repo_root" 2>&1)"
+output="$(python3 "$repo_root/agent-scripts/seed_hook_subset_guard.py" --repo-root "$repo_root" 2>&1)"
 status=$?
 if [ "$status" -ne 0 ]; then
     echo "$output" >&2
     exit "$status"
 fi
 
-output="$(python3 "$repo_root/claude/scripts/gen_skills.py" --check --repo-root "$repo_root" 2>&1)"
+output="$(python3 "$repo_root/agent-scripts/gen_skills.py" --check --repo-root "$repo_root" 2>&1)"
 status=$?
 if [ "$status" -ne 0 ]; then
     echo "$output" >&2
@@ -52,7 +52,7 @@ if [ "$status" -ne 0 ]; then
     exit "$status"
 fi
 
-output="$(python3 "$repo_root/claude/scripts/gen_second_opinion.py" --check --repo-root "$repo_root" 2>&1)"
+output="$(python3 "$repo_root/agent-scripts/gen_second_opinion.py" --check --repo-root "$repo_root" 2>&1)"
 status=$?
 if [ "$status" -ne 0 ]; then
     echo "$output" >&2
@@ -61,7 +61,7 @@ if [ "$status" -ne 0 ]; then
     exit "$status"
 fi
 
-output="$(python3 "$repo_root/claude/scripts/gen_interfaces.py" --check --repo-root "$repo_root" 2>&1)"
+output="$(python3 "$repo_root/agent-scripts/gen_interfaces.py" --check --repo-root "$repo_root" 2>&1)"
 status=$?
 
 if [ "$status" -eq 0 ]; then

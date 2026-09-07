@@ -4,7 +4,7 @@ House style (short, prescriptive)
 
 Scope & philosophy
 - Uniformity is paramount. Keep interfaces small, explicit, and testable.
-- No runtime third-party dependencies in harness code. The claude/scripts tools and their colocated tests must stay runnable with the system Python and the standard library alone.
+- No runtime third-party dependencies in harness code. The agent-scripts tools and their colocated tests must stay runnable with the system Python and the standard library alone.
 - Development tooling is a separate concern: test/ and CI use uv with pinned pytest and ruff. Keep those dependencies out of anything that runs at harness runtime.
 
 Python
@@ -33,13 +33,13 @@ Config & secrets
 
 Logging & output
 - Scripts should write normal results to stdout and diagnostics to stderr.
-- Provide --quiet / --verbose toggles via `cli_common.add_verbosity_args` (claude/scripts/cli_common.py), which also supplies the `qprint` / `vprint` output helpers; gate non-essential stdout with `qprint(..., quiet=quiet)` and diagnostics with `vprint(..., verbose=verbose)`.
+- Provide --quiet / --verbose toggles via `cli_common.add_verbosity_args` (agent-scripts/cli_common.py), which also supplies the `qprint` / `vprint` output helpers; gate non-essential stdout with `qprint(..., quiet=quiet)` and diagnostics with `vprint(..., verbose=verbose)`.
 - Keep prompts and secrets out of logs by default.
 
 Tests & CI
 - Two intentional test tiers; keep new tests in whichever tier matches the code under test.
 - test/ — pytest suites covering the top-level tooling: the installer and departure mode, the lint gates, and the cross-harness invariant guards. Run with `uv run pytest test/`.
-- claude/scripts/test_*.py — standard library unittest, colocated with the scripts they cover and deliberately dependency-free so those tools stay runnable without a `uv sync`. Runnable directly as `python3 test_X.py` from claude/scripts/, and also collected by `uv run pytest` from the repo root, since `testpaths` in pyproject.toml is `["test", "claude/scripts"]`.
+- agent-scripts/test_*.py — standard library unittest, colocated with the scripts they cover and deliberately dependency-free so those tools stay runnable without a `uv sync`. Runnable directly as `python3 test_X.py` from agent-scripts/, and also collected by `uv run pytest` from the repo root, since `testpaths` in pyproject.toml is `["test", "agent-scripts"]`.
 - The repo-root conftest.py sandboxes `HOME` and blocks unmarked real subprocess calls and production-path writes, for the whole suite. A test that needs either must opt in with a marker, and the failure when it does not is a RuntimeError that reads like broken code rather than a missing marker — read test/AGENTS.md before writing one. (Marker names live there, not here, so there is only one place to update if they change.)
 - Dev tooling is declared in the `dev` dependency group in pyproject.toml (pytest and ruff, both pinned) and managed with uv; uv.lock is committed and CI installs from it.
 - Tests should not require network or live LLMs. Mock at the subprocess boundary (`_run_command` / `run_backend_command`) rather than invoking real agy/opencode/copilot binaries.
@@ -63,7 +63,7 @@ Formatting & linting
 
 Files & docs
 - Add a short module docstring to each CLI script listing: flags, env vars, files read/written, and primary exit codes. This discipline is what lets INTERFACES.md be generated from source.
-- INTERFACES.md is the interface inventory for the harness scripts, generated from those docstrings and argparse definitions. Fix the source when an interface changes; do not hand-edit the generated inventory. Regenerate with `python3 claude/scripts/gen_interfaces.py`, or check for staleness with `--check` (exit 1 if stale, which is what the test suite asserts).
+- INTERFACES.md is the interface inventory for the harness scripts, generated from those docstrings and argparse definitions. Fix the source when an interface changes; do not hand-edit the generated inventory. Regenerate with `python3 agent-scripts/gen_interfaces.py`, or check for staleness with `--check` (exit 1 if stale, which is what the test suite asserts).
 - User-facing commands are documented in README.md, per harness — that is where behavioral differences between the Claude Code, Copilot, opencode, agy and Pi ports belong.
 - Directory-level agent instructions live in `<dir>/AGENTS.md` with a `CLAUDE.md` symlink beside it (no single filename reaches all five harnesses). Write one only when the directory has a convention an agent would otherwise get wrong; the repo root's AGENTS.md carries the rationale and the index.
 

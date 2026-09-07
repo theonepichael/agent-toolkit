@@ -451,7 +451,7 @@ conflicting keys), same pattern as Claude Code's `~/.claude/settings.json` +
 ## Pre-tool guard (`tool.execute.before`)
 
 `opencode/plugin/guard-rails.ts` delegates to
-`claude/scripts/guard_rails.py`, the same script all five harnesses call.
+`agent-scripts/guard_rails.py`, the same script all five harnesses call.
 
 **Verified live 2026-09-01**, in a throwaway repo with a throwaway backlog
 store (`GUARD_RAILS_STORE`): the write was denied and the reason reached the

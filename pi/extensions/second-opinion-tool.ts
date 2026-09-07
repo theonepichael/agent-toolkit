@@ -5,7 +5,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { getEffectiveCwd } from "./cwd";
 
-// Wraps claude/scripts/second_opinion.py, following the pattern set by
+// Wraps agent-scripts/second_opinion.py, following the pattern set by
 // dev-status-tool.ts (see ~/.claude/data/grill/pi-tool-dev-status-spec.md).
 //
 // The script is single-round by design: one call, one critique. The

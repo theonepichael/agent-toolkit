@@ -61,7 +61,7 @@ underneath — the `--model-index` bug (silent fallback became a hard error)
 was exactly this: every skill doc that named the flag still compiled and
 still passed a marker check, because nothing re-read the flag's actual
 current behavior. Before committing an edit to any script under
-`claude/scripts/` that a skill doc names (check `INTERFACES.md`'s "Tested
+`agent-scripts/` that a skill doc names (check `INTERFACES.md`'s "Tested
 by"/module entries, or grep `claude/commands/`, `opencode/skills/`,
 `copilot/skills/`, `agy/skills/`, `pi/prompts/` for the script's filename), read that
 script's updated `INTERFACES.md` entry and check every skill doc that names

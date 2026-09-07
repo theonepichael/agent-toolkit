@@ -203,7 +203,7 @@ from pathlib import Path
 import cli_common
 
 HOME = Path.home()
-DOTFILES = Path(__file__).resolve().parents[2]
+DOTFILES = Path(__file__).resolve().parents[1]
 
 # Cosmetic keys — per-machine preferences explicitly allowed to drift
 # silently. Anything NOT in this set is reported as drift by default, so a

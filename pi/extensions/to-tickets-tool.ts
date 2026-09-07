@@ -5,7 +5,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { getEffectiveCwd } from "./cwd";
 
-// Wraps claude/scripts/to_tickets_runner.py, following the pattern set by
+// Wraps agent-scripts/to_tickets_runner.py, following the pattern set by
 // dev-status-tool.ts (see ~/.claude/data/grill/pi-tool-dev-status-spec.md).
 //
 // One subcommand, one argument: path in, created slugs out. The value over

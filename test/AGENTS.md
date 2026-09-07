@@ -36,13 +36,13 @@ back for that test. It is not just a write permit.
 
 - **`test/`** — pytest. Covers the top-level tooling: the installer,
   departure mode, lint gates, and the cross-harness guards.
-- **`claude/scripts/test_*.py`** — standard library `unittest`, colocated
+- **`agent-scripts/test_*.py`** — standard library `unittest`, colocated
   with the scripts they cover and deliberately dependency-free, so those
   tools stay runnable on a machine that has never run `uv sync`. Keep them
-  importable and runnable as `python3 test_X.py` from `claude/scripts/`.
+  importable and runnable as `python3 test_X.py` from `agent-scripts/`.
 
 Both are collected by `uv run pytest` — `pyproject.toml` sets
-`testpaths = ["test", "claude/scripts"]` — so the `conftest.py` guards above
+`testpaths = ["test", "agent-scripts"]` — so the `conftest.py` guards above
 apply to the colocated tests too when they run that way, and not when they
 are run directly with `python3`.
 

@@ -1,6 +1,6 @@
 """Coverage guard: pi's dev-status-tool ACTIONS vs dev_status.py's real CLI.
 
-Adding the ``ready`` subcommand to ``claude/scripts/dev_status.py`` left
+Adding the ``ready`` subcommand to ``agent-scripts/dev_status.py`` left
 ``pi/extensions/dev-status-tool.ts`` without it and nothing failed — bun
 test stayed green with an action no pi session could reach, while the
 contract-fingerprint check pointed at 21 skill docs, none of which
@@ -37,11 +37,11 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "claude" / "scripts"))
+sys.path.insert(0, str(REPO_ROOT / "agent-scripts"))
 
 import gen_interfaces as gi  # noqa: E402  (needs the sys.path insert above)
 
-DEV_STATUS_PATH = REPO_ROOT / "claude" / "scripts" / "dev_status.py"
+DEV_STATUS_PATH = REPO_ROOT / "agent-scripts" / "dev_status.py"
 TOOL_PATH = REPO_ROOT / "pi" / "extensions" / "dev-status-tool.ts"
 
 #: Leaf subcommands intentionally not exposed as tool actions, keyed by
@@ -263,12 +263,12 @@ def real_cli_leaves() -> set[tuple[str, ...]]:
     tree = ast.parse(source)
     spec = gi.extract_cli(tree, ast.get_docstring(tree) or "")
     assert spec is not None, (
-        "extract_cli found no CLI in claude/scripts/dev_status.py — the parser "
+        "extract_cli found no CLI in agent-scripts/dev_status.py — the parser "
         "builder pattern changed and gen_interfaces' extractor no longer "
         "recognizes it; fix the extractor, never a second parser here"
     )
     assert spec.subcommands, (
-        "extract_cli found zero subcommands in claude/scripts/dev_status.py — "
+        "extract_cli found zero subcommands in agent-scripts/dev_status.py — "
         "an empty coverage check would pass anything"
     )
     return gi.leaf_subcommand_paths(spec.subcommands)

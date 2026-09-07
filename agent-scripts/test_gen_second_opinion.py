@@ -17,7 +17,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import gen_second_opinion as gso
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 FIXTURE_PARAMS = gso.HarnessParams(
     frontmatter="---\nname: x\n---\n",
@@ -140,7 +140,7 @@ class EndToEndTests(unittest.TestCase):
                 committed,
                 expected,
                 f"{relpath} is stale — run "
-                "`python3 claude/scripts/gen_second_opinion.py`",
+                "`python3 agent-scripts/gen_second_opinion.py`",
             )
 
     def test_contract_shape_holds_against_the_real_template(self) -> None:

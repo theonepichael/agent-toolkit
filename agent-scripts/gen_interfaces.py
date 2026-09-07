@@ -22,10 +22,10 @@ asset table to tracked files — read-only, and not one of the scripts being
 documented. See :func:`tracked_files` for why that filter is load-bearing.
 
 Usage:
-    python3 claude/scripts/gen_interfaces.py                  rewrite INTERFACES.md
-    python3 claude/scripts/gen_interfaces.py --check           exit 1/3 if it is stale
-    python3 claude/scripts/gen_interfaces.py --stdout          print, write nothing
-    python3 claude/scripts/gen_interfaces.py --update-fingerprints
+    python3 agent-scripts/gen_interfaces.py                  rewrite INTERFACES.md
+    python3 agent-scripts/gen_interfaces.py --check           exit 1/3 if it is stale
+    python3 agent-scripts/gen_interfaces.py --stdout          print, write nothing
+    python3 agent-scripts/gen_interfaces.py --update-fingerprints
                                                                 accept current behavior
                                                                 as the new baseline
 
@@ -50,7 +50,7 @@ Env vars: none.
 Files read: <repo>/links.toml, <repo>/contract_fingerprints.json, and every
 file under claude/, copilot/, opencode/, agy/.
 Files written: <repo>/INTERFACES.md (skipped by --check and --stdout);
-<repo>/claude/scripts/contract_fingerprints.json (only with
+<repo>/agent-scripts/contract_fingerprints.json (only with
 --update-fingerprints).
 Exit codes: 0 success; 1 --check found the file itself stale (fix: rerun
 without --check); 2 bad usage or unreadable input; 3 --check found a doc's
@@ -78,7 +78,7 @@ from pathlib import Path
 import cli_common
 
 HARNESS_DIRS = ("claude", "copilot", "opencode", "agy", "pi")
-SCRIPTS_DIR = "claude/scripts"
+SCRIPTS_DIR = "agent-scripts"
 ROOT_ENTRYPOINTS = ("install.py", "depart.py", "scripts/sync_from_dotfiles.py")
 OUTPUT_NAME = "INTERFACES.md"
 
@@ -90,15 +90,15 @@ _IMPL_MODULE_RE = re.compile(
 
 PREAMBLE = """\
 Scope: `claude/`, `copilot/`, `opencode/`, `agy/`, `pi/`, the shared scripts under
-`claude/scripts/` that `links.toml` installs into `~/.claude/scripts/`, and the
+`agent-scripts/` that `links.toml` installs into `~/.claude/scripts/`, and the
 repo-root installer entrypoints those harnesses are provisioned by.
 
 **This file is generated. Do not edit it by hand — your edits will be
 overwritten.** Regenerate it after changing any harness script:
 
 ```bash
-python3 claude/scripts/gen_interfaces.py           # rewrite this file
-python3 claude/scripts/gen_interfaces.py --check   # exit 1 if it is stale
+python3 agent-scripts/gen_interfaces.py           # rewrite this file
+python3 agent-scripts/gen_interfaces.py --check   # exit 1 if it is stale
 ```
 
 Everything below is extracted statically, with `ast`, `tomllib`, and a small
@@ -1068,7 +1068,7 @@ def find_tests(module: Path, repo_root: Path) -> list[str]:
 
     Searches the module's own directory and the repo's ``test/`` directory —
     ``install.py``'s tests live in the latter, everything under
-    ``claude/scripts/`` is colocated.
+    ``agent-scripts/`` is colocated.
     """
     stem = module.stem
     found: set[str] = set()
@@ -1366,7 +1366,7 @@ def render_assets(
 
 # ── skill/command doc contract drift ────────────────────────────────────────
 
-CONTRACT_FINGERPRINTS_PATH = "claude/scripts/contract_fingerprints.json"
+CONTRACT_FINGERPRINTS_PATH = "agent-scripts/contract_fingerprints.json"
 """Where the recorded per-script behavior fingerprints live.
 
 Covers ``second_opinion.py`` too — the general fingerprint check
@@ -1861,7 +1861,7 @@ def build_document_and_drift(
     modules = load_repo_modules(repo_root, links)
 
     lines = [f"# {OUTPUT_NAME}", "", PREAMBLE, "", "---", ""]
-    lines += ["## 1. Shared scripts (`claude/scripts/`)", ""]
+    lines += ["## 1. Shared scripts (`agent-scripts/`)", ""]
     lines += ["| Module | Purpose |", "| --- | --- |"]
     for module in modules:
         name = Path(module.relpath).name
@@ -1913,7 +1913,7 @@ def anchor(relpath: str) -> str:
 
 def default_repo_root() -> Path:
     """Return the repo root inferred from this script's real location."""
-    return Path(__file__).resolve().parents[2]
+    return Path(__file__).resolve().parents[1]
 
 
 def main() -> None:
@@ -2013,7 +2013,7 @@ def main() -> None:
         sys.stderr.writelines(diff)
         print(
             f"[gen_interfaces] {output.name} is stale — run "
-            "`python3 claude/scripts/gen_interfaces.py`",
+            "`python3 agent-scripts/gen_interfaces.py`",
             file=sys.stderr,
         )
         sys.exit(1)

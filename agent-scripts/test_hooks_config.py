@@ -9,7 +9,7 @@ import re
 import unittest
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[1]
 SETTINGS_FILES = [
     REPO_ROOT / "claude" / "settings.json",
     REPO_ROOT / "claude" / "settings.work.json",

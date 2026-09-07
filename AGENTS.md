@@ -22,7 +22,7 @@ this repo.
 - **Harness script interface inventory** — `INTERFACES.md`, generated from
   source. Fix the docstrings/argparse definitions when an interface
   changes, not the file directly. Regenerate with
-  `python3 claude/scripts/gen_interfaces.py`, or check for staleness with
+  `python3 agent-scripts/gen_interfaces.py`, or check for staleness with
   `--check` (exit 1 if stale — this is what the test suite asserts).
 - **User-facing command/behavior differences across harnesses** (Claude
   Code, Copilot, opencode, agy, Pi) — `README.md`.
@@ -43,7 +43,7 @@ change, and that cost is unbounded — each pass can surface more drift
 
 - **Actively maintained parity** — Claude Code, opencode, Pi. New skills get
   generated copies for all three; capability facts (`CAPABILITY_TABLE` in
-  `claude/scripts/gen_skills.py`, and its `gen_second_opinion.py` analog) get
+  `agent-scripts/gen_skills.py`, and its `gen_second_opinion.py` analog) get
   kept current for these three when touched.
 - **Best-effort** — Copilot, agy. Existing generated/hand-authored content
   for these stays as-is; new skills do **not** get copilot/agy copies by
@@ -63,8 +63,8 @@ not the rules themselves; the mechanics stay in the directory file.
 - **`test/`** — every test runs under a sandboxed `HOME` with real
   subprocess calls and production-path writes blocked. Read
   `test/AGENTS.md` before writing one.
-- **`claude/scripts/`** — standard library only, and the module docstrings
-  are generated source, not commentary. See `claude/scripts/AGENTS.md`.
+- **`agent-scripts/`** — standard library only, and the module docstrings
+  are generated source, not commentary. See `agent-scripts/AGENTS.md`.
 - **`pi/`** — a new extension is invisible until `links.toml` names it, and
   this is the only tree with its own TypeScript toolchain. See
   `pi/AGENTS.md`.

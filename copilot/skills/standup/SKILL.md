@@ -36,7 +36,7 @@ below go through `dev_status.py`.
 `skipped` lists every source that couldn't run (adapter not yet configured,
 no git repos set up, `work_backlog_prefixes` missing, etc.) with a reason.
 Tell the user what was skipped and why — don't silently produce a partial
-standup as if it were complete. See the repo's `claude/scripts/standup_adapters.py`
+standup as if it were complete. See the repo's `agent-scripts/standup_adapters.py`
 for wiring in a real adapter once a source is consistently skipped because
 the platform is now known.
 

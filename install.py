@@ -49,7 +49,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import NoReturn
 
-sys.path.insert(0, str(Path(__file__).resolve().parent / "claude" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parent / "agent-scripts"))
 
 import cli_common  # noqa: E402 — sibling dir inserted above
 

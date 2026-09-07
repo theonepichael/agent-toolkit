@@ -61,7 +61,7 @@ def test_readme_does_not_claim_pi_lacks_a_structured_prompt() -> None:
 
 
 def test_gen_second_opinion_comments_do_not_claim_pi_lacks_a_widget() -> None:
-    text = _read("claude/scripts/gen_second_opinion.py")
+    text = _read("agent-scripts/gen_second_opinion.py")
     assert "no structured multi-choice widget for Pi" not in text
 
 

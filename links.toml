@@ -115,121 +115,121 @@ src = "claude/icons"
 dest = "~/.claude/icons"
 
 [[link]]
-src = "claude/scripts/dev_status.py"
+src = "agent-scripts/dev_status.py"
 dest = "~/.claude/scripts/dev_status.py"
 
 [[link]]
-src = "claude/scripts/dev_status_impl.py"
+src = "agent-scripts/dev_status_impl.py"
 dest = "~/.claude/scripts/dev_status_impl.py"
 
 [[link]]
-src = "claude/scripts/sessionstart_checks.py"
+src = "agent-scripts/sessionstart_checks.py"
 dest = "~/.claude/scripts/sessionstart_checks.py"
 
 [[link]]
-src = "claude/scripts/seed_hook_subset_guard.py"
+src = "agent-scripts/seed_hook_subset_guard.py"
 dest = "~/.claude/scripts/seed_hook_subset_guard.py"
 
 [[link]]
-src = "claude/scripts/herdr_delegate.py"
+src = "agent-scripts/herdr_delegate.py"
 dest = "~/.claude/scripts/herdr_delegate.py"
 
 [[link]]
-src = "claude/scripts/cli_common.py"
+src = "agent-scripts/cli_common.py"
 dest = "~/.claude/scripts/cli_common.py"
 
 [[link]]
-src = "claude/scripts/llm_backends.py"
+src = "agent-scripts/llm_backends.py"
 dest = "~/.claude/scripts/llm_backends.py"
 
 [[link]]
-src = "claude/scripts/to_tickets_runner.py"
+src = "agent-scripts/to_tickets_runner.py"
 dest = "~/.claude/scripts/to_tickets_runner.py"
 
 [[link]]
-src = "claude/scripts/gen_shell_completion.py"
+src = "agent-scripts/gen_shell_completion.py"
 dest = "~/.claude/scripts/gen_shell_completion.py"
 
 [[link]]
-src = "claude/scripts/gen_interfaces.py"
+src = "agent-scripts/gen_interfaces.py"
 dest = "~/.claude/scripts/gen_interfaces.py"
 
 [[link]]
-src = "claude/scripts/gen_second_opinion.py"
+src = "agent-scripts/gen_second_opinion.py"
 dest = "~/.claude/scripts/gen_second_opinion.py"
 
 [[link]]
-src = "claude/scripts/gen_skills.py"
+src = "agent-scripts/gen_skills.py"
 dest = "~/.claude/scripts/gen_skills.py"
 
 [[link]]
-src = "claude/scripts/gen_skills_params.py"
+src = "agent-scripts/gen_skills_params.py"
 dest = "~/.claude/scripts/gen_skills_params.py"
 
 [[link]]
-src = "claude/scripts/repo_identity.py"
+src = "agent-scripts/repo_identity.py"
 dest = "~/.claude/scripts/repo_identity.py"
 
 [[link]]
-src = "claude/scripts/grill.py"
+src = "agent-scripts/grill.py"
 dest = "~/.claude/scripts/grill.py"
 
 [[link]]
-src = "claude/scripts/second_opinion.py"
+src = "agent-scripts/second_opinion.py"
 dest = "~/.claude/scripts/second_opinion.py"
 
 [[link]]
-src = "claude/scripts/standup.py"
+src = "agent-scripts/standup.py"
 dest = "~/.claude/scripts/standup.py"
 
 [[link]]
-src = "claude/scripts/standup_adapters.py"
+src = "agent-scripts/standup_adapters.py"
 dest = "~/.claude/scripts/standup_adapters.py"
 
 [[link]]
-src = "claude/scripts/outlook_email.py"
+src = "agent-scripts/outlook_email.py"
 dest = "~/.claude/scripts/outlook_email.py"
 
 [[link]]
-src = "claude/scripts/outlook_calendar.py"
+src = "agent-scripts/outlook_calendar.py"
 dest = "~/.claude/scripts/outlook_calendar.py"
 
 
 
 [[link]]
-src = "claude/scripts/dotfiles_sync_check.py"
+src = "agent-scripts/dotfiles_sync_check.py"
 dest = "~/.claude/scripts/dotfiles_sync_check.py"
 
 [[link]]
-src = "claude/scripts/settings_seed_drift_check.py"
+src = "agent-scripts/settings_seed_drift_check.py"
 dest = "~/.claude/scripts/settings_seed_drift_check.py"
 
 [[link]]
-src = "claude/scripts/harness_discovery_check.py"
+src = "agent-scripts/harness_discovery_check.py"
 dest = "~/.claude/scripts/harness_discovery_check.py"
 
 [[link]]
-src = "claude/scripts/link_drift_check.py"
+src = "agent-scripts/link_drift_check.py"
 dest = "~/.claude/scripts/link_drift_check.py"
 
 [[link]]
-src = "claude/scripts/vitals_promotion.py"
+src = "agent-scripts/vitals_promotion.py"
 dest = "~/.claude/scripts/vitals_promotion.py"
 
 [[link]]
-src = "claude/scripts/notify.py"
+src = "agent-scripts/notify.py"
 dest = "~/.claude/scripts/notify.py"
 
 [[link]]
-src = "claude/scripts/analyze_sessions.py"
+src = "agent-scripts/analyze_sessions.py"
 dest = "~/.claude/scripts/analyze_sessions.py"
 
 [[link]]
-src = "claude/scripts/guard_rails.py"
+src = "agent-scripts/guard_rails.py"
 dest = "~/.claude/scripts/guard_rails.py"
 
 [[link]]
-src = "claude/scripts/statusline.py"
+src = "agent-scripts/statusline.py"
 dest = "~/.claude/scripts/statusline.py"
 
 # ── GitHub Copilot CLI wiring ────────────────────────────────────────────

@@ -22,7 +22,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).parent))
 import harness_discovery_check as hdc
 
-REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _make_result(

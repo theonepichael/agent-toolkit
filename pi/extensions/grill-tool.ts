@@ -5,7 +5,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { getEffectiveCwd } from "./cwd";
 
-// Wraps claude/scripts/grill.py, following the pattern set by
+// Wraps agent-scripts/grill.py, following the pattern set by
 // dev-status-tool.ts (see ~/.claude/data/grill/pi-tool-dev-status-spec.md).
 //
 // Unlike dev_status.py, grill.py addresses sessions by slug or unique

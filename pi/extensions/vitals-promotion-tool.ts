@@ -5,7 +5,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { getEffectiveCwd } from "./cwd";
 
-// Wraps claude/scripts/vitals_promotion.py, following the pattern set by
+// Wraps agent-scripts/vitals_promotion.py, following the pattern set by
 // dev-status-tool.ts (see ~/.claude/data/grill/pi-tool-dev-status-spec.md).
 //
 // The script has no subcommands, only flags, so the two things a caller

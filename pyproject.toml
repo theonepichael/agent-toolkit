@@ -7,7 +7,7 @@ requires-python = ">=3.12"
 package = false
 
 [tool.pytest.ini_options]
-testpaths = ["test", "claude/scripts", "scripts"]
+testpaths = ["test", "agent-scripts", "scripts"]
 markers = [
     "allow_real_subprocess: permits real subprocess.Popen/subprocess.run calls in this test",
     "allow_production_paths: restores the real HOME (instead of the session sandbox) for this test",

@@ -5,7 +5,7 @@ import type { Plugin } from "@opencode-ai/plugin"
 
 const run = promisify(execFile)
 
-// The verdict logic lives in claude/scripts/guard_rails.py so all five
+// The verdict logic lives in agent-scripts/guard_rails.py so all five
 // harnesses share one source of truth; this plugin only adapts opencode's
 // shape to it. Note the asymmetry with the other harnesses: tool.execute.before
 // can throw or return, with nothing in between, so opencode has no channel for

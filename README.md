@@ -182,7 +182,7 @@ uv run pytest
 Check interface and skill documentation consistency:
 
 ```bash
-python3 claude/scripts/gen_interfaces.py --check
-python3 claude/scripts/gen_skills.py
-python3 claude/scripts/gen_second_opinion.py
+python3 agent-scripts/gen_interfaces.py --check
+python3 agent-scripts/gen_skills.py
+python3 agent-scripts/gen_second_opinion.py
 ```

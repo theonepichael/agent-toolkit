@@ -149,7 +149,7 @@ async function currentGitBranch(pi: ExtensionAPI, cwd: string): Promise<string |
 }
 
 // R2/R3 (main-checkout writes, stale worktree base) and the bash-family
-// core.hooksPath-override companion check live in claude/scripts/
+// core.hooksPath-override companion check live in agent-scripts/
 // guard_rails.py so all five harnesses share one source of truth. The rm -rf
 // / sudo / protected-path / git-commit rules above stay here: they need
 // ctx.ui.confirm(), which a subprocess cannot do. The git-commit-on-main
@@ -191,7 +191,7 @@ async function sharedGuard(
 }
 
 // Bash-family companion check (core.hooksPath override/redirect, --no-verify,
-// direct .git/config writes) -- see claude/scripts/guard_rails.py's module
+// direct .git/config writes) -- see agent-scripts/guard_rails.py's module
 // docstring for the full rule. Only fires on a protected branch; everywhere
 // else guard_rails.py itself allows without even needing the git-commit
 // blocking logic above, since the two checks are independent.

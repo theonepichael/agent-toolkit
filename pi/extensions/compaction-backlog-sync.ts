@@ -2,7 +2,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, SessionCompactEvent } from "@earendil-works/pi-coding-agent";
 
-// Wraps claude/scripts/dev_status.py's `update`, following the
+// Wraps agent-scripts/dev_status.py's `update`, following the
 // pi.exec/DEVSTATUS_AGENT pattern set by dev-status-tool.ts. See
 // ~/.claude/data/grill/pi-compaction-backlog-sync-spec.md for the full
 // design and ~/.claude/data/grill/pi-native-context-management-findings-critique-notes.md

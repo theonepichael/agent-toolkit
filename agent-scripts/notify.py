@@ -29,7 +29,7 @@ from pathlib import Path
 
 import cli_common
 
-ICONS_DIR = Path(__file__).resolve().parent.parent / "icons"
+ICONS_DIR = Path(__file__).resolve().parent.parent / "claude" / "icons"
 
 APP_REGISTRATIONS = {
     "claude": {"id": "Agent.Claude", "name": "Claude Code", "icon": "claude.png"},

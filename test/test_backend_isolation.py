@@ -24,7 +24,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO_ROOT / "claude" / "scripts"))
+sys.path.insert(0, str(REPO_ROOT / "agent-scripts"))
 
 import llm_backends  # noqa: E402
 

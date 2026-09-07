@@ -5,7 +5,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { getEffectiveCwd } from "./cwd";
 
-// Wraps claude/scripts/standup.py, following the pattern set by
+// Wraps agent-scripts/standup.py, following the pattern set by
 // dev-status-tool.ts (see ~/.claude/data/grill/pi-tool-dev-status-spec.md).
 //
 // Scoped to `fetch` only. standup.md also calls dev_status.py for its
