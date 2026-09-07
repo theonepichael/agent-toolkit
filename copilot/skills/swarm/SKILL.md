@@ -99,6 +99,20 @@ If raising `--lines` reveals no more of a finished response, the agent is on
 the terminal's alternate screen and those rows never entered scrollback. Ask it
 to write its answer to a file and read that instead.
 
+### Stopping a working orchestrator is not preemptive
+
+A stop instruction sent with `herdr agent prompt <agent-name> "stop ..."`
+only queues behind whatever tool call the orchestrator has already committed
+to — it cannot preempt one. If the orchestrator is mid-`swarm_spawn` when the
+stop lands in its queue, that spawn still executes and the workers it fanned
+out are real. Treat a stop prompt as a request the orchestrator reads after
+its current tool call, never as a hard stop: after sending one, confirm
+nothing unwanted actually happened — `herdr agent list` for tabs that did not
+exist before, or a fresh read of the orchestrator's pane — before assuming
+the stop took effect. This lost a race on 2026-09-07: a stop sent while the
+orchestrator's spawn reasoning was in flight arrived too late, and two
+workers spawned against a prefix the user had already ruled out.
+
 ## 5. Report
 
 Give the user the tab id, pane id, agent name, and what it is working. Verify
