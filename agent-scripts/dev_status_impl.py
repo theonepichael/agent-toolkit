@@ -380,6 +380,138 @@ def _is_pid_alive(pid: int) -> bool:
         return True
 
 
+def _proc_info(pid: int) -> tuple[int, str] | None:
+    """Return (ppid, space-joined cmdline) for pid, or None if unreadable.
+
+    Linux reads /proc/<pid>/stat (ppid is field 4, split after the closing
+    paren because comm may contain spaces) and /proc/<pid>/cmdline
+    (NUL-delimited). An empty cmdline (e.g. a zombie process) comes back as
+    (ppid, "") — still walkable via ppid, but not owner-eligible. Off-Linux,
+    falls back to `ps -o ppid= -o command=`.
+    """
+    result: tuple[int, str] | None = None
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+        fields = stat[stat.rfind(")") + 2 :].split()
+        ppid = int(fields[1])
+        cmdline = (
+            Path(f"/proc/{pid}/cmdline")
+            .read_bytes()
+            .replace(b"\x00", b" ")
+            .decode("utf-8", "replace")
+            .strip()
+        )
+        result = (ppid, cmdline)
+    except (OSError, ValueError, IndexError):
+        result = None
+    if result is not None:
+        return result
+    try:
+        res = subprocess.run(
+            ["ps", "-o", "ppid=", "-o", "command=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+        if res.returncode != 0:
+            return None
+        parts = res.stdout.strip().split(None, 1)
+        if len(parts) != 2:
+            return None
+        return (int(parts[0]), parts[1].strip())
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
+_SHELL_BASENAMES = {"sh", "bash", "zsh", "dash", "ksh", "fish", "csh", "tcsh"}
+# Processes that outlive any single pane/session: never owner-eligible, and
+# the walk ends when it would step past one. The interactive-shell stop below
+# is the primary containment; this set is the belt-and-braces backstop for
+# chains with no interactive shell below the daemon.
+_DAEMON_BASENAMES = {
+    "tmux",
+    "screen",
+    "herdr",
+    "sshd",
+    "systemd",
+    "login",
+    "ssh-agent",
+    "containerd",
+    "dockerd",
+}
+_OWNER_HOP_CAP = 10
+_ANCESTOR_CMD_MAX = 120
+
+
+def _argv0_basename(cmd: str) -> str:
+    """Basename of a cmdline's first token, stripping a leading login dash."""
+    argv0 = cmd.split(" ", 1)[0].strip()
+    argv0 = argv0.removeprefix("-")
+    return os.path.basename(argv0)
+
+
+def _find_owner_pid(
+    start_pid: int | None = None,
+) -> tuple[int, list[dict[str, object]]]:
+    """Find the session-owner PID for a claim, walking the ancestor chain.
+
+    The invoking process (this script) is short-lived, so its own pid dies
+    within seconds of the claim being written — a live session then reads as
+    dead. The durable anchor is an ancestor: the nearest process that is
+    neither an ephemeral subshell (a shell invoked with -c) nor a daemon,
+    bounded by the first interactive shell (pane/login shell) or a daemon /
+    pid-1 boundary. If a harness process (pi, claude, agy, ...) sits between
+    the child and that boundary, it is the owner — it dies with the actual
+    agent session, which is more precise than the pane shell. With nothing
+    non-shell in between (bare CLI), the interactive shell itself is the
+    owner. Falls back to the invoking pid when the chain yields nothing
+    usable, which is exactly the pre-change behavior.
+
+    Returns (owner_pid, ancestors) — ancestors is the walked chain from the
+    child up to and including the owner (bounded, cmds truncated), kept for
+    incident forensics.
+    """
+    pid = start_pid if start_pid is not None else os.getpid()
+    seen: list[tuple[int, str]] = []
+    candidates: list[int] = []
+    owner: int | None = None
+    cur = pid
+    for _ in range(_OWNER_HOP_CAP):
+        info = _proc_info(cur)
+        if info is None:
+            break
+        ppid, cmd = info
+        seen.append((cur, cmd))
+        at_boundary = ppid <= 1
+        if cmd:
+            base = _argv0_basename(cmd)
+            if base in _DAEMON_BASENAMES:
+                break
+            if base in _SHELL_BASENAMES:
+                if "-c" in cmd.split()[1:]:
+                    if at_boundary:
+                        break
+                    cur = ppid  # ephemeral tool-runner subshell: skip
+                    continue
+                if not candidates:
+                    owner = cur  # bare CLI: the pane/login shell itself
+                break  # interactive shell: pane/session boundary; stop upward
+            if cur != pid:  # the invoking process itself is never owner-eligible
+                candidates.append(cur)
+        if at_boundary:
+            break
+        cur = ppid
+    if owner is None:
+        owner = candidates[0] if candidates else pid
+    owner_cmd = next((c for p, c in seen if p == owner), "")
+    kept = seen[:4]
+    ancestors = [{"pid": p, "cmd": c[:_ANCESTOR_CMD_MAX]} for p, c in kept]
+    if owner != pid and all(a["pid"] != owner for a in ancestors):
+        ancestors.append({"pid": owner, "cmd": owner_cmd[:_ANCESTOR_CMD_MAX]})
+    return owner, ancestors
+
+
 def machine_id() -> str:
     """Return this machine's stable short id, creating it on first use.
 
@@ -407,13 +539,22 @@ _machine_id = machine_id
 
 
 def _make_claim(harness: str | None = None) -> dict[str, object]:
-    """Create a fresh claim dictionary for the current session."""
+    """Create a fresh claim dictionary for the current session.
+
+    `pid` is the short-lived invoking process; `owner_pid` is the durable
+    session anchor found by walking the ancestor chain — liveness checks
+    use the owner, never the child, so a live harness session no longer
+    reads as dead once this process exits.
+    """
     h = _detect_harness(harness)
     now_iso = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    owner_pid, ancestors = _find_owner_pid()
     return {
         "harness": h,
         "machine_id": machine_id(),
         "pid": os.getpid(),
+        "owner_pid": owner_pid,
+        "ancestors": ancestors,
         "claimed_at": now_iso,
         "last_active": now_iso,
     }
@@ -469,6 +610,7 @@ def _check_claim_collision(
     current_pid: int,
     force: bool = False,
     quiet: bool = False,
+    current_owner_pid: int = 0,
 ) -> None:
     """Refuse start if item is already actively claimed by another session."""
     claim = cast(dict[str, object], item.get("claimed_by"))
@@ -477,6 +619,9 @@ def _check_claim_collision(
     claim_harness = str(claim.get("harness", "unknown"))
     claim_machine = str(claim.get("machine_id", ""))
     claim_pid = int(claim.get("pid") or 0) if str(claim.get("pid", "")).isdigit() else 0
+    claim_owner_pid = (
+        int(claim.get("owner_pid")) if str(claim.get("owner_pid", "")).isdigit() else 0
+    )
     claim_last_active = str(claim.get("last_active") or claim.get("claimed_at") or "")
 
     if force:
@@ -488,6 +633,28 @@ def _check_claim_collision(
         and current_pid > 0
     ):
         return
+
+    # Owner-anchored claims: the owner PID, not the ephemeral child pid, is
+    # the liveness anchor — and a matching owner means the same session is
+    # re-entering, not a collision.
+    if claim_machine == current_machine and claim_owner_pid > 0:
+        if claim_owner_pid == current_owner_pid and current_owner_pid > 0:
+            return
+        if _is_pid_alive(claim_owner_pid):
+            print(
+                f"[start] {item.get('id', '?')} is actively claimed by {claim_harness} "
+                f"(PID {claim_owner_pid} on this machine). Use --force to take over the claim.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        else:
+            if not _agent_quiet() and not quiet:
+                print(
+                    f"[start] Previous claim by {claim_harness} (PID {claim_owner_pid}) is dead. "
+                    "Taking over claim.",
+                    file=sys.stderr,
+                )
+            return
 
     if claim_machine == current_machine and claim_pid > 0:
         if _is_pid_alive(claim_pid):
@@ -3465,6 +3632,7 @@ def cmd_start(args: argparse.Namespace) -> None:
             current_harness=_detect_harness(getattr(args, "claimed_by", None)),
             current_machine=_machine_id(),
             current_pid=os.getpid(),
+            current_owner_pid=_find_owner_pid()[0],
             force=bool(getattr(args, "force", False)),
             quiet=args.quiet,
         )

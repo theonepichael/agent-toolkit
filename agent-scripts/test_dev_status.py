@@ -5910,5 +5910,243 @@ class ThinLauncherTests(unittest.TestCase):
         )
 
 
+# ── owner-pid claim anchoring ─────────────────────────────────────────────────
+
+
+def _chain_patch(chain: dict[int, tuple[int, str]]):
+    """Patch dev_status._proc_info with a fake process table.
+
+    chain maps pid -> (ppid, cmdline). Pids absent from the map are unreadable
+    (None), same as a dead or deleted process.
+    """
+
+    def fake(pid: int) -> tuple[int, str] | None:
+        return chain.get(pid)
+
+    return patch.object(dev_status, "_proc_info", side_effect=fake)
+
+
+class OwnerPidClaimTestCase(BacklogFixture):
+    """Claims must anchor to a session-owner PID, not the ephemeral CLI child.
+
+    Regression: _make_claim used to record the short-lived python child's
+    pid, so any later liveness check (internal takeover logic or an external
+    `ps -p`) read a live session as dead and a concurrent session wrongly
+    took over the claim.
+    """
+
+    def test_owner_is_harness_between_child_and_pane_shell(self):
+        # python child -> pi -> zsh (interactive pane shell) -> herdr server.
+        # The walk must stop at the interactive shell and pick pi (the
+        # nearest non-shell below it) -- never the child, never the daemon.
+        chain = {
+            5000: (4900, "python3 dev_status.py start"),
+            4900: (4800, "pi"),
+            4800: (100, "zsh"),
+            100: (1, "herdr server"),
+        }
+        with _chain_patch(chain):
+            owner, ancestors = dev_status._find_owner_pid(5000)
+        self.assertEqual(owner, 4900)
+        self.assertIn(owner, [a["pid"] for a in ancestors])
+        self.assertNotIn(100, [a["pid"] for a in ancestors])
+
+    def test_ephemeral_subshell_skipped(self):
+        # python child -> bash -c (ephemeral tool-runner) -> claude -> zsh.
+        chain = {
+            5000: (4900, "python3 dev_status.py start"),
+            4900: (4800, "bash -c 'python3 dev_status.py start'"),
+            4800: (4700, "claude"),
+            4700: (1, "zsh"),
+        }
+        with _chain_patch(chain):
+            owner, _ancestors = dev_status._find_owner_pid(5000)
+        self.assertEqual(owner, 4800)
+
+    def test_bare_cli_owner_is_interactive_shell(self):
+        # python child -> zsh (interactive login shell). No harness sits
+        # between, so the pane/login shell itself is the owner.
+        chain = {
+            5000: (4900, "python3 dev_status.py start"),
+            4900: (1, "zsh"),
+        }
+        with _chain_patch(chain):
+            owner, _ancestors = dev_status._find_owner_pid(5000)
+        self.assertEqual(owner, 4900)
+
+    def test_walk_never_anchors_to_daemon(self):
+        # python child -> tmux directly (no interactive shell below it). A
+        # daemon spans panes, so the walk must end there and fall back.
+        chain = {
+            5000: (4900, "python3 dev_status.py start"),
+            4900: (4800, "tmux new -s sess"),
+            4800: (1, "init"),
+        }
+        with _chain_patch(chain):
+            owner, _ancestors = dev_status._find_owner_pid(5000)
+        self.assertEqual(owner, 5000)
+
+    def test_orphan_chain_falls_back_to_own_pid(self):
+        with _chain_patch({}):  # nothing readable
+            owner, _ancestors = dev_status._find_owner_pid(5000)
+        self.assertEqual(owner, 5000)
+
+    def test_zombie_midchain_skipped_walk_continues(self):
+        # An ancestor with an empty cmdline (zombie) is never owner-eligible
+        # but must not end the walk: pi above it is still chosen.
+        chain = {
+            5000: (4900, "python3 dev_status.py start"),
+            4900: (4800, ""),
+            4800: (100, "pi"),
+            100: (1, "zsh"),
+        }
+        with _chain_patch(chain):
+            owner, _ancestors = dev_status._find_owner_pid(5000)
+        self.assertEqual(owner, 4800)
+
+    def test_hop_cap_ends_walk(self):
+        chain = {5000: (5001, "python3 a"), 5001: (5002, "python3 b")}
+        for i in range(2, 12):
+            chain[5000 + i] = (5001 + i, "python3 wrapper")
+        chain[5012] = (1, "init")
+        with _chain_patch(chain):
+            owner, _ancestors = dev_status._find_owner_pid(5000)
+        # Cap hit mid-chain: usable candidates found before it still win
+        # (nearest first); only a cap hit with no candidates falls back.
+        self.assertEqual(owner, 5001)
+
+    def test_make_claim_shape_invariants(self):
+        claim = dev_status._make_claim()
+        self.assertEqual(claim["pid"], os.getpid())
+        owner_pid = claim["owner_pid"]
+        self.assertIsInstance(owner_pid, int)
+        self.assertGreater(owner_pid, 0)
+        ancestors = claim["ancestors"]
+        self.assertIsInstance(ancestors, list)
+        self.assertLessEqual(len(ancestors), 5)
+        for entry in ancestors:
+            self.assertLessEqual(len(entry["cmd"]), 120)
+        self.assertIn(owner_pid, [a["pid"] for a in ancestors])
+
+    def _write_claimed_item(self, claim):
+        now_iso = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        claim.setdefault("claimed_at", now_iso)
+        claim.setdefault("last_active", now_iso)
+        self.write_items([make_item("task-a", status="in-progress")])
+        items = dev_status.load_items()
+        items[0]["claimed_by"] = claim
+        self.write_items(items)
+
+    @patch("dev_status._check_worktree_guard")
+    def test_collision_alive_owner_refuses(self, mock_wt):
+        now_iso = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self._write_claimed_item(
+            {
+                "harness": "pi",
+                "machine_id": dev_status.machine_id(),
+                "pid": 888888,
+                "owner_pid": 999999,
+                "claimed_at": now_iso,
+                "last_active": now_iso,
+            }
+        )
+        with patch("dev_status._is_pid_alive", return_value=True):
+            with self.assertRaises(SystemExit) as ctx:
+                dev_status.cmd_start(_args(id="task-a", claimed_by="claude"))
+        self.assertEqual(ctx.exception.code, 1)
+
+    @patch("dev_status._check_worktree_guard")
+    def test_collision_dead_owner_takeover(self, mock_wt):
+        now_iso = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self._write_claimed_item(
+            {
+                "harness": "pi",
+                "machine_id": dev_status.machine_id(),
+                "pid": 888888,
+                "owner_pid": 999999,
+                "claimed_at": now_iso,
+                "last_active": now_iso,
+            }
+        )
+        with patch("dev_status._is_pid_alive", return_value=False):
+            dev_status.cmd_start(_args(id="task-a", claimed_by="claude"))
+        items = dev_status.load_items()
+        self.assertEqual(items[0]["claimed_by"]["harness"], "claude")
+
+    @patch("dev_status._check_worktree_guard")
+    def test_collision_legacy_claim_uses_pid(self, mock_wt):
+        # A pre-existing claim without owner_pid must keep the old behavior.
+        now_iso = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self._write_claimed_item(
+            {
+                "harness": "pi",
+                "machine_id": dev_status.machine_id(),
+                "pid": 999999,
+                "claimed_at": now_iso,
+                "last_active": now_iso,
+            }
+        )
+        with patch("dev_status._is_pid_alive", return_value=True):
+            with self.assertRaises(SystemExit) as ctx:
+                dev_status.cmd_start(_args(id="task-a", claimed_by="claude"))
+        self.assertEqual(ctx.exception.code, 1)
+        with patch("dev_status._is_pid_alive", return_value=False):
+            dev_status.cmd_start(_args(id="task-a", claimed_by="claude"))
+        items = dev_status.load_items()
+        self.assertEqual(items[0]["claimed_by"]["harness"], "claude")
+
+    @patch("dev_status._check_worktree_guard")
+    def test_collision_same_owner_allows_same_session(self, mock_wt):
+        now_iso = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        current_owner = dev_status._find_owner_pid()[0]
+        self._write_claimed_item(
+            {
+                "harness": "pi",
+                "machine_id": dev_status.machine_id(),
+                "pid": 888888,
+                "owner_pid": current_owner,
+                "claimed_at": now_iso,
+                "last_active": now_iso,
+            }
+        )
+        # Same owner -> same session: allowed without even consulting
+        # liveness (not patched here on purpose).
+        dev_status.cmd_start(_args(id="task-a", claimed_by="claude"))
+        items = dev_status.load_items()
+        self.assertEqual(items[0]["claimed_by"]["harness"], "claude")
+
+
+def _owner_subprocess_code(scripts: Path) -> str:
+    return (
+        "import json,sys;"
+        f"sys.path.insert(0, {str(scripts)!r});"
+        "import dev_status;"
+        "print(json.dumps(dev_status._find_owner_pid()))"
+    )
+
+
+class OwnerPidSubprocessTestCase(unittest.TestCase):
+    """Real-subprocess check, outside BacklogFixture (which mocks Popen)."""
+
+    @pytest.mark.allow_real_subprocess
+    def test_subprocess_owner_outlives_child(self):
+        # The core regression: a claim recorded from a subprocess invocation
+        # must name an owner that is still alive after the child exits, and
+        # that owner must not be the child itself.
+        scripts = Path(__file__).parent
+        proc = subprocess.Popen(
+            [sys.executable, "-c", _owner_subprocess_code(scripts)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        out, err = proc.communicate(timeout=30)
+        self.assertEqual(proc.returncode, 0, err)
+        owner, ancestors = json.loads(out)
+        self.assertNotEqual(owner, proc.pid)
+        self.assertTrue(dev_status._is_pid_alive(owner))
+        self.assertIn(owner, [a["pid"] for a in ancestors])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
