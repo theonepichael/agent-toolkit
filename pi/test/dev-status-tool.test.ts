@@ -135,6 +135,14 @@ describe("buildArgv", () => {
         timeout: 60,
       }),
     ).toEqual(["run", "abc", "--timeout", "60", "--", "pytest", "-q"]);
+    expect(
+      buildArgv("run", {
+        action: "run",
+        slug: "abc",
+        command: ["pytest", "-q"],
+        cwd: "/path/to/repo",
+      }),
+    ).toEqual(["run", "abc", "--cwd", "/path/to/repo", "--", "pytest", "-q"]);
     expect(buildArgv("runs", { action: "runs", slug: "abc" })).toEqual(["runs", "abc"]);
   });
 

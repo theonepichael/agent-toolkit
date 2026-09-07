@@ -5452,6 +5452,74 @@ class RunEvidenceTestCase(BacklogFixture):
         datetime.fromisoformat(row["started_at"])
         self.assertRegex(row["run_id"], r"^[0-9a-f]{32}$")
 
+    def test_run_with_explicit_cwd(self):
+        self.write_items([make_item("gt-item")])
+        target_dir = Path(self.tmpdir) / "target_sub"
+        target_dir.mkdir()
+        fake = MagicMock(return_value=MagicMock(returncode=0))
+        with patch("subprocess.run", fake) as m:
+            dev_status.cmd_run(
+                _args(
+                    id="gt-item",
+                    command=["pytest", "-q"],
+                    timeout=60,
+                    cwd=str(target_dir),
+                )
+            )
+        m.assert_called_once()
+        self.assertEqual(m.call_args.kwargs["cwd"], str(target_dir.resolve()))
+        row = self._read_runs()[0]
+        self.assertEqual(row["cwd"], str(target_dir.resolve()))
+
+    def test_run_with_invalid_cwd_fails(self):
+        self.write_items([make_item("gt-item")])
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+            dev_status.cmd_run(
+                _args(
+                    id="gt-item",
+                    command=["pytest", "-q"],
+                    timeout=60,
+                    cwd="/nonexistent/path/here",
+                )
+            )
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("not a directory", err.getvalue())
+
+    def test_run_derives_cwd_from_related_files(self):
+        repo_root = Path(self.tmpdir) / "my_project"
+        repo_root.mkdir()
+        file_path = repo_root / "src" / "app.py"
+        file_path.parent.mkdir()
+        file_path.touch()
+        item = make_item(
+            "gt-item",
+            related_files=[{"path": str(file_path), "note": "entry point"}],
+        )
+        self.write_items([item])
+
+        def fake_subprocess_run(cmd, *args, **kwargs):
+            if isinstance(cmd, list) and cmd[:2] == ["git", "-C"]:
+                mock_res = MagicMock()
+                mock_res.returncode = 0
+                mock_res.stdout = f"{repo_root.resolve()}\n"
+                return mock_res
+            return MagicMock(returncode=0)
+
+        with patch("subprocess.run", side_effect=fake_subprocess_run) as m:
+            dev_status.cmd_run(
+                _args(id="gt-item", command=["pytest", "-q"], timeout=60)
+            )
+        row = self._read_runs()[0]
+        self.assertEqual(row["cwd"], str(repo_root.resolve()))
+
+    def test_run_parser_accepts_cwd_flag(self):
+        args = dev_status.build_parser().parse_args(
+            ["run", "gt-item", "--cwd", "/tmp", "--", "pytest", "-q"]
+        )
+        self.assertEqual(args.cwd, "/tmp")
+        self.assertEqual(args.command, ["pytest", "-q"])
+
     def test_run_scrubs_devstatus_agent_from_the_child_environment(self):
         """Found via live dogfooding, not a code-review guess: `DEVSTATUS_AGENT=1
         dev_status.py run <item> -- uv run pytest -q` (a natural thing to type,

@@ -179,9 +179,10 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `gate-pass <slug|N> ['{"coverage": {"1": "run:<run_id>" | "manual:<note>"}}'] [--if-rev <N>]` — record that an item's gate criteria are satisfied
     - `json` — per-criterion coverage: run evidence or a manual note per criterion (nargs: ?)
     - `--if-rev` — required when <id> is numeric; get the current value from render/list/show immediately before this call
-  - `run <slug|N> [--if-rev <N>] [--timeout SECONDS] -- <command...>` — execute a command and record it as run evidence for an item
+  - `run <slug|N> [--if-rev <N>] [--timeout SECONDS] [--cwd PATH] -- <command...>` — execute a command and record it as run evidence for an item
     - `--if-rev` — required when <id> is numeric; get the current value from render/list/show immediately before this call
     - `--timeout` — kill the command after this many seconds (default: 1800) (default: 1800.0)
+    - `--cwd` — working directory for command execution (defaults to repo root of item's related_files, or session cwd)
     - `command` — command to execute and record (everything after --; no shell) (nargs: *)
   - `runs <slug|N>` — list recorded run evidence for an item
   - `backfill-gate [--apply]` — stamp an explicit inert gate on legacy items

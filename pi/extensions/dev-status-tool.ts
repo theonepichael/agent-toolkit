@@ -66,7 +66,8 @@ export type Field =
   | "backend"
   | "reasonFile"
   | "command"
-  | "timeout";
+  | "timeout"
+  | "cwd";
 
 interface ActionFields {
   readonly allowed: readonly Field[];
@@ -91,7 +92,7 @@ const ACTION_FIELDS: Record<Action, ActionFields> = {
   reject: { allowed: ["slug", "feedback"], required: ["slug", "feedback"] },
   gate_set: { allowed: ["slug", "patch"], required: ["slug", "patch"] },
   gate_pass: { allowed: ["slug", "patch"], required: ["slug"] },
-  run: { allowed: ["slug", "command", "timeout"], required: ["slug", "command"] },
+  run: { allowed: ["slug", "command", "timeout", "cwd"], required: ["slug", "command"] },
   runs: { allowed: ["slug"], required: ["slug"] },
   backfill_gate: { allowed: ["apply"], required: [] },
   rename: { allowed: ["slug", "secondarySlug"], required: ["slug", "secondarySlug"] },
@@ -166,6 +167,7 @@ export interface DevStatusParams {
   reasonFile?: string;
   command?: string[];
   timeout?: number;
+  cwd?: string;
 }
 
 export function assertNotNumericIdentity(action: Action, params: DevStatusParams): void {
@@ -253,6 +255,7 @@ export function buildArgv(action: Action, params: DevStatusParams): string[] {
         "run",
         params.slug!,
         ...(params.timeout ? ["--timeout", String(params.timeout)] : []),
+        ...(params.cwd ? ["--cwd", params.cwd] : []),
         "--",
         ...params.command!,
       ];
@@ -386,6 +389,12 @@ export default function (pi: ExtensionAPI) {
       timeout: Type.Optional(
         Type.Number({
           description: "run: kill the command after this many seconds (default 1800).",
+        }),
+      ),
+      cwd: Type.Optional(
+        Type.String({
+          description:
+            "run: working directory for command execution (defaults to repo root of item's related_files, or session cwd).",
         }),
       ),
     }),

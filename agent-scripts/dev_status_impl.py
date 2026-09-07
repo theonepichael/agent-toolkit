@@ -1585,6 +1585,85 @@ def _repo_name_for_path(path: str) -> str | None:
     return Path(common).parent.name or None
 
 
+def _repo_root_for_path(path: str) -> Path | None:
+    """Resolve a file or directory path to its enclosing git repository/worktree root.
+
+    Uses ``git rev-parse --show-toplevel`` so inside a worktree, the worktree
+    root itself is returned (where work is actually being executed), not the
+    parent repo. Returns None if path does not exist, git fails, or path is
+    not in a git repository.
+    """
+    candidate = Path(path).expanduser()
+    start: Path | None = None
+    if candidate.is_dir():
+        start = candidate
+    else:
+        for ancestor in candidate.parents:
+            if ancestor.is_dir():
+                start = ancestor
+                break
+    if start is None:
+        return None
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(start),
+                "rev-parse",
+                "--path-format=absolute",
+                "--show-toplevel",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    top = result.stdout.strip()
+    if not top:
+        return None
+    p = Path(top)
+    return p if p.is_dir() else None
+
+
+def _derive_run_cwd(item: BacklogItem | None, explicit_cwd: str | None) -> Path:
+    """Determine the working directory for a command run under ``dev_status run``.
+
+    Order of precedence:
+    1. Explicit ``--cwd <path>`` passed on the CLI. If given but invalid/not a
+       directory, exits with code 1.
+    2. Enclosing git repository / worktree root of the first entry in the item's
+       ``related_files`` that resolves via :func:`_repo_root_for_path`.
+    3. The current session working directory (:func:`Path.cwd`).
+    """
+    if explicit_cwd is not None:
+        p = Path(explicit_cwd).expanduser().resolve()
+        if not p.is_dir():
+            print(
+                f"[run] specified cwd '{explicit_cwd}' is not a directory",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        return p
+
+    if item is not None:
+        for entry in item.get("related_files", []):
+            if not isinstance(entry, Mapping):
+                continue
+            raw = str(entry.get("path", "")).strip()
+            if not raw:
+                continue
+            repo_root = _repo_root_for_path(raw)
+            if repo_root is not None and repo_root.is_dir():
+                return repo_root
+
+    return Path.cwd()
+
+
 def _prefix_check_reminder(
     item: BacklogItem,
     *,
@@ -4120,6 +4199,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         )
         kind, slug = resolve_id(args.id, items, pending_items)
         require_kind("run", args.id, kind, "backlog")
+        item = build_index(items).get(slug)
     # argparse's native "--" handling (see the parser's nargs="*" comment)
     # already strips a leading "--" separator, so args.command is the
     # command as typed -- no manual stripping here, which would otherwise
@@ -4131,6 +4211,9 @@ def cmd_run(args: argparse.Namespace) -> None:
             file=sys.stderr,
         )
         sys.exit(1)
+
+    explicit_cwd = getattr(args, "cwd", None)
+    run_cwd = _derive_run_cwd(item, explicit_cwd)
 
     # DEVSTATUS_AGENT scrubbed from the child's environment: CLAUDE.md's own
     # convention has agents prefix it on dev_status.py mutating calls
@@ -4147,7 +4230,12 @@ def cmd_run(args: argparse.Namespace) -> None:
     started_at = datetime.now(UTC).isoformat()
     start_mono = time.monotonic()
     try:
-        proc = subprocess.run(command, timeout=args.timeout, env=child_env)
+        proc = subprocess.run(
+            command,
+            timeout=args.timeout,
+            env=child_env,
+            cwd=str(run_cwd),
+        )
         exit_code: int | None = proc.returncode
         timed_out = False
     except subprocess.TimeoutExpired:
@@ -4166,7 +4254,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         "timed_out": timed_out,
         "started_at": started_at,
         "duration_s": duration_s,
-        "cwd": os.getcwd(),
+        "cwd": str(run_cwd),
     }
     with backlog_lock():
         appended = append_run_record(record)
@@ -5189,6 +5277,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=1800.0,
         metavar="SECONDS",
         help="kill the command after this many seconds (default: 1800)",
+    )
+    p.add_argument(
+        "--cwd",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help="working directory for command execution (defaults to repo root of item's related_files, or session cwd)",
     )
     p.add_argument(
         "command",

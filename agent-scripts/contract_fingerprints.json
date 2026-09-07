@@ -98,6 +98,7 @@
     "arg rename old_slug: ",
     "arg review --if-rev: \u2014 required when <id> is numeric; get the current value from render/list/show immediately before this call",
     "arg review id: ",
+    "arg run --cwd: \u2014 working directory for command execution (defaults to repo root of item's related_files, or session cwd)",
     "arg run --if-rev: \u2014 required when <id> is numeric; get the current value from render/list/show immediately before this call",
     "arg run --timeout: \u2014 kill the command after this many seconds (default: 1800) (default: 1800.0)",
     "arg run command: \u2014 command to execute and record (everything after --; no shell) (nargs: *)",
