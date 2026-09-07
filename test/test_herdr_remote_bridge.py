@@ -65,7 +65,7 @@ async def fake_server(tmp_path):
 
 @pytest.fixture()
 async def client(config, fake_server):
-    app = bridge.create_app(config, HerdrClient(config.socket_path))
+    app = bridge.create_app(config, HerdrClient(config.socket_path), version="test-sha")
     server = TestServer(app)
     tc = TestClient(server)
     await tc.start_server()
@@ -182,7 +182,12 @@ async def test_prompt_ok_and_empty_text_rejected(client):
 async def test_health_reports_herdr_reachable(client):
     resp = await client.get("/api/health", headers=AUTH)
     assert resp.status == 200
-    assert (await resp.json())["herdr"] is True
+    body = await resp.json()
+    assert body["herdr"] is True
+    # Lets a redeploy that only restarts the bridge (or only syncs the PWA
+    # assets) be caught by comparing this against the deployed frontend's
+    # own build marker, instead of only reproducible by a live symptom.
+    assert body["version"] == "test-sha"
 
 
 async def _next_sse_event(
