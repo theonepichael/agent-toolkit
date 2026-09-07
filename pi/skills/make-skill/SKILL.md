@@ -36,8 +36,8 @@ step needs splitting or stronger steering — not more prose.
 
 ## 5. Plumbing (house convention)
 
-1. File lives at the repo's `pi/skills/<name>/SKILL.md` (same for any reference files, under the repo's `pi/skills/<name>/references/`). `pi/skills` is already wired into `links.toml` as one `dir = true` row and into `pi/settings.json`'s `skills` array — a new file under it needs no new `links.toml` row of its own, just the file.
-2. If this skill should also be shared with agy (a skill agy itself should offer, not just Pi), author it at `agy/skills/<name>/SKILL.md` instead and follow agy's own plumbing steps — Pi still falls back to `agy/skills/` (`pi/settings.json`) for anything not under `pi/skills/`.
+1. File lives at the repo's `pi/skills/<name>/SKILL.md` (same for any reference files, under the repo's `pi/skills/<name>/references/`). `pi/skills` is already wired into `links.toml` as one `dir = true` row, symlinked straight to `~/.pi/agent/skills/` — a new file under it needs no new `links.toml` row of its own, just the file.
+2. If this skill should also be shared with agy (a skill agy itself should offer, not just Pi), separately author it at `agy/skills/<name>/SKILL.md` too and follow agy's own plumbing steps — the two are independent files, not a shared one.
 3. Conventional commit, scope `pi` (or `agy`, if authored there instead): `feat` for a new skill, `refactor`/`docs` for revisions.
 
 ## 6. Pruning (every revision, not just creation)

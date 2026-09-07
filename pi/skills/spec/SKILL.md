@@ -47,5 +47,5 @@ Once verification passes (or is stopped-and-reported), ask in plain text with a 
 
 ## 7. Plumbing (house convention)
 
-1. File lives at the repo's `pi/skills/spec/SKILL.md`. `pi/skills` is already wired into `links.toml` as one `dir = true` row and into `pi/settings.json`'s `skills` array — a new file under it needs no new `links.toml` row of its own, just the file.
+1. File lives at the repo's `pi/skills/spec/SKILL.md`. `pi/skills` is already wired into `links.toml` as one `dir = true` row, symlinked straight to `~/.pi/agent/skills/` — a new file under it needs no new `links.toml` row of its own, just the file.
 2. Conventional commit, scope `pi`: `feat`.
