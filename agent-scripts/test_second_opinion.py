@@ -27,6 +27,7 @@ from unittest.mock import patch
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
+import llm_backends  # noqa: E402
 import second_opinion
 
 # The eight model/pool variables that must be isolated from the host so tests
@@ -1422,6 +1423,138 @@ class ResolveTimeoutTests(unittest.TestCase):
             )
 
 
+class OpencodeTimeoutFloorTests(unittest.TestCase):
+    """opencode's per-backend timeout floor (2026-09-07): measured opencode
+    critique latency is 200-270s per real plan regardless of payload size
+    (see meta-agent-toolkit-reconcile-drift-spec-critique-notes.md), so the
+    flat 120s default timed out on essentially every real critique and the
+    failure read as a backend outage. The floor is a floor: a lower global
+    default (explicit or not) must not drop opencode below it, an explicit
+    per-backend override still wins, and everything stays clamped to the
+    hard ceiling."""
+
+    def _clear_timeout_vars(self) -> None:
+        for var in (
+            "SECOND_OPINION_TIMEOUT_SECONDS",
+            "SECOND_OPINION_AGY_TIMEOUT_SECONDS",
+            "SECOND_OPINION_OPENCODE_TIMEOUT_SECONDS",
+            "SECOND_OPINION_PI_TIMEOUT_SECONDS",
+            "SECOND_OPINION_COPILOT_TIMEOUT_SECONDS",
+        ):
+            os.environ.pop(var, None)
+
+    def test_86_ceiling_is_600(self) -> None:
+        self.assertEqual(second_opinion._MAX_BACKEND_TIMEOUT_SECONDS, 600)
+
+    def test_87_opencode_unset_gets_450_floor_not_global_120(self) -> None:
+        with patch.dict(os.environ, {}, clear=False):
+            self._clear_timeout_vars()
+            with patch.object(second_opinion, "BACKEND_TIMEOUT_SECONDS", 120):
+                capture, box = RunOpencodeTests()._capture_cmd()
+                with patch.object(second_opinion, "_run_command", side_effect=capture):
+                    second_opinion.run_opencode("prompt")
+                self.assertEqual(box["timeout"], 450)
+
+    def test_88_floor_beats_lower_explicit_global(self) -> None:
+        """A raised global default (e.g. 200s) still must not drop opencode
+        below its measured-latency floor -- a 200s budget is the original
+        bug for this backend."""
+        with patch.dict(os.environ, {}, clear=False):
+            self._clear_timeout_vars()
+            with patch.object(second_opinion, "BACKEND_TIMEOUT_SECONDS", 200):
+                capture, box = RunOpencodeTests()._capture_cmd()
+                with patch.object(second_opinion, "_run_command", side_effect=capture):
+                    second_opinion.run_opencode("prompt")
+                self.assertEqual(box["timeout"], 450)
+
+    def test_89_explicit_override_wins_over_floor(self) -> None:
+        with patch.dict(os.environ, {"SECOND_OPINION_OPENCODE_TIMEOUT_SECONDS": "60"}):
+            with patch.object(second_opinion, "BACKEND_TIMEOUT_SECONDS", 120):
+                capture, box = RunOpencodeTests()._capture_cmd()
+                with patch.object(second_opinion, "_run_command", side_effect=capture):
+                    second_opinion.run_opencode("prompt")
+                self.assertEqual(box["timeout"], 60)
+
+    def test_89b_override_above_ceiling_clamped(self) -> None:
+        with patch.dict(os.environ, {"SECOND_OPINION_OPENCODE_TIMEOUT_SECONDS": "700"}):
+            capture, box = RunOpencodeTests()._capture_cmd()
+            with patch.object(second_opinion, "_run_command", side_effect=capture):
+                second_opinion.run_opencode("prompt")
+            self.assertEqual(box["timeout"], 600)
+
+    def test_89c_other_backends_keep_120_default(self) -> None:
+        """The floor is opencode-only: no measured latency evidence for
+        agy/pi/copilot, so their unset fallback stays the 120s global."""
+        with patch.dict(os.environ, {}, clear=False):
+            self._clear_timeout_vars()
+            with patch.object(second_opinion, "BACKEND_TIMEOUT_SECONDS", 120):
+                self.assertEqual(
+                    second_opinion._resolve_timeout(
+                        "SECOND_OPINION_AGY_TIMEOUT_SECONDS"
+                    ),
+                    120,
+                )
+                self.assertEqual(
+                    second_opinion._resolve_timeout(
+                        "SECOND_OPINION_PI_TIMEOUT_SECONDS"
+                    ),
+                    120,
+                )
+                self.assertEqual(
+                    second_opinion._resolve_timeout(
+                        "SECOND_OPINION_COPILOT_TIMEOUT_SECONDS"
+                    ),
+                    120,
+                )
+
+    def test_89d_resolve_timeout_default_param(self) -> None:
+        """The new ``default`` parameter: used as the fallback when the env
+        var is unset/invalid, clamped to the ceiling like every other path."""
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("SECOND_OPINION_AGY_TIMEOUT_SECONDS", None)
+            self.assertEqual(
+                second_opinion._resolve_timeout(
+                    "SECOND_OPINION_AGY_TIMEOUT_SECONDS", default=450
+                ),
+                450,
+            )
+        with patch.dict(os.environ, {"SECOND_OPINION_AGY_TIMEOUT_SECONDS": "700"}):
+            self.assertEqual(
+                second_opinion._resolve_timeout(
+                    "SECOND_OPINION_AGY_TIMEOUT_SECONDS", default=450
+                ),
+                600,
+            )
+
+
+class TimeoutErrorHintTests(unittest.TestCase):
+    """A timeout failure must name its escape hatch: which env var raises
+    the budget and what the hard ceiling is -- the 2026-09-03 incident read
+    as a backend outage because the message said only that attempts timed
+    out."""
+
+    def test_89e_timeout_failure_names_override_var_and_ceiling(self) -> None:
+        err = io.StringIO()
+        with (
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.dict(os.environ, {}, clear=False),
+            self.assertRaises(SystemExit) as cm,
+            patch("sys.stderr", err),
+            patch.object(
+                second_opinion.llm_backends,
+                "run_agy",
+                side_effect=llm_backends.BackendTimeoutError(
+                    "timed out after 120s — killed"
+                ),
+            ),
+        ):
+            second_opinion.cmd_review(ns(plan="text", backend="agy"))
+        self.assertEqual(cm.exception.code, 1)
+        combined = err.getvalue()
+        self.assertIn("SECOND_OPINION_AGY_TIMEOUT_SECONDS", combined)
+        self.assertIn("600", combined)
+
+
 class PerBackendTimeoutIsolationTests(unittest.TestCase):
     """Cross-contamination checks run through the real run_agy/run_opencode/
     run_copilot call sites -- the only place a wrong literal env-var-name
@@ -1459,7 +1592,10 @@ class PerBackendTimeoutIsolationTests(unittest.TestCase):
                 capture, box = RunOpencodeTests()._capture_cmd()
                 with patch.object(second_opinion, "_run_command", side_effect=capture):
                     second_opinion.run_opencode("prompt")
-                self.assertEqual(box["timeout"], 120)
+                # 2026-09-07: opencode's unset fallback is its 450s
+                # measured-latency floor, not the 120s global (see
+                # OpencodeTimeoutFloorTests).
+                self.assertEqual(box["timeout"], 450)
 
     def test_84_opencode_override_does_not_leak_into_agy_or_copilot(self) -> None:
         with patch.dict(os.environ, {}, clear=False):

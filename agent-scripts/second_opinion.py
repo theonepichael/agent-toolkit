@@ -66,11 +66,13 @@ Env vars
   SECOND_OPINION_OPENCODE_TIMEOUT_SECONDS override the timeout for opencode calls only
   SECOND_OPINION_COPILOT_TIMEOUT_SECONDS  override the timeout for copilot calls only
                                      Unset/blank/non-integer/zero/negative
-                                     falls back to SECOND_OPINION_TIMEOUT_SECONDS.
-                                     A value above 300 is clamped to 300 —
-                                     the previous global default is now a
-                                     hard ceiling on every timeout, default
-                                     or overridden.
+                                     falls back to SECOND_OPINION_TIMEOUT_SECONDS
+                                     (opencode to max(that, 450) — its measured
+                                     real-plan latency is 200-270s; the flat
+                                     default timed out on every real critique).
+                                     A value above 600 is clamped to 600 —
+                                     the hard ceiling on every timeout,
+                                     default or overridden.
 
 Files read: <plan-file-or-text> (if a path), --focus-file. Nothing written.
 
@@ -118,7 +120,21 @@ DATA_DIR = Path.home() / ".claude" / "data" / "grill"
 
 MAX_FOCUS_FILE_BYTES = 8192
 
-_MAX_BACKEND_TIMEOUT_SECONDS = 300  # the previous global default, now a hard ceiling
+_MAX_BACKEND_TIMEOUT_SECONDS = 600  # hard ceiling on every timeout, default or
+# overridden -- sized above opencode's measured real-plan latency (200-270s,
+# see _OPENCODE_TIMEOUT_SECONDS) so the override var has real headroom.
+
+# opencode's per-backend timeout FLOOR (2026-09-07): its real-plan critique
+# latency measured 200-270s per call regardless of payload size (6KB -> 269s,
+# 12KB -> 206s, both exit 0; see grill/meta-agent-toolkit-reconcile-drift-
+# spec-critique-notes.md), so the flat 120s default timed out on essentially
+# every real plan and the failure read as a backend outage. A floor, not a
+# default: a lower global timeout must not drop opencode below what it
+# physically needs. agy/pi/copilot keep the 120s fallback -- no measured
+# latency evidence exists to change them.
+_OPENCODE_TIMEOUT_SECONDS = 450  # ~1.7x the measured 200-270s mean; absorbs
+# pool variance. A floor, not a hard default: an explicit per-backend
+# override still wins, and a higher explicit global default applies.
 
 
 def _parse_positive_int(value: str, default: int) -> int:
@@ -150,16 +166,22 @@ BACKEND_TIMEOUT_SECONDS = _parse_positive_int(
 )
 
 
-def _resolve_timeout(env_var: str) -> int:
+def _resolve_timeout(env_var: str, default: int | None = None) -> int:
     """Return ``env_var``'s value as a per-backend timeout override.
 
-    Falls back to :data:`BACKEND_TIMEOUT_SECONDS` if ``env_var`` is unset,
-    blank, non-integer, zero, or negative. Read fresh from the environment
-    on every call (unlike the module-latched global) -- matches how
+    Falls back to ``default`` (``default=None`` means
+    :data:`BACKEND_TIMEOUT_SECONDS`) if ``env_var`` is unset, blank,
+    non-integer, zero, or negative. Callers pass an explicit ``default``
+    when their backend needs more than the global baseline (opencode's
+    measured-latency floor). Read fresh from the environment on every call
+    (unlike the module-latched global) -- matches how
     :func:`_resolve_pooled_model`'s single-override env var is already read
     fresh per call, not latched.
     """
-    return _parse_positive_int(os.environ.get(env_var, ""), BACKEND_TIMEOUT_SECONDS)
+    return _parse_positive_int(
+        os.environ.get(env_var, ""),
+        BACKEND_TIMEOUT_SECONDS if default is None else default,
+    )
 
 
 # backend -> (pool env var, single-override env var). The single source of
@@ -642,7 +664,10 @@ def run_opencode(prompt: str, *, model_index: int | None = None) -> str:
     cmd = llm_backends.build_isolated_command("opencode", prompt, model=model)
     _, stdout, stderr = _run_command(
         cmd,
-        timeout=_resolve_timeout("SECOND_OPINION_OPENCODE_TIMEOUT_SECONDS"),
+        timeout=_resolve_timeout(
+            "SECOND_OPINION_OPENCODE_TIMEOUT_SECONDS",
+            default=max(BACKEND_TIMEOUT_SECONDS, _OPENCODE_TIMEOUT_SECONDS),
+        ),
         retries=1,
     )
     events = _opencode_json_events(stdout)
@@ -861,14 +886,25 @@ def cmd_review(args: argparse.Namespace) -> None:
         try:
             critique = BACKEND_RUNNERS[backend](prompt, model_index=model_index)
         except BackendError as exc:
+            # A timeout is a budget problem, not an outage: name the env var
+            # that raises the budget and the hard ceiling, so the next
+            # reader doesn't misdiagnose a slow backend as a dead one
+            # (2026-09-03: exactly that misread cost a debugging session).
+            hint = ""
+            if isinstance(exc, llm_backends.BackendTimeoutError):
+                hint = (
+                    f" — raise SECOND_OPINION_{backend.upper()}_TIMEOUT_SECONDS "
+                    f"(hard ceiling {_MAX_BACKEND_TIMEOUT_SECONDS}s) to allow "
+                    "longer runs"
+                )
             if isinstance(exc, llm_backends.BackendPayloadSizeError):
                 size_rule_outs.append(exc)
             cli_common.vprint(
                 f"[second_opinion] {backend_label(backend, model_index=model_index)} "
-                f"failed: {exc}",
+                f"failed: {exc}{hint}",
                 verbose=verbose,
             )
-            failures.append(f"{backend}: {exc}")
+            failures.append(f"{backend}: {exc}{hint}")
             continue
         print(f"Second opinion via {backend_label(backend, model_index=model_index)}:")
         print(critique)
