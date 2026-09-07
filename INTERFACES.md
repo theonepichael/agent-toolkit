@@ -835,11 +835,11 @@ refresh_guidance.py — audit-by-inspection for hand-authored, agent-facing docs
 - Subcommands:
   - `check [--repo-root <REPO_ROOT>] [--doc-set <DOC_SET>] [--agent-toolkit-root <AGENT_TOOLKIT_ROOT>]` — scan the configured doc-set and print a findings + staleness report (default)
     - `--repo-root` — repo root to scan (default: this checkout)
-    - `--doc-set` — which per-repo doc-set config to use (default: agent-toolkit) (choices computed at runtime; default: agent-toolkit)
+    - `--doc-set` — which built-in doc-set config to use. No default -- either pass this, or let <repo-root>/refresh-guidance.toml be auto-discovered (never both). (choices computed at runtime)
     - `--agent-toolkit-root` — agent-toolkit checkout used to resolve cross-repo script citations for doc-sets with cross_repo_scripts set (default: $AGENT_TOOLKIT_PATH or ~/Workspace/agent-toolkit)
   - `mark-reviewed [--repo-root <REPO_ROOT>] [--doc-set <DOC_SET>] [--agent-toolkit-root <AGENT_TOOLKIT_ROOT>] <doc> <heading> [--commit <COMMIT>] [--date <DATE>]` — record human sign-off that one doc's `## <heading>` section is current
     - `--repo-root` — repo root to scan (default: this checkout)
-    - `--doc-set` — which per-repo doc-set config to use (default: agent-toolkit) (choices computed at runtime; default: agent-toolkit)
+    - `--doc-set` — which built-in doc-set config to use. No default -- either pass this, or let <repo-root>/refresh-guidance.toml be auto-discovered (never both). (choices computed at runtime)
     - `--agent-toolkit-root` — agent-toolkit checkout used to resolve cross-repo script citations for doc-sets with cross_repo_scripts set (default: $AGENT_TOOLKIT_PATH or ~/Workspace/agent-toolkit)
     - `doc` — repo-relative doc path, e.g. AGENTS.md
     - `heading` — exact `## <heading>` text
@@ -851,6 +851,8 @@ refresh_guidance.py — audit-by-inspection for hand-authored, agent-facing docs
   - `DEFAULT_AGENT_TOOLKIT_ROOT = Path(os.environ.get('AGENT_TOOLKIT_PATH', str(Path.home() / 'Workspace' / 'agent-toolkit')))`
 - Explicit exit codes: `2`
 - Depends on: `cli_common.py`, `gen_interfaces.py`
+- Exceptions:
+  - `class ConfigError(Exception)` — A refresh-guidance.toml or --doc-set resolution problem.
 - Public classes:
   - `class DocSetConfig` — What to scan for one repo: fixed docs, plus where its scripts live.
   - `class UndocumentedDir`
@@ -860,6 +862,8 @@ refresh_guidance.py — audit-by-inspection for hand-authored, agent-facing docs
   - `class SectionStatus`
   - `class CheckResult`
 - Public functions:
+  - `load_external_doc_set(repo_root: Path) -> DocSetConfig | None` — Load `<repo_root>/refresh-guidance.toml` into a `DocSetConfig`, or `None` if the file doesn't exist.
+  - `resolve_doc_set(repo_root: Path, doc_set_name: str | None) -> tuple[DocSetConfig, str]` — Resolve the doc-set to use for `repo_root`, given the (possibly absent) `--doc-set` value.
   - `discover_agents_md(repo_root: Path) -> list[str]` — Return every tracked `AGENTS.md`'s repo-relative path, sorted.
   - `discover_undocumented_dirs(repo_root: Path, threshold: int = UNDOCUMENTED_DIR_THRESHOLD) -> list[UndocumentedDir]` — Flag a top-level directory that looks complex enough to warrant its own `AGENTS.md` but doesn't have one -- the inverse signal from the rest of this module: not "this existing doc is stale" but "no one has written a doc for this yet." Purely a suggestion for a human to weigh; never creates anything.
   - `discover_basename_index(repo_root: Path) -> dict[str, list[str]]` — Map every tracked file's basename to its repo-relative path(s).
@@ -872,8 +876,8 @@ refresh_guidance.py — audit-by-inspection for hand-authored, agent-facing docs
   - `git_blame_range(repo_root: Path, doc: str, start_line: int, end_line: int) -> tuple[str | None, str | None]` — Last commit (short sha, date) that touched a section's line range, via `git log -L` -- the secondary staleness signal for a section with no review-state entry yet.
   - `load_state(repo_root: Path, doc_set: DocSetConfig) -> dict[str, dict[str, str]]`
   - `save_state(repo_root: Path, doc_set: DocSetConfig, state: dict[str, dict[str, str]]) -> None`
-  - `run_check(repo_root: Path, doc_set_name: str, agent_toolkit_root: Path = DEFAULT_AGENT_TOOLKIT_ROOT) -> CheckResult`
-  - `render_report(result: CheckResult, doc_set_name: str) -> str`
+  - `run_check(repo_root: Path, doc_set_name: str | None, agent_toolkit_root: Path = DEFAULT_AGENT_TOOLKIT_ROOT) -> CheckResult`
+  - `render_report(result: CheckResult, doc_set_label: str) -> str`
   - `build_parser() -> argparse.ArgumentParser`
 - Subcommand handlers: `cmd_check`, `cmd_mark_reviewed`
 - Tested by: `agent-scripts/test_refresh_guidance.py`
@@ -1571,9 +1575,7 @@ named doc, not regenerating this file.
 
 | Doc | Status |
 | --- | --- |
-| `claude/commands/refresh-guidance.md` | OK |
 | `claude/commands/skill-map.md` | OK |
-| `opencode/skills/refresh-guidance/SKILL.md` | OK |
 
 ### `grill.py`
 

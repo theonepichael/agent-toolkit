@@ -22,32 +22,38 @@ construction, since these docs already use code-span formatting as their
 convention for a real citation.
 
 This is a shared engine, not a per-repo copy: which docs and script
-directories to scan is config (``DOC_SETS``), keyed by ``--doc-set``, so the
-same checking logic runs against agent-toolkit and dotfiles alike — only the
-per-repo doc/script-directory list differs. ``MIGRATION.md`` is deliberately
-never in a doc-set's fixed list: it is transient, self-obsoleting migration
-prose, not evergreen guidance.
+directories to scan is config (a ``DocSetConfig``), so the same checking
+logic runs against any repo. ``DOC_SETS`` holds only agent-toolkit's own,
+self-describing entry — every other repo (dotfiles included) supplies its
+own config by placing a ``refresh-guidance.toml`` at its own repo root,
+auto-discovered by ``--repo-root`` (see ``load_external_doc_set``); this
+module carries no hardcoded knowledge of any other repo's internal layout.
+``MIGRATION.md`` is deliberately never in a doc-set's fixed list: it is
+transient, self-obsoleting migration prose, not evergreen guidance.
 
 Usage:
-    refresh_guidance.py check --repo-root <path> --doc-set <name>
+    refresh_guidance.py check --repo-root <path> [--doc-set agent-toolkit]
         scan and print a findings + staleness report (default subcommand)
-    refresh_guidance.py mark-reviewed <doc> <heading> --repo-root <path> --doc-set <name>
+    refresh_guidance.py mark-reviewed <doc> <heading> --repo-root <path> [--doc-set agent-toolkit]
         record human sign-off that one doc's `## <heading>` section is current
 
 Flags: --repo-root <path> (default: this checkout), --doc-set
-{agent-toolkit,dotfiles} (default: agent-toolkit), --commit <sha> and --date
-<YYYY-MM-DD> (mark-reviewed only; default to current HEAD / today),
---quiet/-q, --verbose/-v.
+{agent-toolkit} (no default — required unless <repo-root>/refresh-guidance.toml
+exists, in which case that file is used instead and --doc-set must be
+omitted), --commit <sha> and --date <YYYY-MM-DD> (mark-reviewed only;
+default to current HEAD / today), --quiet/-q, --verbose/-v.
 Env vars: none.
 Files read: every doc named by the active doc-set's config, every script
 under its configured script directories (parsed with `ast`, never imported
 or executed — these tools mutate live state, so auditing them must not run
-them), and its sidecar state file if present.
+them), its sidecar state file if present, and
+`<repo-root>/refresh-guidance.toml` if present.
 Files written: the active doc-set's sidecar state file
 (`refresh-guidance-state.json` at the repo root, by default), only by
 `mark-reviewed`.
-Exit codes: 0 success; 2 bad usage (unknown doc-set, missing repo root, or
-— for `mark-reviewed` — a doc/heading pair that doesn't exist).
+Exit codes: 0 success; 2 bad usage (no doc-set resolvable, a malformed
+`refresh-guidance.toml`, `--doc-set` conflicting with one, missing repo
+root, or — for `mark-reviewed` — a doc/heading pair that doesn't exist).
 
 Requires Python 3.12+.
 """
@@ -60,6 +66,7 @@ import os
 import re
 import subprocess
 import sys
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -165,12 +172,136 @@ DOC_SETS: dict[str, DocSetConfig] = {
             "pi/CLAUDE_CODE_PARITY.md",
         ),
     ),
-    "dotfiles": DocSetConfig(
-        fixed_docs=("README.md", "STYLE.md", "CHANGELOG.md"),
-        script_dirs=("claude/scripts", "scripts"),  # dotfiles-repo-relative
-        cross_repo_scripts=True,
-    ),
 }
+"""The only built-in doc-set: agent-toolkit describing itself. Any other
+repo (dotfiles included) supplies its own config via an external
+`refresh-guidance.toml` at its own repo root (see
+:func:`load_external_doc_set`) -- agent-toolkit's shared source carries no
+hardcoded knowledge of any other repo's internal layout."""
+
+
+EXTERNAL_CONFIG_FILENAME = "refresh-guidance.toml"
+
+_DOC_SET_FIELD_KINDS: dict[str, str] = {
+    "fixed_docs": "list_str",
+    "script_dirs": "list_str",
+    "root_entrypoints": "list_str",
+    "state_path": "str",
+    "cross_repo_scripts": "bool",
+    "claim_exempt_docs": "list_str",
+}
+_REQUIRED_DOC_SET_KEYS = frozenset({"fixed_docs", "script_dirs"})
+
+
+class ConfigError(Exception):
+    """A refresh-guidance.toml or --doc-set resolution problem. Raised by
+    :func:`load_external_doc_set`/:func:`resolve_doc_set`, never by a
+    direct `sys.exit` -- only the CLI command functions translate this
+    into an exit code, so a direct caller (a test, a future script) can
+    catch it as a normal exception instead of capturing stderr and
+    catching `SystemExit`."""
+
+
+def load_external_doc_set(repo_root: Path) -> DocSetConfig | None:
+    """Load `<repo_root>/refresh-guidance.toml` into a `DocSetConfig`, or
+    `None` if the file doesn't exist. Validates every key before
+    constructing anything: required keys present, no unrecognized keys,
+    every value matching its field's expected shape (a `tuple[str, ...]`
+    field must be a TOML array of strings, a `str` field a TOML string, a
+    `bool` field a TOML boolean -- a quoted `"true"` is a string, not a
+    boolean, and is rejected). Only after validation does it convert each
+    validated array to a tuple -- a straight type coercion applied
+    uniformly to every array field, never a per-field value translation.
+    """
+    path = repo_root / EXTERNAL_CONFIG_FILENAME
+    if not path.is_file():
+        return None
+
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError as exc:
+        raise ConfigError(f"{EXTERNAL_CONFIG_FILENAME}: invalid TOML: {exc}") from exc
+
+    missing = _REQUIRED_DOC_SET_KEYS - data.keys()
+    if missing:
+        raise ConfigError(
+            f"{EXTERNAL_CONFIG_FILENAME}: missing required key(s): "
+            f"{', '.join(sorted(missing))}"
+        )
+    unknown = data.keys() - _DOC_SET_FIELD_KINDS.keys()
+    if unknown:
+        raise ConfigError(
+            f"{EXTERNAL_CONFIG_FILENAME}: unknown key(s): {', '.join(sorted(unknown))}"
+        )
+
+    kwargs: dict[str, object] = {}
+    for key, value in data.items():
+        kind = _DOC_SET_FIELD_KINDS[key]
+        if kind == "list_str":
+            if not isinstance(value, list):
+                raise ConfigError(
+                    f"{EXTERNAL_CONFIG_FILENAME}: {key} must be a list of "
+                    f"strings, got {type(value).__name__}"
+                )
+            for index, element in enumerate(value):
+                if not isinstance(element, str):
+                    raise ConfigError(
+                        f"{EXTERNAL_CONFIG_FILENAME}: {key}[{index}] must "
+                        f"be a string, got {type(element).__name__}"
+                    )
+            kwargs[key] = tuple(value)
+        elif kind == "bool":
+            if not isinstance(value, bool):
+                raise ConfigError(
+                    f"{EXTERNAL_CONFIG_FILENAME}: {key} must be a bool, "
+                    f"got {type(value).__name__}"
+                )
+            kwargs[key] = value
+        else:  # "str"
+            if not isinstance(value, str):
+                raise ConfigError(
+                    f"{EXTERNAL_CONFIG_FILENAME}: {key} must be a string, "
+                    f"got {type(value).__name__}"
+                )
+            kwargs[key] = value
+
+    return DocSetConfig(**kwargs)
+
+
+def resolve_doc_set(
+    repo_root: Path, doc_set_name: str | None
+) -> tuple[DocSetConfig, str]:
+    """Resolve the doc-set to use for `repo_root`, given the (possibly
+    absent) `--doc-set` value.
+
+    `doc_set_name` is `None` exactly when `--doc-set` was omitted --
+    argparse's default is `None`, not `"agent-toolkit"` (see
+    `_add_doc_set_args`), so this function can tell "no opinion given"
+    apart from "user explicitly chose agent-toolkit". Every branch either
+    resolves from one explicit source or raises :class:`ConfigError` --
+    there is no silent fallback, since a silent fallback to
+    `DOC_SETS["agent-toolkit"]` here is exactly how this module used to
+    leak agent-toolkit's own doc-set onto a repo that isn't agent-toolkit.
+    """
+    external = load_external_doc_set(repo_root)
+    if external is not None:
+        if doc_set_name is not None:
+            raise ConfigError(
+                f"{EXTERNAL_CONFIG_FILENAME} and --doc-set were both "
+                "given; pick one (remove the flag, or delete/move the file)"
+            )
+        return external, f"{repo_root.name} (external config)"
+
+    if doc_set_name is None:
+        raise ConfigError(
+            "no doc-set specified: pass --doc-set agent-toolkit, or add "
+            f"{repo_root}/{EXTERNAL_CONFIG_FILENAME}"
+        )
+    if doc_set_name not in DOC_SETS:
+        raise ConfigError(
+            f"unknown doc-set {doc_set_name!r}; choices: {sorted(DOC_SETS)}"
+        )
+    return DOC_SETS[doc_set_name], doc_set_name
 
 
 # ── discovery ─────────────────────────────────────────────────────────────────
@@ -689,10 +820,10 @@ class CheckResult:
 
 def run_check(
     repo_root: Path,
-    doc_set_name: str,
+    doc_set_name: str | None,
     agent_toolkit_root: Path = DEFAULT_AGENT_TOOLKIT_ROOT,
 ) -> CheckResult:
-    doc_set = DOC_SETS[doc_set_name]
+    doc_set, _label = resolve_doc_set(repo_root, doc_set_name)
     docs = discovered_docs(repo_root, doc_set)
     scripts = discover_scripts(repo_root, doc_set, agent_toolkit_root)
     known_basenames = set(scripts)
@@ -759,8 +890,8 @@ def run_check(
     )
 
 
-def render_report(result: CheckResult, doc_set_name: str) -> str:
-    lines: list[str] = [f"refresh-guidance report — doc-set: {doc_set_name}", ""]
+def render_report(result: CheckResult, doc_set_label: str) -> str:
+    lines: list[str] = [f"refresh-guidance report — doc-set: {doc_set_label}", ""]
 
     lines.append(f"Findings ({len(result.findings)}):")
     if not result.findings:
@@ -802,40 +933,37 @@ def render_report(result: CheckResult, doc_set_name: str) -> str:
 
 def cmd_check(
     repo_root: Path,
-    doc_set_name: str,
+    doc_set_name: str | None,
     agent_toolkit_root: Path = DEFAULT_AGENT_TOOLKIT_ROOT,
     quiet: bool = False,
 ) -> None:
-    if doc_set_name not in DOC_SETS:
-        print(
-            f"refresh_guidance: unknown doc-set {doc_set_name!r}; choices: {sorted(DOC_SETS)}",
-            file=sys.stderr,
-        )
-        sys.exit(2)
     if not repo_root.is_dir():
         print(f"refresh_guidance: no such repo root {repo_root}", file=sys.stderr)
         sys.exit(2)
+    try:
+        doc_set, label = resolve_doc_set(repo_root, doc_set_name)
+    except ConfigError as exc:
+        print(f"refresh_guidance: {exc}", file=sys.stderr)
+        sys.exit(2)
     result = run_check(repo_root, doc_set_name, agent_toolkit_root)
     if not quiet:
-        print(render_report(result, doc_set_name), end="")
+        print(render_report(result, label), end="")
 
 
 def cmd_mark_reviewed(
     repo_root: Path,
-    doc_set_name: str,
+    doc_set_name: str | None,
     doc: str,
     heading: str,
     commit: str | None,
     date: str | None,
     quiet: bool = False,
 ) -> None:
-    if doc_set_name not in DOC_SETS:
-        print(
-            f"refresh_guidance: unknown doc-set {doc_set_name!r}; choices: {sorted(DOC_SETS)}",
-            file=sys.stderr,
-        )
+    try:
+        doc_set, _label = resolve_doc_set(repo_root, doc_set_name)
+    except ConfigError as exc:
+        print(f"refresh_guidance: {exc}", file=sys.stderr)
         sys.exit(2)
-    doc_set = DOC_SETS[doc_set_name]
     full_path = repo_root / doc
     if not full_path.is_file():
         print(
@@ -893,8 +1021,10 @@ def _add_doc_set_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--doc-set",
         choices=sorted(DOC_SETS),
-        default="agent-toolkit",
-        help="which per-repo doc-set config to use (default: agent-toolkit)",
+        default=None,
+        help="which built-in doc-set config to use. No default -- either "
+        "pass this, or let <repo-root>/refresh-guidance.toml be "
+        "auto-discovered (never both).",
     )
     parser.add_argument(
         "--agent-toolkit-root",
@@ -951,7 +1081,7 @@ def main() -> None:
     subcommand = args.subcommand or "check"
     quiet = getattr(args, "quiet", False)
     repo_root = getattr(args, "repo_root", DEFAULT_REPO_ROOT).resolve()
-    doc_set_name = getattr(args, "doc_set", "agent-toolkit")
+    doc_set_name = getattr(args, "doc_set", None)
     agent_toolkit_root = getattr(args, "agent_toolkit_root", DEFAULT_AGENT_TOOLKIT_ROOT)
 
     if subcommand == "check":

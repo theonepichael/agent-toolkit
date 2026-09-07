@@ -400,6 +400,128 @@ class StateRoundTripTestCase(unittest.TestCase):
             del rg.DOC_SETS["custom"]
 
 
+class ExternalDocSetConfigTestCase(unittest.TestCase):
+    """Covers loading <repo_root>/refresh-guidance.toml into a DocSetConfig
+    — the mechanism that lets a calling repo (dotfiles, or any future
+    third repo) supply its own doc-set config without agent-toolkit
+    hardcoding that repo's internal layout."""
+
+    def setUp(self) -> None:
+        self.tmpdir = tempfile.mkdtemp()
+        self.repo = Path(self.tmpdir)
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmpdir)
+
+    def _write_toml(self, text: str) -> None:
+        (self.repo / rg.EXTERNAL_CONFIG_FILENAME).write_text(text)
+
+    def test_no_file_returns_none(self) -> None:
+        self.assertIsNone(rg.load_external_doc_set(self.repo))
+
+    def test_valid_file_produces_expected_config_with_tuples(self) -> None:
+        self._write_toml(
+            'fixed_docs = ["README.md", "STYLE.md"]\n'
+            'script_dirs = ["tools", "scripts"]\n'
+            "cross_repo_scripts = true\n"
+        )
+        doc_set = rg.load_external_doc_set(self.repo)
+        assert doc_set is not None
+        self.assertEqual(doc_set.fixed_docs, ("README.md", "STYLE.md"))
+        self.assertIsInstance(doc_set.fixed_docs, tuple)
+        self.assertEqual(doc_set.script_dirs, ("tools", "scripts"))
+        self.assertTrue(doc_set.cross_repo_scripts)
+        # Optional fields not given fall back to DocSetConfig's own defaults.
+        self.assertEqual(doc_set.claim_exempt_docs, ("CHANGELOG.md",))
+
+    def test_missing_required_key_raises_config_error(self) -> None:
+        self._write_toml('fixed_docs = ["README.md"]\n')  # no script_dirs
+        with self.assertRaises(rg.ConfigError) as ctx:
+            rg.load_external_doc_set(self.repo)
+        self.assertIn("script_dirs", str(ctx.exception))
+
+    def test_unknown_key_raises_config_error(self) -> None:
+        self._write_toml(
+            'fixed_docs = ["README.md"]\n'
+            'script_dirs = ["scripts"]\n'
+            'bogus_key = "oops"\n'
+        )
+        with self.assertRaises(rg.ConfigError) as ctx:
+            rg.load_external_doc_set(self.repo)
+        self.assertIn("bogus_key", str(ctx.exception))
+
+    def test_invalid_toml_raises_config_error(self) -> None:
+        self._write_toml("this is not [valid toml\n")
+        with self.assertRaises(rg.ConfigError):
+            rg.load_external_doc_set(self.repo)
+
+    def test_non_string_array_element_raises_config_error(self) -> None:
+        self._write_toml('fixed_docs = ["README.md"]\nscript_dirs = ["scripts", 123]\n')
+        with self.assertRaises(rg.ConfigError) as ctx:
+            rg.load_external_doc_set(self.repo)
+        message = str(ctx.exception)
+        self.assertIn("script_dirs", message)
+        self.assertIn("1", message)
+
+    def test_wrong_type_scalar_raises_config_error(self) -> None:
+        self._write_toml(
+            'fixed_docs = ["README.md"]\n'
+            'script_dirs = ["scripts"]\n'
+            'cross_repo_scripts = "true"\n'
+        )
+        with self.assertRaises(rg.ConfigError) as ctx:
+            rg.load_external_doc_set(self.repo)
+        self.assertIn("cross_repo_scripts", str(ctx.exception))
+
+
+class DocSetResolutionTestCase(unittest.TestCase):
+    """Covers resolve_doc_set's precedence rules -- no path through it may
+    silently apply agent-toolkit's own doc-set to a repo that isn't
+    agent-toolkit."""
+
+    def setUp(self) -> None:
+        self.tmpdir = tempfile.mkdtemp()
+        self.repo = Path(self.tmpdir)
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmpdir)
+
+    def test_external_file_used_when_doc_set_name_is_none(self) -> None:
+        (self.repo / rg.EXTERNAL_CONFIG_FILENAME).write_text(
+            'fixed_docs = ["README.md"]\nscript_dirs = ["scripts"]\n'
+        )
+        doc_set, label = rg.resolve_doc_set(self.repo, None)
+        self.assertEqual(doc_set.fixed_docs, ("README.md",))
+        self.assertIn("external config", label)
+
+    def test_explicit_doc_set_with_external_file_conflicts(self) -> None:
+        (self.repo / rg.EXTERNAL_CONFIG_FILENAME).write_text(
+            'fixed_docs = ["README.md"]\nscript_dirs = ["scripts"]\n'
+        )
+        with self.assertRaises(rg.ConfigError) as ctx:
+            rg.resolve_doc_set(self.repo, "agent-toolkit")
+        self.assertIn("refresh-guidance.toml", str(ctx.exception))
+
+    def test_no_external_file_and_no_doc_set_name_errors(self) -> None:
+        with self.assertRaises(rg.ConfigError) as ctx:
+            rg.resolve_doc_set(self.repo, None)
+        self.assertIn("no doc-set specified", str(ctx.exception))
+
+    def test_no_external_file_explicit_known_name_resolves(self) -> None:
+        doc_set, label = rg.resolve_doc_set(self.repo, "agent-toolkit")
+        self.assertIs(doc_set, rg.DOC_SETS["agent-toolkit"])
+        self.assertEqual(label, "agent-toolkit")
+
+    def test_no_external_file_unknown_name_errors(self) -> None:
+        with self.assertRaises(rg.ConfigError):
+            rg.resolve_doc_set(self.repo, "nonexistent-doc-set")
+
+    def test_dotfiles_leak_is_gone(self) -> None:
+        """The leak this item exists to remove: DOC_SETS must carry no
+        repo-specific config for anything other than agent-toolkit."""
+        self.assertEqual(list(rg.DOC_SETS.keys()), ["agent-toolkit"])
+
+
 class RealRepoSmokeTestCase(unittest.TestCase):
     """Covers verification step 2: run against agent-toolkit's actual docs.
 
@@ -439,10 +561,14 @@ class CliParsingTestCase(unittest.TestCase):
             ("mark-reviewed", ["AGENTS.md", "Some Heading"]),
         ):
             args = rg.build_parser().parse_args(
-                [cmd, *extra, "-q", "--doc-set", "dotfiles"]
+                [cmd, *extra, "-q", "--doc-set", "agent-toolkit"]
             )
             self.assertTrue(args.quiet)
-            self.assertEqual(args.doc_set, "dotfiles")
+            self.assertEqual(args.doc_set, "agent-toolkit")
+
+    def test_doc_set_omitted_parses_to_none(self) -> None:
+        args = rg.build_parser().parse_args(["check"])
+        self.assertIsNone(args.doc_set)
 
     def test_bare_invocation_defaults_to_check(self) -> None:
         args = rg.build_parser().parse_args([])
