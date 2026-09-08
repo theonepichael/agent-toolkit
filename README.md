@@ -12,7 +12,7 @@ A modular, multi-harness platform for AI agent workflows and paired development 
 > began as a snapshot of a personal dotfiles repo, which is still where
 > harness work lands first — reconciliation is now
 > `scripts/sync_from_dotfiles.py`, a repeatable command, not a hand-derived
-> diff. A private GitHub remote exists; coworker access isn't open yet. See
+> diff. The GitHub remote is public (since 2026-09-08). See
 > [MIGRATION.md](MIGRATION.md) for what remains and the order it must be done
 > in.
 
