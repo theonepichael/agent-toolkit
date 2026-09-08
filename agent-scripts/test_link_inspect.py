@@ -18,6 +18,7 @@ Covers three layers:
   resolve unchanged.
 """
 
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -276,6 +277,166 @@ class IsolationTests(unittest.TestCase):
         self.assertEqual(proc.stdout.strip(), li.CHECK_BUCKET_BROKEN_SOURCE)
 
 
+class LoadLinksTests(unittest.TestCase):
+    """The moved TOML parsers (verbatim from install.py) keep their validation."""
+
+    def setUp(self) -> None:
+        self.tmpdir = Path(tempfile.mkdtemp(prefix="test-link-inspect-load-"))
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def write(self, text: str) -> Path:
+        path = self.tmpdir / "links.toml"
+        path.write_text(text)
+        return path
+
+    def test_load_links_parses_rows_in_file_order(self) -> None:
+        path = self.write(
+            '[[link]]\nsrc = "a/b"\ndest = "~/.a-b"\n\n'
+            '[[link]]\nsrc = "c/d"\ndest = "~/.c-d"\nharness = "pi"\ndir = true\n'
+        )
+        specs = li.load_links(path)
+        self.assertEqual([s.src for s in specs], ["a/b", "c/d"])
+        self.assertEqual(specs[1].harness, "pi")
+        self.assertTrue(specs[1].dir)
+
+    def test_load_links_rejects_unknown_keys_and_bad_values(self) -> None:
+        for bad in (
+            '[[link]]\nsrc = "a"\ndest = "b"\nharnes = "claude"\n',
+            '[[link]]\nsrc = "a"\ndest = "~/.a"\nharness = "nope"\n',
+            '[[link]]\nsrc = "a"\ndest = "~/.a"\nplatform = "beos"\n',
+            '[[link]]\nsrc = "a"\ndest = "~/.a"\nprofile_exclude = ["side"]\n',
+            "[[link]]\nsrc = \n",
+        ):
+            with self.assertRaises((ValueError, TypeError)):
+                li.load_links(self.write(bad))
+
+    def test_load_managed_dirs_parse_and_reject(self) -> None:
+        path = self.write('[[managed_dir]]\ndest = "~/.managed"\nignore = ["*.tmp"]\n')
+        specs = li.load_managed_dirs(path)
+        self.assertEqual(specs[0].dest, "~/.managed")
+        self.assertEqual(specs[0].ignore, ("*.tmp",))
+        with self.assertRaises((ValueError, TypeError)):
+            li.load_managed_dirs(self.write("[[managed_dir]]\nnope = 1\n"))
+
+
+class ManifestAndScopeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmpdir = Path(tempfile.mkdtemp(prefix="test-link-inspect-scope-"))
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_manifest_path_is_the_shared_state_constant(self) -> None:
+        home = self.tmpdir / "home"
+        self.assertEqual(
+            li.manifest_path(home),
+            home / ".local" / "state" / "agent-toolkit" / "history.jsonl",
+        )
+
+    def test_read_manifest_entries_missing_file_and_bad_lines(self) -> None:
+        self.assertEqual(li.read_manifest_entries(self.tmpdir / "nope.jsonl"), [])
+        path = self.tmpdir / "history.jsonl"
+        path.write_text(
+            '{"kind": "symlink-created", "dest": "/x"}\n'
+            "garbage line\n\n"
+            '{"kind": "file-copied"}\n'
+        )
+        entries = li.read_manifest_entries(path)
+        self.assertEqual(
+            [e["kind"] for e in entries], ["symlink-created", "file-copied"]
+        )
+
+    def test_link_applies_gates_on_each_field(self) -> None:
+        spec = li.LinkSpec(src="a", dest="~/.a", harness="pi", platform="mac")
+        kwargs = dict(
+            harnesses=("claude",),
+            is_mac=False,
+            is_linux=True,
+            is_wsl=False,
+            profile="personal",
+        )
+        self.assertFalse(li.link_applies(spec, **kwargs))  # harness gate
+        self.assertFalse(
+            li.link_applies(
+                spec,
+                harnesses=("pi",),
+                **{k: v for k, v in kwargs.items() if k != "harnesses"},
+            )
+        )  # platform gate
+        plain = li.LinkSpec(src="a", dest="~/.a")
+        self.assertTrue(li.link_applies(plain, **kwargs))
+
+    def test_format_path_shortens_home(self) -> None:
+        home = self.tmpdir / "home"
+        self.assertEqual(li.format_path(home / ".claude" / "x", home), "~/.claude/x")
+        self.assertEqual(li.format_path(Path("/etc/hosts"), home), "/etc/hosts")
+
+
+class AuditLinksTests(unittest.TestCase):
+    """The consolidated entry point: assembly, scoping, and findings in one."""
+
+    def setUp(self) -> None:
+        self.tmpdir = Path(tempfile.mkdtemp(prefix="test-link-inspect-audit-"))
+        self.repo = self.tmpdir / "repo"
+        self.home = self.tmpdir / "home"
+        self.repo.mkdir()
+        self.home.mkdir()
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_audit_links_reports_wrong_target_as_data(self) -> None:
+        (self.repo / "claude").mkdir()
+        (self.repo / "claude" / "g.md").write_text("x\n")
+        (self.repo / "links.toml").write_text(
+            '[[link]]\nsrc = "claude/g.md"\ndest = "~/.claude/g.md"\n'
+        )
+        (self.home / ".claude").mkdir()
+        (self.home / ".claude" / "g.md").symlink_to(
+            self.repo / "claude" / "elsewhere.md"
+        )
+        findings, foreign, dirs_audited = li.audit_links(
+            dotfiles=self.repo,
+            home=self.home,
+            harnesses=li.VALID_HARNESSES,
+            is_mac=False,
+            is_linux=True,
+            is_wsl=False,
+            profile=li.DEFAULT_PROFILE,
+            manifest_file=li.manifest_path(self.home),
+            format_path=lambda path: li.format_path(path, self.home),
+        )
+        self.assertEqual(len(findings[li.CHECK_BUCKET_WRONG_TARGET]), 1)
+        self.assertEqual(foreign, {})
+        self.assertEqual(dirs_audited, 0)
+
+    def test_audit_links_pre_parsed_specs_skip_second_parse(self) -> None:
+        (self.repo / "claude").mkdir()
+        (self.repo / "claude" / "g.md").write_text("x\n")
+        (self.repo / "links.toml").write_text(
+            '[[link]]\nsrc = "claude/g.md"\ndest = "~/.claude/g.md"\n'
+        )
+        (self.home / ".claude").mkdir()
+        (self.home / ".claude" / "g.md").symlink_to(self.repo / "claude" / "g.md")
+        specs = li.load_links(self.repo / "links.toml")
+        findings, _foreign, _dirs = li.audit_links(
+            dotfiles=self.repo,
+            home=self.home,
+            harnesses=li.VALID_HARNESSES,
+            is_mac=False,
+            is_linux=True,
+            is_wsl=False,
+            profile=li.DEFAULT_PROFILE,
+            manifest_file=li.manifest_path(self.home),
+            format_path=lambda path: li.format_path(path, self.home),
+            specs=specs,
+            managed_dirs=[],
+        )
+        self.assertEqual(findings, {bucket: [] for bucket in li.CHECK_BUCKETS})
+
+
 class InstallAliasTests(unittest.TestCase):
     """Every name install.py must keep re-exporting after the extraction."""
 
@@ -305,6 +466,20 @@ class InstallAliasTests(unittest.TestCase):
         "_live_backup_paths",
         "_dir_applies",
         "_check_unmanaged_files",
+        "VALID_HARNESSES",
+        "VALID_PROFILES",
+        "DEFAULT_PROFILE",
+        "load_links",
+        "load_managed_dirs",
+        "detect_wsl",
+        "manifest_path",
+        "read_manifest_entries",
+        "format_path",
+        "audit_links",
+        "link_applies",
+        "iter_concrete_links",
+        "gather_links",
+        "dir_applies",
     )
 
     def test_install_module_reexports_every_moved_name(self) -> None:

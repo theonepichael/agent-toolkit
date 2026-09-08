@@ -40,7 +40,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import tomllib
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
@@ -110,8 +109,24 @@ _adopt_file = settings_seed._adopt_file
 _opencode_adopt_blocker = settings_seed._opencode_adopt_blocker
 _reseed_file = settings_seed._reseed_file
 
-VALID_HARNESSES = ("claude", "copilot", "opencode", "agy", "pi", "codex")
-VALID_PROFILES = ("personal", "work")
+# VALID_HARNESSES/VALID_PROFILES re-export from link_inspect rather than a
+# second literal here: install.py used to keep its own copy alongside
+# link_inspect's, and that duplication is exactly what let link_inspect's
+# copy go stale (missing "codex") while this one was updated for the Codex
+# harness landing — the same class of drift atk-settings-unvendor-drift-
+# helpers fixed for the settings hook. link_inspect.VALID_HARNESSES now
+# includes "codex" too, so there is one source of truth again.
+VALID_HARNESSES = link_inspect.VALID_HARNESSES
+VALID_PROFILES = link_inspect.VALID_PROFILES
+DEFAULT_PROFILE = link_inspect.DEFAULT_PROFILE
+load_links = link_inspect.load_links
+load_managed_dirs = link_inspect.load_managed_dirs
+detect_wsl = link_inspect.detect_wsl
+manifest_path = link_inspect.manifest_path
+read_manifest_entries = link_inspect.read_manifest_entries
+format_path = link_inspect.format_path
+audit_links = link_inspect.audit_links
+dir_applies = link_inspect.dir_applies
 
 # Pinned rather than "latest" so every machine ends up with byte-identical
 # fonts; bump manually to upgrade. A version-marker file next to the fonts
@@ -596,22 +611,7 @@ class Context:
 
     def display(self, path: Path) -> str:
         """Render ``path`` with the home directory shortened back to ``~``."""
-        try:
-            return f"~/{path.relative_to(self.home)}"
-        except ValueError:
-            return str(path)
-
-
-def detect_wsl(system: str) -> bool:
-    """Return whether this is a WSL kernel (as opposed to native Linux)."""
-    if system != "Linux":
-        return False
-    if os.environ.get("WSL_DISTRO_NAME"):
-        return True
-    try:
-        return "microsoft" in Path("/proc/version").read_text().lower()
-    except OSError:
-        return False
+        return link_inspect.format_path(path, self.home)
 
 
 def build_context(opts: Options, dotfiles: Path | None = None) -> Context:
@@ -619,8 +619,10 @@ def build_context(opts: Options, dotfiles: Path | None = None) -> Context:
     root = dotfiles or Path(__file__).resolve().parent
     home = Path.home()
     system = platform.system()
-    # "agent-toolkit", not "dotfiles" -- both repos' install.py write a
-    # symlink-creation manifest under this directory, and orphan-cleanup
+    # The manifest path lives in link_inspect.manifest_path (the auditor
+    # resolves the same constant) -- the "agent-toolkit" directory name is
+    # load-bearing: both repos' install.py write a symlink-creation manifest
+    # under a shared state directory, and orphan-cleanup
     # (install_symlinks' _cleanup_orphaned_links, run on every plain
     # install) deletes any manifest-recorded symlink this repo's own
     # links.toml doesn't produce. A shared state directory means each
@@ -632,12 +634,11 @@ def build_context(opts: Options, dotfiles: Path | None = None) -> Context:
     # opencode_skills_sync_activity.py) with no warning under --quiet.
     # Giving agent-toolkit its own state directory makes this permanently
     # impossible, not just during a one-time cutover.
-    state_dir = home / ".local" / "state" / "agent-toolkit"
     return Context(
         dotfiles=root,
         home=home,
         opts=opts,
-        manifest=Manifest(state_dir / "history.jsonl", dry_run=opts.dry_run),
+        manifest=Manifest(manifest_path(home), dry_run=opts.dry_run),
         reporter=Reporter(),
         system=system,
         is_wsl=detect_wsl(system),
@@ -716,7 +717,7 @@ def parse_args(argv: Sequence[str]) -> Options:
     """
     parser = _Parser(add_help=False, allow_abbrev=False)
     cli_common.add_verbosity_args(parser)
-    parser.add_argument("--profile", default="personal")
+    parser.add_argument("--profile", default=DEFAULT_PROFILE)
     # append, not store: --harness=claude --harness=copilot must accumulate
     # both, not silently drop the first on the second flag.
     parser.add_argument("--harness", action="append", default=[])
@@ -1508,176 +1509,29 @@ def _activate_nvm_node(ctx: Context) -> None:
 # ── symlink engine ────────────────────────────────────────────────────────────
 
 
-# LinkSpec and ManagedDirSpec live in agent-scripts/link_inspect.py now (the
+# load_links, load_managed_dirs, and the pure link_applies/iter_concrete_links/
+# gather_links machinery live in agent-scripts/link_inspect.py now (the
 # extracted links.toml-audit module); they are re-exported from this module's
-# import block above. The field-name sets below stay here because they belong
-# to the TOML-parsing validation in load_links/load_managed_dirs.
-
-_LINK_FIELDS = {"src", "dest", "harness", "platform", "wsl", "profile_exclude", "dir"}
-
-
-_MANAGED_DIR_FIELDS = {"dest", "ignore"}
-
-
-def load_links(path: Path) -> list[LinkSpec]:
-    """Parse ``links.toml`` into an ordered list of link specs.
-
-    Unknown keys and bad values are rejected loudly rather than ignored — a
-    typo'd gate (``harnes = "claude"``) would otherwise silently widen a
-    link to every run.
-
-    Args:
-        path: Path to the TOML table.
-
-    Returns:
-        The specs, in file order.
-
-    Raises:
-        ValueError: If the file is malformed or an entry is invalid.
-    """
-    try:
-        data = tomllib.loads(path.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError) as exc:
-        raise ValueError(f"{path}: {exc}") from exc
-
-    rows = data.get("link", [])
-    if not isinstance(rows, list):
-        raise TypeError(f"{path}: expected a [[link]] array")
-
-    specs: list[LinkSpec] = []
-    for index, row in enumerate(rows, start=1):
-        if not isinstance(row, dict):
-            raise TypeError(f"{path}: entry {index} is not a table")
-        unknown = sorted(set(row) - _LINK_FIELDS)
-        if unknown:
-            raise ValueError(f"{path}: entry {index} has unknown key(s): {unknown}")
-        for required in ("src", "dest"):
-            if not isinstance(row.get(required), str) or not row[required]:
-                raise ValueError(f"{path}: entry {index} is missing '{required}'")
-        harness = row.get("harness")
-        if harness is not None and harness not in VALID_HARNESSES:
-            raise ValueError(f"{path}: entry {index} has unknown harness {harness!r}")
-        os_gate = row.get("platform")
-        if os_gate is not None and os_gate not in ("mac", "linux"):
-            raise ValueError(f"{path}: entry {index} has unknown platform {os_gate!r}")
-        wsl = row.get("wsl")
-        if wsl is not None and wsl not in ("only", "exclude"):
-            raise ValueError(f"{path}: entry {index} has unknown wsl value {wsl!r}")
-        excluded = row.get("profile_exclude", [])
-        if not isinstance(excluded, list) or any(
-            profile not in VALID_PROFILES for profile in excluded
-        ):
-            raise ValueError(f"{path}: entry {index} has invalid profile_exclude")
-        dir_flag = row.get("dir", False)
-        if not isinstance(dir_flag, bool):
-            raise TypeError(f"{path}: entry {index} has non-bool 'dir'")
-        specs.append(
-            LinkSpec(
-                src=row["src"],
-                dest=row["dest"],
-                harness=harness,
-                platform=os_gate,
-                wsl=wsl,
-                profile_exclude=tuple(excluded),
-                dir=dir_flag,
-            )
-        )
-    return specs
-
-
-def load_managed_dirs(path: Path) -> list[ManagedDirSpec]:
-    """Parse the ``[[managed_dir]]`` rows declaring directories we own exclusively.
-
-    Mirrors :func:`load_links` in refusing to guess — unknown keys and bad
-    values are rejected loudly, because a typo'd row would otherwise silently
-    widen or narrow the audit. An absent table is not an error: every
-    ``links.toml`` predating this mechanism has none, and the audit then finds
-    nothing declared.
-
-    Args:
-        path: Path to the TOML table.
-
-    Returns:
-        The specs, in file order.
-
-    Raises:
-        ValueError: If the file is malformed or an entry is invalid.
-    """
-    try:
-        data = tomllib.loads(path.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError) as exc:
-        raise ValueError(f"{path}: {exc}") from exc
-
-    rows = data.get("managed_dir", [])
-    if not isinstance(rows, list):
-        raise TypeError(f"{path}: expected a [[managed_dir]] array")
-
-    specs: list[ManagedDirSpec] = []
-    for index, row in enumerate(rows, start=1):
-        if not isinstance(row, dict):
-            raise TypeError(f"{path}: managed_dir entry {index} is not a table")
-        unknown = sorted(set(row) - _MANAGED_DIR_FIELDS)
-        if unknown:
-            raise ValueError(
-                f"{path}: managed_dir entry {index} has unknown key(s): {unknown}"
-            )
-        dest = row.get("dest")
-        if not isinstance(dest, str) or not dest:
-            raise ValueError(f"{path}: managed_dir entry {index} is missing 'dest'")
-        raw_ignore = row.get("ignore", [])
-        if not isinstance(raw_ignore, list) or any(
-            not isinstance(item, str) or not item for item in raw_ignore
-        ):
-            raise ValueError(f"{path}: managed_dir entry {index} has invalid 'ignore'")
-        specs.append(ManagedDirSpec(dest=dest, ignore=tuple(raw_ignore)))
-    return specs
+# import block above. Only the Context-coupled wrappers stay here.
 
 
 def link_applies(spec: LinkSpec, ctx: Context) -> bool:
     """Return whether ``spec`` should be linked for this run's machine/options."""
-    if spec.harness is not None and not ctx.has_harness(spec.harness):
-        return False
-    if spec.platform == "mac" and not ctx.is_mac:
-        return False
-    if spec.platform == "linux" and not ctx.is_linux:
-        return False
-    if spec.wsl == "exclude" and ctx.is_wsl:
-        return False
-    if spec.wsl == "only" and not ctx.is_wsl:
-        return False
-    return ctx.opts.profile not in spec.profile_exclude
+    return link_inspect.link_applies(
+        spec,
+        harnesses=ctx.opts.harnesses,
+        is_mac=ctx.is_mac,
+        is_linux=ctx.is_linux,
+        is_wsl=ctx.is_wsl,
+        profile=ctx.opts.profile,
+    )
 
 
 def iter_concrete_links(
     spec: LinkSpec, ctx: Context
 ) -> Iterator[tuple[Path, Path, str]]:
-    """Expand one ``links.toml`` row into concrete ``(src, dest, relative_src)`` triples.
-
-    A normal row (``dir`` unset) yields exactly one triple, unchanged from
-    today. A ``dir=true`` row recursively globs its source directory,
-    skipping plain subdirectory entries (walked into, never linked
-    themselves) and junk — dotfiles and editor swap/backup files — so
-    those never get symlinked in. A missing, empty, or unreadable source
-    directory yields nothing, with no error and no special-casing: see the
-    plan's cleanup design for why "can't confirm" and "confirmed empty"
-    are deliberately not distinguished.
-    """
-    src_root = ctx.dotfiles / spec.src
-    dest_root = expand_dest(spec.dest, ctx.home)
-    if not spec.dir:
-        yield src_root, dest_root, spec.src
-        return
-    try:
-        candidates = sorted(src_root.rglob("*"))
-    except OSError:
-        return
-    for path in candidates:
-        if not (path.is_file() or path.is_symlink()):
-            continue
-        if path.name.startswith(".") or path.name.endswith(_JUNK_SUFFIXES):
-            continue
-        relative = path.relative_to(src_root)
-        yield path, dest_root / relative, f"{spec.src}/{relative}"
+    """Expand one ``links.toml`` row into concrete ``(src, dest, relative_src)`` triples."""
+    return link_inspect.iter_concrete_links(spec, dotfiles=ctx.dotfiles, home=ctx.home)
 
 
 def gather_links(
@@ -1693,12 +1547,16 @@ def gather_links(
     single pass feeds all three, rather than each recomputing its own
     expansion independently.
     """
-    result: list[tuple[Path, Path, str, bool]] = []
-    for spec in specs:
-        applicable = link_applies(spec, ctx)
-        for src, dest, rel in iter_concrete_links(spec, ctx):
-            result.append((src, dest, rel, applicable))
-    return result
+    return link_inspect.gather_links(
+        specs,
+        dotfiles=ctx.dotfiles,
+        home=ctx.home,
+        harnesses=ctx.opts.harnesses,
+        is_mac=ctx.is_mac,
+        is_linux=ctx.is_linux,
+        is_wsl=ctx.is_wsl,
+        profile=ctx.opts.profile,
+    )
 
 
 def _find_link_collision(
@@ -3250,12 +3108,22 @@ def do_check_links(ctx: Context) -> int:
 
     specs = load_links(ctx.dotfiles / "links.toml")
     managed_dirs = load_managed_dirs(ctx.dotfiles / "links.toml")
-    links = gather_links(ctx, specs)
-    findings, foreign = _check_applicable_links(
-        ctx, links, report_uninstalled=ctx.opts.report_uninstalled
+    # The audit computation itself lives in link_inspect.audit_links now,
+    # shared with the drift hook; only the printing below stays here.
+    findings, foreign, dirs_audited = link_inspect.audit_links(
+        dotfiles=ctx.dotfiles,
+        home=ctx.home,
+        harnesses=ctx.opts.harnesses,
+        is_mac=ctx.is_mac,
+        is_linux=ctx.is_linux,
+        is_wsl=ctx.is_wsl,
+        profile=ctx.opts.profile,
+        manifest_file=ctx.manifest.path,
+        format_path=ctx.display,
+        report_uninstalled=ctx.opts.report_uninstalled,
+        specs=specs,
+        managed_dirs=managed_dirs,
     )
-    _check_orphaned_links(ctx, links, findings)
-    dirs_audited = _check_unmanaged_files(ctx, specs, links, managed_dirs, findings)
 
     _header("==> links.toml audit (read-only)", quiet=ctx.opts.quiet)
     for root, count in sorted(foreign.items()):
