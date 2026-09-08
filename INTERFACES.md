@@ -59,6 +59,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`second_opinion.py`](#agentscriptssecondopinionpy) | second_opinion.py — one-shot adversarial critique of a plan from a non-Claude backend. Single-round by design: the multi-round loop, plan revision, and convergence judgment all require LLM reasoning and live in prose instructions, not here. |
 | [`seed_hook_subset_guard.py`](#agentscriptsseedhooksubsetguardpy) | seed_hook_subset_guard.py — refuse a commit that drops a seed's SessionStart hook groups. |
 | [`sessionstart_checks.py`](#agentscriptssessionstartcheckspy) | sessionstart_checks.py — run the SessionStart context checks concurrently. |
+| [`settings_seed.py`](#agentscriptssettingsseedpy) | Copy-once settings seeding, adoption, reseed, and drift detection. |
 | [`settings_seed_drift_check.py`](#agentscriptssettingsseeddriftcheckpy) | SessionStart hook + CLI: detect (and optionally fix) drift between the live ``~/.claude/settings.json`` / ``~/.config/opencode/opencode.jsonc`` / (under WSL) the Windows-side VS Code ``settings.json`` and ``keybindings.json`` and their seeds in the dotfiles repo. |
 | [`standup.py`](#agentscriptsstanduppy) | standup.py — /standup skill CLI: local data gathering. |
 | [`standup_adapters.py`](#agentscriptsstandupadapterspy) | standup_adapters.py — provider-agnostic adapter interfaces for /standup. |
@@ -138,16 +139,20 @@ Shared CLI helpers used across dotfiles scripts.
 - Installed at: `~/.claude/scripts/cli_common.py` (all harnesses)
 - Entrypoint: not executable, no shebang
 - CLI: none (library module).
-- Environment: `AGENT_TOOLKIT_TIMING`, `XDG_STATE_HOME`
+- Environment: `AGENT_TOOLKIT_TIMING`, `NO_COLOR`, `TERM`, `XDG_STATE_HOME`
+- Public classes:
+  - `class Palette` — ANSI colorizer that no-ops when color isn't appropriate.
 - Public functions:
   - `add_verbosity_args(parser: argparse.ArgumentParser) -> None` — Add mutually-exclusive --quiet/-q and --verbose/-v flags to a parser.
   - `vprint(msg: str, *, verbose: bool, file: TextIO | None = None) -> None` — Print a diagnostic message when verbose mode is enabled.
   - `qprint(msg: str, *, quiet: bool, file: TextIO | None = None) -> None` — Print a message unless quiet mode is enabled.
+  - `color_enabled(stream: object) -> bool` — Return whether ANSI codes should be emitted to ``stream``.
+  - `preview(message: str, *, quiet: bool = False) -> None` — Print a dry-run preview line.
   - `get_logger(name: str, *, verbose: bool = False, quiet: bool = False) -> logging.Logger` — Return a stderr-only diagnostic logger, a structured complement to vprint.
   - `append_jsonl(path: Path, record: dict[str, object]) -> None` — Best-effort: append one JSON record to `path` as a single JSONL line.
   - `redact_secrets(text: str, *, max_length: int = 200) -> str` — Mask secret-shaped substrings, then truncate to max_length.
   - `timing_span(name: str, **fields: str | int) -> Iterator[dict[str, object]]` — Opt-in nested timings; callers must supply only fixed operational labels.
-- Tested by: `agent-scripts/test_cli_common.py`, `agent-scripts/test_timing.py`
+- Tested by: `agent-scripts/test_cli_common.py`, `agent-scripts/test_settings_seed.py`, `agent-scripts/test_timing.py`
 
 ### `agent-scripts/dev_status.py`
 
@@ -1051,6 +1056,25 @@ sessionstart_checks.py — run the SessionStart context checks concurrently.
   - `run_checks(checks: list[tuple[str, int]] | None = None) -> str` — Run all checks concurrently, returning their outputs concatenated in the original list order — not completion order — so the session-start context stays stable and reviewable run over run.
 - Tested by: `agent-scripts/test_sessionstart_checks.py`
 
+### `agent-scripts/settings_seed.py`
+
+Copy-once settings seeding, adoption, reseed, and drift detection.
+
+- Installed at: `~/.claude/scripts/settings_seed.py` (all harnesses)
+- Entrypoint: not executable, `#!/usr/bin/env python3`
+- CLI: none (library module).
+- Depends on: `cli_common.py`
+- Public classes:
+  - `class CommandOutcome(Protocol)` — Duck-type of install.CommandResult, what an injected run_command returns.
+- Public functions:
+  - `json_key_drift(seed: dict[str, object], live: dict[str, object]) -> list[str]` — Return the top-level keys whose values differ between seed and live.
+  - `opencode_bypass_drift(seed: dict[str, object], live: dict[str, object]) -> list[str]` — Return allowlist-bypass bash patterns present live but not in the seed.
+  - `describe_settings_drift(seed: Path, live: Path) -> str` — Describe how a live settings.json diverged from its seed.
+  - `describe_opencode_drift(seed: Path, live: Path) -> str` — Describe how a live opencode.jsonc diverged from its seed.
+  - `describe_vscode_drift(seed: Path, live: Path) -> str` — Describe how a live VS Code settings/keybindings file diverged from its seed.
+  - `seed_file(ctx: Context, seed: Path, dest: Path, *, skip_label: str, drift: Callable[[Path, Path], str], adopt_drift: Callable[[str, str], str] | None = None, adopt_blocker: Callable[[Context, Path, Path, str, str], str | None] | None = None, run_command: Callable[..., CommandOutcome]) -> str` — Copy ``seed`` to ``dest`` once, or report drift if it's already there.
+- Tested by: `agent-scripts/test_settings_seed.py`
+
 ### `agent-scripts/settings_seed_drift_check.py`
 
 SessionStart hook + CLI: detect (and optionally fix) drift between the live ``~/.claude/settings.json`` / ``~/.config/opencode/opencode.jsonc`` / (under WSL) the Windows-side VS Code ``settings.json`` and ``keybindings.json`` and their seeds in the dotfiles repo.
@@ -1431,12 +1455,11 @@ install.py — dotfiles + AI-harness provisioner for macOS and Linux/WSL.
   - `--check-links`
   - `--report-uninstalled`
   - `-h/--help`
-- Environment: `AGENT_TOOLKIT_INSTALL_WRAPPER`, `LOGNAME`, `NO_COLOR`, `PATH`, `TERM`, `USER`, `WSL_DISTRO_NAME`
+- Environment: `AGENT_TOOLKIT_INSTALL_WRAPPER`, `LOGNAME`, `PATH`, `USER`, `WSL_DISTRO_NAME`
 - Filesystem constants:
   - `GLOBAL_GIT_HOOKS_PATH_KEY = 'core.hooksPath'`
 - Explicit exit codes: `0`, `2`
 - Public classes:
-  - `class Palette` — ANSI colorizer that no-ops when color isn't appropriate.
   - `class Reporter` — Collects every step that didn't run, for the end-of-run summary.
   - `class Manifest` — Append-only JSON Lines history of every file mutation, across all runs.
   - `class Options` — Validated command-line options for one invocation.
@@ -1444,7 +1467,6 @@ install.py — dotfiles + AI-harness provisioner for macOS and Linux/WSL.
   - `class CommandResult` — Outcome of one external command: whether it succeeded, and its stdout.
   - `class ManagedService` — One systemd --user service this installer enables/disables/tracks.
 - Public functions:
-  - `color_enabled(stream: object) -> bool` — Return whether ANSI codes should be emitted to ``stream``.
   - `detect_wsl(system: str) -> bool` — Return whether this is a WSL kernel (as opposed to native Linux).
   - `build_context(opts: Options, dotfiles: Path | None = None) -> Context` — Assemble a :class:`Context` for a real run on this machine.
   - `check_harness_binaries(ctx: Context) -> list[str]` — Return error strings for requested harnesses whose binaries are not on PATH.
@@ -1460,13 +1482,7 @@ install.py — dotfiles + AI-harness provisioner for macOS and Linux/WSL.
   - `gather_links(ctx: Context, specs: Sequence[LinkSpec]) -> list[tuple[Path, Path, str, bool]]` — Expand every ``links.toml`` row into concrete triples, once per run.
   - `symlink(ctx: Context, src: Path, dest: Path) -> bool` — Link ``dest`` → ``src``, backing up whatever non-symlink is in the way.
   - `install_symlinks(ctx: Context, links: Sequence[tuple[Path, Path, str, bool]]) -> None` — Link every applicable expanded ``links.toml`` entry.
-  - `json_key_drift(seed: dict[str, object], live: dict[str, object]) -> list[str]` — Return the top-level keys whose values differ between seed and live.
-  - `opencode_bypass_drift(seed: dict[str, object], live: dict[str, object]) -> list[str]` — Return allowlist-bypass bash patterns present live but not in the seed.
-  - `describe_settings_drift(seed: Path, live: Path) -> str` — Describe how a live settings.json diverged from its seed.
-  - `describe_opencode_drift(seed: Path, live: Path) -> str` — Describe how a live opencode.jsonc diverged from its seed.
-  - `describe_vscode_drift(seed: Path, live: Path) -> str` — Describe how a live VS Code settings/keybindings file diverged from its seed.
   - `seed_vscode_settings(ctx: Context) -> list[tuple[str, tuple[str, str]]]` — Seed the Windows-side VS Code settings.json and keybindings.json under WSL.
-  - `seed_file(ctx: Context, seed: Path, dest: Path, *, skip_label: str, drift: Callable[[Path, Path], str], adopt_drift: Callable[[str, str], str] | None = None, adopt_blocker: Callable[[Context, Path, Path, str, str], str | None] | None = None) -> str` — Copy ``seed`` to ``dest`` once, or report drift if it's already there.
   - `seed_claude_settings(ctx: Context) -> tuple[str, str]` — Seed ~/.claude/settings.json, if Claude Code was selected.
   - `seed_pi_settings(ctx: Context) -> tuple[str, str]` — Seed ~/.pi/agent/settings.json, if Pi was selected.
   - `seed_opencode_config(ctx: Context) -> tuple[str, str]` — Seed ~/.config/opencode/opencode.jsonc, if opencode was selected.
