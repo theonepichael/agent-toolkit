@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
@@ -4110,6 +4111,222 @@ class BacklogTestCase(BacklogFixture):
         line = dev_status._render_changelog(entries)
         self.assertNotIn("new-slug-name", line)
         self.assertIn("Widen the dashboard box", line)
+
+    # ── diagnostic journal events (lock-wait / stale-pid-sweep / claim-theft) ─
+
+    def _lock_wait_entries(self):
+        return [e for e in self._journal_lines() if e.get("cmd") == "lock-wait"]
+
+    def test_lock_wait_journals_past_threshold(self):
+        # A real flock against the fixture's tmpdir LOCK_FILE, artificially
+        # slowed past the 0.5s journal threshold. Deterministic: the sleep
+        # happens inside the patched flock, so the recorded wait always
+        # exceeds the threshold.
+        real_flock = fcntl.flock
+
+        def slow_flock(fd, op):
+            time.sleep(0.6)
+            return real_flock(fd, op)
+
+        with patch("fcntl.flock", side_effect=slow_flock):
+            with dev_status.backlog_lock():
+                pass
+        entries = self._lock_wait_entries()
+        self.assertEqual(len(entries), 1)
+        e = entries[0]
+        self.assertEqual(e["kind"], "backlog")
+        self.assertTrue(e["diagnostic"])
+        self.assertIsInstance(e["wait_seconds"], float)
+        self.assertGreaterEqual(e["wait_seconds"], 0.5)
+
+    def test_lock_wait_not_journaled_below_threshold(self):
+        # A plain uncontended acquisition (no artificial slowdown) must not
+        # leave a lock-wait entry behind.
+        with dev_status.backlog_lock():
+            pass
+        self.assertEqual(self._lock_wait_entries(), [])
+
+    def test_lock_wait_scoped_to_backlog_lock_only(self):
+        # out_of_scope_lock acquires a different fd and must never journal a
+        # lock-wait, even when its flock is slowed past the threshold.
+        real_flock = fcntl.flock
+
+        def slow_flock(fd, op):
+            time.sleep(0.6)
+            return real_flock(fd, op)
+
+        with patch("fcntl.flock", side_effect=slow_flock):
+            with dev_status.out_of_scope_lock():
+                pass
+        self.assertEqual(self._lock_wait_entries(), [])
+
+    def test_render_changelog_skips_diagnostic_entries(self):
+        entries = [
+            {
+                "ts": "2026-01-01T12:00:00+00:00",
+                "cmd": "done",
+                "slug": "real-work",
+                "summary": "Ship the widget",
+            },
+            {
+                "ts": "2026-01-01T12:01:00+00:00",
+                "cmd": "lock-wait",
+                "wait_seconds": 1.25,
+                "diagnostic": True,
+            },
+            {
+                "ts": "2026-01-01T12:02:00+00:00",
+                "cmd": "stale-pid-sweep",
+                "slug": "some-item",
+                "detail": "dead-claim sweep",
+                "diagnostic": True,
+            },
+            {
+                "ts": "2026-01-01T12:03:00+00:00",
+                "cmd": "claim-theft",
+                "slug": "other-item",
+                "detail": "--force took over",
+                "diagnostic": True,
+            },
+            {
+                # A diagnostic-less entry keeps rendering normally.
+                "ts": "2026-01-01T12:04:00+00:00",
+                "cmd": "start",
+                "slug": "third-item",
+                "summary": "Pick up the thread",
+            },
+        ]
+        text = dev_status._render_changelog(entries)
+        self.assertIn("Ship the widget", text)
+        self.assertIn("Pick up the thread", text)
+        self.assertNotIn("lock-wait", text)
+        self.assertNotIn("stale-pid-sweep", text)
+        self.assertNotIn("claim-theft", text)
+        self.assertNotIn("some-item", text)
+        self.assertNotIn("other-item", text)
+        self.assertNotIn("dead-claim sweep", text)
+
+    def test_stale_pid_sweep_journals_and_reverts(self):
+        now_iso = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        item = make_item("task-a", status="in-progress")
+        item["claimed_by"] = {
+            "harness": "pi",
+            "machine_id": dev_status.machine_id(),
+            "pid": 999999,
+            "claimed_at": now_iso,
+            "last_active": now_iso,
+        }
+        self.write_items([item])
+        out, err = io.StringIO(), io.StringIO()
+        with (
+            patch("dev_status._is_pid_alive", return_value=False),
+            patch("sys.stdout", out),
+            patch("sys.stderr", err),
+        ):
+            dev_status.cmd_render(_args())
+        # The claim was reverted and a diagnostic event journaled.
+        self.assertEqual(self.read_items()[0]["status"], "open")
+        sweeps = [e for e in self._journal_lines() if e.get("cmd") == "stale-pid-sweep"]
+        self.assertEqual(len(sweeps), 1)
+        e = sweeps[0]
+        self.assertEqual(e["slug"], "task-a")
+        self.assertEqual(e["kind"], "backlog")
+        self.assertTrue(e["diagnostic"])
+        self.assertIn("999999", e["detail"])
+
+    def test_stale_pid_sweep_not_journaled_when_claim_alive(self):
+        now_iso = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        item = make_item("task-a", status="in-progress")
+        item["claimed_by"] = {
+            "harness": "pi",
+            "machine_id": dev_status.machine_id(),
+            "pid": 999999,
+            "claimed_at": now_iso,
+            "last_active": now_iso,
+        }
+        self.write_items([item])
+        out, err = io.StringIO(), io.StringIO()
+        with (
+            patch("dev_status._is_pid_alive", return_value=True),
+            patch("sys.stdout", out),
+            patch("sys.stderr", err),
+        ):
+            dev_status.cmd_render(_args())
+        self.assertEqual(self.read_items()[0]["status"], "in-progress")
+        self.assertEqual(
+            [e for e in self._journal_lines() if e.get("cmd") == "stale-pid-sweep"], []
+        )
+
+    @patch("dev_status._check_worktree_guard")
+    @patch("dev_status._is_pid_alive", return_value=True)
+    def test_claim_theft_journaled_on_force_over_live_claim(self, mock_pid, mock_wt):
+        now_iso = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        item = make_item("task-a", status="in-progress")
+        item["claimed_by"] = {
+            "harness": "pi",
+            "machine_id": dev_status.machine_id(),
+            "pid": 999999,
+            "claimed_at": now_iso,
+            "last_active": now_iso,
+        }
+        self.write_items([item])
+        dev_status.cmd_start(_args(id="task-a", claimed_by="claude", force=True))
+        thefts = [e for e in self._journal_lines() if e.get("cmd") == "claim-theft"]
+        self.assertEqual(len(thefts), 1)
+        e = thefts[0]
+        self.assertEqual(e["slug"], "task-a")
+        self.assertEqual(e["kind"], "backlog")
+        self.assertTrue(e["diagnostic"])
+        self.assertIn("999999", e["detail"])
+
+    @patch("dev_status._check_worktree_guard")
+    @patch("dev_status._is_pid_alive", return_value=False)
+    def test_claim_theft_not_journaled_for_dead_claim_takeover(self, mock_pid, mock_wt):
+        now_iso = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        item = make_item("task-a", status="in-progress")
+        item["claimed_by"] = {
+            "harness": "pi",
+            "machine_id": dev_status.machine_id(),
+            "pid": 999999,
+            "claimed_at": now_iso,
+            "last_active": now_iso,
+        }
+        self.write_items([item])
+        dev_status.cmd_start(_args(id="task-a", claimed_by="claude", force=True))
+        self.assertEqual(
+            [e for e in self._journal_lines() if e.get("cmd") == "claim-theft"], []
+        )
+
+    @patch("dev_status._check_worktree_guard")
+    def test_claim_theft_not_journaled_for_own_claim_reentry(self, mock_wt):
+        # Same session re-entering its own claim (even with --force) is not
+        # a takeover: no claim-theft event.
+        self.write_items([make_item("task-a")])
+        dev_status.cmd_start(_args(id="task-a", claimed_by="claude"))
+        dev_status.cmd_start(_args(id="task-a", claimed_by="claude", force=True))
+        self.assertEqual(
+            [e for e in self._journal_lines() if e.get("cmd") == "claim-theft"], []
+        )
+
+    @patch("dev_status._check_worktree_guard")
+    def test_claim_theft_journaled_for_cross_machine_ttl_claim(self, mock_wt):
+        # A cross-machine claim inside the TTL cannot be PID-checked; --force
+        # over it is theft of an assumed-live claim.
+        now_iso = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        item = make_item("task-a", status="in-progress")
+        item["claimed_by"] = {
+            "harness": "claude",
+            "machine_id": "other-machine",
+            "pid": 999999,
+            "claimed_at": now_iso,
+            "last_active": now_iso,
+        }
+        self.write_items([item])
+        dev_status.cmd_start(_args(id="task-a", claimed_by="pi", force=True))
+        thefts = [e for e in self._journal_lines() if e.get("cmd") == "claim-theft"]
+        self.assertEqual(len(thefts), 1)
+        self.assertEqual(thefts[0]["slug"], "task-a")
+        self.assertTrue(thefts[0]["diagnostic"])
 
     # ── DEVSTATUS_AGENT: suppress agent-only stderr noise on request ────────
     # Five success-path stderr sites (never on an error path -- those stay

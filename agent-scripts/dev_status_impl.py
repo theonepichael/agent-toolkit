@@ -360,6 +360,27 @@ def _claim_ttl_seconds() -> float:
         return float(DEFAULT_CLAIM_TTL_SECONDS)
 
 
+def _claim_within_ttl(claim_last_active: str) -> bool:
+    """True if a claim's activity stamp is parseable and inside the claim TTL.
+
+    Used for cross-machine claims, which cannot be PID-checked: a stamp
+    within :func:`_claim_ttl_seconds` means the claim must be assumed live.
+    An unparseable or missing stamp returns ``False`` (an unknowable claim
+    is not treated as a confirmed-live theft victim).
+    """
+    if not claim_last_active:
+        return False
+    try:
+        ts_str = claim_last_active.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(ts_str)
+    except (ValueError, TypeError):
+        return False
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    elapsed = (datetime.now(UTC) - dt).total_seconds()
+    return elapsed < _claim_ttl_seconds()
+
+
 def _is_pid_alive(pid: int) -> bool:
     """Check whether a process with `pid` is currently alive on the local machine."""
     if pid <= 0:
@@ -628,9 +649,6 @@ def _check_claim_collision(
     )
     claim_last_active = str(claim.get("last_active") or claim.get("claimed_at") or "")
 
-    if force:
-        return
-
     if (
         claim_machine == current_machine
         and claim_pid == current_pid
@@ -638,12 +656,48 @@ def _check_claim_collision(
     ):
         return
 
+    # Same session re-entering via its owner PID is not a takeover either.
+    if (
+        claim_machine == current_machine
+        and claim_owner_pid > 0
+        and claim_owner_pid == current_owner_pid
+        and current_owner_pid > 0
+    ):
+        return
+
+    if force:
+        # A forced takeover of a *live* claim is claim theft — journal it for
+        # forensics. (We're inside the caller's ``backlog_lock`` critical
+        # section, so this append is serialized with every other journal
+        # write.) Own-claim re-entries above are not theft and are never
+        # journaled; a --force over an already-dead or expired claim is the
+        # ordinary takeover path, also not journaled.
+        anchor_pid = claim_owner_pid if claim_owner_pid > 0 else claim_pid
+        if claim_machine == current_machine:
+            stolen_live = anchor_pid > 0 and _is_pid_alive(anchor_pid)
+        else:
+            stolen_live = _claim_within_ttl(claim_last_active)
+        if stolen_live:
+            append_journal_event(
+                _journal_entry(
+                    "claim-theft",
+                    "backlog",
+                    load_rev(),
+                    slug=str(item.get("id", "?")),
+                    detail=(
+                        f"--force took over live {claim_harness} claim "
+                        f"(PID {anchor_pid}, machine {claim_machine[:6]})"
+                    ),
+                    diagnostic=True,
+                )
+            )
+        return
+
     # Owner-anchored claims: the owner PID, not the ephemeral child pid, is
     # the liveness anchor — and a matching owner means the same session is
-    # re-entering, not a collision.
+    # re-entering, not a collision (an exact owner match already returned
+    # above, so the block below only handles mismatched/dead owners).
     if claim_machine == current_machine and claim_owner_pid > 0:
-        if claim_owner_pid == current_owner_pid and current_owner_pid > 0:
-            return
         if _is_pid_alive(claim_owner_pid):
             print(
                 f"[start] {item.get('id', '?')} is actively claimed by {claim_harness} "
@@ -1124,6 +1178,12 @@ _backlog_lock_rlock = threading.RLock()
 _backlog_lock_fd: int = -1
 _backlog_lock_count: int = 0
 
+# ``lock-wait`` journal events are only emitted when acquiring
+# ``_backlog_lock_fd`` (the outermost entry, where the real ``flock`` blocks)
+# took longer than this many seconds — routine near-zero acquisitions would
+# otherwise flood the journal.
+_BACKLOG_LOCK_WAIT_JOURNAL_THRESHOLD_SECONDS = 0.5
+
 
 @contextmanager
 def backlog_lock() -> Iterator[None]:
@@ -1144,7 +1204,24 @@ def backlog_lock() -> Iterator[None]:
         _backlog_lock_count += 1
         if _backlog_lock_count == 1:
             _backlog_lock_fd = os.open(str(LOCK_FILE), os.O_WRONLY | os.O_CREAT, 0o644)
+            wait_start = time.monotonic()
             fcntl.flock(_backlog_lock_fd, fcntl.LOCK_EX)
+            wait_seconds = time.monotonic() - wait_start
+            if wait_seconds > _BACKLOG_LOCK_WAIT_JOURNAL_THRESHOLD_SECONDS:
+                # Recorded *after* acquisition, inside the critical section
+                # the wait just ended — journaling never requires acquiring
+                # a different lock, so no cross-lock nesting is introduced.
+                # Deliberately scoped to ``_backlog_lock_fd`` only (never
+                # ``_out_of_scope_lock_fd``), per the logging spec.
+                append_journal_event(
+                    _journal_entry(
+                        "lock-wait",
+                        "backlog",
+                        load_rev(),
+                        wait_seconds=round(wait_seconds, 3),
+                        diagnostic=True,
+                    )
+                )
         try:
             yield
         finally:
@@ -2244,6 +2321,9 @@ def _journal_entry(
     fields: list[str] | None = None,
     feedback: str | None = None,
     count: int | None = None,
+    wait_seconds: float | None = None,
+    detail: str | None = None,
+    diagnostic: bool | None = None,
 ) -> dict[str, object]:
     """Build one journal entry: a fixed envelope plus structured optionals.
 
@@ -2272,6 +2352,12 @@ def _journal_entry(
         entry["feedback"] = feedback
     if count is not None:
         entry["count"] = count
+    if wait_seconds is not None:
+        entry["wait_seconds"] = wait_seconds
+    if detail is not None:
+        entry["detail"] = detail
+    if diagnostic is not None:
+        entry["diagnostic"] = diagnostic
     return entry
 
 
@@ -2693,6 +2779,11 @@ def _render_changelog(entries: list[dict[str, object]]) -> str:
     """
     lines = []
     for e in entries:
+        if e.get("diagnostic"):
+            # Low-level lock-contention/stale-sweep/claim-theft telemetry is
+            # post-mortem detail, never a workflow event a recap reader
+            # should see — skip it before any rendering runs.
+            continue
         if e.get("to_status") == "done":
             continue
         ts = _parse_journal_ts(e.get("ts"))
@@ -3324,12 +3415,30 @@ def _sweep_dead_claims(items: list[BacklogItem]) -> list[str]:
         if owner_pid <= 0 or _is_pid_alive(owner_pid):
             continue
         claimed_at = str(claim.get("claimed_at") or "")
-        notices.append(
+        notice = (
             f"[sweep] {item.get('id', '?')} claim by {claim_harness} "
             f"(PID {owner_pid}, claimed {claimed_at}) is dead; reverted to open."
         )
+        notices.append(notice)
         item["status"] = "open"
         item.pop("claimed_by", None)
+        # Journal write happens here, inside the same ``fcntl.flock`` critical
+        # section as the claim mutation — callers all hold :func:`backlog_lock`
+        # — so two racing processes can never both sweep and both journal the
+        # same stale claim.
+        append_journal_event(
+            _journal_entry(
+                "stale-pid-sweep",
+                "backlog",
+                load_rev(),
+                slug=str(item.get("id", "?")),
+                detail=(
+                    f"dead-claim sweep reverted {claim_harness} claim "
+                    f"(PID {owner_pid}, claimed {claimed_at}) to open"
+                ),
+                diagnostic=True,
+            )
+        )
     return notices
 
 
