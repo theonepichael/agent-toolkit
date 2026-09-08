@@ -84,8 +84,11 @@ import { Type } from "typebox";
 
 // Extracted helper modules (interface-preserving refactor): the picker
 // relay, scheduling decisions and herdr protocol argv/response helpers live
-// in their own files; every moved symbol is re-exported below so this
-// extension's import surface is unchanged.
+// in their own files under swarm-lib/ -- deliberately un-discoverable by pi
+// (no index.ts, no package.json manifest), since a bare *.ts file directly
+// in extensions/ is loaded as its own extension and none of these three
+// export a factory function. Every moved symbol is re-exported below so
+// this extension's import surface is unchanged.
 import {
   AMEND_INSTRUCTION,
   buildAgentGetArgv,
@@ -110,10 +113,10 @@ import {
   parseTabCreate,
   reasonHeadline,
   waitResultDetail,
-} from "./swarm-herdr";
-import type { BlockClass } from "./swarm-picker";
-import type { PollEventKind } from "./swarm-herdr";
-import type { ProbeResult, TabCreateResult } from "./swarm-herdr";
+} from "./swarm-lib/swarm-herdr";
+import type { BlockClass } from "./swarm-lib/swarm-picker";
+import type { PollEventKind } from "./swarm-lib/swarm-herdr";
+import type { ProbeResult, TabCreateResult } from "./swarm-lib/swarm-herdr";
 import {
   classifyBlock,
   matchOption,
@@ -121,7 +124,7 @@ import {
   noteResolveFailure,
   parsePicker,
   pickerLabels,
-} from "./swarm-picker";
+} from "./swarm-lib/swarm-picker";
 import {
   isSuspiciousFinish,
   itemPaths,
@@ -131,12 +134,12 @@ import {
   selectSchedulable,
   spawnBudget,
   stalledRelayWorkers,
-} from "./swarm-scheduling";
-import type { ReadyItem, SwarmState, WorkerRecord } from "./swarm-scheduling";
+} from "./swarm-lib/swarm-scheduling";
+import type { ReadyItem, SwarmState, WorkerRecord } from "./swarm-lib/swarm-scheduling";
 
-export * from "./swarm-picker";
-export * from "./swarm-scheduling";
-export * from "./swarm-herdr";
+export * from "./swarm-lib/swarm-picker";
+export * from "./swarm-lib/swarm-scheduling";
+export * from "./swarm-lib/swarm-herdr";
 
 /**
  * Where a run's state file lives. Resolved per call, not captured at module

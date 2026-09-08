@@ -11,9 +11,13 @@ import { describe, expect, test } from "bun:test";
 // Type-only exports are erased at runtime, so their existence is asserted at
 // compile time (`keyof typeof mod` union membership, checked by the
 // `typecheck` stage) and pinned to `true` here so the assertion cannot rot.
-import * as picker from "../extensions/swarm-picker";
-import type { BlockClass, ParsedPicker, RenderedOption } from "../extensions/swarm-picker";
-import * as scheduling from "../extensions/swarm-scheduling";
+import * as picker from "../extensions/swarm-lib/swarm-picker";
+import type {
+  BlockClass,
+  ParsedPicker,
+  RenderedOption,
+} from "../extensions/swarm-lib/swarm-picker";
+import * as scheduling from "../extensions/swarm-lib/swarm-scheduling";
 import type {
   Amendment,
   ReadyItem,
@@ -22,15 +26,15 @@ import type {
   SwarmState,
   WorkerLifecycle,
   WorkerRecord,
-} from "../extensions/swarm-scheduling";
-import * as herdr from "../extensions/swarm-herdr";
+} from "../extensions/swarm-lib/swarm-scheduling";
+import * as herdr from "../extensions/swarm-lib/swarm-herdr";
 import type {
   PollEventKind,
   ProbeResult,
   ResyncVerdict,
   TabCreateResult,
   TimeoutVerdict,
-} from "../extensions/swarm-herdr";
+} from "../extensions/swarm-lib/swarm-herdr";
 import * as surface from "../extensions/swarm-tool";
 import type { CaptureOffer, PollEvent } from "../extensions/swarm-tool";
 

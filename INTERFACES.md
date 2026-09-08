@@ -1326,9 +1326,9 @@ are copy-once seeds for exactly that reason.
 | `pi/extensions/ruff-format-on-edit.ts` | `~/.pi/agent/extensions/ruff-format-on-edit.ts` (pi) |
 | `pi/extensions/second-opinion-tool.ts` | `~/.pi/agent/extensions/second-opinion-tool.ts` (pi) |
 | `pi/extensions/standup-tool.ts` | `~/.pi/agent/extensions/standup-tool.ts` (pi) |
-| `pi/extensions/swarm-herdr.ts` | `~/.pi/agent/extensions/swarm-herdr.ts` (pi) |
-| `pi/extensions/swarm-picker.ts` | `~/.pi/agent/extensions/swarm-picker.ts` (pi) |
-| `pi/extensions/swarm-scheduling.ts` | `~/.pi/agent/extensions/swarm-scheduling.ts` (pi) |
+| `pi/extensions/swarm-lib/swarm-herdr.ts` | not symlinked by `links.toml` |
+| `pi/extensions/swarm-lib/swarm-picker.ts` | not symlinked by `links.toml` |
+| `pi/extensions/swarm-lib/swarm-scheduling.ts` | not symlinked by `links.toml` |
 | `pi/extensions/swarm-tool.ts` | `~/.pi/agent/extensions/swarm-tool.ts` (pi) |
 | `pi/extensions/to-tickets-tool.ts` | `~/.pi/agent/extensions/to-tickets-tool.ts` (pi) |
 | `pi/extensions/trust-session.ts` | `~/.pi/agent/extensions/trust-session.ts` (pi) |
