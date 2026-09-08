@@ -128,6 +128,10 @@ src = "agent-scripts/dev_status_impl.py"
 dest = "~/.claude/scripts/dev_status_impl.py"
 
 [[link]]
+src = "agent-scripts/dev_status_formatting.py"
+dest = "~/.claude/scripts/dev_status_formatting.py"
+
+[[link]]
 src = "agent-scripts/sessionstart_checks.py"
 dest = "~/.claude/scripts/sessionstart_checks.py"
 
@@ -714,4 +718,3 @@ ignore = [
 [[managed_dir]]
 dest = "~/.pi/agent/extensions"
 ignore = ["herdr-agent-state.ts"]
-
