@@ -72,7 +72,7 @@ of effective attention. Before delegating:
    spec skill finishes - <original next_steps preserved/appended>"}'`.
 3. Run spec's protocol to actual completion, including any inner grill-me
    delegation and spec's own end-of-session steps.
-4. On return, read `~/.agents/skills/backlog-item/SKILL.md`'s own step 6
+4. On return, read `~/.codex/skills/backlog-item/SKILL.md`'s own step 6
    text by its literal absolute path before acting — don't rely on
    recalling it from earlier in the conversation.
 

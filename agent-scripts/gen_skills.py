@@ -203,10 +203,13 @@ CAPABILITY_TABLE: dict[str, dict[str, str | bool]] = {
         # a poor fit for provisioned files.
         "has_session_start_hook": False,
         "skill_src_pattern": "codex/skills/<name>/SKILL.md",
-        # Codex's USER-scope skills dir; docs confirm symlinked skill
-        # folders/files are followed. Per-FILE links (copilot/agy style):
-        # the 5 generated skills are self-contained, no ref/ dirs.
-        "skill_dest_pattern": "~/.agents/skills/<name>/SKILL.md",
+        # Codex's USER-scope skills dir, sibling to the bundled .system/ one
+        # -- confirmed live via `codex debug prompt-input`'s skill-roots
+        # table and Codex's own skill-installer skill (2026-09-08,
+        # atk-codex-skill-root-fix); ~/.agents/skills/ is never scanned.
+        # Per-FILE links (copilot/agy style): the 5 generated skills are
+        # self-contained, no ref/ dirs.
+        "skill_dest_pattern": "~/.codex/skills/<name>/SKILL.md",
         "skill_ref_dir": "ref",
         "probe_command": "codex exec",
         "commit_scope": "codex",

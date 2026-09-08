@@ -182,13 +182,15 @@ export SECOND_OPINION_PI_MODEL_POOL="opencode-go/glm-5.2,opencode-go/glm-5.3-fla
 | **OpenCode** | `~/.config/opencode/opencode.jsonc` | `~/.config/opencode/commands/` | `~/.config/opencode/plugin/` |
 | **Antigravity (AGY)** | `~/.gemini/GEMINI.md` | `~/.gemini/antigravity-cli/skills/` | `~/.gemini/config/hooks.json` |
 | **Pi** | `~/.pi/agent/AGENTS.md` | `~/.pi/agent/prompts/` | `~/.pi/agent/extensions/` |
-| **Codex CLI** | `~/.codex/AGENTS.md` | `~/.agents/skills/` | none provisioned |
+| **Codex CLI** | `~/.codex/AGENTS.md` | `~/.codex/skills/` | none provisioned |
 
 **Codex notes.** Codex CLI (best-effort tier, like Copilot/AGY — see AGENTS.md's
 "Harness maintenance tiers") reads global instructions from `~/.codex/AGENTS.md`
-and USER-scope skills from `~/.agents/skills/` (a shared cross-tool namespace
-per the agentskills.io standard — no exclusivity audit, per-file drift checks
-only). One caveat: Codex caps the combined instruction chain at
+and USER-scope skills from `~/.codex/skills/` (sibling to the bundled
+`~/.codex/skills/.system/` skills, not the `~/.agents/skills/` shared
+namespace other harnesses use — confirmed via `codex debug prompt-input`'s
+skill-roots table on a live 0.153.4 install; no exclusivity audit, per-file
+drift checks only). One caveat: Codex caps the combined instruction chain at
 `project_doc_max_bytes` (32 KiB default), and the shared instructions file is
 ~27 KB of that budget, leaving ~5 KB headroom for a repo's own AGENTS.md
 chain — raise `project_doc_max_bytes` in `~/.codex/config.toml` if a

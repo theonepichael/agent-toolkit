@@ -27,9 +27,24 @@ state the options, give a recommendation, wait for a plain-text reply.
 
 ## 3. Skills
 
-- USER scope: `~/.agents/skills/` (not `~/.codex/skills/` — that holds
-  SYSTEM/bundled skills under `.system/`). Repo scope: `.agents/skills/`
-  walking cwd up to the repo root. ADMIN: `/etc/codex/skills`.
+- USER scope: `~/.codex/skills/<name>/`, **sibling to** the bundled
+  `~/.codex/skills/.system/` skills — NOT `~/.agents/skills/`.
+  CORRECTED 2026-09-08 (`atk-codex-skill-root-fix`): the original entry
+  here claimed `~/.agents/skills/` from reading upstream docs alone,
+  which turned out to be wrong (or at least not true for 0.153.4) —
+  a live install's skills there were completely invisible to both
+  `$skill-name` and implicit matching. Caught by dumping the actual
+  model-visible skill index (`codex debug prompt-input`), whose
+  `skills_instructions` block lists a "Skill roots" table — on this
+  machine it showed exactly one root, `r0 = ~/.codex/skills/.system`,
+  and no `~/.agents/skills` root at all. Codex's own bundled
+  `skill-installer` system skill independently confirms the real
+  convention: "Installs into `$CODEX_HOME/skills/<skill-name>` (defaults
+  to `~/.codex/skills`)." Repo scope and ADMIN scope below are still
+  doc-sourced only, not live-reverified the same way — treat them with
+  the same suspicion until spot-checked:
+  - Repo scope: `.agents/skills/` walking cwd up to the repo root.
+  - ADMIN: `/etc/codex/skills`.
 - `SKILL.md` frontmatter requires `name` + `description` (agentskills.io
   standard); optional `references/`, `scripts/`, `assets/`,
   `agents/openai.yaml`. This repo's generated codex skills are

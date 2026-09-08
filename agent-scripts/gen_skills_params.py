@@ -1242,7 +1242,7 @@ of effective attention. Before delegating:
    spec skill finishes - <original next_steps preserved/appended>"}'`.
 3. Run spec's protocol to actual completion, including any inner grill-me
    delegation and spec's own end-of-session steps.
-4. On return, read `~/.agents/skills/backlog-item/SKILL.md`'s own step 6
+4. On return, read `~/.codex/skills/backlog-item/SKILL.md`'s own step 6
    text by its literal absolute path before acting — don't rely on
    recalling it from earlier in the conversation.
 
@@ -1691,8 +1691,8 @@ descriptions first.""",
 Probe with `codex exec '<a real trigger phrase>'` (verified non-interactive mode: `codex exec [OPTIONS] [PROMPT]`). Check the output (and reasoning, if visible) repeats your leading words back. If the agent skips a step, that step needs splitting or stronger steering — not more prose.""",
         "PLUMBING_STEPS": """\
 1. File lives at the repo's `codex/skills/<name>/SKILL.md` (same for any reference files, under the repo's `codex/skills/<name>/references/`).
-2. Add a `[[link]]` entry (`src = "codex/skills/<name>/SKILL.md"`, `dest = "~/.agents/skills/<name>/SKILL.md"`, `harness = "codex"`) in `links.toml` next to the existing ones (same for any reference files). `~/.agents/skills` is Codex's USER-scope skills directory — a shared cross-tool namespace, so it deliberately has no `[[managed_dir]]` exclusivity row.
-3. Create the live symlink now: `ln -s "$(git rev-parse --show-toplevel)/codex/skills/<name>/SKILL.md" "~/.agents/skills/<name>/SKILL.md"` (create the parent directory first). Codex follows symlinked skill files when scanning.
+2. Add a `[[link]]` entry (`src = "codex/skills/<name>/SKILL.md"`, `dest = "~/.codex/skills/<name>/SKILL.md"`, `harness = "codex"`) in `links.toml` next to the existing ones (same for any reference files). `~/.codex/skills` is Codex's USER-scope skills directory, sibling to the bundled `~/.codex/skills/.system/` one — verified via `codex debug prompt-input`'s skill-roots table and Codex's own skill-installer skill, not the `~/.agents/skills` shared namespace this repo originally (and wrongly) assumed — so it deliberately has no `[[managed_dir]]` exclusivity row.
+3. Create the live symlink now: `ln -s "$(git rev-parse --show-toplevel)/codex/skills/<name>/SKILL.md" "~/.codex/skills/<name>/SKILL.md"` (create the parent directory first). Codex follows symlinked skill files when scanning.
 4. Conventional commit, scope `codex`: `feat` for a new skill, `refactor`/`docs` for revisions.""",
     },
     "pi": {

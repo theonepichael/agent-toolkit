@@ -539,36 +539,43 @@ src = "claude/CORE_INSTRUCTIONS.md"
 dest = "~/.codex/AGENTS.md"
 harness = "codex"
 
-# Codex's USER-scope skills dir (~/.agents/skills). Per-FILE links like
-# copilot/agy -- the generated skills are self-contained. Deliberately NO
-# [[managed_dir]] row: this is a shared cross-tool namespace (the open
-# agentskills.io standard location), so foreign skills there are
-# legitimate; each link below still gets individual drift checking from
-# --check-links. Codex follows symlinked skill files when scanning
-# (docs, build-skills).
+# Codex's USER-scope skills dir. CORRECTED 2026-09-08
+# (atk-codex-skill-root-fix): the original ~/.agents/skills/ destination
+# below was never actually scanned by Codex -- `codex debug prompt-input`
+# on a live 0.153.4 session showed exactly one skill root,
+# `~/.codex/skills/.system` (the bundled skills), and no ~/.agents/skills/
+# root at all, so a skill linked there was invisible to $skill-name
+# invocation and implicit matching alike. Codex's own bundled
+# skill-installer skill documents the real convention: user skills install
+# into "$CODEX_HOME/skills/<skill-name>" (defaults to ~/.codex/skills),
+# sibling to .system/ -- not a shared agentskills.io namespace under
+# ~/.agents/. Per-FILE links like copilot/agy -- the generated skills are
+# self-contained. Deliberately NO [[managed_dir]] row on ~/.codex/skills/
+# itself: that would claim exclusivity over Codex's own .system/ sibling;
+# each link below still gets individual drift checking from --check-links.
 [[link]]
 src = "codex/skills/dashboard/SKILL.md"
-dest = "~/.agents/skills/dashboard/SKILL.md"
+dest = "~/.codex/skills/dashboard/SKILL.md"
 harness = "codex"
 
 [[link]]
 src = "codex/skills/recap/SKILL.md"
-dest = "~/.agents/skills/recap/SKILL.md"
+dest = "~/.codex/skills/recap/SKILL.md"
 harness = "codex"
 
 [[link]]
 src = "codex/skills/grill-me/SKILL.md"
-dest = "~/.agents/skills/grill-me/SKILL.md"
+dest = "~/.codex/skills/grill-me/SKILL.md"
 harness = "codex"
 
 [[link]]
 src = "codex/skills/backlog-item/SKILL.md"
-dest = "~/.agents/skills/backlog-item/SKILL.md"
+dest = "~/.codex/skills/backlog-item/SKILL.md"
 harness = "codex"
 
 [[link]]
 src = "codex/skills/make-skill/SKILL.md"
-dest = "~/.agents/skills/make-skill/SKILL.md"
+dest = "~/.codex/skills/make-skill/SKILL.md"
 harness = "codex"
 
 # ── Pi ───────────────────────────────────────────────────────────────────
