@@ -672,19 +672,19 @@ dest = "~/.pi/agent/extensions/swarm-tool.ts"
 harness = "pi"
 
 [[link]]
-src = "pi/extensions/swarm-picker.ts"
-dest = "~/.pi/agent/extensions/swarm-picker.ts"
+# swarm-tool.ts's internal helper modules (picker relay, scheduling
+# decisions, herdr protocol argv/response helpers). Linked as a whole
+# directory, not per-file: pi loads every *.ts directly in extensions/ as
+# its own extension, and none of these three export a factory function --
+# a per-file link here reintroduces the "Failed to load extension" errors
+# this arrangement exists to avoid. A bare subdirectory with no index.ts/
+# package.json is silently skipped by pi's one-level discovery scan, so
+# swarm-tool.ts's `./swarm-lib/...` imports resolve without pi ever trying
+# to load anything inside it as its own extension.
+src = "pi/extensions/swarm-lib"
+dest = "~/.pi/agent/extensions/swarm-lib"
 harness = "pi"
-
-[[link]]
-src = "pi/extensions/swarm-scheduling.ts"
-dest = "~/.pi/agent/extensions/swarm-scheduling.ts"
-harness = "pi"
-
-[[link]]
-src = "pi/extensions/swarm-herdr.ts"
-dest = "~/.pi/agent/extensions/swarm-herdr.ts"
-harness = "pi"
+dir = true
 
 [[link]]
 src = "pi/extensions/exit-alias.ts"
