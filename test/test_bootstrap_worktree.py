@@ -136,3 +136,45 @@ class TestBootstrapWorktree:
         assert SCRIPT.exists(), f"{SCRIPT} missing"
         first_line = SCRIPT.read_text().splitlines()[0]
         assert first_line == "#!/usr/bin/env bash"
+
+    def test_unexpected_argument_exits_2_and_skips_installs(
+        self, tmp_path: Path, script_in_fake_repo: Path
+    ) -> None:
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        log = tmp_path / "calls.log"
+        _write_stub(bin_dir, log, "uv", exit_code=0)
+        _write_stub(bin_dir, log, "bun", exit_code=0)
+
+        result = subprocess.run(
+            ["bash", str(script_in_fake_repo), "/some/worktree/path"],
+            cwd=tmp_path,
+            env={"PATH": f"{bin_dir}:/usr/bin:/bin"},
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 2
+        assert "/some/worktree/path" in result.stderr
+        assert not log.exists(), "no installer should run when an argument is rejected"
+
+    def test_successful_run_prints_resolved_target(
+        self, tmp_path: Path, script_in_fake_repo: Path
+    ) -> None:
+        repo = script_in_fake_repo.parent.parent
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        log = tmp_path / "calls.log"
+        _write_stub(bin_dir, log, "uv", exit_code=0)
+        _write_stub(bin_dir, log, "bun", exit_code=0)
+
+        result = subprocess.run(
+            ["bash", str(script_in_fake_repo)],
+            cwd=tmp_path,
+            env={"PATH": f"{bin_dir}:/usr/bin:/bin"},
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert str(repo) in result.stdout

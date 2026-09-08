@@ -13,7 +13,13 @@
 # installs are incremental.
 set -euo pipefail
 
+if [ "$#" -ne 0 ]; then
+  echo "ERROR: bootstrap-worktree.sh takes no arguments (got: $1) — it always installs into its own checkout, resolved from its own location" >&2
+  exit 2
+fi
+
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+echo "==> bootstrap target: $repo_root"
 fail=0
 
 if command -v uv >/dev/null 2>&1; then
