@@ -56,21 +56,40 @@ related_files names exactly one project repo → worktree it per the shared inst
 Run that repo's test suite (or the most relevant targeted subset) in the fresh worktree before touching anything (the shared instructions file's "Baseline tests before starting code work").
 
 ## 5. Spec or plan
-Now use the `spec` skill with the item's context/next_steps as the task.
-Let it run through drafting and saving end-to-end (its steps 1–4) —
-including its own internal escalation to `grill-me` if a field's design is
-genuinely open; `spec`'s step 3 owns that handoff and the resume-after
-entirely, there is nothing to orchestrate here. Only when it reaches its
-own step 4 generation offer: do not ask that question and do not implement
-yet — move immediately to step 6 here instead.
+Copilot has no `spec` skill — it's deliberately excluded from Copilot's
+active tier (the shared instructions file's "Harness maintenance tiers";
+see AGENTS.md). Don't hand off to one. Draft the spec yourself, inline,
+using the item's context/next_steps as the task:
 
-Once spec is saved, update the backlog item's `related_files` to include
-its path if not already present (per the shared instructions file's "Plans
-and deliverables get a path on record" rule) — neither skill has knowledge
-of `dev_status.py`, so nothing else performs this update, and step 1's
-resume branch depends on it. If `spec` delegated into `grill-me` along the
-way, that session's plan path is already cited from the spec's Context
-field — don't also record it as a second, competing artifact.
+- **Objective** — one sentence: what exists when this is done.
+- **Context** — what the agent needs to know: existing code, conventions, prior decisions.
+- **Inputs** — data, files, tools, assumptions in bounds.
+- **Output format** — the literal shape of the deliverable: file structure, schema, API contracts (signatures, types, and invariants — never full function/class implementations).
+- **Constraints** — what to avoid: new deps, paid APIs, style rules.
+- **Evaluation criteria** — how correctness gets judged.
+- **Edge cases** — what could go wrong or fall through.
+- **Verification steps** — tests/checks that must pass before this counts as done.
+
+Fill in what you can from the item's record and context already in scope —
+don't ask about anything inferable from the codebase. For a genuine gap, ask
+one field at a time rather than guessing.
+
+If a field's design is genuinely open — multiple viable approaches, unclear
+tradeoffs, a decision that cascades into others — invoke the `grill-me`
+skill for that specific decision. Decline its own clear-and-go offer —
+drafting isn't done yet. Once it concludes, resume drafting with that field
+now answered; cite grill-me's `plan_path` from the spec's own Context field
+as the decision record behind that field. Never interrogate architecture
+inline in the spec itself.
+
+Write the finished spec to `~/.claude/data/grill/<slug>-spec.md` (the same
+central location grill-me/second-opinion use for plan artifacts — never a
+per-session scratchpad; never `mkdir -p` first, `grill.py`/`second_opinion.py`
+each create it on every invocation, so just write the file). Update the
+backlog item's `related_files` to include its path if not already present
+(per the shared instructions file's "Plans and deliverables get a path on
+record" rule) — nothing else performs this update, and step 1's resume
+branch depends on it.
 
 ### Architecture capture (new modules only)
 
@@ -255,11 +274,10 @@ queue.
    exception. Anything needing real investigation: draft the backlog-item
    `add` JSON for it, queue it in the digest (never add silently), skip
    implementing on top of a broken baseline, and move to the next item.
-3. **Step 5 (Spec or plan)** — when handing off to the `spec` skill, state
-   explicitly in the task that this backlog-item run is `--auto`: if
-   spec's own step 3 escalates into `grill-me` for a genuinely open design
-   branch, tell it to run that inner session as `grill-me --auto` too,
-   rather than stopping for live Q&A.
+3. **Step 5 (Spec or plan)** — draft the spec fields directly as described
+   above; no `spec` skill to hand off to. If a field's design is genuinely
+   open and gets escalated to `grill-me`, run that inner session as
+   `grill-me --auto` too, rather than stopping for live Q&A.
 4. **Step 6 (Critique)** — no ask either way, per the updated step 6 rule:
    runs unconditionally when a gate was set, skipped when the item is
    all-mechanical.
