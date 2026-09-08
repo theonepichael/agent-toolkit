@@ -5,10 +5,11 @@ began as a snapshot taken from a personal dotfiles repository on
 2026-09-02; as of today, the personal machine that authored both repos
 installs its shared harness tooling from *this* repository, not dotfiles
 -- verified via both repos' `install.py --check-links` reporting clean.
-The sections below are kept as the historical record of how that happened
-and what remains (coworker access, item 3) -- see "What done looks like"
-for the exact final shape, which differs slightly from what this file
-originally described as done-criteria.
+**Update 2026-09-08: the repository is public (item 3).** The sections
+below are kept as the historical record of how the cutover happened and
+how the repo was published -- see "What done looks like" for the exact
+final shape, which differs slightly from what this file originally
+described as done-criteria.
 
 This file records what is left and, more importantly, **the order**, because
 the order is not obvious and getting it wrong is what strands a migration
@@ -61,11 +62,11 @@ new `claude/scripts/gen_core_instructions.py` into the
 `claude/global-instructions.md` dotfiles actually symlinks out — never
 synced to agent-toolkit (`scripts/sync_from_dotfiles.py`'s `EXCLUDE`).
 
-### 3. Publish the repository — remote and scan DONE, coworker access still pending
+### 3. Publish the repository — DONE (2026-09-08, now public)
 
-The split exists so coworkers can clone this. A private GitHub remote
-(`github.com/theonepichael/agent-toolkit`) now exists, with zero collaborators
-added yet.
+The split exists so this repo can be cloned outside the one machine that
+authored it. The GitHub remote (`github.com/theonepichael/agent-toolkit`)
+is public as of 2026-09-08.
 
 The work here was mostly not the remote itself — it was a secret scan across
 the **full history** pushed, not just the working tree or the initial
@@ -73,16 +74,15 @@ snapshot's era, since history carries everything ever committed and this
 repo's history was imported wholesale. That scan (gitleaks, full history) came
 back clean. A separate hardcoded-path audit of the working tree, done as part
 of the same pass, was not clean — it found this-machine-specific paths in
-three files that would have silently misbehaved for a coworker; those are
-fixed, with a regression test added so the class doesn't recur.
+three files that would have silently misbehaved for someone else cloning
+this, on a different machine; those are fixed, with a regression test added
+so the class doesn't recur. A second full-history scan was re-run
+immediately before flipping visibility to public (~150 commits had landed
+since the first one) and also came back clean.
 
-Remaining before a coworker actually gets in: a scratch-clone install
-verification (done, two harnesses), the onboarding entry point (this file and
-the README, being brought current now), and then adding named collaborators —
-deliberately last, since two more coworker-facing issues turned up mid-audit
-(`atk-pi-prompts-dotfiles-refs`) and should land first.
-
-Independent of items 1 and 2; was done alongside both.
+Read access is now open to anyone. Named collaborators (push/write access)
+were never a blocker for that and remain a separate, optional step if ever
+wanted — nothing here is waiting on it.
 
 ### 4. Write the handover order and its rollback — DONE (2026-09-03, executed 2026-09-07)
 
@@ -121,15 +121,14 @@ reassert step, which is exactly where both incidents lived.
 ### 5. Sync once, then cut over — DONE (2026-09-07)
 
 Ran `install-with-agent-toolkit.sh` for real on the machine that authors both
-repos. Both repos' `install.py --check-links` report clean. Collaborator
-access (item 3) is still the one open item.
+repos. Both repos' `install.py --check-links` report clean.
 
 ## What done looks like
 
 The local machine's harness config resolves to this repository rather than to
-dotfiles for every destination except the 4 that are supposed to keep
+dotfiles for every destination except the 5 that are supposed to keep
 resolving to dotfiles' composed `global-instructions.md` (`~/.claude/CLAUDE.md`
-and its copilot/gemini/pi equivalents) — that's the personal-overlay design,
+and its copilot/gemini/pi/codex equivalents) — that's the personal-overlay design,
 not an unfinished cutover, and `install-with-agent-toolkit.sh` is what makes
 it durable across future installs, not just this one. The old harness trees
 are gone from dotfiles rather than duplicated, except for what's still a
@@ -139,9 +138,8 @@ log` on `pi/`, `copilot/`, `agy/`, and the pruned parts of `claude/`
 in dotfiles shows the 2026-09-04 deletion commit for the full picture.
 `sync_from_dotfiles.py` keeps one narrow, permanent, and deliberate upstream
 relationship — `CORE_INSTRUCTIONS.md` is authored in dotfiles and synced in —
-which is the intended final shape, not a leftover. What's still open: a
-coworker cloning this repo can't yet get in, since no collaborators are added
-(item 3).
+which is the intended final shape, not a leftover. The repo has been public
+since 2026-09-08 (item 3) — nothing is still open there.
 
 ## A note on why this file exists
 
