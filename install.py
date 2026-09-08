@@ -32,7 +32,6 @@ Requires Python 3.12+.
 
 import argparse
 import contextlib
-import fnmatch
 import json
 import os
 import platform
@@ -53,8 +52,33 @@ from uuid import uuid4
 sys.path.insert(0, str(Path(__file__).resolve().parent / "agent-scripts"))
 
 import cli_common  # noqa: E402 — sibling dir inserted above
+import link_inspect  # noqa: E402 — sibling dir inserted above
 
-import depart
+import depart  # noqa: E402 — sibling dir on path above
+
+# Re-exports from link_inspect (the extracted links.toml-audit module in
+# agent-scripts/): every moved name keeps resolving through install for
+# existing tests and callers. Assignment style, so ruff's F401 has nothing
+# to flag — these are the interface, not unused accidents.
+JUNK_SUFFIXES = link_inspect.JUNK_SUFFIXES
+_JUNK_SUFFIXES = link_inspect.JUNK_SUFFIXES
+CHECK_BUCKET_BROKEN_SOURCE = link_inspect.CHECK_BUCKET_BROKEN_SOURCE
+CHECK_BUCKET_WRONG_TARGET = link_inspect.CHECK_BUCKET_WRONG_TARGET
+CHECK_BUCKET_NOT_A_SYMLINK = link_inspect.CHECK_BUCKET_NOT_A_SYMLINK
+CHECK_BUCKET_ORPHANED = link_inspect.CHECK_BUCKET_ORPHANED
+CHECK_BUCKET_UNMANAGED = link_inspect.CHECK_BUCKET_UNMANAGED
+CHECK_BUCKET_NEVER_INSTALLED = link_inspect.CHECK_BUCKET_NEVER_INSTALLED
+CHECK_BUCKETS = link_inspect.CHECK_BUCKETS
+LinkSpec = link_inspect.LinkSpec
+ManagedDirSpec = link_inspect.ManagedDirSpec
+expand_dest = link_inspect.expand_dest
+_is_symlink = link_inspect.is_symlink
+_path_exists = link_inspect.path_exists
+_link_target = link_inspect.link_target
+_same_path = link_inspect.same_path
+_implied_repo_root = link_inspect.implied_repo_root
+_is_dotfiles_checkout = link_inspect.is_dotfiles_checkout
+_is_main_checkout = link_inspect.is_main_checkout
 
 VALID_HARNESSES = ("claude", "copilot", "opencode", "agy", "pi")
 VALID_PROFILES = ("personal", "work")
@@ -1513,33 +1537,12 @@ def _activate_nvm_node(ctx: Context) -> None:
 # ── symlink engine ────────────────────────────────────────────────────────────
 
 
-@dataclass(frozen=True)
-class LinkSpec:
-    """One row of ``links.toml``: a repo file and where it gets linked."""
-
-    src: str
-    dest: str
-    harness: str | None = None
-    platform: str | None = None
-    wsl: str | None = None
-    profile_exclude: tuple[str, ...] = ()
-    dir: bool = False
-
+# LinkSpec and ManagedDirSpec live in agent-scripts/link_inspect.py now (the
+# extracted links.toml-audit module); they are re-exported from this module's
+# import block above. The field-name sets below stay here because they belong
+# to the TOML-parsing validation in load_links/load_managed_dirs.
 
 _LINK_FIELDS = {"src", "dest", "harness", "platform", "wsl", "profile_exclude", "dir"}
-
-
-@dataclass(frozen=True)
-class ManagedDirSpec:
-    """One row of ``links.toml``: a directory dotfiles owns exclusively.
-
-    Exclusivity is opt-in rather than inferred. Inferring it from every link's
-    ``dest.parent`` surfaces 230 unmanaged entries to find 2 real ones, 68 of
-    them in ``$HOME`` alone, because seven separate rows happen to land there.
-    """
-
-    dest: str
-    ignore: tuple[str, ...] = ()
 
 
 _MANAGED_DIR_FIELDS = {"dest", "ignore"}
@@ -1672,23 +1675,6 @@ def link_applies(spec: LinkSpec, ctx: Context) -> bool:
     if spec.wsl == "only" and not ctx.is_wsl:
         return False
     return ctx.opts.profile not in spec.profile_exclude
-
-
-def expand_dest(dest: str, home: Path) -> Path:
-    """Expand a ``links.toml`` destination against ``home``.
-
-    Explicit rather than :func:`os.path.expanduser` so the destination
-    tracks the context's home directory (which tests point at a temporary
-    one) instead of the process environment.
-    """
-    if dest == "~":
-        return home
-    if dest.startswith("~/"):
-        return home / dest[2:]
-    return Path(dest)
-
-
-_JUNK_SUFFIXES = ("~", ".swp", ".swo", ".tmp")
 
 
 def iter_concrete_links(
@@ -4660,100 +4646,12 @@ def do_depart(ctx: Context) -> int:
 
 # ── links.toml audit ──────────────────────────────────────────────────────────
 
-CHECK_BUCKET_BROKEN_SOURCE = "broken-source"
-CHECK_BUCKET_WRONG_TARGET = "wrong-target"
-CHECK_BUCKET_NOT_A_SYMLINK = "not-a-symlink"
-CHECK_BUCKET_ORPHANED = "orphaned"
-CHECK_BUCKET_UNMANAGED = "unmanaged"
-CHECK_BUCKET_NEVER_INSTALLED = "never-installed"
-
-CHECK_BUCKETS = (
-    CHECK_BUCKET_BROKEN_SOURCE,
-    CHECK_BUCKET_WRONG_TARGET,
-    CHECK_BUCKET_NOT_A_SYMLINK,
-    CHECK_BUCKET_ORPHANED,
-    CHECK_BUCKET_UNMANAGED,
-    CHECK_BUCKET_NEVER_INSTALLED,
-)
-
-
-def _is_symlink(path: Path) -> bool:
-    """Return whether ``path`` is a symlink, catching OSError when unreadable."""
-    try:
-        return path.is_symlink()
-    except OSError:
-        return False
-
-
-def _path_exists(path: Path) -> bool:
-    """Return whether ``path`` exists, catching OSError when unreadable."""
-    try:
-        return path.exists()
-    except OSError:
-        return False
-
-
-def _link_target(dest: Path) -> Path:
-    """Return what ``dest`` points at, as an absolute path.
-
-    ``symlink`` only ever writes absolute targets, but a link placed there
-    by hand may be relative — resolve those against the link's own
-    directory the way the kernel does, rather than against the cwd.
-    """
-    target = Path(os.readlink(dest))
-    return target if target.is_absolute() else dest.parent / target
-
-
-def _same_path(left: Path, right: Path) -> bool:
-    """Compare two paths that may or may not exist, ignoring symlinked parents.
-
-    A plain string comparison is the common case; the ``resolve`` fallback
-    catches an installer run whose repo path reached the link through a
-    symlink (a symlinked home, ``/tmp`` → ``/private/tmp`` on macOS), which
-    would otherwise read as a wrong target.
-    """
-    if left == right:
-        return True
-    try:
-        return left.resolve() == right.resolve()
-    except OSError:
-        return False
-
-
-def _implied_repo_root(target: Path, relative_src: str) -> Path | None:
-    """Return the repo root ``target`` implies, if it ends with ``relative_src``.
-
-    ``/home/u/dotfiles-wt/claude/global-instructions.md`` with a
-    ``claude/global-instructions.md`` entry implies ``/home/u/dotfiles-wt``.
-    None if the tail doesn't match, which means the link points at
-    something unrelated rather than at the same file in a different
-    checkout.
-    """
-    tail = Path(relative_src).parts
-    parts = target.parts
-    if len(parts) <= len(tail) or parts[-len(tail) :] != tail:
-        return None
-    return Path(*parts[: -len(tail)])
-
-
-def _is_dotfiles_checkout(root: Path) -> bool:
-    """Return whether ``root`` looks like another checkout of this repo."""
-    return (root / "links.toml").is_file() and (root / "install.py").is_file()
-
-
-def _is_main_checkout(root: Path) -> bool:
-    """Return whether ``root`` is the repo's primary checkout, not a worktree.
-
-    `git worktree add` gives a worktree a `.git` *file* holding a `gitdir:`
-    pointer, while the primary checkout keeps `.git` as a directory. That
-    difference is the whole test, and reading it costs one stat -- no git
-    subprocess, which keeps this usable from the audit and from a test suite
-    that blocks real subprocess calls.
-    """
-    try:
-        return (root / ".git").is_dir()
-    except OSError:
-        return False
+# The inspection/classification logic itself — bucket constants, path
+# classifiers, orphan detection, drift finding — lives in
+# agent-scripts/link_inspect.py now; this module re-exports every moved name
+# (see the import block at the top) and keeps only the Context-coupled
+# adapters, the repair/deletion execution (_cleanup_orphaned_links), and the
+# do_check_links entrypoint.
 
 
 def _check_applicable_links(
@@ -4762,145 +4660,23 @@ def _check_applicable_links(
     *,
     report_uninstalled: bool = False,
 ) -> tuple[dict[str, list[str]], dict[Path, int]]:
-    """Report inconsistencies on destinations in scope for this machine.
-
-    Entries whose destination does not exist at all are silently fine by
-    default: that is simply a link this machine has not installed (yet), not
-    a defect. That is also what makes the widened-harness default safe — an
-    entry for a harness that was never provisioned has no destination to
-    report on. Passing ``report_uninstalled`` additionally flags a missing
-    destination whose source exists but that the manifest has never once
-    recorded creating — genuinely never installed, as distinct from a link
-    that was installed and later removed (rollback or manual cleanup), which
-    a manifest record still explains and which stays silent either way.
-
-    Returns:
-        The findings by bucket, and a count per *other* checkout the live
-        links point into. The second value is not a finding: this repo
-        mandates worktree-first development, so running the audit from a
-        worktree while the machine's links point at the main checkout is
-        the normal case, not a defect (see :func:`do_check_links`).
-    """
-    findings: dict[str, list[str]] = {bucket: [] for bucket in CHECK_BUCKETS}
-    foreign: dict[Path, int] = {}
-    installed_dests: set[Path] = set()
-    if report_uninstalled:
-        installed_dests = {
-            Path(str(entry["dest"]))
-            for entry in ctx.manifest.entries()
-            if entry.get("kind") == "symlink-created" and "dest" in entry
-        }
-    for src, dest, rel, applicable in links:
-        if not applicable:
-            continue
-        if not _is_symlink(dest) and not _path_exists(dest):
-            if report_uninstalled and _path_exists(src) and dest not in installed_dests:
-                findings[CHECK_BUCKET_NEVER_INSTALLED].append(
-                    f"{ctx.display(dest)} — {src} exists in the repo but was "
-                    "never linked here; run install.sh to link it"
-                )
-            continue
-
-        if not _is_symlink(dest):
-            # Reached through a symlinked *parent* (a directory-level entry
-            # linking the ancestor) the file is still correctly wired, even
-            # though this path is not itself a link.
-            if not _same_path(dest, src):
-                findings[CHECK_BUCKET_NOT_A_SYMLINK].append(
-                    f"{ctx.display(dest)} — a real "
-                    f"{'directory' if dest.is_dir() else 'file'} sits where a "
-                    f"symlink to {src} belongs; the next install run would "
-                    "back it up and replace it"
-                )
-            continue
-
-        target = _link_target(dest)
-        if not _same_path(target, src):
-            other_root = _implied_repo_root(target, rel)
-            # Only a link into the PRIMARY checkout is excusable. The
-            # direction matters and used to be ignored: auditing from a
-            # worktree while the machine points at main is the normal state
-            # under worktree-first development, but a link pointing INTO a
-            # worktree is drift -- someone hand-pointed it for a live test and
-            # left it there, and it dangles the moment that worktree is
-            # removed, silently unloading whatever it provided. Both cases
-            # answered "a different checkout?" the same way, so the second was
-            # filed as a benign note and dropped from the audited count. It
-            # has bitten three times: custom-footer.ts, then permission-gate.ts
-            # and swarm-tool.ts on 2026-09-02.
-            same_file_other_checkout = (
-                other_root is not None
-                and not _same_path(other_root, ctx.dotfiles)
-                and _is_dotfiles_checkout(other_root)
-                and _is_main_checkout(other_root)
-            )
-            if same_file_other_checkout:
-                # A dangling link is a real machine problem regardless of
-                # which checkout it points into, so that still gets reported.
-                if not _path_exists(target):
-                    findings[CHECK_BUCKET_BROKEN_SOURCE].append(
-                        f"{ctx.display(dest)} — links to {target}, which no "
-                        "longer exists (dangling symlink)"
-                    )
-                else:
-                    assert other_root is not None  # narrowed by the guard above
-                    foreign[other_root] = foreign.get(other_root, 0) + 1
-                continue
-            findings[CHECK_BUCKET_WRONG_TARGET].append(
-                f"{ctx.display(dest)} — points at {target}, but links.toml says {src}"
-            )
-            continue
-
-        if not _path_exists(src):
-            findings[CHECK_BUCKET_BROKEN_SOURCE].append(
-                f"{ctx.display(dest)} — links to {src}, which no longer "
-                "exists in the repo (dangling symlink)"
-            )
-    return findings, foreign
+    """Adapter for link_inspect.check_applicable_links; see it for detail."""
+    return link_inspect.check_applicable_links(
+        links,
+        dotfiles=ctx.dotfiles,
+        format_path=ctx.display,
+        manifest_entries=ctx.manifest.entries(),
+        report_uninstalled=report_uninstalled,
+    )
 
 
 def _find_orphaned_links(
     ctx: Context, links: Sequence[tuple[Path, Path, str, bool]]
 ) -> list[Path]:
-    """Return manifest-recorded symlink destinations no current entry produces.
-
-    Compared against *every* triple's destination rather than only the
-    applicable ones: a triple that is merely gated off on this machine (a
-    mac-only link seen from Linux, a harness not selected this run) has not
-    been removed from links.toml, so its recorded destination is not an
-    orphan — reporting it as one would be a false positive on every
-    cross-platform machine, or on a run scoped to a different harness.
-
-    A destination whose *live* target no longer matches what this repo's
-    manifest recorded creating is not orphaned — it's claimed. Some other
-    tool (most commonly another repo's own installer, sharing this same
-    destination) has already repointed it, and unlinking it here would
-    delete that tool's live symlink, not ours. 2026-09-07: dotfiles'
-    orphan-cleanup deleted three ~/.claude/scripts/*.py symlinks
-    agent-toolkit's installer had just created moments earlier in the same
-    install-with-agent-toolkit.sh run, because this check didn't exist —
-    _rollback_symlink already guards the equivalent case before removing
-    anything; this mirrors that same guard here.
-    """
-    known = {dest for _src, dest, _rel, _applicable in links}
-    orphans: list[Path] = []
-    seen: set[Path] = set()
-    for entry in ctx.manifest.entries():
-        if entry.get("kind") != "symlink-created":
-            continue
-        dest = Path(str(entry.get("dest", "")))
-        if dest in known or dest in seen:
-            continue
-        seen.add(dest)
-        # A dest that no longer exists needs no report: a past --rollback,
-        # or the user, already cleaned it up.
-        if not _is_symlink(dest) and not _path_exists(dest):
-            continue
-        recorded_src = str(entry.get("src", ""))
-        if _is_symlink(dest) and recorded_src and os.readlink(dest) != recorded_src:
-            continue
-        orphans.append(dest)
-    return orphans
+    """Adapter for link_inspect.find_orphaned_links; see it for detail."""
+    return link_inspect.find_orphaned_links(
+        links, manifest_entries=ctx.manifest.entries()
+    )
 
 
 def _check_orphaned_links(
@@ -4909,38 +4685,17 @@ def _check_orphaned_links(
     findings: dict[str, list[str]],
 ) -> None:
     """Add manifest-recorded symlinks that links.toml no longer produces."""
-    for dest in _find_orphaned_links(ctx, links):
-        if _is_symlink(dest):
-            detail = f"still symlinked → {_link_target(dest)}"
-        else:
-            detail = "still present as a real file"
-        findings[CHECK_BUCKET_ORPHANED].append(
-            f"{ctx.display(dest)} — recorded by a past install run, but no "
-            f"links.toml entry produces it anymore; {detail}"
-        )
+    link_inspect.check_orphaned_links(
+        links,
+        findings,
+        format_path=ctx.display,
+        manifest_entries=ctx.manifest.entries(),
+    )
 
 
 def _live_backup_paths(ctx: Context) -> set[Path]:
-    """Return manifest-recorded backups that are still live ``--rollback`` payload.
-
-    Liveness means "the destination is still present at all", not "it
-    resolves": ``shutil.move(backup, dest)`` replaces a dangling symlink just
-    as readily as a healthy one, so a broken link does not make its backup
-    disposable. Reporting one would tell the user to delete the only copy of
-    their pre-dotfiles original, which is the opposite of what the backup is
-    for.
-    """
-    live: set[Path] = set()
-    for entry in ctx.manifest.entries():
-        if entry.get("kind") != "file-backed-up":
-            continue
-        dest = Path(str(entry.get("dest", "")))
-        backup = Path(str(entry.get("backup", "")))
-        if not dest.parts or not backup.parts:
-            continue
-        if _path_exists(backup) and (_path_exists(dest) or _is_symlink(dest)):
-            live.add(backup)
-    return live
+    """Adapter for link_inspect.live_backup_paths; see it for detail."""
+    return link_inspect.live_backup_paths(ctx.manifest.entries())
 
 
 def _dir_applies(
@@ -4972,62 +4727,16 @@ def _check_unmanaged_files(
     managed_dirs: Sequence[ManagedDirSpec],
     findings: dict[str, list[str]],
 ) -> int:
-    """Report foreign entries in directories ``links.toml`` owns exclusively.
-
-    Nothing else catches these. ``--rollback`` only inspects what the history
-    recorded, ``--depart`` compares against an install-time baseline, and the
-    repo-to-links.toml parity tests check both directions of the mapping yet
-    cannot see a file that exists only on the installed side.
-
-    Args:
-        specs: Parsed ``[[link]]`` rows, for :func:`_dir_applies`.
-        links: Every gathered triple, applicable or not — a gated row's
-            destination is still ours, so it must never read as foreign.
-        managed_dirs: Parsed ``[[managed_dir]]`` rows.
-        findings: Bucket map to append into.
-
-    Returns:
-        How many declared directories were actually audited.
-    """
-    live_backups = _live_backup_paths(ctx)
-    audited = 0
-    for dir_spec in managed_dirs:
-        directory = expand_dest(dir_spec.dest, ctx.home)
-        if not directory.is_dir():
-            continue
-        if not _dir_applies(dir_spec, specs, ctx):
-            continue
-        audited += 1
-        managed = {
-            dest
-            for _src, dest, _rel, _applicable in links
-            if dest.is_relative_to(directory)
-        }
-        try:
-            entries = sorted(os.listdir(directory))
-        except OSError as exc:
-            findings[CHECK_BUCKET_UNMANAGED].append(
-                f"{ctx.display(directory)} — declared exclusive, but unreadable "
-                f"({exc.strerror or exc}), so it could not be audited"
-            )
-            continue
-        for name in entries:
-            path = directory / name
-            if path in managed or path in live_backups:
-                continue
-            if any(fnmatch.fnmatch(name, pat) for pat in dir_spec.ignore):
-                continue
-            # Hidden files are skipped: macOS drops .DS_Store into any directory
-            # the user merely opens in Finder.
-            if name.startswith(".") or name.endswith(_JUNK_SUFFIXES):
-                continue
-            if path.is_dir() and not _is_symlink(path):
-                continue
-            findings[CHECK_BUCKET_UNMANAGED].append(
-                f"{ctx.display(path)} — {dir_spec.dest} is declared exclusive "
-                "to dotfiles, but no links.toml entry produces it"
-            )
-    return audited
+    """Adapter for link_inspect.check_unmanaged_files; see it for detail."""
+    return link_inspect.check_unmanaged_files(
+        managed_dirs,
+        links,
+        home=ctx.home,
+        format_path=ctx.display,
+        dir_applies=lambda dir_spec: _dir_applies(dir_spec, specs, ctx),
+        findings=findings,
+        manifest_entries=ctx.manifest.entries(),
+    )
 
 
 def _cleanup_orphaned_links(

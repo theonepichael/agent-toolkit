@@ -227,6 +227,10 @@ src = "agent-scripts/link_drift_check.py"
 dest = "~/.claude/scripts/link_drift_check.py"
 
 [[link]]
+src = "agent-scripts/link_inspect.py"
+dest = "~/.claude/scripts/link_inspect.py"
+
+[[link]]
 src = "agent-scripts/refresh_guidance.py"
 dest = "~/.claude/scripts/refresh_guidance.py"
 
