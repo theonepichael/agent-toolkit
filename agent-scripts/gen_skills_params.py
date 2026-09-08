@@ -729,21 +729,40 @@ Otherwise (item is open): run `dev_status.py start <slug|N>` (`--if-rev <N>`
 for numeric ids). On a main/master checkout, `start` now refuses (worktree
 guard) — do step 3 first, then run `start` from inside the fresh worktree.""",
         "STEP5_BODY": """\
-Now use the `spec` skill with the item's context/next_steps as the task.
-Let it run through drafting and saving end-to-end (its steps 1–4) —
-including its own internal escalation to `grill-me` if a field's design is
-genuinely open; `spec`'s step 3 owns that handoff and the resume-after
-entirely, there is nothing to orchestrate here. Only when it reaches its
-own step 4 generation offer: do not ask that question and do not implement
-yet — move immediately to step 6 here instead.
+Copilot has no `spec` skill — it's deliberately excluded from Copilot's
+active tier (the shared instructions file's "Harness maintenance tiers";
+see AGENTS.md). Don't hand off to one. Draft the spec yourself, inline,
+using the item's context/next_steps as the task:
 
-Once spec is saved, update the backlog item's `related_files` to include
-its path if not already present (per the shared instructions file's "Plans
-and deliverables get a path on record" rule) — neither skill has knowledge
-of `dev_status.py`, so nothing else performs this update, and step 1's
-resume branch depends on it. If `spec` delegated into `grill-me` along the
-way, that session's plan path is already cited from the spec's Context
-field — don't also record it as a second, competing artifact.""",
+- **Objective** — one sentence: what exists when this is done.
+- **Context** — what the agent needs to know: existing code, conventions, prior decisions.
+- **Inputs** — data, files, tools, assumptions in bounds.
+- **Output format** — the literal shape of the deliverable: file structure, schema, API contracts (signatures, types, and invariants — never full function/class implementations).
+- **Constraints** — what to avoid: new deps, paid APIs, style rules.
+- **Evaluation criteria** — how correctness gets judged.
+- **Edge cases** — what could go wrong or fall through.
+- **Verification steps** — tests/checks that must pass before this counts as done.
+
+Fill in what you can from the item's record and context already in scope —
+don't ask about anything inferable from the codebase. For a genuine gap, ask
+one field at a time rather than guessing.
+
+If a field's design is genuinely open — multiple viable approaches, unclear
+tradeoffs, a decision that cascades into others — invoke the `grill-me`
+skill for that specific decision. Decline its own clear-and-go offer —
+drafting isn't done yet. Once it concludes, resume drafting with that field
+now answered; cite grill-me's `plan_path` from the spec's own Context field
+as the decision record behind that field. Never interrogate architecture
+inline in the spec itself.
+
+Write the finished spec to `~/.claude/data/grill/<slug>-spec.md` (the same
+central location grill-me/second-opinion use for plan artifacts — never a
+per-session scratchpad; never `mkdir -p` first, `grill.py`/`second_opinion.py`
+each create it on every invocation, so just write the file). Update the
+backlog item's `related_files` to include its path if not already present
+(per the shared instructions file's "Plans and deliverables get a path on
+record" rule) — nothing else performs this update, and step 1's resume
+branch depends on it.""",
         "STEP6_BODY": """\
 If step 5 set a gate (judgment steps present), run the `second-opinion`
 skill against the resulting plan or spec file unconditionally, no ask —
@@ -858,11 +877,10 @@ start of the run — items added to READY mid-run aren't picked up until a
 later invocation. Loop the modified per-item procedure below across the
 queue.""",
         "AUTO_STEP5_SPEC": """\
-**Step 5 (Spec or plan)** — when handing off to the `spec` skill, state
-   explicitly in the task that this backlog-item run is `--auto`: if
-   spec's own step 3 escalates into `grill-me` for a genuinely open design
-   branch, tell it to run that inner session as `grill-me --auto` too,
-   rather than stopping for live Q&A.""",
+**Step 5 (Spec or plan)** — draft the spec fields directly as described
+   above; no `spec` skill to hand off to. If a field's design is genuinely
+   open and gets escalated to `grill-me`, run that inner session as
+   `grill-me --auto` too, rather than stopping for live Q&A.""",
         "AUTO_END_BLOCK": """\
 in one pass, asking in plain text for each queued item exactly as its
 originating shared-instructions protocol specifies (a backlog `add`, a
@@ -1041,38 +1059,54 @@ Otherwise (item is open): run `dev_status.py start <slug|N>` (`--if-rev <N>`
 for numeric ids). On a main/master checkout, `start` now refuses (worktree
 guard) — do step 3 first, then run `start` from inside the fresh worktree.""",
         "STEP5_BODY": """\
-Delegate to the spec skill with the item's context/next_steps as the task.
-Let it draft and save the spec end-to-end (its steps 1–4) — including its
-own internal escalation to grill-me if a field's design is genuinely open;
-spec's step 3 owns that handoff and the resume-after entirely, including
-its own suspend-and-return discipline for that inner delegation. There is
-nothing to orchestrate here. Decline spec's own step 4 generation offer —
-step 7 below owns the handoff decision.
+agy has no `spec` skill — it's deliberately excluded from agy's active tier
+(the shared instructions file's "Harness maintenance tiers"; see AGENTS.md).
+Don't attempt to delegate into one. Draft the spec yourself, inline, right
+here, using the item's context/next_steps as the task:
 
-**Delegating into spec is a suspend-and-return, not a fire-and-forget
-reference** — agy has no discrete "Skill" tool call; the model activates a
-referenced skill by reading and following its SKILL.md body directly using
-normal tool access, which means a long sub-conversation inside spec (and,
-inside that, potentially grill-me) can push this procedure's own state out
-of effective attention. Before delegating:
+- **Objective** — one sentence: what exists when this is done.
+- **Context** — what the agent needs to know: existing code, conventions, prior decisions.
+- **Inputs** — data, files, tools, assumptions in bounds.
+- **Output format** — the literal shape of the deliverable: file structure, schema, API contracts (signatures, types, and invariants — never full function/class implementations).
+- **Constraints** — what to avoid: new deps, paid APIs, style rules.
+- **Evaluation criteria** — how correctness gets judged.
+- **Edge cases** — what could go wrong or fall through.
+- **Verification steps** — tests/checks that must pass before this counts as done.
+
+Fill in what you can from the item's record and context already in scope —
+don't ask about anything inferable from the codebase. For a genuine gap, ask
+one field at a time rather than guessing.
+
+If a field's design is genuinely open — multiple viable approaches, unclear
+tradeoffs, a decision that cascades into others — escalate just that
+decision to `grill-me`, using the same suspend-and-return discipline as
+step 6 below (agy has no discrete "Skill" tool call; a long sub-conversation
+inside grill-me can push this procedure's own state out of effective
+attention):
 1. Print a literal checkpoint marker: `[CHECKPOINT: suspending backlog-item
-   at step 5 for the spec skill; resume at step 6 when it finishes]`.
+   at step 5 for grill-me; resume drafting the spec when it finishes]`.
 2. Persist the same return pointer somewhere that outlives the chat
-   transcript — this harness and agy both auto-compress context under
-   length pressure, so the marker alone isn't enough: `dev_status.py
-   update <slug> '{"next_steps": "Resume backlog-item at step 6 after the
-   spec skill finishes - <original next_steps preserved/appended>"}'`.
-3. Run spec's protocol to actual completion, including any inner grill-me
-   delegation and spec's own end-of-session steps.
-4. On return, read `~/.gemini/antigravity-cli/skills/backlog-item/SKILL.md`'s
-   own step 6 text by its literal absolute path before acting — don't rely
-   on recalling it from earlier in the conversation.
+   transcript — this harness auto-compresses context under length
+   pressure, so the marker alone isn't enough: `dev_status.py update
+   <slug> '{"next_steps": "Resume backlog-item at step 5 after grill-me
+   finishes - <original next_steps preserved/appended>"}'`.
+3. Run grill-me's protocol to actual completion (Q&A, `--verify`,
+   executor-readiness). Decline its own clear-and-go offer — drafting isn't
+   done yet.
+4. On return, read
+   `~/.gemini/antigravity-cli/skills/backlog-item/SKILL.md`'s own step 5
+   text by its literal absolute path before resuming — don't rely on
+   recalling it from earlier in the conversation. Resume drafting with that
+   field now answered; cite grill-me's `plan_path` from the spec's own
+   Context field as the decision record behind that field. Never
+   interrogate architecture inline in the spec itself.
 
-Once spec records its artifact path, add it to the item's related_files if
-missing (the shared instructions file's "Plans and deliverables get a path
-on record"). If spec delegated into grill-me along the way, that session's
-`plan_path` is already cited from the spec's Context field — don't also
-record it as a second, competing artifact.""",
+Write the finished spec to `~/.claude/data/grill/<slug>-spec.md` (the same
+central location grill-me/second-opinion use for plan artifacts — never a
+per-session scratchpad; never `mkdir -p` first, `grill.py`/`second_opinion.py`
+each create it on every invocation, so just write the file). Add that path
+to the item's related_files (the shared instructions file's "Plans and
+deliverables get a path on record").""",
         "STEP6_BODY": """\
 If step 5 set a gate (judgment steps present), run the second-opinion
 skill against the resulting plan or spec file unconditionally, no ask,
@@ -1155,17 +1189,17 @@ items are skipped by construction (never READY). The queue is fixed at the
 start of the run — items added to READY mid-run aren't picked up until a
 later invocation. Loop the modified per-item procedure below across the
 queue. This mode does not remove the need for step 5/6's suspend-and-return
-checkpoint discipline around delegating into `spec` (and, inside that,
-potentially `grill-me`) — it still applies unchanged; the checkpoint marker
-and the persisted `next_steps` pointer just also carry the auto-context note
-from point 3 below.""",
+checkpoint discipline around escalating an open field into `grill-me` — it
+still applies unchanged when step 5's inline spec-drafting hits one; the
+checkpoint marker and the persisted `next_steps` pointer just also carry the
+auto-context note from point 3 below.""",
         "AUTO_STEP5_SPEC": """\
-**Step 5 (Spec or plan)** — the checkpoint marker and persisted
-   `next_steps` pointer this step already requires before delegating into
-   `spec` also state explicitly that this backlog-item run is `--auto`: if
-   spec's own step 3 escalates into `grill-me` for a genuinely open design
-   branch, that inner session should also run `grill-me --auto` rather than
-   stopping for live Q&A.""",
+**Step 5 (Spec or plan)** — draft the spec fields directly as described
+   above; no `spec` skill to delegate into. If a field's design is
+   genuinely open and gets escalated to `grill-me`, the checkpoint marker
+   and persisted `next_steps` pointer that escalation already requires also
+   state explicitly that this backlog-item run is `--auto`, so that inner
+   session runs `grill-me --auto` rather than stopping for live Q&A.""",
         "AUTO_END_BLOCK": """\
 in one pass, asking in plain conversational text for each queued item
 exactly as its originating shared-instructions protocol specifies (a
