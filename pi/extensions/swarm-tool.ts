@@ -109,7 +109,7 @@ import {
   deadlineStopDetail,
   findTabByLabel,
   paneIdentityMismatch,
-  parseAgentListIds,
+  parseAgentList,
   parseTabCreate,
   reasonHeadline,
   waitResultDetail,
@@ -133,6 +133,7 @@ import {
   parseShownItem,
   selectSchedulable,
   spawnBudget,
+  staleWorkerRecords,
   stalledRelayWorkers,
 } from "./swarm-lib/swarm-scheduling";
 import type { ReadyItem, SwarmState, WorkerRecord } from "./swarm-lib/swarm-scheduling";
@@ -495,6 +496,69 @@ export default function (pi: ExtensionAPI) {
   }
 
   /**
+   * Drops worker records herdr proves are finished-or-gone, and reports each
+   * drop in text the calling tool renders.
+   *
+   * The 2026-09-08 atk run's trap: a worker whose pi finished while the
+   * orchestrator was away keeps its record, and herdr keeps the agent LISTED
+   -- the pi sits idle in an open tab -- so presence-only reconcile called
+   * it alive and every later wave deferred the colliding items on its
+   * declared paths, indefinitely. Terminal status past RECONCILE_MIN_AGE_MS
+   * IS the finish event that poll never got to process; staleWorkerRecords
+   * owns that classification, this function owns the consequences: full
+   * teardown per dropped record (capture offers harvested first -- the
+   * read-before-delete invariant -- then tab close, then record removal),
+   * one line per drop naming the worker and its item with an explicit
+   * verify-the-outcome caveat, since the drop bypassed poll's finish-
+   * evidence check. Re-selection is impossible by construction: attempted
+   * already contains the slug.
+   *
+   * Runs warm and cold (the per-run cache is refreshed by teardown's own
+   * persist), at the top of the spawn path and inside swarm_poll's zero-
+   * active resync -- the two moments where a dead record's silence does
+   * damage. Fail open: an unreadable agent list (after one retry) prunes
+   * nothing.
+   *
+   * Mutates `state`; returns report lines for the tool's text output.
+   */
+  async function pruneStaleWorkers(state: SwarmState): Promise<string[]> {
+    let listResult: { code: number; stdout: string; stderr: string } | undefined;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        listResult = await herdr(pi, buildAgentListArgv());
+      } catch {
+        listResult = undefined;
+      }
+      if (listResult && listResult.code === 0 && parseAgentList(listResult.stdout) !== null) break;
+    }
+    const entries = listResult && listResult.code === 0 ? parseAgentList(listResult.stdout) : null;
+    if (entries === null) return [];
+
+    const stale = staleWorkerRecords(state, entries, Date.now());
+    if (stale.length === 0) return [];
+    const staleAgents = new Set(stale.map((w) => w.agent));
+    state.workers = state.workers.filter((w) => !staleAgents.has(w.agent));
+    // A dropped worker must not keep a wait slot: nothing will ever settle it.
+    const rt = runtimes.get(state.runId);
+    for (const w of stale) rt?.inFlight.delete(w.agent);
+
+    const lines: string[] = [];
+    for (const w of stale) {
+      const status = entries.find((e) => e.id === w.agent)?.status;
+      const offers = await teardownAndHarvestWorker(state, w);
+      lines.push(
+        `${w.agent} (${w.slug}): stale worker record cleared -- herdr reports its agent ${
+          status ?? "gone"
+        } (finished or dead), but its finish was never reported through ` +
+          "swarm_poll; outcome inferred, not observed. Verify the item's state before " +
+          `treating it as complete.${renderCaptureOffers(offers)}`,
+      );
+    }
+    persist(state);
+    return lines;
+  }
+
+  /**
    * Finds and closes the tab a failed `tab create` left behind, returning its
    * id when it could be identified and closed.
    *
@@ -641,12 +705,17 @@ export default function (pi: ExtensionAPI) {
     }
 
     const listResult = await herdr(pi, buildAgentListArgv());
-    const liveIds = listResult.code === 0 ? parseAgentListIds(listResult.stdout) : [];
+    // An unreadable list is INCONCLUSIVE, never an empty one: parseAgentList
+    // returns null for it and reconcile is skipped, keeping every record --
+    // the same fail-open rule the spawn path applies. An empty agents array
+    // is a truthful "nothing live" and still drops everything, as before.
+    const entries = listResult.code === 0 ? parseAgentList(listResult.stdout) : null;
+    const liveIds = (entries ?? []).map((e) => e.id);
     // Dropped entries (tracked in state, dead in herdr's live list) are
     // simply excluded from `reconciled.workers` -- a dead worker's item just
     // won't produce further events; there's nothing left to reconcile it
     // against once its pane and process are gone.
-    const { state: reconciled } = reconcileState(loaded, liveIds);
+    const reconciled = entries === null ? loaded : reconcileState(loaded, liveIds).state;
     activeRuns.set(runId, reconciled);
     saveState(reconciled);
     return reconciled;
@@ -1051,9 +1120,28 @@ export default function (pi: ExtensionAPI) {
           .filter((slug) => typed.items !== undefined || !attempted.has(slug))
           .map((slug) => readyById.get(slug) ?? { id: slug });
 
+        // A worker that finished while the orchestrator was away keeps its
+        // record and its declared paths; herdr keeps the agent LISTED (idle
+        // in its tab), so presence-only reconcile never cleared it and every
+        // wave deferred the colliding items -- the 2026-09-08 atk run's
+        // still-owed-but-never-schedulable queue. Proving liveness here,
+        // before the pool is measured, is what makes the budget and the
+        // deferral decision below trustworthy; the drop lines join the
+        // report so the run's digest can verify those items by hand.
+        const pruneLines = await pruneStaleWorkers(state);
+
         const budget = spawnBudget(state, candidates.length);
-        const takenPaths = state.workers.flatMap((w) => w.paths ?? []);
-        const selection = selectSchedulable(candidates, takenPaths, budget);
+        // Only workers herdr still shows as genuinely working hold their
+        // paths -- pruneStaleWorkers above already removed the ones it can
+        // prove finished. The holder rides along with every path so the
+        // deferral reason names the specific work in the way.
+        const taken = state.workers.flatMap((w) =>
+          (w.paths ?? []).map((p) => ({
+            path: p,
+            holder: `worker ${w.agent} (${w.slug}, ${w.lifecycle})`,
+          })),
+        );
+        const selection = selectSchedulable(candidates, taken, budget);
         const toSpawn = selection.slugs;
 
         const tabs: {
@@ -1157,6 +1245,7 @@ export default function (pi: ExtensionAPI) {
           `${refused.length} refused (not worker-safe)`,
         ];
         const lines = [`${parts.join(", ")}.`];
+        lines.push(...pruneLines);
         for (const f of failed) lines.push(`- ${f.slug}: ${reasonHeadline(f.reason)}`);
         // Deferred items are named in the TEXT, not just details: the
         // orchestrator has to know they are still owed, and no provider
@@ -1343,22 +1432,23 @@ export default function (pi: ExtensionAPI) {
         // This is exactly the right moment: nothing is active, so the
         // distinction between "genuinely waiting on a human" and "dead record"
         // is the only thing that matters, and a live agent is never dropped.
-        const relistResult = await herdr(pi, buildAgentListArgv(), signal);
-        let goneNote = "";
-        if (relistResult.code === 0) {
-          const liveNow = parseAgentListIds(relistResult.stdout);
-          const { state: pruned, dropped } = reconcileState(state, liveNow);
-          if (dropped.length) {
-            state.workers = pruned.workers;
-            // A dropped worker must not keep a wait slot: its agent is
-            // gone, so nothing will ever settle that arm.
-            for (const w of dropped) rt.inFlight.delete(w.agent);
-            persist(state);
-            goneNote = ` ${dropped.length} stale record(s) cleared -- their agents are gone from herdr, so they were finished or dead, not waiting: ${dropped
-              .map((w) => `${w.agent} (${w.slug})`)
-              .join(", ")}.`;
-          }
-        }
+        // Re-reconcile HERE, warm. A record whose agent is gone outright was
+        // already dropped by cold-load reconcile; a record whose agent is
+        // STILL LISTED but terminally idle/done is the one this sweep exists
+        // for (herdr keeps a finished pi listed, so presence alone is not
+        // liveness) -- pruneStaleWorkers classifies it via staleWorkerRecords
+        // and routes each drop through the same teardown the drain loop uses,
+        // capture offers rendered into the note rather than lost. That is
+        // not cosmetic: a record with lifecycle "active" keeps
+        // activeWorkerCount up and its paths deferring new spawns forever;
+        // an awaiting_relay one eats the pane soft cap while contributing
+        // nothing. Three of four workers in the 2026-09-03 harness2 run ended
+        // this way and a human had to find it from a dashboard in another
+        // pane. This is exactly the right moment: nothing is active, so the
+        // distinction between "genuinely waiting on a human" and "dead
+        // record" is the only thing that matters, and a live agent is never
+        // dropped.
+        const goneNoteLines = await pruneStaleWorkers(state);
 
         const awaitingRelay = state.workers.filter((w) => w.lifecycle === "awaiting_relay");
         const stalledHere = stalledRelayWorkers(state.workers, Date.now(), rt.stallMs);
@@ -1376,7 +1466,8 @@ export default function (pi: ExtensionAPI) {
             ? `No active workers to poll. ${awaitingRelay.length} worker(s) awaiting a relay -- answer each with swarm_resolve_blocked before polling again: ${awaitingRelay
                 .map(describe)
                 .join(", ")}.`
-            : "No active workers to poll.") + goneNote;
+            : "No active workers to poll.") +
+          (goneNoteLines.length ? `\n\n${goneNoteLines.join("\n")}` : "");
         return {
           content: [{ type: "text", text }],
           details: { events: [] as PollEvent[] },
