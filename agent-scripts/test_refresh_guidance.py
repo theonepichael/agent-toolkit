@@ -547,7 +547,35 @@ class RealRepoSmokeTestCase(unittest.TestCase):
         ("STYLE.md", ".github/SECRET_CHECK.md"),
         ("pi/AGENTS.md", "docs/skills.md"),
         ("pi/AGENTS.md", "pi/node_modules"),
+        ("README.md", "pi/node_modules"),
     }
+
+    def test_every_pi_node_modules_citation_is_a_known_finding(self) -> None:
+        """Regression guard for the fresh-worktree variant: any scanned,
+        claim-checked doc that cites `pi/node_modules` must have a matching
+        `_KNOWN_FINDINGS` entry, because a fresh worktree legitimately lacks
+        the untracked directory and the checker then flags the citation as
+        stale (the smoke test above only catches this when it happens to run
+        in a worktree before `bootstrap-worktree.sh` installed the deps).
+        """
+        repo_root = rg.DEFAULT_REPO_ROOT
+        doc_set, _label = rg.resolve_doc_set(repo_root, "agent-toolkit")
+        for doc in rg.discovered_docs(repo_root, doc_set):
+            if doc in doc_set.claim_exempt_docs:
+                continue
+            text = (repo_root / doc).read_text(encoding="utf-8", errors="replace")
+            _, claims = rg.parse_document(doc, text, set())
+            cited = {
+                (claim.doc, claim.raw)
+                for claim in claims
+                if claim.kind == "path" and claim.raw == "pi/node_modules"
+            }
+            self.assertEqual(
+                cited - self._KNOWN_FINDINGS,
+                set(),
+                f"{doc} cites `pi/node_modules` without a _KNOWN_FINDINGS "
+                "entry; a fresh worktree without it flags the citation stale",
+            )
 
     def test_no_unexpected_findings_against_this_checkout(self) -> None:
         result = rg.run_check(rg.DEFAULT_REPO_ROOT, "agent-toolkit")
