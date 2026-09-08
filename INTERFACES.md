@@ -37,6 +37,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`cli_common.py`](#agentscriptsclicommonpy) | Shared CLI helpers used across dotfiles scripts. |
 | [`dev_status.py`](#agentscriptsdevstatuspy) | dev_status.py v2 — slug IDs, structured dependency graph, pure render. |
 | [`dev_status_formatting.py`](#agentscriptsdevstatusformattingpy) | Pure text-formatting helpers shared by the backlog dashboard and recap. |
+| [`dev_status_storage.py`](#agentscriptsdevstatusstoragepy) | Backlog persistence, lock coordination, and journal primitives. |
 | [`dotfiles_sync_check.py`](#agentscriptsdotfilessynccheckpy) | SessionStart hook: flag when the dotfiles repo has drifted from the last commit bundled over to a GitHub-blocked work machine. |
 | [`gen_interfaces.py`](#agentscriptsgeninterfacespy) | gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources. |
 | [`gen_second_opinion.py`](#agentscriptsgensecondopinionpy) | gen_second_opinion.py — regenerate the second-opinion skill copies (one per harness, named in HARNESS_TABLE) from one canonical template. |
@@ -220,22 +221,8 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `out-of-scope list` — list rejected concepts, newest-first
   - `out-of-scope show <concept-slug>` — print a rejected concept's full record
 - Environment: `AGY_SESSION`, `ANTHROPIC_CLI`, `ANTIGRAVITY`, `CLAUDE_CODE`, `COPILOT`, `DEVSTATUS_AGENT`, `DEVSTATUS_CLAIM_TTL_SECONDS`, `DEVSTATUS_HARNESS`, `DEVSTATUS_RECAP_AGY_MODEL`, `DEVSTATUS_RECAP_DISABLE`, `DEVSTATUS_RECAP_TIMEOUT_SECONDS`, `GITHUB_COPILOT`, `OPENCODE`, `OPENCODE_GATEWAY`, `PI_CODING_AGENT`, `PI_SESSION`
-- Filesystem constants:
-  - `DATA_DIR = Path.home() / '.claude' / 'data' / 'backlog'`
-  - `ITEMS_FILE = DATA_DIR / 'items.json'`
-  - `PENDING_FILE = DATA_DIR / 'pending_items.json'`
-  - `META_FILE = DATA_DIR / '_meta.json'`
-  - `LOCK_FILE = DATA_DIR / '.backlog.lock'`
-  - `JOURNAL_FILE = DATA_DIR / 'journal.jsonl'`
-  - `RUNS_FILE = DATA_DIR / 'runs.jsonl'`
-  - `MACHINE_ID_FILE = DATA_DIR / '_machine_id'`
-  - `RECAP_CACHE_FILE = DATA_DIR / 'recap-cache.json'`
-  - `RECAP_REGEN_LOCK_FILE = DATA_DIR / 'recap-regen.lock'`
-  - `OUT_OF_SCOPE_DIR = Path.home() / '.claude' / 'data' / 'backlog-out-of-scope'`
-  - `OUT_OF_SCOPE_INDEX_FILE = OUT_OF_SCOPE_DIR / 'index.json'`
-  - `OUT_OF_SCOPE_LOCK_FILE = OUT_OF_SCOPE_DIR / '.out-of-scope.lock'`
 - Explicit exit codes: `1`
-- Depends on: `cli_common.py`, `dev_status_formatting.py`, `llm_backends.py`
+- Depends on: `cli_common.py`, `dev_status_formatting.py`, `dev_status_storage.py`, `llm_backends.py`
 - Public classes:
   - `class Gate(TypedDict)` — A judgment-step verification checkpoint on a backlog item.
   - `class RunRecord(TypedDict)` — One recorded command execution — a row of the ``runs.jsonl`` sidecar.
@@ -294,6 +281,61 @@ Pure text-formatting helpers shared by the backlog dashboard and recap.
   - `recap_last_sentence_cut(text: str, budget: int, min_keep: int, is_abbrev_boundary: Callable[[str, int], bool] = recap_is_abbrev_boundary) -> int | None` — Return the last acceptable sentence boundary within ``budget``.
   - `normalize_recap_text(raw: str, max_chars: int, min_keep: int, last_sentence_cut: Callable[[str, int, int], int | None] = recap_last_sentence_cut) -> str` — Strip presentation noise and fit backend recap prose within a budget.
 - Tested by: nothing
+
+### `agent-scripts/dev_status_storage.py`
+
+Backlog persistence, lock coordination, and journal primitives.
+
+- Installed at: `~/.claude/scripts/dev_status_storage.py` (all harnesses)
+- Entrypoint: not executable, no shebang
+- CLI: none (library module).
+- Filesystem constants:
+  - `DATA_DIR = Path.home() / '.claude' / 'data' / 'backlog'`
+  - `ITEMS_FILE = DATA_DIR / 'items.json'`
+  - `PENDING_FILE = DATA_DIR / 'pending_items.json'`
+  - `META_FILE = DATA_DIR / '_meta.json'`
+  - `LOCK_FILE = DATA_DIR / '.backlog.lock'`
+  - `JOURNAL_FILE = DATA_DIR / 'journal.jsonl'`
+  - `RUNS_FILE = DATA_DIR / 'runs.jsonl'`
+  - `MACHINE_ID_FILE = DATA_DIR / '_machine_id'`
+  - `RECAP_CACHE_FILE = DATA_DIR / 'recap-cache.json'`
+  - `RECAP_REGEN_LOCK_FILE = DATA_DIR / 'recap-regen.lock'`
+  - `OUT_OF_SCOPE_DIR = Path.home() / '.claude' / 'data' / 'backlog-out-of-scope'`
+  - `OUT_OF_SCOPE_INDEX_FILE = OUT_OF_SCOPE_DIR / 'index.json'`
+  - `OUT_OF_SCOPE_LOCK_FILE = OUT_OF_SCOPE_DIR / '.out-of-scope.lock'`
+- Explicit exit codes: `1`
+- Depends on: `cli_common.py`
+- Public classes:
+  - `class Gate(TypedDict)` — A judgment-step verification checkpoint on a backlog item.
+  - `class RunRecord(TypedDict)` — One recorded command execution — a row of the runs.jsonl sidecar.
+  - `class BacklogItem(TypedDict)` — A single backlog item as stored in items.json (schema v2).
+  - `class PendingItem(TypedDict)` — A single waiting-on-someone-else item as stored in pending_items.json.
+- Public functions:
+  - `machine_id(machine_id_file: Path | None = None, data_dir: Path | None = None) -> str` — Return this machine's stable short id, creating it on first use.
+  - `atomic_write_json(path: Path, payload: str, prefix: str) -> None` — Write text to ``path`` via a temp file in its directory + ``os.replace``.
+  - `backup_before_bulk_delete(path: Path) -> None` — Snapshot a data file before a filter-based bulk deletion.
+  - `load_items(path: Path | None = None) -> list[BacklogItem]` — Load all backlog items from ``path`` (defaults to :data:`ITEMS_FILE`).
+  - `save_items(items: list[BacklogItem], path: Path | None = None) -> None` — Atomically persist ``items`` to ``path`` (defaults to :data:`ITEMS_FILE`).
+  - `load_pending(path: Path | None = None) -> list[PendingItem]` — Load all pending items from ``path`` (defaults to :data:`PENDING_FILE`).
+  - `save_pending(pending_items: list[PendingItem], path: Path | None = None) -> None` — Atomically persist ``pending_items`` to ``path`` (defaults to :data:`PENDING_FILE`).
+  - `load_rev(meta_file: Path | None = None) -> int` — Read the current revision counter.
+  - `bump_rev(meta_file: Path | None = None) -> int` — Increment and persist the revision counter.
+  - `backlog_lock(data_dir: Path | None = None, lock_file: Path | None = None) -> Iterator[None]` — Hold an exclusive lock over a mutating command's full read-modify-write cycle.
+  - `out_of_scope_lock(out_of_scope_dir: Path | None = None, lock_file: Path | None = None) -> Iterator[None]` — Hold an exclusive lock over an out-of-scope command's cycle.
+  - `load_out_of_scope_index(path: Path | None = None) -> dict[str, dict[str, object]]` — Load the out-of-scope concept index, or ``{}`` if it doesn't exist yet.
+  - `save_out_of_scope_index(index: dict[str, dict[str, object]], path: Path | None = None) -> None` — Atomically persist the out-of-scope concept index.
+  - `out_of_scope_md_path(slug: str, out_of_scope_dir: Path | None = None) -> Path` — Path to a concept's freeform-reason markdown file.
+  - `journal_entry(cmd: str, kind: str, rev: int, *, slug: str | None = None, summary: str | None = None, from_status: str | None = None, to_status: str | None = None, fields: list[str] | None = None, feedback: str | None = None, count: int | None = None, wait_seconds: float | None = None, detail: str | None = None, diagnostic: bool | None = None) -> dict[str, object]` — Build one journal entry: a fixed envelope plus structured optionals.
+  - `append_journal_event(entry: dict[str, object], *, journal_file: Path | None = None, data_dir: Path | None = None, verbose: bool = False) -> None` — Append one event to the journal, best-effort.
+  - `parse_journal_ts(raw: object) -> datetime | None` — Parse a journal entry's ``ts`` field into an aware UTC ``datetime``.
+  - `read_journal_entries(within_hours: float | None = None, *, journal_file: Path | None = None, verbose: bool = False) -> list[dict[str, object]]` — Read journal entries, optionally filtered to the last ``within_hours``.
+  - `journal_last_entry_within(hours: float, *, journal_file: Path | None = None) -> bool` — Cheap pre-spawn check: does the journal's last entry fall within ``hours``?
+  - `load_runs(item: str | None = None, *, runs_file: Path | None = None) -> list[RunRecord]` — Load run-evidence rows from :data:`RUNS_FILE`, optionally for one item.
+  - `write_runs_file(runs: Sequence[RunRecord], *, runs_file: Path | None = None) -> None` — Atomically rewrite :data:`RUNS_FILE` with ``runs``.
+  - `append_run_record(record: RunRecord, *, runs_file: Path | None = None, data_dir: Path | None = None) -> bool` — Append one run-evidence row to :data:`RUNS_FILE` (best-effort).
+  - `load_recap_cache(path: Path | None = None) -> dict[str, object] | None` — Load ``recap-cache.json``, or ``None`` if missing/corrupt/malformed.
+  - `save_recap_cache(backend: str, text: str, board_fingerprint: str, path: Path | None = None) -> None` — Atomically persist a recap result.
+- Tested by: `agent-scripts/test_dev_status.py`
 
 ### `agent-scripts/dotfiles_sync_check.py`
 
