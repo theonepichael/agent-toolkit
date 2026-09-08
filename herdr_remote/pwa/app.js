@@ -14,6 +14,8 @@ const $ = (id) => document.getElementById(id);
 let token = localStorage.getItem(TOKEN_KEY) || "";
 let agents = [];
 let currentDetailId = null;
+let prevStatus = new Map(); // agent id -> last rendered status (flash-on-change)
+const STATUSES = ["working", "idle", "blocked", "done"];
 
 function headers() {
   return { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
@@ -50,25 +52,57 @@ async function api(path, options = {}) {
 
 function renderAgents() {
   const root = $("agents");
-  root.innerHTML = "";
-  for (const agent of agents) {
-    const card = document.createElement("button");
-    card.className = `card status-${agent.agent_status}`;
-    card.innerHTML = `
-      <span class="dot"></span>
-      <span class="name">${escapeHtml(agent.name)}</span>
-      <span class="status">${escapeHtml(agent.agent_status)}</span>
-      <span class="meta">${escapeHtml(agent.title || agent.agent)}</span>`;
-    card.onclick = () => openDetail(agent.id);
-    root.appendChild(card);
+  if (!agents.length) {
+    // Empty state replaces the whole list; never mixed into the keyed diff.
+    root.replaceChildren();
+    const empty = document.createElement("p");
+    empty.classList.add("empty");
+    empty.textContent = "No agents right now.";
+    root.appendChild(empty);
+    prevStatus.clear();
+    return;
   }
-  if (!agents.length) root.innerHTML = "<p class='meta'>No agents right now.</p>";
-}
-
-function escapeHtml(text) {
-  const div = document.createElement("div");
-  div.textContent = text;
-  return div.innerHTML;
+  const existing = new Map();
+  for (const node of root.children) {
+    if (node.dataset && node.dataset.id) existing.set(node.dataset.id, node);
+  }
+  const seen = new Set();
+  for (const agent of agents) {
+    seen.add(agent.id);
+    let card = existing.get(agent.id);
+    if (!card) {
+      card = document.createElement("button");
+      card.classList.add("card");
+      card.dataset.id = agent.id;
+      card.innerHTML = `
+        <span class="dot" aria-hidden="true"></span>
+        <span class="name"></span>
+        <span class="pill"></span>
+        <span class="meta"></span>`;
+      card.querySelector(".name").textContent = agent.name;
+      card.querySelector(".meta").textContent = agent.title || agent.agent;
+      card.onclick = () => openDetail(agent.id);
+    }
+    for (const s of STATUSES) {
+      card.classList.toggle(`status-${s}`, s === agent.agent_status);
+    }
+    card.querySelector(".pill").textContent = agent.agent_status;
+    // Flash only on an actual status change (never on unchanged snapshot
+    // refetches); restart the animation deterministically via reflow.
+    if (prevStatus.has(agent.id) && prevStatus.get(agent.id) !== agent.agent_status) {
+      card.classList.remove("flash");
+      void card.offsetWidth;
+      card.classList.add("flash");
+    }
+    prevStatus.set(agent.id, agent.agent_status);
+    root.appendChild(card); // also keeps DOM order following payload order
+  }
+  for (const [id, node] of existing) {
+    if (!seen.has(id)) {
+      node.remove();
+      prevStatus.delete(id);
+    }
+  }
 }
 
 async function openDetail(id) {
@@ -96,24 +130,39 @@ async function sendPrompt(event) {
   const id = currentDetailId;
   const text = $("prompt-text").value.trim();
   if (!text) return;
-  const resp = await api(`/api/agents/${encodeURIComponent(id)}/prompt`, {
-    method: "POST",
-    body: JSON.stringify({ text }),
-  });
-  if (resp.ok) {
-    $("prompt-text").value = "";
-    $("prompt-error").textContent = "Prompt sent — watch the status.";
-    $("prompt-error").classList.remove("hidden");
-  } else {
-    const body = await resp.json().catch(() => ({}));
-    $("prompt-error").textContent = body.error || `send failed: ${resp.status}`;
-    $("prompt-error").classList.remove("hidden");
+  const button = $("prompt-send");
+  const error = $("prompt-error");
+  button.disabled = true;
+  button.classList.add("pending");
+  try {
+    const resp = await api(`/api/agents/${encodeURIComponent(id)}/prompt`, {
+      method: "POST",
+      body: JSON.stringify({ text }),
+    });
+    if (resp.ok) {
+      $("prompt-text").value = "";
+      error.textContent = "Prompt sent — watch the status.";
+      error.classList.add("ok");
+    } else {
+      const body = await resp.json().catch(() => ({}));
+      error.textContent = body.error || `send failed: ${resp.status}`;
+      error.classList.remove("ok");
+    }
+    error.classList.remove("hidden");
+  } finally {
+    // try…finally: a thrown network error must not leave the button stuck
+    // pending; disabled during flight also blocks double-tap duplicates.
+    button.disabled = false;
+    button.classList.remove("pending");
   }
 }
 
 function setConn(state) {
-  $("conn-state").textContent = state;
-  $("conn-state").className = `conn conn-${state === "live" ? "on" : "off"}`;
+  const pill = $("conn-state");
+  pill.textContent = state;
+  pill.classList.toggle("conn-on", state === "live");
+  pill.classList.toggle("conn-wait", state === "connecting" || state === "reconnecting");
+  pill.classList.toggle("conn-off", state === "off");
 }
 
 // Fetch-based SSE with auto-reconnect: on any stream end the client

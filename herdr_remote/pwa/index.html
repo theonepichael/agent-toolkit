@@ -2,23 +2,29 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content"
+    />
     <title>herdr remote</title>
-    <meta name="theme-color" content="#131518" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0f1114" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f2f4f7" />
     <link rel="manifest" href="manifest.webmanifest" />
     <link rel="icon" href="icon-192.png" />
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
     <div id="token-gate" class="gate hidden">
-      <h1>herdr remote</h1>
-      <p>Paste the bridge token (see ~/.config/herdr-bridge/ on the workstation).</p>
-      <input id="token-input" type="password" autocomplete="off" placeholder="bridge token" />
-      <button id="token-save">Connect</button>
-      <p id="token-error" class="error hidden"></p>
+      <div class="gate-card">
+        <h1>herdr remote</h1>
+        <p>Paste the bridge token (see ~/.config/herdr-bridge/ on the workstation).</p>
+        <input id="token-input" type="password" autocomplete="off" placeholder="bridge token" />
+        <button id="token-save">Connect</button>
+        <p id="token-error" class="error hidden"></p>
+      </div>
     </div>
     <header id="topbar" class="hidden">
-      <span id="conn-state" class="conn conn-off">connecting</span>
+      <span id="conn-state" class="conn conn-wait" aria-live="polite">connecting</span>
       <h1>herdr remote</h1>
     </header>
     <main id="agents" class="hidden"></main>
@@ -27,10 +33,10 @@
       <h2 id="detail-name"></h2>
       <pre id="detail-output">loading…</pre>
       <form id="prompt-form">
-        <textarea id="prompt-text" rows="3" placeholder="prompt…"></textarea>
-        <button type="submit">Send prompt</button>
+        <textarea id="prompt-text" rows="2" placeholder="prompt…"></textarea>
+        <button type="submit" id="prompt-send">Send</button>
       </form>
-      <p id="prompt-error" class="error hidden"></p>
+      <p id="prompt-error" class="error hidden" aria-live="polite"></p>
     </section>
     <script src="app.js"></script>
   </body>
