@@ -71,6 +71,20 @@ cd ~/Workspace/agent-toolkit
 ./install.sh
 ```
 
+### Fresh worktrees: bootstrap dependencies first
+
+`node_modules` is untracked, so a fresh `git worktree add` of this repo has
+no `pi/node_modules` (and no root venv) — the pi TypeScript checks skip
+silently until it exists. Run the per-directory installs in one
+step after creating a worktree:
+
+```bash
+scripts/bootstrap-worktree.sh   # uv sync at the root + bun install in pi/
+```
+
+It warns (and skips that step) if `uv` or `bun` is missing, and is safe to
+rerun.
+
 ### Options & Flags
 
 ```bash

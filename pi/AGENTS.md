@@ -73,8 +73,9 @@ creating the state at all.
 
 Run them from `pi/`, not the repo root. A fresh worktree has no
 `pi/node_modules`, and all four stages **skip** rather than fail when it is
-missing — run `bun install` in `pi/` first, or you will read a green suite
-that checked nothing.
+missing — run `bun install` in `pi/` first (or `scripts/bootstrap-worktree.sh`
+from the repo root, which also does the root `uv sync`), or you will read a
+green suite that checked nothing.
 
 **Both checks are scoped to `extensions` and `test`, not to `pi/` itself.**
 That is why this file and its `CLAUDE.md` symlink sit at `pi/` root:

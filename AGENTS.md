@@ -16,6 +16,12 @@ this repo.
 
 ## Standards
 
+- **Fresh worktrees**: the repo has two dependency roots — the uv-managed
+  root venv and the bun project in `pi/` (whose `node_modules` is untracked,
+  so a fresh worktree never has it and the pi TypeScript checks skip rather
+  than fail). Run `scripts/bootstrap-worktree.sh` right after `git worktree
+  add` to do both installs in one step.
+
 - **House style** (Python/shell/TypeScript conventions, type hints, CLI
   ergonomics, config/secrets, logging, testing tiers, formatting/linting) —
   `STYLE.md`.
