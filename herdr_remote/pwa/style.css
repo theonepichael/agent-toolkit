@@ -1,99 +1,247 @@
+/* herdr remote — design tokens + components.
+ *
+ * Dark-first, light via prefers-color-scheme token overrides only. All
+ * color lives in the two token blocks below — component rules reference
+ * custom properties, never hex. No url() references (assets are inline or
+ * referenced from HTML), so the sheet works under any path prefix.
+ */
+
 :root {
-  --bg: #131518;
-  --card: #1f232a;
-  --fg: #e6e6e6;
-  --muted: #8b93a1;
-  --working: #d9a441;
-  --idle: #4d9e63;
-  --blocked: #c4472c;
-  --done: #4d7f9e;
+  --bg: #0f1114;
+  --surface: #171a20;
+  --surface-raised: #1e232b;
+  --border: #2b313b;
+  --fg: #e8eaee;
+  --fg-muted: #9aa3b2;
+  --accent: #6ea8fe;
+  --on-accent: #ffffff;
+
+  --working: #e0a83e;
+  --idle: #4caf7d;
+  --blocked: #e0604a;
+  --done: #5b9dd9;
+
+  --ok: #4caf7d;
+  --danger: #e0604a;
+
+  --radius-sm: 8px;
+  --radius: 12px;
+  --radius-lg: 16px;
+  --shadow: 0 1px 3px rgb(0 0 0 / 0.4);
+  --topbar-bg: rgb(15 17 20 / 0.72);
+  --output-bg: #12151a;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f2f4f7;
+    --surface: #ffffff;
+    --surface-raised: #ffffff;
+    --border: #d9dee6;
+    --fg: #1a1d22;
+    --fg-muted: #5d6673;
+    --accent: #2f6fd0;
+    --on-accent: #ffffff;
+
+    --shadow: 0 1px 3px rgb(16 24 40 / 0.1);
+    --topbar-bg: rgb(242 244 247 / 0.72);
+    --output-bg: #f7f8fa;
+  }
 }
 
 * {
   box-sizing: border-box;
 }
 
+html,
+body {
+  height: 100%;
+}
+
 body {
   margin: 0;
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  overflow: hidden;
   background: var(--bg);
   color: var(--fg);
-  font-family: system-ui, sans-serif;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   font-size: 16px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
 }
 
 .hidden {
   display: none !important;
 }
 
+button {
+  font: inherit;
+  color: inherit;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.6rem 1rem;
+  min-height: 44px;
+  cursor: pointer;
+  transition: background-color 150ms ease, border-color 150ms ease,
+    transform 100ms ease;
+}
+
+button:active {
+  transform: scale(0.98);
+}
+
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+input,
+textarea {
+  font: inherit;
+  color: var(--fg);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.75rem;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--fg-muted);
+}
+
+/* --- Token gate ---------------------------------------------------------- */
+
 .gate {
   max-width: 26rem;
-  margin: 20vh auto;
+  width: 100%;
+  margin: auto;
   padding: 0 1rem;
+}
+
+.gate-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  padding: 2rem 1.5rem;
   text-align: center;
+}
+
+.gate h1 {
+  margin: 0 0 0.25rem;
+  font-size: 1.35rem;
+  letter-spacing: -0.01em;
+}
+
+.gate p {
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: 0.9rem;
 }
 
 .gate input {
   width: 100%;
-  padding: 0.75rem;
-  margin: 1rem 0;
-  background: var(--card);
-  color: var(--fg);
-  border: 1px solid #333;
-  border-radius: 8px;
-  font-size: 1rem;
+  margin: 1.25rem 0 0.75rem;
+  text-align: center;
 }
 
-button {
-  background: var(--card);
-  color: var(--fg);
-  border: 1px solid #333;
-  border-radius: 8px;
-  padding: 0.6rem 1rem;
-  font-size: 1rem;
+.gate button {
+  width: 100%;
+  background: var(--accent);
+  border-color: transparent;
+  color: var(--on-accent);
+  font-weight: 600;
 }
+
+.gate .error {
+  margin-top: 0.75rem;
+}
+
+/* --- Topbar --------------------------------------------------------------- */
 
 #topbar {
+  flex: none;
   display: flex;
   align-items: baseline;
   gap: 0.75rem;
-  padding: 0.75rem 1rem;
-  border-bottom: 1px solid #22262e;
+  padding: 0.75rem max(1rem, env(safe-area-inset-left)) 0.75rem
+    max(1rem, env(safe-area-inset-right));
+  padding-top: max(0.75rem, env(safe-area-inset-top));
+  border-bottom: 1px solid var(--border);
+  background: var(--topbar-bg);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
 }
 
 #topbar h1 {
-  font-size: 1.1rem;
+  font-size: 1.05rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
   margin: 0;
 }
 
 .conn {
-  font-size: 0.75rem;
-  padding: 0.15rem 0.5rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 0.2rem 0.55rem;
   border-radius: 999px;
 }
 
 .conn-on {
-  background: #1d3324;
+  background: color-mix(in srgb, var(--idle) 18%, transparent);
   color: var(--idle);
 }
 
+.conn-wait {
+  background: color-mix(in srgb, var(--working) 18%, transparent);
+  color: var(--working);
+}
+
 .conn-off {
-  background: #3a2419;
+  background: color-mix(in srgb, var(--blocked) 18%, transparent);
   color: var(--blocked);
 }
 
+/* --- Agent list ----------------------------------------------------------- */
+
 #agents {
-  display: grid;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
   gap: 0.6rem;
-  padding: 1rem;
+  padding: 1rem max(1rem, env(safe-area-inset-left)) 1rem
+    max(1rem, env(safe-area-inset-right));
+  width: 100%;
+  max-width: 40rem;
+  margin: 0 auto;
 }
 
 .card {
   display: grid;
   grid-template-columns: auto 1fr auto;
-  grid-template-areas: "dot name status" "meta meta meta";
+  grid-template-areas:
+    "dot name pill"
+    "meta meta meta";
   text-align: left;
-  padding: 0.75rem;
-  gap: 0.25rem 0.5rem;
+  align-items: center;
+  padding: 0.8rem 1rem;
+  gap: 0.3rem 0.65rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  min-height: 44px;
 }
 
 .card .dot {
@@ -101,75 +249,196 @@ button {
   width: 0.65rem;
   height: 0.65rem;
   border-radius: 50%;
-  background: var(--muted);
-  align-self: center;
-}
-
-.status-working .dot {
-  background: var(--working);
-}
-
-.status-idle .dot {
-  background: var(--idle);
-}
-
-.status-blocked .dot {
-  background: var(--blocked);
-}
-
-.status-done .dot {
-  background: var(--done);
+  background: var(--fg-muted);
 }
 
 .card .name {
   grid-area: name;
   font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.card .status {
-  grid-area: status;
-  color: var(--muted);
-  font-size: 0.8rem;
+.card .pill {
+  grid-area: pill;
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--fg-muted) 18%, transparent);
+  color: var(--fg-muted);
 }
 
 .card .meta {
   grid-area: meta;
-  color: var(--muted);
+  color: var(--fg-muted);
   font-size: 0.8rem;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.status-working .dot {
+  background: var(--working);
+}
+.status-working .pill {
+  background: color-mix(in srgb, var(--working) 18%, transparent);
+  color: var(--working);
+}
+
+.status-idle .dot {
+  background: var(--idle);
+}
+.status-idle .pill {
+  background: color-mix(in srgb, var(--idle) 18%, transparent);
+  color: var(--idle);
+}
+
+.status-blocked .dot {
+  background: var(--blocked);
+}
+.status-blocked .pill {
+  background: color-mix(in srgb, var(--blocked) 18%, transparent);
+  color: var(--blocked);
+}
+
+.status-done .dot {
+  background: var(--done);
+}
+.status-done .pill {
+  background: color-mix(in srgb, var(--done) 18%, transparent);
+  color: var(--done);
+}
+
+/* Working agents pulse; flash fires on status change (class added by
+   app.js, restarted via reflow). */
+.status-working .dot {
+  animation: pulse 2s ease-in-out infinite;
+}
+
+.card.flash {
+  animation: flash 900ms ease-out;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--working) 45%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 6px transparent;
+  }
+}
+
+@keyframes flash {
+  0% {
+    background: color-mix(in srgb, var(--accent) 16%, var(--surface));
+  }
+  100% {
+    background: var(--surface);
+  }
+}
+
+.empty {
+  margin: 3rem auto;
+  color: var(--fg-muted);
+  text-align: center;
+}
+
+/* --- Detail view ----------------------------------------------------------- */
+
 #detail {
-  padding: 1rem;
-  display: grid;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   gap: 0.75rem;
+  width: 100%;
+  max-width: 40rem;
+  margin: 0 auto;
+  padding: 1rem max(1rem, env(safe-area-inset-left)) max(1rem, env(safe-area-inset-bottom))
+    max(1rem, env(safe-area-inset-right));
+}
+
+#back {
+  align-self: flex-start;
+  background: transparent;
+  border-color: transparent;
+  color: var(--accent);
+  padding-left: 0;
+  min-height: 44px;
+}
+
+#detail h2 {
+  margin: 0;
+  font-size: 1.2rem;
+  letter-spacing: -0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 #detail-output {
-  background: var(--card);
-  border-radius: 8px;
-  padding: 0.75rem;
-  max-height: 45vh;
+  flex: 1;
+  min-height: 0;
   overflow: auto;
+  margin: 0;
+  background: var(--output-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.85rem;
+  font-family: var(--font-mono);
   font-size: 0.8rem;
+  line-height: 1.5;
   white-space: pre-wrap;
-  word-break: break-all;
+  word-break: break-word;
+}
+
+#prompt-form {
+  display: flex;
+  gap: 0.6rem;
+  align-items: flex-end;
 }
 
 #prompt-text {
-  width: 100%;
-  background: var(--card);
-  color: var(--fg);
-  border: 1px solid #333;
-  border-radius: 8px;
-  padding: 0.6rem;
-  font-size: 1rem;
-  font-family: inherit;
+  flex: 1;
+  resize: none;
+  min-height: 44px;
+  max-height: 30vh;
+}
+
+#prompt-form button {
+  flex: none;
+  background: var(--accent);
+  border-color: transparent;
+  color: var(--on-accent);
+  font-weight: 600;
+}
+
+#prompt-form button.pending {
+  opacity: 0.6;
 }
 
 .error {
-  color: var(--blocked);
+  margin: 0;
+  color: var(--danger);
   font-size: 0.85rem;
+}
+
+#prompt-error.ok {
+  color: var(--ok);
+}
+
+/* --- Reduced motion: kill every animation/transition ----------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
 }
