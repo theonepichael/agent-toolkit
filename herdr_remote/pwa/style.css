@@ -14,7 +14,10 @@
   --fg: #e8eaee;
   --fg-muted: #9aa3b2;
   --accent: #6ea8fe;
-  --on-accent: #ffffff;
+  /* Dark mode's accent is a light blue, so on-accent content needs a dark
+     ink, not white -- #ffffff on #6ea8fe measures 2.42:1, well under WCAG
+     AA's 4.5:1 floor. --bg against the same accent measures ~7.8:1. */
+  --on-accent: var(--bg);
 
   --working: #e0a83e;
   --idle: #4caf7d;
