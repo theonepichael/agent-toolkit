@@ -19,6 +19,7 @@ prompt-contract exact-match.
 import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -92,33 +93,60 @@ def write_state(
 def make_fake_herdr(
     *,
     start_error: str | None = None,
+    start_code: str | None = None,
+    start_error_script: list[tuple[str, str | None] | None] | None = None,
+    agent_list_script: list[list[dict[str, str]]] | None = None,
     prompt_error: str | None = None,
     close_error: str | None = None,
 ) -> tuple[Callable[[list[str]], dict[str, object]], list[list[str]]]:
     """Replace herdr_delegate.herdr with a scripted fake.
 
-    Returns (fake, argvs): ``fake`` answers ``tab create`` with canned JSON and
-    ``agent start`` / ``agent prompt`` / ``tab close`` from the given error
-    strings (None = success). ``argvs`` records every argv it was given.
+    Returns (fake, argvs): ``fake`` answers ``tab create`` with a fresh
+    ``w:t<n>``/``w:p<n>`` pair each call (so a caller retrying gets a
+    distinguishable tab per attempt), ``agent list`` from
+    ``agent_list_script`` (consumed in order, empty list once exhausted),
+    and ``agent start`` / ``agent prompt`` / ``tab close`` from the given
+    error strings (None = success). ``start_error_script``, if given, is
+    consumed in order for successive ``agent start`` calls (``None`` entry
+    = success that attempt, ``(message, code)`` = a raised
+    ``RefusedError``); once exhausted, further calls succeed. Without a
+    script, every ``agent start`` call uses the single ``start_error``/
+    ``start_code`` pair. ``argvs`` records every argv it was given.
     """
 
     argvs: list[list[str]] = []
+    tab_seq = {"n": 0}
+    start_script = list(start_error_script) if start_error_script is not None else None
+    agent_list_steps = list(agent_list_script or [])
 
     def fake(argv: list[str]) -> dict[str, object]:
         argvs.append(argv)
         if argv[0] == "tab" and argv[1] == "create":
+            tab_seq["n"] += 1
+            n = tab_seq["n"]
             return {
                 "result": {
-                    "root_pane": {"pane_id": "w:p1"},
-                    "tab": {"tab_id": "w:t1"},
+                    "root_pane": {"pane_id": f"w:p{n}"},
+                    "tab": {"tab_id": f"w:t{n}"},
                 }
             }
-        if argv[0] == "agent" and argv[1] == "start" and start_error:
-            raise herdr_delegate.RefusedError(start_error)
+        if argv[0] == "agent" and argv[1] == "start":
+            if start_script is not None and start_script:
+                entry = start_script.pop(0)
+                if entry is not None:
+                    message, code = entry
+                    raise herdr_delegate.RefusedError(message, code=code)
+            elif start_error:
+                raise herdr_delegate.RefusedError(start_error, code=start_code)
+            return {"result": {"type": "ok"}}
         if argv[0] == "agent" and argv[1] == "prompt" and prompt_error:
             raise herdr_delegate.RefusedError(prompt_error)
         if argv[0] == "tab" and argv[1] == "close" and close_error:
             raise herdr_delegate.RefusedError(close_error)
+        if argv[0] == "agent" and argv[1] == "list":
+            if agent_list_steps:
+                return {"result": {"agents": agent_list_steps.pop(0)}}
+            return {"result": {"agents": []}}
         return {"result": {"type": "ok"}}
 
     return fake, argvs
@@ -128,6 +156,7 @@ def run_launch(fake: Callable[[list[str]], dict[str, object]]) -> int:
     """Run ``launch --slug atk-example`` with herdr faked; return exit code."""
     with (
         mock.patch.object(herdr_delegate, "herdr", fake),
+        mock.patch.object(herdr_delegate.time, "sleep", lambda _s: None),
         mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
     ):
         argv = ["launch", "--slug", "atk-example", "--cwd", "/tmp"]
@@ -179,6 +208,234 @@ class LaunchFailureCleanupTests(unittest.TestCase):
         code = run_launch(fake)
         self.assertEqual(code, 0)
         self.assertNotIn(["tab", "close", "w:t1"], argvs)
+
+
+class RefusedErrorCodeTests(unittest.TestCase):
+    """The optional ``code`` attribute must never change message/str behavior."""
+
+    def test_code_defaults_to_none(self) -> None:
+        exc = herdr_delegate.RefusedError("boom")
+        self.assertIsNone(exc.code)
+        self.assertEqual(str(exc), "boom")
+
+    def test_code_is_stored_without_altering_str(self) -> None:
+        exc = herdr_delegate.RefusedError("boom", code="timeout")
+        self.assertEqual(exc.code, "timeout")
+        self.assertEqual(str(exc), "boom")
+        self.assertEqual(exc.args, ("boom",))
+
+
+class ParseHerdrErrorCodeTests(unittest.TestCase):
+    """``_parse_herdr_error_code`` is a pure function: no side effects to fake."""
+
+    def test_extracts_code_from_envelope(self) -> None:
+        stderr = json.dumps({"error": {"code": "timeout", "message": "x"}, "id": "y"})
+        self.assertEqual(herdr_delegate._parse_herdr_error_code(stderr), "timeout")
+
+    def test_empty_string_returns_none(self) -> None:
+        self.assertIsNone(herdr_delegate._parse_herdr_error_code(""))
+
+    def test_non_json_returns_none(self) -> None:
+        self.assertIsNone(herdr_delegate._parse_herdr_error_code("not json at all"))
+
+    def test_json_without_error_key_returns_none(self) -> None:
+        self.assertIsNone(
+            herdr_delegate._parse_herdr_error_code(json.dumps({"ok": True}))
+        )
+
+    def test_error_not_a_dict_returns_none(self) -> None:
+        self.assertIsNone(
+            herdr_delegate._parse_herdr_error_code(json.dumps({"error": "boom"}))
+        )
+
+    def test_code_not_a_string_returns_none(self) -> None:
+        self.assertIsNone(
+            herdr_delegate._parse_herdr_error_code(json.dumps({"error": {"code": 5}}))
+        )
+
+
+class HerdrSubprocessTests(unittest.TestCase):
+    """``herdr()`` itself, at the real subprocess boundary -- the only way to
+    exercise its JSON-error-code parsing, since every other test in this file
+    fakes ``herdr_delegate.herdr`` wholesale and never reaches this code."""
+
+    def _completed(self, *, stderr: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=["herdr", "agent", "start"], returncode=1, stdout="", stderr=stderr
+        )
+
+    def test_nonzero_exit_attaches_parsed_code(self) -> None:
+        stderr = json.dumps(
+            {
+                "error": {"code": "timeout", "message": "timed out"},
+                "id": "cli:agent:start",
+            }
+        )
+        with (
+            mock.patch.object(
+                herdr_delegate.subprocess,
+                "run",
+                return_value=self._completed(stderr=stderr),
+            ),
+            self.assertRaises(herdr_delegate.RefusedError) as ctx,
+        ):
+            herdr_delegate.herdr(["agent", "start", "x"])
+        self.assertEqual(ctx.exception.code, "timeout")
+
+    def test_nonzero_exit_with_unrecognized_json_warns_on_stderr(self) -> None:
+        stderr = json.dumps({"weird": "shape"})
+        err = io.StringIO()
+        with (
+            mock.patch.object(
+                herdr_delegate.subprocess,
+                "run",
+                return_value=self._completed(stderr=stderr),
+            ),
+            redirect_stderr(err),
+            self.assertRaises(herdr_delegate.RefusedError) as ctx,
+        ):
+            herdr_delegate.herdr(["agent", "start", "x"])
+        self.assertIsNone(ctx.exception.code)
+        self.assertIn("no recognized 'code' field", err.getvalue())
+
+    def test_nonzero_exit_with_plain_text_stderr_has_no_warning(self) -> None:
+        err = io.StringIO()
+        with (
+            mock.patch.object(
+                herdr_delegate.subprocess,
+                "run",
+                return_value=self._completed(stderr="boom, not json"),
+            ),
+            redirect_stderr(err),
+            self.assertRaises(herdr_delegate.RefusedError) as ctx,
+        ):
+            herdr_delegate.herdr(["agent", "start", "x"])
+        self.assertIsNone(ctx.exception.code)
+        self.assertEqual(err.getvalue(), "")
+
+
+class AgentStartRetryTests(unittest.TestCase):
+    """The bounded fresh-tab retry for a ``timeout``-coded ``agent start``.
+
+    Every retry must get its own tab/pane (round 1's finding: retrying
+    against the same pane a timeout already gave up on is unsafe), and only
+    the ``timeout`` code may ever retry -- everything else (including no
+    parseable code at all) must behave exactly as before this feature
+    existed.
+    """
+
+    def test_timeout_retried_then_succeeds(self) -> None:
+        fake, argvs = make_fake_herdr(
+            start_error_script=[
+                ("timed out", "timeout"),
+                ("timed out", "timeout"),
+                None,
+            ]
+        )
+        code = run_launch(fake)
+        self.assertEqual(code, 0)
+        self.assertEqual(len(_named(argvs, "agent", "start")), 3)
+        self.assertEqual(len(_named(argvs, "tab", "create")), 3)
+        self.assertEqual(len(_named(argvs, "tab", "close")), 2)
+        self.assertEqual(
+            _named(argvs, "agent", "prompt"),
+            [["agent", "prompt", "atk-example", "/backlog-item --auto atk-example"]],
+        )
+
+    def test_timeout_exhausts_after_configured_retries(self) -> None:
+        fake, argvs = make_fake_herdr(
+            start_error_script=[("timed out", "timeout")] * 10
+        )
+        code = run_launch(fake)
+        self.assertEqual(code, 1)
+        attempts = herdr_delegate.AGENT_START_TIMEOUT_RETRIES + 1
+        self.assertEqual(len(_named(argvs, "agent", "start")), attempts)
+        self.assertEqual(len(_named(argvs, "tab", "create")), attempts)
+        self.assertEqual(len(_named(argvs, "tab", "close")), attempts)
+
+    def test_exhaustion_message_names_attempts_and_herdr_status(self) -> None:
+        fake, _ = make_fake_herdr(start_error_script=[("timed out", "timeout")] * 10)
+        _, err = self._run_main_capturing(fake, expect_exit=True)
+        attempts = herdr_delegate.AGENT_START_TIMEOUT_RETRIES + 1
+        self.assertIn(f"{attempts} attempt", err)
+        self.assertIn("herdr status", err)
+
+    def test_non_timeout_failure_never_retries(self) -> None:
+        fake, argvs = make_fake_herdr(start_error="agent_name_taken: nope")
+        code = run_launch(fake)
+        self.assertEqual(code, 1)
+        self.assertEqual(len(_named(argvs, "agent", "start")), 1)
+        self.assertEqual(len(_named(argvs, "tab", "create")), 1)
+
+    def test_uncoded_failure_never_retries(self) -> None:
+        # code=None (e.g. non-JSON stderr) is exactly as non-retryable as
+        # any other unrecognized failure -- a single attempt, no change.
+        fake, argvs = make_fake_herdr(start_error="weird failure", start_code=None)
+        code = run_launch(fake)
+        self.assertEqual(code, 1)
+        self.assertEqual(len(_named(argvs, "agent", "start")), 1)
+
+    def test_retry_progress_notice_emitted_to_stderr(self) -> None:
+        fake, _ = make_fake_herdr(start_error_script=[("timed out", "timeout"), None])
+        _, err = self._run_main_capturing(fake, expect_exit=False)
+        self.assertIn("retrying after backoff", err)
+
+    def test_deregistration_wait_between_retries(self) -> None:
+        fake, argvs = make_fake_herdr(
+            start_error_script=[("timed out", "timeout"), None],
+            agent_list_script=[[{"name": "atk-example"}], []],
+        )
+        code = run_launch(fake)
+        self.assertEqual(code, 0)
+        self.assertEqual(len(_named(argvs, "agent", "list")), 2)
+
+    def test_deregistration_exhaustion_uses_retry_loop_advice_not_restart(self) -> None:
+        fake, _ = make_fake_herdr(
+            start_error_script=[("timed out", "timeout"), None],
+            agent_list_script=[[{"name": "atk-example"}]] * 100,
+        )
+        _, err = self._run_main_capturing(fake, expect_exit=True)
+        self.assertNotIn("`restart`", err)
+        self.assertIn("retry loop", err)
+
+    def test_tab_create_failure_propagates_unretried(self) -> None:
+        def fake(argv: list[str]) -> dict[str, object]:
+            if argv[0] == "tab" and argv[1] == "create":
+                raise herdr_delegate.RefusedError("boom: cannot create tab")
+            return {"result": {"type": "ok"}}
+
+        code = run_launch(fake)
+        self.assertEqual(code, 1)
+
+    def test_prompt_failure_after_success_is_not_retried_and_leaves_tab(self) -> None:
+        fake, argvs = make_fake_herdr(prompt_error="agent_prompt_stalled")
+        code = run_launch(fake)
+        self.assertEqual(code, 1)
+        self.assertEqual(len(_named(argvs, "agent", "start")), 1)
+        self.assertNotIn(["tab", "close", "w:t1"], argvs)
+
+    def _run_main_capturing(
+        self, fake: Callable[[list[str]], dict[str, object]], *, expect_exit: bool
+    ) -> tuple[str, str]:
+        with (
+            mock.patch.object(herdr_delegate, "herdr", fake),
+            mock.patch.object(herdr_delegate.time, "sleep", lambda _s: None),
+            mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
+        ):
+            argv = ["launch", "--slug", "atk-example", "--cwd", "/tmp"]
+            sys.argv = ["herdr_delegate.py", *argv]
+            out, err = io.StringIO(), io.StringIO()
+            with redirect_stdout(out), redirect_stderr(err):
+                if expect_exit:
+                    with self.assertRaises(SystemExit):
+                        herdr_delegate.main()
+                else:
+                    herdr_delegate.main()
+            return out.getvalue(), err.getvalue()
+
+
+def _named(argvs: list[list[str]], command: str, subcommand: str) -> list[list[str]]:
+    return [a for a in argvs if a[0] == command and a[1] == subcommand]
 
 
 class DelegateTests(unittest.TestCase):
