@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Pre-tool guard shared by every harness: refuse a write into a repository's
 main checkout while a backlog item for that repository is in progress, warn
-when the current worktree's base has fallen behind ``origin/main``, and (Bash,
+when the current worktree's base has fallen behind ``origin/main``, (Bash,
 Claude Code only) deny the git-native ways to defeat the no-commit-on-main
-git hook (``githooks/pre-commit`` / ``githooks-global/pre-commit``).
+git hook (``githooks/pre-commit`` / ``githooks-global/pre-commit``), and
+require an active backlog-item claim before a write that points at an
+in-progress item.
 
 Claude Code, agy and Copilot pipe their native hook payload in on stdin and
 get their native verdict back on stdout. Pi and opencode already hold the
@@ -19,6 +21,25 @@ overriding or redirecting ``core.hooksPath`` (``-c``, ``GIT_CONFIG_*`` env
 vars, a plain ``git config`` mutation), and a direct write to
 ``.git/config``. agy and Copilot get no bash-family wiring (best-effort
 tier); their Bash calls fall through unrecognized, same as before.
+
+R4, the claim check: a write "points at" an in-progress backlog item when it
+targets exactly one of the item's ``related_files`` paths, or lands in a
+linked worktree whose branch name is the item's slug. Such a write is denied
+unless the calling session holds an active claim on that item. Session
+identity is the claim's ``owner_pid`` -- the harness process the claim's
+``dev_status.py start`` run anchored to by walking its ancestor chain --
+found alive in the guard process's own walked ancestor chain (or equal to
+the walk's resolved owner, tolerating an extra spawn wrapper). On the same
+machine, liveness is the only test: a live owner is active however old the
+claim is, and a dead one is not. A claim from a different machine can only
+be checked against its TTL. Nothing here mutates the backlog store; a dead
+claim is recovered by re-running ``start``, which takes it over.
+
+Accepted gaps: Bash-family calls can route a file mutation past the claim
+check entirely (same bypassability as the commit check -- git-hook territory);
+a harness running inside a container/other PID namespace sees every claim as
+foreign and is denied (kill-based liveness, as in dev_status.py itself, also
+tolerates PID reuse).
 
 Usage:
     guard_rails.py --harness claude|agy|copilot        read stdin, write that harness's verdict
@@ -53,6 +74,7 @@ import shlex
 import subprocess
 import sys
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 import cli_common
@@ -245,6 +267,157 @@ def _busy_item(common_dir: str, items: list[dict]) -> str | None:
             if common_dir_of(directory) == common_dir:
                 return str(item.get("id") or "?")
     return None
+
+
+def _related_paths(item: dict) -> list[str]:
+    """Deduplicated related_files path strings of an item."""
+    seen: dict[str, None] = {}
+    for entry in item.get("related_files") or []:
+        path = entry.get("path") if isinstance(entry, dict) else entry
+        if isinstance(path, str) and path:
+            seen.setdefault(path, None)
+    return list(seen)
+
+
+def _session_identity() -> tuple[str, int, list[int]]:
+    """(machine_id, owner_pid, ancestor pids) of this guard process.
+
+    The guard runs as a child of the harness process -- directly for the
+    hook-spawning harnesses, in-process for pi/opencode's extension spawns
+    -- so the same ancestor walk a claim's ``dev_status.py start`` used
+    anchors both to the same owner. dev_status_impl is imported lazily so a
+    repo with no in-progress items never pays the import.
+    """
+    import dev_status_impl
+
+    owner, ancestors = dev_status_impl._find_owner_pid()
+    chain = [int(a["pid"]) for a in ancestors]
+    return dev_status_impl.machine_id(), owner, chain
+
+
+def _claim_is_active(
+    claim: object, current_machine: str, owner_pid: int, chain: list[int]
+) -> bool:
+    """Whether a claim is held, actively, by this session.
+
+    Same machine: the claim's owner PID must be alive AND appear in this
+    session's walked chain (or be the resolved owner, tolerating an extra
+    spawn wrapper); an owner recorded but dead means the claim is not
+    active, whatever the age. A claim from a different machine is never
+    this session's, whatever its TTL says -- the TTL only governs whether
+    ``dev_status.py start`` may take the claim over, not whether the guard
+    grants a write.
+    """
+    if not isinstance(claim, dict):
+        return False
+    import dev_status_impl
+
+    if str(claim.get("machine_id", "")) != current_machine:
+        return False
+
+    def _int(value: object) -> int:
+        return int(value) if str(value or "").isdigit() else 0
+
+    claim_owner = _int(claim.get("owner_pid"))
+    if claim_owner <= 0:
+        claim_pid = _int(claim.get("pid"))
+        return claim_pid > 0 and dev_status_impl._is_pid_alive(claim_pid)
+    if claim_owner != owner_pid and claim_owner not in chain:
+        return False
+    return dev_status_impl._is_pid_alive(claim_owner)
+
+
+def _claim_holder_alive(claim: object, current_machine: str) -> bool:
+    """Whether some live process plausibly still stands behind the claim --
+    used only to phrase the deny reason (a foreign live claim vs a dead or
+    expired one), never to grant a write. Cross-machine claims are liveness-
+    uncheckable, so their TTL stands in for liveness, mirroring
+    dev_status's collision semantics."""
+    if not isinstance(claim, dict):
+        return False
+    import dev_status_impl
+
+    if str(claim.get("machine_id", "")) == current_machine:
+
+        def _int(value: object) -> int:
+            return int(value) if str(value or "").isdigit() else 0
+
+        owner = _int(claim.get("owner_pid"))
+        if owner > 0 and dev_status_impl._is_pid_alive(owner):
+            return True
+        pid = _int(claim.get("pid"))
+        return pid > 0 and dev_status_impl._is_pid_alive(pid)
+    stamp = str(claim.get("last_active") or claim.get("claimed_at") or "")
+    if not stamp:
+        return False
+    try:
+        dt = datetime.fromisoformat(stamp)
+    except (ValueError, TypeError):
+        return False
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return (
+        0
+        <= (datetime.now(UTC) - dt).total_seconds()
+        < (dev_status_impl._claim_ttl_seconds())
+    )
+
+
+def _pointed_at(req: Request, info: RepoInfo, item: dict) -> bool:
+    """Whether a write request points at an in-progress item: exact
+    related_files path match, or the item's slug-named worktree. Deliberately
+    no parent-directory widening -- an item listing a top-level file must not
+    blanket-lock its repository."""
+    if req.path:
+        target = os.path.realpath(req.path)
+        if target in {os.path.realpath(p) for p in _related_paths(item)}:
+            return True
+    return bool(
+        info.is_worktree and info.branch and info.branch == str(item.get("id") or "")
+    )
+
+
+def _evaluate_claim(req: Request, info: RepoInfo) -> Verdict:
+    """R4: deny a write that points at an in-progress item this session does
+    not hold an active claim on. Fails open (allow) when nothing points at
+    anything, exactly like every other check here."""
+    items = load_in_progress()
+    if not items:
+        return Verdict("allow")
+
+    pointed = [item for item in items if _pointed_at(req, info, item)]
+    if not pointed:
+        return Verdict("allow")
+
+    current_machine, owner_pid, chain = _session_identity()
+    unclaimed = [
+        item
+        for item in pointed
+        if not _claim_is_active(
+            item.get("claimed_by"), current_machine, owner_pid, chain
+        )
+    ]
+    if not unclaimed:
+        return Verdict("allow")
+
+    slugs = ", ".join(str(item.get("id") or "?") for item in unclaimed)
+    if any(
+        _claim_holder_alive(item.get("claimed_by"), current_machine)
+        for item in unclaimed
+    ):
+        return Verdict(
+            "deny",
+            f"Refusing to write to '{req.path}': backlog item(s) {slugs} "
+            "actively claimed by another session. Taking over needs a human "
+            "decision, not this tool call.",
+        )
+    return Verdict(
+        "deny",
+        f"Refusing to write to '{req.path}': backlog item(s) {slugs} in "
+        "progress but not actively claimed by this session. Run: "
+        f"dev_status.py start <slug> (claims the item, reclaims a dead "
+        f"claim) and work in the worktree it requires.",
+    )
 
 
 def _behind_origin_main(directory: str) -> bool:
@@ -472,8 +645,9 @@ def evaluate_bash_override(command: str, cwd: str) -> Verdict:
 
 
 def evaluate(req: Request) -> Verdict:
-    """Apply R2 then R3 to write-family calls, and the bash-family override
-    check to Bash calls. Fails open on anything it cannot answer."""
+    """Apply R2 then R3 to write-family calls, and R4's claim check to any
+    checkout they land in, plus the bash-family override check to Bash
+    calls. Fails open on anything it cannot answer."""
     if os.environ.get("GUARD_RAILS_OFF") == "1":
         return Verdict("allow")
     if req.tool == "bash":
@@ -486,33 +660,31 @@ def evaluate(req: Request) -> Verdict:
     if info is None or info.is_bare:
         return Verdict("allow")
 
-    if info.is_worktree:
+    if not info.is_worktree and info.branch in PROTECTED_BRANCHES:
+        items = load_in_progress()
+        if items:
+            slug = _busy_item(info.common_dir, items)
+            if slug is not None:
+                return Verdict(
+                    "deny",
+                    f"Refusing to write into the main checkout of "
+                    f"{info.toplevel} on '{info.branch}' while backlog item "
+                    f"'{slug}' is in progress there. Do this work in a "
+                    f"worktree: git -C {info.toplevel} worktree add "
+                    f"../<repo>-<slug> -b <slug>",
+                )
+
+    verdict = _evaluate_claim(req, info)
+    if verdict.decision == "deny":
+        return verdict
+    if info.is_worktree and _behind_origin_main(directory):
         # R3: only a worktree can be behind its own base.
-        if _behind_origin_main(directory):
-            return Verdict(
-                "warn",
-                "This worktree's base is behind origin/main. Pull before "
-                "continuing, or the work will be built on a stale tree.",
-            )
-        return Verdict("allow")
-
-    if info.branch not in PROTECTED_BRANCHES:
-        return Verdict("allow")
-
-    items = load_in_progress()
-    if not items:
-        return Verdict("allow")
-
-    slug = _busy_item(info.common_dir, items)
-    if slug is None:
-        return Verdict("allow")
-    return Verdict(
-        "deny",
-        f"Refusing to write into the main checkout of {info.toplevel} on "
-        f"'{info.branch}' while backlog item '{slug}' is in progress there. "
-        f"Do this work in a worktree: "
-        f"git -C {info.toplevel} worktree add ../<repo>-<slug> -b <slug>",
-    )
+        return Verdict(
+            "warn",
+            "This worktree's base is behind origin/main. Pull before "
+            "continuing, or the work will be built on a stale tree.",
+        )
+    return Verdict("allow")
 
 
 def parse_payload(harness: str, payload: object) -> Request | None:

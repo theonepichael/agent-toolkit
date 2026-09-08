@@ -95,6 +95,7 @@ def test_the_guard_script_is_stdlib_only() -> None:
     ]
     allowed = {
         "argparse",
+        "datetime",
         "json",
         "os",
         "re",
