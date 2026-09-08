@@ -306,10 +306,10 @@ export function buildAgentListArgv(): string[] {
   return ["agent", "list"];
 }
 
-export function parseAgentListIds(stdout: string): string[] {
+export function parseAgentList(stdout: string): { id: string; status?: string }[] | null {
   try {
     const parsed = JSON.parse(stdout) as {
-      result?: { agents?: { name?: string }[] };
+      result?: { agents?: { name?: string; agent_status?: string }[] };
     };
     // Each `agent list` entry carries the caller-chosen herdr name directly
     // as `.name` (confirmed live, herdr 0.8.2, 2026-09-02) -- this is what
@@ -324,12 +324,26 @@ export function parseAgentListIds(stdout: string): string[] {
     // version read `agent_session.value` (a pi session file path) instead,
     // which could never match a synthetic id like "run1-w1" and would have
     // wrongly dropped every genuinely-live worker as dead.
-    return (parsed.result?.agents ?? [])
-      .map((a) => a.name)
-      .filter((v): v is string => typeof v === "string");
+    //
+    // Returns NULL when the payload itself is unreadable -- no envelope, no
+    // agents array. Null means "inconclusive" and callers fail open; an
+    // empty agents array is a truthful "nothing live" and flows through as
+    // []. An unparseable list must never read as an empty one: that is the
+    // drop-every-worker trap reconcile's own empty-list test guards.
+    const agents = parsed?.result?.agents;
+    if (!Array.isArray(agents)) return null;
+    return agents.flatMap((a) =>
+      typeof a?.name === "string"
+        ? [{ id: a.name, status: typeof a.agent_status === "string" ? a.agent_status : undefined }]
+        : [],
+    );
   } catch {
-    return [];
+    return null;
   }
+}
+
+export function parseAgentListIds(stdout: string): string[] {
+  return (parseAgentList(stdout) ?? []).map((a) => a.id);
 }
 
 // ---------------------------------------------------------------------------

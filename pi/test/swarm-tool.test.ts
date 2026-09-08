@@ -36,6 +36,9 @@ import registerSwarmTools, {
   buildShowArgv,
   parseShownItem,
   isSuspiciousFinish,
+  isTerminalAgentStatus,
+  parseAgentList,
+  staleWorkerRecords,
   parseTabCreate,
   readCaptureOffers,
   selectSchedulable,
@@ -1032,6 +1035,129 @@ describe("reconcileState", () => {
     const { state: reconciled, dropped } = reconcileState(state, liveIds);
     expect(reconciled.workers.map((w) => w.agent)).toEqual(["probe-w1"]);
     expect(dropped).toHaveLength(0);
+  });
+});
+
+describe("staleWorkerRecords / isTerminalAgentStatus", () => {
+  const NOW = 1_000_000_000;
+  const aged = (o: Partial<WorkerRecord> = {}): WorkerRecord =>
+    makeWorker({ workingSinceMs: NOW - 120_000, ...o });
+
+  test("idle and done are terminal, exactly classifyWaitResult's finished set", () => {
+    expect(isTerminalAgentStatus("idle")).toBe(true);
+    expect(isTerminalAgentStatus("done")).toBe(true);
+    expect(isTerminalAgentStatus("working")).toBe(false);
+    expect(isTerminalAgentStatus("blocked")).toBe(false);
+    expect(isTerminalAgentStatus(undefined)).toBe(false);
+  });
+
+  test("an agent absent from herdr's list is stale, whatever its record says", () => {
+    const stale = staleWorkerRecords(makeState({ workers: [aged()] }), [], NOW);
+    expect(stale.map((w) => w.agent)).toEqual(["run1-w1"]);
+  });
+
+  test("a terminal status past the age floor is stale", () => {
+    for (const status of ["idle", "done"]) {
+      const stale = staleWorkerRecords(
+        makeState({ workers: [aged()] }),
+        [{ id: "run1-w1", status }],
+        NOW,
+      );
+      expect(stale.map((w) => w.agent)).toEqual(["run1-w1"]);
+    }
+  });
+
+  test("a terminal status inside the age floor is kept", () => {
+    // The startup window: a freshly spawned pi can also read idle.
+    const stale = staleWorkerRecords(
+      makeState({ workers: [aged({ workingSinceMs: NOW - 1000 })] }),
+      [{ id: "run1-w1", status: "idle" }],
+      NOW,
+    );
+    expect(stale).toHaveLength(0);
+  });
+
+  test("a working or blocked status is never stale, whatever its age", () => {
+    for (const status of ["working", "blocked"]) {
+      const stale = staleWorkerRecords(
+        makeState({ workers: [aged()] }),
+        [{ id: "run1-w1", status }],
+        NOW,
+      );
+      expect(stale).toHaveLength(0);
+    }
+  });
+
+  test("no age evidence fails open: a terminal status alone keeps the record", () => {
+    // workingSinceMs and awaitingRelaySinceMs both absent (a pre-budgets
+    // record): an inconclusive age never prunes.
+    const w = aged();
+    delete w.workingSinceMs;
+    const stale = staleWorkerRecords(
+      makeState({ workers: [w] }),
+      [{ id: "run1-w1", status: "done" }],
+      NOW,
+    );
+    expect(stale).toHaveLength(0);
+  });
+
+  test("an awaiting_relay record's age reads from awaitingRelaySinceMs", () => {
+    const w = aged({ lifecycle: "awaiting_relay" as const });
+    delete w.workingSinceMs;
+    w.awaitingRelaySinceMs = NOW - 120_000;
+    const stale = staleWorkerRecords(
+      makeState({ workers: [w] }),
+      [{ id: "run1-w1", status: "idle" }],
+      NOW,
+    );
+    expect(stale.map((x) => x.agent)).toEqual(["run1-w1"]);
+  });
+});
+
+describe("parseAgentList", () => {
+  test("extracts named entries with their status, ignoring nameless foreign agents", () => {
+    const entries = parseAgentList(
+      realAgentListEnvelope(UNNAMED_CLAUDE_ENTRY, {
+        agent: "pi",
+        agent_status: "idle",
+        name: "run1-w1",
+        pane_id: "w1:p2N",
+      }),
+    );
+    expect(entries).toEqual([{ id: "run1-w1", status: "idle" }]);
+  });
+
+  test("an unparseable payload is null, not an empty list", () => {
+    // Null means "inconclusive" -- callers fail open. Returning [] here
+    // would read as a truthful "no agents live" and drop every worker.
+    expect(parseAgentList("{not json")).toBeNull();
+    expect(parseAgentList("")).toBeNull();
+  });
+
+  test("an envelope without an agents array is null; an empty array is a truthful empty list", () => {
+    expect(parseAgentList(JSON.stringify({ result: {} }))).toBeNull();
+    expect(parseAgentList(JSON.stringify({ result: { agents: [] } }))).toEqual([]);
+  });
+
+  test("an entry's missing agent_status is undefined, never a status string", () => {
+    const entries = parseAgentList(
+      JSON.stringify({ result: { agents: [{ agent: "pi", name: "run1-w1" }] } }),
+    );
+    expect(entries).toEqual([{ id: "run1-w1", status: undefined }]);
+  });
+
+  test("parseAgentListIds stays the id-only view over parseAgentList", () => {
+    expect(
+      parseAgentListIds(
+        realAgentListEnvelope(UNNAMED_CLAUDE_ENTRY, {
+          agent: "pi",
+          agent_status: "done",
+          name: "run1-w1",
+          pane_id: "w1:p2N",
+        }),
+      ),
+    ).toEqual(["run1-w1"]);
+    expect(parseAgentListIds("{not json")).toEqual([]);
   });
 });
 
@@ -2102,9 +2228,14 @@ describe("swarm_spawn worker bootstrap", () => {
 
     // meta-a's worker dies. A fresh tool instance reloads the run from disk
     // and reconciles it against herdr's live agent list -- which the stub
-    // answers empty -- so the dead worker is dropped exactly as it would be
-    // after a restart. dev_status still reports meta-a as READY.
-    const { spawn: spawn2, stub: stub2 } = stubFor(withReady([{ id: "meta-a" }, { id: "meta-b" }]));
+    // answers with a truthful empty envelope -- so the dead worker is
+    // dropped exactly as it would be after a restart. dev_status still
+    // reports meta-a as READY.
+    const { spawn: spawn2, stub: stub2 } = stubFor((argv) => {
+      if (argv[0] === "agent" && argv[1] === "list")
+        return { code: 0, stdout: realAgentListEnvelope(), stderr: "" };
+      return withReady([{ id: "meta-a" }, { id: "meta-b" }])(argv);
+    });
     const second = (await spawn2.execute(
       ...(["c2", { runId: "noretry", prefix: "meta-", concurrency: 1 }] as unknown as never[]),
     )) as { details: { spawned: { slug: string }[] } };
@@ -2119,6 +2250,194 @@ describe("swarm_spawn worker bootstrap", () => {
     expect(label(stub2.calls)).toEqual(["meta-b"]);
   });
 
+  // THE STALE DEFERRAL, from the 2026-09-08 atk run: a worker whose pi
+  // finished while the orchestrator was away keeps its record -- herdr still
+  // lists the agent (its pi sits idle in an open tab), so presence-only
+  // reconcile called it alive and every later wave deferred the colliding
+  // items on its paths, indefinitely, with a reason that named no one.
+  // herdr's agent list carries agent_status, and idle/done are the exact
+  // statuses a natural finish produces (classifyWaitResult maps them to
+  // "finished") -- so a terminal status past an age floor IS the finish
+  // event the lost orchestrator never processed.
+  const agentListEnvelope = (status: string, name: string) =>
+    realAgentListEnvelope(UNNAMED_CLAUDE_ENTRY, {
+      agent: "pi",
+      agent_status: status,
+      name,
+      pane_id: "w1:pA",
+    });
+
+  const staleSpawn = (
+    list: { code: number; stdout: string; stderr: string },
+    readyItems: { id: string; paths?: string[] }[],
+  ) =>
+    stubFor((argv) => {
+      if (argv[0] === "agent" && argv[1] === "list") return list;
+      if (argv.includes("ready"))
+        return {
+          code: 0,
+          stdout: JSON.stringify(
+            readyItems.map((i) => ({
+              id: i.id,
+              worker_safe: true,
+              related_files: (i.paths ?? []).map((path) => ({ path })),
+            })),
+          ),
+          stderr: "",
+        };
+      return tabCreateOk(argv);
+    });
+
+  const staleWorkerState = (overrides: Partial<WorkerRecord> = {}): SwarmState => ({
+    runId: "stalefin",
+    concurrency: 2,
+    nextCounter: 1,
+    workers: [
+      {
+        agent: "stalefin-w1",
+        slug: "meta-a",
+        paneId: "w1:pA",
+        tabId: "w1:tA",
+        paths: ["/repo/s.ts"],
+        workingSinceMs: Date.now() - 120_000,
+        lifecycle: "active",
+        ...overrides,
+      },
+    ],
+    attempted: ["meta-a"],
+  });
+
+  test("a worker herdr reports finished no longer defers the next wave", async () => {
+    // Red test prescribed by the item: seed a run state whose colliding
+    // worker is finished -- herdr still lists it, tab still open -- and the
+    // next swarm_spawn with no other active workers schedules the deferred
+    // item, drops the dead record, and closes the tab it left behind.
+    saveState(staleWorkerState(), dir);
+
+    const { spawn, stub } = staleSpawn(
+      { code: 0, stdout: agentListEnvelope("done", "stalefin-w1"), stderr: "" },
+      [{ id: "meta-b", paths: ["/repo/s.ts"] }],
+    );
+    const res = (await spawn.execute(
+      ...(["c1", { runId: "stalefin", prefix: "meta-", concurrency: 2 }] as unknown as never[]),
+    )) as {
+      content: { text: string }[];
+      details: { spawned: { slug: string }[]; deferred: { slug: string }[] };
+    };
+
+    expect(res.details.spawned.map((w) => w.slug)).toEqual(["meta-b"]);
+    expect(res.details.deferred).toEqual([]);
+    // The dead worker's tab must not outlive its record.
+    expect(workerCloses(stub).map((c) => c.argv[2])).toContain("w1:tA");
+    const after = loadState("stalefin", dir);
+    expect(after?.workers.map((w) => w.agent)).not.toContain("stalefin-w1");
+    // The digest has to be able to reconcile this drop: the worker's finish
+    // bypassed poll's evidence check, so the report says to verify by hand.
+    const text = res.content.map((c) => c.text).join("\n");
+    expect(text).toContain("stalefin-w1");
+    expect(text).toContain("meta-a");
+    expect(text).toContain("Verify the item");
+  });
+
+  test("a pruned stale worker's queued captures are rendered, not lost", async () => {
+    saveState(staleWorkerState(), dir);
+    writeFileSync(
+      capturePath("stalefin", "meta-a", dir),
+      JSON.stringify({ offers: [{ kind: "backlog", id: "cap-1", summary: "file a follow-up" }] }),
+    );
+
+    const { spawn } = staleSpawn(
+      { code: 0, stdout: agentListEnvelope("idle", "stalefin-w1"), stderr: "" },
+      [{ id: "meta-b", paths: ["/repo/s.ts"] }],
+    );
+    const res = (await spawn.execute(
+      ...(["c1", { runId: "stalefin", prefix: "meta-", concurrency: 2 }] as unknown as never[]),
+    )) as { content: { text: string }[] };
+
+    const text = res.content.map((c) => c.text).join("\n");
+    expect(text).toContain("Queued capture offers");
+    expect(text).toContain("cap-1");
+  });
+
+  test("an unreadable agent list fails open: no drops, deferral unchanged", async () => {
+    // An inconclusive list never prunes -- the standing fail-open rule. The
+    // colliding item stays deferred this wave; a retry (the next spawn call)
+    // gets another chance at a readable list.
+    saveState(staleWorkerState(), dir);
+
+    const { spawn, stub } = staleSpawn(
+      { code: 1, stdout: "", stderr: "herdr: connection refused" },
+      [{ id: "meta-b", paths: ["/repo/s.ts"] }],
+    );
+    const res = (await spawn.execute(
+      ...(["c1", { runId: "stalefin", prefix: "meta-", concurrency: 2 }] as unknown as never[]),
+    )) as { details: { spawned: unknown[]; deferred: { slug: string }[] } };
+
+    expect(res.details.spawned).toHaveLength(0);
+    expect(res.details.deferred.map((d) => d.slug)).toEqual(["meta-b"]);
+    expect(workerCloses(stub)).toHaveLength(0);
+    expect(loadState("stalefin", dir)?.workers.map((w) => w.agent)).toEqual(["stalefin-w1"]);
+  });
+
+  test("a just-started worker is never pruned, even with a terminal status", async () => {
+    // A freshly spawned pi can read idle in its startup window; the age
+    // floor keeps reconcile from killing it before its first turn.
+    saveState(staleWorkerState({ workingSinceMs: Date.now() }), dir);
+
+    const { spawn, stub } = staleSpawn(
+      { code: 0, stdout: agentListEnvelope("done", "stalefin-w1"), stderr: "" },
+      [{ id: "meta-b", paths: ["/repo/s.ts"] }],
+    );
+    const res = (await spawn.execute(
+      ...(["c1", { runId: "stalefin", prefix: "meta-", concurrency: 2 }] as unknown as never[]),
+    )) as { details: { spawned: unknown[]; deferred: { slug: string }[] } };
+
+    expect(res.details.deferred.map((d) => d.slug)).toEqual(["meta-b"]);
+    expect(workerCloses(stub)).toHaveLength(0);
+    expect(loadState("stalefin", dir)?.workers.map((w) => w.agent)).toEqual(["stalefin-w1"]);
+  });
+
+  test("a live worker's deferral names the worker holding the file", async () => {
+    // The reason must be falsifiable: WHICH worker holds the path, and its
+    // lifecycle. Without the holder the 09-08 run could not be diagnosed
+    // from its own output.
+    saveState(staleWorkerState(), dir);
+
+    const { spawn } = staleSpawn(
+      { code: 0, stdout: agentListEnvelope("working", "stalefin-w1"), stderr: "" },
+      [{ id: "meta-b", paths: ["/repo/s.ts"] }],
+    );
+    const res = (await spawn.execute(
+      ...(["c1", { runId: "stalefin", prefix: "meta-", concurrency: 2 }] as unknown as never[]),
+    )) as { content: { text: string }[] };
+
+    const text = res.content.map((c) => c.text).join("\n");
+    expect(text).toContain("deferred");
+    expect(text).toContain("worker stalefin-w1 (meta-a, active)");
+    expect(text).toContain("/repo/s.ts");
+  });
+
+  test("an in-wave deferral names the earlier-selected candidate", async () => {
+    const { spawn } = staleSpawn(
+      { code: 0, stdout: agentListEnvelope("idle", "nobody"), stderr: "" },
+      [
+        { id: "meta-a", paths: ["/repo/s.ts"] },
+        { id: "meta-b", paths: ["/repo/s.ts"] },
+      ],
+    );
+    const res = (await spawn.execute(
+      ...(["c1", { runId: "stalewave", prefix: "meta-", concurrency: 3 }] as unknown as never[]),
+    )) as {
+      details: { spawned: { slug: string }[]; deferred: { slug: string; reason: string }[] };
+    };
+
+    expect(res.details.spawned.map((w) => w.slug)).toEqual(["meta-a"]);
+    expect(res.details.deferred.map((d) => d.slug)).toEqual(["meta-b"]);
+    expect(res.details.deferred[0]?.reason).toContain(
+      "candidate meta-a (selected earlier this wave)",
+    );
+  });
+
   test("naming an item explicitly still retries it -- that is the caller asking", async () => {
     // The guard is on automatic selection only. A human who names a slug
     // after reading the digest means it.
@@ -2127,7 +2446,11 @@ describe("swarm_spawn worker bootstrap", () => {
     await spawn.execute(
       ...(["c1", { runId: "explicit", prefix: "meta-", concurrency: 1 }] as unknown as never[]),
     );
-    const { spawn: spawn2 } = stubFor(withReady([{ id: "meta-a" }]));
+    const { spawn: spawn2 } = stubFor((argv) => {
+      if (argv[0] === "agent" && argv[1] === "list")
+        return { code: 0, stdout: realAgentListEnvelope(), stderr: "" };
+      return withReady([{ id: "meta-a" }])(argv);
+    });
     const again = (await spawn2.execute(
       ...(["c2", { runId: "explicit", items: ["meta-a"], concurrency: 1 }] as unknown as never[]),
     )) as { details: { spawned: { slug: string }[] } };
@@ -2150,12 +2473,14 @@ describe("swarm_spawn worker bootstrap", () => {
     )) as { details: { deferred: { slug: string }[] } };
     expect(first.details.deferred.map((d) => d.slug)).toEqual(["meta-b"]);
 
-    const { spawn: spawn2 } = stubFor(
-      withReady([
+    const { spawn: spawn2 } = stubFor((argv) => {
+      if (argv[0] === "agent" && argv[1] === "list")
+        return { code: 0, stdout: realAgentListEnvelope(), stderr: "" };
+      return withReady([
         { id: "meta-a", paths: ["/repo/s.ts"] },
         { id: "meta-b", paths: ["/repo/s.ts"] },
-      ]),
-    );
+      ])(argv);
+    });
     const second = (await spawn2.execute(
       ...(["c2", { runId: "defnotatt", prefix: "meta-", concurrency: 3 }] as unknown as never[]),
     )) as { details: { spawned: { slug: string }[] } };
@@ -3061,10 +3386,16 @@ describe("selectSchedulable", () => {
     expect(res.deferred[0]?.reason).toContain("/r/shared.ts");
   });
 
-  test("an item overlapping a worker already running is deferred too", () => {
-    const res = selectSchedulable([item("a", "/r/live.ts")], ["/r/live.ts"], 3);
+  test("an item overlapping a worker already running is deferred too, with the holder named", () => {
+    const res = selectSchedulable(
+      [item("a", "/r/live.ts")],
+      [{ path: "/r/live.ts", holder: "worker run1-w1 (live-item, active)" }],
+      3,
+    );
     expect(res.slugs).toEqual([]);
     expect(res.deferred.map((d) => d.slug)).toEqual(["a"]);
+    expect(res.deferred[0]?.reason).toContain("worker run1-w1 (live-item, active)");
+    expect(res.deferred[0]?.reason).toContain("/r/live.ts");
   });
 
   test("a directory and a file inside it count as overlapping", () => {
@@ -3101,7 +3432,13 @@ describe("selectSchedulable", () => {
   });
 
   test("items with no related_files never block each other", () => {
-    const res = selectSchedulable([item("a"), item("b"), item("c")], ["/r/live.ts"], 3);
+    // The taken list carries a live worker's claim, but items with no
+    // declared paths collide with nothing and are constrained by nothing.
+    const res = selectSchedulable(
+      [item("a"), item("b"), item("c")],
+      [{ path: "/r/live.ts", holder: "worker run1-w1 (live, active)" }],
+      3,
+    );
     expect(res.slugs).toEqual(["a", "b", "c"]);
   });
 

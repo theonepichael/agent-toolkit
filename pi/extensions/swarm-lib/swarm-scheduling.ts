@@ -4,6 +4,63 @@
 // state, no I/O.
 const OPEN_PANE_SOFT_CAP_MULTIPLIER = 2;
 
+/**
+ * The herdr `agent_status` values that mean the worker's pi has finished and
+ * sits at its own prompt: EXACTLY the set `classifyWaitResult` (swarm-herdr)
+ * maps to "finished". herdr keeps such an agent LISTED -- the process is
+ * alive, its tab open -- so agent-list presence alone is not liveness; a
+ * listed-but-terminal worker has finished its item, and its record must not
+ * hold the wave back. `working` is mid-item and `blocked` is awaiting a
+ * relay: never terminal. Anything else (absent, unknown) is inconclusive and
+ * keeps the record -- fail open, per this module's standing rule.
+ */
+export const TERMINAL_AGENT_STATUSES = ["idle", "done"] as const;
+
+export function isTerminalAgentStatus(status?: string): boolean {
+  return status !== undefined && (TERMINAL_AGENT_STATUSES as readonly string[]).includes(status);
+}
+
+/**
+ * Minimum age a worker record must have (measured from its last working
+ * segment's start, or its relay park) before a TERMINAL status counts as a
+ * finish. A freshly spawned pi can also read `idle` in its startup window,
+ * before the prompt begins processing -- without the floor, a reconcile in
+ * that window would kill the worker before its first turn. A genuinely
+ * finished trivial item merely waits out one floor period before being
+ * cleared: the conservative direction.
+ */
+export const RECONCILE_MIN_AGE_MS = 60_000;
+
+/**
+ * Worker records that can no longer produce an event and must not hold
+ * files: the agent is absent from herdr's live list (gone outright), or
+ * herdr reports a terminal status and the record is older than
+ * RECONCILE_MIN_AGE_MS. Everything else -- working, blocked, unknown
+ * status, terminal but too young, or no timestamps at all -- is kept.
+ *
+ * Pure; the caller owns the teardown that follows. Companion to
+ * `reconcileState` (which decides on PRESENCE alone and stays that way for
+ * its cold-load contract): this is the status-aware decision the spawn path
+ * and swarm_poll's zero-active resync use, because a finished worker
+ * remains listed in herdr and presence alone would defer on its paths
+ * forever.
+ */
+export function staleWorkerRecords(
+  state: SwarmState,
+  live: readonly { id: string; status?: string }[],
+  now: number,
+): WorkerRecord[] {
+  const statusById = new Map(live.map((e) => [e.id, e.status]));
+  return state.workers.filter((w) => {
+    const status = statusById.get(w.agent);
+    if (status === undefined) return true; // absent: gone outright
+    if (!isTerminalAgentStatus(status)) return false;
+    const began = w.workingSinceMs ?? w.awaitingRelaySinceMs;
+    if (began === undefined) return false; // no age evidence: fail open
+    return now - began >= RECONCILE_MIN_AGE_MS;
+  });
+}
+
 export type WorkerLifecycle = "active" | "awaiting_relay";
 
 export interface WorkerRecord {
@@ -317,6 +374,14 @@ export interface SelectionResult {
  * differently on them: a skipped item is coming next wave whatever happens,
  * while a deferred one is waiting on a specific worker to finish.
  *
+ * `takenPaths` carries a HOLDER per path -- `worker <agent> (<slug>,
+ * <lifecycle>)` for a running worker's claim, `candidate <slug> (selected
+ * earlier this wave)` for an in-wave selection -- so the deferral reason
+ * names the specific work holding the file. First match wins, in candidate
+ * `related_files` order against taken insertion order (worker records in
+ * state order, then selections): one holder, one path per reason, always
+ * deterministic.
+ *
  * Termination rests on one property: with no worker running and no item yet
  * selected, the first candidate collides with nothing, so a non-empty queue
  * always yields at least one spawn. A deferred item therefore cannot be
@@ -325,7 +390,7 @@ export interface SelectionResult {
  */
 export function selectSchedulable(
   candidates: readonly ReadyItem[],
-  takenPaths: readonly string[],
+  takenPaths: readonly { path: string; holder: string }[],
   headroom: number,
 ): SelectionResult {
   const slugs: string[] = [];
@@ -333,7 +398,6 @@ export function selectSchedulable(
   const skipped: string[] = [];
   const refused: { slug: string; reason: string }[] = [];
   const taken = [...takenPaths];
-
   const seen = new Set<string>();
 
   for (const candidate of candidates) {
@@ -364,16 +428,30 @@ export function selectSchedulable(
       continue;
     }
     const paths = itemPaths(candidate);
-    const clash = paths.find((p) => taken.some((t) => pathsCollide(p, t)));
-    if (clash !== undefined) {
+    let clashPath: string | undefined;
+    let clashHolder: string | undefined;
+    for (const p of paths) {
+      const hit = taken.find((t) => pathsCollide(p, t.path));
+      if (hit !== undefined) {
+        clashPath = p;
+        clashHolder = hit.holder;
+        break;
+      }
+    }
+    if (clashPath !== undefined) {
       deferred.push({
         slug: candidate.id,
-        reason: `file overlap with work already in this run: ${clash}`,
+        reason: `file overlap with ${clashHolder}: ${clashPath}`,
       });
       continue;
     }
     slugs.push(candidate.id);
-    taken.push(...paths);
+    taken.push(
+      ...paths.map((p) => ({
+        path: p,
+        holder: `candidate ${candidate.id} (selected earlier this wave)`,
+      })),
+    );
   }
 
   return { slugs, deferred, skipped, refused };
