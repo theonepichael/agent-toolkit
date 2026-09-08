@@ -25,39 +25,37 @@ import hashlib
 import json
 import os
 import re
-import secrets
 import subprocess
 import sys
-import tempfile
 import textwrap
-import threading
 import time
 import uuid
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import NotRequired, TextIO, TypedDict, cast
 
 import cli_common
 import dev_status_formatting
+import dev_status_storage
 import llm_backends
 
-DATA_DIR = Path.home() / ".claude" / "data" / "backlog"
-ITEMS_FILE = DATA_DIR / "items.json"
-PENDING_FILE = DATA_DIR / "pending_items.json"
-META_FILE = DATA_DIR / "_meta.json"
-LOCK_FILE = DATA_DIR / ".backlog.lock"
-JOURNAL_FILE = DATA_DIR / "journal.jsonl"
-RUNS_FILE = DATA_DIR / "runs.jsonl"
-MACHINE_ID_FILE = DATA_DIR / "_machine_id"
-RECAP_CACHE_FILE = DATA_DIR / "recap-cache.json"
-RECAP_REGEN_LOCK_FILE = DATA_DIR / "recap-regen.lock"
+DATA_DIR = dev_status_storage.DATA_DIR
+ITEMS_FILE = dev_status_storage.ITEMS_FILE
+PENDING_FILE = dev_status_storage.PENDING_FILE
+META_FILE = dev_status_storage.META_FILE
+LOCK_FILE = dev_status_storage.LOCK_FILE
+JOURNAL_FILE = dev_status_storage.JOURNAL_FILE
+RUNS_FILE = dev_status_storage.RUNS_FILE
+MACHINE_ID_FILE = dev_status_storage.MACHINE_ID_FILE
+RECAP_CACHE_FILE = dev_status_storage.RECAP_CACHE_FILE
+RECAP_REGEN_LOCK_FILE = dev_status_storage.RECAP_REGEN_LOCK_FILE
 
-OUT_OF_SCOPE_DIR = Path.home() / ".claude" / "data" / "backlog-out-of-scope"
-OUT_OF_SCOPE_INDEX_FILE = OUT_OF_SCOPE_DIR / "index.json"
-OUT_OF_SCOPE_LOCK_FILE = OUT_OF_SCOPE_DIR / ".out-of-scope.lock"
+OUT_OF_SCOPE_DIR = dev_status_storage.OUT_OF_SCOPE_DIR
+OUT_OF_SCOPE_INDEX_FILE = dev_status_storage.OUT_OF_SCOPE_INDEX_FILE
+OUT_OF_SCOPE_LOCK_FILE = dev_status_storage.OUT_OF_SCOPE_LOCK_FILE
 
 # ── recap tuning knobs ──────────────────────────────────────────────────────
 RECAP_TTL_SECONDS = 30 * 60
@@ -539,26 +537,8 @@ def _find_owner_pid(
 
 
 def machine_id() -> str:
-    """Return this machine's stable short id, creating it on first use.
-
-    Not hostname — hostnames change/collide across machines this store is
-    shared between. Matches the ``_meta.json``/``_sync-base.json`` aux-file
-    convention: a small file alongside the data files, not part of the
-    schema itself.
-    """
-    try:
-        existing = MACHINE_ID_FILE.read_text().strip()
-        if existing:
-            return existing
-    except OSError:
-        pass
-    new_id = secrets.token_hex(4)
-    try:
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        MACHINE_ID_FILE.write_text(new_id)
-    except OSError:
-        pass
-    return new_id
+    """Return this machine's stable short id, creating it on first use."""
+    return dev_status_storage.machine_id(MACHINE_ID_FILE, DATA_DIR)
 
 
 _machine_id = machine_id
@@ -1053,275 +1033,63 @@ def _reject_null_fields(
 
 
 def load_items() -> list[BacklogItem]:
-    """Load all backlog items from :data:`ITEMS_FILE`.
-
-    Returns:
-        The stored items, or ``[]`` if the file doesn't exist yet.
-
-    Raises:
-        SystemExit: If the file contains invalid JSON or an unrecognized
-            schema version. The process exits with status 1 after printing
-            a diagnostic to stderr.
-    """
-    if not ITEMS_FILE.exists():
-        return []
-    try:
-        data = json.loads(ITEMS_FILE.read_text())
-    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as e:
-        print(
-            f"backlog file corrupted at {ITEMS_FILE}; restore from backup. ({e})",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    if not isinstance(data, dict) or data.get("schema_version") != 2:
-        print(
-            f"backlog file at {ITEMS_FILE} is not schema_version 2; "
-            "check file or run migration.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    return cast(list[BacklogItem], data.get("items", []))
+    """Load all backlog items from :data:`ITEMS_FILE`."""
+    return dev_status_storage.load_items(ITEMS_FILE)
 
 
 def _atomic_write_json(path: Path, payload: str, prefix: str) -> None:
-    """Write text to ``path`` via a temp file in its directory + ``os.replace``.
+    """Write text to ``path`` via a temp file in its directory + ``os.replace``."""
+    dev_status_storage.atomic_write_json(path, payload, prefix)
 
-    Shared by every writer of the backlog data files (and, despite the
-    name, any other text this module writes atomically — the payload need
-    not be JSON). Cleans up the temp file on failure so a crash mid-write
-    never leaves debris behind or corrupts the destination.
 
-    Ensures the temp file is fsynced before rename and the containing
-    directory is fsynced after the rename so the replace is durable.
-
-    Args:
-        path: Destination file path.
-        payload: Already-serialized text to write.
-        prefix: Prefix for the temporary file created alongside ``path``.
-    """
-    directory = path.parent
-    directory.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(dir=directory, prefix=prefix)
-    try:
-        with os.fdopen(fd, "w") as f:
-            f.write(payload)
-            f.flush()
-            os.fsync(f.fileno())
-
-        os.replace(tmp_path, path)
-
-        dir_fd = None
-        try:
-            dir_fd = os.open(
-                str(directory), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-            )
-            os.fsync(dir_fd)
-        finally:
-            if dir_fd is not None:
-                os.close(dir_fd)
-    except Exception:
-        with suppress(OSError):
-            os.unlink(tmp_path)
-        raise
+atomic_write_json = _atomic_write_json
 
 
 def save_items(items: list[BacklogItem]) -> None:
     """Atomically persist ``items`` to :data:`ITEMS_FILE`."""
-    payload = json.dumps({"schema_version": 2, "items": items}, indent=2)
-    _atomic_write_json(ITEMS_FILE, payload, ".items_tmp_")
+    dev_status_storage.save_items(items, ITEMS_FILE)
 
 
 def load_pending() -> list[PendingItem]:
-    """Load all pending items from :data:`PENDING_FILE`.
-
-    Returns:
-        The stored pending items, or ``[]`` if the file doesn't exist yet.
-
-    Raises:
-        SystemExit: If the file contains invalid JSON or an unrecognized
-            schema version. The process exits with status 1 after printing
-            a diagnostic to stderr.
-    """
-    if not PENDING_FILE.exists():
-        return []
-    try:
-        data = json.loads(PENDING_FILE.read_text())
-    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as e:
-        print(
-            f"pending-items file corrupted at {PENDING_FILE}; restore from backup. ({e})",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    if not isinstance(data, dict) or data.get("schema_version") != 1:
-        print(
-            f"pending-items file at {PENDING_FILE} is not schema_version 1; "
-            "check file or run migration.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    return cast(list[PendingItem], data.get("items", []))
+    """Load all pending items from :data:`PENDING_FILE`."""
+    return dev_status_storage.load_pending(PENDING_FILE)
 
 
 def save_pending(pending_items: list[PendingItem]) -> None:
     """Atomically persist ``pending_items`` to :data:`PENDING_FILE`."""
-    payload = json.dumps({"schema_version": 1, "items": pending_items}, indent=2)
-    _atomic_write_json(PENDING_FILE, payload, ".pending_tmp_")
-
-
-# flock(2) locks are tied to the open file description, not the process, so a
-# naive nested ``with backlog_lock()`` deadlocks: the inner ``open`` gets a
-# distinct descriptor and its ``flock`` blocks forever waiting on the outer
-# lock held by the same process. A ``threading.RLock`` makes same-thread
-# re-entry a no-op (no second ``flock``) while still blocking other threads,
-# and the single ``flock`` taken on the outermost entry still serializes
-# distinct *processes* as before.
-_backlog_lock_rlock = threading.RLock()
-_backlog_lock_fd: int = -1
-_backlog_lock_count: int = 0
-
-# ``lock-wait`` journal events are only emitted when acquiring
-# ``_backlog_lock_fd`` (the outermost entry, where the real ``flock`` blocks)
-# took longer than this many seconds — routine near-zero acquisitions would
-# otherwise flood the journal.
-_BACKLOG_LOCK_WAIT_JOURNAL_THRESHOLD_SECONDS = 0.5
+    dev_status_storage.save_pending(pending_items, PENDING_FILE)
 
 
 @contextmanager
 def backlog_lock() -> Iterator[None]:
-    """Hold an exclusive lock over a mutating command's full read-modify-write cycle.
-
-    Held across items.json + pending_items.json + _meta.json so two
-    concurrent writers (e.g. Claude Code and opencode sharing this store)
-    serialize instead of racing.
-
-    Safe to re-enter from the same thread (a nested ``with`` does not
-    deadlock): the underlying ``flock`` is taken once on the outermost entry
-    and released on the innermost exit. Distinct threads/processes still
-    serialize behind the lock.
-    """
-    global _backlog_lock_fd, _backlog_lock_count
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    with _backlog_lock_rlock:
-        _backlog_lock_count += 1
-        if _backlog_lock_count == 1:
-            _backlog_lock_fd = os.open(str(LOCK_FILE), os.O_WRONLY | os.O_CREAT, 0o644)
-            wait_start = time.monotonic()
-            fcntl.flock(_backlog_lock_fd, fcntl.LOCK_EX)
-            wait_seconds = time.monotonic() - wait_start
-            if wait_seconds > _BACKLOG_LOCK_WAIT_JOURNAL_THRESHOLD_SECONDS:
-                # Recorded *after* acquisition, inside the critical section
-                # the wait just ended — journaling never requires acquiring
-                # a different lock, so no cross-lock nesting is introduced.
-                # Deliberately scoped to ``_backlog_lock_fd`` only (never
-                # ``_out_of_scope_lock_fd``), per the logging spec.
-                append_journal_event(
-                    _journal_entry(
-                        "lock-wait",
-                        "backlog",
-                        load_rev(),
-                        wait_seconds=round(wait_seconds, 3),
-                        diagnostic=True,
-                    )
-                )
-        try:
-            yield
-        finally:
-            _backlog_lock_count -= 1
-            if _backlog_lock_count == 0:
-                fcntl.flock(_backlog_lock_fd, fcntl.LOCK_UN)
-                os.close(_backlog_lock_fd)
-                _backlog_lock_fd = -1
-
-
-_out_of_scope_lock_rlock = threading.RLock()
-_out_of_scope_lock_fd: int = -1
-_out_of_scope_lock_count: int = 0
+    """Hold an exclusive lock over a mutating command's full read-modify-write cycle."""
+    with dev_status_storage.backlog_lock(DATA_DIR, LOCK_FILE):
+        yield
 
 
 @contextmanager
 def out_of_scope_lock() -> Iterator[None]:
-    """Hold an exclusive lock over an out-of-scope command's read-modify-write cycle.
-
-    Mirrors :func:`backlog_lock` exactly (same reentrant-per-thread,
-    serialize-across-processes shape) but over its own lock file, scoped to
-    ``~/.claude/data/backlog-out-of-scope/`` -- unrelated to
-    ``LOCK_FILE``/``backlog_lock()``, which guards the separate
-    items.json/pending_items.json store.
-    """
-    global _out_of_scope_lock_fd, _out_of_scope_lock_count
-    OUT_OF_SCOPE_DIR.mkdir(parents=True, exist_ok=True)
-    with _out_of_scope_lock_rlock:
-        _out_of_scope_lock_count += 1
-        if _out_of_scope_lock_count == 1:
-            _out_of_scope_lock_fd = os.open(
-                str(OUT_OF_SCOPE_LOCK_FILE), os.O_WRONLY | os.O_CREAT, 0o644
-            )
-            fcntl.flock(_out_of_scope_lock_fd, fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            _out_of_scope_lock_count -= 1
-            if _out_of_scope_lock_count == 0:
-                fcntl.flock(_out_of_scope_lock_fd, fcntl.LOCK_UN)
-                os.close(_out_of_scope_lock_fd)
-                _out_of_scope_lock_fd = -1
+    """Hold an exclusive lock over an out-of-scope command's read-modify-write cycle."""
+    with dev_status_storage.out_of_scope_lock(OUT_OF_SCOPE_DIR, OUT_OF_SCOPE_LOCK_FILE):
+        yield
 
 
 def load_rev() -> int:
-    """Read the current revision counter.
-
-    Returns:
-        The stored revision, or ``0`` if :data:`META_FILE` is missing or
-        unreadable (lazy auto-init, no migration needed). A structurally
-        valid non-dict JSON value (e.g. ``[]``) or a non-int ``rev`` field
-        also falls back to ``0`` — the previous narrow ``JSONDecodeError``
-        catch alone would let a non-dict traceback with
-        ``AttributeError`` on the ``.get`` and a non-int rev silently brick
-        every numeric ``--if-rev`` mutation.
-    """
-    if not META_FILE.exists():
-        return 0
-    try:
-        data = json.loads(META_FILE.read_text())
-    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
-        return 0
-    if not isinstance(data, dict):
-        return 0
-    rev = data.get("rev", 0)
-    if not isinstance(rev, int) or isinstance(rev, bool):
-        return 0
-    return rev
+    """Read the current revision counter."""
+    return dev_status_storage.load_rev(META_FILE)
 
 
 def bump_rev() -> int:
-    """Increment and persist the revision counter.
-
-    Must be called while holding :func:`backlog_lock`.
-
-    Returns:
-        The new revision value.
-    """
-    rev = load_rev() + 1
-    payload = json.dumps({"rev": rev})
-    _atomic_write_json(META_FILE, payload, ".meta_tmp_")
-    return rev
+    """Increment and persist the revision counter."""
+    return dev_status_storage.bump_rev(META_FILE)
 
 
 def _backup_before_bulk_delete(path: Path) -> None:
-    """Snapshot a data file before a filter-based bulk deletion.
+    """Snapshot a data file before a filter-based bulk deletion."""
+    dev_status_storage.backup_before_bulk_delete(path)
 
-    Covers the one class of mutation that isn't trivially reversible by
-    re-running a single command: records removed by a computed filter
-    rather than by explicit id.
 
-    Args:
-        path: The data file to snapshot. No-op if it doesn't exist.
-    """
-    if not path.exists():
-        return
-    stamp = datetime.now().strftime("%Y%m%dT%H%M%S%f")
-    backup_path = path.with_name(f"{path.stem}.bak-{stamp}{path.suffix}")
-    backup_path.write_bytes(path.read_bytes())
+backup_before_bulk_delete = _backup_before_bulk_delete
 
 
 # ── graph helpers ─────────────────────────────────────────────────────────────
@@ -1828,22 +1596,26 @@ def _blocker_check_reminder(
 
 def _load_out_of_scope_index() -> dict[str, dict[str, object]]:
     """Load the out-of-scope concept index, or ``{}`` if it doesn't exist yet."""
-    if not OUT_OF_SCOPE_INDEX_FILE.exists():
-        return {}
-    return cast(
-        dict[str, dict[str, object]], json.loads(OUT_OF_SCOPE_INDEX_FILE.read_text())
-    )
+    return dev_status_storage.load_out_of_scope_index(OUT_OF_SCOPE_INDEX_FILE)
+
+
+load_out_of_scope_index = _load_out_of_scope_index
 
 
 def _save_out_of_scope_index(index: dict[str, dict[str, object]]) -> None:
     """Atomically persist the out-of-scope concept index."""
-    payload = json.dumps(index, indent=2)
-    _atomic_write_json(OUT_OF_SCOPE_INDEX_FILE, payload, ".oos_index_tmp_")
+    dev_status_storage.save_out_of_scope_index(index, OUT_OF_SCOPE_INDEX_FILE)
+
+
+save_out_of_scope_index = _save_out_of_scope_index
 
 
 def _out_of_scope_md_path(slug: str) -> Path:
     """Path to a concept's freeform-reason markdown file."""
-    return OUT_OF_SCOPE_DIR / f"{slug}.md"
+    return dev_status_storage.out_of_scope_md_path(slug, OUT_OF_SCOPE_DIR)
+
+
+out_of_scope_md_path = _out_of_scope_md_path
 
 
 def _out_of_scope_check_reminder(
@@ -2314,149 +2086,60 @@ def _journal_entry(
     detail: str | None = None,
     diagnostic: bool | None = None,
 ) -> dict[str, object]:
-    """Build one journal entry: a fixed envelope plus structured optionals.
+    """Build one journal entry: a fixed envelope plus structured optionals."""
+    return dev_status_storage.journal_entry(
+        cmd,
+        kind,
+        rev,
+        slug=slug,
+        summary=summary,
+        from_status=from_status,
+        to_status=to_status,
+        fields=fields,
+        feedback=feedback,
+        count=count,
+        wait_seconds=wait_seconds,
+        detail=detail,
+        diagnostic=diagnostic,
+    )
 
-    Optional fields are omitted entirely (not written as ``null``) when not
-    given, keeping entries compact and letting :func:`_render_changelog`
-    branch on plain ``dict.get`` presence checks.
-    """
-    entry: dict[str, object] = {
-        "ts": datetime.now(UTC).isoformat(),
-        "rev": rev,
-        "machine": machine_id(),
-        "cmd": cmd,
-        "kind": kind,
-    }
-    if slug is not None:
-        entry["slug"] = slug
-    if summary is not None:
-        entry["summary"] = summary
-    if from_status is not None:
-        entry["from_status"] = from_status
-    if to_status is not None:
-        entry["to_status"] = to_status
-    if fields is not None:
-        entry["fields"] = fields
-    if feedback is not None:
-        entry["feedback"] = feedback
-    if count is not None:
-        entry["count"] = count
-    if wait_seconds is not None:
-        entry["wait_seconds"] = wait_seconds
-    if detail is not None:
-        entry["detail"] = detail
-    if diagnostic is not None:
-        entry["diagnostic"] = diagnostic
-    return entry
+
+journal_entry = _journal_entry
 
 
 def append_journal_event(entry: dict[str, object], *, verbose: bool = False) -> None:
-    """Append one event to the journal, best-effort.
-
-    The JSON store (``items.json``/``pending_items.json``) is authoritative
-    and has already been written by the time this is called — a failed
-    journal append (disk full, permissions) must never fail or crash a
-    mutation that already succeeded, so failures are swallowed with a
-    one-line stderr warning instead of raised.
-    """
-    line = json.dumps(entry, sort_keys=True)
-    try:
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        with open(JOURNAL_FILE, "a") as f:
-            f.write(line + "\n")
-    except OSError as e:
-        cli_common.vprint(
-            f"[journal] append failed (non-fatal): {e}",
-            verbose=verbose,
-            file=sys.stderr,
-        )
+    """Append one event to the journal, best-effort."""
+    dev_status_storage.append_journal_event(
+        entry, journal_file=JOURNAL_FILE, data_dir=DATA_DIR, verbose=verbose
+    )
 
 
 def _parse_journal_ts(raw: object) -> datetime | None:
     """Parse a journal entry's ``ts`` field into an aware UTC ``datetime``."""
-    if not isinstance(raw, str):
-        return None
-    try:
-        ts = datetime.fromisoformat(raw)
-    except ValueError:
-        return None
-    if ts.tzinfo is None:
-        ts = ts.replace(tzinfo=UTC)
-    return ts
+    return dev_status_storage.parse_journal_ts(raw)
+
+
+parse_journal_ts = _parse_journal_ts
 
 
 # ── run evidence (runs.jsonl sidecar) ──────────────────────────────────────
 
 
 def load_runs(item: str | None = None) -> list[RunRecord]:
-    """Load run-evidence rows from :data:`RUNS_FILE`, optionally for one item.
-
-    Read without holding :func:`backlog_lock` — writers append single lines
-    under the lock, but a concurrent append can still expose a trailing
-    partial line on read. A ``JSONDecodeError`` on that last line is
-    silently skipped (the writer just hasn't finished); the same failure on
-    any earlier line is real corruption and surfaces as a stderr warning
-    rather than being silently dropped (same policy as the journal reader).
-
-    Args:
-        item: Restrict to rows whose ``item`` field equals this slug, or
-            ``None`` for every row.
-    """
-    if not RUNS_FILE.exists():
-        return []
-    try:
-        raw_lines = RUNS_FILE.read_text().splitlines()
-    except OSError:
-        return []
-    non_blank = [line for line in raw_lines if line.strip()]
-    runs: list[RunRecord] = []
-    for line_no, line in enumerate(non_blank, start=1):
-        try:
-            run = json.loads(line)
-        except json.JSONDecodeError:
-            if line_no == len(non_blank):
-                break  # trailing partial line from a concurrent append
-            print(
-                f"runs file corrupted at {RUNS_FILE}; ignoring malformed "
-                f"line {line_no}",
-                file=sys.stderr,
-            )
-            continue
-        if not isinstance(run, dict):
-            continue
-        if item is None or run.get("item") == item:
-            runs.append(cast(RunRecord, run))
-    return runs
+    """Load run-evidence rows from :data:`RUNS_FILE`, optionally for one item."""
+    return dev_status_storage.load_runs(item, runs_file=RUNS_FILE)
 
 
 def write_runs_file(runs: Sequence[RunRecord]) -> None:
     """Atomically rewrite :data:`RUNS_FILE` with ``runs`` (one JSON line each)."""
-    payload = "".join(json.dumps(run, sort_keys=True) + "\n" for run in runs)
-    _atomic_write_json(RUNS_FILE, payload, ".runs_tmp_")
+    dev_status_storage.write_runs_file(runs, runs_file=RUNS_FILE)
 
 
 def append_run_record(record: RunRecord) -> bool:
-    """Append one run-evidence row to :data:`RUNS_FILE` (best-effort).
-
-    Callers must hold :func:`backlog_lock` (appends are single-line
-    O_APPEND writes, but the lock serializes concurrent harness sessions).
-    The subprocess whose evidence this is has already run by the time this
-    is called — a failed append (disk full, permissions) must never fail or
-    crash the ``run`` command itself, so failures print a one-line stderr
-    warning instead of raised. Unconditional (not verbose-gated): silently
-    losing evidence would defeat the whole point of recording it. Returns
-    whether the append actually landed, so ``cmd_run`` doesn't tell the
-    caller evidence was recorded when it wasn't.
-    """
-    line = json.dumps(record, sort_keys=True)
-    try:
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        with open(RUNS_FILE, "a") as f:
-            f.write(line + "\n")
-    except OSError as e:
-        print(f"[runs] append failed (non-fatal): {e}", file=sys.stderr)
-        return False
-    return True
+    """Append one run-evidence row to :data:`RUNS_FILE` (best-effort)."""
+    return dev_status_storage.append_run_record(
+        record, runs_file=RUNS_FILE, data_dir=DATA_DIR
+    )
 
 
 def _run_state(run: RunRecord) -> str:
@@ -2469,78 +2152,20 @@ def _run_state(run: RunRecord) -> str:
 def read_journal_entries(
     within_hours: float | None = None, *, verbose: bool = False
 ) -> list[dict[str, object]]:
-    """Read journal entries, optionally filtered to the last ``within_hours``.
-
-    Read without holding :func:`backlog_lock` — appends are serialized
-    elsewhere (under the lock), but a concurrent append can still expose a
-    trailing partial line on the final read. A ``JSONDecodeError`` on that
-    last line is silently skipped (the writer just hasn't finished); the
-    same failure on any earlier line is real corruption and is surfaced as
-    a stderr warning rather than silently dropped.
-    """
-    if not JOURNAL_FILE.exists():
-        return []
-    try:
-        raw_lines = JOURNAL_FILE.read_text().splitlines()
-    except OSError:
-        return []
-
-    non_blank = [line for line in raw_lines if line.strip()]
-    cutoff = (
-        datetime.now(UTC) - timedelta(hours=within_hours)
-        if within_hours is not None
-        else None
+    """Read journal entries, optionally filtered to the last ``within_hours``."""
+    return dev_status_storage.read_journal_entries(
+        within_hours, journal_file=JOURNAL_FILE, verbose=verbose
     )
-
-    entries: list[dict[str, object]] = []
-    last_index = len(non_blank) - 1
-    for i, line in enumerate(non_blank):
-        try:
-            entry = json.loads(line)
-        except json.JSONDecodeError:
-            if i != last_index:
-                cli_common.vprint(
-                    f"[journal] corrupt line {i + 1} in {JOURNAL_FILE}",
-                    verbose=verbose,
-                    file=sys.stderr,
-                )
-            continue
-        if not isinstance(entry, dict):
-            continue
-        if cutoff is not None:
-            ts = _parse_journal_ts(entry.get("ts"))
-            if ts is None or ts < cutoff:
-                continue
-        entries.append(entry)
-    return entries
 
 
 def _journal_last_entry_within(hours: float) -> bool:
-    """Cheap pre-spawn check: does the journal's last entry fall within ``hours``?
+    """Cheap pre-spawn check: does the journal's last entry fall within ``hours``?"""
+    return dev_status_storage.journal_last_entry_within(
+        hours, journal_file=JOURNAL_FILE
+    )
 
-    A bare "file non-empty" check would spawn a regen forever on a journal
-    that's gone quiet (the child caches an empty result, it ages out in
-    :data:`RECAP_TTL_SECONDS`, the next render spawns again) — this looks at
-    the actual last timestamp instead.
-    """
-    if not JOURNAL_FILE.exists():
-        return False
-    try:
-        non_blank = [
-            line for line in JOURNAL_FILE.read_text().splitlines() if line.strip()
-        ]
-    except OSError:
-        return False
-    for line in reversed(non_blank):
-        try:
-            entry = json.loads(line)
-        except json.JSONDecodeError:
-            continue  # trailing partial line (or, for an earlier one, corrupt) — skip
-        ts = _parse_journal_ts(entry.get("ts") if isinstance(entry, dict) else None)
-        if ts is None:
-            return False
-        return (datetime.now(UTC) - ts) <= timedelta(hours=hours)
-    return False
+
+journal_last_entry_within = _journal_last_entry_within
 
 
 # ── recap: cache + dispatch ─────────────────────────────────────────────────
@@ -2553,42 +2178,20 @@ def _recap_disabled() -> bool:
 
 def _load_recap_cache() -> dict[str, object] | None:
     """Load ``recap-cache.json``, or ``None`` if missing/corrupt/malformed."""
-    if not RECAP_CACHE_FILE.exists():
-        return None
-    try:
-        data = json.loads(RECAP_CACHE_FILE.read_text())
-    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
-        return None
-    if not isinstance(data, dict):
-        return None
-    return data
+    return dev_status_storage.load_recap_cache(RECAP_CACHE_FILE)
+
+
+load_recap_cache = _load_recap_cache
 
 
 def _save_recap_cache(backend: str, text: str, board_fingerprint: str) -> None:
-    """Atomically persist a recap result. ``text`` may legitimately be empty.
-
-    Caching an empty result (with a fresh timestamp) is deliberate: it's
-    what bounds retries to :data:`RECAP_TTL_SECONDS` instead of re-triggering
-    a backend call on every render forever (see module plan, Part 3).
-
-    ``board_fingerprint`` is the board's identity fingerprint (see
-    :func:`_board_fingerprint`) as of generation time -- persisted so a
-    later render can detect the board has moved since this text was
-    generated (see :func:`_recap_section_lines`), independent of how much
-    wall-clock time has passed. Deliberately not a counts-only summary: two
-    different real board states (e.g. one item moving ready->done while
-    another moves blocked->ready) can share identical counts while the
-    prose's specific claims are already wrong about *which* item changed.
-    """
-    payload = json.dumps(
-        {
-            "generated_at": datetime.now(UTC).isoformat(),
-            "backend": backend,
-            "text": text,
-            "board_fingerprint": board_fingerprint,
-        }
+    """Atomically persist a recap result."""
+    dev_status_storage.save_recap_cache(
+        backend, text, board_fingerprint, RECAP_CACHE_FILE
     )
-    _atomic_write_json(RECAP_CACHE_FILE, payload, ".recap_tmp_")
+
+
+save_recap_cache = _save_recap_cache
 
 
 def _recap_cache_age_seconds(cache: dict[str, object]) -> float | None:
