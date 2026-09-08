@@ -23,6 +23,10 @@ markers = [
 addopts = "-m 'not live_backends' -n auto"
 
 [tool.ruff]
+# Enforce the exclusions even on explicitly-passed paths — without this,
+# `ruff check <some test file>` reports violations the lint gate deliberately
+# does not cover.
+force-exclude = true
 extend-exclude = ["**/test_*.py", "test/"]
 line-length = 88
 
