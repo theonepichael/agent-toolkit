@@ -71,7 +71,7 @@ SKILLS = (
     "to-tickets",
     "swarm",
 )
-HARNESSES = ("claude", "copilot", "opencode", "agy", "pi")
+HARNESSES = ("claude", "copilot", "opencode", "agy", "pi", "codex")
 
 # Per skill, which harnesses get a generated copy. Every skill defaults to
 # the full HARNESSES tuple except spec/standup/to-tickets, which cover only
@@ -85,6 +85,10 @@ HARNESSES = ("claude", "copilot", "opencode", "agy", "pi")
 # "second copy is a second thing to drift" problem swarm.md's own closing
 # section warns against.
 _ACTIVE_TIER = ("claude", "opencode", "pi")
+# codex is best-effort (like copilot/agy): it gets the 5 base-skill copies via
+# HARNESSES above, but stays out of _ACTIVE_TIER -- no spec/standup/to-tickets
+# copies, and future skills don't get codex copies by default (AGENTS.md's
+# "Harness maintenance tiers"; promote if codex becomes a daily driver).
 SKILL_HARNESSES: dict[str, tuple[str, ...]] = {
     "dashboard": HARNESSES,
     "recap": HARNESSES,
@@ -134,6 +138,11 @@ OUTPUT_PATHS: dict[tuple[str, str], str] = {
     ("make-skill", "copilot"): "copilot/skills/make-skill/SKILL.md",
     ("make-skill", "opencode"): "opencode/command/make-skill.md",
     ("make-skill", "agy"): "agy/skills/make-skill/SKILL.md",
+    ("dashboard", "codex"): "codex/skills/dashboard/SKILL.md",
+    ("recap", "codex"): "codex/skills/recap/SKILL.md",
+    ("grill-me", "codex"): "codex/skills/grill-me/SKILL.md",
+    ("backlog-item", "codex"): "codex/skills/backlog-item/SKILL.md",
+    ("make-skill", "codex"): "codex/skills/make-skill/SKILL.md",
     ("make-skill", "pi"): "pi/skills/make-skill/SKILL.md",
     ("spec", "claude"): "claude/commands/spec.md",
     ("spec", "opencode"): "opencode/command/spec.md",
@@ -181,6 +190,27 @@ def do_not_edit_marker(skill: str) -> str:
 # the pre-fix hand-forked copies -- those are exactly what was wrong).
 
 CAPABILITY_TABLE: dict[str, dict[str, str | bool]] = {
+    "codex": {
+        # Verified against Codex CLI 0.153.4's official docs and --help
+        # surface (2026-09-08): no AskUserQuestion-style structured
+        # multi-choice widget exists; judgment calls go through plain text.
+        "structured_choice": "",
+        "instructions_ref": "the shared instructions file's",
+        "instructions_ref_bare": "the shared instructions file",
+        # Codex itself has SessionStart hook events, but this toolkit
+        # provisions no codex hooks: every non-managed codex hook needs
+        # per-definition trust review (/hooks, hash-tracked) before it runs,
+        # a poor fit for provisioned files.
+        "has_session_start_hook": False,
+        "skill_src_pattern": "codex/skills/<name>/SKILL.md",
+        # Codex's USER-scope skills dir; docs confirm symlinked skill
+        # folders/files are followed. Per-FILE links (copilot/agy style):
+        # the 5 generated skills are self-contained, no ref/ dirs.
+        "skill_dest_pattern": "~/.agents/skills/<name>/SKILL.md",
+        "skill_ref_dir": "ref",
+        "probe_command": "codex exec",
+        "commit_scope": "codex",
+    },
     "claude": {
         # Claude Code's structured multi-choice UI is AskUserQuestion.
         "structured_choice": "AskUserQuestion",

@@ -330,9 +330,9 @@ class CapabilityFixtureTests(unittest.TestCase):
 class EndToEndTests(unittest.TestCase):
     """Assert the real templates + params render to exactly what's committed."""
 
-    def test_all_36_copies_are_up_to_date(self) -> None:
+    def test_all_41_copies_are_up_to_date(self) -> None:
         rendered = gs.render_all(REPO_ROOT, SKILL_PARAMS)
-        self.assertEqual(len(rendered), 36)
+        self.assertEqual(len(rendered), 41)
         stale = []
         for relpath, text in rendered.items():
             on_disk = (REPO_ROOT / relpath).read_text(encoding="utf-8")

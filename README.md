@@ -6,6 +6,7 @@ A modular, multi-harness platform for AI agent workflows and paired development 
 - **OpenCode** (Local / Multi-provider TUI)
 - **Google Antigravity (AGY)** (Google DeepMind)
 - **Pi** (Lightweight extensible terminal assistant)
+- **Codex CLI** (OpenAI) — best-effort tier
 
 > **Status: not yet independent, but no longer manual.** This repository
 > began as a snapshot of a personal dotfiles repo, which is still where
@@ -24,7 +25,7 @@ A modular, multi-harness platform for AI agent workflows and paired development 
 - **Seed Rewrite Guard**: A pre-commit check refuses a commit whose staged seed would lose SessionStart hook groups relative to HEAD — the lossy-rewrite race that once committed a seed without its matcher-`*` herdr group. Intentional drops use `SEED_HOOK_ALLOW_DROP=1`, never `--no-verify`.
 - **Auto-Formatting on Tool Use**: Automatic Ruff formatting/lint fixing on Python edits.
 - **Shell Completions & Environment Helpers**: Portable `shell/agent-tools.zsh` providing completions, PATH setup, and harness aliases.
-- **Cross-Harness Code Generation**: Generators keep documentation (`INTERFACES.md`) and prompt templates (`templates/*.tmpl`) in sync across all 5 harnesses.
+- **Cross-Harness Code Generation**: Generators keep documentation (`INTERFACES.md`) and prompt templates (`templates/*.tmpl`) in sync across all 6 harnesses.
 
 ---
 
@@ -39,6 +40,7 @@ Install whichever CLI harness(es) you plan to use:
 | **OpenCode** | `curl -fsSL https://opencode.ai/install \| bash` |
 | **Google Antigravity (AGY)** | Internal workstation installation |
 | **Pi** | `npm install -g @mariozechner/pi-cli` |
+| **Codex CLI** | `npm install -g @openai/codex` |
 
 System tools:
 - **Python 3.12+**
@@ -180,6 +182,18 @@ export SECOND_OPINION_PI_MODEL_POOL="opencode-go/glm-5.2,opencode-go/glm-5.3-fla
 | **OpenCode** | `~/.config/opencode/opencode.jsonc` | `~/.config/opencode/commands/` | `~/.config/opencode/plugin/` |
 | **Antigravity (AGY)** | `~/.gemini/GEMINI.md` | `~/.gemini/antigravity-cli/skills/` | `~/.gemini/config/hooks.json` |
 | **Pi** | `~/.pi/agent/AGENTS.md` | `~/.pi/agent/prompts/` | `~/.pi/agent/extensions/` |
+| **Codex CLI** | `~/.codex/AGENTS.md` | `~/.agents/skills/` | none provisioned |
+
+**Codex notes.** Codex CLI (best-effort tier, like Copilot/AGY — see AGENTS.md's
+"Harness maintenance tiers") reads global instructions from `~/.codex/AGENTS.md`
+and USER-scope skills from `~/.agents/skills/` (a shared cross-tool namespace
+per the agentskills.io standard — no exclusivity audit, per-file drift checks
+only). One caveat: Codex caps the combined instruction chain at
+`project_doc_max_bytes` (32 KiB default), and the shared instructions file is
+~27 KB of that budget, leaving ~5 KB headroom for a repo's own AGENTS.md
+chain — raise `project_doc_max_bytes` in `~/.codex/config.toml` if a
+heavy-AGENTS.md repo truncates. `~/.codex/config.toml` itself (auth, model,
+trust) is never provisioned or managed.
 
 **Structured choices in Pi.** Pi has no *built-in* multi-choice prompt, but the bundled `question-tool.ts` extension supplies a `question` tool for interactive sessions. It is a hard error in headless `-p`/JSON modes and absent when Pi is launched with `--no-extensions`, so the ported skills route enumerable judgment calls to the `question` tool and fall back to plain conversational text only where it is genuinely unavailable.
 

@@ -99,6 +99,7 @@ OPENCODE_PINNED_VERSION: str = "1.18.25"
 PI_PINNED_VERSION: str = "0.84.4"
 COPILOT_PINNED_VERSION: str = "1.0.80"
 AGY_PINNED_VERSION: str = "1.1.22"
+CODEX_PINNED_VERSION: str = "0.153.4"
 
 # ── semantic expectations — which filenames each harness loads ──────────────
 # These encode the measured behavioral facts, not version-specific offsets.
@@ -111,6 +112,10 @@ COPILOT_EXPECTED_FILENAMES: frozenset[str] = frozenset(
     {"CLAUDE.md", "GEMINI.md", "AGENTS.md"}
 )
 AGY_EXPECTED_FILENAMES: frozenset[str] = frozenset()
+# Codex reads project AGENTS.md natively (global ~/.codex/AGENTS.md too);
+# extra project names only via its project_doc_fallback_filenames config,
+# which this toolkit doesn't set. Verified against the 0.153.4 docs.
+CODEX_EXPECTED_FILENAMES: frozenset[str] = frozenset({"AGENTS.md"})
 
 # ── harness metadata ─────────────────────────────────────────────────────────
 
@@ -121,6 +126,7 @@ _FALLBACK_PATHS: dict[str, list[str]] = {
     "pi": ["~/.npm-global/bin/pi"],
     "copilot": ["~/.npm-global/bin/copilot"],
     "agy": ["~/.local/bin/agy"],
+    "codex": ["~/.npm-global/bin/codex"],
 }
 
 _LOAD_BEARING: tuple[str, ...] = ("claude", "opencode")
@@ -508,6 +514,16 @@ def _harness_probe_command(name: str, prompt: str) -> list[str]:
         return ["copilot", "-p", prompt]
     if name == "agy":
         return ["agy", "-p", prompt]
+    if name == "codex":
+        # `codex exec` is the verified non-interactive mode (positional
+        # PROMPT). Model override via env var, mirroring opencode's
+        # pattern -- unset means codex's own configured default model.
+        model = os.environ.get("CODEX_PROBE_MODEL")
+        cmd = ["codex", "exec"]
+        if model:
+            cmd += ["-m", model]
+        cmd.append(prompt)
+        return cmd
     raise HarnessCheckError(f"unknown harness: {name}")
 
 
@@ -629,6 +645,7 @@ def cmd_probe(
             "pi",
             "copilot",
             "agy",
+            "codex",
         ]
     )
 
@@ -639,6 +656,7 @@ def cmd_probe(
         "pi": {_TOKEN_AGENTS_ROOT},  # prefers AGENTS.md
         "copilot": {_TOKEN_CLAUDE_ROOT, _TOKEN_GEMINI_ROOT, _TOKEN_AGENTS_ROOT},
         "agy": set(),  # none at project level
+        "codex": {_TOKEN_AGENTS_ROOT},  # reads project AGENTS.md natively
     }
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -707,8 +725,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     probe_parser.add_argument(
         "--harness",
-        choices=["claude", "opencode", "pi", "copilot", "agy"],
-        help="probe a single harness instead of all five",
+        choices=["claude", "opencode", "pi", "copilot", "agy", "codex"],
+        help="probe a single harness instead of all supported ones",
     )
 
     return parser

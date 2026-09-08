@@ -51,11 +51,13 @@ change, and that cost is unbounded — each pass can surface more drift
   generated copies for all three; capability facts (`CAPABILITY_TABLE` in
   `agent-scripts/gen_skills.py`, and its `gen_second_opinion.py` analog) get
   kept current for these three when touched.
-- **Best-effort** — Copilot, agy. Existing generated/hand-authored content
-  for these stays as-is; new skills do **not** get copilot/agy copies by
-  default. Fix drift there only when actually about to use that harness —
-  never as a proactive drift-chasing pass, and never let staleness there
-  block or expand an unrelated item's scope.
+- **Best-effort** — Copilot, agy, and Codex CLI (added 2026-09-08 when codex
+  support landed; it was just installed and its usage patterns are unproven —
+  promote it if it becomes a daily driver). Existing generated/hand-authored
+  content for these stays as-is; new skills do **not** get copilot/agy/codex
+  copies by default. Fix drift there only when actually about to use that
+  harness — never as a proactive drift-chasing pass, and never let staleness
+  there block or expand an unrelated item's scope.
 
 This tier is a starting point, not a permanent ceiling — revisit it if usage
 patterns change (e.g. copilot or agy becomes a real daily fallback the way

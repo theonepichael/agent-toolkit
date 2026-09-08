@@ -99,6 +99,15 @@ name: dashboard
 description: "surfaces backlog and pending items as a dashboard. use when the user says 'dashboard', 'what's pending', 'show backlog', 'where we at', 'what am i working on', 'open items', or any variant of checking current work status."
 ---""",
     },
+    "codex": {
+        # Codex requires both `name` and `description` in SKILL.md
+        # frontmatter (build-skills docs); no tool-permission fields.
+        "FRONTMATTER": """\
+---
+name: dashboard
+description: "surfaces backlog and pending items as a dashboard. use when the user says 'dashboard', 'what's pending', 'show backlog', 'where we at', 'what am i working on', 'open items', or any variant of checking current work status."
+---""",
+    },
     "pi": {
         "FRONTMATTER": """\
 ---
@@ -131,6 +140,13 @@ description: "prints a friendly prose recap of recent activity. use when the use
 ---""",
     },
     "agy": {
+        "FRONTMATTER": """\
+---
+name: recap
+description: "prints a friendly prose recap of recent activity. use when the user says 'recap', 'what did we do', 'catch me up', 'summary of recent work', or any variant of requesting a recap."
+---""",
+    },
+    "codex": {
         "FRONTMATTER": """\
 ---
 name: recap
@@ -384,6 +400,78 @@ If this session was started with `--backlog-slug` (the batch-backlog-items
    normal tool access, and a long sub-conversation inside spec (and, inside
    that, potentially a nested grill-me delegation for an unrelated field) can
    push this session's own state out of effective attention. Before
+   delegating:
+   1. Print a literal checkpoint marker: `[CHECKPOINT: suspending grill-me
+      --auto at step 5 for the spec skill; grill-me itself has nothing left
+      to resume once spec confirms its save — this is the last step]`.
+   2. Run spec's protocol to actual completion, including any inner grill-me
+      delegation and spec's own end-of-session steps.
+   3. On return, confirm spec recorded its artifact path and that the item's
+      `related_files` cites it (CLAUDE.md's "Plans and deliverables get a
+      path on record"). `spec.md` becomes the artifact this item's
+      `related_files` records; spec's own Context field cites this session's
+      `plan_path` as the decision record behind it — spec is final, this
+      plan is the precursor, the same relationship default mode's escalation
+      case has (`spec.md` step 3). End the grill-me session here.""",
+    },
+    "codex": {
+        # Codex activates skills by reading SKILL.md directly (no discrete
+        # Skill tool call), has no structured multi-choice widget (verified
+        # 0.153.4 docs/help), and gets no provisioned SessionStart hook in
+        # this toolkit -- so the ask/clear-go/resume mechanics mirror agy's
+        # plain-text ones, with codex-specific hook facts where they differ.
+        "FRONTMATTER": """\
+---
+name: grill-me
+description: Interview the user relentlessly about a plan or design until reaching shared understanding, resolving each branch of the decision tree. Use when user wants to stress-test a plan, get grilled on their design, or mentions "grill me".
+---""",
+        "DEFAULT_MODE_OPENING": """\
+If the user didn't name a specific topic (and isn't asking for verification or
+autonomous resolution), grill the plan under discussion when the conversation
+makes it obvious; otherwise ask the user what to grill before proceeding.
+`--verify` and autonomous/"grill this on your own" runs each follow their own
+section below instead of this Q&A loop.""",
+        "STEP2_ASK_MECHANISM": (
+            "List them together in the same message, numbered, each with your "
+            "recommended answer, applying the shared instructions file's "
+            "convention for asking the user to choose."
+        ),
+        "STEP5_VERDICT_OFFER": (
+            'offer, in plain text, with the breakdown visible: "N decision(s) have '
+            "no recorded verdict — X defaulted/assumed, Y user-stated — want me to "
+            'run --verify on them before we call this done?"'
+        ),
+        "STEP6_CLEARGO": """\
+Once verification (if any) is settled, always offer clear-and-go, in plain text — ask whether to clear context and start executing the plan now. On yes, run `grill.py mark-pending-execution` (defaults to this session), then tell the user: "Marked — start a fresh session whenever you're ready and ask me to pick the plan back up." Codex has a `SessionStart` hook event, but this toolkit provisions no codex hooks — every non-managed codex hook requires per-definition trust review (`/hooks`, hash-tracked) before it runs, a poor fit for provisioned files — so nothing auto-surfaces the marked plan and resume is manual: when a session opens with the user asking to resume/execute the marked plan, run `grill.py pending-plan --consume` and act on the printed instructions (resume if the user says go/continue, otherwise leave the cleared flag alone). On no, nothing else happens, no state change.""",
+        "AUTO_CRITIQUE_MECHANISM": """\
+For each open question, instead of asking the user: form your own leading
+   answer, then run the second-opinion skill's iteration loop (same
+   convergence rule and round cap — reuse that backend and loop rather than
+   inventing a separate critique mechanism) against a short write-up of the
+   question, your answer, and enough surrounding context for an outside
+   model to attack it credibly. "Adversarial" here means exactly what
+   `second_opinion.py`'s own `CRITIQUE_PROMPT` already asks for — find
+   problems rather than summarize or agree, name what's underspecified or
+   assumed without justification, disagree explicitly where warranted, and
+   propose a simpler approach if one exists; a critique that just restates
+   or praises your answer isn't adversarial and doesn't count as a round.
+   Record the surviving answer with `decide` and source `assumed` —
+   summarize the critique exchange (what was challenged, what survived, what
+   changed) in `reasoning`, since that's the only record of how the decision
+   was actually stress-tested.""",
+        "AUTO_SPEC_HANDOFF": """\
+If this session was started with `--backlog-slug` (the batch-backlog-items
+   case — a freestanding topic session with no item behind it skips this step
+   entirely): once `--verify` is settled, delegate to the spec skill with this
+   session's resolved decisions and plan.md as input, declining spec's own
+   step 4 generation offer.
+
+   **Delegating into spec is a suspend-and-return, not a fire-and-forget
+   reference** — Codex has no discrete "Skill" tool call; the model activates
+   a referenced skill by reading and following its SKILL.md body directly
+   using normal tool access, and a long sub-conversation inside spec (and,
+   inside that, potentially a nested grill-me delegation for an unrelated
+   field) can push this session's own state out of effective attention. Before
    delegating:
    1. Print a literal checkpoint marker: `[CHECKPOINT: suspending grill-me
       --auto at step 5 for the spec skill; grill-me itself has nothing left
@@ -1085,6 +1173,181 @@ backlog `add`, a `pending add`, an `out-of-scope add`), stating a
 recommendation first, then stopping and waiting for an actual reply before
 each next entry.""",
     },
+    "codex": {
+        # Mechanics mirror agy's: no discrete Skill tool call (skills load by
+        # reading SKILL.md), no structured multi-choice widget, no provisioned
+        # SessionStart hook. Codex-specific: `codex exec` for headless runs.
+        "FRONTMATTER": """\
+---
+name: backlog-item
+description: "Runs a dev_status.py backlog item end-to-end: resolve, worktree, spec/plan, second-opinion critique, execution handoff, TDD implement, verify, commit/merge/push gates, review+approve. Use when the user says 'work on backlog item 4', 'pick up <slug>', 'let's do the next backlog item', or otherwise names a specific item to work end-to-end. Add --auto (optionally with a slug) for an unattended single-item or full-READY-batch run — commit and merge/push gates still stop live, per item."
+---""",
+        "OPENING_PARAGRAPH": """\
+Work the named item to done, one step at a time. If the user's prompt names
+`--auto` (with or without a target item), skip straight to the `--auto
+mode` section at the end of this file instead of running the numbered
+steps live. Otherwise, if the user didn't name a specific item (slug or N),
+ask which one — never guess. Every user-approval gate below (`## 10`,
+`## 11`) stops and waits for the user — never collapse two gates into one
+approval. Distinct from those: the item's own `gate` field in
+`dev_status.py` (step 5, step 12) is a judgment-step verification
+checkpoint, not a user-approval stop — same word, different mechanism,
+don't conflate them.""",
+        "STEP1_BODY": """\
+`python3 ~/.claude/scripts/dev_status.py show <slug|N>`. Read the full
+record — never start from the dashboard's one-line summary (the shared
+instructions file). Empty context/next_steps/related_files: stop and ask
+the user to fill them in; don't fabricate a plan from the title. Numeric
+id: note the rendered rev for `--if-rev` on the next mutating call.
+related_files already names a grill plan (`~/.claude/data/grill/<slug>-plan.md`)
+or a spec (`~/.claude/data/grill/<slug>-spec.md`)? Planning and critique
+(steps 5–6) are already done — skip to step 8. Worktree already has
+implemented, uncommitted changes (e.g. handed back from an external
+executor)? Skip straight to step 9. `next_steps` starts with "Resume
+backlog-item at step N" (a return pointer left by an earlier suspend, see
+step 5–6)? That step N is where to resume, not step 1's normal dispatch.""",
+        "STEP2_BODY": """\
+If the item is already in-progress: STOP immediately — do not proceed to
+step 3 or touch any worktree. Report the existing claim details (`claimed_by`
+harness, PID, and timestamp from `show`) to the user and ask how to proceed.
+Never attempt a manual PID liveness check (e.g. `ps -p <pid>`) to decide
+whether to take over — `dev_status start`'s claim-collision refusal is the
+authoritative enforcement path, and `--force` (`-f`) is used only on explicit
+user instruction.
+
+Otherwise (item is open): run `dev_status.py start <slug|N>` (`--if-rev <N>`
+for numeric ids). On a main/master checkout, `start` now refuses (worktree
+guard) — do step 3 first, then run `start` from inside the fresh worktree.""",
+        "STEP5_BODY": """\
+Delegate to the spec skill with the item's context/next_steps as the task.
+Let it draft and save the spec end-to-end (its steps 1–4) — including its
+own internal escalation to grill-me if a field's design is genuinely open;
+spec's step 3 owns that handoff and the resume-after entirely, including
+its own suspend-and-return discipline for that inner delegation. There is
+nothing to orchestrate here. Decline spec's own step 4 generation offer —
+step 7 below owns the handoff decision.
+
+**Delegating into spec is a suspend-and-return, not a fire-and-forget
+reference** — Codex has no discrete "Skill" tool call; the model activates a
+referenced skill by reading and following its SKILL.md body directly using
+normal tool access, which means a long sub-conversation inside spec (and,
+inside that, potentially grill-me) can push this procedure's own state out
+of effective attention. Before delegating:
+1. Print a literal checkpoint marker: `[CHECKPOINT: suspending backlog-item
+   at step 5 for the spec skill; resume at step 6 when it finishes]`.
+2. Persist the same return pointer somewhere that outlives the chat
+   transcript — a session's context can be compacted or the session
+   restarted entirely, so the marker alone isn't enough: `dev_status.py
+   update <slug> '{"next_steps": "Resume backlog-item at step 6 after the
+   spec skill finishes - <original next_steps preserved/appended>"}'`.
+3. Run spec's protocol to actual completion, including any inner grill-me
+   delegation and spec's own end-of-session steps.
+4. On return, read `~/.agents/skills/backlog-item/SKILL.md`'s own step 6
+   text by its literal absolute path before acting — don't rely on
+   recalling it from earlier in the conversation.
+
+Once spec records its artifact path, add it to the item's related_files if
+missing (the shared instructions file's "Plans and deliverables get a path
+on record"). If spec delegated into grill-me along the way, that session's
+`plan_path` is already cited from the spec's Context field — don't also
+record it as a second, competing artifact.""",
+        "STEP6_BODY": """\
+If step 5 set a gate (judgment steps present), run the second-opinion
+skill against the resulting plan or spec file unconditionally, no ask,
+using the same suspend-and-return framing as step 5 (checkpoint marker,
+persisted return pointer, absolute-path re-read on return) — critique the
+plan before committing to an executor. If step 5 left the gate unset (all
+steps mechanical), skip this step; a critique adds nothing to a rote
+transformation.""",
+        "STEP7_BODY": """\
+Decide who implements the plan — ask if it isn't already obvious from the
+conversation, in plain conversational text with a stated recommendation (Codex
+has no structured multi-choice widget — state the options, recommend one,
+then stop and wait for an actual reply, don't assume the recommended option
+was accepted):
+
+- **Same session, now.** Trivial/small item → go to step 8 immediately.
+- **Cheaper codex session.** Run `grill.py mark-pending-execution
+  --backlog-slug <slug>` (the plan's session, with this item's slug — not
+  its own resolved-topic slug), then tell the user to start a fresh codex
+  session, invoke this skill explicitly (`$backlog-item <slug|N>`), and
+  follow it. Codex has a `SessionStart` hook event, but this toolkit
+  provisions no codex hooks (per-definition trust review via `/hooks` is a
+  poor fit for provisioned files), so the explicit invocation IS the resume
+  path — step 1 sees the plan in related_files and skips to step 8.
+- **A cheaper codex model, same machine.** Personal projects only, never at
+  work. Ask the user to name the specific model id to run (don't parse
+  `codex exec` catalog output and guess which entry is "the cheap one" —
+  that's brittle to catalog/format drift). State explicitly, before
+  offering this option, that a small-tier model doing unsupervised TDD
+  (implement, run tests, debug, iterate) is a materially weaker executor
+  than the model running this session — step 9's review below is not
+  optional for this branch, it's the actual safety net. If chosen: this is
+  a blocking subprocess call from this session's own shell access, not an
+  out-of-band handoff — say so, so the user knows this session's own
+  context/tokens pay for it. Redirect the child's output to a file rather
+  than letting the full streaming transcript land in this session's
+  context: `codex exec "Implement <plan path> exactly as written — TDD,
+  run the full suite, then STOP without committing and report the diff."
+  > /tmp/<slug>-handoff.log 2>&1`, then read back only the final
+  summary/diff from the log. This branch never gets the commit gate. Once
+  it reports back, review the diff yourself — that resumes at step 9.
+
+For a work-related item, only the first two options are on the table —
+don't offer the cheaper-model branch at all.""",
+        "STEP8_BODY": """\
+TDD in the worktree: a failing test that proves the gap the plan names, then the minimal implementation.""",
+        "STEP10_BODY": """\
+Show the full diff. Ask for explicit commit approval, then stop and yield
+the turn. Do not run `git commit` under any circumstances until the user's
+next message contains an explicit yes — stating the question is not the
+same as getting an answer. No exceptions for being mid-pipeline, and no
+exception for code an external executor wrote (the shared instructions
+file).""",
+        "STEP11_BODY": """\
+On approval, commit (conventional format) — this gate is never bundled with
+what follows. Personal project (this repo, a personal side project — never
+a `work-`-prefixed item or a work repo): offer the follow-on sequence as one
+bundled question (the shared instructions file's Git section) — "merge to
+main, push, and clean up the worktree?" — then merge locally, push, `git
+worktree remove`, `git branch -d` on that single approval. Work-related or
+ambiguous: ask separately for merge and for push — never bundle.""",
+        "STEP12_BODY": """\
+`dev_status.py review <slug|N>` then `approve <slug|N>` — never a bare
+`done` on an in-review item. If `approve` refuses citing an unmet gate,
+actually check each criterion from `show <slug|N>` against the diff — don't
+pass it reflexively — then cover every criterion with evidence:
+`dev_status.py run <slug|N> -- <command>` executes and records a command,
+and `gate-pass <slug|N> '{"coverage": {"<N>": "run:<run_id>" or
+"manual:<note>"}}'` refuses until each criterion cites a recorded run or a
+manual note. Then retry `approve`. Display the full dashboard stdout these
+print; don't just narrate a one-line confirmation.""",
+        "AUTO_INVOCATION": """\
+**Invocation.** `--auto` with a slug/N runs just that item under this mode.
+`--auto` alone batch-processes every READY item, in dashboard order; any IN
+PROGRESS item is resumed first via the existing step 1–2 logic; BLOCKED
+items are skipped by construction (never READY). The queue is fixed at the
+start of the run — items added to READY mid-run aren't picked up until a
+later invocation. Loop the modified per-item procedure below across the
+queue. This mode does not remove the need for step 5/6's suspend-and-return
+checkpoint discipline around delegating into `spec` (and, inside that,
+potentially `grill-me`) — it still applies unchanged; the checkpoint marker
+and the persisted `next_steps` pointer just also carry the auto-context note
+from point 3 below.""",
+        "AUTO_STEP5_SPEC": """\
+**Step 5 (Spec or plan)** — the checkpoint marker and persisted
+   `next_steps` pointer this step already requires before delegating into
+   `spec` also state explicitly that this backlog-item run is `--auto`: if
+   spec's own step 3 escalates into `grill-me` for a genuinely open design
+   branch, that inner session should also run `grill-me --auto` rather than
+   stopping for live Q&A.""",
+        "AUTO_END_BLOCK": """\
+in one pass, asking in plain conversational text for each queued item
+exactly as its originating shared-instructions protocol specifies (a
+backlog `add`, a `pending add`, an `out-of-scope add`), stating a
+recommendation first, then stopping and waiting for an actual reply before
+each next entry.""",
+    },
     "pi": {
         "FRONTMATTER": """\
 ---
@@ -1401,6 +1664,36 @@ real transcripts).""",
 2. Add a `[[link]]` entry (`src = "agy/skills/<name>/SKILL.md"`, `dest = "~/.gemini/antigravity-cli/skills/<name>/SKILL.md"`, `harness = "agy"`) in `links.toml` next to the existing ones (same for any reference files).
 3. Create the live symlink now: {symlink_cmd("agy/skills/<name>/SKILL.md", "~/.gemini/antigravity-cli/skills/<name>/SKILL.md")}.
 4. Conventional commit, scope `agy`: `feat` for a new skill, `refactor`/`docs` for revisions.""",
+    },
+    "codex": {
+        "FRONTMATTER": """\
+---
+name: make-skill
+description: "Author or revise a Codex CLI skill using a trigger/structure/steering/pruning rubric. Use when the user wants to create a new skill, improve or simplify an existing one, or complains a skill isn't triggering or isn't being followed."
+---""",
+        "TRIGGER_SECTION": """\
+Codex skills use progressive disclosure: only `name` + `description` are
+injected into context up front; the full SKILL.md body loads only once the
+skill is selected, and references/scripts only when actually needed (Codex's
+own build-skills docs). Skills can be invoked explicitly (`$skill-name`, or
+`/skills`) and Codex also activates them implicitly when the task matches the
+`description` — so the frontmatter `description` is the trigger surface both
+ways. Write it as: what the skill does + "use when" + the literal phrases
+the user actually says (steal them from real transcripts). Keep it concise
+and discriminating: Codex caps the initial skill list at 2% of the context
+window (8,000 characters when unknown) and shortens or omits verbose
+descriptions first.""",
+        "STRUCTURE_REF_NOTE": """\
+- Supporting material (schemas, long examples, lookup tables) does NOT go in the body. Codex's own docs specify a `references/` subdirectory for this (not `ref/` — matches Codex's documented skill-folder convention, distinct from this repo's `claude`/`copilot` naming). Put it in the repo's `codex/skills/<skill>/references/<topic>.md` and point to it from the step that needs it. Reference files need their own symlink lines (step 5).""",
+        "STEERING_WIDGET_NOTE": """\
+- Codex has no `AskUserQuestion`-style structured prompt (verified against Codex CLI 0.153.4's docs and `--help` surface). Any step that needs a multi-choice decision from the user must be written as plain conversational text: state the question, give a recommendation, wait for a plain-text reply. Don't design a skill step around a UI widget Codex doesn't have.""",
+        "VERIFY_PROBE": """\
+Probe with `codex exec '<a real trigger phrase>'` (verified non-interactive mode: `codex exec [OPTIONS] [PROMPT]`). Check the output (and reasoning, if visible) repeats your leading words back. If the agent skips a step, that step needs splitting or stronger steering — not more prose.""",
+        "PLUMBING_STEPS": """\
+1. File lives at the repo's `codex/skills/<name>/SKILL.md` (same for any reference files, under the repo's `codex/skills/<name>/references/`).
+2. Add a `[[link]]` entry (`src = "codex/skills/<name>/SKILL.md"`, `dest = "~/.agents/skills/<name>/SKILL.md"`, `harness = "codex"`) in `links.toml` next to the existing ones (same for any reference files). `~/.agents/skills` is Codex's USER-scope skills directory — a shared cross-tool namespace, so it deliberately has no `[[managed_dir]]` exclusivity row.
+3. Create the live symlink now: `ln -s "$(git rev-parse --show-toplevel)/codex/skills/<name>/SKILL.md" "~/.agents/skills/<name>/SKILL.md"` (create the parent directory first). Codex follows symlinked skill files when scanning.
+4. Conventional commit, scope `codex`: `feat` for a new skill, `refactor`/`docs` for revisions.""",
     },
     "pi": {
         "FRONTMATTER": """\
