@@ -667,6 +667,21 @@ dest = "~/.pi/agent/extensions/swarm-tool.ts"
 harness = "pi"
 
 [[link]]
+src = "pi/extensions/swarm-picker.ts"
+dest = "~/.pi/agent/extensions/swarm-picker.ts"
+harness = "pi"
+
+[[link]]
+src = "pi/extensions/swarm-scheduling.ts"
+dest = "~/.pi/agent/extensions/swarm-scheduling.ts"
+harness = "pi"
+
+[[link]]
+src = "pi/extensions/swarm-herdr.ts"
+dest = "~/.pi/agent/extensions/swarm-herdr.ts"
+harness = "pi"
+
+[[link]]
 src = "pi/extensions/exit-alias.ts"
 dest = "~/.pi/agent/extensions/exit-alias.ts"
 harness = "pi"

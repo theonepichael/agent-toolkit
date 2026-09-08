@@ -1284,6 +1284,9 @@ are copy-once seeds for exactly that reason.
 | `pi/extensions/ruff-format-on-edit.ts` | `~/.pi/agent/extensions/ruff-format-on-edit.ts` (pi) |
 | `pi/extensions/second-opinion-tool.ts` | `~/.pi/agent/extensions/second-opinion-tool.ts` (pi) |
 | `pi/extensions/standup-tool.ts` | `~/.pi/agent/extensions/standup-tool.ts` (pi) |
+| `pi/extensions/swarm-herdr.ts` | `~/.pi/agent/extensions/swarm-herdr.ts` (pi) |
+| `pi/extensions/swarm-picker.ts` | `~/.pi/agent/extensions/swarm-picker.ts` (pi) |
+| `pi/extensions/swarm-scheduling.ts` | `~/.pi/agent/extensions/swarm-scheduling.ts` (pi) |
 | `pi/extensions/swarm-tool.ts` | `~/.pi/agent/extensions/swarm-tool.ts` (pi) |
 | `pi/extensions/to-tickets-tool.ts` | `~/.pi/agent/extensions/to-tickets-tool.ts` (pi) |
 | `pi/extensions/trust-session.ts` | `~/.pi/agent/extensions/trust-session.ts` (pi) |
@@ -1318,6 +1321,7 @@ are copy-once seeds for exactly that reason.
 | `pi/test/ruff-format-on-edit.test.ts` | not symlinked by `links.toml` |
 | `pi/test/second-opinion-tool.test.ts` | not symlinked by `links.toml` |
 | `pi/test/standup-tool.test.ts` | not symlinked by `links.toml` |
+| `pi/test/swarm-module-surface.test.ts` | not symlinked by `links.toml` |
 | `pi/test/swarm-tool.test.ts` | not symlinked by `links.toml` |
 | `pi/test/test-env.test.ts` | not symlinked by `links.toml` |
 | `pi/test/to-tickets-tool.test.ts` | not symlinked by `links.toml` |

@@ -1,0 +1,422 @@
+// Pure scheduling decisions over a swarm run's persisted state shape:
+// worker naming, READY-item selection, concurrency/pane accounting and
+// relay-stall detection. Extracted verbatim from swarm-tool.ts; no module
+// state, no I/O.
+const OPEN_PANE_SOFT_CAP_MULTIPLIER = 2;
+
+export type WorkerLifecycle = "active" | "awaiting_relay";
+
+export interface WorkerRecord {
+  agent: string; // synthetic id, e.g. "w1" -- never the raw slug (herdr names cap at 32 chars)
+  slug: string;
+  paneId: string;
+  /**
+   * The tab this worker owns, closed when it is dropped.
+   *
+   * Optional only for state files written before workers had their own tabs:
+   * those workers live in split panes, and closing them still goes through
+   * `pane close`. A worker spawned by this version always carries one.
+   */
+  tabId?: string;
+  /**
+   * The files this worker's item declared it would touch (`related_files`).
+   *
+   * Held on the record so a later wave can tell whether a candidate would
+   * edit the same file as something already running, without re-querying
+   * dev_status for items that have since left READY. Optional for records
+   * written before scheduling existed: such a worker simply constrains
+   * nothing, which is the pre-existing behaviour.
+   */
+  paths?: string[];
+  /**
+   * Epoch ms the worker's CURRENT working segment began.
+   *
+   * Stamped at spawn, folded into `accumulatedWorkingMs` when the worker
+   * parks at awaiting_relay, and re-stamped when swarm_resolve_blocked
+   * returns it to active. That is what makes the budget measure WORKING time
+   * rather than wall time: a worker parked overnight waiting on a human would
+   * otherwise resume already past its deadline and be stopped on its first
+   * check-in -- destroying its work at the exact moment the human answered.
+   *
+   * Optional only for records written before budgets existed. Such a record
+   * is stamped on its first check-in rather than left without a deadline:
+   * "no deadline" would revive the unbounded hang, for exactly the state
+   * files in flight across the upgrade.
+   */
+  workingSinceMs?: number;
+  /**
+   * Working time from this worker's COMPLETED segments, in ms. Absent means
+   * zero.
+   *
+   * Without it, re-stamping `workingSinceMs` on every resume would not pause
+   * the clock, it would erase it: a worker that works 3h50m, blocks on a
+   * relay and is answered would start a fresh budget and could run 7h50m in
+   * total. The budget is per item, not per segment.
+   */
+  accumulatedWorkingMs?: number;
+  /**
+   * The orchestrator cwd this worker's tab was created in, so a deliberate
+   * stop can name the worktree its item was being worked in. Optional for
+   * records written before this existed; absent means the report says so
+   * rather than printing a guess.
+   */
+  cwd?: string;
+  /**
+   * How many check-ins this worker has had. Absent means none yet.
+   *
+   * On the record rather than in a runtime map because the working-time
+   * fields beside it are persisted: a restart that kept a worker's 3h45m
+   * elapsed but reset its count would report "check-in 1, 3h45m of a 4h
+   * budget", which reads as a stall rather than a resumption.
+   */
+  checkIns?: number;
+  /**
+   * The model this worker was started on, when one was pinned.
+   *
+   * Recorded so a run can say what actually did the work. Absent means the
+   * worker took pi's own default, which is what every worker did before this
+   * was wired -- and which no digest could report, so a finished run could
+   * not be reasoned about or reproduced after the fact.
+   */
+  model?: string;
+  /**
+   * Epoch ms this worker parked at `awaiting_relay`, cleared when it resumes.
+   *
+   * Separate from `workingSinceMs` on purpose: that clock stops here, so
+   * without this one a parked worker has no clock at all. See
+   * `stalledRelayWorkers`.
+   */
+  awaitingRelaySinceMs?: number;
+  /**
+   * The last relay answer that failed to match, if one did.
+   *
+   * Without it a failed resolve left no trace: the worker stayed at
+   * awaiting_relay and the next poll reported an ordinary unanswered relay,
+   * indistinguishable from one nobody had tried yet. That is exactly how the
+   * 2026-09-03 stall formed and went unnoticed.
+   */
+  lastResolveFailure?: { answer: string; reason: string; at: number };
+  /**
+   * Mid-flight corrections sent to this worker.
+   *
+   * On the record so the end-of-run digest can say an item's premises changed
+   * under a worker and when. The raw `herdr agent prompt` this replaces left
+   * no trace: the run state had no idea an item had been amended, and the
+   * orchestrator went on polling a worker whose instructions had been
+   * rewritten underneath it.
+   */
+  amendments?: Amendment[];
+  lifecycle: WorkerLifecycle;
+}
+
+export interface SwarmState {
+  runId: string;
+  concurrency: number;
+  nextCounter: number;
+  workers: WorkerRecord[];
+  /**
+   * Every slug this run has already handed to a worker, successfully or not.
+   *
+   * Automatic selection reads the READY set fresh on each wave, and a worker
+   * that dies without reaching `dev_status.py start` leaves its item exactly
+   * as it found it -- READY. Without this the next wave selects that same
+   * item again, and again, which is the "silently retried" behaviour
+   * swarm_poll's own guidance rules out. Caught on a live run: a worker whose
+   * tab was closed was re-spawned by the very next wave.
+   *
+   * Attempted, not completed, is the right key. The run should not re-select
+   * an item it already tried, whatever the outcome; a human decides whether a
+   * failure is worth another go, from the digest.
+   *
+   * A DEFERRED item is not attempted -- it was never handed to anyone, and
+   * becoming schedulable later is the entire point of deferring it.
+   *
+   * Optional for state files written before this existed; absent means the
+   * run has attempted nothing it can prove, which is the old behaviour.
+   */
+  attempted?: string[];
+  /**
+   * The slug prefix this run was scoped to, stamped when a fresh state is
+   * initialized and carried through every save.
+   *
+   * herdr_delegate.py's `restart` mode discovers the runId to resume by
+   * matching this field exactly against the prefix it was invoked with.
+   * Legacy files written before the field existed fall back to matching
+   * worker/`attempted` slugs -- a substring-prefix collision could fool the
+   * scan (e.g. a hypothetical `auth` prefix inside `auth-api-` slugs), which
+   * is why the exact field exists rather than the scan alone. Optional for
+   * the same reason every other field added here is: old state files on disk.
+   */
+  prefix?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Naming
+// ---------------------------------------------------------------------------
+
+/**
+ * Project prefixes backlog slugs share within a wave. Stripped before naming
+ * because they carry no distinguishing information -- the head of every slug
+ * in a run is often identical (three `meta-second-opinion-*` items once
+ * rendered as the same 32-char name), so the budget is better spent on the
+ * tail, which is what actually tells items apart. Longest match first, so a
+ * future prefix that extends another (e.g. `meta-x-` vs `meta-`) strips
+ * correctly, and only that one is removed.
+ */
+const PROJECT_PREFIXES = ["iron-lb-", "meta-", "work-"];
+
+/** Synthetic herdr agent name incorporating the slug, capped at herdr's 32-char limit.
+ *
+ * Truncates from the slug's HEAD, keeping its tail: the `w<counter>` segment
+ * guarantees uniqueness within a run, so the slug's only job here is
+ * readability, and the tail is the part a human maps back to an item.
+ */
+export function nextAgentId(runId: string, counter: number, slug?: string): string {
+  const cleanSlug = slug ? slug.replace(/[^a-zA-Z0-9_-]/g, "") : "";
+  // Longest match, and only ONE: reduce-and-strip-each would take both
+  // prefixes off a slug like `meta-work-foo` and leave `foo`, silently
+  // discarding a segment that distinguishes it.
+  const matched = PROJECT_PREFIXES.filter((prefix) => cleanSlug.startsWith(prefix)).sort(
+    (a, b) => b.length - a.length,
+  )[0];
+  const stripped = matched ? cleanSlug.slice(matched.length) : cleanSlug;
+  if (!stripped) return `${runId}-w${counter}`;
+  const base = `${runId}-w${counter}-${stripped}`;
+  if (base.length <= 32) return base;
+  // Not enough budget for any slug tail (pathological runId): fall back to a
+  // plain truncation rather than slicing a negative count.
+  const remaining = 32 - `${runId}-w${counter}-`.length;
+  if (remaining < 1) return base.slice(0, 32);
+  return `${runId}-w${counter}-${stripped.slice(-remaining)}`;
+}
+
+export function stalledRelayWorkers(
+  workers: WorkerRecord[],
+  now: number,
+  stallMs: number,
+): WorkerRecord[] {
+  return workers.filter(
+    (w) =>
+      w.lifecycle === "awaiting_relay" &&
+      w.awaitingRelaySinceMs !== undefined &&
+      now - w.awaitingRelaySinceMs >= stallMs,
+  );
+}
+
+/** One READY item, as much of it as scheduling needs. */
+export interface ReadyItem {
+  id: string;
+  /**
+   * Whether a worker may be given this item, as reported by
+   * `dev_status.py ready`.
+   *
+   * Deliberately `unknown` rather than `boolean | undefined`: the value comes
+   * from a JSON payload this module does not control, and the check below
+   * requires an explicit `true`, so anything else -- absent, null, a string --
+   * lands in the same fail-closed branch.
+   */
+  worker_safe?: unknown;
+  related_files?: { path?: unknown }[];
+}
+
+export function parseReadyItems(stdout: string): ReadyItem[] {
+  try {
+    const parsed: unknown = JSON.parse(stdout);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((i): i is ReadyItem => typeof (i as ReadyItem)?.id === "string");
+  } catch {
+    return [];
+  }
+}
+
+/** One `show` result, as much of it as the finish-evidence check needs. */
+export interface ShownItem {
+  /**
+   * `dev_status.py`'s status field: one of `VALID_STATUSES`
+   * (`"open"`/`"in-progress"`/`"in-review"`/`"done"`) in practice, but
+   * `unknown` until checked -- the payload comes from JSON this module does
+   * not control.
+   */
+  status?: unknown;
+}
+
+export function parseShownItem(stdout: string): ShownItem | null {
+  try {
+    const parsed: unknown = JSON.parse(stdout);
+    return parsed && typeof parsed === "object" ? (parsed as ShownItem) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether a "finished" event has zero evidence of real progress: the item's
+ * dev_status.py status never advanced past open/in-progress, and no capture
+ * was queued. Fail open -- a `shownStatus` that isn't exactly "open" or
+ * "in-progress" (including a failed/unparseable query's `undefined`/`null`)
+ * never counts as suspicious; only a positive, successfully-read status does.
+ */
+export function isSuspiciousFinish(shownStatus: unknown, captureCount: number): boolean {
+  if (captureCount > 0) return false;
+  return shownStatus === "open" || shownStatus === "in-progress";
+}
+
+/** The files an item declares it will touch. Absent or malformed entries simply contribute nothing. */
+export function itemPaths(item: ReadyItem): string[] {
+  const paths = (item.related_files ?? [])
+    .map((f) => f?.path)
+    .filter((p): p is string => typeof p === "string" && p.length > 0);
+  return [...new Set(paths)];
+}
+
+/**
+ * True when two declared paths refer to overlapping work.
+ *
+ * Equality, or one containing the other as a directory. The separator check
+ * is the point: plain string prefixing would make "/r/pkg" swallow
+ * "/r/pkg-other", deferring unrelated items forever.
+ */
+function pathsCollide(a: string, b: string): boolean {
+  // Trailing slashes are stripped first, or a directory written "/repo/pkg/"
+  // builds the prefix "/repo/pkg//" and matches nothing inside itself.
+  const x = a.replace(/\/+$/, "");
+  const y = b.replace(/\/+$/, "");
+  if (x === y) return true;
+  return x.startsWith(`${y}/`) || y.startsWith(`${x}/`);
+}
+
+export interface SelectionResult {
+  slugs: string[];
+  /** Held back because another item in this wave, or a running worker, edits the same file. */
+  deferred: { slug: string; reason: string }[];
+  /** Held back only because the concurrency cap was already full. */
+  skipped: string[];
+  /**
+   * Never schedulable: a worker must not take this item at all.
+   *
+   * A third category on purpose. `skipped` is coming next wave regardless and
+   * `deferred` is waiting on a named worker, so both end when a worker
+   * finishes -- but a refused item is owed nothing and will never be spawned.
+   * Folding it into either would leave the orchestrator polling for a worker
+   * that was never started, on a queue that cannot drain.
+   */
+  refused: { slug: string; reason: string }[];
+}
+
+/**
+ * Choose which candidates may run together.
+ *
+ * Two items that edit the same file cannot run concurrently: each worker gets
+ * its own worktree, so the second one to merge conflicts. dev_status already
+ * prevents two sessions claiming the same ITEM; nothing prevented two items
+ * claiming the same FILE, and that is the collision that actually occurred --
+ * meta-swarm-trust-ack-fail-open and meta-swarm-poll-abort-and-orphan-pane
+ * both edit swarm-tool.ts and had to be held apart by hand.
+ *
+ * `deferred` and `skipped` are kept apart because the orchestrator acts
+ * differently on them: a skipped item is coming next wave whatever happens,
+ * while a deferred one is waiting on a specific worker to finish.
+ *
+ * Termination rests on one property: with no worker running and no item yet
+ * selected, the first candidate collides with nothing, so a non-empty queue
+ * always yields at least one spawn. A deferred item therefore cannot be
+ * deferred forever -- the wave that defers it must have spawned the worker it
+ * collided with, and that worker finishes.
+ */
+export function selectSchedulable(
+  candidates: readonly ReadyItem[],
+  takenPaths: readonly string[],
+  headroom: number,
+): SelectionResult {
+  const slugs: string[] = [];
+  const deferred: { slug: string; reason: string }[] = [];
+  const skipped: string[] = [];
+  const refused: { slug: string; reason: string }[] = [];
+  const taken = [...takenPaths];
+
+  const seen = new Set<string>();
+
+  for (const candidate of candidates) {
+    // A slug repeated in an explicit `items` list would otherwise pass every
+    // check twice and spawn two workers onto one backlog item, each in its own
+    // worktree, racing each other's commits.
+    if (seen.has(candidate.id)) continue;
+    seen.add(candidate.id);
+    // Before the cap and before the collision check: a refused item must never
+    // be reported as skipped, which would promise it a later wave that will
+    // never take it, nor as deferred, which would promise it a worker.
+    if (candidate.worker_safe !== true) {
+      refused.push({
+        slug: candidate.id,
+        reason:
+          candidate.worker_safe === false
+            ? "the backlog reports this item is not worker-safe -- its prefix " +
+              "names the harness repo, or is unrecognised. A worker would be " +
+              "editing the code it is running. Work it in a normal session."
+            : "dev_status.py ready reported no worker_safe field for this " +
+              "item, so eligibility is unknown and it is refused rather than " +
+              "assumed safe. Update the installed dev_status.py.",
+      });
+      continue;
+    }
+    if (slugs.length >= headroom) {
+      skipped.push(candidate.id);
+      continue;
+    }
+    const paths = itemPaths(candidate);
+    const clash = paths.find((p) => taken.some((t) => pathsCollide(p, t)));
+    if (clash !== undefined) {
+      deferred.push({
+        slug: candidate.id,
+        reason: `file overlap with work already in this run: ${clash}`,
+      });
+      continue;
+    }
+    slugs.push(candidate.id);
+    taken.push(...paths);
+  }
+
+  return { slugs, deferred, skipped, refused };
+}
+
+/** One recorded mid-flight correction of a worker's item. */
+export interface Amendment {
+  at: number;
+  by: string;
+}
+
+// ---------------------------------------------------------------------------
+// Concurrency and pane accounting -- pure, so the cap/backpressure rules are
+// independently testable from the async pool machinery that calls them.
+// ---------------------------------------------------------------------------
+
+export function activeWorkerCount(state: SwarmState): number {
+  return state.workers.filter((w) => w.lifecycle === "active").length;
+}
+
+export function canSpawnNew(state: SwarmState): boolean {
+  return activeWorkerCount(state) < state.concurrency;
+}
+
+export function openPaneCount(state: SwarmState): number {
+  return state.workers.length; // active + awaiting_relay; finished workers' entries are removed on close
+}
+
+export function openPaneSoftCap(concurrency: number): number {
+  return concurrency * OPEN_PANE_SOFT_CAP_MULTIPLIER;
+}
+
+export function canOpenNewPane(state: SwarmState): boolean {
+  return openPaneCount(state) < openPaneSoftCap(state.concurrency);
+}
+
+// ---------------------------------------------------------------------------
+// Queue selection
+// ---------------------------------------------------------------------------
+
+/** How many new items can be spawned right now, bounded by both the concurrency cap and the open-pane soft cap. */
+export function spawnBudget(state: SwarmState, readyCount: number): number {
+  const byConcurrency = Math.max(0, state.concurrency - activeWorkerCount(state));
+  const byPaneCap = Math.max(0, openPaneSoftCap(state.concurrency) - openPaneCount(state));
+  return Math.min(byConcurrency, byPaneCap, readyCount);
+}

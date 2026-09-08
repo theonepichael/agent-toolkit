@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
@@ -82,6 +82,62 @@ import { Type } from "typebox";
 // probe failed would be the same class of lie as the mislabeled timeout that
 // started all this.
 
+// Extracted helper modules (interface-preserving refactor): the picker
+// relay, scheduling decisions and herdr protocol argv/response helpers live
+// in their own files; every moved symbol is re-exported below so this
+// extension's import surface is unchanged.
+import {
+  AMEND_INSTRUCTION,
+  buildAgentGetArgv,
+  buildAgentListArgv,
+  buildAgentPromptArgv,
+  buildAgentReadArgv,
+  buildAgentSendKeysArgv,
+  buildAgentStartArgv,
+  buildAgentWaitArgv,
+  buildPaneReadArgv,
+  buildTabCloseArgv,
+  buildTabCreateArgv,
+  buildTabListArgv,
+  buildWorkerCloseArgv,
+  classifyResyncGet,
+  classifyTimeoutProbe,
+  classifyWaitResult,
+  deadlineStopDetail,
+  findTabByLabel,
+  paneIdentityMismatch,
+  parseAgentListIds,
+  parseTabCreate,
+  reasonHeadline,
+  waitResultDetail,
+} from "./swarm-herdr";
+import type { BlockClass } from "./swarm-picker";
+import type { PollEventKind } from "./swarm-herdr";
+import type { ProbeResult, TabCreateResult } from "./swarm-herdr";
+import {
+  classifyBlock,
+  matchOption,
+  navigationKeys,
+  noteResolveFailure,
+  parsePicker,
+  pickerLabels,
+} from "./swarm-picker";
+import {
+  isSuspiciousFinish,
+  itemPaths,
+  nextAgentId,
+  parseReadyItems,
+  parseShownItem,
+  selectSchedulable,
+  spawnBudget,
+  stalledRelayWorkers,
+} from "./swarm-scheduling";
+import type { ReadyItem, SwarmState, WorkerRecord } from "./swarm-scheduling";
+
+export * from "./swarm-picker";
+export * from "./swarm-scheduling";
+export * from "./swarm-herdr";
+
 /**
  * Where a run's state file lives. Resolved per call, not captured at module
  * load, so a test can point it somewhere disposable after importing this
@@ -92,10 +148,7 @@ import { Type } from "typebox";
 function herdrStateDir(): string {
   return process.env.PI_SWARM_STATE_DIR ?? join(homedir(), ".pi", "agent", "state");
 }
-
 const DEFAULT_CONCURRENCY = 3;
-const OPEN_PANE_SOFT_CAP_MULTIPLIER = 2;
-const AGENT_START_TIMEOUT_MS = 30_000;
 /**
  * How long one `herdr agent wait` runs before the poller checks in on the
  * worker. A CHECK-IN INTERVAL, not a kill deadline -- see the header comment
@@ -112,7 +165,6 @@ const DEFAULT_WAIT_TIMEOUT_MS = 30 * 60 * 1000;
  * forever, holding its slot until someone killed the orchestrator by hand.
  */
 const DEFAULT_WORKER_DEADLINE_MS = 4 * 60 * 60 * 1000;
-
 // How long a worker may sit at awaiting_relay before the poll says so out
 // loud. Not a stop: a relay answered at minute 31 is still worth having, and
 // killing the worker would destroy finished work over a slow human. It is
@@ -136,112 +188,6 @@ const PANE_CAPTURE_LINES = 200;
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
-export type WorkerLifecycle = "active" | "awaiting_relay";
-
-export interface WorkerRecord {
-  agent: string; // synthetic id, e.g. "w1" -- never the raw slug (herdr names cap at 32 chars)
-  slug: string;
-  paneId: string;
-  /**
-   * The tab this worker owns, closed when it is dropped.
-   *
-   * Optional only for state files written before workers had their own tabs:
-   * those workers live in split panes, and closing them still goes through
-   * `pane close`. A worker spawned by this version always carries one.
-   */
-  tabId?: string;
-  /**
-   * The files this worker's item declared it would touch (`related_files`).
-   *
-   * Held on the record so a later wave can tell whether a candidate would
-   * edit the same file as something already running, without re-querying
-   * dev_status for items that have since left READY. Optional for records
-   * written before scheduling existed: such a worker simply constrains
-   * nothing, which is the pre-existing behaviour.
-   */
-  paths?: string[];
-  /**
-   * Epoch ms the worker's CURRENT working segment began.
-   *
-   * Stamped at spawn, folded into `accumulatedWorkingMs` when the worker
-   * parks at awaiting_relay, and re-stamped when swarm_resolve_blocked
-   * returns it to active. That is what makes the budget measure WORKING time
-   * rather than wall time: a worker parked overnight waiting on a human would
-   * otherwise resume already past its deadline and be stopped on its first
-   * check-in -- destroying its work at the exact moment the human answered.
-   *
-   * Optional only for records written before budgets existed. Such a record
-   * is stamped on its first check-in rather than left without a deadline:
-   * "no deadline" would revive the unbounded hang, for exactly the state
-   * files in flight across the upgrade.
-   */
-  workingSinceMs?: number;
-  /**
-   * Working time from this worker's COMPLETED segments, in ms. Absent means
-   * zero.
-   *
-   * Without it, re-stamping `workingSinceMs` on every resume would not pause
-   * the clock, it would erase it: a worker that works 3h50m, blocks on a
-   * relay and is answered would start a fresh budget and could run 7h50m in
-   * total. The budget is per item, not per segment.
-   */
-  accumulatedWorkingMs?: number;
-  /**
-   * The orchestrator cwd this worker's tab was created in, so a deliberate
-   * stop can name the worktree its item was being worked in. Optional for
-   * records written before this existed; absent means the report says so
-   * rather than printing a guess.
-   */
-  cwd?: string;
-  /**
-   * How many check-ins this worker has had. Absent means none yet.
-   *
-   * On the record rather than in a runtime map because the working-time
-   * fields beside it are persisted: a restart that kept a worker's 3h45m
-   * elapsed but reset its count would report "check-in 1, 3h45m of a 4h
-   * budget", which reads as a stall rather than a resumption.
-   */
-  checkIns?: number;
-  /**
-   * The model this worker was started on, when one was pinned.
-   *
-   * Recorded so a run can say what actually did the work. Absent means the
-   * worker took pi's own default, which is what every worker did before this
-   * was wired -- and which no digest could report, so a finished run could
-   * not be reasoned about or reproduced after the fact.
-   */
-  model?: string;
-  /**
-   * Epoch ms this worker parked at `awaiting_relay`, cleared when it resumes.
-   *
-   * Separate from `workingSinceMs` on purpose: that clock stops here, so
-   * without this one a parked worker has no clock at all. See
-   * `stalledRelayWorkers`.
-   */
-  awaitingRelaySinceMs?: number;
-  /**
-   * The last relay answer that failed to match, if one did.
-   *
-   * Without it a failed resolve left no trace: the worker stayed at
-   * awaiting_relay and the next poll reported an ordinary unanswered relay,
-   * indistinguishable from one nobody had tried yet. That is exactly how the
-   * 2026-09-03 stall formed and went unnoticed.
-   */
-  lastResolveFailure?: { answer: string; reason: string; at: number };
-  /**
-   * Mid-flight corrections sent to this worker.
-   *
-   * On the record so the end-of-run digest can say an item's premises changed
-   * under a worker and when. The raw `herdr agent prompt` this replaces left
-   * no trace: the run state had no idea an item had been amended, and the
-   * orchestrator went on polling a worker whose instructions had been
-   * rewritten underneath it.
-   */
-  amendments?: Amendment[];
-  lifecycle: WorkerLifecycle;
-}
-
 /**
  * Total working time so far: completed segments plus the open one.
  *
@@ -264,7 +210,6 @@ export function elapsedWorkingMs(worker: WorkerRecord, now: number): number | nu
   if (open === null && worker.accumulatedWorkingMs === undefined) return null;
   return (worker.accumulatedWorkingMs ?? 0) + (open ?? 0);
 }
-
 /**
  * Folds the open segment into `accumulatedWorkingMs` and clears
  * `workingSinceMs`.
@@ -280,84 +225,9 @@ export function foldWorkingSegment(worker: WorkerRecord, now: number): void {
     (worker.accumulatedWorkingMs ?? 0) + Math.max(0, now - worker.workingSinceMs);
   worker.workingSinceMs = undefined;
 }
-
-export interface SwarmState {
-  runId: string;
-  concurrency: number;
-  nextCounter: number;
-  workers: WorkerRecord[];
-  /**
-   * Every slug this run has already handed to a worker, successfully or not.
-   *
-   * Automatic selection reads the READY set fresh on each wave, and a worker
-   * that dies without reaching `dev_status.py start` leaves its item exactly
-   * as it found it -- READY. Without this the next wave selects that same
-   * item again, and again, which is the "silently retried" behaviour
-   * swarm_poll's own guidance rules out. Caught on a live run: a worker whose
-   * tab was closed was re-spawned by the very next wave.
-   *
-   * Attempted, not completed, is the right key. The run should not re-select
-   * an item it already tried, whatever the outcome; a human decides whether a
-   * failure is worth another go, from the digest.
-   *
-   * A DEFERRED item is not attempted -- it was never handed to anyone, and
-   * becoming schedulable later is the entire point of deferring it.
-   *
-   * Optional for state files written before this existed; absent means the
-   * run has attempted nothing it can prove, which is the old behaviour.
-   */
-  attempted?: string[];
-  /**
-   * The slug prefix this run was scoped to, stamped when a fresh state is
-   * initialized and carried through every save.
-   *
-   * herdr_delegate.py's `restart` mode discovers the runId to resume by
-   * matching this field exactly against the prefix it was invoked with.
-   * Legacy files written before the field existed fall back to matching
-   * worker/`attempted` slugs -- a substring-prefix collision could fool the
-   * scan (e.g. a hypothetical `auth` prefix inside `auth-api-` slugs), which
-   * is why the exact field exists rather than the scan alone. Optional for
-   * the same reason every other field added here is: old state files on disk.
-   */
-  prefix?: string;
-}
-
 /** One item's outcome from the spawn loop: a live worker, or a reason it never became one. */
 type SpawnOutcome =
   { worker: WorkerRecord } | { slug: string; failed?: { slug: string; reason: string } };
-
-/**
- * `still_working` is the only NON-terminal kind: the wait window elapsed, the
- * worker was confirmed alive, its budget has not run out, and a fresh wait is
- * already armed. Nothing was closed and no slot was freed.
- *
- * It exists because the alternative -- re-arming silently and emitting
- * nothing -- would make a single swarm_poll call block for up to the whole
- * worker budget: `waitForEvent` has no timeout of its own, so the poll parks
- * until an event or an abort. A check-in keeps the caller's block bounded by
- * `timeoutMs` exactly as it was before, and gives the orchestrator something
- * honest to show a human ("check-in 7, 3h31m of a 4h budget") instead of
- * silence that looks identical to a wedged run.
- */
-export type PollEventKind = "blocked" | "finished" | "timed_out" | "error" | "still_working";
-
-/**
- * Whether a blocked worker's prompt is one the swarm can answer.
- *
- * Detection of blocked-ness is already class-wide -- herdr-blocked-bridge.ts
- * listens to pi's ui_prompt_start, which fires for every blocking `ctx.ui.*`
- * prompt -- but ANSWERING is not. `swarm_resolve_blocked` drives
- * question-tool.ts's numbered picker by arrow key, and nothing else. A
- * guard-rails `rm -rf` confirmation, a `/compact` select, or any pi built-in
- * prompt parks the worker just the same, and the orchestrator had no way to
- * tell the two apart: both simply appeared as `blocked`.
- *
- * So an unattended batch that hit a non-picker prompt stopped making progress
- * with no signal naming the pane or the reason (observed live 2026-09-02,
- * cleared by a human send-keys).
- */
-export type BlockClass = "answerable" | "needs_human";
-
 export interface PollEvent {
   kind: PollEventKind;
   agent: string;
@@ -376,11 +246,9 @@ export interface PollEvent {
 // ---------------------------------------------------------------------------
 // State file persistence and crash recovery
 // ---------------------------------------------------------------------------
-
 export function statePath(runId: string, stateDir: string = herdrStateDir()): string {
   return join(stateDir, `swarm-${runId}.json`);
 }
-
 /**
  * A queued proactive-capture offer a worker wants recorded.
  *
@@ -393,7 +261,6 @@ export interface CaptureOffer {
   id: string;
   summary: string;
 }
-
 /**
  * Where a worker writes the capture offers it wants the orchestrator to ask
  * about, keyed by slug rather than agent id.
@@ -414,7 +281,6 @@ export function capturePath(
   const safeSlug = (slug.split("/").pop() ?? "").replace(/[^A-Za-z0-9._-]/g, "_");
   return join(stateDir, `swarm-${safeRun}-capture-${safeSlug}.json`);
 }
-
 /**
  * Read a worker's queued capture offers, CONSUMING the file.
  *
@@ -465,7 +331,6 @@ export function readCaptureOffers(
     return [];
   }
 }
-
 /**
  * Renders harvested capture offers for a tool result's text, in the same
  * shape swarm_poll attaches them to a finished event. Shared by swarm_poll
@@ -481,7 +346,6 @@ export function renderCaptureOffers(offers: CaptureOffer[]): string {
     offers.map((c) => `[${c.kind}] ${c.id} -- ${c.summary}`).join("; ")
   );
 }
-
 export function loadState(runId: string, stateDir: string = herdrStateDir()): SwarmState | null {
   const path = statePath(runId, stateDir);
   if (!existsSync(path)) return null;
@@ -495,12 +359,10 @@ export function loadState(runId: string, stateDir: string = herdrStateDir()): Sw
     return null;
   }
 }
-
 export function saveState(state: SwarmState, stateDir: string = herdrStateDir()): void {
   mkdirSync(stateDir, { recursive: true });
   writeFileSync(statePath(state.runId, stateDir), JSON.stringify(state, null, 2));
 }
-
 /**
  * Reconcile persisted bookkeeping against herdr's live agent list. A
  * tracked-but-dead entry (in state, absent from herdr's live list) is
@@ -535,193 +397,6 @@ export function reconcileState(
   return { state: { ...state, workers: kept }, dropped };
 }
 
-// ---------------------------------------------------------------------------
-// Naming
-// ---------------------------------------------------------------------------
-
-/**
- * Project prefixes backlog slugs share within a wave. Stripped before naming
- * because they carry no distinguishing information -- the head of every slug
- * in a run is often identical (three `meta-second-opinion-*` items once
- * rendered as the same 32-char name), so the budget is better spent on the
- * tail, which is what actually tells items apart. Longest match first, so a
- * future prefix that extends another (e.g. `meta-x-` vs `meta-`) strips
- * correctly, and only that one is removed.
- */
-const PROJECT_PREFIXES = ["iron-lb-", "meta-", "work-"];
-
-/** Synthetic herdr agent name incorporating the slug, capped at herdr's 32-char limit.
- *
- * Truncates from the slug's HEAD, keeping its tail: the `w<counter>` segment
- * guarantees uniqueness within a run, so the slug's only job here is
- * readability, and the tail is the part a human maps back to an item.
- */
-export function nextAgentId(runId: string, counter: number, slug?: string): string {
-  const cleanSlug = slug ? slug.replace(/[^a-zA-Z0-9_-]/g, "") : "";
-  // Longest match, and only ONE: reduce-and-strip-each would take both
-  // prefixes off a slug like `meta-work-foo` and leave `foo`, silently
-  // discarding a segment that distinguishes it.
-  const matched = PROJECT_PREFIXES.filter((prefix) => cleanSlug.startsWith(prefix)).sort(
-    (a, b) => b.length - a.length,
-  )[0];
-  const stripped = matched ? cleanSlug.slice(matched.length) : cleanSlug;
-  if (!stripped) return `${runId}-w${counter}`;
-  const base = `${runId}-w${counter}-${stripped}`;
-  if (base.length <= 32) return base;
-  // Not enough budget for any slug tail (pathological runId): fall back to a
-  // plain truncation rather than slicing a negative count.
-  const remaining = 32 - `${runId}-w${counter}-`.length;
-  if (remaining < 1) return base.slice(0, 32);
-  return `${runId}-w${counter}-${stripped.slice(-remaining)}`;
-}
-
-// ---------------------------------------------------------------------------
-// herdr argv builders -- every element is a discrete argv item, never a
-// concatenated shell string (delegate-tool.ts's buildArgv pattern). This is
-// load-bearing: swarm_resolve_blocked passes the human's free-text answer
-// straight through as one of these elements.
-// ---------------------------------------------------------------------------
-
-/**
- * One worker, one herdr tab.
- *
- * The shipped version carved worker panes out of the orchestrator's own pane
- * with `pane split`, and everything that made that hard -- an equal-share
- * split plan, a 40x10 usability floor, a batch trimmed when the terminal
- * could not fit it -- existed only because panes inside one tab divide a
- * fixed width between them. Tabs do not: measured against herdr 0.8.2 on
- * 2026-09-02, a `tab create --no-focus` root pane reports the full terminal
- * (168x38 here) while unfocused, and a pi agent started in it reads back at
- * that same size.
- *
- * Width was never only a comfort question. A worker pane in a three-way split
- * was 42 columns, which is narrow enough that pi wraps its own picker footer,
- * which is what made every relay in the first live swarm run fail to parse.
- * Removing the split removes that whole class, and concurrency stops being
- * bounded by the terminal's geometry.
- *
- * `--label` carries the slug, so the tab bar names the item -- the pane
- * rename this replaces was only ever visible in the sidebar.
- *
- * `--env` is what makes the worker's gates resolve themselves. It is set on
- * the tab, so it is in pi's environment before pi starts, which is the whole
- * reason there is no trust prompt to send afterwards -- see
- * WORKER_UNATTENDED_ENV.
- */
-export function buildTabCreateArgv(cwd: string, label: string, captureFile?: string): string[] {
-  return [
-    "tab",
-    "create",
-    "--cwd",
-    cwd,
-    "--label",
-    label,
-    "--env",
-    WORKER_UNATTENDED_ENV,
-    // A second --env, not a replacement: the worker needs both, and the
-    // unattended flag is what settles its gates at module load.
-    ...(captureFile ? ["--env", `PI_SWARM_CAPTURE_FILE=${captureFile}`] : []),
-    "--no-focus",
-  ];
-}
-
-/**
- * Classify a blocked worker's captured pane as answerable or not.
- *
- * The test is exactly what `swarm_resolve_blocked` can actually drive: a
- * question-tool picker that `parsePicker` recognises. That is deliberate --
- * the classifier must never claim answerable for something the relay would
- * then fail on, so it reuses the same parser rather than a looser heuristic
- * of its own.
- *
- * An absent or empty capture is `needs_human`, not `answerable`. The read
- * failed or the pane was empty, and guessing answerable would send arrow
- * keys at a prompt nobody has read.
- *
- * This does NOT teach the relay to answer confirm dialogs. Approving
- * arbitrary bash on a human's behalf is what the gate exists to prevent;
- * `parsePicker` refusing them is correct and stays. The point here is only
- * to say WHICH kind of block this is, so the orchestrator can relay one and
- * escalate the other instead of treating every block alike.
- */
-export function classifyBlock(rawPrompt: string | undefined): BlockClass {
-  if (!rawPrompt) return "needs_human";
-  return parsePicker(rawPrompt).options.length > 0 ? "answerable" : "needs_human";
-}
-
-/**
- * Workers parked awaiting a relay for longer than `stallMs`.
- *
- * A SECOND clock, deliberately separate from the working-time budget. That
- * budget measures time a worker spends WORKING and is folded shut the moment
- * it parks, precisely so hours spent waiting on a human are never charged
- * against it -- charging them would stop a worker at the instant its relay
- * was finally answered. The consequence is that a parked worker is otherwise
- * completely unbounded, which is the gap this closes: the budget bounds a
- * worker that is working, this bounds one waiting on a human who may never
- * come.
- *
- * An `active` worker is never stalled here however long it has run -- that is
- * the budget's business, and double-reporting it would make a busy worker
- * look stuck.
- *
- * A parked record with no stamp is not reported. Such a record was written
- * before this existed, and inventing a stall for it would fire a spurious
- * escalation on the first poll after an upgrade. The caller stamps it
- * instead, so it is bounded from that moment on.
- */
-/**
- * The option labels a blocked worker is really rendering.
- *
- * `swarm_resolve_blocked` matches an answer against these exact strings, read
- * fresh off the pane -- so an orchestrator that composes its OWN labels for
- * the human ("Merge, push, clean up" for a worker showing "Leave it
- * unlanded") produces an answer that matches nothing. The resolve returns
- * needs_manual, the worker is never moved off awaiting_relay, and the run
- * strands with no message explaining why.
- *
- * Putting them on the event is what lets the orchestrator mirror them
- * structurally instead of reading them out of prose and retyping them. Three
- * of four workers in one run stranded this way on 2026-09-03; the one that
- * did not was the one where the orchestrator had just been corrected by hand,
- * and the correction did not survive to the next worker.
- */
-export function pickerLabels(rawPrompt: string | undefined): string[] {
-  if (!rawPrompt) return [];
-  return parsePicker(rawPrompt).options.map((o) => o.label);
-}
-
-/** Record a relay answer that matched no listed option, so a later poll can say so. */
-export function noteResolveFailure(
-  worker: WorkerRecord,
-  answer: string,
-  reason: string,
-  now: number,
-): void {
-  worker.lastResolveFailure = { answer, reason, at: now };
-}
-
-export function stalledRelayWorkers(
-  workers: WorkerRecord[],
-  now: number,
-  stallMs: number,
-): WorkerRecord[] {
-  return workers.filter(
-    (w) =>
-      w.lifecycle === "awaiting_relay" &&
-      w.awaitingRelaySinceMs !== undefined &&
-      now - w.awaitingRelaySinceMs >= stallMs,
-  );
-}
-
-export function buildTabCloseArgv(tabId: string): string[] {
-  return ["tab", "close", tabId];
-}
-
-// ---------------------------------------------------------------------------
-// Scheduling
-// ---------------------------------------------------------------------------
-
 /**
  * dev_status.py, the authority on which items are READY.
  *
@@ -735,709 +410,15 @@ export function devStatusPath(): string {
     process.env.PI_SWARM_DEV_STATUS_PATH ?? join(homedir(), ".claude", "scripts", "dev_status.py")
   );
 }
-
 /** `dev_status.py ready` reports the bucket the dashboard already builds. */
 export function buildReadyArgv(prefix?: string): string[] {
   const argv = ["python3", devStatusPath(), "ready"];
   return prefix ? [...argv, "--prefix", prefix] : argv;
 }
-
-/** One READY item, as much of it as scheduling needs. */
-export interface ReadyItem {
-  id: string;
-  /**
-   * Whether a worker may be given this item, as reported by
-   * `dev_status.py ready`.
-   *
-   * Deliberately `unknown` rather than `boolean | undefined`: the value comes
-   * from a JSON payload this module does not control, and the check below
-   * requires an explicit `true`, so anything else -- absent, null, a string --
-   * lands in the same fail-closed branch.
-   */
-  worker_safe?: unknown;
-  related_files?: { path?: unknown }[];
-}
-
-export function parseReadyItems(stdout: string): ReadyItem[] {
-  try {
-    const parsed: unknown = JSON.parse(stdout);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((i): i is ReadyItem => typeof (i as ReadyItem)?.id === "string");
-  } catch {
-    return [];
-  }
-}
-
 /** `dev_status.py show <slug>` reports one item's full record; only `status` matters here. */
 export function buildShowArgv(slug: string): string[] {
   return ["python3", devStatusPath(), "show", slug];
 }
-
-/** One `show` result, as much of it as the finish-evidence check needs. */
-export interface ShownItem {
-  /**
-   * `dev_status.py`'s status field: one of `VALID_STATUSES`
-   * (`"open"`/`"in-progress"`/`"in-review"`/`"done"`) in practice, but
-   * `unknown` until checked -- the payload comes from JSON this module does
-   * not control.
-   */
-  status?: unknown;
-}
-
-export function parseShownItem(stdout: string): ShownItem | null {
-  try {
-    const parsed: unknown = JSON.parse(stdout);
-    return parsed && typeof parsed === "object" ? (parsed as ShownItem) : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Whether a "finished" event has zero evidence of real progress: the item's
- * dev_status.py status never advanced past open/in-progress, and no capture
- * was queued. Fail open -- a `shownStatus` that isn't exactly "open" or
- * "in-progress" (including a failed/unparseable query's `undefined`/`null`)
- * never counts as suspicious; only a positive, successfully-read status does.
- */
-export function isSuspiciousFinish(shownStatus: unknown, captureCount: number): boolean {
-  if (captureCount > 0) return false;
-  return shownStatus === "open" || shownStatus === "in-progress";
-}
-
-/** The files an item declares it will touch. Absent or malformed entries simply contribute nothing. */
-export function itemPaths(item: ReadyItem): string[] {
-  const paths = (item.related_files ?? [])
-    .map((f) => f?.path)
-    .filter((p): p is string => typeof p === "string" && p.length > 0);
-  return [...new Set(paths)];
-}
-
-/**
- * True when two declared paths refer to overlapping work.
- *
- * Equality, or one containing the other as a directory. The separator check
- * is the point: plain string prefixing would make "/r/pkg" swallow
- * "/r/pkg-other", deferring unrelated items forever.
- */
-function pathsCollide(a: string, b: string): boolean {
-  // Trailing slashes are stripped first, or a directory written "/repo/pkg/"
-  // builds the prefix "/repo/pkg//" and matches nothing inside itself.
-  const x = a.replace(/\/+$/, "");
-  const y = b.replace(/\/+$/, "");
-  if (x === y) return true;
-  return x.startsWith(`${y}/`) || y.startsWith(`${x}/`);
-}
-
-export interface SelectionResult {
-  slugs: string[];
-  /** Held back because another item in this wave, or a running worker, edits the same file. */
-  deferred: { slug: string; reason: string }[];
-  /** Held back only because the concurrency cap was already full. */
-  skipped: string[];
-  /**
-   * Never schedulable: a worker must not take this item at all.
-   *
-   * A third category on purpose. `skipped` is coming next wave regardless and
-   * `deferred` is waiting on a named worker, so both end when a worker
-   * finishes -- but a refused item is owed nothing and will never be spawned.
-   * Folding it into either would leave the orchestrator polling for a worker
-   * that was never started, on a queue that cannot drain.
-   */
-  refused: { slug: string; reason: string }[];
-}
-
-/**
- * Choose which candidates may run together.
- *
- * Two items that edit the same file cannot run concurrently: each worker gets
- * its own worktree, so the second one to merge conflicts. dev_status already
- * prevents two sessions claiming the same ITEM; nothing prevented two items
- * claiming the same FILE, and that is the collision that actually occurred --
- * meta-swarm-trust-ack-fail-open and meta-swarm-poll-abort-and-orphan-pane
- * both edit swarm-tool.ts and had to be held apart by hand.
- *
- * `deferred` and `skipped` are kept apart because the orchestrator acts
- * differently on them: a skipped item is coming next wave whatever happens,
- * while a deferred one is waiting on a specific worker to finish.
- *
- * Termination rests on one property: with no worker running and no item yet
- * selected, the first candidate collides with nothing, so a non-empty queue
- * always yields at least one spawn. A deferred item therefore cannot be
- * deferred forever -- the wave that defers it must have spawned the worker it
- * collided with, and that worker finishes.
- */
-export function selectSchedulable(
-  candidates: readonly ReadyItem[],
-  takenPaths: readonly string[],
-  headroom: number,
-): SelectionResult {
-  const slugs: string[] = [];
-  const deferred: { slug: string; reason: string }[] = [];
-  const skipped: string[] = [];
-  const refused: { slug: string; reason: string }[] = [];
-  const taken = [...takenPaths];
-
-  const seen = new Set<string>();
-
-  for (const candidate of candidates) {
-    // A slug repeated in an explicit `items` list would otherwise pass every
-    // check twice and spawn two workers onto one backlog item, each in its own
-    // worktree, racing each other's commits.
-    if (seen.has(candidate.id)) continue;
-    seen.add(candidate.id);
-    // Before the cap and before the collision check: a refused item must never
-    // be reported as skipped, which would promise it a later wave that will
-    // never take it, nor as deferred, which would promise it a worker.
-    if (candidate.worker_safe !== true) {
-      refused.push({
-        slug: candidate.id,
-        reason:
-          candidate.worker_safe === false
-            ? "the backlog reports this item is not worker-safe -- its prefix " +
-              "names the harness repo, or is unrecognised. A worker would be " +
-              "editing the code it is running. Work it in a normal session."
-            : "dev_status.py ready reported no worker_safe field for this " +
-              "item, so eligibility is unknown and it is refused rather than " +
-              "assumed safe. Update the installed dev_status.py.",
-      });
-      continue;
-    }
-    if (slugs.length >= headroom) {
-      skipped.push(candidate.id);
-      continue;
-    }
-    const paths = itemPaths(candidate);
-    const clash = paths.find((p) => taken.some((t) => pathsCollide(p, t)));
-    if (clash !== undefined) {
-      deferred.push({
-        slug: candidate.id,
-        reason: `file overlap with work already in this run: ${clash}`,
-      });
-      continue;
-    }
-    slugs.push(candidate.id);
-    taken.push(...paths);
-  }
-
-  return { slugs, deferred, skipped, refused };
-}
-
-export function buildTabListArgv(): string[] {
-  return ["tab", "list"];
-}
-
-/**
- * The id of the one tab carrying `label`, if there is exactly one.
- *
- * Used to recover from a `tab create` that exits 0 with output that will not
- * parse: the tab exists, and the id needed to close it was in precisely the
- * response that could not be read. The label is the slug this spawn asked
- * for, so it is the only handle left.
- *
- * Deliberately refuses to guess. Two tabs sharing the label cannot say which
- * one this spawn created, and closing the wrong one would close a tab a human
- * opened -- worse than the leak it is trying to clean up. Zero matches means
- * the same thing from the other side. Both cases return undefined so the
- * caller reports the leak by name instead.
- */
-export function findTabByLabel(stdout: string, label: string): string | undefined {
-  try {
-    const parsed = JSON.parse(stdout) as {
-      result?: { tabs?: { tab_id?: unknown; label?: unknown }[] };
-    };
-    const matches = (parsed.result?.tabs ?? []).filter(
-      (t) => t.label === label && typeof t.tab_id === "string",
-    );
-    return matches.length === 1 ? (matches[0]!.tab_id as string) : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-/** The two ids a worker needs: the pane to start its agent in, the tab to close when it is done. */
-export interface TabCreateResult {
-  paneId: string;
-  tabId: string;
-}
-
-/**
- * Read both ids out of a `herdr tab create` response.
- *
- * They live in different objects -- `.result.root_pane.pane_id` and
- * `.result.tab.tab_id` -- and a worker is only recordable with both. One
- * without the other produces a tab that can be started into and never closed,
- * which is the orphan class this change is meant to end, so a partial
- * response is treated as no response at all.
- */
-export function parseTabCreate(stdout: string): TabCreateResult | undefined {
-  try {
-    const parsed = JSON.parse(stdout) as {
-      result?: { root_pane?: { pane_id?: string }; tab?: { tab_id?: string } };
-    };
-    const paneId = parsed.result?.root_pane?.pane_id;
-    const tabId = parsed.result?.tab?.tab_id;
-    if (typeof paneId !== "string" || typeof tabId !== "string") return undefined;
-    return { paneId, tabId };
-  } catch {
-    return undefined;
-  }
-}
-
-export function buildAgentStartArgv(agentId: string, paneId: string, model?: string): string[] {
-  return [
-    "agent",
-    "start",
-    agentId,
-    "--kind",
-    "pi",
-    "--pane",
-    paneId,
-    "--timeout",
-    String(AGENT_START_TIMEOUT_MS),
-    // Everything pi needs goes AFTER the separator. herdr's usage is
-    // `agent start <NAME> --kind <KIND> --pane <ID> [OPTIONS] [-- [AGENT_ARG]...]`,
-    // so `--model` handed to herdr directly is an unknown flag; only the
-    // trailing block reaches the agent. Omitting the model omits the
-    // separator too -- a bare trailing `--` is a different command line.
-    ...(model ? ["--", "--model", model] : []),
-  ];
-}
-
-/**
- * Marks a worker's tab as unattended, read by both gate extensions at module
- * load.
- *
- * Pi ships no permission system of its own (docs/usage.md's Design
- * Principles: "it intentionally does not include ... permission popups").
- * This repo supplies two: permission-gate.ts confirms bash outside its
- * allowlist, guard-rails.ts confirms `rm -rf` and `sudo`. Both raise
- * `ctx.ui.confirm`, and a worker's `ctx.hasUI` is true because it really is a
- * TUI -- one with nobody in front of it. The worker then waits forever while
- * `agent_status` still reads "working", so swarm_poll sees progress and the
- * orchestrator relays nothing. Observed live on 2026-09-02, twice.
- *
- * Passing this at tab creation replaces a slash-command handshake that tried
- * to talk one gate down after the fact and then prove it had worked, with a
- * token, an ack file, a poll and a 15-second deadline. The environment is set
- * before pi starts, so there is no prompt to deliver, nothing to time out,
- * and no window in which a worker holds real work while still armed. It also
- * sidesteps the reason that handshake could only ever cover one gate: pi
- * loads each extension separately, so a session-wide switch cannot be shared
- * between them in module state -- /trust-session tried exactly that and was
- * a silent no-op until it was rewired onto the shared extension event bus.
- * An environment variable each gate reads for itself has no such failure
- * mode, which is why the swarm still prefers it over any runtime handshake.
- *
- * The two gates draw DIFFERENT conclusions from it, on purpose:
- *   - permission-gate.ts allows. Its "ask" tier is everything outside a
- *     narrow allowlist, and a worker that cannot run tests or git is useless.
- *     This is what the swarm already did by sending /permission-gate-disable.
- *   - guard-rails.ts blocks. `rm -rf` and `sudo` are refused with a reason
- *     the worker can read, rather than asked about. Every other guard-rails
- *     rule -- protected-path writes, the git-commit-on-main worktree policy
- *     -- stays armed in a worker exactly as in an attended session.
- *
- * So this is not a blanket grant of autonomy. It is the statement "no human
- * will answer a dialog here", which is simply true of a swarm worker.
- */
-export const WORKER_UNATTENDED_ENV = "PI_AGENT_UNATTENDED=1";
-
-/**
- * The entire payload of an amend. Fixed, and deliberately carries no
- * correction text.
- *
- * The correction lives in the backlog store, edited there before this is
- * sent. The moment this channel carries content instead, the store stops
- * being the single source of truth and the two can disagree -- a worker
- * acting on a message while `show` says something else is worse than the
- * problem being solved. So there is no parameter to smuggle content through:
- * a caller who wants to change the work changes the item.
- *
- * On 2026-09-03 a worker was several minutes into an item whose stored
- * premise was wrong -- it was reasoning carefully toward a fix that would
- * have broken the user's work machine. The correction went through three raw
- * `herdr agent prompt` calls. It worked, but only because a human happened
- * to be watching, and the run recorded none of it.
- */
-export const AMEND_INSTRUCTION =
-  "STOP and re-read your backlog item before doing anything else: run " +
-  "`python3 ~/.claude/scripts/dev_status.py show <your slug>` and read the " +
-  "whole record fresh. Its context or next_steps have been corrected since " +
-  "you started, so any plan you formed from the earlier version may now be " +
-  "wrong. Reconcile what you have already done against the updated record, " +
-  "and say plainly what changes as a result before continuing.";
-
-/** One recorded mid-flight correction of a worker's item. */
-export interface Amendment {
-  at: number;
-  by: string;
-}
-
-/**
- * `--wait` blocks until the agent settles, so a follow-up prompt can't land
- * while it is still processing this one.
- *
- * Not usable for a client-side slash command. herdr 0.8.2 documents `--wait`
- * from a non-working state as requiring an observed lifecycle change within
- * 5000 ms, with no flag to relax it. A pi slash command applies instantly and
- * never enters the working state, so there is nothing to observe and the call
- * always returns agent_prompt_stalled. Confirmed live on 2026-09-02 against a
- * real pi; it is why the worker trust step was a prompt-plus-ack rather than
- * a prompt-plus-wait, before an environment variable removed the step.
- */
-export function buildAgentPromptArgv(
-  agentId: string,
-  prompt: string,
-  opts: { wait?: boolean } = {},
-): string[] {
-  const argv = ["agent", "prompt", agentId, prompt];
-  return opts.wait ? [...argv, "--wait"] : argv;
-}
-
-/**
- * The classification line of a failure reason, without the pane capture
- * appended after it.
- *
- * Exists because an orchestrator reads a tool's `content` and nothing else --
- * confirmed live on 2026-09-02, where a real swarm_spawn failure carried its
- * full reason in `details` and the model's next turn reported seeing "no
- * per-item failure details". backlog-item.md instructs the orchestrator to
- * act differently on permission_gate_not_disabled than on
- * agent_prompt_failed, so which one fired has to reach the text. The pane
- * capture stays behind in `details`: it is up to PANE_CAPTURE_CHARS per
- * failure and is for a human reading back, not for the routing decision.
- */
-export function reasonHeadline(reason: string): string {
-  return reason.split("\n", 1)[0] ?? reason;
-}
-
-/** `agent prompt` refuses a blocked agent outright (agent_blocked, confirmed live) -- send-keys is the only way to answer its picker. */
-export function buildAgentSendKeysArgv(agentId: string, keys: readonly string[]): string[] {
-  return ["agent", "send-keys", agentId, ...keys];
-}
-
-/** `--until` must be repeated once per state -- herdr rejects a comma-joined list (confirmed live: `--until idle,done,blocked` exits 2, "invalid agent status"). */
-export function buildAgentWaitArgv(
-  agentId: string,
-  until: readonly string[],
-  timeoutMs: number,
-): string[] {
-  return [
-    "agent",
-    "wait",
-    agentId,
-    ...until.flatMap((state) => ["--until", state]),
-    "--timeout",
-    String(timeoutMs),
-  ];
-}
-
-export function buildAgentGetArgv(agentId: string): string[] {
-  return ["agent", "get", agentId];
-}
-
-export function buildAgentReadArgv(agentId: string, lines: number): string[] {
-  return ["agent", "read", agentId, "--source", "recent-unwrapped", "--lines", String(lines)];
-}
-
-export function buildPaneCloseArgv(paneId: string): string[] {
-  return ["pane", "close", paneId];
-}
-
-/**
- * How a worker is torn down.
- *
- * A worker spawned by this version owns its whole tab, so closing the tab is
- * what removes it. `paneId` is the fallback for a worker restored from a
- * state file written when workers lived in panes split out of the
- * orchestrator's own -- closing its pane is still the right cleanup for that
- * layout, and a run in flight across the upgrade should not leak.
- */
-export function buildWorkerCloseArgv(worker: WorkerRecord): string[] {
-  return worker.tabId ? buildTabCloseArgv(worker.tabId) : buildPaneCloseArgv(worker.paneId);
-}
-
-/** By pane id, not agent id -- a spawn can fail before `agent start` succeeds, and the pane's text is exactly what diagnoses that. */
-export function buildPaneReadArgv(paneId: string, lines: number): string[] {
-  return ["pane", "read", paneId, "--source", "recent-unwrapped", "--lines", String(lines)];
-}
-
-export function buildAgentListArgv(): string[] {
-  return ["agent", "list"];
-}
-
-export function parseAgentListIds(stdout: string): string[] {
-  try {
-    const parsed = JSON.parse(stdout) as {
-      result?: { agents?: { name?: string }[] };
-    };
-    // Each `agent list` entry carries the caller-chosen herdr name directly
-    // as `.name` (confirmed live, herdr 0.8.2, 2026-09-02) -- this is what
-    // `reconcileState` must match against `worker.agent` (the synthetic id
-    // assigned at spawn time). The key is present exactly when the agent was
-    // started with an explicit name (`herdr agent start <NAME>`) and absent
-    // entirely otherwise -- an unnamed entry is a foreign/interactive agent,
-    // never one of ours, so skipping nameless entries is correct, not a gap.
-    // Swarm workers are always started named: buildAgentStartArgv passes the
-    // synthetic id as the NAME argument. Do not re-derive this from an
-    // unnamed agent and conclude `.name` is the wrong field -- an earlier
-    // version read `agent_session.value` (a pi session file path) instead,
-    // which could never match a synthetic id like "run1-w1" and would have
-    // wrongly dropped every genuinely-live worker as dead.
-    return (parsed.result?.agents ?? [])
-      .map((a) => a.name)
-      .filter((v): v is string => typeof v === "string");
-  } catch {
-    return [];
-  }
-}
-
-// ---------------------------------------------------------------------------
-// herdr response parsing
-// ---------------------------------------------------------------------------
-
-interface HerdrEnvelope {
-  // `agent get`/`agent wait` nest the single-agent payload one level under
-  // "agent" -- confirmed live, repeatedly (e.g. `herdr agent get <id>` ->
-  // {"result":{"agent":{"agent_status":"blocked",...}}}). `agent list`'s
-  // `result.agents[]` array elements do NOT have this extra nesting (each
-  // element already has agent_status/agent_session directly on it) -- these
-  // are two different response shapes for two different commands, not one
-  // shared shape; do not conflate them into a single flat interface again.
-  result?: {
-    agent?: { agent_status?: string; pane_id?: string };
-    agents?: { agent_status?: string; agent_session?: unknown; pane_id?: string }[];
-  };
-  error?: { code?: string; message?: string };
-}
-
-function parseHerdrJson(text: string): HerdrEnvelope | null {
-  try {
-    return JSON.parse(text) as HerdrEnvelope;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Classify a settled `herdr agent wait` result into blocked/finished/
- * timed_out/error. herdr reports server errors as JSON on stderr with exit
- * status 1 (confirmed live) -- only `{"error":{"code":"timeout"}}` counts as
- * a genuine timeout. Any other nonzero exit (agent_not_found, a crash) or an
- * exit-0 response with no recognized agent_status is "error", not silently
- * folded into "timed_out" -- see this file's header comment for why that
- * distinction matters (a killed-but-resolved exec call looks exactly like
- * the exit-0/unrecognized-status case).
- */
-export function classifyWaitResult(
-  exitCode: number,
-  stdout: string,
-  stderr: string,
-): PollEventKind {
-  if (exitCode === 0) {
-    const status = parseHerdrJson(stdout)?.result?.agent?.agent_status;
-    if (status === "blocked") return "blocked";
-    if (status === "idle" || status === "done") return "finished";
-    return "error";
-  }
-  const code = parseHerdrJson(stderr)?.error?.code;
-  return code === "timeout" ? "timed_out" : "error";
-}
-
-/**
- * What swarm_poll's blocked-state resync pass does with a parked
- * (`awaiting_relay`) record's `herdr agent get` result.
- *
- * A parked record has NO wait armed, so if its gate was answered out-of-band
- * -- direct pane keys, not `swarm_resolve_blocked` -- or its agent exited,
- * nothing will ever produce an event for it and the record outlives its
- * worker: deferring new spawns on its "held" worktree, burning a pane-cap
- * slot, and reporting an unanswered relay nobody is waiting on. Resync
- * re-derives the truth from live herdr instead of trusting the record.
- *
- * `drop` fires only on the one code that positively means gone (the same
- * rule `classifyTimeoutProbe` applies); `unpark` fires only on the KNOWN
- * non-blocked statuses, never "status != blocked" in general -- a future
- * herdr status like `paused` must not be handed a transition into a state
- * the worker's wait cannot settle. Everything else keeps the record exactly
- * as it was: fail open, an inconclusive check never mutates a worker.
- */
-export type ResyncVerdict = { action: "drop" } | { action: "unpark" } | { action: "keep" };
-
-export function classifyResyncGet(exitCode: number, stdout: string, stderr: string): ResyncVerdict {
-  if (exitCode !== 0) {
-    const code = parseHerdrJson(stderr)?.error?.code;
-    return code === "agent_not_found" ? { action: "drop" } : { action: "keep" };
-  }
-  const status = parseHerdrJson(stdout)?.result?.agent?.agent_status;
-  if (status === "working" || status === "idle" || status === "done") return { action: "unpark" };
-  return { action: "keep" };
-}
-
-/**
- * What swarm_poll does with a worker whose wait window elapsed.
- *
- * `rearm` emits no event at all beyond the check-in; `event` is a real
- * outcome. `livenessConfirmed` is carried on a `timed_out` so the report can
- * tell the truth about which of two very different things happened -- see
- * `deadlineStopDetail`.
- */
-export type TimeoutVerdict =
-  | { disposition: "rearm" }
-  | { disposition: "event"; kind: PollEventKind; livenessConfirmed?: boolean };
-
-/** The liveness probe's outcome. `abandoned` means WE gave up on it, not that herdr answered. */
-export interface ProbeResult {
-  code: number;
-  stdout: string;
-  stderr: string;
-  abandoned: boolean;
-}
-
-/**
- * Decide what an elapsed wait means, given a liveness probe.
- *
- * The governing rule is FAIL OPEN. This whole mechanism exists because a
- * worker was killed on an inconclusive signal; killing a healthy worker
- * because an ancillary check hiccuped would be the same bug one layer down.
- * So only a positive statement that the agent is gone -- herdr's own
- * `agent_not_found` -- closes it. Everything else that is not a settle
- * re-arms.
- *
- * But fail open means "do not kill on uncertainty", NOT "never kill": the
- * budget bounds ALL of it, inconclusive outcomes included. A worker wedged
- * badly enough that `agent get` itself hangs or errors every time would
- * otherwise re-arm forever, holding its slot until someone killed the
- * orchestrator by hand -- precisely the stall the budget exists to prevent.
- *
- * `abandoned` has to be a flag rather than something inferred from `code`:
- * `pi.exec` RESOLVES on abort, coercing a killed process's null exit to 0
- * with empty stdout (see the header comment), so an abandoned probe is
- * indistinguishable from "exit 0, no recognizable status" by its result
- * alone -- and that case would close a healthy worker.
- */
-export function classifyTimeoutProbe(
-  probe: ProbeResult,
-  elapsedMs: number | null,
-  deadlineMs: number,
-): TimeoutVerdict {
-  const overBudget = elapsedMs !== null && elapsedMs >= deadlineMs;
-  const inconclusive = (): TimeoutVerdict =>
-    overBudget
-      ? { disposition: "event", kind: "timed_out", livenessConfirmed: false }
-      : { disposition: "rearm" };
-
-  if (probe.abandoned) return inconclusive();
-  if (probe.code !== 0) {
-    const code = parseHerdrJson(probe.stderr)?.error?.code;
-    // The one code that positively means gone. Anything else -- a daemon
-    // restart, a momentary fault, an unparseable envelope -- says nothing
-    // about the worker, only about the check.
-    if (code === "agent_not_found") return { disposition: "event", kind: "error" };
-    return inconclusive();
-  }
-  const status = parseHerdrJson(probe.stdout)?.result?.agent?.agent_status;
-  if (status === "blocked") return { disposition: "event", kind: "blocked" };
-  if (status === "idle" || status === "done") return { disposition: "event", kind: "finished" };
-  if (status === undefined) return inconclusive();
-  // `working`, or a status a future herdr adds. Treated as alive rather than
-  // dead on purpose: enumerating statuses herdr MIGHT report as dead would be
-  // inventing a list from guesswork, the same mistake as the early fixtures
-  // that copied this code's own wrong assumptions and so agreed with the bug.
-  return overBudget
-    ? { disposition: "event", kind: "timed_out", livenessConfirmed: true }
-    : { disposition: "rearm" };
-}
-
-/**
- * The worktree a worker's item was being worked in, per the repo convention
- * `<repo>/../<repo-name>-<slug>`. Null when the record predates `cwd` being
- * tracked.
- *
- * Derived, not verified: it assumes `cwd` is the repo root, which is the
- * convention but not a checked fact -- an orchestrator launched from inside a
- * worktree would produce a doubly-suffixed path. The report prints the cwd
- * beside it and says which is which, rather than stripping suffixes or
- * resolving a git common directory, either of which swaps a guess the reader
- * can see for one they cannot.
- */
-export function workerWorktreePath(cwd: string | undefined, slug: string): string | null {
-  if (!cwd) return null;
-  return join(dirname(cwd), `${basename(cwd)}-${slug}`);
-}
-
-/**
- * The `detail` for a deliberately-stopped worker: what happened, and
- * everything needed to recover the item and its worktree by hand.
- *
- * Two quite different things reach this, and reporting them identically would
- * repeat this item's own root complaint -- that a wrong outcome label becomes
- * the story the orchestrator tells the human. A confirmed-live worker really
- * was working when its budget ran out. A worker whose probe was abandoned or
- * failed might have crashed hours ago; claiming it "was still working" would
- * be a fabrication, so that case names the probe's own failure instead.
- */
-export function deadlineStopDetail(
-  worker: WorkerRecord,
-  deadlineMs: number,
-  opts: { livenessConfirmed: boolean; probeDetail?: string },
-): string {
-  const minutes = Math.round(deadlineMs / 60000);
-  const lines = opts.livenessConfirmed
-    ? [
-        `worker budget of ${minutes} min of working time elapsed while the agent still reported working -- stopped deliberately.`,
-      ]
-    : [
-        `worker budget of ${minutes} min of working time elapsed, and its liveness could NOT be verified: ${opts.probeDetail ?? "the probe gave no usable answer"}.`,
-        "It may have been working, or may have died earlier -- this stop is on the budget, not on evidence about the worker.",
-      ];
-  lines.push(
-    "",
-    `The item is very likely still in-progress with a live claim: python3 ~/.claude/scripts/dev_status.py show ${worker.slug}`,
-  );
-  const worktree = workerWorktreePath(worker.cwd, worker.slug);
-  if (worktree) {
-    lines.push(
-      `Its worktree survives on disk. Worker cwd was ${worker.cwd}; by the <repo>-<slug> convention that makes the worktree ${worktree} (derived from the cwd, not verified).`,
-      `Recover with: git -C ${worker.cwd} worktree remove --force ${worktree}, then reset the item to open to clear the claim.`,
-    );
-  } else {
-    lines.push(
-      "This worker predates cwd tracking, so its worktree path cannot be named here -- find it with git worktree list.",
-    );
-  }
-  return lines.join("\n");
-}
-
-/**
- * Cross-check that `agent get`'s reported pane_id still matches the pane
- * this worker was spawned into, right before `swarm_resolve_blocked` sends
- * any keystrokes. herdr's `agent <name>` commands (read/get/send-keys) all
- * resolve the same name -> pane mapping internally; if that mapping ever
- * goes stale or collides under concurrency, every one of those calls would
- * consistently hit the same wrong pane, so re-reading by agent name before
- * sending keys can't catch it -- only a cross-check against the pane_id
- * swarm-tool tracked independently at spawn time can. A missing/unparseable
- * pane_id is treated as a mismatch (fail closed, not open).
- */
-export function paneIdentityMismatch(
-  getExitCode: number,
-  getStdout: string,
-  expectedPaneId: string,
-): boolean {
-  if (getExitCode !== 0) return true;
-  const reportedPaneId = parseHerdrJson(getStdout)?.result?.agent?.pane_id;
-  return reportedPaneId !== expectedPaneId;
-}
-
-/** The raw herdr error detail for a timed_out/error event -- for an honest digest, not just a bare label. */
-export function waitResultDetail(stdout: string, stderr: string): string {
-  const err = parseHerdrJson(stderr)?.error;
-  if (err) return `${err.code ?? "unknown"}: ${err.message ?? stderr.trim()}`;
-  return stdout.trim() || stderr.trim() || "(no output)";
-}
-
 /** Human-readable ms, for a check-in line a person reads ("3h31m", "45m"). */
 export function formatDuration(ms: number): string {
   const totalMinutes = Math.max(0, Math.round(ms / 60000));
@@ -1445,257 +426,9 @@ export function formatDuration(ms: number): string {
   const minutes = totalMinutes % 60;
   return hours > 0 ? `${hours}h${String(minutes).padStart(2, "0")}m` : `${minutes}m`;
 }
-
 /** Content that fills the requested line budget exactly is a truncation signal, not necessarily proof -- see plan section 4. */
 export function looksTruncated(content: string, requestedLines: number): boolean {
   return content.split("\n").length >= requestedLines;
-}
-
-// ---------------------------------------------------------------------------
-// Answering a blocked worker's picker -- `herdr agent prompt` refuses a
-// blocked agent outright (agent_blocked error, confirmed live) and there is
-// no `agent send-text` for literal input. The only real path is driving
-// question-tool.ts's rendered picker via `agent send-keys` (arrow-key
-// navigation, confirmed live: "down" moves the `>` marker, "enter" submits).
-// Free-text answers matching no listed option aren't auto-answerable this
-// way -- see swarm_resolve_blocked's needsManual outcome below.
-// ---------------------------------------------------------------------------
-
-export interface RenderedOption {
-  index: number;
-  label: string;
-}
-
-export interface ParsedPicker {
-  selectedIndex: number | null;
-  options: RenderedOption[];
-}
-
-const OPTION_LINE = /^\s*(>)?\s*(\d+)\.\s+(.+?)\s*$/;
-const OTHER_OPTION_LABEL = "Something else (type it)";
-
-/**
- * question-tool.ts renders each option with a 2-visible-column prefix ("> " highlighted,
- * "  " not) and wraps the label at renderWidth - 2, continuation lines carrying a 2-space
- * prefix; descriptions (and their continuations) carry a 5-space prefix. In a narrow worker
- * pane the LABEL wraps too, and a capture that keeps only the first line collapses two
- * options that share their first word ("Merge + push + cleanup (Recommended)" and
- * "Merge and push only" both became "Merge" on 2026-09-07) -- unresolvable for matchOption.
- * Continuations are therefore reattached, keyed off the option line's own number column
- * (the char offset of its \\d+, with the marker counted as its 2 visible columns -- captures
- * are ANSI-stripped, so chars are columns). Both "  1. X" and "> 1. X" put the number at
- * column 2, and a globally padded capture shifts number and continuations equally, so the
- * baseline is relative, never an absolute indent. Descriptions start exactly 3 columns past
- * the number (5 - 2), so anything at or beyond baseline + 3 is skipped.
- */
-const DESCRIPTION_COLUMN_OFFSET = 3;
-/**
- * A line that still SMELLS like an option but fails OPTION_LINE -- a multi-select picker's
- * toggled row ("[x] 2. Push only") is the live case -- must never be appended to the
- * previous option's label as if it were a wrapped continuation. Today's parser skipped it
- * and the broken numbering degraded the window to needs_manual; appending would instead
- * corrupt a neighboring label, which is a worse way to fail. Skip it, keep the state, and
- * let contiguity refuse the window as before.
- */
-const SMELLS_LIKE_OPTION = /^\d+\.\s/;
-/**
- * question-tool.ts's picker closes with one of exactly three hint lines --
- * select, multi-select, and the free-text edit mode -- and wraps the whole
- * block in full-width accent rules. Those are the only marks in the pane that
- * belong to the live picker and nothing else, so they are what the parse
- * anchors on.
- *
- * Matched on the OPENING of the hint line only, never the whole of it. pi
- * wraps the footer to the pane width before it is ever captured, and a worker
- * pane in a real three-way split is 42 columns, where
- * "↑↓ navigate • Enter to select • Esc to cancel" breaks after "Esc to". An
- * anchor spanning the full sentence matched nothing there, so parsePicker
- * returned no options and every relay came back needs_manual with "(none
- * parsed)" -- observed live on 2026-09-02. Both openings are short enough to
- * survive any width the pane guard permits.
- */
-const PICKER_FOOTER = /↑↓ navigate|Enter to submit/;
-const PICKER_RULE = /^─{3,}\s*$/;
-
-/**
- * Parse question-tool.ts's rendered picker (plain `recent-unwrapped` text, no
- * ANSI) into its option list and current selection.
- *
- * Anchored to the LAST rendered picker rather than scanning the whole
- * capture, because `agent read` hands back 500 lines of scrollback and any
- * numbered line in it used to parse as an option. Observed on 2026-09-02: a
- * plan list sitting above a real picker contributed "1. Merge to main and
- * push" as option 1, and the navigation keys were then computed from that
- * fabricated index -- submitting whatever happened to sit at the resulting
- * offset. Reading the wrong list is worse than reading none, so anything
- * unexpected inside the window yields no options at all and the caller falls
- * back to needs_manual.
- */
-export function parsePicker(content: string): ParsedPicker {
-  const lines = content.split("\n");
-
-  let footer = -1;
-  for (let i = lines.length - 1; i >= 0; i--) {
-    if (PICKER_FOOTER.test(lines[i]!)) {
-      footer = i;
-      break;
-    }
-  }
-  if (footer === -1) return { selectedIndex: null, options: [] };
-
-  let opening = -1;
-  for (let i = footer - 1; i >= 0; i--) {
-    if (PICKER_RULE.test(lines[i]!)) {
-      opening = i;
-      break;
-    }
-  }
-  if (opening === -1) return { selectedIndex: null, options: [] };
-
-  const options: RenderedOption[] = [];
-  const selected: number[] = [];
-  // Visible column of the active option's number -- 2 for both "  1. X" and "> 1. X"; see
-  // DESCRIPTION_COLUMN_OFFSET's comment for why it is measured per option line.
-  let baseline = 0;
-  for (const line of lines.slice(opening + 1, footer)) {
-    const m = OPTION_LINE.exec(line);
-    if (m) {
-      options.push({ index: Number(m[2]), label: m[3]! });
-      if (m[1] === ">") selected.push(Number(m[2]));
-      baseline = line.indexOf(m[2]!);
-      continue;
-    }
-    if (options.length === 0) continue;
-    const trimmed = line.trim();
-    if (!trimmed) continue; // a blank line never detaches a continuation from its option
-    const indent = line.length - line.trimStart().length;
-    if (indent >= baseline + DESCRIPTION_COLUMN_OFFSET || SMELLS_LIKE_OPTION.test(trimmed)) {
-      // A description line (or its continuations), or something that smells like a
-      // mis-rendered option row: skipped, state kept -- never part of a label.
-      continue;
-    }
-    const last = options[options.length - 1]!;
-    last.label = `${last.label} ${trimmed}`;
-  }
-
-  // render() numbers options `${i + 1}`, so a real picker's indices are always
-  // 1..N with no gaps. Anything else means the window caught something that is
-  // not an option list -- a description that happens to start with a number,
-  // a redraw seam -- and there is no safe way to navigate a list we misread.
-  const contiguous = options.length > 0 && options.every((option, i) => option.index === i + 1);
-  if (!contiguous) return { selectedIndex: null, options: [] };
-
-  return { selectedIndex: selected.length === 1 ? selected[0]! : null, options };
-}
-
-/** Shortest answer allowed to match as a fragment; below this, only an exact label will do. */
-const MIN_PARTIAL_ANSWER = 3;
-
-/** True when `needle` appears in `haystack` bounded by non-alphanumerics on both sides. */
-function containsAsWord(haystack: string, needle: string): boolean {
-  const isWordChar = (c: string | undefined) => c !== undefined && /[a-z0-9]/.test(c);
-  let from = 0;
-  for (;;) {
-    const at = haystack.indexOf(needle, from);
-    if (at === -1) return false;
-    if (!isWordChar(haystack[at - 1]) && !isWordChar(haystack[at + needle.length])) {
-      return true;
-    }
-    from = at + 1;
-  }
-}
-
-/**
- * Match a free-text answer to a listed option -- case-insensitive exact match
- * first, then a whole-word fragment match, both excluding the always-present
- * free-text escape option (never auto-select "Something else" via fuzzy
- * matching). Returns null on no match or an ambiguous (multiple) match -- the
- * caller falls back to reporting needsManual rather than guessing.
- *
- * The fragment match is bounded on word edges because a bare substring test
- * inverted answers on the approval gate this tool exists to relay:
- * matchOption("no", ["Commit now (Recommended)", "Stop here"]) found "no"
- * inside "now", matched exactly one option, and committed for a user who had
- * said no. Reproduced live on 2026-09-02 against a real picker. Answers
- * shorter than MIN_PARTIAL_ANSWER skip the fragment pass entirely, so a
- * two-letter answer can only ever take the exact path -- "no" still answers
- * an option actually labelled "No".
- */
-export function matchOption(
-  answer: string,
-  options: readonly RenderedOption[],
-): RenderedOption | null {
-  const candidates = options.filter(
-    (o) => o.label.toLowerCase() !== OTHER_OPTION_LABEL.toLowerCase(),
-  );
-  const needle = answer.trim().toLowerCase();
-  if (!needle) return null;
-
-  const exact = candidates.filter((o) => o.label.toLowerCase() === needle);
-  if (exact.length === 1) return exact[0]!;
-  if (needle.length < MIN_PARTIAL_ANSWER) return null;
-
-  const partial = candidates.filter((o) => containsAsWord(o.label.toLowerCase(), needle));
-  if (partial.length === 1) return partial[0]!;
-
-  // Whitespace-insensitive last pass, for labels that only the reassembly path can produce:
-  // wrapTextWithAnsi hard-breaks a word wider than the pane ("(Recommended)" ->
-  // "(Recommended" + ")"), and single-space joining freezes the break in ("Commit
-  // (Recommended )"), so neither the exact nor the word-bounded pass can pair the true label
-  // text with the reassembled one. Word boundaries do not survive whitespace removal
-  // ("stop here" -> "stophere"), so this pass is plain substring containment -- the
-  // MIN_PARTIAL_ANSWER floor above gates it exactly like the fragment pass, and it still
-  // counts candidates and refuses ambiguity like every other pass.
-  const strippedNeedle = needle.replace(/\s+/g, "");
-  const stripped = candidates.filter((o) =>
-    o.label.toLowerCase().replace(/\s+/g, "").includes(strippedNeedle),
-  );
-  if (stripped.length === 1) return stripped[0]!;
-
-  return null;
-}
-
-/** Arrow-key presses to move from the currently selected option to the target, then submit. */
-export function navigationKeys(fromIndex: number, toIndex: number): string[] {
-  const steps = toIndex - fromIndex;
-  const key = steps > 0 ? "down" : "up";
-  return [...Array(Math.abs(steps)).fill(key), "enter"];
-}
-
-// ---------------------------------------------------------------------------
-// Concurrency and pane accounting -- pure, so the cap/backpressure rules are
-// independently testable from the async pool machinery that calls them.
-// ---------------------------------------------------------------------------
-
-export function activeWorkerCount(state: SwarmState): number {
-  return state.workers.filter((w) => w.lifecycle === "active").length;
-}
-
-export function canSpawnNew(state: SwarmState): boolean {
-  return activeWorkerCount(state) < state.concurrency;
-}
-
-export function openPaneCount(state: SwarmState): number {
-  return state.workers.length; // active + awaiting_relay; finished workers' entries are removed on close
-}
-
-export function openPaneSoftCap(concurrency: number): number {
-  return concurrency * OPEN_PANE_SOFT_CAP_MULTIPLIER;
-}
-
-export function canOpenNewPane(state: SwarmState): boolean {
-  return openPaneCount(state) < openPaneSoftCap(state.concurrency);
-}
-
-// ---------------------------------------------------------------------------
-// Queue selection
-// ---------------------------------------------------------------------------
-
-/** How many new items can be spawned right now, bounded by both the concurrency cap and the open-pane soft cap. */
-export function spawnBudget(state: SwarmState, readyCount: number): number {
-  const byConcurrency = Math.max(0, state.concurrency - activeWorkerCount(state));
-  const byPaneCap = Math.max(0, openPaneSoftCap(state.concurrency) - openPaneCount(state));
-  return Math.min(byConcurrency, byPaneCap, readyCount);
 }
 
 export default function (pi: ExtensionAPI) {
