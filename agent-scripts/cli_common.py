@@ -6,8 +6,16 @@ Flags
 """
 
 import argparse
+import json
+import logging
+import re
 import sys
+import time
+from pathlib import Path
 from typing import TextIO
+
+_SUPPRESSED_LEVEL = logging.CRITICAL + 1
+_MODULE_LOGGER_NAME = "cli_common"
 
 
 def add_verbosity_args(parser: argparse.ArgumentParser) -> None:
@@ -41,3 +49,102 @@ def qprint(msg: str, *, quiet: bool, file: TextIO | None = None) -> None:
         if file is None:
             file = sys.stdout
         print(msg, file=file)
+
+
+def get_logger(
+    name: str, *, verbose: bool = False, quiet: bool = False
+) -> logging.Logger:
+    """Return a stderr-only diagnostic logger, a structured complement to vprint.
+
+    Attaches only an in-memory StreamHandler(sys.stderr) — never a file
+    handler, never stdout, and no parameter can select either. Performs no
+    I/O at call time (no directory creation, nothing opened), so it is safe
+    on every invocation of a latency-sensitive script.
+
+    Idempotent but not static: a repeat call with the same name reuses the
+    existing handler (no duplicate handlers/log lines) but still resets the
+    level, so later calls with different verbose/quiet flags take effect.
+    Level gating matches vprint/qprint: DEBUG if verbose, fully suppressed
+    if quiet, WARNING otherwise. propagate=False keeps records from leaking
+    onto a root-logger handler configured elsewhere in the process.
+
+    Raises ValueError on an empty name — guards against attaching a handler
+    to the root logger by accident.
+    """
+    if not name:
+        raise ValueError("logger name must be a non-empty string")
+    logger = logging.getLogger(name)
+    handler = None
+    for existing in logger.handlers:
+        if (
+            isinstance(existing, logging.StreamHandler)
+            and existing.stream is sys.stderr
+        ):
+            handler = existing
+            break
+    if handler is None:
+        handler = logging.StreamHandler(sys.stderr)
+        formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+        formatter.converter = time.gmtime
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+    if quiet:
+        logger.setLevel(_SUPPRESSED_LEVEL)
+    elif verbose:
+        logger.setLevel(logging.DEBUG)
+    else:
+        logger.setLevel(logging.WARNING)
+    logger.propagate = False
+    return logger
+
+
+def append_jsonl(path: Path, record: dict[str, object]) -> None:
+    """Best-effort: append one JSON record to `path` as a single JSONL line.
+
+    Never raises to the caller: a write failure (bad data, disk full,
+    permissions) is swallowed and debug-logged via get_logger so a --verbose
+    operator can still see it. Logging a record is not part of any caller's
+    contract.
+
+    Concurrency-safe across processes by construction: lazy parent mkdir,
+    then one unbuffered, single write() of the whole line under O_APPEND
+    ("ab", buffering=0) — exactly one write(2) syscall for a line well under
+    PIPE_BUF, which makes concurrent writers' lines interleaving-free. A
+    buffered text-mode open(path, "a") does not carry that guarantee.
+    """
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        line = (json.dumps(record) + "\n").encode()
+        with path.open("ab", buffering=0) as f:
+            f.write(line)
+    except Exception as exc:
+        get_logger(_MODULE_LOGGER_NAME, verbose=True).debug(
+            "append_jsonl failed for %s: %s", path, exc
+        )
+
+
+# Named, high-confidence, structural secret patterns only. Deliberately no
+# generic length/entropy-based catch-all: a blunt "any 20+ char
+# alnum/base64-looking run" would mask git SHAs, UUIDs, branch names and
+# ordinary identifiers — exactly what audit-log target fields are made of.
+_REDACT_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]+"),
+    re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b"),
+    re.compile(r"\b(?:ghp|gho)_[A-Za-z0-9]{16,}\b"),
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+    re.compile(r"(?:\b|(?<=_))(?i:key|token|password)=[^\s&]+"),
+)
+
+
+def redact_secrets(text: str, *, max_length: int = 200) -> str:
+    """Mask secret-shaped substrings, then truncate to max_length.
+
+    Clamps the input to max_length + 200 first, bounding the regex pass's
+    input size on a hot path. Truncation alone is never a sanitization step:
+    redaction always runs before the final truncation, so a secret
+    straddling the truncation boundary is masked, not partially leaked.
+    """
+    clamped = text[: max_length + 200]
+    for pattern in _REDACT_PATTERNS:
+        clamped = pattern.sub("[REDACTED]", clamped)
+    return clamped[:max_length]

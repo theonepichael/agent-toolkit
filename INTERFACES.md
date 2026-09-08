@@ -139,6 +139,9 @@ Shared CLI helpers used across dotfiles scripts.
   - `add_verbosity_args(parser: argparse.ArgumentParser) -> None` — Add mutually-exclusive --quiet/-q and --verbose/-v flags to a parser.
   - `vprint(msg: str, *, verbose: bool, file: TextIO | None = None) -> None` — Print a diagnostic message when verbose mode is enabled.
   - `qprint(msg: str, *, quiet: bool, file: TextIO | None = None) -> None` — Print a message unless quiet mode is enabled.
+  - `get_logger(name: str, *, verbose: bool = False, quiet: bool = False) -> logging.Logger` — Return a stderr-only diagnostic logger, a structured complement to vprint.
+  - `append_jsonl(path: Path, record: dict[str, object]) -> None` — Best-effort: append one JSON record to `path` as a single JSONL line.
+  - `redact_secrets(text: str, *, max_length: int = 200) -> str` — Mask secret-shaped substrings, then truncate to max_length.
 - Tested by: `agent-scripts/test_cli_common.py`
 
 ### `agent-scripts/dev_status.py`
