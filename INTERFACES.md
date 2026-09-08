@@ -1094,12 +1094,10 @@ SessionStart hook + CLI: detect (and optionally fix) drift between the live ``~/
   - `HOME = Path.home()`
   - `DOTFILES = Path(__file__).resolve().parents[1]`
   - `PROFILE_MARKER = HOME / '.local' / 'state' / 'agent-toolkit' / 'profile'`
-- Depends on: `cli_common.py`
+- Depends on: `cli_common.py`, `settings_seed.py`
 - Exceptions:
   - `class DriftCheckError(Exception)` — Raised when drift checking can't proceed (parse failure, not a missing file).
 - Public functions:
-  - `json_key_drift(seed: dict[str, object], live: dict[str, object]) -> list[str]` — Return the top-level keys whose values differ between seed and live.
-  - `opencode_bypass_drift(seed: dict[str, object], live: dict[str, object]) -> list[str]` — Return allowlist-bypass bash patterns present live but not in the seed.
   - `resolve_profile() -> str` — Return "work" if this machine is work-provisioned, else "personal".
   - `settings_seed_path(root: Path | None = None) -> Path` — Return the seed settings.json path for this machine's profile, under ``root`` (default the ``DOTFILES`` module constant — resolved at call time, not bound at import, so callers that don't pass ``root`` still pick up a patched/overridden ``DOTFILES``).
   - `opencode_seed_path(root: Path | None = None) -> Path | None` — Return the opencode.jsonc seed path under ``root``, or None on a work machine.

@@ -48,16 +48,29 @@ forcing a human to either silence it (add to cosmetics) or investigate.
                     under WSL, when a Windows-side ``code`` CLI is found on
                     PATH (see ``_vscode_wsl_user_dir``).
 
-Why the helpers are vendored in-script, not imported from install.py
--------------------------------------------------------------------
+Why the drift helpers are imported, not vendored
+------------------------------------------------
 A SessionStart hook is leaf infrastructure; importing a 1800-line
-installer to reuse ~30 lines of pure drift helpers trades trivial
-one-time duplication for permanent coupling — and an import failure
+installer to reuse ~30 lines of pure drift helpers would have traded
+trivial one-time duplication for permanent coupling — an import failure
 (any ``ImportError`` propagating from a future edit to install.py)
 would silently no-op the whole hook, disconnecting the smoke detector
-from its battery. The helpers below are vendored from install.py
-(see the ``# vendored from install.py`` headers); keep them in sync if
-install.py's drifts.
+from its battery. So ``json_key_drift`` and ``opencode_bypass_drift``
+were vendored by hand — and drifted: install.py's bypass curation grew
+from two patterns to sixteen without this hook noticing.
+
+They are now imported from ``agent-scripts/settings_seed.py`` (the
+small, stdlib-only module install.py's drift layer was extracted into,
+which imports only its ``cli_common`` sibling — already this hook's
+dependency), so the failure-isolation concern does not transfer and the
+"keep in sync if it drifts" burden is gone: the check path tracks
+settings_seed's canonical curation automatically. The fix path keeps
+its own, deliberately narrower strip list (``OPENCODE_BYPASS_PATTERNS``
+below) — stripping patterns from a live config is destructive, so
+widening it is a separate policy decision, which also means ``check``
+can flag a bypass that ``fix`` will not auto-repair (its message still
+points at ``fix``, which repairs the two original patterns and
+flag-and-skips the rest).
 
 Subcommands
 -----------
@@ -211,6 +224,7 @@ from datetime import datetime
 from pathlib import Path
 
 import cli_common
+from settings_seed import json_key_drift, opencode_bypass_drift
 
 HOME = Path.home()
 DOTFILES = Path(__file__).resolve().parents[1]
@@ -238,11 +252,15 @@ SETTINGS_COSMETIC_KEYS: frozenset[str] = frozenset(
 )
 OPENCODE_COSMETIC_KEYS: frozenset[str] = frozenset({"$schema", "agent"})
 
-# opencode allowlist-bypass patterns — these invoke an arbitrary other
-# command as their own argument (awk via system()), so their presence
-# defeats the allowlist entirely. They're stripped from live even under
-# the otherwise-additive fix policy: a security regression takes priority
-# over preserving live-only entries.
+# opencode allowlist-bypass patterns stripped by the FIX path (see
+# _merge_opencode_permission). This is the hook's fix-strip policy, not a
+# vendored copy: the check path's bypass detection now comes from
+# settings_seed.opencode_bypass_drift and its wider canonical curation
+# (xargs/awk/sqlite3/nohup/git --no-pager/uv/python3/node/npm/npx/opencode
+# run/copilot), which install.py's drift layer uses too. Widening this fix
+# strip to match is a separate policy decision — stripping patterns from a
+# live config is destructive, so it stays deliberately narrow (and narrower
+# than check's report scope) until that decision is made.
 OPENCODE_BYPASS_PATTERNS: tuple[str, ...] = ("xargs *", "awk *")
 
 PROFILE_MARKER = HOME / ".local" / "state" / "agent-toolkit" / "profile"
@@ -254,47 +272,23 @@ class DriftCheckError(Exception):
     to compare against."""
 
 
-# ── vendored from install.py — keep in sync if it drifts ─────────────────────
-# These were lifted from install.py so this leaf SessionStart hook doesn't
-# need to import a multi-thousand-line installer (an import failure there
-# would silently no-op the whole hook). They are pure functions with no
-# install side effects. install.py's drift helpers now live in
-# agent-scripts/settings_seed.py — sync against that file (and install.py
-# if it ever inlines drift logic again).
-
-
-def json_key_drift(seed: dict[str, object], live: dict[str, object]) -> list[str]:
-    """Return the top-level keys whose values differ between seed and live."""
-    return sorted(k for k in set(seed) | set(live) if seed.get(k) != live.get(k))
-
-
-def _bash_permissions(config: dict[str, object]) -> dict[str, object]:
-    """Return ``permission.bash`` from an opencode config, or ``{}``."""
-    permission = config.get("permission")
-    if not isinstance(permission, dict):
-        return {}
-    bash = permission.get("bash")
-    return bash if isinstance(bash, dict) else {}
-
-
-def opencode_bypass_drift(
-    seed: dict[str, object], live: dict[str, object]
-) -> list[str]:
-    """Return allowlist-bypass bash patterns present live but not in the seed.
-
-    ``xargs`` and ``awk`` each invoke an arbitrary other command as their
-    own argument (awk via ``system()``), so their presence isn't
-    "individually risky command a profile could allow" — it defeats the
-    allowlist entirely. They're called out separately from the generic
-    top-level key diff because they live nested under ``permission.bash``,
-    where a top-level diff would only say "permission" changed without
-    saying which pattern came back.
-    """
-    seed_bash = _bash_permissions(seed)
-    live_bash = _bash_permissions(live)
-    return [
-        k for k in OPENCODE_BYPASS_PATTERNS if k in live_bash and k not in seed_bash
-    ]
+# ── drift helpers: imported, not vendored ────────────────────────────
+# json_key_drift and opencode_bypass_drift are imported from
+# agent-scripts/settings_seed.py (see the import above) — the canonical
+# home of install.py's extracted drift layer, replacing the hand-vendored
+# copies this hook carried since the install.py:1173-1226 era. The original
+# reason for vendoring was failure isolation: importing a multi-thousand-
+# line installer into a leaf SessionStart hook meant any import error there
+# silently no-op'd the hook. That concern does not transfer to
+# settings_seed.py: it is small and stdlib-only, importing only its
+# cli_common sibling (already this hook's dependency), so the failure
+# surface of the import is the same directory of files that ship together.
+# The check path therefore regains settings_seed's full bypass curation for
+# free — the "keep in sync if it drifts" burden is gone.
+#
+# Scope note: only the check path uses the imported (wider) bypass
+# curation. The fix path keeps its own OPENCODE_BYPASS_PATTERNS strip list
+# (see that constant's comment) — a deliberate, narrower policy, not drift.
 
 
 def _vscode_wsl_user_dir() -> Path | None:
@@ -331,9 +325,6 @@ def _vscode_wsl_user_dir() -> Path | None:
     if "Users" not in parts:
         return None
     return win_user_dir / "AppData" / "Roaming" / "Code" / "User"
-
-
-# ── end vendored block ──────────────────────────────────────────────────────
 
 
 # ── JSON loading: loud-fail on parse failure, silent on missing file ────────
@@ -817,9 +808,10 @@ def _merge_opencode_permission(
     """Additively merge seed ``permission`` into live for opencode.jsonc.
 
     The args are the ``permission`` sub-dicts (NOT whole top-level
-    configs), so ``bash`` is read directly rather than via
-    :func:`_bash_permissions` (which expects a top-level config and looks
-    up ``config["permission"]["bash"]``).
+    configs), so ``bash`` is read directly from the sub-dict rather than
+    via a whole-config lookup like settings_seed's private
+    ``_bash_permissions`` helper (which expects a top-level config and
+    looks up ``config["permission"]["bash"]``).
 
     * ``permission.bash``: union — append seed patterns not in live;
       differing verdicts on shared patterns are flag-and-skip; bypass

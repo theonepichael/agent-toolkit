@@ -340,6 +340,22 @@ class SettingsSeedDriftCheckTestCase(unittest.TestCase):
         self.assertIn("xargs *", out)
         self.assertIn("fix`", out)
 
+    def test_check_opencode_security_uses_settings_seed_bypass_curation(self) -> None:
+        # After the un-vendor rewire, check imports opencode_bypass_drift
+        # from settings_seed.py, so its bypass curation (16 patterns) is the
+        # single canonical list — a live-only newer pattern (uv *, not one of
+        # the hook's old vendored xargs/awk two) is surfaced as SECURITY,
+        # same as install.py's drift layer reports it. The fix path's strip
+        # policy stays deliberately narrower (see OPENCODE_BYPASS_PATTERNS).
+        self.write_settings_seed({"permissions": {"allow": []}})
+        self.write_opencode_seed({"permission": {"bash": {"git status*": "allow"}}})
+        self.write_live_opencode(
+            {"permission": {"bash": {"git status*": "allow", "uv *": "allow"}}}
+        )
+        out, _ = self.run_check()
+        self.assertIn("SECURITY:", out)
+        self.assertIn("uv *", out)
+
     def test_check_work_profile_skips_opencode(self) -> None:
         self.mark_work()
         self.write_settings_seed(
