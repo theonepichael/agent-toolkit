@@ -60,6 +60,12 @@ Environment
   GUARD_RAILS_STORE    path to an alternate backlog store, for exercising the
                        guard against a throwaway store
 
+Every delivered verdict is also appended, best-effort, to a durable JSONL
+audit trail at ``~/.claude/data/guard_rails_audit.jsonl`` (fields: ``ts``,
+``harness``, ``tool``, redacted ``target``, ``rule``, ``decision``). That
+write happens strictly after the verdict is on stdout and can never alter
+or suppress it.
+
 Set ``GUARD_RAILS_OFF=1`` in the environment the harness is launched from to
 disable every rule. It is intentionally not reachable from an agent's own
 shell: hooks are spawned by the host process, so a tool call's ``export``
@@ -80,6 +86,7 @@ from pathlib import Path
 import cli_common
 
 DEFAULT_BACKLOG_ITEMS = Path.home() / ".claude" / "data" / "backlog" / "items.json"
+GUARD_RAILS_LOG_PATH = Path.home() / ".claude" / "data" / "guard_rails_audit.jsonl"
 PROTECTED_BRANCHES = {"main", "master"}
 GIT_TIMEOUT = 2.0
 
@@ -116,6 +123,10 @@ class Request:
 class Verdict:
     decision: str  # allow | deny | warn
     reason: str = ""
+    # Which guard rule produced this verdict, for the audit trail -- e.g.
+    # "GUARD_RAILS_OFF" when the guard is disabled. Empty for a plain
+    # default allow (no specific rule matched).
+    rule: str = ""
 
 
 @dataclass(frozen=True)
@@ -410,6 +421,7 @@ def _evaluate_claim(req: Request, info: RepoInfo) -> Verdict:
             f"Refusing to write to '{req.path}': backlog item(s) {slugs} "
             "actively claimed by another session. Taking over needs a human "
             "decision, not this tool call.",
+            rule="claim-held-elsewhere",
         )
     return Verdict(
         "deny",
@@ -417,6 +429,7 @@ def _evaluate_claim(req: Request, info: RepoInfo) -> Verdict:
         "progress but not actively claimed by this session. Run: "
         f"dev_status.py start <slug> (claims the item, reclaims a dead "
         f"claim) and work in the worktree it requires.",
+        rule="unclaimed-item-write",
     )
 
 
@@ -586,6 +599,7 @@ def evaluate_bash_override(command: str, cwd: str) -> Verdict:
             "Referencing core.hooksPath through a shell variable or command "
             "substitution is blocked on a protected branch -- this could "
             "supply an override value a static check can't otherwise see.",
+            rule="hookspath-shell-substitution",
         )
 
     tokens = _shell_tokens(command)
@@ -595,6 +609,7 @@ def evaluate_bash_override(command: str, cwd: str) -> Verdict:
             "deny",
             "git --no-verify is blocked on a protected branch -- it would "
             "skip the no-commit-on-main hook entirely.",
+            rule="no-verify",
         )
 
     if _has_config_override_flag(tokens):
@@ -603,6 +618,7 @@ def evaluate_bash_override(command: str, cwd: str) -> Verdict:
             "git -c/--config core.hooksPath=... is blocked on a protected "
             "branch -- it would override the no-commit-on-main hook for "
             "this invocation.",
+            rule="hookspath-config-override",
         )
 
     if re.search(r"\bGIT_CONFIG_KEY_\d+\s*=\s*[\"']?core\.hooksPath", command):
@@ -611,19 +627,23 @@ def evaluate_bash_override(command: str, cwd: str) -> Verdict:
             "GIT_CONFIG_KEY_N=core.hooksPath is blocked on a protected "
             "branch -- it redirects core.hooksPath via git's positional "
             "config-override env vars.",
+            rule="hookspath-env-config",
         )
     if re.search(r"\bGIT_CONFIG_(GLOBAL|SYSTEM)=", command):
         return Verdict(
             "deny",
             "GIT_CONFIG_GLOBAL=/GIT_CONFIG_SYSTEM= is blocked on a "
             "protected branch -- it redirects which config file git reads, "
-            "which can hide core.hooksPath the same way overriding it directly would.",
+            "which can hide core.hooksPath the same way overriding it "
+            "directly would.",
+            rule="hookspath-env-config",
         )
     if re.search(r"\bGIT_CONFIG_PARAMETERS=", command):
         return Verdict(
             "deny",
             "GIT_CONFIG_PARAMETERS= is blocked on a protected branch -- "
             "it is git's env-var form of -c-style config overrides.",
+            rule="hookspath-env-config",
         )
 
     if _find_hookspath_mutation(tokens):
@@ -631,6 +651,7 @@ def evaluate_bash_override(command: str, cwd: str) -> Verdict:
             "deny",
             "Setting or unsetting core.hooksPath is blocked on a protected "
             "branch -- it would disable the no-commit-on-main hook.",
+            rule="hookspath-mutation",
         )
 
     if _writes_git_config_file(tokens):
@@ -639,6 +660,7 @@ def evaluate_bash_override(command: str, cwd: str) -> Verdict:
             "Writing directly to .git/config is blocked on a protected "
             "branch -- it can rewrite core.hooksPath outside git's own "
             "config-mutation commands.",
+            rule="git-config-file-write",
         )
 
     return Verdict("allow")
@@ -649,7 +671,7 @@ def evaluate(req: Request) -> Verdict:
     checkout they land in, plus the bash-family override check to Bash
     calls. Fails open on anything it cannot answer."""
     if os.environ.get("GUARD_RAILS_OFF") == "1":
-        return Verdict("allow")
+        return Verdict("allow", rule="GUARD_RAILS_OFF")
     if req.tool == "bash":
         return evaluate_bash_override(req.command, req.cwd)
     if req.tool != "write":
@@ -672,6 +694,7 @@ def evaluate(req: Request) -> Verdict:
                     f"'{slug}' is in progress there. Do this work in a "
                     f"worktree: git -C {info.toplevel} worktree add "
                     f"../<repo>-<slug> -b <slug>",
+                    rule="main-checkout-write",
                 )
 
     verdict = _evaluate_claim(req, info)
@@ -683,6 +706,7 @@ def evaluate(req: Request) -> Verdict:
             "warn",
             "This worktree's base is behind origin/main. Pull before "
             "continuing, or the work will be built on a stale tree.",
+            rule="stale-worktree-base",
         )
     return Verdict("allow")
 
@@ -764,6 +788,30 @@ def render(harness: str | None, verdict: Verdict) -> tuple[str, int]:
     return json.dumps({"decision": verdict.decision, "reason": verdict.reason}), 0
 
 
+def _audit_verdict(harness: str, req: Request | None, verdict: Verdict) -> None:
+    """Best-effort durable audit trail: one JSONL record per delivered
+    verdict, appended strictly after the verdict has already been written to
+    stdout. append_jsonl never touches stdout/stderr and never raises, so
+    the harness IPC contract is unaffected by this entirely. ``decision``
+    stays a strict two-value enum: warn (and a disabled guard) record as
+    "allow", with the deciding rule named separately ("GUARD_RAILS_OFF" for
+    a disabled guard). The bash-family target is the command; the
+    write-family target is the file path; both pass through
+    redact_secrets before storage."""
+    target = "" if req is None else (req.command if req.tool == "bash" else req.path)
+    cli_common.append_jsonl(
+        GUARD_RAILS_LOG_PATH,
+        {
+            "ts": datetime.now(UTC).isoformat(),
+            "harness": harness,
+            "tool": req.tool if req is not None else "",
+            "target": cli_common.redact_secrets(target),
+            "rule": verdict.rule or "default-allow",
+            "decision": "deny" if verdict.decision == "deny" else "allow",
+        },
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="pre-tool guard shared by every harness",
@@ -797,6 +845,7 @@ def main(argv: list[str] | None = None) -> int:
         if req is None:
             out, code = render(args.harness, Verdict("allow"))
             print(out)
+            _audit_verdict(args.harness, None, Verdict("allow"))
             return code
         verdict = evaluate(req)
         cli_common.vprint(
@@ -807,6 +856,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.harness == "copilot" and verdict.reason:
             print(verdict.reason, file=sys.stderr)
         print(out)
+        _audit_verdict(args.harness, req, verdict)
         return code
 
     req = Request(
@@ -818,6 +868,7 @@ def main(argv: list[str] | None = None) -> int:
     verdict = evaluate(req)
     out, code = render(None, verdict)
     print(out)
+    _audit_verdict("", req, verdict)
     return code
 
 

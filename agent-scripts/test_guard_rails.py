@@ -7,7 +7,9 @@ assumptions under test."""
 
 import io
 import json
+import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -531,6 +533,154 @@ class MainTests(unittest.TestCase):
     def test_unparseable_stdin_allows_and_does_not_raise(self) -> None:
         _, code = self._run(["--harness", "claude"], "not json at all")
         self.assertEqual(code, 0)
+
+
+class AuditLogTests(unittest.TestCase):
+    """Ticket B: the durable JSONL audit trail at GUARD_RAILS_LOG_PATH.
+    Strictly additive -- stdout in IPC modes stays byte-for-byte unchanged,
+    and an audit write failure can never break the guard."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.log_path = Path(tmp.name) / "guard_rails_audit.jsonl"
+        patcher = mock.patch.object(guard_rails, "GUARD_RAILS_LOG_PATH", self.log_path)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _run(self, argv, stdin_text=""):
+        out = io.StringIO()
+        with mock.patch.object(sys, "stdin", io.StringIO(stdin_text)):
+            with mock.patch.object(sys, "stdout", out):
+                code = guard_rails.main(argv)
+        return out.getvalue(), code
+
+    def _records(self):
+        return [json.loads(line) for line in self.log_path.read_text().splitlines()]
+
+    def test_harness_verdict_is_audited_with_expected_fields(self) -> None:
+        payload = json.dumps(
+            {
+                "cwd": "/repo",
+                "tool_name": "Bash",
+                "tool_input": {"command": "git commit -m x"},
+            }
+        )
+        verdict = guard_rails.Verdict("deny", "no", rule="no-verify")
+        with mock.patch.object(guard_rails, "evaluate", return_value=verdict):
+            out, code = self._run(["--harness", "claude"], payload)
+        self.assertEqual(code, 0)
+        # Byte-for-byte unchanged: the record matches render()'s output alone.
+        self.assertEqual(out, guard_rails.render("claude", verdict)[0] + "\n")
+        (record,) = self._records()
+        self.assertEqual(record["harness"], "claude")
+        self.assertEqual(record["tool"], "bash")
+        self.assertEqual(record["target"], "git commit -m x")
+        self.assertEqual(record["rule"], "no-verify")
+        self.assertEqual(record["decision"], "deny")
+        self.assertIn("ts", record)
+
+    def test_target_is_redacted_before_storage(self) -> None:
+        payload = json.dumps(
+            {
+                "cwd": "/repo",
+                "tool_name": "Bash",
+                "tool_input": {"command": "deploy --token=supersecret123456"},
+            }
+        )
+        with mock.patch.object(
+            guard_rails, "evaluate", return_value=guard_rails.Verdict("allow")
+        ):
+            self._run(["--harness", "claude"], payload)
+        (record,) = self._records()
+        self.assertNotIn("supersecret123456", record["target"])
+        self.assertIn("[REDACTED]", record["target"])
+
+    def test_guard_rails_off_records_allow_with_guard_rails_off_rule(self) -> None:
+        payload = json.dumps(
+            {
+                "cwd": "/repo",
+                "tool_name": "Bash",
+                "tool_input": {"command": "git commit"},
+            }
+        )
+        with mock.patch.dict(os.environ, {"GUARD_RAILS_OFF": "1"}):
+            self._run(["--harness", "claude"], payload)
+        (record,) = self._records()
+        self.assertEqual(record["decision"], "allow")
+        self.assertEqual(record["rule"], "GUARD_RAILS_OFF")
+
+    def test_warn_verdict_is_recorded_as_allow(self) -> None:
+        payload = json.dumps(
+            {
+                "cwd": "/repo",
+                "tool_name": "Edit",
+                "tool_input": {"file_path": "/repo/a.py"},
+            }
+        )
+        verdict = guard_rails.Verdict("warn", "stale base", rule="stale-worktree-base")
+        with mock.patch.object(guard_rails, "evaluate", return_value=verdict):
+            self._run(["--harness", "claude"], payload)
+        (record,) = self._records()
+        self.assertEqual(record["decision"], "allow")
+        self.assertEqual(record["rule"], "stale-worktree-base")
+
+    def test_unparseable_payload_still_audits_one_allow(self) -> None:
+        _, code = self._run(["--harness", "claude"], "not json at all")
+        self.assertEqual(code, 0)
+        (record,) = self._records()
+        self.assertEqual(record["decision"], "allow")
+        self.assertEqual(record["tool"], "")
+        self.assertEqual(record["target"], "")
+
+    def test_neutral_mode_records_empty_harness(self) -> None:
+        with mock.patch.object(
+            guard_rails, "evaluate", return_value=guard_rails.Verdict("allow")
+        ):
+            self._run(["--tool", "Bash", "--cwd", "/repo", "--command", "ls"])
+        (record,) = self._records()
+        self.assertEqual(record["harness"], "")
+        self.assertEqual(record["tool"], "bash")
+        self.assertEqual(record["target"], "ls")
+
+    def test_each_invocation_appends_exactly_one_line(self) -> None:
+        payload = json.dumps(
+            {
+                "cwd": "/repo",
+                "tool_name": "Bash",
+                "tool_input": {"command": "git commit"},
+            }
+        )
+        with mock.patch.object(
+            guard_rails, "evaluate", return_value=guard_rails.Verdict("allow")
+        ):
+            self._run(["--harness", "claude"], payload)
+            self._run(["--harness", "claude"], payload)
+        self.assertEqual(len(self._records()), 2)
+
+    def test_audit_write_failure_never_breaks_the_guard(self) -> None:
+        # A path whose parent is a regular file makes append_jsonl's lazy
+        # mkdir fail; the guard must still deliver its verdict unchanged.
+        blocker = self.log_path.parent / "blocker"
+        blocker.write_text("not a directory")
+        with (
+            mock.patch.object(
+                guard_rails, "GUARD_RAILS_LOG_PATH", blocker / "audit.jsonl"
+            ),
+            mock.patch.object(
+                guard_rails, "evaluate", return_value=guard_rails.Verdict("allow")
+            ),
+        ):
+            payload = json.dumps(
+                {
+                    "cwd": "/repo",
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "git commit"},
+                }
+            )
+            out, code = self._run(["--harness", "claude"], payload)
+        self.assertEqual(code, 0)
+        self.assertIn("hookSpecificOutput", out)
 
 
 if __name__ == "__main__":

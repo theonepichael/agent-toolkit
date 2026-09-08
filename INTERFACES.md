@@ -605,6 +605,7 @@ Pre-tool guard shared by every harness: refuse a write into a repository's main 
 - Environment: `GUARD_RAILS_OFF`, `GUARD_RAILS_STORE`
 - Filesystem constants:
   - `DEFAULT_BACKLOG_ITEMS = Path.home() / '.claude' / 'data' / 'backlog' / 'items.json'`
+  - `GUARD_RAILS_LOG_PATH = Path.home() / '.claude' / 'data' / 'guard_rails_audit.jsonl'`
 - Depends on: `cli_common.py`, `dev_status_impl.py`
 - Public classes:
   - `class Request` — A normalized tool call: what family, from where, against which path (write-family) or command (bash-family).
