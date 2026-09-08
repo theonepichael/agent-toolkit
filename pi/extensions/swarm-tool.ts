@@ -540,7 +540,11 @@ export default function (pi: ExtensionAPI) {
     state.workers = state.workers.filter((w) => !staleAgents.has(w.agent));
     // A dropped worker must not keep a wait slot: nothing will ever settle it.
     const rt = runtimes.get(state.runId);
-    for (const w of stale) rt?.inFlight.delete(w.agent);
+    if (rt) {
+      for (const w of stale) rt.inFlight.delete(w.agent);
+      rt.pendingEvents = rt.pendingEvents.filter((e) => !staleAgents.has(e.agent));
+      wakeWaiters(rt);
+    }
 
     const lines: string[] = [];
     for (const w of stale) {
@@ -737,6 +741,7 @@ export default function (pi: ExtensionAPI) {
   // ---------------------------------------------------------------------------
 
   interface RunRuntime {
+    runId: string;
     inFlight: Set<string>; // agent ids with a wait currently running
     pendingEvents: PollEvent[];
     waiters: (() => void)[]; // resolvers for swarm_poll calls currently waiting on the next event
@@ -763,6 +768,7 @@ export default function (pi: ExtensionAPI) {
     let rt = runtimes.get(runId);
     if (!rt) {
       rt = {
+        runId,
         inFlight: new Set(),
         pendingEvents: [],
         waiters: [],
@@ -949,6 +955,10 @@ export default function (pi: ExtensionAPI) {
         const probe = await probeLiveness(worker.agent);
         const verdict = classifyTimeoutProbe(probe, elapsedWorkingMsFor(worker), rt.deadlineMs);
         if (verdict.disposition === "rearm") {
+          const runState = activeRuns.get(rt.runId);
+          if (runState && !runState.workers.some((w) => w.agent === worker.agent)) {
+            return;
+          }
           worker.checkIns = (worker.checkIns ?? 0) + 1;
           // Re-arm BEFORE the event becomes visible, so a caller woken by the
           // check-in can never observe a worker with no wait running.
@@ -993,6 +1003,11 @@ export default function (pi: ExtensionAPI) {
       };
     } finally {
       rt.inFlight.delete(worker.agent);
+    }
+    const runState = activeRuns.get(rt.runId);
+    if (runState && !runState.workers.some((w) => w.agent === worker.agent)) {
+      wakeWaiters(rt);
+      return;
     }
     rt.pendingEvents.push(event);
     wakeWaiters(rt);
@@ -1481,6 +1496,9 @@ export default function (pi: ExtensionAPI) {
       // still working, so a poll that loses that race goes back to waiting.
       let aborted = false;
       while (rt.pendingEvents.length === 0) {
+        if (state.workers.filter((w) => w.lifecycle === "active").length === 0) {
+          break;
+        }
         if (!(await waitForEvent(rt, signal))) {
           aborted = true;
           break;
@@ -1499,26 +1517,56 @@ export default function (pi: ExtensionAPI) {
         };
       }
 
-      const events = rt.pendingEvents.splice(0);
+      const rawEvents = rt.pendingEvents.splice(0);
+      const events: PollEvent[] = [];
 
-      for (const event of events) {
+      for (const event of rawEvents) {
         const worker = state.workers.find((w) => w.agent === event.agent);
         if (!worker) continue;
         if (event.kind === "blocked") {
-          const getResult = await herdr(pi, buildAgentGetArgv(event.agent), signal);
-          let readResult = await herdr(
-            pi,
-            buildAgentReadArgv(event.agent, BLOCKED_READ_LINES),
-            signal,
+          let getResult: { code: number; stdout: string; stderr: string };
+          try {
+            getResult = await herdr(pi, buildAgentGetArgv(event.agent), signal);
+          } catch {
+            getResult = { code: 1, stdout: "", stderr: "" };
+          }
+          const resyncVerdict = classifyResyncGet(
+            getResult.code,
+            getResult.stdout,
+            getResult.stderr,
           );
-          let truncated = looksTruncated(readResult.stdout, BLOCKED_READ_LINES);
-          if (truncated) {
+          if (resyncVerdict.action === "drop") {
+            event.kind = "finished";
+            event.detail =
+              "resync: agent gone from herdr while resolving blocked prompt -- " +
+              "worker has since finished or exited; outcome inferred, not observed. " +
+              "Verify the item's state before treating it as complete.";
+            event.captures = await teardownAndHarvestWorker(state, worker, signal);
+            events.push(event);
+            continue;
+          }
+          let readResult: { code: number; stdout: string; stderr: string };
+          try {
             readResult = await herdr(
               pi,
-              buildAgentReadArgv(event.agent, BLOCKED_READ_LINES_RETRY),
+              buildAgentReadArgv(event.agent, BLOCKED_READ_LINES),
               signal,
             );
-            truncated = looksTruncated(readResult.stdout, BLOCKED_READ_LINES_RETRY);
+          } catch {
+            readResult = { code: 1, stdout: "", stderr: "" };
+          }
+          let truncated = looksTruncated(readResult.stdout, BLOCKED_READ_LINES);
+          if (truncated) {
+            try {
+              readResult = await herdr(
+                pi,
+                buildAgentReadArgv(event.agent, BLOCKED_READ_LINES_RETRY),
+                signal,
+              );
+              truncated = looksTruncated(readResult.stdout, BLOCKED_READ_LINES_RETRY);
+            } catch {
+              truncated = false;
+            }
           }
           event.rawPrompt = readResult.stdout || getResult.stdout;
           event.truncated = truncated;
@@ -1545,6 +1593,7 @@ export default function (pi: ExtensionAPI) {
           // per housekeeping offer.
           event.captures = await teardownAndHarvestWorker(state, worker, signal);
         }
+        events.push(event);
       }
       persist(state);
 
@@ -1596,34 +1645,36 @@ export default function (pi: ExtensionAPI) {
           {
             type: "text",
             text:
-              events
-                .map((e) => {
-                  if (e.kind === "blocked") {
-                    // The class goes in the text, not in `details`: no provider
-                    // adapter in @earendil-works/pi-ai reads details, so a
-                    // classification put there would be invisible to the very
-                    // model that has to act on it.
-                    const verdict =
-                      e.blockClass === "answerable"
-                        ? "answerable -- a question-tool picker, so answer it with swarm_resolve_blocked"
-                        : `needs_human -- NOT a question-tool picker, so swarm_resolve_blocked cannot drive it. Relay the prompt below to the user verbatim and tell them to answer in pane ${e.paneId} themselves`;
-                    // The labels are quoted verbatim and called out as such,
-                    // because swarm_resolve_blocked matches on these exact
-                    // strings. An orchestrator that relays a paraphrase of them
-                    // produces an answer matching nothing, and the worker is
-                    // never moved off awaiting_relay.
-                    const labels = (e.options ?? []).length
-                      ? `\nRelay these option labels to the user VERBATIM -- swarm_resolve_blocked matches on these exact strings, so a paraphrase strands the worker: ${(e.options ?? []).map((l) => JSON.stringify(l)).join(", ")}`
-                      : "";
-                    return `${e.slug} (${e.agent}, pane ${e.paneId}) is blocked [${verdict}]${e.truncated ? " -- content may be truncated, inspect the pane directly" : ""}:\n${e.rawPrompt}${labels}`;
-                  }
-                  if (e.kind === "still_working") {
-                    return `${e.slug} (${e.agent}) still_working -- check-in ${e.checkIn}, ${formatDuration(e.elapsedMs ?? 0)} of working time so far against a ${formatDuration(rt.deadlineMs)} budget. Nothing settled and no slot was freed; poll again.`;
-                  }
-                  const captures = renderCaptureOffers(e.captures ?? []);
-                  return `${e.slug} (${e.agent}) ${e.kind}${e.detail ? `: ${e.detail}` : ""}${captures}`;
-                })
-                .join("\n\n") +
+              (events.length > 0
+                ? events
+                    .map((e) => {
+                      if (e.kind === "blocked") {
+                        // The class goes in the text, not in `details`: no provider
+                        // adapter in @earendil-works/pi-ai reads details, so a
+                        // classification put there would be invisible to the very
+                        // model that has to act on it.
+                        const verdict =
+                          e.blockClass === "answerable"
+                            ? "answerable -- a question-tool picker, so answer it with swarm_resolve_blocked"
+                            : `needs_human -- NOT a question-tool picker, so swarm_resolve_blocked cannot drive it. Relay the prompt below to the user verbatim and tell them to answer in pane ${e.paneId} themselves`;
+                        // The labels are quoted verbatim and called out as such,
+                        // because swarm_resolve_blocked matches on these exact
+                        // strings. An orchestrator that relays a paraphrase of them
+                        // produces an answer matching nothing, and the worker is
+                        // never moved off awaiting_relay.
+                        const labels = (e.options ?? []).length
+                          ? `\nRelay these option labels to the user VERBATIM -- swarm_resolve_blocked matches on these exact strings, so a paraphrase strands the worker: ${(e.options ?? []).map((l) => JSON.stringify(l)).join(", ")}`
+                          : "";
+                        return `${e.slug} (${e.agent}, pane ${e.paneId}) is blocked [${verdict}]${e.truncated ? " -- content may be truncated, inspect the pane directly" : ""}:\n${e.rawPrompt}${labels}`;
+                      }
+                      if (e.kind === "still_working") {
+                        return `${e.slug} (${e.agent}) still_working -- check-in ${e.checkIn}, ${formatDuration(e.elapsedMs ?? 0)} of working time so far against a ${formatDuration(rt.deadlineMs)} budget. Nothing settled and no slot was freed; poll again.`;
+                      }
+                      const captures = renderCaptureOffers(e.captures ?? []);
+                      return `${e.slug} (${e.agent}) ${e.kind}${e.detail ? `: ${e.detail}` : ""}${captures}`;
+                    })
+                    .join("\n\n")
+                : "No active workers to poll.") +
               stalledNote +
               resyncNote,
           },

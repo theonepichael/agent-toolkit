@@ -1276,8 +1276,10 @@ interface ExecCall {
   argv: string[];
 }
 
+type StubExecResult = { code: number; stdout: string; stderr: string };
+
 /** Minimal ExtensionAPI stub -- swarm-tool only ever touches exec + registerTool. */
-function makeStubPi(respond: (argv: string[]) => { code: number; stdout: string; stderr: string }) {
+function makeStubPi(respond: (argv: string[]) => StubExecResult | Promise<StubExecResult>) {
   const calls: ExecCall[] = [];
   const tools = new Map<string, { execute: (...a: never[]) => Promise<unknown> }>();
   const pi = {
@@ -4758,5 +4760,236 @@ describe("swarm_poll blocked-state resync", () => {
     expect(res.details.events.map((e) => e.kind)).toEqual(["error"]);
     expect(res.content.map((c) => c.text).join("\n")).not.toContain("resync");
     expect(loadState(runId, dir)?.workers).toEqual([]);
+  });
+});
+
+describe("phantom events and stale worker closeout cleanup", () => {
+  let dir: string;
+  let priorStateDir: string | undefined;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "swarm-phantom-"));
+    priorStateDir = process.env.PI_SWARM_STATE_DIR;
+    process.env.PI_SWARM_STATE_DIR = dir;
+  });
+
+  afterEach(() => {
+    if (priorStateDir === undefined) delete process.env.PI_SWARM_STATE_DIR;
+    else process.env.PI_SWARM_STATE_DIR = priorStateDir;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("agent_not_found during blocked prompt retrieval drops worker and does not park at awaiting_relay", async () => {
+    const runId = "blocked-vanish";
+    const agentId = `${runId}-w1`;
+    const worker: WorkerRecord = {
+      agent: agentId,
+      slug: "item-vanish",
+      paneId: "w1:pA",
+      tabId: "w1:tA",
+      lifecycle: "active",
+    };
+    saveState({ runId, concurrency: 2, nextCounter: 1, workers: [worker] }, dir);
+
+    const stub = makeStubPi((argv) => {
+      const [a, b] = argv;
+      if (a === "agent" && b === "list") {
+        return {
+          code: 0,
+          stdout: realAgentListEnvelope({
+            agent: "pi",
+            agent_status: "working",
+            name: agentId,
+            pane_id: "w1:pA",
+          }),
+          stderr: "",
+        };
+      }
+      if (a === "agent" && b === "wait") {
+        return { code: 0, stdout: realWaitEnvelope("blocked", agentId, "w1:pA"), stderr: "" };
+      }
+      if (a === "agent" && b === "get") {
+        return {
+          code: 1,
+          stdout: "",
+          stderr: JSON.stringify({
+            error: { code: "agent_not_found", message: "agent not found" },
+          }),
+        };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    });
+
+    registerSwarmTools(stub.pi as unknown as Parameters<typeof registerSwarmTools>[0]);
+    const poll = stub.tools.get("swarm_poll");
+    if (!poll) throw new Error("swarm_poll was never registered");
+
+    const res = (await poll.execute(
+      ...(["c1", { runId, timeoutMs: 1000 }, undefined] as unknown as never[]),
+    )) as { content: { text: string }[]; details: { events: { kind: string; detail?: string }[] } };
+
+    const persisted = loadState(runId, dir);
+    expect(persisted?.workers ?? []).toEqual([]);
+    expect(res.details.events.map((e) => e.kind)).toEqual(["finished"]);
+    expect(res.details.events[0]?.detail).toContain("resync: agent gone");
+  });
+
+  test("settleWait and swarm_poll discard events for workers pruned while wait was in flight", async () => {
+    const runId = "pruned-inflight";
+    const agentId = `${runId}-w1`;
+    const NOW = Date.now();
+    const worker: WorkerRecord = {
+      agent: agentId,
+      slug: "in-flight-item",
+      paneId: "w1:pA",
+      tabId: "w1:tA",
+      lifecycle: "active",
+      workingSinceMs: NOW - 120_000,
+    };
+    saveState({ runId, concurrency: 2, nextCounter: 1, workers: [worker] }, dir);
+
+    let resolveWait: ((val: { code: number; stdout: string; stderr: string }) => void) | undefined;
+    let agentListStatus = "working";
+
+    const stub = makeStubPi((argv) => {
+      const [a, b] = argv;
+      if (a === "agent" && b === "list") {
+        return {
+          code: 0,
+          stdout: realAgentListEnvelope({
+            agent: "pi",
+            agent_status: agentListStatus,
+            name: agentId,
+            pane_id: "w1:pA",
+          }),
+          stderr: "",
+        };
+      }
+      if (a === "agent" && b === "wait") {
+        return new Promise((resolve) => {
+          resolveWait = resolve;
+        });
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    });
+
+    registerSwarmTools(stub.pi as unknown as Parameters<typeof registerSwarmTools>[0]);
+    const poll = stub.tools.get("swarm_poll");
+    const spawn = stub.tools.get("swarm_spawn");
+    if (!poll || !spawn) throw new Error("tools not registered");
+
+    // 1. Start poll with a timeout signal that won't fire early.
+    // armWait starts settleWait against worker.
+    const pollPromise = poll.execute(
+      ...(["c1", { runId, timeoutMs: 5000 }, undefined] as unknown as never[]),
+    );
+
+    // Allow settleWait to reach herdr agent wait
+    await new Promise((r) => setTimeout(r, 20));
+
+    // 2. Worker becomes stale in herdr, and swarm_spawn runs (which calls pruneStaleWorkers)
+    agentListStatus = "idle";
+    await spawn.execute(
+      ...(["c2", { runId, items: ["in-flight-item"] }, undefined] as unknown as never[]),
+    );
+
+    const stateAfterSpawn = loadState(runId, dir);
+    expect(stateAfterSpawn?.workers).toHaveLength(0);
+
+    // 3. Now the in-flight wait settles as blocked
+    expect(resolveWait).toBeDefined();
+    resolveWait!({
+      code: 0,
+      stdout: realWaitEnvelope("blocked", agentId, "w1:pA"),
+      stderr: "",
+    });
+
+    // 4. Poll resolves
+    const res = (await pollPromise) as {
+      content: { text: string }[];
+      details: { events: unknown[] };
+    };
+    const text = res.content.map((c) => c.text).join("\n");
+
+    expect(text).not.toContain("undefined");
+    expect(text).not.toContain("is blocked [needs_human]");
+    expect(res.details.events).toEqual([]);
+  });
+
+  test("pruneStaleWorkers purges rt.pendingEvents for stale agents", async () => {
+    const runId = "prune-pending-events";
+    const agentId = `${runId}-w1`;
+    const NOW = Date.now();
+    const worker: WorkerRecord = {
+      agent: agentId,
+      slug: "stale-item",
+      paneId: "w1:pA",
+      tabId: "w1:tA",
+      lifecycle: "active",
+      workingSinceMs: NOW - 120_000,
+    };
+    saveState({ runId, concurrency: 2, nextCounter: 1, workers: [worker] }, dir);
+
+    let agentPresent = true;
+
+    const stub = makeStubPi((argv) => {
+      const [a, b] = argv;
+      if (a === "agent" && b === "list") {
+        return {
+          code: 0,
+          stdout: agentPresent
+            ? realAgentListEnvelope({
+                agent: "pi",
+                agent_status: "working",
+                name: agentId,
+                pane_id: "w1:pA",
+              })
+            : realAgentListEnvelope(),
+          stderr: "",
+        };
+      }
+      if (a === "agent" && b === "wait") {
+        return { code: 0, stdout: realWaitEnvelope("blocked", agentId, "w1:pA"), stderr: "" };
+      }
+      if (a === "agent" && b === "get") {
+        return { code: 0, stdout: realWaitEnvelope("blocked", agentId, "w1:pA"), stderr: "" };
+      }
+      if (a === "agent" && b === "read") {
+        return { code: 0, stdout: "Prompt", stderr: "" };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    });
+
+    registerSwarmTools(stub.pi as unknown as Parameters<typeof registerSwarmTools>[0]);
+    const poll = stub.tools.get("swarm_poll");
+    const spawn = stub.tools.get("swarm_spawn");
+    if (!poll || !spawn) throw new Error("tools not registered");
+
+    // 1. Arm worker and let wait settle.
+    // In swarm_poll, armWait runs and wait settles as blocked.
+    // Then poll processes it and parks worker at awaiting_relay.
+    await poll.execute(...(["c1", { runId, timeoutMs: 1000 }, undefined] as unknown as never[]));
+
+    // Now worker is awaiting_relay.
+    const stateAfterPoll = loadState(runId, dir);
+    expect(stateAfterPoll?.workers[0]?.lifecycle).toBe("awaiting_relay");
+
+    // 2. Worker agent in herdr vanishes completely.
+    agentPresent = false;
+
+    // 3. spawn runs pruneStaleWorkers, which tears down worker
+    await spawn.execute(
+      ...(["c2", { runId, items: ["stale-item"] }, undefined] as unknown as never[]),
+    );
+
+    expect(loadState(runId, dir)?.workers).toHaveLength(0);
+
+    // 4. Next poll sees no active workers and no pending events
+    const nextPoll = (await poll.execute(
+      ...(["c3", { runId, timeoutMs: 1000 }, undefined] as unknown as never[]),
+    )) as { content: { text: string }[]; details: { events: unknown[] } };
+
+    expect(nextPoll.details.events).toEqual([]);
+    expect(nextPoll.content[0].text).toContain("No active workers to poll.");
   });
 });

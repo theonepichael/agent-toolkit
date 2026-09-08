@@ -1466,19 +1466,32 @@ structured-choice tool at all, so plain text is the only option there):
             "names, then the minimal implementation."
         ),
         "STEP10_BODY": """\
-Show the full diff. Stop — ask in plain text for explicit commit approval,
-stating your recommendation first (this repo's `question` extension tool
-is also available for an interactive session; either way, wait for an
-actual reply). No exceptions for being mid-pipeline, and no exception for
-code an external executor wrote (CLAUDE.md).""",
+Show the full diff. Stop — use the `question` tool for explicit commit
+approval, recommended option first (e.g. "Yes, commit (Recommended)" / "No,
+don't commit"), per CLAUDE.md's judgment-call convention. No exceptions for
+being mid-pipeline, and no exception for code an external executor wrote
+(CLAUDE.md). Use `question`, not plain text: its interactive prompt is what
+herdr's pi integration reports as agent state `blocked` — asking in plain
+text instead ends the turn like normal completion does, leaving this gate
+indistinguishable from the agent simply finishing, to anything watching
+over herdr's socket API (`--swarm` mode's relay, in particular).
+
+`herdr-blocked-bridge.ts` is what raises that state, not the question tool
+itself: it listens to pi's own `ui_prompt_start`/`ui_prompt_end` events, so
+every blocking prompt reports `blocked` without each call site having to
+remember to emit anything. The consequence worth knowing: a session started
+with `-ne`/`--no-extensions` has no bridge and no herdr integration, so
+nothing it does will ever report `blocked`.""",
         "STEP11_BODY": """\
 On approval, commit (conventional format) — this gate is never bundled with
 what follows. Personal project (this repo, a personal side project — never
 a `work-`-prefixed item or a work repo): offer the follow-on sequence as one
-bundled question (CLAUDE.md's Git section) — "merge to main, push, and
-clean up the worktree?" — then merge locally, push, `git worktree remove`,
-`git branch -d` on that single approval. Work-related or ambiguous: ask
-separately for merge and for push — never bundle.""",
+bundled question via the `question` tool (CLAUDE.md's Git section) — "merge
+to main, push, and clean up the worktree?" — then merge locally, push,
+`git worktree remove`, `git branch -d` on that single approval. Work-related
+or ambiguous: ask separately for merge and for push via the `question`
+tool — never bundle. Same reason as step 10: `question`, not plain text, so
+this gate registers as `blocked`, not indistinguishable from done.""",
         "STEP12_BODY": """\
 Call the tool with `action: "review", slug: "<resolved slug>"`, then
 `action: "approve", slug: "<resolved slug>"` — never a bare `done` on an
@@ -1506,10 +1519,40 @@ queue.""",
    `grill-me` for a genuinely open design branch, tell it to run that inner
    session as `grill-me --auto` too, rather than stopping for live Q&A.""",
         "AUTO_END_BLOCK": """\
-in one pass, asking in plain text for each queued item exactly as its
-originating CLAUDE.md protocol specifies (a backlog `add`, a `pending add`,
-an `out-of-scope add`), stating a recommendation first and confirming or
-declining each in turn.""",
+subject to the mandatory digest-offer check below:
+
+**Digest-offer check — mandatory, before the run may be reported
+finished.** A digest entry that exists only in this session's context is
+a finding that dies with the session: in a swarm worker, ending the turn
+to "ask in plain text" is indistinguishable from finishing, so the entry
+never reaches the orchestrator's relay and a manual end-of-run audit
+becomes the only backstop (the 2026-09-07 full atk run lost two real
+findings this way and recovered them only by that audit). Which branch
+applies is decided by one environment variable:
+
+- **`PI_SWARM_CAPTURE_FILE` set** — this session is a swarm worker, and
+  the plain-text walk cannot work here. Write every queued digest entry
+  to that file, verbatim as this shape:
+
+  ```json
+  {"offers": [{"kind": "backlog", "id": "<slug>", "summary": "<one line>"}]}
+  ```
+
+  `kind` mirrors the CLAUDE.md protocol each entry would otherwise have
+  been offered under: `backlog` for a backlog `add`, `pending` for a
+  pending-item `add`, `out-of-scope` for a rejected concept; `id` is the
+  slug (or concept slug); `summary` is the one-line offer text. Write the
+  file only when there is at least one entry — an absent file already
+  means "nothing to offer" downstream. Do NOT also ask the entries in
+  plain text: the orchestrator reads this file when the worker settles
+  and owns the single end-of-run ask for the whole run. Before ending,
+  re-check every queued entry against the file — refuse to report the
+  item finished with a queued-but-unwritten entry still pending.
+- **`PI_SWARM_CAPTURE_FILE` unset** (ordinary unattended run) — walk the
+  accumulated digest in one pass, asking in plain text for each queued
+  item exactly as its originating CLAUDE.md protocol specifies (a backlog
+  `add`, a `pending add`, an `out-of-scope add`), stating a recommendation
+  first and confirming or declining each in turn.""",
     },
 }
 
