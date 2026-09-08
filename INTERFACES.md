@@ -49,6 +49,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`harness_discovery_check.py`](#agentscriptsharnessdiscoverycheckpy) | SessionStart hook + CLI: detect when a harness's instruction-file discovery behavior may have drifted from the version-pinned facts in README.md. |
 | [`herdr_delegate.py`](#agentscriptsherdrdelegatepy) | Launch pi agents in herdr tabs to work backlog items. |
 | [`link_drift_check.py`](#agentscriptslinkdriftcheckpy) | SessionStart hook + CLI: flag when a managed symlink on this machine no longer points where links.toml says it should. |
+| [`link_inspect.py`](#agentscriptslinkinspectpy) | link_inspect.py — pure link inspection, path classification, and drift finding for install.py's ``--check-links`` audit. |
 | [`llm_backends.py`](#agentscriptsllmbackendspy) | llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, opencode, pi, copilot). Extracted from second_opinion.py so dev_status.py's recap generation can reuse the same process-lifecycle handling (timeouts, process-group kills, opencode JSON-event parsing) with its own timeout and model choices, without duplicating it. |
 | [`notify.py`](#agentscriptsnotifypy) | Cross-platform agent notification dispatcher. |
 | [`outlook_calendar.py`](#agentscriptsoutlookcalendarpy) | outlook_calendar.py — CLI tool and agent interface for Windows Outlook Calendar via PowerShell COM. |
@@ -768,6 +769,32 @@ SessionStart hook + CLI: flag when a managed symlink on this machine no longer p
 - Subcommand handlers: `cmd_check`
 - Tested by: `agent-scripts/test_link_drift_check.py`
 
+### `agent-scripts/link_inspect.py`
+
+link_inspect.py — pure link inspection, path classification, and drift finding for install.py's ``--check-links`` audit.
+
+- Installed at: `~/.claude/scripts/link_inspect.py` (all harnesses)
+- Entrypoint: not executable, `#!/usr/bin/env python3`
+- CLI: none (library module).
+- Public classes:
+  - `class LinkSpec` — One row of ``links.toml``: a repo file and where it gets linked.
+  - `class ManagedDirSpec` — One row of ``links.toml``: a directory dotfiles owns exclusively.
+- Public functions:
+  - `expand_dest(dest: str, home: Path) -> Path` — Expand a ``links.toml`` destination against ``home``.
+  - `is_symlink(path: Path) -> bool` — Return whether ``path`` is a symlink, catching OSError when unreadable.
+  - `path_exists(path: Path) -> bool` — Return whether ``path`` exists, catching OSError when unreadable.
+  - `link_target(dest: Path) -> Path` — Return what ``dest`` points at, as an absolute path.
+  - `same_path(left: Path, right: Path) -> bool` — Compare two paths that may or may not exist, ignoring symlinked parents.
+  - `implied_repo_root(target: Path, relative_src: str) -> Path | None` — Return the repo root ``target`` implies, if it ends with ``relative_src``.
+  - `is_dotfiles_checkout(root: Path) -> bool` — Return whether ``root`` looks like another checkout of this repo.
+  - `is_main_checkout(root: Path) -> bool` — Return whether ``root`` is the repo's primary checkout, not a worktree.
+  - `check_applicable_links(links: Sequence[tuple[Path, Path, str, bool]], *, dotfiles: Path, format_path: Callable[[Path], str], manifest_entries: Iterable[dict[str, object]] = (), report_uninstalled: bool = False) -> tuple[dict[str, list[str]], dict[Path, int]]` — Report inconsistencies on destinations in scope for this machine.
+  - `find_orphaned_links(links: Sequence[tuple[Path, Path, str, bool]], *, manifest_entries: Iterable[dict[str, object]]) -> list[Path]` — Return manifest-recorded symlink destinations no current entry produces.
+  - `check_orphaned_links(links: Sequence[tuple[Path, Path, str, bool]], findings: dict[str, list[str]], *, format_path: Callable[[Path], str], manifest_entries: Iterable[dict[str, object]]) -> None` — Add manifest-recorded symlinks that links.toml no longer produces.
+  - `live_backup_paths(manifest_entries: Iterable[dict[str, object]]) -> set[Path]` — Return manifest-recorded backups that are still live ``--rollback`` payload.
+  - `check_unmanaged_files(managed_dirs: Sequence[ManagedDirSpec], links: Sequence[tuple[Path, Path, str, bool]], *, home: Path, format_path: Callable[[Path], str], dir_applies: Callable[[ManagedDirSpec], bool], findings: dict[str, list[str]], manifest_entries: Iterable[dict[str, object]] = ()) -> int` — Report foreign entries in directories ``links.toml`` owns exclusively.
+- Tested by: `agent-scripts/test_link_inspect.py`
+
 ### `agent-scripts/llm_backends.py`
 
 llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, opencode, pi, copilot). Extracted from second_opinion.py so dev_status.py's recap generation can reuse the same process-lifecycle handling (timeouts, process-group kills, opencode JSON-event parsing) with its own timeout and model choices, without duplicating it.
@@ -1415,8 +1442,6 @@ install.py — dotfiles + AI-harness provisioner for macOS and Linux/WSL.
   - `class Options` — Validated command-line options for one invocation.
   - `class Context` — Everything a step needs: paths, options, history, and the skip tally.
   - `class CommandResult` — Outcome of one external command: whether it succeeded, and its stdout.
-  - `class LinkSpec` — One row of ``links.toml``: a repo file and where it gets linked.
-  - `class ManagedDirSpec` — One row of ``links.toml``: a directory dotfiles owns exclusively.
   - `class ManagedService` — One systemd --user service this installer enables/disables/tracks.
 - Public functions:
   - `color_enabled(stream: object) -> bool` — Return whether ANSI codes should be emitted to ``stream``.
@@ -1431,7 +1456,6 @@ install.py — dotfiles + AI-harness provisioner for macOS and Linux/WSL.
   - `load_links(path: Path) -> list[LinkSpec]` — Parse ``links.toml`` into an ordered list of link specs.
   - `load_managed_dirs(path: Path) -> list[ManagedDirSpec]` — Parse the ``[[managed_dir]]`` rows declaring directories we own exclusively.
   - `link_applies(spec: LinkSpec, ctx: Context) -> bool` — Return whether ``spec`` should be linked for this run's machine/options.
-  - `expand_dest(dest: str, home: Path) -> Path` — Expand a ``links.toml`` destination against ``home``.
   - `iter_concrete_links(spec: LinkSpec, ctx: Context) -> Iterator[tuple[Path, Path, str]]` — Expand one ``links.toml`` row into concrete ``(src, dest, relative_src)`` triples.
   - `gather_links(ctx: Context, specs: Sequence[LinkSpec]) -> list[tuple[Path, Path, str, bool]]` — Expand every ``links.toml`` row into concrete triples, once per run.
   - `symlink(ctx: Context, src: Path, dest: Path) -> bool` — Link ``dest`` → ``src``, backing up whatever non-symlink is in the way.
