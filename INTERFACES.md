@@ -43,7 +43,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`gen_skills.py`](#agentscriptsgenskillspy) | gen_skills.py — regenerate the dashboard/recap/grill-me/backlog-item/ make-skill/spec/standup/to-tickets/swarm skill copies from one template per skill, plus a shared per-harness capability table. dashboard/recap/ grill-me/backlog-item/make-skill cover all 5 harnesses (claude, copilot, opencode, agy, pi); spec/standup/to-tickets cover only claude/opencode/pi; swarm covers only claude/copilot (user-directed; pi already owns the orchestration surface) — see `SKILL_HARNESSES` below and AGENTS.md's "Harness maintenance tiers" section for why copilot/agy stop getting new generated skills. |
 | [`gen_skills_params.py`](#agentscriptsgenskillsparamspy) | gen_skills_params.py — per-(skill, harness) content tables for gen_skills.py. |
 | [`grill.py`](#agentscriptsgrillpy) | grill.py — grill-me session state CLI. All session mutations go through here. |
-| [`guard_rails.py`](#agentscriptsguardrailspy) | Pre-tool guard shared by every harness: refuse a write into a repository's main checkout while a backlog item for that repository is in progress, warn when the current worktree's base has fallen behind ``origin/main``, and (Bash, Claude Code only) deny the git-native ways to defeat the no-commit-on-main git hook (``githooks/pre-commit`` / ``githooks-global/pre-commit``). |
+| [`guard_rails.py`](#agentscriptsguardrailspy) | Pre-tool guard shared by every harness: refuse a write into a repository's main checkout while a backlog item for that repository is in progress, warn when the current worktree's base has fallen behind ``origin/main``, (Bash, Claude Code only) deny the git-native ways to defeat the no-commit-on-main git hook (``githooks/pre-commit`` / ``githooks-global/pre-commit``), and require an active backlog-item claim before a write that points at an in-progress item. |
 | [`harness_discovery_check.py`](#agentscriptsharnessdiscoverycheckpy) | SessionStart hook + CLI: detect when a harness's instruction-file discovery behavior may have drifted from the version-pinned facts in README.md. |
 | [`herdr_delegate.py`](#agentscriptsherdrdelegatepy) | Launch pi agents in herdr tabs to work backlog items. |
 | [`link_drift_check.py`](#agentscriptslinkdriftcheckpy) | SessionStart hook + CLI: flag when a managed symlink on this machine no longer points where links.toml says it should. |
@@ -561,7 +561,7 @@ grill.py — grill-me session state CLI. All session mutations go through here.
 
 ### `agent-scripts/guard_rails.py`
 
-Pre-tool guard shared by every harness: refuse a write into a repository's main checkout while a backlog item for that repository is in progress, warn when the current worktree's base has fallen behind ``origin/main``, and (Bash, Claude Code only) deny the git-native ways to defeat the no-commit-on-main git hook (``githooks/pre-commit`` / ``githooks-global/pre-commit``).
+Pre-tool guard shared by every harness: refuse a write into a repository's main checkout while a backlog item for that repository is in progress, warn when the current worktree's base has fallen behind ``origin/main``, (Bash, Claude Code only) deny the git-native ways to defeat the no-commit-on-main git hook (``githooks/pre-commit`` / ``githooks-global/pre-commit``), and require an active backlog-item claim before a write that points at an in-progress item.
 
 - Installed at: `~/.claude/scripts/guard_rails.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
@@ -576,7 +576,7 @@ Pre-tool guard shared by every harness: refuse a write into a repository's main 
 - Environment: `GUARD_RAILS_OFF`, `GUARD_RAILS_STORE`
 - Filesystem constants:
   - `DEFAULT_BACKLOG_ITEMS = Path.home() / '.claude' / 'data' / 'backlog' / 'items.json'`
-- Depends on: `cli_common.py`
+- Depends on: `cli_common.py`, `dev_status_impl.py`
 - Public classes:
   - `class Request` — A normalized tool call: what family, from where, against which path (write-family) or command (bash-family).
   - `class Verdict`
@@ -589,11 +589,11 @@ Pre-tool guard shared by every harness: refuse a write into a repository's main 
   - `backlog_items_path() -> Path` — Where the backlog store lives.
   - `load_in_progress() -> list[dict] | None` — In-progress backlog items, or None when the store cannot be read.
   - `evaluate_bash_override(command: str, cwd: str) -> Verdict` — Deny the git-native ways to defeat the no-commit-on-main git hook, on a protected branch only -- see the module docstring.
-  - `evaluate(req: Request) -> Verdict` — Apply R2 then R3 to write-family calls, and the bash-family override check to Bash calls.
+  - `evaluate(req: Request) -> Verdict` — Apply R2 then R3 to write-family calls, and R4's claim check to any checkout they land in, plus the bash-family override check to Bash calls.
   - `parse_payload(harness: str, payload: object) -> Request | None` — Normalize a harness's native hook payload.
   - `render(harness: str | None, verdict: Verdict) -> tuple[str, int]` — Shape a verdict into the harness's own reply.
   - `build_parser() -> argparse.ArgumentParser`
-- Tested by: `agent-scripts/test_guard_rails.py`, `test/test_guard_rails_topology.py`
+- Tested by: `agent-scripts/test_guard_rails.py`, `test/test_guard_rails_claim.py`, `test/test_guard_rails_topology.py`
 
 ### `agent-scripts/harness_discovery_check.py`
 

@@ -175,7 +175,10 @@ class FailurePostureTests(unittest.TestCase):
         self.assertEqual(verdict.decision, "allow")
         load.assert_not_called()
 
-    def test_worktree_short_circuits_before_the_backlog_read(self) -> None:
+    def test_worktree_pointing_nowhere_skips_the_session_walk(self) -> None:
+        """R4's fast path: a worktree whose write points at no in-progress
+        item may read the (cheap JSON) backlog, but must never walk /proc or
+        import dev_status_impl."""
         info = guard_rails.RepoInfo(
             toplevel="/wt",
             common_dir="/repo/.git",
@@ -184,39 +187,55 @@ class FailurePostureTests(unittest.TestCase):
             branch="feature",
         )
         with mock.patch.object(guard_rails, "repo_info", return_value=info):
-            with mock.patch.object(guard_rails, "load_in_progress") as load:
-                # A worktree still gets the R3 base check; stub it so this
-                # test stays about the backlog short-circuit.
+            with mock.patch.object(guard_rails, "load_in_progress", return_value=[]):
                 with mock.patch.object(
                     guard_rails, "_behind_origin_main", return_value=False
                 ):
-                    verdict = guard_rails.evaluate(
-                        guard_rails.Request("write", "/wt", "/wt/a.py")
-                    )
+                    with mock.patch.object(guard_rails, "_session_identity") as session:
+                        verdict = guard_rails.evaluate(
+                            guard_rails.Request("write", "/wt", "/wt/a.py")
+                        )
         self.assertEqual(verdict.decision, "allow")
-        load.assert_not_called()
+        session.assert_not_called()
 
-    def test_worktree_behind_origin_main_warns_without_reading_the_backlog(
+    def test_worktree_behind_origin_main_warns_after_the_claim_check(
         self,
     ) -> None:
+        """R3's warn still fires, but only after R4 has had its say -- a
+        denied claim beats a stale-base warning."""
         info = guard_rails.RepoInfo(
             toplevel="/wt",
             common_dir="/repo/.git",
             is_worktree=True,
             is_bare=False,
-            branch="feature",
+            branch="demo-slug",
         )
         with mock.patch.object(guard_rails, "repo_info", return_value=info):
-            with mock.patch.object(guard_rails, "load_in_progress") as load:
+            with mock.patch.object(
+                guard_rails,
+                "load_in_progress",
+                return_value=[
+                    {
+                        "id": "demo-slug",
+                        "status": "in-progress",
+                        "related_files": [],
+                        "claimed_by": None,
+                    }
+                ],
+            ):
                 with mock.patch.object(
                     guard_rails, "_behind_origin_main", return_value=True
                 ):
-                    verdict = guard_rails.evaluate(
-                        guard_rails.Request("write", "/wt", "/wt/a.py")
-                    )
-        self.assertEqual(verdict.decision, "warn")
-        self.assertIn("origin/main", verdict.reason)
-        load.assert_not_called()
+                    with mock.patch.object(
+                        guard_rails,
+                        "_session_identity",
+                        return_value=("machine", 1, [1]),
+                    ):
+                        verdict = guard_rails.evaluate(
+                            guard_rails.Request("write", "/wt", "/wt/a.py")
+                        )
+        self.assertEqual(verdict.decision, "deny")
+        self.assertIn("demo-slug", verdict.reason)
 
     def test_bare_repo_allows(self) -> None:
         info = guard_rails.RepoInfo(
@@ -243,12 +262,13 @@ class FailurePostureTests(unittest.TestCase):
             branch="feature",
         )
         with mock.patch.object(guard_rails, "repo_info", return_value=info):
-            with mock.patch.object(guard_rails, "load_in_progress") as load:
-                verdict = guard_rails.evaluate(
-                    guard_rails.Request("write", "/repo", "/repo/a.py")
-                )
+            with mock.patch.object(guard_rails, "load_in_progress", return_value=[]):
+                with mock.patch.object(guard_rails, "_session_identity") as session:
+                    verdict = guard_rails.evaluate(
+                        guard_rails.Request("write", "/repo", "/repo/a.py")
+                    )
         self.assertEqual(verdict.decision, "allow")
-        load.assert_not_called()
+        session.assert_not_called()
 
     def test_unreadable_backlog_store_allows(self) -> None:
         info = guard_rails.RepoInfo(
