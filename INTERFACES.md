@@ -706,6 +706,7 @@ llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, open
 - Installed at: `~/.claude/scripts/llm_backends.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI: none (library module).
+- Depends on: `cli_common.py`
 - Exceptions:
   - `class IsolationError(RuntimeError)` — A backend cannot be invoked because it does not meet the contract.
   - `class BackendError(Exception)` — A backend was invoked but failed (timeout or nonzero exit).
