@@ -21,9 +21,18 @@ one session and leaves no state behind to forget to undo.
 
 What it reports
 ---------------
-Whatever ``--check-links`` reports, condensed to one line per bucket plus a
-pointer at the full audit. Silent and exit 0 when the machine is clean, so
-it costs a session nothing to have running.
+The same audit ``--check-links`` runs, condensed to one line per bucket plus
+a pointer at the full audit. The audit computation is shared with install.py
+through ``link_inspect.audit_links`` -- this hook shells out to nothing and
+parses no audit stdout, so the two can never disagree about what counts as
+drift. Silent and exit 0 when the machine is clean, so it costs a session
+nothing to have running. Also silent when the audit cannot run at all
+(links.toml missing or malformed): a broken checker must not itself become
+a session-start warning about the checker rather than the machine.
+
+A fingerprint cache memoizes the findings keyed on the exact state of
+links.toml, this file, install.py, link_inspect.py, the history manifest,
+and all managed symlink targets, reducing a repeat run to a cache read.
 
 Usage:
     link_drift_check.py check   print a line per drifted bucket (default)
@@ -38,23 +47,33 @@ import contextlib
 import hashlib
 import json
 import os
-import subprocess
-import sys
 import tempfile
-import tomllib
-from collections.abc import Callable
 from pathlib import Path
 
 import cli_common
+import link_inspect
 
 REPO = Path(__file__).resolve().parents[1]
-AUDIT_TIMEOUT_SECONDS = 15
 
-# Audit cache configuration. Memoizing the audit result keyed on the
-# exact state of links.toml, install.py, and all managed symlink targets
-# reduces runtime from ~130ms down to ~3ms on subsequent invocations.
+# Audit cache configuration. Memoizing the audit result keyed on the exact
+# state of links.toml, this file, install.py, link_inspect.py, the history
+# manifest, and all managed symlink targets keeps a repeat invocation from
+# re-walking every destination.
 _CACHE_REPO_DIRNAME: str = "agent-toolkit"
 _CACHE_FILENAME: str = "link-drift-check-cache.json"
+# Bumped whenever the payload shape changes; an entry without a matching
+# marker is a miss, never misread across schema edits.
+_CACHE_SCHEMA: int = 2
+
+# Repo-side files whose content the findings depend on. links.toml holds the
+# rows themselves; the other three are the code that interprets them (the
+# hook's own assembly included) -- an edit to any invalidates the cache.
+_FINGERPRINT_FILES: tuple[str, ...] = (
+    "links.toml",
+    "install.py",
+    "agent-scripts/link_inspect.py",
+    "agent-scripts/link_drift_check.py",
+)
 
 
 def _cache_path() -> Path:
@@ -93,135 +112,198 @@ def _write_cache(path: Path, entries: dict[str, object]) -> None:
         pass
 
 
-def _fingerprint_links(repo: Path = REPO) -> str | None:
-    """Compute a cryptographic hash representing the state of links.toml,
-    install.py, and the live managed symlink destinations.
+def _file_records(repo: Path, rel: str, records: list[object]) -> bool:
+    """Append ``rel``'s (path, mtime, size) to ``records``; False on OSError.
 
-    Returns None if links.toml or install.py cannot be read or parsed.
+    A repo-side file the fingerprint depends on must exist for the cache to
+    be trustworthy: a missing interpreter of the audit is a changed world,
+    and returning False makes the fingerprint None (uncached runs).
     """
-    links_toml = repo / "links.toml"
-    installer = repo / "install.py"
+    path = repo / rel
     try:
-        toml_st = links_toml.stat()
-        inst_st = installer.stat()
-        data = tomllib.loads(links_toml.read_text("utf-8"))
-    except (OSError, tomllib.TOMLDecodeError):
-        return None
+        st = path.stat()
+    except OSError:
+        return False
+    records.extend([rel, st.st_mtime_ns, st.st_size])
+    return True
 
-    links = data.get("link", [])
-    records: list[object] = [
-        str(links_toml),
-        toml_st.st_mtime_ns,
-        toml_st.st_size,
-        str(installer),
-        inst_st.st_mtime_ns,
-        inst_st.st_size,
-    ]
-    for entry in links:
-        dest_raw = entry.get("dest")
-        if not dest_raw or not isinstance(dest_raw, str):
-            continue
-        p = Path(os.path.expanduser(dest_raw))
+
+def _fingerprint(
+    specs: list[link_inspect.LinkSpec],
+    repo: Path,
+    home: Path,
+    manifest: Path,
+) -> str | None:
+    """Compute a cryptographic hash representing the state everything the
+    audit's findings depend on: the repo-side files in _FINGERPRINT_FILES,
+    the history manifest, each ``dir=true`` row's source root, and the live
+    managed symlink destinations.
+
+    Returns None if any fingerprinted repo file cannot be stat'd. Per-link
+    problems are not fatal: an unreadable destination is recorded as a
+    marker in the hash (and is exactly the drift this hook exists to
+    report), while a vanished manifest is recorded as "missing" -- a fresh
+    machine, not a broken one.
+    """
+    records: list[object] = []
+    for rel in _FINGERPRINT_FILES:
+        if not _file_records(repo, rel, records):
+            return None
+    try:
+        st = manifest.stat()
+        records.extend([str(manifest), st.st_mtime_ns, st.st_size])
+    except OSError:
+        records.append([str(manifest), "missing"])
+    for spec in specs:
+        if spec.dir:
+            root = repo / spec.src
+            try:
+                st = root.stat()
+            except OSError:
+                records.append([spec.src, "dir-missing"])
+            else:
+                records.extend([[spec.src, "d"], st.st_mtime_ns, st.st_size])
+        dest = link_inspect.expand_dest(spec.dest, home)
         try:
-            target = os.readlink(p)
-            records.append((dest_raw, "l", target))
+            target = os.readlink(dest)
+            records.append([str(dest), "l", target])
         except OSError:
             try:
-                st = p.lstat()
-                records.append((dest_raw, "f", st.st_mtime_ns, st.st_size))
+                st = dest.lstat()
+                records.append([str(dest), "f", st.st_mtime_ns, st.st_size])
             except OSError:
-                records.append((dest_raw, "m"))
-
+                records.append([str(dest), "m"])
     return hashlib.sha256(json.dumps(records, sort_keys=True).encode()).hexdigest()
 
 
-def _audit(
-    run_command: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
-) -> subprocess.CompletedProcess[str] | None:
-    """Run install.py's read-only link audit, or None if it cannot run."""
-    installer = REPO / "install.py"
-    if not installer.is_file():
-        return None
-    try:
-        return run_command(
-            [sys.executable, str(installer), "--check-links"],
-            capture_output=True,
-            text=True,
-            timeout=AUDIT_TIMEOUT_SECONDS,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
+def _machine_facts() -> tuple[bool, bool, bool]:
+    """Detect this machine's platform booleans: (is_mac, is_linux, is_wsl)."""
+    system = os.uname().sysname if hasattr(os, "uname") else ""
+    return (system == "Darwin", system == "Linux", link_inspect.detect_wsl(system))
 
 
-def _drift_lines(stdout: str) -> list[str]:
-    """Pull the audit's bucket headers ("wrong-target (2):") out of its report.
+def _summary(buckets: dict[str, list[str]]) -> str:
+    """Render the bucket summary exactly as the audit's stdout would show it.
 
-    Parsing the headers rather than reimplementing the audit keeps links.toml
-    the single source of truth: a bucket added to install.py shows up here
-    with no change, and the two can never disagree about what counts as drift.
+    Buckets in CHECK_BUCKETS order as ``name (count)``, ``; ``-joined; the
+    pointer at the full audit stands in when nothing parseable was found.
     """
-    lines = []
-    for raw in stdout.splitlines():
-        stripped = raw.strip()
-        if stripped.endswith(":") and "(" in stripped and stripped[0].isalpha():
-            lines.append(stripped.rstrip(":"))
-    return lines
+    named = [
+        f"{bucket} ({len(buckets[bucket])})"
+        for bucket in link_inspect.CHECK_BUCKETS
+        if buckets.get(bucket)
+    ]
+    return "; ".join(named) if named else "see the full audit"
+
+
+def _report(findings: dict[str, list[str]], quiet: bool, repo: Path) -> None:
+    summary = _summary(findings)
+    cli_common.qprint(
+        f"links: {summary} — run `python3 {repo}/install.py --check-links`",
+        quiet=quiet,
+    )
+
+
+def _audit(
+    specs: list[link_inspect.LinkSpec],
+    managed_dirs: list[link_inspect.ManagedDirSpec],
+    repo: Path,
+    home: Path,
+    machine: tuple[bool, bool, bool],
+) -> dict[str, list[str]] | None:
+    """Run the shared audit in-process, or None if it cannot run.
+
+    Data-shaped failures (malformed links.toml — ValueError/TypeError, the
+    same classification install.py's --check-links entrypoint catches) and
+    environmental ones (OSError) both map to None: the hook never reports
+    problems with itself. Unexpected internal errors are deliberately not
+    caught — in a dev repo a bug must be visible.
+    """
+    is_mac, is_linux, is_wsl = machine
+    try:
+        findings, _foreign, _dirs = link_inspect.audit_links(
+            dotfiles=repo,
+            home=home,
+            harnesses=link_inspect.VALID_HARNESSES,
+            is_mac=is_mac,
+            is_linux=is_linux,
+            is_wsl=is_wsl,
+            profile=link_inspect.DEFAULT_PROFILE,
+            manifest_file=link_inspect.manifest_path(home),
+            format_path=lambda path: link_inspect.format_path(path, home),
+            report_uninstalled=False,
+            specs=specs,
+            managed_dirs=managed_dirs,
+        )
+    except (OSError, ValueError, TypeError):
+        return None
+    return findings
 
 
 def cmd_check(
     quiet: bool = False,
-    run_command: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    *,
+    dotfiles: Path | None = None,
+    home: Path | None = None,
+    machine: tuple[bool, bool, bool] | None = None,
 ) -> None:
-    cache_path = _cache_path()
-    cache = _read_cache(cache_path)
-    fp = _fingerprint_links()
+    """Print one summary line per run of drifted buckets, or nothing.
 
-    cached_entry = cache.get("audit") if isinstance(cache, dict) else None
-    if (
-        fp is not None
-        and isinstance(cached_entry, dict)
-        and cached_entry.get("fingerprint") == fp
-    ):
-        returncode = cached_entry.get("returncode")
-        stdout = cached_entry.get("stdout")
-        if isinstance(returncode, int) and isinstance(stdout, str):
-            if returncode == 0:
-                return
-            buckets = _drift_lines(stdout)
-            summary = "; ".join(buckets) if buckets else "see the full audit"
-            cli_common.qprint(
-                f"links: {summary} — run `python3 {REPO}/install.py --check-links`",
-                quiet=quiet,
-            )
-            return
+    ``dotfiles``/``home``/``machine`` are injectable so tests can point the
+    hook at fixture state instead of this machine; production leaves them
+    all defaulted.
+    """
+    repo = dotfiles or REPO
+    home = home or Path.home()
 
-    result = _audit(run_command)
-    # No installer, an unreadable one, or a crashed audit is not this hook's
-    # problem to report -- staying silent beats a session-start warning about
-    # the checker rather than the machine.
-    if result is None:
+    try:
+        specs = link_inspect.load_links(repo / "links.toml")
+        managed_dirs = link_inspect.load_managed_dirs(repo / "links.toml")
+    except (OSError, ValueError, TypeError):
         return
 
+    cache_path = _cache_path()
+    cache = _read_cache(cache_path)
+    cached_entry = cache.get("audit") if isinstance(cache, dict) else None
+    fp: str | None = None
+    if isinstance(cached_entry, dict) and cache.get("schema") == _CACHE_SCHEMA:
+        fp = _fingerprint(specs, repo, home, link_inspect.manifest_path(home))
+        if (
+            fp is not None
+            and cached_entry.get("fingerprint") == fp
+            and isinstance(cached_entry.get("buckets"), dict)
+            and isinstance(cached_entry.get("exit"), int)
+        ):
+            if cached_entry["exit"] == 0:
+                return
+            _report(cached_entry["buckets"], quiet, repo)  # type: ignore[arg-type]
+            return
+
+    findings = _audit(specs, managed_dirs, repo, home, machine or _machine_facts())
+    if findings is None:
+        return
+
+    exit_code = (
+        1 if any(findings[bucket] for bucket in link_inspect.CHECK_BUCKETS) else 0
+    )
+    if fp is None:
+        fp = _fingerprint(specs, repo, home, link_inspect.manifest_path(home))
     if fp is not None:
         _write_cache(
             cache_path,
             {
+                "schema": _CACHE_SCHEMA,
                 "audit": {
                     "fingerprint": fp,
-                    "returncode": result.returncode,
-                    "stdout": result.stdout,
-                }
+                    "buckets": findings,
+                    "exit": exit_code,
+                },
             },
         )
 
-    if result.returncode == 0:
+    if exit_code == 0:
         return
-    buckets = _drift_lines(result.stdout)
-    summary = "; ".join(buckets) if buckets else "see the full audit"
-    cli_common.qprint(
-        f"links: {summary} — run `python3 {REPO}/install.py --check-links`",
-        quiet=quiet,
-    )
+    _report(findings, quiet, repo)
 
 
 def build_parser() -> argparse.ArgumentParser:

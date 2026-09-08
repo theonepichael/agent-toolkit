@@ -49,7 +49,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`harness_discovery_check.py`](#agentscriptsharnessdiscoverycheckpy) | SessionStart hook + CLI: detect when a harness's instruction-file discovery behavior may have drifted from the version-pinned facts in README.md. |
 | [`herdr_delegate.py`](#agentscriptsherdrdelegatepy) | Launch pi agents in herdr tabs to work backlog items. |
 | [`link_drift_check.py`](#agentscriptslinkdriftcheckpy) | SessionStart hook + CLI: flag when a managed symlink on this machine no longer points where links.toml says it should. |
-| [`link_inspect.py`](#agentscriptslinkinspectpy) | link_inspect.py — pure link inspection, path classification, and drift finding for install.py's ``--check-links`` audit. |
+| [`link_inspect.py`](#agentscriptslinkinspectpy) | link_inspect.py — link inspection, path classification, drift finding, and the self-contained audit assembly for install.py's ``--check-links`` audit and link_drift_check.py's SessionStart hook. |
 | [`llm_backends.py`](#agentscriptsllmbackendspy) | llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, opencode, pi, copilot). Extracted from second_opinion.py so dev_status.py's recap generation can reuse the same process-lifecycle handling (timeouts, process-group kills, opencode JSON-event parsing) with its own timeout and model choices, without duplicating it. |
 | [`notify.py`](#agentscriptsnotifypy) | Cross-platform agent notification dispatcher. |
 | [`outlook_calendar.py`](#agentscriptsoutlookcalendarpy) | outlook_calendar.py — CLI tool and agent interface for Windows Outlook Calendar via PowerShell COM. |
@@ -763,7 +763,7 @@ SessionStart hook + CLI: flag when a managed symlink on this machine no longer p
 - Environment: `XDG_CACHE_HOME`
 - Filesystem constants:
   - `REPO = Path(__file__).resolve().parents[1]`
-- Depends on: `cli_common.py`
+- Depends on: `cli_common.py`, `link_inspect.py`
 - Public functions:
   - `build_parser() -> argparse.ArgumentParser`
 - Subcommand handlers: `cmd_check`
@@ -771,11 +771,12 @@ SessionStart hook + CLI: flag when a managed symlink on this machine no longer p
 
 ### `agent-scripts/link_inspect.py`
 
-link_inspect.py — pure link inspection, path classification, and drift finding for install.py's ``--check-links`` audit.
+link_inspect.py — link inspection, path classification, drift finding, and the self-contained audit assembly for install.py's ``--check-links`` audit and link_drift_check.py's SessionStart hook.
 
 - Installed at: `~/.claude/scripts/link_inspect.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI: none (library module).
+- Environment: `WSL_DISTRO_NAME`
 - Public classes:
   - `class LinkSpec` — One row of ``links.toml``: a repo file and where it gets linked.
   - `class ManagedDirSpec` — One row of ``links.toml``: a directory dotfiles owns exclusively.
@@ -788,12 +789,23 @@ link_inspect.py — pure link inspection, path classification, and drift finding
   - `implied_repo_root(target: Path, relative_src: str) -> Path | None` — Return the repo root ``target`` implies, if it ends with ``relative_src``.
   - `is_dotfiles_checkout(root: Path) -> bool` — Return whether ``root`` looks like another checkout of this repo.
   - `is_main_checkout(root: Path) -> bool` — Return whether ``root`` is the repo's primary checkout, not a worktree.
+  - `load_links(path: Path) -> list[LinkSpec]` — Parse ``links.toml`` into an ordered list of link specs.
+  - `load_managed_dirs(path: Path) -> list[ManagedDirSpec]` — Parse the ``[[managed_dir]]`` rows declaring directories we own exclusively.
+  - `detect_wsl(system: str) -> bool` — Return whether this is a WSL kernel (as opposed to native Linux).
+  - `manifest_path(home: Path) -> Path` — Return the history-manifest path installs write under ``home``.
+  - `read_manifest_entries(path: Path) -> list[dict[str, object]]` — Read every recorded entry from a history manifest, oldest first.
+  - `format_path(path: Path, home: Path) -> str` — Render ``path`` with the home directory shortened back to ``~``.
+  - `link_applies(spec: LinkSpec, *, harnesses: Iterable[str], is_mac: bool, is_linux: bool, is_wsl: bool, profile: str) -> bool` — Return whether ``spec`` should be linked for this machine/options.
+  - `iter_concrete_links(spec: LinkSpec, *, dotfiles: Path, home: Path) -> Iterator[tuple[Path, Path, str]]` — Expand one ``links.toml`` row into concrete ``(src, dest, relative_src)`` triples.
+  - `dir_applies(dir_spec: ManagedDirSpec, specs: Sequence[LinkSpec], *, dotfiles: Path, home: Path, harnesses: Iterable[str], is_mac: bool, is_linux: bool, is_wsl: bool, profile: str) -> bool` — Return whether a declared directory is in scope for this run.
+  - `gather_links(specs: Sequence[LinkSpec], *, dotfiles: Path, home: Path, harnesses: Iterable[str], is_mac: bool, is_linux: bool, is_wsl: bool, profile: str) -> list[tuple[Path, Path, str, bool]]` — Expand every ``links.toml`` row into concrete triples, once per run.
+  - `audit_links(*, dotfiles: Path, home: Path, harnesses: Iterable[str], is_mac: bool, is_linux: bool, is_wsl: bool, profile: str, manifest_file: Path, format_path: Callable[[Path], str], report_uninstalled: bool = False, specs: Sequence[LinkSpec] | None = None, managed_dirs: Sequence[ManagedDirSpec] | None = None) -> tuple[dict[str, list[str]], dict[Path, int], int]` — Run the full read-only link audit and return its findings as plain data.
   - `check_applicable_links(links: Sequence[tuple[Path, Path, str, bool]], *, dotfiles: Path, format_path: Callable[[Path], str], manifest_entries: Iterable[dict[str, object]] = (), report_uninstalled: bool = False) -> tuple[dict[str, list[str]], dict[Path, int]]` — Report inconsistencies on destinations in scope for this machine.
   - `find_orphaned_links(links: Sequence[tuple[Path, Path, str, bool]], *, manifest_entries: Iterable[dict[str, object]]) -> list[Path]` — Return manifest-recorded symlink destinations no current entry produces.
   - `check_orphaned_links(links: Sequence[tuple[Path, Path, str, bool]], findings: dict[str, list[str]], *, format_path: Callable[[Path], str], manifest_entries: Iterable[dict[str, object]]) -> None` — Add manifest-recorded symlinks that links.toml no longer produces.
   - `live_backup_paths(manifest_entries: Iterable[dict[str, object]]) -> set[Path]` — Return manifest-recorded backups that are still live ``--rollback`` payload.
   - `check_unmanaged_files(managed_dirs: Sequence[ManagedDirSpec], links: Sequence[tuple[Path, Path, str, bool]], *, home: Path, format_path: Callable[[Path], str], dir_applies: Callable[[ManagedDirSpec], bool], findings: dict[str, list[str]], manifest_entries: Iterable[dict[str, object]] = ()) -> int` — Report foreign entries in directories ``links.toml`` owns exclusively.
-- Tested by: `agent-scripts/test_link_inspect.py`
+- Tested by: `agent-scripts/test_link_drift_check.py`, `agent-scripts/test_link_inspect.py`
 
 ### `agent-scripts/llm_backends.py`
 
@@ -1416,7 +1428,7 @@ install.py — dotfiles + AI-harness provisioner for macOS and Linux/WSL.
 - CLI (`argparse`): no `description=` set
   - `--quiet/-q`
   - `--verbose/-v`
-  - `--profile` (default: personal)
+  - `--profile`
   - `--harness`
   - `--rollback`
   - `--wipe`
@@ -1431,7 +1443,7 @@ install.py — dotfiles + AI-harness provisioner for macOS and Linux/WSL.
   - `--check-links`
   - `--report-uninstalled`
   - `-h/--help`
-- Environment: `AGENT_TOOLKIT_INSTALL_WRAPPER`, `LOGNAME`, `NO_COLOR`, `PATH`, `TERM`, `USER`, `WSL_DISTRO_NAME`
+- Environment: `AGENT_TOOLKIT_INSTALL_WRAPPER`, `LOGNAME`, `NO_COLOR`, `PATH`, `TERM`, `USER`
 - Filesystem constants:
   - `GLOBAL_GIT_HOOKS_PATH_KEY = 'core.hooksPath'`
 - Explicit exit codes: `0`, `2`
@@ -1445,7 +1457,6 @@ install.py — dotfiles + AI-harness provisioner for macOS and Linux/WSL.
   - `class ManagedService` — One systemd --user service this installer enables/disables/tracks.
 - Public functions:
   - `color_enabled(stream: object) -> bool` — Return whether ANSI codes should be emitted to ``stream``.
-  - `detect_wsl(system: str) -> bool` — Return whether this is a WSL kernel (as opposed to native Linux).
   - `build_context(opts: Options, dotfiles: Path | None = None) -> Context` — Assemble a :class:`Context` for a real run on this machine.
   - `check_harness_binaries(ctx: Context) -> list[str]` — Return error strings for requested harnesses whose binaries are not on PATH.
   - `parse_args(argv: Sequence[str]) -> Options` — Parse and validate the command line.
@@ -1453,8 +1464,6 @@ install.py — dotfiles + AI-harness provisioner for macOS and Linux/WSL.
   - `have(executable: str) -> bool` — Return whether ``executable`` is on PATH.
   - `install_mac_packages(ctx: Context) -> None` — Bootstrap Homebrew if needed, then install the formulae and casks.
   - `install_linux_packages(ctx: Context) -> None` — Install everything the Linux/WSL branch owns: distro packages and extras.
-  - `load_links(path: Path) -> list[LinkSpec]` — Parse ``links.toml`` into an ordered list of link specs.
-  - `load_managed_dirs(path: Path) -> list[ManagedDirSpec]` — Parse the ``[[managed_dir]]`` rows declaring directories we own exclusively.
   - `link_applies(spec: LinkSpec, ctx: Context) -> bool` — Return whether ``spec`` should be linked for this run's machine/options.
   - `iter_concrete_links(spec: LinkSpec, ctx: Context) -> Iterator[tuple[Path, Path, str]]` — Expand one ``links.toml`` row into concrete ``(src, dest, relative_src)`` triples.
   - `gather_links(ctx: Context, specs: Sequence[LinkSpec]) -> list[tuple[Path, Path, str, bool]]` — Expand every ``links.toml`` row into concrete triples, once per run.
