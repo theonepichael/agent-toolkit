@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """Generate a zsh `#compdef` completion file for a harness CLI.
 
-Supports all five harness CLIs in this repo — `claude`, `copilot`, `agy`,
-`opencode`, `pi` — via a small per-harness adapter registry rather than a
-single auto-detecting parser: each harness's `--help` output has a
+Supports all six harness CLIs in this repo — `claude`, `copilot`, `agy`,
+`opencode`, `pi`, `codex` — via a small per-harness adapter registry rather
+than a single auto-detecting parser: each harness's `--help` output has a
 genuinely different shape (Commander.js for claude/copilot, Go's `flag`
 package for agy, yargs for opencode, which ships its own native completion
 generator; Pi has no native completion command, but its `--help` shape is
 close enough to Commander's to reuse that adapter with one accommodation —
-see the `pi` entry in `HARNESSES` and `parse_commands`'s `strip_cli`).
+see the `pi` entry in `HARNESSES` and `parse_commands`'s `strip_cli`;
+codex (clap) also ships a native generator, invoked as
+`codex completion zsh`).
 
 Usage:
     python3 ~/.claude/scripts/gen_shell_completion.py --harness agy
@@ -75,6 +77,11 @@ HARNESSES: dict[str, HarnessSpec] = {
     # straight with the subcommand name — parse_commands's strip_cli param
     # exists specifically to strip that repeated token for this harness.
     "pi": HarnessSpec(cli="pi", format="commander"),
+    # Codex (clap) ships a native zsh generator that takes the shell as an
+    # argument: `codex completion zsh` emits a `#compdef codex` script.
+    "codex": HarnessSpec(
+        cli="codex", format="native-passthrough", native_command=["completion", "zsh"]
+    ),
 }
 
 

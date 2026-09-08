@@ -201,6 +201,29 @@ Flags:
             self.assertTrue(script.startswith("#compdef agy"))
             self.assertIn("_agy_mcp", script)
 
+    def test_harnesses_codex_entry(self):
+        self.assertIn("codex", HARNESSES)
+        spec = HARNESSES["codex"]
+        self.assertEqual(spec.cli, "codex")
+        self.assertEqual(spec.format, "native-passthrough")
+        self.assertEqual(spec.native_command, ["completion", "zsh"])
+
+    def test_generate_native_passthrough_codex_mocked(self):
+        # Codex's native generator takes the shell as an argument:
+        # `codex completion zsh` emits a clap-generated #compdef script.
+        # Verify the adapter invokes it with the zsh argument and passes
+        # the output through untouched.
+        native = "#compdef codex\n_codex() { true; }\n"
+        with patch("gen_shell_completion._run", return_value=native) as mock_run:
+            script = generate(HARNESSES["codex"])
+        self.assertIsNotNone(script)
+        self.assertEqual(script, native)
+        self.assertEqual(mock_run.call_args.args[0], ["codex", "completion", "zsh"])
+
+    def test_generate_native_passthrough_codex_bad_header_refuses(self):
+        with patch("gen_shell_completion._run", return_value="not a completion"):
+            self.assertIsNone(generate(HARNESSES["codex"]))
+
     def test_generate_native_passthrough_mocked(self):
         with patch(
             "gen_shell_completion._run",
