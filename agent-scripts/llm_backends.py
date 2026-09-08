@@ -21,6 +21,8 @@ from contextlib import contextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
 
+import cli_common
+
 BACKEND_PRIORITY = ["agy", "pi", "opencode", "copilot"]
 
 # ── isolation contract ────────────────────────────────────────────────────
@@ -650,6 +652,7 @@ def _kill_active_process() -> None:
     proc.wait()
 
 
+@cli_common.timing_span("backend_call")
 def _run_command(
     cmd: list[str], timeout: float, *, retries: int = 0
 ) -> tuple[int, str, str]:
@@ -697,41 +700,47 @@ def _run_command(
     # Sanitize environment: omit variables > 32KB to protect total ARG_MAX budget
     env = {k: v for k, v in os.environ.items() if len(k) + len(v) <= 32768}
     while True:
-        try:
-            proc = subprocess.Popen(
-                cmd,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                start_new_session=True,
-                env=env,
-            )
-        except OSError as e:
-            # e.g. the backend vanished from PATH between `shutil.which` and
-            # here — without this, an unhandled OSError would crash the
-            # whole program instead of letting the caller's per-backend
-            # fallback run.
-            raise BackendError(f"failed to start {cmd[0]}: {e}") from e
-        _active_process = proc
-        try:
-            stdout, stderr = proc.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            _kill_active_process()
-            # `_kill_active_process` only reaps the process (`wait()`); the
-            # stdout/stderr pipes opened by Popen(..., stdout=PIPE, stderr=PIPE)
-            # are still open at this point. A second `communicate()` on the
-            # now-dead process drains and closes them — without it, the fds
-            # leak until the Popen object happens to get garbage-collected.
-            proc.communicate()
-            if attempt < retries:
-                attempt += 1
-                continue
-            suffix = f" (all {retries + 1} attempts timed out)" if retries else ""
-            raise BackendTimeoutError(f"timed out after {timeout}s — killed{suffix}")
-        finally:
-            _active_process = None
-        return proc.returncode, stdout, stderr
+        with cli_common.timing_span("backend_attempt", attempt=attempt + 1) as timing:
+            try:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    start_new_session=True,
+                    env=env,
+                )
+            except OSError as e:
+                # e.g. the backend vanished from PATH between `shutil.which` and
+                # here — without this, an unhandled OSError would crash the
+                # whole program instead of letting the caller's per-backend
+                # fallback run.
+                raise BackendError(f"failed to start {cmd[0]}: {e}") from e
+            _active_process = proc
+            try:
+                stdout, stderr = proc.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                timing["outcome"] = "timeout"
+                _kill_active_process()
+                # `_kill_active_process` only reaps the process (`wait()`); the
+                # stdout/stderr pipes opened by Popen(..., stdout=PIPE, stderr=PIPE)
+                # are still open at this point. A second `communicate()` on the
+                # now-dead process drains and closes them — without it, the fds
+                # leak until the Popen object happens to get garbage-collected.
+                proc.communicate()
+                if attempt < retries:
+                    attempt += 1
+                    continue
+                suffix = f" (all {retries + 1} attempts timed out)" if retries else ""
+                raise BackendTimeoutError(
+                    f"timed out after {timeout}s — killed{suffix}"
+                )
+            finally:
+                _active_process = None
+            timing["outcome"] = "success" if proc.returncode == 0 else "error"
+            timing["exit_code"] = proc.returncode
+            return proc.returncode, stdout, stderr
 
 
 def run_backend_command(cmd: list[str], timeout: float) -> str:

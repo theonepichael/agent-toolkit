@@ -28,6 +28,8 @@ Flags
                     longer silently falls back. Must be non-negative.
 
 Env vars
+  AGENT_TOOLKIT_TIMING=1           opt-in timing JSONL under $XDG_STATE_HOME/agent-toolkit
+                                    (default ~/.local/state); no prompts or argv
   SECOND_OPINION_AGY_MODEL          force the agy model (default "Gemini 3.7 Flash (High)")
   SECOND_OPINION_AGY_MODEL_POOL     comma-separated agy model pool for
                                     --model-index rotation (default: unset,
@@ -798,45 +800,48 @@ def cmd_review(args: argparse.Namespace) -> None:
     successful critique and returns. Exits nonzero only if every candidate
     fails.
     """
-    if args.backend:
-        if not shutil.which(args.backend):
-            die(f"{args.backend} not found on PATH")
-        candidates = [args.backend]
-    else:
-        candidates = available_backends()
-        if not candidates:
-            die("no backend available — install one of: " + ", ".join(BACKEND_PRIORITY))
+    with cli_common.timing_span("prepare"):
+        if args.backend:
+            if not shutil.which(args.backend):
+                die(f"{args.backend} not found on PATH")
+            candidates = [args.backend]
+        else:
+            candidates = available_backends()
+            if not candidates:
+                die(
+                    "no backend available — install one of: "
+                    + ", ".join(BACKEND_PRIORITY)
+                )
 
-    plan_text = resolve_plan_text(args.plan)
-    plan_text, bytes_saved = sanitize_plan_text(plan_text)
-    if bytes_saved > 0:
-        print(
-            f"[second_opinion] stripped inline review debris from plan ({bytes_saved} bytes saved)",
-            file=sys.stderr,
-        )
-    focus_hints = None
-    if args.focus_file:
-        focus_path = Path(args.focus_file).expanduser()
-        if not focus_path.is_file():
-            die(f"--focus-file not found: {focus_path}")
-        raw_focus = focus_path.read_text(encoding="utf-8")
-        raw_bytes = raw_focus.encode("utf-8")
-        if len(raw_bytes) > MAX_FOCUS_FILE_BYTES:
-            truncated = raw_bytes[:MAX_FOCUS_FILE_BYTES].decode(
-                "utf-8", errors="ignore"
-            )
-            actual_truncated_bytes = len(truncated.encode("utf-8"))
+        plan_text = resolve_plan_text(args.plan)
+        plan_text, bytes_saved = sanitize_plan_text(plan_text)
+        if bytes_saved > 0:
             print(
-                f"[second_opinion] warning: --focus-file '{args.focus_file}' "
-                f"exceeds {MAX_FOCUS_FILE_BYTES} bytes; truncated to {actual_truncated_bytes} bytes",
+                f"[second_opinion] stripped inline review debris from plan ({bytes_saved} bytes saved)",
                 file=sys.stderr,
             )
-            focus_hints = truncated
-        else:
-            focus_hints = raw_focus
-    prompt = build_prompt(plan_text, focus_hints)
-    prompt_bytes = len(prompt.encode("utf-8"))
-
+        focus_hints = None
+        if args.focus_file:
+            focus_path = Path(args.focus_file).expanduser()
+            if not focus_path.is_file():
+                die(f"--focus-file not found: {focus_path}")
+            raw_focus = focus_path.read_text(encoding="utf-8")
+            raw_bytes = raw_focus.encode("utf-8")
+            if len(raw_bytes) > MAX_FOCUS_FILE_BYTES:
+                truncated = raw_bytes[:MAX_FOCUS_FILE_BYTES].decode(
+                    "utf-8", errors="ignore"
+                )
+                actual_truncated_bytes = len(truncated.encode("utf-8"))
+                print(
+                    f"[second_opinion] warning: --focus-file '{args.focus_file}' "
+                    f"exceeds {MAX_FOCUS_FILE_BYTES} bytes; truncated to {actual_truncated_bytes} bytes",
+                    file=sys.stderr,
+                )
+                focus_hints = truncated
+            else:
+                focus_hints = raw_focus
+        prompt = build_prompt(plan_text, focus_hints)
+        prompt_bytes = len(prompt.encode("utf-8"))
     model_index = getattr(args, "model_index", None)
     verbose = getattr(args, "verbose", False)
     quiet = getattr(args, "quiet", False)
@@ -856,7 +861,7 @@ def cmd_review(args: argparse.Namespace) -> None:
             + "; ".join(failures)
         )
 
-    for backend in candidates:
+    for candidate_index, backend in enumerate(candidates, 1):
         if backend == "pi" and prompt_bytes > llm_backends.PI_MAX_PROMPT_BYTES:
             exc = llm_backends.BackendPayloadSizeError(
                 f"prompt size ({prompt_bytes} bytes) exceeds pi limit "
@@ -884,7 +889,10 @@ def cmd_review(args: argparse.Namespace) -> None:
         if not quiet and _absent_pool_config(backend):
             print(_default_fallback_notice(backend), file=sys.stderr)
         try:
-            critique = BACKEND_RUNNERS[backend](prompt, model_index=model_index)
+            with cli_common.timing_span(
+                "backend", backend=backend, candidate=candidate_index
+            ):
+                critique = BACKEND_RUNNERS[backend](prompt, model_index=model_index)
         except BackendError as exc:
             # A timeout is a budget problem, not an outage: name the env var
             # that raises the budget and the hard ceiling, so the next
@@ -1001,6 +1009,7 @@ def ensure_data_dir() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
+@cli_common.timing_span("script", script="second_opinion")
 def main() -> None:
     """Register termination handlers, parse argv, and dispatch to a subcommand."""
     ensure_data_dir()
@@ -1012,7 +1021,10 @@ def main() -> None:
 
     dispatch = {"detect": cmd_detect, "review": cmd_review}
     if args.cmd in dispatch:
-        dispatch[args.cmd](args)
+        with cli_common.timing_span(
+            "command", script="second_opinion", command=args.cmd
+        ):
+            dispatch[args.cmd](args)
     else:
         parser.print_help()
         sys.exit(1)

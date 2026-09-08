@@ -12,6 +12,10 @@ Flags
   --quiet, -q    suppress non-essential output
   --verbose, -v  emit extra diagnostic messages to stderr
 
+Environment: AGENT_TOOLKIT_TIMING=1 enables operational timing JSONL under
+$XDG_STATE_HOME/agent-toolkit/timing.jsonl (default ~/.local/state).
+Normal output and exit codes are unchanged; no prompts or argv are recorded.
+
 Requires Python 3.12+.
 """
 
@@ -5470,6 +5474,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+@cli_common.timing_span("script", script="dev_status")
 def main() -> None:
     """Parse argv and dispatch to the matching subcommand handler.
 
@@ -5479,7 +5484,10 @@ def main() -> None:
     :data:`SUBCOMMANDS`/``dispatch``, never shown in ``--help``).
     """
     if len(sys.argv) > 1 and sys.argv[1] == "_internal-regen":
-        cmd_internal_regen()
+        with cli_common.timing_span(
+            "command", script="dev_status", command="_internal-regen"
+        ):
+            cmd_internal_regen()
         return
 
     parser = build_parser()
@@ -5492,7 +5500,13 @@ def main() -> None:
             "list": cmd_pending_list,
         }
         if args.pending_cmd in pending_dispatch:
-            pending_dispatch[args.pending_cmd](args)
+            with cli_common.timing_span(
+                "command",
+                script="dev_status",
+                command=args.cmd,
+                subcommand=args.pending_cmd,
+            ):
+                pending_dispatch[args.pending_cmd](args)
         else:
             parser.pending_parser.print_help()  # type: ignore[attr-defined]
             sys.exit(1)
@@ -5506,12 +5520,19 @@ def main() -> None:
             "show": cmd_out_of_scope_show,
         }
         if args.oos_cmd in oos_dispatch:
-            oos_dispatch[args.oos_cmd](args)
+            with cli_common.timing_span(
+                "command",
+                script="dev_status",
+                command=args.cmd,
+                subcommand=args.oos_cmd,
+            ):
+                oos_dispatch[args.oos_cmd](args)
         else:
             parser.out_of_scope_parser.print_help()  # type: ignore[attr-defined]
             sys.exit(1)
     elif args.cmd in dispatch:
-        dispatch[args.cmd](args)
+        with cli_common.timing_span("command", script="dev_status", command=args.cmd):
+            dispatch[args.cmd](args)
     else:
         parser.print_help()
         sys.exit(1)

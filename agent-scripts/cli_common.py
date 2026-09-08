@@ -1,5 +1,10 @@
 """Shared CLI helpers used across dotfiles scripts.
 
+Environment
+  AGENT_TOOLKIT_TIMING=1 enables timing_span records under
+  $XDG_STATE_HOME/agent-toolkit/timing.jsonl (default ~/.local/state).
+  No prompts or argv are recorded. Logging failure never changes exit behavior.
+
 Flags
   --quiet, -q    suppress non-essential stdout output
   --verbose, -v  emit extra diagnostic messages to stderr
@@ -8,9 +13,15 @@ Flags
 import argparse
 import json
 import logging
+import os
 import re
 import sys
 import time
+import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TextIO
 
@@ -148,3 +159,67 @@ def redact_secrets(text: str, *, max_length: int = 200) -> str:
     for pattern in _REDACT_PATTERNS:
         clamped = pattern.sub("[REDACTED]", clamped)
     return clamped[:max_length]
+
+
+_TIMING_PARENT: ContextVar[tuple[str, str] | None] = ContextVar(
+    "timing_parent", default=None
+)
+
+
+@contextmanager
+def timing_span(name: str, **fields: str | int) -> Iterator[dict[str, object]]:
+    """Opt-in nested timings; callers must supply only fixed operational labels.
+
+    AGENT_TOOLKIT_TIMING=1 appends JSONL to
+    $XDG_STATE_HOME/agent-toolkit/timing.jsonl (default ~/.local/state).
+    Records include UTC start, monotonic duration, PID, trace/span/parent IDs,
+    outcome and caller-supplied metadata. Never pass argv, prompts or errors.
+    Disabled mode performs no file I/O; recording failures stay silent.
+    """
+    record: dict[str, object] = {}
+    if os.environ.get("AGENT_TOOLKIT_TIMING") != "1":
+        yield record
+        return
+    parent = _TIMING_PARENT.get()
+    span_id = uuid.uuid4().hex
+    trace_id = parent[0] if parent else uuid.uuid4().hex
+    token = _TIMING_PARENT.set((trace_id, span_id))
+    record.update(fields)
+    record.update(
+        name=name,
+        trace_id=trace_id,
+        span_id=span_id,
+        parent_id=parent[1] if parent else None,
+        pid=os.getpid(),
+        started_at=datetime.now(UTC).isoformat(),
+        outcome="success",
+    )
+    start = time.monotonic()
+    try:
+        yield record
+    except BaseException as exc:
+        if record.get("outcome") == "success":
+            record["outcome"] = "error"
+        if isinstance(exc, SystemExit):
+            record["outcome"] = "success" if exc.code in (None, 0) else "error"
+        elif isinstance(exc, (KeyboardInterrupt, GeneratorExit)):
+            record["outcome"] = "cancelled"
+        raise
+    finally:
+        record["duration_seconds"] = round(time.monotonic() - start, 6)
+        _TIMING_PARENT.reset(token)
+        try:
+            state = os.environ.get("XDG_STATE_HOME")
+            base = (
+                Path(state)
+                if state and Path(state).is_absolute()
+                else Path.home() / ".local/state"
+            )
+            path = base / "agent-toolkit/timing.jsonl"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            data = (json.dumps(record) + "\n").encode()
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            with os.fdopen(fd, "ab", buffering=0) as stream:
+                stream.write(data)
+        except Exception:
+            pass

@@ -135,6 +135,7 @@ Shared CLI helpers used across dotfiles scripts.
 - Installed at: `~/.claude/scripts/cli_common.py` (all harnesses)
 - Entrypoint: not executable, no shebang
 - CLI: none (library module).
+- Environment: `AGENT_TOOLKIT_TIMING`, `XDG_STATE_HOME`
 - Public functions:
   - `add_verbosity_args(parser: argparse.ArgumentParser) -> None` — Add mutually-exclusive --quiet/-q and --verbose/-v flags to a parser.
   - `vprint(msg: str, *, verbose: bool, file: TextIO | None = None) -> None` — Print a diagnostic message when verbose mode is enabled.
@@ -142,7 +143,8 @@ Shared CLI helpers used across dotfiles scripts.
   - `get_logger(name: str, *, verbose: bool = False, quiet: bool = False) -> logging.Logger` — Return a stderr-only diagnostic logger, a structured complement to vprint.
   - `append_jsonl(path: Path, record: dict[str, object]) -> None` — Best-effort: append one JSON record to `path` as a single JSONL line.
   - `redact_secrets(text: str, *, max_length: int = 200) -> str` — Mask secret-shaped substrings, then truncate to max_length.
-- Tested by: `agent-scripts/test_cli_common.py`
+  - `timing_span(name: str, **fields: str | int) -> Iterator[dict[str, object]]` — Opt-in nested timings; callers must supply only fixed operational labels.
+- Tested by: `agent-scripts/test_cli_common.py`, `agent-scripts/test_timing.py`
 
 ### `agent-scripts/dev_status.py`
 
@@ -706,6 +708,7 @@ llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, open
 - Installed at: `~/.claude/scripts/llm_backends.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI: none (library module).
+- Depends on: `cli_common.py`
 - Exceptions:
   - `class IsolationError(RuntimeError)` — A backend cannot be invoked because it does not meet the contract.
   - `class BackendError(Exception)` — A backend was invoked but failed (timeout or nonzero exit).
@@ -727,7 +730,7 @@ llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, open
   - `run_copilot(prompt: str, *, model: str | None, timeout: float) -> str` — Run the ``copilot`` backend and return its text output.
   - `run_pi(prompt: str, *, model: str | None, timeout: float) -> str` — Run Pi's headless mode and return its text output.
   - `run_opencode(prompt: str, *, model: str | None, timeout: float) -> str` — Run opencode's default agent (no ``--agent`` override) and return its text output.
-- Tested by: `agent-scripts/test_dev_status.py`, `agent-scripts/test_gen_interfaces.py`, `agent-scripts/test_llm_backends.py`, `agent-scripts/test_second_opinion.py`, `test/test_backend_isolation.py`, `test/test_backend_isolation_live.py`
+- Tested by: `agent-scripts/test_dev_status.py`, `agent-scripts/test_gen_interfaces.py`, `agent-scripts/test_llm_backends.py`, `agent-scripts/test_second_opinion.py`, `agent-scripts/test_timing.py`, `test/test_backend_isolation.py`, `test/test_backend_isolation_live.py`
 
 ### `agent-scripts/notify.py`
 
@@ -929,7 +932,7 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
   - `build_parser() -> argparse.ArgumentParser` — Build the full argument parser for every subcommand.
   - `ensure_data_dir() -> None` — Create ``DATA_DIR`` if it is missing.
 - Subcommand handlers: `cmd_detect`, `cmd_review`
-- Tested by: `agent-scripts/test_second_opinion.py`
+- Tested by: `agent-scripts/test_second_opinion.py`, `agent-scripts/test_timing.py`
 
 ### `agent-scripts/seed_hook_subset_guard.py`
 

@@ -186,3 +186,38 @@ python3 agent-scripts/gen_interfaces.py --check
 python3 agent-scripts/gen_skills.py
 python3 agent-scripts/gen_second_opinion.py
 ```
+
+
+## Measuring skill latency
+
+Set `AGENT_TOOLKIT_TIMING=1` in the environment of the harness running your
+skills. Instrumented `dev_status.py` and `second_opinion.py` calls append
+JSONL to `$XDG_STATE_HOME/agent-toolkit/timing.jsonl`, defaulting to
+`~/.local/state/agent-toolkit/timing.jsonl`. Unset the variable to stop recording.
+For example, to measure a dashboard call:
+
+```sh
+AGENT_TOOLKIT_TIMING=1 python3 ~/.claude/scripts/dev_status.py render
+```
+
+Each record has `name`, `started_at`, `duration_seconds`, `outcome`, `pid`,
+`trace_id`, `span_id`, and `parent_id`. Command records name the script and
+subcommand; second-opinion backend records identify the backend and candidate
+order; subprocess attempt records include attempt number and exit code when
+available. Timeout attempts remain visible even when a retry succeeds. Records
+exclude arguments, prompts, outputs, item contents, and exception messages.
+Timing is opt-in, best-effort, and does not change normal stdout or exit codes.
+
+The script span measures `main()`, including argument parsing, but excludes
+Python startup and imports. Command, preparation, backend, and attempt spans
+are nested: **do not add their durations together**. Each backend candidate
+contains its attempts; increasing candidate numbers expose fallback and
+increasing attempt numbers expose retries. The shared subprocess instrumentation
+also covers second-opinion's custom opencode path. Detached recap children have
+separate traces; their time is not dashboard latency. Other scripts using the
+shared backend runner can emit standalone attempt spans.
+
+Compare a script span with its enclosing session tool-call interval to locate
+waits outside the script. Approval time, shell startup, output transport and
+agent scheduling are not measured by these records. The log does not rotate;
+remove or archive it when finished. New log files are created with mode 0600.
