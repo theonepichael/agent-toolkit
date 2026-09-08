@@ -1926,6 +1926,83 @@ def seed_opencode_config(ctx: Context) -> tuple[str, str]:
     )
 
 
+def sync_codex_skills(ctx: Context) -> list[str]:
+    """Copy each ``codex/skills/<name>/SKILL.md`` into ``~/.codex/skills/<name>/``.
+
+    Every other harness's skills are plain ``[[link]]`` symlink rows in
+    links.toml. Codex's can't be: its skill scanner does not follow
+    symlinks for USER-scope discovery -- confirmed live (2026-09-08,
+    atk-codex-skill-copy-fix) by swapping one skill's symlink for a real
+    file copy at the identical path. The copy appeared in ``codex exec``'s
+    skill list immediately; the symlink was invisible to both
+    ``$skill-name`` and implicit matching, even after a full session
+    restart.
+
+    This mirrors the ``seed_*`` functions' shape above but not their
+    copy-once-and-report-drift semantics: nothing here is meant for a user
+    to hand-customize (same policy as every symlinked skill on every other
+    harness), so unlike settings.json this unconditionally overwrites a
+    stale copy back into sync on every run, rather than merely reporting
+    the drift. A destination that is still the old (pre-fix) symlink is
+    replaced the same way -- ``os.replace`` never follows a symlink target,
+    so this always ends with a real file, never a symlink left in place.
+
+    Known gap: unlike the ``[[link]]``-driven symlinks, a skill retired
+    from ``codex/skills/`` later leaves its old ``~/.codex/skills/<name>/``
+    copy behind with no automatic orphan-cleanup (that mechanism only
+    tracks manifest-recorded symlinks) -- remove a retired skill's
+    directory by hand if this list ever shrinks.
+
+    Returns:
+        Names of skills this run actually wrote (created or updated);
+        empty when Codex wasn't selected or every copy was already current.
+    """
+    if not ctx.has_harness("codex"):
+        return []
+    src_root = ctx.dotfiles / "codex" / "skills"
+    if not src_root.is_dir():
+        return []
+    updated: list[str] = []
+    for skill_dir in sorted(p for p in src_root.iterdir() if p.is_dir()):
+        src = skill_dir / "SKILL.md"
+        if not src.is_file():
+            continue
+        name = skill_dir.name
+        dest = ctx.home / ".codex" / "skills" / name / "SKILL.md"
+        src_bytes = src.read_bytes()
+        if dest.is_file() and not dest.is_symlink() and dest.read_bytes() == src_bytes:
+            continue
+        if ctx.opts.dry_run:
+            _preview(
+                f"would sync {ctx.display(dest)} ← {ctx.display(src)}",
+                quiet=ctx.opts.quiet,
+            )
+            updated.append(name)
+            continue
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            ctx.reporter.skip(
+                f"codex skill {name}", "could not create parent directory"
+            )
+            continue
+        temp = dest.parent / f".{dest.name}.tmp-{os.getpid()}-{uuid4().hex}"
+        try:
+            temp.write_bytes(src_bytes)
+            os.replace(temp, dest)
+        except OSError:
+            ctx.reporter.skip(f"codex skill {name}", "copy failed")
+            continue
+        finally:
+            temp.unlink(missing_ok=True)
+        ctx.manifest.record_copy(dest)
+        cli_common.qprint(
+            PALETTE.ok(f"  synced {ctx.display(dest)}"), quiet=ctx.opts.quiet
+        )
+        updated.append(name)
+    return updated
+
+
 # ── services ──────────────────────────────────────────────────────────────────
 
 
@@ -3208,6 +3285,7 @@ def run_install(ctx: Context, specs: Sequence[LinkSpec]) -> int:
 
     install_symlinks(ctx, links)
     _cleanup_orphaned_links(ctx, links)
+    sync_codex_skills(ctx)
     opencode_drift = seed_opencode_config(ctx)
     settings_drift = seed_claude_settings(ctx)
     pi_settings_drift = seed_pi_settings(ctx)

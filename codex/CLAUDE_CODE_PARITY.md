@@ -48,9 +48,20 @@ state the options, give a recommendation, wait for a plain-text reply.
 - `SKILL.md` frontmatter requires `name` + `description` (agentskills.io
   standard); optional `references/`, `scripts/`, `assets/`,
   `agents/openai.yaml`. This repo's generated codex skills are
-  self-contained (no ref dirs) and linked per-file.
-- Codex follows symlinked skill folders/files when scanning (docs,
-  build-skills) — symlink deployment works.
+  self-contained (no ref dirs).
+- Codex does **not** follow symlinks for USER-scope skill discovery.
+  CORRECTED 2026-09-08 (`atk-codex-skill-copy-fix`): this doc previously
+  claimed the opposite ("Codex follows symlinked skill folders/files when
+  scanning (docs, build-skills) — symlink deployment works"), sourced from
+  Codex's own docs about a different feature (doc/build-skills scanning),
+  not live-verified for skill discovery itself — same mistake as the
+  USER-scope path above. Disproved directly: swapped one skill's symlink
+  for a real file at the identical path — the file appeared in a fresh
+  `codex exec` session's skill list immediately, the symlink never did,
+  even after a full interactive-session restart. This repo's generated
+  codex skills are deployed by `install.py`'s `sync_codex_skills()`
+  copying `codex/skills/<name>/SKILL.md` into place, not by a `links.toml`
+  `[[link]]` symlink row like every other harness here.
 - Invocation: explicit (`$skill-name`, `/skills`) or implicit
   (description match). Initial skill list budget: 2% of the context
   window or 8,000 characters, descriptions shortened first.

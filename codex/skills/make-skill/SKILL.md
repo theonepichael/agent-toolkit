@@ -23,7 +23,7 @@ descriptions first.
 ## 2. Structure — steps, then reference
 
 - The body is a **procedure**: numbered/ordered steps in imperative voice, addressed to the agent.
-- Supporting material (schemas, long examples, lookup tables) does NOT go in the body. Codex's own docs specify a `references/` subdirectory for this (not `ref/` — matches Codex's documented skill-folder convention, distinct from this repo's `claude`/`copilot` naming). Put it in the repo's `codex/skills/<skill>/references/<topic>.md` and point to it from the step that needs it. Reference files need their own symlink lines (step 5).
+- Supporting material (schemas, long examples, lookup tables) does NOT go in the body. Codex's own docs specify a `references/` subdirectory for this (not `ref/` — matches Codex's documented skill-folder convention, distinct from this repo's `claude`/`copilot` naming). Put it in the repo's `codex/skills/<skill>/references/<topic>.md` and point to it from the step that needs it. `install.py`'s `sync_codex_skills()` only copies each skill's `SKILL.md` today — extend it to also copy a `references/` tree before relying on one (step 5).
 - Keep the body under ~50 lines. If it branches into genuinely different workflows, split into separate skills instead of one branching monster — smaller skills also hide the end goal, which stops the agent from rushing past planning/questioning steps. (Splitting isn't the only way: grill-me gets the same effect inside one skill by forbidding plan-writing until every question is decided. Don't split a skill that demonstrably works.)
 
 ## 3. Steering — make it stick
@@ -38,9 +38,9 @@ Probe with `codex exec '<a real trigger phrase>'` (verified non-interactive mode
 
 ## 5. Plumbing (house convention)
 
-1. File lives at the repo's `codex/skills/<name>/SKILL.md` (same for any reference files, under the repo's `codex/skills/<name>/references/`).
-2. Add a `[[link]]` entry (`src = "codex/skills/<name>/SKILL.md"`, `dest = "~/.codex/skills/<name>/SKILL.md"`, `harness = "codex"`) in `links.toml` next to the existing ones (same for any reference files). `~/.codex/skills` is Codex's USER-scope skills directory, sibling to the bundled `~/.codex/skills/.system/` one — verified via `codex debug prompt-input`'s skill-roots table and Codex's own skill-installer skill, not the `~/.agents/skills` shared namespace this repo originally (and wrongly) assumed — so it deliberately has no `[[managed_dir]]` exclusivity row.
-3. Create the live symlink now: `ln -s "$(git rev-parse --show-toplevel)/codex/skills/<name>/SKILL.md" "~/.codex/skills/<name>/SKILL.md"` (create the parent directory first). Codex follows symlinked skill files when scanning.
+1. File lives at the repo's `codex/skills/<name>/SKILL.md` (same for any reference files, under the repo's `codex/skills/<name>/references/` — but see the note above, `sync_codex_skills()` doesn't copy those yet).
+2. Nothing to add to `links.toml`: unlike every other harness here, Codex's skills are NOT `[[link]]` symlink rows. Codex's skill scanner does not follow symlinks for USER-scope discovery — verified live via `codex debug prompt-input`'s skill-roots table and by swapping a symlink for a real file at the identical path (2026-09-08, atk-codex-skill-copy-fix). A new skill directory under `codex/skills/` is picked up automatically by `install.py`'s `sync_codex_skills()`, which globs that directory — no per-skill registration needed there either.
+3. Apply it now: run `python3 install.py --harness=codex` (from this repo's root) to copy the new `~/.codex/skills/<name>/SKILL.md` into place immediately, rather than waiting for the next full install.
 4. Conventional commit, scope `codex`: `feat` for a new skill, `refactor`/`docs` for revisions.
 
 ## 6. Pruning (every revision, not just creation)

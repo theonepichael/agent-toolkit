@@ -1493,6 +1493,7 @@ install.py — dotfiles + AI-harness provisioner for macOS and Linux/WSL.
   - `seed_claude_settings(ctx: Context) -> tuple[str, str]` — Seed ~/.claude/settings.json, if Claude Code was selected.
   - `seed_pi_settings(ctx: Context) -> tuple[str, str]` — Seed ~/.pi/agent/settings.json, if Pi was selected.
   - `seed_opencode_config(ctx: Context) -> tuple[str, str]` — Seed ~/.config/opencode/opencode.jsonc, if opencode was selected.
+  - `sync_codex_skills(ctx: Context) -> list[str]` — Copy each ``codex/skills/<name>/SKILL.md`` into ``~/.codex/skills/<name>/``.
   - `capture_service_baseline(ctx: Context) -> None` — Capture every managed service's service/linger state, immediately before :func:`enable_managed_services` runs — capturing any later would record the post-install enabled state as baseline and departure would never disable anything.
   - `enable_managed_services(ctx: Context) -> None` — Enable and start every managed systemd --user unit (Linux, non-work).
   - `capture_git_hooks_path_baseline(ctx: Context) -> None` — Capture the pre-existing global ``core.hooksPath``, immediately before :func:`install_global_git_hooks_path` runs -- capturing any later would record dotfiles' own already-set value as if it were the original, which would make departure "restore" dotfiles' own path instead of the true pre-dotfiles value.

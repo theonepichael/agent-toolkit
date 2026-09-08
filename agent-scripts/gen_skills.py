@@ -207,8 +207,12 @@ CAPABILITY_TABLE: dict[str, dict[str, str | bool]] = {
         # -- confirmed live via `codex debug prompt-input`'s skill-roots
         # table and Codex's own skill-installer skill (2026-09-08,
         # atk-codex-skill-root-fix); ~/.agents/skills/ is never scanned.
-        # Per-FILE links (copilot/agy style): the 5 generated skills are
-        # self-contained, no ref/ dirs.
+        # UPDATE 2026-09-08 (atk-codex-skill-copy-fix): this destination is
+        # reached by install.py's sync_codex_skills() copying the file into
+        # place, not a links.toml [[link]] symlink row like every other
+        # harness here -- Codex's skill scanner does not follow symlinks for
+        # USER-scope discovery (confirmed live the same way). The 5
+        # generated skills are still self-contained, no ref/ dirs.
         "skill_dest_pattern": "~/.codex/skills/<name>/SKILL.md",
         "skill_ref_dir": "ref",
         "probe_command": "codex exec",

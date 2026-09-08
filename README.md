@@ -189,8 +189,11 @@ export SECOND_OPINION_PI_MODEL_POOL="opencode-go/glm-5.2,opencode-go/glm-5.3-fla
 and USER-scope skills from `~/.codex/skills/` (sibling to the bundled
 `~/.codex/skills/.system/` skills, not the `~/.agents/skills/` shared
 namespace other harnesses use — confirmed via `codex debug prompt-input`'s
-skill-roots table on a live 0.153.4 install; no exclusivity audit, per-file
-drift checks only). One caveat: Codex caps the combined instruction chain at
+skill-roots table on a live 0.153.4 install). Unlike every other harness
+here, these skills are copied into place by `install.py`'s
+`sync_codex_skills()` on every install run rather than symlinked — Codex's
+skill scanner doesn't follow symlinks for USER-scope discovery, confirmed
+the same way. One caveat: Codex caps the combined instruction chain at
 `project_doc_max_bytes` (32 KiB default), and the shared instructions file is
 ~27 KB of that budget, leaving ~5 KB headroom for a repo's own AGENTS.md
 chain — raise `project_doc_max_bytes` in `~/.codex/config.toml` if a
