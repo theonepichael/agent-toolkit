@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import NotRequired, TextIO, TypedDict, cast
 
 import cli_common
+import dev_status_formatting
 import llm_backends
 
 DATA_DIR = Path.home() / ".claude" / "data" / "backlog"
@@ -1454,21 +1455,17 @@ def _priority_glyph(item: BacklogItem, color: bool) -> str:
 
 def _section_top(title: str, width: int = SECTION_WIDTH) -> str:
     """Render a section's top border with an embedded title."""
-    prefix = f"┌─ {title} "
-    fill = max(width - len(prefix), 3)
-    return prefix + ("─" * fill)
+    return dev_status_formatting.section_top(title, width)
 
 
 def _section_bottom(width: int = SECTION_WIDTH) -> str:
     """Render a section's bottom border."""
-    return "└" + ("─" * (width - 1))
+    return dev_status_formatting.section_bottom(width)
 
 
 def _ellipsize(text: str, limit: int) -> str:
     """Truncate ``text`` to ``limit`` display chars with a trailing ``…``."""
-    if len(text) <= limit:
-        return text
-    return text[: max(limit - 1, 1)] + "…"
+    return dev_status_formatting.ellipsize(text, limit)
 
 
 def _project_prefix(slug: str) -> str:
@@ -1478,12 +1475,7 @@ def _project_prefix(slug: str) -> str:
     falling back to the first hyphen-separated segment if a hyphen exists,
     or the empty string for un-prefixed slugs.
     """
-    for prefix in KNOWN_PROJECT_PREFIXES:
-        if slug == prefix or slug.startswith(f"{prefix}-"):
-            return prefix
-    if "-" in slug:
-        return slug.split("-", 1)[0]
-    return ""
+    return dev_status_formatting.project_prefix(slug, KNOWN_PROJECT_PREFIXES)
 
 
 def _project_divider(
@@ -1493,10 +1485,7 @@ def _project_divider(
     color: bool = False,
 ) -> str:
     """Render a horizontal divider row for a project group within a section."""
-    unit = "item" if count == 1 else "items"
-    label = f"─── {project} ({count} {unit}) "
-    fill = max(width - len(f"│  {label}"), 3)
-    line = f"│  {label}" + ("─" * fill)
+    line = dev_status_formatting.project_divider(project, count, width)
     return _colorize(line, _COLORS["dim"], color) if color else line
 
 
@@ -2729,23 +2718,7 @@ def _recap_section_lines(color: bool, current_fingerprint: str) -> list[str] | N
 
 # ── recap: prompt + normalization ───────────────────────────────────────────
 
-RECAP_PROMPT = """\
-You are writing a short "welcome back" recap for a personal task dashboard, \
-in the style of an away-summary: second person, warm, plain text, no emoji, \
-1-3 sentences. Use ONLY the facts below -- never invent items, people, or \
-events not listed. Refer to items by what they are (a short plain-language \
-description), never by an internal id or slug, even if one appears in the \
-facts below. Stay short, but be comprehensive within that space: name what \
-was actually done rather than only a count or a vague gesture at it.
-
-Latest completions (not necessarily within the last 48h):
-{completed}
-
-Other recent activity (last 48h, excluding completion transitions):
-{changelog}
-
-Current board: {buckets}
-"""
+RECAP_PROMPT = dev_status_formatting.RECAP_PROMPT
 
 
 def _render_changelog(entries: list[dict[str, object]]) -> str:
@@ -2777,47 +2750,12 @@ def _render_changelog(entries: list[dict[str, object]]) -> str:
     text can't be safely scrubbed without risking mangled prose, and field
     names are code-controlled, not user data.
     """
-    lines = []
-    for e in entries:
-        if e.get("diagnostic"):
-            # Low-level lock-contention/stale-sweep/claim-theft telemetry is
-            # post-mortem detail, never a workflow event a recap reader
-            # should see — skip it before any rendering runs.
-            continue
-        if e.get("to_status") == "done":
-            continue
-        ts = _parse_journal_ts(e.get("ts"))
-        time_str = ts.strftime("%H:%M") if ts else "??:??"
-        line = f"[{time_str}] {e.get('cmd', '?')}"
-        slug = e.get("slug")
-        summary = e.get("summary")
-        if slug and not summary:
-            line += f" {slug}"
-        if summary:
-            line += f" — {summary}"
-        detail = []
-        if e.get("from_status") and e.get("to_status"):
-            detail.append(f"{e['from_status']}→{e['to_status']}")
-        if e.get("fields"):
-            detail.append(f"changed: {', '.join(cast(list[str], e['fields']))}")
-        if e.get("feedback"):
-            detail.append(f"feedback: {e['feedback']}")
-        if e.get("count") is not None:
-            detail.append(f"{e['count']} item(s)")
-        if detail:
-            line += f" ({'; '.join(detail)})"
-        lines.append(line)
-    return "\n".join(lines)
+    return dev_status_formatting.render_changelog(entries, _parse_journal_ts)
 
 
 def _render_done_facts(items: list[BacklogItem]) -> str:
     """Render selected completed items as dated, slug-free prompt facts."""
-    lines = []
-    for item in items:
-        stamp = _done_selection_stamp(item)
-        completed = stamp.date().isoformat() if stamp else "unknown date"
-        lines.append(f"- {item.get('summary', '')} (completed {completed})")
-    return "\n".join(lines)
+    return dev_status_formatting.render_done_facts(items, _done_selection_stamp)
 
 
 def _bucket_summary(
@@ -2832,15 +2770,9 @@ def _bucket_summary(
     every count unchanged), so counts alone would be too weak a staleness
     signal even though they're the right level of detail for the prompt.
     """
-    parts = [
-        f"in progress: {in_progress}",
-        f"ready: {ready}",
-        f"blocked: {blocked}",
-        f"in review: {in_review}",
-        f"done (latest 5 max): {done}",
-        f"pending: {pending}",
-    ]
-    return ", ".join(parts)
+    return dev_status_formatting.bucket_summary(
+        in_progress, ready, blocked, in_review, done, pending
+    )
 
 
 def _current_bucket_summary() -> str:
@@ -2942,47 +2874,16 @@ def _current_board_fingerprint() -> str:
 
 def _build_recap_prompt(changelog: str, buckets: str, completed: str) -> str:
     """Build the recap prompt from activity, selected completions, and counts."""
-    return RECAP_PROMPT.format(
-        changelog=changelog or "(none)",
-        completed=completed or "(none)",
-        buckets=buckets,
+    return dev_status_formatting.build_recap_prompt(
+        changelog, buckets, completed, RECAP_PROMPT
     )
 
 
 # Tokens whose trailing '.' does not end a sentence: common abbreviations and
 # initials. Heuristic by design -- when in doubt, we do not cut.
-_RECAP_ABBREV_TOKENS = frozenset(
-    {
-        "e.g",
-        "i.e",
-        "etc",
-        "vs",
-        "dr",
-        "mr",
-        "mrs",
-        "ms",
-        "prof",
-        "sr",
-        "jr",
-        "st",
-        "inc",
-        "ltd",
-        "fig",
-        "no",
-        "approx",
-    }
-)
-
-
 def _recap_is_abbrev_boundary(text: str, dot: int) -> bool:
     """True when the '.' at *dot* is abbreviation/initial, not a sentence end."""
-    start = dot
-    while start > 0 and not text[start - 1].isspace():
-        start -= 1
-    token = text[start:dot]
-    if token.lower() in _RECAP_ABBREV_TOKENS:
-        return True
-    return len(token) == 1 and token.isalpha() and token.isupper()
+    return dev_status_formatting.recap_is_abbrev_boundary(text, dot)
 
 
 def _recap_last_sentence_cut(text: str, budget: int, min_keep: int) -> int | None:
@@ -2995,24 +2896,9 @@ def _recap_last_sentence_cut(text: str, budget: int, min_keep: int) -> int | Non
     *min_keep* characters is rejected as degenerate. Returns ``None`` when no
     acceptable boundary exists (CJK, run-on text, all-degenerate boundaries).
     """
-    last: int | None = None
-    for i, ch in enumerate(text[:budget]):
-        if ch not in ".!?":
-            continue
-        if i + 1 >= len(text) or not text[i + 1].isspace():
-            continue
-        if ch == "." and _recap_is_abbrev_boundary(text, i):
-            continue
-        if i + 1 < min_keep:
-            continue
-        last = i + 1
-    return last
-
-
-_RECAP_MARKDOWN_RE = re.compile(r"[*_`#>~]")
-_RECAP_EMOJI_RE = re.compile(
-    "[\U0001f300-\U0001faff\U00002600-\U000027bf\U0001f1e6-\U0001f1ff]+"
-)
+    return dev_status_formatting.recap_last_sentence_cut(
+        text, budget, min_keep, _recap_is_abbrev_boundary
+    )
 
 
 def _normalize_recap_text(raw: str) -> str:
@@ -3026,15 +2912,9 @@ def _normalize_recap_text(raw: str) -> str:
     normalization is a legitimate outcome, cached by the caller (see
     :func:`_save_recap_cache`), not an error.
     """
-    text = _RECAP_EMOJI_RE.sub("", raw)
-    text = _RECAP_MARKDOWN_RE.sub("", text)
-    text = re.sub(r"\s+", " ", text).strip()
-    if len(text) > RECAP_MAX_CHARS:
-        cut = _recap_last_sentence_cut(text, RECAP_MAX_CHARS, RECAP_MIN_KEEP)
-        if cut is not None:
-            return text[:cut]
-        return text[:RECAP_MAX_CHARS].rstrip() + "…"
-    return text
+    return dev_status_formatting.normalize_recap_text(
+        raw, RECAP_MAX_CHARS, RECAP_MIN_KEEP, _recap_last_sentence_cut
+    )
 
 
 # ── recap: generation + subcommands ─────────────────────────────────────────

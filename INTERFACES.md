@@ -36,6 +36,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`analyze_sessions.py`](#agentscriptsanalyzesessionspy) | analyze_sessions.py — multi-harness session analysis tool. |
 | [`cli_common.py`](#agentscriptsclicommonpy) | Shared CLI helpers used across dotfiles scripts. |
 | [`dev_status.py`](#agentscriptsdevstatuspy) | dev_status.py v2 — slug IDs, structured dependency graph, pure render. |
+| [`dev_status_formatting.py`](#agentscriptsdevstatusformattingpy) | Pure text-formatting helpers shared by the backlog dashboard and recap. |
 | [`dotfiles_sync_check.py`](#agentscriptsdotfilessynccheckpy) | SessionStart hook: flag when the dotfiles repo has drifted from the last commit bundled over to a GitHub-blocked work machine. |
 | [`gen_interfaces.py`](#agentscriptsgeninterfacespy) | gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources. |
 | [`gen_second_opinion.py`](#agentscriptsgensecondopinionpy) | gen_second_opinion.py — regenerate the second-opinion skill copies (one per harness, named in HARNESS_TABLE) from one canonical template. |
@@ -234,7 +235,7 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `OUT_OF_SCOPE_INDEX_FILE = OUT_OF_SCOPE_DIR / 'index.json'`
   - `OUT_OF_SCOPE_LOCK_FILE = OUT_OF_SCOPE_DIR / '.out-of-scope.lock'`
 - Explicit exit codes: `1`
-- Depends on: `cli_common.py`, `llm_backends.py`
+- Depends on: `cli_common.py`, `dev_status_formatting.py`, `llm_backends.py`
 - Public classes:
   - `class Gate(TypedDict)` — A judgment-step verification checkpoint on a backlog item.
   - `class RunRecord(TypedDict)` — One recorded command execution — a row of the ``runs.jsonl`` sidecar.
@@ -270,6 +271,29 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `build_parser() -> argparse.ArgumentParser` — Build the full argument parser for every subcommand.
 - Subcommand handlers: `cmd_internal_regen`, `cmd_recap`, `cmd_render`, `cmd_ready`, `cmd_list`, `cmd_show`, `cmd_add`, `cmd_update`, `cmd_start`, `cmd_done`, `cmd_review`, `cmd_approve`, `cmd_reject`, `cmd_gate_set`, `cmd_gate_pass`, `cmd_run`, `cmd_runs`, `cmd_backfill_gate`, `cmd_rename`, `cmd_block`, `cmd_unblock`, `cmd_out_of_scope_add`, `cmd_out_of_scope_link`, `cmd_out_of_scope_unlink`, `cmd_out_of_scope_remove`, `cmd_out_of_scope_list`, `cmd_out_of_scope_show`, `cmd_pending_add`, `cmd_pending_update`, `cmd_pending_list`, `cmd_remove`, `cmd_prune`
 - Tested by: `agent-scripts/test_dev_status.py`, `agent-scripts/test_sweep_dead_claims.py`, `agent-scripts/test_to_tickets_runner.py`
+
+### `agent-scripts/dev_status_formatting.py`
+
+Pure text-formatting helpers shared by the backlog dashboard and recap.
+
+- Installed at: `~/.claude/scripts/dev_status_formatting.py` (all harnesses)
+- Entrypoint: not executable, no shebang
+- CLI: none (library module).
+- Public functions:
+  - `section_top(title: str, width: int) -> str` — Render a section's top border with an embedded title.
+  - `section_bottom(width: int) -> str` — Render a section's bottom border.
+  - `ellipsize(text: str, limit: int) -> str` — Truncate ``text`` to ``limit`` display chars with a trailing ``…``.
+  - `project_prefix(slug: str, known_prefixes: Sequence[str]) -> str` — Extract a canonical project prefix, with a generic slug fallback.
+  - `project_divider(project: str, count: int, width: int) -> str` — Render an uncolored divider row for a project group.
+  - `format_age(seconds: float) -> str` — Render an age in seconds as a short marker: ``45m`` or ``3h``.
+  - `render_changelog(entries: list[dict[str, object]], parse_timestamp: Callable[[object], datetime | None]) -> str` — Pre-render non-completion journal entries into dense prompt facts.
+  - `render_done_facts(items: list[dict[str, object]], done_stamp: Callable[[dict[str, object]], datetime | None]) -> str` — Render selected completed items as dated, slug-free prompt facts.
+  - `bucket_summary(in_progress: int, ready: int, blocked: int, in_review: int, done: int, pending: int) -> str` — Render bucket section counts as a compact recap-prompt fact.
+  - `build_recap_prompt(changelog: str, buckets: str, completed: str, template: str = RECAP_PROMPT) -> str` — Build the recap prompt from activity, selected completions, and counts.
+  - `recap_is_abbrev_boundary(text: str, dot: int) -> bool` — True when the dot at ``dot`` is an abbreviation or initial.
+  - `recap_last_sentence_cut(text: str, budget: int, min_keep: int, is_abbrev_boundary: Callable[[str, int], bool] = recap_is_abbrev_boundary) -> int | None` — Return the last acceptable sentence boundary within ``budget``.
+  - `normalize_recap_text(raw: str, max_chars: int, min_keep: int, last_sentence_cut: Callable[[str, int, int], int | None] = recap_last_sentence_cut) -> str` — Strip presentation noise and fit backend recap prose within a budget.
+- Tested by: nothing
 
 ### `agent-scripts/dotfiles_sync_check.py`
 
