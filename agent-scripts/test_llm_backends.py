@@ -17,6 +17,7 @@ import sys
 import tempfile
 import time
 import unittest
+from collections.abc import Callable
 from contextlib import AbstractContextManager
 from pathlib import Path
 from unittest.mock import patch
@@ -901,6 +902,43 @@ class LogBackendCallTests(_LogPathRedirected):
         self.assertEqual(len(lines), 2)
         self.assertEqual([r["backend"] for r in lines], ["agy", "copilot"])
 
+    def test_79_error_snippet_and_fallback_reason_null_without_arguments(self) -> None:
+        # Additive schema: callers that don't pass the new fields (including
+        # every pre-existing call site) get explicit nulls, and no old field
+        # changes shape.
+        llm_backends._log_backend_call("pi", "m", "success", 0.1, 1)
+        record = _read_jsonl(self.log_path)[0]
+        self.assertIsNone(record["error_snippet"])
+        self.assertIsNone(record["fallback_reason"])
+
+    def test_80_error_snippet_redacted_before_logging(self) -> None:
+        llm_backends._log_backend_call(
+            "agy",
+            "m",
+            "error",
+            0.1,
+            1,
+            error_snippet="exited 1: auth failed with Bearer abc123def456ghi",
+        )
+        snippet = _read_jsonl(self.log_path)[0]["error_snippet"]
+        self.assertIn("[REDACTED]", snippet)
+        self.assertNotIn("abc123def456ghi", snippet)
+        self.assertIn("exited 1", snippet)
+
+    def test_81_error_snippet_truncated_to_500(self) -> None:
+        llm_backends._log_backend_call(
+            "agy", "m", "error", 0.1, 1, error_snippet="x" * 5000
+        )
+        self.assertEqual(len(_read_jsonl(self.log_path)[0]["error_snippet"]), 500)
+
+    def test_82_fallback_reason_passed_through_verbatim(self) -> None:
+        llm_backends._log_backend_call(
+            "copilot", "m", "timeout", 5.0, 999, fallback_reason="timeout"
+        )
+        record = _read_jsonl(self.log_path)[0]
+        self.assertEqual(record["fallback_reason"], "timeout")
+        self.assertIsNone(record["error_snippet"])
+
 
 class TrackBackendCallTests(_LogPathRedirected):
     def test_71_success_logs_success_outcome(self) -> None:
@@ -940,6 +978,27 @@ class TrackBackendCallTests(_LogPathRedirected):
             raise ValueError("something else broke")
         record = _read_jsonl(self.log_path)[0]
         self.assertEqual(record["outcome"], "error")
+        self.assertEqual(record["error_snippet"], "something else broke")
+
+    def test_83_success_logs_null_error_snippet_and_fallback_reason(self) -> None:
+        with llm_backends._track_backend_call("pi", "m", "p"):
+            pass
+        record = _read_jsonl(self.log_path)[0]
+        self.assertIsNone(record["error_snippet"])
+        self.assertIsNone(record["fallback_reason"])
+
+    def test_84_timeout_error_snippet_is_redacted_exception_text(self) -> None:
+        with (
+            self.assertRaises(llm_backends.BackendTimeoutError),
+            llm_backends._track_backend_call("opencode", "m", "p"),
+        ):
+            raise llm_backends.BackendTimeoutError(
+                "timed out after 60s — killed: Bearer abc123def456ghi789"
+            )
+        record = _read_jsonl(self.log_path)[0]
+        self.assertEqual(record["outcome"], "timeout")
+        self.assertIn("[REDACTED]", record["error_snippet"])
+        self.assertNotIn("abc123def456ghi789", record["error_snippet"])
 
 
 class RunFunctionsLoggingTests(_ContainmentStubbed, _LogPathRedirected):
@@ -980,6 +1039,122 @@ class RunFunctionsLoggingTests(_ContainmentStubbed, _LogPathRedirected):
         ):
             llm_backends.run_agy("p", model="m", timeout=60)
         self.assertEqual(_read_jsonl(self.log_path), [])
+
+    def test_85_run_function_fallback_chain_logs_fallback_reason(self) -> None:
+        # End-to-end: run_with_fallback dispatches through the real run_*
+        # wrappers — pi times out, copilot succeeds — and copilot's record
+        # carries fallback_reason="timeout" plus a redacted error_snippet.
+        def runner(backend: str) -> str:
+            run = {
+                "pi": llm_backends.run_pi,
+                "copilot": llm_backends.run_copilot,
+            }[backend]
+            return run("p", model="m", timeout=60)  # type: ignore[arg-type]
+
+        def fake_run_backend_command(cmd: list[str], timeout: float) -> str:
+            if cmd[0] == "pi":
+                raise llm_backends.BackendTimeoutError(
+                    "timed out after 60s — killed: Bearer abc123def456ghi"
+                )
+            return "ok"
+
+        with (
+            patch.object(
+                llm_backends,
+                "build_isolated_command",
+                lambda backend, prompt, *, model: [backend],
+            ),
+            patch.object(
+                llm_backends,
+                "run_backend_command",
+                side_effect=fake_run_backend_command,
+            ),
+        ):
+            backend, out = llm_backends.run_with_fallback(
+                runner, backends=["pi", "copilot"]
+            )
+        self.assertEqual((backend, out), ("copilot", "ok"))
+        first, second = _read_jsonl(self.log_path)
+        self.assertIsNone(first["fallback_reason"])
+        self.assertEqual(second["fallback_reason"], "timeout")
+        self.assertIn("[REDACTED]", first["error_snippet"])
+        self.assertNotIn("abc123def456ghi", first["error_snippet"])
+        self.assertIsNone(second["error_snippet"])
+
+
+class FallbackReasonTests(_LogPathRedirected):
+    """run_with_fallback's fallback_reason handoff: the second attempt's
+    record names the prior attempt's bounded outcome, the first attempt's
+    is null, and a stale handoff never leaks into an unrelated later call."""
+
+    @staticmethod
+    def _runner(failures: dict[str, Exception]) -> Callable[[str], str]:
+        def run(backend: str) -> str:
+            with llm_backends._track_backend_call(backend, "m", "p"):
+                if backend in failures:
+                    raise failures[backend]
+                return "ok"
+
+        return run
+
+    def test_86_first_attempt_logs_no_fallback_reason(self) -> None:
+        backend, out = llm_backends.run_with_fallback(self._runner({}), backends=["pi"])
+        self.assertEqual((backend, out), ("pi", "ok"))
+        record = _read_jsonl(self.log_path)[0]
+        self.assertIsNone(record["fallback_reason"])
+
+    def test_87_fallback_records_prior_error_outcome(self) -> None:
+        runner = self._runner({"pi": llm_backends.BackendError("exited 1: boom")})
+        backend, out = llm_backends.run_with_fallback(
+            runner, backends=["pi", "copilot"]
+        )
+        self.assertEqual((backend, out), ("copilot", "ok"))
+        first, second = _read_jsonl(self.log_path)
+        self.assertIsNone(first["fallback_reason"])
+        self.assertEqual(second["fallback_reason"], "error")
+        self.assertEqual(second["backend"], "copilot")
+
+    def test_88_fallback_records_prior_timeout_outcome(self) -> None:
+        runner = self._runner(
+            {"pi": llm_backends.BackendTimeoutError("timed out after 60s")}
+        )
+        llm_backends.run_with_fallback(runner, backends=["pi", "copilot"])
+        second = _read_jsonl(self.log_path)[1]
+        self.assertEqual(second["fallback_reason"], "timeout")
+
+    def test_89_no_stale_fallback_reason_after_chain_ends(self) -> None:
+        # The chain exhausts every candidate and raises; a later, unrelated
+        # direct call must not inherit the dead chain's fallback_reason.
+        runner = self._runner(
+            {
+                "pi": llm_backends.BackendError("boom"),
+                "copilot": llm_backends.BackendError("boom"),
+            }
+        )
+        with self.assertRaises(llm_backends.BackendError):
+            llm_backends.run_with_fallback(runner, backends=["pi", "copilot"])
+        with llm_backends._track_backend_call("agy", "m", "p"):
+            pass
+        last = _read_jsonl(self.log_path)[-1]
+        self.assertIsNone(last["fallback_reason"])
+
+    def test_90_isolation_error_mid_chain_never_leaks_fallback_reason(self) -> None:
+        # The next candidate refuses to build a command at all
+        # (IsolationError propagates, not caught by run_with_fallback); the
+        # pending handoff must still not reach a later unrelated call.
+        runner = self._runner({"pi": llm_backends.BackendError("boom")})
+
+        def failing_runner(backend: str) -> str:
+            if backend == "copilot":
+                raise llm_backends.IsolationError("no descriptor")
+            return runner(backend)
+
+        with self.assertRaises(llm_backends.IsolationError):
+            llm_backends.run_with_fallback(failing_runner, backends=["pi", "copilot"])
+        with llm_backends._track_backend_call("agy", "m", "p"):
+            pass
+        last = _read_jsonl(self.log_path)[-1]
+        self.assertIsNone(last["fallback_reason"])
 
 
 class OpencodeToolUseEventsTests(unittest.TestCase):

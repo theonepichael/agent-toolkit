@@ -526,6 +526,21 @@ class BackendModelPolicyError(BackendError):
     """
 
 
+# Fallback-chain telemetry handoff. When run_with_fallback moves to the
+# next candidate after a failure, it parks the failed attempt's outcome
+# ("timeout"/"error" — the same bounded enum _track_backend_call logs) in
+# _pending_fallback_reason; the next _track_backend_call consumes it as the
+# new record's fallback_reason and reports its own outcome in
+# _last_attempt_outcome for the following iteration. Module-level state is
+# deliberate: these scripts drive backends one call at a time from a single
+# thread, and threading the value through the Callable[[str], str] runner
+# signature would break every existing caller. run_with_fallback clears the
+# pending value on exit so a dead chain can never leak into an unrelated
+# later call (including the IsolationError path, which exits without
+# consuming it).
+_last_attempt_outcome: str | None = None
+_pending_fallback_reason: str | None = None
+
 # The minimal stable fragment of copilot's entitlement-rejection wording.
 # Deliberately not the vendor's full sentence: they can reword the rest, and
 # a reworded message must degrade to a plain BackendError, never
@@ -609,11 +624,19 @@ def run_with_fallback(
         )
 
     failures: list[str] = []
-    for backend in candidates:
-        try:
-            return backend, runner(backend)
-        except BackendError as exc:
-            failures.append(f"{backend}: {exc}")
+    global _pending_fallback_reason
+    try:
+        for index, backend in enumerate(candidates):
+            if index:
+                _pending_fallback_reason = _last_attempt_outcome
+            try:
+                return backend, runner(backend)
+            except BackendError as exc:
+                failures.append(f"{backend}: {exc}")
+    finally:
+        # Consumed by a successful next attempt or abandoned; either way it
+        # must never outlive this call.
+        _pending_fallback_reason = None
     raise BackendError("all eligible backends failed — " + "; ".join(failures))
 
 
@@ -788,6 +811,9 @@ def _log_backend_call(
     outcome: str,
     wall_seconds: float,
     prompt_bytes: int,
+    *,
+    error_snippet: str | None = None,
+    fallback_reason: str | None = None,
 ) -> None:
     """Best-effort: append one JSONL record of a backend-call attempt.
 
@@ -796,28 +822,36 @@ def _log_backend_call(
     :func:`run_opencode`. Logging a call is not part of any caller's
     contract, so a failure here (bad data, disk full, permissions) must
     never surface as a call failure.
+
+    ``error_snippet`` carries the failing attempt's exception text,
+    redacted through :func:`cli_common.redact_secrets` (the record ships to
+    disk, so sanitization is not optional and truncation alone would never
+    count) and ``None`` on success. ``fallback_reason`` names the *prior*
+    attempt's outcome when this call follows a fallback ("timeout" or
+    "error" — the same bounded enum ``outcome`` uses, never free text) and
+    is ``None`` for the first attempt in a chain. Both fields are additive:
+    nothing outside this module parses the file, and readers tolerate the
+    nulls.
     """
-    try:
-        record = {
-            "ts": datetime.now(UTC).isoformat(timespec="seconds"),
-            "backend": backend,
-            "model": model,
-            "outcome": outcome,  # "success" | "timeout" | "error"
-            "wall_seconds": round(wall_seconds, 2),
-            "prompt_bytes": prompt_bytes,
-        }
-        line = (json.dumps(record) + "\n").encode()
-        path = _backend_call_log_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        # Unbuffered, single write() of the whole line: guarantees exactly
-        # one write(2) syscall for a line well under PIPE_BUF (4096 on
-        # Linux), which is what makes O_APPEND interleaving-free across
-        # concurrent processes. A buffered text-mode open(path, "a") does
-        # not carry that guarantee.
-        with path.open("ab", buffering=0) as f:
-            f.write(line)
-    except Exception:
-        pass
+    record = {
+        "ts": datetime.now(UTC).isoformat(timespec="seconds"),
+        "backend": backend,
+        "model": model,
+        "outcome": outcome,  # "success" | "timeout" | "error"
+        "wall_seconds": round(wall_seconds, 2),
+        "prompt_bytes": prompt_bytes,
+        "error_snippet": (
+            cli_common.redact_secrets(error_snippet, max_length=500)
+            if error_snippet
+            else None
+        ),
+        "fallback_reason": fallback_reason,
+    }
+    # The O_APPEND single-write technique lives in cli_common.append_jsonl
+    # now — shared with every other durable-JSONL writer in this repo — but
+    # the atomicity property is identical to what this module proven out:
+    # exactly one unbuffered write(2) under O_APPEND per line.
+    cli_common.append_jsonl(_backend_call_log_path(), record)
 
 
 @contextmanager
@@ -833,22 +867,41 @@ def _track_backend_call(backend: str, model: str | None, prompt: str) -> Iterato
     its traceback still propagate via ``raise``), it only guarantees that
     every failure mode — including one this module doesn't raise today —
     gets one logged "error" record instead of silently escaping uncounted.
+
+    A failure's ``str(exc)`` is logged as the record's redacted
+    ``error_snippet``: every BackendError this module raises already embeds
+    the relevant subprocess detail in its own message, so the exception text
+    captures the full failure surface. A non-None ``fallback_reason`` —
+    parked by :func:`run_with_fallback` when the prior candidate failed — is
+    consumed here so it lands on exactly one record, this attempt's.
     """
+    global _last_attempt_outcome
     start = time.monotonic()
     prompt_bytes = len(prompt.encode())
     outcome = "success"
+    error_snippet: str | None = None
+    fallback_reason = _pending_fallback_reason
     try:
         yield
-    except BackendTimeoutError:
+    except BackendTimeoutError as exc:
         outcome = "timeout"
+        error_snippet = str(exc)
         raise
-    except Exception:
+    except Exception as exc:
         outcome = "error"
+        error_snippet = str(exc)
         raise
     finally:
         _log_backend_call(
-            backend, model, outcome, time.monotonic() - start, prompt_bytes
+            backend,
+            model,
+            outcome,
+            time.monotonic() - start,
+            prompt_bytes,
+            error_snippet=error_snippet,
+            fallback_reason=fallback_reason,
         )
+        _last_attempt_outcome = outcome
 
 
 def run_agy(prompt: str, *, model: str, timeout: float) -> str:
