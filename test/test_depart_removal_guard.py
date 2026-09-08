@@ -28,6 +28,8 @@ ALLOWED_RMTREE_FUNCTIONS = {
         "_install_nerd_font",  # tmp_dir download-staging cleanup, not the installed tree itself
         "_install_neovim_fallback",  # tmp_dir cleanup + verdict-gated prefix removal (installed_tree_verdict: TREE_MODIFIED blocks, TREE_UNCHANGED/TREE_UNRECORDED proceed)
         "_wipe_neovim_dirs",  # deliberate unguarded XDG state/cache sweep, distinct from the vendor runtime tree
+    },
+    "depart_exec.py": {
         "_execute_remove_directory",  # generic executor for .nvm + shared neovim dirs, never manifest-tracked
     },
     "depart.py": {
