@@ -33,6 +33,9 @@ import registerSwarmTools, {
   findTabByLabel,
   itemPaths,
   parseReadyItems,
+  buildShowArgv,
+  parseShownItem,
+  isSuspiciousFinish,
   parseTabCreate,
   readCaptureOffers,
   selectSchedulable,
@@ -1317,6 +1320,289 @@ describe("swarm_poll execute() wiring", () => {
     expect(res.details.events.map((e) => e.kind)).toEqual(["error"]);
     expect(workerCloses(stub)).toHaveLength(1);
     expect(loadState(runId, dir)?.workers).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A "finished" event with zero evidence of real progress (no dev_status.py
+// status advance, no queued capture) -- the wave-1 silent no-op finishes
+// observed 2026-09-07. Mirrors the resync-drop path's own convention: keep
+// the existing "finished" kind, attach a verify-me `detail`, never clobber
+// one that's already there.
+// ---------------------------------------------------------------------------
+
+describe("swarm_poll: suspicious finish (no dev_status.py progress, no capture)", () => {
+  let dir: string;
+  let priorStateDir: string | undefined;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "swarm-suspicious-finish-"));
+    priorStateDir = process.env.PI_SWARM_STATE_DIR;
+    process.env.PI_SWARM_STATE_DIR = dir;
+  });
+
+  afterEach(() => {
+    if (priorStateDir === undefined) delete process.env.PI_SWARM_STATE_DIR;
+    else process.env.PI_SWARM_STATE_DIR = priorStateDir;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  type Result = { code: number; stdout: string; stderr: string };
+
+  /** Seeds one active worker and wires swarm_poll with a configurable `show` response. */
+  function setup(opts: {
+    runId: string;
+    show: Result | ((slug: string) => Result);
+    slug?: string;
+  }) {
+    const agentId = `${opts.runId}-w1`;
+    const slug = opts.slug ?? "some-item";
+    const worker: WorkerRecord = {
+      agent: agentId,
+      slug,
+      paneId: "w1:pZ",
+      tabId: "w1:tZ",
+      lifecycle: "active",
+    };
+    saveState({ runId: opts.runId, concurrency: 2, nextCounter: 1, workers: [worker] }, dir);
+
+    const stub = makeStubPi((argv) => {
+      const [a, b] = argv;
+      // getOrInitState reconciles loaded state against a live `agent list`
+      // on every call, dropping any worker whose agent id isn't reported --
+      // this branch is what keeps the seeded worker "active" at all.
+      if (a === "agent" && b === "list") {
+        return {
+          code: 0,
+          stdout: realAgentListEnvelope({
+            agent: "pi",
+            agent_status: "working",
+            name: agentId,
+            pane_id: "w1:pZ",
+          }),
+          stderr: "",
+        };
+      }
+      if (a === "agent" && b === "wait") {
+        return { code: 0, stdout: realWaitEnvelope("idle", agentId, "w1:pZ"), stderr: "" };
+      }
+      if (b === "show") {
+        return typeof opts.show === "function" ? opts.show(argv[2] ?? "") : opts.show;
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    });
+
+    registerSwarmTools(stub.pi as unknown as Parameters<typeof registerSwarmTools>[0]);
+    const poll = stub.tools.get("swarm_poll");
+    if (!poll) throw new Error("swarm_poll was never registered");
+    return { poll, stub };
+  }
+
+  const execute = (poll: { execute: (...a: never[]) => Promise<unknown> }, runId: string) =>
+    poll.execute(
+      ...(["c1", { runId, timeoutMs: 1000 }, undefined] as unknown as never[]),
+    ) as Promise<{ details: { events: { kind: string; detail?: string }[] } }>;
+
+  test("status still in-progress, zero captures -- gets a verify-me detail", async () => {
+    const runId = "suspicious-inprogress";
+    const { poll } = setup({
+      runId,
+      show: { code: 0, stdout: JSON.stringify({ status: "in-progress" }), stderr: "" },
+    });
+
+    const res = await execute(poll, runId);
+
+    expect(res.details.events.map((e) => e.kind)).toEqual(["finished"]);
+    expect(res.details.events[0]?.detail).toContain("in-progress");
+    expect(res.details.events[0]?.detail).toContain("verify");
+  });
+
+  test("status still open, zero captures -- gets a verify-me detail", async () => {
+    const runId = "suspicious-open";
+    const { poll } = setup({
+      runId,
+      show: { code: 0, stdout: JSON.stringify({ status: "open" }), stderr: "" },
+    });
+
+    const res = await execute(poll, runId);
+
+    expect(res.details.events[0]?.detail).toContain("open");
+  });
+
+  test("status done -- no detail, a real finish is not flagged", async () => {
+    const runId = "not-suspicious-done";
+    const { poll } = setup({
+      runId,
+      show: { code: 0, stdout: JSON.stringify({ status: "done" }), stderr: "" },
+    });
+
+    const res = await execute(poll, runId);
+
+    expect(res.details.events[0]?.detail).toBeUndefined();
+  });
+
+  test("a failing show call -- fail open, no detail", async () => {
+    const runId = "show-fails";
+    const { poll } = setup({
+      runId,
+      show: { code: 1, stdout: "", stderr: "[show] not found: some-item" },
+    });
+
+    const res = await execute(poll, runId);
+
+    expect(res.details.events[0]?.detail).toBeUndefined();
+  });
+
+  test("a timed-out/garbage show call -- fail open, no detail", async () => {
+    const runId = "show-garbage";
+    const { poll } = setup({
+      runId,
+      show: { code: 0, stdout: "not json", stderr: "" },
+    });
+
+    const res = await execute(poll, runId);
+
+    expect(res.details.events[0]?.detail).toBeUndefined();
+  });
+
+  test("a throwing show call -- fail open for this event, never crashes the poll", async () => {
+    const runId = "show-throws";
+    const worker: WorkerRecord = {
+      agent: `${runId}-w1`,
+      slug: "some-item",
+      paneId: "w1:pZ",
+      tabId: "w1:tZ",
+      lifecycle: "active",
+    };
+    saveState({ runId, concurrency: 2, nextCounter: 1, workers: [worker] }, dir);
+    const stub = makeStubPi((argv) => {
+      const [a, b] = argv;
+      if (a === "agent" && b === "list") {
+        return {
+          code: 0,
+          stdout: realAgentListEnvelope({
+            agent: "pi",
+            agent_status: "working",
+            name: `${runId}-w1`,
+            pane_id: "w1:pZ",
+          }),
+          stderr: "",
+        };
+      }
+      if (a === "agent" && b === "wait") {
+        return { code: 0, stdout: realWaitEnvelope("idle", `${runId}-w1`, "w1:pZ"), stderr: "" };
+      }
+      if (b === "show") throw new Error("spawn failed");
+      return { code: 0, stdout: "", stderr: "" };
+    });
+    registerSwarmTools(stub.pi as unknown as Parameters<typeof registerSwarmTools>[0]);
+    const poll = stub.tools.get("swarm_poll");
+    if (!poll) throw new Error("swarm_poll was never registered");
+
+    const res = await execute(poll, runId);
+
+    expect(res.details.events.map((e) => e.kind)).toEqual(["finished"]);
+    expect(res.details.events[0]?.detail).toBeUndefined();
+  });
+
+  test("multiple finished events in one batch resolve independently", async () => {
+    const runId = "suspicious-batch";
+    const workers: WorkerRecord[] = [
+      {
+        agent: `${runId}-w1`,
+        slug: "item-a",
+        paneId: "w1:pA",
+        tabId: "w1:tA",
+        lifecycle: "active",
+      },
+      {
+        agent: `${runId}-w2`,
+        slug: "item-b",
+        paneId: "w1:pB",
+        tabId: "w1:tB",
+        lifecycle: "active",
+      },
+    ];
+    saveState({ runId, concurrency: 2, nextCounter: 1, workers }, dir);
+    const stub = makeStubPi((argv) => {
+      const [a, b, slug] = argv;
+      if (a === "agent" && b === "list") {
+        return {
+          code: 0,
+          stdout: realAgentListEnvelope(
+            { agent: "pi", agent_status: "working", name: `${runId}-w1`, pane_id: "w1:pA" },
+            { agent: "pi", agent_status: "working", name: `${runId}-w2`, pane_id: "w1:pB" },
+          ),
+          stderr: "",
+        };
+      }
+      if (a === "agent" && b === "wait") {
+        // Both workers settle idle in the same poll.
+        return { code: 0, stdout: realWaitEnvelope("idle", `${runId}-w1`, "w1:pA"), stderr: "" };
+      }
+      if (b === "show") {
+        return slug === "item-a"
+          ? { code: 0, stdout: JSON.stringify({ status: "in-progress" }), stderr: "" }
+          : { code: 0, stdout: JSON.stringify({ status: "done" }), stderr: "" };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    });
+    registerSwarmTools(stub.pi as unknown as Parameters<typeof registerSwarmTools>[0]);
+    const poll = stub.tools.get("swarm_poll");
+    if (!poll) throw new Error("swarm_poll was never registered");
+
+    const res = await execute(poll, runId);
+
+    const bySlug = new Map(
+      (res.details.events as { slug?: string; detail?: string }[]).map((e) => [e.slug, e.detail]),
+    );
+    expect(bySlug.get("item-a")).toContain("in-progress");
+    expect(bySlug.get("item-b")).toBeUndefined();
+  });
+
+  test("timed_out/error events are never checked or flagged", async () => {
+    const runId = "not-finished-kind";
+    const worker: WorkerRecord = {
+      agent: `${runId}-w1`,
+      slug: "some-item",
+      paneId: "w1:pZ",
+      tabId: "w1:tZ",
+      lifecycle: "active",
+    };
+    saveState({ runId, concurrency: 2, nextCounter: 1, workers: [worker] }, dir);
+    let sawShowCall = false;
+    const stub = makeStubPi((argv) => {
+      const [a, b] = argv;
+      if (a === "agent" && b === "list") {
+        return {
+          code: 0,
+          stdout: realAgentListEnvelope({
+            agent: "pi",
+            agent_status: "working",
+            name: `${runId}-w1`,
+            pane_id: "w1:pZ",
+          }),
+          stderr: "",
+        };
+      }
+      if (a === "agent" && b === "wait") {
+        return {
+          code: 1,
+          stdout: "",
+          stderr: JSON.stringify({ error: { code: "agent_not_found" } }),
+        };
+      }
+      if (b === "show") sawShowCall = true;
+      return { code: 0, stdout: "", stderr: "" };
+    });
+    registerSwarmTools(stub.pi as unknown as Parameters<typeof registerSwarmTools>[0]);
+    const poll = stub.tools.get("swarm_poll");
+    if (!poll) throw new Error("swarm_poll was never registered");
+
+    const res = await execute(poll, runId);
+
+    expect(res.details.events.map((e) => e.kind)).toEqual(["error"]);
+    expect(sawShowCall).toBe(false);
   });
 });
 
@@ -2707,6 +2993,53 @@ describe("parseReadyItems / itemPaths", () => {
   });
 });
 
+describe("buildShowArgv", () => {
+  test("shells out to dev_status.py show <slug>", () => {
+    expect(buildShowArgv("some-item")).toEqual([
+      "python3",
+      expect.stringContaining("dev_status.py") as unknown as string,
+      "show",
+      "some-item",
+    ]);
+  });
+});
+
+describe("parseShownItem", () => {
+  test("reads the status field of a valid item payload", () => {
+    expect(parseShownItem(JSON.stringify({ status: "in-progress" }))?.status).toBe("in-progress");
+  });
+
+  test("returns null on unparseable or non-object output instead of throwing", () => {
+    expect(parseShownItem("not json")).toBeNull();
+    expect(parseShownItem("")).toBeNull();
+    expect(parseShownItem("42")).toBeNull();
+    expect(parseShownItem("null")).toBeNull();
+  });
+});
+
+describe("isSuspiciousFinish", () => {
+  test("flags open/in-progress status with zero captures", () => {
+    expect(isSuspiciousFinish("open", 0)).toBe(true);
+    expect(isSuspiciousFinish("in-progress", 0)).toBe(true);
+  });
+
+  test("never flags done/in-review, regardless of captures", () => {
+    expect(isSuspiciousFinish("done", 0)).toBe(false);
+    expect(isSuspiciousFinish("in-review", 0)).toBe(false);
+  });
+
+  test("never flags a nonzero capture count, regardless of status", () => {
+    expect(isSuspiciousFinish("open", 1)).toBe(false);
+    expect(isSuspiciousFinish("in-progress", 3)).toBe(false);
+  });
+
+  test("fails open on a query that produced no usable status", () => {
+    expect(isSuspiciousFinish(undefined, 0)).toBe(false);
+    expect(isSuspiciousFinish(null, 0)).toBe(false);
+    expect(isSuspiciousFinish("some-other-string", 0)).toBe(false);
+  });
+});
+
 describe("selectSchedulable", () => {
   // `worker_safe: true` is what dev_status.py's `ready` now stamps on an
   // ordinary item. The helper carries it so these tests keep describing a
@@ -3883,7 +4216,13 @@ describe("swarm_poll blocked-state resync", () => {
   };
 
   /** Seeds one parked worker and returns a wired swarm_poll with configurable herdr responses. */
-  function setup(opts: { runId: string; get: Result; wait?: Result; listAlive?: boolean }) {
+  function setup(opts: {
+    runId: string;
+    get: Result;
+    wait?: Result;
+    listAlive?: boolean;
+    show?: Result;
+  }) {
     const worker: WorkerRecord = {
       agent: `${opts.runId}-w1`,
       slug: "resync-item",
@@ -3897,6 +4236,7 @@ describe("swarm_poll blocked-state resync", () => {
     const stub = makeStubPi((argv) => {
       const [a, b] = argv;
       if (a === "agent" && b === "get") return opts.get;
+      if (b === "show" && opts.show) return opts.show;
       if (a === "agent" && b === "wait") {
         return opts.wait ?? { code: 0, stdout: "", stderr: "" };
       }
@@ -3947,6 +4287,25 @@ describe("swarm_poll blocked-state resync", () => {
     // The drain loop owns the teardown: captures read, pane closed, record dropped.
     expect(stub.calls.filter((c) => c.argv[0] === "tab" && c.argv[1] === "close")).toHaveLength(1);
     expect(loadState(runId, dir)?.workers).toEqual([]);
+  });
+
+  test("a resync-drop's own detail survives even when the item also looks suspicious", async () => {
+    // The resync-drop path already sets a detail on this "finished" event,
+    // and the item it drops also has zero captures and (here) a status that
+    // hasn't advanced -- exactly what the no-op check would otherwise flag
+    // too. The resync-drop message must win; it must never be overwritten.
+    const runId = "resyncgone-also-suspicious";
+    const { poll } = setup({
+      runId,
+      get: GONE,
+      show: { code: 0, stdout: JSON.stringify({ status: "open" }), stderr: "" },
+    });
+
+    const res = await execute(poll, runId);
+
+    expect(res.details.events.map((e) => e.kind)).toEqual(["finished"]);
+    expect(res.details.events[0]?.detail).toContain("resync");
+    expect(res.details.events[0]?.detail).toContain("inferred");
   });
 
   test("a parked worker whose agent resumed working is unparked and re-armed", async () => {

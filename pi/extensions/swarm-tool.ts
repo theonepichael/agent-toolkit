@@ -368,7 +368,7 @@ export interface PollEvent {
   blockClass?: BlockClass; // blocked only
   options?: string[]; // blocked only -- the worker's REAL rendered labels
   captures?: CaptureOffer[]; // finished only -- offers the worker queued instead of asking
-  detail?: string; // timed_out/error only -- the raw herdr error detail, for an honest digest
+  detail?: string; // timed_out/error always; finished sometimes -- an inferred/unverified outcome (resync-drop, or a suspicious no-evidence finish) gets an honest verify-me note here too
   elapsedMs?: number; // still_working only -- working time so far, against the budget
   checkIn?: number; // still_working only -- 1-based, so "check-in 7 of a 4h budget" is sayable
 }
@@ -766,6 +766,43 @@ export function parseReadyItems(stdout: string): ReadyItem[] {
   } catch {
     return [];
   }
+}
+
+/** `dev_status.py show <slug>` reports one item's full record; only `status` matters here. */
+export function buildShowArgv(slug: string): string[] {
+  return ["python3", devStatusPath(), "show", slug];
+}
+
+/** One `show` result, as much of it as the finish-evidence check needs. */
+export interface ShownItem {
+  /**
+   * `dev_status.py`'s status field: one of `VALID_STATUSES`
+   * (`"open"`/`"in-progress"`/`"in-review"`/`"done"`) in practice, but
+   * `unknown` until checked -- the payload comes from JSON this module does
+   * not control.
+   */
+  status?: unknown;
+}
+
+export function parseShownItem(stdout: string): ShownItem | null {
+  try {
+    const parsed: unknown = JSON.parse(stdout);
+    return parsed && typeof parsed === "object" ? (parsed as ShownItem) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether a "finished" event has zero evidence of real progress: the item's
+ * dev_status.py status never advanced past open/in-progress, and no capture
+ * was queued. Fail open -- a `shownStatus` that isn't exactly "open" or
+ * "in-progress" (including a failed/unparseable query's `undefined`/`null`)
+ * never counts as suspicious; only a positive, successfully-read status does.
+ */
+export function isSuspiciousFinish(shownStatus: unknown, captureCount: number): boolean {
+  if (captureCount > 0) return false;
+  return shownStatus === "open" || shownStatus === "in-progress";
 }
 
 /** The files an item declares it will touch. Absent or malformed entries simply contribute nothing. */
@@ -2428,6 +2465,7 @@ export default function (pi: ExtensionAPI) {
       "timed_out means the worker exceeded its whole-item WORKING-TIME budget and was stopped deliberately -- not that a wait deadline elapsed, which is now merely a check-in. Its tab is closed and its slot freed, but the item is probably still in-progress with a live claim and its worktree survives on disk, so relay the recovery detail in the event verbatim rather than reporting it as a worker that misbehaved. The detail also says whether the worker's liveness was actually confirmed before it was stopped, or whether the probe failed and the stop was on the budget alone -- do not report the second as though it were the first.",
       "error means the agent is positively gone (herdr reported agent_not_found), it crashed, or the wait itself failed. A transient failure of the liveness check is NOT an error: it re-arms, because killing a healthy worker on an inconclusive signal is the bug this tool was fixed for.",
       "finished/timed_out/error events already closed their pane and freed their slot; if the READY queue still has items and the cap has headroom, call swarm_spawn again for the next batch. still_working frees nothing.",
+      "A finished event can also carry a detail -- either the item's dev_status.py status never advanced past open/in-progress with zero captures queued (no evidence of real progress during the run), or its agent vanished from herdr while parked and the outcome was inferred, not observed. Either way, do NOT treat that event as a clean, no-further-action success: surface it prominently in your end-of-run digest, the same way queued capture offers already are, and let the human decide whether the item needs a fresh worker. A finished event with no detail is a real, verified success.",
     ],
     parameters: Type.Object({
       runId: Type.String(),
@@ -2682,6 +2720,41 @@ export default function (pi: ExtensionAPI) {
         }
       }
       persist(state);
+
+      // Minimum-evidence check for a "finished" event: was there ANY sign of
+      // real progress -- the item's dev_status.py status advanced past
+      // open/in-progress, or at least one capture was queued? If not, attach
+      // a verify-me detail, same as the resync-drop path above already does
+      // for its own "outcome inferred, not observed" case -- and never
+      // overwrite a detail a path like that one already set. Batched via
+      // Promise.all (bounded in practice by DEFAULT_CONCURRENCY, a small
+      // integer) with each call wrapped in its own try/catch, mirroring the
+      // resync pass's identical per-call error boundary above: an
+      // inconclusive or failed check never mutates anything and never
+      // affects another event.
+      await Promise.all(
+        events
+          .filter((e) => e.kind === "finished")
+          .map(async (event) => {
+            try {
+              const result = await pi.exec("python3", buildShowArgv(event.slug).slice(1), {
+                signal,
+                timeout: PROBE_TIMEOUT_MS,
+              });
+              if (result.code !== 0) return;
+              const shown = parseShownItem(result.stdout);
+              if (shown === null || event.detail !== undefined) return;
+              if (isSuspiciousFinish(shown.status, (event.captures ?? []).length)) {
+                event.detail =
+                  `dev_status.py still shows status ${JSON.stringify(shown.status)} and zero ` +
+                  "captures were queued during this run -- verify the item's actual state " +
+                  "before treating this as complete.";
+              }
+            } catch {
+              // Inconclusive -- same fail-open rule every other check in this file follows.
+            }
+          }),
+      );
 
       const stalled = stalledRelayWorkers(state.workers, Date.now(), rt.stallMs);
       const stalledNote = stalled.length
