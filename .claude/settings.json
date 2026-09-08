@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 ~/.claude/scripts/second_opinion.py:*)",
+      "Bash(herdr agent read:*)",
+      "Bash(herdr agent wait:*)",
+      "Bash(herdr agent get:*)",
+      "Bash(herdr agent list)",
+      "Bash(herdr agent explain:*)",
+      "Bash(herdr pane get:*)",
+      "Bash(herdr pane list)",
+      "Bash(herdr tab list)",
+      "Bash(herdr tab get:*)",
+      "Bash(uv run pytest:*)",
+      "Bash(uv run ruff check:*)",
+      "Bash(python3 install.py --check-links*)",
+      "Bash(python3 install.py --dry-run*)"
+    ]
+  }
+}
