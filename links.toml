@@ -527,6 +527,50 @@ src = "agy/hooks/agy-elapsed.js"
 dest = "~/.claude/hooks/agy-elapsed.js"
 harness = "agy"
 
+# ── codex (OpenAI Codex CLI) ──────────────────────────────────────
+
+# Codex reads global instructions from ~/.codex/AGENTS.md
+# (AGENTS.override.md wins if present; verified against the 0.153.4 docs).
+# Caveat: Codex caps the combined instruction chain at
+# project_doc_max_bytes (32 KiB default) and this file is ~27 KB of it --
+# see README.md's codex row.
+[[link]]
+src = "claude/CORE_INSTRUCTIONS.md"
+dest = "~/.codex/AGENTS.md"
+harness = "codex"
+
+# Codex's USER-scope skills dir (~/.agents/skills). Per-FILE links like
+# copilot/agy -- the generated skills are self-contained. Deliberately NO
+# [[managed_dir]] row: this is a shared cross-tool namespace (the open
+# agentskills.io standard location), so foreign skills there are
+# legitimate; each link below still gets individual drift checking from
+# --check-links. Codex follows symlinked skill files when scanning
+# (docs, build-skills).
+[[link]]
+src = "codex/skills/dashboard/SKILL.md"
+dest = "~/.agents/skills/dashboard/SKILL.md"
+harness = "codex"
+
+[[link]]
+src = "codex/skills/recap/SKILL.md"
+dest = "~/.agents/skills/recap/SKILL.md"
+harness = "codex"
+
+[[link]]
+src = "codex/skills/grill-me/SKILL.md"
+dest = "~/.agents/skills/grill-me/SKILL.md"
+harness = "codex"
+
+[[link]]
+src = "codex/skills/backlog-item/SKILL.md"
+dest = "~/.agents/skills/backlog-item/SKILL.md"
+harness = "codex"
+
+[[link]]
+src = "codex/skills/make-skill/SKILL.md"
+dest = "~/.agents/skills/make-skill/SKILL.md"
+harness = "codex"
+
 # ── Pi ───────────────────────────────────────────────────────────────────
 
 [[link]]

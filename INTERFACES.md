@@ -686,9 +686,9 @@ SessionStart hook + CLI: detect when a harness's instruction-file discovery beha
   - `check [--hook] [--strict]` — stateless version-pin comparison for load-bearing harnesses (default)
     - `--hook` — format output for SessionStart hook consumption
     - `--strict` — exit 2 when a version mismatch is noted (default: exit 0)
-  - `probe [--harness {claude,opencode,pi,copilot,agy}]` — on-demand live semantic verification (~10-15 API calls)
-    - `--harness` — probe a single harness instead of all five (choices: claude, opencode, pi, copilot, agy)
-- Environment: `OPENCODE_PROBE_MODEL`, `XDG_CACHE_HOME`
+  - `probe [--harness {claude,opencode,pi,copilot,agy,codex}]` — on-demand live semantic verification (~10-15 API calls)
+    - `--harness` — probe a single harness instead of all supported ones (choices: claude, opencode, pi, copilot, agy, codex)
+- Environment: `CODEX_PROBE_MODEL`, `OPENCODE_PROBE_MODEL`, `XDG_CACHE_HOME`
 - Depends on: `cli_common.py`
 - Exceptions:
   - `class HarnessCheckError(Exception)` — Raised when a harness check can't proceed (subprocess failure, not a missing binary).
@@ -1327,7 +1327,7 @@ are copy-once seeds for exactly that reason.
 
 | Source | Installed at |
 | --- | --- |
-| `claude/CORE_INSTRUCTIONS.md` | `~/.claude/CLAUDE.md` (claude), `~/.copilot/copilot-instructions.md` (copilot), `~/.gemini/GEMINI.md` (agy), `~/.pi/agent/AGENTS.md` (pi) |
+| `claude/CORE_INSTRUCTIONS.md` | `~/.claude/CLAUDE.md` (claude), `~/.copilot/copilot-instructions.md` (copilot), `~/.gemini/GEMINI.md` (agy), `~/.pi/agent/AGENTS.md` (pi), `~/.codex/AGENTS.md` (codex) |
 | `claude/icons/agy.png` | not symlinked by `links.toml` |
 | `claude/icons/claude.png` | not symlinked by `links.toml` |
 | `claude/icons/copilot.png` | not symlinked by `links.toml` |

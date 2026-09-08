@@ -223,6 +223,7 @@ class ProbeTestCase(unittest.TestCase):
                 "pi": hdc._TOKEN_AGENTS_ROOT,
                 "copilot": f"{hdc._TOKEN_CLAUDE_ROOT}, {hdc._TOKEN_GEMINI_ROOT}, {hdc._TOKEN_AGENTS_ROOT}",
                 "agy": "none",
+                "codex": hdc._TOKEN_AGENTS_ROOT,
             }
         )
         code, output = self.run_probe(fake_run=fake)
