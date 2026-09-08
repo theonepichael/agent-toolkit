@@ -699,7 +699,7 @@ Launch pi agents in herdr tabs to work backlog items.
   - `parse_tab_list(listing: dict[str, object]) -> list[dict[str, object]]` — Tabs out of a `herdr tab list` envelope; [] on anything unexpected.
   - `live_tab_ids_with_label(label: str) -> list[str]` — Ids of every live tab carrying exactly ``label``.
   - `parse_agent_names(listing: dict[str, object]) -> list[str]` — Agent names out of a `herdr agent list` envelope; [] on anything unexpected.
-  - `wait_agent_deregistered(name: str) -> None` — Poll until no live agent carries ``name``, bounded; refuse if it persists.
+  - `wait_agent_deregistered(name: str, *, retry_advice: str = 'Retry `restart` (it relaunches once the name frees)') -> None` — Poll until no live agent carries ``name``, bounded; refuse if it persists.
   - `spawn_in_new_tab(*, cwd: str, label: str, prompt: str, model: str | None) -> dict[str, object]` — Create a tab, start pi in it, and hand it its prompt.
   - `ready_slugs() -> list[str]` — Slugs currently in READY, straight from ``dev_status.py ready``.
   - `herdr(argv: list[str]) -> dict[str, object]` — Run a herdr command and return its parsed JSON result.

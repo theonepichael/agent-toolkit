@@ -26,6 +26,12 @@ Refusing here is a convenience for the human watching, not a guarantee --
 ``swarm_spawn`` re-reads the READY set on every spawn call, so enforcement
 belongs there. That is a separate backlog item.
 
+A bare ``agent start`` timeout (herdr's own "timed out waiting for agent
+startup") has been observed to be transient, so ``spawn_in_new_tab`` retries
+it a bounded number of times -- each attempt against a brand new tab/pane,
+never the one the timeout gave up on -- before treating it as a hard
+failure. Any other failure still fails on the first attempt, unchanged.
+
 Usage:
     herdr_delegate.py plan
     herdr_delegate.py launch --slug <slug> [--model <model>]
@@ -75,6 +81,36 @@ DEV_STATUS = Path(__file__).parent / "dev_status.py"
 
 class RefusedError(RuntimeError):
     """A launch that must not proceed, with a reason fit to show the user."""
+
+    def __init__(self, message: str, *, code: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+        """herdr's own ``error.code`` for this failure, when parseable (see
+        ``_parse_herdr_error_code``). ``None`` for a non-JSON or
+        differently-shaped stderr -- deliberately not passed to
+        ``super().__init__`` so ``.args``/``str()`` stay exactly the message,
+        unaffected by this attribute."""
+
+
+def _parse_herdr_error_code(stderr: str) -> str | None:
+    """``error.code`` from a herdr JSON error envelope, or ``None``.
+
+    ``None`` for anything that isn't exactly ``{"error": {"code": "<str>", ...}}``
+    -- non-JSON stderr, JSON missing the ``error`` key, a non-dict ``error``,
+    or a non-string ``code``. All of these are treated identically by the
+    caller (an unrecognized failure, never retried).
+    """
+    try:
+        parsed = json.loads(stderr)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    error = parsed.get("error")
+    if not isinstance(error, dict):
+        return None
+    code = error.get("code")
+    return code if isinstance(code, str) else None
 
 
 def require_herdr_env(env: dict[str, str] | os._Environ[str]) -> None:
@@ -337,14 +373,19 @@ RESTART_DEREGISTER_POLLS = 20
 RESTART_DEREGISTER_INTERVAL_S = 0.25
 
 
-def wait_agent_deregistered(name: str) -> None:
+def wait_agent_deregistered(
+    name: str,
+    *,
+    retry_advice: str = "Retry `restart` (it relaunches once the name frees)",
+) -> None:
     """Poll until no live agent carries ``name``, bounded; refuse if it persists.
 
     A just-closed tab's agent may take a moment to unregister, and relaunching
     into a still-registered name fails with agent_name_taken. Exhaustion is a
-    refusal naming the recovery -- retry restart (idempotent: it finds zero
-    tabs and relaunches once the name frees) or attach manually -- not a
-    silent relaunch attempt.
+    refusal naming the recovery -- not a silent relaunch attempt.
+    ``retry_advice`` lets a different caller (the agent-start retry loop in
+    ``spawn_in_new_tab``, which is already retrying on its own) name its own
+    recovery instead of `restart`'s, which would be the wrong advice there.
     """
     for _ in range(RESTART_DEREGISTER_POLLS):
         listing = herdr(build_agent_list_argv())
@@ -352,10 +393,21 @@ def wait_agent_deregistered(name: str) -> None:
             return
         time.sleep(RESTART_DEREGISTER_INTERVAL_S)
     raise RefusedError(
-        f"agent '{name}' is still registered after its tab closed. Retry "
-        f"`restart` (it relaunches once the name frees) or attach manually: "
-        f"herdr agent attach {name}"
+        f"agent '{name}' is still registered after its tab closed. "
+        f"{retry_advice} or attach manually: herdr agent attach {name}"
     )
+
+
+AGENT_START_TIMEOUT_RETRIES = 2
+"""Retries after the first `agent start` attempt, for herdr's own `timeout`
+error only. Fixed and unconfigurable, matching RESTART_DEREGISTER_POLLS'
+style -- this is a narrow, low-frequency failure path, not a tuning knob."""
+
+AGENT_START_RETRY_BACKOFF_BASE_S = 3.0
+"""Backoff before retry n (0-indexed) is this times (n + 1): 3s, 6s, ...
+A formula rather than a parallel list-of-durations, so raising
+AGENT_START_TIMEOUT_RETRIES can never desync from a fixed-length backoff
+list and index out of range."""
 
 
 def spawn_in_new_tab(
@@ -364,29 +416,57 @@ def spawn_in_new_tab(
     """Create a tab, start pi in it, and hand it its prompt.
 
     The one launch sequence, shared by `launch` and `restart` so the two
-    cannot drift apart.
+    cannot drift apart. A `timeout`-coded `agent start` failure is retried
+    against a brand new tab/pane (never the one the timeout gave up on --
+    herdr's own contract leaves that pane in unspecified, caller-owned state);
+    every other failure, and a `timeout` once retries are exhausted, behaves
+    exactly as before this existed. Only `agent start` is inside the retried
+    section: `tab create` and `agent prompt` failures are different failure
+    classes (a live-agent tab must never be closed, and a creation failure has
+    no tab to clean up) and must never be retried here.
     """
-    created = herdr(build_tab_argv(cwd=cwd, label=label))
-    result = created["result"]
-    pane = result["root_pane"]["pane_id"]  # type: ignore[index]
-    tab = result["tab"]["tab_id"]  # type: ignore[index]
-
     name = agent_name_for(label)
-    try:
-        herdr(build_agent_start_argv(name=name, pane=pane, model=model))
-    except RefusedError:
-        # No agent is running in the freshly created tab, and herdr leaves
-        # pane cleanup to the caller on this failure -- so if we do nothing,
-        # the tab leaks as a contentless, unknown-status pane (seen after a
-        # failed 2026-09-07 swarm launch). Close it best-effort and surface
-        # the original launch error either way. A failed `agent prompt` is
-        # NOT this case: there the agent did start, the tab holds a live
-        # agent, and closing the tab would kill it.
-        with contextlib.suppress(RefusedError):
-            herdr(["tab", "close", tab])
-        raise
-    herdr(["agent", "prompt", name, prompt])
-    return {"tab": tab, "pane": pane, "agent": name, "prompt": prompt}
+    for attempt in range(AGENT_START_TIMEOUT_RETRIES + 1):
+        created = herdr(build_tab_argv(cwd=cwd, label=label))
+        result = created["result"]
+        pane = result["root_pane"]["pane_id"]  # type: ignore[index]
+        tab = result["tab"]["tab_id"]  # type: ignore[index]
+
+        try:
+            herdr(build_agent_start_argv(name=name, pane=pane, model=model))
+        except RefusedError as exc:
+            # No agent is running in the freshly created tab, and herdr leaves
+            # pane cleanup to the caller on this failure -- so if we do nothing,
+            # the tab leaks as a contentless, unknown-status pane (seen after a
+            # failed 2026-09-07 swarm launch). Close it best-effort and surface
+            # the original launch error either way.
+            with contextlib.suppress(RefusedError):
+                herdr(["tab", "close", tab])
+            if exc.code != "timeout" or attempt == AGENT_START_TIMEOUT_RETRIES:
+                if exc.code == "timeout":
+                    raise RefusedError(
+                        f"gave up after {attempt + 1} attempt(s) waiting for "
+                        f"agent startup across fresh tabs (name={name!r}); "
+                        "check `herdr status`",
+                        code=exc.code,
+                    ) from exc
+                raise
+            print(
+                f"[herdr_delegate] agent start timed out on attempt "
+                f"{attempt + 1}; retrying after backoff",
+                file=sys.stderr,
+            )
+            wait_agent_deregistered(
+                name, retry_advice="This retry loop will try again shortly"
+            )
+            time.sleep(AGENT_START_RETRY_BACKOFF_BASE_S * (attempt + 1))
+            continue
+        # Only reached after a successful `agent start`. A failed `agent
+        # prompt` here means the agent DID start -- the tab holds a live
+        # agent, closing it would kill it, and it must never be retried.
+        herdr(["agent", "prompt", name, prompt])
+        return {"tab": tab, "pane": pane, "agent": name, "prompt": prompt}
+    raise AssertionError("unreachable: loop always returns or raises")
 
 
 def ready_slugs() -> list[str]:
@@ -410,13 +490,35 @@ def herdr(argv: list[str]) -> dict[str, object]:
         ["herdr", *argv], capture_output=True, text=True, check=False
     )
     if result.returncode != 0:
-        raise RefusedError(f"herdr {' '.join(argv)} failed: {result.stderr.strip()}")
+        code = _parse_herdr_error_code(result.stderr)
+        if code is None and _looks_like_json_object(result.stderr):
+            # Valid JSON, but not the {"error": {"code": ...}} shape this
+            # file knows how to read -- herdr's error envelope may have
+            # drifted. Purely descriptive: this function has no notion of
+            # what, if anything, a caller would have retried.
+            print(
+                f"[herdr_delegate] herdr {argv[0]} {argv[1]} returned a JSON "
+                f"error with no recognized 'code' field: {result.stderr.strip()}",
+                file=sys.stderr,
+            )
+        raise RefusedError(
+            f"herdr {' '.join(argv)} failed: {result.stderr.strip()}", code=code
+        )
     try:
         return json.loads(result.stdout)
     except json.JSONDecodeError as exc:
         raise RefusedError(
             f"herdr {' '.join(argv)} returned unparseable output: {exc}"
         ) from exc
+
+
+def _looks_like_json_object(text: str) -> bool:
+    """Whether ``text`` parses as a JSON object (used only to decide whether
+    a missing/unrecognized ``error.code`` is worth a drift warning)."""
+    try:
+        return isinstance(json.loads(text), dict)
+    except (json.JSONDecodeError, ValueError):
+        return False
 
 
 def cmd_plan(_args: argparse.Namespace) -> None:
