@@ -37,7 +37,6 @@ import os
 import platform
 import plistlib
 import shutil
-import stat
 import subprocess
 import sys
 import tempfile
@@ -53,6 +52,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "agent-scripts"))
 
 import cli_common  # noqa: E402 — sibling dir inserted above
 import link_inspect  # noqa: E402 — sibling dir inserted above
+import settings_seed  # noqa: E402 — sibling dir inserted above
 
 import depart  # noqa: E402 — sibling dir on path above
 
@@ -79,6 +79,35 @@ _same_path = link_inspect.same_path
 _implied_repo_root = link_inspect.implied_repo_root
 _is_dotfiles_checkout = link_inspect.is_dotfiles_checkout
 _is_main_checkout = link_inspect.is_main_checkout
+
+# Re-exports from settings_seed (the extracted copy-once-settings module in
+# agent-scripts/): every moved name keeps resolving through install for
+# existing tests and callers — same assignment style as the link_inspect
+# block above. Palette/color_enabled/PALETTE moved to cli_common, which both
+# install.py and settings_seed.py import; main() mutates PALETTE.enabled on
+# that single canonical object rather than rebinding the name.
+PALETTE = cli_common.PALETTE
+Palette = cli_common.Palette
+color_enabled = cli_common.color_enabled
+json_key_drift = settings_seed.json_key_drift
+_BYPASS_BASH_PATTERNS = settings_seed._BYPASS_BASH_PATTERNS
+opencode_bypass_drift = settings_seed.opencode_bypass_drift
+_bash_permissions = settings_seed._bash_permissions
+_load_json_pair_text = settings_seed._load_json_pair_text
+_describe_settings_text = settings_seed._describe_settings_text
+_describe_opencode_text = settings_seed._describe_opencode_text
+_describe_vscode_text = settings_seed._describe_vscode_text
+describe_settings_drift = settings_seed.describe_settings_drift
+describe_opencode_drift = settings_seed.describe_opencode_drift
+describe_vscode_drift = settings_seed.describe_vscode_drift
+_load_json_pair = settings_seed._load_json_pair
+seed_file = settings_seed.seed_file
+_adopt_seed = settings_seed._adopt_seed
+_normalize_seed_text = settings_seed._normalize_seed_text
+_adopt_git_reason = settings_seed._adopt_git_reason
+_adopt_file = settings_seed._adopt_file
+_opencode_adopt_blocker = settings_seed._opencode_adopt_blocker
+_reseed_file = settings_seed._reseed_file
 
 VALID_HARNESSES = ("claude", "copilot", "opencode", "agy", "pi")
 VALID_PROFILES = ("personal", "work")
@@ -294,66 +323,6 @@ Examples:
   ./install.sh --check-links --report-uninstalled  # also flag never-installed links
 
 Exits 0 if every step ran, 1 if any step was skipped (see summary)."""
-
-
-# ── terminal colors ───────────────────────────────────────────────────────────
-
-
-class Palette:
-    """ANSI colorizer that no-ops when color isn't appropriate.
-
-    Raw escape codes rather than a third-party library: this script runs on
-    a machine that by definition hasn't been provisioned yet, so it can only
-    depend on the standard library.
-    """
-
-    RESET = "\x1b[0m"
-
-    def __init__(self, enabled: bool) -> None:
-        self.enabled = enabled
-
-    def _wrap(self, text: str, code: str) -> str:
-        return f"{code}{text}{self.RESET}" if self.enabled else text
-
-    def header(self, text: str) -> str:
-        """Section header (``==>`` lines) and the summary banner."""
-        return self._wrap(text, "\x1b[1;36m")
-
-    def ok(self, text: str) -> str:
-        """A mutation that succeeded."""
-        return self._wrap(text, "\x1b[32m")
-
-    def warn(self, text: str) -> str:
-        """A skipped step or a drift report — not fatal, but read it."""
-        return self._wrap(text, "\x1b[33m")
-
-    def error(self, text: str) -> str:
-        """A hard error (argument errors, blocked run)."""
-        return self._wrap(text, "\x1b[31m")
-
-    def dim(self, text: str) -> str:
-        """Dry-run previews and other informational asides."""
-        return self._wrap(text, "\x1b[2m")
-
-
-def color_enabled(stream: object) -> bool:
-    """Return whether ANSI codes should be emitted to ``stream``.
-
-    Honors the ``NO_COLOR`` convention (any non-empty value disables color)
-    and ``TERM=dumb``, and otherwise only colorizes an interactive terminal
-    so piped/redirected output stays clean for grep.
-    """
-    if os.environ.get("NO_COLOR"):
-        return False
-    if os.environ.get("TERM") == "dumb":
-        return False
-    isatty = getattr(stream, "isatty", None)
-    return bool(isatty and isatty())
-
-
-# Rebound in main() once the output stream is known. Default-off so any
-# import-time or test-time use is plain text.
-PALETTE = Palette(False)
 
 
 # ── skip-and-report plumbing ──────────────────────────────────────────────────
@@ -960,9 +929,8 @@ def have(executable: str) -> bool:
     return shutil.which(executable) is not None
 
 
-def _preview(message: str, *, quiet: bool = False) -> None:
-    """Print a dry-run preview line."""
-    cli_common.qprint(PALETTE.dim(f"  [dry-run] {message}"), quiet=quiet)
+# Dry-run preview printing lives in cli_common (shared with settings_seed).
+_preview = cli_common.preview
 
 
 def _header(message: str, *, quiet: bool = False) -> None:
@@ -1951,204 +1919,6 @@ def install_symlinks(
 # ── copy-once seeds and drift detection ───────────────────────────────────────
 
 
-def json_key_drift(seed: dict[str, object], live: dict[str, object]) -> list[str]:
-    """Return the top-level keys whose values differ between seed and live."""
-    return sorted(k for k in set(seed) | set(live) if seed.get(k) != live.get(k))
-
-
-_BYPASS_BASH_PATTERNS = (
-    # Take an arbitrary command as their own argument (awk via
-    # ``system()``), so their presence isn't "individually risky command
-    # a profile could allow" — it defeats the allowlist entirely.
-    "xargs *",
-    "awk *",
-    "sqlite3 *",  # .shell/.system dot-commands run arbitrary shell
-    "nohup *",
-    # Broaden an otherwise-narrow, already-approved command into a wider
-    # category that can reach arbitrary code.
-    "git --no-pager *",  # matches any git subcommand, incl. commit/push
-    "uv *",  # broadens past the 4 named uv commands; `uv run` is arbitrary
-    "python3 -m *",  # any installed module, incl. ones with side effects
-    # Inline arbitrary code evaluation.
-    "node -e *",
-    "python3 -c *",
-    "python3 - *",
-    # Network-fetches and runs lifecycle hooks / arbitrary packages.
-    "npm install*",
-    "npm install",
-    "npx *",
-    # Delegates to a CLI with its own separate permission model, or the
-    # same CLI redirected/auto-approved via specific flags.
-    "opencode run*",  # --auto/--dir make this a real bypass
-    "copilot *",
-)
-
-
-def opencode_bypass_drift(
-    seed: dict[str, object], live: dict[str, object]
-) -> list[str]:
-    """Return allowlist-bypass bash patterns present live but not in the seed.
-
-    This is a curated, fixed set — not a generalized "any key live has
-    that seed doesn't" diff. A generalized version would flag a live-only
-    key that's merely narrower than, but already behaviorally covered by,
-    an existing seed glob (e.g. a one-off interactively-approved
-    ``git log --all`` against seed's ``git log*``) as false-positive
-    drift. Every pattern here instead shares one of two properties that
-    makes a legitimate interactive approval unlikely to ever collide with
-    it: it takes an arbitrary command as its own argument (``xargs``,
-    ``awk``, ``sqlite3``'s ``.shell``/``.system``, ``nohup``), or it
-    broadens an otherwise-narrow, already-approved command into a wider
-    category, evaluates code inline, fetches and runs external code, or
-    delegates to a separate CLI/permission model entirely.
-
-    This check is diff-gated (only runs when a caller already detected
-    seed≠live) and deliberately doesn't attempt full policy compliance —
-    only this bypass-shaped subset. It's also a snapshot of known bypass
-    shapes, not a taxonomy: a future bypass-shaped tool not in this tuple
-    (e.g. ``perl -e *``) isn't automatically caught here or by the seed's
-    own policy-compliance test — a policy review has to catch that, same
-    as any other undocumented addition. Full policy compliance for the
-    *seed* itself (not just this bypass subset, and unconditional on any
-    diff existing) is a separate, CI-only pytest check — see
-    ``test/test_install.py``'s ``_APPROVED_BASH_PATTERNS``.
-    """
-    seed_bash = _bash_permissions(seed)
-    live_bash = _bash_permissions(live)
-    return [k for k in _BYPASS_BASH_PATTERNS if k in live_bash and k not in seed_bash]
-
-
-def _bash_permissions(config: dict[str, object]) -> dict[str, object]:
-    """Return ``permission.bash`` from an opencode config, or ``{}``."""
-    permission = config.get("permission")
-    if not isinstance(permission, dict):
-        return {}
-    bash = permission.get("bash")
-    return bash if isinstance(bash, dict) else {}
-
-
-def _load_json_pair_text(
-    seed_text: str, live_text: str
-) -> tuple[dict[str, object], dict[str, object]] | None:
-    """Load a JSON object pair from already-read text."""
-    try:
-        seed_data = json.loads(seed_text)
-        live_data = json.loads(live_text)
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        return None
-    if not isinstance(seed_data, dict) or not isinstance(live_data, dict):
-        return None
-    return seed_data, live_data
-
-
-def _describe_settings_text(seed_text: str, live_text: str) -> str:
-    """Describe settings drift without rereading either side."""
-    if seed_text == live_text:
-        return ""
-    pair = _load_json_pair_text(seed_text, live_text)
-    if pair is None:
-        return "content differs from the repo copy (unreadable or invalid JSON)"
-    return ", ".join(json_key_drift(*pair))
-
-
-def _describe_opencode_text(
-    seed_text: str, live_text: str, *, adopt: bool = False
-) -> str:
-    """Describe opencode drift without rereading either side."""
-    if seed_text == live_text:
-        return ""
-    pair = _load_json_pair_text(seed_text, live_text)
-    if pair is None:
-        return "content differs from the repo copy (unreadable or invalid JSON)"
-    bypasses = opencode_bypass_drift(*pair)
-    if bypasses:
-        action = (
-            "resolve manually before adopting"
-            if adopt
-            else "re-run with --reseed to fix"
-        )
-        return (
-            f"SECURITY: {', '.join(bypasses)} still allowed in your live "
-            f"opencode.jsonc (allowlist bypass) — {action}"
-        )
-    return ", ".join(json_key_drift(*pair))
-
-
-def _describe_vscode_text(seed_text: str, live_text: str) -> str:
-    """Describe VS Code JSON/JSONC drift without rereading either side."""
-    if seed_text == live_text:
-        return ""
-    try:
-        seed_data: object = json.loads(seed_text)
-    except json.JSONDecodeError:
-        seed_data = None
-    try:
-        live_data: object = json.loads(live_text)
-    except json.JSONDecodeError:
-        live_data = None
-    if isinstance(seed_data, dict) and isinstance(live_data, dict):
-        return ", ".join(json_key_drift(seed_data, live_data))
-    if isinstance(seed_data, list) and isinstance(live_data, list):
-        if len(seed_data) != len(live_data):
-            return f"{len(live_data)} bindings live vs {len(seed_data)} in seed"
-        return f"binding definitions differ ({len(live_data)} bindings)"
-    return "content differs from the repo copy"
-
-
-def describe_settings_drift(seed: Path, live: Path) -> str:
-    """Describe how a live settings.json diverged from its seed.
-
-    Text equality is checked first, before any JSON parsing is attempted —
-    see ``describe_vscode_drift``'s docstring for why (this mirrors its
-    exact shape). Only once text has already proven to differ does an
-    unparseable live file get its own non-empty fallback, so a corrupted
-    live settings.json is no longer invisible to drift reporting.
-    """
-    if not seed.is_file() or not live.is_file():
-        return ""
-    return _describe_settings_text(
-        seed.read_text(encoding="utf-8"), live.read_text(encoding="utf-8")
-    )
-
-
-def describe_opencode_drift(seed: Path, live: Path) -> str:
-    """Describe how a live opencode.jsonc diverged from its seed.
-
-    A returned allowlist bypass outranks (and replaces) the generic key
-    list: it's a security regression, not config drift to skim past. Text
-    equality is checked before any JSON parsing, same as
-    ``describe_settings_drift`` — this is what keeps a byte-identical
-    ``opencode.jsonc`` containing a ``//`` comment from being misreported as
-    drifted just because ``json.loads`` can't parse it.
-    """
-    if not seed.is_file() or not live.is_file():
-        return ""
-    return _describe_opencode_text(
-        seed.read_text(encoding="utf-8"), live.read_text(encoding="utf-8")
-    )
-
-
-def describe_vscode_drift(seed: Path, live: Path) -> str:
-    """Describe how a live VS Code settings/keybindings file diverged from its seed.
-
-    Text equality is the definitive drift signal, not JSON equality: VS
-    Code's live files are legal JSONC (``//`` comments, trailing commas),
-    which ``json.loads`` can't parse, so a JSON-first check would miss real
-    drift whenever the live file merely contains a comment. JSON parsing
-    below only runs after text drift is already confirmed, purely to
-    enrich the message. A missing seed or live file means there's nothing
-    to compare — not a difference to report.
-    """
-    if not seed.is_file() or not live.is_file():
-        return ""
-    seed_text = seed.read_text(encoding="utf-8")
-    live_text = live.read_text(encoding="utf-8")
-    if seed_text == live_text:
-        return ""
-
-    return _describe_vscode_text(seed_text, live_text)
-
-
 def _replace_stale_vscode_symlink(ctx: Context, dest: Path) -> None:
     """Remove a stale WSL-only VS Code symlink so ``seed_file`` copies for real.
 
@@ -2206,366 +1976,10 @@ def seed_vscode_settings(ctx: Context) -> list[tuple[str, tuple[str, str]]]:
             skip_label=f"{name} seed",
             drift=describe_vscode_drift,
             adopt_drift=_describe_vscode_text,
+            run_command=run_command,
         )
         results.append((ctx.display(dest), (name, drift)))
     return results
-
-
-def _load_json_pair(
-    seed: Path, live: Path
-) -> tuple[dict[str, object], dict[str, object]] | None:
-    """Load a (seed, live) JSON pair, or None if either can't be read."""
-    try:
-        seed_text = seed.read_text(encoding="utf-8")
-        live_text = live.read_text(encoding="utf-8")
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-        return None
-    return _load_json_pair_text(seed_text, live_text)
-
-
-def seed_file(
-    ctx: Context,
-    seed: Path,
-    dest: Path,
-    *,
-    skip_label: str,
-    drift: Callable[[Path, Path], str],
-    adopt_drift: Callable[[str, str], str] | None = None,
-    adopt_blocker: Callable[[Context, Path, Path, str, str], str | None] | None = None,
-) -> str:
-    """Copy ``seed`` to ``dest`` once, or report drift if it's already there.
-
-    These files (Claude Code's settings.json, opencode's opencode.jsonc,
-    Pi's settings.json) are copied rather than symlinked because each tool
-    rewrites its own copy in place live (permissions approved, settings
-    edited, etc.), which would replace a symlink with a plain file and
-    silently detach it from the repo. So the repo copy is a *seed*: written
-    once, never overwritten, with divergence reported instead.
-
-    Args:
-        ctx: The run context.
-        seed: Repo-side seed file (already profile-resolved by the caller).
-        dest: Live destination path.
-        skip_label: Step name used if the copy fails.
-        drift: Callback describing divergence when ``dest`` already exists.
-
-    Returns:
-        A drift description for the end-of-run summary, or ``""``.
-    """
-    if ctx.opts.adopt:
-        return _adopt_seed(
-            ctx,
-            seed,
-            dest,
-            skip_label=skip_label,
-            drift=adopt_drift,
-            blocker=adopt_blocker,
-        )
-
-    if not dest.is_file():
-        if ctx.opts.dry_run:
-            _preview(
-                f"would copy {ctx.display(dest)} (from {seed.name})",
-                quiet=ctx.opts.quiet,
-            )
-            return ""
-        try:
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy(seed, dest)
-        except OSError:
-            ctx.reporter.skip(skip_label, "copy failed")
-            return ""
-        ctx.manifest.record_copy(dest)
-        cli_common.qprint(
-            PALETTE.ok(f"  copied {ctx.display(dest)} (from {seed.name})"),
-            quiet=ctx.opts.quiet,
-        )
-        return ""
-
-    drift_desc = drift(seed, dest)
-    if not drift_desc or not ctx.opts.reseed:
-        return drift_desc
-    return _reseed_file(ctx, seed, dest, skip_label=skip_label, drift_desc=drift_desc)
-
-
-def _adopt_seed(
-    ctx: Context,
-    seed: Path,
-    dest: Path,
-    *,
-    skip_label: str,
-    drift: Callable[[str, str], str] | None,
-    blocker: Callable[[Context, Path, Path, str, str], str | None] | None,
-) -> str:
-    """Validate one live snapshot, then adopt it into a clean repo seed."""
-    if not dest.exists() and not dest.is_symlink():
-        return ""
-    if seed.is_symlink():
-        ctx.reporter.skip(
-            skip_label,
-            f"repo seed {ctx.display(seed)} is a symlink — resolve manually",
-        )
-        return "content differs from the repo copy"
-
-    try:
-        live_text = dest.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return ""
-    except (OSError, UnicodeDecodeError):
-        ctx.reporter.skip(
-            skip_label,
-            f"could not read live file {ctx.display(dest)} — repair it before rerunning",
-        )
-        return "content differs from the repo copy"
-    if not live_text:
-        ctx.reporter.skip(
-            skip_label,
-            f"live file {ctx.display(dest)} is empty — repair it before rerunning",
-        )
-        return "content differs from the repo copy"
-
-    try:
-        seed_text = seed.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        ctx.reporter.skip(
-            skip_label,
-            f"could not read repo seed {ctx.display(seed)} — repair it before rerunning",
-        )
-        return "content differs from the repo copy"
-
-    normalized_seed = _normalize_seed_text(seed_text)
-    normalized_live = _normalize_seed_text(live_text)
-    if normalized_seed == normalized_live:
-        return ""
-
-    drift_desc = (
-        drift(normalized_seed, normalized_live)
-        if drift is not None
-        else "content differs from the repo copy"
-    )
-    reasons: list[str] = []
-    if blocker is not None:
-        reason = blocker(ctx, seed, dest, normalized_seed, normalized_live)
-        if reason:
-            reasons.append(reason)
-    git_reason = _adopt_git_reason(ctx, seed)
-    if git_reason:
-        reasons.append(git_reason)
-    if reasons:
-        ctx.reporter.skip(skip_label, "; ".join(reasons))
-        return drift_desc or "content differs from the repo copy"
-
-    if ctx.opts.dry_run:
-        _preview(
-            f"would adopt {ctx.display(dest)} → {ctx.display(seed)} "
-            "(repo seed will become dirty)",
-            quiet=ctx.opts.quiet,
-        )
-        return ""
-
-    if not _adopt_file(ctx, seed, normalized_live, skip_label=skip_label):
-        return drift_desc or "content differs from the repo copy"
-    cli_common.qprint(
-        PALETTE.ok(
-            f"  adopted {ctx.display(dest)} → {ctx.display(seed)} "
-            "(commit the repo seed before adopting another edit)"
-        ),
-        quiet=ctx.opts.quiet,
-    )
-    return ""
-
-
-def _normalize_seed_text(text: str) -> str:
-    """Normalize Windows CRLF text without changing other content."""
-    return text.replace("\r\n", "\n")
-
-
-def _adopt_git_reason(ctx: Context, seed: Path) -> str:
-    """Return a refusal reason unless Git proves the seed is tracked and clean."""
-    try:
-        relative = seed.relative_to(ctx.dotfiles).as_posix()
-    except ValueError:
-        return "repo seed is outside the Git checkout — repair the path manually"
-    prefix = ["git", "-C", str(ctx.dotfiles)]
-    tracked = run_command(
-        [*prefix, "ls-files", "--error-unmatch", "--", relative], capture=True
-    )
-    if not tracked.ok or not tracked.stdout.strip():
-        return (
-            f"repo seed {ctx.display(seed)} is untracked or Git is unavailable "
-            "— track it and repair Git access before rerunning"
-        )
-    status = run_command(
-        [*prefix, "status", "--porcelain", "--", relative], capture=True
-    )
-    if not status.ok:
-        return (
-            f"Git could not inspect {ctx.display(seed)} — repair Git access "
-            "before rerunning"
-        )
-    if status.stdout:
-        return (
-            f"repo seed {ctx.display(seed)} is dirty — commit or stash it "
-            "before rerunning"
-        )
-    return ""
-
-
-def _adopt_file(ctx: Context, seed: Path, live_text: str, *, skip_label: str) -> bool:
-    """Atomically write normalized live text while preserving the seed mode."""
-    if seed.is_symlink():
-        ctx.reporter.skip(
-            skip_label,
-            f"repo seed {ctx.display(seed)} is a symlink — resolve manually",
-        )
-        return False
-    temp_path: Path | None = None
-    try:
-        mode = stat.S_IMODE(seed.stat().st_mode)
-        fd, temp_name = tempfile.mkstemp(prefix=f".{seed.name}.adopt-", dir=seed.parent)
-        temp_path = Path(temp_name)
-        os.close(fd)
-        temp_path.write_text(
-            _normalize_seed_text(live_text), encoding="utf-8", newline=""
-        )
-        os.chmod(temp_path, mode)
-        os.replace(temp_path, seed)
-    except OSError:
-        ctx.reporter.skip(
-            skip_label,
-            f"could not atomically write {ctx.display(seed)} — "
-            "repair the writable directory or disk before rerunning",
-        )
-        return False
-    finally:
-        if temp_path is not None:
-            try:
-                temp_path.unlink()
-            except FileNotFoundError:
-                pass
-            except OSError:
-                pass
-    return True
-
-
-def _opencode_adopt_blocker(
-    ctx: Context,
-    seed: Path,
-    dest: Path,
-    seed_text: str,
-    live_text: str,
-) -> str | None:
-    """Refuse live opencode parses that fail or introduce an allowlist bypass."""
-    try:
-        live_data = json.loads(live_text)
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        return (
-            f"live opencode file {ctx.display(dest)} is not a JSON object "
-            "(comments, trailing commas, or invalid JSON are unsupported) — "
-            "resolve it manually before adopting"
-        )
-    if not isinstance(live_data, dict):
-        return (
-            f"live opencode file {ctx.display(dest)} is not a JSON object — "
-            "resolve it manually before adopting"
-        )
-
-    seed_data: object
-    try:
-        seed_data = json.loads(seed_text)
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        seed_data = {}
-    if not isinstance(seed_data, dict):
-        seed_data = {}
-
-    bypasses = opencode_bypass_drift(seed_data, live_data)
-    if not bypasses:
-        return None
-    return (
-        f"SECURITY: {', '.join(bypasses)} present in live {ctx.display(dest)} "
-        "(allowlist bypass) — resolve the security change manually before adopting"
-    )
-
-
-def _reseed_file(
-    ctx: Context, seed: Path, dest: Path, *, skip_label: str, drift_desc: str
-) -> str:
-    """Back up and overwrite a drifted copy-once seed with the repo's version.
-
-    Only called once ``seed_file`` has already confirmed real drift and
-    ``--reseed`` is set. ``dest``'s true original is preserved exactly
-    once, tracked via the manifest (not merely a ``<name>.bak``'s presence
-    on disk — see ``Manifest.has_backup``): a foreign, unrecorded ``.bak``
-    blocks the reseed entirely rather than risking either file, and a
-    recorded backup whose ``.bak`` was since deleted is treated as if no
-    backup had ever been taken.
-    """
-    backup = dest.with_name(dest.name + ".bak")
-    has_backup = ctx.manifest.has_backup(dest)
-    backup_exists = backup.exists()
-
-    # A .bak this dotfiles tool never recorded — don't touch either file.
-    if not has_backup and backup_exists:
-        if ctx.opts.dry_run:
-            _preview(
-                f"would skip reseeding {ctx.display(dest)} — {backup.name} exists "
-                "but isn't a recorded backup, resolve manually",
-                quiet=ctx.opts.quiet,
-            )
-            return drift_desc
-        ctx.reporter.skip(
-            skip_label,
-            f"{backup} exists but isn't a recorded backup — resolve manually",
-        )
-        return drift_desc
-
-    # True original not (or no longer) safely preserved anywhere.
-    needs_backup = not has_backup or not backup_exists
-
-    if ctx.opts.dry_run:
-        if needs_backup:
-            _preview(
-                f"would back up {ctx.display(dest)} → {dest.name}.bak, "
-                f"then reseed from {seed.name}",
-                quiet=ctx.opts.quiet,
-            )
-        else:
-            _preview(
-                f"would reseed {ctx.display(dest)} from {seed.name} (already backed up)",
-                quiet=ctx.opts.quiet,
-            )
-        return ""
-
-    if needs_backup:
-        try:
-            shutil.move(str(dest), str(backup))
-        except (OSError, shutil.Error):
-            ctx.reporter.skip(skip_label, "reseed backup failed")
-            return ""
-        ctx.manifest.record_backup(dest, backup)
-        cli_common.qprint(f"  Backing up {dest} → {backup}", quiet=ctx.opts.quiet)
-
-    try:
-        shutil.copy(seed, dest)
-    except OSError:
-        ctx.reporter.skip(skip_label, "copy failed")
-        if needs_backup:
-            try:
-                shutil.move(str(backup), str(dest))
-            except (OSError, shutil.Error):
-                ctx.reporter.skip(
-                    skip_label,
-                    f"could not restore {dest} from {backup} after failed "
-                    f"reseed — {dest.name} is missing; restore manually",
-                )
-        return ""
-
-    ctx.manifest.record_copy(dest)
-    cli_common.qprint(
-        PALETTE.ok(f"  reseeded {ctx.display(dest)} (from {seed.name})"),
-        quiet=ctx.opts.quiet,
-    )
-    return ""
 
 
 def seed_claude_settings(ctx: Context) -> tuple[str, str]:
@@ -2587,6 +2001,7 @@ def seed_claude_settings(ctx: Context) -> tuple[str, str]:
         skip_label="settings.json seed",
         drift=describe_settings_drift,
         adopt_drift=_describe_settings_text,
+        run_command=run_command,
     )
 
 
@@ -2616,6 +2031,7 @@ def seed_pi_settings(ctx: Context) -> tuple[str, str]:
         skip_label="pi settings.json seed",
         drift=describe_settings_drift,
         adopt_drift=_describe_settings_text,
+        run_command=run_command,
     )
 
 
@@ -2645,6 +2061,7 @@ def seed_opencode_config(ctx: Context) -> tuple[str, str]:
             seed_text, live_text, adopt=True
         ),
         adopt_blocker=_opencode_adopt_blocker,
+        run_command=run_command,
     )
 
 
@@ -4944,8 +4361,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         ``--check-links``, something was found), 2 refused (bad arguments,
         an unreadable links.toml, or the work-profile guard).
     """
-    global PALETTE
-    PALETTE = Palette(color_enabled(sys.stdout))
+    # Canonical Palette lives in cli_common (shared with settings_seed);
+    # mutate its state rather than rebinding the name so every importer
+    # observes the same color state.
+    cli_common.PALETTE.enabled = color_enabled(sys.stdout)
 
     opts = parse_args(sys.argv[1:] if argv is None else argv)
     ctx = build_context(opts)

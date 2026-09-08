@@ -61,6 +61,7 @@ FROZEN_SCRIPT_DESTS = frozenset(
         "repo_identity.py",
         "second_opinion.py",
         "sessionstart_checks.py",
+        "settings_seed.py",
         "settings_seed_drift_check.py",
         "standup.py",
         "standup_adapters.py",
@@ -127,7 +128,7 @@ def test_links_toml_srcs_live_in_agent_scripts() -> None:
         if isinstance(entry.get("src"), str)
         and "~/.claude/scripts" in str(entry.get("dest", ""))
     ]
-    assert len(script_links) == 33, f"expected 33 script links, got {len(script_links)}"
+    assert len(script_links) == 34, f"expected 34 script links, got {len(script_links)}"
     bad = [
         entry["src"]
         for entry in script_links

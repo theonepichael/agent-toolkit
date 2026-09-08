@@ -255,10 +255,12 @@ class DriftCheckError(Exception):
 
 
 # ── vendored from install.py — keep in sync if it drifts ─────────────────────
-# These are lifted from install.py:1173-1226 so this leaf SessionStart hook
-# doesn't need to import an 1800-line installer (an import failure there
+# These were lifted from install.py so this leaf SessionStart hook doesn't
+# need to import a multi-thousand-line installer (an import failure there
 # would silently no-op the whole hook). They are pure functions with no
-# install side effects.
+# install side effects. install.py's drift helpers now live in
+# agent-scripts/settings_seed.py — sync against that file (and install.py
+# if it ever inlines drift logic again).
 
 
 def json_key_drift(seed: dict[str, object], live: dict[str, object]) -> list[str]:

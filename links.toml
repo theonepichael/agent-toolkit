@@ -215,6 +215,10 @@ src = "agent-scripts/dotfiles_sync_check.py"
 dest = "~/.claude/scripts/dotfiles_sync_check.py"
 
 [[link]]
+src = "agent-scripts/settings_seed.py"
+dest = "~/.claude/scripts/settings_seed.py"
+
+[[link]]
 src = "agent-scripts/settings_seed_drift_check.py"
 dest = "~/.claude/scripts/settings_seed_drift_check.py"
 

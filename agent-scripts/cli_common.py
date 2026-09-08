@@ -62,6 +62,70 @@ def qprint(msg: str, *, quiet: bool, file: TextIO | None = None) -> None:
         print(msg, file=file)
 
 
+class Palette:
+    """ANSI colorizer that no-ops when color isn't appropriate.
+
+    Raw escape codes rather than a third-party library: this runs on
+    machines that may not have been provisioned yet, so only the standard
+    library is depended on.
+    """
+
+    RESET = "\x1b[0m"
+
+    def __init__(self, enabled: bool) -> None:
+        self.enabled = enabled
+
+    def _wrap(self, text: str, code: str) -> str:
+        return f"{code}{text}{self.RESET}" if self.enabled else text
+
+    def header(self, text: str) -> str:
+        """Section header (``==>`` lines) and the summary banner."""
+        return self._wrap(text, "\x1b[1;36m")
+
+    def ok(self, text: str) -> str:
+        """A mutation that succeeded."""
+        return self._wrap(text, "\x1b[32m")
+
+    def warn(self, text: str) -> str:
+        """A skipped step or a drift report — not fatal, but read it."""
+        return self._wrap(text, "\x1b[33m")
+
+    def error(self, text: str) -> str:
+        """A hard error (argument errors, blocked run)."""
+        return self._wrap(text, "\x1b[31m")
+
+    def dim(self, text: str) -> str:
+        """Dry-run previews and other informational asides."""
+        return self._wrap(text, "\x1b[2m")
+
+
+def color_enabled(stream: object) -> bool:
+    """Return whether ANSI codes should be emitted to ``stream``.
+
+    Honors the ``NO_COLOR`` convention (any non-empty value disables color)
+    and ``TERM=dumb``, and otherwise only colorizes an interactive terminal
+    so piped/redirected output stays clean for grep.
+    """
+    if os.environ.get("NO_COLOR"):
+        return False
+    if os.environ.get("TERM") == "dumb":
+        return False
+    isatty = getattr(stream, "isatty", None)
+    return bool(isatty and isatty())
+
+
+# Color state is set once at entrypoint startup (install.py's main()) by
+# mutating ``enabled`` on this single canonical object — never by rebinding
+# the name — so every importer observes the same state regardless of import
+# style. Default-off so any import-time or test-time use is plain text.
+PALETTE = Palette(False)
+
+
+def preview(message: str, *, quiet: bool = False) -> None:
+    """Print a dry-run preview line."""
+    qprint(PALETTE.dim(f"  [dry-run] {message}"), quiet=quiet)
+
+
 def get_logger(
     name: str, *, verbose: bool = False, quiet: bool = False
 ) -> logging.Logger:
