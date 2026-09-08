@@ -525,12 +525,18 @@ class DocSetResolutionTestCase(unittest.TestCase):
 class RealRepoSmokeTestCase(unittest.TestCase):
     """Covers verification step 2: run against agent-toolkit's actual docs.
 
-    Two of the four known findings below are genuine stale references
+    Two of the five known findings below are genuine stale references
     (`CHANGELOG.md`/`.github/SECRET_CHECK.md` are cited but don't exist);
-    the other two are accepted v1 false positives -- a bare filename that
-    names something outside the repo (a runtime data file, another tool's
-    own doc) is mechanically indistinguishable from a genuinely-broken
-    repo-relative citation. This asserts no *new* finding appears (a
+    the rest are accepted false positives -- a bare filename that names
+    something outside the repo (a runtime data file, another tool's own
+    doc) is mechanically indistinguishable from a genuinely-broken
+    repo-relative citation, and `pi/node_modules` is an uncommitted
+    dependency directory that exists only after `bun install` runs in
+    `pi/`, so a fresh worktree legitimately lacks it. The known set is
+    subtractive (`actual - known`), so an entry for a finding that never
+    occurs (deps installed) masks nothing: the checker only flags paths
+    that don't exist, so an existing `pi/node_modules` can never produce
+    this finding. This asserts no *new* finding appears (a
     regression in the checking logic) without being brittle to line
     numbers, and doesn't fail if one of the known findings gets fixed.
     """
@@ -540,6 +546,7 @@ class RealRepoSmokeTestCase(unittest.TestCase):
         ("README.md", "backlog.json"),
         ("STYLE.md", ".github/SECRET_CHECK.md"),
         ("pi/AGENTS.md", "docs/skills.md"),
+        ("pi/AGENTS.md", "pi/node_modules"),
     }
 
     def test_no_unexpected_findings_against_this_checkout(self) -> None:
