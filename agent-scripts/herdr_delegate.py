@@ -211,9 +211,9 @@ def worker_prompt(slug: str) -> str:
     return f"/backlog-item --auto {slug}"
 
 
-def orchestrator_prompt(concurrency: int) -> str:
+def orchestrator_prompt(concurrency: int, prefix: str) -> str:
     """One orchestrator; `swarm_spawn` owns the fan-out from here."""
-    return f"/backlog-item --swarm={concurrency}"
+    return f"/backlog-item --swarm={concurrency} --prefix {prefix}"
 
 
 def orchestrator_resume_prompt(concurrency: int, run_id: str, prefix: str) -> str:
@@ -535,7 +535,7 @@ def cmd_launch(args: argparse.Namespace) -> None:
     else:
         check_launchable(prefix=args.prefix)
         label = f"swarm-{args.prefix}"
-        prompt = orchestrator_prompt(args.swarm)
+        prompt = orchestrator_prompt(args.swarm, args.prefix)
 
     print(
         json.dumps(

@@ -1,6 +1,6 @@
 ---
 description: "Runs a dev_status.py backlog item end-to-end: resolve, worktree, spec (escalating to grill-me only for a genuinely open design branch), second-opinion critique, execution handoff, TDD implement, verify, commit/merge/push gates, review+approve. Use when the user says 'work on backlog item 4', 'pick up <slug>', 'let's do the next backlog item', or otherwise names a specific item to work end-to-end. Add --auto (optionally with a slug) for an unattended single-item or full-READY-batch run — commit and merge/push gates still stop live, per item. Add --swarm[=N] to fan the full-READY-batch run out across N (default 3) concurrent recursive pi workers via herdr, instead of running the queue one item at a time -- requires HERDR_ENV=1."
-argument-hint: [--auto] [--swarm[=N]] [slug|N]
+argument-hint: [--auto] [--swarm[=N] [--prefix <prefix>]] [slug|N]
 ---
 
 Work the named item to done, one step at a time. `$ARGUMENTS` holds the
@@ -11,9 +11,10 @@ mode` section at the end of this file instead of running the numbered steps
 live. If `--swarm`/`--swarm=N` was given, skip straight to the `--swarm[=N]
 mode` section instead — it does not take a single-item target; `--swarm
 <slug>` is a usage error, ask the user whether they meant `--auto <slug>`. A
+`--prefix <prefix>` tail (sent by `herdr_delegate.py launch`) or a
 `resume <runId> --prefix <prefix>` tail (sent by `herdr_delegate.py
-restart`) also selects `--swarm` mode and additionally carries a resume
-directive — see that section's step 1. Otherwise, if the remaining target
+restart`) also selects `--swarm` mode and carries that run's queue scope
+and/or resume directive — see that section's step 1. Otherwise, if the remaining target
 is empty, ask the user which item — never guess. Every
 user-approval gate below (`## 10`, `## 11`) stops and waits for the user —
 never collapse two gates into one approval. Distinct from those: the item's

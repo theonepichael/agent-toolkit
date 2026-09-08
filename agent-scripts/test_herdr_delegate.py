@@ -468,10 +468,57 @@ class SmokeTests(DelegateTests):
         self.assertEqual(code, 2)
         self.assertIn("--slug", err)
 
+    def test_launch_requires_prefix_with_swarm(self) -> None:
+        code, _, err = self.run_main(["launch", "--swarm", "3"])
+        self.assertEqual(code, 2)
+        self.assertIn("--prefix", err)
+
     def test_restart_requires_prefix_with_swarm(self) -> None:
         code, _, err = self.run_main(["restart", "--swarm", "3"])
         self.assertEqual(code, 2)
         self.assertIn("--prefix", err)
+
+
+class PromptContractTests(unittest.TestCase):
+    def test_worker_prompt(self) -> None:
+        self.assertEqual(
+            herdr_delegate.worker_prompt("atk-example"),
+            "/backlog-item --auto atk-example",
+        )
+
+    def test_orchestrator_prompt(self) -> None:
+        self.assertEqual(
+            herdr_delegate.orchestrator_prompt(3, "atk"),
+            "/backlog-item --swarm=3 --prefix atk",
+        )
+
+    def test_orchestrator_resume_prompt(self) -> None:
+        self.assertEqual(
+            herdr_delegate.orchestrator_resume_prompt(3, "r1", "atk"),
+            "/backlog-item --swarm=3 resume r1 --prefix atk",
+        )
+
+
+@mock.patch.dict(os.environ, {"HERDR_ENV": "1"})
+class LaunchTests(DelegateTests):
+    def setUp(self) -> None:
+        self.fake = FakeHerdr()
+        patcher = mock.patch.object(herdr_delegate, "herdr", self.fake)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        sleep_patcher = mock.patch.object(herdr_delegate.time, "sleep", lambda _s: None)
+        sleep_patcher.start()
+        self.addCleanup(sleep_patcher.stop)
+
+    def test_swarm_launch_prompts_with_prefix(self) -> None:
+        code, out, _ = self.run_main(
+            ["launch", "--swarm", "3", "--prefix", "atk", "--cwd", "/tmp"]
+        )
+        self.assertEqual(code, 0)
+        prompts = self.fake.named("agent", "prompt")
+        self.assertEqual(len(prompts), 1)
+        self.assertEqual(prompts[0][2], "swarm-atk")
+        self.assertEqual(prompts[0][3], "/backlog-item --swarm=3 --prefix atk")
 
 
 @mock.patch.dict(os.environ, {"HERDR_ENV": "1"})

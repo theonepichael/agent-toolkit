@@ -731,7 +731,7 @@ Launch pi agents in herdr tabs to work backlog items.
   - `build_agent_list_argv() -> list[str]` — `herdr agent list` argv.
   - `build_agent_start_argv(*, name: str, pane: str, model: str | None) -> list[str]` — `herdr agent start` argv, with any model passed through after a bare ``--``.
   - `worker_prompt(slug: str) -> str` — One worker, one item, unattended.
-  - `orchestrator_prompt(concurrency: int) -> str` — One orchestrator; `swarm_spawn` owns the fan-out from here.
+  - `orchestrator_prompt(concurrency: int, prefix: str) -> str` — One orchestrator; `swarm_spawn` owns the fan-out from here.
   - `orchestrator_resume_prompt(concurrency: int, run_id: str, prefix: str) -> str` — One orchestrator, resuming an interrupted run.
   - `validate_run_id(run_id: str) -> str` — Refuse a runId the delegate cannot safely pass through.
   - `swarm_state_dir() -> Path` — Where swarm-tool.ts persists per-runId state (same override, same default).

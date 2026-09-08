@@ -53,7 +53,7 @@ python3 ~/.claude/scripts/herdr_delegate.py launch --swarm <N> --prefix <prefix>
 ```
 
 `--swarm` starts **one** pi orchestrator and hands it `/backlog-item
---swarm=N`; `swarm_spawn` owns the fan-out from there. Default `N` to 3 unless
+--swarm=N --prefix <prefix>`; `swarm_spawn` owns the fan-out from there. Default `N` to 3 unless
 the user says otherwise.
 
 Mid-run, after orchestrator-side code has just landed (a `swarm-tool.ts` or
