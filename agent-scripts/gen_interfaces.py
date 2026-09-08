@@ -79,7 +79,12 @@ import cli_common
 
 HARNESS_DIRS = ("claude", "copilot", "opencode", "agy", "pi")
 SCRIPTS_DIR = "agent-scripts"
-ROOT_ENTRYPOINTS = ("install.py", "depart.py", "scripts/sync_from_dotfiles.py")
+ROOT_ENTRYPOINTS = (
+    "install.py",
+    "depart.py",
+    "depart_exec.py",
+    "scripts/sync_from_dotfiles.py",
+)
 OUTPUT_NAME = "INTERFACES.md"
 
 # A thin launcher names its implementation module with this module-level

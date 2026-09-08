@@ -1480,22 +1480,22 @@ install.py — dotfiles + AI-harness provisioner for macOS and Linux/WSL.
   - `parse_neovim_version(output: str) -> tuple[int, int] | None` — Extract ``(major, minor)`` from ``nvim --version`` output.
   - `neovim_runtime_ok() -> bool` — Whether the Neovim binary on PATH can actually resolve its Lua runtime.
   - `bootstrap_neovim(ctx: Context) -> None` — Sync the vendored Neovim config's plugins with lazy.nvim.
-  - `capture_departure_baseline(ctx: Context, specs: Sequence[LinkSpec]) -> None` — Capture this run's departure baseline layer before any install step runs.
+  - `capture_departure_baseline(ctx: Context, specs: Sequence[LinkSpec]) -> None` — Thin shim — implementation in depart_exec.
+  - `build_preflight_report(ctx: Context) -> dict[str, depart.Classification] | None` — Thin shim — implementation in depart_exec.
+  - `build_package_preflight(ctx: Context) -> list[depart.PackageClassification] | None` — Thin shim — implementation in depart_exec.
+  - `execute_service_phase(ctx: Context, baseline: depart.Baseline, ledger: depart.DepartureLedger) -> None` — Thin shim — implementation in depart_exec.
+  - `execute_gitconfig_phase(ctx: Context, baseline: depart.Baseline, ledger: depart.DepartureLedger) -> None` — Thin shim — implementation in depart_exec.
+  - `execute_file_symlink_phase(ctx: Context, baseline: depart.Baseline, report: dict[str, depart.Classification], ledger: depart.DepartureLedger) -> None` — Thin shim — implementation in depart_exec.
+  - `execute_directory_phase(ctx: Context, baseline: depart.Baseline, report: dict[str, depart.Classification], ledger: depart.DepartureLedger) -> None` — Thin shim — implementation in depart_exec.
+  - `execute_runtime_phase(ctx: Context, report: dict[str, depart.Classification], ledger: depart.DepartureLedger) -> None` — Thin shim — implementation in depart_exec.
+  - `live_package_snapshots(baseline: depart.Baseline) -> dict[str, dict[str, str] | None]` — Thin shim — implementation in depart_exec.
+  - `execute_package_phase(ctx: Context, baseline: depart.Baseline, ledger: depart.DepartureLedger) -> bool` — Thin shim — implementation in depart_exec.
+  - `execute_departure(ctx: Context, baseline: depart.Baseline, report: dict[str, depart.Classification]) -> depart.DepartureLedger` — Thin shim — implementation in depart_exec.
+  - `do_depart(ctx: Context) -> int` — Thin shim — implementation in depart_exec.
   - `write_profile_marker(ctx: Context) -> None` — Mark this machine as work-provisioned, so later plain runs are guarded.
   - `work_guard_blocks(ctx: Context) -> bool` — Return whether a plain personal run must be refused on this machine.
   - `do_rollback(ctx: Context) -> int` — Reverse every file mutation recorded across every past run.
   - `print_summary(ctx: Context, settings: tuple[str, str], opencode: tuple[str, str], vscode: Sequence[tuple[str, tuple[str, str]]] = (), pi_settings: tuple[str, str] = ('', '')) -> None` — Print the loud end-of-run summary: skips, drift, and next steps.
-  - `build_preflight_report(ctx: Context) -> dict[str, depart.Classification] | None` — Classify every tracked ownership key, or None if there's no baseline.
-  - `build_package_preflight(ctx: Context) -> list[depart.PackageClassification] | None` — Classify every requested/introduced package, or None if there's no baseline.
-  - `execute_service_phase(ctx: Context, baseline: depart.Baseline, ledger: depart.DepartureLedger) -> None` — Disable+stop every owned managed service, then reconcile linger once.
-  - `execute_gitconfig_phase(ctx: Context, baseline: depart.Baseline, ledger: depart.DepartureLedger) -> None` — Restore the pre-dotfiles global core.hooksPath value, if this installer owns the current value.
-  - `execute_file_symlink_phase(ctx: Context, baseline: depart.Baseline, report: dict[str, depart.Classification], ledger: depart.DepartureLedger) -> None` — Execute every owned ``file:``/``symlink:`` action, in pinned order.
-  - `execute_directory_phase(ctx: Context, baseline: depart.Baseline, report: dict[str, depart.Classification], ledger: depart.DepartureLedger) -> None` — Execute every owned ``directory:`` action, deepest-path-first.
-  - `execute_runtime_phase(ctx: Context, report: dict[str, depart.Classification], ledger: depart.DepartureLedger) -> None` — Remove the NVM root wholesale, if owned and not already done.
-  - `live_package_snapshots(baseline: depart.Baseline) -> dict[str, dict[str, str] | None]` — Fresh probe results for every manager appearing in recorded transactions.
-  - `execute_package_phase(ctx: Context, baseline: depart.Baseline, ledger: depart.DepartureLedger) -> bool` — Remove/downgrade owned packages, reverse transactions order.
-  - `execute_departure(ctx: Context, baseline: depart.Baseline, report: dict[str, depart.Classification]) -> depart.DepartureLedger` — Perform every safe ``owned`` action, retry-safe via the departure ledger.
-  - `do_depart(ctx: Context) -> int` — Preview and execute a pristine-state departure.
   - `do_check_links(ctx: Context) -> int` — Audit the live symlinks against ``links.toml`` and report, changing nothing.
   - `run_install(ctx: Context, specs: Sequence[LinkSpec]) -> int` — Run every install step in order and return the process exit status.
 - Tested by: `test/test_install.py`
@@ -1582,6 +1582,36 @@ Pristine-state departure mode: baseline capture and ownership tracking.
   - `build_gitconfig_record(value: str | None) -> dict[str, object]` — Build a ``gitconfig:`` record from an already-read global config value.
   - `classify_gitconfig(recorded: dict[str, object] | None, live: dict[str, object], managed_value: str) -> Classification` — Classify a single global git config key this installer manages.
 - Tested by: `test/test_depart.py`, `test/test_depart_transactions.py`, `test/test_install.py`
+
+### `depart_exec.py`
+
+depart_exec.py — --depart execution: preflight, phases, confirmation, cleanup.
+
+- Installed at: not symlinked by `links.toml`
+- Entrypoint: not executable, `#!/usr/bin/env python3`
+- CLI: none (library module).
+- Public classes:
+  - `class DepartureOptionsLike(Protocol)` — The install options departure execution actually reads.
+  - `class ManifestLike(Protocol)` — The install manifest surface departure execution actually reads.
+  - `class ManagedServiceLike(Protocol)` — Structural stand-in for install.ManagedService (name/unit only).
+  - `class LinkSpecLike(Protocol)` — Structural stand-in for link_inspect.LinkSpec (dest only, here).
+  - `class CommandResultLike(Protocol)` — Structural stand-in for install.CommandResult.
+  - `class DepartureContext(Protocol)` — Structural subset of install.Context used by departure execution.
+  - `class Deps` — Execution dependencies injected from install.py (resolved at call time).
+- Public functions:
+  - `capture_departure_baseline(deps: Deps, ctx: DepartureContext, specs: Sequence[LinkSpecLike]) -> None` — Capture this run's departure baseline layer before any install step runs.
+  - `build_preflight_report(deps: Deps, ctx: DepartureContext) -> dict[str, depart.Classification] | None` — Classify every tracked ownership key, or None if there's no baseline.
+  - `build_package_preflight(deps: Deps, ctx: DepartureContext) -> list[depart.PackageClassification] | None` — Classify every requested/introduced package, or None if there's no baseline.
+  - `execute_service_phase(deps: Deps, ctx: DepartureContext, baseline: depart.Baseline, ledger: depart.DepartureLedger) -> None` — Disable+stop every owned managed service, then reconcile linger once.
+  - `execute_gitconfig_phase(deps: Deps, ctx: DepartureContext, baseline: depart.Baseline, ledger: depart.DepartureLedger) -> None` — Restore the pre-dotfiles global core.hooksPath value, if this installer owns the current value.
+  - `execute_file_symlink_phase(deps: Deps, ctx: DepartureContext, baseline: depart.Baseline, report: dict[str, depart.Classification], ledger: depart.DepartureLedger) -> None` — Execute every owned ``file:``/``symlink:`` action, in pinned order.
+  - `execute_directory_phase(deps: Deps, ctx: DepartureContext, baseline: depart.Baseline, report: dict[str, depart.Classification], ledger: depart.DepartureLedger) -> None` — Execute every owned ``directory:`` action, deepest-path-first.
+  - `execute_runtime_phase(deps: Deps, ctx: DepartureContext, report: dict[str, depart.Classification], ledger: depart.DepartureLedger) -> None` — Remove the NVM root wholesale, if owned and not already done.
+  - `live_package_snapshots(deps: Deps, baseline: depart.Baseline) -> dict[str, dict[str, str] | None]` — Fresh probe results for every manager appearing in recorded transactions.
+  - `execute_package_phase(deps: Deps, ctx: DepartureContext, baseline: depart.Baseline, ledger: depart.DepartureLedger) -> bool` — Remove/downgrade owned packages, reverse transactions order.
+  - `execute_departure(deps: Deps, ctx: DepartureContext, baseline: depart.Baseline, report: dict[str, depart.Classification]) -> depart.DepartureLedger` — Perform every safe ``owned`` action, retry-safe via the departure ledger.
+  - `do_depart(deps: Deps, ctx: DepartureContext) -> int` — Preview and execute a pristine-state departure.
+- Tested by: `test/test_depart_exec_layering.py`
 
 ### `scripts/sync_from_dotfiles.py`
 
