@@ -1,0 +1,6 @@
+prefix_rule(pattern=["python3", "agent-scripts/second_opinion.py"], decision="allow")
+prefix_rule(pattern=["herdr", "agent", ["read", "wait", "get", "list", "explain"]], decision="allow")
+prefix_rule(pattern=["herdr", "pane", ["get", "list"]], decision="allow")
+prefix_rule(pattern=["herdr", "tab", ["list", "get"]], decision="allow")
+prefix_rule(pattern=["python3", "install.py", "--check-links"], decision="allow")
+prefix_rule(pattern=["python3", "install.py", "--dry-run"], decision="allow")
