@@ -116,15 +116,6 @@ DOTFILES_REF_PATHSPECS = (
     # this item's generator fix doesn't touch it since it was never part of
     # the generator's SKILLS set. Worth its own fix, out of scope here.
     ":!claude/commands/skill-map.md",
-    # Known, separate finding: agy/skills/standup/SKILL.md and
-    # copilot/skills/standup/SKILL.md are hand-authored, orphaned copies --
-    # standup is only ever generated for claude/opencode/pi
-    # (gen_skills.py's SKILL_HARNESSES), so these two are not managed by
-    # the generator at all and this item's regeneration step never touches
-    # them, despite being live-symlinked per links.toml. Worth its own fix,
-    # out of scope here.
-    ":!agy/skills/standup/SKILL.md",
-    ":!copilot/skills/standup/SKILL.md",
 )
 
 

@@ -39,29 +39,20 @@ this repo.
 
 ## Harness maintenance tiers
 
-Decided 2026-08-31, after chasing a single 3-skill drift fix
-(`meta-pi-residual-skill-drift`) through a third layer of undiscovered
-divergence in one session: full generated content parity across every
-harness is not worth maintaining unconditionally. It costs a
-capability-verification pass per harness on every new skill or template
-change, and that cost is unbounded — each pass can surface more drift
-(wording, tooling, whole mechanisms) than it fixes.
+Revisited 2026-09-08: with all six supported harnesses (Claude Code, Copilot,
+opencode, agy, Pi, and Codex CLI) in active daily personal use and testing,
+leaving Copilot, agy, and Codex as best-effort created silent drift and
+dangling references across skills. Full generated content parity is now
+maintained across all six harnesses (`_ACTIVE_TIER = HARNESSES`).
 
-- **Actively maintained parity** — Claude Code, opencode, Pi. New skills get
-  generated copies for all three; capability facts (`CAPABILITY_TABLE` in
-  `agent-scripts/gen_skills.py`, and its `gen_second_opinion.py` analog) get
-  kept current for these three when touched.
-- **Best-effort** — Copilot, agy, and Codex CLI (added 2026-09-08 when codex
-  support landed; it was just installed and its usage patterns are unproven —
-  promote it if it becomes a daily driver). Existing generated/hand-authored
-  content for these stays as-is; new skills do **not** get copilot/agy/codex
-  copies by default. Fix drift there only when actually about to use that
-  harness — never as a proactive drift-chasing pass, and never let staleness
-  there block or expand an unrelated item's scope.
-
-This tier is a starting point, not a permanent ceiling — revisit it if usage
-patterns change (e.g. copilot or agy becomes a real daily fallback the way
-opencode already is for billing overflow).
+- **Actively maintained parity** — Claude Code, Copilot, opencode, agy, Pi,
+  and Codex CLI. Generated skills (`dashboard`, `recap`, `grill-me`,
+  `backlog-item`, `make-skill`, `spec`, `standup`, `to-tickets`) cover all six
+  harnesses; capability facts (`CAPABILITY_TABLE` in `agent-scripts/gen_skills.py`,
+  and its `gen_second_opinion.py` analog) get kept current for all six.
+- **Exceptions** — `swarm` remains intentionally restricted to `("claude", "copilot")`
+  because Pi owns its own native TypeScript orchestration layer (`swarm-tool.ts`,
+  `--swarm[=N]`) and other harnesses do not have swarm runner infrastructure.
 
 ## Directory instructions — read before working in these
 

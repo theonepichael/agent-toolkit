@@ -1991,6 +1991,148 @@ description: "Turn a vague coding task into a structured specification (objectiv
 1. File lives at {edit_root("pi/skills/spec/SKILL.md")}. `pi/skills` is already wired into `links.toml` as one `dir = true` row, symlinked straight to `~/.pi/agent/skills/` — a new file under it needs no new `links.toml` row of its own, just the file.
 2. Conventional commit, scope `pi`: `feat`.""",
     },
+    "copilot": {
+        "FRONTMATTER": """\
+---
+name: spec
+description: "Turn a vague coding task into a structured specification (objective, context, inputs, output format, constraints, evaluation criteria, edge cases, verification steps) before generation begins. Use when the user wants to formalize a task, write a spec, or invokes /spec."
+allowed-tools: shell
+---""",
+        "OPENING_LINE": (
+            "If the user didn't name a specific task (and isn't asking to "
+            "formalize something already under discussion), ask what to spec "
+            "before proceeding. Otherwise spec the named task, or the task "
+            "under discussion in the conversation."
+        ),
+        "ARGS_TOKEN": "the named task",
+        "STEP2_BODY": (
+            "For each field you can't confidently fill, ask one at a time, "
+            "applying the shared instructions file's convention for asking the "
+            "user to choose. Skip fields already unambiguous from context — "
+            "a trivial task doesn't need all eight interrogated."
+        ),
+        "STEP3_ESCALATION": (
+            "A missing fact gets asked directly (step 2). A genuinely open "
+            "branch — multiple viable designs, unclear tradeoffs, a decision "
+            "that cascades into others — gets handed to `grill-me`: use it for "
+            "that specific decision, with the blocked field's question as topic. "
+            "Let it own its full protocol — Q&A, `--verify`, executor-readiness. "
+            "Decline grill-me's own clear-and-go offer — drafting isn't done yet, "
+            "so grill-me resolving the branch doesn't get to be the last word."
+        ),
+        "BACKLOG_ITEM_REF": "`backlog-item`",
+        "STEP4_ASK": (
+            'ask, in plain text with a recommendation: "Start generation '
+            'against this spec now?" — recommend yes.'
+        ),
+        "STEP6_AUDIT_OFFER": (
+            "Once verification passes (or is stopped-and-reported), ask, in "
+            'plain text with a recommendation: "Run an audit pass for '
+            'specification gaming?" — recommend yes unless this is trivial. '
+            "A yes reuses `/second-opinion`'s `second_opinion.py review` loop "
+            "against the spec's Objective and the result — does it satisfy "
+            "the letter while missing the intent? — rather than self-grading."
+        ),
+        "PLUMBING_STEPS": f"""\
+1. File lives at {edit_root("copilot/skills/spec/SKILL.md")}.
+2. Add a `[[link]]` entry (`src = "copilot/skills/spec/SKILL.md"`, `dest = "~/.copilot/skills/spec/SKILL.md"`, `harness = "copilot"`) in `links.toml` next to the existing ones.
+3. Create the live symlink now: {symlink_cmd("copilot/skills/spec/SKILL.md", "~/.copilot/skills/spec/SKILL.md")}.
+4. Conventional commit, scope `copilot`: `feat`.""",
+    },
+    "agy": {
+        "FRONTMATTER": """\
+---
+name: spec
+description: "Turn a vague coding task into a structured specification (objective, context, inputs, output format, constraints, evaluation criteria, edge cases, verification steps) before generation begins. Use when the user wants to formalize a task, write a spec, or invokes /spec."
+---""",
+        "OPENING_LINE": (
+            "If the user didn't name a specific task (and isn't asking to "
+            "formalize something already under discussion), ask what to spec "
+            "before proceeding. Otherwise spec the named task, or the task "
+            "under discussion in the conversation."
+        ),
+        "ARGS_TOKEN": "the named task",
+        "STEP2_BODY": (
+            "For each field you can't confidently fill, ask one at a time, "
+            "applying the shared instructions file's convention for asking the "
+            "user to choose. Skip fields already unambiguous from context — "
+            "a trivial task doesn't need all eight interrogated."
+        ),
+        "STEP3_ESCALATION": (
+            "A missing fact gets asked directly (step 2). A genuinely open "
+            "branch — multiple viable designs, unclear tradeoffs, a decision "
+            "that cascades into others — gets handed to `grill-me`: use it for "
+            "that specific decision, with the blocked field's question as topic. "
+            "Let it own its full protocol — Q&A, `--verify`, executor-readiness. "
+            "Decline grill-me's own clear-and-go offer — drafting isn't done yet, "
+            "so grill-me resolving the branch doesn't get to be the last word."
+        ),
+        "BACKLOG_ITEM_REF": "`backlog-item`",
+        "STEP4_ASK": (
+            'ask, in plain text with a recommendation: "Start generation '
+            'against this spec now?" — recommend yes.'
+        ),
+        "STEP6_AUDIT_OFFER": (
+            "Once verification passes (or is stopped-and-reported), ask, in "
+            'plain text with a recommendation: "Run an audit pass for '
+            'specification gaming?" — recommend yes unless this is trivial. '
+            "A yes reuses `/second-opinion`'s `second_opinion.py review` loop "
+            "against the spec's Objective and the result — does it satisfy "
+            "the letter while missing the intent? — rather than self-grading."
+        ),
+        "PLUMBING_STEPS": f"""\
+1. File lives at {edit_root("agy/skills/spec/SKILL.md")}.
+2. Add a `[[link]]` entry (`src = "agy/skills/spec/SKILL.md"`, `dest = "~/.gemini/antigravity-cli/skills/spec/SKILL.md"`, `harness = "agy"`) in `links.toml` next to the existing ones.
+3. Create the live symlink now: {symlink_cmd("agy/skills/spec/SKILL.md", "~/.gemini/antigravity-cli/skills/spec/SKILL.md")}.
+4. Conventional commit, scope `agy`: `feat`.""",
+    },
+    "codex": {
+        "FRONTMATTER": """\
+---
+name: spec
+description: "Turn a vague coding task into a structured specification (objective, context, inputs, output format, constraints, evaluation criteria, edge cases, verification steps) before generation begins. Use when the user wants to formalize a task, write a spec, or invokes /spec."
+---""",
+        "OPENING_LINE": (
+            "If the user didn't name a specific task (and isn't asking to "
+            "formalize something already under discussion), ask what to spec "
+            "before proceeding. Otherwise spec the named task, or the task "
+            "under discussion in the conversation."
+        ),
+        "ARGS_TOKEN": "the named task",
+        "STEP2_BODY": (
+            "For each field you can't confidently fill, ask one at a time, "
+            "applying the shared instructions file's convention for asking the "
+            "user to choose. Skip fields already unambiguous from context — "
+            "a trivial task doesn't need all eight interrogated."
+        ),
+        "STEP3_ESCALATION": (
+            "A missing fact gets asked directly (step 2). A genuinely open "
+            "branch — multiple viable designs, unclear tradeoffs, a decision "
+            "that cascades into others — gets handed to `grill-me`: use it for "
+            "that specific decision, with the blocked field's question as topic. "
+            "Let it own its full protocol — Q&A, `--verify`, executor-readiness. "
+            "Decline grill-me's own clear-and-go offer — drafting isn't done yet, "
+            "so grill-me resolving the branch doesn't get to be the last word."
+        ),
+        "BACKLOG_ITEM_REF": "`backlog-item`",
+        "STEP4_ASK": (
+            'ask, in plain text with a recommendation: "Start generation '
+            'against this spec now?" — recommend yes.'
+        ),
+        "STEP6_AUDIT_OFFER": (
+            "Once verification passes (or is stopped-and-reported), ask, in "
+            'plain text with a recommendation: "Run an audit pass for '
+            'specification gaming?" — recommend yes unless this is trivial. '
+            "A yes reuses `/second-opinion`'s `second_opinion.py review` loop "
+            "against the spec's Objective and the result — does it satisfy "
+            "the letter while missing the intent? — rather than self-grading."
+        ),
+        "PLUMBING_STEPS": f"""\
+1. File lives at {edit_root("codex/skills/spec/SKILL.md")}.
+2. Nothing to add to `links.toml`: unlike every other harness here, Codex's skills are NOT `[[link]]` symlink rows. Codex's skill scanner does not follow symlinks for USER-scope discovery. A new skill directory under `codex/skills/` is picked up automatically by `install.py`'s `sync_codex_skills()`, which globs that directory — no per-skill registration needed there either.
+3. Apply it now: run `python3 install.py --harness=codex` (from this repo's root) to copy the new `~/.codex/skills/spec/SKILL.md` into place immediately, rather than waiting for the next full install.
+4. Conventional commit, scope `codex`: `feat`.""",
+    },
 }
 
 STANDUP_PARAMS: dict[str, dict[str, str]] = {
@@ -2144,6 +2286,181 @@ email) — not a free-text string.""",
             dotfiles_relpath="claude/scripts/standup_adapters.py",
         ),
     },
+    "copilot": {
+        "FRONTMATTER": """\
+---
+name: standup
+description: "Gather assigned work, chat signal, calendar events, pending replies, git commits, and backlog activity into a daily standup draft, saved to a dated file. Use when the user says 'standup', 'prep for standup', or wants their daily status pulled together."
+allowed-tools: shell
+---""",
+        "FETCH_MECHANISM": """\
+```
+python3 ~/.claude/scripts/standup.py fetch [--date YYYY-MM-DD]
+```
+
+`--date` overrides the reference date (defaults to today) — use it after a
+gap longer than one working day (holiday, PTO) where the default
+last-working-day boundary would land on the wrong day.""",
+        "RECONCILE_BODY": """\
+Status moves one step at a time: `waiting_for_reply` → `reply_received` →
+`resolved`. A reply landing doesn't mean the thing is closed out — it means
+it needs a look. Don't jump straight to `resolved` on a hunch.
+
+For each entry in `pending_items_open`, check `chat_thread_updates` /
+`email_thread_updates` (and `messages`/`email_correspondence` for anything
+those targeted fetches missed) for a reply. Propose the transition to the
+user in chat first — nothing gets written until they confirm, since "was
+this actually answered" is a judgment call, not a pattern match:
+
+```
+python3 ~/.claude/scripts/dev_status.py pending update <id> '{"status": "reply_received"}'
+```
+
+Only move an item to `resolved` when the user confirms it's actually done,
+and record what happened:
+
+```
+python3 ~/.claude/scripts/dev_status.py pending update <id> '{"status": "resolved", "outcome": "what actually happened"}'
+```
+
+For anything in the fetched data that looks like a new item worth tracking
+across days (an email/chat message still awaiting a reply, an access
+request not yet approved) but isn't already in `pending_items_open`,
+propose adding it:
+
+```
+python3 ~/.claude/scripts/dev_status.py pending add '{"id", "description", "kind", "source_ref": {...}, "context", "next_steps": [...]}'
+```
+
+`<id>` can be the pending item's slug — `dev_status.py`'s cross-section
+numbering (visible via `/dashboard`) also works, but its numbers shift as
+items change, so prefer the slug here since `standup.py`'s `fetch` output
+already gives you it directly.
+
+`kind` is one of `email`, `chat`, `approval`. `source_ref` is a structured
+object appropriate to the kind (e.g. `{"to", "subject", "sent_date"}` for
+email) — not a free-text string.""",
+        "EDIT_ROOT": edit_root(
+            "agent-scripts/standup_adapters.py",
+            dotfiles_relpath="claude/scripts/standup_adapters.py",
+        ),
+    },
+    "agy": {
+        "FRONTMATTER": """\
+---
+name: standup
+description: "Gather assigned work, chat signal, calendar events, pending replies, git commits, and backlog activity into a daily standup draft, saved to a dated file. Use when the user says 'standup', 'prep for standup', or wants their daily status pulled together."
+---""",
+        "FETCH_MECHANISM": """\
+```
+python3 ~/.claude/scripts/standup.py fetch [--date YYYY-MM-DD]
+```
+
+`--date` overrides the reference date (defaults to today) — use it after a
+gap longer than one working day (holiday, PTO) where the default
+last-working-day boundary would land on the wrong day.""",
+        "RECONCILE_BODY": """\
+Status moves one step at a time: `waiting_for_reply` → `reply_received` →
+`resolved`. A reply landing doesn't mean the thing is closed out — it means
+it needs a look. Don't jump straight to `resolved` on a hunch.
+
+For each entry in `pending_items_open`, check `chat_thread_updates` /
+`email_thread_updates` (and `messages`/`email_correspondence` for anything
+those targeted fetches missed) for a reply. Propose the transition to the
+user in chat first — nothing gets written until they confirm, since "was
+this actually answered" is a judgment call, not a pattern match:
+
+```
+python3 ~/.claude/scripts/dev_status.py pending update <id> '{"status": "reply_received"}'
+```
+
+Only move an item to `resolved` when the user confirms it's actually done,
+and record what happened:
+
+```
+python3 ~/.claude/scripts/dev_status.py pending update <id> '{"status": "resolved", "outcome": "what actually happened"}'
+```
+
+For anything in the fetched data that looks like a new item worth tracking
+across days (an email/chat message still awaiting a reply, an access
+request not yet approved) but isn't already in `pending_items_open`,
+propose adding it:
+
+```
+python3 ~/.claude/scripts/dev_status.py pending add '{"id", "description", "kind", "source_ref": {...}, "context", "next_steps": [...]}'
+```
+
+`<id>` can be the pending item's slug — `dev_status.py`'s cross-section
+numbering (visible via `/dashboard`) also works, but its numbers shift as
+items change, so prefer the slug here since `standup.py`'s `fetch` output
+already gives you it directly.
+
+`kind` is one of `email`, `chat`, `approval`. `source_ref` is a structured
+object appropriate to the kind (e.g. `{"to", "subject", "sent_date"}` for
+email) — not a free-text string.""",
+        "EDIT_ROOT": edit_root(
+            "agent-scripts/standup_adapters.py",
+            dotfiles_relpath="claude/scripts/standup_adapters.py",
+        ),
+    },
+    "codex": {
+        "FRONTMATTER": """\
+---
+name: standup
+description: "Gather assigned work, chat signal, calendar events, pending replies, git commits, and backlog activity into a daily standup draft, saved to a dated file. Use when the user says 'standup', 'prep for standup', or wants their daily status pulled together."
+---""",
+        "FETCH_MECHANISM": """\
+```
+python3 ~/.claude/scripts/standup.py fetch [--date YYYY-MM-DD]
+```
+
+`--date` overrides the reference date (defaults to today) — use it after a
+gap longer than one working day (holiday, PTO) where the default
+last-working-day boundary would land on the wrong day.""",
+        "RECONCILE_BODY": """\
+Status moves one step at a time: `waiting_for_reply` → `reply_received` →
+`resolved`. A reply landing doesn't mean the thing is closed out — it means
+it needs a look. Don't jump straight to `resolved` on a hunch.
+
+For each entry in `pending_items_open`, check `chat_thread_updates` /
+`email_thread_updates` (and `messages`/`email_correspondence` for anything
+those targeted fetches missed) for a reply. Propose the transition to the
+user in chat first — nothing gets written until they confirm, since "was
+this actually answered" is a judgment call, not a pattern match:
+
+```
+python3 ~/.claude/scripts/dev_status.py pending update <id> '{"status": "reply_received"}'
+```
+
+Only move an item to `resolved` when the user confirms it's actually done,
+and record what happened:
+
+```
+python3 ~/.claude/scripts/dev_status.py pending update <id> '{"status": "resolved", "outcome": "what actually happened"}'
+```
+
+For anything in the fetched data that looks like a new item worth tracking
+across days (an email/chat message still awaiting a reply, an access
+request not yet approved) but isn't already in `pending_items_open`,
+propose adding it:
+
+```
+python3 ~/.claude/scripts/dev_status.py pending add '{"id", "description", "kind", "source_ref": {...}, "context", "next_steps": [...]}'
+```
+
+`<id>` can be the pending item's slug — `dev_status.py`'s cross-section
+numbering (visible via `/dashboard`) also works, but its numbers shift as
+items change, so prefer the slug here since `standup.py`'s `fetch` output
+already gives you it directly.
+
+`kind` is one of `email`, `chat`, `approval`. `source_ref` is a structured
+object appropriate to the kind (e.g. `{"to", "subject", "sent_date"}` for
+email) — not a free-text string.""",
+        "EDIT_ROOT": edit_root(
+            "agent-scripts/standup_adapters.py",
+            dotfiles_relpath="claude/scripts/standup_adapters.py",
+        ),
+    },
 }
 
 TO_TICKETS_PARAMS: dict[str, dict[str, str]] = {
@@ -2240,6 +2557,103 @@ description: "Decompose a plan or spec into multiple linked dev_status.py backlo
             "directly, never construct it inline in a shell command. The "
             "`to_tickets` tool takes the path as a discrete argument, so no "
             "shell parses it."
+        ),
+    },
+    "copilot": {
+        "FRONTMATTER": """\
+---
+name: to-tickets
+description: "Decompose a plan or spec into multiple linked dev_status.py backlog items — vertical-slice/tracer-bullet tickets joined by blocked_by edges — after confirming the breakdown with the user. Use when the user wants a plan broken into tickets, wants a spec turned into backlog items, or invokes /to-tickets."
+allowed-tools: shell
+---""",
+        "OPENING_LINE": (
+            "If the user didn't name a specific plan or spec (and isn't "
+            "asking to decompose something already under discussion), ask "
+            "what to decompose before proceeding. Otherwise decompose the "
+            "named plan/spec, or the one under discussion in the "
+            "conversation."
+        ),
+        "STEP4_CONFIRM_MECHANISM": (
+            "Ask in plain text with your recommendation first."
+        ),
+        "RUNNER_INVOKE": (
+            "run `python3 ~/.claude/scripts/to_tickets_runner.py run <that path>`."
+        ),
+        "RUNNER_MKDIR_OWNER": "`to_tickets_runner.py`",
+        "RESUME_MECHANISM": (
+            "simply re-invoke the same `to_tickets_runner.py run` command on "
+            "the same batch file —"
+        ),
+        "SHELL_SAFETY_NOTE": (
+            "Every batch-JSON write and every `to_tickets_runner.py` "
+            "invocation you make inherits this repo's shell-safety rule: a "
+            "summary/context field containing an apostrophe never goes into "
+            "an inline single-quoted shell string — write the JSON file "
+            "directly, never construct it inline in a shell command."
+        ),
+    },
+    "agy": {
+        "FRONTMATTER": """\
+---
+name: to-tickets
+description: "Decompose a plan or spec into multiple linked dev_status.py backlog items — vertical-slice/tracer-bullet tickets joined by blocked_by edges — after confirming the breakdown with the user. Use when the user wants a plan broken into tickets, wants a spec turned into backlog items, or invokes /to-tickets."
+---""",
+        "OPENING_LINE": (
+            "If the user didn't name a specific plan or spec (and isn't "
+            "asking to decompose something already under discussion), ask "
+            "what to decompose before proceeding. Otherwise decompose the "
+            "named plan/spec, or the one under discussion in the "
+            "conversation."
+        ),
+        "STEP4_CONFIRM_MECHANISM": (
+            "Ask in plain text with your recommendation first."
+        ),
+        "RUNNER_INVOKE": (
+            "run `python3 ~/.claude/scripts/to_tickets_runner.py run <that path>`."
+        ),
+        "RUNNER_MKDIR_OWNER": "`to_tickets_runner.py`",
+        "RESUME_MECHANISM": (
+            "simply re-invoke the same `to_tickets_runner.py run` command on "
+            "the same batch file —"
+        ),
+        "SHELL_SAFETY_NOTE": (
+            "Every batch-JSON write and every `to_tickets_runner.py` "
+            "invocation you make inherits this repo's shell-safety rule: a "
+            "summary/context field containing an apostrophe never goes into "
+            "an inline single-quoted shell string — write the JSON file "
+            "directly, never construct it inline in a shell command."
+        ),
+    },
+    "codex": {
+        "FRONTMATTER": """\
+---
+name: to-tickets
+description: "Decompose a plan or spec into multiple linked dev_status.py backlog items — vertical-slice/tracer-bullet tickets joined by blocked_by edges — after confirming the breakdown with the user. Use when the user wants a plan broken into tickets, wants a spec turned into backlog items, or invokes /to-tickets."
+---""",
+        "OPENING_LINE": (
+            "If the user didn't name a specific plan or spec (and isn't "
+            "asking to decompose something already under discussion), ask "
+            "what to decompose before proceeding. Otherwise decompose the "
+            "named plan/spec, or the one under discussion in the "
+            "conversation."
+        ),
+        "STEP4_CONFIRM_MECHANISM": (
+            "Ask in plain text with your recommendation first."
+        ),
+        "RUNNER_INVOKE": (
+            "run `python3 ~/.claude/scripts/to_tickets_runner.py run <that path>`."
+        ),
+        "RUNNER_MKDIR_OWNER": "`to_tickets_runner.py`",
+        "RESUME_MECHANISM": (
+            "simply re-invoke the same `to_tickets_runner.py run` command on "
+            "the same batch file —"
+        ),
+        "SHELL_SAFETY_NOTE": (
+            "Every batch-JSON write and every `to_tickets_runner.py` "
+            "invocation you make inherits this repo's shell-safety rule: a "
+            "summary/context field containing an apostrophe never goes into "
+            "an inline single-quoted shell string — write the JSON file "
+            "directly, never construct it inline in a shell command."
         ),
     },
 }

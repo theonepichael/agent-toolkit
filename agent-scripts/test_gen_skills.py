@@ -271,6 +271,29 @@ class CapabilityFixtureTests(unittest.TestCase):
         self.assertNotIn("no built-in question/select tool", text)
         self.assertIn("rule out built-in sub-agents", text)
 
+    def test_spec_copilot(self) -> None:
+        text = self._render("spec", "copilot")
+        self.assertIn("name: spec", text)
+        self.assertIn("allowed-tools: shell", text)
+        self.assertNotIn("AskUserQuestion", text)
+        self.assertIn("ask, in plain text with a recommendation", text)
+        self.assertIn("copilot/skills/spec/SKILL.md", text)
+
+    def test_spec_agy(self) -> None:
+        text = self._render("spec", "agy")
+        self.assertIn("name: spec", text)
+        self.assertNotIn("AskUserQuestion", text)
+        self.assertIn("ask, in plain text with a recommendation", text)
+        self.assertIn("agy/skills/spec/SKILL.md", text)
+
+    def test_spec_codex(self) -> None:
+        text = self._render("spec", "codex")
+        self.assertIn("name: spec", text)
+        self.assertNotIn("AskUserQuestion", text)
+        self.assertIn("ask, in plain text with a recommendation", text)
+        self.assertIn("codex/skills/spec/SKILL.md", text)
+        self.assertIn("sync_codex_skills", text)
+
     # -- standup --------------------------------------------------------
 
     def test_standup_claude(self) -> None:
@@ -278,15 +301,34 @@ class CapabilityFixtureTests(unittest.TestCase):
         self.assertIn("Bash(python3 ~/.claude/scripts/standup.py:*)", text)
         self.assertIn("CLAUDE.md's pending-item status-transition rule", text)
 
+    def test_standup_copilot(self) -> None:
+        text = self._render("standup", "copilot")
+        self.assertIn("name: standup", text)
+        self.assertIn("allowed-tools: shell", text)
+        self.assertIn("python3 ~/.claude/scripts/standup.py fetch", text)
+        self.assertIn("python3 ~/.claude/scripts/dev_status.py pending update", text)
+
     def test_standup_opencode(self) -> None:
         text = self._render("standup", "opencode")
         self.assertIn("python3 ~/.claude/scripts/dev_status.py pending update", text)
         self.assertIn("visible via `/dashboard`", text)
 
+    def test_standup_agy(self) -> None:
+        text = self._render("standup", "agy")
+        self.assertIn("name: standup", text)
+        self.assertIn("python3 ~/.claude/scripts/standup.py fetch", text)
+        self.assertIn("python3 ~/.claude/scripts/dev_status.py pending update", text)
+
     def test_standup_pi(self) -> None:
         text = self._render("standup", "pi")
         self.assertIn("Call the `standup` tool with action `fetch`", text)
         self.assertIn("`dev_status` tool", text)
+
+    def test_standup_codex(self) -> None:
+        text = self._render("standup", "codex")
+        self.assertIn("name: standup", text)
+        self.assertIn("python3 ~/.claude/scripts/standup.py fetch", text)
+        self.assertIn("python3 ~/.claude/scripts/dev_status.py pending update", text)
 
     # -- to-tickets -----------------------------------------------------
 
@@ -295,15 +337,34 @@ class CapabilityFixtureTests(unittest.TestCase):
         self.assertIn("AskUserQuestion", text)
         self.assertIn("to_tickets_runner.py run", text)
 
+    def test_to_tickets_copilot(self) -> None:
+        text = self._render("to-tickets", "copilot")
+        self.assertIn("name: to-tickets", text)
+        self.assertIn("allowed-tools: shell", text)
+        self.assertNotIn("AskUserQuestion", text)
+        self.assertIn("to_tickets_runner.py run", text)
+
     def test_to_tickets_opencode(self) -> None:
         text = self._render("to-tickets", "opencode")
         self.assertIn("`question` tool", text)
+        self.assertIn("to_tickets_runner.py run", text)
+
+    def test_to_tickets_agy(self) -> None:
+        text = self._render("to-tickets", "agy")
+        self.assertIn("name: to-tickets", text)
+        self.assertNotIn("AskUserQuestion", text)
         self.assertIn("to_tickets_runner.py run", text)
 
     def test_to_tickets_pi(self) -> None:
         text = self._render("to-tickets", "pi")
         self.assertIn("`to_tickets` tool", text)
         self.assertNotIn("python3 ~/.claude/scripts/to_tickets_runner.py run", text)
+
+    def test_to_tickets_codex(self) -> None:
+        text = self._render("to-tickets", "codex")
+        self.assertIn("name: to-tickets", text)
+        self.assertNotIn("AskUserQuestion", text)
+        self.assertIn("to_tickets_runner.py run", text)
 
     # -- swarm --------------------------------------------------------------
 
@@ -330,9 +391,12 @@ class CapabilityFixtureTests(unittest.TestCase):
 class EndToEndTests(unittest.TestCase):
     """Assert the real templates + params render to exactly what's committed."""
 
-    def test_all_41_copies_are_up_to_date(self) -> None:
+    def test_active_tier_is_all_harnesses(self) -> None:
+        self.assertEqual(gs._ACTIVE_TIER, gs.HARNESSES)
+
+    def test_all_50_copies_are_up_to_date(self) -> None:
         rendered = gs.render_all(REPO_ROOT, SKILL_PARAMS)
-        self.assertEqual(len(rendered), 41)
+        self.assertEqual(len(rendered), 50)
         stale = []
         for relpath, text in rendered.items():
             on_disk = (REPO_ROOT / relpath).read_text(encoding="utf-8")

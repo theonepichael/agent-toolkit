@@ -2,12 +2,10 @@
 """gen_skills.py — regenerate the dashboard/recap/grill-me/backlog-item/
 make-skill/spec/standup/to-tickets/swarm skill copies from one template per
 skill, plus a shared per-harness capability table. dashboard/recap/
-grill-me/backlog-item/make-skill cover all 5 harnesses (claude, copilot,
-opencode, agy, pi); spec/standup/to-tickets cover only claude/opencode/pi;
-swarm covers only claude/copilot (user-directed; pi already owns the
-orchestration surface) — see `SKILL_HARNESSES` below and AGENTS.md's
-"Harness maintenance tiers" section for why copilot/agy stop getting new
-generated skills.
+grill-me/backlog-item/make-skill/spec/standup/to-tickets cover all 6
+harnesses (claude, copilot, opencode, agy, pi, codex); swarm covers only
+claude/copilot (user-directed; pi already owns the orchestration surface) —
+see `SKILL_HARNESSES` below and AGENTS.md's "Harness maintenance tiers" section.
 
 The first 4 skills used to live as hand-forked copies, one per harness, with
 no mechanism keeping them in sync (see `meta-pi-skill-content-mismatch`'s
@@ -43,10 +41,9 @@ Usage:
 Flags: --check, --stdout, --repo-root <path>, --quiet/-q, --verbose/-v.
 Env vars: none.
 Files read: <repo>/templates/{dashboard,recap,grill_me,backlog_item,make_skill,spec,standup,to_tickets,swarm}.md.tmpl.
-Files written: the 36 (skill, harness) copies named in OUTPUT_PATHS —
-5 skills x 5 harnesses (25), 3 skills x 3 harnesses (9), plus swarm x
-{claude, copilot} (2), per `SKILL_HARNESSES` (skipped by --check and
---stdout).
+Files written: the 50 (skill, harness) copies named in OUTPUT_PATHS —
+8 skills x 6 harnesses (48), plus swarm x {claude, copilot} (2), per
+`SKILL_HARNESSES` (skipped by --check and --stdout).
 Exit codes: 0 success; 1 --check found stale output; 2 bad usage.
 
 Requires Python 3.12+.
@@ -73,22 +70,15 @@ SKILLS = (
 )
 HARNESSES = ("claude", "copilot", "opencode", "agy", "pi", "codex")
 
-# Per skill, which harnesses get a generated copy. Every skill defaults to
-# the full HARNESSES tuple except spec/standup/to-tickets, which cover only
-# claude/opencode/pi -- per AGENTS.md's "Harness maintenance tiers": copilot
-# and agy are best-effort and not proactively extended with new generated
-# skills (meta-pi-residual-skill-drift's scope decision). swarm deviates the
-# other way -- claude/copilot only, user-directed: copilot was explicitly
-# requested, opencode was not, and pi already owns the swarm orchestration
+# Per skill, which harnesses get a generated copy. All 6 harnesses are in
+# _ACTIVE_TIER (full active parity, decided 2026-09-08). swarm deviates:
+# claude/copilot only, user-directed: copilot was explicitly requested,
+# opencode/agy/codex were not, and pi already owns the swarm orchestration
 # surface (pi/prompts/backlog-item.md's --swarm[=N] section plus
 # pi/extensions/swarm-tool.ts), so a pi copy would be exactly the
 # "second copy is a second thing to drift" problem swarm.md's own closing
 # section warns against.
-_ACTIVE_TIER = ("claude", "opencode", "pi")
-# codex is best-effort (like copilot/agy): it gets the 5 base-skill copies via
-# HARNESSES above, but stays out of _ACTIVE_TIER -- no spec/standup/to-tickets
-# copies, and future skills don't get codex copies by default (AGENTS.md's
-# "Harness maintenance tiers"; promote if codex becomes a daily driver).
+_ACTIVE_TIER = HARNESSES
 SKILL_HARNESSES: dict[str, tuple[str, ...]] = {
     "dashboard": HARNESSES,
     "recap": HARNESSES,
@@ -145,14 +135,23 @@ OUTPUT_PATHS: dict[tuple[str, str], str] = {
     ("make-skill", "codex"): "codex/skills/make-skill/SKILL.md",
     ("make-skill", "pi"): "pi/skills/make-skill/SKILL.md",
     ("spec", "claude"): "claude/commands/spec.md",
+    ("spec", "copilot"): "copilot/skills/spec/SKILL.md",
     ("spec", "opencode"): "opencode/command/spec.md",
+    ("spec", "agy"): "agy/skills/spec/SKILL.md",
     ("spec", "pi"): "pi/skills/spec/SKILL.md",
+    ("spec", "codex"): "codex/skills/spec/SKILL.md",
     ("standup", "claude"): "claude/commands/standup.md",
+    ("standup", "copilot"): "copilot/skills/standup/SKILL.md",
     ("standup", "opencode"): "opencode/command/standup.md",
+    ("standup", "agy"): "agy/skills/standup/SKILL.md",
     ("standup", "pi"): "pi/skills/standup/SKILL.md",
+    ("standup", "codex"): "codex/skills/standup/SKILL.md",
     ("to-tickets", "claude"): "claude/commands/to-tickets.md",
+    ("to-tickets", "copilot"): "copilot/skills/to-tickets/SKILL.md",
     ("to-tickets", "opencode"): "opencode/command/to-tickets.md",
+    ("to-tickets", "agy"): "agy/skills/to-tickets/SKILL.md",
     ("to-tickets", "pi"): "pi/skills/to-tickets/SKILL.md",
+    ("to-tickets", "codex"): "codex/skills/to-tickets/SKILL.md",
     ("swarm", "claude"): "claude/commands/swarm.md",
     ("swarm", "copilot"): "copilot/skills/swarm/SKILL.md",
 }
