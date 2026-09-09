@@ -544,7 +544,8 @@ gen_skills.py — regenerate the dashboard/recap/grill-me/backlog-item/ make-ski
 - Explicit exit codes: `1`, `2`
 - Depends on: `cli_common.py`, `gen_skills_params.py`
 - Public functions:
-  - `do_not_edit_marker(skill: str) -> str` — Return this skill's marker, naming its own template file by name.
+  - `template_path_for(skill: str, harness: str) -> str` — Return the template path this (skill, harness) pair renders from.
+  - `do_not_edit_marker(skill: str, harness: str) -> str` — Return this (skill, harness) pair's marker, naming its real template.
   - `capability_tokens(harness: str) -> dict[str, str]` — Map the shared capability facts to the `{{TOKEN}}` names templates use.
   - `apply_placeholders(text: str, values: dict[str, str]) -> str` — Replace every `{{TOKEN}}` in ``text`` with its harness-specific value.
   - `render_body(template_text: str, values: dict[str, str]) -> str` — Render one harness's body: substitute placeholders, no reflow.
