@@ -4285,6 +4285,67 @@ class BacklogTestCase(BacklogFixture):
             [e for e in self._journal_lines() if e.get("cmd") == "stale-pid-sweep"], []
         )
 
+    def test_stale_pid_sweep_keeps_fresh_unanchored_claim(self):
+        now_iso = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        item = make_item("task-a", status="in-progress")
+        item["claimed_by"] = {
+            "harness": "codex",
+            "machine_id": dev_status.machine_id(),
+            "pid": 999999,
+            "owner_pid": 999999,
+            "claimed_at": now_iso,
+            "last_active": now_iso,
+        }
+        self.write_items([item])
+
+        with patch("dev_status._is_pid_alive", return_value=False):
+            dev_status.cmd_render(_args())
+
+        self.assertEqual(self.read_items()[0]["status"], "in-progress")
+
+    def test_stale_pid_sweep_reverts_expired_unanchored_claim(self):
+        old_iso = (datetime.now(UTC) - timedelta(hours=3)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        item = make_item("task-a", status="in-progress")
+        item["claimed_by"] = {
+            "harness": "codex",
+            "machine_id": dev_status.machine_id(),
+            "pid": 999999,
+            "owner_pid": 999999,
+            "claimed_at": old_iso,
+            "last_active": old_iso,
+        }
+        self.write_items([item])
+
+        with patch("dev_status._is_pid_alive", return_value=True):
+            dev_status.cmd_render(_args())
+
+        self.assertEqual(self.read_items()[0]["status"], "open")
+
+    def test_stale_pid_sweep_keeps_fresh_other_namespace_claim(self):
+        now_iso = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        item = make_item("task-a", status="in-progress")
+        item["claimed_by"] = {
+            "harness": "codex",
+            "machine_id": dev_status.machine_id(),
+            "pid": 3,
+            "owner_pid": 2,
+            "pid_namespace": "pid:[other]",
+            "claimed_at": now_iso,
+            "last_active": now_iso,
+        }
+        self.write_items([item])
+
+        with (
+            patch("dev_status._pid_namespace_identity", return_value="pid:[current]"),
+            patch("dev_status._is_pid_alive", return_value=False) as mock_alive,
+        ):
+            dev_status.cmd_render(_args())
+
+        self.assertEqual(self.read_items()[0]["status"], "in-progress")
+        mock_alive.assert_not_called()
+
     @patch("dev_status._check_worktree_guard")
     @patch("dev_status._is_pid_alive", return_value=True)
     def test_claim_theft_journaled_on_force_over_live_claim(self, mock_pid, mock_wt):
@@ -6392,6 +6453,7 @@ class OwnerPidClaimTestCase(BacklogFixture):
         for entry in ancestors:
             self.assertLessEqual(len(entry["cmd"]), 120)
         self.assertIn(owner_pid, [a["pid"] for a in ancestors])
+        self.assertIn("pid_namespace", claim)
 
     def _write_claimed_item(self, claim):
         now_iso = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -6459,6 +6521,63 @@ class OwnerPidClaimTestCase(BacklogFixture):
             dev_status.cmd_start(_args(id="task-a", claimed_by="claude"))
         items = dev_status.load_items()
         self.assertEqual(items[0]["claimed_by"]["harness"], "claude")
+
+    @patch("dev_status._check_worktree_guard")
+    def test_collision_fresh_unanchored_claim_uses_ttl(self, mock_wt):
+        now_iso = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self._write_claimed_item(
+            {
+                "harness": "codex",
+                "machine_id": dev_status.machine_id(),
+                "pid": 999999,
+                "owner_pid": 999999,
+                "claimed_at": now_iso,
+                "last_active": now_iso,
+            }
+        )
+
+        with patch("dev_status._is_pid_alive", return_value=False):
+            with self.assertRaises(SystemExit) as ctx:
+                dev_status.cmd_start(_args(id="task-a", claimed_by="claude"))
+
+        self.assertEqual(ctx.exception.code, 1)
+
+    @patch("dev_status._check_worktree_guard")
+    def test_collision_fresh_other_namespace_claim_uses_ttl(self, mock_wt):
+        now_iso = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self._write_claimed_item(
+            {
+                "harness": "codex",
+                "machine_id": dev_status.machine_id(),
+                "pid": 3,
+                "owner_pid": 2,
+                "pid_namespace": "pid:[other]",
+                "claimed_at": now_iso,
+                "last_active": now_iso,
+            }
+        )
+
+        with (
+            patch("dev_status._pid_namespace_identity", return_value="pid:[current]"),
+            patch("dev_status._is_pid_alive", return_value=False) as mock_alive,
+            self.assertRaises(SystemExit) as ctx,
+        ):
+            dev_status.cmd_start(_args(id="task-a", claimed_by="claude"))
+
+        self.assertEqual(ctx.exception.code, 1)
+        mock_alive.assert_not_called()
+
+    def test_claim_with_unavailable_namespace_uses_ttl(self):
+        claim = {
+            "pid": 3,
+            "owner_pid": 2,
+            "pid_namespace": None,
+        }
+        self.assertTrue(dev_status._claim_uses_ttl(claim))
+
+    def test_legacy_claim_without_namespace_keeps_pid_behavior(self):
+        claim = {"pid": 3, "owner_pid": 2}
+        self.assertFalse(dev_status._claim_uses_ttl(claim))
 
     @patch("dev_status._check_worktree_guard")
     def test_collision_same_owner_allows_same_session(self, mock_wt):

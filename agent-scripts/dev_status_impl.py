@@ -425,6 +425,52 @@ def _claim_within_ttl(claim_last_active: str) -> bool:
     return elapsed < _claim_ttl_seconds()
 
 
+def _is_unanchored_claim(claim: dict[str, object]) -> bool:
+    """Return whether owner discovery fell back to the invoking child PID.
+
+    A claim with equal positive ``pid`` and ``owner_pid`` has no observable
+    durable owner. Its PID is therefore not a liveness signal; callers must
+    use the activity TTL instead. Legacy claims omit ``owner_pid`` and remain
+    PID-anchored.
+    """
+    pid = int(claim.get("pid") or 0) if str(claim.get("pid", "")).isdigit() else 0
+    owner_pid = (
+        int(claim.get("owner_pid")) if str(claim.get("owner_pid", "")).isdigit() else 0
+    )
+    return pid > 0 and owner_pid == pid
+
+
+def _pid_namespace_identity() -> str | None:
+    """Return the current Linux PID-namespace identity, if observable."""
+    try:
+        return os.readlink("/proc/self/ns/pid")
+    except OSError:
+        return None
+
+
+def _claim_uses_ttl(claim: dict[str, object]) -> bool:
+    """Return whether a claim's PIDs cannot safely be checked by this process.
+
+    An owner-discovery fallback has no durable PID anchor. Newer claims also
+    record their PID namespace: equal machine IDs do not make numeric PIDs
+    comparable across namespaces, where a recycled PID can name an unrelated
+    host process. Records written before namespace identity was introduced
+    retain the prior PID-based behavior for compatibility.
+    """
+    if _is_unanchored_claim(claim):
+        return True
+    if "pid_namespace" not in claim:
+        return False
+    claim_namespace = claim.get("pid_namespace")
+    current_namespace = _pid_namespace_identity()
+    return (
+        not isinstance(claim_namespace, str)
+        or not claim_namespace
+        or current_namespace is None
+        or claim_namespace != current_namespace
+    )
+
+
 def _is_pid_alive(pid: int) -> bool:
     """Check whether a process with `pid` is currently alive on the local machine."""
     if pid <= 0:
@@ -619,9 +665,9 @@ def _make_claim(harness: str | None = None) -> dict[str, object]:
     """Create a fresh claim dictionary for the current session.
 
     `pid` is the short-lived invoking process; `owner_pid` is the durable
-    session anchor found by walking the ancestor chain — liveness checks
-    use the owner, never the child, so a live harness session no longer
-    reads as dead once this process exits.
+    session anchor found by walking the ancestor chain. `pid_namespace`
+    makes those numeric PIDs comparable only to readers in the same Linux
+    PID namespace; otherwise liveness falls back to the claim TTL.
     """
     h = _detect_harness(harness)
     now_iso = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -631,6 +677,7 @@ def _make_claim(harness: str | None = None) -> dict[str, object]:
         "machine_id": machine_id(),
         "pid": os.getpid(),
         "owner_pid": owner_pid,
+        "pid_namespace": _pid_namespace_identity(),
         "ancestors": ancestors,
         "claimed_at": now_iso,
         "last_active": now_iso,
@@ -700,9 +747,11 @@ def _check_claim_collision(
         int(claim.get("owner_pid")) if str(claim.get("owner_pid", "")).isdigit() else 0
     )
     claim_last_active = str(claim.get("last_active") or claim.get("claimed_at") or "")
+    ttl_only = _claim_uses_ttl(claim)
 
     if (
-        claim_machine == current_machine
+        not ttl_only
+        and claim_machine == current_machine
         and claim_pid == current_pid
         and current_pid > 0
     ):
@@ -710,7 +759,8 @@ def _check_claim_collision(
 
     # Same session re-entering via its owner PID is not a takeover either.
     if (
-        claim_machine == current_machine
+        not ttl_only
+        and claim_machine == current_machine
         and claim_owner_pid > 0
         and claim_owner_pid == current_owner_pid
         and current_owner_pid > 0
@@ -726,7 +776,11 @@ def _check_claim_collision(
         # ordinary takeover path, also not journaled.
         anchor_pid = claim_owner_pid if claim_owner_pid > 0 else claim_pid
         if claim_machine == current_machine:
-            stolen_live = anchor_pid > 0 and _is_pid_alive(anchor_pid)
+            stolen_live = (
+                _claim_within_ttl(claim_last_active)
+                if ttl_only
+                else anchor_pid > 0 and _is_pid_alive(anchor_pid)
+            )
         else:
             stolen_live = _claim_within_ttl(claim_last_active)
         if stolen_live:
@@ -749,7 +803,7 @@ def _check_claim_collision(
     # the liveness anchor — and a matching owner means the same session is
     # re-entering, not a collision (an exact owner match already returned
     # above, so the block below only handles mismatched/dead owners).
-    if claim_machine == current_machine and claim_owner_pid > 0:
+    if claim_machine == current_machine and not ttl_only and claim_owner_pid > 0:
         if _is_pid_alive(claim_owner_pid):
             print(
                 f"[start] {item.get('id', '?')} is actively claimed by {claim_harness} "
@@ -766,7 +820,7 @@ def _check_claim_collision(
                 )
             return
 
-    if claim_machine == current_machine and claim_pid > 0:
+    if claim_machine == current_machine and not ttl_only and claim_pid > 0:
         if _is_pid_alive(claim_pid):
             print(
                 f"[start] {item.get('id', '?')} is actively claimed by {claim_harness} "
@@ -2964,9 +3018,10 @@ def _sweep_dead_claims(items: list[BacklogItem]) -> list[str]:
     - Only ``status == "in-progress"`` items with a dict ``claimed_by``.
     - Only same-machine claims (``machine_id`` matches); cross-machine
       claims cannot be PID-checked and stay TTL-governed.
-    - The owner anchor is authoritative: ``owner_pid`` dead → claim dead
-      (falling back to the ephemeral ``pid`` only when ``owner_pid`` is
-      absent), exactly like the takeover path in ``start``.
+    - Durable owner anchors and legacy ``pid``-only claims are PID-checked
+      only in the same PID namespace. An equal positive ``owner_pid`` and
+      ``pid``, a namespace mismatch, or unavailable namespace identity uses
+      the claim activity TTL instead.
 
     Mutates ``items`` in place for every reverted claim and returns one
     human-readable notice string per reversion (empty list = nothing
@@ -2993,8 +3048,15 @@ def _sweep_dead_claims(items: list[BacklogItem]) -> list[str]:
             if str(claim.get("owner_pid", "")).isdigit()
             else 0
         )
+        claim_last_active = str(
+            claim.get("last_active") or claim.get("claimed_at") or ""
+        )
+        ttl_only = _claim_uses_ttl(claim)
         owner_pid = claim_owner_pid if claim_owner_pid > 0 else claim_pid
-        if owner_pid <= 0 or _is_pid_alive(owner_pid):
+        if ttl_only:
+            if _claim_within_ttl(claim_last_active):
+                continue
+        elif owner_pid <= 0 or _is_pid_alive(owner_pid):
             continue
         claimed_at = str(claim.get("claimed_at") or "")
         notice = (
