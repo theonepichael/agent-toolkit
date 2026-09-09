@@ -1252,6 +1252,7 @@ def render_command_matrix(repo_root: Path, links: LinkTable) -> list[str]:
         "opencode": ["opencode/command/{name}.md", "opencode/skills/{name}/SKILL.md"],
         "agy": ["agy/skills/{name}/SKILL.md"],
         "pi": ["pi/skills/{name}/SKILL.md", "pi/prompts/{name}.md"],
+        "codex": ["codex/skills/{name}/SKILL.md"],
     }
     names = sorted(
         path.stem for path in (repo_root / "claude" / "commands").glob("*.md")

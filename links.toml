@@ -364,6 +364,11 @@ dest = "~/.copilot/skills/analyze-sessions/SKILL.md"
 harness = "copilot"
 
 [[link]]
+src = "copilot/skills/refresh-guidance/SKILL.md"
+dest = "~/.copilot/skills/refresh-guidance/SKILL.md"
+harness = "copilot"
+
+[[link]]
 src = "copilot/aliases.zsh"
 dest = "~/.copilot_aliases"
 harness = "copilot"
@@ -515,6 +520,11 @@ harness = "agy"
 [[link]]
 src = "agy/skills/analyze-sessions/SKILL.md"
 dest = "~/.gemini/antigravity-cli/skills/analyze-sessions/SKILL.md"
+harness = "agy"
+
+[[link]]
+src = "agy/skills/refresh-guidance/SKILL.md"
+dest = "~/.gemini/antigravity-cli/skills/refresh-guidance/SKILL.md"
 harness = "agy"
 
 [[link]]
