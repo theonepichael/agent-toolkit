@@ -570,9 +570,9 @@ class DocSetResolutionTestCase(unittest.TestCase):
 class RealRepoSmokeTestCase(unittest.TestCase):
     """Covers verification step 2: run against agent-toolkit's actual docs.
 
-    Two of the five known findings below are genuine stale references
-    (`CHANGELOG.md`/`.github/SECRET_CHECK.md` are cited but don't exist);
-    the rest are accepted false positives -- a bare filename that names
+    One of the known findings below is a genuine stale reference
+    (`.github/SECRET_CHECK.md` is cited but doesn't exist); the rest are
+    accepted false positives -- a bare filename that names
     something outside the repo (a runtime data file, another tool's own
     doc) is mechanically indistinguishable from a genuinely-broken
     repo-relative citation, and `pi/node_modules` is an uncommitted
@@ -587,7 +587,6 @@ class RealRepoSmokeTestCase(unittest.TestCase):
     """
 
     _KNOWN_FINDINGS = {
-        ("AGENTS.md", "CHANGELOG.md"),
         ("README.md", "backlog.json"),
         ("STYLE.md", ".github/SECRET_CHECK.md"),
         ("pi/AGENTS.md", "docs/skills.md"),

@@ -35,7 +35,6 @@ this repo.
 - **Per-harness porting and verification notes** —
   `copilot/CLAUDE_CODE_PARITY.md`, `agy/CLAUDE_CODE_PARITY.md`,
   `opencode/CLAUDE_CODE_PARITY.md`, `pi/CLAUDE_CODE_PARITY.md`.
-- **Changelog of breaking/internal tooling changes** — `CHANGELOG.md`.
 
 ## Harness maintenance tiers
 

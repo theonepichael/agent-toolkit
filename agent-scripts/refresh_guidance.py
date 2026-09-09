@@ -160,7 +160,6 @@ DOC_SETS: dict[str, DocSetConfig] = {
         fixed_docs=(
             "README.md",
             "STYLE.md",
-            "CHANGELOG.md",
             "copilot/CLAUDE_CODE_PARITY.md",
             "agy/CLAUDE_CODE_PARITY.md",
             "opencode/CLAUDE_CODE_PARITY.md",
