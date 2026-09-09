@@ -114,13 +114,16 @@ class DocSetConfig:
     cross_repo_scripts: bool = False
     """When True, script discovery also indexes `agent-scripts/*.py` under
     the resolved agent-toolkit root (see :data:`DEFAULT_AGENT_TOOLKIT_ROOT`),
-    the same `AGENT_TOOLKIT_PATH` convention `scripts/install-with-agent-
-    toolkit.sh` and `dotfiles/claude/scripts/test_dev_status_sync.py`
-    already use.
+    and path claim checks (both directory-qualified paths and bare-filename
+    basename lookups) consult that checkout as well, matching the
+    `AGENT_TOOLKIT_PATH` convention `scripts/install-with-agent-toolkit.sh`
+    and `dotfiles/claude/scripts/test_dev_status_sync.py` already use.
     Real, evidence-based need: post-cutover, dotfiles' own docs legitimately
     cite `dev_status.py`/`second_opinion.py`/etc. bare, meaning "the shared
-    tool, now hosted in agent-toolkit" -- without this, every one of those
-    reads as a broken reference even though the doc is correct."""
+    tool, now hosted in agent-toolkit", as well as shared docs/templates
+    like `MIGRATION.md`, `claude/commands/swarm.md`, or `agent-toolkit/README.md`
+    -- without this, every one of those reads as a broken reference even though
+    the doc is correct."""
     claim_exempt_docs: tuple[str, ...] = ("CHANGELOG.md",)
     """Docs still scanned for `##` sections and staleness, but never for
     mechanical path/command claims.
@@ -393,7 +396,9 @@ def discover_undocumented_dirs(
     return results
 
 
-def discover_basename_index(repo_root: Path) -> dict[str, list[str]]:
+def discover_basename_index(
+    repo_root: Path, agent_toolkit_root: Path | None = None
+) -> dict[str, list[str]]:
     """Map every tracked file's basename to its repo-relative path(s).
 
     The fallback :func:`check_path_claim` uses for a bare filename citation
@@ -401,10 +406,16 @@ def discover_basename_index(repo_root: Path) -> dict[str, list[str]]:
     existence anywhere in the repo is enough to call the claim valid.
     Empty (not None) when git is unavailable, so callers need no special
     case: a bare-filename fallback just never matches.
+
+    When ``agent_toolkit_root`` is provided, also indexes its tracked files
+    after ``repo_root``'s, so local repo files take precedence on collision.
     """
     index: dict[str, list[str]] = {}
     for relpath in _tracked_files(repo_root) or []:
         index.setdefault(Path(relpath).name, []).append(relpath)
+    if agent_toolkit_root is not None:
+        for relpath in _tracked_files(agent_toolkit_root) or []:
+            index.setdefault(Path(relpath).name, []).append(relpath)
     return index
 
 
@@ -633,7 +644,10 @@ def parse_document(
 
 
 def check_path_claim(
-    claim: Claim, repo_root: Path, basename_index: dict[str, list[str]]
+    claim: Claim,
+    repo_root: Path,
+    basename_index: dict[str, list[str]],
+    agent_toolkit_root: Path | None = None,
 ) -> str | None:
     """Verify a path claim's file/dir exists, and -- when it carries a
     `#fragment` -- that a matching `##` heading exists in the target doc.
@@ -645,11 +659,36 @@ def check_path_claim(
     basename) before being declared broken, so a doc that names a real file
     without spelling out its full path (`` `question-tool.ts` `` rather
     than `` `pi/extensions/question-tool.ts` ``) isn't a false positive.
+
+    When ``agent_toolkit_root`` is provided, paths that do not exist under
+    ``repo_root`` are checked against ``agent_toolkit_root`` (either directly,
+    with an ``agent-toolkit/`` or checkout-basename prefix stripped, or
+    under ``agent_toolkit_root.parent``) before being declared broken.
     """
     path_part, _, fragment = claim.raw.partition("#")
     if not path_part:
         return None
     target = repo_root / path_part
+    if not target.exists() and agent_toolkit_root is not None:
+        if (agent_toolkit_root / path_part).exists():
+            target = agent_toolkit_root / path_part
+        elif (
+            path_part.startswith(f"{agent_toolkit_root.name}/")
+            and (
+                agent_toolkit_root
+                / path_part.removeprefix(f"{agent_toolkit_root.name}/")
+            ).exists()
+        ):
+            target = agent_toolkit_root / path_part.removeprefix(
+                f"{agent_toolkit_root.name}/"
+            )
+        elif (
+            path_part.startswith("agent-toolkit/")
+            and (agent_toolkit_root / path_part.removeprefix("agent-toolkit/")).exists()
+        ):
+            target = agent_toolkit_root / path_part.removeprefix("agent-toolkit/")
+        elif (agent_toolkit_root.parent / path_part).exists():
+            target = agent_toolkit_root.parent / path_part
     if not target.exists():
         if "/" not in path_part and path_part in basename_index:
             return None
@@ -827,7 +866,8 @@ def run_check(
     docs = discovered_docs(repo_root, doc_set)
     scripts = discover_scripts(repo_root, doc_set, agent_toolkit_root)
     known_basenames = set(scripts)
-    basename_index = discover_basename_index(repo_root)
+    cross_repo_root = agent_toolkit_root if doc_set.cross_repo_scripts else None
+    basename_index = discover_basename_index(repo_root, cross_repo_root)
     state = load_state(repo_root, doc_set)
     cli_cache: dict[Path, gen_interfaces.CliSpec | None] = {}
     findings: list[Finding] = []
@@ -841,7 +881,7 @@ def run_check(
 
         for claim in claims:
             detail = (
-                check_path_claim(claim, repo_root, basename_index)
+                check_path_claim(claim, repo_root, basename_index, cross_repo_root)
                 if claim.kind == "path"
                 else check_command_claim(
                     claim, scripts, cli_cache, repo_root, basename_index

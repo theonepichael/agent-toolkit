@@ -238,6 +238,8 @@ class CrossRepoScriptsTestCase(unittest.TestCase):
 
         self.repo = Path(self.tmpdir) / "dotfiles"
         _init_repo(self.repo)
+        _init_repo(self.agent_toolkit_root)
+        _commit_all(self.agent_toolkit_root, "init toolkit")
         self.doc_set = rg.DocSetConfig(
             fixed_docs=("README.md",), script_dirs=("scripts",), cross_repo_scripts=True
         )
@@ -277,6 +279,49 @@ class CrossRepoScriptsTestCase(unittest.TestCase):
             del rg.DOC_SETS["custom-cross-repo"]
         self.assertEqual(len(result.findings), 1)
         self.assertIn("no such script", result.findings[0].detail)
+
+    def test_cross_repo_path_claim_bare_and_qualified_not_flagged(self) -> None:
+        (self.agent_toolkit_root / "MIGRATION.md").write_text("## Migration\n\nContent.\n")
+        (self.agent_toolkit_root / "templates").mkdir()
+        (self.agent_toolkit_root / "templates" / "swarm.md.tmpl").write_text("template")
+        (self.agent_toolkit_root / "README.md").write_text("## Toolkit\n\nRoot readme.\n")
+        _commit_all(self.agent_toolkit_root, "add cross repo files")
+
+        (self.repo / "README.md").write_text(
+            "## Docs\n\n"
+            "See `MIGRATION.md` for migration guide.\n"
+            "Template lives at `templates/swarm.md.tmpl`.\n"
+            "Also refer to `agent-toolkit/README.md`.\n"
+        )
+        _commit_all(self.repo, "add readme")
+        rg.DOC_SETS["custom-cross-repo"] = self.doc_set
+        try:
+            result = rg.run_check(
+                self.repo, "custom-cross-repo", self.agent_toolkit_root
+            )
+        finally:
+            del rg.DOC_SETS["custom-cross-repo"]
+        self.assertEqual(result.findings, [])
+
+    def test_cross_repo_path_claim_heading_fragment_verified(self) -> None:
+        (self.agent_toolkit_root / "guide.md").write_text("## Real Heading\n\nBody.\n")
+        _commit_all(self.agent_toolkit_root, "add guide")
+
+        (self.repo / "README.md").write_text(
+            "## Docs\n\n"
+            "Valid: `guide.md#Real Heading`.\n"
+            "Invalid: `guide.md#Ghost Heading`.\n"
+        )
+        _commit_all(self.repo, "add readme")
+        rg.DOC_SETS["custom-cross-repo"] = self.doc_set
+        try:
+            result = rg.run_check(
+                self.repo, "custom-cross-repo", self.agent_toolkit_root
+            )
+        finally:
+            del rg.DOC_SETS["custom-cross-repo"]
+        self.assertEqual(len(result.findings), 1)
+        self.assertIn("heading not found in `guide.md`: 'Ghost Heading'", result.findings[0].detail)
 
 
 class ClaimExemptDocsTestCase(unittest.TestCase):
