@@ -1099,10 +1099,13 @@ def _vscode_wsl_user_dir() -> Path | None:
     return win_user_dir / "AppData" / "Roaming" / "Code" / "User"
 
 
-# The links.toml src whose 4 destinations (~/.claude/CLAUDE.md and its
-# copilot/gemini/pi equivalents) dotfiles recomposes with a personal overlay
-# on any machine that has both repos checked out.
-_PERSONAL_OVERLAY_SRC_REL = "claude/CORE_INSTRUCTIONS.md"
+# The links.toml src whose 5 destinations (~/.claude/CLAUDE.md and its
+# codex/copilot/gemini/pi equivalents) dotfiles recomposes with a personal
+# overlay on any machine that has both repos checked out. Single source of
+# truth lives in link_inspect (do_check_links' audit needs the same fact to
+# stay in sync with this write-side guard — see link_inspect.py's docstring
+# on the constant for the 2026-09-09 false-positive this prevents).
+_PERSONAL_OVERLAY_SRC_REL = link_inspect.PERSONAL_OVERLAY_SRC_REL
 
 
 def _personal_overlay_unwrapped(ctx: Context, rel: str) -> bool:
@@ -2210,6 +2213,7 @@ def _check_applicable_links(
         format_path=ctx.display,
         manifest_entries=ctx.manifest.entries(),
         report_uninstalled=report_uninstalled,
+        home=ctx.home,
     )
 
 
