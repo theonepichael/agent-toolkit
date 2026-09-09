@@ -6,7 +6,7 @@ A modular, multi-harness platform for AI agent workflows and paired development 
 - **OpenCode** (Local / Multi-provider TUI)
 - **Google Antigravity (AGY)** (Google DeepMind)
 - **Pi** (Lightweight extensible terminal assistant)
-- **Codex CLI** (OpenAI) — best-effort tier
+- **Codex CLI** (OpenAI)
 
 > **Status: not yet independent, but no longer manual.** This repository
 > began as a snapshot of a personal dotfiles repo, which is still where
@@ -26,6 +26,7 @@ A modular, multi-harness platform for AI agent workflows and paired development 
 - **Auto-Formatting on Tool Use**: Automatic Ruff formatting/lint fixing on Python edits.
 - **Shell Completions & Environment Helpers**: Portable `shell/agent-tools.zsh` providing completions, PATH setup, and harness aliases.
 - **Cross-Harness Code Generation**: Generators keep documentation (`INTERFACES.md`) and prompt templates (`templates/*.tmpl`) in sync across all 6 harnesses.
+- **Architectural Overview & Progressive Disclosure**: System diagrams, component maps, and lifecycle flows are detailed in [docs/architecture/overview.md](docs/architecture/overview.md), complemented by the [progressive disclosure rubric](docs/architecture/progressive-disclosure-rubric.md).
 
 ---
 
@@ -184,7 +185,7 @@ export SECOND_OPINION_PI_MODEL_POOL="opencode-go/glm-5.2,opencode-go/glm-5.3-fla
 | **Pi** | `~/.pi/agent/AGENTS.md` | `~/.pi/agent/prompts/` | `~/.pi/agent/extensions/` |
 | **Codex CLI** | `~/.codex/AGENTS.md` | `~/.codex/skills/` | none provisioned |
 
-**Codex notes.** Codex CLI (best-effort tier, like Copilot/AGY — see AGENTS.md's
+**Codex notes.** Codex CLI (actively maintained tier — see [AGENTS.md](AGENTS.md)'s
 "Harness maintenance tiers") reads global instructions from `~/.codex/AGENTS.md`
 and USER-scope skills from `~/.codex/skills/` (sibling to the bundled
 `~/.codex/skills/.system/` skills, not the `~/.agents/skills/` shared

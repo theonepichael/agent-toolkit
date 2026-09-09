@@ -31,7 +31,9 @@ this repo.
   `python3 agent-scripts/gen_interfaces.py`, or check for staleness with
   `--check` (exit 1 if stale — this is what the test suite asserts).
 - **User-facing command/behavior differences across harnesses** (Claude
-  Code, Copilot, opencode, agy, Pi) — `README.md`.
+  Code, Copilot, opencode, agy, Pi, Codex CLI) — `README.md`.
+- **System architecture overview** (component map, cross-harness dispatch,
+  lifecycle mechanics) — `docs/architecture/overview.md`.
 - **Per-harness porting and verification notes** —
   `copilot/CLAUDE_CODE_PARITY.md`, `agy/CLAUDE_CODE_PARITY.md`,
   `opencode/CLAUDE_CODE_PARITY.md`, `pi/CLAUDE_CODE_PARITY.md`.
