@@ -92,7 +92,7 @@ describe("single module graph: guard-rails, permission-gate, and trust-session i
     const before = await fireCommand(handlers, "sudo apt update", true);
     expect(before.titles).toEqual(["⚠️ sudo", "Run bash command?"]);
 
-    await commands["guard-rails-disable"]!.handler("", { ui: { notify: () => {} } });
+    await commands["guard-rails"]!.handler("off", { ui: { notify: () => {} } });
 
     const after = await fireCommand(handlers, "sudo apt update", true);
     expect(after.titles).toEqual(["Run bash command?"]);
@@ -116,14 +116,14 @@ describe("single module graph: guard-rails, permission-gate, and trust-session i
     expect(unlisted.finalResult).toBeUndefined();
   });
 
-  test("/trust-session-off restores both gates", async () => {
+  test("/trust-session restores both gates when toggled off", async () => {
     const { pi, handlers, commands } = makeFakePi();
     guardRails(pi as any);
     permissionGate(pi as any);
     trustSession(pi as any);
 
     await commands["trust-session"]!.handler("", { ui: { notify: () => {} } });
-    await commands["trust-session-off"]!.handler("", { ui: { notify: () => {} } });
+    await commands["trust-session"]!.handler("off", { ui: { notify: () => {} } });
 
     const result = await fireCommand(handlers, "sudo apt update", true);
     expect(result.titles).toEqual(["⚠️ sudo", "Run bash command?"]);
@@ -207,11 +207,11 @@ describe("loaded in isolated module instances, wired to one shared event bus", (
     expect(unlisted.finalResult).toBeUndefined();
   });
 
-  test("/trust-session-off restores both gates", async () => {
+  test("/trust-session restores both gates when toggled off", async () => {
     const { handlers, commands } = await loadIsolatedInstances();
 
     await commands["trust-session"].handler("", { ui: { notify: () => {} } });
-    await commands["trust-session-off"].handler("", { ui: { notify: () => {} } });
+    await commands["trust-session"].handler("off", { ui: { notify: () => {} } });
 
     const result = await fireCommand(handlers, "sudo apt update", true);
     expect(result.titles).toEqual(["⚠️ sudo", "Run bash command?"]);

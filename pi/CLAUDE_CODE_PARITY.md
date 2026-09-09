@@ -187,7 +187,7 @@ Enforces safety and workflow guard rails:
 - **`sudo` confirmation gate**: blocks privileged commands unless confirmed via `ctx.ui.confirm()`. In headless `-p` mode, blocks outright.
 - **`git commit` main/master branch protection (worktree policy)**: resolves the target git working directory and branch. If attempting `git commit` directly on `main` or `master`, blocks with a guidance message enforcing feature branches or worktrees. Allowed on feature branches.
 - **`write`/`edit` protected path protection**: blocks modifications to `.env` (and `.env.*`), `.git` internal files, and `node_modules`.
-- **Toggle commands**: `/guard-rails-disable` and `/guard-rails-enable` for session-scoped override.
+- **Toggle command**: `/guard-rails [on|off|status]` for session-scoped override.
 
 **Verified live**:
 1. `rm -rf /tmp/test_guard_file.txt` in headless `-p` mode was blocked and preserved on disk.
@@ -204,6 +204,8 @@ Only bash is gated, matching `opencode.jsonc`'s actual current scope (no
 deny entries exist there today, only allow + a `"*": "ask"` default);
 `opencode.jsonc`'s separate `external_directory` permission type has no
 direct Pi analog and is out of scope.
+- **Toggle command**: `/permission-gate [on|off|status]` for session-scoped override.
+  (And `/trust-session [on|off|status]` in `trust-session.ts` to toggle both gates simultaneously).
 
 On the "ask" tier (anything not on the allowlist), the extension checks
 `ctx.hasUI` (`docs/extensions.md`'s ExtensionContext: `true` in TUI and RPC

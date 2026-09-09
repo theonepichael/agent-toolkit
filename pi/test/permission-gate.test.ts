@@ -120,14 +120,14 @@ type Handler = (
   ctx: { ui: { notify: (m: string, l: string) => void } },
 ) => Promise<void>;
 
-describe("/permission-gate-disable", () => {
+describe("/permission-gate", () => {
   afterEach(async () => {
-    // Re-arm through the gate's own enable command -- the same path a real
+    // Re-arm through the gate's own command -- the same path a real
     // session uses. There is no exported setter to call here on purpose: an
     // exported setter was how /trust-session flipped private module copies
     // for months while reporting success (see the extension's comment).
     const commands = loadCommands();
-    await commands["permission-gate-enable"]!.handler("", { ui: { notify: () => {} } });
+    await commands["permission-gate"]!.handler("on", { ui: { notify: () => {} } });
   });
 
   function loadCommands() {
@@ -150,34 +150,39 @@ describe("/permission-gate-disable", () => {
     };
   }
 
-  test("disables the gate and says so", async () => {
+  test("toggles off the gate and says so", async () => {
     const { ctx, notices } = makeCtx();
-    await loadCommands()["permission-gate-disable"]!.handler("", ctx);
+    await loadCommands()["permission-gate"]!.handler("off", ctx);
 
     expect(isPermissionGateEnabled()).toBe(false);
     expect(notices[0]?.level).toBe("warning");
   });
 
-  test("/permission-gate-enable re-arms it", async () => {
+  test("toggles back on", async () => {
     const { ctx } = makeCtx();
     const commands = loadCommands();
-    await commands["permission-gate-disable"]!.handler("", ctx);
-    await commands["permission-gate-enable"]!.handler("", ctx);
+    await commands["permission-gate"]!.handler("off", ctx);
+    await commands["permission-gate"]!.handler("on", ctx);
 
     expect(isPermissionGateEnabled()).toBe(true);
   });
 
-  // The command took an optional ack token while swarm_spawn had to talk the
-  // gate down over a prompt and then confirm it had worked. The environment
-  // now settles it before pi starts, so an argument here would be a silently
-  // ignored positional on a security-adjacent command.
-  test("takes no argument, and its description promises none", async () => {
+  test("bare command toggles state", async () => {
     const { ctx } = makeCtx();
     const commands = loadCommands();
-    await commands["permission-gate-disable"]!.handler("some-stray-argument", ctx);
-
+    expect(isPermissionGateEnabled()).toBe(true);
+    await commands["permission-gate"]!.handler("", ctx);
     expect(isPermissionGateEnabled()).toBe(false);
-    expect(commands["permission-gate-disable"]!.description).not.toContain("token");
+    await commands["permission-gate"]!.handler("", ctx);
+    expect(isPermissionGateEnabled()).toBe(true);
+  });
+
+  test("status reports without changing state", async () => {
+    const { ctx, notices } = makeCtx();
+    const commands = loadCommands();
+    await commands["permission-gate"]!.handler("status", ctx);
+    expect(isPermissionGateEnabled()).toBe(true);
+    expect(notices[0]?.message).toContain("Permission gate is enabled");
   });
 });
 

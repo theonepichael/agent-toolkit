@@ -296,8 +296,8 @@ export function classify(command: string): Verdict {
  * What "unattended" means is each gate's own decision, and the two differ on
  * purpose. Here it means allow: this gate's "ask" tier is everything outside
  * a narrow allowlist, and a worker that cannot run tests or git is no worker
- * at all. That is also exactly what the swarm already did by sending
- * /permission-gate-disable, so it is not a new grant. guard-rails.ts reaches
+ * at all. That is also what the swarm historically did by sending /permission-gate
+ * off (historically /permission-gate-disable), so it is not a new grant. guard-rails.ts reaches
  * the opposite conclusion for the commands it guards -- it blocks them rather
  * than asking -- and keeps every one of its non-interactive rules armed.
  *
@@ -318,7 +318,7 @@ export function agentUnattendedByEnv(env: NodeJS.ProcessEnv = process.env): bool
  * The gate's state at module load, as a function so it can be tested.
  *
  * The read happens once, at load, rather than per tool_call: an explicit
- * /permission-gate-enable must be able to re-arm the gate even in an
+ * /permission-gate on must be able to re-arm the gate even in an
  * unattended session, which a per-call environment check would silently
  * override.
  */
@@ -341,7 +341,7 @@ export function isPermissionGateEnabled(): boolean {
 // Cross-extension toggling now arrives over the shared event bus below.
 
 export default function (pi: ExtensionAPI) {
-  // /trust-session and /trust-session-off broadcast here (see their comment
+  // /trust-session broadcasts here (see its comment
   // for why the channel name is a duplicated literal rather than an import).
   // The listener mutates the same module-level `enabled` the tool_call
   // handler reads. Malformed payloads are ignored: a wrong shape must never
@@ -379,19 +379,27 @@ export default function (pi: ExtensionAPI) {
     if (!ok) return { block: true, reason: "Blocked by user" };
   });
 
-  pi.registerCommand("permission-gate-disable", {
-    description: "Disable the bash permission-gate for this session (trust mode)",
-    handler: async (_args, ctx) => {
-      enabled = false;
-      ctx.ui.notify("Permission gate disabled — all bash commands run unconfirmed", "warning");
-    },
-  });
-
-  pi.registerCommand("permission-gate-enable", {
-    description: "Re-enable the bash permission-gate",
-    handler: async (_args, ctx) => {
-      enabled = true;
-      ctx.ui.notify("Permission gate enabled", "info");
+  pi.registerCommand("permission-gate", {
+    description:
+      "Toggle bash permission-gate for this session (or: /permission-gate [on|off|status])",
+    handler: async (args, ctx) => {
+      const mode = args.trim().toLowerCase();
+      if (mode === "status") {
+        ctx.ui.notify(`Permission gate is ${enabled ? "enabled" : "disabled"}`, "info");
+        return;
+      }
+      if (mode === "on" || mode === "enable") {
+        enabled = true;
+      } else if (mode === "off" || mode === "disable") {
+        enabled = false;
+      } else {
+        enabled = !enabled;
+      }
+      if (enabled) {
+        ctx.ui.notify("Permission gate enabled", "info");
+      } else {
+        ctx.ui.notify("Permission gate disabled — all bash commands run unconfirmed", "warning");
+      }
     },
   });
 }

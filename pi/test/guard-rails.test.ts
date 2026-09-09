@@ -3,6 +3,7 @@ import guardRailsExtension, {
   getGitCommitTarget,
   getGuardEffectiveCwd,
   isDangerousRm,
+  isGuardRailsEnabled,
   isProtectedPath,
   resetGuardEffectiveCwd,
 } from "../extensions/guard-rails";
@@ -235,5 +236,67 @@ describe("guard-rails cwd-change integration", () => {
 
     resetGuardEffectiveCwd();
     expect(getGuardEffectiveCwd()).toBeNull();
+  });
+});
+
+describe("/guard-rails command", () => {
+  function loadCommand() {
+    const commands: Record<string, { handler: (args: string, ctx: any) => Promise<void> }> = {};
+    const mockPi = {
+      events: { on: () => () => {}, emit: () => {} },
+      on: () => {},
+      registerCommand: (name: string, opts: any) => {
+        commands[name] = opts;
+      },
+    } as unknown as ExtensionAPI;
+    guardRailsExtension(mockPi);
+    return commands["guard-rails"]!;
+  }
+
+  function makeCtx() {
+    const notices: { message: string; level: string }[] = [];
+    return {
+      ctx: { ui: { notify: (message: string, level: string) => notices.push({ message, level }) } },
+      notices,
+    };
+  }
+
+  test("off argument disables guard rails", async () => {
+    const cmd = loadCommand();
+    const { ctx, notices } = makeCtx();
+    await cmd.handler("off", ctx);
+    expect(isGuardRailsEnabled()).toBe(false);
+    expect(notices[0]?.level).toBe("warning");
+  });
+
+  test("on argument enables guard rails", async () => {
+    const cmd = loadCommand();
+    const { ctx, notices } = makeCtx();
+    await cmd.handler("off", ctx);
+    await cmd.handler("on", ctx);
+    expect(isGuardRailsEnabled()).toBe(true);
+    expect(notices[1]?.level).toBe("info");
+  });
+
+  test("bare invocation toggles state", async () => {
+    const cmd = loadCommand();
+    const { ctx } = makeCtx();
+    await cmd.handler("on", ctx);
+    expect(isGuardRailsEnabled()).toBe(true);
+
+    await cmd.handler("", ctx);
+    expect(isGuardRailsEnabled()).toBe(false);
+
+    await cmd.handler("", ctx);
+    expect(isGuardRailsEnabled()).toBe(true);
+  });
+
+  test("status reports state without modifying it", async () => {
+    const cmd = loadCommand();
+    const { ctx, notices } = makeCtx();
+    await cmd.handler("on", ctx);
+    await cmd.handler("status", ctx);
+    expect(isGuardRailsEnabled()).toBe(true);
+    expect(notices.some((n) => n.message.includes("Guard rails is enabled"))).toBe(true);
   });
 });

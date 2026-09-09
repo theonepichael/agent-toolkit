@@ -238,7 +238,7 @@ export function buildAgentStartArgv(
  * The two gates draw DIFFERENT conclusions from it, on purpose:
  *   - permission-gate.ts allows. Its "ask" tier is everything outside a
  *     narrow allowlist, and a worker that cannot run tests or git is useless.
- *     This is what the swarm already did by sending /permission-gate-disable.
+ *     This is what the swarm historically did by sending /permission-gate-disable.
  *   - guard-rails.ts blocks. `rm -rf` and `sudo` are refused with a reason
  *     the worker can read, rather than asked about. Every other guard-rails
  *     rule -- protected-path writes, the git-commit-on-main worktree policy

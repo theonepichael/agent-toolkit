@@ -223,7 +223,7 @@ async function sharedBashGuard(
 }
 
 export default function (pi: ExtensionAPI) {
-  // /trust-session and /trust-session-off broadcast here (see their comment
+  // /trust-session broadcasts here (see its comment
   // for why the channel name is a duplicated literal rather than an import).
   // The listener mutates the same module-level `enabled` the tool_call
   // handler reads. Malformed payloads are ignored: a wrong shape must never
@@ -322,19 +322,26 @@ export default function (pi: ExtensionAPI) {
     return undefined;
   });
 
-  pi.registerCommand("guard-rails-disable", {
-    description: "Disable guard-rails for this session",
-    handler: async (_args, ctx) => {
-      enabled = false;
-      ctx.ui.notify("Guard rails disabled", "warning");
-    },
-  });
-
-  pi.registerCommand("guard-rails-enable", {
-    description: "Re-enable guard-rails",
-    handler: async (_args, ctx) => {
-      enabled = true;
-      ctx.ui.notify("Guard rails enabled", "info");
+  pi.registerCommand("guard-rails", {
+    description: "Toggle guard-rails for this session (or: /guard-rails [on|off|status])",
+    handler: async (args, ctx) => {
+      const mode = args.trim().toLowerCase();
+      if (mode === "status") {
+        ctx.ui.notify(`Guard rails is ${enabled ? "enabled" : "disabled"}`, "info");
+        return;
+      }
+      if (mode === "on" || mode === "enable") {
+        enabled = true;
+      } else if (mode === "off" || mode === "disable") {
+        enabled = false;
+      } else {
+        enabled = !enabled;
+      }
+      if (enabled) {
+        ctx.ui.notify("Guard rails enabled", "info");
+      } else {
+        ctx.ui.notify("Guard rails disabled", "warning");
+      }
     },
   });
 }

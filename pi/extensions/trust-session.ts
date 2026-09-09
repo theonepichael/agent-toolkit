@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 // guard-rails.ts and permission-gate.ts are independent gates with their own
-// enable/disable commands -- disabling one leaves the other still asking for
+// toggle commands -- disabling one leaves the other still asking for
 // anything it doesn't recognize (confirmed: disabling guard-rails alone
 // still lets permission-gate intercept sudo/rm -rf with its own dialog).
 // This is the single "go for it, I trust you" switch that flips both.
@@ -26,22 +26,37 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 const TRUST_CHANNEL = "session-trust-changed";
 
 export default function (pi: ExtensionAPI) {
-  pi.registerCommand("trust-session", {
-    description: "Disable guard-rails and permission-gate for this session",
-    handler: async (_args, ctx) => {
-      pi.events.emit(TRUST_CHANNEL, { trusted: true });
-      ctx.ui.notify(
-        "Trust mode: guard-rails and permission-gate disabled for this session",
-        "warning",
-      );
-    },
-  });
+  let trusted = false;
 
-  pi.registerCommand("trust-session-off", {
-    description: "Re-enable guard-rails and permission-gate",
-    handler: async (_args, ctx) => {
-      pi.events.emit(TRUST_CHANNEL, { trusted: false });
-      ctx.ui.notify("Guard-rails and permission-gate re-enabled", "info");
+  pi.registerCommand("trust-session", {
+    description:
+      "Toggle trust mode (disable/enable guard-rails and permission-gate) (or: /trust-session [on|off|status])",
+    handler: async (args, ctx) => {
+      const mode = args.trim().toLowerCase();
+      if (mode === "status") {
+        ctx.ui.notify(
+          `Trust mode is ${trusted ? "enabled (gates disabled)" : "disabled (gates enabled)"}`,
+          "info",
+        );
+        return;
+      }
+      if (mode === "on" || mode === "enable") {
+        trusted = true;
+      } else if (mode === "off" || mode === "disable") {
+        trusted = false;
+      } else {
+        trusted = !trusted;
+      }
+
+      pi.events.emit(TRUST_CHANNEL, { trusted });
+      if (trusted) {
+        ctx.ui.notify(
+          "Trust mode: guard-rails and permission-gate disabled for this session",
+          "warning",
+        );
+      } else {
+        ctx.ui.notify("Guard-rails and permission-gate re-enabled", "info");
+      }
     },
   });
 }
