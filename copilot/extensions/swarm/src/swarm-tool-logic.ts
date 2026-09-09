@@ -259,8 +259,10 @@ export const defaultExec: ExecFn = async (cmd, args, opts) => {
       stderr += chunk.toString();
     });
     let timer: NodeJS.Timeout | undefined;
+    let timedOut = false;
     if (opts?.timeout) {
       timer = setTimeout(() => {
+        timedOut = true;
         proc.kill();
       }, opts.timeout);
     }
@@ -270,6 +272,13 @@ export const defaultExec: ExecFn = async (cmd, args, opts) => {
     });
     proc.on("close", (code) => {
       if (timer) clearTimeout(timer);
+      // A kill()-ed process typically reports code null, which `code ?? 0`
+      // would otherwise map straight to success -- every caller here treats
+      // `code !== 0` as failure, so a timeout must never look like a clean exit.
+      if (timedOut) {
+        resolve({ code: 124, stdout, stderr: `${stderr}\n<timed out after ${opts?.timeout}ms>` });
+        return;
+      }
       resolve({ code: code ?? 0, stdout, stderr });
     });
   });
@@ -898,12 +907,12 @@ export class SwarmToolContext {
       const spawned: WorkerRecord[] = [];
       const failed: { slug: string; reason: string }[] = [];
 
+      // Sequential, mirroring pi: tab creation mutates shared workspace
+      // state. Only the phase after -- the per-worker herdr round-trips in
+      // spawnInto -- is parallelized, via Promise.allSettled below.
+      const tabs: { slug: string; created: { paneId: string; tabId: string } }[] = [];
       for (const slug of toSpawn) {
-        const candidateItem = candidates.find((c) => c.id === slug);
-        const paths = candidateItem ? itemPaths(candidateItem) : [];
-        const agentId = nextAgentId(state.runId, state.nextCounter++, slug);
         const captureFile = capturePath(state.runId, slug);
-
         const tabCreated = await this.herdr(
           buildTabCreateArgv(process.cwd(), slug, { captureFile, kind: "copilot" }),
         );
@@ -926,21 +935,45 @@ export class SwarmToolContext {
           });
           continue;
         }
+        tabs.push({ slug, created: parsedTab });
+      }
 
-        const outcome = await this.spawnInto(
-          parsedTab.paneId,
-          parsedTab.tabId,
-          agentId,
-          slug,
-          paths,
-          params.model,
-          params.pluginDir,
-        );
-        if ("worker" in outcome) {
-          spawned.push(outcome.worker);
-          state.workers.push(outcome.worker);
-        } else if (outcome.failed) {
-          failed.push(outcome.failed);
+      const startResults = await Promise.allSettled(
+        tabs.map(async (t): Promise<SpawnOutcome> => {
+          const candidateItem = candidates.find((c) => c.id === t.slug);
+          const paths = candidateItem ? itemPaths(candidateItem) : [];
+          const agentId = nextAgentId(state.runId, state.nextCounter++, t.slug);
+          const { paneId, tabId } = t.created;
+          try {
+            return await this.spawnInto(
+              paneId,
+              tabId,
+              agentId,
+              t.slug,
+              paths,
+              params.model,
+              params.pluginDir,
+            );
+          } catch (e) {
+            // A throw out of spawnInto's herdr calls is a post-create failure
+            // like any other -- without this it lands in allSettled's
+            // rejected branch, losing both the item's identity and the tab
+            // that would otherwise get closed.
+            return this.failWithTab(t.slug, paneId, tabId, `spawn_error: ${String(e)}`);
+          }
+        }),
+      );
+
+      for (const r of startResults) {
+        if (r.status === "fulfilled") {
+          if ("worker" in r.value) {
+            spawned.push(r.value.worker);
+            state.workers.push(r.value.worker);
+          } else if (r.value.failed) {
+            failed.push(r.value.failed);
+          }
+        } else {
+          failed.push({ slug: "unknown", reason: `spawn_error: ${String(r.reason)}` });
         }
       }
 

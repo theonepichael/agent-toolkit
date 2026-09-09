@@ -964,8 +964,9 @@ a crash/restart, crash recovery, and concurrency-cap accounting.
    skipped one was only held back by the concurrency cap and is coming next
    wave regardless. Both are named in the tool's result text.
 
-   Each worker's tab is launched with `COPILOT_AGENT_UNATTENDED=1` in its
-   environment and runs Copilot CLI with `--allow-all-tools`.
+   Each worker's agent is started with `--allow-all-tools`, which auto-approves
+   every tool call -- unlike pi, Copilot CLI has no separate unattended-mode
+   env var, so `tab create` sets nothing extra.
 
 2. Loop: call `swarm_poll`. It blocks until at least one worker settles and
    returns every event that settled in that window (process all of them
