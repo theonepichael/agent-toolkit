@@ -70,6 +70,18 @@ def probe_add_dir() -> str:
     return '"$(git rev-parse --show-toplevel)"'
 
 
+_DASHBOARD_RENDER_DISPLAY_QUIET = (
+    "Display stdout is already presented to the user by the tool runner — do not copy "
+    "the ASCII dashboard into the assistant response, do not narrate, do not "
+    "reformat. `DEVSTATUS_AGENT=1` suppresses the agent-only `item-map:` line at the "
+    "source, so stdout is just the dashboard; there's nothing to filter."
+)
+_DASHBOARD_RENDER_DISPLAY_VERBATIM = (
+    "Display stdout verbatim — do not narrate, do not reformat. `DEVSTATUS_AGENT=1` "
+    "suppresses the agent-only `item-map:` line at the source, so stdout is just the "
+    "dashboard; there's nothing to filter."
+)
+
 DASHBOARD_PARAMS: dict[str, dict[str, str]] = {
     "claude": {
         "FRONTMATTER": """\
@@ -77,6 +89,7 @@ DASHBOARD_PARAMS: dict[str, dict[str, str]] = {
 name: dashboard
 description: "surfaces backlog and pending items as a dashboard. use when the user says 'dashboard', 'what's pending', 'show backlog', 'where we at', 'what am i working on', 'open items', or any variant of checking current work status. Renamed from /status to avoid colliding with Claude Code's built-in /status (plan usage/rate-limit view) — a naming collision with a built-in command can silently break custom command loading. (session start is covered by a SessionStart hook — do not run this again unprompted.)"
 ---""",
+        "DASHBOARD_RENDER_DISPLAY": _DASHBOARD_RENDER_DISPLAY_QUIET,
     },
     "copilot": {
         "FRONTMATTER": """\
@@ -85,12 +98,14 @@ name: dashboard
 description: "surfaces backlog and pending items as a dashboard. use when the user says 'dashboard', 'what's pending', 'show backlog', 'where we at', 'what am i working on', 'open items', or any variant of checking current work status. Renamed from /status to avoid colliding with Claude Code's built-in /status. (session start is covered by a sessionStart hook — do not run this again unprompted.)"
 allowed-tools: shell
 ---""",
+        "DASHBOARD_RENDER_DISPLAY": _DASHBOARD_RENDER_DISPLAY_QUIET,
     },
     "opencode": {
         "FRONTMATTER": """\
 ---
 description: "surfaces backlog and pending items as a dashboard. use when the user says 'dashboard', 'what's pending', 'show backlog', 'where we at', 'what am i working on', 'open items', or any variant of checking current work status."
 ---""",
+        "DASHBOARD_RENDER_DISPLAY": _DASHBOARD_RENDER_DISPLAY_QUIET,
     },
     "agy": {
         "FRONTMATTER": """\
@@ -98,6 +113,7 @@ description: "surfaces backlog and pending items as a dashboard. use when the us
 name: dashboard
 description: "surfaces backlog and pending items as a dashboard. use when the user says 'dashboard', 'what's pending', 'show backlog', 'where we at', 'what am i working on', 'open items', or any variant of checking current work status."
 ---""",
+        "DASHBOARD_RENDER_DISPLAY": _DASHBOARD_RENDER_DISPLAY_VERBATIM,
     },
     "codex": {
         # Codex requires both `name` and `description` in SKILL.md
@@ -107,6 +123,7 @@ description: "surfaces backlog and pending items as a dashboard. use when the us
 name: dashboard
 description: "surfaces backlog and pending items as a dashboard. use when the user says 'dashboard', 'what's pending', 'show backlog', 'where we at', 'what am i working on', 'open items', or any variant of checking current work status."
 ---""",
+        "DASHBOARD_RENDER_DISPLAY": _DASHBOARD_RENDER_DISPLAY_QUIET,
     },
     "pi": {
         "FRONTMATTER": """\
@@ -114,6 +131,7 @@ description: "surfaces backlog and pending items as a dashboard. use when the us
 name: dashboard
 description: "surfaces backlog and pending items as a dashboard. use when the user says 'dashboard', 'what's pending', 'show backlog', 'where we at', 'what am i working on', 'open items', or any variant of checking current work status."
 ---""",
+        "DASHBOARD_RENDER_DISPLAY": _DASHBOARD_RENDER_DISPLAY_QUIET,
     },
 }
 

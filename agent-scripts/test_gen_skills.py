@@ -79,6 +79,9 @@ class CapabilityFixtureTests(unittest.TestCase):
         self.assertIn("name: dashboard", text)
         self.assertIn("SessionStart hook", text)
         self.assertIn("CLAUDE.md's Backlog section", text)
+        self.assertIn(
+            "do not copy the ASCII dashboard into the assistant response", text
+        )
 
     def test_dashboard_copilot(self) -> None:
         text = self._render("dashboard", "copilot")
@@ -97,6 +100,12 @@ class CapabilityFixtureTests(unittest.TestCase):
         self.assertIn("name: dashboard", text)
         self.assertNotIn("SessionStart", text)
         self.assertIn("the shared instructions file's Backlog section", text)
+        self.assertIn(
+            "Display stdout verbatim — do not narrate, do not reformat", text
+        )
+        self.assertNotIn(
+            "do not copy the ASCII dashboard into the assistant response", text
+        )
 
     def test_dashboard_pi(self) -> None:
         text = self._render("dashboard", "pi")
