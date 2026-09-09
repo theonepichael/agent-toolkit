@@ -1644,41 +1644,31 @@ depart_exec.py — --depart execution: preflight, phases, confirmation, cleanup.
 
 ### `scripts/sync_from_dotfiles.py`
 
-sync_from_dotfiles.py — replay dotfiles' harness changes onto this toolkit.
+sync_from_dotfiles.py — keep claude/CORE_INSTRUCTIONS.md current with dotfiles.
 
 - Installed at: not symlinked by `links.toml`
 - Entrypoint: not executable, `#!/usr/bin/env python3`
-- CLI (`argparse`): replay dotfiles' harness changes onto this toolkit
-  - `--apply` — derive, verify, and apply the sync (default: report/diff only)
-  - `--since` — override the stored dotfiles BASE (first run, or recovery)
+- CLI (`argparse`): keep claude/CORE_INSTRUCTIONS.md current with dotfiles@HEAD (the one permanent post-cutover upstream relationship), then run the generator sweep; see the module docstring for the full contract
+  - `--apply` — apply the sync (default: report/diff only)
   - `--dotfiles-path` — path to the dotfiles checkout (default: ~/dotfiles)
   - `--quiet/-q`
   - `--verbose/-v`
 - Filesystem constants:
   - `REPO_ROOT = Path(__file__).resolve().parent.parent`
   - `DEFAULT_DOTFILES_PATH = Path.home() / 'dotfiles'`
-- Explicit exit codes: `1`, `2`
+- Explicit exit codes: `0`, `1`
 - Public functions:
   - `state_path(repo_root: Path) -> Path` — Return the path to the committed sync-state marker.
-  - `load_state(repo_root: Path) -> dict[str, object] | None` — Load the sync-state marker, or None if this repo has never synced.
-  - `write_state(repo_root: Path, *, dotfiles_sha: str, toolkit_commit: str | None) -> None` — Record a successful sync as the new BASE for the next run.
+  - `load_state(repo_root: Path) -> dict[str, object] | None` — Load the sync-state marker, or None if absent or corrupt.
+  - `write_state(repo_root: Path, *, dotfiles_sha: str) -> None` — Record provenance for a successful content sync.
   - `run_git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]` — Run a git command in ``repo``, capturing output as text.
-  - `changed_paths(repo: Path, base: str, tip: str) -> frozenset[str]` — Return every path git reports as changed between two refs.
+  - `resolve_head(repo: Path) -> str` — Return the current HEAD commit of ``repo``.
   - `path_exists_at(repo: Path, ref: str, path: str) -> bool` — Return whether ``path`` exists in ``repo`` at ``ref``.
   - `read_at(repo: Path, ref: str, path: str) -> bytes` — Return the raw bytes of ``path`` in ``repo`` at ``ref``.
-  - `resolve_head(repo: Path) -> str` — Return the current HEAD commit of ``repo``.
-  - `root_commit(repo: Path) -> str` — Return the earliest commit reachable from HEAD in ``repo``.
-  - `resolve_toolkit_anchor(repo_root: Path, state: dict[str, object] | None) -> str` — Toolkit-side anchor for conflict-set math.
-  - `git_add(repo_root: Path, paths: Sequence[str]) -> None` — Stage the given repo-relative paths.
-  - `write_copies(repo_root: Path, dotfiles_path: Path, tip: str, paths: Sequence[str]) -> None` — Write each path's byte-identical content from dotfiles@tip into the repo.
-  - `run_generator_sweep(repo_root: Path, sweep: Sequence[str], *, quiet: bool, verbose: bool) -> None` — Run every generator in ``sweep`` so copied artifacts describe this repo.
-  - `apply_sync(repo_root: Path, dotfiles_path: Path, tip: str, plain_copies: Sequence[str], handled: Sequence[str], base: str, *, generator_sweep: Sequence[str] = GENERATOR_SWEEP, quiet: bool = False, verbose: bool = False) -> None` — Write copies, apply handled conflicts, sweep, then record new state.
-  - `match_never_synced(path: str) -> bool` — Whether ``path`` is never synced between the two checkouts.
-  - `compute_copy_set(dotfiles_changed: frozenset[str]) -> frozenset[str]` — Paths to replay onto the toolkit: everything dotfiles changed, minus the deliberate-deletion blocklist, the dotfiles-only exclude list, and the never-synced repo-specific paths (same relative path in both checkouts, intentionally different content — copying one over the other would clobber).
-  - `compute_conflict_set(dotfiles_changed: frozenset[str], toolkit_changed: frozenset[str]) -> frozenset[str]` — Paths both sides changed since the last sync — never assumed, always derived.
-  - `find_unclassified_divergences(common_paths: Iterable[str], diverged_paths: Iterable[str], diverged: Callable[[str], bool]) -> list[str]` — Same-path divergences between the two checkouts with no classification.
-  - `classify_conflict(path: str) -> str` — Classify one conflict path: "generated_artifact", "handled", or "unclassified" (category 4 — stop and hand-resolve, the safe default).
-  - `verify_invariants(dotfiles_path: Path, base: str, tip: str, copy_set: frozenset[str], plain_copies: Sequence[str], toolkit_root: Path = REPO_ROOT) -> list[str]` — Check the invariants that must hold before any write.
+  - `last_commit_touching(repo: Path, ref: str, path: str) -> str` — The sha of the last commit in ``repo`` (at ``ref``) touching ``path``.
+  - `git_add(repo_root: Path, paths: list[str]) -> None` — Stage the given repo-relative paths.
+  - `apply_transform(text: str) -> tuple[str, int]` — Apply the registered transform; return (new text, substitution count).
+  - `run_generator_sweep(repo_root: Path, sweep: tuple[str, ...], *, quiet: bool, verbose: bool) -> None` — Run every generator in ``sweep`` so generated artifacts describe this repo.
   - `build_parser() -> argparse.ArgumentParser` — Build the argument parser.
 - Tested by: `scripts/test_sync_from_dotfiles.py`
 

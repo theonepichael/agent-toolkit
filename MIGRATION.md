@@ -139,7 +139,11 @@ in dotfiles shows the 2026-09-04 deletion commit for the full picture.
 `sync_from_dotfiles.py` keeps one narrow, permanent, and deliberate upstream
 relationship — `CORE_INSTRUCTIONS.md` is authored in dotfiles and synced in —
 which is the intended final shape, not a leftover. The repo has been public
-since 2026-09-08 (item 3) — nothing is still open there.
+since 2026-09-08 (item 3) — nothing is still open there. (2026-09-09: the
+tool itself was retooled to match this final shape — from a whole-repo opt-out
+diff reconciler to a single-contract sync of `CORE_INSTRUCTIONS.md` plus the
+generator sweep — the whole-repo machinery having nothing left to reconcile
+after the cutover.)
 
 ## A note on why this file exists
 

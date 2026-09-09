@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
 """Tests for sync_from_dotfiles.py. Run with: python3 test_sync_from_dotfiles.py
 
-Two tiers, per the plan this tool implements:
+Two tiers, per the spec this tool implements
+(~/.claude/data/grill/atk-sync-post-cutover-alignment-spec.md):
 
-- Pure-function tests for the classification rule, blocklist/exclude
-  subtraction, and conflict-set math — plain in-memory path sets, no git
-  subprocess calls at all.
-- A slower integration tier against synthetic throwaway git repos (built and
-  torn down inside each test), exercising the real git-diffing and copy
-  code paths. Marked ``allow_real_subprocess`` per test/AGENTS.md, since
-  this tool's entire job is diffing two real external repos and the repo
-  conftest.py blocks unmarked real subprocess calls.
+- Pure-function tests for the registered transform and the state-file
+  schema — no git subprocess calls at all.
+- A slower integration tier against synthetic throwaway git repos (built
+  and torn down inside each test), exercising the real read/compare/copy/
+  sweep/state code paths. Marked ``allow_real_subprocess`` per
+  test/AGENTS.md, since this tool's entire job is reading a real external
+  repo via git and running real generator subprocesses.
+
+Post-cutover contract (MIGRATION.md): only ``claude/CORE_INSTRUCTIONS.md``
+is authored in dotfiles and flows downstream into this toolkit. The whole
+range-replay machinery of the pre-cutover tool is gone.
 """
 
 import subprocess
@@ -25,197 +29,72 @@ sys.path.insert(0, str(Path(__file__).parent))
 import sync_from_dotfiles as sfd
 
 
-class ComputeCopySetTests(unittest.TestCase):
-    def test_excludes_blocklist_and_exclude_entries(self) -> None:
-        changed = frozenset({"a.py", sfd.BLOCKLIST[0], sfd.EXCLUDE[0], "b.py"})
-        self.assertEqual(sfd.compute_copy_set(changed), frozenset({"a.py", "b.py"}))
+class TransformTests(unittest.TestCase):
+    """The registered mechanical transform, pure — no git, no filesystem."""
 
-    def test_excludes_the_post_cutover_watchcommit_dotfiles_only_paths(self) -> None:
-        # dotfiles' 11c827b added these two files after the toolkit snapshot
-        # was cut; the toolkit deliberately never carries them. Without the
-        # EXCLUDE entries the copy set tries to blind-copy them (and the
-        # BLOCKED_MODULES content check then rejects scripts/watchcommit.py
-        # for referencing watchcommit_activity).
-        changed = frozenset(
-            {"scripts/watchcommit.py", "test/test_no_commit_on_main.py"}
+    def test_rewrites_the_backticked_scripts_dir_token(self) -> None:
+        text = "commit an edit to a script under `claude/scripts/` that a doc names\n"
+        out, count = sfd.apply_transform(text)
+        self.assertIn("`agent-scripts/`", out)
+        self.assertNotIn("`claude/scripts/`", out)
+        self.assertEqual(count, 1)
+
+    def test_leaves_every_deployed_path_occurrence_untouched(self) -> None:
+        # ~/.claude/scripts/ refers to the deployed symlink farm, not this
+        # repo's agent-scripts/ — the transform must never touch it.
+        text = (
+            "run `python3 ~/.claude/scripts/dev_status.py add ...`\n"
+            "  `python3 ~/.claude/scripts/dev_status.py block a b`\n"
         )
-        self.assertEqual(sfd.compute_copy_set(changed), frozenset())
+        out, count = sfd.apply_transform(text)
+        self.assertEqual(out, text)
+        self.assertEqual(count, 0)
 
-    def test_excludes_never_synced_repo_specific_paths(self) -> None:
-        # The same relative path exists in BOTH checkouts with intentionally
-        # different content (AGENTS.md-style directory docs, each repo's own
-        # README/config/tests) — blind-copying dotfiles' version would
-        # clobber the toolkit's diverged copy, so it is never replayed.
-        changed = frozenset(
-            {
-                "claude/scripts/AGENTS.md",
-                "test/AGENTS.md",
-                "some/new/dir/AGENTS.md",
-                "README.md",
-                "links.toml",
-                "shared_new_code.py",
-            }
-        )
-        self.assertEqual(
-            sfd.compute_copy_set(changed), frozenset({"shared_new_code.py"})
-        )
+    def test_is_idempotent(self) -> None:
+        text = "under `claude/scripts/` per INTERFACES.md\n"
+        once, count1 = sfd.apply_transform(text)
+        twice, count2 = sfd.apply_transform(once)
+        self.assertEqual(once, twice)
+        self.assertEqual(count1, 1)
+        self.assertEqual(count2, 0)
 
-    def test_is_derived_from_the_diff_not_a_fixed_list(self) -> None:
-        changed = frozenset({"some/brand/new/path.py"})
-        self.assertEqual(sfd.compute_copy_set(changed), changed)
+    @pytest.mark.allow_real_subprocess
+    def test_real_dotfiles_copy_transforms_to_the_real_toolkit_copy(self) -> None:
+        """The one live occurrence: dotfiles@HEAD's file, transformed, must
+        equal the toolkit's committed copy. Skipped when ~/dotfiles is not
+        present (e.g. a checkout on another machine) — the synthetic
+        integration tier covers the mechanism regardless."""
+        dotfiles = sfd.DEFAULT_DOTFILES_PATH
+        probe = sfd.run_git(dotfiles, "rev-parse", "--is-inside-work-tree")
+        if probe.returncode != 0:
+            self.skipTest(f"{dotfiles} not available")
+        head = sfd.resolve_head(dotfiles)
+        if not sfd.path_exists_at(dotfiles, head, sfd.CONTRACT_FILE):
+            self.skipTest("contract file absent from live dotfiles@HEAD")
+        text = sfd.read_at(dotfiles, head, sfd.CONTRACT_FILE).decode("utf-8")
+        transformed, count = sfd.apply_transform(text)
+        toolkit_copy = (sfd.REPO_ROOT / sfd.CONTRACT_FILE).read_text(encoding="utf-8")
+        if transformed == toolkit_copy:
+            self.assertEqual(count, 1)
+        else:
+            # Legitimate drift either direction (an upstream edit not yet
+            # synced, or toolkit-side work not yet pushed) — the transform
+            # must still have fired exactly once on the current wording.
+            self.assertEqual(count, 1, "live dotfiles copy lost its token")
 
-    def test_empty_diff_is_empty_copy_set(self) -> None:
-        self.assertEqual(sfd.compute_copy_set(frozenset()), frozenset())
 
-
-class ComputeConflictSetTests(unittest.TestCase):
-    def test_is_the_intersection(self) -> None:
-        dotfiles_changed = frozenset({"a.py", "b.py", "c.py"})
-        toolkit_changed = frozenset({"b.py", "c.py", "d.py"})
-        self.assertEqual(
-            sfd.compute_conflict_set(dotfiles_changed, toolkit_changed),
-            frozenset({"b.py", "c.py"}),
-        )
-
-    def test_disjoint_changes_have_no_conflict(self) -> None:
-        self.assertEqual(
-            sfd.compute_conflict_set(frozenset({"a"}), frozenset({"b"})), frozenset()
-        )
-
-    def test_never_a_fixed_expected_value(self) -> None:
-        # A repeatable tool's conflict set changes every run -- assert the
-        # math, not a memorized 3-file answer from one historical run.
-        # (README.md is a never-synced repo-specific path now, so the
-        # fixture uses a neutral shared path.)
-        dotfiles_changed = frozenset({"config.toml", "links.toml", "new_thing.py"})
-        toolkit_changed = frozenset({"config.toml", "unrelated_toolkit_file.py"})
-        self.assertEqual(
-            sfd.compute_conflict_set(dotfiles_changed, toolkit_changed),
-            frozenset({"config.toml"}),
+class GeneratorSweepShapeTests(unittest.TestCase):
+    def test_all_sweep_paths_live_in_agent_scripts(self) -> None:
+        self.assertTrue(
+            all(p.startswith("agent-scripts/") for p in sfd.GENERATOR_SWEEP),
+            sfd.GENERATOR_SWEEP,
         )
 
-    def test_subtracts_never_synced_repo_specific_paths(self) -> None:
-        # A repo-specific doc changed on both sides is not a conflict to
-        # hand-resolve: it never replays in either direction, so both sets
-        # subtract it before the intersection survives.
-        dotfiles_changed = frozenset(
-            {"AGENTS.md", "test/AGENTS.md", "deep/dir/AGENTS.md", "shared.py"}
-        )
-        toolkit_changed = frozenset({"AGENTS.md", "deep/dir/AGENTS.md", "shared.py"})
-        self.assertEqual(
-            sfd.compute_conflict_set(dotfiles_changed, toolkit_changed),
-            frozenset({"shared.py"}),
-        )
-
-
-class FindUnclassifiedDivergencesTests(unittest.TestCase):
-    """The pure core of the same-path divergence derivation."""
-
-    def test_flags_a_same_path_divergence_with_no_classification(self) -> None:
-        diverged = {"brand/new/dir/NOTES.md"}
-        self.assertEqual(
-            sfd.find_unclassified_divergences(
-                diverged,
-                {"brand/new/dir/NOTES.md", "in_sync.py"},
-                lambda p: p in diverged,
-            ),
-            ["brand/new/dir/NOTES.md"],
-        )
-
-    def test_an_agents_md_in_a_new_directory_is_never_synced(self) -> None:
-        # `*/AGENTS.md` covers a directory doc added to a brand-new
-        # directory — the point of pattern (not exact-path) membership.
-        self.assertEqual(
-            sfd.find_unclassified_divergences(
-                {"brand/new/dir/AGENTS.md"},
-                {"brand/new/dir/AGENTS.md"},
-                lambda _p: True,
-            ),
-            [],
-        )
-
-    def test_a_divergence_in_the_never_synced_set_is_classified(self) -> None:
-        diverged = {"claude/scripts/AGENTS.md", "README.md", "links.toml"}
-        self.assertEqual(
-            sfd.find_unclassified_divergences(
-                diverged, diverged, lambda p: p in diverged
-            ),
-            [],
-        )
-
-    def test_a_divergence_matching_generated_artifact_patterns_is_classified(
-        self,
-    ) -> None:
-        # INTERFACES.md diverges by construction (each repo's sweep emits
-        # its own) and is owned by GENERATED_ARTIFACT_PATTERNS.
-        self.assertEqual(
-            sfd.find_unclassified_divergences(
-                {"INTERFACES.md"}, {"INTERFACES.md"}, lambda _p: True
-            ),
-            [],
-        )
-
-    def test_a_divergence_with_a_registered_handler_is_classified(self) -> None:
-        sfd.CONFLICT_HANDLERS["fixture/handled.txt"] = lambda *_args: None
-        try:
-            self.assertEqual(
-                sfd.find_unclassified_divergences(
-                    {"fixture/handled.txt"}, {"fixture/handled.txt"}, lambda _p: True
-                ),
-                [],
+    def test_all_sweep_paths_exist_in_this_repo(self) -> None:
+        for relpath in sfd.GENERATOR_SWEEP:
+            self.assertTrue(
+                (sfd.REPO_ROOT / relpath).is_file(), f"missing: {relpath}"
             )
-        finally:
-            del sfd.CONFLICT_HANDLERS["fixture/handled.txt"]
-
-    def test_an_in_sync_path_is_never_flagged(self) -> None:
-        self.assertEqual(
-            sfd.find_unclassified_divergences(
-                {"same.py", "never_synced/AGENTS.md"},
-                {"same.py", "never_synced/AGENTS.md"},
-                lambda _p: False,
-            ),
-            [],
-        )
-
-
-class ClassifyConflictTests(unittest.TestCase):
-    def test_interfaces_md_is_a_generated_artifact(self) -> None:
-        self.assertEqual(sfd.classify_conflict("INTERFACES.md"), "generated_artifact")
-
-    def test_skill_doc_globs_are_generated_artifacts(self) -> None:
-        for path in (
-            "claude/commands/spec.md",
-            "pi/skills/spec/SKILL.md",
-            "opencode/skills/second-opinion/SKILL.md",
-            "copilot/skills/second-opinion/SKILL.md",
-            "agy/skills/second-opinion/SKILL.md",
-            "pi/prompts/spec.md",
-            "opencode/command/spec.md",
-            "templates/spec.md.tmpl",
-            "claude/scripts/contract_fingerprints.json",
-        ):
-            self.assertEqual(sfd.classify_conflict(path), "generated_artifact", path)
-
-    def test_unregistered_path_is_unclassified_by_default(self) -> None:
-        # The safe default: a repeatable tool must never guess on a conflict
-        # it has no verified rule for -- see CONFLICT_HANDLERS's docstring.
-        self.assertEqual(sfd.classify_conflict("links.toml"), "unclassified")
-        self.assertEqual(sfd.classify_conflict("README.md"), "unclassified")
-
-    def test_registered_handler_path_is_handled(self) -> None:
-        sfd.CONFLICT_HANDLERS["fixture/only.txt"] = lambda *_args: None
-        try:
-            self.assertEqual(sfd.classify_conflict("fixture/only.txt"), "handled")
-        finally:
-            del sfd.CONFLICT_HANDLERS["fixture/only.txt"]
-
-
-class BlocklistShapeTests(unittest.TestCase):
-    def test_blocklist_and_exclude_do_not_overlap(self) -> None:
-        self.assertFalse(set(sfd.BLOCKLIST) & set(sfd.EXCLUDE))
-
-    def test_blocklist_entries_are_unique(self) -> None:
-        self.assertEqual(len(sfd.BLOCKLIST), len(set(sfd.BLOCKLIST)))
 
 
 class StateFileTests(unittest.TestCase):
@@ -223,15 +102,24 @@ class StateFileTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertIsNone(sfd.load_state(Path(tmp)))
 
-    def test_write_then_load_round_trips(self) -> None:
+    def test_load_state_ignores_a_corrupt_file(self) -> None:
+        # Provenance-only: a corrupt state file can never block or crash a
+        # run — the sync decision is made from content comparison.
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = sfd.state_path(Path(tmp))
+            state_path.parent.mkdir(parents=True)
+            state_path.write_text("{not json at all", encoding="utf-8")
+            self.assertIsNone(sfd.load_state(Path(tmp)))
+
+    def test_write_state_schema_is_provenance_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            sfd.write_state(root, dotfiles_sha="abc123", toolkit_commit="def456")
+            sfd.write_state(root, dotfiles_sha="abc123")
             state = sfd.load_state(root)
             assert state is not None
             self.assertEqual(state["last_synced_dotfiles_sha"], "abc123")
-            self.assertEqual(state["toolkit_commit"], "def456")
             self.assertIn("synced_at", state)
+            self.assertNotIn("toolkit_commit", state)
 
     def test_state_path_is_committed_not_ignored(self) -> None:
         gitignore = (Path(__file__).resolve().parent.parent / ".gitignore").read_text(
@@ -240,23 +128,7 @@ class StateFileTests(unittest.TestCase):
         self.assertNotIn(".sync-state.json", gitignore)
 
 
-class ResolveToolkitAnchorTests(unittest.TestCase):
-    def test_uses_the_recorded_commit_when_present(self) -> None:
-        anchor = sfd.resolve_toolkit_anchor(
-            Path("/nonexistent"), {"toolkit_commit": "abc"}
-        )
-        self.assertEqual(anchor, "abc")
-
-    @pytest.mark.allow_real_subprocess
-    def test_ignores_a_blank_recorded_commit(self) -> None:
-        # write_state() deliberately leaves toolkit_commit as None until a
-        # wrapping caller fills it in after committing -- falling back must
-        # not treat that None as a real anchor.
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            subprocess_git_init_and_commit(root)
-            anchor = sfd.resolve_toolkit_anchor(root, {"toolkit_commit": None})
-            self.assertEqual(anchor, sfd.root_commit(root))
+# ── integration tier: real git, synthetic throwaway repos ───────────────────
 
 
 def subprocess_git_init_and_commit(repo: Path) -> None:
@@ -297,13 +169,26 @@ def commit_file(repo: Path, relpath: str, content: str) -> None:
     git(repo, "commit", "-q", "-m", f"add {relpath}")
 
 
-class SyntheticRepoIntegrationTests(unittest.TestCase):
-    """Exercises real git diffing and copy code paths against throwaway repos.
+def staged_paths(repo: Path) -> set[str]:
+    out = git(repo, "diff", "--name-only", "--cached")
+    return {line for line in out.splitlines() if line}
 
-    No real ~/dotfiles or ~/.claude state is touched -- both "dotfiles" and
-    "toolkit" are throwaway repos under a temp directory, built and torn
-    down inside this test.
+
+class SyntheticRepoIntegrationTests(unittest.TestCase):
+    """Exercises the real read/compare/copy/sweep/state paths end to end.
+
+    No real ~/dotfiles or real agent-scripts/ generators are touched —
+    both "dotfiles" and "toolkit" are throwaway repos under a temp
+    directory, and the sweep is a tuple of throwaway fake generators.
     """
+
+    DOTFILES_TEXT = (
+        "# core\n"
+        "line one: commit an edit to any script under `claude/scripts/` that a\n"
+        "skill doc names.\n"
+        "run `python3 ~/.claude/scripts/dev_status.py add ...\n"
+        "more shared prose\n"
+    )
 
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -314,357 +199,282 @@ class SyntheticRepoIntegrationTests(unittest.TestCase):
         self.toolkit.mkdir()
         subprocess_git_init_and_commit(self.dotfiles)
         subprocess_git_init_and_commit(self.toolkit)
+        # The toolkit starts with dotfiles@HEAD's file already transformed —
+        # i.e. a synced baseline — so each test moves one lever at a time.
+        head = sfd.resolve_head(self.dotfiles)
+        commit_file(self.dotfiles, sfd.CONTRACT_FILE, self.DOTFILES_TEXT)
+        head = sfd.resolve_head(self.dotfiles)
+        transformed, count = sfd.apply_transform(self.DOTFILES_TEXT)
+        assert count == 1
+        commit_file(self.toolkit, sfd.CONTRACT_FILE, transformed)
+        self.tip = head
+
+    def write_fake_generators(self, *names: str) -> tuple[str, ...]:
+        """Commit throwaway generator scripts into the toolkit repo; the
+        sync runs them with cwd=toolkit root."""
+        relpaths: list[str] = []
+        for i, name in enumerate(names):
+            relpath = f"fake_gen_{i}_{name}.py"
+            (self.toolkit / relpath).write_text(
+                "from pathlib import Path\n"
+                f"Path('{name}.out').write_text('generated by {name}\\n')\n",
+                encoding="utf-8",
+            )
+            git(self.toolkit, "add", relpath)
+            relpaths.append(relpath)
+        git(self.toolkit, "commit", "-q", "-m", "add fake generators")
+        return tuple(relpaths)
+
+    # -- up-to-date runs are true no-ops ------------------------------------
 
     @pytest.mark.allow_real_subprocess
-    def test_copy_set_and_conflict_set_from_real_git_history(self) -> None:
-        base = git(self.dotfiles, "rev-parse", "HEAD").strip()
-        commit_file(self.dotfiles, "shared/new_thing.py", "print('hi')\n")
-        tip = git(self.dotfiles, "rev-parse", "HEAD").strip()
-
-        toolkit_anchor = git(self.toolkit, "rev-parse", "HEAD").strip()
-        commit_file(self.toolkit, "toolkit_only.py", "x = 1\n")
-        toolkit_head = git(self.toolkit, "rev-parse", "HEAD").strip()
-
-        dotfiles_changed = sfd.changed_paths(self.dotfiles, base, tip)
-        toolkit_changed = sfd.changed_paths(self.toolkit, toolkit_anchor, toolkit_head)
-        self.assertEqual(dotfiles_changed, frozenset({"shared/new_thing.py"}))
-
-        copy_set = sfd.compute_copy_set(dotfiles_changed)
-        conflict_set = sfd.compute_conflict_set(dotfiles_changed, toolkit_changed)
-        self.assertEqual(copy_set, frozenset({"shared/new_thing.py"}))
-        self.assertEqual(conflict_set, frozenset())
-
-        # BLOCKLIST is hardcoded against the real dotfiles repo, so every
-        # entry is reported stale here -- this throwaway repo has none of
-        # them. That noise is expected; assert the actual path under test
-        # raised no problem of its own.
-        problems = sfd.verify_invariants(self.dotfiles, base, tip, copy_set, copy_set)
-        self.assertFalse([p for p in problems if "shared/new_thing.py" in p], problems)
-
-    @pytest.mark.allow_real_subprocess
-    def test_verify_invariants_flags_a_stale_blocklist_entry(self) -> None:
-        # BLOCKLIST names dotfiles paths that do not exist in this throwaway
-        # dotfiles repo -- exactly the "typo/stale entry" case the check
-        # exists to catch.
-        base = git(self.dotfiles, "rev-parse", "HEAD").strip()
-        tip = base
-        problems = sfd.verify_invariants(
-            self.dotfiles, base, tip, frozenset(), frozenset()
-        )
-        self.assertTrue(any("BLOCKLIST entry" in p for p in problems), problems)
-
-    @pytest.mark.allow_real_subprocess
-    def test_verify_invariants_flags_an_unhandled_deletion(self) -> None:
-        commit_file(self.dotfiles, "will_delete.py", "x = 1\n")
-        base = git(self.dotfiles, "rev-parse", "HEAD").strip()
-        (self.dotfiles / "will_delete.py").unlink()
-        git(self.dotfiles, "add", "-A")
-        git(self.dotfiles, "commit", "-q", "-m", "delete")
-        tip = git(self.dotfiles, "rev-parse", "HEAD").strip()
-
-        dotfiles_changed = sfd.changed_paths(self.dotfiles, base, tip)
-        copy_set = sfd.compute_copy_set(dotfiles_changed)
-        problems = sfd.verify_invariants(self.dotfiles, base, tip, copy_set, copy_set)
-        self.assertTrue(any("missing from dotfiles" in p for p in problems), problems)
-
-    @pytest.mark.allow_real_subprocess
-    def test_verify_invariants_flags_a_blocked_module_reference(self) -> None:
-        commit_file(
-            self.dotfiles,
-            "claude/scripts/watchcommit_activity.py",
-            "def record(): ...\n",
-        )
-        base = git(self.dotfiles, "rev-parse", "HEAD").strip()
-        commit_file(
-            self.dotfiles,
-            "claude/scripts/uses_it.py",
-            "import watchcommit_activity\n",
-        )
-        tip = git(self.dotfiles, "rev-parse", "HEAD").strip()
-
-        dotfiles_changed = sfd.changed_paths(self.dotfiles, base, tip)
-        copy_set = sfd.compute_copy_set(dotfiles_changed)
-        self.assertEqual(copy_set, frozenset({"claude/scripts/uses_it.py"}))
-        problems = sfd.verify_invariants(self.dotfiles, base, tip, copy_set, copy_set)
-        self.assertTrue(
-            any("references blocklisted module" in p for p in problems), problems
-        )
-
-    @pytest.mark.allow_real_subprocess
-    def test_verify_invariants_ignores_a_blocked_module_reference_outside_plain_copies(
-        self,
-    ) -> None:
-        """Regression test: a conflict path (e.g. a generated artifact or a
-        hand-resolved file) that happens to mention a blocklisted module
-        name must NOT block the run, because it is never blind-copied --
-        only ``plain_copies`` (``copy_set - conflict_set``) is. Before the
-        fix, this check ran over the full ``copy_set``, so dotfiles' own
-        legitimate self-references to its personal-only scripts inside its
-        generated docs (INTERFACES.md, links.toml) made every real run
-        refuse to proceed at all."""
-        commit_file(
-            self.dotfiles,
-            "claude/scripts/watchcommit_activity.py",
-            "def record(): ...\n",
-        )
-        base = git(self.dotfiles, "rev-parse", "HEAD").strip()
-        commit_file(
-            self.dotfiles,
-            "INTERFACES.md",
-            "mentions watchcommit_activity in prose\n",
-        )
-        tip = git(self.dotfiles, "rev-parse", "HEAD").strip()
-
-        dotfiles_changed = sfd.changed_paths(self.dotfiles, base, tip)
-        copy_set = sfd.compute_copy_set(dotfiles_changed)
-        self.assertEqual(copy_set, frozenset({"INTERFACES.md"}))
-
-        # INTERFACES.md is a conflict path here (it's in the copy_set but
-        # excluded from plain_copies -- simulating that the toolkit side
-        # also changed it, or that it is always regenerated rather than
-        # blind-copied).
-        plain_copies: frozenset[str] = frozenset()
-        problems = sfd.verify_invariants(
-            self.dotfiles, base, tip, copy_set, plain_copies
-        )
-        self.assertFalse(
-            [p for p in problems if "references blocklisted module" in p], problems
-        )
-
-    @pytest.mark.allow_real_subprocess
-    def test_apply_stages_new_files_before_generator_sweep_sees_them(self) -> None:
-        """Regression test for the ordering defect found in the one-off run:
-        a generator that enumerates git-TRACKED files silently omits a
-        brand-new copied file unless that file is staged first."""
-        base = git(self.dotfiles, "rev-parse", "HEAD").strip()
-        commit_file(self.dotfiles, "brand_new_file.txt", "hello\n")
-        tip = git(self.dotfiles, "rev-parse", "HEAD").strip()
-
-        dotfiles_changed = sfd.changed_paths(self.dotfiles, base, tip)
-        copy_set = sfd.compute_copy_set(dotfiles_changed)
-        self.assertEqual(copy_set, frozenset({"brand_new_file.txt"}))
-
-        generator = self.toolkit / "fake_generator.py"
-        generator.write_text(
-            "import subprocess\n"
-            "from pathlib import Path\n"
-            "tracked = subprocess.run(\n"
-            "    ['git', 'ls-files'], capture_output=True, text=True, check=True\n"
-            ").stdout\n"
-            "Path('MANIFEST.txt').write_text(tracked)\n",
-            encoding="utf-8",
-        )
-        git(self.toolkit, "add", "fake_generator.py")
-        git(self.toolkit, "commit", "-q", "-m", "add fake generator")
-
-        sfd.apply_sync(
+    def test_up_to_date_apply_is_a_true_noop(self) -> None:
+        """Same content → exit 0, no sweep, no state write, tree unchanged."""
+        before = git(self.toolkit, "status", "--porcelain")
+        code = sfd.main(
             self.toolkit,
-            self.dotfiles,
-            tip,
-            sorted(copy_set),
-            [],
-            base,
-            generator_sweep=("fake_generator.py",),
-            quiet=True,
+            argv=["--apply", "--quiet", "--dotfiles-path", str(self.dotfiles)],
+            do_exit=False,
         )
+        self.assertEqual(code, 0)
+        self.assertEqual(git(self.toolkit, "status", "--porcelain"), before)
+        self.assertFalse(sfd.state_path(self.toolkit).exists())
 
-        manifest = (self.toolkit / "MANIFEST.txt").read_text(encoding="utf-8")
-        self.assertIn("brand_new_file.txt", manifest)
-        self.assertTrue((self.toolkit / "brand_new_file.txt").is_file())
+    @pytest.mark.allow_real_subprocess
+    def test_unrelated_upstream_commits_cause_no_state_churn(self) -> None:
+        """The provenance sha is the last commit touching the contract file,
+        not HEAD — an unrelated dotfiles commit must not dirty the state."""
+        commit_file(self.dotfiles, "unrelated/zshrc", "alias ll='ls -l'\n")
+        before = git(self.toolkit, "status", "--porcelain")
+        code = sfd.main(
+            self.toolkit,
+            argv=["--apply", "--quiet", "--dotfiles-path", str(self.dotfiles)],
+            do_exit=False,
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(git(self.toolkit, "status", "--porcelain"), before)
+        self.assertFalse(sfd.state_path(self.toolkit).exists())
+
+    # -- apply with a real delta ---------------------------------------------
+
+    @pytest.mark.allow_real_subprocess
+    def test_apply_writes_transformed_file_sweeps_and_advances_state(self) -> None:
+        sweep = self.write_fake_generators("alpha", "beta")
+        commit_file(
+            self.dotfiles,
+            sfd.CONTRACT_FILE,
+            self.DOTFILES_TEXT + "new upstream paragraph\n",
+        )
+        # An unrelated upstream commit on top: tip advances past the commit
+        # that touched the contract file, and provenance must record the
+        # latter, not HEAD.
+        commit_file(self.dotfiles, "unrelated/notes", "unrelated\n")
+        self.tip = sfd.resolve_head(self.dotfiles)
+        touching = sfd.last_commit_touching(
+            self.dotfiles, self.tip, sfd.CONTRACT_FILE
+        )
+        self.assertNotEqual(touching, self.tip)  # last change to the file itself
+
+        code = sfd.main(
+            self.toolkit,
+            argv=["--apply", "--quiet", "--dotfiles-path", str(self.dotfiles)],
+            do_exit=False,
+            generator_sweep=sweep,
+        )
+        self.assertEqual(code, 0)
+
+        toolkit_copy = (self.toolkit / sfd.CONTRACT_FILE).read_text(encoding="utf-8")
+        self.assertIn("new upstream paragraph\n", toolkit_copy)
+        self.assertNotIn("`claude/scripts/`", toolkit_copy)
 
         state = sfd.load_state(self.toolkit)
         assert state is not None
-        self.assertEqual(state["last_synced_dotfiles_sha"], tip)
-        self.assertIsNone(state["toolkit_commit"])
+        self.assertEqual(state["last_synced_dotfiles_sha"], touching)
 
-
-class VerifyInvariantsDivergenceTests(SyntheticRepoIntegrationTests):
-    """The same-path divergence check over plain copies.
-
-    A plain copy is safe to blind-copy iff the toolkit's copy is exactly
-    dotfiles@BASE's (clean delta replay) or is a genuinely new file
-    (absent from the toolkit AND from dotfiles@BASE). Anything else is
-    pre-anchor divergence or an unclassified deletion — flagged before
-    any write, never silently clobbered or resurrected.
-    """
-
-    def commit_shared_diverged(self) -> tuple[str, str]:
-        """dotfiles and toolkit both carry a common path; toolkit's copy
-        diverged from the shared lineage before the anchor."""
-        commit_file(self.dotfiles, "docs/shared.md", "lineage version\n")
-        base = git(self.dotfiles, "rev-parse", "HEAD").strip()
-        commit_file(self.dotfiles, "docs/shared.md", "lineage version + delta\n")
-        tip = git(self.dotfiles, "rev-parse", "HEAD").strip()
-        commit_file(self.toolkit, "docs/shared.md", "toolkit's own diverged copy\n")
-        return base, tip
-
-    @pytest.mark.allow_real_subprocess
-    def test_flags_pre_anchor_divergence_on_a_plain_copy(self) -> None:
-        base, tip = self.commit_shared_diverged()
-        changed = sfd.changed_paths(self.dotfiles, base, tip)
-        copy_set = sfd.compute_copy_set(changed)
-        self.assertEqual(copy_set, frozenset({"docs/shared.md"}))
-        problems = sfd.verify_invariants(
-            self.dotfiles, base, tip, copy_set, copy_set, toolkit_root=self.toolkit
-        )
-        self.assertTrue(
-            any(
-                "diverged from the sync lineage" in p and "docs/shared.md" in p
-                for p in problems
-            ),
-            problems,
-        )
-
-    @pytest.mark.allow_real_subprocess
-    def test_plain_copy_with_clean_lineage_is_not_flagged(self) -> None:
-        # The toolkit's copy is exactly dotfiles@BASE's — the pending
-        # dotfiles delta replays cleanly, no divergence.
-        commit_file(self.dotfiles, "docs/clean.md", "lineage version\n")
-        commit_file(self.toolkit, "docs/clean.md", "lineage version\n")
-        base = git(self.dotfiles, "rev-parse", "HEAD").strip()
-        commit_file(self.dotfiles, "docs/clean.md", "lineage + delta\n")
-        tip = git(self.dotfiles, "rev-parse", "HEAD").strip()
-        problems = sfd.verify_invariants(
-            self.dotfiles,
-            base,
-            tip,
-            frozenset({"docs/clean.md"}),
-            frozenset({"docs/clean.md"}),
-            toolkit_root=self.toolkit,
-        )
-        self.assertFalse([p for p in problems if "docs/clean.md" in p], problems)
-
-    @pytest.mark.allow_real_subprocess
-    def test_flags_an_unclassified_deletion_never_resurrects(self) -> None:
-        # The toolkit deleted the path while dotfiles edited it: treating
-        # "toolkit lacks it" as a new file would silently resurrect it.
-        commit_file(self.dotfiles, "docs/deleted_toolkit_side.md", "lineage\n")
-        base = git(self.dotfiles, "rev-parse", "HEAD").strip()
-        commit_file(self.dotfiles, "docs/deleted_toolkit_side.md", "lineage + delta\n")
-        tip = git(self.dotfiles, "rev-parse", "HEAD").strip()
-        problems = sfd.verify_invariants(
-            self.dotfiles,
-            base,
-            tip,
-            frozenset({"docs/deleted_toolkit_side.md"}),
-            frozenset({"docs/deleted_toolkit_side.md"}),
-            toolkit_root=self.toolkit,
-        )
-        self.assertTrue(
-            any(
-                "unclassified deletion" in p and "deleted_toolkit_side.md" in p
-                for p in problems
-            ),
-            problems,
-        )
-
-    @pytest.mark.allow_real_subprocess
-    def test_genuinely_new_file_in_both_repos_is_safe(self) -> None:
-        # dotfiles created the path after BASE and the toolkit never had it:
-        # a clean new-file copy, no divergence, no deletion.
-        base = git(self.dotfiles, "rev-parse", "HEAD").strip()
-        commit_file(self.dotfiles, "docs/brand_new.md", "dotfiles new file\n")
-        tip = git(self.dotfiles, "rev-parse", "HEAD").strip()
-        problems = sfd.verify_invariants(
-            self.dotfiles,
-            base,
-            tip,
-            frozenset({"docs/brand_new.md"}),
-            frozenset({"docs/brand_new.md"}),
-            toolkit_root=self.toolkit,
-        )
-        self.assertFalse([p for p in problems if "brand_new.md" in p], problems)
-
-    @pytest.mark.allow_real_subprocess
-    def test_flags_independent_creation_without_a_clean_lineage(self) -> None:
-        # The path exists in both trees but was absent from dotfiles@BASE:
-        # no lineage to compare against, so blind-copying is a clobber risk.
-        base = git(self.dotfiles, "rev-parse", "HEAD").strip()
-        commit_file(self.dotfiles, "docs/independent.md", "dotfiles' new file\n")
-        tip = git(self.dotfiles, "rev-parse", "HEAD").strip()
-        commit_file(self.toolkit, "docs/independent.md", "toolkit's own file\n")
-        problems = sfd.verify_invariants(
-            self.dotfiles,
-            base,
-            tip,
-            frozenset({"docs/independent.md"}),
-            frozenset({"docs/independent.md"}),
-            toolkit_root=self.toolkit,
-        )
-        self.assertTrue(
-            any(
-                "diverged from the sync lineage" in p and "independent.md" in p
-                for p in problems
-            ),
-            problems,
-        )
-
-    @pytest.mark.allow_real_subprocess
-    def test_generated_artifact_divergence_is_skipped_silently(self) -> None:
-        # A generated artifact diverges by construction (each repo's sweep
-        # emits its own); the sweep regenerates it, so no flag.
-        base, _ = self.commit_shared_diverged()
-        commit_file(self.dotfiles, "INTERFACES.md", "dotfiles' generated copy\n")
-        commit_file(self.toolkit, "INTERFACES.md", "toolkit's generated copy\n")
-        tip = git(self.dotfiles, "rev-parse", "HEAD").strip()
-        changed = frozenset({"INTERFACES.md"})
-        problems = sfd.verify_invariants(
-            self.dotfiles, base, tip, changed, changed, toolkit_root=self.toolkit
-        )
-        self.assertFalse([p for p in problems if "INTERFACES.md" in p], problems)
-
-
-class RealCheckoutDerivationTests(unittest.TestCase):
-    """Derives the never-synced classification against the REAL checkouts.
-
-    This is the "caught at test time, not by a live sync halt" guard: any
-    new same-path file whose toolkit@ANCHOR content differs from
-    dotfiles@BASE and that carries no classification reds this test long
-    before a sync run would blind-copy over it.
-    """
-
-    @pytest.mark.allow_real_subprocess
-    def test_every_settled_same_path_divergence_is_classified(self) -> None:
-        state = sfd.load_state(sfd.REPO_ROOT)
-        assert state is not None, "sync state file must be committed"
-        base = state["last_synced_dotfiles_sha"]
-        assert isinstance(base, str)
-        anchor = sfd.resolve_toolkit_anchor(sfd.REPO_ROOT, state)
-
-        dotfiles_files = {
-            line
-            for line in sfd.run_git(
-                sfd.DEFAULT_DOTFILES_PATH, "ls-files"
-            ).stdout.splitlines()
-            if line
-        }
-        toolkit_files = {
-            line
-            for line in sfd.run_git(sfd.REPO_ROOT, "ls-files").stdout.splitlines()
-            if line
-        }
-        common = dotfiles_files & toolkit_files
-
-        def diverged(path: str) -> bool:
-            if not sfd.path_exists_at(sfd.DEFAULT_DOTFILES_PATH, base, path):
-                return True  # no clean lineage to compare against
-            dotfiles_blob = sfd.read_at(sfd.DEFAULT_DOTFILES_PATH, base, path)
-            toolkit_blob = sfd.read_at(sfd.REPO_ROOT, anchor, path)
-            return dotfiles_blob != toolkit_blob
-
-        unclassified = sfd.find_unclassified_divergences(common, common, diverged)
+        # Staged set is exactly the contract file + the state file; the
+        # fake generators' outputs stay unstaged for review.
         self.assertEqual(
-            unclassified,
-            [],
-            "unclassified same-path divergence(s) between the real checkouts: "
-            f"{unclassified}. For each path, either (a) the divergence is "
-            "intentional (AGENTS.md-style directory docs, each repo's own "
-            "README/config/tests) — add it to NEVER_SYNCED_REPO_SPECIFIC; "
-            "(b) a mechanical delta rule applies — register a "
-            "CONFLICT_HANDLERS entry per that registry's once-by-hand "
-            "policy; or (c) the divergence is this item's own pending "
-            "work — commit/resolve it before this derivation can pass.",
+            staged_paths(self.toolkit), {sfd.CONTRACT_FILE, "scripts/.sync-state.json"}
         )
+        self.assertTrue((self.toolkit / "alpha.out").is_file())
+        self.assertTrue((self.toolkit / "beta.out").is_file())
+        self.assertNotIn("alpha.out", staged_paths(self.toolkit))
+
+    @pytest.mark.allow_real_subprocess
+    def test_state_advances_only_on_content_change(self) -> None:
+        """A first successful sync writes state; an immediate re-run (same
+        content, same upstream touching-sha) leaves it byte-identical."""
+        sweep = self.write_fake_generators("once")
+        commit_file(
+            self.dotfiles,
+            sfd.CONTRACT_FILE,
+            self.DOTFILES_TEXT + "delta\n",
+        )
+        argv = ["--apply", "--quiet", "--dotfiles-path", str(self.dotfiles)]
+        self.assertEqual(
+            sfd.main(self.toolkit, argv=argv, do_exit=False,
+                     generator_sweep=sweep),
+            0,
+        )
+        first = sfd.state_path(self.toolkit).read_bytes()
+        self.assertEqual(
+            sfd.main(self.toolkit, argv=argv, do_exit=False,
+                     generator_sweep=sweep),
+            0,
+        )
+        self.assertEqual(sfd.state_path(self.toolkit).read_bytes(), first)
+
+    # -- report mode ----------------------------------------------------------
+
+    @pytest.mark.allow_real_subprocess
+    def test_report_mode_writes_nothing_and_skips_the_sweep(self) -> None:
+        """No --apply: summarize and stop — no file write, no state, and the
+        generators never run (a report must not mutate the tree)."""
+        commit_file(
+            self.dotfiles,
+            sfd.CONTRACT_FILE,
+            self.DOTFILES_TEXT + "pending upstream delta\n",
+        )
+        before = git(self.toolkit, "status", "--porcelain")
+        code = sfd.main(
+            self.toolkit,
+            argv=["--quiet", "--dotfiles-path", str(self.dotfiles)],
+            do_exit=False,
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(git(self.toolkit, "status", "--porcelain"), before)
+        self.assertFalse(sfd.state_path(self.toolkit).exists())
+        self.assertFalse((self.toolkit / sfd.CONTRACT_FILE).read_text(
+            encoding="utf-8"
+        ).endswith("pending upstream delta\n"))
+
+    # -- loud failure modes ----------------------------------------------------
+
+    @pytest.mark.allow_real_subprocess
+    def test_contract_missing_from_dotfiles_head_stops_clean(self) -> None:
+        (self.dotfiles / sfd.CONTRACT_FILE).unlink()
+        git(self.dotfiles, "add", "-A")
+        git(self.dotfiles, "commit", "-q", "-m", "delete contract")
+        before = git(self.toolkit, "status", "--porcelain")
+        code = sfd.main(
+            self.toolkit,
+            argv=["--apply", "--quiet", "--dotfiles-path", str(self.dotfiles)],
+            do_exit=False,
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(git(self.toolkit, "status", "--porcelain"), before)
+        self.assertFalse(sfd.state_path(self.toolkit).exists())
+
+    @pytest.mark.allow_real_subprocess
+    def test_zero_substitutions_with_differing_content_stops(self) -> None:
+        """An upstream reword that dropped the token could carry an
+        unadjusted path reference into the toolkit copy — stop for manual
+        review instead of copying it."""
+        dropped = self.DOTFILES_TEXT.replace("`claude/scripts/`", "the scripts tree")
+        commit_file(self.dotfiles, sfd.CONTRACT_FILE, dropped)
+        before = git(self.toolkit, "status", "--porcelain")
+        code = sfd.main(
+            self.toolkit,
+            argv=["--apply", "--quiet", "--dotfiles-path", str(self.dotfiles)],
+            do_exit=False,
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(git(self.toolkit, "status", "--porcelain"), before)
+        self.assertFalse(sfd.state_path(self.toolkit).exists())
+
+    @pytest.mark.allow_real_subprocess
+    def test_zero_substitutions_up_to_date_is_a_normal_noop(self) -> None:
+        # dotfiles went path-neutral AND the toolkit copy matches: the
+        # designed no-op, not a guard trip.
+        dropped = self.DOTFILES_TEXT.replace("`claude/scripts/`", "the scripts tree")
+        commit_file(self.dotfiles, sfd.CONTRACT_FILE, dropped)
+        commit_file(self.toolkit, sfd.CONTRACT_FILE, dropped)
+        before = git(self.toolkit, "status", "--porcelain")
+        code = sfd.main(
+            self.toolkit,
+            argv=["--apply", "--quiet", "--dotfiles-path", str(self.dotfiles)],
+            do_exit=False,
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(git(self.toolkit, "status", "--porcelain"), before)
+
+    @pytest.mark.allow_real_subprocess
+    def test_multiple_token_occurrences_stop_for_review(self) -> None:
+        doubled = self.DOTFILES_TEXT.replace(
+            "`claude/scripts/`", "`claude/scripts/` plus `claude/scripts/`", 1
+        )
+        commit_file(self.dotfiles, sfd.CONTRACT_FILE, doubled)
+        before = git(self.toolkit, "status", "--porcelain")
+        code = sfd.main(
+            self.toolkit,
+            argv=["--apply", "--quiet", "--dotfiles-path", str(self.dotfiles)],
+            do_exit=False,
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(git(self.toolkit, "status", "--porcelain"), before)
+
+    @pytest.mark.allow_real_subprocess
+    def test_bad_dotfiles_path_fails_loudly_not_with_a_traceback(self) -> None:
+        code = sfd.main(
+            self.toolkit,
+            argv=["--apply", "--quiet", "--dotfiles-path", "/nonexistent/repo"],
+            do_exit=False,
+        )
+        self.assertEqual(code, 1)
+
+    # -- generator failure -------------------------------------------------
+
+    @pytest.mark.allow_real_subprocess
+    def test_failing_generator_stops_before_state_and_staging(self) -> None:
+        (self.toolkit / "broken_gen.py").write_text(
+            "import sys\nsys.exit('boom')\n", encoding="utf-8"
+        )
+        git(self.toolkit, "add", "broken_gen.py")
+        git(self.toolkit, "commit", "-q", "-m", "add broken generator")
+        commit_file(
+            self.dotfiles,
+            sfd.CONTRACT_FILE,
+            self.DOTFILES_TEXT + "delta before a broken sweep\n",
+        )
+        code = sfd.main(
+            self.toolkit,
+            argv=[
+                "--apply",
+                "--quiet",
+                "--dotfiles-path",
+                str(self.dotfiles),
+            ],
+            do_exit=False,
+            generator_sweep=("broken_gen.py",),
+        )
+        self.assertEqual(code, 1)
+        # The contract file was written before the sweep ran — it stays in
+        # the working tree, unstaged (no automatic rollback). Nothing is
+        # staged, and state was not advanced.
+        self.assertEqual(staged_paths(self.toolkit), set())
+        self.assertIn(" M claude/CORE_INSTRUCTIONS.md", git(
+            self.toolkit, "status", "--porcelain"
+        ))
+        self.assertIn(
+            "delta before a broken sweep",
+            (self.toolkit / sfd.CONTRACT_FILE).read_text(encoding="utf-8"),
+        )
+        self.assertFalse(sfd.state_path(self.toolkit).exists())
+
+    # -- CLI flags ------------------------------------------------------------
+
+    @pytest.mark.allow_real_subprocess
+    def test_since_flag_is_rejected(self) -> None:
+        with self.assertRaises(SystemExit) as ctx:
+            sfd.main(self.toolkit, argv=["--since", "abc123"], do_exit=False)
+        self.assertEqual(ctx.exception.code, 2)
+
+    @pytest.mark.allow_real_subprocess
+    def test_bad_dotfiles_path_flag_shape(self) -> None:
+        # --dotfiles-path takes a value; a missing value is bad usage.
+        with self.assertRaises(SystemExit) as ctx:
+            sfd.main(self.toolkit, argv=["--dotfiles-path"], do_exit=False)
+        self.assertEqual(ctx.exception.code, 2)
 
 
 if __name__ == "__main__":
