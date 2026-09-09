@@ -1291,7 +1291,7 @@ the file existing in the repo; the description is the canonical
 | `/grill-me` | yes | yes | yes | yes | yes |
 | `/make-skill` | yes | yes | yes | yes | yes |
 | `/recap` | yes | yes | yes | yes | yes |
-| `/refresh-guidance` | yes | — | yes | — | yes |
+| `/refresh-guidance` | yes | yes | yes | yes | yes |
 | `/second-opinion` | yes | yes | yes | yes | yes |
 | `/skill-map` | yes | — | — | — | — |
 | `/spec` | yes | yes | yes | yes | yes |
@@ -1787,7 +1787,9 @@ named doc, not regenerating this file.
 
 | Doc | Status |
 | --- | --- |
+| `agy/skills/refresh-guidance/SKILL.md` | OK |
 | `claude/commands/refresh-guidance.md` | OK |
+| `copilot/skills/refresh-guidance/SKILL.md` | OK |
 | `opencode/skills/refresh-guidance/SKILL.md` | OK |
 
 ### `second_opinion.py`
