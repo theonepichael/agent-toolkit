@@ -41,9 +41,11 @@ Usage:
 Flags: --check, --stdout, --repo-root <path>, --quiet/-q, --verbose/-v.
 Env vars: none.
 Files read: <repo>/templates/{dashboard,recap,grill_me,backlog_item,make_skill,spec,standup,to_tickets,swarm}.md.tmpl.
-Files written: the 50 (skill, harness) copies named in OUTPUT_PATHS —
-8 skills x 6 harnesses (48), plus swarm x {claude, copilot} (2), per
-`SKILL_HARNESSES` (skipped by --check and --stdout).
+Files written: the 58 (skill, harness) copies named in OUTPUT_PATHS —
+8 skills x 6 harnesses (48), plus swarm x {claude, copilot} (2), plus a
+second pi/prompts/*.md output for each of the 8 skills under the synthetic
+"pi-prompt" harness (8), per `SKILL_HARNESSES` (skipped by --check and
+--stdout).
 Exit codes: 0 success; 1 --check found stale output; 2 bad usage.
 
 Requires Python 3.12+.
@@ -79,15 +81,22 @@ HARNESSES = ("claude", "copilot", "opencode", "agy", "pi", "codex")
 # "second copy is a second thing to drift" problem swarm.md's own closing
 # section warns against.
 _ACTIVE_TIER = HARNESSES
+# The 8 gen_skills.py-managed skills each get a second pi output --
+# pi/prompts/{name}.md, the "pi-prompt" synthetic harness (see
+# TEMPLATE_PATH_OVERRIDES) -- alongside their pi/skills/{name}/SKILL.md.
+# swarm doesn't: pi already owns the swarm orchestration surface natively
+# (pi/prompts/backlog-item.md's --swarm[=N] section), so a swarm-specific
+# pi/prompts output would be exactly the "second copy is a second thing to
+# drift" problem this fix exists to close, not extend.
 SKILL_HARNESSES: dict[str, tuple[str, ...]] = {
-    "dashboard": HARNESSES,
-    "recap": HARNESSES,
-    "grill-me": HARNESSES,
-    "backlog-item": HARNESSES,
-    "make-skill": HARNESSES,
-    "spec": _ACTIVE_TIER,
-    "standup": _ACTIVE_TIER,
-    "to-tickets": _ACTIVE_TIER,
+    "dashboard": HARNESSES + ("pi-prompt",),
+    "recap": HARNESSES + ("pi-prompt",),
+    "grill-me": HARNESSES + ("pi-prompt",),
+    "backlog-item": HARNESSES + ("pi-prompt",),
+    "make-skill": HARNESSES + ("pi-prompt",),
+    "spec": _ACTIVE_TIER + ("pi-prompt",),
+    "standup": _ACTIVE_TIER + ("pi-prompt",),
+    "to-tickets": _ACTIVE_TIER + ("pi-prompt",),
     "swarm": ("claude", "copilot"),
 }
 
@@ -102,6 +111,35 @@ TEMPLATE_PATHS: dict[str, str] = {
     "to-tickets": "templates/to_tickets.md.tmpl",
     "swarm": "templates/swarm.md.tmpl",
 }
+
+# Per-(skill, harness) template overrides. Pi is the only harness with a
+# second output surface per skill: `pi/prompts/{name}.md` binds pi's literal
+# `/name` slash command (prompt-template mechanism), separate from
+# `pi/skills/{name}/SKILL.md` (`/skill:name` or semantic match). 7 of the 8
+# skills' prompts/ bodies integrate pi-native extension tools (`dev_status`,
+# `grill`, `standup`, `question`, `delegate`, `swarm_resolve_blocked`) that
+# the generic bash-oriented template never references, so those 7 render
+# from a second, dedicated template file under the synthetic harness key
+# "pi-prompt" -- not a real member of HARNESSES, never iterated by anything
+# outside this script. `make-skill` is deliberately absent here: it has no
+# native-tool content, so its "pi-prompt" output reuses TEMPLATE_PATHS
+# ["make-skill"] unchanged (same pattern gen_second_opinion.py already uses
+# for second-opinion: one shared body, two frontmatter variants).
+TEMPLATE_PATH_OVERRIDES: dict[tuple[str, str], str] = {
+    ("dashboard", "pi-prompt"): "templates/dashboard_pi_native.md.tmpl",
+    ("recap", "pi-prompt"): "templates/recap_pi_native.md.tmpl",
+    ("grill-me", "pi-prompt"): "templates/grill_me_pi_native.md.tmpl",
+    ("backlog-item", "pi-prompt"): "templates/backlog_item_pi_native.md.tmpl",
+    ("spec", "pi-prompt"): "templates/spec_pi_native.md.tmpl",
+    ("standup", "pi-prompt"): "templates/standup_pi_native.md.tmpl",
+    ("to-tickets", "pi-prompt"): "templates/to_tickets_pi_native.md.tmpl",
+}
+
+
+def template_path_for(skill: str, harness: str) -> str:
+    """Return the template path this (skill, harness) pair renders from."""
+    return TEMPLATE_PATH_OVERRIDES.get((skill, harness), TEMPLATE_PATHS[skill])
+
 
 OUTPUT_PATHS: dict[tuple[str, str], str] = {
     ("dashboard", "claude"): "claude/commands/dashboard.md",
@@ -154,26 +192,36 @@ OUTPUT_PATHS: dict[tuple[str, str], str] = {
     ("to-tickets", "codex"): "codex/skills/to-tickets/SKILL.md",
     ("swarm", "claude"): "claude/commands/swarm.md",
     ("swarm", "copilot"): "copilot/skills/swarm/SKILL.md",
+    ("dashboard", "pi-prompt"): "pi/prompts/dashboard.md",
+    ("recap", "pi-prompt"): "pi/prompts/recap.md",
+    ("grill-me", "pi-prompt"): "pi/prompts/grill-me.md",
+    ("backlog-item", "pi-prompt"): "pi/prompts/backlog-item.md",
+    ("make-skill", "pi-prompt"): "pi/prompts/make-skill.md",
+    ("spec", "pi-prompt"): "pi/prompts/spec.md",
+    ("standup", "pi-prompt"): "pi/prompts/standup.md",
+    ("to-tickets", "pi-prompt"): "pi/prompts/to-tickets.md",
 }
 
 # A line that is nothing but one `{{TOKEN}}` -- see render_body.
 WHOLE_LINE_PLACEHOLDER = re.compile(r"\{\{[A-Z_]+\}\}")
 
 
-def do_not_edit_marker(skill: str) -> str:
-    """Return this skill's marker, naming its own template file by name.
+def do_not_edit_marker(skill: str, harness: str) -> str:
+    """Return this (skill, harness) pair's marker, naming its real template.
 
     Deliberately not a literal import of `gen_second_opinion.DO_NOT_EDIT_MARKER`
     (that constant names `gen_second_opinion.py` and a single template, both
-    wrong here): this script drives 4 templates, and a developer editing the
-    wrong one of the 4 is a real failure mode a generic marker wouldn't
-    prevent, so each marker names its own `.tmpl` path specifically.
+    wrong here): this script drives many templates, and a developer editing
+    the wrong one is a real failure mode a generic marker wouldn't prevent,
+    so each marker names its own `.tmpl` path specifically -- via
+    `template_path_for`, since a pi-prompt output can name a different
+    template than its skill's other harnesses.
     """
     return (
         f"<!-- generated by agent-scripts/gen_skills.py — do not edit; "
-        f"edit {TEMPLATE_PATHS[skill]} for shared wording or gen_skills.py's "
-        "CAPABILITY_TABLE / *_PARAMS tables for harness-specific wording, "
-        "then regenerate -->"
+        f"edit {template_path_for(skill, harness)} for shared wording or "
+        "gen_skills.py's CAPABILITY_TABLE / *_PARAMS tables for "
+        "harness-specific wording, then regenerate -->"
     )
 
 
@@ -309,6 +357,23 @@ CAPABILITY_TABLE: dict[str, dict[str, str | bool]] = {
         "probe_command": "pi -p",
         "commit_scope": "pi",
     },
+    # Synthetic harness for pi/prompts/{name}.md's second output surface --
+    # not a real member of HARNESSES (see TEMPLATE_PATH_OVERRIDES above).
+    # Same facts as "pi": it's still pi under the hood, just a different
+    # invocation surface, so make-skill's shared-template rendering (the
+    # only "pi-prompt" consumer that actually substitutes these tokens)
+    # gets identical values to pi/skills/make-skill/SKILL.md's.
+    "pi-prompt": {
+        "structured_choice": "the `question` tool",
+        "instructions_ref": "the shared instructions file's",
+        "instructions_ref_bare": "the shared instructions file",
+        "has_session_start_hook": False,
+        "skill_src_pattern": "pi/skills/<name>/SKILL.md",
+        "skill_dest_pattern": "~/.pi/agent/skills/<name>/SKILL.md",
+        "skill_ref_dir": "references",
+        "probe_command": "pi -p",
+        "commit_scope": "pi",
+    },
 }
 
 
@@ -363,7 +428,7 @@ def render_one(skill: str, harness: str, template_text: str, params: dict) -> st
     values = {**capability_tokens(harness), **params}
     frontmatter = values.pop("FRONTMATTER")
     body = render_body(template_text, values)
-    return f"{frontmatter}\n{do_not_edit_marker(skill)}\n\n{body}"
+    return f"{frontmatter}\n{do_not_edit_marker(skill, harness)}\n\n{body}"
 
 
 def render_all(
@@ -372,8 +437,10 @@ def render_all(
     """Render every (skill, harness) pair, keyed by its repo-relative output path."""
     rendered: dict[str, str] = {}
     for skill in SKILLS:
-        template_text = (repo_root / TEMPLATE_PATHS[skill]).read_text(encoding="utf-8")
         for harness in SKILL_HARNESSES[skill]:
+            template_text = (repo_root / template_path_for(skill, harness)).read_text(
+                encoding="utf-8"
+            )
             relpath = OUTPUT_PATHS[(skill, harness)]
             params = skill_params[skill][harness]
             rendered[relpath] = render_one(skill, harness, template_text, params)
@@ -415,6 +482,24 @@ def main() -> None:
 
     repo_root = (args.repo_root or default_repo_root()).resolve()
     for skill, relpath in TEMPLATE_PATHS.items():
+        if not (repo_root / relpath).is_file():
+            print(f"[gen_skills] no {relpath} under {repo_root}", file=sys.stderr)
+            sys.exit(2)
+    for (override_skill, override_harness), relpath in TEMPLATE_PATH_OVERRIDES.items():
+        if override_skill not in SKILLS:
+            print(
+                f"[gen_skills] TEMPLATE_PATH_OVERRIDES key names unknown skill "
+                f"{override_skill!r}",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        if override_harness != "pi-prompt":
+            print(
+                f"[gen_skills] TEMPLATE_PATH_OVERRIDES key names unknown harness "
+                f'{override_harness!r} (only "pi-prompt" overrides exist today)',
+                file=sys.stderr,
+            )
+            sys.exit(2)
         if not (repo_root / relpath).is_file():
             print(f"[gen_skills] no {relpath} under {repo_root}", file=sys.stderr)
             sys.exit(2)

@@ -405,7 +405,7 @@ class EndToEndTests(unittest.TestCase):
 
     def test_all_50_copies_are_up_to_date(self) -> None:
         rendered = gs.render_all(REPO_ROOT, SKILL_PARAMS)
-        self.assertEqual(len(rendered), 50)
+        self.assertEqual(len(rendered), 58)
         stale = []
         for relpath, text in rendered.items():
             on_disk = (REPO_ROOT / relpath).read_text(encoding="utf-8")

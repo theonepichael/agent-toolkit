@@ -133,6 +133,12 @@ description: "surfaces backlog and pending items as a dashboard. use when the us
 ---""",
         "DASHBOARD_RENDER_DISPLAY": _DASHBOARD_RENDER_DISPLAY_QUIET,
     },
+    "pi-prompt": {
+        "FRONTMATTER": """\
+---
+description: "surfaces backlog and pending items as a dashboard. use when the user says 'dashboard', 'what's pending', 'show backlog', 'where we at', 'what am i working on', 'open items', or any variant of checking current work status."
+---""",
+    },
 }
 
 RECAP_PARAMS: dict[str, dict[str, str]] = {
@@ -175,6 +181,12 @@ description: "prints a friendly prose recap of recent activity. use when the use
         "FRONTMATTER": """\
 ---
 name: recap
+description: "prints a friendly prose recap of recent activity. use when the user says 'recap', 'what did we do', 'catch me up', 'summary of recent work', or any variant of requesting a recap."
+---""",
+    },
+    "pi-prompt": {
+        "FRONTMATTER": """\
+---
 description: "prints a friendly prose recap of recent activity. use when the user says 'recap', 'what did we do', 'catch me up', 'summary of recent work', or any variant of requesting a recap."
 ---""",
     },
@@ -561,6 +573,13 @@ If this session was started with `--backlog-slug` (the batch-backlog-items
    `plan_path` from spec's Context field as the decision record behind it —
    spec is final, this plan is the precursor, the same relationship default
    mode's escalation case has (`spec.md` step 3).""",
+    },
+    "pi-prompt": {
+        "FRONTMATTER": """\
+---
+description: "Interview the user relentlessly about a plan or design until reaching shared understanding, resolving each branch of the decision tree. Use when user wants to stress-test a plan, get grilled on their design, or mentions 'grill me'."
+argument-hint: [--verify | --auto] [topic or plan to grill on]
+---""",
     },
 }
 
@@ -1754,6 +1773,13 @@ of one item at a time. This generated copy only points at
 `pi/prompts/backlog-item.md` (the file `/backlog-item` actually runs in Pi) —
 read that file for the full `--swarm[=N] mode` procedure.""",
     },
+    "pi-prompt": {
+        "FRONTMATTER": """\
+---
+description: "Runs a dev_status.py backlog item end-to-end: resolve, worktree, spec (escalating to grill-me only for a genuinely open design branch), second-opinion critique, execution handoff, TDD implement, verify, commit/merge/push gates, review+approve. Use when the user says 'work on backlog item 4', 'pick up <slug>', 'let's do the next backlog item', or otherwise names a specific item to work end-to-end. Add --auto (optionally with a slug) for an unattended single-item or full-READY-batch run — commit and merge/push gates still stop live, per item. Add --swarm[=N] to fan the full-READY-batch run out across N (default 3) concurrent recursive pi workers via herdr, instead of running the queue one item at a time -- requires HERDR_ENV=1."
+argument-hint: [--auto] [--swarm[=N] [--prefix <prefix>]] [slug|N]
+---""",
+    },
 }
 
 MAKE_SKILL_PARAMS: dict[str, dict[str, str]] = {
@@ -1958,7 +1984,55 @@ Ask (or infer and confirm): model-invoked, user-invoked, or both?
             "it from the step that needs it. Reference files need their own "
             "symlink lines (step 5)."
         ),
-        "STEERING_WIDGET_NOTE": "",
+        "STEERING_WIDGET_NOTE": (
+            "- Any step that needs a multi-choice decision from the user "
+            "should phrase it as a plain conversational question: state the "
+            "question, give a recommendation, wait for a plain-text reply. "
+            "These skills are also read by agy, which at present exposes no "
+            "structured-choice widget, so a multi-choice ask must not depend "
+            "on a widget only Pi has — this repo's `question-tool.ts` "
+            "extension is Pi-only; plain text is the portable form."
+        ),
+        "VERIFY_PROBE": """\
+Probe with `pi -p '<a real trigger phrase>'` for model-invoke, or
+`pi -p '/skill:<name> <args>'` for a direct user-typed invocation (Pi
+registers every discovered skill as a `/skill:<name>` command —
+`docs/skills.md`'s "Skill Commands"). Check the output (and reasoning, if
+visible) repeats your leading words back. If the agent skips a step, that
+step needs splitting or stronger steering — not more prose.""",
+        "PLUMBING_STEPS": f"""\
+1. File lives at {edit_root("pi/skills/<name>/SKILL.md")} (same for any reference files, under {edit_root("pi/skills/<name>/references/")}). `pi/skills` is already wired into `links.toml` as one `dir = true` row, symlinked straight to `~/.pi/agent/skills/` — a new file under it needs no new `links.toml` row of its own, just the file.
+2. If this skill should also be shared with agy (a skill agy itself should offer, not just Pi), separately author it at `agy/skills/<name>/SKILL.md` too and follow agy's own plumbing steps — the two are independent files, not a shared one.
+3. Conventional commit, scope `pi` (or `agy`, if authored there instead): `feat` for a new skill, `refactor`/`docs` for revisions.""",
+    },
+    "pi-prompt": {
+        "FRONTMATTER": """\
+---
+description: "Author or revise a skill Pi can use, using a trigger/structure/steering/pruning rubric. Use when the user wants to create a new skill, improve or simplify an existing one, or complains a skill isn't triggering or isn't being followed."
+---""",
+        "TRIGGER_SECTION": """\
+Ask (or infer and confirm): model-invoked, user-invoked, or both?
+
+- **Model-invoked** costs context in every session and can silently not fire; it buys hands-off convenience. **User-invoked** is reliable and cheap but the user must remember it exists.
+- The frontmatter `description` IS the model-invoke surface. Write it as: what the skill does + "use when" + the literal phrases the user actually says (steal them from real transcripts). For user-invoked-only skills, keep the description one terse line.""",
+        "STRUCTURE_REF_NOTE": (
+            "- Supporting material (schemas, long examples, lookup tables) does "
+            "NOT go in the body. Pi implements the Agent Skills standard, whose "
+            "documented subdirectory for this is `references/` (not `ref/` — "
+            "this repo's claude/copilot convention). Put it in "
+            f"{edit_root('pi/skills/<skill>/references/<topic>.md')} and point to "
+            "it from the step that needs it. Reference files need their own "
+            "symlink lines (step 5)."
+        ),
+        "STEERING_WIDGET_NOTE": (
+            "- Any step that needs a multi-choice decision from the user "
+            "should phrase it as a plain conversational question: state the "
+            "question, give a recommendation, wait for a plain-text reply. "
+            "These skills are also read by agy, which at present exposes no "
+            "structured-choice widget, so a multi-choice ask must not depend "
+            "on a widget only Pi has — this repo's `question-tool.ts` "
+            "extension is Pi-only; plain text is the portable form."
+        ),
         "VERIFY_PROBE": """\
 Probe with `pi -p '<a real trigger phrase>'` for model-invoke, or
 `pi -p '/skill:<name> <args>'` for a direct user-typed invocation (Pi
@@ -2141,6 +2215,13 @@ description: "Turn a vague coding task into a structured specification (objectiv
         "PLUMBING_STEPS": f"""\
 1. File lives at {edit_root("pi/skills/spec/SKILL.md")}. `pi/skills` is already wired into `links.toml` as one `dir = true` row, symlinked straight to `~/.pi/agent/skills/` — a new file under it needs no new `links.toml` row of its own, just the file.
 2. Conventional commit, scope `pi`: `feat`.""",
+    },
+    "pi-prompt": {
+        "FRONTMATTER": """\
+---
+description: "Turn a vague coding task into a structured specification (objective, context, inputs, output format, constraints, evaluation criteria, edge cases, verification steps) before generation begins. Use when the user wants to formalize a task, write a spec, or invokes /spec."
+argument-hint: [task description]
+---""",
     },
     "copilot": {
         "FRONTMATTER": """\
@@ -2437,6 +2518,12 @@ email) — not a free-text string.""",
             dotfiles_relpath="claude/scripts/standup_adapters.py",
         ),
     },
+    "pi-prompt": {
+        "FRONTMATTER": """\
+---
+description: "Gather assigned work, chat signal, calendar events, pending replies, git commits, and backlog activity into a daily standup draft, saved to a dated file. Use when the user says 'standup', 'prep for standup', or wants their daily status pulled together."
+---""",
+    },
     "copilot": {
         "FRONTMATTER": """\
 ---
@@ -2709,6 +2796,13 @@ description: "Decompose a plan or spec into multiple linked dev_status.py backlo
             "`to_tickets` tool takes the path as a discrete argument, so no "
             "shell parses it."
         ),
+    },
+    "pi-prompt": {
+        "FRONTMATTER": """\
+---
+description: "Decompose a plan or spec into multiple linked dev_status.py backlog items — vertical-slice/tracer-bullet tickets joined by blocked_by edges — after confirming the breakdown with the user. Use when the user wants a plan broken into tickets, wants a spec turned into backlog items, or invokes /to-tickets."
+argument-hint: [plan or spec file path]
+---""",
     },
     "copilot": {
         "FRONTMATTER": """\

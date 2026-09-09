@@ -590,6 +590,7 @@ class RealRepoSmokeTestCase(unittest.TestCase):
         ("README.md", "backlog.json"),
         ("STYLE.md", ".github/SECRET_CHECK.md"),
         ("pi/AGENTS.md", "docs/skills.md"),
+        ("pi/AGENTS.md", "docs/prompt-templates.md"),
         ("pi/AGENTS.md", "pi/node_modules"),
         ("pi/AGENTS.md", "swarm-picker-copilot.ts"),
         ("README.md", "pi/node_modules"),
