@@ -640,12 +640,16 @@ class SwarmToolContext {
       await this.herdr(buildWorkerCloseArgv(worker), signal);
     } catch {}
   }
-  async teardownAndHarvestWorker(state, worker, signal) {
+  async harvestWorkerIO(state, worker, signal) {
     const offers = readCaptureOffers(state.runId, worker.slug);
     await this.closeWorker(worker, signal);
     try {
       rmSync(capturePath(state.runId, worker.slug), { force: true });
     } catch {}
+    return offers;
+  }
+  async teardownAndHarvestWorker(state, worker, signal) {
+    const offers = await this.harvestWorkerIO(state, worker, signal);
     state.workers = state.workers.filter((w) => w.agent !== worker.agent);
     this.persist(state);
     return offers;
@@ -676,12 +680,11 @@ class SwarmToolContext {
       rt.pendingEvents = rt.pendingEvents.filter((e) => !staleAgents.has(e.agent));
       this.wakeWaiters(rt);
     }
-    const lines = [];
-    for (const w of stale) {
+    const lines = await Promise.all(stale.map(async (w) => {
       const status = entries.find((e) => e.id === w.agent)?.status;
       const offers = await this.teardownAndHarvestWorker(state, w);
-      lines.push(`${w.agent} (${w.slug}): stale worker record cleared -- herdr reports its agent ${status ?? "gone"} (finished or dead), but its finish was never reported through ` + "swarm_poll; outcome inferred, not observed. Verify the item's state before " + `treating it as complete.${renderCaptureOffers(offers)}`);
-    }
+      return `${w.agent} (${w.slug}): stale worker record cleared -- herdr reports its agent ${status ?? "gone"} (finished or dead), but its finish was never reported through ` + "swarm_poll; outcome inferred, not observed. Verify the item's state before " + `treating it as complete.${renderCaptureOffers(offers)}`;
+    }));
     this.persist(state);
     return lines;
   }
@@ -715,7 +718,7 @@ class SwarmToolContext {
 ${capture}` } };
   }
   async spawnInto(paneId, tabId, agentId, slug, paths, model, pluginDir) {
-    const sessionId = randomUUID();
+    let sessionId = randomUUID();
     const startResult = await this.herdr(buildAgentStartArgv(agentId, paneId, model, {
       kind: "copilot",
       sessionId,
@@ -729,7 +732,11 @@ ${capture}` } };
       const getResult = await this.herdr(buildAgentGetArgv(agentId));
       if (getResult.code === 0) {
         const sessionVal = parseAgentSession(getResult.stdout);
-        if (sessionVal && sessionVal !== sessionId) {}
+        if (sessionVal && sessionVal !== sessionId) {
+          process.stderr.write(`[swarm] ${agentId}: requested session-id ${sessionId} but herdr agent get ` + `reports ${sessionVal} -- using the confirmed value for crash recovery
+`);
+          sessionId = sessionVal;
+        }
       }
     } catch {}
     const promptResult = await this.herdr(buildAgentPromptArgv(agentId, `/backlog-item --auto ${slug}`));
@@ -795,7 +802,7 @@ ${capture}` } };
     this.persist(state);
     return true;
   }
-  async getOrInitState(runId, concurrency, prefix) {
+  async getOrInitState(runId, concurrency, prefix, pluginDir) {
     const cached = this.activeRuns.get(runId);
     if (cached)
       return cached;
@@ -806,7 +813,8 @@ ${capture}` } };
         concurrency,
         nextCounter: 0,
         workers: [],
-        ...prefix !== undefined ? { prefix } : {}
+        ...prefix !== undefined ? { prefix } : {},
+        ...pluginDir !== undefined ? { pluginDir } : {}
       };
       this.activeRuns.set(runId, fresh);
       return fresh;
@@ -816,11 +824,13 @@ ${capture}` } };
     const liveIds = (entries ?? []).map((e) => e.id);
     if (entries !== null) {
       const missing = loaded.workers.filter((w) => !liveIds.includes(w.agent));
-      for (const w of missing) {
-        const recovered = await this.attemptCrashRecovery(loaded, w);
-        if (recovered) {
-          liveIds.push(w.agent);
-        }
+      const recoveries = await Promise.all(missing.map(async (w) => ({
+        agent: w.agent,
+        recovered: await this.attemptCrashRecovery(loaded, w, loaded.pluginDir)
+      })));
+      for (const { agent, recovered } of recoveries) {
+        if (recovered)
+          liveIds.push(agent);
       }
     }
     const reconciled = entries === null ? loaded : reconcileState(loaded, liveIds).state;
@@ -883,7 +893,7 @@ ${capture}` } };
         }
         if (verdict.kind === "error") {
           const state = this.activeRuns.get(rt.runId);
-          if (state && await this.attemptCrashRecovery(state, worker)) {
+          if (state && await this.attemptCrashRecovery(state, worker, state.pluginDir)) {
             rt.inFlight.delete(worker.agent);
             this.armWait(rt, worker);
             return;
@@ -929,9 +939,11 @@ ${capture}` } };
       throw new Error("swarm_spawn needs either `items` or `prefix`. Selecting from the whole READY queue " + "unscoped would pull unrelated projects into this run.");
     }
     return this.withSpawnLock(params.runId, async () => {
-      const state = await this.getOrInitState(params.runId, params.concurrency ?? DEFAULT_CONCURRENCY, params.prefix);
+      const state = await this.getOrInitState(params.runId, params.concurrency ?? DEFAULT_CONCURRENCY, params.prefix, params.pluginDir);
       if (params.concurrency !== undefined)
         state.concurrency = params.concurrency;
+      if (params.pluginDir !== undefined)
+        state.pluginDir = params.pluginDir;
       const pruneLines = await this.pruneStaleWorkers(state);
       if (!canSpawnNew(state)) {
         return {
@@ -958,17 +970,15 @@ ${capture}` } };
       let candidates;
       if (params.items) {
         const explicitSlugs = params.items;
-        candidates = explicitSlugs.map((id) => ({ id, worker_safe: true, related_files: [] }));
-        try {
-          const readyResult = await this.exec("python3", buildReadyArgv(params.prefix).slice(1), {
-            timeout: PROBE_TIMEOUT_MS
-          });
-          if (readyResult.code === 0) {
-            const parsed = parseReadyItems(readyResult.stdout);
-            const byId = new Map(parsed.map((i) => [i.id, i]));
-            candidates = explicitSlugs.map((id) => byId.get(id) ?? { id, worker_safe: true, related_files: [] });
-          }
-        } catch {}
+        const readyResult = await this.exec("python3", buildReadyArgv(params.prefix).slice(1), {
+          timeout: PROBE_TIMEOUT_MS
+        });
+        if (readyResult.code !== 0) {
+          throw new Error(`dev_status.py ready failed: ${readyResult.stderr || readyResult.stdout}`);
+        }
+        const parsed = parseReadyItems(readyResult.stdout);
+        const byId = new Map(parsed.map((i) => [i.id, i]));
+        candidates = explicitSlugs.map((id) => byId.get(id) ?? { id });
       } else {
         const readyResult = await this.exec("python3", buildReadyArgv(params.prefix).slice(1), {
           timeout: PROBE_TIMEOUT_MS
@@ -1157,11 +1167,12 @@ ${goneNoteLines.join(`
       };
     }
     const rawEvents = rt.pendingEvents.splice(0);
-    const events = [];
-    for (const event of rawEvents) {
-      const worker = state.workers.find((w) => w.agent === event.agent);
+    const workersByAgent = new Map(state.workers.map((w) => [w.agent, w]));
+    const toRemove = new Set;
+    const processed = await Promise.all(rawEvents.map(async (event) => {
+      const worker = workersByAgent.get(event.agent);
       if (!worker)
-        continue;
+        return null;
       if (event.kind === "blocked") {
         let getResult;
         try {
@@ -1173,9 +1184,9 @@ ${goneNoteLines.join(`
         if (resyncVerdict.action === "drop") {
           event.kind = "finished";
           event.detail = "resync: agent gone from herdr while resolving blocked prompt -- " + "worker has since finished or exited; outcome inferred, not observed. " + "Verify the item's state before treating it as complete.";
-          event.captures = await this.teardownAndHarvestWorker(state, worker, signal);
-          events.push(event);
-          continue;
+          event.captures = await this.harvestWorkerIO(state, worker, signal);
+          toRemove.add(worker.agent);
+          return event;
         }
         let readResult;
         try {
@@ -1201,9 +1212,14 @@ ${goneNoteLines.join(`
         worker.awaitingRelaySinceMs = parkedAt;
         worker.lifecycle = "awaiting_relay";
       } else if (event.kind === "still_working") {} else {
-        event.captures = await this.teardownAndHarvestWorker(state, worker, signal);
+        event.captures = await this.harvestWorkerIO(state, worker, signal);
+        toRemove.add(worker.agent);
       }
-      events.push(event);
+      return event;
+    }));
+    const events = processed.filter((e) => e !== null);
+    if (toRemove.size > 0) {
+      state.workers = state.workers.filter((w) => !toRemove.has(w.agent));
     }
     this.persist(state);
     await Promise.all(events.filter((e) => e.kind === "finished").map(async (event) => {

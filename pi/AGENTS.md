@@ -59,7 +59,18 @@ swarm toolset down with them.
 every session — but a check you have to notice is a worse fix than not
 creating the state at all.
 
-## This is the only TypeScript tree in the repo
+## This is the only TypeScript tree with pi's own toolchain
+
+The one exception is `copilot/extensions/swarm/src/*.ts`: a vendored,
+kind-parameterized fork of `pi/extensions/swarm-tool.ts` and its
+`pi/extensions/swarm-lib/` helpers, built by `scripts/build-copilot-swarm.sh`
+(`bun build` straight to plain JS) rather than loaded live the way pi loads
+its own extensions. Copilot CLI extensions must be `.mjs`/`.cjs`, not TypeScript, so
+pi's live-TS-loading approach does not apply there — this is a second,
+independent toolchain, not covered by the four stages below. It is a fork,
+not a shared import: nothing keeps the two copies in sync automatically
+(`pi/test/copilot-swarm.test.ts` pins `PROJECT_PREFIXES` parity between them
+as one guard against drift, but that is a spot-check, not a general one).
 
 `pi/package.json` drives four stages, all run by
 `test/test_pi_ts_checks.py` via `bun run <stage>`:

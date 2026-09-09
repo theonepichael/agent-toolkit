@@ -409,7 +409,15 @@ export class SwarmToolContext {
     }
   }
 
-  public async teardownAndHarvestWorker(
+  /**
+   * The I/O half of tearing a worker down: read its queued capture offers,
+   * close it in herdr, delete its capture file. Does NOT touch
+   * state.workers or persist -- callers that process several workers at
+   * once (swarmPoll's event loop) run this in parallel across workers, then
+   * remove them from state.workers in one batch afterward, since concurrent
+   * per-worker filter-and-reassign calls on the same array would race.
+   */
+  private async harvestWorkerIO(
     state: SwarmState,
     worker: WorkerRecord,
     signal?: AbortSignal,
@@ -421,6 +429,15 @@ export class SwarmToolContext {
     } catch {
       // Best effort
     }
+    return offers;
+  }
+
+  public async teardownAndHarvestWorker(
+    state: SwarmState,
+    worker: WorkerRecord,
+    signal?: AbortSignal,
+  ): Promise<CaptureOffer[]> {
+    const offers = await this.harvestWorkerIO(state, worker, signal);
     state.workers = state.workers.filter((w) => w.agent !== worker.agent);
     this.persist(state);
     return offers;
@@ -450,18 +467,24 @@ export class SwarmToolContext {
       this.wakeWaiters(rt);
     }
 
-    const lines: string[] = [];
-    for (const w of stale) {
-      const status = entries.find((e) => e.id === w.agent)?.status;
-      const offers = await this.teardownAndHarvestWorker(state, w);
-      lines.push(
-        `${w.agent} (${w.slug}): stale worker record cleared -- herdr reports its agent ${
-          status ?? "gone"
-        } (finished or dead), but its finish was never reported through ` +
+    // Parallel, safely: state.workers already had every stale agent removed
+    // in one batch above, so teardownAndHarvestWorker's own per-call
+    // `state.workers = state.workers.filter(...)` is a no-op re-filter of an
+    // already-absent agent no matter how these calls interleave -- there is
+    // no shared array left to race on.
+    const lines = await Promise.all(
+      stale.map(async (w) => {
+        const status = entries.find((e) => e.id === w.agent)?.status;
+        const offers = await this.teardownAndHarvestWorker(state, w);
+        return (
+          `${w.agent} (${w.slug}): stale worker record cleared -- herdr reports its agent ${
+            status ?? "gone"
+          } (finished or dead), but its finish was never reported through ` +
           "swarm_poll; outcome inferred, not observed. Verify the item's state before " +
-          `treating it as complete.${renderCaptureOffers(offers)}`,
-      );
-    }
+          `treating it as complete.${renderCaptureOffers(offers)}`
+        );
+      }),
+    );
     this.persist(state);
     return lines;
   }
@@ -521,7 +544,7 @@ export class SwarmToolContext {
     model?: string,
     pluginDir?: string,
   ): Promise<SpawnOutcome> {
-    const sessionId = randomUUID();
+    let sessionId: string = randomUUID();
     const startResult = await this.herdr(
       buildAgentStartArgv(agentId, paneId, model, {
         kind: "copilot",
@@ -539,13 +562,21 @@ export class SwarmToolContext {
       );
     }
 
-    // Cross-check sessionId against herdr agent get
+    // Cross-check the requested sessionId against what herdr actually
+    // reports. attemptCrashRecovery later resumes via --resume=<the value
+    // stored here>, so if Copilot silently picked a different session id
+    // than the one we requested, the confirmed value -- not our request --
+    // is the only one that can ever be resumed successfully.
     try {
       const getResult = await this.herdr(buildAgentGetArgv(agentId));
       if (getResult.code === 0) {
         const sessionVal = parseAgentSession(getResult.stdout);
         if (sessionVal && sessionVal !== sessionId) {
-          // Warning/mismatch logged, but keep sessionId
+          process.stderr.write(
+            `[swarm] ${agentId}: requested session-id ${sessionId} but herdr agent get ` +
+              `reports ${sessionVal} -- using the confirmed value for crash recovery\n`,
+          );
+          sessionId = sessionVal;
         }
       }
     } catch {
@@ -656,6 +687,7 @@ export class SwarmToolContext {
     runId: string,
     concurrency: number,
     prefix?: string,
+    pluginDir?: string,
   ): Promise<SwarmState> {
     const cached = this.activeRuns.get(runId);
     if (cached) return cached;
@@ -668,6 +700,7 @@ export class SwarmToolContext {
         nextCounter: 0,
         workers: [],
         ...(prefix !== undefined ? { prefix } : {}),
+        ...(pluginDir !== undefined ? { pluginDir } : {}),
       };
       this.activeRuns.set(runId, fresh);
       return fresh;
@@ -678,13 +711,24 @@ export class SwarmToolContext {
     const liveIds = (entries ?? []).map((e) => e.id);
 
     if (entries !== null) {
-      // Reconcile and check for crash recovery on missing workers
+      // Reconcile and check for crash recovery on missing workers. The
+      // run's own pluginDir travels with the persisted state -- a caller
+      // supplies it once at spawn time, and recovery (which may happen long
+      // after, or after a full process restart) must keep using that same
+      // value rather than falling back to copilotPluginDir()'s guessed default.
+      // Parallel: each call only ever mutates its own WorkerRecord's fields
+      // (never a shared array), so concurrent recovery of several
+      // simultaneously-crashed workers is safe -- and worth it, since a
+      // machine restart is exactly the case where more than one crashes at once.
       const missing = loaded.workers.filter((w) => !liveIds.includes(w.agent));
-      for (const w of missing) {
-        const recovered = await this.attemptCrashRecovery(loaded, w);
-        if (recovered) {
-          liveIds.push(w.agent);
-        }
+      const recoveries = await Promise.all(
+        missing.map(async (w) => ({
+          agent: w.agent,
+          recovered: await this.attemptCrashRecovery(loaded, w, loaded.pluginDir),
+        })),
+      );
+      for (const { agent, recovered } of recoveries) {
+        if (recovered) liveIds.push(agent);
       }
     }
 
@@ -763,7 +807,7 @@ export class SwarmToolContext {
         // Gone detection on mid-poll probe
         if (verdict.kind === "error") {
           const state = this.activeRuns.get(rt.runId);
-          if (state && (await this.attemptCrashRecovery(state, worker))) {
+          if (state && (await this.attemptCrashRecovery(state, worker, state.pluginDir))) {
             rt.inFlight.delete(worker.agent);
             this.armWait(rt, worker);
             return;
@@ -833,8 +877,10 @@ export class SwarmToolContext {
         params.runId,
         params.concurrency ?? DEFAULT_CONCURRENCY,
         params.prefix,
+        params.pluginDir,
       );
       if (params.concurrency !== undefined) state.concurrency = params.concurrency;
+      if (params.pluginDir !== undefined) state.pluginDir = params.pluginDir;
 
       const pruneLines = await this.pruneStaleWorkers(state);
 
@@ -868,19 +914,19 @@ export class SwarmToolContext {
       let candidates: ReadyItem[];
       if (params.items) {
         const explicitSlugs = params.items;
-        candidates = explicitSlugs.map((id) => ({ id, worker_safe: true, related_files: [] }));
-        try {
-          const readyResult = await this.exec("python3", buildReadyArgv(params.prefix).slice(1), {
-            timeout: PROBE_TIMEOUT_MS,
-          });
-          if (readyResult.code === 0) {
-            const parsed = parseReadyItems(readyResult.stdout);
-            const byId = new Map(parsed.map((i) => [i.id, i]));
-            candidates = explicitSlugs.map((id) => byId.get(id) ?? { id, worker_safe: true, related_files: [] });
-          }
-        } catch {
-          // Fall back to explicit list
+        const readyResult = await this.exec("python3", buildReadyArgv(params.prefix).slice(1), {
+          timeout: PROBE_TIMEOUT_MS,
+        });
+        if (readyResult.code !== 0) {
+          throw new Error(`dev_status.py ready failed: ${readyResult.stderr || readyResult.stdout}`);
         }
+        const parsed = parseReadyItems(readyResult.stdout);
+        const byId = new Map(parsed.map((i) => [i.id, i]));
+        // A slug missing from the ready set (mistyped, stale, or genuinely
+        // not worker-safe) must NOT default to worker_safe: true -- leaving
+        // it unset lets selectSchedulable's fail-closed refusal apply, same
+        // as an automatically-selected candidate that failed this lookup.
+        candidates = explicitSlugs.map((id) => byId.get(id) ?? { id });
       } else {
         const readyResult = await this.exec("python3", buildReadyArgv(params.prefix).slice(1), {
           timeout: PROBE_TIMEOUT_MS,
@@ -1133,68 +1179,84 @@ export class SwarmToolContext {
     }
 
     const rawEvents = rt.pendingEvents.splice(0);
-    const events: PollEvent[] = [];
+    // Snapshot once, up front: worker removal is batched at the very end
+    // (see toRemove below) instead of per-event, so every event in this
+    // poll resolves its worker against the same pre-removal view.
+    const workersByAgent = new Map(state.workers.map((w) => [w.agent, w]));
+    const toRemove = new Set<string>();
 
-    for (const event of rawEvents) {
-      const worker = state.workers.find((w) => w.agent === event.agent);
-      if (!worker) continue;
-      if (event.kind === "blocked") {
-        let getResult: ExecResult;
-        try {
-          getResult = await this.herdr(buildAgentGetArgv(event.agent), signal);
-        } catch {
-          getResult = { code: 1, stdout: "", stderr: "" };
-        }
-        const resyncVerdict = classifyResyncGet(
-          getResult.code,
-          getResult.stdout,
-          getResult.stderr,
-        );
-        if (resyncVerdict.action === "drop") {
-          event.kind = "finished";
-          event.detail =
-            "resync: agent gone from herdr while resolving blocked prompt -- " +
-            "worker has since finished or exited; outcome inferred, not observed. " +
-            "Verify the item's state before treating it as complete.";
-          event.captures = await this.teardownAndHarvestWorker(state, worker, signal);
-          events.push(event);
-          continue;
-        }
-        let readResult: ExecResult;
-        try {
-          readResult = await this.herdr(
-            buildAgentReadArgv(event.agent, BLOCKED_READ_LINES),
-            signal,
+    const processed = await Promise.all(
+      rawEvents.map(async (event): Promise<PollEvent | null> => {
+        const worker = workersByAgent.get(event.agent);
+        if (!worker) return null;
+        if (event.kind === "blocked") {
+          let getResult: ExecResult;
+          try {
+            getResult = await this.herdr(buildAgentGetArgv(event.agent), signal);
+          } catch {
+            getResult = { code: 1, stdout: "", stderr: "" };
+          }
+          const resyncVerdict = classifyResyncGet(
+            getResult.code,
+            getResult.stdout,
+            getResult.stderr,
           );
-        } catch {
-          readResult = { code: 1, stdout: "", stderr: "" };
-        }
-        let truncated = looksTruncated(readResult.stdout, BLOCKED_READ_LINES);
-        if (truncated) {
+          if (resyncVerdict.action === "drop") {
+            event.kind = "finished";
+            event.detail =
+              "resync: agent gone from herdr while resolving blocked prompt -- " +
+              "worker has since finished or exited; outcome inferred, not observed. " +
+              "Verify the item's state before treating it as complete.";
+            // harvestWorkerIO, not teardownAndHarvestWorker: several events
+            // in this same poll can each be tearing down a different
+            // worker concurrently, and teardownAndHarvestWorker's own
+            // filter-and-reassign of state.workers would race across them.
+            // Removal happens once, in a single batch, after this Promise.all.
+            event.captures = await this.harvestWorkerIO(state, worker, signal);
+            toRemove.add(worker.agent);
+            return event;
+          }
+          let readResult: ExecResult;
           try {
             readResult = await this.herdr(
-              buildAgentReadArgv(event.agent, BLOCKED_READ_LINES_RETRY),
+              buildAgentReadArgv(event.agent, BLOCKED_READ_LINES),
               signal,
             );
-            truncated = looksTruncated(readResult.stdout, BLOCKED_READ_LINES_RETRY);
           } catch {
-            truncated = false;
+            readResult = { code: 1, stdout: "", stderr: "" };
           }
+          let truncated = looksTruncated(readResult.stdout, BLOCKED_READ_LINES);
+          if (truncated) {
+            try {
+              readResult = await this.herdr(
+                buildAgentReadArgv(event.agent, BLOCKED_READ_LINES_RETRY),
+                signal,
+              );
+              truncated = looksTruncated(readResult.stdout, BLOCKED_READ_LINES_RETRY);
+            } catch {
+              truncated = false;
+            }
+          }
+          event.rawPrompt = readResult.stdout || getResult.stdout;
+          event.truncated = truncated;
+          event.blockClass = classifyBlock(event.rawPrompt);
+          event.options = pickerLabels(event.rawPrompt);
+          const parkedAt = Date.now();
+          foldWorkingSegment(worker, parkedAt);
+          worker.awaitingRelaySinceMs = parkedAt;
+          worker.lifecycle = "awaiting_relay";
+        } else if (event.kind === "still_working") {
+          // Check-in
+        } else {
+          event.captures = await this.harvestWorkerIO(state, worker, signal);
+          toRemove.add(worker.agent);
         }
-        event.rawPrompt = readResult.stdout || getResult.stdout;
-        event.truncated = truncated;
-        event.blockClass = classifyBlock(event.rawPrompt);
-        event.options = pickerLabels(event.rawPrompt);
-        const parkedAt = Date.now();
-        foldWorkingSegment(worker, parkedAt);
-        worker.awaitingRelaySinceMs = parkedAt;
-        worker.lifecycle = "awaiting_relay";
-      } else if (event.kind === "still_working") {
-        // Check-in
-      } else {
-        event.captures = await this.teardownAndHarvestWorker(state, worker, signal);
-      }
-      events.push(event);
+        return event;
+      }),
+    );
+    const events = processed.filter((e): e is PollEvent => e !== null);
+    if (toRemove.size > 0) {
+      state.workers = state.workers.filter((w) => !toRemove.has(w.agent));
     }
     this.persist(state);
 

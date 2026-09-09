@@ -23,6 +23,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import uuid
 from collections.abc import Callable
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -875,8 +876,37 @@ class CopilotKindTests(DelegateTests):
             self.assertIn("--model", passthrough)
             self.assertEqual(passthrough[passthrough.index("--model") + 1], "gpt-5")
 
+            # copilot/skills/swarm/SKILL.md lists --session-id as a "key
+            # invariant" for every copilot `agent start` -- this launch is
+            # one, same as a swarm_spawn worker.
+            self.assertIn("--session-id", passthrough)
+            session_id = passthrough[passthrough.index("--session-id") + 1]
+            self.assertEqual(uuid.UUID(session_id).version, 4)
+
             prompt = fake.named("agent", "prompt")[0]
             self.assertEqual(prompt[3], "/backlog-item --auto atk-example")
+
+            summary = json.loads(out)
+            self.assertEqual(summary["session_id"], session_id)
+
+    def test_launch_pi_omits_session_id(self) -> None:
+        fake = FakeHerdr()
+        with (
+            mock.patch.object(herdr_delegate, "herdr", fake),
+            mock.patch.object(herdr_delegate.time, "sleep", lambda _s: None),
+            mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
+        ):
+            code, out, _ = self.run_main([
+                "launch",
+                "--slug",
+                "atk-example",
+                "--cwd",
+                "/tmp",
+            ])
+            self.assertEqual(code, 0)
+            start = fake.named("agent", "start")[0]
+            self.assertNotIn("--session-id", start)
+            self.assertNotIn("session_id", json.loads(out))
 
     def test_restart_copilot_reads_copilot_state_dir(self) -> None:
         fake = FakeHerdr()
@@ -909,6 +939,15 @@ class CopilotKindTests(DelegateTests):
             start = fake.named("agent", "start")[0]
             self.assertIn("--kind", start)
             self.assertEqual(start[start.index("--kind") + 1], "copilot")
+
+            # The relaunched orchestrator is a brand new copilot process, so
+            # it gets its own fresh --session-id, same as cmd_launch.
+            sep = start.index("--")
+            passthrough = start[sep + 1 :]
+            self.assertIn("--session-id", passthrough)
+            session_id = passthrough[passthrough.index("--session-id") + 1]
+            self.assertEqual(uuid.UUID(session_id).version, 4)
+            self.assertEqual(summary["session_id"], session_id)
 
 
 if __name__ == "__main__":

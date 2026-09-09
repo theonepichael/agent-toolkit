@@ -55,9 +55,14 @@ export interface SwarmState {
   workers: WorkerRecord[];
   attempted?: string[];
   prefix?: string;
+  pluginDir?: string;
 }
 
-const PROJECT_PREFIXES = ["iron-lb-", "meta-", "work-", "atk-"];
+// Exported so a test can assert this stays byte-identical to the pi
+// original's own PROJECT_PREFIXES (pi/extensions/swarm-lib/swarm-scheduling.ts)
+// -- this is a vendored fork, not a shared import, so nothing else keeps
+// the two in sync automatically.
+export const PROJECT_PREFIXES = ["iron-lb-", "meta-", "work-", "atk-"];
 
 export function nextAgentId(runId: string, counter: number, slug?: string): string {
   const cleanSlug = slug ? slug.replace(/[^a-zA-Z0-9_-]/g, "") : "";

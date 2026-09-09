@@ -220,7 +220,12 @@ export interface SwarmState {
  * future prefix that extends another (e.g. `meta-x-` vs `meta-`) strips
  * correctly, and only that one is removed.
  */
-const PROJECT_PREFIXES = ["iron-lb-", "meta-", "work-"];
+// Exported so a test can assert this stays byte-identical to the vendored
+// copilot copy's own PROJECT_PREFIXES (copilot/extensions/swarm/src/swarm-scheduling.ts)
+// -- the two lists already drifted once (copilot's copy correctly gained
+// "atk-"; this one did not, so the same atk-* item got a different synthetic
+// agent name depending which harness's worker picked it up).
+export const PROJECT_PREFIXES = ["iron-lb-", "meta-", "work-", "atk-"];
 
 /** Synthetic herdr agent name incorporating the slug, capped at herdr's 32-char limit.
  *

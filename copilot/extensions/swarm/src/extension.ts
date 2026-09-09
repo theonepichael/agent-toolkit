@@ -38,6 +38,15 @@ await joinSession({
             type: "string",
             description: "Model for every worker in this wave.",
           },
+          pluginDir: {
+            type: "string",
+            description:
+              "Absolute path to this checkout's copilot/extensions/swarm, passed to every " +
+              "worker's --plugin-dir. Omit only if this checkout is literally at " +
+              "~/Workspace/agent-toolkit -- otherwise the default guess is wrong and every " +
+              "worker spawn in this run will fail. Persists on the run's state, so only the " +
+              "first swarm_spawn call for a runId needs to pass it.",
+          },
         },
         required: ["runId"],
       },
