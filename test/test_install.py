@@ -3615,6 +3615,83 @@ def test_check_links_detects_wrong_target(home, fake_repo, capsys):
     assert f"but links.toml says {fake_repo / 'zsh' / '.zshrc'}" in out
 
 
+PERSONAL_OVERLAY_LINKS_TOML = """\
+[[link]]
+src = "claude/CORE_INSTRUCTIONS.md"
+dest = "~/.claude/CLAUDE.md"
+harness = "claude"
+"""
+
+
+def make_personal_overlay_repo(tmp_path):
+    """A throwaway repo with a single CORE_INSTRUCTIONS.md-style entry."""
+    repo = tmp_path / "repo"
+    (repo / "claude").mkdir(parents=True)
+    (repo / "claude" / "CORE_INSTRUCTIONS.md").write_text("core\n")
+    (repo / "links.toml").write_text(PERSONAL_OVERLAY_LINKS_TOML)
+    (repo / ".git").mkdir()
+    return repo
+
+
+def test_check_links_exempts_dotfiles_composed_personal_overlay(home, tmp_path, capsys):
+    """The 2026-09-09 false positive: do_check_links must not flag a
+    destination dotfiles legitimately recomposes with a personal overlay."""
+    repo = make_personal_overlay_repo(tmp_path)
+    composed = home / "dotfiles" / "claude" / "global-instructions.md"
+    composed.parent.mkdir(parents=True)
+    composed.write_text("composed\n")
+    ctx = check_links_ctx(home, repo, harnesses=("claude",))
+    dest = home / ".claude" / "CLAUDE.md"
+    dest.parent.mkdir(parents=True)
+    dest.symlink_to(composed)
+    capsys.readouterr()
+
+    code = install.do_check_links(ctx)
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "wrong-target" not in out
+
+
+def test_check_links_still_flags_broken_personal_overlay_link(home, tmp_path, capsys):
+    """The exemption is narrow: a link at the same destination pointing
+    somewhere unrelated is still real drift, dotfiles present or not."""
+    repo = make_personal_overlay_repo(tmp_path)
+    (home / "dotfiles" / "claude").mkdir(parents=True)
+    (home / "dotfiles" / "claude" / "global-instructions.md").write_text("composed\n")
+    ctx = check_links_ctx(home, repo, harnesses=("claude",))
+    dest = home / ".claude" / "CLAUDE.md"
+    dest.parent.mkdir(parents=True)
+    dest.symlink_to(home / "somewhere-else.md")
+    capsys.readouterr()
+
+    code = install.do_check_links(ctx)
+
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "wrong-target (1)" in out
+
+
+def test_check_links_audits_personal_overlay_normally_without_dotfiles(
+    home, tmp_path, capsys
+):
+    """No ~/dotfiles checkout: the destination must audit against
+    CORE_INSTRUCTIONS.md exactly like any other entry, no exemption."""
+    repo = make_personal_overlay_repo(tmp_path)
+    assert not (home / "dotfiles").exists()
+    ctx = check_links_ctx(home, repo, harnesses=("claude",))
+    dest = home / ".claude" / "CLAUDE.md"
+    dest.parent.mkdir(parents=True)
+    dest.symlink_to(home / "somewhere-else.md")
+    capsys.readouterr()
+
+    code = install.do_check_links(ctx)
+
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "wrong-target (1)" in out
+
+
 def make_checkout(root, *, main):
     """Build a second dotfiles checkout that _is_dotfiles_checkout() accepts.
 

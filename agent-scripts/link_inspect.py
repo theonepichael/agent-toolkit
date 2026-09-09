@@ -578,6 +578,7 @@ def audit_links(
         format_path=format_path,
         manifest_entries=entries,
         report_uninstalled=report_uninstalled,
+        home=home,
     )
     check_orphaned_links(
         links, findings, format_path=format_path, manifest_entries=entries
@@ -615,6 +616,20 @@ CHECK_BUCKETS = (
 )
 
 
+# The links.toml src whose destinations dotfiles recomposes with a personal
+# overlay on any machine that has both repos checked out. Mirrors install.py's
+# write-side ``_personal_overlay_unwrapped``/``_PERSONAL_OVERLAY_SRC_REL`` (the
+# 2026-09-07 incident guard) — install.py imports this constant rather than
+# keeping its own copy, so the two halves of the guard can't drift apart.
+PERSONAL_OVERLAY_SRC_REL = "claude/CORE_INSTRUCTIONS.md"
+
+
+def personal_overlay_composed_target(home: Path) -> Path:
+    """The file dotfiles actually composes and symlinks ``PERSONAL_OVERLAY_SRC_REL``'s
+    destinations to, on a machine with both repos checked out."""
+    return home / "dotfiles" / "claude" / "global-instructions.md"
+
+
 def check_applicable_links(
     links: Sequence[tuple[Path, Path, str, bool]],
     *,
@@ -622,6 +637,7 @@ def check_applicable_links(
     format_path: Callable[[Path], str],
     manifest_entries: Iterable[dict[str, object]] = (),
     report_uninstalled: bool = False,
+    home: Path | None = None,
 ) -> tuple[dict[str, list[str]], dict[Path, int]]:
     """Report inconsistencies on destinations in scope for this machine.
 
@@ -645,6 +661,12 @@ def check_applicable_links(
             when ``report_uninstalled`` is set).
         report_uninstalled: Also flag destinations the manifest never
             recorded creating; see above.
+        home: The home directory to check the personal-overlay exemption
+            against (see ``PERSONAL_OVERLAY_SRC_REL``). ``None`` (the
+            default, and what every pre-existing caller passes) disables
+            the exemption entirely rather than guessing at a home — a unit
+            test exercising an unrelated entry has no reason to know about
+            dotfiles composition.
 
     Returns:
         The findings by bucket, and a count per *other* checkout the live
@@ -687,6 +709,14 @@ def check_applicable_links(
             continue
 
         target = link_target(dest)
+        if (
+            home is not None
+            and rel == PERSONAL_OVERLAY_SRC_REL
+            and same_path(target, personal_overlay_composed_target(home))
+        ):
+            # Correctly recomposed by dotfiles/scripts/install-with-agent-
+            # toolkit.sh, not a mismatch — see PERSONAL_OVERLAY_SRC_REL.
+            continue
         if not same_path(target, src):
             other_root = implied_repo_root(target, rel)
             # Only a link into the PRIMARY checkout is excusable. The
