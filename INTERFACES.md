@@ -1776,6 +1776,7 @@ named doc, not regenerating this file.
 | `claude/commands/swarm.md` | OK |
 | `copilot/skills/backlog-item/SKILL.md` | OK |
 | `copilot/skills/swarm/SKILL.md` | OK |
+| `pi/skills/backlog-item/SKILL.md` | OK |
 
 ### `refresh_guidance.py`
 

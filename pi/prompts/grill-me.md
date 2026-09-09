@@ -35,7 +35,7 @@ recently touched.
 
 ## Default mode
 
-If $ARGUMENTS is empty (and contains neither `--verify` nor `--auto`), grill the plan under discussion when the conversation makes it obvious; otherwise ask the user what to grill before proceeding. `--verify` and `--auto` each run their own section below instead of this Q&A loop.
+If no specific topic or plan was named (or $ARGUMENTS is empty, and contains neither `--verify` nor `--auto`), grill the plan under discussion when the conversation makes it obvious; otherwise ask the user what to grill before proceeding. `--verify` and `--auto` each run their own section below instead of this Q&A loop.
 
 **Pre-step: orient before asking.**
 Check what codebase context is already in scope from prior exploration. Do a targeted read/grep only for files directly relevant to the topic that haven't been read yet. Don't re-crawl what's already known. Never ask a question the codebase already answers.

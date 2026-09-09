@@ -112,20 +112,25 @@ TEMPLATE_PATHS: dict[str, str] = {
     "swarm": "templates/swarm.md.tmpl",
 }
 
-# Per-(skill, harness) template overrides. Pi is the only harness with a
-# second output surface per skill: `pi/prompts/{name}.md` binds pi's literal
-# `/name` slash command (prompt-template mechanism), separate from
-# `pi/skills/{name}/SKILL.md` (`/skill:name` or semantic match). 7 of the 8
-# skills' prompts/ bodies integrate pi-native extension tools (`dev_status`,
-# `grill`, `standup`, `question`, `delegate`, `swarm_resolve_blocked`) that
-# the generic bash-oriented template never references, so those 7 render
-# from a second, dedicated template file under the synthetic harness key
-# "pi-prompt" -- not a real member of HARNESSES, never iterated by anything
-# outside this script. `make-skill` is deliberately absent here: it has no
-# native-tool content, so its "pi-prompt" output reuses TEMPLATE_PATHS
-# ["make-skill"] unchanged (same pattern gen_second_opinion.py already uses
-# for second-opinion: one shared body, two frontmatter variants).
+# Per-(skill, harness) template overrides. Pi has two output surfaces per
+# skill: `pi/prompts/{name}.md` binds pi's literal `/name` slash command
+# (prompt-template mechanism), and `pi/skills/{name}/SKILL.md` binds
+# `/skill:name` or semantic match. 7 of the 8 skills integrate pi-native
+# extension tools (`dev_status`, `grill`, `standup`, `question`, `delegate`,
+# `swarm_resolve_blocked`) that the generic bash-oriented templates never
+# reference. Both Pi surfaces (`pi` and `pi-prompt`) render from the dedicated
+# native template for those 7 skills, unifying Pi's behavior across `/name`
+# and `/skill:name`. `make-skill` is deliberately absent: it has no
+# native-tool content, so both its outputs reuse TEMPLATE_PATHS["make-skill"]
+# unchanged (same pattern gen_second_opinion.py uses for second-opinion).
 TEMPLATE_PATH_OVERRIDES: dict[tuple[str, str], str] = {
+    ("dashboard", "pi"): "templates/dashboard_pi_native.md.tmpl",
+    ("recap", "pi"): "templates/recap_pi_native.md.tmpl",
+    ("grill-me", "pi"): "templates/grill_me_pi_native.md.tmpl",
+    ("backlog-item", "pi"): "templates/backlog_item_pi_native.md.tmpl",
+    ("spec", "pi"): "templates/spec_pi_native.md.tmpl",
+    ("standup", "pi"): "templates/standup_pi_native.md.tmpl",
+    ("to-tickets", "pi"): "templates/to_tickets_pi_native.md.tmpl",
     ("dashboard", "pi-prompt"): "templates/dashboard_pi_native.md.tmpl",
     ("recap", "pi-prompt"): "templates/recap_pi_native.md.tmpl",
     ("grill-me", "pi-prompt"): "templates/grill_me_pi_native.md.tmpl",
@@ -485,6 +490,7 @@ def main() -> None:
         if not (repo_root / relpath).is_file():
             print(f"[gen_skills] no {relpath} under {repo_root}", file=sys.stderr)
             sys.exit(2)
+    valid_harnesses = set(HARNESSES) | {"pi-prompt"}
     for (override_skill, override_harness), relpath in TEMPLATE_PATH_OVERRIDES.items():
         if override_skill not in SKILLS:
             print(
@@ -493,10 +499,10 @@ def main() -> None:
                 file=sys.stderr,
             )
             sys.exit(2)
-        if override_harness != "pi-prompt":
+        if override_harness not in valid_harnesses:
             print(
                 f"[gen_skills] TEMPLATE_PATH_OVERRIDES key names unknown harness "
-                f'{override_harness!r} (only "pi-prompt" overrides exist today)',
+                f"{override_harness!r}",
                 file=sys.stderr,
             )
             sys.exit(2)

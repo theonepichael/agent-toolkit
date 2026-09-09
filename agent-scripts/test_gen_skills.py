@@ -66,9 +66,9 @@ class CapabilityFixtureTests(unittest.TestCase):
     """One method per (skill, harness) pair — 31 total."""
 
     def _render(self, skill: str, harness: str) -> str:
-        template_text = (REPO_ROOT / gs.TEMPLATE_PATHS[skill]).read_text(
-            encoding="utf-8"
-        )
+        template_text = (
+            REPO_ROOT / gs.template_path_for(skill, harness)
+        ).read_text(encoding="utf-8")
         params = SKILL_PARAMS[skill][harness]
         return gs.render_one(skill, harness, template_text, params)
 
@@ -110,8 +110,9 @@ class CapabilityFixtureTests(unittest.TestCase):
     def test_dashboard_pi(self) -> None:
         text = self._render("dashboard", "pi")
         self.assertIn("name: dashboard", text)
-        self.assertNotIn("SessionStart", text)
-        self.assertIn("the shared instructions file's Backlog section", text)
+        self.assertIn('action: "render"', text)
+        self.assertIn("dev_status` tool", text)
+        self.assertNotIn("the shared instructions file's Backlog section", text)
 
     # -- recap ------------------------------------------------------------
 
@@ -139,7 +140,8 @@ class CapabilityFixtureTests(unittest.TestCase):
     def test_recap_pi(self) -> None:
         text = self._render("recap", "pi")
         self.assertIn("name: recap", text)
-        self.assertIn("dev_status.py recap", text)
+        self.assertIn('action: "recap"', text)
+        self.assertIn("dev_status` tool", text)
 
     # -- grill-me -----------------------------------------------------------
 
@@ -171,8 +173,8 @@ class CapabilityFixtureTests(unittest.TestCase):
         text = self._render("grill-me", "pi")
         self.assertNotIn("AskUserQuestion", text)
         self.assertIn("the `question` tool", text)
-        # The bug this whole item exists to fix: Pi's copy used to be agy's,
-        # claiming Pi has no structured-choice widget. It does (question-tool.ts).
+        self.assertIn("grill` tool", text)
+        self.assertNotIn("python3 ~/.claude/scripts/grill.py", text)
         self.assertNotIn("no structured multi-choice widget", text)
         self.assertIn("session_start` extension event", text)
 
@@ -273,11 +275,8 @@ class CapabilityFixtureTests(unittest.TestCase):
 
     def test_spec_pi(self) -> None:
         text = self._render("spec", "pi")
-        self.assertNotIn("$ARGUMENTS", text)
         self.assertIn("the `question` tool", text)
-        # The bug this item exists to fix: agy's copy claimed Pi has no
-        # structured-choice widget and lacked this Pi-only note.
-        self.assertNotIn("no built-in question/select tool", text)
+        self.assertIn("question-tool.ts", text)
         self.assertIn("rule out built-in sub-agents", text)
 
     def test_spec_copilot(self) -> None:
@@ -442,6 +441,39 @@ class EndToEndTests(unittest.TestCase):
                 text,
                 f"missing marker: {relpath}",
             )
+
+    def test_pi_and_pi_prompt_render_identical_bodies_for_native_skills(self) -> None:
+        """For the 7 native-tool skills, pi and pi-prompt must share the exact
+        same template body, differing only in frontmatter."""
+        native_skills = (
+            "dashboard",
+            "recap",
+            "grill-me",
+            "backlog-item",
+            "spec",
+            "standup",
+            "to-tickets",
+        )
+        rendered = gs.render_all(REPO_ROOT, SKILL_PARAMS)
+        for skill in native_skills:
+            pi_path = gs.OUTPUT_PATHS[(skill, "pi")]
+            prompt_path = gs.OUTPUT_PATHS[(skill, "pi-prompt")]
+            pi_text = rendered[pi_path]
+            prompt_text = rendered[prompt_path]
+            pi_body = pi_text.split("-->\n\n", 1)[1]
+            prompt_body = prompt_text.split("-->\n\n", 1)[1]
+            self.assertEqual(pi_body, prompt_body, f"body mismatch for {skill}")
+
+    def test_non_pi_harnesses_do_not_reference_native_tools(self) -> None:
+        """claude, copilot, opencode, agy, codex must not reference native extension
+        tools in dashboard or recap."""
+        rendered = gs.render_all(REPO_ROOT, SKILL_PARAMS)
+        for skill in ("dashboard", "recap"):
+            for harness in ("claude", "copilot", "opencode", "agy", "codex"):
+                relpath = gs.OUTPUT_PATHS[(skill, harness)]
+                text = rendered[relpath]
+                self.assertNotIn('action: "render"', text, f"{skill} on {harness}")
+                self.assertNotIn('action: "recap"', text, f"{skill} on {harness}")
 
 
 class RepoIdentityTests(unittest.TestCase):

@@ -119,20 +119,17 @@ or `pi/test/` would start failing `format:check`. Leave them where they are.
   surface per skill (`pi/prompts/*.md` binds pi's literal `/name` slash
   command; `pi/skills/*/SKILL.md` binds `/skill:name` or semantic match —
   `docs/prompt-templates.md` vs `docs/skills.md`). 7 of the 8 render from a
-  dedicated `templates/{name}_pi_native.md.tmpl` file under the synthetic
-  `"pi-prompt"` harness key (`TEMPLATE_PATH_OVERRIDES` in `gen_skills.py`),
-  since their bodies integrate pi-native extension tools (`dev_status`,
-  `grill`, `standup`, `question`, `delegate`, `swarm_resolve_blocked`) that
-  the generic `pi/skills/*/SKILL.md` bodies never reference — the two are
-  legitimately different content, not duplicates, so don't expect them to
-  match. `make-skill`'s `pi-prompt` output has no native-tool content and
-  reuses `templates/make_skill.md.tmpl` unchanged (same pattern
-  `gen_second_opinion.py` uses for `second-opinion` above: one shared body,
-  two frontmatter variants). Before this was generated, `pi/prompts/*.md`
-  silently drifted from `pi/skills/*/SKILL.md` for months with no check
-  catching it (`atk-pi-prompts-stale-duplicate`) — never hand-edit these
-  files; edit the relevant `_pi_native.md.tmpl` (or `make_skill.md.tmpl` for
-  make-skill) or the params table, then regenerate.
+  dedicated `templates/{name}_pi_native.md.tmpl` file for both `pi` and the
+  synthetic `"pi-prompt"` harness key (`TEMPLATE_PATH_OVERRIDES` in
+  `gen_skills.py`), since both surfaces integrate pi-native extension tools
+  (`dev_status`, `grill`, `standup`, `question`, `delegate`,
+  `swarm_resolve_blocked`) rather than CLI subprocesses — their markdown
+  bodies are identical, differing only in frontmatter. `make-skill`'s output
+  has no native-tool content and reuses `templates/make_skill.md.tmpl` unchanged
+  for all harnesses. Before this was unified, `pi/skills/*/SKILL.md` fell back
+  to generic shell commands and drifted from `pi/prompts/*.md` — never hand-edit
+  these files; edit the relevant `_pi_native.md.tmpl` (or `make_skill.md.tmpl`
+  for make-skill) or the params table, then regenerate.
 - `pi/settings.json` is a copy-once seed. It carries **no** `skills` key.
   All 8 generated skills above are found purely through Pi's default,
   always-on scan of `~/.pi/agent/skills/`, which `links.toml`'s `dir = true`
