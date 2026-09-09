@@ -1340,21 +1340,22 @@ class BacklogTestCase(BacklogFixture):
         self.write_items([make_item("item-a")])
         results = {}
 
-        def writer(name):
+        def writer(name, ready):
             # each thread opens its own fd on LOCK_FILE (per open-file-description flock)
+            ready.set()
             dev_status.cmd_add(_args(json=f'{{"id": "child-{name}", "summary": "x"}}'))
             results[name] = self.read_rev()
 
         # hold the lock in the main thread so the spawned writers block
         with dev_status.backlog_lock():
-            t1 = threading.Thread(target=writer, args=("one",))
-            t2 = threading.Thread(target=writer, args=("two",))
+            one_ready = threading.Event()
+            two_ready = threading.Event()
+            t1 = threading.Thread(target=writer, args=("one", one_ready))
+            t2 = threading.Thread(target=writer, args=("two", two_ready))
             t1.start()
             t2.start()
-            # give them a moment to block on flock
-            import time
-
-            time.sleep(0.1)
+            self.assertTrue(one_ready.wait(timeout=1))
+            self.assertTrue(two_ready.wait(timeout=1))
             self.assertTrue(t1.is_alive())
             self.assertTrue(t2.is_alive())
             # now release; both should proceed serialized
@@ -6861,4 +6862,3 @@ class CompactMutationOutputTestCase(BacklogFixture):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
-
