@@ -61,16 +61,25 @@ creating the state at all.
 
 ## This is the only TypeScript tree with pi's own toolchain
 
-The one exception is `copilot/extensions/swarm/src/*.ts`: a vendored,
-kind-parameterized fork of `pi/extensions/swarm-tool.ts` and its
-`pi/extensions/swarm-lib/` helpers, built by `scripts/build-copilot-swarm.sh`
-(`bun build` straight to plain JS) rather than loaded live the way pi loads
-its own extensions. Copilot CLI extensions must be `.mjs`/`.cjs`, not TypeScript, so
-pi's live-TS-loading approach does not apply there — this is a second,
-independent toolchain, not covered by the four stages below. It is a fork,
-not a shared import: nothing keeps the two copies in sync automatically
-(`pi/test/copilot-swarm.test.ts` pins `PROJECT_PREFIXES` parity between them
-as one guard against drift, but that is a spot-check, not a general one).
+The one exception is `copilot/extensions/swarm/src/*.ts`, built by
+`scripts/build-copilot-swarm.sh` (`bun build` straight to plain JS) rather
+than loaded live the way pi loads its own extensions — Copilot CLI
+extensions must be `.mjs`/`.cjs`, not TypeScript, so pi's live-TS-loading
+approach does not apply there. This is a second, independent toolchain, not
+covered by the four stages below.
+
+`swarm-scheduling.ts` and `swarm-herdr.ts` are no longer a vendored fork:
+`pi/extensions/swarm-lib/`
+is their single shared source, and `build-copilot-swarm.sh` builds Copilot's
+copies straight from it — there is nothing left there to drift.
+`swarm-picker.ts` and the tool-registration/class split
+(`pi/extensions/swarm-tool.ts`'s monolithic closure vs
+`copilot/extensions/swarm/src/swarm-tool-logic.ts`'s `SwarmToolContext`
+class) remain forked: the picker genuinely differs by design (pi's real
+interactive-terminal parser vs Copilot's `needs_human` stub, since Copilot
+workers never render pi's picker), and unifying the tool registration is a
+separate, larger follow-up item. `pi/extensions/swarm-lib/swarm-picker.ts`
+carries a `PickerAdapter` interface prepared for that follow-up to wire in.
 
 `pi/package.json` drives four stages, all run by
 `test/test_pi_ts_checks.py` via `bun run <stage>`:

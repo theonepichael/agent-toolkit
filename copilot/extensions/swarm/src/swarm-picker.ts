@@ -1,6 +1,14 @@
 // Stub picker for Copilot CLI swarm: Copilot workers do not render pi's question-tool
 // interactive terminal picker, so any block defaults to needs_human.
-import type { WorkerRecord } from "./swarm-scheduling";
+//
+// UNLIKE swarm-scheduling.ts and swarm-herdr.ts in this same directory (both
+// built straight from pi/extensions/swarm-lib/ instead), this file is a deliberately
+// different implementation, not a fork awaiting unification. Do not delete
+// it or repoint scripts/build-copilot-swarm.sh at pi's real parser; a
+// follow-up item wires pi/extensions/swarm-lib/swarm-picker.ts's
+// PickerAdapter interface into a shared class instead, at which point this
+// file's implementation becomes that class's Copilot-side StubPickerAdapter.
+import type { WorkerRecord } from "../../../../pi/extensions/swarm-lib/swarm-scheduling";
 
 export type BlockClass = "answerable" | "needs_human";
 

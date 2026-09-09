@@ -1361,9 +1361,7 @@ are copy-once seeds for exactly that reason.
 | `copilot/extensions/swarm/lib/swarm-tool-logic.js` | not symlinked by `links.toml` |
 | `copilot/extensions/swarm/plugin.json` | not symlinked by `links.toml` |
 | `copilot/extensions/swarm/src/extension.ts` | not symlinked by `links.toml` |
-| `copilot/extensions/swarm/src/swarm-herdr.ts` | not symlinked by `links.toml` |
 | `copilot/extensions/swarm/src/swarm-picker.ts` | not symlinked by `links.toml` |
-| `copilot/extensions/swarm/src/swarm-scheduling.ts` | not symlinked by `links.toml` |
 | `copilot/extensions/swarm/src/swarm-tool-logic.ts` | not symlinked by `links.toml` |
 | `copilot/hooks/agent-stop.json` | `~/.copilot/hooks/agent-stop.json` (copilot, mac, linux) |
 | `copilot/hooks/post-tool-use.json` | `~/.copilot/hooks/post-tool-use.json` (copilot, mac, linux) |

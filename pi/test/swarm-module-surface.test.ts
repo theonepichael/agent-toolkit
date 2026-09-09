@@ -15,6 +15,7 @@ import * as picker from "../extensions/swarm-lib/swarm-picker";
 import type {
   BlockClass,
   ParsedPicker,
+  PickerAdapter,
   RenderedOption,
 } from "../extensions/swarm-lib/swarm-picker";
 import * as scheduling from "../extensions/swarm-lib/swarm-scheduling";
@@ -29,9 +30,11 @@ import type {
 } from "../extensions/swarm-lib/swarm-scheduling";
 import * as herdr from "../extensions/swarm-lib/swarm-herdr";
 import type {
+  AgentStartOptions,
   PollEventKind,
   ProbeResult,
   ResyncVerdict,
+  TabCreateOptions,
   TabCreateResult,
   TimeoutVerdict,
 } from "../extensions/swarm-lib/swarm-herdr";
@@ -45,6 +48,7 @@ const PICKER_VALUES = [
   "parsePicker",
   "matchOption",
   "navigationKeys",
+  "realPickerAdapter",
 ] as const;
 
 const SCHEDULING_VALUES = [
@@ -89,6 +93,7 @@ const HERDR_VALUES = [
   "deadlineStopDetail",
   "paneIdentityMismatch",
   "waitResultDetail",
+  "parseAgentSession",
 ] as const;
 
 // The pre-extraction import surface of swarm-tool.ts: every moved symbol
@@ -126,6 +131,7 @@ function typeExportsExist(): boolean {
   const probes = [
     undefined as BlockClass | undefined,
     undefined as ParsedPicker | undefined,
+    undefined as PickerAdapter | undefined,
     undefined as RenderedOption | undefined,
     undefined as Amendment | undefined,
     undefined as ReadyItem | undefined,
@@ -134,9 +140,11 @@ function typeExportsExist(): boolean {
     undefined as SwarmState | undefined,
     undefined as WorkerLifecycle | undefined,
     undefined as WorkerRecord | undefined,
+    undefined as AgentStartOptions | undefined,
     undefined as PollEventKind | undefined,
     undefined as ProbeResult | undefined,
     undefined as ResyncVerdict | undefined,
+    undefined as TabCreateOptions | undefined,
     undefined as TabCreateResult | undefined,
     undefined as TimeoutVerdict | undefined,
     undefined as PollEvent | undefined,

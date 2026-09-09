@@ -28,7 +28,7 @@ import {
   type SelectionResult,
   type SwarmState,
   type WorkerRecord,
-} from "./swarm-scheduling";
+} from "../../../../pi/extensions/swarm-lib/swarm-scheduling";
 import {
   buildAgentGetArgv,
   buildAgentListArgv,
@@ -57,7 +57,7 @@ import {
   workerWorktreePath,
   type PollEventKind,
   type ProbeResult,
-} from "./swarm-herdr";
+} from "../../../../pi/extensions/swarm-lib/swarm-herdr";
 import {
   classifyBlock,
   noteResolveFailure,

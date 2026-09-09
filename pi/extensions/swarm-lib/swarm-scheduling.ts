@@ -164,6 +164,14 @@ export interface WorkerRecord {
    */
   amendments?: Amendment[];
   lifecycle: WorkerLifecycle;
+  /**
+   * Copilot-only: the confirmed session id `attemptCrashRecovery` resumes
+   * via `--resume=`. Unused by pi workers -- absent means recovery never
+   * applies, which is the correct behavior for a host with no such feature.
+   */
+  copilotSessionId?: string;
+  /** Copilot-only: how many times `attemptCrashRecovery` has resumed this worker, capped at MAX_RECOVERY_ATTEMPTS. Unused by pi workers. */
+  recoveryAttempts?: number;
 }
 
 export interface SwarmState {
@@ -205,6 +213,14 @@ export interface SwarmState {
    * the same reason every other field added here is: old state files on disk.
    */
   prefix?: string;
+  /**
+   * Copilot-only: the run's `--plugin-dir`, persisted so a later crash
+   * recovery (which may happen long after the initial spawn, or after a
+   * full process restart) keeps using the value the run was actually
+   * started with rather than falling back to a guessed default. Unused by
+   * pi, which loads extensions live rather than via a plugin-dir flag.
+   */
+  pluginDir?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -220,11 +236,13 @@ export interface SwarmState {
  * future prefix that extends another (e.g. `meta-x-` vs `meta-`) strips
  * correctly, and only that one is removed.
  */
-// Exported so a test can assert this stays byte-identical to the vendored
-// copilot copy's own PROJECT_PREFIXES (copilot/extensions/swarm/src/swarm-scheduling.ts)
-// -- the two lists already drifted once (copilot's copy correctly gained
-// "atk-"; this one did not, so the same atk-* item got a different synthetic
-// agent name depending which harness's worker picked it up).
+// Historical note: this list once had a copilot-side duplicate
+// (copilot/extensions/swarm/src/swarm-scheduling.ts) that drifted --
+// copilot's copy correctly gained "atk-", this one did not, so the same
+// atk-* item got a different synthetic agent name depending which harness's
+// worker picked it up. This file is now the single shared source, so that
+// class of drift is structurally impossible rather than merely guarded
+// against.
 export const PROJECT_PREFIXES = ["iron-lb-", "meta-", "work-", "atk-"];
 
 /** Synthetic herdr agent name incorporating the slug, capped at herdr's 32-char limit.

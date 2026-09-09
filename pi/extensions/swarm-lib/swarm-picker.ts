@@ -2,6 +2,15 @@
 // picker -- what `swarm_resolve_blocked` reads off a blocked worker's pane
 // and the arrow-key path it drives to answer it. Extracted verbatim from
 // swarm-tool.ts; no module state, no I/O.
+//
+// UNLIKE its siblings swarm-scheduling.ts and swarm-herdr.ts (both shared
+// with copilot/extensions/swarm/src/, sourced from this pi/extensions/swarm-lib/
+// tree), this file is NOT
+// shared -- copilot/extensions/swarm/src/swarm-picker.ts is a deliberately
+// different needs_human-always stub, not a fork of this real parser, since
+// Copilot workers never render pi's interactive picker at all. Do not
+// "finish" the unification by merging this file; a follow-up item wires the
+// PickerAdapter interface below into a shared class instead. See pi/AGENTS.md.
 import type { WorkerRecord } from "./swarm-scheduling";
 /**
  * Whether a blocked worker's prompt is one the swarm can answer.
@@ -310,3 +319,28 @@ export function navigationKeys(fromIndex: number, toIndex: number): string[] {
   const key = steps > 0 ? "down" : "up";
   return [...Array(Math.abs(steps)).fill(key), "enter"];
 }
+
+/**
+ * The picker surface a swarm host needs: read a blocked worker's pane and
+ * say whether/what it's asking. pi implements this with the real parser
+ * below (`realPickerAdapter`); Copilot workers never render pi's picker at
+ * all, so its own `swarm-picker.ts` implements the same interface as a
+ * `needs_human`-always stub instead. Not yet consumed by anything in this
+ * file or `swarm-tool.ts` -- this is a prepared seam for the shared
+ * SwarmToolContext-equivalent class (a follow-up item) to inject, the same
+ * way that class already takes an injected `exec: ExecFn`.
+ * `matchOption`/`navigationKeys` are intentionally NOT part of this surface:
+ * both are internal to `parsePicker`'s own implementation and to pi's
+ * resolve-blocked navigation code, which Copilot has no equivalent for.
+ */
+export interface PickerAdapter {
+  classifyBlock(rawPrompt: string | undefined): BlockClass;
+  parsePicker(content: string): ParsedPicker;
+  pickerLabels(rawPrompt: string | undefined): string[];
+}
+
+export const realPickerAdapter: PickerAdapter = {
+  classifyBlock,
+  parsePicker,
+  pickerLabels,
+};

@@ -1,4 +1,4 @@
-// copilot/extensions/swarm/src/swarm-scheduling.ts
+// pi/extensions/swarm-lib/swarm-scheduling.ts
 var OPEN_PANE_SOFT_CAP_MULTIPLIER = 2;
 var TERMINAL_AGENT_STATUSES = ["idle", "done"];
 function isTerminalAgentStatus(status) {

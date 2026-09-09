@@ -644,7 +644,10 @@ export default function (pi: ExtensionAPI) {
     paths: string[],
     model?: string,
   ): Promise<SpawnOutcome> {
-    const startResult = await herdr(pi, buildAgentStartArgv(agentId, paneId, model));
+    const startResult = await herdr(
+      pi,
+      buildAgentStartArgv(agentId, paneId, model, { kind: "pi" }),
+    );
     if (startResult.code !== 0) {
       return failWithTab(
         slug,
@@ -1173,7 +1176,10 @@ export default function (pi: ExtensionAPI) {
         for (const slug of toSpawn) {
           const result = await herdr(
             pi,
-            buildTabCreateArgv(process.cwd(), slug, capturePath(typed.runId, slug)),
+            buildTabCreateArgv(process.cwd(), slug, {
+              captureFile: capturePath(typed.runId, slug),
+              kind: "pi",
+            }),
           );
           if (result.code !== 0) {
             tabs.push({
