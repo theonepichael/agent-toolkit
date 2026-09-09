@@ -464,6 +464,29 @@ class EndToEndTests(unittest.TestCase):
             prompt_body = prompt_text.split("-->\n\n", 1)[1]
             self.assertEqual(pi_body, prompt_body, f"body mismatch for {skill}")
 
+    def test_native_skills_have_leading_imperative_opener(self) -> None:
+        """Every native-tool skill body must open with an imperative directive sentence,
+        preventing models from interpreting prompt templates as reference docs."""
+        native_openers = {
+            "dashboard": "Render the current project dashboard and pending items immediately.",
+            "recap": "Display the recent work recap immediately.",
+            "grill-me": "Conduct an interactive grill session to stress-test and resolve decisions on the specified plan or topic.",
+            "backlog-item": "Work the named item to done, one step at a time.",
+            "spec": "Produce a complete implementation spec for the specified task.",
+            "standup": "Generate the daily standup update for recent work.",
+            "to-tickets": "Decompose the specified plan or spec into a dependency-ordered ticket batch.",
+        }
+        rendered = gs.render_all(REPO_ROOT, SKILL_PARAMS)
+        for skill, expected_opener in native_openers.items():
+            for harness in ("pi", "pi-prompt"):
+                relpath = gs.OUTPUT_PATHS[(skill, harness)]
+                text = rendered[relpath]
+                body = text.split("-->\n\n", 1)[1]
+                self.assertTrue(
+                    body.startswith(expected_opener),
+                    f"Body of {skill} ({harness}) does not start with '{expected_opener}'",
+                )
+
     def test_non_pi_harnesses_do_not_reference_native_tools(self) -> None:
         """claude, copilot, opencode, agy, codex must not reference native extension
         tools in dashboard or recap."""
