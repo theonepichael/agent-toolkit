@@ -318,12 +318,15 @@
     "subcommand run: create every ticket in a batch file"
   ],
   "vitals_promotion.py": [
-    "arg (top-level) --apply: \u2014 write vitals/needs-review files (default: dry-run, prints only)",
+    "arg (top-level) --apply: \u2014 write vitals files (default: dry-run, prints only)",
+    "arg (top-level) --backlog-slug: \u2014 with --search, also search <SLUG>.json (default: _global.json only)",
     "arg (top-level) --data-dir: \u2014 grill session data directory (default: ~/.claude/data/grill)",
-    "arg (top-level) --needs-review-summary: \u2014 print a one-line summary of the latest needs-review file and exit",
+    "arg (top-level) --include-superseded: \u2014 with --search, also match superseded records",
+    "arg (top-level) --json: \u2014 with --search, emit matching records as a JSON list instead of plain text",
     "arg (top-level) --quiet/-q: ",
+    "arg (top-level) --search: \u2014 search vitals records for QUERY (space-separated keywords, AND-combined) and exit",
     "arg (top-level) --verbose/-v: ",
-    "exit codes: ",
+    "exit codes: 1",
     "module docstring: vitals-promotion.py \u2014 mechanical vitals-promotion pass over grill session data."
   ]
 }

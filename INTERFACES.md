@@ -1231,19 +1231,21 @@ vitals-promotion.py — mechanical vitals-promotion pass over grill session data
   - `--quiet/-q`
   - `--verbose/-v`
   - `--data-dir` — grill session data directory (default: ~/.claude/data/grill)
-  - `--apply` — write vitals/needs-review files (default: dry-run, prints only)
-  - `--needs-review-summary` — print a one-line summary of the latest needs-review file and exit
+  - `--apply` — write vitals files (default: dry-run, prints only)
+  - `--search` — search vitals records for QUERY (space-separated keywords, AND-combined) and exit
+  - `--backlog-slug` — with --search, also search <SLUG>.json (default: _global.json only)
+  - `--include-superseded` — with --search, also match superseded records
+  - `--json` — with --search, emit matching records as a JSON list instead of plain text
 - Filesystem constants:
   - `DATA_DIR = Path.home() / '.claude' / 'data' / 'grill'`
   - `VITALS_DIR = DATA_DIR / 'vitals'`
-  - `NEEDS_REVIEW_DIR = DATA_DIR / 'needs-review'`
+- Explicit exit codes: `1`
 - Depends on: `cli_common.py`
 - Public classes:
   - `class Verdict(TypedDict)`
   - `class Decision(TypedDict)`
   - `class Session(TypedDict)`
   - `class VitalsRecord(TypedDict, total=False)`
-  - `class NeedsReviewEntry(TypedDict)`
   - `class Report(TypedDict)`
 - Public functions:
   - `now_iso() -> str`
@@ -1253,8 +1255,9 @@ vitals-promotion.py — mechanical vitals-promotion pass over grill session data
   - `atomic_write_json(path: Path, payload: object) -> None`
   - `load_vitals_file(path: Path) -> list[VitalsRecord]`
   - `vitals_path(vitals_dir: Path, backlog_slug: str | None) -> Path`
-  - `latest_needs_review_file(needs_review_dir: Path) -> Path | None` — Return the most recently dated needs-review file, or None if none exist.
-  - `summarize_needs_review(entries: list[NeedsReviewEntry]) -> str` — One-line summary: count plus the earliest-dated entry, by source_slug prefix.
+  - `matches_query(record: VitalsRecord, keywords: list[str]) -> bool` — True iff every keyword is a case-insensitive substring of text or reasoning.
+  - `search_vitals(vitals_dir: Path, keywords: list[str], include_superseded: bool, backlog_slug: str | None = None) -> list[VitalsRecord]` — Search _global.json (plus <backlog_slug>.json if given) for matches.
+  - `print_search_results(results: list[VitalsRecord], as_json: bool, quiet: bool = False, file: TextIO | None = None) -> None`
   - `anomaly_reason(decision: Decision) -> str`
   - `classify_decision(decision: Decision) -> str` — Classify one closed decision.
   - `needs_review_reason(decision: Decision) -> str` — Which NEEDS_REVIEW sub-condition fired, in priority order (for the breakdown).

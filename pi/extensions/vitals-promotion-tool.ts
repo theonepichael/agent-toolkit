@@ -9,18 +9,19 @@ import { getEffectiveCwd } from "./cwd";
 // dev-status-tool.ts (see ~/.claude/data/grill/pi-tool-dev-status-spec.md).
 //
 // The script has no subcommands, only flags, so the two things a caller
-// actually wants -- run the promotion pass, or read the latest
-// needs-review summary -- are modelled as two actions rather than as a
-// bare flag bag. That keeps --apply from being offered on the
-// summary-only path, where the script would silently ignore it.
+// actually wants -- run the promotion pass, or search the vitals store for
+// already-settled facts on a topic -- are modelled as two actions rather
+// than as a bare flag bag. That keeps --apply and the search-only fields
+// from being offered on the wrong action, where the script would silently
+// ignore them.
 
 const VITALS_PROMOTION_PATH = join(homedir(), ".claude", "scripts", "vitals_promotion.py");
 
-const ACTIONS = ["run", "needs_review_summary"] as const;
+const ACTIONS = ["run", "search"] as const;
 
 export type Action = (typeof ACTIONS)[number];
 
-export type Field = "apply" | "dataDir";
+export type Field = "apply" | "dataDir" | "query" | "includeSuperseded" | "backlogSlug";
 
 interface ActionFields {
   readonly allowed: readonly Field[];
@@ -29,12 +30,18 @@ interface ActionFields {
 
 const ACTION_FIELDS: Record<Action, ActionFields> = {
   run: { allowed: ["apply", "dataDir"], required: [] },
-  needs_review_summary: { allowed: ["dataDir"], required: [] },
+  search: {
+    allowed: ["query", "includeSuperseded", "backlogSlug", "dataDir"],
+    required: ["query"],
+  },
 };
 
 export interface VitalsPromotionParams {
   action: Action;
   apply?: boolean;
+  query?: string;
+  includeSuperseded?: boolean;
+  backlogSlug?: string;
   dataDir?: string;
 }
 
@@ -62,8 +69,14 @@ export function buildArgv(action: Action, params: VitalsPromotionParams): string
   switch (action) {
     case "run":
       return [...(params.apply ? ["--apply"] : []), ...dataDir];
-    case "needs_review_summary":
-      return ["--needs-review-summary", ...dataDir];
+    case "search":
+      return [
+        "--search",
+        params.query ?? "",
+        ...(params.includeSuperseded ? ["--include-superseded"] : []),
+        ...(params.backlogSlug ? ["--backlog-slug", params.backlogSlug] : []),
+        ...dataDir,
+      ];
   }
 }
 
@@ -72,19 +85,38 @@ export default function (pi: ExtensionAPI) {
     name: "vitals_promotion",
     label: "Vitals",
     description:
-      "Run the mechanical vitals-promotion pass over grill session data, or read the latest needs-review summary.",
-    promptSnippet: "Promote settled grill decisions into the vitals store",
+      "Run the mechanical vitals-promotion pass over grill session data, or search the vitals store for already-settled facts on a topic.",
+    promptSnippet: "Promote settled grill decisions into the vitals store, or search it",
     promptGuidelines: [
-      "Never invoke vitals_promotion.py via bash, for any reason, including a dry run or a plain needs-review read -- always use vitals_promotion instead.",
-      'vitals_promotion covers everything vitals_promotion.py does: action "run" is the promote/supersede pass (apply: true writes, omitted is a dry run that only prints), and action "needs_review_summary" prints the one-line summary of the latest needs-review file. If you are about to compose a `python3 ~/.claude/scripts/vitals_promotion.py ...` bash command, use vitals_promotion with the matching action instead.',
+      "Never invoke vitals_promotion.py via bash, for any reason, including a dry run or a search -- always use vitals_promotion instead.",
+      'vitals_promotion covers everything vitals_promotion.py does: action "run" is the promote/supersede pass (apply: true writes, omitted is a dry run that only prints), and action "search" looks up vitals records matching query (space-separated keywords, AND-combined -- every keyword must appear, no length filtering) without loading the whole store. If you are about to compose a `python3 ~/.claude/scripts/vitals_promotion.py ...` bash command, use vitals_promotion with the matching action instead.',
       "The pass is global, not per-session: it re-classifies every session on disk, so it also catches drift from sessions closed since the last run. Show its printed report to the user rather than summarizing the counts away.",
+      "search defaults to the global vitals store only; pass backlogSlug to also search that backlog item's own vitals file. Superseded records are excluded unless includeSuperseded is set -- a superseded record is not a settled fact.",
     ],
     parameters: Type.Object({
       action: StringEnum(ACTIONS),
       apply: Type.Optional(
         Type.Boolean({
           description:
-            'run: write the vitals/needs-review files. Omit for a dry run that only prints the report. Not accepted on "needs_review_summary".',
+            'run: write the vitals files. Omit for a dry run that only prints the report. Not accepted on "search".',
+        }),
+      ),
+      query: Type.Optional(
+        Type.String({
+          description:
+            'search (required): space-separated keywords, AND-combined, matched case-insensitively against each record\'s text and reasoning. Not accepted on "run".',
+        }),
+      ),
+      includeSuperseded: Type.Optional(
+        Type.Boolean({
+          description:
+            'search: also match superseded records (excluded by default). Not accepted on "run".',
+        }),
+      ),
+      backlogSlug: Type.Optional(
+        Type.String({
+          description:
+            'search: also search this backlog item\'s own vitals file, not just the global store. Not accepted on "run".',
         }),
       ),
       dataDir: Type.Optional(

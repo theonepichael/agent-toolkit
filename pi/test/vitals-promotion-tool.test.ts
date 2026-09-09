@@ -12,32 +12,45 @@ describe("assertFields", () => {
     expect(() => assertFields("run", { action: "run", dataDir: "/tmp/grill" })).not.toThrow();
   });
 
-  test("needs_review_summary accepts only dataDir", () => {
+  test("search requires query", () => {
+    expect(() => assertFields("search", { action: "search" })).toThrow(/requires: query/);
+  });
+
+  test("search accepts query, includeSuperseded and dataDir", () => {
+    expect(() => assertFields("search", { action: "search", query: "vitals" })).not.toThrow();
     expect(() =>
-      assertFields("needs_review_summary", { action: "needs_review_summary" }),
+      assertFields("search", { action: "search", query: "vitals", includeSuperseded: true }),
     ).not.toThrow();
     expect(() =>
-      assertFields("needs_review_summary", {
-        action: "needs_review_summary",
-        dataDir: "/tmp/grill",
+      assertFields("search", { action: "search", query: "vitals", dataDir: "/tmp/grill" }),
+    ).not.toThrow();
+    expect(() =>
+      assertFields("search", {
+        action: "search",
+        query: "vitals",
+        backlogSlug: "proj-x",
       }),
     ).not.toThrow();
   });
 
-  test("apply is rejected on needs_review_summary", () => {
-    // --apply and --needs-review-summary are unrelated flags on the script;
-    // passing apply here would be silently dropped, so refuse instead.
-    expect(() =>
-      assertFields("needs_review_summary", { action: "needs_review_summary", apply: true }),
-    ).toThrow(/does not accept: apply/);
+  test("query and includeSuperseded are rejected on run", () => {
+    // --search and its sub-flags are unrelated to the promote/supersede
+    // pass; passing them here would be silently dropped, so refuse instead.
+    expect(() => assertFields("run", { action: "run", query: "vitals" } as any)).toThrow(
+      /does not accept: query/,
+    );
+    expect(() => assertFields("run", { action: "run", includeSuperseded: true } as any)).toThrow(
+      /does not accept: includeSuperseded/,
+    );
   });
 
   test("an undefined field is not treated as supplied", () => {
     const params: VitalsPromotionParams = {
-      action: "needs_review_summary",
-      apply: undefined,
+      action: "search",
+      query: "vitals",
+      includeSuperseded: undefined,
     };
-    expect(() => assertFields("needs_review_summary", params)).not.toThrow();
+    expect(() => assertFields("search", params)).not.toThrow();
   });
 });
 
@@ -54,10 +67,29 @@ describe("buildArgv", () => {
     expect(buildArgv("run", { action: "run", apply: false })).toEqual([]);
   });
 
-  test("needs_review_summary passes its flag", () => {
-    expect(buildArgv("needs_review_summary", { action: "needs_review_summary" })).toEqual([
-      "--needs-review-summary",
+  test("search passes its query", () => {
+    expect(buildArgv("search", { action: "search", query: "vitals query" })).toEqual([
+      "--search",
+      "vitals query",
     ]);
+  });
+
+  test("search with includeSuperseded passes its flag", () => {
+    expect(
+      buildArgv("search", { action: "search", query: "vitals", includeSuperseded: true }),
+    ).toEqual(["--search", "vitals", "--include-superseded"]);
+  });
+
+  test("search includeSuperseded false omits the flag", () => {
+    expect(
+      buildArgv("search", { action: "search", query: "vitals", includeSuperseded: false }),
+    ).toEqual(["--search", "vitals"]);
+  });
+
+  test("search with backlogSlug passes it", () => {
+    expect(
+      buildArgv("search", { action: "search", query: "vitals", backlogSlug: "proj-x" }),
+    ).toEqual(["--search", "vitals", "--backlog-slug", "proj-x"]);
   });
 
   test("dataDir is passed through on both actions", () => {
@@ -67,11 +99,12 @@ describe("buildArgv", () => {
       "/tmp/grill",
     ]);
     expect(
-      buildArgv("needs_review_summary", {
-        action: "needs_review_summary",
+      buildArgv("search", {
+        action: "search",
+        query: "vitals",
         dataDir: "/tmp/grill",
       }),
-    ).toEqual(["--needs-review-summary", "--data-dir", "/tmp/grill"]);
+    ).toEqual(["--search", "vitals", "--data-dir", "/tmp/grill"]);
   });
 });
 

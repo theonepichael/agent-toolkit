@@ -380,9 +380,10 @@ recorded here.
   to carry a quoting rule to stop an inline single-quoted command breaking
   on them. `pi.exec` takes argv directly, so no shell parses the path.
 - **`vitals-promotion-tool.ts`** — the script is flags-only, with no
-  subcommands. Modelled as two actions (`run`, `needs_review_summary`)
-  rather than a bare flag bag, so `apply` cannot be offered on the
-  summary-only path where the script would silently ignore it.
+  subcommands. Modelled as two actions (`run`, `search`) rather than a bare
+  flag bag, so `apply` and the search-only fields (`query`,
+  `includeSuperseded`, `backlogSlug`) can't be offered on the wrong action,
+  where the script would silently ignore them.
 
 **Verified live** (2026-08-30, tool calls read from session JSONL):
 `grill` `{action:"list"}` returned the real session list; `second_opinion`

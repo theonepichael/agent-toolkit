@@ -3,19 +3,27 @@
 
 Reads every grill session under DATA_DIR, classifies each closed decision
 into AUTO_PROMOTE / NEEDS_REVIEW / PENDING_VERIFICATION / SCHEMA_ANOMALY, and
-(when --apply is passed) writes AUTO_PROMOTE decisions out as vitals records
-and NEEDS_REVIEW decisions out as a dated review pile. A supersede pass keeps
-previously-promoted vitals records honest against the session data's current
-state: a promoted decision that got removed, reopened, revised, or that no
-longer classifies as AUTO_PROMOTE has its vitals record flipped to
-"superseded" (never deleted) so a fresh promotion can replace it.
+(when --apply is passed) writes AUTO_PROMOTE decisions out as vitals records.
+A supersede pass keeps previously-promoted vitals records honest against the
+session data's current state: a promoted decision that got removed,
+reopened, revised, or that no longer classifies as AUTO_PROMOTE has its
+vitals record flipped to "superseded" (never deleted) so a fresh promotion
+can replace it.
 
 This is a mechanical, rerunnable pass — no cross-session contradiction
 detection, no curation. Dry-run by default; pass --apply to write.
 
+Also supports --search <query> to look up already-promoted vitals records
+by keyword without loading the whole store, so a caller (e.g. grill-me's
+own pre-step) can check for already-settled facts cheaply.
+
 Flags
-  --quiet, -q    suppress non-essential output
-  --verbose, -v  emit extra diagnostic messages to stderr
+  --quiet, -q             suppress non-essential output
+  --verbose, -v           emit extra diagnostic messages to stderr
+  --search <query>        search vitals records for QUERY and exit
+  --backlog-slug <slug>   with --search, also search <slug>.json
+  --include-superseded    with --search, also match superseded records
+  --json                  with --search, emit JSON instead of plain text
 
 Requires Python 3.12+.
 """
@@ -23,18 +31,18 @@ Requires Python 3.12+.
 import argparse
 import json
 import os
+import sys
 import tempfile
 from collections import Counter
 from contextlib import suppress
-from datetime import date, datetime
+from datetime import datetime
 from pathlib import Path
-from typing import TypedDict, cast
+from typing import TextIO, TypedDict, cast
 
 import cli_common
 
 DATA_DIR = Path.home() / ".claude" / "data" / "grill"
 VITALS_DIR = DATA_DIR / "vitals"
-NEEDS_REVIEW_DIR = DATA_DIR / "needs-review"
 
 VALID_SOURCES = {"user", "defaulted", "assumed", "tested"}
 VALID_RESULTS = {"VERIFIED", "DISPUTED", "UNVERIFIABLE"}
@@ -87,18 +95,6 @@ class VitalsRecord(TypedDict, total=False):
     status: str
     superseded_at: str
     reason: str
-
-
-class NeedsReviewEntry(TypedDict):
-    source_slug: str
-    source_decision_id: str
-    backlog_slug: str | None
-    question: str
-    decision: str
-    reasoning: str
-    source: str | None
-    verdict: Verdict | None
-    flag_reason: str
 
 
 DecisionKey = tuple[str, str]
@@ -155,29 +151,75 @@ def vitals_path(vitals_dir: Path, backlog_slug: str | None) -> Path:
     return vitals_dir / f"{backlog_slug or '_global'}.json"
 
 
-def latest_needs_review_file(needs_review_dir: Path) -> Path | None:
-    """Return the most recently dated needs-review file, or None if none exist.
+# ── search ────────────────────────────────────────────────────────────────────
 
-    Each run overwrites a full snapshot (not a delta) to a same-day file and
-    a fresh file on a new day — only the newest file is non-redundant.
+
+def matches_query(record: VitalsRecord, keywords: list[str]) -> bool:
+    """True iff every keyword is a case-insensitive substring of text or reasoning.
+
+    No length filtering: substring matching can't distinguish a short
+    stopword ("of", "is") from a short domain term ("ci", "cd", "ui", "db"),
+    so every keyword is used as given.
     """
-    if not needs_review_dir.exists():
-        return None
-    files = sorted(needs_review_dir.glob("*-needs-review.json"))
-    return files[-1] if files else None
+    if not keywords:
+        raise ValueError("keywords must not be empty")
+    haystack = f"{record.get('text', '')} {record.get('reasoning', '')}".lower()
+    return all(keyword.lower() in haystack for keyword in keywords)
 
 
-def summarize_needs_review(entries: list[NeedsReviewEntry]) -> str:
-    """One-line summary: count plus the earliest-dated entry, by source_slug prefix."""
-    if not entries:
-        return "needs-review: 0 entries"
-    oldest = min(entries, key=lambda e: e["source_slug"][:10])
-    question = oldest["question"]
-    snippet = question if len(question) <= 80 else question[:77] + "..."
-    return (
-        f"needs-review: {len(entries)} entries (oldest: "
-        f"{oldest['source_slug'][:10]} {oldest['source_decision_id']} — {snippet!r})"
-    )
+def search_vitals(
+    vitals_dir: Path,
+    keywords: list[str],
+    include_superseded: bool,
+    backlog_slug: str | None = None,
+) -> list[VitalsRecord]:
+    """Search _global.json (plus <backlog_slug>.json if given) for matches.
+
+    Deliberately not a glob over every *.json in vitals_dir: that would let
+    a search from one project's session surface unrelated projects'
+    decisions once other backlog-scoped files start existing. Global
+    matches come first, then backlog-scoped matches, each in on-disk record
+    order. `backlog_slug == "_global"` is a no-op, not a second load of the
+    same file.
+    """
+    if not keywords:
+        raise ValueError("keywords must not be empty")
+    paths = [vitals_dir / "_global.json"]
+    if backlog_slug and backlog_slug != "_global":
+        paths.append(vitals_dir / f"{backlog_slug}.json")
+
+    results: list[VitalsRecord] = []
+    for path in paths:
+        for record in load_vitals_file(path):
+            if not include_superseded and record.get("status") != "active":
+                continue
+            if matches_query(record, keywords):
+                results.append(record)
+    return results
+
+
+def print_search_results(
+    results: list[VitalsRecord],
+    as_json: bool,
+    quiet: bool = False,
+    file: TextIO | None = None,
+) -> None:
+    if as_json:
+        cli_common.qprint(json.dumps(results, indent=2), quiet=quiet, file=file)
+        return
+    if not results:
+        cli_common.qprint("no matching vitals records", quiet=quiet, file=file)
+        return
+    blocks = []
+    for record in results:
+        backlog_slug = record.get("backlog_slug") or "global"
+        blocks.append(
+            f"[{record.get('source_slug')}] {record.get('source_decision_id')}  "
+            f"(status: {record.get('status')}, backlog_slug: {backlog_slug})\n"
+            f"text: {record.get('text', '')}\n"
+            f"reasoning: {record.get('reasoning', '')}"
+        )
+    cli_common.qprint("\n\n".join(blocks), quiet=quiet, file=file)
 
 
 # ── classification ───────────────────────────────────────────────────────────
@@ -263,14 +305,11 @@ class Report(TypedDict):
     promoted_count: int
     superseded_count: int
     anomaly_entries: list[tuple[str, str, str]]  # (session_slug, decision_id, reason)
-    needs_review_entries: list[NeedsReviewEntry]
-    needs_review_path: Path
     dirty_vitals_paths: list[Path]
 
 
 def run(data_dir: Path, apply: bool) -> Report:
     vitals_dir = data_dir / "vitals"
-    needs_review_dir = data_dir / "needs-review"
 
     sessions = load_all_sessions(data_dir)
     lookup = build_decision_lookup(sessions)
@@ -300,7 +339,6 @@ def run(data_dir: Path, apply: bool) -> Report:
     open_decisions = 0
     total_decisions = 0
     auto_promote_items: list[tuple[Session, Decision]] = []
-    needs_review_entries: list[NeedsReviewEntry] = []
     anomaly_entries: list[tuple[str, str, str]] = []
 
     for session in sessions:
@@ -313,21 +351,6 @@ def run(data_dir: Path, apply: bool) -> Report:
             bucket_counts[bucket] += 1
             if bucket == AUTO_PROMOTE:
                 auto_promote_items.append((session, decision))
-            elif bucket == NEEDS_REVIEW:
-                verdict = decision.get("verdict")
-                needs_review_entries.append(
-                    {
-                        "source_slug": session["slug"],
-                        "source_decision_id": decision["id"],
-                        "backlog_slug": session.get("backlog_slug"),
-                        "question": decision.get("question", ""),
-                        "decision": decision.get("decision") or "",
-                        "reasoning": decision.get("reasoning", ""),
-                        "source": decision.get("source"),
-                        "verdict": verdict,
-                        "flag_reason": needs_review_reason(decision),
-                    }
-                )
             elif bucket == SCHEMA_ANOMALY:
                 anomaly_entries.append(
                     (session["slug"], decision["id"], anomaly_reason(decision))
@@ -364,14 +387,9 @@ def run(data_dir: Path, apply: bool) -> Report:
         promoted_count += 1
         dirty_paths.add(path)
 
-    needs_review_path = (
-        needs_review_dir / f"{date.today().isoformat()}-needs-review.json"
-    )
-
     if apply:
         for path in dirty_paths:
             atomic_write_json(path, vitals_by_path[path])
-        atomic_write_json(needs_review_path, needs_review_entries)
 
     return {
         "sessions_scanned": len(sessions),
@@ -381,8 +399,6 @@ def run(data_dir: Path, apply: bool) -> Report:
         "promoted_count": promoted_count,
         "superseded_count": superseded_count,
         "anomaly_entries": anomaly_entries,
-        "needs_review_entries": needs_review_entries,
-        "needs_review_path": needs_review_path,
         "dirty_vitals_paths": sorted(dirty_paths),
     }
 
@@ -407,16 +423,8 @@ def print_report(report: Report, apply: bool, quiet: bool = False) -> None:
         for slug, decision_id, reason in report["anomaly_entries"]:
             cli_common.qprint(f"  ANOMALY {slug}:{decision_id} — {reason}", quiet=quiet)
     if apply:
-        cli_common.qprint(
-            f"needs-review written to: {report['needs_review_path']}", quiet=quiet
-        )
         for path in report["dirty_vitals_paths"]:
             cli_common.qprint(f"vitals written: {path}", quiet=quiet)
-    else:
-        cli_common.qprint(
-            f"needs-review would be written to: {report['needs_review_path']}",
-            quiet=quiet,
-        )
 
 
 def main() -> None:
@@ -431,27 +439,47 @@ def main() -> None:
     parser.add_argument(
         "--apply",
         action="store_true",
-        help="write vitals/needs-review files (default: dry-run, prints only)",
+        help="write vitals files (default: dry-run, prints only)",
     )
     parser.add_argument(
-        "--needs-review-summary",
+        "--search",
+        metavar="QUERY",
+        help="search vitals records for QUERY (space-separated keywords, "
+        "AND-combined) and exit",
+    )
+    parser.add_argument(
+        "--backlog-slug",
+        metavar="SLUG",
+        help="with --search, also search <SLUG>.json (default: _global.json only)",
+    )
+    parser.add_argument(
+        "--include-superseded",
         action="store_true",
-        help="print a one-line summary of the latest needs-review file and exit",
+        help="with --search, also match superseded records",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="with --search, emit matching records as a JSON list instead of "
+        "plain text",
     )
     args = parser.parse_args()
 
-    if args.needs_review_summary:
-        path = latest_needs_review_file(args.data_dir / "needs-review")
-        if path is None:
-            cli_common.qprint(
-                "needs-review: 0 entries", quiet=getattr(args, "quiet", False)
+    if args.search is not None:
+        keywords = args.search.split()
+        if not keywords:
+            print(
+                "Error: --search query must contain at least one keyword.",
+                file=sys.stderr,
             )
-        else:
-            entries = cast(list[NeedsReviewEntry], json.loads(path.read_text()))
-            cli_common.qprint(
-                summarize_needs_review(entries),
-                quiet=getattr(args, "quiet", False),
-            )
+            sys.exit(1)
+        results = search_vitals(
+            args.data_dir / "vitals",
+            keywords,
+            args.include_superseded,
+            args.backlog_slug,
+        )
+        print_search_results(results, args.json, quiet=getattr(args, "quiet", False))
         return
 
     report = run(args.data_dir, args.apply)

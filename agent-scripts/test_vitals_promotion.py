@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Tests for vitals_promotion.py. Run with: python3 test_vitals_promotion.py"""
 
+import io
 import json
 import shutil
 import subprocess
@@ -243,16 +244,12 @@ class RunApplyTests(VitalsPromotionTestCase):
         vp.run(self.data_dir, apply=True)
         self.assertTrue(self.vitals_file(None).exists())
 
-    def test_apply_writes_needs_review_file(self) -> None:
+    def test_apply_does_not_write_needs_review_snapshot(self) -> None:
         self.write_session(
             make_session("s1", [make_decision("d1", source="assumed", verdict=None)])
         )
-        report = vp.run(self.data_dir, apply=True)
-        self.assertTrue(report["needs_review_path"].exists())
-        entries = json.loads(report["needs_review_path"].read_text())
-        self.assertEqual(len(entries), 1)
-        self.assertEqual(entries[0]["source_decision_id"], "d1")
-        self.assertEqual(entries[0]["flag_reason"], "assumed_defaulted")
+        vp.run(self.data_dir, apply=True)
+        self.assertFalse((self.data_dir / "needs-review").exists())
 
     def test_needs_review_does_not_touch_vitals(self) -> None:
         self.write_session(
@@ -408,109 +405,225 @@ class SupersedeTests(VitalsPromotionTestCase):
         self.assertEqual(report["promoted_count"], 0)
 
 
-def make_needs_review_entry(
-    source_slug: str,
-    decision_id: str,
-    *,
-    question: str = "some question?",
-    flag_reason: str = "assumed_defaulted",
-) -> dict:
-    return {
-        "source_slug": source_slug,
-        "source_decision_id": decision_id,
+def make_vitals_record(**overrides: object) -> dict:
+    base: dict = {
+        "text": "some settled fact about the topic",
+        "reasoning": "because reasons that mention the topic too",
+        "source_slug": "2026-09-09-some-session",
+        "source_decision_id": "d1",
         "backlog_slug": None,
-        "question": question,
-        "decision": "some answer",
-        "reasoning": "some reasoning",
-        "source": "assumed",
-        "verdict": None,
-        "flag_reason": flag_reason,
+        "confidence": "verified",
+        "promoted_at": "2026-09-09T00:00:00",
+        "status": "active",
     }
+    base.update(overrides)
+    return base
 
 
-class LatestNeedsReviewFileTests(VitalsPromotionTestCase):
-    def test_returns_none_on_missing_directory(self) -> None:
-        self.assertIsNone(vp.latest_needs_review_file(self.data_dir / "needs-review"))
+class MatchesQueryTests(unittest.TestCase):
+    def test_and_combination_requires_every_keyword(self) -> None:
+        rec = make_vitals_record(text="fix the vitals query interface", reasoning="")
+        self.assertTrue(vp.matches_query(rec, ["vitals", "query"]))
+        self.assertFalse(vp.matches_query(rec, ["vitals", "missing"]))
 
-    def test_returns_none_on_empty_directory(self) -> None:
-        needs_review_dir = self.data_dir / "needs-review"
-        needs_review_dir.mkdir()
-        self.assertIsNone(vp.latest_needs_review_file(needs_review_dir))
+    def test_case_insensitive(self) -> None:
+        rec = make_vitals_record(text="Fix CLI Output", reasoning="")
+        self.assertTrue(vp.matches_query(rec, ["cli"]))
 
-    def test_returns_lexicographically_last_file(self) -> None:
-        needs_review_dir = self.data_dir / "needs-review"
-        needs_review_dir.mkdir()
-        (needs_review_dir / "2026-08-01-needs-review.json").write_text("[]")
-        (needs_review_dir / "2026-08-11-needs-review.json").write_text("[]")
-        (needs_review_dir / "2026-08-05-needs-review.json").write_text("[]")
-        result = vp.latest_needs_review_file(needs_review_dir)
-        self.assertEqual(result, needs_review_dir / "2026-08-11-needs-review.json")
+    def test_matches_reasoning_field_too(self) -> None:
+        rec = make_vitals_record(text="unrelated", reasoning="mentions ci pipeline")
+        self.assertTrue(vp.matches_query(rec, ["ci"]))
 
+    def test_short_domain_term_keywords_are_not_filtered(self) -> None:
+        rec = make_vitals_record(text="set up ci and cd pipelines", reasoning="")
+        self.assertTrue(vp.matches_query(rec, ["ci", "cd"]))
 
-class SummarizeNeedsReviewTests(unittest.TestCase):
-    def test_empty_list(self) -> None:
-        self.assertEqual(vp.summarize_needs_review([]), "needs-review: 0 entries")
-
-    def test_mixed_list_picks_earliest_source_slug(self) -> None:
-        entries = [
-            make_needs_review_entry("2026-08-11-later-topic", "d2", question="q2"),
-            make_needs_review_entry("2026-08-01-earlier-topic", "d1", question="q1"),
-        ]
-        summary = vp.summarize_needs_review(entries)
-        self.assertIn("2 entries", summary)
-        self.assertIn("2026-08-01", summary)
-        self.assertIn("d1", summary)
-        self.assertIn("q1", summary)
-
-    def test_long_question_is_truncated(self) -> None:
-        long_question = "x" * 200
-        entries = [
-            make_needs_review_entry("2026-08-01-slug", "d1", question=long_question)
-        ]
-        summary = vp.summarize_needs_review(entries)
-        self.assertNotIn(long_question, summary)
-        self.assertIn("...", summary)
+    def test_raises_on_empty_keywords(self) -> None:
+        rec = make_vitals_record()
+        with self.assertRaises(ValueError):
+            vp.matches_query(rec, [])
 
 
-@pytest.mark.allow_real_subprocess
-class NeedsReviewSummaryCliTests(VitalsPromotionTestCase):
-    def test_flag_prints_zero_entries_on_missing_dir(self) -> None:
-        result = subprocess.run(
+class SearchVitalsTests(VitalsPromotionTestCase):
+    def write_vitals(self, backlog_slug: str | None, records: list[dict]) -> None:
+        path = self.vitals_file(backlog_slug)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(records))
+
+    def test_raises_on_empty_keywords(self) -> None:
+        self.write_vitals(None, [make_vitals_record()])
+        with self.assertRaises(ValueError):
+            vp.search_vitals(self.data_dir / "vitals", [], include_superseded=False)
+
+    def test_defaults_to_global_only(self) -> None:
+        self.write_vitals(None, [make_vitals_record(text="global vitals query fact")])
+        self.write_vitals(
+            "proj-x",
+            [
+                make_vitals_record(
+                    text="proj-x vitals query fact", backlog_slug="proj-x"
+                )
+            ],
+        )
+        results = vp.search_vitals(
+            self.data_dir / "vitals", ["vitals", "query"], include_superseded=False
+        )
+        self.assertEqual(len(results), 1)
+        self.assertIsNone(results[0]["backlog_slug"])
+
+    def test_backlog_slug_includes_both_files_global_first(self) -> None:
+        self.write_vitals(None, [make_vitals_record(text="global vitals query fact")])
+        self.write_vitals(
+            "proj-x",
+            [
+                make_vitals_record(
+                    text="proj-x vitals query fact", backlog_slug="proj-x"
+                )
+            ],
+        )
+        results = vp.search_vitals(
+            self.data_dir / "vitals",
+            ["vitals", "query"],
+            include_superseded=False,
+            backlog_slug="proj-x",
+        )
+        self.assertEqual(len(results), 2)
+        self.assertIsNone(results[0]["backlog_slug"])
+        self.assertEqual(results[1]["backlog_slug"], "proj-x")
+
+    def test_backlog_slug_global_is_not_a_duplicate_load(self) -> None:
+        self.write_vitals(None, [make_vitals_record(text="global vitals query fact")])
+        results = vp.search_vitals(
+            self.data_dir / "vitals",
+            ["vitals", "query"],
+            include_superseded=False,
+            backlog_slug="_global",
+        )
+        self.assertEqual(len(results), 1)
+
+    def test_excludes_superseded_by_default(self) -> None:
+        self.write_vitals(
+            None,
+            [
+                make_vitals_record(text="active vitals query fact", status="active"),
+                make_vitals_record(
+                    text="superseded vitals query fact", status="superseded"
+                ),
+            ],
+        )
+        results = vp.search_vitals(
+            self.data_dir / "vitals", ["vitals", "query"], include_superseded=False
+        )
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["status"], "active")
+
+    def test_include_superseded(self) -> None:
+        self.write_vitals(
+            None,
+            [
+                make_vitals_record(text="active vitals query fact", status="active"),
+                make_vitals_record(
+                    text="superseded vitals query fact", status="superseded"
+                ),
+            ],
+        )
+        results = vp.search_vitals(
+            self.data_dir / "vitals", ["vitals", "query"], include_superseded=True
+        )
+        self.assertEqual(len(results), 2)
+
+    def test_missing_backlog_file_returns_global_only(self) -> None:
+        self.write_vitals(None, [make_vitals_record(text="global vitals query fact")])
+        results = vp.search_vitals(
+            self.data_dir / "vitals",
+            ["vitals", "query"],
+            include_superseded=False,
+            backlog_slug="nonexistent",
+        )
+        self.assertEqual(len(results), 1)
+
+    def test_no_matches_returns_empty_list(self) -> None:
+        self.write_vitals(None, [make_vitals_record(text="unrelated fact")])
+        results = vp.search_vitals(
+            self.data_dir / "vitals", ["zzznomatch"], include_superseded=False
+        )
+        self.assertEqual(results, [])
+
+
+class PrintSearchResultsTests(unittest.TestCase):
+    def test_plain_text_zero_matches(self) -> None:
+        buf = io.StringIO()
+        vp.print_search_results([], as_json=False, file=buf)
+        self.assertIn("no matching vitals records", buf.getvalue())
+
+    def test_json_zero_matches_prints_empty_list(self) -> None:
+        buf = io.StringIO()
+        vp.print_search_results([], as_json=True, file=buf)
+        self.assertEqual(json.loads(buf.getvalue()), [])
+
+    def test_plain_text_includes_backlog_slug_and_citation_fields(self) -> None:
+        rec = make_vitals_record(
+            text="the fact", reasoning="the reasoning", backlog_slug="proj-x"
+        )
+        buf = io.StringIO()
+        vp.print_search_results([rec], as_json=False, file=buf)
+        out = buf.getvalue()
+        self.assertIn("2026-09-09-some-session", out)
+        self.assertIn("d1", out)
+        self.assertIn("backlog_slug: proj-x", out)
+        self.assertIn("the fact", out)
+        self.assertIn("the reasoning", out)
+
+    def test_plain_text_global_record_shown_as_global(self) -> None:
+        rec = make_vitals_record(backlog_slug=None)
+        buf = io.StringIO()
+        vp.print_search_results([rec], as_json=False, file=buf)
+        self.assertIn("backlog_slug: global", buf.getvalue())
+
+    def test_json_output_round_trips_records(self) -> None:
+        rec = make_vitals_record()
+        buf = io.StringIO()
+        vp.print_search_results([rec], as_json=True, file=buf)
+        self.assertEqual(json.loads(buf.getvalue()), [rec])
+
+
+@pytest.mark.allow_real_subprocess  # invokes the real vitals_promotion.py CLI end to end
+class SearchCliTests(VitalsPromotionTestCase):
+    def write_vitals(self, backlog_slug: str | None, records: list[dict]) -> None:
+        path = self.vitals_file(backlog_slug)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(records))
+
+    def run_cli(self, *args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
             [
                 sys.executable,
                 str(Path(__file__).parent / "vitals_promotion.py"),
                 "--data-dir",
                 str(self.data_dir),
-                "--needs-review-summary",
+                *args,
             ],
             capture_output=True,
             text=True,
         )
-        self.assertEqual(result.returncode, 0)
-        self.assertIn("needs-review: 0 entries", result.stdout)
 
-    def test_flag_prints_summary_and_does_not_run_apply(self) -> None:
-        needs_review_dir = self.data_dir / "needs-review"
-        needs_review_dir.mkdir()
-        entries = [make_needs_review_entry("2026-08-01-slug", "d1", question="q1")]
-        (needs_review_dir / "2026-08-01-needs-review.json").write_text(
-            json.dumps(entries)
-        )
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(Path(__file__).parent / "vitals_promotion.py"),
-                "--data-dir",
-                str(self.data_dir),
-                "--needs-review-summary",
-            ],
-            capture_output=True,
-            text=True,
-        )
+    def test_search_prints_matches(self) -> None:
+        self.write_vitals(None, [make_vitals_record(text="the vitals query design")])
+        result = self.run_cli("--search", "vitals query")
         self.assertEqual(result.returncode, 0)
-        self.assertIn("1 entries", result.stdout)
-        self.assertIn("d1", result.stdout)
-        self.assertFalse((self.data_dir / "vitals").exists())
+        self.assertIn("the vitals query design", result.stdout)
+
+    def test_empty_query_is_rejected(self) -> None:
+        self.write_vitals(None, [make_vitals_record()])
+        result = self.run_cli("--search", "   ")
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_search_does_not_run_apply(self) -> None:
+        self.write_vitals(None, [make_vitals_record(text="the vitals query design")])
+        result = self.run_cli("--search", "vitals query")
+        self.assertEqual(result.returncode, 0)
+        # nothing to promote since no grill sessions exist in data_dir
+        self.assertFalse((self.data_dir / "needs-review").exists())
 
 
 if __name__ == "__main__":
