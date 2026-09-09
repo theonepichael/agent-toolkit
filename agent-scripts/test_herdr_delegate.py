@@ -782,5 +782,134 @@ class RestartTests(DelegateTests):
         self.assertEqual(start[sep:], ["--", "--model", "opencode-go/glm-5.2"])
 
 
+class CopilotKindTests(DelegateTests):
+    """Specific unit tests covering `--kind copilot` behavior."""
+
+    def test_build_tab_argv_copilot_omits_unattended_env(self) -> None:
+        pi_argv = herdr_delegate.build_tab_argv(cwd="/tmp", label="foo", kind="pi")
+        self.assertIn("PI_AGENT_UNATTENDED=1", pi_argv)
+
+        copilot_argv = herdr_delegate.build_tab_argv(cwd="/tmp", label="foo", kind="copilot")
+        self.assertNotIn("PI_AGENT_UNATTENDED=1", copilot_argv)
+        self.assertIn("--label", copilot_argv)
+        self.assertIn("--no-focus", copilot_argv)
+
+    def test_build_agent_start_argv_copilot_flags(self) -> None:
+        argv = herdr_delegate.build_agent_start_argv(
+            name="copilot-worker",
+            pane="w:p1",
+            model="gpt-5",
+            kind="copilot",
+            session_id="123e4567-e89b-12d3-a456-426614174000",
+            allow_all_tools=True,
+            plugin_dir="/custom/plugins",
+        )
+        self.assertEqual(argv[:5], ["agent", "start", "copilot-worker", "--kind", "copilot"])
+        self.assertEqual(argv[5:7], ["--pane", "w:p1"])
+        sep = argv.index("--")
+        passthrough = argv[sep + 1 :]
+        self.assertIn("--session-id", passthrough)
+        self.assertEqual(
+            passthrough[passthrough.index("--session-id") + 1],
+            "123e4567-e89b-12d3-a456-426614174000",
+        )
+        self.assertIn("--allow-all-tools", passthrough)
+        self.assertIn("--plugin-dir", passthrough)
+        self.assertEqual(passthrough[passthrough.index("--plugin-dir") + 1], "/custom/plugins")
+        self.assertIn("--model", passthrough)
+        self.assertEqual(passthrough[passthrough.index("--model") + 1], "gpt-5")
+
+    def test_build_agent_start_argv_pi_byte_identical_before(self) -> None:
+        argv_pi_nomodel = herdr_delegate.build_agent_start_argv(
+            name="pi-worker", pane="w:p1", model=None, kind="pi"
+        )
+        self.assertEqual(argv_pi_nomodel, ["agent", "start", "pi-worker", "--kind", "pi", "--pane", "w:p1"])
+
+        argv_pi_model = herdr_delegate.build_agent_start_argv(
+            name="pi-worker", pane="w:p1", model="claude-3-7-sonnet", kind="pi"
+        )
+        self.assertEqual(
+            argv_pi_model,
+            ["agent", "start", "pi-worker", "--kind", "pi", "--pane", "w:p1", "--", "--model", "claude-3-7-sonnet"],
+        )
+
+    def test_swarm_state_dir_copilot(self) -> None:
+        with mock.patch.dict(os.environ, {"COPILOT_SWARM_STATE_DIR": "/custom/copilot/state"}):
+            self.assertEqual(herdr_delegate.swarm_state_dir("copilot"), Path("/custom/copilot/state"))
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(
+                herdr_delegate.swarm_state_dir("copilot"),
+                Path.home() / ".copilot" / "state",
+            )
+
+    def test_launch_copilot_passes_plugin_dir_and_flags(self) -> None:
+        fake = FakeHerdr()
+        with (
+            mock.patch.object(herdr_delegate, "herdr", fake),
+            mock.patch.object(herdr_delegate.time, "sleep", lambda _s: None),
+            mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
+        ):
+            code, out, _ = self.run_main([
+                "launch",
+                "--slug",
+                "atk-example",
+                "--cwd",
+                "/tmp",
+                "--kind",
+                "copilot",
+                "--model",
+                "gpt-5",
+            ])
+            self.assertEqual(code, 0)
+            create = fake.named("tab", "create")[0]
+            self.assertNotIn("PI_AGENT_UNATTENDED=1", create)
+
+            start = fake.named("agent", "start")[0]
+            self.assertIn("--kind", start)
+            self.assertEqual(start[start.index("--kind") + 1], "copilot")
+            sep = start.index("--")
+            passthrough = start[sep + 1 :]
+            self.assertIn("--allow-all-tools", passthrough)
+            self.assertIn("--plugin-dir", passthrough)
+            self.assertEqual(passthrough[passthrough.index("--plugin-dir") + 1], herdr_delegate.COPILOT_PLUGIN_DIR)
+            self.assertIn("--model", passthrough)
+            self.assertEqual(passthrough[passthrough.index("--model") + 1], "gpt-5")
+
+            prompt = fake.named("agent", "prompt")[0]
+            self.assertEqual(prompt[3], "/backlog-item --auto atk-example")
+
+    def test_restart_copilot_reads_copilot_state_dir(self) -> None:
+        fake = FakeHerdr()
+        state_dir = Path(tempfile.mkdtemp(prefix="copilot-swarm-state-"))
+        self.addCleanup(lambda: __import__("shutil").rmtree(state_dir, ignore_errors=True))
+        write_state(
+            state_dir,
+            "swarm-c1.json",
+            json.dumps({"runId": "c1", "prefix": "atk", "workers": []}),
+        )
+        with (
+            mock.patch.object(herdr_delegate, "herdr", fake),
+            mock.patch.object(herdr_delegate.time, "sleep", lambda _s: None),
+            mock.patch.dict(os.environ, {"HERDR_ENV": "1", "COPILOT_SWARM_STATE_DIR": str(state_dir)}),
+        ):
+            code, out, _ = self.run_main([
+                "restart",
+                "--swarm",
+                "3",
+                "--prefix",
+                "atk",
+                "--kind",
+                "copilot",
+            ])
+            self.assertEqual(code, 0)
+            summary = json.loads(out)
+            self.assertEqual(summary["resumed"], "c1")
+            create = fake.named("tab", "create")[0]
+            self.assertNotIn("PI_AGENT_UNATTENDED=1", create)
+            start = fake.named("agent", "start")[0]
+            self.assertIn("--kind", start)
+            self.assertEqual(start[start.index("--kind") + 1], "copilot")
+
+
 if __name__ == "__main__":
     unittest.main()

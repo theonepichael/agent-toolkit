@@ -34,10 +34,11 @@ failure. Any other failure still fails on the first attempt, unchanged.
 
 Usage:
     herdr_delegate.py plan
-    herdr_delegate.py launch --slug <slug> [--model <model>]
+    herdr_delegate.py launch --slug <slug> [--model <model>] [--kind {pi,copilot}]
     herdr_delegate.py launch --swarm <N> --prefix <prefix> [--model <model>]
+                             [--kind {pi,copilot}]
     herdr_delegate.py restart --swarm <N> --prefix <prefix> [--run-id <runId>]
-                              [--model <model>]
+                              [--model <model>] [--kind {pi,copilot}]
 """
 
 from __future__ import annotations
@@ -77,6 +78,9 @@ UNATTENDED_ENV = "PI_AGENT_UNATTENDED=1"
 # this?"; a second copy here would be the drift this design exists to avoid.
 
 DEV_STATUS = Path(__file__).parent / "dev_status.py"
+COPILOT_PLUGIN_DIR = str(
+    Path(__file__).resolve().parent.parent / "copilot" / "extensions" / "swarm"
+)
 
 
 class RefusedError(RuntimeError):
@@ -161,19 +165,13 @@ def group_by_prefix(slugs: list[str]) -> list[dict[str, object]]:
     return rows
 
 
-def build_tab_argv(*, cwd: str, label: str) -> list[str]:
-    """`herdr tab create` argv. The env pair is what makes the worker unattended."""
-    return [
-        "tab",
-        "create",
-        "--cwd",
-        cwd,
-        "--label",
-        label,
-        "--env",
-        UNATTENDED_ENV,
-        "--no-focus",
-    ]
+def build_tab_argv(*, cwd: str, label: str, kind: str = "pi") -> list[str]:
+    """`herdr tab create` argv. For pi, the env pair is what makes the worker unattended."""
+    argv = ["tab", "create", "--cwd", cwd, "--label", label]
+    if kind == "pi":
+        argv += ["--env", UNATTENDED_ENV]
+    argv += ["--no-focus"]
+    return argv
 
 
 def agent_name_for(label: str) -> str:
@@ -198,31 +196,56 @@ def build_agent_list_argv() -> list[str]:
     return ["agent", "list"]
 
 
-def build_agent_start_argv(*, name: str, pane: str, model: str | None) -> list[str]:
-    """`herdr agent start` argv, with any model passed through after a bare ``--``."""
-    argv = ["agent", "start", name, "--kind", "pi", "--pane", pane]
+def build_agent_start_argv(
+    *,
+    name: str,
+    pane: str,
+    model: str | None,
+    kind: str = "pi",
+    session_id: str | None = None,
+    allow_all_tools: bool = True,
+    plugin_dir: str | None = None,
+) -> list[str]:
+    """`herdr agent start` argv, with flags passed through after a bare ``--``."""
+    argv = ["agent", "start", name, "--kind", kind, "--pane", pane]
+    if kind == "copilot":
+        session_args: list[str] = []
+        if session_id:
+            session_args += ["--session-id", session_id]
+        if allow_all_tools:
+            session_args += ["--allow-all-tools"]
+        if plugin_dir:
+            session_args += ["--plugin-dir", plugin_dir]
+        if model:
+            session_args += ["--model", model]
+        if session_args:
+            argv += ["--", *session_args]
+        return argv
+
     if model:
         argv += ["--", "--model", model]
     return argv
 
 
-def worker_prompt(slug: str) -> str:
+def worker_prompt(slug: str, kind: str = "pi") -> str:
     """One worker, one item, unattended."""
     return f"/backlog-item --auto {slug}"
 
 
-def orchestrator_prompt(concurrency: int, prefix: str) -> str:
+def orchestrator_prompt(concurrency: int, prefix: str, kind: str = "pi") -> str:
     """One orchestrator; `swarm_spawn` owns the fan-out from here."""
     return f"/backlog-item --swarm={concurrency} --prefix {prefix}"
 
 
-def orchestrator_resume_prompt(concurrency: int, run_id: str, prefix: str) -> str:
+def orchestrator_resume_prompt(
+    concurrency: int, run_id: str, prefix: str, kind: str = "pi"
+) -> str:
     """One orchestrator, resuming an interrupted run.
 
-    Single line, deliberately: pi's prompt templates take arguments from the
+    Single line, deliberately: prompt templates take arguments from the
     command line itself, and extra prose after a slash command is not a
     documented mechanism. Everything `resume` means lives in
-    pi/prompts/backlog-item.md's --swarm section; this only has to match what
+    the harness's --swarm section; this only has to match what
     that parser accepts.
     """
     return f"/backlog-item --swarm={concurrency} resume {run_id} --prefix {prefix}"
@@ -251,8 +274,13 @@ def validate_run_id(run_id: str) -> str:
     return run_id
 
 
-def swarm_state_dir() -> Path:
-    """Where swarm-tool.ts persists per-runId state (same override, same default)."""
+def swarm_state_dir(kind: str = "pi") -> Path:
+    """Where swarm state is persisted for kind (same override, same default)."""
+    if kind == "copilot":
+        override = os.environ.get("COPILOT_SWARM_STATE_DIR")
+        if override:
+            return Path(override)
+        return Path.home() / ".copilot" / "state"
     override = os.environ.get("PI_SWARM_STATE_DIR")
     if override:
         return Path(override)
@@ -262,7 +290,7 @@ def swarm_state_dir() -> Path:
 def state_matches_prefix(state: object, prefix: str) -> bool:
     """Whether one parsed state file belongs to a run scoped to ``prefix``.
 
-    Exact field first -- swarm-tool.ts stamps ``prefix`` on fresh state --
+    Exact field first -- swarm-tool stamps ``prefix`` on fresh state --
     with a slug-scan fallback for files written before the field existed. A
     file with a DIFFERENT prefix field never matches by slug luck: the field
     is the deliberate answer, the scan is only for legacy files that lack it.
@@ -282,7 +310,7 @@ def state_matches_prefix(state: object, prefix: str) -> bool:
     return any(isinstance(s, str) and s.startswith(f"{prefix}-") for s in slugs)
 
 
-def discover_run_id(prefix: str) -> str:
+def discover_run_id(prefix: str, kind: str = "pi") -> str:
     """The runId of the newest state file belonging to ``prefix``.
 
     Refuses rather than falling back to a fresh run: a restart that cannot
@@ -292,7 +320,7 @@ def discover_run_id(prefix: str) -> str:
     deliberate exits instead (explicit --run-id, or launch for a conscious
     fresh start).
     """
-    state_dir = swarm_state_dir()
+    state_dir = swarm_state_dir(kind=kind)
     if not state_dir.is_dir():
         raise RefusedError(
             f"no swarm state dir at {state_dir}, so there is no run to resume. "
@@ -325,11 +353,11 @@ def discover_run_id(prefix: str) -> str:
     )
 
 
-def resolve_resume_run_id(prefix: str, run_id: str | None) -> str:
+def resolve_resume_run_id(prefix: str, run_id: str | None, kind: str = "pi") -> str:
     """The runId a restart will resume. Explicit always wins; discovery next."""
     if run_id is not None:
         return validate_run_id(run_id)
-    return discover_run_id(prefix)
+    return discover_run_id(prefix, kind=kind)
 
 
 def parse_tab_list(listing: dict[str, object]) -> list[dict[str, object]]:
@@ -411,9 +439,17 @@ list and index out of range."""
 
 
 def spawn_in_new_tab(
-    *, cwd: str, label: str, prompt: str, model: str | None
+    *,
+    cwd: str,
+    label: str,
+    prompt: str,
+    model: str | None,
+    kind: str = "pi",
+    session_id: str | None = None,
+    allow_all_tools: bool = True,
+    plugin_dir: str | None = None,
 ) -> dict[str, object]:
-    """Create a tab, start pi in it, and hand it its prompt.
+    """Create a tab, start pi or copilot in it, and hand it its prompt.
 
     The one launch sequence, shared by `launch` and `restart` so the two
     cannot drift apart. A `timeout`-coded `agent start` failure is retried
@@ -427,13 +463,23 @@ def spawn_in_new_tab(
     """
     name = agent_name_for(label)
     for attempt in range(AGENT_START_TIMEOUT_RETRIES + 1):
-        created = herdr(build_tab_argv(cwd=cwd, label=label))
+        created = herdr(build_tab_argv(cwd=cwd, label=label, kind=kind))
         result = created["result"]
         pane = result["root_pane"]["pane_id"]  # type: ignore[index]
         tab = result["tab"]["tab_id"]  # type: ignore[index]
 
         try:
-            herdr(build_agent_start_argv(name=name, pane=pane, model=model))
+            herdr(
+                build_agent_start_argv(
+                    name=name,
+                    pane=pane,
+                    model=model,
+                    kind=kind,
+                    session_id=session_id,
+                    allow_all_tools=allow_all_tools,
+                    plugin_dir=plugin_dir,
+                )
+            )
         except RefusedError as exc:
             # No agent is running in the freshly created tab, and herdr leaves
             # pane cleanup to the caller on this failure -- so if we do nothing,
@@ -527,19 +573,28 @@ def cmd_plan(_args: argparse.Namespace) -> None:
 
 
 def cmd_launch(args: argparse.Namespace) -> None:
-    """Create a tab, start pi in it, and hand it its prompt."""
+    """Create a tab, start pi or copilot in it, and hand it its prompt."""
     require_herdr_env(os.environ)
+    kind = getattr(args, "kind", "pi")
+    plugin_dir = COPILOT_PLUGIN_DIR if kind == "copilot" else None
     if args.slug:
         check_launchable(slug=args.slug)
-        label, prompt = args.slug, worker_prompt(args.slug)
+        label, prompt = args.slug, worker_prompt(args.slug, kind=kind)
     else:
         check_launchable(prefix=args.prefix)
         label = f"swarm-{args.prefix}"
-        prompt = orchestrator_prompt(args.swarm, args.prefix)
+        prompt = orchestrator_prompt(args.swarm, args.prefix, kind=kind)
 
     print(
         json.dumps(
-            spawn_in_new_tab(cwd=args.cwd, label=label, prompt=prompt, model=args.model)
+            spawn_in_new_tab(
+                cwd=args.cwd,
+                label=label,
+                prompt=prompt,
+                model=args.model,
+                kind=kind,
+                plugin_dir=plugin_dir,
+            )
         )
     )
 
@@ -554,9 +609,11 @@ def cmd_restart(args: argparse.Namespace) -> None:
     """
     require_herdr_env(os.environ)
     check_launchable(prefix=args.prefix)
+    kind = getattr(args, "kind", "pi")
+    plugin_dir = COPILOT_PLUGIN_DIR if kind == "copilot" else None
     label = f"swarm-{args.prefix}"
 
-    run_id = resolve_resume_run_id(args.prefix, args.run_id)
+    run_id = resolve_resume_run_id(args.prefix, args.run_id, kind=kind)
 
     matches = live_tab_ids_with_label(label)
     if len(matches) > 1:
@@ -571,9 +628,14 @@ def cmd_restart(args: argparse.Namespace) -> None:
         herdr(["tab", "close", closed_tab])
         wait_agent_deregistered(agent_name_for(label))
 
-    prompt = orchestrator_resume_prompt(args.swarm, run_id, args.prefix)
+    prompt = orchestrator_resume_prompt(args.swarm, run_id, args.prefix, kind=kind)
     summary = spawn_in_new_tab(
-        cwd=args.cwd, label=label, prompt=prompt, model=args.model
+        cwd=args.cwd,
+        label=label,
+        prompt=prompt,
+        model=args.model,
+        kind=kind,
+        plugin_dir=plugin_dir,
     )
     summary["closed_tab"] = closed_tab
     summary["resumed"] = run_id
@@ -588,7 +650,9 @@ def main() -> None:
     plan = sub.add_parser("plan", help="READY queue grouped by prefix, as JSON")
     plan.set_defaults(func=cmd_plan)
 
-    launch = sub.add_parser("launch", help="start a pi worker or orchestrator")
+    launch = sub.add_parser(
+        "launch", help="start a pi or copilot worker or orchestrator"
+    )
     # Flat rather than a mutually exclusive group: gen_interfaces.py extracts a
     # subcommand's flags from add_argument calls on the subparser itself, so a
     # group's members are invisible to it and every doc example citing them
@@ -596,8 +660,16 @@ def main() -> None:
     launch.add_argument("--slug", help="single item for one unattended worker")
     launch.add_argument("--swarm", type=int, help="fan out across N workers")
     launch.add_argument("--prefix", help="queue scope, required with --swarm")
-    launch.add_argument("--model", help="model passed through to pi after a bare --")
+    launch.add_argument(
+        "--model", help="model passed through to harness after a bare --"
+    )
     launch.add_argument("--cwd", default=os.getcwd(), help="working directory")
+    launch.add_argument(
+        "--kind",
+        choices=["pi", "copilot"],
+        default="pi",
+        help="agent harness (pi or copilot; default: pi)",
+    )
     launch.set_defaults(func=cmd_launch)
 
     restart = sub.add_parser(
@@ -609,8 +681,16 @@ def main() -> None:
     restart.add_argument(
         "--run-id", help="runId to resume; discovered from persisted state when omitted"
     )
-    restart.add_argument("--model", help="model passed through to pi after a bare --")
+    restart.add_argument(
+        "--model", help="model passed through to harness after a bare --"
+    )
     restart.add_argument("--cwd", default=os.getcwd(), help="working directory")
+    restart.add_argument(
+        "--kind",
+        choices=["pi", "copilot"],
+        default="pi",
+        help="agent harness (pi or copilot; default: pi)",
+    )
     restart.set_defaults(func=cmd_restart)
 
     args = parser.parse_args()

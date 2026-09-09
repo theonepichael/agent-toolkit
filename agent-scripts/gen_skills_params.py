@@ -678,12 +678,13 @@ the queue.""",
 in one pass via `AskUserQuestion`, offering each queued item exactly as its
 originating CLAUDE.md protocol specifies (a backlog `add`, a `pending add`,
 an `out-of-scope add`), confirming or declining each in turn.""",
+        "SWARM_SECTION": "",
     },
     "copilot": {
         "FRONTMATTER": """\
 ---
 name: backlog-item
-description: "Runs a dev_status.py backlog item end-to-end: resolve, worktree, spec (escalating to grill-me only for a genuinely open design branch), second-opinion critique, execution handoff, TDD implement, verify, commit/merge/push gates, review+approve. Use when the user says 'work on backlog item 4', 'pick up <slug>', 'let's do the next backlog item', or otherwise names a specific item to work end-to-end. Add --auto (optionally with a slug) for an unattended single-item or full-READY-batch run — commit and merge/push gates still stop live, per item."
+description: "Runs a dev_status.py backlog item end-to-end: resolve, worktree, spec (escalating to grill-me only for a genuinely open design branch), second-opinion critique, execution handoff, TDD implement, verify, commit/merge/push gates, review+approve. Use when the user says 'work on backlog item 4', 'pick up <slug>', 'let's do the next backlog item', or otherwise names a specific item to work end-to-end. Add --auto (optionally with a slug) for an unattended single-item or full-READY-batch run — commit and merge/push gates still stop live, per item. Also supports a --swarm[=N] mode (concurrent Copilot workers via herdr) — see the --swarm[=N] mode section below."
 allowed-tools: shell
 ---""",
         "OPENING_PARAGRAPH": """\
@@ -691,8 +692,9 @@ The target item is whatever slug or integer N the user named in their
 prompt (e.g. `/backlog-item 4`, "work on backlog item 4"). If the prompt
 also names `--auto` (with or without a target item), skip straight to the
 `--auto mode` section at the end of this file instead of running the
-numbered steps live. Otherwise, if no target item was named, ask which item
-— never guess.
+numbered steps live. If the prompt names `--swarm` (e.g. `/backlog-item --swarm=3`),
+skip straight to the `--swarm[=N] mode` section at the end of this file.
+Otherwise, if no target item was named, ask which item — never guess.
 
 Work the named item to done, one step at a time. Every user-approval gate
 below (`## 10`, `## 11`) stops and waits for the user — never collapse two
@@ -882,10 +884,117 @@ queue.""",
    open and gets escalated to `grill-me`, run that inner session as
    `grill-me --auto` too, rather than stopping for live Q&A.""",
         "AUTO_END_BLOCK": """\
-in one pass, asking in plain text for each queued item exactly as its
-originating shared-instructions protocol specifies (a backlog `add`, a
-`pending add`, an `out-of-scope add`), stating a recommendation first and
-confirming or declining each in turn.""",
+subject to the mandatory digest-offer check below:
+
+**Digest-offer check — mandatory, before the run may be reported
+finished.** A digest entry that exists only in this session's context is
+a finding that dies with the session: in a swarm worker, ending the turn
+to "ask in plain text" is indistinguishable from finishing, so the entry
+never reaches the orchestrator's relay and a manual end-of-run audit
+becomes the only backstop. Which branch applies is decided by one
+environment variable:
+
+- **`COPILOT_SWARM_CAPTURE_FILE` set** — this session is a swarm worker, and
+  the plain-text walk cannot work here. Write every queued digest entry
+  to that file, verbatim as this shape:
+
+  ```json
+  {"offers": [{"kind": "backlog", "id": "<slug>", "summary": "<one line>"}]}
+  ```
+
+  `kind` mirrors the shared instructions file protocol each entry would otherwise have
+  been offered under: `backlog` for a backlog `add`, `pending` for a
+  pending-item `add`, `out-of-scope` for a rejected concept; `id` is the
+  slug (or concept slug); `summary` is the one-line offer text. Write the
+  file only when there is at least one entry — an absent file already
+  means "nothing to offer" downstream. Do NOT also ask the entries in
+  plain text: the orchestrator reads this file when the worker settles
+  and owns the single end-of-run ask for the whole run. Before ending,
+  re-check every queued entry against the file — refuse to report the
+  item finished with a queued-but-unwritten entry still pending.
+- **Unset** — this is an ordinary attended `--auto` session: walk the
+  accumulated digest in one pass, asking in plain text for each queued
+  item exactly as its originating shared-instructions protocol specifies (a backlog
+  `add`, a `pending add`, an `out-of-scope add`), stating a recommendation
+  first and confirming or declining each in turn.""",
+        "SWARM_SECTION": """\
+---
+
+## `--swarm[=N]` mode
+
+Runs the READY queue concurrently instead of one item at a time — `N`
+recursive Copilot workers (default 3, from `--swarm=N`), each in its own herdr
+tab, each running its own `/backlog-item --auto <slug>`. Requires
+`HERDR_ENV=1` (this session must itself be running inside a herdr-managed
+pane); if it isn't, say so and stop rather than falling back to `--auto`
+silently.
+
+Queue selection is delegated to `swarm_spawn`. Pass it a `prefix` scoping
+the run (`meta-` for tooling work, `iron-lb-` for that project, and so on)
+rather than a fixed list of slugs: it re-reads the READY set from
+`dev_status.py` on every call, so an item unblocked by a worker that just
+finished is picked up on the next spawn without you naming it. A `prefix` is
+required when you do not pass `items` — selecting from the whole READY queue
+unscoped would pull unrelated projects into one run. `--swarm` never takes a
+single-item target.
+
+Uses the `swarm_spawn`, `swarm_poll`, `swarm_amend`, and `swarm_resolve_blocked` tools
+provided by the Copilot swarm extension (`copilot/extensions/swarm/`) — never hand-compose
+`herdr` bash commands for this; the tools own argv safety, state persistence across
+a crash/restart, crash recovery, and concurrency-cap accounting.
+
+1. Pick a `runId` for this invocation (e.g. a short timestamp-based slug)
+   and call `swarm_spawn` with the run's `prefix` and the concurrency — it
+   spawns up to the cap, reporting any items skipped (cap), deferred (file
+   overlap) or failed to spawn.
+
+   **Resume.** If the invocation carried `resume <runId> --prefix <prefix>`
+   (sent by `herdr_delegate.py restart`, which closed and relaunched this
+   orchestrator), do not pick a fresh runId: call `swarm_spawn` and
+   `swarm_poll` with that exact runId and prefix. State persistence loads the
+   persisted state for that runId, reconciles it against herdr's live agent
+   list, and keeps already-tried items from being re-selected. Resuming an
+   unknown runId degrades safely to a fresh state under that id. Say in your
+   first turn that you are resuming `<runId>` rather than starting fresh.
+
+   **Deferred is not skipped.** Two items whose `related_files` name the same
+   file are never spawned into the same wave: each worker gets its own
+   worktree, so the second to merge would conflict. A deferred item is still
+   owed and becomes schedulable once the worker it collided with finishes; a
+   skipped one was only held back by the concurrency cap and is coming next
+   wave regardless. Both are named in the tool's result text.
+
+   Each worker's tab is launched with `COPILOT_AGENT_UNATTENDED=1` in its
+   environment and runs Copilot CLI with `--allow-all-tools`.
+
+2. Loop: call `swarm_poll`. It blocks until at least one worker settles and
+   returns every event that settled in that window (process all of them
+   before polling again):
+   - **`blocked`** — a worker hit an approval gate (almost always step 10
+     commit or step 11 merge/push, or another stop). `swarm_poll` reports that
+     event with the quoted prompt. Never answer commit or merge gates on the
+     user's behalf. Call `swarm_resolve_blocked` with the agent id and prompt.
+     Note: Copilot swarm currently delegates option matching to manual
+     resolution (`needs_manual:`), reporting the worker tab id and prompt so
+     the user can attach directly (`herdr agent attach <id>`) or answer.
+   - **`still_working`** — a check-in, **not an outcome**. The worker is still
+     active and within its working budget. Relay check-in status to the user
+     if appropriate, then continue polling. It frees no concurrency slot.
+   - **`finished`** / **`timed_out`** / **`error`** — record the outcome for
+     the end-of-run digest; all three close that worker's tab and free its slot.
+     A freed slot is the cue to call `swarm_spawn` again with the same `runId`
+     and `prefix` to pick up newly unblocked or queued items.
+
+3. Repeat steps 1 and 2 — spawn, poll, spawn again — until `swarm_spawn`
+   reports nothing left to spawn, `swarm_poll` reports no active workers, and
+   the digest accounts for the whole queue.
+
+4. **End of run** — a dashboard-style summary of every item processed (done,
+   flagged, stopped on budget, failed), then walk any accumulated
+   proactive-capture digest entries (including those captured from workers via
+   `COPILOT_SWARM_CAPTURE_FILE`).
+
+Steps 10 and 11's live-approval requirement is never bypassed in this mode.""",
     },
     "opencode": {
         "FRONTMATTER": """\
@@ -1015,6 +1124,7 @@ procedure below across the queue.""",
 in one pass via the `question` tool, offering each queued item exactly as
 its originating CLAUDE.md protocol specifies (a backlog `add`, a
 `pending add`, an `out-of-scope add`), confirming or declining each in turn.""",
+        "SWARM_SECTION": "",
     },
     "agy": {
         "FRONTMATTER": """\
@@ -1206,6 +1316,7 @@ exactly as its originating shared-instructions protocol specifies (a
 backlog `add`, a `pending add`, an `out-of-scope add`), stating a
 recommendation first, then stopping and waiting for an actual reply before
 each next entry.""",
+        "SWARM_SECTION": "",
     },
     "codex": {
         # Mechanics mirror agy's: no discrete Skill tool call (skills load by
@@ -1396,6 +1507,7 @@ exactly as its originating shared-instructions protocol specifies (a
 backlog `add`, a `pending add`, an `out-of-scope add`), stating a
 recommendation first, then stopping and waiting for an actual reply before
 each next entry.""",
+        "SWARM_SECTION": "",
     },
     "pi": {
         "FRONTMATTER": """\
@@ -1602,6 +1714,16 @@ applies is decided by one environment variable:
   item exactly as its originating CLAUDE.md protocol specifies (a backlog
   `add`, a `pending add`, an `out-of-scope add`), stating a recommendation
   first and confirming or declining each in turn.""",
+        "SWARM_SECTION": """\
+---
+
+## `--swarm[=N]` mode
+
+Runs the READY queue concurrently instead of one item at a time — `N`
+recursive pi workers via herdr fanning out over the full READY queue, instead
+of one item at a time. This generated copy only points at
+`pi/prompts/backlog-item.md` (the file `/backlog-item` actually runs in Pi) —
+read that file for the full `--swarm[=N] mode` procedure.""",
     },
 }
 
@@ -2663,7 +2785,7 @@ SWARM_PARAMS: dict[str, dict[str, str]] = {
         "FRONTMATTER": """\
 ---
 name: swarm
-description: "Hand READY backlog items to pi agents running in herdr tabs — a real fan-out across the queue by default, or a single item when one is named. Use when the user says 'swarm', 'swarm the backlog', 'hand this to pi', 'give <item> to a pi agent', or 'delegate to a pi worker'. Requires HERDR_ENV=1; says so and stops otherwise."
+description: "Hand READY backlog items to pi or copilot agents running in herdr tabs — a real fan-out across the queue by default, or a single item when one is named. Use when the user says 'swarm', 'swarm the backlog', 'hand this to pi', 'give <item> to a pi agent', 'hand this to copilot', or 'delegate to a swarm worker'. Requires HERDR_ENV=1; says so and stops otherwise."
 ---""",
         # Transcribed verbatim from the hand-authored dotfiles copy this
         # generated output replaces (ff05d19) -- byte-for-byte, so the
@@ -2679,7 +2801,7 @@ the user asked for a swarm, not for a guess about which project.""",
         "FRONTMATTER": """\
 ---
 name: swarm
-description: "Hand READY backlog items to pi agents running in herdr tabs — a real fan-out across the queue by default, or a single item when one is named. Use when the user says 'swarm', 'swarm the backlog', 'hand this to pi', 'give <item> to a pi agent', or 'delegate to a pi worker'. Requires HERDR_ENV=1; says so and stops otherwise."
+description: "Hand READY backlog items to pi or copilot agents running in herdr tabs — a real fan-out across the queue by default, or a single item when one is named. Use when the user says 'swarm', 'swarm the backlog', 'hand this to pi', 'give <item> to a pi agent', 'hand this to copilot', or 'delegate to a swarm worker'. Requires HERDR_ENV=1; says so and stops otherwise."
 allowed-tools: shell
 ---""",
         # Same mechanics adaptation as every copilot params entry: no

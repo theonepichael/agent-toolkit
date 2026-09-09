@@ -299,3 +299,13 @@ applies is decided by one environment variable:
   item exactly as its originating CLAUDE.md protocol specifies (a backlog
   `add`, a `pending add`, an `out-of-scope add`), stating a recommendation
   first and confirming or declining each in turn.
+
+---
+
+## `--swarm[=N]` mode
+
+Runs the READY queue concurrently instead of one item at a time — `N`
+recursive pi workers via herdr fanning out over the full READY queue, instead
+of one item at a time. This generated copy only points at
+`pi/prompts/backlog-item.md` (the file `/backlog-item` actually runs in Pi) —
+read that file for the full `--swarm[=N] mode` procedure.

@@ -1,0 +1,5 @@
+{
+  "name": "copilot-swarm",
+  "version": "0.1.0",
+  "description": "Fan-out swarm orchestration for GitHub Copilot CLI"
+}

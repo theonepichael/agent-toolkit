@@ -709,21 +709,24 @@ Launch pi agents in herdr tabs to work backlog items.
 - CLI (`argparse`): Launch pi agents in herdr tabs to work backlog items.
 - Subcommands:
   - `plan` — READY queue grouped by prefix, as JSON
-  - `launch [--slug <SLUG>] [--swarm <SWARM>] [--prefix <PREFIX>] [--model <MODEL>] [--cwd <CWD>]` — start a pi worker or orchestrator
+  - `launch [--slug <SLUG>] [--swarm <SWARM>] [--prefix <PREFIX>] [--model <MODEL>] [--cwd <CWD>] [--kind {pi,copilot}]` — start a pi or copilot worker or orchestrator
     - `--slug` — single item for one unattended worker
     - `--swarm` — fan out across N workers
     - `--prefix` — queue scope, required with --swarm
-    - `--model` — model passed through to pi after a bare --
+    - `--model` — model passed through to harness after a bare --
     - `--cwd` — working directory
-  - `restart [--swarm <SWARM>] [--prefix <PREFIX>] [--run-id <RUN_ID>] [--model <MODEL>] [--cwd <CWD>]` — close a live swarm orchestrator's tab, relaunch it, resume the same run
+    - `--kind` — agent harness (pi or copilot; default: pi) (choices: pi, copilot; default: pi)
+  - `restart [--swarm <SWARM>] [--prefix <PREFIX>] [--run-id <RUN_ID>] [--model <MODEL>] [--cwd <CWD>] [--kind {pi,copilot}]` — close a live swarm orchestrator's tab, relaunch it, resume the same run
     - `--swarm` — fan out across N workers
     - `--prefix` — queue scope, required with --swarm
     - `--run-id` — runId to resume; discovered from persisted state when omitted
-    - `--model` — model passed through to pi after a bare --
+    - `--model` — model passed through to harness after a bare --
     - `--cwd` — working directory
-- Environment: `PI_SWARM_STATE_DIR`
+    - `--kind` — agent harness (pi or copilot; default: pi) (choices: pi, copilot; default: pi)
+- Environment: `COPILOT_SWARM_STATE_DIR`, `PI_SWARM_STATE_DIR`
 - Filesystem constants:
   - `DEV_STATUS = Path(__file__).parent / 'dev_status.py'`
+  - `COPILOT_PLUGIN_DIR = str(Path(__file__).resolve().parent.parent / 'copilot' / 'extensions' / 'swarm')`
 - Explicit exit codes: `1`
 - Depends on: `dev_status.py`
 - Exceptions:
@@ -732,24 +735,24 @@ Launch pi agents in herdr tabs to work backlog items.
   - `require_herdr_env(env: dict[str, str] | os._Environ[str]) -> None` — Refuse unless this process is inside a herdr-managed pane.
   - `check_launchable(*, slug: str | None = None, prefix: str | None = None) -> None` — Refuse a launch that targets the harness's own repo.
   - `group_by_prefix(slugs: list[str]) -> list[dict[str, object]]` — Group slugs by prefix, worker-safe prefixes first, then largest first.
-  - `build_tab_argv(*, cwd: str, label: str) -> list[str]` — `herdr tab create` argv.
+  - `build_tab_argv(*, cwd: str, label: str, kind: str = 'pi') -> list[str]` — `herdr tab create` argv.
   - `agent_name_for(label: str) -> str` — The herdr agent name derived from a tab label.
   - `build_tab_list_argv() -> list[str]` — `herdr tab list` argv.
   - `build_agent_list_argv() -> list[str]` — `herdr agent list` argv.
-  - `build_agent_start_argv(*, name: str, pane: str, model: str | None) -> list[str]` — `herdr agent start` argv, with any model passed through after a bare ``--``.
-  - `worker_prompt(slug: str) -> str` — One worker, one item, unattended.
-  - `orchestrator_prompt(concurrency: int, prefix: str) -> str` — One orchestrator; `swarm_spawn` owns the fan-out from here.
-  - `orchestrator_resume_prompt(concurrency: int, run_id: str, prefix: str) -> str` — One orchestrator, resuming an interrupted run.
+  - `build_agent_start_argv(*, name: str, pane: str, model: str | None, kind: str = 'pi', session_id: str | None = None, allow_all_tools: bool = True, plugin_dir: str | None = None) -> list[str]` — `herdr agent start` argv, with flags passed through after a bare ``--``.
+  - `worker_prompt(slug: str, kind: str = 'pi') -> str` — One worker, one item, unattended.
+  - `orchestrator_prompt(concurrency: int, prefix: str, kind: str = 'pi') -> str` — One orchestrator; `swarm_spawn` owns the fan-out from here.
+  - `orchestrator_resume_prompt(concurrency: int, run_id: str, prefix: str, kind: str = 'pi') -> str` — One orchestrator, resuming an interrupted run.
   - `validate_run_id(run_id: str) -> str` — Refuse a runId the delegate cannot safely pass through.
-  - `swarm_state_dir() -> Path` — Where swarm-tool.ts persists per-runId state (same override, same default).
+  - `swarm_state_dir(kind: str = 'pi') -> Path` — Where swarm state is persisted for kind (same override, same default).
   - `state_matches_prefix(state: object, prefix: str) -> bool` — Whether one parsed state file belongs to a run scoped to ``prefix``.
-  - `discover_run_id(prefix: str) -> str` — The runId of the newest state file belonging to ``prefix``.
-  - `resolve_resume_run_id(prefix: str, run_id: str | None) -> str` — The runId a restart will resume.
+  - `discover_run_id(prefix: str, kind: str = 'pi') -> str` — The runId of the newest state file belonging to ``prefix``.
+  - `resolve_resume_run_id(prefix: str, run_id: str | None, kind: str = 'pi') -> str` — The runId a restart will resume.
   - `parse_tab_list(listing: dict[str, object]) -> list[dict[str, object]]` — Tabs out of a `herdr tab list` envelope; [] on anything unexpected.
   - `live_tab_ids_with_label(label: str) -> list[str]` — Ids of every live tab carrying exactly ``label``.
   - `parse_agent_names(listing: dict[str, object]) -> list[str]` — Agent names out of a `herdr agent list` envelope; [] on anything unexpected.
   - `wait_agent_deregistered(name: str, *, retry_advice: str = 'Retry `restart` (it relaunches once the name frees)') -> None` — Poll until no live agent carries ``name``, bounded; refuse if it persists.
-  - `spawn_in_new_tab(*, cwd: str, label: str, prompt: str, model: str | None) -> dict[str, object]` — Create a tab, start pi in it, and hand it its prompt.
+  - `spawn_in_new_tab(*, cwd: str, label: str, prompt: str, model: str | None, kind: str = 'pi', session_id: str | None = None, allow_all_tools: bool = True, plugin_dir: str | None = None) -> dict[str, object]` — Create a tab, start pi or copilot in it, and hand it its prompt.
   - `ready_slugs() -> list[str]` — Slugs currently in READY, straight from ``dev_status.py ready``.
   - `herdr(argv: list[str]) -> dict[str, object]` — Run a herdr command and return its parsed JSON result.
 - Subcommand handlers: `cmd_plan`, `cmd_launch`, `cmd_restart`
@@ -1321,7 +1324,7 @@ the file existing in the repo; the description is the canonical
 - **`/standup`** — Gather assigned work, chat signal, calendar events, pending replies, git commits, and backlog activity into a daily standup draft, saved to a dated file. Use when the user says 'standup', 'prep for standup', or wants their daily status pulled together.
   - Source: `claude/commands/standup.md`
   - Installed at: `~/.claude/commands/standup.md` (claude)
-- **`/swarm`** — Hand READY backlog items to pi agents running in herdr tabs — a real fan-out across the queue by default, or a single item when one is named. Use when the user says 'swarm', 'swarm the backlog', 'hand this to pi', 'give <item> to a pi agent', or 'delegate to a pi worker'. Requires HERDR_ENV=1; says so and stops otherwise.
+- **`/swarm`** — Hand READY backlog items to pi or copilot agents running in herdr tabs — a real fan-out across the queue by default, or a single item when one is named. Use when the user says 'swarm', 'swarm the backlog', 'hand this to pi', 'give <item> to a pi agent', 'hand this to copilot', or 'delegate to a swarm worker'. Requires HERDR_ENV=1; says so and stops otherwise.
   - Source: `claude/commands/swarm.md`
   - Installed at: `~/.claude/commands/swarm.md` (claude)
 - **`/to-tickets`** — Decompose a plan or spec into multiple linked dev_status.py backlog items — vertical-slice/tracer-bullet tickets joined by blocked_by edges — after confirming the breakdown with the user. Use when the user wants a plan broken into tickets, wants a spec turned into backlog items, or invokes /to-tickets.
@@ -1351,6 +1354,17 @@ are copy-once seeds for exactly that reason.
 | `claude/settings.work.json` | not symlinked by `links.toml` |
 | `copilot/CLAUDE_CODE_PARITY.md` | not symlinked by `links.toml` |
 | `copilot/aliases.zsh` | `~/.copilot_aliases` (copilot) |
+| `copilot/extensions/swarm/extensions/swarm/extension.mjs` | not symlinked by `links.toml` |
+| `copilot/extensions/swarm/lib/swarm-herdr.js` | not symlinked by `links.toml` |
+| `copilot/extensions/swarm/lib/swarm-picker.js` | not symlinked by `links.toml` |
+| `copilot/extensions/swarm/lib/swarm-scheduling.js` | not symlinked by `links.toml` |
+| `copilot/extensions/swarm/lib/swarm-tool-logic.js` | not symlinked by `links.toml` |
+| `copilot/extensions/swarm/plugin.json` | not symlinked by `links.toml` |
+| `copilot/extensions/swarm/src/extension.ts` | not symlinked by `links.toml` |
+| `copilot/extensions/swarm/src/swarm-herdr.ts` | not symlinked by `links.toml` |
+| `copilot/extensions/swarm/src/swarm-picker.ts` | not symlinked by `links.toml` |
+| `copilot/extensions/swarm/src/swarm-scheduling.ts` | not symlinked by `links.toml` |
+| `copilot/extensions/swarm/src/swarm-tool-logic.ts` | not symlinked by `links.toml` |
 | `copilot/hooks/agent-stop.json` | `~/.copilot/hooks/agent-stop.json` (copilot, mac, linux) |
 | `copilot/hooks/post-tool-use.json` | `~/.copilot/hooks/post-tool-use.json` (copilot, mac, linux) |
 | `copilot/hooks/pre-tool-use.json` | `~/.copilot/hooks/pre-tool-use.json` (copilot, mac, linux) |
@@ -1409,6 +1423,7 @@ are copy-once seeds for exactly that reason.
 | `pi/prompts/to-tickets.md` | `~/.pi/agent/prompts/to-tickets.md` (pi) |
 | `pi/settings.json` | not symlinked by `links.toml` |
 | `pi/test/compaction-backlog-sync.test.ts` | not symlinked by `links.toml` |
+| `pi/test/copilot-swarm.test.ts` | not symlinked by `links.toml` |
 | `pi/test/cwd.test.ts` | not symlinked by `links.toml` |
 | `pi/test/delegate-tool.test.ts` | not symlinked by `links.toml` |
 | `pi/test/dev-status-tool.test.ts` | not symlinked by `links.toml` |
@@ -1770,6 +1785,7 @@ named doc, not regenerating this file.
 | Doc | Status |
 | --- | --- |
 | `claude/commands/swarm.md` | OK |
+| `copilot/skills/backlog-item/SKILL.md` | OK |
 | `copilot/skills/swarm/SKILL.md` | OK |
 
 ### `refresh_guidance.py`
