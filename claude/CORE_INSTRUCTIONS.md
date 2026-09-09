@@ -315,13 +315,15 @@ records an executed command; `"manual:<note>"` covers genuinely-manual
 checks) and retry. A bare `gate-pass` without coverage is refused.
 `gate` can't be set via a raw `update` patch — always `gate-set`/`gate-pass`.
 
-`start`/`done`/`update`/`review`/`approve`/`reject` already render the full dashboard as part of their own
-stdout — after running one, display that stdout to the user instead of just
-narrating a one-line confirmation. Run these with `DEVSTATUS_AGENT=1` (see
-the example invocations above) so stdout is clean; dashboard.md's
-misresolution-check protocol still applies (verify against the mutated
-item's line in the displayed dashboard, since the old stderr echo is
-suppressed under this env var).
+Under `DEVSTATUS_AGENT=1`, mutating commands (`start`, `done`, `update`,
+`review`, `approve`, `reject`, `add`, `pending *`, `block`, `unblock`,
+`gate-*`, `rename`, `remove`) emit a single structured confirmation line on
+stdout: `[<cmd>] slug=<slug> status=<status> rev=<rev> [ref=<ref>]
+detail="<detail>"`. Because the harness tool runner displays stdout directly
+to the user, do not copy or narrate the confirmation back. Verify against
+misresolution by checking that `slug`, `ref` (if numeric), and `detail`
+match the item intended; if they don't, revert (`update <slug> '{"status":
+"open"}'` or similar) and ask.
 
 If the item's work touched a real project repo and left actual file
 changes, offer to commit — and if the repo has a remote, offer to push too

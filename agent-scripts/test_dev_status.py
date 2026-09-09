@@ -6107,6 +6107,8 @@ class _args:
         False  # default; argparse sets --quiet/-q (default False) on every leaf parser
     )
     verbose = False  # default; argparse sets --verbose/-v (default False) on every leaf parser
+    compact = False  # default; argparse sets --compact (default False)
+    full = False  # default; argparse sets --full/--no-compact (default False)
 
     def __init__(self, **kwargs):
         self.__dict__.update(kwargs)
@@ -6546,5 +6548,290 @@ class BacklogStorageExtractionTestCase(unittest.TestCase):
                 pass
 
 
+class CompactMutationOutputTestCase(BacklogFixture):
+    """Verify single-line compact structured confirmations for mutating commands."""
+
+    def test_format_compact_confirmation_unit(self):
+        line = dev_status.format_compact_confirmation(
+            "start", "my-slug", "in-progress", 42, ref=None, detail="Standard summary"
+        )
+        self.assertEqual(
+            line,
+            '[start] slug=my-slug status=in-progress rev=42 detail="Standard summary"',
+        )
+
+        # With numeric ref
+        line_ref = dev_status.format_compact_confirmation(
+            "start", "my-slug", "in-progress", 42, ref="3", detail="Standard summary"
+        )
+        self.assertEqual(
+            line_ref,
+            '[start] slug=my-slug status=in-progress rev=42 ref="3" detail="Standard summary"',
+        )
+
+        # Ref identical to slug should be omitted
+        line_same = dev_status.format_compact_confirmation(
+            "start", "my-slug", "in-progress", 42, ref="my-slug", detail="Standard summary"
+        )
+        self.assertEqual(
+            line_same,
+            '[start] slug=my-slug status=in-progress rev=42 detail="Standard summary"',
+        )
+
+        # Whitespace collapsing, multiline newline removal, quote escaping, and 200 char truncation
+        long_text = "Word " * 50  # 250 chars
+        line_long = dev_status.format_compact_confirmation(
+            "update", "my-slug", "open", 43, detail=f'Hello\n\tworld "quotes"   extra   {long_text}'
+        )
+        self.assertNotIn("\n", line_long)
+        self.assertNotIn("\t", line_long)
+        self.assertIn('\\"quotes\\"', line_long)
+        self.assertIn("...", line_long)
+
+    def test_is_compact_resolution(self):
+        # Default with no env var
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("DEVSTATUS_AGENT", None)
+            self.assertFalse(dev_status._is_compact(_args()))
+            self.assertTrue(dev_status._is_compact(_args(compact=True)))
+            self.assertFalse(dev_status._is_compact(_args(full=True)))
+
+        # With DEVSTATUS_AGENT=1
+        with patch.dict(os.environ, {"DEVSTATUS_AGENT": "1"}):
+            self.assertTrue(dev_status._is_compact(_args()))
+            self.assertFalse(dev_status._is_compact(_args(full=True)))
+            self.assertTrue(dev_status._is_compact(_args(compact=True)))
+
+    def test_start_compact_output_slug_and_numeric(self):
+        self.write_items([make_item("item-one"), make_item("item-two")])
+        out = io.StringIO()
+        with (
+            patch.dict(os.environ, {"DEVSTATUS_AGENT": "1"}),
+            patch("sys.stdout", out),
+        ):
+            dev_status.cmd_start(_args(id="item-one"))
+        val = out.getvalue().strip()
+        self.assertTrue(val.startswith("[start] slug=item-one status=in-progress rev="))
+        self.assertNotIn('ref="', val)
+        self.assertNotIn("┌─", val)
+
+        # Numeric ID includes ref="2"
+        out2 = io.StringIO()
+        cur_rev = self.read_rev()
+        with (
+            patch.dict(os.environ, {"DEVSTATUS_AGENT": "1"}),
+            patch("sys.stdout", out2),
+        ):
+            dev_status.cmd_start(_args(id="2", if_rev=cur_rev))
+        val2 = out2.getvalue().strip()
+        self.assertTrue(val2.startswith("[start] slug=item-two status=in-progress rev="))
+        self.assertIn('ref="2"', val2)
+        self.assertNotIn("┌─", val2)
+
+    def test_done_compact_output(self):
+        self.write_items([make_item("item-one")])
+        out = io.StringIO()
+        with (
+            patch.dict(os.environ, {"DEVSTATUS_AGENT": "1"}),
+            patch("sys.stdout", out),
+        ):
+            dev_status.cmd_done(_args(id="item-one"))
+        val = out.getvalue().strip()
+        self.assertTrue(val.startswith("[done] slug=item-one status=done rev="))
+        self.assertNotIn("┌─", val)
+
+    def test_review_approve_reject_compact_output(self):
+        self.write_items([make_item("item-one", status="in-progress")])
+        out_rev = io.StringIO()
+        with (
+            patch.dict(os.environ, {"DEVSTATUS_AGENT": "1"}),
+            patch("sys.stdout", out_rev),
+        ):
+            dev_status.cmd_review(_args(id="item-one"))
+        self.assertTrue(out_rev.getvalue().strip().startswith("[review] slug=item-one status=in-review rev="))
+        self.assertNotIn("┌─", out_rev.getvalue())
+
+        # reject sends back to in-progress
+        out_rej = io.StringIO()
+        with (
+            patch.dict(os.environ, {"DEVSTATUS_AGENT": "1"}),
+            patch("sys.stdout", out_rej),
+        ):
+            dev_status.cmd_reject(_args(id="item-one", feedback="needs work"))
+        self.assertTrue(out_rej.getvalue().strip().startswith("[reject] slug=item-one status=in-progress rev="))
+        self.assertNotIn("┌─", out_rej.getvalue())
+
+        # review again, then approve
+        dev_status.cmd_review(_args(id="item-one"))
+        out_app = io.StringIO()
+        with (
+            patch.dict(os.environ, {"DEVSTATUS_AGENT": "1"}),
+            patch("sys.stdout", out_app),
+        ):
+            dev_status.cmd_approve(_args(id="item-one"))
+        self.assertTrue(out_app.getvalue().strip().startswith("[approve] slug=item-one status=done rev="))
+        self.assertNotIn("┌─", out_app.getvalue())
+
+    def test_add_compact_output(self):
+        out = io.StringIO()
+        with (
+            patch.dict(os.environ, {"DEVSTATUS_AGENT": "1"}),
+            patch("sys.stdout", out),
+        ):
+            dev_status.cmd_add(_args(json='{"id": "new-item", "summary": "Fresh summary"}'))
+        val = out.getvalue().strip()
+        self.assertTrue(val.startswith("[add] slug=new-item status=open rev="))
+        self.assertIn('detail="Fresh summary"', val)
+        self.assertNotIn("┌─", val)
+
+    def test_pending_add_and_update_compact_output(self):
+        out_add = io.StringIO()
+        with (
+            patch.dict(os.environ, {"DEVSTATUS_AGENT": "1"}),
+            patch("sys.stdout", out_add),
+        ):
+            dev_status.cmd_pending_add(
+                _args(json='{"id": "wait-item", "description": "Waiting on reply", "kind": "email"}')
+            )
+        val_add = out_add.getvalue().strip()
+        self.assertTrue(val_add.startswith("[pending add] slug=wait-item status=waiting_for_reply rev="))
+        self.assertIn('detail="Waiting on reply"', val_add)
+        self.assertNotIn("┌─", val_add)
+
+        out_up = io.StringIO()
+        with (
+            patch.dict(os.environ, {"DEVSTATUS_AGENT": "1"}),
+            patch("sys.stdout", out_up),
+        ):
+            dev_status.cmd_pending_update(
+                _args(id="wait-item", patch='{"status": "reply_received"}')
+            )
+        val_up = out_up.getvalue().strip()
+        self.assertTrue(val_up.startswith("[pending update] slug=wait-item status=reply_received rev="))
+        self.assertIn('detail="Waiting on reply"', val_up)
+        self.assertNotIn("┌─", val_up)
+
+    def test_update_compact_output(self):
+        self.write_items([make_item("item-one", summary="Original summary")])
+        out = io.StringIO()
+        with (
+            patch.dict(os.environ, {"DEVSTATUS_AGENT": "1"}),
+            patch("sys.stdout", out),
+        ):
+            dev_status.cmd_update(_args(id="item-one", patch='{"summary": "New summary"}'))
+        val = out.getvalue().strip()
+        self.assertTrue(val.startswith("[update] slug=item-one status=open rev="))
+        self.assertIn('detail="updated summary: New summary"', val)
+        self.assertNotIn("┌─", val)
+
+    def test_block_and_unblock_compact_output(self):
+        self.write_items([make_item("blocker-item"), make_item("blocked-item")])
+        out_blk = io.StringIO()
+        with (
+            patch.dict(os.environ, {"DEVSTATUS_AGENT": "1"}),
+            patch("sys.stdout", out_blk),
+        ):
+            dev_status.cmd_block(_args(id="blocked-item", blocker="blocker-item"))
+        val_blk = out_blk.getvalue().strip()
+        self.assertTrue(val_blk.startswith("[block] slug=blocked-item status=open rev="))
+        self.assertIn('detail="blocked by blocker-item"', val_blk)
+        self.assertNotIn("┌─", val_blk)
+
+        out_unblk = io.StringIO()
+        with (
+            patch.dict(os.environ, {"DEVSTATUS_AGENT": "1"}),
+            patch("sys.stdout", out_unblk),
+        ):
+            dev_status.cmd_unblock(_args(id="blocked-item", blocker="blocker-item"))
+        val_unblk = out_unblk.getvalue().strip()
+        self.assertTrue(val_unblk.startswith("[unblock] slug=blocked-item status=open rev="))
+        self.assertIn('detail="unblocked from blocker-item"', val_unblk)
+        self.assertNotIn("┌─", val_unblk)
+
+    def test_gate_set_and_pass_compact_output(self):
+        self.write_items([make_item("gated-item")])
+        out_set = io.StringIO()
+        with (
+            patch.dict(os.environ, {"DEVSTATUS_AGENT": "1"}),
+            patch("sys.stdout", out_set),
+        ):
+            dev_status.cmd_gate_set(_args(id="gated-item", json='{"required": true, "criteria": ["Crit 1", "Crit 2"]}'))
+        val_set = out_set.getvalue().strip()
+        self.assertTrue(val_set.startswith("[gate-set] slug=gated-item status=open rev="))
+        self.assertIn('detail="gate set (2 criteria, required=true)"', val_set)
+        self.assertNotIn("┌─", val_set)
+
+        out_pass = io.StringIO()
+        with (
+            patch.dict(os.environ, {"DEVSTATUS_AGENT": "1"}),
+            patch("sys.stdout", out_pass),
+        ):
+            dev_status.cmd_gate_pass(_args(id="gated-item", json='{"coverage": {"1": "manual:ok", "2": "manual:ok"}}'))
+        val_pass = out_pass.getvalue().strip()
+        self.assertTrue(val_pass.startswith("[gate-pass] slug=gated-item status=open rev="))
+        self.assertIn('detail="gate passed via manual"', val_pass)
+        self.assertNotIn("┌─", val_pass)
+
+    def test_rename_compact_output(self):
+        self.write_items([make_item("old-slug")])
+        out = io.StringIO()
+        with (
+            patch.dict(os.environ, {"DEVSTATUS_AGENT": "1"}),
+            patch("sys.stdout", out),
+        ):
+            dev_status.cmd_rename(_args(old_slug="old-slug", new_slug="new-slug"))
+        val = out.getvalue().strip()
+        self.assertTrue(val.startswith("[rename] slug=new-slug status=open rev="))
+        self.assertIn('ref="old-slug"', val)
+        self.assertIn('detail="renamed from old-slug"', val)
+        self.assertNotIn("┌─", val)
+
+    def test_remove_compact_output(self):
+        self.write_items([make_item("doomed-slug", summary="Going away")])
+        out = io.StringIO()
+        with (
+            patch.dict(os.environ, {"DEVSTATUS_AGENT": "1"}),
+            patch("sys.stdout", out),
+        ):
+            dev_status.cmd_remove(_args(id="doomed-slug"))
+        val = out.getvalue().strip()
+        self.assertTrue(val.startswith("[remove] slug=doomed-slug status=removed rev="))
+        self.assertIn('detail="Going away"', val)
+        self.assertNotIn("┌─", val)
+
+    def test_full_flag_overrides_env_var(self):
+        self.write_items([make_item("item-one")])
+        out = io.StringIO()
+        with (
+            patch.dict(os.environ, {"DEVSTATUS_AGENT": "1"}),
+            patch("sys.stdout", out),
+        ):
+            dev_status.cmd_start(_args(id="item-one", full=True))
+        val = out.getvalue()
+        self.assertIn("┌─", val)
+
+    def test_compact_flag_without_env_var(self):
+        self.write_items([make_item("item-one")])
+        out = io.StringIO()
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("DEVSTATUS_AGENT", None)
+            with patch("sys.stdout", out):
+                dev_status.cmd_start(_args(id="item-one", compact=True))
+        val = out.getvalue().strip()
+        self.assertTrue(val.startswith("[start] slug=item-one status=in-progress rev="))
+        self.assertNotIn("┌─", val)
+
+    def test_interactive_run_without_env_var_retains_full_dashboard(self):
+        self.write_items([make_item("item-one")])
+        out = io.StringIO()
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("DEVSTATUS_AGENT", None)
+            with patch("sys.stdout", out):
+                dev_status.cmd_start(_args(id="item-one"))
+        val = out.getvalue()
+        self.assertIn("┌─", val)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+

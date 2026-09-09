@@ -84,6 +84,45 @@ def _agent_quiet() -> bool:
     return bool(os.environ.get("DEVSTATUS_AGENT"))
 
 
+def _is_compact(args: argparse.Namespace | None = None) -> bool:
+    """True when mutating commands should emit a single-line structured confirmation.
+
+    Compact mode is active when DEVSTATUS_AGENT is truthy or --compact is
+    explicitly supplied, unless overridden by --full / --no-compact.
+    """
+    if args is not None:
+        if getattr(args, "full", False) or getattr(args, "no_compact", False):
+            return False
+        if getattr(args, "compact", False):
+            return True
+    return _agent_quiet()
+
+
+def _sanitize_compact_detail(detail: str) -> str:
+    """Collapse whitespace, truncate to 200 chars, and escape quotes."""
+    cleaned = " ".join(str(detail).split())
+    if len(cleaned) > 200:
+        cleaned = cleaned[:197] + "..."
+    return cleaned.replace('"', '\\"')
+
+
+def format_compact_confirmation(
+    cmd: str,
+    slug: str,
+    status: str,
+    rev: int,
+    ref: str | int | None = None,
+    detail: str = "",
+) -> str:
+    """Format a single-line structured confirmation for mutating commands under compact mode."""
+    ref_part = f' ref="{ref}"' if ref is not None and str(ref) != slug else ""
+    sanitized_detail = _sanitize_compact_detail(detail)
+    return (
+        f"[{cmd}] slug={slug} status={status} rev={rev}{ref_part} "
+        f'detail="{sanitized_detail}"'
+    )
+
+
 DONE_MAX_ITEMS = 5
 DONE_SELECTION_VERSION = 2
 
@@ -2724,6 +2763,9 @@ class _MutationResult:
     slug: str
     new_rev: int | None = None
     journal_extra: dict[str, object] = field(default_factory=dict)
+    compact_detail: str | None = None
+    compact_status: str | None = None
+    ref: str | int | None = None
 
 
 @contextmanager
@@ -2735,6 +2777,7 @@ def _backlog_mutation(
     *,
     quiet: bool = False,
     verbose: bool = False,
+    compact: bool | None = None,
 ) -> Iterator[_MutationResult]:
     """Run the shared skeleton for update/start/done/block/unblock/remove
     (also review/approve/reject/gate-set/gate-pass — every command sharing
@@ -2788,6 +2831,7 @@ def _backlog_mutation(
         quiet: Threaded to :func:`confirm_resolution` and
             :func:`append_journal_event`.
         verbose: Threaded to :func:`append_journal_event`.
+        compact: Force compact structured output on stdout or None for auto.
 
     Yields:
         A :class:`_MutationResult` for the caller to mutate.
@@ -2819,6 +2863,7 @@ def _backlog_mutation(
             pending_items=pending_items,
             slug=slug,
             new_rev=new_rev,
+            ref=id_arg,
         )
 
         yield result
@@ -2840,9 +2885,31 @@ def _backlog_mutation(
             ),
             verbose=verbose,
         )
-        if announce:
-            confirm_resolution(cmd, id_arg, result.item, quiet=quiet)
-        render(result.items, result.pending_items, rev=result.new_rev)
+        is_compact_run = _agent_quiet() if compact is None else compact
+        if is_compact_run:
+            detail = (
+                result.compact_detail
+                if result.compact_detail is not None
+                else cast(str, result.item.get("summary", ""))
+            )
+            status = (
+                result.compact_status
+                if result.compact_status is not None
+                else cast(str, result.item.get("status", ""))
+            )
+            line = format_compact_confirmation(
+                cmd=cmd,
+                slug=result.slug,
+                status=status,
+                rev=cast(int, result.new_rev),
+                ref=result.ref,
+                detail=detail,
+            )
+            print(line)
+        else:
+            if announce:
+                confirm_resolution(cmd, id_arg, result.item, quiet=quiet)
+            render(result.items, result.pending_items, rev=result.new_rev)
     _maybe_dispatch_recap_regen()
 
 
@@ -3234,7 +3301,18 @@ def cmd_add(args: argparse.Namespace) -> None:
             ),
             verbose=args.verbose,
         )
-        render(items, pending_items, rev=new_rev)
+        if _is_compact(args):
+            line = format_compact_confirmation(
+                cmd="add",
+                slug=slug,
+                status="open",
+                rev=new_rev,
+                ref=None,
+                detail=cast(str, item["summary"]),
+            )
+            print(line)
+        else:
+            render(items, pending_items, rev=new_rev)
     _maybe_dispatch_recap_regen()
     _blocker_check_reminder(items, slug, cmd="add", quiet=args.quiet)
     _out_of_scope_check_reminder("add", quiet=args.quiet)
@@ -3336,6 +3414,7 @@ def cmd_update(args: argparse.Namespace) -> None:
         announce=True,
         quiet=args.quiet,
         verbose=args.verbose,
+        compact=_is_compact(args),
     ) as m:
         m.journal_extra["fields"] = sorted(patch)
         if "status" in patch:
@@ -3360,6 +3439,8 @@ def cmd_update(args: argparse.Namespace) -> None:
                 m.item["claimed_by"] = _make_claim()
         cast(dict[str, object], m.item).update(patch)
         m.item["updated"] = today()
+        fields_str = ", ".join(sorted(patch.keys()))
+        m.compact_detail = f"updated {fields_str}: {m.item.get('summary', '')}"
 
 
 def cmd_start(args: argparse.Namespace) -> None:
@@ -3378,6 +3459,7 @@ def cmd_start(args: argparse.Namespace) -> None:
         announce=True,
         quiet=args.quiet,
         verbose=args.verbose,
+        compact=_is_compact(args),
     ) as m:
         if m.item.get("status") == "in-review":
             print(
@@ -3415,6 +3497,7 @@ def cmd_done(args: argparse.Namespace) -> None:
         announce=True,
         quiet=args.quiet,
         verbose=args.verbose,
+        compact=_is_compact(args),
     ) as m:
         if m.item.get("status") == "in-review":
             print(
@@ -3446,6 +3529,7 @@ def cmd_review(args: argparse.Namespace) -> None:
         announce=True,
         quiet=args.quiet,
         verbose=args.verbose,
+        compact=_is_compact(args),
     ) as m:
         if m.item.get("status") not in ("in-progress", "in-review"):
             print(
@@ -3473,6 +3557,7 @@ def cmd_approve(args: argparse.Namespace) -> None:
         announce=True,
         quiet=args.quiet,
         verbose=args.verbose,
+        compact=_is_compact(args),
     ) as m:
         if m.item.get("status") != "in-review":
             print(
@@ -3510,6 +3595,7 @@ def cmd_reject(args: argparse.Namespace) -> None:
         announce=True,
         quiet=args.quiet,
         verbose=args.verbose,
+        compact=_is_compact(args),
     ) as m:
         if m.item.get("status") != "in-review":
             print(
@@ -3573,7 +3659,11 @@ def cmd_gate_set(args: argparse.Namespace) -> None:
         announce=True,
         quiet=args.quiet,
         verbose=args.verbose,
+        compact=_is_compact(args),
     ) as m:
+        m.compact_detail = (
+            f"gate set ({len(criteria)} criteria, required={str(required).lower()})"
+        )
         m.item["gate"] = {
             "required": required,
             "criteria": criteria,
@@ -3677,6 +3767,7 @@ def cmd_gate_pass(args: argparse.Namespace) -> None:
         announce=True,
         quiet=args.quiet,
         verbose=args.verbose,
+        compact=_is_compact(args),
     ) as m:
         gate = m.item.get("gate")
         if not gate or not gate.get("required"):
@@ -3761,6 +3852,7 @@ def cmd_gate_pass(args: argparse.Namespace) -> None:
             else "mixed"
         )
         gate["coverage"] = covered
+        m.compact_detail = f"gate passed via {gate['passed_via']}"
         m.item["updated"] = today()
 
 
@@ -4067,12 +4159,23 @@ def cmd_rename(args: argparse.Namespace) -> None:
             ),
             verbose=args.verbose,
         )
-        cli_common.qprint(
-            f"[rename] {old_slug} → {new_slug}",
-            quiet=(args.quiet or _agent_quiet()),
-            file=sys.stderr,
-        )
-        render(items, pending_items, rev=new_rev)
+        if _is_compact(args):
+            line = format_compact_confirmation(
+                cmd="rename",
+                slug=new_slug,
+                status=cast(str, cast(BacklogItem, renamed_item).get("status", "open")),
+                rev=new_rev,
+                ref=old_slug,
+                detail=f"renamed from {old_slug}",
+            )
+            print(line)
+        else:
+            cli_common.qprint(
+                f"[rename] {old_slug} → {new_slug}",
+                quiet=(args.quiet or _agent_quiet()),
+                file=sys.stderr,
+            )
+            render(items, pending_items, rev=new_rev)
     _maybe_dispatch_recap_regen()
 
 
@@ -4092,7 +4195,12 @@ def cmd_block(args: argparse.Namespace) -> None:
     """
     blocker = args.blocker
     with _backlog_mutation(
-        "block", args.id, args.if_rev, quiet=args.quiet, verbose=args.verbose
+        "block",
+        args.id,
+        args.if_rev,
+        quiet=args.quiet,
+        verbose=args.verbose,
+        compact=_is_compact(args),
     ) as m:
         index = build_index(m.items)
         pending_ids = {p["id"] for p in m.pending_items}
@@ -4111,13 +4219,19 @@ def cmd_block(args: argparse.Namespace) -> None:
 
         m.item.setdefault("blocked_by", []).append(blocker)
         m.item["updated"] = today()
+        m.compact_detail = f"blocked by {blocker}"
 
 
 def cmd_unblock(args: argparse.Namespace) -> None:
     """Handle ``unblock``: remove a blocker from a backlog item."""
     blocker = args.blocker
     with _backlog_mutation(
-        "unblock", args.id, args.if_rev, quiet=args.quiet, verbose=args.verbose
+        "unblock",
+        args.id,
+        args.if_rev,
+        quiet=args.quiet,
+        verbose=args.verbose,
+        compact=_is_compact(args),
     ) as m:
         if blocker not in m.item.get("blocked_by", []):
             print(f"[unblock] {m.slug} is not blocked by {blocker}", file=sys.stderr)
@@ -4125,6 +4239,7 @@ def cmd_unblock(args: argparse.Namespace) -> None:
 
         m.item["blocked_by"] = [s for s in m.item["blocked_by"] if s != blocker]
         m.item["updated"] = today()
+        m.compact_detail = f"unblocked from {blocker}"
 
 
 def _read_reason_file(path_str: str) -> str:
@@ -4373,12 +4488,23 @@ def cmd_pending_add(args: argparse.Namespace) -> None:
             _journal_entry("add", "pending", new_rev, slug=slug, summary=description),
             verbose=args.verbose,
         )
-        cli_common.qprint(
-            f"[pending add] {slug} — {description[:60]}",
-            quiet=(args.quiet or _agent_quiet()),
-            file=sys.stderr,
-        )
-        render(backlog_items, pending_items, rev=new_rev)
+        if _is_compact(args):
+            line = format_compact_confirmation(
+                cmd="pending add",
+                slug=slug,
+                status="waiting_for_reply",
+                rev=new_rev,
+                ref=None,
+                detail=description,
+            )
+            print(line)
+        else:
+            cli_common.qprint(
+                f"[pending add] {slug} — {description[:60]}",
+                quiet=(args.quiet or _agent_quiet()),
+                file=sys.stderr,
+            )
+            render(backlog_items, pending_items, rev=new_rev)
     _maybe_dispatch_recap_regen()
     _blocker_check_reminder(backlog_items, None, cmd="pending add", quiet=args.quiet)
     _out_of_scope_check_reminder("pending add", quiet=args.quiet)
@@ -4467,14 +4593,25 @@ def cmd_pending_update(args: argparse.Namespace) -> None:
             ),
             verbose=args.verbose,
         )
-        confirm_resolution(
-            "pending update",
-            args.id,
-            item,
-            summary_key="description",
-            quiet=args.quiet,
-        )
-        render(items, pending_items, rev=new_rev)
+        if _is_compact(args):
+            line = format_compact_confirmation(
+                cmd="pending update",
+                slug=slug,
+                status=cast(str, item.get("status", "")),
+                rev=new_rev,
+                ref=args.id,
+                detail=cast(str, item.get("description", "")),
+            )
+            print(line)
+        else:
+            confirm_resolution(
+                "pending update",
+                args.id,
+                item,
+                summary_key="description",
+                quiet=args.quiet,
+            )
+            render(items, pending_items, rev=new_rev)
     _maybe_dispatch_recap_regen()
 
 
@@ -4497,11 +4634,20 @@ def cmd_remove(args: argparse.Namespace) -> None:
     moment this process exits, leaving the stale slug on disk for the next
     command to reload.
     """
-    with _backlog_mutation("remove", args.id, args.if_rev, verbose=args.verbose) as m:
+    with _backlog_mutation(
+        "remove",
+        args.id,
+        args.if_rev,
+        verbose=args.verbose,
+        compact=_is_compact(args),
+    ) as m:
         m.items = [i for i in m.items if i["id"] != m.slug]
         _purge_inbound_refs({m.slug}, m.items, m.pending_items)
         save_pending(m.pending_items)
-        confirm_resolution("remove", args.id, m.item, quiet=args.quiet)
+        m.compact_status = "removed"
+        m.compact_detail = cast(str, m.item.get("summary", ""))
+        if not _is_compact(args):
+            confirm_resolution("remove", args.id, m.item, quiet=args.quiet)
 
 
 def cmd_prune(args: argparse.Namespace) -> None:
@@ -4721,6 +4867,22 @@ def build_parser() -> argparse.ArgumentParser:
     # outer-set value get silently reset by the inner parse.
     verbosity_parent = argparse.ArgumentParser(add_help=False)
     cli_common.add_verbosity_args(verbosity_parent)
+    compact_parent = argparse.ArgumentParser(add_help=False)
+    compact_group = compact_parent.add_mutually_exclusive_group()
+    compact_group.add_argument(
+        "--compact",
+        action="store_true",
+        default=False,
+        help="single-line structured confirmation on stdout instead of full dashboard",
+    )
+    compact_group.add_argument(
+        "--full",
+        "--no-compact",
+        dest="full",
+        action="store_true",
+        default=False,
+        help="force full dashboard render even under DEVSTATUS_AGENT=1",
+    )
     sub = parser.add_subparsers(
         dest="cmd",
         metavar="{" + ",".join(SUBCOMMANDS) + "}",
@@ -4768,7 +4930,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser(
         "add",
         help="append a new item (id required in JSON)",
-        parents=[verbosity_parent],
+        parents=[verbosity_parent, compact_parent],
     )
     p.add_argument(
         "json",
@@ -4776,14 +4938,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     p = sub.add_parser(
-        "update", help="merge JSON patch into an item", parents=[verbosity_parent]
+        "update",
+        help="merge JSON patch into an item",
+        parents=[verbosity_parent, compact_parent],
     )
     _add_id_arg(p)
     p.add_argument("patch", metavar='\'{"field": "value", "priority": "high"}\'')
     _add_if_rev_arg(p)
 
     p = sub.add_parser(
-        "start", help="mark item in-progress", parents=[verbosity_parent]
+        "start",
+        help="mark item in-progress",
+        parents=[verbosity_parent, compact_parent],
     )
     _add_id_arg(p)
     _add_if_rev_arg(p)
@@ -4807,14 +4973,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="override claimed harness/session identifier",
     )
 
-    p = sub.add_parser("done", help="mark item done", parents=[verbosity_parent])
+    p = sub.add_parser(
+        "done",
+        help="mark item done",
+        parents=[verbosity_parent, compact_parent],
+    )
     _add_id_arg(p)
     _add_if_rev_arg(p)
 
     p = sub.add_parser(
         "review",
         help="submit (or re-submit) an item for review",
-        parents=[verbosity_parent],
+        parents=[verbosity_parent, compact_parent],
     )
     _add_id_arg(p)
     _add_if_rev_arg(p)
@@ -4822,7 +4992,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser(
         "approve",
         help="approve an in-review item, marking it done",
-        parents=[verbosity_parent],
+        parents=[verbosity_parent, compact_parent],
     )
     _add_id_arg(p)
     _add_if_rev_arg(p)
@@ -4830,7 +5000,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser(
         "reject",
         help="reject an in-review item, sending it back to in-progress",
-        parents=[verbosity_parent],
+        parents=[verbosity_parent, compact_parent],
     )
     _add_id_arg(p)
     p.add_argument("feedback", metavar="<feedback>")
@@ -4839,7 +5009,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser(
         "gate-set",
         help="classify an item's judgment-verification gate",
-        parents=[verbosity_parent],
+        parents=[verbosity_parent, compact_parent],
     )
     _add_id_arg(p)
     p.add_argument("json", metavar='\'{"required": true, "criteria": ["..."]}\'')
@@ -4848,7 +5018,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser(
         "gate-pass",
         help="record that an item's gate criteria are satisfied",
-        parents=[verbosity_parent],
+        parents=[verbosity_parent, compact_parent],
     )
     _add_id_arg(p)
     p.add_argument(
@@ -4914,7 +5084,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser(
         "rename",
         help="rename slug (rewrites all references)",
-        parents=[verbosity_parent],
+        parents=[verbosity_parent, compact_parent],
     )
     _add_id_arg(p, "old_slug")
     p.add_argument("new_slug")
@@ -4923,20 +5093,24 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser(
         "remove",
         help="permanently remove one item by slug or number",
-        parents=[verbosity_parent],
+        parents=[verbosity_parent, compact_parent],
     )
     _add_id_arg(p)
     _add_if_rev_arg(p)
 
     p = sub.add_parser(
-        "block", help="add a blocker to an item", parents=[verbosity_parent]
+        "block",
+        help="add a blocker to an item",
+        parents=[verbosity_parent, compact_parent],
     )
     _add_id_arg(p)
     p.add_argument("blocker", metavar="<blocker-slug>")
     _add_if_rev_arg(p)
 
     p = sub.add_parser(
-        "unblock", help="remove a blocker from an item", parents=[verbosity_parent]
+        "unblock",
+        help="remove a blocker from an item",
+        parents=[verbosity_parent, compact_parent],
     )
     _add_id_arg(p)
     p.add_argument("blocker", metavar="<blocker-slug>")
@@ -4978,7 +5152,9 @@ def build_parser() -> argparse.ArgumentParser:
     pending_sub = pending.add_subparsers(dest="pending_cmd")
 
     p = pending_sub.add_parser(
-        "add", help="track a new pending item", parents=[verbosity_parent]
+        "add",
+        help="track a new pending item",
+        parents=[verbosity_parent, compact_parent],
     )
     p.add_argument(
         "json",
@@ -4989,7 +5165,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = pending_sub.add_parser(
         "update",
         help="merge a JSON patch into an existing pending item",
-        parents=[verbosity_parent],
+        parents=[verbosity_parent, compact_parent],
     )
     _add_id_arg(p)
     p.add_argument("patch", metavar='\'{"status": "reply_received", ...}\'')

@@ -235,6 +235,7 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `class BacklogItem(TypedDict)` — A single backlog item as stored in ``items.json`` (schema v2).
   - `class PendingItem(TypedDict)` — A single waiting-on-someone-else item as stored in ``pending_items.json``.
 - Public functions:
+  - `format_compact_confirmation(cmd: str, slug: str, status: str, rev: int, ref: str | int | None = None, detail: str = '') -> str` — Format a single-line structured confirmation for mutating commands under compact mode.
   - `today() -> str` — Return today's date as an ISO-8601 string (``YYYY-MM-DD``).
   - `machine_id() -> str` — Return this machine's stable short id, creating it on first use.
   - `validate_slug(slug: str, context: str = '') -> str | None` — Validate a candidate item slug.
