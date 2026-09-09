@@ -128,7 +128,7 @@ the difference between a working install and silent fallbacks.
 
 | Path | Status | What it holds |
 | :--- | :--- | :--- |
-| `~/.claude/data/` | **Created on first use** by `dev_status.py` | The backlog/pending store (`backlog.json`, journal, out-of-scope concepts). Per-user by construction — it lives in your home, not in the repo. Hardcoded location: `Path.home() / ".claude" / "data"`; there is no `XDG_DATA_HOME` support. |
+| `~/.claude/data/backlog/` | **Created on first use** by `dev_status.py` | The backlog/pending store (items.json, pending_items.json, _meta.json, journal.jsonl). Per-user by construction — it lives in your home, not in the repo. Hardcoded location: `Path.home() / ".claude" / "data" / "backlog"`; there is no `XDG_DATA_HOME` support. Out-of-scope concepts live in the sibling `~/.claude/data/backlog-out-of-scope/`, not nested under this path. |
 | `~/.claude/data/grill/` | **Created on first use** by `grill.py` and `second_opinion.py` | Spec, plan, and critique artifacts written by the `/spec`, `/grill-me`, and `/second-opinion` skills. Same hardcoded base path as above. |
 | `~/.claude/data/to-tickets/` | **Created on first use** by `to_tickets_runner.py` | Batch files drafted by the `/to-tickets` skill. |
 | `~/.secrets` (or wherever you keep shell env) | **Expected, user-supplied — never created by the installer** | This machine's `SECOND_OPINION_*` model pools live here. The toolkit itself never opens this file — it reads environment variables, however you set them. |
