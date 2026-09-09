@@ -4,7 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
-import { type SwarmState } from "../../copilot/extensions/swarm/src/swarm-scheduling.js";
+import {
+  PROJECT_PREFIXES as COPILOT_PROJECT_PREFIXES,
+  type SwarmState,
+} from "../../copilot/extensions/swarm/src/swarm-scheduling.js";
+import { PROJECT_PREFIXES as PI_PROJECT_PREFIXES } from "../extensions/swarm-lib/swarm-scheduling.js";
 
 import {
   buildAgentStartArgv,
@@ -28,29 +32,35 @@ import {
 describe("Copilot Swarm: Staleness and Build Consistency", () => {
   test("compiled artifacts match fresh build from src", () => {
     const rootDir = join(__dirname, "../..");
-    const extensionBefore = readFileSync(
-      join(rootDir, "copilot/extensions/swarm/extensions/swarm/extension.mjs"),
-      "utf8",
-    );
-    const logicBefore = readFileSync(
-      join(rootDir, "copilot/extensions/swarm/lib/swarm-tool-logic.js"),
-      "utf8",
-    );
+    // All five build-copilot-swarm.sh outputs, not just the two most likely
+    // to be touched -- a stale swarm-scheduling.js/swarm-herdr.js/swarm-picker.js
+    // edited without rebuilding would otherwise ship with no direct test
+    // catching it (only indirect coverage via the extension.mjs bundle).
+    const outputPaths = [
+      "copilot/extensions/swarm/extensions/swarm/extension.mjs",
+      "copilot/extensions/swarm/lib/swarm-tool-logic.js",
+      "copilot/extensions/swarm/lib/swarm-scheduling.js",
+      "copilot/extensions/swarm/lib/swarm-herdr.js",
+      "copilot/extensions/swarm/lib/swarm-picker.js",
+    ];
+    const before = outputPaths.map((p) => readFileSync(join(rootDir, p), "utf8"));
 
-    // Run build script
     execSync("./scripts/build-copilot-swarm.sh", { cwd: rootDir });
 
-    const extensionAfter = readFileSync(
-      join(rootDir, "copilot/extensions/swarm/extensions/swarm/extension.mjs"),
-      "utf8",
-    );
-    const logicAfter = readFileSync(
-      join(rootDir, "copilot/extensions/swarm/lib/swarm-tool-logic.js"),
-      "utf8",
-    );
+    const after = outputPaths.map((p) => readFileSync(join(rootDir, p), "utf8"));
+    for (let i = 0; i < outputPaths.length; i++) {
+      expect(after[i]).toBe(before[i]);
+    }
+  });
+});
 
-    expect(extensionAfter).toBe(extensionBefore);
-    expect(logicAfter).toBe(logicBefore);
+describe("Copilot Swarm: pi/copilot vendored-copy parity", () => {
+  test("PROJECT_PREFIXES stays in sync between the pi original and the copilot fork", () => {
+    // These are two independently-maintained copies, not a shared import --
+    // nothing else catches drift here. They already diverged once (copilot's
+    // copy correctly gained "atk-"; pi's did not), so the same atk-* item got
+    // a different synthetic agent name depending which harness's worker ran it.
+    expect([...COPILOT_PROJECT_PREFIXES].sort()).toEqual([...PI_PROJECT_PREFIXES].sort());
   });
 });
 
@@ -351,6 +361,90 @@ describe("Copilot Swarm: SwarmToolContext Behavioral Tests", () => {
     // Sequential spawnInto would never have two "agent start" calls in
     // flight at once; parallel spawnInto (Promise.allSettled) does.
     expect(maxConcurrentStarts).toBeGreaterThan(1);
+  });
+
+  test("swarmSpawn refuses an explicit item missing from the ready set, never defaults it to worker_safe", async () => {
+    const fakeExec = async (cmd: string) => {
+      if (cmd === "python3") {
+        // The ready set does NOT include "atk-missing" -- mistyped, stale,
+        // or genuinely not worker-safe (e.g. its real prefix names this repo).
+        return { code: 0, stdout: JSON.stringify([]), stderr: "" };
+      }
+      return { code: 0, stdout: "{}", stderr: "" };
+    };
+
+    const ctx = new SwarmToolContext(fakeExec);
+    const result = await ctx.swarmSpawn({ runId: "r1", items: ["atk-missing"], concurrency: 3 });
+
+    expect((result.details.spawned as unknown[]).length).toBe(0);
+    const refused = result.details.refused as { slug: string }[];
+    expect(refused.map((r) => r.slug)).toContain("atk-missing");
+  });
+
+  test("swarmPoll tears down two simultaneously-finished workers without losing either", async () => {
+    const fakeExec = async (cmd: string, args: string[]) => {
+      if (cmd === "herdr") {
+        if (args[0] === "agent" && args[1] === "list") {
+          return {
+            code: 0,
+            stdout: JSON.stringify({
+              result: {
+                agents: [
+                  { name: "r1-w1", agent_status: "working" },
+                  { name: "r1-w2", agent_status: "working" },
+                ],
+              },
+            }),
+            stderr: "",
+          };
+        }
+        if (args[0] === "agent" && args[1] === "wait") {
+          // Resolves via a plain microtask -- no timer -- so both workers'
+          // waits settle in the same batch, exercising the concurrent
+          // teardown path (not a one-worker-at-a-time coincidence).
+          return {
+            code: 0,
+            stdout: JSON.stringify({ result: { agent: { agent_status: "idle" } } }),
+            stderr: "",
+          };
+        }
+      }
+      return { code: 0, stdout: JSON.stringify({ result: {} }), stderr: "" };
+    };
+
+    const ctx = new SwarmToolContext(fakeExec);
+    const state: SwarmState = {
+      runId: "r1",
+      concurrency: 3,
+      nextCounter: 2,
+      workers: [
+        {
+          agent: "r1-w1",
+          slug: "atk-one",
+          paneId: "w:p1",
+          tabId: "w:t1",
+          lifecycle: "active",
+          workingSinceMs: Date.now(),
+        },
+        {
+          agent: "r1-w2",
+          slug: "atk-two",
+          paneId: "w:p2",
+          tabId: "w:t2",
+          lifecycle: "active",
+          workingSinceMs: Date.now(),
+        },
+      ],
+    };
+    saveState(state, tempStateDir);
+
+    const result = await ctx.swarmPoll({ runId: "r1" });
+    const events = result.details.events as { agent: string; kind: string }[];
+    expect(events.map((e) => e.agent).sort()).toEqual(["r1-w1", "r1-w2"]);
+    expect(events.every((e) => e.kind === "finished")).toBe(true);
+
+    const reconciled = await ctx.getOrInitState("r1", 3);
+    expect(reconciled.workers.length).toBe(0);
   });
 });
 

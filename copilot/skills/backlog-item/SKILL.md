@@ -364,6 +364,16 @@ a crash/restart, crash recovery, and concurrency-cap accounting.
    spawns up to the cap, reporting any items skipped (cap), deferred (file
    overlap) or failed to spawn.
 
+   **Pass `pluginDir`.** On the first `swarm_spawn` call for a `runId`, pass
+   `pluginDir` as the absolute path to *this checkout's*
+   `copilot/extensions/swarm` (e.g. via `pwd` or `git rev-parse --show-toplevel`
+   plus that suffix). Every worker is started with `--plugin-dir <pluginDir>`;
+   without it the tool guesses `~/Workspace/agent-toolkit/copilot/extensions/swarm`,
+   which is wrong for a worktree or any other checkout path and fails every
+   worker spawn in the run. It persists on the run's state, so later
+   `swarm_spawn` calls for the same `runId` (and crash recovery) reuse it
+   automatically -- no need to repeat it.
+
    **Resume.** If the invocation carried `resume <runId> --prefix <prefix>`
    (sent by `herdr_delegate.py restart`, which closed and relaunched this
    orchestrator), do not pick a fresh runId: call `swarm_spawn` and

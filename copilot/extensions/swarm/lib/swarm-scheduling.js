@@ -140,6 +140,7 @@ function spawnBudget(state, readyCount) {
   return Math.min(byConcurrency, byPaneCap, readyCount);
 }
 export {
+  PROJECT_PREFIXES,
   RECONCILE_MIN_AGE_MS,
   TERMINAL_AGENT_STATUSES,
   activeWorkerCount,

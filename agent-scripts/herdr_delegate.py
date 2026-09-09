@@ -51,6 +51,7 @@ import re
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 
 # Deliberately NOT .resolve()'d: post meta-agent-toolkit-migration-cutover,
@@ -511,7 +512,15 @@ def spawn_in_new_tab(
         # prompt` here means the agent DID start -- the tab holds a live
         # agent, closing it would kill it, and it must never be retried.
         herdr(["agent", "prompt", name, prompt])
-        return {"tab": tab, "pane": pane, "agent": name, "prompt": prompt}
+        summary: dict[str, object] = {
+            "tab": tab,
+            "pane": pane,
+            "agent": name,
+            "prompt": prompt,
+        }
+        if session_id:
+            summary["session_id"] = session_id
+        return summary
     raise AssertionError("unreachable: loop always returns or raises")
 
 
@@ -577,6 +586,10 @@ def cmd_launch(args: argparse.Namespace) -> None:
     require_herdr_env(os.environ)
     kind = getattr(args, "kind", "pi")
     plugin_dir = COPILOT_PLUGIN_DIR if kind == "copilot" else None
+    # copilot only: --session-id belongs on every copilot `agent start`
+    # (see copilot/skills/swarm/SKILL.md's "key invariants") so this launch
+    # is nameable for a later --resume=<id>, the same as a swarm_spawn worker.
+    session_id = str(uuid.uuid4()) if kind == "copilot" else None
     if args.slug:
         check_launchable(slug=args.slug)
         label, prompt = args.slug, worker_prompt(args.slug, kind=kind)
@@ -593,6 +606,7 @@ def cmd_launch(args: argparse.Namespace) -> None:
                 prompt=prompt,
                 model=args.model,
                 kind=kind,
+                session_id=session_id,
                 plugin_dir=plugin_dir,
             )
         )
@@ -611,6 +625,10 @@ def cmd_restart(args: argparse.Namespace) -> None:
     check_launchable(prefix=args.prefix)
     kind = getattr(args, "kind", "pi")
     plugin_dir = COPILOT_PLUGIN_DIR if kind == "copilot" else None
+    # See cmd_launch: the relaunched orchestrator is a brand new copilot
+    # process (its own tab was just closed below), so it gets its own fresh
+    # session-id the same way, not the closed tab's.
+    session_id = str(uuid.uuid4()) if kind == "copilot" else None
     label = f"swarm-{args.prefix}"
 
     run_id = resolve_resume_run_id(args.prefix, args.run_id, kind=kind)
@@ -635,6 +653,7 @@ def cmd_restart(args: argparse.Namespace) -> None:
         prompt=prompt,
         model=args.model,
         kind=kind,
+        session_id=session_id,
         plugin_dir=plugin_dir,
     )
     summary["closed_tab"] = closed_tab
