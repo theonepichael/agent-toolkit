@@ -527,8 +527,10 @@ var defaultExec = async (cmd, args, opts) => {
       stderr += chunk.toString();
     });
     let timer;
+    let timedOut = false;
     if (opts?.timeout) {
       timer = setTimeout(() => {
+        timedOut = true;
         proc.kill();
       }, opts.timeout);
     }
@@ -541,6 +543,11 @@ ${String(err)}` });
     proc.on("close", (code) => {
       if (timer)
         clearTimeout(timer);
+      if (timedOut) {
+        resolve({ code: 124, stdout, stderr: `${stderr}
+<timed out after ${opts?.timeout}ms>` });
+        return;
+      }
       resolve({ code: code ?? 0, stdout, stderr });
     });
   });
@@ -984,10 +991,8 @@ ${capture}` } };
       const toSpawn = selection.slugs;
       const spawned = [];
       const failed = [];
+      const tabs = [];
       for (const slug of toSpawn) {
-        const candidateItem = candidates.find((c) => c.id === slug);
-        const paths = candidateItem ? itemPaths(candidateItem) : [];
-        const agentId = nextAgentId(state.runId, state.nextCounter++, slug);
         const captureFile = capturePath(state.runId, slug);
         const tabCreated = await this.herdr(buildTabCreateArgv(process.cwd(), slug, { captureFile, kind: "copilot" }));
         let parsedTab = parseTabCreate(tabCreated.stdout);
@@ -1007,12 +1012,29 @@ ${capture}` } };
           });
           continue;
         }
-        const outcome = await this.spawnInto(parsedTab.paneId, parsedTab.tabId, agentId, slug, paths, params.model, params.pluginDir);
-        if ("worker" in outcome) {
-          spawned.push(outcome.worker);
-          state.workers.push(outcome.worker);
-        } else if (outcome.failed) {
-          failed.push(outcome.failed);
+        tabs.push({ slug, created: parsedTab });
+      }
+      const startResults = await Promise.allSettled(tabs.map(async (t) => {
+        const candidateItem = candidates.find((c) => c.id === t.slug);
+        const paths = candidateItem ? itemPaths(candidateItem) : [];
+        const agentId = nextAgentId(state.runId, state.nextCounter++, t.slug);
+        const { paneId, tabId } = t.created;
+        try {
+          return await this.spawnInto(paneId, tabId, agentId, t.slug, paths, params.model, params.pluginDir);
+        } catch (e) {
+          return this.failWithTab(t.slug, paneId, tabId, `spawn_error: ${String(e)}`);
+        }
+      }));
+      for (const r of startResults) {
+        if (r.status === "fulfilled") {
+          if ("worker" in r.value) {
+            spawned.push(r.value.worker);
+            state.workers.push(r.value.worker);
+          } else if (r.value.failed) {
+            failed.push(r.value.failed);
+          }
+        } else {
+          failed.push({ slug: "unknown", reason: `spawn_error: ${String(r.reason)}` });
         }
       }
       state.attempted = [...new Set([...state.attempted ?? [], ...toSpawn])];

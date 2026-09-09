@@ -19,6 +19,7 @@ import {
 } from "../../copilot/extensions/swarm/src/swarm-picker.js";
 
 import {
+  defaultExec,
   isValidUuid,
   saveState,
   SwarmToolContext,
@@ -303,5 +304,62 @@ describe("Copilot Swarm: SwarmToolContext Behavioral Tests", () => {
     const reconciled = await ctx.getOrInitState("r1", 3);
     // Worker could not be recovered, so it is dropped
     expect(reconciled.workers.length).toBe(0);
+  });
+
+  test("swarmSpawn runs spawnInto for multiple workers concurrently, not sequentially", async () => {
+    let concurrentStarts = 0;
+    let maxConcurrentStarts = 0;
+    const fakeExec = async (cmd: string, args: string[]) => {
+      if (cmd === "python3") {
+        return {
+          code: 0,
+          stdout: JSON.stringify([
+            { id: "atk-a", worker_safe: true, related_files: [] },
+            { id: "atk-b", worker_safe: true, related_files: [] },
+          ]),
+          stderr: "",
+        };
+      }
+      if (cmd === "herdr") {
+        if (args[0] === "tab" && args[1] === "create") {
+          const label = args[args.indexOf("--label") + 1];
+          return {
+            code: 0,
+            stdout: JSON.stringify({
+              result: { root_pane: { pane_id: `p-${label}` }, tab: { tab_id: `t-${label}` } },
+            }),
+            stderr: "",
+          };
+        }
+        if (args[0] === "agent" && args[1] === "start") {
+          concurrentStarts++;
+          maxConcurrentStarts = Math.max(maxConcurrentStarts, concurrentStarts);
+          await new Promise((r) => setTimeout(r, 30));
+          concurrentStarts--;
+          return { code: 0, stdout: JSON.stringify({ result: {} }), stderr: "" };
+        }
+        if (args[0] === "agent" && (args[1] === "get" || args[1] === "prompt")) {
+          return { code: 0, stdout: JSON.stringify({ result: {} }), stderr: "" };
+        }
+      }
+      return { code: 0, stdout: "{}", stderr: "" };
+    };
+
+    const ctx = new SwarmToolContext(fakeExec);
+    await ctx.swarmSpawn({ runId: "r1", prefix: "atk-", concurrency: 3 });
+
+    // Sequential spawnInto would never have two "agent start" calls in
+    // flight at once; parallel spawnInto (Promise.allSettled) does.
+    expect(maxConcurrentStarts).toBeGreaterThan(1);
+  });
+});
+
+describe("Copilot Swarm: defaultExec timeout handling", () => {
+  test("a killed-by-timeout process reports a non-zero code, never success", async () => {
+    const result = await defaultExec("sleep", ["5"], { timeout: 50 });
+    // A kill()-ed process reports code null; `code ?? 0` would otherwise
+    // read as a clean exit, which every caller treats as success.
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain("timed out");
   });
 });
