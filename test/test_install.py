@@ -18,6 +18,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -3511,47 +3512,311 @@ def test_depart_second_lock_acquisition_refuses_while_first_is_live(
 # ── package transaction recording (step 2 live wiring) ─────────────────────
 
 
-def test_install_linux_packages_one_by_one_records_transactions(home, monkeypatch):
-    ctx = make_ctx(home)
-    ctx.departure_baseline = depart.Baseline()
-    live_versions: dict[str, str] = {}
+def apt_stub(live_versions, calls, *, batch_ok=True, missing=()):
+    """run_command stub for the apt path of install_linux_packages.
+
+    Records every command in *calls*; installs into *live_versions*. The
+    batched attempt (any install command naming more than one package, run
+    with capture=True) fails wholesale when *batch_ok* is False; the
+    per-package fallback fails for names in *missing*.
+    """
 
     def run(cmd, **kwargs):
+        calls.append(cmd)
         if cmd[0] == "dpkg-query":
             output = "".join(f"{n}\t{v}\n" for n, v in live_versions.items())
             return install.CommandResult(True, output)
+        if cmd[:3] == ["sudo", "apt-get", "update"]:
+            return install.CommandResult(True)
         if cmd[:3] == ["sudo", "apt-get", "install"]:
-            live_versions[cmd[-1]] = "1.0-1"
+            pkgs = cmd[4:]
+            if len(pkgs) > 1:
+                # The speculative batch attempt: capture=True, all-or-nothing.
+                assert kwargs.get("capture"), "batch attempt must capture output"
+                if batch_ok:
+                    for pkg in pkgs:
+                        live_versions[pkg] = "1.0-1"
+                    return install.CommandResult(True)
+                return install.CommandResult(False)
+            pkg = pkgs[0]
+            if pkg in missing:
+                return install.CommandResult(False)
+            live_versions[pkg] = "1.0-1"
             return install.CommandResult(True)
         raise AssertionError(f"unexpected command: {cmd!r}")
 
-    monkeypatch.setattr(install, "run_command", run)
-    install._install_linux_packages_one_by_one(ctx, "apt", epoch={})
+    return run
 
-    txns = ctx.departure_baseline.transactions
-    assert len(txns) == len(install.LINUX_PACKAGES)
-    first = txns[0]
-    assert first["manager"] == "apt"
-    assert first["requested"] == [install.LINUX_PACKAGES[0]]
-    assert first["after"][install.LINUX_PACKAGES[0]] == "1.0-1"
-    assert first["comparand_source"] == "epoch"
-    # Every recorded package actually landed in the manifest too.
+
+def stub_extras(monkeypatch, events=None, **overrides):
+    """Neuter the four parallel network installers (+ ruff tool) for flow tests.
+
+    Each records its name into *events* (a shared list) when invoked, in
+    whichever order the implementation calls them. *overrides* maps an
+    installer name to a replacement function (e.g. a barrier-waiting one
+    for a concurrency test).
+    """
+    noop_names = (
+        "_install_neovim_fallback",
+        "_install_uv",
+        "_install_oh_my_posh",
+        "_install_nerd_font",
+        "_install_ruff_uv_tool",
+    )
+    for name in noop_names:
+        replacement = overrides.get(name)
+        if replacement is None:
+            def make(name=name):
+                def noop(ctx):
+                    if events is not None:
+                        events.append(name)
+                return noop
+            replacement = make()
+        monkeypatch.setattr(install, name, replacement)
+
+
+def test_install_linux_packages_one_by_one_installs_per_package(home, monkeypatch):
+    """The fallback loop shells out once per package; no snapshotting of its own."""
+    ctx = make_ctx(home)
+    ctx.departure_baseline = depart.Baseline()
+    calls: list = []
+    live_versions: dict[str, str] = {}
+
+    monkeypatch.setattr(install, "run_command", apt_stub(live_versions, calls))
+    install._install_linux_packages_one_by_one(ctx, "apt")
+
+    installs = [c for c in calls if c[:3] == ["sudo", "apt-get", "install"]]
+    assert installs == [["sudo", "apt-get", "install", "-y", pkg] for pkg in install.LINUX_PACKAGES]
+    # Transaction recording moved to the install_linux_packages caller; the
+    # fallback loop must not probe the inventory at all.
+    assert not [c for c in calls if c[0] == "dpkg-query"]
+    assert ctx.departure_baseline.transactions == []
     assert kinds(ctx, "package-installed") == [
         {"kind": "package-installed", "name": pkg} for pkg in install.LINUX_PACKAGES
     ]
 
 
-def test_install_linux_packages_dry_run_records_no_transactions(home, monkeypatch):
+def test_install_linux_packages_batch_success_single_invocation(home, monkeypatch):
+    """The happy path: one batched install, all packages recorded, one transaction."""
+    ctx = make_ctx(home)
+    ctx.departure_baseline = depart.Baseline()
+    calls: list = []
+    live_versions: dict[str, str] = {}
+    events: list = []
+
+    monkeypatch.setattr(install, "have", lambda name: False)
+    monkeypatch.setattr(install, "run_command", apt_stub(live_versions, calls))
+    stub_extras(monkeypatch, events)
+    install.install_linux_packages(ctx)
+
+    batches = [c for c in calls if c[:3] == ["sudo", "apt-get", "install"]]
+    assert batches == [
+        ["sudo", "apt-get", "install", "-y", *install.LINUX_PACKAGES]
+    ]
+    # Tracking path: exactly two full-inventory scans (epoch + post-install),
+    # not two per package (28 under the old code).
+    probes = [c for c in calls if c[0] == "dpkg-query"]
+    assert len(probes) == 2
+    (txns,) = ctx.departure_baseline.transactions
+    assert txns["manager"] == "apt"
+    assert txns["requested"] == list(install.LINUX_PACKAGES)
+    assert all(txns["after"][pkg] == "1.0-1" for pkg in install.LINUX_PACKAGES)
+    assert txns["comparand_source"] == "epoch"
+    assert kinds(ctx, "package-installed") == [
+        {"kind": "package-installed", "name": pkg} for pkg in install.LINUX_PACKAGES
+    ]
+    assert events == [
+        "_install_neovim_fallback",
+        "_install_uv",
+        "_install_oh_my_posh",
+        "_install_nerd_font",
+        "_install_ruff_uv_tool",
+    ]
+
+
+def test_install_linux_packages_batch_failure_falls_back_per_package(
+    home, monkeypatch
+):
+    """A batch failure (the eza-on-22.04 shape) degrades to the per-package loop.
+
+    The missing package becomes a skip; every other package still installs;
+    the failed batch's raw output must not reach the terminal.
+    """
+    ctx = make_ctx(home)
+    ctx.departure_baseline = depart.Baseline()
+    calls: list = []
+    live_versions: dict[str, str] = {}
+    events: list = []
+    missing = install.LINUX_PACKAGES[-1]
+
+    monkeypatch.setattr(install, "have", lambda name: False)
+    monkeypatch.setattr(
+        install, "run_command", apt_stub(live_versions, calls, batch_ok=False, missing={missing})
+    )
+    stub_extras(monkeypatch, events)
+    install.install_linux_packages(ctx)
+
+    fallback = [c[4] for c in calls if c[:3] == ["sudo", "apt-get", "install"] and len(c) == 5]
+    assert fallback == list(install.LINUX_PACKAGES)
+    # Still exactly one whole-step transaction, capturing the net effect.
+    probes = [c for c in calls if c[0] == "dpkg-query"]
+    assert len(probes) == 2
+    (txns,) = ctx.departure_baseline.transactions
+    assert txns["requested"] == list(install.LINUX_PACKAGES)
+    assert missing not in txns["after"]
+    assert txns["after"][install.LINUX_PACKAGES[0]] == "1.0-1"
+    installed = [e["name"] for e in kinds(ctx, "package-installed")]
+    assert installed == [pkg for pkg in install.LINUX_PACKAGES if pkg != missing]
+    assert any(missing in line for line in ctx.reporter.skipped)
+
+
+def test_install_linux_packages_no_tracking_skips_probes_but_still_batches(
+    home, monkeypatch
+):
+    """Without a departure baseline there is nothing to probe — the batch stays."""
+    ctx = make_ctx(home)
+    calls: list = []
+    live_versions: dict[str, str] = {}
+    events: list = []
+
+    monkeypatch.setattr(install, "have", lambda name: False)
+    monkeypatch.setattr(install, "run_command", apt_stub(live_versions, calls))
+    stub_extras(monkeypatch, events)
+    install.install_linux_packages(ctx)
+
+    assert not [c for c in calls if c[0] == "dpkg-query"]
+    assert [
+        c for c in calls if c[:3] == ["sudo", "apt-get", "install"]
+    ] == [["sudo", "apt-get", "install", "-y", *install.LINUX_PACKAGES]]
+
+
+def test_install_linux_packages_dry_run_previews_and_records_nothing(
+    home, monkeypatch, capsys
+):
     ctx = make_ctx(home, dry_run=True)
     ctx.departure_baseline = depart.Baseline()
+    events: list = []
 
     def run(cmd, **kwargs):
         raise AssertionError("dry-run must never shell out")
 
     monkeypatch.setattr(install, "run_command", run)
-    install._install_linux_packages_one_by_one(ctx, "apt", epoch={})
+    monkeypatch.setattr(install, "have", lambda name: False)
+    stub_extras(monkeypatch, events)
+    install.install_linux_packages(ctx)
 
+    out = capsys.readouterr().out
+    assert (
+        "would run: sudo apt-get install -y " + " ".join(install.LINUX_PACKAGES)
+    ) in out
     assert ctx.departure_baseline.transactions == []
+    assert kinds(ctx, "package-installed") == []
+    # Dry-run previews sequentially, in the documented order.
+    assert events == [
+        "_install_neovim_fallback",
+        "_install_uv",
+        "_install_oh_my_posh",
+        "_install_nerd_font",
+        "_install_ruff_uv_tool",
+    ]
+
+
+def test_install_extras_run_concurrently(home, monkeypatch):
+    """The four network installers overlap: all four run at once off the main thread.
+
+    A 4-party barrier can only be passed if all four installers are alive
+    simultaneously — a sequential implementation times out and fails.
+    """
+    ctx = make_ctx(home)
+    barrier = threading.Barrier(4, timeout=30)
+    threads: list = []
+    events: list = []
+
+    def barrier_installer(ctx):
+        threads.append(threading.get_ident())
+        barrier.wait()
+
+    monkeypatch.setattr(install, "have", lambda name: False)
+    monkeypatch.setattr(
+        install,
+        "run_command",
+        lambda cmd, **kwargs: install.CommandResult(True),
+    )
+    stub_extras(
+        monkeypatch,
+        events,
+        _install_neovim_fallback=barrier_installer,
+        _install_uv=barrier_installer,
+        _install_oh_my_posh=barrier_installer,
+        _install_nerd_font=barrier_installer,
+    )
+    install.install_linux_packages(ctx)
+
+    assert len(set(threads)) == 4
+
+
+def test_install_extras_worker_exception_surfaces_after_all_complete(home, monkeypatch):
+    """One installer raising must not orphan the others mid-flight."""
+    ctx = make_ctx(home)
+    done: list = []
+
+    def raiser(ctx):
+        raise RuntimeError("unexpected worker failure")
+
+    def finisher(name):
+        def fn(ctx):
+            done.append(name)
+        return fn
+
+    monkeypatch.setattr(install, "have", lambda name: False)
+    monkeypatch.setattr(
+        install,
+        "run_command",
+        lambda cmd, **kwargs: install.CommandResult(True),
+    )
+    stub_extras(
+        monkeypatch,
+        _install_neovim_fallback=raiser,
+        _install_uv=finisher("uv"),
+        _install_oh_my_posh=finisher("omp"),
+        _install_nerd_font=finisher("font"),
+    )
+    with pytest.raises(RuntimeError, match="unexpected worker failure"):
+        install.install_linux_packages(ctx)
+
+    # The healthy workers all ran to completion before the error surfaced.
+    assert sorted(done) == ["font", "omp", "uv"]
+
+
+def test_install_ruff_tool_runs_after_parallel_join(home, monkeypatch):
+    """``uv tool install ruff`` must not start before the pool has joined.
+
+    The uv installer sets an event; ruff's installer requires it. Under a
+    correct implementation uv has ALWAYS completed by the time ruff starts
+    (the join guarantees it), so the assertion always holds; an
+    implementation that starts ruff before the join races uv and fails.
+    """
+    ctx = make_ctx(home)
+    uv_done = threading.Event()
+
+    def uv_installer(ctx):
+        uv_done.set()
+
+    def ruff_installer(ctx):
+        assert uv_done.is_set(), "ruff tool install started before the pool joined"
+
+    monkeypatch.setattr(install, "have", lambda name: False)
+    monkeypatch.setattr(
+        install,
+        "run_command",
+        lambda cmd, **kwargs: install.CommandResult(True),
+    )
+    stub_extras(
+        monkeypatch,
+        _install_uv=uv_installer,
+        _install_ruff_uv_tool=ruff_installer,
+    )
+    install.install_linux_packages(ctx)
 
 
 def test_install_linux_packages_no_departure_baseline_skips_probes(home, monkeypatch):
@@ -3565,7 +3830,7 @@ def test_install_linux_packages_no_departure_baseline_skips_probes(home, monkeyp
         raise AssertionError(f"unexpected probe call when not tracking: {cmd!r}")
 
     monkeypatch.setattr(install, "run_command", run)
-    install._install_linux_packages_one_by_one(ctx, "apt", epoch=None)
+    install._install_linux_packages_one_by_one(ctx, "apt")
 
 
 def test_install_ruff_uv_tool_records_transaction(home, monkeypatch):

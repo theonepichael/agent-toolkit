@@ -40,7 +40,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 from collections.abc import Callable, Iterator, Sequence
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
@@ -344,6 +346,13 @@ Exits 0 if every step ran, 1 if any step was skipped (see summary)."""
 # ── skip-and-report plumbing ──────────────────────────────────────────────────
 
 
+# Serializes whole-line console output: several installers run concurrently
+# (see _install_extras), and two threads printing half-lines at once garble
+# the terminal. list.append-style mutations stay lock-free (GIL-atomic);
+# this only guards print statements.
+_io_lock = threading.Lock()
+
+
 @dataclass
 class Reporter:
     """Collects every step that didn't run, for the end-of-run summary.
@@ -367,7 +376,8 @@ class Reporter:
     def note(self, message: str) -> None:
         """Record and print an already-formatted skip message."""
         self.skipped.append(message)
-        print(PALETTE.warn(f"  !! SKIPPED: {message}"))
+        with _io_lock:
+            print(PALETTE.warn(f"  !! SKIPPED: {message}"))
 
     def __len__(self) -> int:
         return len(self.skipped)
@@ -397,6 +407,9 @@ class Manifest:
 
     path: Path
     dry_run: bool = False
+    _append_lock: threading.Lock = field(
+        default_factory=threading.Lock, repr=False, compare=False
+    )
 
     def init_run(self, profile: str, quiet: bool = False) -> None:
         """Open a new run in the history (or preview doing so)."""
@@ -513,15 +526,20 @@ class Manifest:
         with respect to other appenders; flush + fsync is what makes it
         survive a crash. The containing directory is fsynced the first time
         the file is created so the new directory entry is durable too.
+        The lock is defensive: each call opens its own handle, so concurrent
+        appends can't interleave each other's buffers anyway, but threads are
+        now a supported caller pattern (see _install_extras) and the cost is
+        negligible.
         """
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        is_new = not self.path.exists()
-        with open(self.path, "a", encoding="utf-8") as handle:
-            handle.write(json.dumps(entry) + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        if is_new:
-            _fsync_dir(self.path.parent)
+        with self._append_lock:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            is_new = not self.path.exists()
+            with open(self.path, "a", encoding="utf-8") as handle:
+                handle.write(json.dumps(entry) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            if is_new:
+                _fsync_dir(self.path.parent)
 
 
 def _fsync_dir(directory: Path) -> None:
@@ -939,7 +957,8 @@ _preview = cli_common.preview
 
 def _header(message: str, *, quiet: bool = False) -> None:
     """Print a section header line."""
-    cli_common.qprint(PALETTE.header(message), quiet=quiet)
+    with _io_lock:
+        cli_common.qprint(PALETTE.header(message), quiet=quiet)
 
 
 # ── packages: macOS ───────────────────────────────────────────────────────────
@@ -1064,39 +1083,29 @@ def _record_package_transaction(
     )
 
 
-def _install_linux_packages_one_by_one(
-    ctx: Context, manager: str, epoch: dict[str, str] | None
-) -> None:
+def _install_linux_packages_one_by_one(ctx: Context, manager: str) -> None:
     """Install each package with its own package-manager invocation.
 
-    Deliberately not one batched install command: ``apt-get install`` fails
-    atomically on the first unresolvable name, which would block every
-    package after it — e.g. eza/lsd don't exist before Ubuntu 24.04, which
-    used to silently take tmux/bat/ncdu/tldr/ripgrep/unzip down with them on
-    22.04 machines. Same reasoning applies to dnf.
+    The fallback path behind _install_distro_packages' failed batch attempt:
+    ``apt-get install`` fails atomically on the first unresolvable name, which
+    would block every package after it — e.g. eza/lsd don't exist before Ubuntu
+    24.04, which used to silently take tmux/bat/ncdu/tldr/ripgrep/unzip down
+    with them on 22.04 machines. Same reasoning applies to dnf. Running each
+    package on its own isolates that failure: an unavailable name becomes a
+    skip, and every other package still installs.
+
+    Package-inventory snapshotting and transaction recording used to live here
+    too (a full dpkg-query/rpm -qa scan before AND after every package — 28
+    scans for 14 packages); both moved up to install_linux_packages, which
+    records one whole-step transaction from a single post-install snapshot.
     """
     base = (
         ["sudo", "dnf", "install", "-y"]
         if manager == "dnf"
         else ["sudo", "apt-get", "install", "-y"]
     )
-    _header(f"==> Installing packages ({manager})...", quiet=ctx.opts.quiet)
     for pkg in LINUX_PACKAGES:
-        if ctx.opts.dry_run:
-            _preview(f"would run: {' '.join(base)} {pkg}", quiet=ctx.opts.quiet)
-            continue
-        before = (
-            _capture_package_snapshot(manager)
-            if ctx.departure_baseline is not None
-            else None
-        )
         outcome = run_command([*base, pkg])
-        after = (
-            _capture_package_snapshot(manager)
-            if ctx.departure_baseline is not None
-            else None
-        )
-        _record_package_transaction(ctx, manager, [pkg], before, after, epoch)
         if outcome.ok:
             ctx.manifest.record_package(pkg)
         else:
@@ -1104,6 +1113,42 @@ def _install_linux_packages_one_by_one(
                 f"{manager} package: {pkg}",
                 "not available in this release's repos, or install failed",
             )
+
+
+def _install_distro_packages(ctx: Context, manager: str) -> None:
+    """Install LINUX_PACKAGES in one batched call, falling back to per-package.
+
+    One ``apt-get``/``dnf`` invocation pays dependency resolution once instead
+    of once per package. The fallback exists because a batch is all-or-nothing
+    at resolution time: one unresolvable name (eza/lsd before Ubuntu 24.04)
+    fails the whole transaction, taking the 13 good packages down with it — so
+    on batch failure the per-package loop retries with its atomic-failure
+    isolation. Both managers fail the transaction before executing it when a
+    name is unresolvable, so a failed batch leaves the inventory untouched and
+    the loop's repeated installs of already-present packages are idempotent
+    no-ops.
+
+    The attempt captures its output: a failed speculative batch must not dump
+    raw package-manager stderr at the user before the graceful fallback (which
+    reports the actual per-package skips) handles it.
+    """
+    base = (
+        ["sudo", "dnf", "install", "-y"]
+        if manager == "dnf"
+        else ["sudo", "apt-get", "install", "-y"]
+    )
+    _header(f"==> Installing packages ({manager})...", quiet=ctx.opts.quiet)
+    if ctx.opts.dry_run:
+        _preview(
+            f"would run: {' '.join(base)} {' '.join(LINUX_PACKAGES)}",
+            quiet=ctx.opts.quiet,
+        )
+        return
+    if run_command([*base, *LINUX_PACKAGES], capture=True).ok:
+        for pkg in LINUX_PACKAGES:
+            ctx.manifest.record_package(pkg)
+    else:
+        _install_linux_packages_one_by_one(ctx, manager)
 
 
 def _shim(ctx: Context, shim_name: str, real_name: str) -> None:
@@ -1206,9 +1251,10 @@ def _install_nerd_font(ctx: Context) -> None:
             # before the user can add fonts of their own.
             if ctx.departure_baseline is not None:
                 depart.record_installed_tree(ctx.departure_baseline, font_dir)
-            cli_common.qprint(
-                PALETTE.ok(f"  installed to {font_dir}"), quiet=ctx.opts.quiet
-            )
+            with _io_lock:
+                cli_common.qprint(
+                    PALETTE.ok(f"  installed to {font_dir}"), quiet=ctx.opts.quiet
+                )
         else:
             ctx.reporter.skip(
                 "JetBrainsMono Nerd Font",
@@ -1379,12 +1425,13 @@ def _install_neovim_fallback(ctx: Context) -> None:
             # tree wholesale if it still matches this snapshot exactly.
             if ctx.departure_baseline is not None:
                 depart.record_installed_tree(ctx.departure_baseline, prefix)
-            cli_common.qprint(
-                PALETTE.ok(
-                    f"  installed to {ctx.display(prefix)}, linked from {ctx.display(shim)}"
-                ),
-                quiet=ctx.opts.quiet,
-            )
+            with _io_lock:
+                cli_common.qprint(
+                    PALETTE.ok(
+                        f"  installed to {ctx.display(prefix)}, linked from {ctx.display(shim)}"
+                    ),
+                    quiet=ctx.opts.quiet,
+                )
         else:
             ctx.neovim_fallback_failure = (
                 "download/extract failed, or archive layout unexpected"
@@ -1424,68 +1471,125 @@ def _install_ruff_uv_tool(ctx: Context) -> None:
         ctx.reporter.skip("ruff", "uv tool install failed")
 
 
+def _install_oh_my_posh(ctx: Context) -> None:
+    """Install oh-my-posh via its official installer into ~/.local/bin."""
+    if have("oh-my-posh"):
+        return
+    if ctx.opts.dry_run:
+        _preview(
+            "would install oh-my-posh "
+            "(curl ohmyposh.dev/install.sh | bash -s -- -d ~/.local/bin)",
+            quiet=ctx.opts.quiet,
+        )
+        return
+    _header("==> Installing oh-my-posh...", quiet=ctx.opts.quiet)
+    bin_dir = ctx.home / ".local" / "bin"
+    if run_command(
+        f"curl -s https://ohmyposh.dev/install.sh | bash -s -- -d {bin_dir}",
+        shell=True,
+    ).ok:
+        ctx.manifest.record_package("oh-my-posh")
+    else:
+        ctx.reporter.skip(
+            "oh-my-posh",
+            "installer failed (network blocked, or unzip missing?)",
+        )
+
+
+def _install_extras(ctx: Context) -> None:
+    """Run the four independent network installs concurrently.
+
+    Neovim fallback, uv, oh-my-posh, and the Nerd Font each spend their time
+    waiting on the network with no data dependency between them, so they run
+    on a thread pool instead of back to back. Thread safety: each installer
+    writes only to its own paths plus shared append-only structures (manifest,
+    reporter) whose appends are atomic; console output is serialized by
+    ``_io_lock``. All four futures are gathered before any error is raised, so
+    a raising worker never orphans the others mid-flight.
+
+    Ordering: the pool starts only after the distro packages and shims are
+    done (the Neovim fallback probes the distro nvim; the shims need apt's
+    batcat/fdfind), and the caller keeps ``_install_ruff_uv_tool`` strictly
+    after this returns — ``uv tool install`` needs uv on PATH, which
+    ``_install_uv`` puts there. Dry-run stays sequential: its whole point is
+    deterministic preview output.
+    """
+    installers = (
+        _install_neovim_fallback,
+        _install_uv,
+        _install_oh_my_posh,
+        _install_nerd_font,
+    )
+    if ctx.opts.dry_run:
+        for installer in installers:
+            installer(ctx)
+        return
+    errors: list[BaseException] = []
+    with ThreadPoolExecutor(
+        max_workers=len(installers), thread_name_prefix="install-extras"
+    ) as pool:
+        futures = [pool.submit(installer, ctx) for installer in installers]
+        for future in as_completed(futures):
+            try:
+                future.result()
+            except Exception as exc:  # noqa: BLE001 — re-raised below, after all join
+                errors.append(exc)
+    # Raised only after every worker has finished: the remaining installers
+    # must always run to completion (or their own skip) before teardown.
+    if errors:
+        raise errors[0]
+
+
 def install_linux_packages(ctx: Context) -> None:
     """Install everything the Linux/WSL branch owns: distro packages and extras."""
     manager = "dnf" if have("dnf") else "apt"
     # Captured once, immediately before any package-manager mutation this
-    # run makes — the comparand for each manager's *first* transaction in
-    # the interference-detection scheme, not re-probed per package.
+    # run makes. Doubles as the whole-step transaction's ``before`` snapshot:
+    # it is taken in the same breath as the install attempt (nothing mutates
+    # the inventory in between — apt-get update only refreshes package
+    # lists), which is exactly what today's first per-package transaction
+    # already did, minus one redundant back-to-back scan.
     epoch = (
         _capture_package_snapshot(manager)
         if ctx.departure_baseline is not None and not ctx.opts.dry_run
         else None
     )
 
-    if manager == "dnf":
-        if ctx.opts.dry_run:
-            _preview("would run: sudo dnf makecache", quiet=ctx.opts.quiet)
+    try:
+        if manager == "dnf":
+            if ctx.opts.dry_run:
+                _preview("would run: sudo dnf makecache", quiet=ctx.opts.quiet)
+            else:
+                _header("==> Refreshing dnf package metadata...", quiet=ctx.opts.quiet)
+                if not run_command(["sudo", "dnf", "makecache"]).ok:
+                    ctx.reporter.skip(
+                        "dnf makecache", "dnf makecache failed (offline or blocked?)"
+                    )
+            _install_distro_packages(ctx, "dnf")
         else:
-            _header("==> Refreshing dnf package metadata...", quiet=ctx.opts.quiet)
-            if not run_command(["sudo", "dnf", "makecache"]).ok:
-                ctx.reporter.skip(
-                    "dnf makecache", "dnf makecache failed (offline or blocked?)"
-                )
-        _install_linux_packages_one_by_one(ctx, "dnf", epoch)
-    else:
-        if ctx.opts.dry_run:
-            _preview("would run: sudo apt-get update", quiet=ctx.opts.quiet)
-        else:
-            _header("==> Updating apt package lists...", quiet=ctx.opts.quiet)
-            if not run_command(["sudo", "apt-get", "update"]).ok:
-                ctx.reporter.skip(
-                    "apt update", "apt-get update failed (offline or blocked?)"
-                )
-        _install_linux_packages_one_by_one(ctx, "apt", epoch)
-
-    _install_neovim_fallback(ctx)
+            if ctx.opts.dry_run:
+                _preview("would run: sudo apt-get update", quiet=ctx.opts.quiet)
+            else:
+                _header("==> Updating apt package lists...", quiet=ctx.opts.quiet)
+                if not run_command(["sudo", "apt-get", "update"]).ok:
+                    ctx.reporter.skip(
+                        "apt update", "apt-get update failed (offline or blocked?)"
+                    )
+            _install_distro_packages(ctx, "apt")
+    finally:
+        # One whole-step transaction, in a finally so even an unexpected
+        # exception records whatever the last successful snapshot shows —
+        # departure must never go blind to packages that did land.
+        if ctx.departure_baseline is not None and epoch is not None:
+            after = _capture_package_snapshot(manager)
+            _record_package_transaction(
+                ctx, manager, list(LINUX_PACKAGES), epoch, after, epoch
+            )
 
     _shim(ctx, "bat", "batcat")
     _shim(ctx, "fd", "fdfind")
-    _install_uv(ctx)
+    _install_extras(ctx)
     _install_ruff_uv_tool(ctx)
-
-    if not have("oh-my-posh"):
-        if ctx.opts.dry_run:
-            _preview(
-                "would install oh-my-posh "
-                "(curl ohmyposh.dev/install.sh | bash -s -- -d ~/.local/bin)",
-                quiet=ctx.opts.quiet,
-            )
-        else:
-            _header("==> Installing oh-my-posh...", quiet=ctx.opts.quiet)
-            bin_dir = ctx.home / ".local" / "bin"
-            if run_command(
-                f"curl -s https://ohmyposh.dev/install.sh | bash -s -- -d {bin_dir}",
-                shell=True,
-            ).ok:
-                ctx.manifest.record_package("oh-my-posh")
-            else:
-                ctx.reporter.skip(
-                    "oh-my-posh",
-                    "installer failed (network blocked, or unzip missing?)",
-                )
-
-    _install_nerd_font(ctx)
 
 
 # ── packages: Node-based harnesses ────────────────────────────────────────────
