@@ -85,7 +85,6 @@ def make_ctx(
     dry_run=False,
     force=False,
     wipe=False,
-    no_nvim_pin=False,
     reseed=False,
     adopt=False,
     depart=False,
@@ -104,7 +103,6 @@ def make_ctx(
         dry_run=dry_run,
         force=force,
         wipe=wipe,
-        no_nvim_pin=no_nvim_pin,
         reseed=reseed,
         adopt=adopt,
         depart=depart,
@@ -145,8 +143,6 @@ def offline_install(monkeypatch):
     a full ``run_install`` can be exercised end to end.
     """
     for name in (
-        "install_mac_packages",
-        "install_linux_packages",
         "capture_service_baseline",
         "enable_managed_services",
         "capture_git_hooks_path_baseline",
@@ -220,7 +216,6 @@ def parse_error(argv, capsys):
             ["--report-uninstalled", "--harness=claude"],
             "--report-uninstalled can only be used with --check-links",
         ),
-        (["--depart", "--no-nvim-pin"], "--depart must be used alone"),
         # --depart --rollback names the --depart conflict, not rollback's —
         # the --depart-alone check runs first.
         (["--rollback", "--depart"], "--depart must be used alone"),
@@ -300,12 +295,7 @@ def test_rollback_wipe_dry_run_parses():
 def test_defaults():
     opts = install.parse_args(["--harness=claude"])
     assert opts.profile == "personal"
-    assert not (opts.rollback or opts.force or opts.dry_run or opts.no_nvim_pin)
-
-
-def test_no_nvim_pin_flag_parses():
-    opts = install.parse_args(["--harness=claude", "--no-nvim-pin"])
-    assert opts.no_nvim_pin
+    assert not (opts.rollback or opts.force or opts.dry_run)
 
 
 def test_reseed_flag_parses():
@@ -1857,7 +1847,13 @@ def test_duplicate_backup_entry_is_not_reported_twice(home, capsys):
 def test_rollback_never_uninstalls_packages(home, capsys):
     ctx = make_ctx(home)
     ctx.manifest.init_run("personal")
-    ctx.manifest.record_package("ripgrep")
+    # Simulates a historical ledger written by an installer version that
+    # recorded package entries — rollback must keep reporting these entries
+    # without any writer in the tree.
+    with open(ctx.manifest.path, "a", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps({"kind": "package-installed", "name": "ripgrep"}) + "\n"
+        )
 
     assert install.do_rollback(make_ctx(home)) == 0
     assert "package left installed (profile-independent): ripgrep" in (
@@ -2101,7 +2097,7 @@ def test_history_survives_a_malformed_line(home):
     ctx.manifest.init_run("personal")
     with open(ctx.manifest.path, "a", encoding="utf-8") as handle:
         handle.write("not json at all\n")
-    ctx.manifest.record_package("tmux")
+        handle.write(json.dumps({"kind": "package-installed", "name": "tmux"}) + "\n")
 
     entries = ctx.manifest.entries()
     assert [e["kind"] for e in entries] == ["run", "package-installed"]
@@ -2171,16 +2167,6 @@ def test_exit_status_is_1_when_a_step_was_skipped(home, links, offline_install):
     assert install.run_install(ctx, links) == 1
 
 
-# ── small helpers ─────────────────────────────────────────────────────────────
-
-
-def test_parse_neovim_version():
-    assert install.parse_neovim_version("NVIM v0.11.2\nBuild type: Release") == (0, 11)
-    assert install.parse_neovim_version("NVIM v0.9.5") == (0, 9)
-    assert install.parse_neovim_version("nvim: command not found") is None
-    assert install.parse_neovim_version("") is None
-
-
 def _stub_nvim(monkeypatch, *, version_output="NVIM v0.12.4", runtime_ok=True):
     """Stub nvim --version and the headless runtime probe."""
 
@@ -2194,441 +2180,6 @@ def _stub_nvim(monkeypatch, *, version_output="NVIM v0.12.4", runtime_ok=True):
 
     monkeypatch.setattr(install, "have", lambda exe: exe == "nvim")
     monkeypatch.setattr(install, "run_command", _stub)
-
-
-def test_neovim_runtime_ok_reflects_probe(monkeypatch):
-    _stub_nvim(monkeypatch, runtime_ok=True)
-    assert install.neovim_runtime_ok() is True
-
-
-def test_neovim_runtime_ok_reflects_probe_failure(monkeypatch):
-    _stub_nvim(monkeypatch, runtime_ok=False)
-    assert install.neovim_runtime_ok() is False
-
-
-def test_neovim_status_missing_binary(monkeypatch):
-    monkeypatch.setattr(install, "have", lambda exe: False)
-    assert install._neovim_status() == (None, False)
-
-
-def test_neovim_status_unparseable_version_skips_runtime_probe(monkeypatch):
-    calls = []
-
-    def _stub(cmd, *, shell=False, capture=False):
-        calls.append(list(cmd))
-        return install.CommandResult(True, "nvim: command not found")
-
-    monkeypatch.setattr(install, "have", lambda exe: True)
-    monkeypatch.setattr(install, "run_command", _stub)
-    assert install._neovim_status() == (None, False)
-    assert calls == [["nvim", "--version"]]
-
-
-def test_neovim_status_ok(monkeypatch):
-    _stub_nvim(monkeypatch, version_output="NVIM v0.12.4", runtime_ok=True)
-    assert install._neovim_status() == ((0, 12), True)
-
-
-def test_neovim_status_broken_runtime(monkeypatch):
-    _stub_nvim(monkeypatch, version_output="NVIM v0.12.4", runtime_ok=False)
-    assert install._neovim_status() == ((0, 12), False)
-
-
-def test_bootstrap_neovim_skips_when_not_installed(home, monkeypatch, capsys):
-    ctx = make_ctx(home)
-    monkeypatch.setattr(install, "have", lambda exe: False)
-    install.bootstrap_neovim(ctx)
-    assert "Neovim not installed" in capsys.readouterr().out
-
-
-def test_bootstrap_neovim_skips_when_version_too_old(home, monkeypatch, capsys):
-    ctx = make_ctx(home)
-    _stub_nvim(monkeypatch, version_output="NVIM v0.9.5")
-    install.bootstrap_neovim(ctx)
-    out = capsys.readouterr().out
-    assert "Neovim 0.9 found, config needs >=0.11" in out
-
-
-def test_bootstrap_neovim_old_version_includes_fallback_failure(
-    home, monkeypatch, capsys
-):
-    ctx = make_ctx(home)
-    ctx.neovim_fallback_failure = (
-        "download/extract failed, or archive layout unexpected"
-    )
-    _stub_nvim(monkeypatch, version_output="NVIM v0.9.5")
-    install.bootstrap_neovim(ctx)
-    out = capsys.readouterr().out
-    assert "fallback install also failed" in out
-    assert "download/extract failed, or archive layout unexpected" in out
-
-
-def test_bootstrap_neovim_skips_when_runtime_broken(home, monkeypatch, capsys):
-    ctx = make_ctx(home)
-    _stub_nvim(monkeypatch, version_output="NVIM v0.12.4", runtime_ok=False)
-    install.bootstrap_neovim(ctx)
-    out = capsys.readouterr().out
-    assert "runtime doesn't resolve" in out
-    assert "vim.uri" in out
-
-
-def test_bootstrap_neovim_proceeds_when_runtime_ok(home, monkeypatch, capsys):
-    ctx = make_ctx(home, dry_run=True)
-    _stub_nvim(monkeypatch, version_output="NVIM v0.12.4", runtime_ok=True)
-    install.bootstrap_neovim(ctx)
-    out = capsys.readouterr().out
-    assert "would run: nvim --headless" in out
-    assert "SKIPPED" not in out
-
-
-# ── neovim fallback install (Linux) ────────────────────────────────────────────
-
-
-def _stub_neovim_fallback(
-    monkeypatch,
-    *,
-    have_nvim=False,
-    version_output="",
-    runtime_ok=False,
-    download_ok=True,
-    extract_ok=True,
-    asset="nvim-linux-x86_64.tar.gz",
-    machine="x86_64",
-):
-    """Stub the whole external surface _install_neovim_fallback touches.
-
-    The ``tar`` stub fabricates the extracted directory tree a real
-    extraction would produce (bin/nvim, share/nvim/runtime), since nothing
-    here actually shells out.
-    """
-    calls: list[list[str]] = []
-
-    def _stub(cmd, *, shell=False, capture=False):
-        argv = list(cmd)
-        calls.append(argv)
-        if argv == ["nvim", "--version"]:
-            return install.CommandResult(True, version_output)
-        if argv[:2] == ["nvim", "--headless"]:
-            return install.CommandResult(runtime_ok)
-        if argv[0] == "curl":
-            return install.CommandResult(download_ok)
-        if argv[0] == "tar":
-            if extract_ok:
-                tmp_dir = Path(argv[-1])
-                extracted = tmp_dir / asset.removesuffix(".tar.gz")
-                (extracted / "bin").mkdir(parents=True)
-                (extracted / "bin" / "nvim").write_text("fake nvim binary\n")
-                (extracted / "share" / "nvim" / "runtime").mkdir(parents=True)
-            return install.CommandResult(extract_ok)
-        raise AssertionError(f"unexpected command: {argv!r}")
-
-    monkeypatch.setattr(install, "have", lambda exe: exe == "nvim" and have_nvim)
-    monkeypatch.setattr(install, "run_command", _stub)
-    monkeypatch.setattr(install.platform, "machine", lambda: machine)
-    return calls
-
-
-def test_install_neovim_fallback_no_pin_noop_when_already_good(home, monkeypatch):
-    """--no-nvim-pin restores the old rescue-only behavior: a system nvim
-    that's already good enough (>=0.11, working runtime) is left alone,
-    even though it isn't our managed pin."""
-    ctx = make_ctx(home, no_nvim_pin=True)
-    calls = _stub_neovim_fallback(
-        monkeypatch, have_nvim=True, version_output="NVIM v0.11.6", runtime_ok=True
-    )
-    install._install_neovim_fallback(ctx)
-    assert kinds(ctx, "package-installed") == []
-    assert kinds(ctx, "symlink-created") == []
-    assert not any(argv[0] in ("curl", "tar") for argv in calls)
-
-
-def test_install_neovim_fallback_pins_by_default_even_when_system_nvim_good(
-    home, monkeypatch
-):
-    """Default behavior (no --no-nvim-pin): a system nvim that's already
-    good enough still gets overridden by the pinned build, since it isn't
-    our managed symlink into ~/.local/opt/neovim."""
-    ctx = make_ctx(home)
-    _stub_neovim_fallback(
-        monkeypatch, have_nvim=True, version_output="NVIM v0.11.6", runtime_ok=True
-    )
-    install._install_neovim_fallback(ctx)
-
-    prefix = home / ".local" / "opt" / "neovim"
-    shim = home / ".local" / "bin" / "nvim"
-    assert (prefix / "bin" / "nvim").read_text() == "fake nvim binary\n"
-    assert shim.is_symlink()
-
-    packages = kinds(ctx, "package-installed")
-    assert len(packages) == 1
-    assert install.NEOVIM_FALLBACK_VERSION in packages[0]["name"]
-
-
-def test_install_neovim_fallback_noop_when_already_pinned(home, monkeypatch):
-    """Idempotent: once ~/.local/bin/nvim already resolves to our own
-    correctly-pinned install, re-running does nothing — no network calls,
-    no reinstall — under default (pin-enforcing) behavior."""
-    ctx = make_ctx(home)
-    prefix = home / ".local" / "opt" / "neovim"
-    shim = home / ".local" / "bin" / "nvim"
-    nvim_bin = prefix / "bin" / "nvim"
-    nvim_bin.parent.mkdir(parents=True)
-    nvim_bin.write_text("real fallback binary\n")
-    shim.parent.mkdir(parents=True)
-    shim.symlink_to(nvim_bin)
-
-    calls: list[list[str]] = []
-
-    def _stub(cmd, *, shell=False, capture=False):
-        argv = list(cmd)
-        calls.append(argv)
-        if argv == [str(shim), "--version"]:
-            return install.CommandResult(
-                True, f"NVIM v{install.NEOVIM_FALLBACK_VERSION}"
-            )
-        raise AssertionError(f"unexpected command: {argv!r}")
-
-    monkeypatch.setattr(install, "run_command", _stub)
-    install._install_neovim_fallback(ctx)
-
-    assert calls == [[str(shim), "--version"]]
-    assert kinds(ctx, "package-installed") == []
-    assert kinds(ctx, "symlink-created") == []
-
-
-def test_install_neovim_fallback_no_pin_still_rescues_when_broken(home, monkeypatch):
-    """--no-nvim-pin doesn't suppress genuine rescues: a missing/broken
-    system nvim still gets the fallback installed."""
-    ctx = make_ctx(home, no_nvim_pin=True)
-    _stub_neovim_fallback(
-        monkeypatch, have_nvim=True, version_output="NVIM v0.9.5", runtime_ok=False
-    )
-    install._install_neovim_fallback(ctx)
-
-    packages = kinds(ctx, "package-installed")
-    assert len(packages) == 1
-    assert install.NEOVIM_FALLBACK_VERSION in packages[0]["name"]
-
-
-def test_install_neovim_fallback_installs_when_too_old(home, monkeypatch):
-    ctx = make_ctx(home)
-    _stub_neovim_fallback(
-        monkeypatch, have_nvim=True, version_output="NVIM v0.9.5", runtime_ok=False
-    )
-    install._install_neovim_fallback(ctx)
-
-    prefix = home / ".local" / "opt" / "neovim"
-    shim = home / ".local" / "bin" / "nvim"
-    assert (prefix / "bin" / "nvim").read_text() == "fake nvim binary\n"
-    assert shim.is_symlink()
-    assert shim.resolve() == (prefix / "bin" / "nvim").resolve()
-
-    packages = kinds(ctx, "package-installed")
-    assert len(packages) == 1
-    assert install.NEOVIM_FALLBACK_VERSION in packages[0]["name"]
-
-    symlinks = kinds(ctx, "symlink-created")
-    assert len(symlinks) == 1
-    assert symlinks[0]["dest"] == str(shim)
-
-
-def test_install_neovim_fallback_download_failure_skips(home, monkeypatch, capsys):
-    ctx = make_ctx(home)
-    _stub_neovim_fallback(monkeypatch, have_nvim=False, download_ok=False)
-    install._install_neovim_fallback(ctx)
-
-    out = capsys.readouterr().out
-    assert "download/extract failed" in out
-    assert ctx.neovim_fallback_failure is not None
-    assert kinds(ctx, "package-installed") == []
-    assert kinds(ctx, "symlink-created") == []
-    assert not (home / ".local" / "opt" / "neovim").exists()
-
-
-def test_install_neovim_fallback_unsupported_arch_skips(home, monkeypatch, capsys):
-    ctx = make_ctx(home)
-    calls = _stub_neovim_fallback(monkeypatch, have_nvim=False, machine="riscv64")
-    install._install_neovim_fallback(ctx)
-
-    out = capsys.readouterr().out
-    assert "unsupported architecture" in out
-    assert "riscv64" in out
-    assert ctx.neovim_fallback_failure is not None
-    assert calls == []
-
-
-def test_install_neovim_fallback_replaces_stale_prefix(home, monkeypatch):
-    """An unrecorded stale prefix self-heals: TREE_UNRECORDED still proceeds
-    (see meta-guard-nvim-fallback-clobber's asymmetric verdict design)."""
-    ctx = make_ctx(home)
-    ctx.departure_baseline = depart.Baseline()
-    prefix = home / ".local" / "opt" / "neovim"
-    (prefix / "bin").mkdir(parents=True)
-    (prefix / "bin" / "nvim").write_text("stale old binary\n")
-    (prefix / "STALE_MARKER").write_text("x\n")
-
-    _stub_neovim_fallback(monkeypatch, have_nvim=False)
-    install._install_neovim_fallback(ctx)
-
-    assert (prefix / "bin" / "nvim").read_text() == "fake nvim binary\n"
-    assert not (prefix / "STALE_MARKER").exists()
-
-
-def test_install_neovim_fallback_replaces_incomplete_prefix(home, monkeypatch):
-    ctx = make_ctx(home)
-    ctx.departure_baseline = depart.Baseline()
-    prefix = home / ".local" / "opt" / "neovim"
-    (prefix / "bin").mkdir(parents=True)  # interrupted install: no nvim binary
-
-    _stub_neovim_fallback(monkeypatch, have_nvim=False)
-    install._install_neovim_fallback(ctx)
-
-    assert (prefix / "bin" / "nvim").read_text() == "fake nvim binary\n"
-
-
-def test_install_neovim_fallback_replaces_unchanged_recorded_prefix(home, monkeypatch):
-    """TREE_UNCHANGED: a prefix that still matches its recorded manifest is
-    removed and replaced, same as an unrecorded one — the common reinstall
-    case."""
-    ctx = make_ctx(home)
-    ctx.departure_baseline = depart.Baseline()
-    prefix = home / ".local" / "opt" / "neovim"
-    (prefix / "bin").mkdir(parents=True)
-    (prefix / "bin" / "nvim").write_text("previous fallback binary\n")
-    depart.record_installed_tree(ctx.departure_baseline, prefix)
-
-    _stub_neovim_fallback(monkeypatch, have_nvim=False)
-    install._install_neovim_fallback(ctx)
-
-    assert (prefix / "bin" / "nvim").read_text() == "fake nvim binary\n"
-
-
-def test_install_neovim_fallback_blocks_on_modified_recorded_prefix(
-    home, monkeypatch, capsys
-):
-    """TREE_MODIFIED: a recorded prefix that no longer matches (the user
-    added something) is left untouched, not silently destroyed — the fix
-    for meta-guard-nvim-fallback-clobber's incident class."""
-    ctx = make_ctx(home)
-    ctx.departure_baseline = depart.Baseline()
-    prefix = home / ".local" / "opt" / "neovim"
-    (prefix / "bin").mkdir(parents=True)
-    (prefix / "bin" / "nvim").write_text("previous fallback binary\n")
-    depart.record_installed_tree(ctx.departure_baseline, prefix)
-    (prefix / "my-own-plugin.lua").write_text("-- mine\n")
-
-    calls = _stub_neovim_fallback(monkeypatch, have_nvim=False)
-    install._install_neovim_fallback(ctx)
-
-    out = capsys.readouterr().out
-    assert "may contain changes you made after installing" in out
-    assert ctx.neovim_fallback_failure is not None
-    assert (prefix / "bin" / "nvim").read_text() == "previous fallback binary\n"
-    assert (prefix / "my-own-plugin.lua").read_text() == "-- mine\n"
-    assert kinds(ctx, "package-installed") == []
-    # tmp_dir cleanup still runs even though the install is skipped
-    assert any(argv[0] == "curl" for argv in calls)
-    assert any(argv[0] == "tar" for argv in calls)
-
-
-def test_install_neovim_fallback_blocks_on_modified_recorded_symlink(
-    home, monkeypatch, capsys
-):
-    """A symlinked prefix goes through the same verdict check as a
-    directory -- TREE_MODIFIED blocks it too, not just the directory case."""
-    ctx = make_ctx(home)
-    ctx.departure_baseline = depart.Baseline()
-    prefix = home / ".local" / "opt" / "neovim"
-    real_dir = home / "custom-neovim-build"
-    (real_dir / "bin").mkdir(parents=True)
-    (real_dir / "bin" / "nvim").write_text("custom build\n")
-    depart.record_installed_tree(ctx.departure_baseline, prefix)  # recorded as a dir
-    prefix.parent.mkdir(parents=True)
-    prefix.symlink_to(real_dir)  # now a symlink -- mismatches the recording
-
-    _stub_neovim_fallback(monkeypatch, have_nvim=False)
-    install._install_neovim_fallback(ctx)
-
-    out = capsys.readouterr().out
-    assert "may contain changes you made after installing" in out
-    assert prefix.is_symlink()
-    assert prefix.resolve() == real_dir.resolve()
-
-
-def test_install_neovim_fallback_replaces_unrecorded_symlink(home, monkeypatch):
-    """An unrecorded symlink self-heals (unlinked, not blocked) -- proves
-    the non-directory branch's TREE_UNRECORDED path doesn't hit a
-    shutil.rmtree-on-non-directory error."""
-    ctx = make_ctx(home)
-    ctx.departure_baseline = depart.Baseline()
-    prefix = home / ".local" / "opt" / "neovim"
-    real_dir = home / "elsewhere"
-    real_dir.mkdir(parents=True)
-    prefix.parent.mkdir(parents=True)
-    prefix.symlink_to(real_dir)
-
-    _stub_neovim_fallback(monkeypatch, have_nvim=False)
-    install._install_neovim_fallback(ctx)
-
-    assert not prefix.is_symlink()
-    assert (prefix / "bin" / "nvim").read_text() == "fake nvim binary\n"
-
-
-def test_install_neovim_fallback_no_baseline_skips_when_prefix_exists(
-    home, monkeypatch, capsys
-):
-    """ctx.departure_baseline is None with an existing prefix fails safe
-    (skips) rather than falling through to an unguarded clobber -- this
-    branch is unreachable via a real run_install (see the module-level
-    comment at its call site) but must still fail safe if ever hit
-    directly, e.g. by a test or a future refactor."""
-    ctx = make_ctx(home)
-    assert ctx.departure_baseline is None
-    prefix = home / ".local" / "opt" / "neovim"
-    (prefix / "bin").mkdir(parents=True)
-    (prefix / "bin" / "nvim").write_text("existing binary\n")
-
-    calls = _stub_neovim_fallback(monkeypatch, have_nvim=False)
-    install._install_neovim_fallback(ctx)
-
-    out = capsys.readouterr().out
-    assert "no departure baseline available" in out
-    assert ctx.neovim_fallback_failure is not None
-    assert (prefix / "bin" / "nvim").read_text() == "existing binary\n"
-    assert any(argv[0] == "curl" for argv in calls)  # tmp_dir cleanup still ran
-
-
-def test_install_neovim_fallback_no_baseline_proceeds_when_prefix_absent(
-    home, monkeypatch
-):
-    """The no-baseline check must never fire when there's nothing at prefix
-    to protect -- a clean install proceeds regardless of
-    ctx.departure_baseline. This is the case an earlier draft of this fix
-    got wrong (gated the whole function on the baseline instead of just
-    the removal decision)."""
-    ctx = make_ctx(home)
-    assert ctx.departure_baseline is None
-    prefix = home / ".local" / "opt" / "neovim"
-    assert not prefix.exists()
-
-    _stub_neovim_fallback(monkeypatch, have_nvim=False)
-    install._install_neovim_fallback(ctx)
-
-    assert (prefix / "bin" / "nvim").read_text() == "fake nvim binary\n"
-    assert ctx.neovim_fallback_failure is None
-
-
-def test_install_neovim_fallback_dry_run(home, monkeypatch, capsys):
-    ctx = make_ctx(home, dry_run=True)
-    calls = _stub_neovim_fallback(monkeypatch, have_nvim=False)
-    install._install_neovim_fallback(ctx)
-
-    out = capsys.readouterr().out
-    assert "[dry-run]" in out
-    assert install.NEOVIM_FALLBACK_VERSION in out
-    assert calls == []
-    assert not (home / ".local" / "opt" / "neovim").exists()
-    assert kinds(ctx, "package-installed") == []
 
 
 def test_color_is_off_for_non_tty(monkeypatch):
@@ -3377,9 +2928,9 @@ def test_depart_leaves_unrelated_files_untouched(home, links, offline_install):
 def _seed_installed_font_tree(home, *, record: bool):
     """Put an installer-shaped font tree in place, optionally snapshotting it.
 
-    Mirrors what _install_nerd_font leaves behind, without downloading
-    anything. ``record=False`` reproduces a baseline captured before
-    post-install snapshotting existed.
+    Mirrors the on-disk layout a font install leaves behind, without
+    downloading anything. ``record=False`` reproduces a baseline captured
+    before post-install snapshotting existed.
     """
     font_dir = home / ".local" / "share" / "fonts" / "JetBrainsMonoNerdFont"
     font_dir.mkdir(parents=True)
@@ -3442,30 +2993,6 @@ def test_depart_preserves_a_font_tree_with_no_recorded_manifest(
     assert "no post-install manifest" in out
 
 
-def test_install_records_the_font_tree_manifest(home, links, monkeypatch):
-    """_install_nerd_font must snapshot what it produced."""
-    ctx = make_ctx(home)
-    ctx.departure_baseline = depart.Baseline()
-    font_dir = home / ".local" / "share" / "fonts" / "JetBrainsMonoNerdFont"
-
-    def fake_run(cmd, **kwargs):
-        if cmd and cmd[0] == "curl":
-            return install.CommandResult(True)
-        if cmd and cmd[0] == "unzip":
-            font_dir.mkdir(parents=True, exist_ok=True)
-            (font_dir / "JetBrainsMono-Regular.ttf").write_bytes(b"font")
-            return install.CommandResult(True)
-        return install.CommandResult(True)
-
-    monkeypatch.setattr(install, "run_command", fake_run)
-    install._install_nerd_font(ctx)
-
-    assert str(font_dir) in ctx.departure_baseline.installed_trees
-    assert depart.installed_tree_verdict(ctx.departure_baseline, font_dir) == (
-        depart.TREE_UNCHANGED
-    )
-
-
 def test_depart_retry_skips_already_ledger_completed_actions(
     home, links, offline_install, monkeypatch
 ):
@@ -3507,363 +3034,6 @@ def test_depart_second_lock_acquisition_refuses_while_first_is_live(
         assert code == 2
     finally:
         depart.release_departure_lock(ctx.state_dir, pid=os.getpid())
-
-
-# ── package transaction recording (step 2 live wiring) ─────────────────────
-
-
-def apt_stub(live_versions, calls, *, batch_ok=True, missing=()):
-    """run_command stub for the apt path of install_linux_packages.
-
-    Records every command in *calls*; installs into *live_versions*. The
-    batched attempt (any install command naming more than one package, run
-    with capture=True) fails wholesale when *batch_ok* is False; the
-    per-package fallback fails for names in *missing*.
-    """
-
-    def run(cmd, **kwargs):
-        calls.append(cmd)
-        if cmd[0] == "dpkg-query":
-            output = "".join(f"{n}\t{v}\n" for n, v in live_versions.items())
-            return install.CommandResult(True, output)
-        if cmd[:3] == ["sudo", "apt-get", "update"]:
-            return install.CommandResult(True)
-        if cmd[:3] == ["sudo", "apt-get", "install"]:
-            pkgs = cmd[4:]
-            if len(pkgs) > 1:
-                # The speculative batch attempt: capture=True, all-or-nothing.
-                assert kwargs.get("capture"), "batch attempt must capture output"
-                if batch_ok:
-                    for pkg in pkgs:
-                        live_versions[pkg] = "1.0-1"
-                    return install.CommandResult(True)
-                return install.CommandResult(False)
-            pkg = pkgs[0]
-            if pkg in missing:
-                return install.CommandResult(False)
-            live_versions[pkg] = "1.0-1"
-            return install.CommandResult(True)
-        raise AssertionError(f"unexpected command: {cmd!r}")
-
-    return run
-
-
-def stub_extras(monkeypatch, events=None, **overrides):
-    """Neuter the four parallel network installers (+ ruff tool) for flow tests.
-
-    Each records its name into *events* (a shared list) when invoked, in
-    whichever order the implementation calls them. *overrides* maps an
-    installer name to a replacement function (e.g. a barrier-waiting one
-    for a concurrency test).
-    """
-    noop_names = (
-        "_install_neovim_fallback",
-        "_install_uv",
-        "_install_oh_my_posh",
-        "_install_nerd_font",
-        "_install_ruff_uv_tool",
-    )
-    for name in noop_names:
-        replacement = overrides.get(name)
-        if replacement is None:
-            def make(name=name):
-                def noop(ctx):
-                    if events is not None:
-                        events.append(name)
-                return noop
-            replacement = make()
-        monkeypatch.setattr(install, name, replacement)
-
-
-def test_install_linux_packages_one_by_one_installs_per_package(home, monkeypatch):
-    """The fallback loop shells out once per package; no snapshotting of its own."""
-    ctx = make_ctx(home)
-    ctx.departure_baseline = depart.Baseline()
-    calls: list = []
-    live_versions: dict[str, str] = {}
-
-    monkeypatch.setattr(install, "run_command", apt_stub(live_versions, calls))
-    install._install_linux_packages_one_by_one(ctx, "apt")
-
-    installs = [c for c in calls if c[:3] == ["sudo", "apt-get", "install"]]
-    assert installs == [["sudo", "apt-get", "install", "-y", pkg] for pkg in install.LINUX_PACKAGES]
-    # Transaction recording moved to the install_linux_packages caller; the
-    # fallback loop must not probe the inventory at all.
-    assert not [c for c in calls if c[0] == "dpkg-query"]
-    assert ctx.departure_baseline.transactions == []
-    assert kinds(ctx, "package-installed") == [
-        {"kind": "package-installed", "name": pkg} for pkg in install.LINUX_PACKAGES
-    ]
-
-
-def test_install_linux_packages_batch_success_single_invocation(home, monkeypatch):
-    """The happy path: one batched install, all packages recorded, one transaction."""
-    ctx = make_ctx(home)
-    ctx.departure_baseline = depart.Baseline()
-    calls: list = []
-    live_versions: dict[str, str] = {}
-    events: list = []
-
-    monkeypatch.setattr(install, "have", lambda name: False)
-    monkeypatch.setattr(install, "run_command", apt_stub(live_versions, calls))
-    stub_extras(monkeypatch, events)
-    install.install_linux_packages(ctx)
-
-    batches = [c for c in calls if c[:3] == ["sudo", "apt-get", "install"]]
-    assert batches == [
-        ["sudo", "apt-get", "install", "-y", *install.LINUX_PACKAGES]
-    ]
-    # Tracking path: exactly two full-inventory scans (epoch + post-install),
-    # not two per package (28 under the old code).
-    probes = [c for c in calls if c[0] == "dpkg-query"]
-    assert len(probes) == 2
-    (txns,) = ctx.departure_baseline.transactions
-    assert txns["manager"] == "apt"
-    assert txns["requested"] == list(install.LINUX_PACKAGES)
-    assert all(txns["after"][pkg] == "1.0-1" for pkg in install.LINUX_PACKAGES)
-    assert txns["comparand_source"] == "epoch"
-    assert kinds(ctx, "package-installed") == [
-        {"kind": "package-installed", "name": pkg} for pkg in install.LINUX_PACKAGES
-    ]
-    assert events[-1] == "_install_ruff_uv_tool"
-    # The four network installers run concurrently on the pool — their
-    # completion order is nondeterministic, so only membership is asserted.
-    # (The Neovim fallback is one of the four pool workers, not sequential:
-    # "pool starts only after the distro packages and shims are done" refers
-    # to its START, not its completion order.)
-    assert set(events[:-1]) == {
-        "_install_neovim_fallback",
-        "_install_uv",
-        "_install_oh_my_posh",
-        "_install_nerd_font",
-    }
-
-
-def test_install_linux_packages_batch_failure_falls_back_per_package(
-    home, monkeypatch
-):
-    """A batch failure (the eza-on-22.04 shape) degrades to the per-package loop.
-
-    The missing package becomes a skip; every other package still installs;
-    the failed batch's raw output must not reach the terminal.
-    """
-    ctx = make_ctx(home)
-    ctx.departure_baseline = depart.Baseline()
-    calls: list = []
-    live_versions: dict[str, str] = {}
-    events: list = []
-    missing = install.LINUX_PACKAGES[-1]
-
-    monkeypatch.setattr(install, "have", lambda name: False)
-    monkeypatch.setattr(
-        install, "run_command", apt_stub(live_versions, calls, batch_ok=False, missing={missing})
-    )
-    stub_extras(monkeypatch, events)
-    install.install_linux_packages(ctx)
-
-    fallback = [c[4] for c in calls if c[:3] == ["sudo", "apt-get", "install"] and len(c) == 5]
-    assert fallback == list(install.LINUX_PACKAGES)
-    # Still exactly one whole-step transaction, capturing the net effect.
-    probes = [c for c in calls if c[0] == "dpkg-query"]
-    assert len(probes) == 2
-    (txns,) = ctx.departure_baseline.transactions
-    assert txns["requested"] == list(install.LINUX_PACKAGES)
-    assert missing not in txns["after"]
-    assert txns["after"][install.LINUX_PACKAGES[0]] == "1.0-1"
-    installed = [e["name"] for e in kinds(ctx, "package-installed")]
-    assert installed == [pkg for pkg in install.LINUX_PACKAGES if pkg != missing]
-    assert any(missing in line for line in ctx.reporter.skipped)
-
-
-def test_install_linux_packages_no_tracking_skips_probes_but_still_batches(
-    home, monkeypatch
-):
-    """Without a departure baseline there is nothing to probe — the batch stays."""
-    ctx = make_ctx(home)
-    calls: list = []
-    live_versions: dict[str, str] = {}
-    events: list = []
-
-    monkeypatch.setattr(install, "have", lambda name: False)
-    monkeypatch.setattr(install, "run_command", apt_stub(live_versions, calls))
-    stub_extras(monkeypatch, events)
-    install.install_linux_packages(ctx)
-
-    assert not [c for c in calls if c[0] == "dpkg-query"]
-    assert [
-        c for c in calls if c[:3] == ["sudo", "apt-get", "install"]
-    ] == [["sudo", "apt-get", "install", "-y", *install.LINUX_PACKAGES]]
-
-
-def test_install_linux_packages_dry_run_previews_and_records_nothing(
-    home, monkeypatch, capsys
-):
-    ctx = make_ctx(home, dry_run=True)
-    ctx.departure_baseline = depart.Baseline()
-    events: list = []
-
-    def run(cmd, **kwargs):
-        raise AssertionError("dry-run must never shell out")
-
-    monkeypatch.setattr(install, "run_command", run)
-    monkeypatch.setattr(install, "have", lambda name: False)
-    stub_extras(monkeypatch, events)
-    install.install_linux_packages(ctx)
-
-    out = capsys.readouterr().out
-    assert (
-        "would run: sudo apt-get install -y " + " ".join(install.LINUX_PACKAGES)
-    ) in out
-    assert ctx.departure_baseline.transactions == []
-    assert kinds(ctx, "package-installed") == []
-    # Dry-run previews sequentially, in the documented order.
-    assert events == [
-        "_install_neovim_fallback",
-        "_install_uv",
-        "_install_oh_my_posh",
-        "_install_nerd_font",
-        "_install_ruff_uv_tool",
-    ]
-
-
-def test_install_extras_run_concurrently(home, monkeypatch):
-    """The four network installers overlap: all four run at once off the main thread.
-
-    A 4-party barrier can only be passed if all four installers are alive
-    simultaneously — a sequential implementation times out and fails.
-    """
-    ctx = make_ctx(home)
-    barrier = threading.Barrier(4, timeout=30)
-    threads: list = []
-    events: list = []
-
-    def barrier_installer(ctx):
-        threads.append(threading.get_ident())
-        barrier.wait()
-
-    monkeypatch.setattr(install, "have", lambda name: False)
-    monkeypatch.setattr(
-        install,
-        "run_command",
-        lambda cmd, **kwargs: install.CommandResult(True),
-    )
-    stub_extras(
-        monkeypatch,
-        events,
-        _install_neovim_fallback=barrier_installer,
-        _install_uv=barrier_installer,
-        _install_oh_my_posh=barrier_installer,
-        _install_nerd_font=barrier_installer,
-    )
-    install.install_linux_packages(ctx)
-
-    assert len(set(threads)) == 4
-
-
-def test_install_extras_worker_exception_surfaces_after_all_complete(home, monkeypatch):
-    """One installer raising must not orphan the others mid-flight."""
-    ctx = make_ctx(home)
-    done: list = []
-
-    def raiser(ctx):
-        raise RuntimeError("unexpected worker failure")
-
-    def finisher(name):
-        def fn(ctx):
-            done.append(name)
-        return fn
-
-    monkeypatch.setattr(install, "have", lambda name: False)
-    monkeypatch.setattr(
-        install,
-        "run_command",
-        lambda cmd, **kwargs: install.CommandResult(True),
-    )
-    stub_extras(
-        monkeypatch,
-        _install_neovim_fallback=raiser,
-        _install_uv=finisher("uv"),
-        _install_oh_my_posh=finisher("omp"),
-        _install_nerd_font=finisher("font"),
-    )
-    with pytest.raises(RuntimeError, match="unexpected worker failure"):
-        install.install_linux_packages(ctx)
-
-    # The healthy workers all ran to completion before the error surfaced.
-    assert sorted(done) == ["font", "omp", "uv"]
-
-
-def test_install_ruff_tool_runs_after_parallel_join(home, monkeypatch):
-    """``uv tool install ruff`` must not start before the pool has joined.
-
-    The uv installer sets an event; ruff's installer requires it. Under a
-    correct implementation uv has ALWAYS completed by the time ruff starts
-    (the join guarantees it), so the assertion always holds; an
-    implementation that starts ruff before the join races uv and fails.
-    """
-    ctx = make_ctx(home)
-    uv_done = threading.Event()
-
-    def uv_installer(ctx):
-        uv_done.set()
-
-    def ruff_installer(ctx):
-        assert uv_done.is_set(), "ruff tool install started before the pool joined"
-
-    monkeypatch.setattr(install, "have", lambda name: False)
-    monkeypatch.setattr(
-        install,
-        "run_command",
-        lambda cmd, **kwargs: install.CommandResult(True),
-    )
-    stub_extras(
-        monkeypatch,
-        _install_uv=uv_installer,
-        _install_ruff_uv_tool=ruff_installer,
-    )
-    install.install_linux_packages(ctx)
-
-
-def test_install_linux_packages_no_departure_baseline_skips_probes(home, monkeypatch):
-    """When not tracking (e.g. macOS, or dry-run upstream), no probe calls happen."""
-    ctx = make_ctx(home)
-    assert ctx.departure_baseline is None
-
-    def run(cmd, **kwargs):
-        if cmd[:3] == ["sudo", "apt-get", "install"]:
-            return install.CommandResult(True)
-        raise AssertionError(f"unexpected probe call when not tracking: {cmd!r}")
-
-    monkeypatch.setattr(install, "run_command", run)
-    install._install_linux_packages_one_by_one(ctx, "apt")
-
-
-def test_install_ruff_uv_tool_records_transaction(home, monkeypatch):
-    ctx = make_ctx(home)
-    ctx.departure_baseline = depart.Baseline()
-    live: dict[str, str] = {}
-
-    def run(cmd, **kwargs):
-        if cmd == ["uv", "tool", "list"]:
-            output = "".join(f"{n} v{v}\n" for n, v in live.items())
-            return install.CommandResult(True, output)
-        if cmd == ["uv", "tool", "install", "ruff"]:
-            live["ruff"] = "0.5.0"
-            return install.CommandResult(True)
-        raise AssertionError(f"unexpected command: {cmd!r}")
-
-    monkeypatch.setattr(install, "have", lambda name: name == "uv")
-    monkeypatch.setattr(install, "run_command", run)
-    install._install_ruff_uv_tool(ctx)
-
-    txns = ctx.departure_baseline.transactions
-    assert len(txns) == 1
-    assert txns[0]["manager"] == "uv-tool"
-    assert txns[0]["requested"] == ["ruff"]
-    assert txns[0]["after"]["ruff"] == "0.5.0"
-    assert kinds(ctx, "package-installed") == [
-        {"kind": "package-installed", "name": "ruff"}
-    ]
 
 
 # ── package removal execution ───────────────────────────────────────────────
@@ -4628,7 +3798,6 @@ def test_check_links_accepts_report_uninstalled():
         ["--check-links", "--wipe"],
         ["--check-links", "--force"],
         ["--check-links", "--reseed"],
-        ["--check-links", "--no-nvim-pin"],
         ["--check-links", "--dry-run"],
     ],
 )

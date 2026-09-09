@@ -4,16 +4,16 @@ functions in install.py/depart.py.
 
 Every shutil.rmtree call on a tree-manifest-tracked directory goes through
 depart.installed_tree_verdict first, either via depart.remove_manifest_tree
-(the departure-time policy: remove only on TREE_UNCHANGED) or directly
-(install._install_neovim_fallback's install-time policy: also self-heals
-on TREE_UNRECORDED — see that function's own comments for why). Every
-other legitimate rmtree call site is named explicitly in
-ALLOWED_RMTREE_FUNCTIONS below, with a reason. Adding a
-new function that calls shutil.rmtree without updating this allowlist fails
-the test here, forcing a deliberate choice (route through
-depart.remove_manifest_tree, or add a reasoned allowlist entry) instead of
-silently going unguarded — the incident class this guards against:
-~/.claude/data/grill/meta-guard-tree-removal-needs-manifest-spec.md.
+(the departure-time policy: remove only on TREE_UNCHANGED) or directly —
+a deliberate unguarded sweep like _wipe_neovim_dirs, whose scope is
+Neovim's own XDG data/state/cache dirs and never a vendor runtime tree
+(see that function's docstring for why). Every other legitimate rmtree
+call site is named explicitly in ALLOWED_RMTREE_FUNCTIONS below, with a
+reason. Adding a new function that calls shutil.rmtree without updating
+this allowlist fails the test here, forcing a deliberate choice (route
+through depart.remove_manifest_tree, or add a reasoned allowlist entry)
+instead of silently going unguarded — the incident class this guards
+against: ~/.claude/data/grill/meta-guard-tree-removal-needs-manifest-spec.md.
 """
 
 import ast
@@ -25,8 +25,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 ALLOWED_RMTREE_FUNCTIONS = {
     "install.py": {
-        "_install_nerd_font",  # tmp_dir download-staging cleanup, not the installed tree itself
-        "_install_neovim_fallback",  # tmp_dir cleanup + verdict-gated prefix removal (installed_tree_verdict: TREE_MODIFIED blocks, TREE_UNCHANGED/TREE_UNRECORDED proceed)
         "_wipe_neovim_dirs",  # deliberate unguarded XDG state/cache sweep, distinct from the vendor runtime tree
     },
     "depart_exec.py": {

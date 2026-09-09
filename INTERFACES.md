@@ -1470,7 +1470,6 @@ install.py — dotfiles + AI-harness provisioner for macOS and Linux/WSL.
   - `--wipe`
   - `--force`
   - `--dry-run`
-  - `--no-nvim-pin`
   - `--reseed`
   - `--adopt`
   - `--force-harness`
@@ -1496,8 +1495,6 @@ install.py — dotfiles + AI-harness provisioner for macOS and Linux/WSL.
   - `parse_args(argv: Sequence[str]) -> Options` — Parse and validate the command line.
   - `run_command(cmd: Sequence[str] | str, *, shell: bool = False, capture: bool = False) -> CommandResult` — Run an external command, returning success rather than raising.
   - `have(executable: str) -> bool` — Return whether ``executable`` is on PATH.
-  - `install_mac_packages(ctx: Context) -> None` — Bootstrap Homebrew if needed, then install the formulae and casks.
-  - `install_linux_packages(ctx: Context) -> None` — Install everything the Linux/WSL branch owns: distro packages and extras.
   - `link_applies(spec: LinkSpec, ctx: Context) -> bool` — Return whether ``spec`` should be linked for this run's machine/options.
   - `iter_concrete_links(spec: LinkSpec, ctx: Context) -> Iterator[tuple[Path, Path, str]]` — Expand one ``links.toml`` row into concrete ``(src, dest, relative_src)`` triples.
   - `gather_links(ctx: Context, specs: Sequence[LinkSpec]) -> list[tuple[Path, Path, str, bool]]` — Expand every ``links.toml`` row into concrete triples, once per run.
@@ -1512,12 +1509,6 @@ install.py — dotfiles + AI-harness provisioner for macOS and Linux/WSL.
   - `enable_managed_services(ctx: Context) -> None` — Enable and start every managed systemd --user unit (Linux, non-work).
   - `capture_git_hooks_path_baseline(ctx: Context) -> None` — Capture the pre-existing global ``core.hooksPath``, immediately before :func:`install_global_git_hooks_path` runs -- capturing any later would record dotfiles' own already-set value as if it were the original, which would make departure "restore" dotfiles' own path instead of the true pre-dotfiles value.
   - `install_global_git_hooks_path(ctx: Context) -> None` — Point global ``core.hooksPath`` at ``githooks-global/``, so every repo without its own local override picks up the no-commit-on-main hook.
-  - `import_rectangle_prefs(ctx: Context) -> None` — Import the repo's Rectangle window-manager preferences.
-  - `set_caps_lock_to_escape(ctx: Context) -> None` — Remap Caps Lock to Escape by rewriting the ByHost GlobalPreferences plist.
-  - `install_vim_plug(ctx: Context) -> None` — Download vim-plug into ~/.vim/autoload, if it isn't there already.
-  - `parse_neovim_version(output: str) -> tuple[int, int] | None` — Extract ``(major, minor)`` from ``nvim --version`` output.
-  - `neovim_runtime_ok() -> bool` — Whether the Neovim binary on PATH can actually resolve its Lua runtime.
-  - `bootstrap_neovim(ctx: Context) -> None` — Sync the vendored Neovim config's plugins with lazy.nvim.
   - `capture_departure_baseline(ctx: Context, specs: Sequence[LinkSpec]) -> None` — Thin shim — implementation in depart_exec.
   - `build_preflight_report(ctx: Context) -> dict[str, depart.Classification] | None` — Thin shim — implementation in depart_exec.
   - `build_package_preflight(ctx: Context) -> list[depart.PackageClassification] | None` — Thin shim — implementation in depart_exec.
@@ -1536,7 +1527,7 @@ install.py — dotfiles + AI-harness provisioner for macOS and Linux/WSL.
   - `print_summary(ctx: Context, settings: tuple[str, str], opencode: tuple[str, str], vscode: Sequence[tuple[str, tuple[str, str]]] = (), pi_settings: tuple[str, str] = ('', '')) -> None` — Print the loud end-of-run summary: skips, drift, and next steps.
   - `do_check_links(ctx: Context) -> int` — Audit the live symlinks against ``links.toml`` and report, changing nothing.
   - `run_install(ctx: Context, specs: Sequence[LinkSpec]) -> int` — Run every install step in order and return the process exit status.
-- Tested by: `test/test_install.py`
+- Tested by: `test/test_dead_installers_stripped.py`, `test/test_install.py`
 
 ### `depart.py`
 

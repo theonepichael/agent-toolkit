@@ -35,14 +35,12 @@ import contextlib
 import json
 import os
 import platform
-import plistlib
 import shutil
 import subprocess
 import sys
 import tempfile
 import threading
 from collections.abc import Callable, Iterator, Sequence
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
@@ -130,78 +128,8 @@ format_path = link_inspect.format_path
 audit_links = link_inspect.audit_links
 dir_applies = link_inspect.dir_applies
 
-# Pinned rather than "latest" so every machine ends up with byte-identical
-# fonts; bump manually to upgrade. A version-marker file next to the fonts
-# keeps re-runs from re-downloading and re-extracting 90+ files every time.
-NERD_FONT_VERSION = "3.4.0"
-NERD_FONT_URL = (
-    "https://github.com/ryanoasis/nerd-fonts/releases/download/"
-    f"v{NERD_FONT_VERSION}/JetBrainsMono.zip"
-)
-
-# Pinned for the same reason as NERD_FONT_VERSION above, and matched to the
-# release already verified working (hash-identical) on the machine this
-# fallback path was first built for. Bump manually to upgrade. Only used on
-# Linux — apt/dnf's neovim is frequently years behind upstream, with no
-# in-repo mechanism to track a moving "latest".
-NEOVIM_FALLBACK_VERSION = "0.12.4"
-NEOVIM_FALLBACK_ASSETS = {
-    "x86_64": "nvim-linux-x86_64.tar.gz",
-    "aarch64": "nvim-linux-arm64.tar.gz",
-}
-
-BREW_FORMULAE = (
-    "python@3.13",
-    "uv",
-    "ruff",
-    "tmux",
-    "zoxide",
-    "eza",
-    "bat",
-    "ripgrep",
-    "lsd",
-    "ncdu",
-    "tldr",
-    "oh-my-posh",
-    "neovim",
-    "fd",
-)
-BREW_CASKS = (
-    "karabiner-elements",
-    "rectangle",
-    "ghostty",
-    "visual-studio-code",
-    "alt-tab",
-    "font-jetbrains-mono-nerd-font",
-)
-LINUX_PACKAGES = (
-    "tmux",
-    "zoxide",
-    "eza",
-    "bat",
-    "lsd",
-    "ncdu",
-    "tldr",
-    "ripgrep",
-    "unzip",
-    "lsof",
-    "xclip",
-    "fontconfig",
-    "neovim",
-    "fd-find",
-)
-
-# Caps Lock → Escape, in the numeric form macOS stores keyboard modifier
-# remaps in (HID usage page << 32 | usage).
-CAPS_LOCK_TO_ESCAPE = [
-    {
-        "HIDKeyboardModifierMappingSrc": 30064771129,  # Caps Lock
-        "HIDKeyboardModifierMappingDst": 30064771113,  # Escape
-    }
-]
-
 USAGE = """\
-usage: ./install.sh --harness=<claude,copilot,opencode,agy,pi,codex>[,...] [--profile=personal|work] [--rollback] [--wipe] [--force] [--dry-run] [--no-nvim-pin] [--reseed | --adopt] [--quiet | --verbose]
+usage: ./install.sh --harness=<claude,copilot,opencode,agy,pi,codex>[,...] [--profile=personal|work] [--rollback] [--wipe] [--force] [--dry-run] [--reseed | --adopt] [--quiet | --verbose]
        ./install.sh --depart [--yes] [--dry-run] [--quiet | --verbose]
        ./install.sh --check-links [--harness=...] [--profile=personal|work] [--quiet | --verbose]
 
@@ -241,13 +169,10 @@ usage: ./install.sh --harness=<claude,copilot,opencode,agy,pi,codex>[,...] [--pr
               on Linux, every managed systemd --user service (disabled
               and stopped). These are NOT where a Neovim binary itself
               belongs — a self-contained Neovim install (its share/nvim/
-              runtime tree) must live outside ~/.local/share/nvim (e.g.
-              ~/.local/opt/neovim, what _install_neovim_fallback uses), or
+              runtime tree) must live outside ~/.local/share/nvim (a
+              self-contained prefix such as ~/.local/opt/neovim), or
               --wipe deletes it along with everything else here. Packages
-              are still never touched. Excludes the
-              macOS Rectangle preferences and
-              the Caps Lock→Escape remap — no clean filesystem-delete
-              equivalent for those. Requires --rollback.
+              are still never touched. Requires --rollback.
   --force     override the work-profile guard on a machine previously
               provisioned with --profile=work
   --dry-run   print what every step would do without doing it: no packages
@@ -256,15 +181,6 @@ usage: ./install.sh --harness=<claude,copilot,opencode,agy,pi,codex>[,...] [--pr
               profile/harness branches apply) still runs for real, so the
               preview reflects actual machine state. The one flag allowed
               alongside --rollback, to preview an undo before running it.
-  --no-nvim-pin  Linux only. By default, _install_neovim_fallback always
-              ends up with ~/.local/bin/nvim pinned to
-              NEOVIM_FALLBACK_VERSION, even when the distro's own neovim
-              package already clears the 0.11 floor — reproducible across
-              machines regardless of what apt/dnf happens to ship. This
-              flag restores the old rescue-only behavior: the fallback is
-              only installed when the neovim on PATH is missing, too old,
-              or has a broken runtime; a distro package that's merely
-              "good enough" is left alone rather than overridden.
   --reseed    force an overwrite of drifted copy-once seeds (VS Code
               settings.json/keybindings.json, Claude Code settings.json,
               opencode.jsonc, Pi settings.json) with the repo's current
@@ -346,10 +262,9 @@ Exits 0 if every step ran, 1 if any step was skipped (see summary)."""
 # ── skip-and-report plumbing ──────────────────────────────────────────────────
 
 
-# Serializes whole-line console output: several installers run concurrently
-# (see _install_extras), and two threads printing half-lines at once garble
-# the terminal. list.append-style mutations stay lock-free (GIL-atomic);
-# this only guards print statements.
+# Serializes whole-line console output: two threads printing half-lines at
+# once would garble the terminal. list.append-style mutations stay lock-free
+# (GIL-atomic); this only guards print statements.
 _io_lock = threading.Lock()
 
 
@@ -402,7 +317,8 @@ class Manifest:
         ``symlink-created``   ``dest``, ``src`` (the link's recorded target)
         ``file-copied``       ``dest``
         ``file-backed-up``    ``dest``, ``backup``
-        ``package-installed`` ``name``
+        ``package-installed`` ``name`` (historical ledgers only — no longer
+                              written, but ``--rollback`` still reports them)
     """
 
     path: Path
@@ -435,10 +351,6 @@ class Manifest:
         self._record(
             {"kind": "file-backed-up", "dest": str(dest), "backup": str(backup)}
         )
-
-    def record_package(self, name: str) -> None:
-        """Record an installed package (reported, never uninstalled, on undo)."""
-        self._record({"kind": "package-installed", "name": name})
 
     def entries(self) -> list[dict[str, object]]:
         """Read every recorded entry, oldest first.
@@ -528,8 +440,7 @@ class Manifest:
         the file is created so the new directory entry is durable too.
         The lock is defensive: each call opens its own handle, so concurrent
         appends can't interleave each other's buffers anyway, but threads are
-        now a supported caller pattern (see _install_extras) and the cost is
-        negligible.
+        a supported caller pattern and the cost is negligible.
         """
         with self._append_lock:
             self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -564,7 +475,6 @@ class Options:
     force: bool = False
     dry_run: bool = False
     wipe: bool = False
-    no_nvim_pin: bool = False
     reseed: bool = False
     adopt: bool = False
     depart: bool = False
@@ -743,7 +653,6 @@ def parse_args(argv: Sequence[str]) -> Options:
     parser.add_argument("--wipe", action="store_true")
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--dry-run", dest="dry_run", action="store_true")
-    parser.add_argument("--no-nvim-pin", dest="no_nvim_pin", action="store_true")
     parser.add_argument("--reseed", action="store_true")
     parser.add_argument("--adopt", action="store_true")
     parser.add_argument("--force-harness", dest="force_harness", action="store_true")
@@ -811,7 +720,6 @@ def parse_args(argv: Sequence[str]) -> Options:
         or args.force
         or args.reseed
         or args.adopt
-        or args.no_nvim_pin
         or args.check_links
     ):
         _fail("--depart must be used alone, with no other flags")
@@ -829,7 +737,6 @@ def parse_args(argv: Sequence[str]) -> Options:
         or args.force
         or args.reseed
         or args.adopt
-        or args.no_nvim_pin
         or args.dry_run
     ):
         _fail("--check-links must be used alone, apart from --harness and --profile")
@@ -882,7 +789,6 @@ def parse_args(argv: Sequence[str]) -> Options:
         force=args.force,
         dry_run=args.dry_run,
         wipe=args.wipe,
-        no_nvim_pin=args.no_nvim_pin,
         reseed=args.reseed,
         adopt=args.adopt,
         depart=args.depart,
@@ -961,83 +867,7 @@ def _header(message: str, *, quiet: bool = False) -> None:
         cli_common.qprint(PALETTE.header(message), quiet=quiet)
 
 
-# ── packages: macOS ───────────────────────────────────────────────────────────
-
-
-def _apply_brew_shellenv(brew: Path) -> None:
-    """Put Homebrew on PATH for the rest of this process.
-
-    The shell version could ``eval "$(brew shellenv)"``; a Python process
-    can't source shell output, so the ``export KEY="value"`` lines are
-    parsed back into ``os.environ`` instead.
-    """
-    result = run_command([str(brew), "shellenv"], capture=True)
-    if not result.ok:
-        return
-    for line in result.stdout.splitlines():
-        line = line.strip()
-        if not line.startswith("export "):
-            continue
-        assignment = line[len("export ") :].rstrip(";")
-        key, _, value = assignment.partition("=")
-        if key:
-            os.environ[key] = value.strip().strip('"')
-
-
-def install_mac_packages(ctx: Context) -> None:
-    """Bootstrap Homebrew if needed, then install the formulae and casks."""
-    if not have("brew"):
-        if ctx.opts.dry_run:
-            # Homebrew itself is a real mutation, so it's previewed rather
-            # than installed — which means the "brew unavailable" branch
-            # below fires in dry-run on a brew-less machine just like it
-            # would for real. A preview can only see one install-time
-            # dependency deep.
-            _preview(
-                "would install Homebrew "
-                "(curl raw.githubusercontent.com/Homebrew/install | bash)",
-                quiet=ctx.opts.quiet,
-            )
-        else:
-            _header("==> Installing Homebrew...", quiet=ctx.opts.quiet)
-            installed = run_command(
-                '/bin/bash -c "$(curl -fsSL '
-                'https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"',
-                shell=True,
-            )
-            if not installed.ok:
-                ctx.reporter.skip("Homebrew", "installer failed (network blocked?)")
-
-    for candidate in (Path("/opt/homebrew/bin/brew"), Path("/usr/local/bin/brew")):
-        if os.access(candidate, os.X_OK):
-            _apply_brew_shellenv(candidate)
-            break
-
-    if not have("brew"):
-        ctx.reporter.skip("brew formulae + casks", "brew unavailable")
-        return
-
-    if ctx.opts.dry_run:
-        _preview(
-            f"would install formulae: {' '.join(BREW_FORMULAE)}", quiet=ctx.opts.quiet
-        )
-        _preview(f"would install casks: {' '.join(BREW_CASKS)}", quiet=ctx.opts.quiet)
-        return
-
-    _header("==> Installing formulae...", quiet=ctx.opts.quiet)
-    if run_command(["brew", "install", *BREW_FORMULAE]).ok:
-        ctx.manifest.record_package("brew formulae")
-    else:
-        ctx.reporter.skip("brew formulae", "brew install failed")
-
-    _header("==> Installing casks...", quiet=ctx.opts.quiet)
-    if run_command(["brew", "install", "--cask", *BREW_CASKS]).ok:
-        ctx.manifest.record_package("brew casks")
-    else:
-        ctx.reporter.skip("brew casks", "brew install --cask failed")
-
-
-# ── packages: Linux ───────────────────────────────────────────────────────────
+# ── package inventory probes (departure support) ─────────────────────────────
 
 
 def _capture_package_snapshot(manager: str) -> dict[str, str] | None:
@@ -1059,555 +889,6 @@ def _capture_package_snapshot(manager: str) -> dict[str, str] | None:
     command, parse = probes[manager]
     result = run_command(command, capture=True)
     return parse(result.stdout) if result.ok else None
-
-
-def _record_package_transaction(
-    ctx: Context,
-    manager: str,
-    requested: list[str],
-    before: dict[str, str] | None,
-    after: dict[str, str] | None,
-    epoch: dict[str, str] | None,
-) -> None:
-    """Record one package transaction onto ctx.departure_baseline, if tracking."""
-    if ctx.departure_baseline is None or before is None or after is None:
-        return
-    depart.record_transaction(
-        ctx.departure_baseline,
-        manager=manager,
-        requested=requested,
-        before=before,
-        after=after,
-        captured_at=datetime.now().astimezone().isoformat(timespec="seconds"),
-        epoch=epoch,
-    )
-
-
-def _install_linux_packages_one_by_one(ctx: Context, manager: str) -> None:
-    """Install each package with its own package-manager invocation.
-
-    The fallback path behind _install_distro_packages' failed batch attempt:
-    ``apt-get install`` fails atomically on the first unresolvable name, which
-    would block every package after it — e.g. eza/lsd don't exist before Ubuntu
-    24.04, which used to silently take tmux/bat/ncdu/tldr/ripgrep/unzip down
-    with them on 22.04 machines. Same reasoning applies to dnf. Running each
-    package on its own isolates that failure: an unavailable name becomes a
-    skip, and every other package still installs.
-
-    Package-inventory snapshotting and transaction recording used to live here
-    too (a full dpkg-query/rpm -qa scan before AND after every package — 28
-    scans for 14 packages); both moved up to install_linux_packages, which
-    records one whole-step transaction from a single post-install snapshot.
-    """
-    base = (
-        ["sudo", "dnf", "install", "-y"]
-        if manager == "dnf"
-        else ["sudo", "apt-get", "install", "-y"]
-    )
-    for pkg in LINUX_PACKAGES:
-        outcome = run_command([*base, pkg])
-        if outcome.ok:
-            ctx.manifest.record_package(pkg)
-        else:
-            ctx.reporter.skip(
-                f"{manager} package: {pkg}",
-                "not available in this release's repos, or install failed",
-            )
-
-
-def _install_distro_packages(ctx: Context, manager: str) -> None:
-    """Install LINUX_PACKAGES in one batched call, falling back to per-package.
-
-    One ``apt-get``/``dnf`` invocation pays dependency resolution once instead
-    of once per package. The fallback exists because a batch is all-or-nothing
-    at resolution time: one unresolvable name (eza/lsd before Ubuntu 24.04)
-    fails the whole transaction, taking the 13 good packages down with it — so
-    on batch failure the per-package loop retries with its atomic-failure
-    isolation. Both managers fail the transaction before executing it when a
-    name is unresolvable, so a failed batch leaves the inventory untouched and
-    the loop's repeated installs of already-present packages are idempotent
-    no-ops.
-
-    The attempt captures its output: a failed speculative batch must not dump
-    raw package-manager stderr at the user before the graceful fallback (which
-    reports the actual per-package skips) handles it.
-    """
-    base = (
-        ["sudo", "dnf", "install", "-y"]
-        if manager == "dnf"
-        else ["sudo", "apt-get", "install", "-y"]
-    )
-    _header(f"==> Installing packages ({manager})...", quiet=ctx.opts.quiet)
-    if ctx.opts.dry_run:
-        _preview(
-            f"would run: {' '.join(base)} {' '.join(LINUX_PACKAGES)}",
-            quiet=ctx.opts.quiet,
-        )
-        return
-    if run_command([*base, *LINUX_PACKAGES], capture=True).ok:
-        for pkg in LINUX_PACKAGES:
-            ctx.manifest.record_package(pkg)
-    else:
-        _install_linux_packages_one_by_one(ctx, manager)
-
-
-def _shim(ctx: Context, shim_name: str, real_name: str) -> None:
-    """Point ``~/.local/bin/<shim_name>`` at a differently-named binary.
-
-    Debian/Ubuntu rename two of these packages' binaries to avoid conflicts
-    (bat → batcat, fd → fdfind); Fedora installs them under their real
-    names, so this is a no-op there.
-    """
-    if not have(real_name) or have(shim_name):
-        return
-    target = ctx.home / ".local" / "bin" / shim_name
-    if ctx.opts.dry_run:
-        _preview(
-            f"would shim {shim_name} → {real_name} ({ctx.display(target)})",
-            quiet=ctx.opts.quiet,
-        )
-        return
-    real_path = Path(shutil.which(real_name) or real_name)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if target.is_symlink() or target.exists():
-        target.unlink()
-    target.symlink_to(real_path)
-    ctx.manifest.record_symlink(target, real_path)
-    cli_common.qprint(
-        PALETTE.ok(f"  shimmed {shim_name} → {real_name}"), quiet=ctx.opts.quiet
-    )
-
-
-def _install_uv(ctx: Context) -> None:
-    """Install uv (not packaged in apt/dnf) via the official installer."""
-    if have("uv"):
-        return
-    if ctx.opts.dry_run:
-        _preview(
-            "would install uv (curl astral.sh/uv/install.sh | sh)", quiet=ctx.opts.quiet
-        )
-        return
-    _header("==> Installing uv...", quiet=ctx.opts.quiet)
-    if run_command("curl -LsSf https://astral.sh/uv/install.sh | sh", shell=True).ok:
-        ctx.manifest.record_package("uv")
-        # The installer writes ~/.local/bin/env for shells to source; this
-        # process can't source it, so put the same directory on PATH
-        # directly, otherwise the `uv tool install ruff` step below can't
-        # see the uv that was just installed.
-        _prepend_path(ctx.home / ".local" / "bin")
-    else:
-        ctx.reporter.skip("uv", "installer failed (network blocked?)")
-
-
-def _prepend_path(directory: Path) -> None:
-    """Put ``directory`` at the front of this process's PATH."""
-    os.environ["PATH"] = f"{directory}{os.pathsep}{os.environ.get('PATH', '')}"
-
-
-def _install_nerd_font(ctx: Context) -> None:
-    """Install the pinned JetBrainsMono Nerd Font, unless already at version.
-
-    The patched (icon-glyph) variant isn't in apt/dnf at all, so the release
-    zip is pulled directly.
-    """
-    font_dir = ctx.home / ".local" / "share" / "fonts" / "JetBrainsMonoNerdFont"
-    marker = font_dir / ".nerd-fonts-version"
-    try:
-        current = marker.read_text().strip()
-    except OSError:
-        current = ""
-    if current == NERD_FONT_VERSION:
-        return
-
-    if ctx.opts.dry_run:
-        _preview(
-            f"would install JetBrainsMono Nerd Font v{NERD_FONT_VERSION} to {font_dir}",
-            quiet=ctx.opts.quiet,
-        )
-        return
-
-    _header(
-        f"==> Installing JetBrainsMono Nerd Font v{NERD_FONT_VERSION}...",
-        quiet=ctx.opts.quiet,
-    )
-    tmp_dir = Path(tempfile.mkdtemp())
-    try:
-        archive = tmp_dir / "JetBrainsMono.zip"
-        downloaded = run_command(["curl", "-fLo", str(archive), NERD_FONT_URL]).ok
-        extracted = False
-        if downloaded:
-            font_dir.mkdir(parents=True, exist_ok=True)
-            extracted = run_command(
-                ["unzip", "-oq", str(archive), "-d", str(font_dir)]
-            ).ok
-        if downloaded and extracted:
-            marker.write_text(f"{NERD_FONT_VERSION}\n")
-            ctx.manifest.record_package(f"JetBrainsMono Nerd Font v{NERD_FONT_VERSION}")
-            run_command(["fc-cache", "-f", str(font_dir)], capture=True)
-            # Snapshotted after fc-cache deliberately: anything it leaves
-            # inside the font directory is still installer-produced, so it
-            # belongs in the manifest. This is departure's only evidence of
-            # what the installer put here, and the last chance to take it
-            # before the user can add fonts of their own.
-            if ctx.departure_baseline is not None:
-                depart.record_installed_tree(ctx.departure_baseline, font_dir)
-            with _io_lock:
-                cli_common.qprint(
-                    PALETTE.ok(f"  installed to {font_dir}"), quiet=ctx.opts.quiet
-                )
-        else:
-            ctx.reporter.skip(
-                "JetBrainsMono Nerd Font",
-                "download/extract failed (network blocked, or unzip missing?)",
-            )
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-
-
-def _fallback_already_pinned(ctx: Context) -> bool:
-    """Whether ~/.local/bin/nvim already resolves to our own pinned install.
-
-    Checked by identity (the shim must actually be our symlink into
-    ~/.local/opt/neovim), not just by version number — a same-numbered
-    binary from some other source shouldn't count, since only our symlink
-    is guaranteed to keep pointing at NEOVIM_FALLBACK_VERSION as that
-    constant changes. Compares the full ``NVIM vX.Y.Z`` line, not just
-    (major, minor) like :func:`parse_neovim_version` — a patch-only pin
-    bump must still be detected as "not yet pinned".
-    """
-    prefix = ctx.home / ".local" / "opt" / "neovim"
-    shim = ctx.home / ".local" / "bin" / "nvim"
-    nvim_bin = prefix / "bin" / "nvim"
-    if not shim.is_symlink():
-        return False
-    try:
-        if shim.resolve() != nvim_bin.resolve():
-            return False
-    except OSError:
-        return False
-    result = run_command([str(shim), "--version"], capture=True)
-    if not result.ok:
-        return False
-    first_line = result.stdout.splitlines()[0] if result.stdout.strip() else ""
-    return first_line == f"NVIM v{NEOVIM_FALLBACK_VERSION}"
-
-
-def _install_neovim_fallback(ctx: Context) -> None:
-    """Fetch a modern, pinned Neovim onto Linux.
-
-    apt/dnf's neovim (LINUX_PACKAGES) is frequently below the 0.11 floor
-    this repo's vendored config needs, and has no upstream mechanism to fix
-    that short of a PPA. By default this always ends up with
-    ~/.local/bin/nvim pinned to NEOVIM_FALLBACK_VERSION, even when the
-    distro package already clears the floor — reproducible across machines
-    regardless of what apt/dnf happens to ship. ``--no-nvim-pin`` restores
-    the old rescue-only behavior: only install when the Neovim currently on
-    PATH is missing, too old, or has a broken runtime (this repo's own
-    incident — see _wipe_neovim_dirs). Either way, installs land in
-    ~/.local/opt/neovim (never ~/.local/share/nvim — see the warning there)
-    with ~/.local/bin/nvim symlinked at it.
-    """
-    if _fallback_already_pinned(ctx):
-        return
-
-    version, runtime_ok = _neovim_status()
-    already_good = (
-        version is not None and (version[0], version[1]) >= (0, 11) and runtime_ok
-    )
-    if ctx.opts.no_nvim_pin and already_good:
-        return
-
-    machine = platform.machine()
-    asset = NEOVIM_FALLBACK_ASSETS.get(machine)
-    if asset is None:
-        ctx.neovim_fallback_failure = f"unsupported architecture {machine!r}"
-        ctx.reporter.skip(
-            "Neovim fallback install",
-            f"unsupported architecture {machine!r} — apt's Neovim "
-            "(if usable) is what you get",
-        )
-        return
-
-    prefix = ctx.home / ".local" / "opt" / "neovim"
-    url = (
-        "https://github.com/neovim/neovim/releases/download/"
-        f"v{NEOVIM_FALLBACK_VERSION}/{asset}"
-    )
-
-    if ctx.opts.dry_run:
-        _preview(
-            f"would install Neovim v{NEOVIM_FALLBACK_VERSION} to {ctx.display(prefix)}",
-            quiet=ctx.opts.quiet,
-        )
-        return
-
-    _header(
-        f"==> Installing Neovim v{NEOVIM_FALLBACK_VERSION} (apt's Neovim is too old or broken)...",
-        quiet=ctx.opts.quiet,
-    )
-    tmp_dir = Path(tempfile.mkdtemp())
-    try:
-        archive = tmp_dir / asset
-        downloaded = run_command(["curl", "-fLo", str(archive), url]).ok
-        extracted = (
-            downloaded
-            and run_command(["tar", "xzf", str(archive), "-C", str(tmp_dir)]).ok
-        )
-        extracted_dir = tmp_dir / asset.removesuffix(".tar.gz")
-        if extracted and not extracted_dir.is_dir():
-            # Upstream's tarball top-level directory name is assumed to
-            # match the asset name minus its extension; fall back to
-            # "whatever single directory the archive actually produced" so
-            # a naming-convention change degrades to a skip instead of a
-            # wrong-but-silent path.
-            candidates = [p for p in tmp_dir.iterdir() if p.is_dir()]
-            extracted_dir = candidates[0] if len(candidates) == 1 else None
-        if extracted and extracted_dir and extracted_dir.is_dir():
-            if prefix.exists() or prefix.is_symlink():
-                # Only consult the baseline when there's actually something
-                # at prefix that removal could affect -- a clean install
-                # (nothing here yet) must never be gated on
-                # departure_baseline, since there's nothing to protect
-                # against either way.
-                if ctx.departure_baseline is None:
-                    # is_linux and not dry_run always hold whenever prefix
-                    # already exists on a real run (_install_neovim_fallback
-                    # only runs under install_linux_packages, and returns
-                    # before this point under --dry-run; capture_departure_baseline
-                    # is a no-op under the identical condition) -- this is a
-                    # defensive fallback for that invariant breaking in a
-                    # future refactor, not an expected path today. Fails
-                    # *safe* (skip) rather than reproducing the unguarded
-                    # clobber this check exists to remove.
-                    ctx.neovim_fallback_failure = (
-                        "no departure baseline available to verify this "
-                        "install is safe to replace"
-                    )
-                    ctx.reporter.skip(
-                        "Neovim fallback install",
-                        f"{ctx.neovim_fallback_failure} — remove "
-                        f"{ctx.display(prefix)} by hand, then re-run to reinstall",
-                    )
-                    return
-
-                verdict = depart.installed_tree_verdict(ctx.departure_baseline, prefix)
-                if verdict == depart.TREE_MODIFIED:
-                    ctx.neovim_fallback_failure = (
-                        "existing install may contain changes you made after installing"
-                    )
-                    ctx.reporter.skip(
-                        "Neovim fallback install",
-                        f"{ctx.neovim_fallback_failure} (unproven safe to "
-                        f"remove) — remove {ctx.display(prefix)} by hand, "
-                        "then re-run to reinstall",
-                    )
-                    return
-
-                # TREE_UNCHANGED or TREE_UNRECORDED (self-heal) -- proceed.
-                if prefix.is_symlink() or prefix.is_file():
-                    prefix.unlink()
-                elif prefix.is_dir():
-                    shutil.rmtree(prefix)
-            prefix.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(extracted_dir), str(prefix))
-            ctx.manifest.record_package(
-                f"Neovim v{NEOVIM_FALLBACK_VERSION} (fallback tarball)"
-            )
-
-            nvim_bin = prefix / "bin" / "nvim"
-            shim = ctx.home / ".local" / "bin" / "nvim"
-            shim.parent.mkdir(parents=True, exist_ok=True)
-            if shim.is_symlink() or shim.exists():
-                shim.unlink()
-            shim.symlink_to(nvim_bin)
-            ctx.manifest.record_symlink(shim, nvim_bin)
-            # See the Nerd Font call site: departure will only remove this
-            # tree wholesale if it still matches this snapshot exactly.
-            if ctx.departure_baseline is not None:
-                depart.record_installed_tree(ctx.departure_baseline, prefix)
-            with _io_lock:
-                cli_common.qprint(
-                    PALETTE.ok(
-                        f"  installed to {ctx.display(prefix)}, linked from {ctx.display(shim)}"
-                    ),
-                    quiet=ctx.opts.quiet,
-                )
-        else:
-            ctx.neovim_fallback_failure = (
-                "download/extract failed, or archive layout unexpected"
-            )
-            ctx.reporter.skip(
-                "Neovim fallback install",
-                "download/extract failed, or archive layout unexpected "
-                "(network blocked, tar missing, or upstream changed the tarball layout?)",
-            )
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-
-
-def _install_ruff_uv_tool(ctx: Context) -> None:
-    """Install ruff via ``uv tool install``, recording a transaction if tracking."""
-    if not have("uv"):
-        ctx.reporter.skip("ruff", "uv unavailable")
-        return
-    if ctx.opts.dry_run:
-        _preview("would run: uv tool install ruff", quiet=ctx.opts.quiet)
-        return
-    before = (
-        _capture_package_snapshot("uv-tool")
-        if ctx.departure_baseline is not None
-        else None
-    )
-    outcome = run_command(["uv", "tool", "install", "ruff"])
-    after = (
-        _capture_package_snapshot("uv-tool")
-        if ctx.departure_baseline is not None
-        else None
-    )
-    _record_package_transaction(ctx, "uv-tool", ["ruff"], before, after, epoch=None)
-    if outcome.ok:
-        ctx.manifest.record_package("ruff")
-    else:
-        ctx.reporter.skip("ruff", "uv tool install failed")
-
-
-def _install_oh_my_posh(ctx: Context) -> None:
-    """Install oh-my-posh via its official installer into ~/.local/bin."""
-    if have("oh-my-posh"):
-        return
-    if ctx.opts.dry_run:
-        _preview(
-            "would install oh-my-posh "
-            "(curl ohmyposh.dev/install.sh | bash -s -- -d ~/.local/bin)",
-            quiet=ctx.opts.quiet,
-        )
-        return
-    _header("==> Installing oh-my-posh...", quiet=ctx.opts.quiet)
-    bin_dir = ctx.home / ".local" / "bin"
-    if run_command(
-        f"curl -s https://ohmyposh.dev/install.sh | bash -s -- -d {bin_dir}",
-        shell=True,
-    ).ok:
-        ctx.manifest.record_package("oh-my-posh")
-    else:
-        ctx.reporter.skip(
-            "oh-my-posh",
-            "installer failed (network blocked, or unzip missing?)",
-        )
-
-
-def _install_extras(ctx: Context) -> None:
-    """Run the four independent network installs concurrently.
-
-    Neovim fallback, uv, oh-my-posh, and the Nerd Font each spend their time
-    waiting on the network with no data dependency between them, so they run
-    on a thread pool instead of back to back. Thread safety: each installer
-    writes only to its own paths plus shared append-only structures (manifest,
-    reporter) whose appends are atomic; console output is serialized by
-    ``_io_lock``. All four futures are gathered before any error is raised, so
-    a raising worker never orphans the others mid-flight.
-
-    Ordering: the pool starts only after the distro packages and shims are
-    done (the Neovim fallback probes the distro nvim; the shims need apt's
-    batcat/fdfind), and the caller keeps ``_install_ruff_uv_tool`` strictly
-    after this returns — ``uv tool install`` needs uv on PATH, which
-    ``_install_uv`` puts there. Dry-run stays sequential: its whole point is
-    deterministic preview output.
-    """
-    installers = (
-        _install_neovim_fallback,
-        _install_uv,
-        _install_oh_my_posh,
-        _install_nerd_font,
-    )
-    if ctx.opts.dry_run:
-        for installer in installers:
-            installer(ctx)
-        return
-    errors: list[BaseException] = []
-    with ThreadPoolExecutor(
-        max_workers=len(installers), thread_name_prefix="install-extras"
-    ) as pool:
-        futures = [pool.submit(installer, ctx) for installer in installers]
-        for future in as_completed(futures):
-            try:
-                future.result()
-            except Exception as exc:  # noqa: BLE001 — re-raised below, after all join
-                errors.append(exc)
-    # Raised only after every worker has finished: the remaining installers
-    # must always run to completion (or their own skip) before teardown.
-    if errors:
-        raise errors[0]
-
-
-def install_linux_packages(ctx: Context) -> None:
-    """Install everything the Linux/WSL branch owns: distro packages and extras."""
-    manager = "dnf" if have("dnf") else "apt"
-    # Captured once, immediately before any package-manager mutation this
-    # run makes. Doubles as the whole-step transaction's ``before`` snapshot:
-    # it is taken in the same breath as the install attempt (nothing mutates
-    # the inventory in between — apt-get update only refreshes package
-    # lists), which is exactly what today's first per-package transaction
-    # already did, minus one redundant back-to-back scan.
-    epoch = (
-        _capture_package_snapshot(manager)
-        if ctx.departure_baseline is not None and not ctx.opts.dry_run
-        else None
-    )
-
-    try:
-        if manager == "dnf":
-            if ctx.opts.dry_run:
-                _preview("would run: sudo dnf makecache", quiet=ctx.opts.quiet)
-            else:
-                _header("==> Refreshing dnf package metadata...", quiet=ctx.opts.quiet)
-                if not run_command(["sudo", "dnf", "makecache"]).ok:
-                    ctx.reporter.skip(
-                        "dnf makecache", "dnf makecache failed (offline or blocked?)"
-                    )
-            _install_distro_packages(ctx, "dnf")
-        else:
-            if ctx.opts.dry_run:
-                _preview("would run: sudo apt-get update", quiet=ctx.opts.quiet)
-            else:
-                _header("==> Updating apt package lists...", quiet=ctx.opts.quiet)
-                if not run_command(["sudo", "apt-get", "update"]).ok:
-                    ctx.reporter.skip(
-                        "apt update", "apt-get update failed (offline or blocked?)"
-                    )
-            _install_distro_packages(ctx, "apt")
-    finally:
-        # One whole-step transaction, in a finally so even an unexpected
-        # exception records whatever the last successful snapshot shows —
-        # departure must never go blind to packages that did land.
-        if ctx.departure_baseline is not None and epoch is not None:
-            after = _capture_package_snapshot(manager)
-            _record_package_transaction(
-                ctx, manager, list(LINUX_PACKAGES), epoch, after, epoch
-            )
-
-    _shim(ctx, "bat", "batcat")
-    _shim(ctx, "fd", "fdfind")
-    _install_extras(ctx)
-    _install_ruff_uv_tool(ctx)
-
-
-# ── packages: Node-based harnesses ────────────────────────────────────────────
-
-
-def _activate_nvm_node(ctx: Context) -> None:
-    """Put the newest nvm-installed node on PATH for the rest of this process.
-
-    ``nvm`` is a shell function, so unlike the shell version this process
-    can't ``source nvm.sh`` and have ``npm`` appear on PATH — the installed
-    node's bin directory is added explicitly instead.
-    """
-    versions = ctx.home / ".nvm" / "versions" / "node"
-    if not versions.is_dir():
-        return
-    candidates = sorted(p for p in versions.iterdir() if (p / "bin").is_dir())
-    if candidates:
-        _prepend_path(candidates[-1] / "bin")
 
 
 # ── symlink engine ────────────────────────────────────────────────────────────
@@ -2310,204 +1591,6 @@ def _current_user() -> str:
     return os.environ.get("USER") or os.environ.get("LOGNAME") or ""
 
 
-# ── macOS extras ──────────────────────────────────────────────────────────────
-
-
-def import_rectangle_prefs(ctx: Context) -> None:
-    """Import the repo's Rectangle window-manager preferences."""
-    plist = ctx.dotfiles / "rectangle" / "com.knollsoft.Rectangle.plist"
-    if ctx.opts.dry_run:
-        _preview(
-            f"would import Rectangle preferences from {plist}", quiet=ctx.opts.quiet
-        )
-        return
-    _header("==> Importing Rectangle preferences...", quiet=ctx.opts.quiet)
-    if not run_command(
-        ["defaults", "import", "com.knollsoft.Rectangle", str(plist)]
-    ).ok:
-        ctx.reporter.skip("Rectangle preferences", "defaults import failed")
-
-
-def set_caps_lock_to_escape(ctx: Context) -> None:
-    """Remap Caps Lock to Escape by rewriting the ByHost GlobalPreferences plist.
-
-    macOS stores the keyboard modifier mapping under a per-host preferences
-    domain, keyed by a name that varies by OS version — hence the substring
-    match on ``modifiermapping`` rather than a fixed key.
-    """
-    if ctx.opts.dry_run:
-        _preview(
-            "would set Caps Lock → Escape "
-            "(rewrite ~/Library/Preferences/ByHost/.GlobalPreferences.*.plist)",
-            quiet=ctx.opts.quiet,
-        )
-        return
-
-    _header("==> Setting Caps Lock → Escape...", quiet=ctx.opts.quiet)
-    byhost = ctx.home / "Library" / "Preferences" / "ByHost"
-    plists = sorted(byhost.glob(".GlobalPreferences.*.plist"))
-    if not plists:
-        cli_common.qprint(
-            "  No ByHost GlobalPreferences plist found — skipping", quiet=ctx.opts.quiet
-        )
-        return
-
-    for path in plists:
-        try:
-            with open(path, "rb") as handle:
-                prefs = plistlib.load(handle)
-            for key in list(prefs):
-                if "modifiermapping" in key:
-                    prefs[key] = CAPS_LOCK_TO_ESCAPE
-            with open(path, "wb") as handle:
-                plistlib.dump(prefs, handle)
-        except (OSError, ValueError, plistlib.InvalidFileException):
-            ctx.reporter.skip("Caps Lock → Escape", "plist rewrite failed")
-            return
-        cli_common.qprint(f"  Updated {path.name}", quiet=ctx.opts.quiet)
-
-
-# ── editors ───────────────────────────────────────────────────────────────────
-
-
-def install_vim_plug(ctx: Context) -> None:
-    """Download vim-plug into ~/.vim/autoload, if it isn't there already."""
-    target = ctx.home / ".vim" / "autoload" / "plug.vim"
-    if target.is_file():
-        return
-    if ctx.opts.dry_run:
-        _preview(
-            f"would install vim-plug to {ctx.display(target)}", quiet=ctx.opts.quiet
-        )
-        return
-    _header("==> Installing vim-plug...", quiet=ctx.opts.quiet)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    url = "https://raw.githubusercontent.com/junegunn/vim-plug/master/plug.vim"
-    if run_command(["curl", "-fLo", str(target), "--create-dirs", url]).ok:
-        ctx.manifest.record_copy(target)
-        cli_common.qprint(
-            "  Run :PlugInstall inside vim to install plugins", quiet=ctx.opts.quiet
-        )
-    else:
-        ctx.reporter.skip("vim-plug", "download failed (network blocked?)")
-
-
-def parse_neovim_version(output: str) -> tuple[int, int] | None:
-    """Extract ``(major, minor)`` from ``nvim --version`` output.
-
-    Returns:
-        The parsed version, or None if the first line isn't recognizable.
-    """
-    first = output.splitlines()[0] if output.strip() else ""
-    if not first.startswith("NVIM v"):
-        return None
-    parts = first[len("NVIM v") :].split(".")
-    try:
-        return int(parts[0]), int(parts[1])
-    except (IndexError, ValueError):
-        return None
-
-
-def neovim_runtime_ok() -> bool:
-    """Whether the Neovim binary on PATH can actually resolve its Lua runtime.
-
-    A binary installed without its accompanying share/nvim/runtime tree
-    (this repo's own incident: the tree got swept by ``--wipe`` because it
-    was nested inside ``~/.local/share/nvim`` — see the warning on
-    :func:`_wipe_neovim_dirs`) starts but can't require ``vim.uri``. This is
-    the cheapest way to catch that before ``Lazy! sync`` dumps a confusing
-    Lua traceback.
-
-    ``--clean`` is load-bearing, not cosmetic: without it this loads the
-    vendored config's own init.lua and tries to bootstrap lazy.nvim, which
-    can itself error loudly on a broken/old binary (a real smoke-test
-    finding — an unclean probe reproduced this repo's original incident's
-    own scary traceback instead of a clean pass/fail). ``vim.uri`` is a
-    core Lua module bundled in the runtime itself, not a user plugin, so
-    ``--clean`` doesn't affect what's actually being tested here.
-    """
-    return run_command(
-        [
-            "nvim",
-            "--headless",
-            "--clean",
-            "-c",
-            "lua os.exit(pcall(require, 'vim.uri') and 0 or 1)",
-        ]
-    ).ok
-
-
-def _neovim_status() -> tuple[tuple[int, int] | None, bool]:
-    """The Neovim binary on PATH's parsed ``(major, minor)`` and runtime health.
-
-    ``(None, False)`` when Neovim is missing or its version output doesn't
-    parse — there's nothing meaningful to runtime-probe in that case.
-    Callers re-run this fresh rather than caching it, since install steps
-    in between (a fallback Neovim install) can change what's on PATH.
-    """
-    if not have("nvim"):
-        return None, False
-    result = run_command(["nvim", "--version"], capture=True)
-    version = parse_neovim_version(result.stdout) if result.ok else None
-    if version is None:
-        return None, False
-    return version, neovim_runtime_ok()
-
-
-def bootstrap_neovim(ctx: Context) -> None:
-    """Sync the vendored Neovim config's plugins with lazy.nvim.
-
-    The vendored config targets Neovim 0.11+; older distro repos still ship
-    older builds (same class of version gap as eza/lsd on Ubuntu 22.04), so
-    this degrades to a skip rather than the upstream config's own hard
-    ``exit 1`` — consistent with this script never aborting a run.
-    """
-    if not have("nvim"):
-        ctx.reporter.skip("Neovim plugin bootstrap", "Neovim not installed")
-        return
-
-    version, runtime_ok = _neovim_status()
-    if version is None:
-        ctx.reporter.skip(
-            "Neovim plugin bootstrap", "could not determine Neovim version"
-        )
-        return
-
-    major, minor = version
-    pretty = f"{major}.{minor}"
-    if major == 0 and minor < 11:
-        reason = f"Neovim {pretty} found, config needs >=0.11"
-        if ctx.neovim_fallback_failure:
-            reason += f" (fallback install also failed: {ctx.neovim_fallback_failure})"
-        ctx.reporter.skip("Neovim plugin bootstrap", reason)
-        return
-    if not runtime_ok:
-        ctx.reporter.skip(
-            "Neovim plugin bootstrap",
-            f"Neovim {pretty} found but its runtime doesn't resolve "
-            "(vim.uri unavailable) — broken or incomplete install",
-        )
-        return
-    if ctx.opts.dry_run:
-        _preview(
-            f'would run: nvim --headless "+Lazy! sync" +qa (Neovim {pretty})',
-            quiet=ctx.opts.quiet,
-        )
-        return
-
-    _header(
-        f"==> Bootstrapping Neovim plugins (lazy.nvim sync, Neovim {pretty})...",
-        quiet=ctx.opts.quiet,
-    )
-    if run_command(["nvim", "--headless", "+Lazy! sync", "+qa"]).ok:
-        cli_common.qprint(PALETTE.ok("  plugins synced"), quiet=ctx.opts.quiet)
-    else:
-        ctx.reporter.skip(
-            "Neovim plugin sync",
-            "'Lazy! sync' reported errors — run :Lazy sync manually inside nvim",
-        )
-
-
 # ── departure execution (extracted to depart_exec.py) ────────────────────
 
 # The --depart execution machinery — baseline capture, preflight
@@ -2889,9 +1972,8 @@ def _wipe_neovim_dirs(ctx: Context, skips: Reporter) -> bool:
     inside ~/.local/share/nvim, since this function `shutil.rmtree`s that
     whole directory. This confusion caused a real incident: a Neovim binary
     installed with its runtime nested here got wiped, leaving a binary that
-    couldn't resolve `require('vim.uri')`. See _install_neovim_fallback,
-    which installs into ~/.local/opt/neovim instead — outside this sweep's
-    reach.
+    couldn't resolve `require('vim.uri')`. A self-contained install goes in
+    ~/.local/opt/neovim instead — outside this sweep's reach.
 
     Returns:
         Whether any of the three currently exist — "swept something" is

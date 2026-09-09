@@ -416,13 +416,14 @@ def remove_manifest_tree(baseline: Baseline, path: Path) -> str:
     """Remove ``path`` wholesale, but only if its :func:`installed_tree_verdict`
     is ``TREE_UNCHANGED`` — the departure-time policy: refuse unless
     provably unchanged, since refusing is departure's safe terminal outcome.
-    (``install._install_neovim_fallback`` has its own, more permissive
-    install-time policy for the same tree-manifest-tracked prefix — it also
-    self-heals on ``TREE_UNRECORDED``, which this function deliberately does
-    not, so it calls :func:`installed_tree_verdict` directly instead of
-    this function. Both are still the only ``shutil.rmtree`` sites for a
-    manifest-tracked directory; see ``test_depart_removal_guard.py``'s
-    file-wide ban on calling ``shutil.rmtree`` anywhere else.) Returns the
+    Departure deliberately does not self-heal on ``TREE_UNRECORDED`` the way
+    an install-time remediator for the same tree-manifest-tracked prefix
+    would, so it calls :func:`installed_tree_verdict` directly instead of
+    delegating. Together with the deliberate unguarded XDG sweep in
+    install.py's neovim-dir wipe, this is one of the only
+    ``shutil.rmtree`` sites for a     manifest-tracked directory; see
+    ``test_depart_removal_guard.py``'s file-wide ban on calling
+    ``shutil.rmtree`` anywhere else. Returns the
     verdict: ``TREE_UNCHANGED`` means the removal happened;
     ``TREE_MODIFIED``/``TREE_UNRECORDED`` mean nothing was touched and the
     caller must decide how to report that.
@@ -912,7 +913,7 @@ def reclassify_rc_file(
     """Override the generic classification for one rc file, if warranted.
 
     Handles the one rc-file case Implementation Sequence step 1/3 calls
-    out by name: NVM/``_install_uv``/oh-my-posh only ever *append* lines to
+    out by name: NVM/uv-tool/oh-my-posh only ever *append* lines to
     an rc file, so a live file whose content still starts with the exact
     baseline content is safely restorable by discarding everything after
     it — never a guess at which lines to strip. Any other kind of change

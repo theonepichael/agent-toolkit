@@ -160,9 +160,9 @@ def capture_departure_baseline(
     Linux/WSL and Fedora only (Implementation Sequence step 6 — this feature
     does not apply on macOS) and a no-op under ``--dry-run`` (step 1: a
     dry-run install writes no ``baseline.json`` and creates no immutable
-    first layer). Must run before ``install_linux_packages`` — ``_install_uv``
-    and the oh-my-posh installer both run inside it, earlier than
-    ``install_node``/NVM, and can mutate rc files themselves.
+    first layer). Must run before any step that could mutate state this
+    baseline is meant to describe — notably the runtime setup steps that
+    follow it (``install_node``/NVM), which can mutate rc files themselves.
     """
     if not ctx.is_linux or ctx.opts.dry_run:
         return
