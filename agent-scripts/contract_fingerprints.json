@@ -284,11 +284,18 @@
     "arg mark-reviewed --repo-root: \u2014 repo root to scan (default: this checkout)",
     "arg mark-reviewed doc: \u2014 repo-relative doc path, e.g. AGENTS.md",
     "arg mark-reviewed heading: \u2014 exact `## <heading>` text",
+    "arg scaffold --agent-toolkit-root: \u2014 agent-toolkit checkout used to resolve cross-repo script citations for doc-sets with cross_repo_scripts set (default: $AGENT_TOOLKIT_PATH or ~/Workspace/agent-toolkit)",
+    "arg scaffold --doc-set: \u2014 which built-in doc-set config to use. No default -- either pass this, or let <repo-root>/refresh-guidance.toml be auto-discovered (never both). (choices computed at runtime)",
+    "arg scaffold --force/-f: \u2014 overwrite existing AGENTS.md or CLAUDE.md",
+    "arg scaffold --repo-root: \u2014 repo root to scan (default: this checkout)",
+    "arg scaffold directory: \u2014 repo-relative directory path to scaffold",
     "exit codes: 2",
     "handler check: ",
     "handler mark-reviewed: ",
+    "handler scaffold: Scaffold a rubric-compliant `AGENTS.md` and paired `CLAUDE.md` symlink under `<repo_root>/<directory>`.",
     "subcommand check: scan the configured doc-set and print a findings + staleness report (default)",
-    "subcommand mark-reviewed: record human sign-off that one doc's `## <heading>` section is current"
+    "subcommand mark-reviewed: record human sign-off that one doc's `## <heading>` section is current",
+    "subcommand scaffold: scaffold a rubric-compliant AGENTS.md and paired CLAUDE.md symlink in a directory"
   ],
   "second_opinion.py": [
     "arg (top-level) --quiet/-q: ",

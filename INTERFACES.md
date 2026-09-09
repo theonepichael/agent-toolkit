@@ -969,6 +969,12 @@ refresh_guidance.py — audit-by-inspection for hand-authored, agent-facing docs
     - `heading` — exact `## <heading>` text
     - `--commit` — commit sha to record (default: current HEAD)
     - `--date` — YYYY-MM-DD to record (default: today)
+  - `scaffold [--repo-root <REPO_ROOT>] [--doc-set <DOC_SET>] [--agent-toolkit-root <AGENT_TOOLKIT_ROOT>] <directory> [--force]` — scaffold a rubric-compliant AGENTS.md and paired CLAUDE.md symlink in a directory
+    - `--repo-root` — repo root to scan (default: this checkout)
+    - `--doc-set` — which built-in doc-set config to use. No default -- either pass this, or let <repo-root>/refresh-guidance.toml be auto-discovered (never both). (choices computed at runtime)
+    - `--agent-toolkit-root` — agent-toolkit checkout used to resolve cross-repo script citations for doc-sets with cross_repo_scripts set (default: $AGENT_TOOLKIT_PATH or ~/Workspace/agent-toolkit)
+    - `directory` — repo-relative directory path to scaffold
+    - `--force/-f` — overwrite existing AGENTS.md or CLAUDE.md
 - Environment: `AGENT_TOOLKIT_PATH`
 - Filesystem constants:
   - `DEFAULT_REPO_ROOT = Path(__file__).resolve().parents[1]`
@@ -1003,7 +1009,7 @@ refresh_guidance.py — audit-by-inspection for hand-authored, agent-facing docs
   - `run_check(repo_root: Path, doc_set_name: str | None, agent_toolkit_root: Path = DEFAULT_AGENT_TOOLKIT_ROOT) -> CheckResult`
   - `render_report(result: CheckResult, doc_set_label: str) -> str`
   - `build_parser() -> argparse.ArgumentParser`
-- Subcommand handlers: `cmd_check`, `cmd_mark_reviewed`
+- Subcommand handlers: `cmd_check`, `cmd_mark_reviewed`, `cmd_scaffold`
 - Tested by: `agent-scripts/test_refresh_guidance.py`
 
 ### `agent-scripts/repo_identity.py`

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Tests for refresh_guidance.py. Run with: python3 test_refresh_guidance.py"""
 
+import os
 import shutil
 import subprocess
 import sys
@@ -633,6 +634,172 @@ class RealRepoSmokeTestCase(unittest.TestCase):
         self.assertGreater(len(result.sections), 0)
 
 
+class ProgressiveDisclosureTestCase(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmpdir = tempfile.mkdtemp()
+        self.repo = Path(self.tmpdir)
+        _init_repo(self.repo)
+        (self.repo / "refresh-guidance.toml").write_text(
+            'fixed_docs = ["README.md"]\nscript_dirs = ["scripts"]\n'
+        )
+        (self.repo / "README.md").write_text("# Readme\n")
+        (self.repo / "scripts").mkdir()
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmpdir)
+
+    def test_symlink_missing_flagged(self) -> None:
+        (self.repo / "AGENTS.md").write_text("# Root\n- `sub/`\n")
+        sub = self.repo / "sub"
+        sub.mkdir()
+        (sub / "AGENTS.md").write_text("# Sub\n")
+        _commit_all(self.repo, "init")
+
+        result = rg.run_check(self.repo, doc_set_name=None)
+        symlink_findings = [f for f in result.findings if f.kind == "symlink"]
+        self.assertEqual(len(symlink_findings), 2)  # root and sub both missing CLAUDE.md
+        self.assertTrue(any("sub/AGENTS.md" in f.detail for f in symlink_findings))
+
+    def test_symlink_regular_file_flagged(self) -> None:
+        (self.repo / "AGENTS.md").write_text("# Root\n")
+        (self.repo / "CLAUDE.md").write_text("# Regular File\n")
+        _commit_all(self.repo, "init")
+
+        result = rg.run_check(self.repo, doc_set_name=None)
+        symlink_findings = [f for f in result.findings if f.kind == "symlink"]
+        self.assertTrue(any("regular file" in f.detail for f in symlink_findings))
+
+    def test_symlink_wrong_target_flagged(self) -> None:
+        (self.repo / "AGENTS.md").write_text("# Root\n")
+        (self.repo / "CLAUDE.md").symlink_to("README.md")
+        _commit_all(self.repo, "init")
+
+        result = rg.run_check(self.repo, doc_set_name=None)
+        symlink_findings = [f for f in result.findings if f.kind == "symlink"]
+        self.assertTrue(any("expected 'AGENTS.md'" in f.detail for f in symlink_findings))
+
+    def test_symlink_valid_not_flagged(self) -> None:
+        (self.repo / "AGENTS.md").write_text("# Root\n- `sub/`\n")
+        (self.repo / "CLAUDE.md").symlink_to("AGENTS.md")
+        sub = self.repo / "sub"
+        sub.mkdir()
+        (sub / "AGENTS.md").write_text("# Sub\n")
+        (sub / "CLAUDE.md").symlink_to("AGENTS.md")
+        _commit_all(self.repo, "init")
+
+        result = rg.run_check(self.repo, doc_set_name=None)
+        symlink_findings = [f for f in result.findings if f.kind == "symlink"]
+        self.assertEqual(symlink_findings, [])
+
+    def test_missing_root_agents_md_flagged(self) -> None:
+        sub = self.repo / "sub"
+        sub.mkdir()
+        (sub / "AGENTS.md").write_text("# Sub\n")
+        (sub / "CLAUDE.md").symlink_to("AGENTS.md")
+        _commit_all(self.repo, "init")
+
+        result = rg.run_check(self.repo, doc_set_name=None)
+        signpost_findings = [f for f in result.findings if f.kind == "signpost"]
+        self.assertTrue(any("missing root AGENTS.md" in f.detail for f in signpost_findings))
+
+    def test_signpost_missing_flagged(self) -> None:
+        (self.repo / "AGENTS.md").write_text("# Root\nNo signposts here.\n")
+        (self.repo / "CLAUDE.md").symlink_to("AGENTS.md")
+        sub = self.repo / "pkg"
+        sub.mkdir()
+        (sub / "AGENTS.md").write_text("# Sub\n")
+        (sub / "CLAUDE.md").symlink_to("AGENTS.md")
+        _commit_all(self.repo, "init")
+
+        result = rg.run_check(self.repo, doc_set_name=None)
+        signpost_findings = [f for f in result.findings if f.kind == "signpost"]
+        self.assertEqual(len(signpost_findings), 1)
+        self.assertIn("pkg", signpost_findings[0].detail)
+
+    def test_signpost_valid_not_flagged(self) -> None:
+        (self.repo / "AGENTS.md").write_text("# Root\n- `pkg/` — subpackage guide\n")
+        (self.repo / "CLAUDE.md").symlink_to("AGENTS.md")
+        sub = self.repo / "pkg"
+        sub.mkdir()
+        (sub / "AGENTS.md").write_text("# Sub\n")
+        (sub / "CLAUDE.md").symlink_to("AGENTS.md")
+        _commit_all(self.repo, "init")
+
+        result = rg.run_check(self.repo, doc_set_name=None)
+        signpost_findings = [f for f in result.findings if f.kind == "signpost"]
+        self.assertEqual(signpost_findings, [])
+
+    def test_budget_exceeded_flagged(self) -> None:
+        lines = ["# Root", "<!-- comment block -->"] + [f"Line {i}" for i in range(160)]
+        (self.repo / "AGENTS.md").write_text("\n".join(lines) + "\n")
+        (self.repo / "CLAUDE.md").symlink_to("AGENTS.md")
+        _commit_all(self.repo, "init")
+
+        result = rg.run_check(self.repo, doc_set_name=None)
+        budget_findings = [f for f in result.findings if f.kind == "budget"]
+        self.assertEqual(len(budget_findings), 1)
+        self.assertIn("exceeds budget", budget_findings[0].detail)
+
+    def test_budget_within_limit_not_flagged(self) -> None:
+        lines = ["# Root"] + [f"Line {i}" for i in range(50)]
+        (self.repo / "AGENTS.md").write_text("\n".join(lines) + "\n")
+        (self.repo / "CLAUDE.md").symlink_to("AGENTS.md")
+        _commit_all(self.repo, "init")
+
+        result = rg.run_check(self.repo, doc_set_name=None)
+        budget_findings = [f for f in result.findings if f.kind == "budget"]
+        self.assertEqual(budget_findings, [])
+
+    def test_scaffold_creates_agents_and_symlink(self) -> None:
+        target = self.repo / "new_dir"
+        rg.cmd_scaffold(self.repo, "new_dir", quiet=True)
+        self.assertTrue((target / "AGENTS.md").is_file())
+        self.assertTrue((target / "CLAUDE.md").is_symlink())
+        self.assertEqual(os.readlink(target / "CLAUDE.md"), "AGENTS.md")
+        content = (target / "AGENTS.md").read_text()
+        self.assertIn("# AGENTS.md — new_dir", content)
+        self.assertIn("## Responsibilities & Boundary", content)
+        self.assertIn("## Hazards & Signposts", content)
+        self.assertIn("## Local Conventions", content)
+
+    def test_scaffold_rejects_root_and_traversal(self) -> None:
+        with self.assertRaises(SystemExit) as ctx:
+            rg.cmd_scaffold(self.repo, ".", quiet=True)
+        self.assertEqual(ctx.exception.code, 2)
+
+        with self.assertRaises(SystemExit) as ctx:
+            rg.cmd_scaffold(self.repo, "../outside", quiet=True)
+        self.assertEqual(ctx.exception.code, 2)
+
+    def test_scaffold_partial_creates_missing_symlink(self) -> None:
+        target = self.repo / "existing_dir"
+        target.mkdir()
+        (target / "AGENTS.md").write_text("# Existing\n")
+        rg.cmd_scaffold(self.repo, "existing_dir", quiet=True)
+        self.assertTrue((target / "CLAUDE.md").is_symlink())
+        self.assertEqual(os.readlink(target / "CLAUDE.md"), "AGENTS.md")
+        self.assertEqual((target / "AGENTS.md").read_text(), "# Existing\n")
+
+    def test_scaffold_conflict_refused_without_force(self) -> None:
+        target = self.repo / "existing_dir"
+        target.mkdir()
+        (target / "AGENTS.md").write_text("# Existing\n")
+        (target / "CLAUDE.md").write_text("# Regular\n")
+        with self.assertRaises(SystemExit) as ctx:
+            rg.cmd_scaffold(self.repo, "existing_dir", quiet=True)
+        self.assertEqual(ctx.exception.code, 2)
+
+    def test_scaffold_force_overwrites(self) -> None:
+        target = self.repo / "existing_dir"
+        target.mkdir()
+        (target / "AGENTS.md").write_text("# Existing\n")
+        (target / "CLAUDE.md").write_text("# Regular\n")
+        rg.cmd_scaffold(self.repo, "existing_dir", force=True, quiet=True)
+        self.assertTrue((target / "CLAUDE.md").is_symlink())
+        self.assertEqual(os.readlink(target / "CLAUDE.md"), "AGENTS.md")
+        self.assertIn("# AGENTS.md — existing_dir", (target / "AGENTS.md").read_text())
+
+
 class CliParsingTestCase(unittest.TestCase):
     def test_verbosity_and_repo_root_flags_parse_after_every_leaf_subcommand(
         self,
@@ -640,12 +807,14 @@ class CliParsingTestCase(unittest.TestCase):
         for cmd, extra in (
             ("check", []),
             ("mark-reviewed", ["AGENTS.md", "Some Heading"]),
+            ("scaffold", ["some_dir"]),
         ):
             args = rg.build_parser().parse_args(
                 [cmd, *extra, "-q", "--doc-set", "agent-toolkit"]
             )
             self.assertTrue(args.quiet)
-            self.assertEqual(args.doc_set, "agent-toolkit")
+            if hasattr(args, "doc_set"):
+                self.assertEqual(args.doc_set, "agent-toolkit")
 
     def test_doc_set_omitted_parses_to_none(self) -> None:
         args = rg.build_parser().parse_args(["check"])
@@ -658,3 +827,4 @@ class CliParsingTestCase(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

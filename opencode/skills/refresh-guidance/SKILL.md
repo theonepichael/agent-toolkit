@@ -41,9 +41,34 @@ never as a side effect of an unrelated task.
    code-holding directory with no `AGENTS.md` at all. This is a suggestion,
    not a finding — never create the file yourself unless the user asks.
 
-6. For each finding, let the user decide what to do — fix it now, offer a
-   backlog item (per the backlog proactive-capture protocol), or ignore it.
-   Never edit a doc to fix a finding without being asked.
+6. Interactive remediation flow — guide the user through resolving findings:
+   - **Broken citations (`path`, `command`)**: For each broken citation, search
+     the repo's tracked basename index or git log for moved or renamed files.
+     Propose the exact substitution or removal and ask for explicit approval
+     before editing.
+   - **Progressive disclosure findings (`symlink`, `signpost`, `budget`)**:
+     - `symlink`: If a paired `CLAUDE.md` symlink is missing or broken, offer
+       to run `python3 ~/.claude/scripts/refresh_guidance.py scaffold <dir>`
+       (which non-destructively creates the missing symlink without modifying
+       existing `AGENTS.md` content).
+     - `signpost`: If a directory carries `AGENTS.md` but lacks a root
+       signpost, offer to add an entry under the root `AGENTS.md` directory
+       guide naming the directory and its core hazard.
+     - `budget`: If root `AGENTS.md` exceeds 150 content lines, propose
+       moving directory-specific rules into child `AGENTS.md` files or
+       `docs/architecture/`.
+   - **Undocumented directories**: Review against the rubric in
+     `docs/architecture/progressive-disclosure-rubric.md`. If the user wants
+     to document the directory, run:
+     ```
+     python3 ~/.claude/scripts/refresh_guidance.py scaffold <dir> --repo-root <repo-root>
+     ```
+     Interview the user to author its three rubric sections (`## Responsibilities & Boundary`,
+     `## Hazards & Signposts`, `## Local Conventions`), and append a signpost
+     to the root `AGENTS.md`.
+   - **Re-verification**: Re-run `check` to verify all findings are cleanly
+     resolved.
+
 
 7. Never run `mark-reviewed` on your own initiative. Only run it when the
    user explicitly confirms they just read a specific section and it's

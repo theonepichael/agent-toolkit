@@ -2,12 +2,14 @@
 """refresh_guidance.py — audit-by-inspection for hand-authored, agent-facing docs.
 
 Scans a repo's hand-authored prose documentation (every ``AGENTS.md``, plus a
-per-repo fixed list such as ``README.md``/``STYLE.md``) for two things: (1)
+per-repo fixed list such as ``README.md``/``STYLE.md``) for three things: (1)
 mechanically-checkable claims in backtick/code-span citations that no longer
 hold — a cited repo-relative path that's gone, or a cited command/flag the
-named script no longer has — and (2) which ``##`` sections have gone longest
-without a human-confirmed review, using a sidecar state file plus a
-git-history fallback for sections that have never been marked reviewed.
+named script no longer has, (2) progressive disclosure criteria — missing
+paired ``CLAUDE.md`` symlinks, un-signposted child ``AGENTS.md`` files, and
+root ``AGENTS.md`` line-budget violations, and (3) which ``##`` sections have
+gone longest without a human-confirmed review, using a sidecar state file plus
+a git-history fallback for sections that have never been marked reviewed.
 
 This does not attempt semantic drift detection (verifying prose still
 matches reality) — only what is mechanically verifiable, plus surfacing what
@@ -36,12 +38,15 @@ Usage:
         scan and print a findings + staleness report (default subcommand)
     refresh_guidance.py mark-reviewed <doc> <heading> --repo-root <path> [--doc-set agent-toolkit]
         record human sign-off that one doc's `## <heading>` section is current
+    refresh_guidance.py scaffold <directory> --repo-root <path> [--force]
+        scaffold rubric-compliant AGENTS.md and paired CLAUDE.md symlink
 
 Flags: --repo-root <path> (default: this checkout), --doc-set
 {agent-toolkit} (no default — required unless <repo-root>/refresh-guidance.toml
 exists, in which case that file is used instead and --doc-set must be
 omitted), --commit <sha> and --date <YYYY-MM-DD> (mark-reviewed only;
-default to current HEAD / today), --quiet/-q, --verbose/-v.
+default to current HEAD / today), --force/-f (scaffold only),
+--quiet/-q, --verbose/-v.
 Env vars: none.
 Files read: every doc named by the active doc-set's config, every script
 under its configured script directories (parsed with `ast`, never imported
@@ -49,11 +54,13 @@ or executed — these tools mutate live state, so auditing them must not run
 them), its sidecar state file if present, and
 `<repo-root>/refresh-guidance.toml` if present.
 Files written: the active doc-set's sidecar state file
-(`refresh-guidance-state.json` at the repo root, by default), only by
-`mark-reviewed`.
+(`refresh-guidance-state.json` at the repo root, by default) by
+`mark-reviewed`, and `<directory>/AGENTS.md` with its sibling `CLAUDE.md`
+symlink by `scaffold`.
 Exit codes: 0 success; 2 bad usage (no doc-set resolvable, a malformed
 `refresh-guidance.toml`, `--doc-set` conflicting with one, missing repo
-root, or — for `mark-reviewed` — a doc/heading pair that doesn't exist).
+root, for `mark-reviewed` a doc/heading pair that doesn't exist, or for
+`scaffold` a conflict or path traversal).
 
 Requires Python 3.12+.
 """
@@ -93,6 +100,25 @@ _PATH_LIKE_EXTENSIONS = (
 _SKIP_DIRS = frozenset(
     {".git", "__pycache__", "node_modules", ".venv", ".pytest_cache", ".ruff_cache"}
 )
+
+ROOT_AGENTS_BUDGET_CONTENT_LINES = 150
+
+AGENTS_MD_TEMPLATE = """# AGENTS.md — {dir_name}
+
+<!-- Paired with CLAUDE.md symlink in the same directory -->
+
+## Responsibilities & Boundary
+
+<!-- What this directory owns, key boundaries, and architectural roles -->
+
+## Hazards & Signposts
+
+<!-- Directory-specific hazards, non-obvious traps, gotchas, and prerequisite reads -->
+
+## Local Conventions
+
+<!-- Local conventions, commands, and verification rules for this subtree -->
+"""
 
 
 # ── per-repo configuration ───────────────────────────────────────────────────
@@ -923,6 +949,116 @@ def run_check(
                 )
             )
 
+    # ── progressive disclosure checks ─────────────────────────────────────────
+    agents_docs = discover_agents_md(repo_root)
+    root_agents_present = "AGENTS.md" in agents_docs
+    if agents_docs and not root_agents_present:
+        findings.append(
+            Finding(
+                doc="AGENTS.md",
+                section="",
+                line=1,
+                kind="signpost",
+                raw="AGENTS.md",
+                detail="missing root AGENTS.md instructions file",
+            )
+        )
+    elif root_agents_present:
+        root_text = (repo_root / "AGENTS.md").read_text(
+            encoding="utf-8", errors="replace"
+        )
+        content_lines = 0
+        in_comment = False
+        for raw_line in root_text.splitlines():
+            stripped = raw_line.strip()
+            if not stripped:
+                continue
+            if stripped.startswith("<!--") and stripped.endswith("-->"):
+                continue
+            if stripped.startswith("<!--"):
+                in_comment = True
+                continue
+            if in_comment:
+                if "-->" in stripped:
+                    in_comment = False
+                continue
+            content_lines += 1
+        if content_lines > ROOT_AGENTS_BUDGET_CONTENT_LINES:
+            findings.append(
+                Finding(
+                    doc="AGENTS.md",
+                    section="",
+                    line=1,
+                    kind="budget",
+                    raw="AGENTS.md",
+                    detail=(
+                        f"root AGENTS.md content line count ({content_lines}) "
+                        f"exceeds budget ({ROOT_AGENTS_BUDGET_CONTENT_LINES})"
+                    ),
+                )
+            )
+
+        for doc in agents_docs:
+            if doc == "AGENTS.md":
+                continue
+            top_dir = Path(doc).parts[0]
+            pattern = re.compile(
+                rf"(?:`{re.escape(top_dir)}/`|`{re.escape(top_dir)}/AGENTS\.md`|`{re.escape(doc)}`|\[[^\]]+\]\((?:\./)?{re.escape(top_dir)}/)"
+            )
+            if not pattern.search(root_text):
+                findings.append(
+                    Finding(
+                        doc=doc,
+                        section="",
+                        line=1,
+                        kind="signpost",
+                        raw=doc,
+                        detail=f"directory '{top_dir}' not signposted in root AGENTS.md",
+                    )
+                )
+
+    for doc in agents_docs:
+        doc_path = repo_root / doc
+        claude_path = doc_path.parent / "CLAUDE.md"
+        if not claude_path.exists() and not claude_path.is_symlink():
+            findings.append(
+                Finding(
+                    doc=doc,
+                    section="",
+                    line=1,
+                    kind="symlink",
+                    raw="CLAUDE.md",
+                    detail=f"missing paired symlink beside {doc}",
+                )
+            )
+        elif not claude_path.is_symlink():
+            findings.append(
+                Finding(
+                    doc=doc,
+                    section="",
+                    line=1,
+                    kind="symlink",
+                    raw="CLAUDE.md",
+                    detail="regular file, expected symlink pointing to AGENTS.md",
+                )
+            )
+        else:
+            try:
+                target = os.readlink(claude_path)
+            except OSError:
+                target = ""
+            if target != "AGENTS.md":
+                findings.append(
+                    Finding(
+                        doc=doc,
+                        section="",
+                        line=1,
+                        kind="symlink",
+                        raw="CLAUDE.md",
+                        detail=f"symlink target is '{target}', expected 'AGENTS.md'",
+                    )
+                )
+
     undocumented_dirs = discover_undocumented_dirs(repo_root)
     return CheckResult(
         findings=findings, sections=sections, undocumented_dirs=undocumented_dirs
@@ -1036,6 +1172,98 @@ def cmd_mark_reviewed(
     )
 
 
+def cmd_scaffold(
+    repo_root: Path,
+    directory: str,
+    force: bool = False,
+    quiet: bool = False,
+) -> None:
+    """Scaffold a rubric-compliant `AGENTS.md` and paired `CLAUDE.md` symlink
+    under `<repo_root>/<directory>`.
+    """
+    if not directory or directory.strip() in (".", "./", "/"):
+        print(
+            "refresh_guidance scaffold: cannot scaffold root repository",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    dir_path = Path(directory)
+    if dir_path.is_absolute() or (dir_path.parts and dir_path.parts[0] == ".."):
+        print(
+            f"refresh_guidance scaffold: path outside repo root: {directory!r}",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    target_dir = (repo_root / dir_path).resolve()
+    try:
+        target_dir.relative_to(repo_root.resolve())
+    except ValueError:
+        print(
+            f"refresh_guidance scaffold: path outside repo root: {directory!r}",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    if target_dir == repo_root.resolve():
+        print(
+            "refresh_guidance scaffold: cannot scaffold root repository",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+    agents_path = target_dir / "AGENTS.md"
+    claude_path = target_dir / "CLAUDE.md"
+
+    if not force:
+        if agents_path.exists() and (claude_path.exists() or claude_path.is_symlink()):
+            if claude_path.is_symlink() and os.readlink(claude_path) == "AGENTS.md":
+                cli_common.qprint(
+                    f"refresh_guidance scaffold: {directory} already has compliant AGENTS.md and CLAUDE.md",
+                    quiet=quiet,
+                )
+                return
+            print(
+                f"refresh_guidance scaffold: {claude_path} already exists (pass --force to overwrite)",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        elif not agents_path.exists() and (
+            claude_path.exists() or claude_path.is_symlink()
+        ):
+            print(
+                f"refresh_guidance scaffold: {claude_path} already exists (pass --force to overwrite)",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        elif (
+            agents_path.exists()
+            and not claude_path.exists()
+            and not claude_path.is_symlink()
+        ):
+            os.symlink("AGENTS.md", claude_path)
+            cli_common.qprint(
+                f"refresh_guidance scaffold: created missing symlink {claude_path} -> AGENTS.md",
+                quiet=quiet,
+            )
+            return
+
+    if force and (claude_path.is_symlink() or claude_path.exists()):
+        claude_path.unlink()
+
+    content = AGENTS_MD_TEMPLATE.format(dir_name=dir_path.name)
+    agents_path.write_text(content, encoding="utf-8")
+    if not claude_path.is_symlink() and not claude_path.exists():
+        os.symlink("AGENTS.md", claude_path)
+
+    cli_common.qprint(
+        f"refresh_guidance scaffold: scaffolded {agents_path} and {claude_path}",
+        quiet=quiet,
+    )
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 
@@ -1111,6 +1339,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--date", default=None, help="YYYY-MM-DD to record (default: today)"
     )
 
+    scaffold_parser = subparsers.add_parser(
+        "scaffold",
+        help="scaffold a rubric-compliant AGENTS.md and paired CLAUDE.md symlink in a directory",
+        parents=[verbosity_parent],
+    )
+    _add_doc_set_args(scaffold_parser)
+    scaffold_parser.add_argument(
+        "directory", help="repo-relative directory path to scaffold"
+    )
+    scaffold_parser.add_argument(
+        "--force",
+        "-f",
+        action="store_true",
+        help="overwrite existing AGENTS.md or CLAUDE.md",
+    )
+
     return parser
 
 
@@ -1125,7 +1369,7 @@ def main() -> None:
 
     if subcommand == "check":
         cmd_check(repo_root, doc_set_name, agent_toolkit_root, quiet=quiet)
-    else:
+    elif subcommand == "mark-reviewed":
         cmd_mark_reviewed(
             repo_root,
             doc_set_name,
@@ -1133,6 +1377,13 @@ def main() -> None:
             args.heading,
             args.commit,
             args.date,
+            quiet=quiet,
+        )
+    elif subcommand == "scaffold":
+        cmd_scaffold(
+            repo_root,
+            args.directory,
+            force=getattr(args, "force", False),
             quiet=quiet,
         )
 
