@@ -226,7 +226,7 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `out-of-scope remove <concept-slug>` — delete a rejected concept's record
   - `out-of-scope list` — list rejected concepts, newest-first
   - `out-of-scope show <concept-slug>` — print a rejected concept's full record
-- Environment: `AGY_SESSION`, `ANTHROPIC_CLI`, `ANTIGRAVITY`, `CLAUDE_CODE`, `COPILOT`, `DEVSTATUS_AGENT`, `DEVSTATUS_CLAIM_TTL_SECONDS`, `DEVSTATUS_HARNESS`, `DEVSTATUS_RECAP_AGY_MODEL`, `DEVSTATUS_RECAP_DISABLE`, `DEVSTATUS_RECAP_TIMEOUT_SECONDS`, `GITHUB_COPILOT`, `OPENCODE`, `OPENCODE_GATEWAY`, `PI_CODING_AGENT`, `PI_SESSION`
+- Environment: `AGY_SESSION`, `AI_AGENT`, `ANTHROPIC_CLI`, `ANTIGRAVITY`, `ANTIGRAVITY_AGENT`, `ANTIGRAVITY_CONVERSATION_ID`, `CLAUDE_CODE`, `COPILOT`, `DEVSTATUS_AGENT`, `DEVSTATUS_CLAIM_TTL_SECONDS`, `DEVSTATUS_HARNESS`, `DEVSTATUS_RECAP_AGY_MODEL`, `DEVSTATUS_RECAP_DISABLE`, `DEVSTATUS_RECAP_TIMEOUT_SECONDS`, `GITHUB_COPILOT`, `OPENCODE`, `OPENCODE_GATEWAY`, `PI_CODING_AGENT`, `PI_SESSION`
 - Explicit exit codes: `1`
 - Depends on: `cli_common.py`, `dev_status_formatting.py`, `dev_status_storage.py`, `llm_backends.py`
 - Public classes:

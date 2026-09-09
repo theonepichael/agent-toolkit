@@ -5044,6 +5044,9 @@ _HARNESS_ENV_VARS = (
     "ANTHROPIC_CLI",
     "ANTIGRAVITY",
     "AGY_SESSION",
+    "ANTIGRAVITY_AGENT",
+    "ANTIGRAVITY_CONVERSATION_ID",
+    "AI_AGENT",
     "OPENCODE_GATEWAY",
     "OPENCODE",
     "GITHUB_COPILOT",
@@ -5081,6 +5084,12 @@ class ClaimMarkerAndWorktreeGuardTestCase(BacklogFixture):
         with patch.dict(os.environ, _only_harness_env(ANTIGRAVITY="1")):
             self.assertEqual(dev_status._detect_harness(), "agy")
         with patch.dict(os.environ, _only_harness_env(AGY_SESSION="1")):
+            self.assertEqual(dev_status._detect_harness(), "agy")
+        with patch.dict(os.environ, _only_harness_env(ANTIGRAVITY_AGENT="1")):
+            self.assertEqual(dev_status._detect_harness(), "agy")
+        with patch.dict(os.environ, _only_harness_env(ANTIGRAVITY_CONVERSATION_ID="123")):
+            self.assertEqual(dev_status._detect_harness(), "agy")
+        with patch.dict(os.environ, _only_harness_env(AI_AGENT="antigravity")):
             self.assertEqual(dev_status._detect_harness(), "agy")
         with patch.dict(os.environ, _only_harness_env(OPENCODE_GATEWAY="1")):
             self.assertEqual(dev_status._detect_harness(), "opencode")
@@ -6284,6 +6293,41 @@ class OwnerPidClaimTestCase(BacklogFixture):
             owner, _ancestors = dev_status._find_owner_pid(5000)
         self.assertEqual(owner, 4800)
 
+    def test_ephemeral_subshell_compound_flags_skipped(self):
+        # Tool runners often invoke shells with combined flags like -lc, -ec,
+        # or /usr/bin/zsh -lc. These ephemeral wrappers must be skipped
+        # so the durable harness process (or interactive shell) is chosen.
+        for shell_cmd in (
+            "/usr/bin/zsh -lc 'python3 dev_status.py start'",
+            "bash -lc 'python3 dev_status.py start'",
+            "bash -ec 'python3 dev_status.py start'",
+            "sh -c 'python3 dev_status.py start'",
+            "bash myscript.sh",
+        ):
+            chain = {
+                5000: (4900, "python3 dev_status.py start"),
+                4900: (4800, shell_cmd),
+                4800: (4700, "agy"),
+                4700: (1, "zsh"),
+            }
+            with _chain_patch(chain):
+                owner, _ancestors = dev_status._find_owner_pid(5000)
+            self.assertEqual(
+                owner, 4800, f"failed to skip ephemeral subshell: {shell_cmd!r}"
+            )
+
+    def test_ephemeral_subshell_bare_cli_anchors_to_interactive_shell(self):
+        # When invoked via an ephemeral subshell with no harness above it,
+        # the claim must anchor to the interactive pane shell, not the subshell.
+        chain = {
+            5000: (4900, "python3 dev_status.py start"),
+            4900: (4800, "zsh -lc 'python3 dev_status.py start'"),
+            4800: (1, "zsh"),
+        }
+        with _chain_patch(chain):
+            owner, _ancestors = dev_status._find_owner_pid(5000)
+        self.assertEqual(owner, 4800)
+
     def test_bare_cli_owner_is_interactive_shell(self):
         # python child -> zsh (interactive login shell). No harness sits
         # between, so the pane/login shell itself is the owner.
@@ -6467,6 +6511,86 @@ class OwnerPidSubprocessTestCase(unittest.TestCase):
         self.assertNotEqual(owner, proc.pid)
         self.assertTrue(dev_status._is_pid_alive(owner))
         self.assertIn(owner, [a["pid"] for a in ancestors])
+
+    @pytest.mark.allow_real_subprocess
+    def test_subprocess_start_claim_survives_subshell_exit_for_review(self):
+        scripts = Path(__file__).parent
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home = Path(tmpdir)
+            data_dir = home / ".claude" / "data" / "backlog"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            items_file = data_dir / "items.json"
+            meta_file = data_dir / "_meta.json"
+            items_file.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "items": [
+                            {
+                                "id": "task-lifecycle",
+                                "summary": "lifecycle test item",
+                                "status": "open",
+                                "category": "bug",
+                                "created": "2026-09-09",
+                                "updated": "2026-09-09",
+                                "blocked_by": [],
+                                "related_files": [],
+                            }
+                        ],
+                    }
+                )
+            )
+            meta_file.write_text(json.dumps({"rev": 1}))
+            env = dict(os.environ)
+            env["HOME"] = str(home)
+            env.pop("DEVSTATUS_HARNESS", None)
+
+            # Invoke start from an ephemeral bash -lc subshell
+            start_cmd = (
+                f"{sys.executable} {scripts}/dev_status.py start --allow-main task-lifecycle"
+            )
+            shell_bin = shutil.which("zsh") or "bash"
+            proc = subprocess.Popen(
+                [shell_bin, "-lc", f"{start_cmd} && true"],
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            out, err = proc.communicate(timeout=30)
+            self.assertEqual(proc.returncode, 0, f"start failed: {err}\n{out}")
+
+            # The start subprocess has now completely exited.
+            # Running show (or render) executes _sweep_dead_claims.
+            # With the fix, the claim is anchored to the live test process
+            # rather than the exited subshell, so it must not be swept.
+            show_proc = subprocess.Popen(
+                [sys.executable, str(scripts / "dev_status.py"), "show", "task-lifecycle"],
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            show_out, show_err = show_proc.communicate(timeout=30)
+            self.assertEqual(show_proc.returncode, 0, f"show failed: {show_err}\n{show_out}")
+            self.assertNotIn("[sweep]", show_err)
+
+            # Next, running review must find the item still in-progress.
+            rev_proc = subprocess.Popen(
+                [sys.executable, str(scripts / "dev_status.py"), "review", "task-lifecycle"],
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            rev_out, rev_err = rev_proc.communicate(timeout=30)
+            self.assertEqual(
+                rev_proc.returncode,
+                0,
+                f"review failed after subshell exit: {rev_err}\n{rev_out}",
+            )
+            updated_items = json.loads(items_file.read_text())["items"]
+            self.assertEqual(updated_items[0]["status"], "in-review")
 
 
 class BacklogStorageExtractionTestCase(unittest.TestCase):

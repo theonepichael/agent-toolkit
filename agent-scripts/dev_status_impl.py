@@ -364,7 +364,7 @@ def _detect_harness(explicit: str | None = None) -> str:
     2. DEVSTATUS_HARNESS environment variable
     3. PI_SESSION / PI_CODING_AGENT -> 'pi'
     4. CLAUDE_CODE / ANTHROPIC_CLI -> 'claude'
-    5. ANTIGRAVITY / AGY_SESSION -> 'agy'
+    5. ANTIGRAVITY / AGY_SESSION / ANTIGRAVITY_AGENT / ANTIGRAVITY_CONVERSATION_ID / AI_AGENT -> 'agy'
     6. OPENCODE_GATEWAY / OPENCODE -> 'opencode'
     7. GITHUB_COPILOT / COPILOT -> 'copilot'
     8. Fallback: 'cli'
@@ -377,7 +377,13 @@ def _detect_harness(explicit: str | None = None) -> str:
         return "pi"
     if os.environ.get("CLAUDE_CODE") or os.environ.get("ANTHROPIC_CLI"):
         return "claude"
-    if os.environ.get("ANTIGRAVITY") or os.environ.get("AGY_SESSION"):
+    if (
+        os.environ.get("ANTIGRAVITY")
+        or os.environ.get("AGY_SESSION")
+        or os.environ.get("ANTIGRAVITY_AGENT")
+        or os.environ.get("ANTIGRAVITY_CONVERSATION_ID")
+        or os.environ.get("AI_AGENT") == "antigravity"
+    ):
         return "agy"
     if os.environ.get("OPENCODE_GATEWAY") or os.environ.get("OPENCODE"):
         return "opencode"
@@ -488,6 +494,7 @@ def _proc_info(pid: int) -> tuple[int, str] | None:
 
 
 _SHELL_BASENAMES = {"sh", "bash", "zsh", "dash", "ksh", "fish", "csh", "tcsh"}
+_HARNESS_BASENAMES = {"agy", "claude", "opencode", "pi", "copilot"}
 # Processes that outlive any single pane/session: never owner-eligible, and
 # the walk ends when it would step past one. The interactive-shell stop below
 # is the primary containment; this set is the belt-and-braces backstop for
@@ -514,6 +521,28 @@ def _argv0_basename(cmd: str) -> str:
     return os.path.basename(argv0)
 
 
+def _is_ephemeral_shell(cmd: str) -> bool:
+    """Check whether a shell command invocation is an ephemeral subshell/script.
+
+    Interactive shells (login shells, bare shells without arguments, or shells
+    with -i) represent durable session/pane boundaries. Ephemeral shells are
+    those executing an inline command string (-c, -lc, -ec, -xc, --command) or
+    a script file (first non-option argument).
+    """
+    tokens = cmd.split()
+    if len(tokens) <= 1:
+        return False
+    for arg in tokens[1:]:
+        if arg == "--":
+            continue
+        if arg.startswith("-") and not arg.startswith("--"):
+            if "c" in arg:
+                return True
+        elif arg.startswith("--command") or not arg.startswith("-"):
+            return True
+    return False
+
+
 def _find_owner_pid(
     start_pid: int | None = None,
 ) -> tuple[int, list[dict[str, object]]]:
@@ -522,13 +551,13 @@ def _find_owner_pid(
     The invoking process (this script) is short-lived, so its own pid dies
     within seconds of the claim being written — a live session then reads as
     dead. The durable anchor is an ancestor: the nearest process that is
-    neither an ephemeral subshell (a shell invoked with -c) nor a daemon,
-    bounded by the first interactive shell (pane/login shell) or a daemon /
-    pid-1 boundary. If a harness process (pi, claude, agy, ...) sits between
-    the child and that boundary, it is the owner — it dies with the actual
-    agent session, which is more precise than the pane shell. With nothing
-    non-shell in between (bare CLI), the interactive shell itself is the
-    owner. Falls back to the invoking pid when the chain yields nothing
+    neither an ephemeral subshell (a shell invoked with -c, -lc, or running a
+    script) nor a daemon, bounded by the first interactive shell (pane/login
+    shell) or a daemon / pid-1 boundary. If a harness process (pi, claude, agy,
+    ...) sits between the child and that boundary, it is the owner — it dies
+    with the actual agent session, which is more precise than the pane shell.
+    With nothing non-shell in between (bare CLI), the interactive shell itself
+    is the owner. Falls back to the invoking pid when the chain yields nothing
     usable, which is exactly the pre-change behavior.
 
     Returns (owner_pid, ancestors) — ancestors is the walked chain from the
@@ -551,8 +580,11 @@ def _find_owner_pid(
             base = _argv0_basename(cmd)
             if base in _DAEMON_BASENAMES:
                 break
+            if base in _HARNESS_BASENAMES and cur != pid:
+                owner = cur
+                break
             if base in _SHELL_BASENAMES:
-                if "-c" in cmd.split()[1:]:
+                if _is_ephemeral_shell(cmd):
                     if at_boundary:
                         break
                     cur = ppid  # ephemeral tool-runner subshell: skip
