@@ -175,6 +175,9 @@ function buildTabCreateArgv(cwd, label, opts) {
 function buildTabCloseArgv(tabId) {
   return ["tab", "close", tabId];
 }
+function buildTabListArgv() {
+  return ["tab", "list"];
+}
 function findTabByLabel(stdout, label) {
   try {
     const parsed = JSON.parse(stdout);
@@ -675,6 +678,20 @@ class SwarmToolContext {
     this.persist(state);
     return lines;
   }
+  async recoverTabByLabel(label) {
+    try {
+      const listing = await this.herdr(buildTabListArgv());
+      if (listing.code !== 0)
+        return;
+      const tabId = findTabByLabel(listing.stdout, label);
+      if (!tabId)
+        return;
+      const closed = await this.herdr(buildTabCloseArgv(tabId));
+      return closed.code === 0 ? tabId : undefined;
+    } catch {
+      return;
+    }
+  }
   async failWithTab(slug, paneId, tabId, reason) {
     let capture;
     try {
@@ -739,9 +756,8 @@ ${capture}` } };
     let tabCreated = await this.herdr(buildTabCreateArgv(cwd, label, { kind: "copilot" }));
     let parsedTab = parseTabCreate(tabCreated.stdout);
     if (!parsedTab && tabCreated.code === 0) {
-      const recoveredId = findTabByLabel(tabCreated.stdout, label);
-      if (recoveredId)
-        parsedTab = { paneId: "", tabId: recoveredId };
+      await this.recoverTabByLabel(label);
+      return false;
     }
     if (!parsedTab || !parsedTab.paneId) {
       return false;
@@ -976,9 +992,13 @@ ${capture}` } };
         const tabCreated = await this.herdr(buildTabCreateArgv(process.cwd(), slug, { captureFile, kind: "copilot" }));
         let parsedTab = parseTabCreate(tabCreated.stdout);
         if (!parsedTab && tabCreated.code === 0) {
-          const recoveredId = findTabByLabel(tabCreated.stdout, slug);
-          if (recoveredId)
-            parsedTab = { paneId: "", tabId: recoveredId };
+          const orphan = await this.recoverTabByLabel(slug);
+          const head = (tabCreated.stderr || tabCreated.stdout).slice(0, 200);
+          failed.push({
+            slug,
+            reason: orphan ? `could not parse tab create response; the tab it created was found by label and closed (${orphan}): ${head}` : `could not parse tab create response, and no single tab labelled "${slug}" was found -- a tab may be open and unaccounted for, close it by hand: ${head}`
+          });
+          continue;
         }
         if (!parsedTab || !parsedTab.paneId) {
           failed.push({

@@ -457,6 +457,28 @@ export class SwarmToolContext {
     return lines;
   }
 
+  /**
+   * Finds and closes the tab a `tab create` left behind when its response
+   * exited 0 but didn't parse -- ported from pi's `recoverTabByLabel`.
+   *
+   * `findTabByLabel` expects a `tab list` response shape (`result.tabs`),
+   * not a `tab create` response (`result.tab`/`result.root_pane`), so this
+   * must issue its own fresh `tab list` call rather than reusing the create
+   * call's stdout.
+   */
+  private async recoverTabByLabel(label: string): Promise<string | undefined> {
+    try {
+      const listing = await this.herdr(buildTabListArgv());
+      if (listing.code !== 0) return undefined;
+      const tabId = findTabByLabel(listing.stdout, label);
+      if (!tabId) return undefined;
+      const closed = await this.herdr(buildTabCloseArgv(tabId));
+      return closed.code === 0 ? tabId : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   private async failWithTab(
     slug: string,
     paneId: string,
@@ -565,8 +587,11 @@ export class SwarmToolContext {
     let tabCreated = await this.herdr(buildTabCreateArgv(cwd, label, { kind: "copilot" }));
     let parsedTab = parseTabCreate(tabCreated.stdout);
     if (!parsedTab && tabCreated.code === 0) {
-      const recoveredId = findTabByLabel(tabCreated.stdout, label);
-      if (recoveredId) parsedTab = { paneId: "", tabId: recoveredId };
+      // A recovered tab id has no pane id attached (tab list doesn't carry
+      // one), so it can never satisfy the paneId check below -- this is
+      // cleanup only, matching pi: find the orphan by label and close it.
+      await this.recoverTabByLabel(label);
+      return false;
     }
     if (!parsedTab || !parsedTab.paneId) {
       return false;
@@ -884,8 +909,15 @@ export class SwarmToolContext {
         );
         let parsedTab = parseTabCreate(tabCreated.stdout);
         if (!parsedTab && tabCreated.code === 0) {
-          const recoveredId = findTabByLabel(tabCreated.stdout, slug);
-          if (recoveredId) parsedTab = { paneId: "", tabId: recoveredId };
+          const orphan = await this.recoverTabByLabel(slug);
+          const head = (tabCreated.stderr || tabCreated.stdout).slice(0, 200);
+          failed.push({
+            slug,
+            reason: orphan
+              ? `could not parse tab create response; the tab it created was found by label and closed (${orphan}): ${head}`
+              : `could not parse tab create response, and no single tab labelled "${slug}" was found -- a tab may be open and unaccounted for, close it by hand: ${head}`,
+          });
+          continue;
         }
         if (!parsedTab || !parsedTab.paneId) {
           failed.push({
