@@ -3625,13 +3625,18 @@ def test_install_linux_packages_batch_success_single_invocation(home, monkeypatc
     assert kinds(ctx, "package-installed") == [
         {"kind": "package-installed", "name": pkg} for pkg in install.LINUX_PACKAGES
     ]
-    assert events == [
+    assert events[-1] == "_install_ruff_uv_tool"
+    # The four network installers run concurrently on the pool — their
+    # completion order is nondeterministic, so only membership is asserted.
+    # (The Neovim fallback is one of the four pool workers, not sequential:
+    # "pool starts only after the distro packages and shims are done" refers
+    # to its START, not its completion order.)
+    assert set(events[:-1]) == {
         "_install_neovim_fallback",
         "_install_uv",
         "_install_oh_my_posh",
         "_install_nerd_font",
-        "_install_ruff_uv_tool",
-    ]
+    }
 
 
 def test_install_linux_packages_batch_failure_falls_back_per_package(
