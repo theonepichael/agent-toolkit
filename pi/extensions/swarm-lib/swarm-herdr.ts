@@ -47,21 +47,33 @@ export type PollEventKind = "blocked" | "finished" | "timed_out" | "error" | "st
  * reason there is no trust prompt to send afterwards -- see
  * WORKER_UNATTENDED_ENV.
  */
-export function buildTabCreateArgv(cwd: string, label: string, captureFile?: string): string[] {
-  return [
-    "tab",
-    "create",
-    "--cwd",
-    cwd,
-    "--label",
-    label,
-    "--env",
-    WORKER_UNATTENDED_ENV,
-    // A second --env, not a replacement: the worker needs both, and the
-    // unattended flag is what settles its gates at module load.
-    ...(captureFile ? ["--env", `PI_SWARM_CAPTURE_FILE=${captureFile}`] : []),
-    "--no-focus",
-  ];
+export interface TabCreateOptions {
+  captureFile?: string;
+  /**
+   * Which host this tab is for. Defaults to "copilot" -- Copilot is the
+   * generalized case, since a bare `tab create` with no unattended-gate env
+   * var is exactly what a Copilot worker needs. A pi caller MUST pass
+   * "pi" explicitly: without it, WORKER_UNATTENDED_ENV is never set and a
+   * pi worker's permission gates hang forever waiting on a human who is
+   * never there (see WORKER_UNATTENDED_ENV's own comment).
+   */
+  kind?: "pi" | "copilot";
+}
+
+export function buildTabCreateArgv(cwd: string, label: string, opts?: TabCreateOptions): string[] {
+  const kind = opts?.kind ?? "copilot";
+  const captureFile = opts?.captureFile;
+  const envArgs: string[] = [];
+  if (kind === "pi") {
+    // Only a pi worker needs its gates settled at module load -- see
+    // WORKER_UNATTENDED_ENV's own comment for why this matters.
+    envArgs.push("--env", WORKER_UNATTENDED_ENV);
+  }
+  if (captureFile) {
+    const varName = kind === "copilot" ? "COPILOT_SWARM_CAPTURE_FILE" : "PI_SWARM_CAPTURE_FILE";
+    envArgs.push("--env", `${varName}=${captureFile}`);
+  }
+  return ["tab", "create", "--cwd", cwd, "--label", label, ...envArgs, "--no-focus"];
 }
 
 export function buildTabCloseArgv(tabId: string): string[] {
@@ -129,24 +141,73 @@ export function parseTabCreate(stdout: string): TabCreateResult | undefined {
   }
 }
 
-export function buildAgentStartArgv(agentId: string, paneId: string, model?: string): string[] {
-  return [
+export interface AgentStartOptions {
+  /** Defaults to "copilot" -- a pi caller MUST pass "pi" explicitly, or this builds a `--kind copilot` command line for what is actually a pi agent. */
+  kind?: "pi" | "copilot";
+  /** Copilot only: the session id to start with, read back and confirmed via `parseAgentSession` for later crash-recovery resume. */
+  sessionId?: string;
+  /** Copilot only. Defaults to true when a sessionId/resumeSessionId is present. */
+  allowAllTools?: boolean;
+  /** Copilot only: passed as `--plugin-dir` so the worker loads this checkout's swarm extension rather than a system-installed one. */
+  pluginDir?: string;
+  /** Copilot only: resumes a prior session instead of starting fresh -- see attemptCrashRecovery. */
+  resumeSessionId?: string;
+}
+
+/**
+ * herdr's usage is `agent start <NAME> --kind <KIND> --pane <ID> [OPTIONS]
+ * [-- [AGENT_ARG]...]` -- everything the AGENT itself needs (as opposed to
+ * herdr) goes after the `--` separator, since a flag like `--model` handed
+ * to herdr directly is an unknown flag. Kind defaults to "copilot"; a pi
+ * caller MUST pass `{kind: "pi"}` explicitly (see AgentStartOptions).
+ */
+export function buildAgentStartArgv(
+  agentId: string,
+  paneId: string,
+  model?: string,
+  opts?: AgentStartOptions,
+): string[] {
+  const kind = opts?.kind ?? "copilot";
+  const argv = [
     "agent",
     "start",
     agentId,
     "--kind",
-    "pi",
+    kind,
     "--pane",
     paneId,
     "--timeout",
     String(AGENT_START_TIMEOUT_MS),
-    // Everything pi needs goes AFTER the separator. herdr's usage is
-    // `agent start <NAME> --kind <KIND> --pane <ID> [OPTIONS] [-- [AGENT_ARG]...]`,
-    // so `--model` handed to herdr directly is an unknown flag; only the
-    // trailing block reaches the agent. Omitting the model omits the
-    // separator too -- a bare trailing `--` is a different command line.
-    ...(model ? ["--", "--model", model] : []),
   ];
+
+  if (kind === "copilot") {
+    const sessionArgs: string[] = [];
+    if (opts?.resumeSessionId) {
+      sessionArgs.push(`--resume=${opts.resumeSessionId}`);
+    } else if (opts?.sessionId) {
+      sessionArgs.push("--session-id", opts.sessionId);
+    }
+    if (opts?.allowAllTools ?? true) {
+      sessionArgs.push("--allow-all-tools");
+    }
+    if (opts?.pluginDir) {
+      sessionArgs.push("--plugin-dir", opts.pluginDir);
+    }
+    if (model) {
+      sessionArgs.push("--model", model);
+    }
+    if (sessionArgs.length > 0) {
+      argv.push("--", ...sessionArgs);
+    }
+    return argv;
+  }
+
+  // Omitting the model omits the separator too -- a bare trailing `--` is a
+  // different command line.
+  if (model) {
+    argv.push("--", "--model", model);
+  }
+  return argv;
 }
 
 /**
@@ -359,8 +420,21 @@ interface HerdrEnvelope {
   // are two different response shapes for two different commands, not one
   // shared shape; do not conflate them into a single flat interface again.
   result?: {
-    agent?: { agent_status?: string; pane_id?: string };
-    agents?: { agent_status?: string; agent_session?: unknown; pane_id?: string }[];
+    agent?: {
+      agent_status?: string;
+      pane_id?: string;
+      // Copilot-only: the confirmed session id, read by parseAgentSession
+      // for attemptCrashRecovery's `--resume=` target. pi's parseAgentList
+      // deliberately does NOT read this field for reconciliation (see its
+      // own comment) -- an earlier version tried and could never match a
+      // synthetic id like "run1-w1", wrongly dropping every live worker.
+      agent_session?: { kind?: string; value?: unknown };
+    };
+    agents?: {
+      agent_status?: string;
+      agent_session?: { kind?: string; value?: unknown };
+      pane_id?: string;
+    }[];
   };
   error?: { code?: string; message?: string };
 }
@@ -370,6 +444,17 @@ function parseHerdrJson(text: string): HerdrEnvelope | null {
     return JSON.parse(text) as HerdrEnvelope;
   } catch {
     return null;
+  }
+}
+
+/** Copilot only: the confirmed session id from `agent get`, used to cross-check a requested session id and as attemptCrashRecovery's `--resume=` target. */
+export function parseAgentSession(stdout: string): string | undefined {
+  try {
+    const parsed = parseHerdrJson(stdout);
+    const val = parsed?.result?.agent?.agent_session?.value;
+    return typeof val === "string" ? val : undefined;
+  } catch {
+    return undefined;
   }
 }
 

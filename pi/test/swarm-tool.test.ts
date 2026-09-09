@@ -166,7 +166,7 @@ describe("nextAgentId", () => {
 
 describe("herdr argv builders", () => {
   test("tab create: cwd, slug label, unattended env, and never steals the human's focus", () => {
-    expect(buildTabCreateArgv("/repo", "my-slug")).toEqual([
+    expect(buildTabCreateArgv("/repo", "my-slug", { kind: "pi" })).toEqual([
       "tab",
       "create",
       "--cwd",
@@ -202,7 +202,7 @@ describe("herdr argv builders", () => {
   });
 
   test("agent start: kind pi, targets the given pane", () => {
-    const argv = buildAgentStartArgv("run1-w1", "w1:pB");
+    const argv = buildAgentStartArgv("run1-w1", "w1:pB", undefined, { kind: "pi" });
     expect(argv).toEqual([
       "agent",
       "start",
@@ -220,7 +220,9 @@ describe("herdr argv builders", () => {
     // herdr's usage is `agent start <NAME> --kind <KIND> --pane <ID> [OPTIONS]
     // [-- [AGENT_ARG]...]`, so everything for pi has to sit after `--`.
     // Without the separator herdr would reject --model as its own unknown flag.
-    const argv = buildAgentStartArgv("run1-w1", "w1:pB", "opencode-go/glm-5.3-flash");
+    const argv = buildAgentStartArgv("run1-w1", "w1:pB", "opencode-go/glm-5.3-flash", {
+      kind: "pi",
+    });
     expect(argv).toEqual([
       "agent",
       "start",
@@ -240,14 +242,16 @@ describe("herdr argv builders", () => {
   test("agent start: no model means today's argv exactly, separator included", () => {
     // Omitted must stay byte-identical to the pre-change command: an empty
     // trailing `--` is a different command line and pi parses it differently.
-    const argv = buildAgentStartArgv("run1-w1", "w1:pB", undefined);
+    const argv = buildAgentStartArgv("run1-w1", "w1:pB", undefined, { kind: "pi" });
     expect(argv).not.toContain("--");
     expect(argv).not.toContain("--model");
-    expect(argv).toEqual(buildAgentStartArgv("run1-w1", "w1:pB"));
+    expect(argv).toEqual(buildAgentStartArgv("run1-w1", "w1:pB", undefined, { kind: "pi" }));
   });
 
   test("agent start: the model is one discrete argv element, never shell-interpolated", () => {
-    const argv = buildAgentStartArgv("run1-w1", "w1:pB", "provider/model with space");
+    const argv = buildAgentStartArgv("run1-w1", "w1:pB", "provider/model with space", {
+      kind: "pi",
+    });
     expect(argv[argv.length - 1]).toBe("provider/model with space");
   });
 
@@ -3966,7 +3970,9 @@ describe("deliberate-stop reporting", () => {
 
 describe("swarm_spawn model passthrough", () => {
   test("the model lands after the separator, so herdr forwards it instead of rejecting it", () => {
-    const argv = buildAgentStartArgv("run1-w1", "w1:pB", "opencode-go/glm-5.3-flash");
+    const argv = buildAgentStartArgv("run1-w1", "w1:pB", "opencode-go/glm-5.3-flash", {
+      kind: "pi",
+    });
     const sep = argv.indexOf("--");
     expect(sep).toBeGreaterThan(-1);
     // Everything herdr parses must precede the separator...
@@ -3977,7 +3983,7 @@ describe("swarm_spawn model passthrough", () => {
   });
 
   test("an omitted model changes nothing about the command", () => {
-    expect(buildAgentStartArgv("run1-w1", "w1:pB")).toEqual([
+    expect(buildAgentStartArgv("run1-w1", "w1:pB", undefined, { kind: "pi" })).toEqual([
       "agent",
       "start",
       "run1-w1",
@@ -4208,14 +4214,17 @@ describe("worker capture offers travel to the orchestrator", () => {
   });
 
   test("the spawned tab is told where to write its offers", () => {
-    const argv = buildTabCreateArgv("/repo", "my-slug", "/state/swarm-r1-capture-my-slug.json");
+    const argv = buildTabCreateArgv("/repo", "my-slug", {
+      captureFile: "/state/swarm-r1-capture-my-slug.json",
+      kind: "pi",
+    });
     expect(argv).toContain("PI_SWARM_CAPTURE_FILE=/state/swarm-r1-capture-my-slug.json");
     // The unattended env must survive alongside it, not be replaced.
     expect(argv).toContain("PI_AGENT_UNATTENDED=1");
   });
 
   test("omitting the capture path leaves the argv exactly as it was", () => {
-    expect(buildTabCreateArgv("/repo", "my-slug")).toEqual([
+    expect(buildTabCreateArgv("/repo", "my-slug", { kind: "pi" })).toEqual([
       "tab",
       "create",
       "--cwd",

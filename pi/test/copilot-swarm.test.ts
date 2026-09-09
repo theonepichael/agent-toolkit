@@ -1,20 +1,21 @@
 import { execSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
-import {
-  PROJECT_PREFIXES as COPILOT_PROJECT_PREFIXES,
-  type SwarmState,
-} from "../../copilot/extensions/swarm/src/swarm-scheduling.js";
-import { PROJECT_PREFIXES as PI_PROJECT_PREFIXES } from "../extensions/swarm-lib/swarm-scheduling.js";
+// swarm-scheduling.js and swarm-herdr.js are no longer a copilot-local vendored
+// copy -- pi/extensions/swarm-lib/ is the single shared source both hosts build
+// from, so there is nothing left for a
+// PROJECT_PREFIXES-parity test to guard: drift between "the pi copy" and "the
+// copilot copy" is now structurally impossible, there being only one copy.
+import { type SwarmState } from "../extensions/swarm-lib/swarm-scheduling.js";
 
 import {
   buildAgentStartArgv,
   buildTabCreateArgv,
   parseAgentSession,
-} from "../../copilot/extensions/swarm/src/swarm-herdr.js";
+} from "../extensions/swarm-lib/swarm-herdr.js";
 
 import {
   classifyBlock,
@@ -54,13 +55,19 @@ describe("Copilot Swarm: Staleness and Build Consistency", () => {
   });
 });
 
-describe("Copilot Swarm: pi/copilot vendored-copy parity", () => {
-  test("PROJECT_PREFIXES stays in sync between the pi original and the copilot fork", () => {
-    // These are two independently-maintained copies, not a shared import --
-    // nothing else catches drift here. They already diverged once (copilot's
-    // copy correctly gained "atk-"; pi's did not), so the same atk-* item got
-    // a different synthetic agent name depending which harness's worker ran it.
-    expect([...COPILOT_PROJECT_PREFIXES].sort()).toEqual([...PI_PROJECT_PREFIXES].sort());
+describe("Copilot Swarm: no accidental re-fork", () => {
+  test("swarm-scheduling.ts and swarm-herdr.ts stay deleted from copilot's src/ tree", () => {
+    // Repurposed from the old "PROJECT_PREFIXES stays in sync" parity test,
+    // which became vacuous once both hosts imported the literal same file.
+    // The actual drift risk this item closed wasn't "the two copies
+    // disagree" -- it was "there are two copies at all". A future edit that
+    // re-creates a local override under copilot/extensions/swarm/src/ would
+    // silently reintroduce that risk with no test catching it; this guards
+    // against exactly that, cheaply, without needing to compare content.
+    const rootDir = join(__dirname, "../..");
+    for (const f of ["swarm-scheduling.ts", "swarm-herdr.ts"]) {
+      expect(existsSync(join(rootDir, "copilot/extensions/swarm/src", f))).toBe(false);
+    }
   });
 });
 

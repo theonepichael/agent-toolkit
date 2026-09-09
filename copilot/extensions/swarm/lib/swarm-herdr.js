@@ -1,4 +1,4 @@
-// copilot/extensions/swarm/src/swarm-herdr.ts
+// pi/extensions/swarm-lib/swarm-herdr.ts
 import { basename, dirname, join } from "node:path";
 var AGENT_START_TIMEOUT_MS = 30000;
 function buildTabCreateArgv(cwd, label, opts) {
@@ -12,16 +12,7 @@ function buildTabCreateArgv(cwd, label, opts) {
     const varName = kind === "copilot" ? "COPILOT_SWARM_CAPTURE_FILE" : "PI_SWARM_CAPTURE_FILE";
     envArgs.push("--env", `${varName}=${captureFile}`);
   }
-  return [
-    "tab",
-    "create",
-    "--cwd",
-    cwd,
-    "--label",
-    label,
-    ...envArgs,
-    "--no-focus"
-  ];
+  return ["tab", "create", "--cwd", cwd, "--label", label, ...envArgs, "--no-focus"];
 }
 function buildTabCloseArgv(tabId) {
   return ["tab", "close", tabId];
