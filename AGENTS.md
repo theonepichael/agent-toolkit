@@ -68,6 +68,18 @@ not the rules themselves; the mechanics stay in the directory file.
 - **`pi/`** — a new extension is invisible until `links.toml` names it, and
   this is the only tree with its own TypeScript toolchain. See
   `pi/AGENTS.md`.
+- **`copilot/`** — `copilot/skills/` is generated output, and
+  `aliases.zsh`'s `--allow-tool` wildcard only matches single-word command
+  stems. See `copilot/AGENTS.md`.
+- **`opencode/`** — `opencode/skills/` is generated output, and
+  `opencode.jsonc`'s `permission.bash` allow-list must be kept aligned with
+  Claude/Codex by hand. See `opencode/AGENTS.md`.
+- **`herdr_remote/`** — every non-static route is its own auth-enforcement
+  point; a world-readable token file is refused at load. See
+  `herdr_remote/AGENTS.md`.
+- **`scripts/`** — repo-maintenance entrypoints, not harness-runtime code;
+  `sync_from_dotfiles.py` stops loudly rather than guessing on an
+  unexpected rewrite count. See `scripts/AGENTS.md`.
 
 ## The `AGENTS.md` + `CLAUDE.md` convention
 

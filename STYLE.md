@@ -29,7 +29,7 @@ Config & secrets
 - Prefer JSON over YAML for new config: the standard library parses JSON, and YAML would pull in a third-party dependency the harness rule above forbids.
 - XDG paths where a tool writes transient state: honor $XDG_STATE_HOME, falling back to ~/.local/state.
 - Precedence: CLI flags > ENV vars > per-user config > system defaults.
-- Secrets: Must never be committed. Use environment variables or system vaults. Add checks in code and tests to avoid accidental logging of secrets. See `.github/SECRET_CHECK.md` for the full handling checklist.
+- Secrets: Must never be committed. Use environment variables or system vaults. Add checks in code and tests to avoid accidental logging of secrets.
 
 Logging & output
 - Scripts should write normal results to stdout and diagnostics to stderr.

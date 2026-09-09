@@ -1362,6 +1362,8 @@ are copy-once seeds for exactly that reason.
 | `claude/output-styles/ConciseSTE.md` | `~/.claude/output-styles/ConciseSTE.md` (claude) |
 | `claude/settings.json` | not symlinked by `links.toml` |
 | `claude/settings.work.json` | not symlinked by `links.toml` |
+| `copilot/AGENTS.md` | not symlinked by `links.toml` |
+| `copilot/CLAUDE.md` | not symlinked by `links.toml` |
 | `copilot/CLAUDE_CODE_PARITY.md` | not symlinked by `links.toml` |
 | `copilot/aliases.zsh` | `~/.copilot_aliases` (copilot) |
 | `copilot/extensions/swarm/extensions/swarm/extension.mjs` | not symlinked by `links.toml` |
@@ -1375,6 +1377,8 @@ are copy-once seeds for exactly that reason.
 | `copilot/hooks/post-tool-use.json` | `~/.copilot/hooks/post-tool-use.json` (copilot, mac, linux) |
 | `copilot/hooks/pre-tool-use.json` | `~/.copilot/hooks/pre-tool-use.json` (copilot, mac, linux) |
 | `copilot/hooks/session-start.json` | `~/.copilot/hooks/session-start.json` (copilot, mac, linux) |
+| `opencode/AGENTS.md` | not symlinked by `links.toml` |
+| `opencode/CLAUDE.md` | not symlinked by `links.toml` |
 | `opencode/CLAUDE_CODE_PARITY.md` | not symlinked by `links.toml` |
 | `opencode/opencode.jsonc` | not symlinked by `links.toml` |
 | `opencode/plugin/guard-rails.ts` | `~/.config/opencode/plugin/guard-rails.ts` (opencode) |
