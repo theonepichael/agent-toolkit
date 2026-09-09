@@ -951,25 +951,47 @@ def test_opencode_bypass_drift_does_not_catch_unnamed_patterns():
 # command) — same shape as xargs/awk, just not touched here.
 _APPROVED_BASH_PATTERNS = frozenset(
     {
-        # 5 named shared workflow scripts
+        # 5 named shared workflow scripts + vitals promotion
         "python3 ~/.claude/scripts/dev_status.py *",
         "python3 ~/.claude/scripts/grill.py *",
         "python3 ~/.claude/scripts/second_opinion.py *",
         "python3 ~/.claude/scripts/settings_seed_drift_check.py *",
         "python3 ~/.claude/scripts/dotfiles_sync_check.py *",
-        # read-only git inspection (6 forms x plain/-C *)
+        "python3 ~/.claude/scripts/vitals_promotion.py *",
+        "python3 agent-scripts/vitals_promotion.py *",
+        # dev_status with environment variable
+        "DEVSTATUS_AGENT=1 python3 *",
+        "env DEVSTATUS_AGENT=1 python3 *",
+        # bun / TypeScript tooling
+        "bun *",
+        # local scripts
+        "./scripts/bootstrap-worktree.sh*",
+        "scripts/bootstrap-worktree.sh*",
+        "./scripts/build-copilot-swarm.sh*",
+        "scripts/build-copilot-swarm.sh*",
+        # git workflow commands (plain/-C *)
         "git log*",
         "git status*",
         "git diff*",
         "git show*",
         "git ls-files*",
         "git check-ignore*",
+        "git add*",
+        "git branch*",
+        "git checkout*",
+        "git worktree*",
+        "git rev-parse*",
         "git -C * log*",
         "git -C * status*",
         "git -C * diff*",
         "git -C * show*",
         "git -C * ls-files*",
         "git -C * check-ignore*",
+        "git -C * add*",
+        "git -C * branch*",
+        "git -C * checkout*",
+        "git -C * worktree*",
+        "git -C * rev-parse*",
         # 4 named uv commands
         "uv sync*",
         "uv run pytest*",
@@ -1040,6 +1062,14 @@ def test_seed_permission_bash_catch_all_is_ask():
     literal either way), so this pins it directly."""
     seed = json.loads((REPO_ROOT / "opencode" / "opencode.jsonc").read_text())
     assert seed["permission"]["bash"]["*"] == "ask"
+
+
+def test_seed_permission_bash_git_commit_is_ask():
+    """Ensures git commit requires interactive approval even with git workflow allowed."""
+    seed = json.loads((REPO_ROOT / "opencode" / "opencode.jsonc").read_text())
+    bash = seed["permission"]["bash"]
+    assert bash.get("git commit*") == "ask"
+    assert bash.get("git -C * commit*") == "ask"
 
 
 # ── --reseed ─────────────────────────────────────────────────────────────────
