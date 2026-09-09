@@ -90,8 +90,12 @@
     "external_directory": {
       "~/.claude/**": "allow",
       "~/.config/opencode/**": "allow",
+      "~/dotfiles/**": "allow",
+      "~/dotfiles-*/**": "allow",
       "~/Workspace/**": "allow",
-      "/tmp/**": "allow"
+      "/tmp/**": "allow",
+      "/mnt/c/Users/yanil/Downloads/**": "allow",
+      "/mnt/c/Users/yanil/OneDrive/Pictures/Screenshots/**": "allow"
     }
   },
   "agent": {
