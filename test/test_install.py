@@ -51,6 +51,18 @@ def no_subprocesses(monkeypatch):
     monkeypatch.setattr(install, "run_command", _forbidden)
 
 
+@pytest.fixture(autouse=True)
+def no_real_fsync(monkeypatch):
+    """Manifest._append fsyncs on every record, which dominates this module's
+    wall time under a real disk. Stub os.fsync to a no-op for the duration of
+    each test (returns None, like the real syscall)."""
+
+    def _no_fsync(fd):
+        return None
+
+    monkeypatch.setattr(os, "fsync", _no_fsync)
+
+
 @pytest.fixture
 def home(tmp_path):
     """A throwaway home directory, handed to Context instead of the real one.

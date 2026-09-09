@@ -31,6 +31,24 @@ class _TtyStringIO(io.StringIO):
         return True
 
 
+class _FakeClock:
+    """Deterministic stand-in for the `time` module inside dev_status_storage.
+
+    `monotonic()` returns a strictly increasing value; a test's patched
+    flock drives `advance()`, so a simulated slow lock crosses the 0.5s
+    lock-wait journal threshold without any real sleeping.
+    """
+
+    def __init__(self, start: float = 1000.0) -> None:
+        self._now = start
+
+    def monotonic(self) -> float:
+        return self._now
+
+    def advance(self, seconds: float) -> None:
+        self._now += seconds
+
+
 def make_item(
     slug,
     status="open",
@@ -4119,16 +4137,20 @@ class BacklogTestCase(BacklogFixture):
 
     def test_lock_wait_journals_past_threshold(self):
         # A real flock against the fixture's tmpdir LOCK_FILE, artificially
-        # slowed past the 0.5s journal threshold. Deterministic: the sleep
-        # happens inside the patched flock, so the recorded wait always
-        # exceeds the threshold.
+        # slowed past the 0.5s journal threshold. Deterministic: the patched
+        # flock advances a fake clock (installed as dev_status_storage.time)
+        # instead of really sleeping, so the recorded wait always exceeds
+        # the threshold.
+        clock = _FakeClock()
         real_flock = fcntl.flock
 
         def slow_flock(fd, op):
-            time.sleep(0.6)
+            clock.advance(0.6)
             return real_flock(fd, op)
 
-        with patch("fcntl.flock", side_effect=slow_flock):
+        with patch("fcntl.flock", side_effect=slow_flock), patch(
+            "dev_status_storage.time", clock
+        ):
             with dev_status.backlog_lock():
                 pass
         entries = self._lock_wait_entries()
@@ -4148,14 +4170,19 @@ class BacklogTestCase(BacklogFixture):
 
     def test_lock_wait_scoped_to_backlog_lock_only(self):
         # out_of_scope_lock acquires a different fd and must never journal a
-        # lock-wait, even when its flock is slowed past the threshold.
+        # lock-wait, even when its flock is slowed past the threshold — the
+        # slowdown is simulated by the same flock-driven fake clock as the
+        # journaled case, so the slow-lock path really fires here.
+        clock = _FakeClock()
         real_flock = fcntl.flock
 
         def slow_flock(fd, op):
-            time.sleep(0.6)
+            clock.advance(0.6)
             return real_flock(fd, op)
 
-        with patch("fcntl.flock", side_effect=slow_flock):
+        with patch("fcntl.flock", side_effect=slow_flock), patch(
+            "dev_status_storage.time", clock
+        ):
             with dev_status.out_of_scope_lock():
                 pass
         self.assertEqual(self._lock_wait_entries(), [])
