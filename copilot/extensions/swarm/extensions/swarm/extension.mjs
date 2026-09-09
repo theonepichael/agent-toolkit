@@ -1,7 +1,7 @@
 // copilot/extensions/swarm/src/extension.ts
 import { joinSession } from "@github/copilot-sdk/extension";
 
-// copilot/extensions/swarm/src/swarm-tool-logic.ts
+// pi/extensions/swarm-lib/swarm-tool-context.ts
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -242,6 +242,9 @@ function reasonHeadline(reason) {
   return reason.split(`
 `, 1)[0] ?? reason;
 }
+function buildAgentSendKeysArgv(agentId, keys) {
+  return ["agent", "send-keys", agentId, ...keys];
+}
 function buildAgentWaitArgv(agentId, until, timeoutMs) {
   return [
     "agent",
@@ -362,6 +365,12 @@ function deadlineStopDetail(worker, deadlineMs, opts) {
   return lines.join(`
 `);
 }
+function paneIdentityMismatch(getExitCode, getStdout, expectedPaneId) {
+  if (getExitCode !== 0)
+    return true;
+  const reportedPaneId = parseHerdrJson(getStdout)?.result?.agent?.pane_id;
+  return reportedPaneId !== expectedPaneId;
+}
 function waitResultDetail(stdout, stderr) {
   const err = parseHerdrJson(stderr)?.error;
   if (err)
@@ -369,18 +378,67 @@ function waitResultDetail(stdout, stderr) {
   return stdout.trim() || stderr.trim() || "(no output)";
 }
 
-// copilot/extensions/swarm/src/swarm-picker.ts
-function classifyBlock(rawPrompt) {
+// pi/extensions/swarm-lib/swarm-picker-copilot.ts
+function classifyBlock(_rawPrompt) {
   return "needs_human";
 }
-function pickerLabels(rawPrompt) {
+function parsePicker(_content) {
+  return { selectedIndex: null, options: [] };
+}
+function pickerLabels(_rawPrompt) {
   return [];
 }
 function noteResolveFailure(worker, answer, reason, now) {
   worker.lastResolveFailure = { answer, reason, at: now };
 }
+var copilotPickerAdapter = {
+  classifyBlock,
+  parsePicker,
+  pickerLabels
+};
 
-// copilot/extensions/swarm/src/swarm-tool-logic.ts
+// pi/extensions/swarm-lib/swarm-picker.ts
+var OTHER_OPTION_LABEL = "Something else (type it)";
+var MIN_PARTIAL_ANSWER = 3;
+function containsAsWord(haystack, needle) {
+  const isWordChar = (c) => c !== undefined && /[a-z0-9]/.test(c);
+  let from = 0;
+  for (;; ) {
+    const at = haystack.indexOf(needle, from);
+    if (at === -1)
+      return false;
+    if (!isWordChar(haystack[at - 1]) && !isWordChar(haystack[at + needle.length])) {
+      return true;
+    }
+    from = at + 1;
+  }
+}
+function matchOption(answer, options) {
+  const candidates = options.filter((o) => o.label.toLowerCase() !== OTHER_OPTION_LABEL.toLowerCase());
+  const needle = answer.trim().toLowerCase();
+  if (!needle)
+    return null;
+  const exact = candidates.filter((o) => o.label.toLowerCase() === needle);
+  if (exact.length === 1)
+    return exact[0];
+  if (needle.length < MIN_PARTIAL_ANSWER)
+    return null;
+  const partial = candidates.filter((o) => containsAsWord(o.label.toLowerCase(), needle));
+  if (partial.length === 1)
+    return partial[0];
+  const strippedNeedle = needle.replace(/\s+/g, "");
+  const stripped = candidates.filter((o) => o.label.toLowerCase().replace(/\s+/g, "").includes(strippedNeedle));
+  if (stripped.length === 1)
+    return stripped[0];
+  return null;
+}
+function navigationKeys(fromIndex, toIndex) {
+  const steps = toIndex - fromIndex;
+  const key = steps > 0 ? "down" : "up";
+  return [...Array(Math.abs(steps)).fill(key), "enter"];
+}
+
+// pi/extensions/swarm-lib/swarm-tool-context.ts
 function herdrStateDir() {
   return process.env.COPILOT_SWARM_STATE_DIR ?? join2(homedir(), ".copilot", "state");
 }
@@ -395,6 +453,7 @@ var DEFAULT_WAIT_TIMEOUT_MS = 30 * 60 * 1000;
 var DEFAULT_WORKER_DEADLINE_MS = 4 * 60 * 60 * 1000;
 var DEFAULT_RELAY_STALL_MS = 30 * 60 * 1000;
 var PROBE_TIMEOUT_MS = 15000;
+var RESOLVE_VERIFY_TIMEOUT_MS = 5000;
 var BLOCKED_READ_LINES = 500;
 var BLOCKED_READ_LINES_RETRY = 2000;
 var PANE_CAPTURE_CHARS = 4000;
@@ -552,11 +611,27 @@ function isValidUuid(id) {
 }
 
 class SwarmToolContext {
+  picker;
+  options;
   activeRuns = new Map;
   runtimes = new Map;
   exec;
-  constructor(exec = defaultExec) {
+  constructor(exec = defaultExec, picker = copilotPickerAdapter, options = {}) {
+    this.picker = picker;
+    this.options = options;
     this.exec = exec;
+  }
+  get kind() {
+    return this.options.kind ?? "copilot";
+  }
+  get stateDir() {
+    return (this.options.stateDir ?? herdrStateDir)();
+  }
+  workerPrompt(slug) {
+    return (this.options.workerPrompt ?? ((id) => `/backlog-item --auto ${id}`))(slug);
+  }
+  defaultPluginDir() {
+    return (this.options.defaultPluginDir ?? copilotPluginDir)();
   }
   async herdr(argv, signal) {
     return this.exec("herdr", argv, { signal });
@@ -635,10 +710,10 @@ class SwarmToolContext {
     } catch {}
   }
   async harvestWorkerIO(state, worker, signal) {
-    const offers = readCaptureOffers(state.runId, worker.slug);
+    const offers = readCaptureOffers(state.runId, worker.slug, this.stateDir);
     await this.closeWorker(worker, signal);
     try {
-      rmSync(capturePath(state.runId, worker.slug), { force: true });
+      rmSync(capturePath(state.runId, worker.slug, this.stateDir), { force: true });
     } catch {}
     return offers;
   }
@@ -712,28 +787,28 @@ class SwarmToolContext {
 ${capture}` } };
   }
   async spawnInto(paneId, tabId, agentId, slug, paths, model, pluginDir) {
-    let sessionId = randomUUID();
+    let sessionId = this.kind === "copilot" ? randomUUID() : undefined;
     const startResult = await this.herdr(buildAgentStartArgv(agentId, paneId, model, {
-      kind: "copilot",
+      kind: this.kind,
       sessionId,
-      allowAllTools: true,
-      pluginDir: pluginDir ?? copilotPluginDir()
+      ...this.kind === "copilot" ? { allowAllTools: true, pluginDir: pluginDir ?? this.defaultPluginDir() } : {}
     }));
     if (startResult.code !== 0) {
       return this.failWithTab(slug, paneId, tabId, `agent_not_ready: ${startResult.stderr || startResult.stdout}`);
     }
-    try {
-      const getResult = await this.herdr(buildAgentGetArgv(agentId));
-      if (getResult.code === 0) {
-        const sessionVal = parseAgentSession(getResult.stdout);
-        if (sessionVal && sessionVal !== sessionId) {
-          process.stderr.write(`[swarm] ${agentId}: requested session-id ${sessionId} but herdr agent get ` + `reports ${sessionVal} -- using the confirmed value for crash recovery
+    if (sessionId)
+      try {
+        const getResult = await this.herdr(buildAgentGetArgv(agentId));
+        if (getResult.code === 0) {
+          const sessionVal = parseAgentSession(getResult.stdout);
+          if (sessionVal && sessionVal !== sessionId) {
+            process.stderr.write(`[swarm] ${agentId}: requested session-id ${sessionId} but herdr agent get ` + `reports ${sessionVal} -- using the confirmed value for crash recovery
 `);
-          sessionId = sessionVal;
+            sessionId = sessionVal;
+          }
         }
-      }
-    } catch {}
-    const promptResult = await this.herdr(buildAgentPromptArgv(agentId, `/backlog-item --auto ${slug}`));
+      } catch {}
+    const promptResult = await this.herdr(buildAgentPromptArgv(agentId, this.workerPrompt(slug)));
     if (promptResult.code !== 0) {
       return this.failWithTab(slug, paneId, tabId, `agent_prompt_stalled: ${promptResult.stderr || promptResult.stdout}`);
     }
@@ -748,14 +823,13 @@ ${capture}` } };
         workingSinceMs: Date.now(),
         model,
         lifecycle: "active",
-        copilotSessionId: sessionId,
-        recoveryAttempts: 0
+        ...sessionId ? { copilotSessionId: sessionId, recoveryAttempts: 0 } : {}
       }
     };
   }
   async attemptCrashRecovery(state, worker, pluginDir) {
     const attempts = worker.recoveryAttempts ?? 0;
-    if (attempts >= MAX_RECOVERY_ATTEMPTS)
+    if (this.kind !== "copilot" || attempts >= MAX_RECOVERY_ATTEMPTS)
       return false;
     if (!worker.copilotSessionId || !isValidUuid(worker.copilotSessionId))
       return false;
@@ -779,7 +853,7 @@ ${capture}` } };
       kind: "copilot",
       resumeSessionId: worker.copilotSessionId,
       allowAllTools: true,
-      pluginDir: pluginDir ?? copilotPluginDir()
+      pluginDir: pluginDir ?? this.defaultPluginDir()
     }));
     if (startResult.code !== 0) {
       try {
@@ -800,7 +874,7 @@ ${capture}` } };
     const cached = this.activeRuns.get(runId);
     if (cached)
       return cached;
-    const loaded = loadState(runId);
+    const loaded = loadState(runId, this.stateDir);
     if (!loaded) {
       const fresh = {
         runId,
@@ -816,7 +890,7 @@ ${capture}` } };
     const listResult = await this.herdr(buildAgentListArgv());
     const entries = listResult.code === 0 ? parseAgentList(listResult.stdout) : null;
     const liveIds = (entries ?? []).map((e) => e.id);
-    if (entries !== null) {
+    if (this.kind === "copilot" && entries !== null) {
       const missing = loaded.workers.filter((w) => !liveIds.includes(w.agent));
       const recoveries = await Promise.all(missing.map(async (w) => ({
         agent: w.agent,
@@ -829,12 +903,12 @@ ${capture}` } };
     }
     const reconciled = entries === null ? loaded : reconcileState(loaded, liveIds).state;
     this.activeRuns.set(runId, reconciled);
-    saveState(reconciled);
+    saveState(reconciled, this.stateDir);
     return reconciled;
   }
   persist(state) {
     this.activeRuns.set(state.runId, state);
-    saveState(state);
+    saveState(state, this.stateDir);
   }
   async probeLiveness(agentId) {
     const controller = new AbortController;
@@ -947,7 +1021,13 @@ ${capture}` } };
               text: `Concurrency cap reached (${state.concurrency} active workers). ` + "Call swarm_poll to wait for workers to settle."
             }
           ],
-          details: { spawned: [], failed: [], skipped: [], deferred: [], refused: [] }
+          details: {
+            spawned: [],
+            failed: [],
+            skipped: params.items ?? [],
+            deferred: [],
+            refused: []
+          }
         };
       }
       if (!canOpenNewPane(state)) {
@@ -997,8 +1077,8 @@ ${capture}` } };
       const failed = [];
       const tabs = [];
       for (const slug of toSpawn) {
-        const captureFile = capturePath(state.runId, slug);
-        const tabCreated = await this.herdr(buildTabCreateArgv(process.cwd(), slug, { captureFile, kind: "copilot" }));
+        const captureFile = capturePath(state.runId, slug, this.stateDir);
+        const tabCreated = await this.herdr(buildTabCreateArgv(process.cwd(), slug, { captureFile, kind: this.kind }));
         let parsedTab = parseTabCreate(tabCreated.stdout);
         if (!parsedTab && tabCreated.code === 0) {
           const orphan = await this.recoverTabByLabel(slug);
@@ -1199,8 +1279,8 @@ ${goneNoteLines.join(`
         }
         event.rawPrompt = readResult.stdout || getResult.stdout;
         event.truncated = truncated;
-        event.blockClass = classifyBlock(event.rawPrompt);
-        event.options = pickerLabels(event.rawPrompt);
+        event.blockClass = this.picker.classifyBlock(event.rawPrompt);
+        event.options = this.picker.pickerLabels(event.rawPrompt);
         const parkedAt = Date.now();
         foldWorkingSegment(worker, parkedAt);
         worker.awaitingRelaySinceMs = parkedAt;
@@ -1287,7 +1367,7 @@ ${e.rawPrompt}`;
         details: { amended: false, slug: worker.slug, paneId: worker.paneId }
       };
     }
-    const result = await this.herdr(buildAgentPromptArgv(worker.agent, "STOP and re-read your backlog item before doing anything else: run " + `python3 ~/.claude/scripts/dev_status.py show ${worker.slug} and read the ` + "whole record fresh. Its context or next_steps have been corrected since " + "you started, so any plan you formed from the earlier version may now be " + "wrong. Reconcile what you have already done against the updated record, " + "and say plainly what changes as a result before continuing."), signal);
+    const result = await this.herdr(buildAgentPromptArgv(worker.agent, AMEND_INSTRUCTION), signal);
     if (result.code !== 0) {
       return {
         content: [
@@ -1325,6 +1405,9 @@ ${e.rawPrompt}`;
         details: { relayFailed: true, needsManual: false, slug: "", paneId: "" }
       };
     }
+    if (this.kind === "pi") {
+      return this.resolvePiBlocked(state, worker, params.answer, signal);
+    }
     let rawPrompt = "";
     try {
       const readResult = await this.herdr(buildAgentReadArgv(params.agent, BLOCKED_READ_LINES), signal);
@@ -1346,6 +1429,67 @@ ${rawPrompt.slice(-2000)}` : "")
         needsManual: true,
         slug: worker.slug,
         paneId: worker.paneId
+      }
+    };
+  }
+  async resolvePiBlocked(state, worker, answer, signal) {
+    const read = await this.herdr(buildAgentReadArgv(worker.agent, BLOCKED_READ_LINES), signal);
+    const picker = this.picker.parsePicker(read.stdout);
+    const target = matchOption(answer, picker.options);
+    const manual = (reason) => {
+      noteResolveFailure(worker, answer, reason, Date.now());
+      this.persist(state);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `needs_manual: ${reason} for ${worker.agent} (${worker.slug}, pane ${worker.paneId}).`
+          }
+        ],
+        details: {
+          relayFailed: false,
+          needsManual: true,
+          slug: worker.slug,
+          paneId: worker.paneId
+        }
+      };
+    };
+    if (!target || picker.selectedIndex === null)
+      return manual("no listed option matched");
+    const identity = await this.herdr(buildAgentGetArgv(worker.agent), signal);
+    if (paneIdentityMismatch(identity.code, identity.stdout, worker.paneId))
+      return manual("pane identity mismatch");
+    const keys = await this.herdr(buildAgentSendKeysArgv(worker.agent, navigationKeys(picker.selectedIndex, target.index)), signal);
+    if (keys.code !== 0)
+      return this.relayFailure(state, worker, `could not send navigation keys to ${worker.agent}: ${keys.stderr || keys.stdout}`, signal);
+    const verify = await this.herdr(buildAgentWaitArgv(worker.agent, ["idle", "done", "working"], RESOLVE_VERIFY_TIMEOUT_MS), signal);
+    if (verify.code !== 0)
+      return this.relayFailure(state, worker, `${worker.agent} did not resume within ${RESOLVE_VERIFY_TIMEOUT_MS} ms after "${target.label}" was submitted.`, signal);
+    worker.workingSinceMs = Date.now();
+    worker.awaitingRelaySinceMs = undefined;
+    worker.lastResolveFailure = undefined;
+    worker.lifecycle = "active";
+    this.persist(state);
+    return {
+      content: [
+        {
+          type: "text",
+          text: `resolved: ${worker.agent} (${worker.slug}, pane ${worker.paneId}) answered "${target.label}", back in the active pool.`
+        }
+      ],
+      details: { relayFailed: false, needsManual: false, slug: worker.slug, paneId: worker.paneId }
+    };
+  }
+  async relayFailure(state, worker, reason, signal) {
+    const captures = await this.teardownAndHarvestWorker(state, worker, signal);
+    return {
+      content: [{ type: "text", text: `relay_failed: ${reason}${renderCaptureOffers(captures)}` }],
+      details: {
+        relayFailed: true,
+        needsManual: false,
+        slug: worker.slug,
+        paneId: worker.paneId,
+        captures
       }
     };
   }

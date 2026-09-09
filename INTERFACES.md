@@ -1361,8 +1361,6 @@ are copy-once seeds for exactly that reason.
 | `copilot/extensions/swarm/lib/swarm-tool-logic.js` | not symlinked by `links.toml` |
 | `copilot/extensions/swarm/plugin.json` | not symlinked by `links.toml` |
 | `copilot/extensions/swarm/src/extension.ts` | not symlinked by `links.toml` |
-| `copilot/extensions/swarm/src/swarm-picker.ts` | not symlinked by `links.toml` |
-| `copilot/extensions/swarm/src/swarm-tool-logic.ts` | not symlinked by `links.toml` |
 | `copilot/hooks/agent-stop.json` | `~/.copilot/hooks/agent-stop.json` (copilot, mac, linux) |
 | `copilot/hooks/post-tool-use.json` | `~/.copilot/hooks/post-tool-use.json` (copilot, mac, linux) |
 | `copilot/hooks/pre-tool-use.json` | `~/.copilot/hooks/pre-tool-use.json` (copilot, mac, linux) |
@@ -1401,8 +1399,10 @@ are copy-once seeds for exactly that reason.
 | `pi/extensions/second-opinion-tool.ts` | `~/.pi/agent/extensions/second-opinion-tool.ts` (pi) |
 | `pi/extensions/standup-tool.ts` | `~/.pi/agent/extensions/standup-tool.ts` (pi) |
 | `pi/extensions/swarm-lib/swarm-herdr.ts` | not symlinked by `links.toml` |
+| `pi/extensions/swarm-lib/swarm-picker-copilot.ts` | not symlinked by `links.toml` |
 | `pi/extensions/swarm-lib/swarm-picker.ts` | not symlinked by `links.toml` |
 | `pi/extensions/swarm-lib/swarm-scheduling.ts` | not symlinked by `links.toml` |
+| `pi/extensions/swarm-lib/swarm-tool-context.ts` | not symlinked by `links.toml` |
 | `pi/extensions/swarm-tool.ts` | `~/.pi/agent/extensions/swarm-tool.ts` (pi) |
 | `pi/extensions/to-tickets-tool.ts` | `~/.pi/agent/extensions/to-tickets-tool.ts` (pi) |
 | `pi/extensions/trust-session.ts` | `~/.pi/agent/extensions/trust-session.ts` (pi) |

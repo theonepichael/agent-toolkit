@@ -21,14 +21,14 @@ import {
   classifyBlock,
   parsePicker,
   pickerLabels,
-} from "../../copilot/extensions/swarm/src/swarm-picker.js";
+} from "../extensions/swarm-lib/swarm-picker-copilot.js";
 
 import {
   defaultExec,
   isValidUuid,
   saveState,
   SwarmToolContext,
-} from "../../copilot/extensions/swarm/src/swarm-tool-logic.js";
+} from "../extensions/swarm-lib/swarm-tool-context.js";
 
 describe("Copilot Swarm: Staleness and Build Consistency", () => {
   test("compiled artifacts match fresh build from src", () => {
@@ -56,7 +56,7 @@ describe("Copilot Swarm: Staleness and Build Consistency", () => {
 });
 
 describe("Copilot Swarm: no accidental re-fork", () => {
-  test("swarm-scheduling.ts and swarm-herdr.ts stay deleted from copilot's src/ tree", () => {
+  test("all shared swarm implementation files stay deleted from copilot's src/ tree", () => {
     // Repurposed from the old "PROJECT_PREFIXES stays in sync" parity test,
     // which became vacuous once both hosts imported the literal same file.
     // The actual drift risk this item closed wasn't "the two copies
@@ -65,7 +65,12 @@ describe("Copilot Swarm: no accidental re-fork", () => {
     // silently reintroduce that risk with no test catching it; this guards
     // against exactly that, cheaply, without needing to compare content.
     const rootDir = join(__dirname, "../..");
-    for (const f of ["swarm-scheduling.ts", "swarm-herdr.ts"]) {
+    for (const f of [
+      "swarm-scheduling.ts",
+      "swarm-herdr.ts",
+      "swarm-picker.ts",
+      "swarm-tool-logic.ts",
+    ]) {
       expect(existsSync(join(rootDir, "copilot/extensions/swarm/src", f))).toBe(false);
     }
   });

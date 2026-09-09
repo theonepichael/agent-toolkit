@@ -47,7 +47,7 @@ Tests & CI
 - test/run.sh drives the containerized install.sh scenario suite (test/scenarios.sh) against Ubuntu and Fedora images. It needs Docker/Podman and is run locally, not in CI. Never run scenarios.sh directly on a real machine — it mutates real state.
 
 TypeScript
-- One tree only: pi/ (extensions plus their specs under pi/test/), with opencode/plugin/*.ts and agy/hooks/*.js as single-file outliers that carry no toolchain of their own. The one exception with its own toolchain is copilot/extensions/swarm/src/*.ts, built via scripts/build-copilot-swarm.sh — Copilot CLI extensions must be plain JS, so pi/'s live-TS-loading approach does not apply there. Its swarm-scheduling.ts/swarm-herdr.ts are built straight from pi/extensions/swarm-lib/ (shared source, not a fork); swarm-picker.ts and the tool-registration/class split remain forked by design. See pi/AGENTS.md.
+- One tree only: pi/ (extensions plus their specs under pi/test/), with opencode/plugin/*.ts and agy/hooks/*.js as single-file outliers that carry no toolchain of their own. The one exception with its own toolchain is copilot/extensions/swarm/src/ (the host registration adapter), built via scripts/build-copilot-swarm.sh — Copilot CLI extensions must be plain JS, so pi/'s live-TS-loading approach does not apply there. Scheduling, recovery, the shared SwarmToolContext, and both host picker adapters live in pi/extensions/swarm-lib/ and build into Copilot's artifacts from that single source. See pi/AGENTS.md.
 - Toolchain is bun-driven and declared in pi/package.json: `bun test`, `tsc --noEmit`, `oxlint extensions test`, `prettier --check extensions test`. Run from pi/, not the repo root.
 - test/test_pi_ts_checks.py drives all four stages from the Python suite, so they gate CI. They skip rather than fail when pi/node_modules is absent — run `bun install` in pi/ first, or a green suite has checked nothing.
 - Lint and format are scoped to pi/extensions and pi/test, deliberately, so markdown at pi/ root is not swept by prettier. See pi/AGENTS.md.
@@ -66,5 +66,4 @@ Files & docs
 - INTERFACES.md is the interface inventory for the harness scripts, generated from those docstrings and argparse definitions. Fix the source when an interface changes; do not hand-edit the generated inventory. Regenerate with `python3 agent-scripts/gen_interfaces.py`, or check for staleness with `--check` (exit 1 if stale, which is what the test suite asserts).
 - User-facing commands are documented in README.md, per harness — that is where behavioral differences between the Claude Code, Copilot, opencode, agy and Pi ports belong.
 - Directory-level agent instructions live in `<dir>/AGENTS.md` with a `CLAUDE.md` symlink beside it (no single filename reaches all five harnesses). Write one only when the directory has a convention an agent would otherwise get wrong; the repo root's AGENTS.md carries the rationale and the index.
-
 

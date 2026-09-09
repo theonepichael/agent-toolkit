@@ -38,6 +38,12 @@ import type {
   TabCreateResult,
   TimeoutVerdict,
 } from "../extensions/swarm-lib/swarm-herdr";
+import * as context from "../extensions/swarm-lib/swarm-tool-context";
+import type {
+  ExecFn,
+  ExecResult,
+  SwarmToolContextOptions,
+} from "../extensions/swarm-lib/swarm-tool-context";
 import * as surface from "../extensions/swarm-tool";
 import type { CaptureOffer, PollEvent } from "../extensions/swarm-tool";
 
@@ -96,6 +102,8 @@ const HERDR_VALUES = [
   "parseAgentSession",
 ] as const;
 
+const CONTEXT_VALUES = ["SwarmToolContext", "defaultExec", "isValidUuid"] as const;
+
 // The pre-extraction import surface of swarm-tool.ts: every moved symbol
 // plus the ones that never moved. A missing entry here is a compatibility
 // break for anything importing swarm-tool.ts directly (the test suite and
@@ -120,6 +128,9 @@ const SURFACE_VALUES = [
   "buildShowArgv",
   "formatDuration",
   "looksTruncated",
+  "SwarmToolContext",
+  "defaultExec",
+  "isValidUuid",
 ] as const;
 // (type-only surface members -- PollEvent, CaptureOffer, and every moved
 // type -- are asserted by the `import type` probes in typeExportsExist().)
@@ -149,6 +160,9 @@ function typeExportsExist(): boolean {
     undefined as TimeoutVerdict | undefined,
     undefined as PollEvent | undefined,
     undefined as CaptureOffer | undefined,
+    undefined as ExecFn | undefined,
+    undefined as ExecResult | undefined,
+    undefined as SwarmToolContextOptions | undefined,
   ];
   return probes.every((v) => v === undefined);
 }
@@ -171,6 +185,13 @@ describe("swarm helper module surface", () => {
   test("swarm-herdr exports its pinned symbols", () => {
     for (const name of HERDR_VALUES) {
       expect(name in herdr).toBe(true);
+    }
+    expect(typeExportsExist()).toBe(true);
+  });
+
+  test("swarm-tool-context exports its host-neutral orchestration surface", () => {
+    for (const name of CONTEXT_VALUES) {
+      expect(name in context).toBe(true);
     }
     expect(typeExportsExist()).toBe(true);
   });

@@ -68,18 +68,14 @@ extensions must be `.mjs`/`.cjs`, not TypeScript, so pi's live-TS-loading
 approach does not apply there. This is a second, independent toolchain, not
 covered by the four stages below.
 
-`swarm-scheduling.ts` and `swarm-herdr.ts` are no longer a vendored fork:
-`pi/extensions/swarm-lib/`
-is their single shared source, and `build-copilot-swarm.sh` builds Copilot's
-copies straight from it — there is nothing left there to drift.
-`swarm-picker.ts` and the tool-registration/class split
-(`pi/extensions/swarm-tool.ts`'s monolithic closure vs
-`copilot/extensions/swarm/src/swarm-tool-logic.ts`'s `SwarmToolContext`
-class) remain forked: the picker genuinely differs by design (pi's real
-interactive-terminal parser vs Copilot's `needs_human` stub, since Copilot
-workers never render pi's picker), and unifying the tool registration is a
-separate, larger follow-up item. `pi/extensions/swarm-lib/swarm-picker.ts`
-carries a `PickerAdapter` interface prepared for that follow-up to wire in.
+`pi/extensions/swarm-lib/` is the single shared source for scheduling,
+herdr recovery, and `SwarmToolContext`. The context receives a host picker
+adapter: `swarm-picker.ts` supplies Pi's real interactive-terminal parser,
+while `swarm-picker-copilot.ts` supplies Copilot's `needs_human` stub because
+Copilot workers never render Pi's picker. `pi/extensions/swarm-tool.ts` and
+Copilot's `extension.ts` are thin host registration adapters;
+`build-copilot-swarm.sh` builds Copilot's artifacts straight from the shared
+source, so there is no copied swarm implementation to drift.
 
 `pi/package.json` drives four stages, all run by
 `test/test_pi_ts_checks.py` via `bun run <stage>`:

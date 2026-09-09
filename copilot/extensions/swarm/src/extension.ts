@@ -2,7 +2,7 @@
 // Exposes tools: swarm_spawn, swarm_poll, swarm_amend, swarm_resolve_blocked.
 
 import { joinSession } from "@github/copilot-sdk/extension";
-import { SwarmToolContext } from "./swarm-tool-logic";
+import { SwarmToolContext } from "../../../../pi/extensions/swarm-lib/swarm-tool-context";
 
 const context = new SwarmToolContext();
 

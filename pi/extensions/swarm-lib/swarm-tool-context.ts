@@ -1,7 +1,7 @@
-// Core business logic for Copilot swarm orchestration tools:
+// Shared business logic for Pi and Copilot swarm orchestration tools:
 // swarm_spawn, swarm_poll, swarm_amend, swarm_resolve_blocked.
-// Implements kind-parameterized execution, crash recovery with session-id resume,
-// and state persistence in ~/.copilot/state (overridable via COPILOT_SWARM_STATE_DIR).
+// Implements host-parameterized execution, Copilot crash recovery with session-id
+// resume, and host-selected state persistence.
 
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -9,7 +9,6 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 import {
-  activeWorkerCount,
   canOpenNewPane,
   canSpawnNew,
   isSuspiciousFinish,
@@ -23,13 +22,12 @@ import {
   spawnBudget,
   staleWorkerRecords,
   stalledRelayWorkers,
-  type Amendment,
   type ReadyItem,
-  type SelectionResult,
   type SwarmState,
   type WorkerRecord,
-} from "../../../../pi/extensions/swarm-lib/swarm-scheduling";
+} from "./swarm-scheduling";
 import {
+  AMEND_INSTRUCTION,
   buildAgentGetArgv,
   buildAgentListArgv,
   buildAgentPromptArgv,
@@ -37,7 +35,6 @@ import {
   buildAgentSendKeysArgv,
   buildAgentStartArgv,
   buildAgentWaitArgv,
-  buildPaneCloseArgv,
   buildPaneReadArgv,
   buildTabCloseArgv,
   buildTabCreateArgv,
@@ -54,17 +51,12 @@ import {
   parseTabCreate,
   reasonHeadline,
   waitResultDetail,
-  workerWorktreePath,
   type PollEventKind,
   type ProbeResult,
-} from "../../../../pi/extensions/swarm-lib/swarm-herdr";
-import {
-  classifyBlock,
-  noteResolveFailure,
-  parsePicker,
-  pickerLabels,
-  type BlockClass,
-} from "./swarm-picker";
+} from "./swarm-herdr";
+import { copilotPickerAdapter, noteResolveFailure, type BlockClass } from "./swarm-picker-copilot";
+import type { PickerAdapter } from "./swarm-picker";
+import { matchOption, navigationKeys } from "./swarm-picker";
 
 export function herdrStateDir(): string {
   return process.env.COPILOT_SWARM_STATE_DIR ?? join(homedir(), ".copilot", "state");
@@ -239,7 +231,11 @@ export interface ExecResult {
   stderr: string;
 }
 
-export type ExecFn = (cmd: string, args: string[], opts?: { signal?: AbortSignal; timeout?: number }) => Promise<ExecResult>;
+export type ExecFn = (
+  cmd: string,
+  args: string[],
+  opts?: { signal?: AbortSignal; timeout?: number },
+) => Promise<ExecResult>;
 
 export const defaultExec: ExecFn = async (cmd, args, opts) => {
   return new Promise<ExecResult>((resolve) => {
@@ -300,8 +296,7 @@ export interface PollEvent {
 }
 
 type SpawnOutcome =
-  | { worker: WorkerRecord }
-  | { slug: string; failed?: { slug: string; reason: string } };
+  { worker: WorkerRecord } | { slug: string; failed?: { slug: string; reason: string } };
 
 interface RunRuntime {
   runId: string;
@@ -320,13 +315,40 @@ export function isValidUuid(id: string): boolean {
   return UUID_REGEX.test(id);
 }
 
+export interface SwarmToolContextOptions {
+  kind?: "pi" | "copilot";
+  stateDir?: () => string;
+  workerPrompt?: (slug: string) => string;
+  defaultPluginDir?: () => string;
+}
+
 export class SwarmToolContext {
   private activeRuns = new Map<string, SwarmState>();
   private runtimes = new Map<string, RunRuntime>();
   public exec: ExecFn;
 
-  constructor(exec: ExecFn = defaultExec) {
+  constructor(
+    exec: ExecFn = defaultExec,
+    private readonly picker: PickerAdapter = copilotPickerAdapter,
+    private readonly options: SwarmToolContextOptions = {},
+  ) {
     this.exec = exec;
+  }
+
+  private get kind(): "pi" | "copilot" {
+    return this.options.kind ?? "copilot";
+  }
+
+  private get stateDir(): string {
+    return (this.options.stateDir ?? herdrStateDir)();
+  }
+
+  private workerPrompt(slug: string): string {
+    return (this.options.workerPrompt ?? ((id: string) => `/backlog-item --auto ${id}`))(slug);
+  }
+
+  private defaultPluginDir(): string {
+    return (this.options.defaultPluginDir ?? copilotPluginDir)();
   }
 
   private async herdr(argv: string[], signal?: AbortSignal): Promise<ExecResult> {
@@ -422,10 +444,10 @@ export class SwarmToolContext {
     worker: WorkerRecord,
     signal?: AbortSignal,
   ): Promise<CaptureOffer[]> {
-    const offers = readCaptureOffers(state.runId, worker.slug);
+    const offers = readCaptureOffers(state.runId, worker.slug, this.stateDir);
     await this.closeWorker(worker, signal);
     try {
-      rmSync(capturePath(state.runId, worker.slug), { force: true });
+      rmSync(capturePath(state.runId, worker.slug, this.stateDir), { force: true });
     } catch {
       // Best effort
     }
@@ -544,13 +566,14 @@ export class SwarmToolContext {
     model?: string,
     pluginDir?: string,
   ): Promise<SpawnOutcome> {
-    let sessionId: string = randomUUID();
+    let sessionId: string | undefined = this.kind === "copilot" ? randomUUID() : undefined;
     const startResult = await this.herdr(
       buildAgentStartArgv(agentId, paneId, model, {
-        kind: "copilot",
+        kind: this.kind,
         sessionId,
-        allowAllTools: true,
-        pluginDir: pluginDir ?? copilotPluginDir(),
+        ...(this.kind === "copilot"
+          ? { allowAllTools: true, pluginDir: pluginDir ?? this.defaultPluginDir() }
+          : {}),
       }),
     );
     if (startResult.code !== 0) {
@@ -567,25 +590,24 @@ export class SwarmToolContext {
     // stored here>, so if Copilot silently picked a different session id
     // than the one we requested, the confirmed value -- not our request --
     // is the only one that can ever be resumed successfully.
-    try {
-      const getResult = await this.herdr(buildAgentGetArgv(agentId));
-      if (getResult.code === 0) {
-        const sessionVal = parseAgentSession(getResult.stdout);
-        if (sessionVal && sessionVal !== sessionId) {
-          process.stderr.write(
-            `[swarm] ${agentId}: requested session-id ${sessionId} but herdr agent get ` +
-              `reports ${sessionVal} -- using the confirmed value for crash recovery\n`,
-          );
-          sessionId = sessionVal;
+    if (sessionId)
+      try {
+        const getResult = await this.herdr(buildAgentGetArgv(agentId));
+        if (getResult.code === 0) {
+          const sessionVal = parseAgentSession(getResult.stdout);
+          if (sessionVal && sessionVal !== sessionId) {
+            process.stderr.write(
+              `[swarm] ${agentId}: requested session-id ${sessionId} but herdr agent get ` +
+                `reports ${sessionVal} -- using the confirmed value for crash recovery\n`,
+            );
+            sessionId = sessionVal;
+          }
         }
+      } catch {
+        // Best effort check
       }
-    } catch {
-      // Best effort check
-    }
 
-    const promptResult = await this.herdr(
-      buildAgentPromptArgv(agentId, `/backlog-item --auto ${slug}`),
-    );
+    const promptResult = await this.herdr(buildAgentPromptArgv(agentId, this.workerPrompt(slug)));
     if (promptResult.code !== 0) {
       return this.failWithTab(
         slug,
@@ -606,8 +628,7 @@ export class SwarmToolContext {
         workingSinceMs: Date.now(),
         model,
         lifecycle: "active" as const,
-        copilotSessionId: sessionId,
-        recoveryAttempts: 0,
+        ...(sessionId ? { copilotSessionId: sessionId, recoveryAttempts: 0 } : {}),
       },
     };
   }
@@ -618,7 +639,7 @@ export class SwarmToolContext {
     pluginDir?: string,
   ): Promise<boolean> {
     const attempts = worker.recoveryAttempts ?? 0;
-    if (attempts >= MAX_RECOVERY_ATTEMPTS) return false;
+    if (this.kind !== "copilot" || attempts >= MAX_RECOVERY_ATTEMPTS) return false;
     if (!worker.copilotSessionId || !isValidUuid(worker.copilotSessionId)) return false;
 
     // Launch a new tab with --resume=<copilotSessionId>
@@ -652,7 +673,7 @@ export class SwarmToolContext {
         kind: "copilot",
         resumeSessionId: worker.copilotSessionId,
         allowAllTools: true,
-        pluginDir: pluginDir ?? copilotPluginDir(),
+        pluginDir: pluginDir ?? this.defaultPluginDir(),
       }),
     );
     if (startResult.code !== 0) {
@@ -692,7 +713,7 @@ export class SwarmToolContext {
     const cached = this.activeRuns.get(runId);
     if (cached) return cached;
 
-    const loaded = loadState(runId);
+    const loaded = loadState(runId, this.stateDir);
     if (!loaded) {
       const fresh: SwarmState = {
         runId,
@@ -710,7 +731,7 @@ export class SwarmToolContext {
     const entries = listResult.code === 0 ? parseAgentList(listResult.stdout) : null;
     const liveIds = (entries ?? []).map((e) => e.id);
 
-    if (entries !== null) {
+    if (this.kind === "copilot" && entries !== null) {
       // Reconcile and check for crash recovery on missing workers. The
       // run's own pluginDir travels with the persisted state -- a caller
       // supplies it once at spawn time, and recovery (which may happen long
@@ -734,13 +755,13 @@ export class SwarmToolContext {
 
     const reconciled = entries === null ? loaded : reconcileState(loaded, liveIds).state;
     this.activeRuns.set(runId, reconciled);
-    saveState(reconciled);
+    saveState(reconciled, this.stateDir);
     return reconciled;
   }
 
   public persist(state: SwarmState): void {
     this.activeRuns.set(state.runId, state);
-    saveState(state);
+    saveState(state, this.stateDir);
   }
 
   private async probeLiveness(agentId: string): Promise<ProbeResult> {
@@ -765,11 +786,7 @@ export class SwarmToolContext {
     void this.settleWait(rt, worker, timeoutMs);
   }
 
-  private async settleWait(
-    rt: RunRuntime,
-    worker: WorkerRecord,
-    timeoutMs: number,
-  ): Promise<void> {
+  private async settleWait(rt: RunRuntime, worker: WorkerRecord, timeoutMs: number): Promise<void> {
     let event: PollEvent | null = null;
     try {
       const result = await this.herdr(
@@ -783,7 +800,11 @@ export class SwarmToolContext {
 
       if (kind === "timed_out") {
         const probe = await this.probeLiveness(worker.agent);
-        const verdict = classifyTimeoutProbe(probe, this.elapsedWorkingMsFor(worker), rt.deadlineMs);
+        const verdict = classifyTimeoutProbe(
+          probe,
+          this.elapsedWorkingMsFor(worker),
+          rt.deadlineMs,
+        );
         if (verdict.disposition === "rearm") {
           const runState = this.activeRuns.get(rt.runId);
           if (runState && !runState.workers.some((w) => w.agent === worker.agent)) {
@@ -894,7 +915,13 @@ export class SwarmToolContext {
                 "Call swarm_poll to wait for workers to settle.",
             },
           ],
-          details: { spawned: [], failed: [], skipped: [], deferred: [], refused: [] },
+          details: {
+            spawned: [],
+            failed: [],
+            skipped: params.items ?? [],
+            deferred: [],
+            refused: [],
+          },
         };
       }
       if (!canOpenNewPane(state)) {
@@ -918,7 +945,9 @@ export class SwarmToolContext {
           timeout: PROBE_TIMEOUT_MS,
         });
         if (readyResult.code !== 0) {
-          throw new Error(`dev_status.py ready failed: ${readyResult.stderr || readyResult.stdout}`);
+          throw new Error(
+            `dev_status.py ready failed: ${readyResult.stderr || readyResult.stdout}`,
+          );
         }
         const parsed = parseReadyItems(readyResult.stdout);
         const byId = new Map(parsed.map((i) => [i.id, i]));
@@ -932,7 +961,9 @@ export class SwarmToolContext {
           timeout: PROBE_TIMEOUT_MS,
         });
         if (readyResult.code !== 0) {
-          throw new Error(`dev_status.py ready failed: ${readyResult.stderr || readyResult.stdout}`);
+          throw new Error(
+            `dev_status.py ready failed: ${readyResult.stderr || readyResult.stdout}`,
+          );
         }
         candidates = parseReadyItems(readyResult.stdout);
         const attempted = new Set(state.attempted ?? []);
@@ -958,9 +989,9 @@ export class SwarmToolContext {
       // spawnInto -- is parallelized, via Promise.allSettled below.
       const tabs: { slug: string; created: { paneId: string; tabId: string } }[] = [];
       for (const slug of toSpawn) {
-        const captureFile = capturePath(state.runId, slug);
+        const captureFile = capturePath(state.runId, slug, this.stateDir);
         const tabCreated = await this.herdr(
-          buildTabCreateArgv(process.cwd(), slug, { captureFile, kind: "copilot" }),
+          buildTabCreateArgv(process.cwd(), slug, { captureFile, kind: this.kind }),
         );
         let parsedTab = parseTabCreate(tabCreated.stdout);
         if (!parsedTab && tabCreated.code === 0) {
@@ -1239,8 +1270,8 @@ export class SwarmToolContext {
           }
           event.rawPrompt = readResult.stdout || getResult.stdout;
           event.truncated = truncated;
-          event.blockClass = classifyBlock(event.rawPrompt);
-          event.options = pickerLabels(event.rawPrompt);
+          event.blockClass = this.picker.classifyBlock(event.rawPrompt);
+          event.options = this.picker.pickerLabels(event.rawPrompt);
           const parkedAt = Date.now();
           foldWorkingSegment(worker, parkedAt);
           worker.awaitingRelaySinceMs = parkedAt;
@@ -1301,8 +1332,7 @@ export class SwarmToolContext {
               ? events
                   .map((e) => {
                     if (e.kind === "blocked") {
-                      const verdict =
-                        `needs_human -- NOT a question-tool picker, so swarm_resolve_blocked cannot drive it. Relay the prompt below to the user verbatim and tell them to answer in pane ${e.paneId} themselves`;
+                      const verdict = `needs_human -- NOT a question-tool picker, so swarm_resolve_blocked cannot drive it. Relay the prompt below to the user verbatim and tell them to answer in pane ${e.paneId} themselves`;
                       return `${e.slug} (${e.agent}, pane ${e.paneId}) is blocked [${verdict}]${e.truncated ? " -- content may be truncated, inspect the pane directly" : ""}:\n${e.rawPrompt}`;
                     }
                     if (e.kind === "still_working") {
@@ -1359,18 +1389,7 @@ export class SwarmToolContext {
       };
     }
 
-    const result = await this.herdr(
-      buildAgentPromptArgv(
-        worker.agent,
-        "STOP and re-read your backlog item before doing anything else: run " +
-          `python3 ~/.claude/scripts/dev_status.py show ${worker.slug} and read the ` +
-          "whole record fresh. Its context or next_steps have been corrected since " +
-          "you started, so any plan you formed from the earlier version may now be " +
-          "wrong. Reconcile what you have already done against the updated record, " +
-          "and say plainly what changes as a result before continuing.",
-      ),
-      signal,
-    );
+    const result = await this.herdr(buildAgentPromptArgv(worker.agent, AMEND_INSTRUCTION), signal);
     if (result.code !== 0) {
       return {
         content: [
@@ -1419,6 +1438,10 @@ export class SwarmToolContext {
       };
     }
 
+    if (this.kind === "pi") {
+      return this.resolvePiBlocked(state, worker, params.answer, signal);
+    }
+
     // Copilot workers do not render pi's question-tool numbered arrow-key picker,
     // so swarm_resolve_blocked always returns needs_manual with captured prompt.
     let rawPrompt = "";
@@ -1432,7 +1455,12 @@ export class SwarmToolContext {
       // Best effort
     }
 
-    noteResolveFailure(worker, params.answer, "copilot workers require manual response", Date.now());
+    noteResolveFailure(
+      worker,
+      params.answer,
+      "copilot workers require manual response",
+      Date.now(),
+    );
     this.persist(state);
 
     return {
@@ -1451,6 +1479,96 @@ export class SwarmToolContext {
         needsManual: true,
         slug: worker.slug,
         paneId: worker.paneId,
+      },
+    };
+  }
+
+  private async resolvePiBlocked(
+    state: SwarmState,
+    worker: WorkerRecord,
+    answer: string,
+    signal?: AbortSignal,
+  ): Promise<{ content: { type: string; text: string }[]; details: Record<string, unknown> }> {
+    const read = await this.herdr(buildAgentReadArgv(worker.agent, BLOCKED_READ_LINES), signal);
+    const picker = this.picker.parsePicker(read.stdout);
+    const target = matchOption(answer, picker.options);
+    const manual = (
+      reason: string,
+    ): { content: { type: string; text: string }[]; details: Record<string, unknown> } => {
+      noteResolveFailure(worker, answer, reason, Date.now());
+      this.persist(state);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `needs_manual: ${reason} for ${worker.agent} (${worker.slug}, pane ${worker.paneId}).`,
+          },
+        ],
+        details: {
+          relayFailed: false,
+          needsManual: true,
+          slug: worker.slug,
+          paneId: worker.paneId,
+        },
+      };
+    };
+    if (!target || picker.selectedIndex === null) return manual("no listed option matched");
+    const identity = await this.herdr(buildAgentGetArgv(worker.agent), signal);
+    if (paneIdentityMismatch(identity.code, identity.stdout, worker.paneId))
+      return manual("pane identity mismatch");
+    const keys = await this.herdr(
+      buildAgentSendKeysArgv(worker.agent, navigationKeys(picker.selectedIndex, target.index)),
+      signal,
+    );
+    if (keys.code !== 0)
+      return this.relayFailure(
+        state,
+        worker,
+        `could not send navigation keys to ${worker.agent}: ${keys.stderr || keys.stdout}`,
+        signal,
+      );
+    const verify = await this.herdr(
+      buildAgentWaitArgv(worker.agent, ["idle", "done", "working"], RESOLVE_VERIFY_TIMEOUT_MS),
+      signal,
+    );
+    if (verify.code !== 0)
+      return this.relayFailure(
+        state,
+        worker,
+        `${worker.agent} did not resume within ${RESOLVE_VERIFY_TIMEOUT_MS} ms after "${target.label}" was submitted.`,
+        signal,
+      );
+    worker.workingSinceMs = Date.now();
+    worker.awaitingRelaySinceMs = undefined;
+    worker.lastResolveFailure = undefined;
+    worker.lifecycle = "active";
+    this.persist(state);
+    return {
+      content: [
+        {
+          type: "text",
+          text: `resolved: ${worker.agent} (${worker.slug}, pane ${worker.paneId}) answered "${target.label}", back in the active pool.`,
+        },
+      ],
+      details: { relayFailed: false, needsManual: false, slug: worker.slug, paneId: worker.paneId },
+    };
+  }
+
+  private async relayFailure(
+    state: SwarmState,
+    worker: WorkerRecord,
+    reason: string,
+    signal?: AbortSignal,
+  ): Promise<{ content: { type: string; text: string }[]; details: Record<string, unknown> }> {
+    const captures = await this.teardownAndHarvestWorker(state, worker, signal);
+    return {
+      content: [{ type: "text", text: `relay_failed: ${reason}${renderCaptureOffers(captures)}` }],
+      details: {
+        relayFailed: true,
+        needsManual: false,
+        slug: worker.slug,
+        paneId: worker.paneId,
+        captures,
       },
     };
   }
