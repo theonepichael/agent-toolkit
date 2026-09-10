@@ -5,7 +5,9 @@ slug — is denied unless the calling session holds an active claim on it.
 
 Session identity is monkeypatched at guard_rails._session_identity in the
 end-to-end tests (the real ancestor walk gets dedicated subprocess tests);
-every store is a throwaway via monkeypatched backlog_items_path.
+every store is a throwaway injected as ``LocalClaimLookup(store_path=...)``
+— no monkeypatching of the store read, which now lives in
+backlog_claim_lookup.py.
 """
 
 import json
@@ -19,6 +21,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "agent-scripts"))
 
 import guard_rails  # noqa: E402
+from backlog_claim_lookup import ClaimInfo, LocalClaimLookup  # noqa: E402
 import pytest  # noqa: E402
 
 pytestmark = pytest.mark.allow_real_subprocess  # git in tmp_path; /proc reads
@@ -120,8 +123,8 @@ class TestClaimIsActive:
         import dev_status_impl
 
         claim = _claim(owner_pid=os.getpid(), minutes_ago=600)
-        assert guard_rails._claim_is_active(
-            claim,
+        assert guard_rails._claim_is_active(ClaimInfo.from_dict(
+            claim),
             current_machine=dev_status_impl.machine_id(),
             owner_pid=os.getpid(),
             chain=[os.getpid()],
@@ -133,8 +136,8 @@ class TestClaimIsActive:
         import dev_status_impl
 
         claim = _claim(owner_pid=os.getpid(), minutes_ago=10_000)
-        assert guard_rails._claim_is_active(
-            claim,
+        assert guard_rails._claim_is_active(ClaimInfo.from_dict(
+            claim),
             current_machine=dev_status_impl.machine_id(),
             owner_pid=os.getpid(),
             chain=[os.getpid()],
@@ -146,8 +149,8 @@ class TestClaimIsActive:
         sleeper = _spawn_sleeper()
         _kill(sleeper)
         claim = _claim(owner_pid=sleeper, minutes_ago=0)
-        assert not guard_rails._claim_is_active(
-            claim,
+        assert not guard_rails._claim_is_active(ClaimInfo.from_dict(
+            claim),
             current_machine=dev_status_impl.machine_id(),
             owner_pid=os.getpid(),
             chain=[os.getpid()],
@@ -163,8 +166,8 @@ class TestClaimIsActive:
         sleeper = _spawn_sleeper()
         _kill(sleeper)
         claim = _claim(owner_pid=sleeper, minutes_ago=0)
-        assert not guard_rails._claim_is_active(
-            claim,
+        assert not guard_rails._claim_is_active(ClaimInfo.from_dict(
+            claim),
             current_machine=dev_status_impl.machine_id(),
             owner_pid=os.getpid(),
             chain=[os.getpid()],
@@ -176,8 +179,8 @@ class TestClaimIsActive:
         foreign = _spawn_sleeper()
         try:
             claim = _claim(owner_pid=foreign, minutes_ago=0)
-            assert not guard_rails._claim_is_active(
-                claim,
+            assert not guard_rails._claim_is_active(ClaimInfo.from_dict(
+                claim),
                 current_machine=dev_status_impl.machine_id(),
                 owner_pid=os.getpid(),
                 chain=[os.getpid()],
@@ -195,19 +198,19 @@ class TestClaimIsActive:
         past = _claim(owner_pid=os.getpid(), machine="ffffffff", minutes_ago=600)
         machine = dev_status_impl.machine_id()
         for claim in (within, past):
-            assert not guard_rails._claim_is_active(
-                claim, current_machine=machine, owner_pid=os.getpid(), chain=[]
+            assert not guard_rails._claim_is_active(ClaimInfo.from_dict(
+                claim), current_machine=machine, owner_pid=os.getpid(), chain=[]
             )
 
     def test_missing_or_malformed_claim_is_not_active(self) -> None:
         import dev_status_impl
 
         machine = dev_status_impl.machine_id()
-        assert not guard_rails._claim_is_active(
-            None, current_machine=machine, owner_pid=os.getpid(), chain=[]
+        assert not guard_rails._claim_is_active(ClaimInfo.from_dict(
+            None), current_machine=machine, owner_pid=os.getpid(), chain=[]
         )
-        assert not guard_rails._claim_is_active(
-            {"harness": "pi"},  # no machine_id, no pids
+        assert not guard_rails._claim_is_active(ClaimInfo.from_dict(
+            {"harness": "pi"}),  # no machine_id, no pids
             current_machine=machine,
             owner_pid=os.getpid(),
             chain=[],
@@ -225,9 +228,8 @@ def repo_pair(tmp_path: Path) -> dict:
 
 
 @pytest.fixture()
-def store(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+def store(tmp_path: Path) -> Path:
     path = tmp_path / "store" / "items.json"
-    monkeypatch.setattr(guard_rails, "backlog_items_path", lambda: path)
     return path
 
 
@@ -282,12 +284,12 @@ class TestClaimEnforcementEndToEnd:
             store,
             [_item("demo-slug", [str(repo / "tracked.txt")], None, status="open")],
         )
-        assert _write(repo / "tracked.txt").decision == "allow"
+        assert _write(repo / "tracked.txt", store).decision == "allow"
 
     def test_exact_related_path_unclaimed_denied(self, repo_pair, store) -> None:
         repo = repo_pair["repo"]
         _set_store(store, [_item("demo-slug", [str(repo / "tracked.txt")], None)])
-        verdict = _write(repo / "tracked.txt")
+        verdict = _write(repo / "tracked.txt", store)
         assert verdict.decision == "deny"
         assert "demo-slug" in verdict.reason
         assert "dev_status.py start" in verdict.reason
@@ -301,7 +303,7 @@ class TestClaimEnforcementEndToEnd:
         _set_store(
             store, [_item("demo-slug", [str(repo / "tracked.txt")], _claim(sleeper))]
         )
-        verdict = _write(repo / "tracked.txt")
+        verdict = _write(repo / "tracked.txt", store)
         assert verdict.decision == "deny"
         assert "dev_status.py start" in verdict.reason
         assert "--force" not in verdict.reason
@@ -320,7 +322,7 @@ class TestClaimEnforcementEndToEnd:
                 )
             ],
         )
-        verdict = _write(repo / "tracked.txt")
+        verdict = _write(repo / "tracked.txt", store)
         assert verdict.decision == "deny"
         assert "demo-slug" in verdict.reason
         assert "--force" not in verdict.reason
@@ -342,7 +344,7 @@ class TestClaimEnforcementEndToEnd:
                 )
             ],
         )
-        verdict = _write(repo / "tracked.txt")
+        verdict = _write(repo / "tracked.txt", store)
         assert verdict.decision == "deny"
         assert "--force" not in verdict.reason
 
@@ -351,7 +353,7 @@ class TestClaimEnforcementEndToEnd:
     ) -> None:
         repo = repo_pair["repo"]
         _set_store(store, [_item("demo-slug", [str(repo / "tracked.txt")], None)])
-        assert _write(repo / "unrelated.txt").decision == "allow"
+        assert _write(repo / "unrelated.txt", store).decision == "allow"
 
     def test_related_files_directory_prefix_must_not_widen(
         self, repo_pair, store, as_own_session
@@ -361,7 +363,7 @@ class TestClaimEnforcementEndToEnd:
         repo = repo_pair["repo"]
         _set_store(store, [_item("demo-slug", [str(repo / "tracked.txt")], None)])
         (repo / "sibling.txt").write_text("y\n")
-        assert _write(repo / "sibling.txt").decision == "allow"
+        assert _write(repo / "sibling.txt", store).decision == "allow"
 
     def test_own_live_claim_exact_path_allowed(
         self, repo_pair, store, as_own_session
@@ -371,7 +373,7 @@ class TestClaimEnforcementEndToEnd:
             store,
             [_item("demo-slug", [str(repo / "tracked.txt")], _claim(_OWN_OWNER))],
         )
-        assert _write(repo / "tracked.txt").decision == "allow"
+        assert _write(repo / "tracked.txt", store).decision == "allow"
 
     def test_own_live_claim_in_slug_worktree_allowed(
         self, repo_pair, store, as_own_session
@@ -379,17 +381,17 @@ class TestClaimEnforcementEndToEnd:
         """The slug-named worktree rule: the whole worktree belongs to the
         item, so any file inside it is allowed for the claim holder."""
         _set_store(store, [_item("demo-slug", [], _claim(_OWN_OWNER))])
-        assert _write(repo_pair["wt"] / "new-file.txt").decision == "allow"
+        assert _write(repo_pair["wt"] / "new-file.txt", store).decision == "allow"
 
     def test_foreign_session_in_slug_worktree_denied(
         self, repo_pair, store, as_foreign_session
     ) -> None:
         _set_store(store, [_item("demo-slug", [], _claim(as_foreign_session))])
-        assert _write(repo_pair["wt"] / "new-file.txt").decision == "deny"
+        assert _write(repo_pair["wt"] / "new-file.txt", store).decision == "deny"
 
     def test_unclaimed_item_in_slug_worktree_denied(self, repo_pair, store) -> None:
         _set_store(store, [_item("demo-slug", [], None)])
-        assert _write(repo_pair["wt"] / "new-file.txt").decision == "deny"
+        assert _write(repo_pair["wt"] / "new-file.txt", store).decision == "deny"
 
     def test_own_claim_elsewhere_does_not_rescue_another_items_worktree(
         self, repo_pair, store, as_own_session
@@ -403,7 +405,7 @@ class TestClaimEnforcementEndToEnd:
                 _item("demo-slug", [], None),
             ],
         )
-        assert _write(repo_pair["wt"] / "new-file.txt").decision == "deny"
+        assert _write(repo_pair["wt"] / "new-file.txt", store).decision == "deny"
 
     def test_r2_protected_main_checkout_still_denies_regardless_of_claim(
         self, tmp_path, store, as_own_session
@@ -413,22 +415,23 @@ class TestClaimEnforcementEndToEnd:
             store,
             [_item("demo-slug", [str(repo / "tracked.txt")], _claim(_OWN_OWNER))],
         )
-        verdict = _write(repo / "tracked.txt")
+        verdict = _write(repo / "tracked.txt", store)
         assert verdict.decision == "deny"
         assert "worktree" in verdict.reason  # R2's message, not the claim's
 
     def test_corrupt_store_fails_open(self, repo_pair, store) -> None:
         store.parent.mkdir(parents=True, exist_ok=True)
         store.write_text("{not json")
-        assert _write(repo_pair["repo"] / "tracked.txt").decision == "allow"
+        assert _write(repo_pair["repo"] / "tracked.txt", store).decision == "allow"
 
 
-def _write(path: Path) -> guard_rails.Verdict:
+def _write(path: Path, store: Path) -> guard_rails.Verdict:
     path.parent.mkdir(parents=True, exist_ok=True)
     return guard_rails.evaluate(
         guard_rails.Request(
             tool="write", cwd=str(path.parent), path=str(path), command=""
-        )
+        ),
+        LocalClaimLookup(store_path=store),
     )
 
 

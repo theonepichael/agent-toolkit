@@ -58,7 +58,11 @@ Flags
 Environment
   GUARD_RAILS_OFF=1    disable every rule
   GUARD_RAILS_STORE    path to an alternate backlog store, for exercising the
-                       guard against a throwaway store
+                       guard against a throwaway store. Resolved by
+                       backlog_claim_lookup.backlog_items_path() -- that
+                       module is the single source of truth for this
+                       contract and owns the store reading this script used
+                       to duplicate.
 
 Every delivered verdict is also appended, best-effort, to a durable JSONL
 audit trail at ``~/.claude/data/guard_rails_audit.jsonl`` (fields: ``ts``,
@@ -84,8 +88,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import cli_common
+from backlog_claim_lookup import BacklogClaimLookup, ClaimInfo, LocalClaimLookup
 
-DEFAULT_BACKLOG_ITEMS = Path.home() / ".claude" / "data" / "backlog" / "items.json"
 GUARD_RAILS_LOG_PATH = Path.home() / ".claude" / "data" / "guard_rails_audit.jsonl"
 PROTECTED_BRANCHES = {"main", "master"}
 GIT_TIMEOUT = 2.0
@@ -234,30 +238,6 @@ def repo_info(directory: str) -> RepoInfo | None:
     )
 
 
-def backlog_items_path() -> Path:
-    """Where the backlog store lives. ``GUARD_RAILS_STORE`` overrides it so
-    the guard can be exercised end-to-end against a throwaway store instead
-    of the real one. Like ``GUARD_RAILS_OFF``, this is only reachable from
-    the environment the harness was launched in -- an agent's own shell
-    cannot reach the hook's environment."""
-    override = os.environ.get("GUARD_RAILS_STORE")
-    return Path(override) if override else DEFAULT_BACKLOG_ITEMS
-
-
-def load_in_progress() -> list[dict] | None:
-    """In-progress backlog items, or None when the store cannot be read."""
-    try:
-        data = json.loads(backlog_items_path().read_text())
-    except (OSError, ValueError):
-        return None
-    items = data.get("items", []) if isinstance(data, dict) else data
-    if not isinstance(items, list):
-        return None
-    return [
-        i for i in items if isinstance(i, dict) and i.get("status") == "in-progress"
-    ]
-
-
 def _item_directories(item: dict) -> list[str]:
     """Deduplicated parent directories of an item's related_files. An item
     routinely lists several files in one repo; without dedup each one costs
@@ -307,7 +287,7 @@ def _session_identity() -> tuple[str, int, list[int]]:
 
 
 def _claim_is_active(
-    claim: object, current_machine: str, owner_pid: int, chain: list[int]
+    claim: ClaimInfo | None, current_machine: str, owner_pid: int, chain: list[int]
 ) -> bool:
     """Whether a claim is held, actively, by this session.
 
@@ -319,46 +299,33 @@ def _claim_is_active(
     ``dev_status.py start`` may take the claim over, not whether the guard
     grants a write.
     """
-    if not isinstance(claim, dict):
+    if claim is None or claim.machine_id != current_machine:
         return False
     import dev_status_impl
 
-    if str(claim.get("machine_id", "")) != current_machine:
-        return False
-
-    def _int(value: object) -> int:
-        return int(value) if str(value or "").isdigit() else 0
-
-    claim_owner = _int(claim.get("owner_pid"))
+    claim_owner = claim.owner_pid
     if claim_owner <= 0:
-        claim_pid = _int(claim.get("pid"))
-        return claim_pid > 0 and dev_status_impl._is_pid_alive(claim_pid)
+        return claim.pid > 0 and dev_status_impl._is_pid_alive(claim.pid)
     if claim_owner != owner_pid and claim_owner not in chain:
         return False
     return dev_status_impl._is_pid_alive(claim_owner)
 
 
-def _claim_holder_alive(claim: object, current_machine: str) -> bool:
+def _claim_holder_alive(claim: ClaimInfo | None, current_machine: str) -> bool:
     """Whether some live process plausibly still stands behind the claim --
     used only to phrase the deny reason (a foreign live claim vs a dead or
     expired one), never to grant a write. Cross-machine claims are liveness-
     uncheckable, so their TTL stands in for liveness, mirroring
     dev_status's collision semantics."""
-    if not isinstance(claim, dict):
+    if claim is None:
         return False
     import dev_status_impl
 
-    if str(claim.get("machine_id", "")) == current_machine:
-
-        def _int(value: object) -> int:
-            return int(value) if str(value or "").isdigit() else 0
-
-        owner = _int(claim.get("owner_pid"))
-        if owner > 0 and dev_status_impl._is_pid_alive(owner):
+    if claim.machine_id == current_machine:
+        if claim.owner_pid > 0 and dev_status_impl._is_pid_alive(claim.owner_pid):
             return True
-        pid = _int(claim.get("pid"))
-        return pid > 0 and dev_status_impl._is_pid_alive(pid)
-    stamp = str(claim.get("last_active") or claim.get("claimed_at") or "")
+        return claim.pid > 0 and dev_status_impl._is_pid_alive(claim.pid)
+    stamp = claim.last_active or claim.claimed_at or ""
     if not stamp:
         return False
     try:
@@ -388,14 +355,16 @@ def _pointed_at(req: Request, info: RepoInfo, item: dict) -> bool:
     )
 
 
-def _evaluate_claim(req: Request, info: RepoInfo) -> Verdict:
+def _evaluate_claim(
+    req: Request, info: RepoInfo, items: list[dict], claims: BacklogClaimLookup
+) -> Verdict:
     """R4: deny a write that points at an in-progress item this session does
     not hold an active claim on. Fails open (allow) when nothing points at
-    anything, exactly like every other check here."""
-    items = load_in_progress()
-    if not items:
-        return Verdict("allow")
+    anything, exactly like every other check here.
 
+    ``items`` is the lookup's in-progress snapshot -- the same list the R2
+    busy check saw, so one evaluation never straddles two store reads.
+    """
     pointed = [item for item in items if _pointed_at(req, info, item)]
     if not pointed:
         return Verdict("allow")
@@ -405,7 +374,10 @@ def _evaluate_claim(req: Request, info: RepoInfo) -> Verdict:
         item
         for item in pointed
         if not _claim_is_active(
-            item.get("claimed_by"), current_machine, owner_pid, chain
+            claims.claim_info(str(item.get("id") or "")),
+            current_machine,
+            owner_pid,
+            chain,
         )
     ]
     if not unclaimed:
@@ -413,7 +385,9 @@ def _evaluate_claim(req: Request, info: RepoInfo) -> Verdict:
 
     slugs = ", ".join(str(item.get("id") or "?") for item in unclaimed)
     if any(
-        _claim_holder_alive(item.get("claimed_by"), current_machine)
+        _claim_holder_alive(
+            claims.claim_info(str(item.get("id") or "")), current_machine
+        )
         for item in unclaimed
     ):
         return Verdict(
@@ -666,10 +640,13 @@ def evaluate_bash_override(command: str, cwd: str) -> Verdict:
     return Verdict("allow")
 
 
-def evaluate(req: Request) -> Verdict:
+def evaluate(req: Request, claims: BacklogClaimLookup) -> Verdict:
     """Apply R2 then R3 to write-family calls, and R4's claim check to any
     checkout they land in, plus the bash-family override check to Bash
-    calls. Fails open on anything it cannot answer."""
+    calls. Fails open on anything it cannot answer.
+
+    ``claims`` is a read-only ``BacklogClaimLookup``; it is the only path to
+    the backlog store here and must not be mutated."""
     if os.environ.get("GUARD_RAILS_OFF") == "1":
         return Verdict("allow", rule="GUARD_RAILS_OFF")
     if req.tool == "bash":
@@ -682,21 +659,20 @@ def evaluate(req: Request) -> Verdict:
     if info is None or info.is_bare:
         return Verdict("allow")
 
-    if not info.is_worktree and info.branch in PROTECTED_BRANCHES:
-        items = load_in_progress()
-        if items:
-            slug = _busy_item(info.common_dir, items)
-            if slug is not None:
-                return Verdict(
-                    "deny",
-                    f"Refusing to write into the main checkout of "
-                    f"{info.toplevel} on '{info.branch}' while backlog item "
-                    f"'{slug}' is in progress there. Do this work in a "
-                    f"worktree: python3 ~/.claude/scripts/worktree.py {slug}",
-                    rule="main-checkout-write",
-                )
+    items = claims.in_progress_items()
+    if not info.is_worktree and info.branch in PROTECTED_BRANCHES and items:
+        slug = _busy_item(info.common_dir, items)
+        if slug is not None:
+            return Verdict(
+                "deny",
+                f"Refusing to write into the main checkout of "
+                f"{info.toplevel} on '{info.branch}' while backlog item "
+                f"'{slug}' is in progress there. Do this work in a "
+                f"worktree: python3 ~/.claude/scripts/worktree.py {slug}",
+                rule="main-checkout-write",
+            )
 
-    verdict = _evaluate_claim(req, info)
+    verdict = _evaluate_claim(req, info, items, claims)
     if verdict.decision == "deny":
         return verdict
     if info.is_worktree and _behind_origin_main(directory):
@@ -834,6 +810,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    claims = LocalClaimLookup()
 
     if args.harness:
         try:
@@ -846,7 +823,7 @@ def main(argv: list[str] | None = None) -> int:
             print(out)
             _audit_verdict(args.harness, None, Verdict("allow"))
             return code
-        verdict = evaluate(req)
+        verdict = evaluate(req, claims)
         cli_common.vprint(
             f"[guard-rails] {verdict.decision}: {verdict.reason}",
             verbose=args.verbose,
@@ -864,7 +841,7 @@ def main(argv: list[str] | None = None) -> int:
         path=args.path or "",
         command=args.command or "",
     )
-    verdict = evaluate(req)
+    verdict = evaluate(req, claims)
     out, code = render(None, verdict)
     print(out)
     _audit_verdict("", req, verdict)

@@ -24,6 +24,28 @@ import guard_rails  # noqa: E402
 pytestmark = pytest.mark.allow_real_subprocess
 
 
+class _FakeLookup:
+    """Minimal BacklogClaimLookup fake for the in-process evaluate() calls:
+    items in, no claims (a None claim is exactly what the unclaimed-item
+    deny path needs)."""
+
+    def __init__(self, items: list[dict] | None = None) -> None:
+        self._items = items or []
+
+    def in_progress_items(self) -> list[dict]:
+        return list(self._items)
+
+    def ready_items(self, prefix: str | None = None) -> list[dict]:
+        return []
+
+    def claim_info(self, slug: str) -> None:
+        return None
+
+
+def _fake_lookup(items: list[dict] | None = None) -> _FakeLookup:
+    return _FakeLookup(items)
+
+
 def _git(*args: str, cwd: Path) -> str:
     result = subprocess.run(
         ["git", *args], cwd=cwd, capture_output=True, text=True, check=True
@@ -118,7 +140,7 @@ def test_bare_repo_is_detected_and_allowed(tmp_path: Path) -> None:
     assert info.is_bare is True
     verdict = guard_rails.evaluate(
         guard_rails.Request("write", str(bare), str(bare / "x.txt"))
-    )
+    , _fake_lookup())
     assert verdict.decision == "allow"
 
 
@@ -149,7 +171,7 @@ def test_path_outside_any_repo_allows(tmp_path: Path) -> None:
     plain.mkdir()
     verdict = guard_rails.evaluate(
         guard_rails.Request("write", str(plain), str(plain / "a.txt"))
-    )
+    , _fake_lookup())
     assert verdict.decision == "allow"
 
 
@@ -165,16 +187,18 @@ def test_busy_main_checkout_denies_end_to_end(
             "related_files": [{"path": str(main_checkout / "f.txt")}],
         }
     ]
-    monkeypatch.setattr(guard_rails, "load_in_progress", lambda: items)
+    lookup = _fake_lookup(items)
     verdict = guard_rails.evaluate(
-        guard_rails.Request("write", str(main_checkout), str(main_checkout / "f.txt"))
+        guard_rails.Request("write", str(main_checkout), str(main_checkout / "f.txt")),
+        lookup,
     )
     assert verdict.decision == "deny"
     assert "demo-slug" in verdict.reason
 
     # The same item must not block work in the worktree -- that is the point.
     allowed = guard_rails.evaluate(
-        guard_rails.Request("write", str(worktree), str(worktree / "f.txt"))
+        guard_rails.Request("write", str(worktree), str(worktree / "f.txt")),
+        _fake_lookup(),
     )
     assert allowed.decision == "allow"
 
@@ -182,9 +206,10 @@ def test_busy_main_checkout_denies_end_to_end(
 def test_no_matching_item_allows_the_main_checkout_edit(
     main_checkout: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(guard_rails, "load_in_progress", list)
+    lookup = _fake_lookup([])
     verdict = guard_rails.evaluate(
-        guard_rails.Request("write", str(main_checkout), str(main_checkout / "f.txt"))
+        guard_rails.Request("write", str(main_checkout), str(main_checkout / "f.txt")),
+        lookup,
     )
     assert verdict.decision == "allow"
 
@@ -213,7 +238,7 @@ def test_stale_worktree_base_warns_and_never_denies(
 
     verdict = guard_rails.evaluate(
         guard_rails.Request("write", str(wt), str(wt / "f.txt"))
-    )
+    , _fake_lookup())
     assert verdict.decision == "warn"
     assert "origin/main" in verdict.reason
 
@@ -229,14 +254,14 @@ def test_up_to_date_worktree_does_not_warn(main_checkout: Path, tmp_path: Path) 
     _git("worktree", "add", "-q", str(wt), "-b", "feature", cwd=clone)
     verdict = guard_rails.evaluate(
         guard_rails.Request("write", str(wt), str(wt / "f.txt"))
-    )
+    , _fake_lookup())
     assert verdict.decision == "allow"
 
 
 def test_repo_with_no_remote_never_warns(worktree: Path) -> None:
     verdict = guard_rails.evaluate(
         guard_rails.Request("write", str(worktree), str(worktree / "f.txt"))
-    )
+    , _fake_lookup())
     assert verdict.decision == "allow"
 
 
@@ -250,10 +275,11 @@ def test_escape_hatch_allows_a_busy_main_checkout(
             "related_files": [{"path": str(main_checkout / "f.txt")}],
         }
     ]
-    monkeypatch.setattr(guard_rails, "load_in_progress", lambda: items)
+    lookup = _fake_lookup(items)
     monkeypatch.setenv("GUARD_RAILS_OFF", "1")
     verdict = guard_rails.evaluate(
-        guard_rails.Request("write", str(main_checkout), str(main_checkout / "f.txt"))
+        guard_rails.Request("write", str(main_checkout), str(main_checkout / "f.txt")),
+        lookup,
     )
     assert verdict.decision == "allow"
 
