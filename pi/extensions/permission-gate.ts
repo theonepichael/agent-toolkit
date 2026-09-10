@@ -52,6 +52,7 @@ const ALLOW_PATTERNS: string[] = [
   // worktree-first policy, backlog-item.md steps 3/4/9). git add/git commit
   // stay off this list on purpose -- backlog-item's steps 10-11 require
   // those to stop for live user approval even in --auto mode.
+  "python3 ~/.claude/scripts/worktree.py*",
   "git worktree add*",
   "git -C * worktree add*",
   "bun install*",

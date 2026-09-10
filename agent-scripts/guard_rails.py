@@ -692,8 +692,7 @@ def evaluate(req: Request) -> Verdict:
                     f"Refusing to write into the main checkout of "
                     f"{info.toplevel} on '{info.branch}' while backlog item "
                     f"'{slug}' is in progress there. Do this work in a "
-                    f"worktree: git -C {info.toplevel} worktree add "
-                    f"../<repo>-<slug> -b <slug>",
+                    f"worktree: python3 ~/.claude/scripts/worktree.py {slug}",
                     rule="main-checkout-write",
                 )
 

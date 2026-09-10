@@ -52,6 +52,6 @@ refuse_if_protected_branch() {
     fi
 
     echo "pre-commit: direct commits to '$branch' are blocked. Create a branch or worktree instead:" >&2
-    echo "  git worktree add ../<repo>-<slug> -b <slug>" >&2
+    echo "  python3 ~/.claude/scripts/worktree.py <slug>" >&2
     return 1
 }

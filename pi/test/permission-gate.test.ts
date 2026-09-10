@@ -44,6 +44,7 @@ describe("classify", () => {
   });
 
   test("backlog-item --auto's worktree/build/test commands are allowed", () => {
+    expect(classify("python3 ~/.claude/scripts/worktree.py slug")).toBe("allow");
     expect(classify("git worktree add ../repo-slug -b slug")).toBe("allow");
     expect(classify("git -C /repo worktree add ../repo-slug -b slug")).toBe("allow");
     expect(classify("bun install")).toBe("allow");
@@ -311,6 +312,7 @@ describe("classify: per-pattern regression table", () => {
       ["uv run pytest", "uv run pytest -q"],
       ["uv run ruff check", "uv run ruff check ."],
       ["uv run ruff format", "uv run ruff format ."],
+      ["python3 ~/.claude/scripts/worktree.py", "python3 ~/.claude/scripts/worktree.py slug"],
       ["git worktree add", "git worktree add ../repo-slug -b slug"],
       ["git -C worktree add", "git -C /repo worktree add ../repo-slug -b slug"],
       ["bun install", "bun install"],

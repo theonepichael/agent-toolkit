@@ -254,6 +254,10 @@ dest = "~/.claude/scripts/guard_rails.py"
 src = "agent-scripts/statusline.py"
 dest = "~/.claude/scripts/statusline.py"
 
+[[link]]
+src = "agent-scripts/worktree.py"
+dest = "~/.claude/scripts/worktree.py"
+
 # ── GitHub Copilot CLI wiring ────────────────────────────────────────────
 
 [[link]]

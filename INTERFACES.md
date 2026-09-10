@@ -65,6 +65,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`statusline.py`](#agentscriptsstatuslinepy) | Claude Code status line: render the model name and a color-coded context window usage bar with the used percentage, from the JSON session payload Claude Code pipes to this script on stdin. |
 | [`to_tickets_runner.py`](#agentscriptstoticketsrunnerpy) | to_tickets_runner.py — create a linked batch of dev_status.py backlog items from a confirmed vertical-slice/tracer-bullet ticket breakdown. |
 | [`vitals_promotion.py`](#agentscriptsvitalspromotionpy) | vitals-promotion.py — mechanical vitals-promotion pass over grill session data. |
+| [`worktree.py`](#agentscriptsworktreepy) | worktree.py — automated worktree creation and dependency bootstrapping. |
 
 ### `agent-scripts/analyze_sessions.py`
 
@@ -1271,6 +1272,38 @@ vitals-promotion.py — mechanical vitals-promotion pass over grill session data
   - `print_report(report: Report, apply: bool, quiet: bool = False) -> None`
 - Tested by: `agent-scripts/test_vitals_promotion.py`
 
+### `agent-scripts/worktree.py`
+
+worktree.py — automated worktree creation and dependency bootstrapping.
+
+- Installed at: `~/.claude/scripts/worktree.py` (all harnesses)
+- Entrypoint: executable, `#!/usr/bin/env python3`
+- CLI (`argparse`): Automate worktree creation and dependency bootstrapping.
+  - `--quiet/-q`
+  - `--verbose/-v`
+  - `item` — Backlog item slug, numeric position, or branch name (nargs: ?)
+  - `--repo` — Path to git repository
+  - `--branch` — Branch name for worktree
+  - `--dest` — Explicit destination path for the worktree
+  - `--skip-bootstrap` — Skip dependency bootstrapping (default: False)
+  - `--force/-f` — Pass --force to git worktree add (default: False)
+  - `--json` — Emit structured result as JSON (default: False)
+- Explicit exit codes: `1`
+- Depends on: `cli_common.py`, `dev_status_impl.py`, `dev_status_storage.py`
+- Exceptions:
+  - `class WorktreeError(Exception)` — Raised when worktree resolution, creation, or bootstrapping fails.
+- Public classes:
+  - `class WorktreeConfig` — Configuration for worktree creation and bootstrapping.
+  - `class WorktreeResult` — Outcome of a worktree creation or reuse operation.
+- Public functions:
+  - `find_repo_for_path(path: Path) -> Path | None` — Find the enclosing git repository root for a given path.
+  - `resolve_backlog_item(slug_or_id: str, items_path: Path | None = None) -> dict[str, object] | None` — Look up a backlog item by slug or numeric position using dev_status_storage.
+  - `resolve_worktree_config(slug_or_id: str | None = None, *, repo: Path | str | None = None, branch: str | None = None, dest: Path | str | None = None, skip_bootstrap: bool = False, force: bool = False, quiet: bool = False, items_path: Path | None = None) -> WorktreeConfig` — Resolve worktree target repository, branch name, and destination path.
+  - `bootstrap_worktree(worktree_path: Path, *, quiet: bool = False) -> tuple[bool, list[str] | None, list[str]]` — Execute dependency bootstrapping for the target worktree.
+  - `create_and_bootstrap_worktree(config: WorktreeConfig) -> WorktreeResult` — Create or reuse a git worktree and bootstrap dependencies.
+  - `build_parser() -> argparse.ArgumentParser` — Build command-line parser for worktree.py.
+- Tested by: `test/test_worktree.py`
+
 ---
 
 ## 2. Skill and command surface
@@ -1816,6 +1849,15 @@ named doc, not regenerating this file.
 | `opencode/command/grill-me.md` | OK |
 | `opencode/skills/grill-me/SKILL.md` | OK |
 | `pi/skills/grill-me/SKILL.md` | OK |
+
+### `worktree.py`
+
+| Doc | Status |
+| --- | --- |
+| `agy/skills/backlog-item/SKILL.md` | OK |
+| `claude/commands/backlog-item.md` | OK |
+| `copilot/skills/backlog-item/SKILL.md` | OK |
+| `opencode/command/backlog-item.md` | OK |
 
 ---
 

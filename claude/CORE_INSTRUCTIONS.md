@@ -427,18 +427,27 @@ used for backlog capture.
 - Never commit directly to `main`/`master`, in any repo. Before starting new
   work — regardless of whether the checkout is currently clean or dirty,
   and even in solo sessions with no concurrent activity — create a fresh
-  worktree for it rather than branching in the existing checkout:
+  worktree for it rather than branching in the existing checkout. Use the
+  canonical automation tool:
+
+  ```bash
+  python3 ~/.claude/scripts/worktree.py <slug|N>
+  ```
+
+  Or manually:
 
   ```bash
   git -C <repo> worktree add ../<repo-name>-<slug> -b <slug>
   ```
 
-  A fresh worktree has no installed dependencies — package managers install
-  into an untracked local folder (`node_modules`, `.venv`, `target`, etc.),
-  and worktrees don't share it. Install dependencies right after creating
-  the worktree, before running tests, lint, or a dev/build command. Check
-  the repo's manifest/lock file to find the right install command for its
-  ecosystem.
+  `worktree.py` automatically resolves the repository from the backlog item,
+  handles branch creation or attachment, reuses existing worktrees idempotently,
+  and bootstraps project dependencies. If doing it manually: a fresh worktree has
+  no installed dependencies — package managers install into an untracked local
+  folder (`node_modules`, `.venv`, `target`, etc.), and worktrees don't share it.
+  Install dependencies right after creating the worktree, before running tests,
+  lint, or a dev/build command. Check the repo's manifest/lock file to find the
+  right install command for its ecosystem.
 
   This sidesteps concurrent-session collisions by construction — repos
   routinely get worked from more than one tool in parallel against the same

@@ -337,5 +337,18 @@
     "arg (top-level) --verbose/-v: ",
     "exit codes: 1",
     "module docstring: vitals-promotion.py \u2014 mechanical vitals-promotion pass over grill session data."
+  ],
+  "worktree.py": [
+    "arg (top-level) --branch: \u2014 Branch name for worktree",
+    "arg (top-level) --dest: \u2014 Explicit destination path for the worktree",
+    "arg (top-level) --force/-f: \u2014 Pass --force to git worktree add (default: False)",
+    "arg (top-level) --json: \u2014 Emit structured result as JSON (default: False)",
+    "arg (top-level) --quiet/-q: ",
+    "arg (top-level) --repo: \u2014 Path to git repository",
+    "arg (top-level) --skip-bootstrap: \u2014 Skip dependency bootstrapping (default: False)",
+    "arg (top-level) --verbose/-v: ",
+    "arg (top-level) item: \u2014 Backlog item slug, numeric position, or branch name (nargs: ?)",
+    "exit codes: 1",
+    "module docstring: worktree.py \u2014 automated worktree creation and dependency bootstrapping."
   ]
 }

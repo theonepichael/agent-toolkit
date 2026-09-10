@@ -52,7 +52,7 @@ for numeric ids). On a main/master checkout, `start` now refuses (worktree
 guard) — do step 3 first, then run `start` from inside the fresh worktree.
 
 ## 3. Branch
-related_files names exactly one project repo → worktree it per the shared instructions file's Git section: `git -C <repo> worktree add ../<repo-name>-<slug> -b <slug>`. Reuse a worktree this session already made for this item instead of a second one. Multiple repos, or none: ask which repo — never guess.
+Create or reuse a dedicated worktree and bootstrap dependencies via `python3 ~/.claude/scripts/worktree.py <slug|N>`. (If multiple project repos are involved or resolution fails, specify `--repo <path>`). Reuse a worktree this session already made for this item instead of a second one.
 
 ## 4. Baseline
 Run that repo's test suite (or the most relevant targeted subset) in the fresh worktree before touching anything (the shared instructions file's "Baseline tests before starting code work").

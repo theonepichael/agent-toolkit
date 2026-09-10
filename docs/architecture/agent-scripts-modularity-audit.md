@@ -121,13 +121,16 @@ domain errors) that later waves reuse.
   @dataclass(frozen=True)
   class StandupConfig: ...
 
+
   @dataclass(frozen=True)
   class StandupPaths: ...
+
 
   @dataclass(frozen=True)
   class SkippedSource:
       source: str  # e.g. "chat", "email", "calendar", "issue_tracker"
       reason: str
+
 
   @dataclass
   class StandupReport:
@@ -137,12 +140,14 @@ domain errors) that later waves reuse.
       skipped_sources: list[SkippedSource]
       # the remaining per-source records
 
+
   @dataclass(frozen=True)
   class StandupSources:
       issue_tracker: standup_adapters.IssueTrackerAdapter | None = None
       chat: standup_adapters.ChatAdapter | None = None
       email: standup_adapters.EmailAdapter | None = None
       calendar: standup_adapters.CalendarAdapter | None = None
+
 
   def fetch_standup(
       config: StandupConfig,
@@ -184,17 +189,20 @@ domain errors) that later waves reuse.
       until: datetime | None = None
       search: str | None = None
 
+
   @dataclass(frozen=True)
   class SkippedRecord:
       path: Path
       harness: str
       reason: str
 
+
   @dataclass(frozen=True)
   class SessionQueryResult:
       records: list[SessionRecord]
       cost_summary: dict[str, object]
       skipped_records: list[SkippedRecord]
+
 
   def query_sessions(
       query: SessionQuery,
@@ -232,11 +240,13 @@ domain errors) that later waves reuse.
       backend: str | None = None
       model_index: int | None = None
 
+
   @dataclass(frozen=True)
   class ReviewResult:
       backend_label: str
       response_text: str
       sanitized_char_count: int
+
 
   def review_plan(request: ReviewRequest) -> ReviewResult: ...
   ```
@@ -299,6 +309,7 @@ domain errors) that later waves reuse.
       path: Path
       detail: str
 
+
   def collect_link_findings(
       links: list[LinkSpec],
       managed_dirs: list[ManagedDirSpec],
@@ -336,26 +347,40 @@ domain errors) that later waves reuse.
   ```python
   from backlog_claim_lookup import ClaimInfo, BacklogClaimLookup
 
+
   @dataclass(frozen=True)
   class BacklogQuery:
       status: str | None = None
       prefix: str | None = None
 
-  def get_item(slug_or_id: str, *, items_path: Path | None = None) -> BacklogItem | None: ...
-  def ready_items(query: BacklogQuery | None = None, *, items_path: Path | None = None) -> list[BacklogItem]: ...
+
+  def get_item(
+      slug_or_id: str, *, items_path: Path | None = None
+  ) -> BacklogItem | None: ...
+  def ready_items(
+      query: BacklogQuery | None = None, *, items_path: Path | None = None
+  ) -> list[BacklogItem]: ...
   def in_progress_items(*, items_path: Path | None = None) -> list[BacklogItem]: ...
-  def item_status(slug_or_id: str, *, items_path: Path | None = None) -> str | None: ...  # None for an unknown id, matching get_item
-  def claim_info(slug_or_id: str, *, items_path: Path | None = None) -> ClaimInfo | None: ...
+  def item_status(
+      slug_or_id: str, *, items_path: Path | None = None
+  ) -> str | None: ...  # None for an unknown id, matching get_item
+  def claim_info(
+      slug_or_id: str, *, items_path: Path | None = None
+  ) -> ClaimInfo | None: ...
+
 
   class DevStatusClaimLookup(BacklogClaimLookup):
       """Implements backlog_claim_lookup.py's protocol over this module's
       functions, so this facade can become a drop-in replacement for
       candidates 9 and 10's LocalClaimLookup without changing either
       candidate's call sites."""
+
       def ready_items(self, prefix: str | None = None) -> list[BacklogItem]:
           return ready_items(BacklogQuery(prefix=prefix))
+
       def in_progress_items(self) -> list[BacklogItem]:
           return in_progress_items()
+
       def claim_info(self, slug_or_id: str) -> ClaimInfo | None:
           return claim_info(slug_or_id)
   ```
@@ -436,22 +461,35 @@ domain errors) that later waves reuse.
   @dataclass(frozen=True)
   class ClaimInfo:
       machine_id: str
-      owner_pid: int       # the durable claim holder, per dev_status_impl._make_claim()
-      pid: int             # the short-lived invoking pid, distinct from owner_pid
+      owner_pid: int  # the durable claim holder, per dev_status_impl._make_claim()
+      pid: int  # the short-lived invoking pid, distinct from owner_pid
       last_active: str | None = None
       claimed_at: str | None = None
+
 
   class BacklogClaimLookup(Protocol):
       def in_progress_items(self) -> list[BacklogItem]: ...
       def ready_items(self, prefix: str | None = None) -> list[BacklogItem]: ...
       def claim_info(self, slug_or_id: str) -> ClaimInfo | None: ...
 
+
   class LocalClaimLookup:
       """Thin wrapper over guard_rails.py's existing item-reading logic,
       until candidate 6 lands as the shared implementation."""
-      def in_progress_items(self) -> list[BacklogItem]: ...  # wraps load_in_progress(), preserving its "None on unreadable storage" tolerance
-      def ready_items(self, prefix: str | None = None) -> list[BacklogItem]: ...  # wraps cmd_ready's read path
-      def claim_info(self, slug_or_id: str) -> ClaimInfo | None: ...  # reads the same claim record load_in_progress() already parses
+
+      def in_progress_items(
+          self,
+      ) -> list[
+          BacklogItem
+      ]: ...  # wraps load_in_progress(), preserving its "None on unreadable storage" tolerance
+      def ready_items(
+          self, prefix: str | None = None
+      ) -> list[BacklogItem]: ...  # wraps cmd_ready's read path
+      def claim_info(
+          self, slug_or_id: str
+      ) -> (
+          ClaimInfo | None
+      ): ...  # reads the same claim record load_in_progress() already parses
   ```
   ```python
   # guard_rails.py
@@ -503,7 +541,9 @@ domain errors) that later waves reuse.
   candidate 6 to exist first, only a read-only claim lookup of some kind.
 - **Proposed interface:**
   ```python
-  def select_ready(prefix: str | None, claims: BacklogClaimLookup) -> list[BacklogItem]: ...
+  def select_ready(
+      prefix: str | None, claims: BacklogClaimLookup
+  ) -> list[BacklogItem]: ...
   def build_launch_plan(items: list[BacklogItem], *, kind: str) -> list[list[str]]: ...
   ```
   `select_ready` calls `claims.ready_items(prefix)` — the other operation
@@ -552,14 +592,25 @@ before candidate 7's read API exists.
 - **Proposed interface:**
   ```python
   class GrillSessionError(Exception): ...
+
+
   class DecisionNotFoundError(GrillSessionError): ...
+
+
   class CycleError(GrillSessionError): ...
+
 
   def open_session(slug: str, *, data_dir: Path | None = None) -> Session: ...
   def all_sessions(data_dir: Path | None = None) -> list[Session]: ...
-  def record_decision(slug: str, patch: DecisionPatch, *, data_dir: Path | None = None) -> Decision: ...
-  def revise_decision(slug: str, decision_id: str, patch: DecisionPatch, *, data_dir: Path | None = None) -> Decision: ...
-  def record_verdict(slug: str, decision_id: str, verdict: Verdict, *, data_dir: Path | None = None) -> Decision: ...
+  def record_decision(
+      slug: str, patch: DecisionPatch, *, data_dir: Path | None = None
+  ) -> Decision: ...
+  def revise_decision(
+      slug: str, decision_id: str, patch: DecisionPatch, *, data_dir: Path | None = None
+  ) -> Decision: ...
+  def record_verdict(
+      slug: str, decision_id: str, verdict: Verdict, *, data_dir: Path | None = None
+  ) -> Decision: ...
   def frontier_of(session: Session) -> DecisionList: ...
   ```
   `all_sessions()` formalizes the bulk-load `load_all_sessions()` currently
@@ -684,10 +735,11 @@ before candidate 7's read API exists.
       *,
       commit: str | None = None,
       date: str | None = None,
-  ) -> None: ...  # validates f"{doc}#{heading}" is a section in result,
-                   # resolves commit/date the same way cmd_mark_reviewed()
-                   # does today, then persists via the module's existing
-                   # (private) state-write helper
+  ) -> None:
+      ...  # validates f"{doc}#{heading}" is a section in result,
+      # resolves commit/date the same way cmd_mark_reviewed()
+      # does today, then persists via the module's existing
+      # (private) state-write helper
   ```
 - **Effect boundary:** `run_check()` is read-only; `mark_reviewed()` is the
   one write effect and must stay a distinct, explicit call — not folded
@@ -744,14 +796,21 @@ before candidate 7's read API exists.
       rev: int
       detail: str
 
+
   class BacklogMutationError(Exception): ...
+
+
   class RevisionConflictError(BacklogMutationError): ...
+
+
   class GateUnmetError(BacklogMutationError): ...
+
 
   @dataclass(frozen=True)
   class RelatedFile:
       path: str
       note: str = ""
+
 
   @dataclass(frozen=True)
   class NewItemRequest:
@@ -763,11 +822,28 @@ before candidate 7's read API exists.
       related_files: tuple[RelatedFile, ...] = ()
       blocked_by: tuple[str, ...] = ()
 
-  def add_item(request: NewItemRequest, *, items_path: Path | None = None) -> MutationResult: ...
-  def start_item(slug_or_id: str, *, if_rev: int | None = None, items_path: Path | None = None) -> MutationResult: ...
-  def approve_item(slug_or_id: str, *, if_rev: int | None = None, items_path: Path | None = None) -> MutationResult: ...
-  def block_item(slug_or_id: str, blocker_slug_or_id: str, *, if_rev: int | None = None, items_path: Path | None = None) -> MutationResult: ...
-  def run_item(slug_or_id: str, command: list[str], *, items_path: Path | None = None) -> RunResult: ...  # distinct result shape — see Why wave 3
+
+  def add_item(
+      request: NewItemRequest, *, items_path: Path | None = None
+  ) -> MutationResult: ...
+  def start_item(
+      slug_or_id: str, *, if_rev: int | None = None, items_path: Path | None = None
+  ) -> MutationResult: ...
+  def approve_item(
+      slug_or_id: str, *, if_rev: int | None = None, items_path: Path | None = None
+  ) -> MutationResult: ...
+  def block_item(
+      slug_or_id: str,
+      blocker_slug_or_id: str,
+      *,
+      if_rev: int | None = None,
+      items_path: Path | None = None,
+  ) -> MutationResult: ...
+  def run_item(
+      slug_or_id: str, command: list[str], *, items_path: Path | None = None
+  ) -> RunResult: ...  # distinct result shape — see Why wave 3
+
+
   # ... one function per existing cmd_* mutation, each with its own typed
   # request dataclass where the mutation takes more than an id (update,
   # gate-set, gate-pass, rename, pending add/update); a raw
@@ -777,18 +853,23 @@ before candidate 7's read API exists.
   # `items_path` defaults to None, matching dev_status_storage.load_items()/
   # save_items()'s own existing explicit-path parameter, per candidate 6.
 
+
   class BacklogTransaction(Protocol):
       """One open backlog_lock() section, for a caller — candidate 13 — that
       needs several reads and mutations to share a single lock/transaction
       instead of each acquiring its own, matching to_tickets_runner.run()'s
       real today's-behavior: one lock spanning index/pending lookups,
       collision checks, and every ticket's creation."""
+
       def index(self) -> BacklogIndex: ...
       def pending_items(self) -> list[PendingItem]: ...
       def add_item(self, request: NewItemRequest) -> MutationResult: ...
 
+
   @contextmanager
-  def mutation_transaction(*, items_path: Path | None = None) -> Iterator[BacklogTransaction]: ...
+  def mutation_transaction(
+      *, items_path: Path | None = None
+  ) -> Iterator[BacklogTransaction]: ...
   ```
 - **Effect boundary:** every mutation except `run_item` acquires the same
   exclusive `backlog_lock()`, bumps `rev` *before* any write (preserving
@@ -895,12 +976,17 @@ before candidate 7's read API exists.
   `mutation_transaction()` instead:
   ```python
   def validate_batch(path: Path) -> list[Ticket]: ...  # wraps load_batch
-  def plan_order(tickets: list[Ticket], index: BacklogIndex) -> list[str]: ...  # wraps compute_order
+  def plan_order(
+      tickets: list[Ticket], index: BacklogIndex
+  ) -> list[str]: ...  # wraps compute_order
+
 
   def run_batch(
       batch_path: Path,
       open_transaction: Callable[[], AbstractContextManager[BacklogTransaction]],
-  ) -> list[str]: ...  # returns created (or already-created, on resume) slugs, in order — matching run()'s existing return shape exactly
+  ) -> list[
+      str
+  ]: ...  # returns created (or already-created, on resume) slugs, in order — matching run()'s existing return shape exactly
   ```
 - **Effect boundary:** `validate_batch`/`plan_order` are pure/read-only;
   `run_batch` opens one `mutation_transaction()` for the whole batch (via

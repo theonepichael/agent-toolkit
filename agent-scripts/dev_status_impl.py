@@ -718,7 +718,7 @@ def _check_worktree_guard(allow_main: bool = False, quiet: bool = False) -> None
         if is_main_worktree and branch in ("main", "master"):
             print(
                 "[start] Refusing to start item on main/master checkout in a git repository.\n"
-                "Create a dedicated worktree first (`git worktree add ../<repo>-<slug> -b <slug>`), "
+                "Create a dedicated worktree first (`python3 ~/.claude/scripts/worktree.py <slug>`), "
                 "or pass --allow-main to override.",
                 file=sys.stderr,
             )
