@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Tests for refresh_guidance.py. Run with: python3 test_refresh_guidance.py"""
 
+import contextlib
+import io
 import os
 import shutil
 import subprocess
@@ -442,6 +444,175 @@ class StateRoundTripTestCase(unittest.TestCase):
                     quiet=True,
                 )
             self.assertEqual(ctx.exception.code, 2)
+        finally:
+            del rg.DOC_SETS["custom"]
+
+
+class MarkReviewedServiceTestCase(unittest.TestCase):
+    """Covers the mark_reviewed() service boundary: run_check() never
+    persists state, mark_reviewed() is the sole writer and validates the
+    supplied CheckResult before writing, and the CLI translates a service
+    rejection into exit 2 without a traceback.
+    """
+
+    def setUp(self) -> None:
+        self.tmpdir = tempfile.mkdtemp()
+        self.repo = Path(self.tmpdir)
+        _init_repo(self.repo)
+        (self.repo / "README.md").write_text(
+            "intro\n\n## First Section\n\nbody one\n\n## Second Section\n\nbody two\n"
+        )
+        _commit_all(self.repo, "add readme")
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmpdir)
+
+    def _state_path(self) -> Path:
+        return self.repo / DOC_SET.state_path
+
+    def test_run_check_never_persists_state(self) -> None:
+        rg.DOC_SETS["custom"] = DOC_SET
+        try:
+            self._state_path().write_text(
+                '{"README.md#First Section": '
+                '{"last_reviewed_commit": "aaa1111", '
+                '"last_reviewed_date": "2026-01-01", '
+                '"reviewed_by": "human-confirmed"}}\n',
+                encoding="utf-8",
+            )
+            before = self._state_path().read_bytes()
+            stat_before = self._state_path().stat().st_mtime_ns
+
+            rg.run_check(self.repo, "custom")
+
+            self.assertEqual(self._state_path().read_bytes(), before)
+            self.assertEqual(self._state_path().stat().st_mtime_ns, stat_before)
+        finally:
+            del rg.DOC_SETS["custom"]
+
+    def test_run_check_creates_no_state_file_when_none_exists(self) -> None:
+        rg.DOC_SETS["custom"] = DOC_SET
+        try:
+            rg.run_check(self.repo, "custom")
+            self.assertFalse(self._state_path().exists())
+        finally:
+            del rg.DOC_SETS["custom"]
+
+    def test_mark_reviewed_rejects_section_absent_from_result(self) -> None:
+        rg.DOC_SETS["custom"] = DOC_SET
+        try:
+            empty_result = rg.CheckResult(findings=[], sections=[],
+                                          undocumented_dirs=[])
+            with self.assertRaises(ValueError):
+                rg.mark_reviewed(
+                    self.repo,
+                    DOC_SET,
+                    "README.md",
+                    "First Section",
+                    empty_result,
+                    commit="abc1234",
+                    date="2026-09-07",
+                )
+            self.assertFalse(self._state_path().exists())
+        finally:
+            del rg.DOC_SETS["custom"]
+
+    def test_mark_reviewed_rejects_heading_absent_from_result(self) -> None:
+        """The heading is real in the doc, but the supplied CheckResult came
+        from a different run that did not include it — rejected."""
+        rg.DOC_SETS["custom"] = DOC_SET
+        try:
+            stale_result = rg.CheckResult(
+                findings=[],
+                sections=[
+                    rg.SectionStatus(
+                        doc="README.md",
+                        heading="Some Other Heading",
+                        reviewed=False,
+                        last_reviewed_commit=None,
+                        last_reviewed_date=None,
+                        fallback_commit=None,
+                        fallback_date=None,
+                    )
+                ],
+                undocumented_dirs=[],
+            )
+            with self.assertRaises(ValueError):
+                rg.mark_reviewed(
+                    self.repo,
+                    DOC_SET,
+                    "README.md",
+                    "First Section",
+                    stale_result,
+                )
+            self.assertFalse(self._state_path().exists())
+        finally:
+            del rg.DOC_SETS["custom"]
+
+    def test_mark_reviewed_happy_path_writes_state(self) -> None:
+        rg.DOC_SETS["custom"] = DOC_SET
+        try:
+            result = rg.run_check(self.repo, "custom")
+            rg.mark_reviewed(
+                self.repo,
+                DOC_SET,
+                "README.md",
+                "First Section",
+                result,
+                commit="abc1234",
+                date="2026-09-07",
+            )
+            import json
+
+            state = json.loads(self._state_path().read_text(encoding="utf-8"))
+            self.assertEqual(
+                state["README.md#First Section"],
+                {
+                    "last_reviewed_commit": "abc1234",
+                    "last_reviewed_date": "2026-09-07",
+                    "reviewed_by": "human-confirmed",
+                },
+            )
+
+            recheck = rg.run_check(self.repo, "custom")
+            statuses = {s.heading: s for s in recheck.sections}
+            self.assertTrue(statuses["First Section"].reviewed)
+            self.assertEqual(statuses["First Section"].last_reviewed_commit,
+                             "abc1234")
+        finally:
+            del rg.DOC_SETS["custom"]
+
+    def test_cmd_mark_reviewed_translates_service_rejection(self) -> None:
+        """A ValueError escaping mark_reviewed() inside the CLI surfaces as
+        exit 2 with the CLI-shaped message, never a traceback."""
+        rg.DOC_SETS["custom"] = DOC_SET
+        try:
+            empty_result = rg.CheckResult(findings=[], sections=[],
+                                          undocumented_dirs=[])
+            original_run_check = rg.run_check
+
+            def fake_run_check(*args: object, **kwargs: object) -> rg.CheckResult:
+                return empty_result
+
+            rg.run_check = fake_run_check  # type: ignore[assignment]
+            try:
+                stderr = io.StringIO()
+                with contextlib.redirect_stderr(stderr):
+                    with self.assertRaises(SystemExit) as ctx:
+                        rg.cmd_mark_reviewed(
+                            self.repo,
+                            "custom",
+                            "README.md",
+                            "First Section",
+                            None,
+                            None,
+                            quiet=True,
+                        )
+            finally:
+                rg.run_check = original_run_check  # type: ignore[assignment]
+            self.assertEqual(ctx.exception.code, 2)
+            self.assertIn("no '## First Section'", stderr.getvalue())
+            self.assertNotIn("Traceback", stderr.getvalue())
         finally:
             del rg.DOC_SETS["custom"]
 

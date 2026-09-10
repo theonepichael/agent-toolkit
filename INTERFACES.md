@@ -1013,9 +1013,9 @@ refresh_guidance.py — audit-by-inspection for hand-authored, agent-facing docs
   - `check_command_claim(claim: Claim, scripts: dict[str, Path], cli_cache: dict[Path, gen_interfaces.CliSpec | None], repo_root: Path, basename_index: dict[str, list[str]]) -> str | None` — Verify a command claim's script exists and its cited flags/subcommands are real, by reusing `gen_interfaces`'s own argparse extraction and invocation validator -- the same machinery it uses to keep INTERFACES.md honest, rather than a second implementation of argparse introspection.
   - `git_blame_range(repo_root: Path, doc: str, start_line: int, end_line: int) -> tuple[str | None, str | None]` — Last commit (short sha, date) that touched a section's line range, via `git log -L` -- the secondary staleness signal for a section with no review-state entry yet.
   - `load_state(repo_root: Path, doc_set: DocSetConfig) -> dict[str, dict[str, str]]`
-  - `save_state(repo_root: Path, doc_set: DocSetConfig, state: dict[str, dict[str, str]]) -> None`
   - `run_check(repo_root: Path, doc_set_name: str | None, agent_toolkit_root: Path = DEFAULT_AGENT_TOOLKIT_ROOT) -> CheckResult`
   - `render_report(result: CheckResult, doc_set_label: str) -> str`
+  - `mark_reviewed(repo_root: Path, doc_set: DocSetConfig, doc: str, heading: str, result: CheckResult, *, commit: str | None = None, date: str | None = None, reviewed_by: str = 'human-confirmed') -> None` — Record human sign-off that one doc's ``## <heading>`` section is current — the sole supported state-writer in this module.
   - `build_parser() -> argparse.ArgumentParser`
 - Subcommand handlers: `cmd_check`, `cmd_mark_reviewed`, `cmd_scaffold`
 - Tested by: `agent-scripts/test_refresh_guidance.py`

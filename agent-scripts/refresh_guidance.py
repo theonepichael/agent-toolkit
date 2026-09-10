@@ -829,9 +829,17 @@ def load_state(repo_root: Path, doc_set: DocSetConfig) -> dict[str, dict[str, st
     return data if isinstance(data, dict) else {}
 
 
-def save_state(
+def _save_state(
     repo_root: Path, doc_set: DocSetConfig, state: dict[str, dict[str, str]]
 ) -> None:
+    """Module-private persistence helper — the only state-writer
+    :func:`mark_reviewed` calls. Not part of the module's public surface:
+    the "only ``mark_reviewed()`` writes valid state" guarantee is enforced
+    by not exporting a general writer, not by a wrapper type (a frozen
+    dataclass still has a public constructor). The write is a plain
+    ``write_text`` — concurrent ``mark_reviewed()`` callers are out of
+    scope for this module.
+    """
     path = _state_path(repo_root, doc_set)
     path.write_text(
         json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -1126,6 +1134,57 @@ def cmd_check(
         print(render_report(result, label), end="")
 
 
+def mark_reviewed(
+    repo_root: Path,
+    doc_set: DocSetConfig,
+    doc: str,
+    heading: str,
+    result: CheckResult,
+    *,
+    commit: str | None = None,
+    date: str | None = None,
+    reviewed_by: str = "human-confirmed",
+) -> None:
+    """Record human sign-off that one doc's ``## <heading>`` section is
+    current — the sole supported state-writer in this module.
+
+    ``run_check()`` is read-only by contract; ``mark_reviewed()`` is the
+    one write effect, and stays a distinct, explicit call (never folded
+    into a check, and there is deliberately no ``run_and_save()``
+    convenience — a caller must not be able to mark a section reviewed
+    while only intending to check it).
+
+    Raises ``ValueError`` when ``f"{doc}#{heading}"`` is not a section in
+    the supplied ``result`` — validation is exact-string against
+    ``run_check()``'s own output (``doc`` the repo-relative posix path as
+    discovered, ``heading`` the ``##``-stripped ``Section.heading`` text);
+    no normalization is applied, so pass a result from the same run/
+    doc-set you mean to record against.
+
+    ``commit`` defaults to the repo's current HEAD short sha (``"unknown"``
+    when git is unavailable — a sentinel, not a real sha); ``date`` to the
+    naïve local date (``YYYY-MM-DD``). The state write itself is not
+    atomic (see :func:`_save_state`).
+    """
+    if not any(
+        section.doc == doc and section.heading == heading for section in result.sections
+    ):
+        raise ValueError(
+            f"section not present in supplied CheckResult: {doc}#{heading}"
+        )
+
+    resolved_commit = commit or _git_head_short(repo_root)
+    resolved_date = date or dt.date.today().isoformat()
+    state = load_state(repo_root, doc_set)
+    key = f"{doc}#{heading}"
+    state[key] = {
+        "last_reviewed_commit": resolved_commit,
+        "last_reviewed_date": resolved_date,
+        "reviewed_by": reviewed_by,
+    }
+    _save_state(repo_root, doc_set, state)
+
+
 def cmd_mark_reviewed(
     repo_root: Path,
     doc_set_name: str | None,
@@ -1159,16 +1218,31 @@ def cmd_mark_reviewed(
 
     resolved_commit = commit or _git_head_short(repo_root)
     resolved_date = date or dt.date.today().isoformat()
-    state = load_state(repo_root, doc_set)
-    key = f"{doc}#{heading}"
-    state[key] = {
-        "last_reviewed_commit": resolved_commit,
-        "last_reviewed_date": resolved_date,
-        "reviewed_by": "human-confirmed",
-    }
-    save_state(repo_root, doc_set, state)
+    result = run_check(repo_root, doc_set_name)
+    try:
+        mark_reviewed(
+            repo_root,
+            doc_set,
+            doc,
+            heading,
+            result,
+            commit=resolved_commit,
+            date=resolved_date,
+        )
+    except ValueError:
+        # A drift between the pre-validation above and the fresh run_check()
+        # result (e.g. the heading exists in the doc file but not in the
+        # doc-set's discovered sections). Translated to the same CLI-shaped
+        # rejection as the pre-check — never a traceback, never the
+        # service's internal "CheckResult" wording.
+        print(
+            f"refresh_guidance: no '## {heading}' heading found in {doc}",
+            file=sys.stderr,
+        )
+        sys.exit(2)
     cli_common.qprint(
-        f"refresh_guidance: marked {key!r} reviewed at {resolved_commit} ({resolved_date})",
+        f"refresh_guidance: marked {f'{doc}#{heading}'!r} reviewed at "
+        f"{resolved_commit} ({resolved_date})",
         quiet=quiet,
     )
 
