@@ -3,7 +3,10 @@
 the failure posture. Git is mocked here; the topology behaviour that depends
 on real git output is covered by test/test_guard_rails_topology.py against
 actual repositories, because mocked git output would encode the very
-assumptions under test."""
+assumptions under test. Backlog-store access is injected as a fake
+BacklogClaimLookup (see backlog_claim_lookup.py) -- evaluate() takes the
+lookup as a required second argument, so no test monkeypatches the store
+read."""
 
 import io
 import json
@@ -17,6 +20,30 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import guard_rails  # noqa: E402
+import backlog_claim_lookup  # noqa: E402
+
+
+class FakeLookup:
+    """Minimal BacklogClaimLookup fake: items in, claims by slug out."""
+
+    def __init__(
+        self,
+        items: list[dict] | None = None,
+        claims: dict[str, object] | None = None,
+    ) -> None:
+        self._items = items or []
+        self._claims = claims or {}
+        self.in_progress_calls = 0
+
+    def in_progress_items(self) -> list[dict]:
+        self.in_progress_calls += 1
+        return list(self._items)
+
+    def ready_items(self, prefix: str | None = None) -> list[dict]:
+        return []
+
+    def claim_info(self, slug: str) -> object:
+        return self._claims.get(slug)
 
 
 class NormalizeToolTests(unittest.TestCase):
@@ -161,21 +188,28 @@ class EscapeHatchTests(unittest.TestCase):
         with mock.patch.dict("os.environ", {"GUARD_RAILS_OFF": "1"}):
             with mock.patch.object(guard_rails, "git") as git:
                 verdict = guard_rails.evaluate(
-                    guard_rails.Request("write", "/repo", "/repo/a.py")
+                    guard_rails.Request("write", "/repo", "/repo/a.py"), FakeLookup()
                 )
         self.assertEqual(verdict.decision, "allow")
         git.assert_not_called()
 
 
 class FailurePostureTests(unittest.TestCase):
+    def test_evaluate_requires_a_claim_lookup(self) -> None:
+        """The store reaches evaluate() only through its claims parameter:
+        calling it without one is an interface error, not a silent default
+        to the real store."""
+        with self.assertRaises(TypeError):
+            guard_rails.evaluate(guard_rails.Request("write", "/repo", "/repo/a.py"))
+
     def test_not_a_repo_allows_without_reading_the_backlog(self) -> None:
+        lookup = FakeLookup()
         with mock.patch.object(guard_rails, "repo_info", return_value=None):
-            with mock.patch.object(guard_rails, "load_in_progress") as load:
-                verdict = guard_rails.evaluate(
-                    guard_rails.Request("write", "/tmp", "/tmp/a.py")
-                )
+            verdict = guard_rails.evaluate(
+                guard_rails.Request("write", "/tmp", "/tmp/a.py"), lookup
+            )
         self.assertEqual(verdict.decision, "allow")
-        load.assert_not_called()
+        self.assertEqual(lookup.in_progress_calls, 0)
 
     def test_worktree_pointing_nowhere_skips_the_session_walk(self) -> None:
         """R4's fast path: a worktree whose write points at no in-progress
@@ -189,14 +223,13 @@ class FailurePostureTests(unittest.TestCase):
             branch="feature",
         )
         with mock.patch.object(guard_rails, "repo_info", return_value=info):
-            with mock.patch.object(guard_rails, "load_in_progress", return_value=[]):
-                with mock.patch.object(
-                    guard_rails, "_behind_origin_main", return_value=False
-                ):
-                    with mock.patch.object(guard_rails, "_session_identity") as session:
-                        verdict = guard_rails.evaluate(
-                            guard_rails.Request("write", "/wt", "/wt/a.py")
-                        )
+            with mock.patch.object(
+                guard_rails, "_behind_origin_main", return_value=False
+            ):
+                with mock.patch.object(guard_rails, "_session_identity") as session:
+                    verdict = guard_rails.evaluate(
+                        guard_rails.Request("write", "/wt", "/wt/a.py"), FakeLookup()
+                    )
         self.assertEqual(verdict.decision, "allow")
         session.assert_not_called()
 
@@ -214,28 +247,26 @@ class FailurePostureTests(unittest.TestCase):
         )
         with mock.patch.object(guard_rails, "repo_info", return_value=info):
             with mock.patch.object(
-                guard_rails,
-                "load_in_progress",
-                return_value=[
-                    {
-                        "id": "demo-slug",
-                        "status": "in-progress",
-                        "related_files": [],
-                        "claimed_by": None,
-                    }
-                ],
+                guard_rails, "_behind_origin_main", return_value=True
             ):
                 with mock.patch.object(
-                    guard_rails, "_behind_origin_main", return_value=True
+                    guard_rails,
+                    "_session_identity",
+                    return_value=("machine", 1, [1]),
                 ):
-                    with mock.patch.object(
-                        guard_rails,
-                        "_session_identity",
-                        return_value=("machine", 1, [1]),
-                    ):
-                        verdict = guard_rails.evaluate(
-                            guard_rails.Request("write", "/wt", "/wt/a.py")
-                        )
+                    verdict = guard_rails.evaluate(
+                        guard_rails.Request("write", "/wt", "/wt/a.py"),
+                        FakeLookup(
+                            items=[
+                                {
+                                    "id": "demo-slug",
+                                    "status": "in-progress",
+                                    "related_files": [],
+                                    "claimed_by": None,
+                                }
+                            ]
+                        ),
+                    )
         self.assertEqual(verdict.decision, "deny")
         self.assertIn("demo-slug", verdict.reason)
 
@@ -247,13 +278,13 @@ class FailurePostureTests(unittest.TestCase):
             is_bare=True,
             branch="main",
         )
+        lookup = FakeLookup()
         with mock.patch.object(guard_rails, "repo_info", return_value=info):
-            with mock.patch.object(guard_rails, "load_in_progress") as load:
-                verdict = guard_rails.evaluate(
-                    guard_rails.Request("write", "/repo.git", "/repo.git/x")
-                )
+            verdict = guard_rails.evaluate(
+                guard_rails.Request("write", "/repo.git", "/repo.git/x"), lookup
+            )
         self.assertEqual(verdict.decision, "allow")
-        load.assert_not_called()
+        self.assertEqual(lookup.in_progress_calls, 0)
 
     def test_feature_branch_in_a_main_checkout_allows(self) -> None:
         info = guard_rails.RepoInfo(
@@ -264,15 +295,16 @@ class FailurePostureTests(unittest.TestCase):
             branch="feature",
         )
         with mock.patch.object(guard_rails, "repo_info", return_value=info):
-            with mock.patch.object(guard_rails, "load_in_progress", return_value=[]):
-                with mock.patch.object(guard_rails, "_session_identity") as session:
-                    verdict = guard_rails.evaluate(
-                        guard_rails.Request("write", "/repo", "/repo/a.py")
-                    )
+            with mock.patch.object(guard_rails, "_session_identity") as session:
+                verdict = guard_rails.evaluate(
+                    guard_rails.Request("write", "/repo", "/repo/a.py"), FakeLookup()
+                )
         self.assertEqual(verdict.decision, "allow")
         session.assert_not_called()
 
     def test_unreadable_backlog_store_allows(self) -> None:
+        """An unreadable store is the fake's empty in-progress list: the
+        fail-open posture expressed as a lookup result."""
         info = guard_rails.RepoInfo(
             toplevel="/repo",
             common_dir="/repo/.git",
@@ -281,10 +313,9 @@ class FailurePostureTests(unittest.TestCase):
             branch="main",
         )
         with mock.patch.object(guard_rails, "repo_info", return_value=info):
-            with mock.patch.object(guard_rails, "load_in_progress", return_value=None):
-                verdict = guard_rails.evaluate(
-                    guard_rails.Request("write", "/repo", "/repo/a.py")
-                )
+            verdict = guard_rails.evaluate(
+                guard_rails.Request("write", "/repo", "/repo/a.py"), FakeLookup()
+            )
         self.assertEqual(verdict.decision, "allow")
 
 
@@ -302,13 +333,13 @@ class BusyMainCheckoutTests(unittest.TestCase):
             return common_dirs.get(directory)
 
         with mock.patch.object(guard_rails, "repo_info", return_value=self.MAIN):
-            with mock.patch.object(guard_rails, "load_in_progress", return_value=items):
-                with mock.patch.object(
-                    guard_rails, "common_dir_of", side_effect=fake_common_dir
-                ) as resolver:
-                    verdict = guard_rails.evaluate(
-                        guard_rails.Request("write", "/repo", "/repo/a.py")
-                    )
+            with mock.patch.object(
+                guard_rails, "common_dir_of", side_effect=fake_common_dir
+            ) as resolver:
+                verdict = guard_rails.evaluate(
+                    guard_rails.Request("write", "/repo", "/repo/a.py"),
+                    FakeLookup(items=items),
+                )
         return verdict, resolver
 
     def test_item_whose_worktree_shares_a_common_dir_denies(self) -> None:
@@ -394,7 +425,8 @@ class BashOverrideTests(unittest.TestCase):
             verdict = guard_rails.evaluate(
                 guard_rails.Request(
                     "bash", "/repo", "", command="git commit --no-verify"
-                )
+                ),
+                FakeLookup(),
             )
         ev.assert_called_once_with("git commit --no-verify", "/repo")
         self.assertEqual(verdict.decision, "deny")
@@ -526,9 +558,10 @@ class MainTests(unittest.TestCase):
             _, code = self._run(["--harness", "claude"], payload)
         self.assertEqual(code, 0)
         ev.assert_called_once()
-        (req,), _ = ev.call_args
+        req, claims = ev.call_args.args
         self.assertEqual(req.tool, "bash")
         self.assertEqual(req.command, "git commit")
+        self.assertIsInstance(claims, backlog_claim_lookup.LocalClaimLookup)
 
     def test_unparseable_stdin_allows_and_does_not_raise(self) -> None:
         _, code = self._run(["--harness", "claude"], "not json at all")
