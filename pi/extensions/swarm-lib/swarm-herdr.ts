@@ -3,7 +3,7 @@
 // interpretation for tab/agent/pane commands. Extracted verbatim from
 // swarm-tool.ts; no module state, no I/O.
 import { basename, dirname, join } from "node:path";
-import type { WorkerRecord } from "./swarm-scheduling";
+import type { PendingAmend, WorkerRecord } from "./swarm-scheduling";
 const AGENT_START_TIMEOUT_MS = 30_000;
 
 /**
@@ -299,6 +299,15 @@ export const AMEND_INSTRUCTION =
  * always returns agent_prompt_stalled. Confirmed live on 2026-09-02 against a
  * real pi; it is why the worker trust step was a prompt-plus-ack rather than
  * a prompt-plus-wait, before an environment variable removed the step.
+ *
+ * It is ALSO not usable for an amendment, for the mirror-image reason: an
+ * amendment is submitted while the worker is already `working`, and herdr's own
+ * contract says "it does not track turns: if the agent is already working, that
+ * active turn's completion may match" (confirmed against `herdr agent prompt
+ * --help` on 2026-09-10). An acknowledged amend would be acknowledged by the
+ * very turn it was meant to correct -- worse than no acknowledgement, because
+ * it looks like proof. Amendment delivery is tracked in the poll state machine
+ * instead; see `classifyAmendAck`.
  */
 export function buildAgentPromptArgv(
   agentId: string,
@@ -441,6 +450,9 @@ interface HerdrEnvelope {
     agent?: {
       agent_status?: string;
       pane_id?: string;
+      // Per-agent stamp from herdr's global state-change counter; read only as
+      // "did THIS agent change state since the last value I saw for it".
+      state_change_seq?: number;
       // Copilot-only: the confirmed session id, read by parseAgentSession
       // for attemptCrashRecovery's `--resume=` target. pi's parseAgentList
       // deliberately does NOT read this field for reconciliation (see its
@@ -692,4 +704,208 @@ export function waitResultDetail(stdout: string, stderr: string): string {
   const err = parseHerdrJson(stderr)?.error;
   if (err) return `${err.code ?? "unknown"}: ${err.message ?? stderr.trim()}`;
   return stdout.trim() || stderr.trim() || "(no output)";
+}
+
+// ---------------------------------------------------------------------------
+// Amendment hold -- the teardown race a mid-flight correction creates.
+//
+// `swarm_amend` prompts a worker that is, by definition, already `working`, so
+// the terminal wait already tracking that turn can settle on ITS idle before
+// the queued correction ever starts, and the run tears the worker down with the
+// correction still unread. Nothing herdr offers can name the amendment's turn
+// (no turn id, no queue length, and `--wait` on a working agent matches the
+// active turn -- see `buildAgentPromptArgv`), so the hold below is built from
+// the two observations that ARE sound, each measured against herdr 0.8.2 on
+// 2026-09-10:
+//
+//   1. `agent wait` matches the agent's CURRENT state immediately, so a
+//      `--until working` wait proves nothing while the worker is working but is
+//      decisive once we have seen it idle: the turn that produced that idle can
+//      no longer be matched, so any `working` after it is a NEW turn.
+//   2. `state_change_seq` is stamped per agent from a global counter. It cannot
+//      be subtracted (other agents advance it), but a value greater than the
+//      last one seen FOR THIS AGENT means that agent changed state -- which
+//      covers a turn that started and finished in the gap between two waits.
+// ---------------------------------------------------------------------------
+
+/**
+ * How long the run must have kept working AFTER the correction was submitted for
+ * pi to have taken it as a steering message.
+ *
+ * pi delivers an Enter-submitted message given mid-work "after the current
+ * assistant turn finishes executing its tool calls" -- inside the run, at a turn
+ * boundary seconds away. So a worker that was still working well past the amend
+ * consumed the correction; one that settled almost immediately after it is the
+ * race, because its run ended before any boundary arrived. 5 s matches herdr's
+ * own documented state-transition window rather than being picked for feel.
+ */
+export const AMEND_STEERING_WINDOW_MS = 5_000;
+
+/**
+ * How long the post-idle ack wait watches for the amendment's turn to start.
+ * Doubles the 5 s steering window so a queued turn that starts late is still
+ * caught, and mirrors `PROMPT_ACK_TIMEOUT_MS`, which is this same question asked
+ * of a freshly launched worker.
+ */
+export const AMEND_ACK_TIMEOUT_MS = 10_000;
+
+/** How many ack waits one hold may arm before it must report something. */
+export const AMEND_ACK_MAX_CHECKS = 3;
+
+/**
+ * Wall-clock ceiling on a hold, independent of the check count.
+ *
+ * Needed because held time is IDLE time, and `elapsedWorkingMs` only accumulates
+ * working segments: a worker parked idle inside a hold adds nothing to the
+ * per-item budget, so without this bound a hold could extend a worker's life
+ * past `deadlineMs` without ever tripping it. Bounded to roughly the check cap
+ * x the ack timeout so the two limits agree, which keeps a hold -- whose whole
+ * job is to wait briefly -- from becoming a stall.
+ */
+export const AMEND_HOLD_MAX_MS = AMEND_ACK_TIMEOUT_MS * AMEND_ACK_MAX_CHECKS;
+
+/** The `result.agent.state_change_seq` of a herdr envelope, if it carries one. */
+export function parseAgentStateSeq(stdout: string): number | undefined {
+  const value = parseHerdrJson(stdout)?.result?.agent?.state_change_seq;
+  return typeof value === "number" ? value : undefined;
+}
+
+/**
+ * What a post-idle ack wait's outcome means for an outstanding amendment.
+ *
+ * `turn_started` -- a new turn began, so the correction is being acted on.
+ * `parked` -- the new turn stopped at a gate: started, and now needs a relay.
+ * `changed_while_unarmed` -- the agent changed state inside the gap between
+ * observing the settle and arming this wait, i.e. a turn started AND finished
+ * unobserved. Reported rather than inferred from a naive re-arm: arming a
+ * terminal wait against the now-idle worker would settle instantly and spin.
+ * `settled_unchanged` -- nothing at all happened since the settle, so no new
+ * turn is coming; the caller decides between steering and a dropped amend.
+ * `gone` -- herdr says the agent is positively absent. The ONLY absence verdict,
+ * per this family's fail-open rule.
+ * `inconclusive` -- an unparseable envelope or a status this code does not
+ * know. Never completion, never death.
+ */
+export type AmendAckOutcome =
+  | "turn_started"
+  | "parked"
+  | "changed_while_unarmed"
+  | "settled_unchanged"
+  | "gone"
+  | "inconclusive";
+
+/**
+ * Classify the probe taken after an ack wait came back inconclusive-by-timeout.
+ *
+ * Takes the `agent get` result (a timeout envelope carries no agent state), but
+ * the same reading applies to a settled wait envelope: pass whichever answer is
+ * being judged, and `lastObservedSeq` as the seq seen when the hold began.
+ */
+export function classifyAmendAck(
+  exitCode: number,
+  stdout: string,
+  stderr: string,
+  lastObservedSeq: number | null,
+): AmendAckOutcome {
+  if (exitCode !== 0) {
+    const code = parseHerdrJson(stderr)?.error?.code;
+    if (code === "agent_not_found") return "gone";
+    return "inconclusive";
+  }
+  const status = parseHerdrJson(stdout)?.result?.agent?.agent_status;
+  if (status === "working") return "turn_started";
+  if (status === "blocked") return "parked";
+  if (status !== "idle" && status !== "done") return "inconclusive";
+  const seq = parseAgentStateSeq(stdout);
+  if (seq === undefined || lastObservedSeq === null) return "inconclusive";
+  return seq > lastObservedSeq ? "changed_while_unarmed" : "settled_unchanged";
+}
+
+/**
+ * What an outstanding amendment amounts to, given the two sound observations.
+ *
+ * `confirmed` -- a new turn started after the idle we held. For an unattended
+ * worker this is the correction: there is no human at the pane, and a relay
+ * answer resumes the CURRENT turn rather than queueing input, so nothing else
+ * can start a turn after a settled idle.
+ * `steered` -- no new turn, but the run stayed working past the steering window
+ * after the amend, so pi took it as steering inside the turn that has now
+ * finished. Probable, and reported as such: herdr gives no way to prove it.
+ * `unpicked` -- no new turn and the run ended within the steering window, so the
+ * correction was very likely never read. This is the defect the hold exists to
+ * name instead of masking as a clean finish.
+ */
+export type AmendHoldVerdict = "confirmed" | "steered" | "unpicked";
+
+export function amendHoldVerdict(opts: {
+  turnObserved: boolean;
+  runWorkedMs: number;
+  steeringWindowMs?: number;
+}): AmendHoldVerdict {
+  if (opts.turnObserved) return "confirmed";
+  const window = opts.steeringWindowMs ?? AMEND_STEERING_WINDOW_MS;
+  return opts.runWorkedMs >= window ? "steered" : "unpicked";
+}
+
+/** How long a worker has been held for an amendment, in wall-clock ms. */
+export function amendHoldMs(pending: { requestedAtMs: number }, now: number): number {
+  return Math.max(0, now - pending.requestedAtMs);
+}
+
+/**
+ * Whether a hold has used up both of its own bounds and must now report.
+ *
+ * Checked on the hold's OWN axes, never on `elapsedWorkingMs`: a held worker is
+ * idle by construction, idle time is not accumulated as working time, and so a
+ * budget-only bound would let a hold extend a worker's life indefinitely without
+ * ever tripping the budget it was supposed to be constrained by.
+ */
+export function amendHoldExpired(pending: PendingAmend, now: number): boolean {
+  return pending.checks >= AMEND_ACK_MAX_CHECKS || amendHoldMs(pending, now) >= AMEND_HOLD_MAX_MS;
+}
+
+/**
+ * The `detail` text for a released terminal event, naming what was actually
+ * observed about the amendment. Each verdict is written to be read by the
+ * orchestrator relaying the run to a human, so the uncertain ones say they are
+ * uncertain rather than borrowing the confident one's phrasing.
+ */
+export function amendVerdictDetail(
+  verdict: AmendHoldVerdict,
+  worker: { agent: string; slug: string },
+  holdMs: number,
+): string {
+  const held = `${Math.round(holdMs / 1000)}s`;
+  switch (verdict) {
+    case "confirmed":
+      return `amend_confirmed: a new turn started after the amendment was submitted, so the correction was picked up (held ${held} to see it).`;
+    case "steered":
+      return (
+        `amend_steered: the worker kept working ${held} after the amendment, so pi most likely took it as a steering message inside the turn that has now finished. ` +
+        "NOT positively confirmed -- if the keystroke never reached the agent, herdr offers nothing that can tell that apart from this. Check the pane before treating the item as corrected."
+      );
+    case "unpicked":
+      return (
+        `amend_unpicked: the run settled ${held} after the amendment and no new turn started, so the queued correction was very likely never read. ` +
+        `The worker is being finished off WITHOUT its correction landing -- re-amend after restarting it, or pick the item up in a normal session. (${worker.agent} / ${worker.slug})`
+      );
+  }
+}
+
+/**
+ * The note appended to a report where a hold could not delay the close, so an
+ * outstanding amendment died with the worker. `now` is a parameter rather than
+ * an internal clock reading so the elapsed figure is assertable.
+ */
+export function amendOutstandingNote(pending: { requestedAtMs: number }, now: number): string {
+  return (
+    "NOTE: an amendment was outstanding for this worker and was NOT confirmed picked up " +
+    `(submitted ${Math.round(amendHoldMs(pending, now) / 1000)}s ago) -- do not report the item as having worked its corrected premises.`
+  );
+}
+
+/** A worker's reported `agent_status`, if the envelope carries one. */
+export function parseAgentStatus(stdout: string): string | undefined {
+  const value = parseHerdrJson(stdout)?.result?.agent?.agent_status;
+  return typeof value === "string" ? value : undefined;
 }

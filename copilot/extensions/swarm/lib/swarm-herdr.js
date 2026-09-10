@@ -239,9 +239,69 @@ function waitResultDetail(stdout, stderr) {
   if (err) return `${err.code ?? "unknown"}: ${err.message ?? stderr.trim()}`;
   return stdout.trim() || stderr.trim() || "(no output)";
 }
+var AMEND_STEERING_WINDOW_MS = 5e3;
+var AMEND_ACK_TIMEOUT_MS = 1e4;
+var AMEND_ACK_MAX_CHECKS = 3;
+var AMEND_HOLD_MAX_MS = AMEND_ACK_TIMEOUT_MS * AMEND_ACK_MAX_CHECKS;
+function parseAgentStateSeq(stdout) {
+  const value = parseHerdrJson(stdout)?.result?.agent?.state_change_seq;
+  return typeof value === "number" ? value : void 0;
+}
+function classifyAmendAck(exitCode, stdout, stderr, lastObservedSeq) {
+  if (exitCode !== 0) {
+    const code = parseHerdrJson(stderr)?.error?.code;
+    if (code === "agent_not_found") return "gone";
+    return "inconclusive";
+  }
+  const status = parseHerdrJson(stdout)?.result?.agent?.agent_status;
+  if (status === "working") return "turn_started";
+  if (status === "blocked") return "parked";
+  if (status !== "idle" && status !== "done") return "inconclusive";
+  const seq = parseAgentStateSeq(stdout);
+  if (seq === void 0 || lastObservedSeq === null) return "inconclusive";
+  return seq > lastObservedSeq ? "changed_while_unarmed" : "settled_unchanged";
+}
+function amendHoldVerdict(opts) {
+  if (opts.turnObserved) return "confirmed";
+  const window = opts.steeringWindowMs ?? AMEND_STEERING_WINDOW_MS;
+  return opts.runWorkedMs >= window ? "steered" : "unpicked";
+}
+function amendHoldMs(pending, now) {
+  return Math.max(0, now - pending.requestedAtMs);
+}
+function amendHoldExpired(pending, now) {
+  return pending.checks >= AMEND_ACK_MAX_CHECKS || amendHoldMs(pending, now) >= AMEND_HOLD_MAX_MS;
+}
+function amendVerdictDetail(verdict, worker, holdMs) {
+  const held = `${Math.round(holdMs / 1e3)}s`;
+  switch (verdict) {
+    case "confirmed":
+      return `amend_confirmed: a new turn started after the amendment was submitted, so the correction was picked up (held ${held} to see it).`;
+    case "steered":
+      return `amend_steered: the worker kept working ${held} after the amendment, so pi most likely took it as a steering message inside the turn that has now finished. NOT positively confirmed -- if the keystroke never reached the agent, herdr offers nothing that can tell that apart from this. Check the pane before treating the item as corrected.`;
+    case "unpicked":
+      return `amend_unpicked: the run settled ${held} after the amendment and no new turn started, so the queued correction was very likely never read. The worker is being finished off WITHOUT its correction landing -- re-amend after restarting it, or pick the item up in a normal session. (${worker.agent} / ${worker.slug})`;
+  }
+}
+function amendOutstandingNote(pending, now) {
+  return `NOTE: an amendment was outstanding for this worker and was NOT confirmed picked up (submitted ${Math.round(amendHoldMs(pending, now) / 1e3)}s ago) -- do not report the item as having worked its corrected premises.`;
+}
+function parseAgentStatus(stdout) {
+  const value = parseHerdrJson(stdout)?.result?.agent?.agent_status;
+  return typeof value === "string" ? value : void 0;
+}
 export {
+  AMEND_ACK_MAX_CHECKS,
+  AMEND_ACK_TIMEOUT_MS,
+  AMEND_HOLD_MAX_MS,
   AMEND_INSTRUCTION,
+  AMEND_STEERING_WINDOW_MS,
   WORKER_UNATTENDED_ENV,
+  amendHoldExpired,
+  amendHoldMs,
+  amendHoldVerdict,
+  amendOutstandingNote,
+  amendVerdictDetail,
   buildAgentGetArgv,
   buildAgentListArgv,
   buildAgentPromptArgv,
@@ -255,6 +315,7 @@ export {
   buildTabCreateArgv,
   buildTabListArgv,
   buildWorkerCloseArgv,
+  classifyAmendAck,
   classifyResyncGet,
   classifyTimeoutProbe,
   classifyWaitResult,
@@ -264,6 +325,8 @@ export {
   parseAgentList,
   parseAgentListIds,
   parseAgentSession,
+  parseAgentStateSeq,
+  parseAgentStatus,
   parseTabCreate,
   reasonHeadline,
   tabPresence,

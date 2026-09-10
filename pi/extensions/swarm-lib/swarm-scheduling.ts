@@ -166,6 +166,22 @@ export interface WorkerRecord {
    * rewritten underneath it.
    */
   amendments?: Amendment[];
+  /**
+   * A correction submitted mid-turn whose delivery the run has not yet accounted
+   * for, or absent when nothing is outstanding.
+   *
+   * This exists because a submission into a `working` agent cannot be
+   * acknowledged: herdr's prompt `--wait` may match the very turn being
+   * corrected, and the terminal wait already armed can settle on that turn's
+   * idle and tear the worker down with the correction still unread. The marker
+   * makes the run hold that teardown until one of the two sound observations
+   * lands (see `classifyAmendAck`), so a lost amendment becomes a named report
+   * instead of an unqualified `finished`.
+   *
+   * Optional so a state file written before this existed loads unchanged and
+   * behaves exactly as it did: no marker, no hold.
+   */
+  pendingAmend?: PendingAmend;
   lifecycle: WorkerLifecycle;
   /** Terminal event retained when serial teardown could not be confirmed. */
   terminalOutcome?: "finished" | "timed_out" | "error";
@@ -507,10 +523,72 @@ export interface Amendment {
   by: string;
 }
 
+/**
+ * An outstanding amendment and the observations made about it.
+ *
+ * Persisted rather than held in a runtime map for the same reason the
+ * working-time fields beside it are: a restart that dropped the marker would
+ * restore the exact race it protects against, silently, on the one worker that
+ * had a correction in flight.
+ */
+export interface PendingAmend {
+  /** Epoch ms the correction was submitted. Starts both the steering clock and the hold bound. */
+  requestedAtMs: number;
+  /**
+   * The agent's `state_change_seq` read immediately before submission, or null
+   * if that probe gave no usable answer -- in which case the gap tie-breaker
+   * cannot fire and the hold falls back to the elapsed axis alone.
+   */
+  seqAtRequest: number | null;
+  /** The last `state_change_seq` observed FOR THIS AGENT while the hold was live. */
+  lastObservedSeq: number | null;
+  /**
+   * How long the run kept working AFTER the correction was submitted, as
+   * measured when the hold first fired, or -1 until it has.
+   *
+   * The second release axis. The armed terminal wait settles promptly on the
+   * transition, so this bounds how long pi had to take the message as steering
+   * inside the run -- see `AMEND_STEERING_WINDOW_MS`. Measured once, at the
+   * first hold, because a later hold would measure a turn this whole question is
+   * about.
+   */
+  runWorkedAfterAmendMs: number;
+  /**
+   * `await_turn` -- the run settled with the correction unacknowledged and the
+   * hold is watching for the amendment's turn to start.
+   * `await_terminal` -- that turn was seen starting; the hold is now waiting for
+   * it to finish, and the settle that follows releases as `confirmed`.
+   */
+  phase: "await_turn" | "await_terminal";
+  /** How many ack waits this hold has armed, bounded by `AMEND_ACK_MAX_CHECKS`. */
+  checks: number;
+  /**
+   * Whether the check-in for this hold has been reported. A hold pushes exactly
+   * one `still_working` rather than one per settle, so a worker that keeps
+   * settling cannot flood the event stream the orchestrator drains.
+   */
+  checkInReported: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Concurrency and pane accounting -- pure, so the cap/backpressure rules are
 // independently testable from the async pool machinery that calls them.
 // ---------------------------------------------------------------------------
+
+/**
+ * Workers with a correction in flight whose delivery the run has not accounted
+ * for. Held separately from `activeWorkerCount` on purpose: these workers ARE
+ * active, and their slot must stay occupied, but the orchestrator needs to know
+ * WHY nothing is settling, or a hold reads as a stall.
+ */
+export function pendingAmendWorkers(state: SwarmState): WorkerRecord[] {
+  return state.workers.filter((w) => w.pendingAmend !== undefined);
+}
+
+/** How many workers are being held open for an unacknowledged amendment. */
+export function pendingAmendCount(state: SwarmState): number {
+  return pendingAmendWorkers(state).length;
+}
 
 export function activeWorkerCount(state: SwarmState): number {
   return state.workers.filter((w) => w.lifecycle === "active").length;

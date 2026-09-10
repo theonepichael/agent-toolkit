@@ -117,6 +117,12 @@ function selectSchedulable(candidates, takenPaths, headroom, mode = "concurrent"
   }
   return { slugs, deferred, skipped, refused };
 }
+function pendingAmendWorkers(state) {
+  return state.workers.filter((w) => w.pendingAmend !== void 0);
+}
+function pendingAmendCount(state) {
+  return pendingAmendWorkers(state).length;
+}
 function activeWorkerCount(state) {
   return state.workers.filter((w) => w.lifecycle === "active").length;
 }
@@ -154,6 +160,8 @@ export {
   openPaneSoftCap,
   parseReadyItems,
   parseShownItem,
+  pendingAmendCount,
+  pendingAmendWorkers,
   selectSchedulable,
   spawnBudget,
   staleWorkerRecords,

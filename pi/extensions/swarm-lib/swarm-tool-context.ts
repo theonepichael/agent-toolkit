@@ -18,17 +18,26 @@ import {
   openPaneSoftCap,
   parseReadyItems,
   parseShownItem,
+  pendingAmendWorkers,
   selectSchedulable,
   spawnBudget,
   staleWorkerRecords,
   stalledRelayWorkers,
   type ReadyItem,
   type ExecutionMode,
+  type PendingAmend,
   type SwarmState,
   type WorkerRecord,
 } from "./swarm-scheduling";
 import {
+  AMEND_ACK_MAX_CHECKS,
+  AMEND_ACK_TIMEOUT_MS,
   AMEND_INSTRUCTION,
+  amendHoldExpired,
+  amendHoldMs,
+  amendHoldVerdict,
+  amendOutstandingNote,
+  amendVerdictDetail,
   buildAgentGetArgv,
   buildAgentListArgv,
   buildAgentPromptArgv,
@@ -41,6 +50,7 @@ import {
   buildTabCreateArgv,
   buildTabListArgv,
   buildWorkerCloseArgv,
+  classifyAmendAck,
   classifyResyncGet,
   classifyTimeoutProbe,
   classifyWaitResult,
@@ -49,10 +59,13 @@ import {
   paneIdentityMismatch,
   parseAgentList,
   parseAgentSession,
+  parseAgentStateSeq,
+  parseAgentStatus,
   parseTabCreate,
   reasonHeadline,
   waitResultDetail,
   tabPresence,
+  type AmendAckOutcome,
   type PollEventKind,
   type ProbeResult,
 } from "./swarm-herdr";
@@ -544,7 +557,13 @@ export class SwarmToolContext {
             status ?? "gone"
           } (finished or dead), but its finish was never reported through ` +
           "swarm_poll; outcome inferred, not observed. Verify the item's state before " +
-          `treating it as complete.${renderCaptureOffers(offers)}`;
+          `treating it as complete.${
+            // This path reaches a close without ever passing a settle, so an
+            // outstanding amendment dies here. Closing anyway is correct -- a
+            // refusal would strand the serial queue on a worker herdr already
+            // calls gone -- but the hold being discarded has to be said.
+            w.pendingAmend ? ` ${amendOutstandingNote(w.pendingAmend, Date.now())}` : ""
+          }${renderCaptureOffers(offers)}`;
         return { worker: w, confirmedGone, line };
       }),
     );
@@ -893,8 +912,248 @@ export class SwarmToolContext {
     void this.settleWait(rt, worker, timeoutMs);
   }
 
+  /**
+   * Arm the post-idle watch for an amendment's turn to start.
+   *
+   * Separate from `armWait` because it asks a different question: not "has this
+   * worker finished" but "has a NEW turn begun". herdr's wait matches the
+   * agent's CURRENT state, so the two cannot share one armed wait -- which is
+   * precisely why the terminal wait settling on the active turn's idle lost the
+   * correction in the first place.
+   */
+  private armAmendAckWait(rt: RunRuntime, worker: WorkerRecord): void {
+    if (rt.inFlight.has(worker.agent)) return;
+    rt.inFlight.add(worker.agent);
+    void this.settleAmendAck(rt, worker);
+  }
+
+  /** Persist a mutated worker through the run's cached state. */
+  private persistRun(rt: RunRuntime): void {
+    const state = this.activeRuns.get(rt.runId);
+    if (state) this.persist(state);
+  }
+
+  /**
+   * Decide what a terminal settle means while an amendment is outstanding.
+   *
+   * Returns the event to report, or null when the hold was armed instead and
+   * nothing should be reported yet. The hold can only ever be armed together
+   * with a wait -- an un-closeable worker with nothing armed would hold its slot
+   * forever, which is a worse failure than the silent loss this prevents.
+   */
+  private amendHoldDecision(
+    rt: RunRuntime,
+    worker: WorkerRecord,
+    pending: PendingAmend,
+    settleStdout: string,
+  ): { event?: PollEvent; rearm?: "terminal" | "ack" } {
+    const now = Date.now();
+    const seq = parseAgentStateSeq(settleStdout);
+    if (seq !== undefined) pending.lastObservedSeq = seq;
+
+    // The amended turn finished: that is the acknowledgement.
+    if (pending.phase === "await_terminal") {
+      const detail = amendVerdictDetail("confirmed", worker, amendHoldMs(pending, now));
+      worker.pendingAmend = undefined;
+      this.persistRun(rt);
+      return {
+        event: {
+          kind: "finished",
+          agent: worker.agent,
+          slug: worker.slug,
+          paneId: worker.paneId,
+          detail,
+        },
+      };
+    }
+
+    // Measured here because the armed wait returns promptly on the transition,
+    // so now is when the run ended -- and how long it ran after the correction
+    // landed is the second release axis. No later hold may overwrite it.
+    if (pending.runWorkedAfterAmendMs < 0) {
+      pending.runWorkedAfterAmendMs = Math.max(0, now - pending.requestedAtMs);
+    }
+
+    if (amendHoldExpired(pending, now)) {
+      const verdict = amendHoldVerdict({
+        turnObserved: false,
+        runWorkedMs: pending.runWorkedAfterAmendMs,
+      });
+      const detail = amendVerdictDetail(verdict, worker, amendHoldMs(pending, now));
+      worker.pendingAmend = undefined;
+      this.persistRun(rt);
+      return {
+        event: {
+          kind: "finished",
+          agent: worker.agent,
+          slug: worker.slug,
+          paneId: worker.paneId,
+          detail,
+        },
+      };
+    }
+
+    pending.checks += 1;
+    // One check-in per hold, not one per settle: a held worker that keeps
+    // settling must not flood the stream the orchestrator drains, and a
+    // check-in is not an outcome -- it frees no slot.
+    if (!pending.checkInReported) {
+      pending.checkInReported = true;
+      worker.checkIns = (worker.checkIns ?? 0) + 1;
+      rt.pendingEvents.push({
+        kind: "still_working",
+        agent: worker.agent,
+        slug: worker.slug,
+        paneId: worker.paneId,
+        elapsedMs: elapsedWorkingMs(worker, now) ?? 0,
+        checkIn: worker.checkIns,
+        detail: `amendment held: ${pending.checks}/${AMEND_ACK_MAX_CHECKS} ack watches armed, watching for the correction's turn to start before this worker can be finished off.`,
+      });
+      this.wakeWaiters(rt);
+    }
+    this.persistRun(rt);
+    return { rearm: "ack" };
+  }
+
+  /**
+   * The ack wait's own settle: watch for the amendment's turn starting.
+   *
+   * Every branch that keeps waiting must leave exactly one wait armed, and does
+   * so by returning a `rearm` directive rather than arming inline -- this
+   * function's `finally` clears `inFlight`, and arming before that would let a
+   * later poll arm a second concurrent wait for the same worker.
+   */
+  private async settleAmendAck(rt: RunRuntime, worker: WorkerRecord): Promise<void> {
+    let event: PollEvent | null = null;
+    let rearm: "terminal" | "ack" | null = null;
+    try {
+      const pending = worker.pendingAmend;
+      if (!pending) return; // cleared by another path while this wait was armed
+
+      const ack = await this.herdr(
+        buildAgentWaitArgv(worker.agent, ["working", "blocked"], AMEND_ACK_TIMEOUT_MS),
+      );
+      const ackStatus = ack.code === 0 ? parseAgentStatus(ack.stdout) : undefined;
+
+      let outcome: AmendAckOutcome;
+      let probe: ProbeResult | null = null;
+      if (ackStatus === "working" || ackStatus === "blocked") {
+        // A turn began after the idle we held. The active turn that produced
+        // that idle can no longer be matched (herdr matches current state), so
+        // this is a genuinely new turn.
+        outcome = ackStatus === "working" ? "turn_started" : "parked";
+      } else {
+        probe = await this.probeLiveness(worker.agent);
+        outcome = probe.abandoned
+          ? "inconclusive"
+          : classifyAmendAck(probe.code, probe.stdout, probe.stderr, pending.lastObservedSeq);
+      }
+
+      const now = Date.now();
+      switch (outcome) {
+        case "turn_started":
+        case "changed_while_unarmed": {
+          // The turn is running, or ran and settled inside the gap between the
+          // two waits. Either way the correction is in hand: wait for the
+          // terminal settle instead, and report it as confirmed. Re-arming a
+          // terminal wait here rather than releasing immediately is what keeps
+          // the amended turn's own output from being cut off mid-flight.
+          pending.phase = "await_terminal";
+          const seen =
+            ackStatus === "working"
+              ? parseAgentStateSeq(ack.stdout)
+              : probe
+                ? parseAgentStateSeq(probe.stdout)
+                : undefined;
+          if (seen !== undefined) pending.lastObservedSeq = seen;
+          rearm = "terminal";
+          break;
+        }
+        case "parked": {
+          // The amendment's turn started and stopped at a gate. A relay is never
+          // something to withhold, so report it -- and keep the hold, because
+          // the correction still has to finish its work once answered.
+          pending.phase = "await_terminal";
+          rearm = null;
+          event = {
+            kind: "blocked",
+            agent: worker.agent,
+            slug: worker.slug,
+            paneId: worker.paneId,
+          };
+          break;
+        }
+        case "gone": {
+          worker.pendingAmend = undefined;
+          this.persistRun(rt);
+          event = {
+            kind: "error",
+            agent: worker.agent,
+            slug: worker.slug,
+            paneId: worker.paneId,
+            detail: `worker vanished while an amendment was outstanding. ${amendOutstandingNote(pending, now)}`,
+          };
+          break;
+        }
+        case "settled_unchanged":
+        case "inconclusive": {
+          pending.checks += 1;
+          if (amendHoldExpired(pending, now)) {
+            // The steering axis is measured at the hold, where the armed wait
+            // first reported the run over; re-deriving it from `now` here would
+            // count the ack watches themselves as working time and turn every
+            // expiry into a false `amend_steered`.
+            const runWorkedMs =
+              pending.runWorkedAfterAmendMs >= 0
+                ? pending.runWorkedAfterAmendMs
+                : Math.max(0, now - pending.requestedAtMs);
+            const verdict = amendHoldVerdict({ turnObserved: false, runWorkedMs });
+            const heldMs = amendHoldMs(pending, now);
+            worker.pendingAmend = undefined;
+            this.persistRun(rt);
+            event = {
+              kind: "finished",
+              agent: worker.agent,
+              slug: worker.slug,
+              paneId: worker.paneId,
+              detail: amendVerdictDetail(verdict, worker, heldMs),
+            };
+          } else {
+            rearm = "ack";
+          }
+          break;
+        }
+      }
+      this.persistRun(rt);
+    } catch (err) {
+      event = {
+        kind: "error",
+        agent: worker.agent,
+        slug: worker.slug,
+        paneId: worker.paneId,
+        detail: `amend_ack_wait_failed: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    } finally {
+      rt.inFlight.delete(worker.agent);
+    }
+
+    const runState = this.activeRuns.get(rt.runId);
+    if (runState && !runState.workers.some((w) => w.agent === worker.agent)) {
+      this.wakeWaiters(rt);
+      return;
+    }
+    if (event) {
+      rt.pendingEvents.push(event);
+      this.wakeWaiters(rt);
+      return;
+    }
+    if (rearm === "terminal") this.armWait(rt, worker);
+    else if (rearm === "ack") this.armAmendAckWait(rt, worker);
+  }
+
   private async settleWait(rt: RunRuntime, worker: WorkerRecord, timeoutMs: number): Promise<void> {
     let event: PollEvent | null = null;
+    let rearmAfter: "terminal" | "ack" | null = null;
     try {
       const result = await this.herdr(
         buildAgentWaitArgv(worker.agent, ["idle", "done", "blocked"], timeoutMs),
@@ -956,8 +1215,31 @@ export class SwarmToolContext {
               : undefined;
       }
 
-      event = { kind, agent: worker.agent, slug: worker.slug, paneId: worker.paneId };
-      if (detail !== undefined) event.detail = detail;
+      // A correction is in flight for this worker. Its turn may not have begun
+      // yet, so this settle is not evidence of anything -- holding it is the
+      // entire point, because the alternative is closing the tab with the
+      // amendment unread. `blocked` is deliberately NOT held: a gate has to
+      // reach the orchestrator for relay or the run deadlocks on a picker
+      // nobody will answer.
+      const pending = worker.pendingAmend;
+      if (pending && kind === "finished") {
+        const decision = this.amendHoldDecision(rt, worker, pending, result.stdout);
+        if (decision.event) {
+          event = decision.event;
+        } else {
+          rearmAfter = decision.rearm ?? null;
+          event = null;
+        }
+      } else {
+        event = { kind, agent: worker.agent, slug: worker.slug, paneId: worker.paneId };
+        if (detail !== undefined) event.detail = detail;
+        if (pending && (kind === "error" || kind === "timed_out")) {
+          // Never suppress these, but never let them read as a clean end either:
+          // the correction died here, and that has to be said.
+          event.detail =
+            `${event.detail ?? ""} ${amendOutstandingNote(pending, Date.now())}`.trim();
+        }
+      }
     } catch (err) {
       event = {
         kind: "error",
@@ -972,6 +1254,21 @@ export class SwarmToolContext {
     const runState = this.activeRuns.get(rt.runId);
     if (runState && !runState.workers.some((w) => w.agent === worker.agent)) {
       this.wakeWaiters(rt);
+      return;
+    }
+    if (rearmAfter === "ack") {
+      // Armed after the `finally` cleared the flag, so exactly one wait is live
+      // for this worker -- arming inside the try would leave the flag cleared by
+      // the `finally` and let the next poll stack a second wait on top.
+      this.armAmendAckWait(rt, worker);
+      return;
+    }
+    if (rearmAfter === "terminal") {
+      this.armWait(rt, worker);
+      return;
+    }
+    if (event === null) {
+      // Held with nothing to report; the ack wait owns the next wake-up.
       return;
     }
     rt.pendingEvents.push(event);
@@ -1493,6 +1790,21 @@ export class SwarmToolContext {
           .join(", ")}.`
       : "";
     const resyncNote = resyncNotes.length ? `\n\n${resyncNotes.join(" ")}` : "";
+    // A held worker reports check-ins, not outcomes, so without this the
+    // orchestrator sees a run where nothing settles and no explanation. It also
+    // has to be said here rather than inferred: a hold occupies its slot on
+    // purpose, and a reader who cannot see why will conclude the run is wedged.
+    const held = state ? pendingAmendWorkers(state) : [];
+    const amendNote = held.length
+      ? `\n\n${held.length} worker(s) are being held open for an unacknowledged amendment and will not settle until it is accounted for: ${held
+          .map(
+            (w) =>
+              `${w.agent} (${w.slug}, phase ${w.pendingAmend?.phase}, watch ${w.pendingAmend?.checks ?? 0}/${AMEND_ACK_MAX_CHECKS})`,
+          )
+          .join(
+            ", ",
+          )}. Their slots stay occupied -- do NOT spawn replacements or treat the run as drained.`
+      : "";
 
     return {
       content: [
@@ -1515,7 +1827,8 @@ export class SwarmToolContext {
                   .join("\n\n")
               : "No active workers to poll.") +
             stalledNote +
-            resyncNote,
+            resyncNote +
+            amendNote,
         },
       ],
       details: { events },
@@ -1574,20 +1887,47 @@ export class SwarmToolContext {
     }
 
     worker.amendments = [...(worker.amendments ?? []), { at: Date.now(), by: "swarm_amend" }];
+    // Stamped AFTER the submission succeeded and BEFORE the response is
+    // returned, and persisted with it: a marker written before a refused prompt
+    // would hold a worker that was never amended, and one written only after the
+    // tool returned could be lost to a crash in between, silently restoring the
+    // race this exists to close.
+    const existing = worker.pendingAmend;
+    const seq = await this.herdr(buildAgentGetArgv(worker.agent), signal);
+    worker.pendingAmend = {
+      requestedAtMs: Date.now(),
+      seqAtRequest: parseAgentStateSeq(seq.stdout) ?? null,
+      lastObservedSeq: parseAgentStateSeq(seq.stdout) ?? null,
+      phase: "await_turn",
+      // One hold, not two: a second correction supersedes the first in the same
+      // backlog record, so the outstanding watch is re-armed rather than stacked.
+      checks: existing ? existing.checks + 1 : 0,
+      checkInReported: false,
+      runWorkedAfterAmendMs: -1,
+    };
     this.persist(state);
 
+    const superseded = existing
+      ? ` This supersedes an earlier amendment still being watched (watch ${existing.checks + 1}), whose correction the updated item has already replaced. `
+      : "";
     return {
       content: [
         {
           type: "text",
           text:
-            `amended: ${worker.agent} (${worker.slug}, pane ${worker.paneId}) was told to re-read its item. ` +
-            "Nothing confirms it has done so -- the instruction lands as its next input, which is a correction " +
-            "while it is still planning and a rewrite of finished work if it is not. Watch its next poll event, " +
-            "and say in the end-of-run digest that this item was amended mid-flight.",
+            `amended: ${worker.agent} (${worker.slug}, pane ${worker.paneId}) was told to re-read its item, ` +
+            "and the run now holds its teardown until that correction is accounted for. " +
+            "At submission nothing is known yet -- the verdict arrives on this worker's next poll " +
+            "events as one of " +
+            "`amend_confirmed` (the amendment's turn ran), `amend_steered` (the worker kept working " +
+            "past the steering window, so the correction was most likely taken inside the finished " +
+            "turn -- not positively confirmed) or `amend_unpicked` (the run settled immediately and no " +
+            "new turn started, so the correction was very likely never read)." +
+            superseded +
+            " Say in the end-of-run digest that this item was amended mid-flight, and with which verdict it ended.",
         },
       ],
-      details: { amended: true, slug: worker.slug, paneId: worker.paneId },
+      details: { amended: true, slug: worker.slug, paneId: worker.paneId, held: true },
     };
   }
 
@@ -1736,11 +2076,14 @@ export class SwarmToolContext {
       worker.lifecycle === "teardown_ambiguous"
         ? ` Teardown is ambiguous: ${worker.teardownDetail}; the serial queue remains paused.`
         : "";
+    const heldNote = worker.pendingAmend
+      ? ` ${amendOutstandingNote(worker.pendingAmend, Date.now())}`
+      : "";
     return {
       content: [
         {
           type: "text",
-          text: `relay_failed: ${reason}${teardown}${renderCaptureOffers(captures)}`,
+          text: `relay_failed: ${reason}${teardown}${heldNote}${renderCaptureOffers(captures)}`,
         },
       ],
       details: {

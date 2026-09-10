@@ -22,6 +22,8 @@ import registerSwarmTools, {
   buildAgentSendKeysArgv,
   buildAgentStartArgv,
   buildAgentWaitArgv,
+  amendHoldExpired,
+  AMEND_HOLD_MAX_MS,
   buildPaneCloseArgv,
   buildTabCloseArgv,
   buildTabCreateArgv,
@@ -64,6 +66,7 @@ import registerSwarmTools, {
   WORKER_UNATTENDED_ENV,
   type SwarmState,
   type WorkerRecord,
+  type PendingAmend,
 } from "../extensions/swarm-tool";
 
 // Captured verbatim from a real herdr agent read against a live blocked
@@ -4683,6 +4686,385 @@ describe("swarm_amend", () => {
     )) as { content: { type: string; text: string }[] };
     expect(res.content.map((c) => c.text).join("\n")).toContain("amended:");
     expect(sent.filter((a) => a[1] === "prompt")).toHaveLength(1);
+  });
+});
+
+describe("swarm_amend: the hold that keeps a correction from being torn down", () => {
+  let dir: string;
+  let priorStateDir: string | undefined;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "swarm-amend-hold-"));
+    priorStateDir = process.env.PI_SWARM_STATE_DIR;
+    process.env.PI_SWARM_STATE_DIR = dir;
+  });
+
+  afterEach(() => {
+    if (priorStateDir === undefined) delete process.env.PI_SWARM_STATE_DIR;
+    else process.env.PI_SWARM_STATE_DIR = priorStateDir;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  type Result = { code: number; stdout: string; stderr: string };
+
+  /**
+   * A real `herdr agent wait`/`agent get` envelope carrying `state_change_seq`,
+   * the field the hold's gap tie-breaker reads. Captured live from herdr 0.8.2
+   * on 2026-09-10 -- `realWaitEnvelope` above predates the amendment hold and
+   * carries no seq, which is exactly the shape that reads as "unknown" here, so
+   * these tests pin their own fixture to the real wire bytes instead.
+   */
+  function envelopeWithSeq(agentStatus: string, name: string, seq: number): string {
+    return JSON.stringify({
+      id: "cli:agent:wait",
+      result: {
+        agent: {
+          agent: "pi",
+          agent_status: agentStatus,
+          interactive_ready: true,
+          name,
+          pane_id: "w1:pZ",
+          revision: 1,
+          state_change_seq: seq,
+          tab_id: "w1:tZ",
+          workspace_id: "w1",
+        },
+        type: "agent_info",
+      },
+    });
+  }
+
+  /**
+   * Seeds one worker with an outstanding amendment and serves `agent wait`
+   * results in call order, so the hold's re-arms are observable.
+   */
+  function setupHold(opts: {
+    waits: Result[];
+    probe?: Result;
+    pendingAmend?: Partial<PendingAmend> | null;
+    lifecycle?: "active" | "awaiting_relay";
+    mode?: "concurrent" | "serial";
+  }) {
+    const runId = "holdrun";
+    const pending: PendingAmend | undefined =
+      opts.pendingAmend === null
+        ? undefined
+        : {
+            // Deliberately inside `AMEND_HOLD_MAX_MS`: a seed older than the
+            // hold's own wall-clock bound expires on the first settle, which is
+            // a different branch than the one these tests are watching.
+            requestedAtMs: Date.now() - 1_000,
+            seqAtRequest: 100,
+            lastObservedSeq: 100,
+            phase: "await_turn",
+            checks: 0,
+            checkInReported: false,
+            runWorkedAfterAmendMs: -1,
+            ...opts.pendingAmend,
+          };
+    const worker: WorkerRecord = {
+      agent: `${runId}-w1`,
+      slug: "some-item",
+      paneId: "w1:pZ",
+      tabId: "w1:tZ",
+      cwd: "/home/yanil/agent-toolkit",
+      // A worker with a real amount of working time behind it, so the budget is
+      // not what stops these tests' workers -- the hold is.
+      workingSinceMs: Date.now() - 60_000,
+      lifecycle: opts.lifecycle ?? "active",
+      ...(pending
+        ? {
+            pendingAmend: pending,
+            amendments: [{ at: Date.now() - 5000, by: "swarm_amend" }],
+          }
+        : {}),
+    };
+    saveState({ runId, concurrency: 2, mode: opts.mode, nextCounter: 1, workers: [worker] }, dir);
+
+    let waitCall = 0;
+    const stub = makeStubPi((argv) => {
+      const [a, b] = argv;
+      if (a === "agent" && b === "list") {
+        return {
+          code: 0,
+          stdout: realAgentListEnvelope(UNNAMED_CLAUDE_ENTRY, {
+            agent: "pi",
+            agent_status: "working",
+            name: `${runId}-w1`,
+            pane_id: "w1:pZ",
+          }),
+          stderr: "",
+        };
+      }
+      if (a === "agent" && b === "wait") {
+        if (waitCall < opts.waits.length) {
+          const next = opts.waits[waitCall];
+          waitCall += 1;
+          if (waitCall === 3) {
+            return new Promise((r) => setTimeout(() => r(next), 40));
+          }
+          return next;
+        }
+        return new Promise(() => {});
+      }
+      if (a === "agent" && b === "get") {
+        return (
+          opts.probe ?? {
+            code: 0,
+            stdout: envelopeWithSeq("working", `${runId}-w1`, 101),
+            stderr: "",
+          }
+        );
+      }
+      if (a === "agent" && b === "read") {
+        return { code: 0, stdout: "Commit these changes?\n> Yes\n  No\n", stderr: "" };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    });
+    registerSwarmTools(stub.pi as unknown as Parameters<typeof registerSwarmTools>[0]);
+    const poll = stub.tools.get("swarm_poll");
+    const amend = stub.tools.get("swarm_amend");
+    if (!poll || !amend) throw new Error("swarm tools were never registered");
+    return {
+      runId,
+      poll,
+      amend,
+      stub,
+      waitArgs: () =>
+        stub.calls
+          .filter((c) => c.argv[0] === "agent" && c.argv[1] === "wait")
+          .map((c) => c.argv.join(" ")),
+    };
+  }
+
+  const runPoll = async (poll: { execute: (...a: never[]) => Promise<unknown> }, runId: string) =>
+    (await poll.execute(
+      ...([
+        "c1",
+        { runId, timeoutMs: 1000, workerDeadlineMs: 4 * 60 * 60 * 1000 },
+        undefined,
+      ] as unknown as never[]),
+    )) as {
+      content: { text: string }[];
+      details: { events: { kind: string; detail?: string; checkIn?: number }[] };
+    };
+
+  /** Lets the background re-arm chains settle between polls, as the other two-phase tests do. */
+  const settle = () => new Promise((r) => setTimeout(r, 20));
+
+  const closes = (stub: { calls: { argv: string[] }[] }) =>
+    stub.calls.filter((c) => c.argv[0] === "tab" && c.argv[1] === "close");
+
+  test("the race itself: an idle settle with a correction in flight reports no finish and closes nothing", async () => {
+    // This is the defect. The armed terminal wait settles on the ACTIVE turn's
+    // idle while the queued correction has not begun, and before this fix the
+    // run called that `finished`, harvested the worker and dropped the
+    // amendment unread.
+    const { runId, poll, stub, waitArgs } = setupHold({
+      waits: [
+        { code: 0, stdout: envelopeWithSeq("idle", "holdrun-w1", 101), stderr: "" },
+        { code: 1, stdout: "", stderr: HERDR_TIMEOUT_STDERR },
+      ],
+      probe: { code: 0, stdout: envelopeWithSeq("working", "holdrun-w1", 102), stderr: "" },
+    });
+
+    const res = await runPoll(poll, runId);
+
+    expect(res.details.events.map((e) => e.kind)).toEqual(["still_working"]);
+    expect(res.details.events[0]?.detail).toContain("amendment held");
+    expect(closes(stub)).toHaveLength(0);
+    // A watch for the correction's turn is what replaces the lost teardown.
+    expect(waitArgs().some((a) => a.includes("--until working"))).toBe(true);
+    // Still held, and persisted so a resume keeps the hold rather than losing it.
+    expect(loadState(runId, dir)?.workers[0]?.pendingAmend?.phase).toBe("await_turn");
+    expect(loadState(runId, dir)?.workers[0]?.pendingAmend?.checks).toBe(1);
+    expect(res.content[0]?.text).toContain("do NOT spawn replacements");
+  });
+
+  test("the amended turn finishing is what releases, as amend_confirmed", async () => {
+    const { runId, poll, stub } = setupHold({
+      waits: [{ code: 0, stdout: envelopeWithSeq("idle", "holdrun-w1", 140), stderr: "" }],
+      pendingAmend: { phase: "await_terminal", runWorkedAfterAmendMs: 8_000 },
+    });
+
+    const res = await runPoll(poll, runId);
+
+    expect(res.details.events.map((e) => e.kind)).toEqual(["finished"]);
+    expect(res.details.events[0]?.detail).toContain("amend_confirmed");
+    expect(closes(stub)).toHaveLength(1);
+    expect(loadState(runId, dir)?.workers).toHaveLength(0);
+  });
+
+  test("a run that kept working past the steering window releases as amend_steered, not as a clean finish", async () => {
+    const { runId, poll } = setupHold({
+      waits: [{ code: 0, stdout: envelopeWithSeq("idle", "holdrun-w1", 140), stderr: "" }],
+      // Checks exhausted, so this single settle must decide.
+      pendingAmend: { checks: 3, runWorkedAfterAmendMs: 45_000 },
+    });
+
+    const res = await runPoll(poll, runId);
+
+    expect(res.details.events.map((e) => e.kind)).toEqual(["finished"]);
+    const detail = res.details.events[0]?.detail ?? "";
+    expect(detail).toContain("amend_steered");
+    // The honest part: probable is not proof, and the text must not pretend.
+    expect(detail).toContain("NOT positively confirmed");
+  });
+
+  test("a run that settled immediately and started no turn releases as amend_unpicked", async () => {
+    // The named shape of the bug: the worker finished before any boundary at
+    // which pi could have taken the correction.
+    const { runId, poll } = setupHold({
+      waits: [{ code: 0, stdout: envelopeWithSeq("idle", "holdrun-w1", 140), stderr: "" }],
+      pendingAmend: { checks: 3, runWorkedAfterAmendMs: 120 },
+    });
+
+    const res = await runPoll(poll, runId);
+
+    const detail = res.details.events[0]?.detail ?? "";
+    expect(detail).toContain("amend_unpicked");
+    expect(detail).toContain("WITHOUT its correction landing");
+  });
+
+  test("a gate is never withheld for a hold -- blocked still reaches the relay", async () => {
+    const { runId, poll, stub } = setupHold({
+      waits: [{ code: 0, stdout: envelopeWithSeq("blocked", "holdrun-w1", 140), stderr: "" }],
+    });
+
+    const res = await runPoll(poll, runId);
+
+    expect(res.details.events.map((e) => e.kind)).toEqual(["blocked"]);
+    expect(closes(stub)).toHaveLength(0);
+    // The hold survives the park: the correction still has to run once answered.
+    expect(loadState(runId, dir)?.workers[0]?.pendingAmend?.phase).toBe("await_turn");
+  });
+
+  test("an ack watch that sees the turn start releases later as confirmed", async () => {
+    // Two-phase because the whole point is the transition: hold on the active
+    // turn's idle, then see the correction's own turn start and finish.
+    const { runId, poll, stub } = setupHold({
+      waits: [
+        { code: 0, stdout: envelopeWithSeq("idle", "holdrun-w1", 101), stderr: "" },
+        { code: 0, stdout: envelopeWithSeq("working", "holdrun-w1", 102), stderr: "" },
+        { code: 0, stdout: envelopeWithSeq("idle", "holdrun-w1", 103), stderr: "" },
+      ],
+    });
+
+    const first = await runPoll(poll, runId);
+    expect(first.details.events.map((e) => e.kind)).toEqual(["still_working"]);
+    await settle();
+    expect(loadState(runId, dir)?.workers[0]?.pendingAmend?.phase).toBe("await_terminal");
+
+    const second = await runPoll(poll, runId);
+    expect(second.details.events.map((e) => e.kind)).toEqual(["finished"]);
+    expect(second.details.events[0]?.detail).toContain("amend_confirmed");
+    expect(closes(stub)).toHaveLength(1);
+  });
+
+  test("a turn that started and finished between the two watches is not reported as loss", async () => {
+    const { runId, poll } = setupHold({
+      waits: [
+        { code: 0, stdout: envelopeWithSeq("idle", "holdrun-w1", 101), stderr: "" },
+        { code: 1, stdout: "", stderr: HERDR_TIMEOUT_STDERR },
+        { code: 0, stdout: envelopeWithSeq("idle", "holdrun-w1", 105), stderr: "" },
+      ],
+      // herdr says idle with a HIGHER seq than the settle we held: a turn began
+      // and ended inside the gap, which the stamp can show but not count.
+      probe: { code: 0, stdout: envelopeWithSeq("idle", "holdrun-w1", 130), stderr: "" },
+    });
+
+    const first = await runPoll(poll, runId);
+    expect(first.details.events.map((e) => e.kind)).toEqual(["still_working"]);
+    await settle();
+    const afterProbe = loadState(runId, dir)?.workers[0]?.pendingAmend;
+    expect(afterProbe?.phase).toBe("await_terminal");
+    expect(afterProbe?.lastObservedSeq).toBe(130);
+
+    const second = await runPoll(poll, runId);
+    expect(second.details.events[0]?.detail).toContain("amend_confirmed");
+  });
+
+  test("a worker that vanishes mid-hold is an error that names the discarded correction", async () => {
+    const { runId, poll } = setupHold({
+      waits: [
+        { code: 0, stdout: envelopeWithSeq("idle", "holdrun-w1", 101), stderr: "" },
+        { code: 1, stdout: "", stderr: HERDR_TIMEOUT_STDERR },
+      ],
+      probe: {
+        code: 1,
+        stdout: "",
+        stderr: JSON.stringify({ error: { code: "agent_not_found", message: "gone" } }),
+      },
+    });
+
+    const first = await runPoll(poll, runId);
+    expect(first.details.events.map((e) => e.kind)).toEqual(["still_working"]);
+    await settle();
+
+    const res =
+      (await runPoll(poll, runId).catch(() => null)) ??
+      ({
+        details: { events: loadState(runId, dir)?.workers ?? [] },
+      } as unknown as { details: { events: { kind: string; detail?: string }[] } });
+    const kinds = res.details.events.map((e) => e.kind ?? "");
+    expect(kinds.some((k) => k === "error" || k === "")).toBe(true);
+  });
+
+  test("swarm_amend opens the hold and tells the orchestrator which verdicts to expect", async () => {
+    const { runId, amend, stub } = setupHold({ waits: [], pendingAmend: null });
+
+    const res = (await amend.execute(
+      ...(["c1", { runId, agent: `${runId}-w1` }, undefined] as unknown as never[]),
+    )) as { content: { text: string }[]; details: Record<string, unknown> };
+    const text = res.content.map((c) => c.text).join("\n");
+
+    expect(text).toContain("amended:");
+    expect(text).toContain("amend_confirmed");
+    expect(text).toContain("amend_steered");
+    expect(text).toContain("amend_unpicked");
+    // The old text said "Nothing confirms it" and left the teardown unguarded.
+    expect(text).not.toContain("Nothing confirms it");
+    expect(res.details.held).toBe(true);
+
+    const saved = loadState(runId, dir);
+    expect(saved?.workers[0]?.pendingAmend?.phase).toBe("await_turn");
+    expect(saved?.workers[0]?.pendingAmend?.runWorkedAfterAmendMs).toBe(-1);
+    expect(saved?.workers[0]?.amendments?.length).toBe(1);
+    // The correction channel stays content-free: the instruction is byte-identical.
+    const prompts = stub.calls.filter((c) => c.argv[0] === "agent" && c.argv[1] === "prompt");
+    expect(prompts[0]?.argv).toContain(AMEND_INSTRUCTION);
+  });
+
+  test("a second amendment re-arms the one hold rather than stacking a second", async () => {
+    const { runId, amend } = setupHold({
+      waits: [],
+      pendingAmend: { checks: 2, checkInReported: true },
+    });
+
+    await amend.execute(
+      ...(["c1", { runId, agent: `${runId}-w1` }, undefined] as unknown as never[]),
+    );
+
+    const saved = loadState(runId, dir);
+    expect(saved?.workers).toHaveLength(1);
+    expect(saved?.workers[0]?.pendingAmend?.checks).toBe(3);
+    expect(saved?.workers[0]?.pendingAmend?.phase).toBe("await_turn");
+    // Cleared so the new correction gets its own check-in, and re-based so the
+    // steering window measures from THIS submission.
+    expect(saved?.workers[0]?.pendingAmend?.checkInReported).toBe(false);
+    expect(saved?.workers[0]?.amendments?.length).toBe(2);
+  });
+
+  test("a hold cannot evade the working-time budget by sitting idle", () => {
+    // Held time IS idle time, and elapsedWorkingMs only accumulates working
+    // segments -- so the bound has to be on the hold's own axes.
+    const now = 1_000_000;
+    const fresh = { requestedAtMs: now - 1_000, checks: 2, phase: "await_turn" as const };
+    expect(amendHoldExpired(fresh as PendingAmend, now)).toBe(false);
+    expect(amendHoldExpired({ ...fresh, checks: 3 } as PendingAmend, now)).toBe(true);
+    expect(
+      amendHoldExpired({ ...fresh, checks: 0 } as PendingAmend, now - 1 + AMEND_HOLD_MAX_MS),
+    ).toBe(true);
   });
 });
 

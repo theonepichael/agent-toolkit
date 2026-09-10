@@ -124,6 +124,9 @@ function selectSchedulable(candidates, takenPaths, headroom, mode = "concurrent"
   }
   return { slugs, deferred, skipped, refused };
 }
+function pendingAmendWorkers(state) {
+  return state.workers.filter((w) => w.pendingAmend !== void 0);
+}
 function activeWorkerCount(state) {
   return state.workers.filter((w) => w.lifecycle === "active").length;
 }
@@ -384,6 +387,57 @@ function waitResultDetail(stdout, stderr) {
   const err = parseHerdrJson(stderr)?.error;
   if (err) return `${err.code ?? "unknown"}: ${err.message ?? stderr.trim()}`;
   return stdout.trim() || stderr.trim() || "(no output)";
+}
+var AMEND_STEERING_WINDOW_MS = 5e3;
+var AMEND_ACK_TIMEOUT_MS = 1e4;
+var AMEND_ACK_MAX_CHECKS = 3;
+var AMEND_HOLD_MAX_MS = AMEND_ACK_TIMEOUT_MS * AMEND_ACK_MAX_CHECKS;
+function parseAgentStateSeq(stdout) {
+  const value = parseHerdrJson(stdout)?.result?.agent?.state_change_seq;
+  return typeof value === "number" ? value : void 0;
+}
+function classifyAmendAck(exitCode, stdout, stderr, lastObservedSeq) {
+  if (exitCode !== 0) {
+    const code = parseHerdrJson(stderr)?.error?.code;
+    if (code === "agent_not_found") return "gone";
+    return "inconclusive";
+  }
+  const status = parseHerdrJson(stdout)?.result?.agent?.agent_status;
+  if (status === "working") return "turn_started";
+  if (status === "blocked") return "parked";
+  if (status !== "idle" && status !== "done") return "inconclusive";
+  const seq = parseAgentStateSeq(stdout);
+  if (seq === void 0 || lastObservedSeq === null) return "inconclusive";
+  return seq > lastObservedSeq ? "changed_while_unarmed" : "settled_unchanged";
+}
+function amendHoldVerdict(opts) {
+  if (opts.turnObserved) return "confirmed";
+  const window = opts.steeringWindowMs ?? AMEND_STEERING_WINDOW_MS;
+  return opts.runWorkedMs >= window ? "steered" : "unpicked";
+}
+function amendHoldMs(pending, now) {
+  return Math.max(0, now - pending.requestedAtMs);
+}
+function amendHoldExpired(pending, now) {
+  return pending.checks >= AMEND_ACK_MAX_CHECKS || amendHoldMs(pending, now) >= AMEND_HOLD_MAX_MS;
+}
+function amendVerdictDetail(verdict, worker, holdMs) {
+  const held = `${Math.round(holdMs / 1e3)}s`;
+  switch (verdict) {
+    case "confirmed":
+      return `amend_confirmed: a new turn started after the amendment was submitted, so the correction was picked up (held ${held} to see it).`;
+    case "steered":
+      return `amend_steered: the worker kept working ${held} after the amendment, so pi most likely took it as a steering message inside the turn that has now finished. NOT positively confirmed -- if the keystroke never reached the agent, herdr offers nothing that can tell that apart from this. Check the pane before treating the item as corrected.`;
+    case "unpicked":
+      return `amend_unpicked: the run settled ${held} after the amendment and no new turn started, so the queued correction was very likely never read. The worker is being finished off WITHOUT its correction landing -- re-amend after restarting it, or pick the item up in a normal session. (${worker.agent} / ${worker.slug})`;
+  }
+}
+function amendOutstandingNote(pending, now) {
+  return `NOTE: an amendment was outstanding for this worker and was NOT confirmed picked up (submitted ${Math.round(amendHoldMs(pending, now) / 1e3)}s ago) -- do not report the item as having worked its corrected premises.`;
+}
+function parseAgentStatus(stdout) {
+  const value = parseHerdrJson(stdout)?.result?.agent?.agent_status;
+  return typeof value === "string" ? value : void 0;
 }
 
 // pi/extensions/swarm-lib/swarm-picker-copilot.ts
@@ -783,7 +837,11 @@ var SwarmToolContext = class {
           w.lifecycle = "teardown_ambiguous";
           w.teardownDetail = this.teardownRecovery(w);
         }
-        const line = `${w.agent} (${w.slug}): stale worker record cleared -- herdr reports its agent ${status ?? "gone"} (finished or dead), but its finish was never reported through swarm_poll; outcome inferred, not observed. Verify the item's state before treating it as complete.${renderCaptureOffers(offers)}`;
+        const line = `${w.agent} (${w.slug}): stale worker record cleared -- herdr reports its agent ${status ?? "gone"} (finished or dead), but its finish was never reported through swarm_poll; outcome inferred, not observed. Verify the item's state before treating it as complete.${// This path reaches a close without ever passing a settle, so an
+        // outstanding amendment dies here. Closing anyway is correct -- a
+        // refusal would strand the serial queue on a worker herdr already
+        // calls gone -- but the hold being discarded has to be said.
+        w.pendingAmend ? ` ${amendOutstandingNote(w.pendingAmend, Date.now())}` : ""}${renderCaptureOffers(offers)}`;
         return { worker: w, confirmedGone, line };
       })
     );
@@ -1042,8 +1100,199 @@ ${capture}` } };
     const timeoutMs = rt.timeoutMs;
     void this.settleWait(rt, worker, timeoutMs);
   }
+  /**
+   * Arm the post-idle watch for an amendment's turn to start.
+   *
+   * Separate from `armWait` because it asks a different question: not "has this
+   * worker finished" but "has a NEW turn begun". herdr's wait matches the
+   * agent's CURRENT state, so the two cannot share one armed wait -- which is
+   * precisely why the terminal wait settling on the active turn's idle lost the
+   * correction in the first place.
+   */
+  armAmendAckWait(rt, worker) {
+    if (rt.inFlight.has(worker.agent)) return;
+    rt.inFlight.add(worker.agent);
+    void this.settleAmendAck(rt, worker);
+  }
+  /** Persist a mutated worker through the run's cached state. */
+  persistRun(rt) {
+    const state = this.activeRuns.get(rt.runId);
+    if (state) this.persist(state);
+  }
+  /**
+   * Decide what a terminal settle means while an amendment is outstanding.
+   *
+   * Returns the event to report, or null when the hold was armed instead and
+   * nothing should be reported yet. The hold can only ever be armed together
+   * with a wait -- an un-closeable worker with nothing armed would hold its slot
+   * forever, which is a worse failure than the silent loss this prevents.
+   */
+  amendHoldDecision(rt, worker, pending, settleStdout) {
+    const now = Date.now();
+    const seq = parseAgentStateSeq(settleStdout);
+    if (seq !== void 0) pending.lastObservedSeq = seq;
+    if (pending.phase === "await_terminal") {
+      const detail = amendVerdictDetail("confirmed", worker, amendHoldMs(pending, now));
+      worker.pendingAmend = void 0;
+      this.persistRun(rt);
+      return {
+        event: {
+          kind: "finished",
+          agent: worker.agent,
+          slug: worker.slug,
+          paneId: worker.paneId,
+          detail
+        }
+      };
+    }
+    if (pending.runWorkedAfterAmendMs < 0) {
+      pending.runWorkedAfterAmendMs = Math.max(0, now - pending.requestedAtMs);
+    }
+    if (amendHoldExpired(pending, now)) {
+      const verdict = amendHoldVerdict({
+        turnObserved: false,
+        runWorkedMs: pending.runWorkedAfterAmendMs
+      });
+      const detail = amendVerdictDetail(verdict, worker, amendHoldMs(pending, now));
+      worker.pendingAmend = void 0;
+      this.persistRun(rt);
+      return {
+        event: {
+          kind: "finished",
+          agent: worker.agent,
+          slug: worker.slug,
+          paneId: worker.paneId,
+          detail
+        }
+      };
+    }
+    pending.checks += 1;
+    if (!pending.checkInReported) {
+      pending.checkInReported = true;
+      worker.checkIns = (worker.checkIns ?? 0) + 1;
+      rt.pendingEvents.push({
+        kind: "still_working",
+        agent: worker.agent,
+        slug: worker.slug,
+        paneId: worker.paneId,
+        elapsedMs: elapsedWorkingMs(worker, now) ?? 0,
+        checkIn: worker.checkIns,
+        detail: `amendment held: ${pending.checks}/${AMEND_ACK_MAX_CHECKS} ack watches armed, watching for the correction's turn to start before this worker can be finished off.`
+      });
+      this.wakeWaiters(rt);
+    }
+    this.persistRun(rt);
+    return { rearm: "ack" };
+  }
+  /**
+   * The ack wait's own settle: watch for the amendment's turn starting.
+   *
+   * Every branch that keeps waiting must leave exactly one wait armed, and does
+   * so by returning a `rearm` directive rather than arming inline -- this
+   * function's `finally` clears `inFlight`, and arming before that would let a
+   * later poll arm a second concurrent wait for the same worker.
+   */
+  async settleAmendAck(rt, worker) {
+    let event = null;
+    let rearm = null;
+    try {
+      const pending = worker.pendingAmend;
+      if (!pending) return;
+      const ack = await this.herdr(
+        buildAgentWaitArgv(worker.agent, ["working", "blocked"], AMEND_ACK_TIMEOUT_MS)
+      );
+      const ackStatus = ack.code === 0 ? parseAgentStatus(ack.stdout) : void 0;
+      let outcome;
+      let probe = null;
+      if (ackStatus === "working" || ackStatus === "blocked") {
+        outcome = ackStatus === "working" ? "turn_started" : "parked";
+      } else {
+        probe = await this.probeLiveness(worker.agent);
+        outcome = probe.abandoned ? "inconclusive" : classifyAmendAck(probe.code, probe.stdout, probe.stderr, pending.lastObservedSeq);
+      }
+      const now = Date.now();
+      switch (outcome) {
+        case "turn_started":
+        case "changed_while_unarmed": {
+          pending.phase = "await_terminal";
+          const seen = ackStatus === "working" ? parseAgentStateSeq(ack.stdout) : probe ? parseAgentStateSeq(probe.stdout) : void 0;
+          if (seen !== void 0) pending.lastObservedSeq = seen;
+          rearm = "terminal";
+          break;
+        }
+        case "parked": {
+          pending.phase = "await_terminal";
+          rearm = null;
+          event = {
+            kind: "blocked",
+            agent: worker.agent,
+            slug: worker.slug,
+            paneId: worker.paneId
+          };
+          break;
+        }
+        case "gone": {
+          worker.pendingAmend = void 0;
+          this.persistRun(rt);
+          event = {
+            kind: "error",
+            agent: worker.agent,
+            slug: worker.slug,
+            paneId: worker.paneId,
+            detail: `worker vanished while an amendment was outstanding. ${amendOutstandingNote(pending, now)}`
+          };
+          break;
+        }
+        case "settled_unchanged":
+        case "inconclusive": {
+          pending.checks += 1;
+          if (amendHoldExpired(pending, now)) {
+            const runWorkedMs = pending.runWorkedAfterAmendMs >= 0 ? pending.runWorkedAfterAmendMs : Math.max(0, now - pending.requestedAtMs);
+            const verdict = amendHoldVerdict({ turnObserved: false, runWorkedMs });
+            const heldMs = amendHoldMs(pending, now);
+            worker.pendingAmend = void 0;
+            this.persistRun(rt);
+            event = {
+              kind: "finished",
+              agent: worker.agent,
+              slug: worker.slug,
+              paneId: worker.paneId,
+              detail: amendVerdictDetail(verdict, worker, heldMs)
+            };
+          } else {
+            rearm = "ack";
+          }
+          break;
+        }
+      }
+      this.persistRun(rt);
+    } catch (err) {
+      event = {
+        kind: "error",
+        agent: worker.agent,
+        slug: worker.slug,
+        paneId: worker.paneId,
+        detail: `amend_ack_wait_failed: ${err instanceof Error ? err.message : String(err)}`
+      };
+    } finally {
+      rt.inFlight.delete(worker.agent);
+    }
+    const runState = this.activeRuns.get(rt.runId);
+    if (runState && !runState.workers.some((w) => w.agent === worker.agent)) {
+      this.wakeWaiters(rt);
+      return;
+    }
+    if (event) {
+      rt.pendingEvents.push(event);
+      this.wakeWaiters(rt);
+      return;
+    }
+    if (rearm === "terminal") this.armWait(rt, worker);
+    else if (rearm === "ack") this.armAmendAckWait(rt, worker);
+  }
   async settleWait(rt, worker, timeoutMs) {
     let event = null;
+    let rearmAfter = null;
     try {
       const result = await this.herdr(
         buildAgentWaitArgv(worker.agent, ["idle", "done", "blocked"], timeoutMs)
@@ -1090,8 +1339,22 @@ ${capture}` } };
           probeDetail: probe.abandoned ? `the liveness probe did not answer within ${PROBE_TIMEOUT_MS} ms and was abandoned` : `probe: ${waitResultDetail(probe.stdout, probe.stderr)}`
         }) : kind === "error" ? `probe: ${waitResultDetail(probe.stdout, probe.stderr)}` : void 0;
       }
-      event = { kind, agent: worker.agent, slug: worker.slug, paneId: worker.paneId };
-      if (detail !== void 0) event.detail = detail;
+      const pending = worker.pendingAmend;
+      if (pending && kind === "finished") {
+        const decision = this.amendHoldDecision(rt, worker, pending, result.stdout);
+        if (decision.event) {
+          event = decision.event;
+        } else {
+          rearmAfter = decision.rearm ?? null;
+          event = null;
+        }
+      } else {
+        event = { kind, agent: worker.agent, slug: worker.slug, paneId: worker.paneId };
+        if (detail !== void 0) event.detail = detail;
+        if (pending && (kind === "error" || kind === "timed_out")) {
+          event.detail = `${event.detail ?? ""} ${amendOutstandingNote(pending, Date.now())}`.trim();
+        }
+      }
     } catch (err) {
       event = {
         kind: "error",
@@ -1106,6 +1369,17 @@ ${capture}` } };
     const runState = this.activeRuns.get(rt.runId);
     if (runState && !runState.workers.some((w) => w.agent === worker.agent)) {
       this.wakeWaiters(rt);
+      return;
+    }
+    if (rearmAfter === "ack") {
+      this.armAmendAckWait(rt, worker);
+      return;
+    }
+    if (rearmAfter === "terminal") {
+      this.armWait(rt, worker);
+      return;
+    }
+    if (event === null) {
       return;
     }
     rt.pendingEvents.push(event);
@@ -1515,6 +1789,14 @@ ${stalled.length} worker(s) have been awaiting a relay for over ${formatDuration
     const resyncNote = resyncNotes.length ? `
 
 ${resyncNotes.join(" ")}` : "";
+    const held = state ? pendingAmendWorkers(state) : [];
+    const amendNote = held.length ? `
+
+${held.length} worker(s) are being held open for an unacknowledged amendment and will not settle until it is accounted for: ${held.map(
+      (w) => `${w.agent} (${w.slug}, phase ${w.pendingAmend?.phase}, watch ${w.pendingAmend?.checks ?? 0}/${AMEND_ACK_MAX_CHECKS})`
+    ).join(
+      ", "
+    )}. Their slots stay occupied -- do NOT spawn replacements or treat the run as drained.` : "";
     return {
       content: [
         {
@@ -1530,7 +1812,7 @@ ${e.rawPrompt}`;
             }
             const captures = renderCaptureOffers(e.captures ?? []);
             return `${e.slug} (${e.agent}) ${e.kind}${e.detail ? `: ${e.detail}` : ""}${captures}`;
-          }).join("\n\n") : "No active workers to poll.") + stalledNote + resyncNote
+          }).join("\n\n") : "No active workers to poll.") + stalledNote + resyncNote + amendNote
         }
       ],
       details: { events }
@@ -1574,15 +1856,29 @@ ${e.rawPrompt}`;
       };
     }
     worker.amendments = [...worker.amendments ?? [], { at: Date.now(), by: "swarm_amend" }];
+    const existing = worker.pendingAmend;
+    const seq = await this.herdr(buildAgentGetArgv(worker.agent), signal);
+    worker.pendingAmend = {
+      requestedAtMs: Date.now(),
+      seqAtRequest: parseAgentStateSeq(seq.stdout) ?? null,
+      lastObservedSeq: parseAgentStateSeq(seq.stdout) ?? null,
+      phase: "await_turn",
+      // One hold, not two: a second correction supersedes the first in the same
+      // backlog record, so the outstanding watch is re-armed rather than stacked.
+      checks: existing ? existing.checks + 1 : 0,
+      checkInReported: false,
+      runWorkedAfterAmendMs: -1
+    };
     this.persist(state);
+    const superseded = existing ? ` This supersedes an earlier amendment still being watched (watch ${existing.checks + 1}), whose correction the updated item has already replaced. ` : "";
     return {
       content: [
         {
           type: "text",
-          text: `amended: ${worker.agent} (${worker.slug}, pane ${worker.paneId}) was told to re-read its item. Nothing confirms it has done so -- the instruction lands as its next input, which is a correction while it is still planning and a rewrite of finished work if it is not. Watch its next poll event, and say in the end-of-run digest that this item was amended mid-flight.`
+          text: `amended: ${worker.agent} (${worker.slug}, pane ${worker.paneId}) was told to re-read its item, and the run now holds its teardown until that correction is accounted for. At submission nothing is known yet -- the verdict arrives on this worker's next poll events as one of \`amend_confirmed\` (the amendment's turn ran), \`amend_steered\` (the worker kept working past the steering window, so the correction was most likely taken inside the finished turn -- not positively confirmed) or \`amend_unpicked\` (the run settled immediately and no new turn started, so the correction was very likely never read).` + superseded + " Say in the end-of-run digest that this item was amended mid-flight, and with which verdict it ended."
         }
       ],
-      details: { amended: true, slug: worker.slug, paneId: worker.paneId }
+      details: { amended: true, slug: worker.slug, paneId: worker.paneId, held: true }
     };
   }
   async swarmResolveBlocked(params, signal) {
@@ -1701,11 +1997,12 @@ ${rawPrompt.slice(-2e3)}` : "")
   async relayFailure(state, worker, reason, signal) {
     const captures = await this.teardownAndHarvestWorker(state, worker, signal);
     const teardown = worker.lifecycle === "teardown_ambiguous" ? ` Teardown is ambiguous: ${worker.teardownDetail}; the serial queue remains paused.` : "";
+    const heldNote = worker.pendingAmend ? ` ${amendOutstandingNote(worker.pendingAmend, Date.now())}` : "";
     return {
       content: [
         {
           type: "text",
-          text: `relay_failed: ${reason}${teardown}${renderCaptureOffers(captures)}`
+          text: `relay_failed: ${reason}${teardown}${heldNote}${renderCaptureOffers(captures)}`
         }
       ],
       details: {
