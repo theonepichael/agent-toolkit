@@ -518,6 +518,121 @@ def gather_links(
 # ── consolidated audit entry point ──────────────────────────────────────
 
 
+@dataclass(frozen=True)
+class LinkFinding:
+    """One drift finding as typed data: the audit's render-free result unit.
+
+    ``kind`` is one of :data:`CHECK_BUCKETS`; ``path`` is the audited
+    destination (or managed directory); ``detail`` is the message suffix
+    rendered as ``f"{format_path(path)} — {detail}"`` by
+    :func:`render_findings`. The detail string is deliberately unstructured
+    prose — the expected/actual target fields a fully structured finding
+    would carry are a follow-up, not this extraction's scope — but it never
+    embeds a *formatted* path: raw targets, ``spec.src``, and ``spec.dest``
+    strings appear verbatim, so rendering stays entirely the caller's.
+    """
+
+    kind: str
+    path: Path
+    detail: str
+
+
+@dataclass(frozen=True)
+class LinkAuditResult:
+    """What one full link audit produced: typed findings plus the two
+    aggregates that are deliberately *not* findings (see
+    :func:`check_applicable_links` for ``foreign``)."""
+
+    findings: list[LinkFinding]
+    foreign: dict[Path, int]
+    dirs_audited: int
+
+
+def collect_link_findings(
+    *,
+    repo_root: Path,
+    home: Path,
+    harnesses: Iterable[str],
+    is_mac: bool,
+    is_linux: bool,
+    is_wsl: bool,
+    profile: str,
+    manifest_file: Path,
+    report_uninstalled: bool = False,
+    specs: Sequence[LinkSpec] | None = None,
+    managed_dirs: Sequence[ManagedDirSpec] | None = None,
+) -> LinkAuditResult:
+    """Run the full read-only link audit and return typed findings.
+
+    The one assembly sequence, shared by every consumer: install.py's
+    ``do_check_links`` (through :func:`audit_links`, which renders) and the
+    drift hook (which renders its own way), so the two can never drift
+    apart about what counts as drift.
+
+    Parameters mirror :func:`audit_links` exactly minus ``format_path``;
+    in particular ``specs``/``managed_dirs`` only skip re-parsing
+    links.toml for a caller that already parsed the table (the drift hook
+    fingerprints it) — the machine facts and ``manifest_file`` are always
+    live inputs to applicability gating and the orphan/backup checks.
+
+    Returns:
+        The typed findings, the per-other-checkout link counts, and how
+        many declared directories were audited. Malformed links.toml
+        propagates the parsers' ``ValueError``/``TypeError`` so the caller
+        decides how loudly to fail.
+    """
+    links_toml = repo_root / "links.toml"
+    if specs is None:
+        specs = load_links(links_toml)
+    if managed_dirs is None:
+        managed_dirs = load_managed_dirs(links_toml)
+    scope = _applies_kwargs(harnesses, is_mac, is_linux, is_wsl, profile)
+    links = gather_links(  # type: ignore[arg-type]
+        specs, repo_root=repo_root, home=home, **scope
+    )
+    entries = read_manifest_entries(manifest_file)
+    applicable, foreign = check_applicable_links(
+        links,
+        repo_root=repo_root,
+        manifest_entries=entries,
+        report_uninstalled=report_uninstalled,
+        home=home,
+    )
+    orphaned = check_orphaned_links(links, manifest_entries=entries)
+    unmanaged, dirs_audited = check_unmanaged_files(
+        managed_dirs,
+        links,
+        home=home,
+        dir_applies=lambda dir_spec: dir_applies(  # type: ignore[arg-type]
+            dir_spec, specs, repo_root=repo_root, home=home, **scope
+        ),
+        manifest_entries=entries,
+    )
+    return LinkAuditResult(
+        findings=[*applicable, *orphaned, *unmanaged],
+        foreign=foreign,
+        dirs_audited=dirs_audited,
+    )
+
+
+def render_findings(
+    findings: Iterable[LinkFinding],
+    format_path: Callable[[Path], str],
+) -> dict[str, list[str]]:
+    """Render typed findings into the audit's bucket-of-messages shape.
+
+    The one place the ``f"{format_path(path)} — {detail}"`` composition
+    lives, so consumers cannot disagree about presentation. All
+    :data:`CHECK_BUCKETS` keys are present (empty list when a bucket found
+    nothing) and each bucket keeps the findings list's order, matching
+    what the pre-rendered construction appended in the same sequence.
+    """
+    buckets: dict[str, list[str]] = {bucket: [] for bucket in CHECK_BUCKETS}
+    for finding in findings:
+        buckets[finding.kind].append(f"{format_path(finding.path)} — {finding.detail}")
+    return buckets
+
+
 def audit_links(
     *,
     repo_root: Path,
@@ -563,40 +678,29 @@ def audit_links(
         declared directories were audited. Malformed links.toml propagates
         the parsers' ``ValueError``/``TypeError`` so the caller decides how
         loudly to fail.
+
+    The findings themselves are constructed (and best asserted) through
+    :func:`collect_link_findings`'s typed records; this entrypoint is the
+    string-rendering adapter over it.
     """
-    links_toml = repo_root / "links.toml"
-    if specs is None:
-        specs = load_links(links_toml)
-    if managed_dirs is None:
-        managed_dirs = load_managed_dirs(links_toml)
-    scope = _applies_kwargs(harnesses, is_mac, is_linux, is_wsl, profile)
-    links = gather_links(  # type: ignore[arg-type]
-        specs, repo_root=repo_root, home=home, **scope
-    )
-    entries = read_manifest_entries(manifest_file)
-    findings, foreign = check_applicable_links(
-        links,
+    result = collect_link_findings(
         repo_root=repo_root,
-        format_path=format_path,
-        manifest_entries=entries,
+        home=home,
+        harnesses=harnesses,
+        is_mac=is_mac,
+        is_linux=is_linux,
+        is_wsl=is_wsl,
+        profile=profile,
+        manifest_file=manifest_file,
         report_uninstalled=report_uninstalled,
-        home=home,
+        specs=specs,
+        managed_dirs=managed_dirs,
     )
-    check_orphaned_links(
-        links, findings, format_path=format_path, manifest_entries=entries
+    return (
+        render_findings(result.findings, format_path),
+        result.foreign,
+        result.dirs_audited,
     )
-    dirs_audited = check_unmanaged_files(
-        managed_dirs,
-        links,
-        home=home,
-        format_path=format_path,
-        dir_applies=lambda dir_spec: dir_applies(  # type: ignore[arg-type]
-            dir_spec, specs, repo_root=repo_root, home=home, **scope
-        ),
-        findings=findings,
-        manifest_entries=entries,
-    )
-    return findings, foreign, dirs_audited
 
 
 # ── drift finding ─────────────────────────────────────────────────────────────
@@ -636,11 +740,10 @@ def check_applicable_links(
     links: Sequence[tuple[Path, Path, str, bool]],
     *,
     repo_root: Path,
-    format_path: Callable[[Path], str],
     manifest_entries: Iterable[dict[str, object]] = (),
     report_uninstalled: bool = False,
     home: Path | None = None,
-) -> tuple[dict[str, list[str]], dict[Path, int]]:
+) -> tuple[list[LinkFinding], dict[Path, int]]:
     """Report inconsistencies on destinations in scope for this machine.
 
     Entries whose destination does not exist at all are silently fine by
@@ -657,8 +760,6 @@ def check_applicable_links(
         links: Every gathered ``(src, dest, rel, applicable)`` triple.
         repo_root: This checkout's root — the target live links are expected
             to point at.
-        format_path: Renders a Path for a findings message (``Context.display``
-            in install.py; pure formatting, no I/O).
         manifest_entries: The history manifest's recorded entries (only read
             when ``report_uninstalled`` is set).
         report_uninstalled: Also flag destinations the manifest never
@@ -671,13 +772,14 @@ def check_applicable_links(
             the composition convention.
 
     Returns:
-        The findings by bucket, and a count per *other* checkout the live
-        links point into. The second value is not a finding: this repo
-        mandates worktree-first development, so running the audit from a
-        worktree while the machine's links point at the main checkout is
-        the normal case, not a defect (see install.py's ``do_check_links``).
+        The typed findings (construction order preserved), and a count per
+        *other* checkout the live links point into. The second value is not
+        a finding: this repo mandates worktree-first development, so running
+        the audit from a worktree while the machine's links point at the main
+        checkout is the normal case, not a defect (see install.py's
+        ``do_check_links``).
     """
-    findings: dict[str, list[str]] = {bucket: [] for bucket in CHECK_BUCKETS}
+    findings: list[LinkFinding] = []
     foreign: dict[Path, int] = {}
     installed_dests: set[Path] = set()
     if report_uninstalled:
@@ -691,9 +793,13 @@ def check_applicable_links(
             continue
         if not is_symlink(dest) and not path_exists(dest):
             if report_uninstalled and path_exists(src) and dest not in installed_dests:
-                findings[CHECK_BUCKET_NEVER_INSTALLED].append(
-                    f"{format_path(dest)} — {src} exists in the repo but was "
-                    "never linked here; run install.sh to link it"
+                findings.append(
+                    LinkFinding(
+                        CHECK_BUCKET_NEVER_INSTALLED,
+                        dest,
+                        f"{src} exists in the repo but was never linked here; "
+                        "run install.sh to link it",
+                    )
                 )
             continue
 
@@ -702,11 +808,14 @@ def check_applicable_links(
             # linking the ancestor) the file is still correctly wired, even
             # though this path is not itself a link.
             if not same_path(dest, src):
-                findings[CHECK_BUCKET_NOT_A_SYMLINK].append(
-                    f"{format_path(dest)} — a real "
-                    f"{'directory' if dest.is_dir() else 'file'} sits where a "
-                    f"symlink to {src} belongs; the next install run would "
-                    "back it up and replace it"
+                findings.append(
+                    LinkFinding(
+                        CHECK_BUCKET_NOT_A_SYMLINK,
+                        dest,
+                        f"a real {'directory' if dest.is_dir() else 'file'} "
+                        f"sits where a symlink to {src} belongs; the next "
+                        "install run would back it up and replace it",
+                    )
                 )
             continue
 
@@ -742,23 +851,35 @@ def check_applicable_links(
                 # A dangling link is a real machine problem regardless of
                 # which checkout it points into, so that still gets reported.
                 if not path_exists(target):
-                    findings[CHECK_BUCKET_BROKEN_SOURCE].append(
-                        f"{format_path(dest)} — links to {target}, which no "
-                        "longer exists (dangling symlink)"
+                    findings.append(
+                        LinkFinding(
+                            CHECK_BUCKET_BROKEN_SOURCE,
+                            dest,
+                            f"links to {target}, which no longer exists "
+                            "(dangling symlink)",
+                        )
                     )
                 else:
                     assert other_root is not None  # narrowed by the guard above
                     foreign[other_root] = foreign.get(other_root, 0) + 1
                 continue
-            findings[CHECK_BUCKET_WRONG_TARGET].append(
-                f"{format_path(dest)} — points at {target}, but links.toml says {src}"
+            findings.append(
+                LinkFinding(
+                    CHECK_BUCKET_WRONG_TARGET,
+                    dest,
+                    f"points at {target}, but links.toml says {src}",
+                )
             )
             continue
 
         if not path_exists(src):
-            findings[CHECK_BUCKET_BROKEN_SOURCE].append(
-                f"{format_path(dest)} — links to {src}, which no longer "
-                "exists in the repo (dangling symlink)"
+            findings.append(
+                LinkFinding(
+                    CHECK_BUCKET_BROKEN_SOURCE,
+                    dest,
+                    f"links to {src}, which no longer exists in the repo "
+                    "(dangling symlink)",
+                )
             )
     return findings, foreign
 
@@ -811,21 +932,26 @@ def find_orphaned_links(
 
 def check_orphaned_links(
     links: Sequence[tuple[Path, Path, str, bool]],
-    findings: dict[str, list[str]],
     *,
-    format_path: Callable[[Path], str],
     manifest_entries: Iterable[dict[str, object]],
-) -> None:
-    """Add manifest-recorded symlinks that links.toml no longer produces."""
+) -> list[LinkFinding]:
+    """Return typed findings for manifest-recorded symlinks that links.toml
+    no longer produces."""
+    findings: list[LinkFinding] = []
     for dest in find_orphaned_links(links, manifest_entries=manifest_entries):
         if is_symlink(dest):
             detail = f"still symlinked → {link_target(dest)}"
         else:
             detail = "still present as a real file"
-        findings[CHECK_BUCKET_ORPHANED].append(
-            f"{format_path(dest)} — recorded by a past install run, but no "
-            f"links.toml entry produces it anymore; {detail}"
+        findings.append(
+            LinkFinding(
+                CHECK_BUCKET_ORPHANED,
+                dest,
+                f"recorded by a past install run, but no links.toml entry "
+                f"produces it anymore; {detail}",
+            )
         )
+    return findings
 
 
 def live_backup_paths(manifest_entries: Iterable[dict[str, object]]) -> set[Path]:
@@ -856,11 +982,9 @@ def check_unmanaged_files(
     links: Sequence[tuple[Path, Path, str, bool]],
     *,
     home: Path,
-    format_path: Callable[[Path], str],
     dir_applies: Callable[[ManagedDirSpec], bool],
-    findings: dict[str, list[str]],
     manifest_entries: Iterable[dict[str, object]] = (),
-) -> int:
+) -> tuple[list[LinkFinding], int]:
     """Report foreign entries in directories ``links.toml`` owns exclusively.
 
     Nothing else catches these. ``--rollback`` only inspects what the history
@@ -873,17 +997,17 @@ def check_unmanaged_files(
         links: Every gathered triple, applicable or not — a gated row's
             destination is still ours, so it must never read as foreign.
         home: The home directory destinations expand against.
-        format_path: Renders a Path for a findings message (pure formatting).
         dir_applies: Scope predicate for a declared directory (install.py's
             ``_dir_applies``, which needs the run's Context to inherit the
             gating of the ``[[link]]`` rows inside each directory).
-        findings: Bucket map to append into.
         manifest_entries: The history manifest's recorded entries (live
             backups are exempt from the foreign-file report).
 
     Returns:
-        How many declared directories were actually audited.
+        The typed findings, and how many declared directories were actually
+        audited.
     """
+    findings: list[LinkFinding] = []
     live_backups = live_backup_paths(manifest_entries)
     audited = 0
     for dir_spec in managed_dirs:
@@ -901,9 +1025,13 @@ def check_unmanaged_files(
         try:
             entries = sorted(os.listdir(directory))
         except OSError as exc:
-            findings[CHECK_BUCKET_UNMANAGED].append(
-                f"{format_path(directory)} — declared exclusive, but unreadable "
-                f"({exc.strerror or exc}), so it could not be audited"
+            findings.append(
+                LinkFinding(
+                    CHECK_BUCKET_UNMANAGED,
+                    directory,
+                    f"declared exclusive, but unreadable ({exc.strerror or exc}), "
+                    "so it could not be audited",
+                )
             )
             continue
         for name in entries:
@@ -918,8 +1046,12 @@ def check_unmanaged_files(
                 continue
             if path.is_dir() and not is_symlink(path):
                 continue
-            findings[CHECK_BUCKET_UNMANAGED].append(
-                f"{format_path(path)} — {dir_spec.dest} is declared exclusive "
-                "to this repo, but no links.toml entry produces it"
+            findings.append(
+                LinkFinding(
+                    CHECK_BUCKET_UNMANAGED,
+                    path,
+                    f"{dir_spec.dest} is declared exclusive to this repo, but "
+                    "no links.toml entry produces it",
+                )
             )
-    return audited
+    return findings, audited

@@ -2209,14 +2209,14 @@ def _check_applicable_links(
     report_uninstalled: bool = False,
 ) -> tuple[dict[str, list[str]], dict[Path, int]]:
     """Adapter for link_inspect.check_applicable_links; see it for detail."""
-    return link_inspect.check_applicable_links(
+    typed, foreign = link_inspect.check_applicable_links(
         links,
         repo_root=ctx.repo_root,
-        format_path=ctx.display,
         manifest_entries=ctx.manifest.entries(),
         report_uninstalled=report_uninstalled,
         home=ctx.home,
     )
+    return link_inspect.render_findings(typed, ctx.display), foreign
 
 
 def _find_orphaned_links(
@@ -2234,12 +2234,11 @@ def _check_orphaned_links(
     findings: dict[str, list[str]],
 ) -> None:
     """Add manifest-recorded symlinks that links.toml no longer produces."""
-    link_inspect.check_orphaned_links(
-        links,
-        findings,
-        format_path=ctx.display,
-        manifest_entries=ctx.manifest.entries(),
+    typed = link_inspect.check_orphaned_links(
+        links, manifest_entries=ctx.manifest.entries()
     )
+    for kind, lines in link_inspect.render_findings(typed, ctx.display).items():
+        findings[kind].extend(lines)
 
 
 def _live_backup_paths(ctx: Context) -> set[Path]:
@@ -2277,15 +2276,16 @@ def _check_unmanaged_files(
     findings: dict[str, list[str]],
 ) -> int:
     """Adapter for link_inspect.check_unmanaged_files; see it for detail."""
-    return link_inspect.check_unmanaged_files(
+    typed, audited = link_inspect.check_unmanaged_files(
         managed_dirs,
         links,
         home=ctx.home,
-        format_path=ctx.display,
         dir_applies=lambda dir_spec: _dir_applies(dir_spec, specs, ctx),
-        findings=findings,
         manifest_entries=ctx.manifest.entries(),
     )
+    for kind, lines in link_inspect.render_findings(typed, ctx.display).items():
+        findings[kind].extend(lines)
+    return audited
 
 
 def _cleanup_orphaned_links(

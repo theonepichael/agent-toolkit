@@ -111,10 +111,11 @@ dest = "~/.claude/global-instructions.md"
 
 
 def counting_audit() -> tuple[object, list[int]]:
-    """Patch link_inspect.audit_links with a wrapper that records how many
-    times the real audit ran (the fixture state stays live underneath)."""
+    """Patch link_inspect.collect_link_findings with a wrapper that records
+    how many times the real audit ran (the fixture state stays live
+    underneath) — the seam the hook actually consumes."""
 
-    real = li.audit_links
+    real = li.collect_link_findings
     calls: list[int] = []
 
     def wrapper(*args: object, **kwargs: object) -> object:
@@ -288,7 +289,7 @@ class CacheTests(unittest.TestCase):
 
     def test_cache_roundtrip_avoids_second_audit(self) -> None:
         wrapper, calls = counting_audit()
-        with patch.object(ldc.link_inspect, "audit_links", wrapper):
+        with patch.object(ldc.link_inspect, "collect_link_findings", wrapper):
             self.assertEqual(self.fx.check(), "")
             self.assertEqual(self.fx.check(), "")
         self.assertEqual(len(calls), 1)
@@ -299,7 +300,7 @@ class CacheTests(unittest.TestCase):
             self.fx.repo / "claude" / "elsewhere.md",
         )
         wrapper, calls = counting_audit()
-        with patch.object(ldc.link_inspect, "audit_links", wrapper):
+        with patch.object(ldc.link_inspect, "collect_link_findings", wrapper):
             fresh = self.fx.check()
             replayed = self.fx.check()
         self.assertEqual(len(calls), 1)

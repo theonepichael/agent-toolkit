@@ -22,8 +22,8 @@ one session and leaves no state behind to forget to undo.
 What it reports
 ---------------
 The same audit ``--check-links`` runs, condensed to one line per bucket plus
-a pointer at the full audit. The audit computation is shared with install.py
-through ``link_inspect.audit_links`` -- this hook shells out to nothing and
+a pointer at the full audit. The audit computation is shared with install.py through
+``link_inspect.collect_link_findings`` -- this hook shells out to nothing and
 parses no audit stdout, so the two can never disagree about what counts as
 drift. Silent and exit 0 when the machine is clean, so it costs a session
 nothing to have running. Also silent when the audit cannot run at all
@@ -211,17 +211,20 @@ def _audit(
     home: Path,
     machine: tuple[bool, bool, bool],
 ) -> dict[str, list[str]] | None:
-    """Run the shared audit in-process, or None if it cannot run.
+    """Run the shared audit in-process and render its buckets, or None.
 
-    Data-shaped failures (malformed links.toml — ValueError/TypeError, the
-    same classification install.py's --check-links entrypoint catches) and
-    environmental ones (OSError) both map to None: the hook never reports
-    problems with itself. Unexpected internal errors are deliberately not
-    caught — in a dev repo a bug must be visible.
+    Consumes the typed result API (``collect_link_findings``) and renders
+    here, exactly as ``audit_links`` does for install.py — same records,
+    same composition. Data-shaped failures (malformed links.toml —
+    ValueError/TypeError, the same classification install.py's
+    --check-links entrypoint catches) and environmental ones (OSError) both
+    map to None: the hook never reports problems with itself. Unexpected
+    internal errors are deliberately not caught — in a dev repo a bug must
+    be visible.
     """
     is_mac, is_linux, is_wsl = machine
     try:
-        findings, _foreign, _dirs = link_inspect.audit_links(
+        result = link_inspect.collect_link_findings(
             repo_root=repo,
             home=home,
             harnesses=link_inspect.VALID_HARNESSES,
@@ -230,14 +233,15 @@ def _audit(
             is_wsl=is_wsl,
             profile=link_inspect.DEFAULT_PROFILE,
             manifest_file=link_inspect.manifest_path(home),
-            format_path=lambda path: link_inspect.format_path(path, home),
             report_uninstalled=False,
             specs=specs,
             managed_dirs=managed_dirs,
         )
     except (OSError, ValueError, TypeError):
         return None
-    return findings
+    return link_inspect.render_findings(
+        result.findings, lambda path: link_inspect.format_path(path, home)
+    )
 
 
 def cmd_check(

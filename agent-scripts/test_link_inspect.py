@@ -123,10 +123,10 @@ class CheckApplicableLinksTests(unittest.TestCase):
     def test_healthy_link_is_silent(self) -> None:
         triple = self.link("claude/x", str(self.repo / "claude" / "x"))
         findings, foreign = li.check_applicable_links(
-            [triple], repo_root=self.repo, format_path=format_path
+            [triple], repo_root=self.repo
         )
         self.assertEqual(foreign, {})
-        self.assertEqual({k: v for k, v in findings.items() if v}, {})
+        self.assertEqual(findings, [])
 
     def test_wrong_target_and_dangling_source(self) -> None:
         wrong = self.link("claude/wrong", str(self.home / "elsewhere"))
@@ -134,10 +134,13 @@ class CheckApplicableLinksTests(unittest.TestCase):
         dangling = self.link("claude/gone", str(self.repo / "claude" / "gone"))
         (self.repo / "claude" / "gone").unlink()
         findings, _ = li.check_applicable_links(
-            [wrong, dangling], repo_root=self.repo, format_path=format_path
+            [wrong, dangling], repo_root=self.repo
         )
-        self.assertEqual(len(findings[li.CHECK_BUCKET_WRONG_TARGET]), 1)
-        self.assertEqual(len(findings[li.CHECK_BUCKET_BROKEN_SOURCE]), 1)
+        self.assertEqual(
+            [f.kind for f in findings],
+            [li.CHECK_BUCKET_WRONG_TARGET, li.CHECK_BUCKET_BROKEN_SOURCE],
+        )
+        self.assertEqual(findings[0].path, wrong[1])
 
     def test_not_a_symlink_bucket(self) -> None:
         src = self.repo / "claude" / "realfile"
@@ -148,17 +151,18 @@ class CheckApplicableLinksTests(unittest.TestCase):
         findings, _ = li.check_applicable_links(
             [(src, dest, "claude/realfile", True)],
             repo_root=self.repo,
-            format_path=format_path,
         )
-        self.assertEqual(len(findings[li.CHECK_BUCKET_NOT_A_SYMLINK]), 1)
+        self.assertEqual(
+            [f.kind for f in findings], [li.CHECK_BUCKET_NOT_A_SYMLINK]
+        )
 
     def test_inapplicable_rows_are_skipped(self) -> None:
         triple = self.link("claude/x", str(self.home / "nowhere"))
         triple = (triple[0], triple[1], triple[2], False)
         findings, _ = li.check_applicable_links(
-            [triple], repo_root=self.repo, format_path=format_path
+            [triple], repo_root=self.repo
         )
-        self.assertEqual({k: v for k, v in findings.items() if v}, {})
+        self.assertEqual(findings, [])
 
 
 class FindOrphanedLinksTests(unittest.TestCase):
@@ -223,30 +227,27 @@ class CheckUnmanagedFilesTests(unittest.TestCase):
         linked = self.managed / "linked.py"
         linked.symlink_to(self.repo / "linked.py")
         dir_spec = li.ManagedDirSpec(dest="~/.claude/scripts")
-        findings: dict[str, list[str]] = {b: [] for b in li.CHECK_BUCKETS}
-        audited = li.check_unmanaged_files(
+        findings, audited = li.check_unmanaged_files(
             [dir_spec],
             links=[(self.repo / "linked.py", linked, "linked.py", True)],
             home=self.home,
-            format_path=format_path,
             dir_applies=lambda _spec: True,
-            findings=findings,
         )
         self.assertEqual(audited, 1)
-        self.assertEqual(len(findings[li.CHECK_BUCKET_UNMANAGED]), 1)
-        self.assertIn("foreign.py", findings[li.CHECK_BUCKET_UNMANAGED][0])
+        self.assertEqual([f.kind for f in findings], [li.CHECK_BUCKET_UNMANAGED])
+        self.assertEqual(findings[0].path, self.managed / "foreign.py")
+        self.assertIn("~/.claude/scripts", findings[0].detail)
 
     def test_out_of_scope_directory_not_audited(self) -> None:
         dir_spec = li.ManagedDirSpec(dest="~/.claude/scripts")
-        audited = li.check_unmanaged_files(
+        findings, audited = li.check_unmanaged_files(
             [dir_spec],
             links=[],
             home=self.home,
-            format_path=format_path,
             dir_applies=lambda _spec: False,
-            findings={b: [] for b in li.CHECK_BUCKETS},
         )
         self.assertEqual(audited, 0)
+        self.assertEqual(findings, [])
 
 
 class IsolationTests(unittest.TestCase):
@@ -387,6 +388,18 @@ class AuditLinksTests(unittest.TestCase):
     def tearDown(self) -> None:
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
+    def audit_kwargs(self) -> dict[str, object]:
+        return dict(
+            repo_root=self.repo,
+            home=self.home,
+            harnesses=li.VALID_HARNESSES,
+            is_mac=False,
+            is_linux=True,
+            is_wsl=False,
+            profile=li.DEFAULT_PROFILE,
+            manifest_file=li.manifest_path(self.home),
+        )
+
     def test_audit_links_reports_wrong_target_as_data(self) -> None:
         (self.repo / "claude").mkdir()
         (self.repo / "claude" / "g.md").write_text("x\n")
@@ -398,15 +411,8 @@ class AuditLinksTests(unittest.TestCase):
             self.repo / "claude" / "elsewhere.md"
         )
         findings, foreign, dirs_audited = li.audit_links(
-            repo_root=self.repo,
-            home=self.home,
-            harnesses=li.VALID_HARNESSES,
-            is_mac=False,
-            is_linux=True,
-            is_wsl=False,
-            profile=li.DEFAULT_PROFILE,
-            manifest_file=li.manifest_path(self.home),
             format_path=lambda path: li.format_path(path, self.home),
+            **self.audit_kwargs(),
         )
         self.assertEqual(len(findings[li.CHECK_BUCKET_WRONG_TARGET]), 1)
         self.assertEqual(foreign, {})
@@ -422,6 +428,93 @@ class AuditLinksTests(unittest.TestCase):
         (self.home / ".claude" / "g.md").symlink_to(self.repo / "claude" / "g.md")
         specs = li.load_links(self.repo / "links.toml")
         findings, _foreign, _dirs = li.audit_links(
+            format_path=lambda path: li.format_path(path, self.home),
+            specs=specs,
+            managed_dirs=[],
+            **self.audit_kwargs(),
+        )
+        self.assertEqual(findings, {bucket: [] for bucket in li.CHECK_BUCKETS})
+
+
+class CollectLinkFindingsTests(unittest.TestCase):
+    """The typed result API: findings asserted independent of any printed
+    text, on a temporary home with representative symlink/managed-dir
+    fixtures."""
+
+    def setUp(self) -> None:
+        self.tmpdir = Path(tempfile.mkdtemp(prefix="test-link-inspect-collect-"))
+        self.repo = self.tmpdir / "repo"
+        (self.repo / "claude").mkdir(parents=True)
+        (self.repo / "links.toml").write_text(
+            '[[link]]\nsrc = "claude/g.md"\ndest = "~/.claude/g.md"\n\n'
+            '[[link]]\nsrc = "claude/gone.md"\ndest = "~/.claude/gone.md"\n\n'
+            '[[managed_dir]]\ndest = "~/.claude/scripts"\n'
+        )
+        (self.repo / "claude" / "g.md").write_text("x\n")
+        # gone.md is deliberately never created: its link dangles at the
+        # repo-side source.
+        home = self.tmpdir / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "g.md").symlink_to(
+            self.repo / "claude" / "elsewhere.md"
+        )  # wrong target
+        (home / ".claude" / "gone.md").symlink_to(
+            self.repo / "claude" / "gone.md"
+        )  # broken source
+        scripts = home / ".claude" / "scripts"
+        scripts.mkdir()
+        (scripts / "foreign.py").write_text("x\n")  # unmanaged
+        self.home = home
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def collect(self) -> li.LinkAuditResult:
+        return li.collect_link_findings(
+            repo_root=self.repo,
+            home=self.home,
+            harnesses=li.VALID_HARNESSES,
+            is_mac=False,
+            is_linux=True,
+            is_wsl=False,
+            profile=li.DEFAULT_PROFILE,
+            manifest_file=li.manifest_path(self.home),
+        )
+
+    def test_findings_are_typed_records_independent_of_rendering(self) -> None:
+        result = self.collect()
+        kinds = [(f.kind, f.path) for f in result.findings]
+        self.assertIn(
+            (li.CHECK_BUCKET_WRONG_TARGET, self.home / ".claude" / "g.md"), kinds
+        )
+        self.assertIn(
+            (li.CHECK_BUCKET_BROKEN_SOURCE, self.home / ".claude" / "gone.md"),
+            kinds,
+        )
+        self.assertIn(
+            (li.CHECK_BUCKET_UNMANAGED, self.home / ".claude" / "scripts" / "foreign.py"),
+            kinds,
+        )
+        self.assertEqual(result.foreign, {})
+        self.assertEqual(result.dirs_audited, 1)
+
+    def test_wrong_target_record_names_expected_and_actual(self) -> None:
+        result = self.collect()
+        wrong = next(
+            f
+            for f in result.findings
+            if f.kind == li.CHECK_BUCKET_WRONG_TARGET
+        )
+        self.assertIn("links.toml says", wrong.detail)
+        self.assertIn(str(self.repo / "claude" / "g.md"), wrong.detail)
+
+    def test_matches_audit_links_string_output(self) -> None:
+        """collect + render reproduce audit_links' bucket strings exactly."""
+        result = self.collect()
+        rendered = li.render_findings(
+            result.findings, lambda path: li.format_path(path, self.home)
+        )
+        findings, foreign, dirs_audited = li.audit_links(
             repo_root=self.repo,
             home=self.home,
             harnesses=li.VALID_HARNESSES,
@@ -431,10 +524,61 @@ class AuditLinksTests(unittest.TestCase):
             profile=li.DEFAULT_PROFILE,
             manifest_file=li.manifest_path(self.home),
             format_path=lambda path: li.format_path(path, self.home),
-            specs=specs,
-            managed_dirs=[],
         )
-        self.assertEqual(findings, {bucket: [] for bucket in li.CHECK_BUCKETS})
+        self.assertEqual(rendered, findings)
+        self.assertEqual(result.foreign, foreign)
+        self.assertEqual(result.dirs_audited, dirs_audited)
+
+
+class RenderFindingsTests(unittest.TestCase):
+    """The composition invariant: every rendered message is
+    f"{format_path(path)} — {detail}", grouped by kind in CHECK_BUCKETS
+    order with all buckets present."""
+
+    def test_one_finding_per_kind_renders_exactly(self) -> None:
+        findings = [
+            li.LinkFinding(
+                li.CHECK_BUCKET_WRONG_TARGET,
+                Path("/h/.claude/g.md"),
+                "points at /x, but links.toml says claude/g.md",
+            ),
+            li.LinkFinding(
+                li.CHECK_BUCKET_ORPHANED,
+                Path("/h/.claude/stale.py"),
+                "recorded by a past install run, but no links.toml entry "
+                "produces it anymore; still present as a real file",
+            ),
+            li.LinkFinding(
+                li.CHECK_BUCKET_UNMANAGED,
+                Path("/h/.claude/scripts"),
+                "declared exclusive, but unreadable (denied), so it could "
+                "not be audited",
+            ),
+        ]
+        buckets = li.render_findings(findings, lambda path: f"<{path}>")
+        self.assertEqual(list(buckets), list(li.CHECK_BUCKETS))
+        self.assertEqual(
+            buckets[li.CHECK_BUCKET_WRONG_TARGET],
+            ["</h/.claude/g.md> — points at /x, but links.toml says claude/g.md"],
+        )
+        self.assertEqual(buckets[li.CHECK_BUCKET_NOT_A_SYMLINK], [])
+        self.assertEqual(
+            buckets[li.CHECK_BUCKET_UNMANAGED],
+            [
+                "</h/.claude/scripts> — declared exclusive, but unreadable "
+                "(denied), so it could not be audited"
+            ],
+        )
+
+    def test_order_within_bucket_is_preserved(self) -> None:
+        findings = [
+            li.LinkFinding(li.CHECK_BUCKET_UNMANAGED, Path("/a"), "one"),
+            li.LinkFinding(li.CHECK_BUCKET_UNMANAGED, Path("/b"), "two"),
+        ]
+        buckets = li.render_findings(findings, str)
+        self.assertEqual(
+            buckets[li.CHECK_BUCKET_UNMANAGED], ["/a — one", "/b — two"]
+        )
 
 
 class InstallAliasTests(unittest.TestCase):
