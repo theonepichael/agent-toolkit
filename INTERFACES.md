@@ -115,19 +115,27 @@ analyze_sessions.py — multi-harness session analysis tool.
     - `--regex/-r` — treat query as regular expression
     - `--context/-C` — context lines around match (default: 0) (default: 0)
     - `--include-subagents` — include subagent / child sessions (excluded by default)
+- Filesystem constants:
+  - `_DEFAULT_ROOT_GETTERS = {'pi': lambda: Path.home() / '.pi' / 'agent' / 'sessions', 'claude': lambda: Path.home() / '.claude' / 'projects', 'opencode': lambda: Path.home() / '.local' / 'share' / 'opencode' / 'opencode.db', 'copilot': lambda: Path.home() / '.copilot' / 'session-store.db', 'agy': lambda: Path.home() / '.gemini' / 'antigravity-cli' / 'brain'}`
 - Depends on: `cli_common.py`
 - Public classes:
   - `class SessionRecord`
+  - `class SessionQuery` — Typed, immutable filter bundle for query_sessions().
+  - `class SkippedRecord` — A tolerated load failure, surfaced as a diagnostic instead of a raise.
+  - `class CostSummary` — Aggregated cost/token rollup over a record list (pure builder output).
+  - `class SessionQueryResult`
 - Public functions:
   - `normalize_timestamp(ts: object) -> tuple[str, datetime | None]` — Convert string ISO timestamp or int/float epoch ms/s into ISO 8601 string and datetime.
   - `parse_date_boundary(val: str | None, *, is_until: bool = False) -> datetime | None`
   - `calculate_claude_cost(model: str | None, in_tok: int, out_tok: int, cr_tok: int, cw_tok: int) -> tuple[float | None, str]`
-  - `load_pi_records(base_dir: Path | None = None, since_dt: datetime | None = None, until_dt: datetime | None = None) -> list[SessionRecord]`
-  - `load_claude_records(base_dir: Path | None = None, since_dt: datetime | None = None, until_dt: datetime | None = None) -> list[SessionRecord]`
-  - `load_opencode_records(db_path: Path | None = None, since_dt: datetime | None = None, until_dt: datetime | None = None, cwd_filter: str | None = None, session_filter: str | None = None) -> list[SessionRecord]`
-  - `load_copilot_records(db_path: Path | None = None, since_dt: datetime | None = None, until_dt: datetime | None = None, cwd_filter: str | None = None, session_filter: str | None = None) -> list[SessionRecord]`
-  - `load_agy_records(base_dir: Path | None = None, since_dt: datetime | None = None, until_dt: datetime | None = None, session_filter: str | None = None) -> list[SessionRecord]`
-  - `load_all_records(harness: str = 'all', since_dt: datetime | None = None, until_dt: datetime | None = None, cwd_filter: str | None = None, model_filter: str | None = None, session_filter: str | None = None, *, include_subagents: bool = True, pi_dir: Path | None = None, claude_dir: Path | None = None, opencode_db: Path | None = None, copilot_db: Path | None = None, agy_dir: Path | None = None) -> list[SessionRecord]`
+  - `aggregate_cost(records: Sequence[SessionRecord]) -> CostSummary` — Pure builder: aggregate + cost-origin classification over a record list.
+  - `query_sessions(query: SessionQuery, *, roots: Mapping[str, Path | None] | None = None) -> SessionQueryResult` — Read-only query/report service over harness session stores.
+  - `load_pi_records(base_dir: Path | None = None, since_dt: datetime | None = None, until_dt: datetime | None = None) -> tuple[list[SessionRecord], list[SkippedRecord]]`
+  - `load_claude_records(base_dir: Path | None = None, since_dt: datetime | None = None, until_dt: datetime | None = None) -> tuple[list[SessionRecord], list[SkippedRecord]]`
+  - `load_opencode_records(db_path: Path | None = None, since_dt: datetime | None = None, until_dt: datetime | None = None, cwd_filter: str | None = None, session_filter: str | None = None) -> tuple[list[SessionRecord], list[SkippedRecord]]`
+  - `load_copilot_records(db_path: Path | None = None, since_dt: datetime | None = None, until_dt: datetime | None = None, cwd_filter: str | None = None, session_filter: str | None = None) -> tuple[list[SessionRecord], list[SkippedRecord]]`
+  - `load_agy_records(base_dir: Path | None = None, since_dt: datetime | None = None, until_dt: datetime | None = None, session_filter: str | None = None) -> tuple[list[SessionRecord], list[SkippedRecord]]`
+  - `load_all_records(harness: str = 'all', since_dt: datetime | None = None, until_dt: datetime | None = None, cwd_filter: str | None = None, model_filter: str | None = None, session_filter: str | None = None, *, include_subagents: bool = True, pi_dir: Path | None = None, claude_dir: Path | None = None, opencode_db: Path | None = None, copilot_db: Path | None = None, agy_dir: Path | None = None) -> list[SessionRecord]` — Legacy shim: same positional contract and bare-list return as always.
   - `build_parser() -> argparse.ArgumentParser`
 - Subcommand handlers: `cmd_cost`, `cmd_prompts`, `cmd_search`
 - Tested by: `agent-scripts/test_analyze_sessions.py`

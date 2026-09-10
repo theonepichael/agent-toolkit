@@ -49,10 +49,11 @@ import json
 import re
 import sqlite3
 import sys
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TextIO
+from typing import Literal, TextIO
 
 import cli_common
 
@@ -216,6 +217,368 @@ def calculate_claude_cost(
     return cost, "derived"
 
 
+# ── Query service ─────────────────────────────────────────────────────────
+
+# agy is opt-in everywhere in this tool, so "no explicit harnesses" means
+# everything except agy — preserving the historical --harness all behavior.
+_DEFAULT_HARNESSES: frozenset[str] = frozenset({"pi", "claude", "opencode", "copilot"})
+# Line-level decode diagnostics are capped per file; overflow collapses into
+# one summary SkippedRecord. Parsing itself never stops early.
+_DECODE_SKIP_CAP = 10
+_VALID_ROLES = ("user", "assistant")
+
+
+@dataclass(frozen=True)
+class SessionQuery:
+    """Typed, immutable filter bundle for query_sessions().
+
+    All matches are record-level (a record failing a filter is dropped
+    individually, never whole-session), exactly like the historical
+    load_all_records() behavior.
+    """
+
+    harnesses: frozenset[str] | None = None
+    # None means "everything except agy" (--harness all semantics).
+    since: datetime | None = None
+    # Must be tz-aware; a naive datetime raises ValueError at query time
+    # (no silent UTC-vs-local interpretation).
+    until: datetime | None = None
+    # Must be tz-aware; same naive-datetime rule.
+    cwd: str | None = None
+    # Substring match, as --cwd today.
+    model: str | None = None
+    # Substring match (case-insensitive), as --model today.
+    session_id: str | None = None
+    # Substring match, as --session today.
+    role: str | None = None
+    # Exact role match ("user"/"assistant"); prompts passes "user".
+    include_subagents: bool = False
+    # Restrictive default: callers opt IN to subagent records. The cost
+    # adapter passes True (unless --no-subagents); prompts/search pass
+    # their --include-subagents flag.
+    text: str | None = None
+    # Record-text match, case-insensitive in every mode (both historical
+    # paths are).
+    text_regex: bool = False
+    # text is a regex (re.IGNORECASE) when True, case-insensitive substring
+    # when False.
+    limit: int | None = None
+    # Applied after all filtering; <= 0 disables limiting (historical
+    # --limit behavior).
+    keep: Literal["first", "last"] = "first"
+    # Which END of the filtered, timestamp-ascending set the limit keeps:
+    # "first" (search) or "last" (prompts). The returned list is ALWAYS
+    # timestamp-ascending.
+
+
+@dataclass(frozen=True)
+class SkippedRecord:
+    """A tolerated load failure, surfaced as a diagnostic instead of a raise.
+
+    kind is one of "decode" (invalid JSON line), "io" (existing file that
+    could not be read), or "db" (corrupt/unusable sqlite db). A path that
+    simply does not exist is benign and produces NO diagnostic.
+    """
+
+    path: Path
+    harness: str
+    kind: str
+    line_number: int | None = None
+    # 1-based JSONL line for kind="decode" line-level entries, else None.
+    reason: str = ""
+
+
+@dataclass(frozen=True)
+class CostSummary:
+    """Aggregated cost/token rollup over a record list (pure builder output)."""
+
+    sessions: int
+    # Count of UNIQUE session_id values — exactly today's
+    # len({rec.session_id ...}) semantics (cross-harness id collisions
+    # dedupe today too; preserved, not fixed).
+    messages: int
+    input_tokens: int
+    output_tokens: int
+    cache_read_tokens: int
+    cache_write_tokens: int
+    total_tokens: int
+    cost_usd: float | None
+    cost_origin: str
+
+
+@dataclass(frozen=True)
+class SessionQueryResult:
+    records: list[SessionRecord]
+    # Timestamp-ascending, tie-broken by (harness, session_id).
+    skipped_records: list[SkippedRecord]
+    # Load diagnostics; never raised.
+
+
+def _iter_jsonl(
+    path: Path, harness: str
+) -> Iterator[dict[str, object] | SkippedRecord]:
+    """Yield parsed JSON objects from a JSONL file, or SkippedRecords.
+
+    Shared by the pi/claude/agy loaders so malformed-line tolerance and the
+    per-file decode-diagnostic cap live in exactly one place. Tolerates and
+    continues past bad lines (only the diagnostics are capped); a file that
+    cannot be opened/read yields one kind="io" skip. Valid JSON that is not
+    an object is treated as a decode skip (the historical code would have
+    crashed on it with AttributeError).
+    """
+
+    bad = 0
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as f:
+            for lineno, line in enumerate(f, 1):
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    obj = json.loads(stripped)
+                except json.JSONDecodeError:
+                    bad += 1
+                    if bad <= _DECODE_SKIP_CAP:
+                        yield SkippedRecord(
+                            path=path,
+                            harness=harness,
+                            kind="decode",
+                            line_number=lineno,
+                            reason="invalid JSON",
+                        )
+                    continue
+                if isinstance(obj, dict):
+                    yield obj
+                else:
+                    bad += 1
+                    if bad <= _DECODE_SKIP_CAP:
+                        yield SkippedRecord(
+                            path=path,
+                            harness=harness,
+                            kind="decode",
+                            line_number=lineno,
+                            reason="invalid JSON",
+                        )
+    except OSError as exc:
+        yield SkippedRecord(
+            path=path,
+            harness=harness,
+            kind="io",
+            line_number=None,
+            reason=f"unreadable: {exc}",
+        )
+    if bad > _DECODE_SKIP_CAP:
+        yield SkippedRecord(
+            path=path,
+            harness=harness,
+            kind="decode",
+            line_number=None,
+            reason=f"{bad - _DECODE_SKIP_CAP} additional invalid JSON lines",
+        )
+
+
+def aggregate_cost(records: Sequence[SessionRecord]) -> CostSummary:
+    """Pure builder: aggregate + cost-origin classification over a record list.
+
+    Reproduces the historical cmd_cost group-row arithmetic exactly,
+    including the cost-origin ladder. cost_usd stays None (never 0.0) when
+    no record carries a cost, so the "-" rendering path is unchanged.
+    """
+
+    sessions = len({rec.session_id for rec in records})
+    in_tok = sum(rec.input_tokens for rec in records)
+    out_tok = sum(rec.output_tokens for rec in records)
+    cr_tok = sum(rec.cache_read_tokens for rec in records)
+    cw_tok = sum(rec.cache_write_tokens for rec in records)
+    costs = [rec.cost_usd for rec in records if rec.cost_usd is not None]
+    cost_sum = sum(costs) if costs else None
+
+    cost_bearing_recs = [
+        rec for rec in records if rec.total_tokens > 0 or rec.cost_usd is not None
+    ]
+    if not cost_bearing_recs:
+        origin_str = "unavailable"
+    else:
+        origins = {rec.cost_origin for rec in cost_bearing_recs}
+        if origins == {"native"}:
+            origin_str = "native"
+        elif origins == {"derived"}:
+            origin_str = "derived"
+        elif origins == {"unavailable"}:
+            origin_str = "unavailable"
+        elif origins == {"native", "derived"}:
+            origin_str = "native+derived"
+        elif "native" in origins or "derived" in origins:
+            origin_str = "partial"
+        else:
+            origin_str = "unavailable"
+
+    return CostSummary(
+        sessions=sessions,
+        messages=len(records),
+        input_tokens=in_tok,
+        output_tokens=out_tok,
+        cache_read_tokens=cr_tok,
+        cache_write_tokens=cw_tok,
+        total_tokens=in_tok + out_tok + cr_tok + cw_tok,
+        cost_usd=cost_sum,
+        cost_origin=origin_str,
+    )
+
+
+def query_sessions(
+    query: SessionQuery,
+    *,
+    roots: Mapping[str, Path | None] | None = None,
+) -> SessionQueryResult:
+    """Read-only query/report service over harness session stores.
+
+    Effect boundary: filesystem/sqlite reads under caller-supplied roots
+    (or loader defaults); no writes, no network, no subprocess. Malformed
+    inputs are surfaced as SkippedRecord diagnostics, never raised.
+    Timezone/boundary semantics: since/until must be tz-aware (naive
+    ValueError); boundaries are inclusive on both ends; records with
+    unparseable timestamps are never dropped by a boundary.
+    """
+
+    if query.role is not None and query.role not in _VALID_ROLES:
+        raise ValueError(f"invalid role: {query.role!r}")
+    if query.keep not in ("first", "last"):
+        raise ValueError(f"invalid keep: {query.keep!r}")
+    for name, dt in (("since", query.since), ("until", query.until)):
+        if dt is not None and dt.tzinfo is None:
+            raise ValueError(
+                f"{name} must be timezone-aware; got naive datetime {dt!r}"
+            )
+    requested = query.harnesses if query.harnesses is not None else _DEFAULT_HARNESSES
+    unknown = sorted(h for h in requested if h not in _DEFAULT_ROOT_GETTERS)
+    if unknown:
+        raise ValueError("unknown harness(es): " + ", ".join(unknown))
+    if roots is not None:
+        missing = sorted(h for h in requested if h not in roots)
+        if missing:
+            raise ValueError(
+                "roots missing requested harness(es): " + ", ".join(missing)
+            )
+
+    def _root(harness: str) -> Path | None:
+        if roots is None:
+            return None
+        return roots.get(harness)
+
+    tasks: list[
+        tuple[str, Callable[[], tuple[list[SessionRecord], list[SkippedRecord]]]]
+    ] = []
+    if "pi" in requested:
+        tasks.append(
+            (
+                "pi",
+                lambda: load_pi_records(_root("pi"), query.since, query.until),
+            )
+        )
+    if "claude" in requested:
+        tasks.append(
+            (
+                "claude",
+                lambda: load_claude_records(_root("claude"), query.since, query.until),
+            )
+        )
+    if "opencode" in requested:
+        tasks.append(
+            (
+                "opencode",
+                lambda: load_opencode_records(
+                    _root("opencode"),
+                    query.since,
+                    query.until,
+                    query.cwd,
+                    query.session_id,
+                ),
+            )
+        )
+    if "copilot" in requested:
+        tasks.append(
+            (
+                "copilot",
+                lambda: load_copilot_records(
+                    _root("copilot"),
+                    query.since,
+                    query.until,
+                    query.cwd,
+                    query.session_id,
+                ),
+            )
+        )
+    if "agy" in requested:
+        tasks.append(
+            (
+                "agy",
+                lambda: load_agy_records(
+                    _root("agy"), query.since, query.until, query.session_id
+                ),
+            )
+        )
+
+    records: list[SessionRecord] = []
+    skipped: list[SkippedRecord] = []
+    for _harness, task in tasks:
+        recs, skips = task()
+        records.extend(recs)
+        skipped.extend(skips)
+
+    if query.model:
+        mf = query.model.lower()
+        records = [r for r in records if r.model and mf in r.model.lower()]
+    if query.cwd:
+        records = [r for r in records if r.cwd and query.cwd in r.cwd]
+    if query.session_id:
+        records = [r for r in records if query.session_id in r.session_id]
+    if query.role is not None:
+        records = [r for r in records if r.role == query.role]
+    if not query.include_subagents:
+        records = [r for r in records if not r.is_subagent]
+    if query.text is not None:
+        if query.text_regex:
+            pattern = re.compile(query.text, re.IGNORECASE)
+            records = [r for r in records if pattern.search(r.text)]
+        else:
+            t_lower = query.text.lower()
+            records = [r for r in records if t_lower in r.text.lower()]
+
+    records.sort(key=lambda r: (r.timestamp, r.harness, r.session_id))
+    limit = query.limit
+    if limit is not None and limit > 0:
+        records = records[-limit:] if query.keep == "last" else records[:limit]
+
+    return SessionQueryResult(records=records, skipped_records=skipped)
+
+
+# Default root resolvers, keyed by harness name — lambdas so Path.home()
+# is evaluated per call (sandbox tests may change HOME after import).
+_DEFAULT_ROOT_GETTERS: dict[str, Callable[[], Path]] = {
+    "pi": lambda: Path.home() / ".pi" / "agent" / "sessions",
+    "claude": lambda: Path.home() / ".claude" / "projects",
+    "opencode": lambda: Path.home() / ".local" / "share" / "opencode" / "opencode.db",
+    "copilot": lambda: Path.home() / ".copilot" / "session-store.db",
+    "agy": lambda: Path.home() / ".gemini" / "antigravity-cli" / "brain",
+}
+
+
+def _resolve_cli_roots() -> Mapping[str, Path | None] | None:
+    """Roots for CLI invocations: None means every loader's default path."""
+
+    return None
+
+
+def _report_skips(skipped: list[SkippedRecord], *, verbose: bool) -> None:
+    """Print skip diagnostics to stderr, but only under --verbose."""
+
+    if not verbose:
+        return
+    for s in skipped:
+        print(f"skipped {s.harness} {s.path}: {s.reason}", file=sys.stderr)
+
+
 # ── Adapters ──────────────────────────────────────────────────────────────
 
 
@@ -223,214 +586,196 @@ def load_pi_records(
     base_dir: Path | None = None,
     since_dt: datetime | None = None,
     until_dt: datetime | None = None,
-) -> list[SessionRecord]:
+) -> tuple[list[SessionRecord], list[SkippedRecord]]:
     if base_dir is None:
         base_dir = Path.home() / ".pi" / "agent" / "sessions"
-    if not base_dir.exists():
-        return []
     records: list[SessionRecord] = []
-    for p in base_dir.rglob("*.jsonl"):
+    skipped: list[SkippedRecord] = []
+    if not base_dir.exists():
+        return records, skipped
+    for p in sorted(base_dir.rglob("*.jsonl")):
         is_subagent_path = "subagent" in str(p).lower()
         session_id = p.stem
         session_cwd: str | None = None
         current_model: str | None = None
 
-        try:
-            with p.open("r", encoding="utf-8", errors="replace") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        obj = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
+        for item in _iter_jsonl(p, "pi"):
+            if isinstance(item, SkippedRecord):
+                skipped.append(item)
+                continue
+            obj = item
 
-                    t = obj.get("type")
-                    if t == "session":
-                        session_id = str(obj.get("id") or session_id)
-                        session_cwd = obj.get("cwd")
-                        continue
-                    if t == "model_change":
-                        current_model = obj.get("modelId") or current_model
-                        continue
-                    if t == "message":
-                        msg = obj.get("message", {})
-                        role = msg.get("role")
-                        if role not in ("user", "assistant"):
-                            continue
+            t = obj.get("type")
+            if t == "session":
+                session_id = str(obj.get("id") or session_id)
+                session_cwd = obj.get("cwd")
+                continue
+            if t == "model_change":
+                current_model = obj.get("modelId") or current_model
+                continue
+            if t == "message":
+                msg = obj.get("message", {})
+                role = msg.get("role")
+                if role not in ("user", "assistant"):
+                    continue
 
-                        ts_val = obj.get("timestamp") or msg.get("timestamp")
-                        ts_str, dt = normalize_timestamp(ts_val)
-                        if since_dt and dt and dt < since_dt:
-                            continue
-                        if until_dt and dt and dt > until_dt:
-                            continue
+                ts_val = obj.get("timestamp") or msg.get("timestamp")
+                ts_str, dt = normalize_timestamp(ts_val)
+                if since_dt and dt and dt < since_dt:
+                    continue
+                if until_dt and dt and dt > until_dt:
+                    continue
 
-                        msg_model = (
-                            obj.get("model") or msg.get("model") or current_model
-                        )
-                        if msg_model:
-                            current_model = msg_model
+                msg_model = obj.get("model") or msg.get("model") or current_model
+                if msg_model:
+                    current_model = msg_model
 
-                        content = msg.get("content")
-                        text_parts: list[str] = []
-                        if isinstance(content, str):
-                            text_parts.append(content)
-                        elif isinstance(content, list):
-                            for block in content:
-                                if isinstance(block, dict):
-                                    if block.get("type") == "text" and "text" in block:
-                                        text_parts.append(str(block["text"]))
-                                elif isinstance(block, str):
-                                    text_parts.append(block)
-                        text = "\n".join(text_parts).strip()
+                content = msg.get("content")
+                text_parts: list[str] = []
+                if isinstance(content, str):
+                    text_parts.append(content)
+                elif isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict):
+                            if block.get("type") == "text" and "text" in block:
+                                text_parts.append(str(block["text"]))
+                        elif isinstance(block, str):
+                            text_parts.append(block)
+                text = "\n".join(text_parts).strip()
 
-                        usage = obj.get("usage") or msg.get("usage") or {}
-                        in_tok = int(usage.get("input", 0) or 0)
-                        out_tok = int(usage.get("output", 0) or 0)
-                        cr_tok = int(usage.get("cacheRead", 0) or 0)
-                        cw_tok = int(usage.get("cacheWrite", 0) or 0)
+                usage = obj.get("usage") or msg.get("usage") or {}
+                in_tok = int(usage.get("input", 0) or 0)
+                out_tok = int(usage.get("output", 0) or 0)
+                cr_tok = int(usage.get("cacheRead", 0) or 0)
+                cw_tok = int(usage.get("cacheWrite", 0) or 0)
 
-                        cost_usd: float | None = None
-                        cost_origin = "unavailable"
-                        cost_data = usage.get("cost")
-                        if isinstance(cost_data, (int, float)):
-                            cost_usd = float(cost_data)
-                            cost_origin = "native"
-                        elif isinstance(cost_data, dict):
-                            total = cost_data.get("total")
-                            if total is not None:
-                                cost_usd = float(total)
-                                cost_origin = "native"
+                cost_usd: float | None = None
+                cost_origin = "unavailable"
+                cost_data = usage.get("cost")
+                if isinstance(cost_data, (int, float)):
+                    cost_usd = float(cost_data)
+                    cost_origin = "native"
+                elif isinstance(cost_data, dict):
+                    total = cost_data.get("total")
+                    if total is not None:
+                        cost_usd = float(total)
+                        cost_origin = "native"
 
-                        records.append(
-                            SessionRecord(
-                                harness="pi",
-                                session_id=session_id,
-                                cwd=session_cwd,
-                                timestamp=ts_str,
-                                role=role,
-                                text=text,
-                                model=current_model,
-                                input_tokens=in_tok,
-                                output_tokens=out_tok,
-                                cache_read_tokens=cr_tok,
-                                cache_write_tokens=cw_tok,
-                                cost_usd=cost_usd,
-                                cost_origin=cost_origin,
-                                is_subagent=is_subagent_path,
-                            )
-                        )
-        except OSError:
-            continue
-    return records
+                records.append(
+                    SessionRecord(
+                        harness="pi",
+                        session_id=session_id,
+                        cwd=session_cwd,
+                        timestamp=ts_str,
+                        role=role,
+                        text=text,
+                        model=current_model,
+                        input_tokens=in_tok,
+                        output_tokens=out_tok,
+                        cache_read_tokens=cr_tok,
+                        cache_write_tokens=cw_tok,
+                        cost_usd=cost_usd,
+                        cost_origin=cost_origin,
+                        is_subagent=is_subagent_path,
+                    )
+                )
+    return records, skipped
 
 
 def load_claude_records(
     base_dir: Path | None = None,
     since_dt: datetime | None = None,
     until_dt: datetime | None = None,
-) -> list[SessionRecord]:
+) -> tuple[list[SessionRecord], list[SkippedRecord]]:
     if base_dir is None:
         base_dir = Path.home() / ".claude" / "projects"
-    if not base_dir.exists():
-        return []
     records: list[SessionRecord] = []
-    for p in base_dir.rglob("*.jsonl"):
+    skipped: list[SkippedRecord] = []
+    if not base_dir.exists():
+        return records, skipped
+    for p in sorted(base_dir.rglob("*.jsonl")):
         session_id = p.stem
         session_cwd: str | None = None
-        try:
-            with p.open("r", encoding="utf-8", errors="replace") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        obj = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
+        for item in _iter_jsonl(p, "claude"):
+            if isinstance(item, SkippedRecord):
+                skipped.append(item)
+                continue
+            obj = item
 
-                    if "sessionId" in obj:
-                        session_id = str(obj["sessionId"])
-                    if "cwd" in obj and session_cwd is None:
-                        session_cwd = str(obj["cwd"])
+            if "sessionId" in obj:
+                session_id = str(obj["sessionId"])
+            if "cwd" in obj and session_cwd is None:
+                session_cwd = str(obj["cwd"])
 
-                    t = obj.get("type")
-                    if t not in ("user", "assistant"):
-                        continue
+            t = obj.get("type")
+            if t not in ("user", "assistant"):
+                continue
 
-                    is_sidechain = bool(obj.get("isSidechain", False))
-                    ts_str, dt = normalize_timestamp(obj.get("timestamp"))
-                    if since_dt and dt and dt < since_dt:
-                        continue
-                    if until_dt and dt and dt > until_dt:
-                        continue
+            is_sidechain = bool(obj.get("isSidechain", False))
+            ts_str, dt = normalize_timestamp(obj.get("timestamp"))
+            if since_dt and dt and dt < since_dt:
+                continue
+            if until_dt and dt and dt > until_dt:
+                continue
 
-                    role = t
-                    msg = obj.get("message", {})
-                    if isinstance(msg, dict) and msg.get("role"):
-                        role = msg.get("role")
+            role = t
+            msg = obj.get("message", {})
+            if isinstance(msg, dict) and msg.get("role"):
+                role = msg.get("role")
 
-                    text_parts: list[str] = []
-                    content = (
-                        msg.get("content")
-                        if isinstance(msg, dict)
-                        else obj.get("content")
-                    )
-                    if isinstance(content, str):
-                        text_parts.append(content)
-                    elif isinstance(content, list):
-                        for block in content:
-                            if isinstance(block, dict):
-                                if block.get("type") == "text" and "text" in block:
-                                    text_parts.append(str(block["text"]))
-                            elif isinstance(block, str):
-                                text_parts.append(block)
-                    text = "\n".join(text_parts).strip()
+            text_parts: list[str] = []
+            content = (
+                msg.get("content") if isinstance(msg, dict) else obj.get("content")
+            )
+            if isinstance(content, str):
+                text_parts.append(content)
+            elif isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict):
+                        if block.get("type") == "text" and "text" in block:
+                            text_parts.append(str(block["text"]))
+                    elif isinstance(block, str):
+                        text_parts.append(block)
+            text = "\n".join(text_parts).strip()
 
-                    model: str | None = None
-                    in_tok, out_tok, cr_tok, cw_tok = 0, 0, 0, 0
-                    cost_usd: float | None = None
-                    cost_origin = "unavailable"
+            model: str | None = None
+            in_tok, out_tok, cr_tok, cw_tok = 0, 0, 0, 0
+            cost_usd: float | None = None
+            cost_origin = "unavailable"
 
-                    if isinstance(msg, dict):
-                        model = msg.get("model")
-                        usage = msg.get("usage", {})
-                        if isinstance(usage, dict):
-                            in_tok = int(usage.get("input_tokens", 0) or 0)
-                            out_tok = int(usage.get("output_tokens", 0) or 0)
-                            cr_tok = int(usage.get("cache_read_input_tokens", 0) or 0)
-                            cw_tok = int(
-                                usage.get("cache_creation_input_tokens", 0) or 0
-                            )
+            if isinstance(msg, dict):
+                model = msg.get("model")
+                usage = msg.get("usage", {})
+                if isinstance(usage, dict):
+                    in_tok = int(usage.get("input_tokens", 0) or 0)
+                    out_tok = int(usage.get("output_tokens", 0) or 0)
+                    cr_tok = int(usage.get("cache_read_input_tokens", 0) or 0)
+                    cw_tok = int(usage.get("cache_creation_input_tokens", 0) or 0)
 
-                    if in_tok or out_tok or cr_tok or cw_tok:
-                        cost_usd, cost_origin = calculate_claude_cost(
-                            model, in_tok, out_tok, cr_tok, cw_tok
-                        )
+            if in_tok or out_tok or cr_tok or cw_tok:
+                cost_usd, cost_origin = calculate_claude_cost(
+                    model, in_tok, out_tok, cr_tok, cw_tok
+                )
 
-                    records.append(
-                        SessionRecord(
-                            harness="claude",
-                            session_id=session_id,
-                            cwd=session_cwd,
-                            timestamp=ts_str,
-                            role=role,
-                            text=text,
-                            model=model,
-                            input_tokens=in_tok,
-                            output_tokens=out_tok,
-                            cache_read_tokens=cr_tok,
-                            cache_write_tokens=cw_tok,
-                            cost_usd=cost_usd,
-                            cost_origin=cost_origin,
-                            is_subagent=is_sidechain,
-                        )
-                    )
-        except OSError:
-            continue
-    return records
+            records.append(
+                SessionRecord(
+                    harness="claude",
+                    session_id=session_id,
+                    cwd=session_cwd,
+                    timestamp=ts_str,
+                    role=role,
+                    text=text,
+                    model=model,
+                    input_tokens=in_tok,
+                    output_tokens=out_tok,
+                    cache_read_tokens=cr_tok,
+                    cache_write_tokens=cw_tok,
+                    cost_usd=cost_usd,
+                    cost_origin=cost_origin,
+                    is_subagent=is_sidechain,
+                )
+            )
+    return records, skipped
 
 
 def load_opencode_records(
@@ -439,21 +784,31 @@ def load_opencode_records(
     until_dt: datetime | None = None,
     cwd_filter: str | None = None,
     session_filter: str | None = None,
-) -> list[SessionRecord]:
+) -> tuple[list[SessionRecord], list[SkippedRecord]]:
     if db_path is None:
         db_path = Path.home() / ".local" / "share" / "opencode" / "opencode.db"
+    records: list[SessionRecord] = []
+    skipped: list[SkippedRecord] = []
     if not db_path.exists():
-        return []
+        return records, skipped
 
     try:
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     except sqlite3.Error:
         try:
             conn = sqlite3.connect(str(db_path))
-        except sqlite3.Error:
-            return []
+        except sqlite3.Error as exc:
+            skipped.append(
+                SkippedRecord(
+                    path=db_path,
+                    harness="opencode",
+                    kind="db",
+                    line_number=None,
+                    reason=f"corrupt db: {exc}",
+                )
+            )
+            return records, skipped
 
-    records: list[SessionRecord] = []
     try:
         cursor = conn.cursor()
         where_clauses: list[str] = []
@@ -485,7 +840,7 @@ def load_opencode_records(
         rows = cursor.fetchall()
 
         if not rows:
-            return []
+            return records, skipped
 
         msg_ids = [r[3] for r in rows]
         part_texts: dict[str, list[str]] = {}
@@ -552,9 +907,19 @@ def load_opencode_records(
                     is_subagent=is_subagent,
                 )
             )
+    except sqlite3.Error as exc:
+        skipped.append(
+            SkippedRecord(
+                path=db_path,
+                harness="opencode",
+                kind="db",
+                line_number=None,
+                reason=f"corrupt db: {exc}",
+            )
+        )
     finally:
         conn.close()
-    return records
+    return records, skipped
 
 
 def load_copilot_records(
@@ -563,21 +928,31 @@ def load_copilot_records(
     until_dt: datetime | None = None,
     cwd_filter: str | None = None,
     session_filter: str | None = None,
-) -> list[SessionRecord]:
+) -> tuple[list[SessionRecord], list[SkippedRecord]]:
     if db_path is None:
         db_path = Path.home() / ".copilot" / "session-store.db"
+    records: list[SessionRecord] = []
+    skipped: list[SkippedRecord] = []
     if not db_path.exists():
-        return []
+        return records, skipped
 
     try:
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     except sqlite3.Error:
         try:
             conn = sqlite3.connect(str(db_path))
-        except sqlite3.Error:
-            return []
+        except sqlite3.Error as exc:
+            skipped.append(
+                SkippedRecord(
+                    path=db_path,
+                    harness="copilot",
+                    kind="db",
+                    line_number=None,
+                    reason=f"corrupt db: {exc}",
+                )
+            )
+            return records, skipped
 
-    records: list[SessionRecord] = []
     try:
         cursor = conn.cursor()
         where_clauses: list[str] = []
@@ -678,9 +1053,19 @@ def load_copilot_records(
                         is_subagent=False,
                     )
                 )
+    except sqlite3.Error as exc:
+        skipped.append(
+            SkippedRecord(
+                path=db_path,
+                harness="copilot",
+                kind="db",
+                line_number=None,
+                reason=f"corrupt db: {exc}",
+            )
+        )
     finally:
         conn.close()
-    return records
+    return records, skipped
 
 
 def load_agy_records(
@@ -688,16 +1073,15 @@ def load_agy_records(
     since_dt: datetime | None = None,
     until_dt: datetime | None = None,
     session_filter: str | None = None,
-) -> list[SessionRecord]:
+) -> tuple[list[SessionRecord], list[SkippedRecord]]:
     if base_dir is None:
         base_dir = Path.home() / ".gemini" / "antigravity-cli" / "brain"
-    if not base_dir.exists():
-        return []
     records: list[SessionRecord] = []
+    skipped: list[SkippedRecord] = []
+    if not base_dir.exists():
+        return records, skipped
 
-    for sess_dir in base_dir.iterdir():
-        if not sess_dir.is_dir():
-            continue
+    for sess_dir in sorted(p for p in base_dir.iterdir() if p.is_dir()):
         session_id = sess_dir.name
         if session_filter and session_filter not in session_id:
             continue
@@ -709,53 +1093,46 @@ def load_agy_records(
         if not transcript_file.exists():
             continue
 
-        try:
-            with transcript_file.open("r", encoding="utf-8", errors="replace") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        obj = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
+        for item in _iter_jsonl(transcript_file, "agy"):
+            if isinstance(item, SkippedRecord):
+                skipped.append(item)
+                continue
+            obj = item
 
-                    t = obj.get("type")
-                    if t == "USER_INPUT":
-                        role = "user"
-                    elif t == "PLANNER_RESPONSE":
-                        role = "assistant"
-                    else:
-                        continue
+            t = obj.get("type")
+            if t == "USER_INPUT":
+                role = "user"
+            elif t == "PLANNER_RESPONSE":
+                role = "assistant"
+            else:
+                continue
 
-                    content = obj.get("content") or ""
-                    ts_str, dt = normalize_timestamp(obj.get("created_at"))
-                    if since_dt and dt and dt < since_dt:
-                        continue
-                    if until_dt and dt and dt > until_dt:
-                        continue
+            content = obj.get("content") or ""
+            ts_str, dt = normalize_timestamp(obj.get("created_at"))
+            if since_dt and dt and dt < since_dt:
+                continue
+            if until_dt and dt and dt > until_dt:
+                continue
 
-                    records.append(
-                        SessionRecord(
-                            harness="agy",
-                            session_id=session_id,
-                            cwd=None,
-                            timestamp=ts_str,
-                            role=role,
-                            text=content if isinstance(content, str) else str(content),
-                            model=None,
-                            input_tokens=0,
-                            output_tokens=0,
-                            cache_read_tokens=0,
-                            cache_write_tokens=0,
-                            cost_usd=None,
-                            cost_origin="unavailable",
-                            is_subagent=False,
-                        )
-                    )
-        except OSError:
-            continue
-    return records
+            records.append(
+                SessionRecord(
+                    harness="agy",
+                    session_id=session_id,
+                    cwd=None,
+                    timestamp=ts_str,
+                    role=role,
+                    text=content if isinstance(content, str) else str(content),
+                    model=None,
+                    input_tokens=0,
+                    output_tokens=0,
+                    cache_read_tokens=0,
+                    cache_write_tokens=0,
+                    cost_usd=None,
+                    cost_origin="unavailable",
+                    is_subagent=False,
+                )
+            )
+    return records, skipped
 
 
 def load_all_records(
@@ -773,42 +1150,30 @@ def load_all_records(
     copilot_db: Path | None = None,
     agy_dir: Path | None = None,
 ) -> list[SessionRecord]:
-    records: list[SessionRecord] = []
+    """Legacy shim: same positional contract and bare-list return as always.
 
-    if harness in ("all", "pi"):
-        records.extend(load_pi_records(pi_dir, since_dt, until_dt))
-    if harness in ("all", "claude"):
-        records.extend(load_claude_records(claude_dir, since_dt, until_dt))
-    if harness in ("all", "opencode"):
-        records.extend(
-            load_opencode_records(
-                opencode_db, since_dt, until_dt, cwd_filter, session_filter
-            )
-        )
-    if harness in ("all", "copilot"):
-        records.extend(
-            load_copilot_records(
-                copilot_db, since_dt, until_dt, cwd_filter, session_filter
-            )
-        )
-    if harness == "agy":
-        records.extend(load_agy_records(agy_dir, since_dt, until_dt, session_filter))
+    Delegates to query_sessions(); skip diagnostics are available only via
+    query_sessions() directly (this shim's historical return type has no
+    place to carry them).
+    """
 
-    if model_filter:
-        mf = model_filter.lower()
-        records = [r for r in records if r.model and mf in r.model.lower()]
-
-    if cwd_filter:
-        records = [r for r in records if r.cwd and cwd_filter in r.cwd]
-
-    if session_filter:
-        records = [r for r in records if session_filter in r.session_id]
-
-    if not include_subagents:
-        records = [r for r in records if not r.is_subagent]
-
-    records.sort(key=lambda r: r.timestamp)
-    return records
+    roots: dict[str, Path | None] = {
+        "pi": pi_dir,
+        "claude": claude_dir,
+        "opencode": opencode_db,
+        "copilot": copilot_db,
+        "agy": agy_dir,
+    }
+    query = SessionQuery(
+        harnesses=None if harness == "all" else frozenset({harness}),
+        since=since_dt,
+        until=until_dt,
+        cwd=cwd_filter,
+        model=model_filter,
+        session_id=session_filter,
+        include_subagents=include_subagents,
+    )
+    return query_sessions(query, roots=roots).records
 
 
 # ── Subcommand Handlers ───────────────────────────────────────────────────
@@ -842,49 +1207,19 @@ def cmd_cost(
 
     rows: list[dict[str, object]] = []
     for g_name, g_recs in sorted(groups.items()):
-        sessions_count = len({rec.session_id for rec in g_recs})
-        msgs_count = len(g_recs)
-        in_tok = sum(rec.input_tokens for rec in g_recs)
-        out_tok = sum(rec.output_tokens for rec in g_recs)
-        cr_tok = sum(rec.cache_read_tokens for rec in g_recs)
-        cw_tok = sum(rec.cache_write_tokens for rec in g_recs)
-        total_tok = in_tok + out_tok + cr_tok + cw_tok
-
-        costs = [rec.cost_usd for rec in g_recs if rec.cost_usd is not None]
-        cost_sum = sum(costs) if costs else None
-
-        cost_bearing_recs = [
-            rec for rec in g_recs if rec.total_tokens > 0 or rec.cost_usd is not None
-        ]
-        if not cost_bearing_recs:
-            origin_str = "unavailable"
-        else:
-            origins = {rec.cost_origin for rec in cost_bearing_recs}
-            if origins == {"native"}:
-                origin_str = "native"
-            elif origins == {"derived"}:
-                origin_str = "derived"
-            elif origins == {"unavailable"}:
-                origin_str = "unavailable"
-            elif origins == {"native", "derived"}:
-                origin_str = "native+derived"
-            elif "native" in origins or "derived" in origins:
-                origin_str = "partial"
-            else:
-                origin_str = "unavailable"
-
+        cs = aggregate_cost(g_recs)
         rows.append(
             {
                 "group": g_name,
-                "sessions": sessions_count,
-                "messages": msgs_count,
-                "input_tokens": in_tok,
-                "output_tokens": out_tok,
-                "cache_read_tokens": cr_tok,
-                "cache_write_tokens": cw_tok,
-                "total_tokens": total_tok,
-                "cost_usd": round(cost_sum, 4) if cost_sum is not None else None,
-                "cost_origin": origin_str,
+                "sessions": cs.sessions,
+                "messages": cs.messages,
+                "input_tokens": cs.input_tokens,
+                "output_tokens": cs.output_tokens,
+                "cache_read_tokens": cs.cache_read_tokens,
+                "cache_write_tokens": cs.cache_write_tokens,
+                "total_tokens": cs.total_tokens,
+                "cost_usd": round(cs.cost_usd, 4) if cs.cost_usd is not None else None,
+                "cost_origin": cs.cost_origin,
             }
         )
 
@@ -1224,22 +1559,56 @@ def main(argv: list[str] | None = None) -> int:
     elif args.subcommand in ("prompts", "search"):
         include_subagents = args.include_subagents
 
-    records = load_all_records(
-        harness=args.harness,
-        since_dt=since_dt,
-        until_dt=until_dt,
-        cwd_filter=args.cwd,
-        model_filter=args.model,
-        session_filter=args.session,
+    # Per-command query shape: prompts narrows to user prompts (grep is
+    # always a case-insensitive regex there, limit keeps the LAST N);
+    # search matches any role (substring unless --regex, limit keeps the
+    # FIRST N). cost honors only its structural filters (--grep/--limit are
+    # historically ignored there and stay ignored).
+    text: str | None = None
+    text_regex = False
+    limit: int | None = None
+    keep: Literal["first", "last"] = "first"
+    role: str | None = None
+    if args.subcommand == "prompts":
+        role = "user"
+        text = args.grep
+        text_regex = True
+        limit = args.limit
+        keep = "last"
+    elif args.subcommand == "search":
+        text = args.query or args.grep
+        text_regex = bool(args.regex)
+        limit = args.limit
+        keep = "first"
+
+    query = SessionQuery(
+        harnesses=None if args.harness == "all" else frozenset({args.harness}),
+        since=since_dt,
+        until=until_dt,
+        cwd=args.cwd,
+        model=args.model,
+        session_id=args.session,
+        role=role,
         include_subagents=include_subagents,
+        text=text,
+        text_regex=text_regex,
+        limit=limit,
+        keep=keep,
     )
+    try:
+        result = query_sessions(query, roots=_resolve_cli_roots())
+    except re.error as e:
+        print(f"Error: invalid regex '{text}': {e}", file=sys.stderr)
+        return 1
+
+    _report_skips(result.skipped_records, verbose=bool(args.verbose))
 
     if args.subcommand == "cost":
-        return cmd_cost(args, records)
+        return cmd_cost(args, result.records)
     if args.subcommand == "prompts":
-        return cmd_prompts(args, records)
+        return cmd_prompts(args, result.records)
     if args.subcommand == "search":
-        return cmd_search(args, records)
+        return cmd_search(args, result.records)
 
     return 0
 
