@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "./helpers/tap";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import {
   assertQuestions,

@@ -762,7 +762,7 @@ class RealRepoSmokeTestCase(unittest.TestCase):
     something outside the repo (a runtime data file, another tool's own
     doc) is mechanically indistinguishable from a genuinely-broken
     repo-relative citation, and `pi/node_modules` is an uncommitted
-    dependency directory that exists only after `bun install` runs in
+    dependency directory that exists only after `npm install` runs in
     `pi/`, so a fresh worktree legitimately lacks it. The known set is
     subtractive (`actual - known`), so an entry for a finding that never
     occurs (deps installed) masks nothing: the checker only flags paths

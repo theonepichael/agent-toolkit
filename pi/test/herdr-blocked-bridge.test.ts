@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "./helpers/tap";
 import registerBridge from "../extensions/herdr-blocked-bridge";
 
 // herdr learns an agent is blocked from one signal only: the custom

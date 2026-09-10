@@ -352,7 +352,7 @@ shape should keep the fallback out of a code fence, not just this repo's
 typed `StringEnum` action plus optional fields, validation in exported
 pure functions so it is unit-testable, and `promptGuidelines` telling the
 model never to reach for the script via bash. Each has its Pi prompt
-template converted to call the tool, a `links.toml` entry, and bun tests
+template converted to call the tool, a `links.toml` entry, and Node tests
 over its `assertFields`/`buildArgv` helpers. Only what is distinctive is
 recorded here.
 

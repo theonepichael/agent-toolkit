@@ -2,7 +2,7 @@ import { execSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "./helpers/tap";
 
 // swarm-scheduling.js and swarm-herdr.js are no longer a copilot-local vendored
 // copy -- pi/extensions/swarm-lib/ is the single shared source both hosts build
@@ -32,7 +32,7 @@ import {
 
 describe("Copilot Swarm: Staleness and Build Consistency", () => {
   test("compiled artifacts match fresh build from src", () => {
-    const rootDir = join(__dirname, "../..");
+    const rootDir = join(import.meta.dirname, "../..");
     // All five build-copilot-swarm.sh outputs, not just the two most likely
     // to be touched -- a stale swarm-scheduling.js/swarm-herdr.js/swarm-picker.js
     // edited without rebuilding would otherwise ship with no direct test
@@ -64,7 +64,7 @@ describe("Copilot Swarm: no accidental re-fork", () => {
     // re-creates a local override under copilot/extensions/swarm/src/ would
     // silently reintroduce that risk with no test catching it; this guards
     // against exactly that, cheaply, without needing to compare content.
-    const rootDir = join(__dirname, "../..");
+    const rootDir = join(import.meta.dirname, "../..");
     for (const f of [
       "swarm-scheduling.ts",
       "swarm-herdr.ts",

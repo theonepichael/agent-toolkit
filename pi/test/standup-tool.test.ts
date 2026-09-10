@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "./helpers/tap";
 import standupExtension, { assertFields, buildArgv } from "../extensions/standup-tool";
 
 describe("assertFields", () => {

@@ -43,7 +43,7 @@ Install whichever CLI harness(es) you plan to use:
 System tools:
 - **Python 3.12+**
 - **Git**
-- Optional: `uv` (recommended for test execution), `bun` / `node` (for Pi TypeScript extensions)
+- Optional: `uv` (recommended for test execution), `npm` + Node 22.19 or newer (for Pi TypeScript extensions; the floor is Pi's own `engines` requirement)
 
 ### Git hooks
 
@@ -79,10 +79,10 @@ silently until it exists. Run the per-directory installs in one
 step after creating a worktree:
 
 ```bash
-scripts/bootstrap-worktree.sh   # uv sync at the root + bun install in pi/
+scripts/bootstrap-worktree.sh   # uv sync at the root + npm install in pi/
 ```
 
-It warns (and skips that step) if `uv` or `bun` is missing, and is safe to
+It warns (and skips that step) if `uv` or `npm` is missing, and is safe to
 rerun.
 
 ### Options & Flags

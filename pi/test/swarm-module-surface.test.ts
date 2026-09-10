@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "./helpers/tap";
 
 // Interface-preservation guard for the swarm helper extraction: the three
 // helper modules (swarm-picker, swarm-scheduling, swarm-herdr) must export

@@ -1,8 +1,8 @@
 """Coverage guard: pi's dev-status-tool ACTIONS vs dev_status.py's real CLI.
 
 Adding the ``ready`` subcommand to ``agent-scripts/dev_status.py`` left
-``pi/extensions/dev-status-tool.ts`` without it and nothing failed — bun
-test stayed green with an action no pi session could reach, while the
+``pi/extensions/dev-status-tool.ts`` without it and nothing failed — the TS
+suite stayed green with an action no pi session could reach, while the
 contract-fingerprint check pointed at 21 skill docs, none of which
 enumerates subcommands. This module closes that gap: ACTIONS must cover
 every leaf subcommand dev_status.py actually defines, and stale entries
@@ -11,7 +11,7 @@ every leaf subcommand dev_status.py actually defines, and stale entries
 The CLI surface comes from gen_interfaces.py's existing AST parser
 (``extract_cli`` + ``leaf_subcommand_paths``), imported — never a second
 parser, which would drift exactly the way this guard exists to catch.
-The TS side is read as text with a small scanner; no bun/node toolchain
+The TS side is read as text with a small scanner; no node/npm toolchain
 is involved.
 
 MAPPING RULE (encoded once in :func:`mapped_action_name`, never per

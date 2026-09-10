@@ -62,7 +62,7 @@ creating the state at all.
 ## This is the only TypeScript tree with pi's own toolchain
 
 The one exception is `copilot/extensions/swarm/src/*.ts`, built by
-`scripts/build-copilot-swarm.sh` (`bun build` straight to plain JS) rather
+`scripts/build-copilot-swarm.sh` (`esbuild` straight to plain JS) rather
 than loaded live the way pi loads its own extensions — Copilot CLI
 extensions must be `.mjs`/`.cjs`, not TypeScript, so pi's live-TS-loading
 approach does not apply there. This is a second, independent toolchain, not
@@ -78,20 +78,32 @@ Copilot's `extension.ts` are thin host registration adapters;
 source, so there is no copied swarm implementation to drift.
 
 `pi/package.json` drives four stages, all run by
-`test/test_pi_ts_checks.py` via `bun run <stage>`:
+`test/test_pi_ts_checks.py` via `npm run <stage>`:
 
 | Stage | Command |
 |---|---|
-| `test` | `bun test` (specs live in `pi/test/`) |
+| `test` | `node --import tsx --import ./test/helpers/sanitize-test-env.mjs --test --test-concurrency=1 --test-timeout=5000 test/*.test.ts` (specs live in `pi/test/`) |
 | `typecheck` | `tsc --noEmit` |
 | `lint` | `oxlint extensions test` |
 | `format:check` | `prettier --check extensions test` |
 
+The suite runs on `node:test` for structure and the `expect` package for
+matchers, both reached through `pi/test/helpers/tap.ts`, which re-exports them
+under the names the specs import. `--test-concurrency=1` is not a
+performance knob: Bun ran every spec in one process, and `node --test`
+defaults to a concurrent child per file, which would let
+`copilot-swarm.test.ts` rewrite the tracked Copilot artifacts while another
+file is reading them. `--test-timeout=5000` carries over Bun's per-test cap
+(so a hang fails the gate instead of blocking it forever).
+
 Run them from `pi/`, not the repo root. A fresh worktree has no
-`pi/node_modules`, and all four stages **skip** rather than fail when it is
-missing — run `bun install` in `pi/` first (or `scripts/bootstrap-worktree.sh`
-from the repo root, which also does the root `uv sync`), or you will read a
-green suite that checked nothing.
+`pi/node_modules`, and `test_pi_ts_checks.py` **fails** rather than skipping
+when it is missing — run `npm install` in `pi/` first (or
+`scripts/bootstrap-worktree.sh` from the repo root, which also does the root
+`uv sync`), or you will read a green suite that checked nothing. That
+fail-not-skip choice is deliberate and load-bearing: a skip in a fresh
+worktree would hide the whole gate from exactly the baseline run that is
+supposed to catch it.
 
 **Both checks are scoped to `extensions` and `test`, not to `pi/` itself.**
 That is why this file and its `CLAUDE.md` symlink sit at `pi/` root:

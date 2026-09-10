@@ -1,6 +1,6 @@
 """Tests for scripts/bootstrap-worktree.sh.
 
-Runs the real script against a temp fake repo with stub `uv`/`bun`
+Runs the real script against a temp fake repo with stub `uv`/`npm`
 executables on PATH, so the per-directory install invocations are verified
 without touching the real repo's venv or pi/node_modules.
 """
@@ -68,7 +68,7 @@ class TestBootstrapWorktree:
         bin_dir.mkdir()
         log = tmp_path / "calls.log"
         _write_stub(bin_dir, log, "uv", exit_code=0)
-        _write_stub(bin_dir, log, "bun", exit_code=0)
+        _write_stub(bin_dir, log, "npm", exit_code=0)
 
         result = subprocess.run(
             ["bash", str(script_in_fake_repo)],
@@ -81,8 +81,8 @@ class TestBootstrapWorktree:
         assert result.returncode == 0, result.stderr
         calls = _read_log(log)
         tools = [name for name, _cwd, _args in calls]
-        assert tools == ["uv", "bun"]
-        # uv runs at the repo root, bun inside pi/ — regardless of caller cwd
+        assert tools == ["uv", "npm"]
+        # uv runs at the repo root, npm inside pi/ — regardless of caller cwd
         assert calls[0][1] == str(repo)
         assert calls[0][2] == "sync"
         assert calls[1][1] == str(repo / "pi")
@@ -95,7 +95,7 @@ class TestBootstrapWorktree:
         bin_dir.mkdir()
         log = tmp_path / "calls.log"
         _write_stub(bin_dir, log, "uv", exit_code=1)
-        _write_stub(bin_dir, log, "bun", exit_code=0)
+        _write_stub(bin_dir, log, "npm", exit_code=0)
 
         result = subprocess.run(
             ["bash", str(script_in_fake_repo)],
@@ -115,7 +115,7 @@ class TestBootstrapWorktree:
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
         log = tmp_path / "calls.log"
-        _write_stub(bin_dir, log, "bun", exit_code=0)  # no uv stub: uv "missing"
+        _write_stub(bin_dir, log, "npm", exit_code=0)  # no uv stub: uv "missing"
 
         result = subprocess.run(
             ["bash", str(script_in_fake_repo)],
@@ -129,7 +129,7 @@ class TestBootstrapWorktree:
         assert "uv" in result.stderr  # warning names the skipped tool
         calls = _read_log(log)
         assert [(name, cwd, args) for name, cwd, args in calls] == [
-            ("bun", str(repo / "pi"), "install")
+            ("npm", str(repo / "pi"), "install")
         ]
 
     def test_script_exists_and_has_bash_shebang(self) -> None:
@@ -144,7 +144,7 @@ class TestBootstrapWorktree:
         bin_dir.mkdir()
         log = tmp_path / "calls.log"
         _write_stub(bin_dir, log, "uv", exit_code=0)
-        _write_stub(bin_dir, log, "bun", exit_code=0)
+        _write_stub(bin_dir, log, "npm", exit_code=0)
 
         result = subprocess.run(
             ["bash", str(script_in_fake_repo), "/some/worktree/path"],
@@ -166,7 +166,7 @@ class TestBootstrapWorktree:
         bin_dir.mkdir()
         log = tmp_path / "calls.log"
         _write_stub(bin_dir, log, "uv", exit_code=0)
-        _write_stub(bin_dir, log, "bun", exit_code=0)
+        _write_stub(bin_dir, log, "npm", exit_code=0)
 
         result = subprocess.run(
             ["bash", str(script_in_fake_repo)],

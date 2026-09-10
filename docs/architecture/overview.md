@@ -56,7 +56,7 @@ The repository is structured into distinct functional layers:
 
 - **`agent-scripts/`**: Standard-library-only Python tools implementing core workflow logic (`dev_status.py`, `grill.py`, `second_opinion.py`, `refresh_guidance.py`) and artifact generators (`gen_skills.py`, `gen_interfaces.py`, `gen_second_opinion.py`).
 - **`claude/`**, **`copilot/`**, **`opencode/`**, **`agy/`**, **`pi/`**, **`codex/`**: Harness-specific configuration adapters, prompts, slash commands, and plugins mapped into user environments via [links.toml](../../links.toml).
-- **`pi/`**: TypeScript ecosystem for the Pi assistant, housing custom extensions (such as `question-tool.ts` and `swarm-tool.ts`) with dedicated bun test suites.
+- **`pi/`**: TypeScript ecosystem for the Pi assistant, housing custom extensions (such as `question-tool.ts` and `swarm-tool.ts`) with dedicated Node test suites (run through `node:test` + the `expect` package).
 - **`herdr_remote/`**: Independent remote-control bridge daemon (`aiohttp`) and static PWA for monitoring and prompting headless agent sessions over Tailscale (see [herdr-remote.md](herdr-remote.md)).
 - **`githooks/`**: Repository pre-commit hooks preventing direct commits on `main`, enforcing seed SessionStart hook retention, and verifying documentation freshness.
 - **`test/`**: Pytest suite operating under a sandboxed `HOME` environment with mocked subprocess calls to verify installer, guards, and link invariants.

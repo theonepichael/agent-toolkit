@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "./helpers/tap";
 import permissionGate, {
   agentUnattendedByEnv,
   classify,
@@ -47,10 +47,12 @@ describe("classify", () => {
     expect(classify("python3 ~/.claude/scripts/worktree.py slug")).toBe("allow");
     expect(classify("git worktree add ../repo-slug -b slug")).toBe("allow");
     expect(classify("git -C /repo worktree add ../repo-slug -b slug")).toBe("allow");
-    expect(classify("bun install")).toBe("allow");
-    expect(classify("bun run test")).toBe("allow");
-    expect(classify("bun run lint")).toBe("allow");
-    expect(classify("bunx tsc --noEmit")).toBe("allow");
+    expect(classify("npm install")).toBe("allow");
+    expect(classify("npm test")).toBe("allow");
+    expect(classify("npm run test")).toBe("allow");
+    expect(classify("npm run lint")).toBe("allow");
+    expect(classify("npm run typecheck")).toBe("allow");
+    expect(classify("npm run format")).toBe("allow");
   });
 
   test("commit-gate commands stay on ask even after the --auto allowlist extension", () => {
@@ -271,7 +273,7 @@ describe("classify: false-positive classes the scanner must not break", () => {
   test("redirection is not a boundary: 2>&1, >&2, <&, &> stay one segment", () => {
     expect(classify("git status 2>&1")).toBe("allow");
     expect(classify("uv run pytest 2>&1 | tail")).toBe("allow");
-    expect(classify("bun run test &> out.log")).toBe("allow");
+    expect(classify("npm test &> out.log")).toBe("allow");
     expect(classify("echo x >&2")).toBe("allow");
   });
 
@@ -315,10 +317,12 @@ describe("classify: per-pattern regression table", () => {
       ["python3 ~/.claude/scripts/worktree.py", "python3 ~/.claude/scripts/worktree.py slug"],
       ["git worktree add", "git worktree add ../repo-slug -b slug"],
       ["git -C worktree add", "git -C /repo worktree add ../repo-slug -b slug"],
-      ["bun install", "bun install"],
-      ["bun run test", "bun run test"],
-      ["bun run lint", "bun run lint"],
-      ["bunx tsc", "bunx tsc --noEmit"],
+      ["npm install", "npm install"],
+      ["npm test", "npm test"],
+      ["npm run test", "npm run test"],
+      ["npm run lint", "npm run lint"],
+      ["npm run typecheck", "npm run typecheck"],
+      ["npm run format", "npm run format"],
       ["lsof", "lsof +D /tmp/x"],
       ["ps", "ps aux"],
       ["ls", "ls -la"],

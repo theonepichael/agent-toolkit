@@ -1381,7 +1381,9 @@ used to guard, so there is no longer a separate exclusion for it here.
 """
 
 SHELL_PROMPT_TOKENS = frozenset({"$", "#", "&&", ";", "|", "|&"})
-INTERPRETER_PREFIXES = frozenset({"python3", "python", "uv", "run", "bun", "node"})
+INTERPRETER_PREFIXES = frozenset(
+    {"python3", "python", "uv", "run", "bun", "node", "npm"}
+)
 
 _CODE_SPAN_RE = re.compile(r"`([^`\n]+)`")
 _FENCED_BLOCK_RE = re.compile(r"```[a-zA-Z0-9]*\n(.*?)```", re.DOTALL)

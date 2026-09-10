@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "./helpers/tap";
 import guardRails from "../extensions/guard-rails";
 import permissionGate from "../extensions/permission-gate";
 import trustSession from "../extensions/trust-session";

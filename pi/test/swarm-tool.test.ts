@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "./helpers/tap";
 import registerSwarmTools, {
   activeWorkerCount,
   AMEND_INSTRUCTION,
@@ -1536,21 +1536,26 @@ describe("swarm_poll execute() wiring", () => {
   // as exit 0 with empty or partial stdout. That must stay distinguishable
   // from a real settle: it closes the pane and drops the worker, and it is
   // reported as "error" rather than a timeout that never elapsed.
-  test.each([
+  // node:test has no `test.each`, so the three shapes are unrolled into one
+  // named test each -- which reads better in output than Bun's `%s` template.
+  const abortedWaitShapes: [string, string][] = [
     ["empty stdout, as a signal-killed exec resolves", ""],
     ["partial/unparseable stdout", '{"result":{"agent":{"agent_st'],
     ["valid JSON with no recognized status", JSON.stringify({ result: { agent: {} } })],
-  ])("exit-0 with %s closes the pane and drops the worker", async (_label, stdout) => {
-    const { runId, poll, stub } = setup(stdout);
+  ];
+  for (const [shape, stdout] of abortedWaitShapes) {
+    test(`exit-0 with ${shape} closes the pane and drops the worker`, async () => {
+      const { runId, poll, stub } = setup(stdout);
 
-    const res = (await poll.execute(
-      ...(["call-1", { runId, timeoutMs: 1000 }, undefined] as unknown as never[]),
-    )) as { details: { events: { kind: string; detail?: string }[] } };
+      const res = (await poll.execute(
+        ...(["call-1", { runId, timeoutMs: 1000 }, undefined] as unknown as never[]),
+      )) as { details: { events: { kind: string; detail?: string }[] } };
 
-    expect(res.details.events.map((e) => e.kind)).toEqual(["error"]);
-    expect(workerCloses(stub)).toHaveLength(1);
-    expect(loadState(runId, dir)?.workers).toHaveLength(0);
-  });
+      expect(res.details.events.map((e) => e.kind)).toEqual(["error"]);
+      expect(workerCloses(stub)).toHaveLength(1);
+      expect(loadState(runId, dir)?.workers).toHaveLength(0);
+    });
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -4971,7 +4976,9 @@ describe("swarm_poll blocked-state resync", () => {
     expect(stub.calls.filter((c) => c.argv[0] === "tab" && c.argv[1] === "close")).toHaveLength(0);
     const persisted = loadState(runId, dir)?.workers[0];
     expect(persisted?.lifecycle).toBe("awaiting_relay");
-    expect(persisted?.awaitingRelaySinceMs).toBeNumber();
+    // Bun's `toBeNumber` has no Jest equivalent; `typeof` is the direct
+    // translation (and fails on undefined/null the same way).
+    expect(typeof persisted?.awaitingRelaySinceMs).toBe("number");
   });
 
   test("an inconclusive agent get leaves the parked record untouched", async () => {

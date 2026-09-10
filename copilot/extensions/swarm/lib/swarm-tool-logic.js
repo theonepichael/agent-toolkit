@@ -9,48 +9,44 @@ import { spawn } from "node:child_process";
 var OPEN_PANE_SOFT_CAP_MULTIPLIER = 2;
 var TERMINAL_AGENT_STATUSES = ["idle", "done"];
 function isTerminalAgentStatus(status) {
-  return status !== undefined && TERMINAL_AGENT_STATUSES.includes(status);
+  return status !== void 0 && TERMINAL_AGENT_STATUSES.includes(status);
 }
-var RECONCILE_MIN_AGE_MS = 60000;
+var RECONCILE_MIN_AGE_MS = 6e4;
 function staleWorkerRecords(state, live, now) {
   const statusById = new Map(live.map((e) => [e.id, e.status]));
   return state.workers.filter((w) => {
-    if (!statusById.has(w.agent))
-      return true;
+    if (!statusById.has(w.agent)) return true;
     const status = statusById.get(w.agent);
-    if (status === undefined)
-      return false;
-    if (!isTerminalAgentStatus(status))
-      return false;
+    if (status === void 0) return false;
+    if (!isTerminalAgentStatus(status)) return false;
     const began = w.workingSinceMs ?? w.awaitingRelaySinceMs;
-    if (began === undefined)
-      return false;
+    if (began === void 0) return false;
     return now - began >= RECONCILE_MIN_AGE_MS;
   });
 }
 var PROJECT_PREFIXES = ["iron-lb-", "meta-", "work-", "atk-"];
 function nextAgentId(runId, counter, slug) {
   const cleanSlug = slug ? slug.replace(/[^a-zA-Z0-9_-]/g, "") : "";
-  const matched = PROJECT_PREFIXES.filter((prefix) => cleanSlug.startsWith(prefix)).sort((a, b) => b.length - a.length)[0];
+  const matched = PROJECT_PREFIXES.filter((prefix) => cleanSlug.startsWith(prefix)).sort(
+    (a, b) => b.length - a.length
+  )[0];
   const stripped = matched ? cleanSlug.slice(matched.length) : cleanSlug;
-  if (!stripped)
-    return `${runId}-w${counter}`;
+  if (!stripped) return `${runId}-w${counter}`;
   const base = `${runId}-w${counter}-${stripped}`;
-  if (base.length <= 32)
-    return base;
+  if (base.length <= 32) return base;
   const remaining = 32 - `${runId}-w${counter}-`.length;
-  if (remaining < 1)
-    return base.slice(0, 32);
+  if (remaining < 1) return base.slice(0, 32);
   return `${runId}-w${counter}-${stripped.slice(-remaining)}`;
 }
 function stalledRelayWorkers(workers, now, stallMs) {
-  return workers.filter((w) => w.lifecycle === "awaiting_relay" && w.awaitingRelaySinceMs !== undefined && now - w.awaitingRelaySinceMs >= stallMs);
+  return workers.filter(
+    (w) => w.lifecycle === "awaiting_relay" && w.awaitingRelaySinceMs !== void 0 && now - w.awaitingRelaySinceMs >= stallMs
+  );
 }
 function parseReadyItems(stdout) {
   try {
     const parsed = JSON.parse(stdout);
-    if (!Array.isArray(parsed))
-      return [];
+    if (!Array.isArray(parsed)) return [];
     return parsed.filter((i) => typeof i?.id === "string");
   } catch {
     return [];
@@ -65,8 +61,7 @@ function parseShownItem(stdout) {
   }
 }
 function isSuspiciousFinish(shownStatus, captureCount) {
-  if (captureCount > 0)
-    return false;
+  if (captureCount > 0) return false;
   return shownStatus === "open" || shownStatus === "in-progress";
 }
 function itemPaths(item) {
@@ -76,8 +71,7 @@ function itemPaths(item) {
 function pathsCollide(a, b) {
   const x = a.replace(/\/+$/, "");
   const y = b.replace(/\/+$/, "");
-  if (x === y)
-    return true;
+  if (x === y) return true;
   return x.startsWith(`${y}/`) || y.startsWith(`${x}/`);
 }
 function selectSchedulable(candidates, takenPaths, headroom, mode = "concurrent") {
@@ -86,16 +80,15 @@ function selectSchedulable(candidates, takenPaths, headroom, mode = "concurrent"
   const skipped = [];
   const refused = [];
   const taken = [...takenPaths];
-  const seen = new Set;
+  const seen = /* @__PURE__ */ new Set();
   for (const candidate of candidates) {
-    if (seen.has(candidate.id))
-      continue;
+    if (seen.has(candidate.id)) continue;
     seen.add(candidate.id);
     const eligibility = mode === "serial" ? candidate.serial_safe : candidate.worker_safe;
     if (eligibility !== true) {
       refused.push({
         slug: candidate.id,
-        reason: mode === "serial" && typeof candidate.serial_safety_reason === "string" ? candidate.serial_safety_reason : eligibility === false ? "the backlog reports this item is not worker-safe -- its prefix " + "names the harness repo, or is unrecognised. A worker would be " + "editing the code it is running. Work it in a normal session." : `dev_status.py ready reported no ${mode === "serial" ? "serial_safe" : "worker_safe"} field for this ` + "item, so eligibility is unknown and it is refused rather than " + "assumed safe. Update the installed dev_status.py."
+        reason: mode === "serial" && typeof candidate.serial_safety_reason === "string" ? candidate.serial_safety_reason : eligibility === false ? "the backlog reports this item is not worker-safe -- its prefix names the harness repo, or is unrecognised. A worker would be editing the code it is running. Work it in a normal session." : `dev_status.py ready reported no ${mode === "serial" ? "serial_safe" : "worker_safe"} field for this item, so eligibility is unknown and it is refused rather than assumed safe. Update the installed dev_status.py.`
       });
       continue;
     }
@@ -108,13 +101,13 @@ function selectSchedulable(candidates, takenPaths, headroom, mode = "concurrent"
     let clashHolder;
     for (const p of paths) {
       const hit = taken.find((t) => pathsCollide(p, t.path));
-      if (hit !== undefined) {
+      if (hit !== void 0) {
         clashPath = p;
         clashHolder = hit.holder;
         break;
       }
     }
-    if (clashPath !== undefined) {
+    if (clashPath !== void 0) {
       deferred.push({
         slug: candidate.id,
         reason: `file overlap with ${clashHolder}: ${clashPath}`
@@ -122,10 +115,12 @@ function selectSchedulable(candidates, takenPaths, headroom, mode = "concurrent"
       continue;
     }
     slugs.push(candidate.id);
-    taken.push(...paths.map((p) => ({
-      path: p,
-      holder: `candidate ${candidate.id} (selected earlier this wave)`
-    })));
+    taken.push(
+      ...paths.map((p) => ({
+        path: p,
+        holder: `candidate ${candidate.id} (selected earlier this wave)`
+      }))
+    );
   }
   return { slugs, deferred, skipped, refused };
 }
@@ -133,8 +128,7 @@ function activeWorkerCount(state) {
   return state.workers.filter((w) => w.lifecycle === "active").length;
 }
 function canSpawnNew(state) {
-  if (state.mode === "serial")
-    return state.workers.length === 0;
+  if (state.mode === "serial") return state.workers.length === 0;
   return activeWorkerCount(state) < state.concurrency;
 }
 function openPaneCount(state) {
@@ -147,8 +141,7 @@ function canOpenNewPane(state) {
   return openPaneCount(state) < openPaneSoftCap(state.concurrency);
 }
 function spawnBudget(state, readyCount) {
-  if (state.mode === "serial")
-    return state.workers.length === 0 && readyCount > 0 ? 1 : 0;
+  if (state.mode === "serial") return state.workers.length === 0 && readyCount > 0 ? 1 : 0;
   const byConcurrency = Math.max(0, state.concurrency - activeWorkerCount(state));
   const byPaneCap = Math.max(0, openPaneSoftCap(state.concurrency) - openPaneCount(state));
   return Math.min(byConcurrency, byPaneCap, readyCount);
@@ -156,7 +149,7 @@ function spawnBudget(state, readyCount) {
 
 // pi/extensions/swarm-lib/swarm-herdr.ts
 import { basename, dirname, join } from "node:path";
-var AGENT_START_TIMEOUT_MS = 30000;
+var AGENT_START_TIMEOUT_MS = 3e4;
 function buildTabCreateArgv(cwd, label, opts) {
   const kind = opts?.kind ?? "copilot";
   const captureFile = opts?.captureFile;
@@ -179,18 +172,19 @@ function buildTabListArgv() {
 function findTabByLabel(stdout, label) {
   try {
     const parsed = JSON.parse(stdout);
-    const matches = (parsed.result?.tabs ?? []).filter((t) => t.label === label && typeof t.tab_id === "string");
-    return matches.length === 1 ? matches[0].tab_id : undefined;
+    const matches = (parsed.result?.tabs ?? []).filter(
+      (t) => t.label === label && typeof t.tab_id === "string"
+    );
+    return matches.length === 1 ? matches[0].tab_id : void 0;
   } catch {
-    return;
+    return void 0;
   }
 }
 function tabPresence(stdout, tabId) {
   try {
     const parsed = JSON.parse(stdout);
     const tabs = parsed.result?.tabs;
-    if (!Array.isArray(tabs))
-      return null;
+    if (!Array.isArray(tabs)) return null;
     return tabs.some((tab) => tab.tab_id === tabId);
   } catch {
     return null;
@@ -201,11 +195,10 @@ function parseTabCreate(stdout) {
     const parsed = JSON.parse(stdout);
     const paneId = parsed.result?.root_pane?.pane_id;
     const tabId = parsed.result?.tab?.tab_id;
-    if (typeof paneId !== "string" || typeof tabId !== "string")
-      return;
+    if (typeof paneId !== "string" || typeof tabId !== "string") return void 0;
     return { paneId, tabId };
   } catch {
-    return;
+    return void 0;
   }
 }
 function buildAgentStartArgv(agentId, paneId, model, opts) {
@@ -248,21 +241,17 @@ function buildAgentStartArgv(agentId, paneId, model, opts) {
   return argv;
 }
 var WORKER_UNATTENDED_ENV = "PI_AGENT_UNATTENDED=1";
-var AMEND_INSTRUCTION = "STOP and re-read your backlog item before doing anything else: run " + "`python3 ~/.claude/scripts/dev_status.py show <your slug>` and read the " + "whole record fresh. Its context or next_steps have been corrected since " + "you started, so any plan you formed from the earlier version may now be " + "wrong. Reconcile what you have already done against the updated record, " + "and say plainly what changes as a result before continuing.";
+var AMEND_INSTRUCTION = "STOP and re-read your backlog item before doing anything else: run `python3 ~/.claude/scripts/dev_status.py show <your slug>` and read the whole record fresh. Its context or next_steps have been corrected since you started, so any plan you formed from the earlier version may now be wrong. Reconcile what you have already done against the updated record, and say plainly what changes as a result before continuing.";
 function buildAgentPromptArgv(agentId, prompt, opts = {}) {
   const argv = ["agent", "prompt", agentId, prompt];
-  if (!opts.wait)
-    return argv;
+  if (!opts.wait) return argv;
   argv.push("--wait");
-  for (const status of opts.until ?? [])
-    argv.push("--until", status);
-  if (opts.timeoutMs !== undefined)
-    argv.push("--timeout", String(opts.timeoutMs));
+  for (const status of opts.until ?? []) argv.push("--until", status);
+  if (opts.timeoutMs !== void 0) argv.push("--timeout", String(opts.timeoutMs));
   return argv;
 }
 function reasonHeadline(reason) {
-  return reason.split(`
-`, 1)[0] ?? reason;
+  return reason.split("\n", 1)[0] ?? reason;
 }
 function buildAgentSendKeysArgv(agentId, keys) {
   return ["agent", "send-keys", agentId, ...keys];
@@ -299,9 +288,10 @@ function parseAgentList(stdout) {
   try {
     const parsed = JSON.parse(stdout);
     const agents = parsed?.result?.agents;
-    if (!Array.isArray(agents))
-      return null;
-    return agents.flatMap((a) => typeof a?.name === "string" ? [{ id: a.name, status: typeof a.agent_status === "string" ? a.agent_status : undefined }] : []);
+    if (!Array.isArray(agents)) return null;
+    return agents.flatMap(
+      (a) => typeof a?.name === "string" ? [{ id: a.name, status: typeof a.agent_status === "string" ? a.agent_status : void 0 }] : []
+    );
   } catch {
     return null;
   }
@@ -317,18 +307,16 @@ function parseAgentSession(stdout) {
   try {
     const parsed = parseHerdrJson(stdout);
     const val = parsed?.result?.agent?.agent_session?.value;
-    return typeof val === "string" ? val : undefined;
+    return typeof val === "string" ? val : void 0;
   } catch {
-    return;
+    return void 0;
   }
 }
 function classifyWaitResult(exitCode, stdout, stderr) {
   if (exitCode === 0) {
     const status = parseHerdrJson(stdout)?.result?.agent?.agent_status;
-    if (status === "blocked")
-      return "blocked";
-    if (status === "idle" || status === "done")
-      return "finished";
+    if (status === "blocked") return "blocked";
+    if (status === "idle" || status === "done") return "finished";
     return "error";
   }
   const code = parseHerdrJson(stderr)?.error?.code;
@@ -340,63 +328,61 @@ function classifyResyncGet(exitCode, stdout, stderr) {
     return code === "agent_not_found" ? { action: "drop" } : { action: "keep" };
   }
   const status = parseHerdrJson(stdout)?.result?.agent?.agent_status;
-  if (status === "working" || status === "idle" || status === "done")
-    return { action: "unpark" };
+  if (status === "working" || status === "idle" || status === "done") return { action: "unpark" };
   return { action: "keep" };
 }
 function classifyTimeoutProbe(probe, elapsedMs, deadlineMs) {
   const overBudget = elapsedMs !== null && elapsedMs >= deadlineMs;
   const inconclusive = () => overBudget ? { disposition: "event", kind: "timed_out", livenessConfirmed: false } : { disposition: "rearm" };
-  if (probe.abandoned)
-    return inconclusive();
+  if (probe.abandoned) return inconclusive();
   if (probe.code !== 0) {
     const code = parseHerdrJson(probe.stderr)?.error?.code;
-    if (code === "agent_not_found")
-      return { disposition: "event", kind: "error" };
+    if (code === "agent_not_found") return { disposition: "event", kind: "error" };
     return inconclusive();
   }
   const status = parseHerdrJson(probe.stdout)?.result?.agent?.agent_status;
-  if (status === "blocked")
-    return { disposition: "event", kind: "blocked" };
-  if (status === "idle" || status === "done")
-    return { disposition: "event", kind: "finished" };
-  if (status === undefined)
-    return inconclusive();
+  if (status === "blocked") return { disposition: "event", kind: "blocked" };
+  if (status === "idle" || status === "done") return { disposition: "event", kind: "finished" };
+  if (status === void 0) return inconclusive();
   return overBudget ? { disposition: "event", kind: "timed_out", livenessConfirmed: true } : { disposition: "rearm" };
 }
 function workerWorktreePath(cwd, slug) {
-  if (!cwd)
-    return null;
+  if (!cwd) return null;
   return join(dirname(cwd), `${basename(cwd)}-${slug}`);
 }
 function deadlineStopDetail(worker, deadlineMs, opts) {
-  const minutes = Math.round(deadlineMs / 60000);
+  const minutes = Math.round(deadlineMs / 6e4);
   const lines = opts.livenessConfirmed ? [
     `worker budget of ${minutes} min of working time elapsed while the agent still reported working -- stopped deliberately.`
   ] : [
     `worker budget of ${minutes} min of working time elapsed, and its liveness could NOT be verified: ${opts.probeDetail ?? "the probe gave no usable answer"}.`,
     "It may have been working, or may have died earlier -- this stop is on the budget, not on evidence about the worker."
   ];
-  lines.push("", `The item is very likely still in-progress with a live claim: python3 ~/.claude/scripts/dev_status.py show ${worker.slug}`);
+  lines.push(
+    "",
+    `The item is very likely still in-progress with a live claim: python3 ~/.claude/scripts/dev_status.py show ${worker.slug}`
+  );
   const worktree = workerWorktreePath(worker.cwd, worker.slug);
   if (worktree) {
-    lines.push(`Its worktree survives on disk. Worker cwd was ${worker.cwd}; by the <repo>-<slug> convention that makes the worktree ${worktree} (derived from the cwd, not verified).`, `Recover with: git -C ${worker.cwd} worktree remove --force ${worktree}, then reset the item to open to clear the claim.`);
+    lines.push(
+      `Its worktree survives on disk. Worker cwd was ${worker.cwd}; by the <repo>-<slug> convention that makes the worktree ${worktree} (derived from the cwd, not verified).`,
+      `Recover with: git -C ${worker.cwd} worktree remove --force ${worktree}, then reset the item to open to clear the claim.`
+    );
   } else {
-    lines.push("This worker predates cwd tracking, so its worktree path cannot be named here -- find it with git worktree list.");
+    lines.push(
+      "This worker predates cwd tracking, so its worktree path cannot be named here -- find it with git worktree list."
+    );
   }
-  return lines.join(`
-`);
+  return lines.join("\n");
 }
 function paneIdentityMismatch(getExitCode, getStdout, expectedPaneId) {
-  if (getExitCode !== 0)
-    return true;
+  if (getExitCode !== 0) return true;
   const reportedPaneId = parseHerdrJson(getStdout)?.result?.agent?.pane_id;
   return reportedPaneId !== expectedPaneId;
 }
 function waitResultDetail(stdout, stderr) {
   const err = parseHerdrJson(stderr)?.error;
-  if (err)
-    return `${err.code ?? "unknown"}: ${err.message ?? stderr.trim()}`;
+  if (err) return `${err.code ?? "unknown"}: ${err.message ?? stderr.trim()}`;
   return stdout.trim() || stderr.trim() || "(no output)";
 }
 
@@ -423,12 +409,11 @@ var copilotPickerAdapter = {
 var OTHER_OPTION_LABEL = "Something else (type it)";
 var MIN_PARTIAL_ANSWER = 3;
 function containsAsWord(haystack, needle) {
-  const isWordChar = (c) => c !== undefined && /[a-z0-9]/.test(c);
+  const isWordChar = (c) => c !== void 0 && /[a-z0-9]/.test(c);
   let from = 0;
-  for (;; ) {
+  for (; ; ) {
     const at = haystack.indexOf(needle, from);
-    if (at === -1)
-      return false;
+    if (at === -1) return false;
     if (!isWordChar(haystack[at - 1]) && !isWordChar(haystack[at + needle.length])) {
       return true;
     }
@@ -436,22 +421,21 @@ function containsAsWord(haystack, needle) {
   }
 }
 function matchOption(answer, options) {
-  const candidates = options.filter((o) => o.label.toLowerCase() !== OTHER_OPTION_LABEL.toLowerCase());
+  const candidates = options.filter(
+    (o) => o.label.toLowerCase() !== OTHER_OPTION_LABEL.toLowerCase()
+  );
   const needle = answer.trim().toLowerCase();
-  if (!needle)
-    return null;
+  if (!needle) return null;
   const exact = candidates.filter((o) => o.label.toLowerCase() === needle);
-  if (exact.length === 1)
-    return exact[0];
-  if (needle.length < MIN_PARTIAL_ANSWER)
-    return null;
+  if (exact.length === 1) return exact[0];
+  if (needle.length < MIN_PARTIAL_ANSWER) return null;
   const partial = candidates.filter((o) => containsAsWord(o.label.toLowerCase(), needle));
-  if (partial.length === 1)
-    return partial[0];
+  if (partial.length === 1) return partial[0];
   const strippedNeedle = needle.replace(/\s+/g, "");
-  const stripped = candidates.filter((o) => o.label.toLowerCase().replace(/\s+/g, "").includes(strippedNeedle));
-  if (stripped.length === 1)
-    return stripped[0];
+  const stripped = candidates.filter(
+    (o) => o.label.toLowerCase().replace(/\s+/g, "").includes(strippedNeedle)
+  );
+  if (stripped.length === 1) return stripped[0];
   return null;
 }
 function navigationKeys(fromIndex, toIndex) {
@@ -471,17 +455,17 @@ function copilotPluginDir() {
   return process.env.COPILOT_SWARM_PLUGIN_DIR ?? join2(homedir(), "Workspace", "agent-toolkit", "copilot", "extensions", "swarm");
 }
 var DEFAULT_CONCURRENCY = 3;
-var DEFAULT_WAIT_TIMEOUT_MS = 30 * 60 * 1000;
-var DEFAULT_WORKER_DEADLINE_MS = 4 * 60 * 60 * 1000;
-var DEFAULT_RELAY_STALL_MS = 30 * 60 * 1000;
-var PROBE_TIMEOUT_MS = 15000;
+var DEFAULT_WAIT_TIMEOUT_MS = 30 * 60 * 1e3;
+var DEFAULT_WORKER_DEADLINE_MS = 4 * 60 * 60 * 1e3;
+var DEFAULT_RELAY_STALL_MS = 30 * 60 * 1e3;
+var PROBE_TIMEOUT_MS = 15e3;
 var PROMPT_ACK_TIMEOUT_MS = 1e4;
-var PROMPT_ACK_PROCESS_TIMEOUT_MS = 15000;
+var PROMPT_ACK_PROCESS_TIMEOUT_MS = 15e3;
 var PROMPT_ACK_STATES = ["working", "idle", "done", "blocked"];
-var RESOLVE_VERIFY_TIMEOUT_MS = 5000;
+var RESOLVE_VERIFY_TIMEOUT_MS = 5e3;
 var BLOCKED_READ_LINES = 500;
-var BLOCKED_READ_LINES_RETRY = 2000;
-var PANE_CAPTURE_CHARS = 4000;
+var BLOCKED_READ_LINES_RETRY = 2e3;
+var PANE_CAPTURE_CHARS = 4e3;
 var PANE_CAPTURE_LINES = 200;
 var MAX_RECOVERY_ATTEMPTS = 2;
 function statePath(runId, stateDir = herdrStateDir()) {
@@ -502,15 +486,14 @@ function readCaptureOffers(runId, slug, stateDir = herdrStateDir()) {
   }
   try {
     rmSync(path, { force: true });
-  } catch {}
+  } catch {
+  }
   try {
     const parsed = JSON.parse(raw);
     const offers = parsed && typeof parsed === "object" && "offers" in parsed ? parsed.offers : null;
-    if (!Array.isArray(offers))
-      return [];
+    if (!Array.isArray(offers)) return [];
     return offers.flatMap((o) => {
-      if (!o || typeof o !== "object")
-        return [];
+      if (!o || typeof o !== "object") return [];
       const rec = o;
       const kind = typeof rec.kind === "string" ? rec.kind : "";
       const id = typeof rec.id === "string" ? rec.id : "";
@@ -522,15 +505,12 @@ function readCaptureOffers(runId, slug, stateDir = herdrStateDir()) {
   }
 }
 function renderCaptureOffers(offers) {
-  if (offers.length === 0)
-    return "";
-  return `
-  Queued capture offers from this worker -- do NOT ask about them now; fold them into your single end-of-run digest walk: ` + offers.map((c) => `[${c.kind}] ${c.id} -- ${c.summary}`).join("; ");
+  if (offers.length === 0) return "";
+  return "\n  Queued capture offers from this worker -- do NOT ask about them now; fold them into your single end-of-run digest walk: " + offers.map((c) => `[${c.kind}] ${c.id} -- ${c.summary}`).join("; ");
 }
 function loadState(runId, stateDir = herdrStateDir()) {
   const path = statePath(runId, stateDir);
-  if (!existsSync(path))
-    return null;
+  if (!existsSync(path)) return null;
   try {
     const parsed = JSON.parse(readFileSync(path, "utf8"));
     if (parsed && typeof parsed === "object" && "workers" in parsed) {
@@ -569,26 +549,23 @@ function buildRenderArgv() {
   return ["python3", devStatusPath(), "render"];
 }
 function formatDuration(ms) {
-  const totalMinutes = Math.max(0, Math.round(ms / 60000));
+  const totalMinutes = Math.max(0, Math.round(ms / 6e4));
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;
   return hours > 0 ? `${hours}h${String(minutes).padStart(2, "0")}m` : `${minutes}m`;
 }
 function looksTruncated(content, requestedLines) {
-  return content.split(`
-`).length >= requestedLines;
+  return content.split("\n").length >= requestedLines;
 }
 function elapsedWorkingMs(worker, now) {
-  const open = worker.workingSinceMs === undefined ? null : Math.max(0, now - worker.workingSinceMs);
-  if (open === null && worker.accumulatedWorkingMs === undefined)
-    return null;
+  const open = worker.workingSinceMs === void 0 ? null : Math.max(0, now - worker.workingSinceMs);
+  if (open === null && worker.accumulatedWorkingMs === void 0) return null;
   return (worker.accumulatedWorkingMs ?? 0) + (open ?? 0);
 }
 function foldWorkingSegment(worker, now) {
-  if (worker.workingSinceMs === undefined)
-    return;
+  if (worker.workingSinceMs === void 0) return;
   worker.accumulatedWorkingMs = (worker.accumulatedWorkingMs ?? 0) + Math.max(0, now - worker.workingSinceMs);
-  worker.workingSinceMs = undefined;
+  worker.workingSinceMs = void 0;
 }
 var defaultExec = async (cmd, args, opts) => {
   return new Promise((resolve) => {
@@ -616,14 +593,12 @@ var defaultExec = async (cmd, args, opts) => {
       }, opts.timeout);
     }
     proc.on("error", (err) => {
-      if (timer)
-        clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       resolve({ code: 1, stdout, stderr: `${stderr}
 ${String(err)}` });
     });
     proc.on("close", (code) => {
-      if (timer)
-        clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       if (timedOut) {
         resolve({ code: 124, stdout, stderr: `${stderr}
 <timed out after ${opts?.timeout}ms>` });
@@ -637,18 +612,15 @@ var UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0
 function isValidUuid(id) {
   return UUID_REGEX.test(id);
 }
-
-class SwarmToolContext {
-  picker;
-  options;
-  activeRuns = new Map;
-  runtimes = new Map;
-  exec;
+var SwarmToolContext = class {
   constructor(exec = defaultExec, picker = copilotPickerAdapter, options = {}) {
     this.picker = picker;
     this.options = options;
     this.exec = exec;
   }
+  activeRuns = /* @__PURE__ */ new Map();
+  runtimes = /* @__PURE__ */ new Map();
+  exec;
   get kind() {
     return this.options.kind ?? "copilot";
   }
@@ -669,7 +641,7 @@ class SwarmToolContext {
     if (!rt) {
       rt = {
         runId,
-        inFlight: new Set,
+        inFlight: /* @__PURE__ */ new Set(),
         pendingEvents: [],
         waiters: [],
         spawnChain: Promise.resolve(),
@@ -700,20 +672,17 @@ class SwarmToolContext {
       let settled = false;
       const cleanup = () => {
         const i = rt.waiters.indexOf(wake);
-        if (i !== -1)
-          rt.waiters.splice(i, 1);
+        if (i !== -1) rt.waiters.splice(i, 1);
         signal?.removeEventListener("abort", onAbort);
       };
       const wake = () => {
-        if (settled)
-          return;
+        if (settled) return;
         settled = true;
         cleanup();
         resolve(true);
       };
       const onAbort = () => {
-        if (settled)
-          return;
+        if (settled) return;
         settled = true;
         cleanup();
         resolve(false);
@@ -729,8 +698,7 @@ class SwarmToolContext {
   }
   wakeWaiters(rt) {
     const waiting = rt.waiters.splice(0);
-    for (const wake of waiting)
-      wake();
+    for (const wake of waiting) wake();
   }
   async closeWorker(worker, signal) {
     try {
@@ -744,6 +712,14 @@ class SwarmToolContext {
     const close = worker.tabId ? `herdr tab close ${worker.tabId}` : `herdr pane close ${worker.paneId}`;
     return `herdr did not confirm worker teardown. Run \`${close}\`, then poll or restart this run to reconcile it`;
   }
+  /**
+   * The I/O half of tearing a worker down: read its queued capture offers,
+   * close it in herdr, delete its capture file. Does NOT touch
+   * state.workers or persist -- callers that process several workers at
+   * once (swarmPoll's event loop) run this in parallel across workers, then
+   * remove them from state.workers in one batch afterward, since concurrent
+   * per-worker filter-and-reassign calls on the same array would race.
+   */
   async harvestWorkerIO(state, worker, signal) {
     return (await this.harvestWorkerIOWithStatus(state, worker, signal)).offers;
   }
@@ -765,7 +741,8 @@ class SwarmToolContext {
     }
     try {
       rmSync(capturePath(state.runId, worker.slug, this.stateDir), { force: true });
-    } catch {}
+    } catch {
+    }
     return { offers, closed };
   }
   async teardownAndHarvestWorker(state, worker, signal) {
@@ -783,58 +760,67 @@ class SwarmToolContext {
   }
   async pruneStaleWorkers(state) {
     let listResult;
-    for (let attempt = 0;attempt < 2; attempt++) {
+    for (let attempt = 0; attempt < 2; attempt++) {
       try {
         listResult = await this.herdr(buildAgentListArgv());
       } catch {
-        listResult = undefined;
+        listResult = void 0;
       }
-      if (listResult && listResult.code === 0 && parseAgentList(listResult.stdout) !== null)
-        break;
+      if (listResult && listResult.code === 0 && parseAgentList(listResult.stdout) !== null) break;
     }
     const entries = listResult && listResult.code === 0 ? parseAgentList(listResult.stdout) : null;
-    if (entries === null)
-      return [];
+    if (entries === null) return [];
     const stale = staleWorkerRecords(state, entries, Date.now());
-    if (stale.length === 0)
-      return [];
-    const results = await Promise.all(stale.map(async (w) => {
-      const entry = entries.find((e) => e.id === w.agent);
-      const status = entry?.status;
-      const teardown = await this.harvestWorkerIOWithStatus(state, w);
-      const offers = [...w.terminalCaptures ?? [], ...teardown.offers];
-      const confirmedGone = entry === undefined || teardown.closed;
-      if ((state.mode ?? "concurrent") === "serial" && !confirmedGone) {
-        w.lifecycle = "teardown_ambiguous";
-        w.teardownDetail = this.teardownRecovery(w);
-      }
-      const line = `${w.agent} (${w.slug}): stale worker record cleared -- herdr reports its agent ${status ?? "gone"} (finished or dead), but its finish was never reported through ` + "swarm_poll; outcome inferred, not observed. Verify the item's state before " + `treating it as complete.${renderCaptureOffers(offers)}`;
-      return { worker: w, confirmedGone, line };
-    }));
-    const removed = new Set(results.filter(({ confirmedGone }) => confirmedGone || (state.mode ?? "concurrent") !== "serial").map(({ worker }) => worker.agent));
+    if (stale.length === 0) return [];
+    const results = await Promise.all(
+      stale.map(async (w) => {
+        const entry = entries.find((e) => e.id === w.agent);
+        const status = entry?.status;
+        const teardown = await this.harvestWorkerIOWithStatus(state, w);
+        const offers = [...w.terminalCaptures ?? [], ...teardown.offers];
+        const confirmedGone = entry === void 0 || teardown.closed;
+        if ((state.mode ?? "concurrent") === "serial" && !confirmedGone) {
+          w.lifecycle = "teardown_ambiguous";
+          w.teardownDetail = this.teardownRecovery(w);
+        }
+        const line = `${w.agent} (${w.slug}): stale worker record cleared -- herdr reports its agent ${status ?? "gone"} (finished or dead), but its finish was never reported through swarm_poll; outcome inferred, not observed. Verify the item's state before treating it as complete.${renderCaptureOffers(offers)}`;
+        return { worker: w, confirmedGone, line };
+      })
+    );
+    const removed = new Set(
+      results.filter(({ confirmedGone }) => confirmedGone || (state.mode ?? "concurrent") !== "serial").map(({ worker }) => worker.agent)
+    );
     state.workers = state.workers.filter((w) => !removed.has(w.agent));
     const rt = this.runtimes.get(state.runId);
     if (rt) {
-      for (const agent of removed)
-        rt.inFlight.delete(agent);
+      for (const agent of removed) rt.inFlight.delete(agent);
       rt.pendingEvents = rt.pendingEvents.filter((e) => !removed.has(e.agent));
       this.wakeWaiters(rt);
     }
     this.persist(state);
-    return results.map(({ worker, confirmedGone, line }) => (state.mode ?? "concurrent") === "serial" && !confirmedGone ? `${worker.agent} (${worker.slug}): teardown remains ambiguous -- ${worker.teardownDetail}; the serial queue is paused.` : line);
+    return results.map(
+      ({ worker, confirmedGone, line }) => (state.mode ?? "concurrent") === "serial" && !confirmedGone ? `${worker.agent} (${worker.slug}): teardown remains ambiguous -- ${worker.teardownDetail}; the serial queue is paused.` : line
+    );
   }
+  /**
+   * Finds and closes the tab a `tab create` left behind when its response
+   * exited 0 but didn't parse -- ported from pi's `recoverTabByLabel`.
+   *
+   * `findTabByLabel` expects a `tab list` response shape (`result.tabs`),
+   * not a `tab create` response (`result.tab`/`result.root_pane`), so this
+   * must issue its own fresh `tab list` call rather than reusing the create
+   * call's stdout.
+   */
   async recoverTabByLabel(label) {
     try {
       const listing = await this.herdr(buildTabListArgv());
-      if (listing.code !== 0)
-        return;
+      if (listing.code !== 0) return void 0;
       const tabId = findTabByLabel(listing.stdout, label);
-      if (!tabId)
-        return;
+      if (!tabId) return void 0;
       const closed = await this.herdr(buildTabCloseArgv(tabId));
-      return closed.code === 0 ? tabId : undefined;
+      return closed.code === 0 ? tabId : void 0;
     } catch {
-      return;
+      return void 0;
     }
   }
   async failWithTab(slug, paneId, tabId, reason) {
@@ -847,20 +833,28 @@ class SwarmToolContext {
     }
     try {
       await this.herdr(buildTabCloseArgv(tabId));
-    } catch {}
+    } catch {
+    }
     return { slug, failed: { slug, reason: `${reason}
 --- pane ${paneId} ---
 ${capture}` } };
   }
   async spawnInto(paneId, tabId, agentId, slug, paths, model, pluginDir) {
-    let sessionId = this.kind === "copilot" ? randomUUID() : undefined;
-    const startResult = await this.herdr(buildAgentStartArgv(agentId, paneId, model, {
-      kind: this.kind,
-      sessionId,
-      ...this.kind === "copilot" ? { allowAllTools: true, pluginDir: pluginDir ?? this.defaultPluginDir() } : {}
-    }));
+    let sessionId = this.kind === "copilot" ? randomUUID() : void 0;
+    const startResult = await this.herdr(
+      buildAgentStartArgv(agentId, paneId, model, {
+        kind: this.kind,
+        sessionId,
+        ...this.kind === "copilot" ? { allowAllTools: true, pluginDir: pluginDir ?? this.defaultPluginDir() } : {}
+      })
+    );
     if (startResult.code !== 0) {
-      return this.failWithTab(slug, paneId, tabId, `agent_not_ready: ${startResult.stderr || startResult.stdout}`);
+      return this.failWithTab(
+        slug,
+        paneId,
+        tabId,
+        `agent_not_ready: ${startResult.stderr || startResult.stdout}`
+      );
     }
     if (sessionId)
       try {
@@ -868,19 +862,31 @@ ${capture}` } };
         if (getResult.code === 0) {
           const sessionVal = parseAgentSession(getResult.stdout);
           if (sessionVal && sessionVal !== sessionId) {
-            process.stderr.write(`[swarm] ${agentId}: requested session-id ${sessionId} but herdr agent get ` + `reports ${sessionVal} -- using the confirmed value for crash recovery
-`);
+            process.stderr.write(
+              `[swarm] ${agentId}: requested session-id ${sessionId} but herdr agent get reports ${sessionVal} -- using the confirmed value for crash recovery
+`
+            );
             sessionId = sessionVal;
           }
         }
-      } catch {}
-    const promptResult = await this.herdr(buildAgentPromptArgv(agentId, this.workerPrompt(slug), {
-      wait: true,
-      until: PROMPT_ACK_STATES,
-      timeoutMs: PROMPT_ACK_TIMEOUT_MS
-    }), undefined, PROMPT_ACK_PROCESS_TIMEOUT_MS);
+      } catch {
+      }
+    const promptResult = await this.herdr(
+      buildAgentPromptArgv(agentId, this.workerPrompt(slug), {
+        wait: true,
+        until: PROMPT_ACK_STATES,
+        timeoutMs: PROMPT_ACK_TIMEOUT_MS
+      }),
+      void 0,
+      PROMPT_ACK_PROCESS_TIMEOUT_MS
+    );
     if (promptResult.code !== 0) {
-      return this.failWithTab(slug, paneId, tabId, `agent_prompt_stalled: ${promptResult.stderr || promptResult.stdout}`);
+      return this.failWithTab(
+        slug,
+        paneId,
+        tabId,
+        `agent_prompt_stalled: ${promptResult.stderr || promptResult.stdout}`
+      );
     }
     return {
       worker: {
@@ -899,10 +905,8 @@ ${capture}` } };
   }
   async attemptCrashRecovery(state, worker, pluginDir) {
     const attempts = worker.recoveryAttempts ?? 0;
-    if (this.kind !== "copilot" || attempts >= MAX_RECOVERY_ATTEMPTS)
-      return false;
-    if (!worker.copilotSessionId || !isValidUuid(worker.copilotSessionId))
-      return false;
+    if (this.kind !== "copilot" || attempts >= MAX_RECOVERY_ATTEMPTS) return false;
+    if (!worker.copilotSessionId || !isValidUuid(worker.copilotSessionId)) return false;
     const cwd = worker.cwd ?? process.cwd();
     const label = worker.slug.replace(/[^A-Za-z0-9._-]/g, "-").slice(0, 32);
     let tabCreated = await this.herdr(buildTabCreateArgv(cwd, label, { kind: "copilot" }));
@@ -917,29 +921,42 @@ ${capture}` } };
     if (worker.tabId) {
       try {
         await this.herdr(buildTabCloseArgv(worker.tabId));
-      } catch {}
+      } catch {
+      }
     }
-    const startResult = await this.herdr(buildAgentStartArgv(worker.agent, parsedTab.paneId, worker.model, {
-      kind: "copilot",
-      resumeSessionId: worker.copilotSessionId,
-      allowAllTools: true,
-      pluginDir: pluginDir ?? this.defaultPluginDir()
-    }));
+    const startResult = await this.herdr(
+      buildAgentStartArgv(worker.agent, parsedTab.paneId, worker.model, {
+        kind: "copilot",
+        resumeSessionId: worker.copilotSessionId,
+        allowAllTools: true,
+        pluginDir: pluginDir ?? this.defaultPluginDir()
+      })
+    );
     if (startResult.code !== 0) {
       try {
         await this.herdr(buildTabCloseArgv(parsedTab.tabId));
-      } catch {}
+      } catch {
+      }
       return false;
     }
-    const promptResult = await this.herdr(buildAgentPromptArgv(worker.agent, "Continue working on this backlog item where you left off.", {
-      wait: true,
-      until: PROMPT_ACK_STATES,
-      timeoutMs: PROMPT_ACK_TIMEOUT_MS
-    }), undefined, PROMPT_ACK_PROCESS_TIMEOUT_MS);
+    const promptResult = await this.herdr(
+      buildAgentPromptArgv(
+        worker.agent,
+        "Continue working on this backlog item where you left off.",
+        {
+          wait: true,
+          until: PROMPT_ACK_STATES,
+          timeoutMs: PROMPT_ACK_TIMEOUT_MS
+        }
+      ),
+      void 0,
+      PROMPT_ACK_PROCESS_TIMEOUT_MS
+    );
     if (promptResult.code !== 0) {
       try {
         await this.herdr(buildTabCloseArgv(parsedTab.tabId));
-      } catch {}
+      } catch {
+      }
       return false;
     }
     worker.paneId = parsedTab.paneId;
@@ -953,8 +970,10 @@ ${capture}` } };
     const cached = this.activeRuns.get(runId);
     if (cached) {
       const recordedMode2 = cached.mode ?? "concurrent";
-      if (requestedMode !== undefined && requestedMode !== recordedMode2) {
-        throw new Error(`run ${runId} is persisted in ${recordedMode2} mode; refusing requested ${requestedMode} mode`);
+      if (requestedMode !== void 0 && requestedMode !== recordedMode2) {
+        throw new Error(
+          `run ${runId} is persisted in ${recordedMode2} mode; refusing requested ${requestedMode} mode`
+        );
       }
       return cached;
     }
@@ -967,28 +986,31 @@ ${capture}` } };
         mode,
         nextCounter: 0,
         workers: [],
-        ...prefix !== undefined ? { prefix } : {},
-        ...pluginDir !== undefined ? { pluginDir } : {}
+        ...prefix !== void 0 ? { prefix } : {},
+        ...pluginDir !== void 0 ? { pluginDir } : {}
       };
       this.activeRuns.set(runId, fresh);
       return fresh;
     }
     const recordedMode = loaded.mode ?? "concurrent";
-    if (requestedMode !== undefined && requestedMode !== recordedMode) {
-      throw new Error(`run ${runId} is persisted in ${recordedMode} mode; refusing requested ${requestedMode} mode`);
+    if (requestedMode !== void 0 && requestedMode !== recordedMode) {
+      throw new Error(
+        `run ${runId} is persisted in ${recordedMode} mode; refusing requested ${requestedMode} mode`
+      );
     }
     const listResult = await this.herdr(buildAgentListArgv());
     const entries = listResult.code === 0 ? parseAgentList(listResult.stdout) : null;
     const liveIds = (entries ?? []).map((e) => e.id);
     if (this.kind === "copilot" && entries !== null) {
       const missing = loaded.workers.filter((w) => !liveIds.includes(w.agent));
-      const recoveries = await Promise.all(missing.map(async (w) => ({
-        agent: w.agent,
-        recovered: await this.attemptCrashRecovery(loaded, w, loaded.pluginDir)
-      })));
+      const recoveries = await Promise.all(
+        missing.map(async (w) => ({
+          agent: w.agent,
+          recovered: await this.attemptCrashRecovery(loaded, w, loaded.pluginDir)
+        }))
+      );
       for (const { agent, recovered } of recoveries) {
-        if (recovered)
-          liveIds.push(agent);
+        if (recovered) liveIds.push(agent);
       }
     }
     const reconciled = entries === null || recordedMode === "serial" ? loaded : reconcileState(loaded, liveIds).state;
@@ -1001,7 +1023,7 @@ ${capture}` } };
     saveState(state, this.stateDir);
   }
   async probeLiveness(agentId) {
-    const controller = new AbortController;
+    const controller = new AbortController();
     let abandoned = false;
     const timer = setTimeout(() => {
       abandoned = true;
@@ -1015,21 +1037,26 @@ ${capture}` } };
     }
   }
   armWait(rt, worker) {
-    if (rt.inFlight.has(worker.agent))
-      return;
+    if (rt.inFlight.has(worker.agent)) return;
     rt.inFlight.add(worker.agent);
     const timeoutMs = rt.timeoutMs;
-    this.settleWait(rt, worker, timeoutMs);
+    void this.settleWait(rt, worker, timeoutMs);
   }
   async settleWait(rt, worker, timeoutMs) {
     let event = null;
     try {
-      const result = await this.herdr(buildAgentWaitArgv(worker.agent, ["idle", "done", "blocked"], timeoutMs));
+      const result = await this.herdr(
+        buildAgentWaitArgv(worker.agent, ["idle", "done", "blocked"], timeoutMs)
+      );
       let kind = classifyWaitResult(result.code, result.stdout, result.stderr);
-      let detail = kind === "timed_out" || kind === "error" ? waitResultDetail(result.stdout, result.stderr) : undefined;
+      let detail = kind === "timed_out" || kind === "error" ? waitResultDetail(result.stdout, result.stderr) : void 0;
       if (kind === "timed_out") {
         const probe = await this.probeLiveness(worker.agent);
-        const verdict = classifyTimeoutProbe(probe, this.elapsedWorkingMsFor(worker), rt.deadlineMs);
+        const verdict = classifyTimeoutProbe(
+          probe,
+          this.elapsedWorkingMsFor(worker),
+          rt.deadlineMs
+        );
         if (verdict.disposition === "rearm") {
           const runState2 = this.activeRuns.get(rt.runId);
           if (runState2 && !runState2.workers.some((w) => w.agent === worker.agent)) {
@@ -1061,11 +1088,10 @@ ${capture}` } };
         detail = kind === "timed_out" ? deadlineStopDetail(worker, rt.deadlineMs, {
           livenessConfirmed: verdict.livenessConfirmed === true,
           probeDetail: probe.abandoned ? `the liveness probe did not answer within ${PROBE_TIMEOUT_MS} ms and was abandoned` : `probe: ${waitResultDetail(probe.stdout, probe.stderr)}`
-        }) : kind === "error" ? `probe: ${waitResultDetail(probe.stdout, probe.stderr)}` : undefined;
+        }) : kind === "error" ? `probe: ${waitResultDetail(probe.stdout, probe.stderr)}` : void 0;
       }
       event = { kind, agent: worker.agent, slug: worker.slug, paneId: worker.paneId };
-      if (detail !== undefined)
-        event.detail = detail;
+      if (detail !== void 0) event.detail = detail;
     } catch (err) {
       event = {
         kind: "error",
@@ -1087,34 +1113,41 @@ ${capture}` } };
   }
   elapsedWorkingMsFor(worker) {
     const now = Date.now();
-    if (worker.workingSinceMs === undefined && worker.accumulatedWorkingMs === undefined) {
+    if (worker.workingSinceMs === void 0 && worker.accumulatedWorkingMs === void 0) {
       worker.workingSinceMs = now;
     }
     return elapsedWorkingMs(worker, now);
   }
   async swarmSpawn(params) {
     if (!params.items && !params.prefix) {
-      throw new Error("swarm_spawn needs either `items` or `prefix`. Selecting from the whole READY queue " + "unscoped would pull unrelated projects into this run.");
+      throw new Error(
+        "swarm_spawn needs either `items` or `prefix`. Selecting from the whole READY queue unscoped would pull unrelated projects into this run."
+      );
     }
-    if (params.mode === "serial" && params.concurrency !== undefined && params.concurrency !== 1) {
+    if (params.mode === "serial" && params.concurrency !== void 0 && params.concurrency !== 1) {
       throw new Error("serial mode requires concurrency 1 when concurrency is supplied");
     }
     return this.withSpawnLock(params.runId, async () => {
-      const state = await this.getOrInitState(params.runId, params.mode === "serial" ? 1 : params.concurrency ?? DEFAULT_CONCURRENCY, params.prefix, params.pluginDir, params.mode);
+      const state = await this.getOrInitState(
+        params.runId,
+        params.mode === "serial" ? 1 : params.concurrency ?? DEFAULT_CONCURRENCY,
+        params.prefix,
+        params.pluginDir,
+        params.mode
+      );
       if (state.mode === "serial") {
         state.concurrency = 1;
-      } else if (params.concurrency !== undefined) {
+      } else if (params.concurrency !== void 0) {
         state.concurrency = params.concurrency;
       }
-      if (params.pluginDir !== undefined)
-        state.pluginDir = params.pluginDir;
+      if (params.pluginDir !== void 0) state.pluginDir = params.pluginDir;
       const pruneLines = await this.pruneStaleWorkers(state);
       if (!canSpawnNew(state)) {
         return {
           content: [
             {
               type: "text",
-              text: `Concurrency cap reached (${state.concurrency} active workers). ` + "Call swarm_poll to wait for workers to settle."
+              text: `Concurrency cap reached (${state.concurrency} active workers). Call swarm_poll to wait for workers to settle.`
             }
           ],
           details: {
@@ -1131,7 +1164,7 @@ ${capture}` } };
           content: [
             {
               type: "text",
-              text: `Open-pane soft cap reached (${openPaneCount(state)}/${openPaneSoftCap(state.concurrency)} open panes). ` + "Parked workers awaiting a relay are holding panes -- answer each with swarm_resolve_blocked before spawning more."
+              text: `Open-pane soft cap reached (${openPaneCount(state)}/${openPaneSoftCap(state.concurrency)} open panes). Parked workers awaiting a relay are holding panes -- answer each with swarm_resolve_blocked before spawning more.`
             }
           ],
           details: { spawned: [], failed: [], skipped: [], deferred: [], refused: [] }
@@ -1144,7 +1177,9 @@ ${capture}` } };
           timeout: PROBE_TIMEOUT_MS
         });
         if (readyResult.code !== 0) {
-          throw new Error(`dev_status.py ready failed: ${readyResult.stderr || readyResult.stdout}`);
+          throw new Error(
+            `dev_status.py ready failed: ${readyResult.stderr || readyResult.stdout}`
+          );
         }
         const parsed = parseReadyItems(readyResult.stdout);
         const byId = new Map(parsed.map((i) => [i.id, i]));
@@ -1154,7 +1189,9 @@ ${capture}` } };
           timeout: PROBE_TIMEOUT_MS
         });
         if (readyResult.code !== 0) {
-          throw new Error(`dev_status.py ready failed: ${readyResult.stderr || readyResult.stdout}`);
+          throw new Error(
+            `dev_status.py ready failed: ${readyResult.stderr || readyResult.stdout}`
+          );
         }
         candidates = parseReadyItems(readyResult.stdout);
         const attempted = new Set(state.attempted ?? []);
@@ -1168,14 +1205,21 @@ ${capture}` } };
         }
       }
       const budget = spawnBudget(state, candidates.length);
-      const selection = selectSchedulable(candidates, takenPaths, budget, state.mode ?? "concurrent");
+      const selection = selectSchedulable(
+        candidates,
+        takenPaths,
+        budget,
+        state.mode ?? "concurrent"
+      );
       const toSpawn = selection.slugs;
       const spawned = [];
       const failed = [];
       const tabs = [];
       for (const slug of toSpawn) {
         const captureFile = capturePath(state.runId, slug, this.stateDir);
-        const tabCreated = await this.herdr(buildTabCreateArgv(process.cwd(), slug, { captureFile, kind: this.kind }));
+        const tabCreated = await this.herdr(
+          buildTabCreateArgv(process.cwd(), slug, { captureFile, kind: this.kind })
+        );
         let parsedTab = parseTabCreate(tabCreated.stdout);
         if (!parsedTab && tabCreated.code === 0) {
           const orphan = await this.recoverTabByLabel(slug);
@@ -1195,17 +1239,27 @@ ${capture}` } };
         }
         tabs.push({ slug, created: parsedTab });
       }
-      const startResults = await Promise.allSettled(tabs.map(async (t) => {
-        const candidateItem = candidates.find((c) => c.id === t.slug);
-        const paths = candidateItem ? itemPaths(candidateItem) : [];
-        const agentId = nextAgentId(state.runId, state.nextCounter++, t.slug);
-        const { paneId, tabId } = t.created;
-        try {
-          return await this.spawnInto(paneId, tabId, agentId, t.slug, paths, params.model, params.pluginDir);
-        } catch (e) {
-          return this.failWithTab(t.slug, paneId, tabId, `spawn_error: ${String(e)}`);
-        }
-      }));
+      const startResults = await Promise.allSettled(
+        tabs.map(async (t) => {
+          const candidateItem = candidates.find((c) => c.id === t.slug);
+          const paths = candidateItem ? itemPaths(candidateItem) : [];
+          const agentId = nextAgentId(state.runId, state.nextCounter++, t.slug);
+          const { paneId, tabId } = t.created;
+          try {
+            return await this.spawnInto(
+              paneId,
+              tabId,
+              agentId,
+              t.slug,
+              paths,
+              params.model,
+              params.pluginDir
+            );
+          } catch (e) {
+            return this.failWithTab(t.slug, paneId, tabId, `spawn_error: ${String(e)}`);
+          }
+        })
+      );
       for (const r of startResults) {
         if (r.status === "fulfilled") {
           if ("worker" in r.value) {
@@ -1218,13 +1272,14 @@ ${capture}` } };
           failed.push({ slug: "unknown", reason: `spawn_error: ${String(r.reason)}` });
         }
       }
-      state.attempted = [...new Set([...state.attempted ?? [], ...toSpawn])];
-      const refusedBySlug = new Map([...state.refused ?? [], ...selection.refused].map((entry) => [entry.slug, entry]));
+      state.attempted = [.../* @__PURE__ */ new Set([...state.attempted ?? [], ...toSpawn])];
+      const refusedBySlug = new Map(
+        [...state.refused ?? [], ...selection.refused].map((entry) => [entry.slug, entry])
+      );
       state.refused = [...refusedBySlug.values()];
       this.persist(state);
       const rt = this.getRuntime(state.runId);
-      for (const w of spawned)
-        this.armWait(rt, w);
+      for (const w of spawned) this.armWait(rt, w);
       const skipped = selection.skipped;
       const deferred = selection.deferred;
       const refused = selection.refused;
@@ -1237,27 +1292,29 @@ ${capture}` } };
       ];
       const lines = [`${parts.join(", ")}.`];
       lines.push(...pruneLines);
-      for (const f of failed)
-        lines.push(`- ${f.slug}: ${reasonHeadline(f.reason)}`);
-      for (const d of deferred)
-        lines.push(`- ${d.slug}: deferred -- ${d.reason}`);
-      for (const r of refused)
-        lines.push(`- ${r.slug}: refused -- ${r.reason}`);
+      for (const f of failed) lines.push(`- ${f.slug}: ${reasonHeadline(f.reason)}`);
+      for (const d of deferred) lines.push(`- ${d.slug}: deferred -- ${d.reason}`);
+      for (const r of refused) lines.push(`- ${r.slug}: refused -- ${r.reason}`);
       if (spawned.length === 0 && deferred.length > 0) {
-        lines.push("Nothing spawned but items remain: poll the running workers, then call swarm_spawn again once one finishes.");
+        lines.push(
+          "Nothing spawned but items remain: poll the running workers, then call swarm_spawn again once one finishes."
+        );
       } else if (spawned.length === 0 && refused.length > 0) {
-        lines.push("Nothing spawned and the remaining items are refused, not waiting: they are never schedulable by a worker. " + "This is the end of the swarm phase for this prefix -- report them as needing a normal session rather than polling or spawning again.");
+        lines.push(
+          "Nothing spawned and the remaining items are refused, not waiting: they are never schedulable by a worker. This is the end of the swarm phase for this prefix -- report them as needing a normal session rather than polling or spawning again."
+        );
       }
       if ((state.mode ?? "concurrent") === "serial" && spawned.length === 0 && failed.length === 0 && skipped.length === 0 && deferred.length === 0 && refused.length === 0 && state.workers.length === 0) {
         const dashboard = await this.exec("python3", buildRenderArgv().slice(1), {
           timeout: PROBE_TIMEOUT_MS
         });
-        lines.push(dashboard.code === 0 ? `Serial queue is quiescent. Current dashboard:
-${dashboard.stdout.trimEnd()}` : `Serial queue is quiescent, but dev_status.py render failed: ${dashboard.stderr || dashboard.stdout}`);
+        lines.push(
+          dashboard.code === 0 ? `Serial queue is quiescent. Current dashboard:
+${dashboard.stdout.trimEnd()}` : `Serial queue is quiescent, but dev_status.py render failed: ${dashboard.stderr || dashboard.stdout}`
+        );
       }
       return {
-        content: [{ type: "text", text: lines.join(`
-`) }],
+        content: [{ type: "text", text: lines.join("\n") }],
         details: { spawned, failed, skipped, deferred, refused }
       };
     });
@@ -1271,14 +1328,16 @@ ${dashboard.stdout.trimEnd()}` : `Serial queue is quiescent, but dev_status.py r
     const parkedNow = state.workers.filter((w) => w.lifecycle === "awaiting_relay");
     const resyncNotes = [];
     if (parkedNow.length > 0) {
-      const gets = await Promise.all(parkedNow.map(async (worker) => {
-        try {
-          const r = await this.herdr(buildAgentGetArgv(worker.agent), signal);
-          return { worker, verdict: classifyResyncGet(r.code, r.stdout, r.stderr) };
-        } catch {
-          return { worker, verdict: { action: "keep" } };
-        }
-      }));
+      const gets = await Promise.all(
+        parkedNow.map(async (worker) => {
+          try {
+            const r = await this.herdr(buildAgentGetArgv(worker.agent), signal);
+            return { worker, verdict: classifyResyncGet(r.code, r.stdout, r.stderr) };
+          } catch {
+            return { worker, verdict: { action: "keep" } };
+          }
+        })
+      );
       const resumedAt = Date.now();
       for (const { worker, verdict } of gets) {
         if (verdict.action === "drop") {
@@ -1288,28 +1347,28 @@ ${dashboard.stdout.trimEnd()}` : `Serial queue is quiescent, but dev_status.py r
             agent: worker.agent,
             slug: worker.slug,
             paneId: worker.paneId,
-            detail: (state.mode ?? "concurrent") === "serial" ? "resync: the worker disappeared while awaiting a relay; that relay is cancelled and the item outcome is failed, not inferred complete." : "resync: agent gone from herdr while its record said awaiting_relay -- " + "its gate was likely answered out-of-band (direct pane keys) and the " + "worker has since finished or exited; outcome inferred, not observed. " + "Verify the item's state before treating it as complete."
+            detail: (state.mode ?? "concurrent") === "serial" ? "resync: the worker disappeared while awaiting a relay; that relay is cancelled and the item outcome is failed, not inferred complete." : "resync: agent gone from herdr while its record said awaiting_relay -- its gate was likely answered out-of-band (direct pane keys) and the worker has since finished or exited; outcome inferred, not observed. Verify the item's state before treating it as complete."
           });
         } else if (verdict.action === "unpark") {
           worker.workingSinceMs = resumedAt;
-          worker.awaitingRelaySinceMs = undefined;
-          worker.lastResolveFailure = undefined;
+          worker.awaitingRelaySinceMs = void 0;
+          worker.lastResolveFailure = void 0;
           worker.lifecycle = "active";
-          resyncNotes.push(`${worker.agent} (${worker.slug}) was parked awaiting a relay, but herdr now reports it unblocked -- resumed tracking as active.`);
+          resyncNotes.push(
+            `${worker.agent} (${worker.slug}) was parked awaiting a relay, but herdr now reports it unblocked -- resumed tracking as active.`
+          );
         }
       }
-      if (resyncNotes.length > 0)
-        this.persist(state);
+      if (resyncNotes.length > 0) this.persist(state);
     }
     const stampNow = Date.now();
     for (const w of state.workers) {
-      if (w.lifecycle === "awaiting_relay" && w.awaitingRelaySinceMs === undefined) {
+      if (w.lifecycle === "awaiting_relay" && w.awaitingRelaySinceMs === void 0) {
         w.awaitingRelaySinceMs = stampNow;
       }
     }
     const active = state.workers.filter((w) => w.lifecycle === "active");
-    for (const w of active)
-      this.armWait(rt, w);
+    for (const w of active) this.armWait(rt, w);
     if (active.length === 0 && rt.pendingEvents.length === 0) {
       const goneNoteLines = await this.pruneStaleWorkers(state);
       const awaitingRelay = state.workers.filter((w) => w.lifecycle === "awaiting_relay");
@@ -1319,8 +1378,7 @@ ${dashboard.stdout.trimEnd()}` : `Serial queue is quiescent, but dev_status.py r
       const describe = (w) => `${w.agent} (${w.slug}, pane ${w.paneId})` + (stalledAgents.has(w.agent) ? ` -- STALLED, over ${formatDuration(rt.stallMs)} with no answer` : "") + (w.lastResolveFailure ? ` -- a previous answer ${JSON.stringify(w.lastResolveFailure.answer)} failed to land (${w.lastResolveFailure.reason}); re-read the pane and answer with its EXACT rendered label` : "");
       const text = (awaitingRelay.length ? `No active workers to poll. ${awaitingRelay.length} worker(s) awaiting a relay -- answer each with swarm_resolve_blocked before polling again: ${awaitingRelay.map(describe).join(", ")}.` : ambiguous.length ? `No active workers to poll. ${ambiguous.length} worker(s) have ambiguous teardown and still occupy the serial slot: ${ambiguous.map((w) => `${w.agent} (${w.slug}, pane ${w.paneId})`).join(", ")}. Reconcile or close them before spawning the next item.` : "No active workers to poll.") + (goneNoteLines.length ? `
 
-${goneNoteLines.join(`
-`)}` : "");
+${goneNoteLines.join("\n")}` : "");
       return {
         content: [{ type: "text", text }],
         details: { events: [] }
@@ -1349,22 +1407,70 @@ ${goneNoteLines.join(`
     }
     const rawEvents = rt.pendingEvents.splice(0);
     const workersByAgent = new Map(state.workers.map((w) => [w.agent, w]));
-    const toRemove = new Set;
-    const processed = await Promise.all(rawEvents.map(async (event) => {
-      const worker = workersByAgent.get(event.agent);
-      if (!worker)
-        return null;
-      if (event.kind === "blocked") {
-        let getResult;
-        try {
-          getResult = await this.herdr(buildAgentGetArgv(event.agent), signal);
-        } catch {
-          getResult = { code: 1, stdout: "", stderr: "" };
-        }
-        const resyncVerdict = classifyResyncGet(getResult.code, getResult.stdout, getResult.stderr);
-        if (resyncVerdict.action === "drop") {
-          event.kind = (state.mode ?? "concurrent") === "serial" ? "error" : "finished";
-          event.detail = (state.mode ?? "concurrent") === "serial" ? "resync: the worker disappeared while resolving its blocked prompt; the relay is cancelled and the item outcome is failed." : "resync: agent gone from herdr while resolving blocked prompt -- " + "worker has since finished or exited; outcome inferred, not observed. " + "Verify the item's state before treating it as complete.";
+    const toRemove = /* @__PURE__ */ new Set();
+    const processed = await Promise.all(
+      rawEvents.map(async (event) => {
+        const worker = workersByAgent.get(event.agent);
+        if (!worker) return null;
+        if (event.kind === "blocked") {
+          let getResult;
+          try {
+            getResult = await this.herdr(buildAgentGetArgv(event.agent), signal);
+          } catch {
+            getResult = { code: 1, stdout: "", stderr: "" };
+          }
+          const resyncVerdict = classifyResyncGet(
+            getResult.code,
+            getResult.stdout,
+            getResult.stderr
+          );
+          if (resyncVerdict.action === "drop") {
+            event.kind = (state.mode ?? "concurrent") === "serial" ? "error" : "finished";
+            event.detail = (state.mode ?? "concurrent") === "serial" ? "resync: the worker disappeared while resolving its blocked prompt; the relay is cancelled and the item outcome is failed." : "resync: agent gone from herdr while resolving blocked prompt -- worker has since finished or exited; outcome inferred, not observed. Verify the item's state before treating it as complete.";
+            const teardown = await this.harvestWorkerIOWithStatus(state, worker, signal);
+            event.captures = teardown.offers;
+            if ((state.mode ?? "concurrent") === "serial" && !teardown.closed) {
+              worker.lifecycle = "teardown_ambiguous";
+              worker.terminalOutcome = event.kind;
+              worker.terminalCaptures = event.captures;
+              worker.teardownDetail = this.teardownRecovery(worker);
+              event.detail = `${event.detail} Teardown is ambiguous: ${worker.teardownDetail}; no later serial worker will start until the record reconciles.`;
+            } else {
+              toRemove.add(worker.agent);
+            }
+            return event;
+          }
+          let readResult;
+          try {
+            readResult = await this.herdr(
+              buildAgentReadArgv(event.agent, BLOCKED_READ_LINES),
+              signal
+            );
+          } catch {
+            readResult = { code: 1, stdout: "", stderr: "" };
+          }
+          let truncated = looksTruncated(readResult.stdout, BLOCKED_READ_LINES);
+          if (truncated) {
+            try {
+              readResult = await this.herdr(
+                buildAgentReadArgv(event.agent, BLOCKED_READ_LINES_RETRY),
+                signal
+              );
+              truncated = looksTruncated(readResult.stdout, BLOCKED_READ_LINES_RETRY);
+            } catch {
+              truncated = false;
+            }
+          }
+          event.rawPrompt = readResult.stdout || getResult.stdout;
+          event.truncated = truncated;
+          event.blockClass = this.picker.classifyBlock(event.rawPrompt);
+          event.options = this.picker.pickerLabels(event.rawPrompt);
+          const parkedAt = Date.now();
+          foldWorkingSegment(worker, parkedAt);
+          worker.awaitingRelaySinceMs = parkedAt;
+          worker.lifecycle = "awaiting_relay";
+        } else if (event.kind === "still_working") {
+        } else {
           const teardown = await this.harvestWorkerIOWithStatus(state, worker, signal);
           event.captures = teardown.offers;
           if ((state.mode ?? "concurrent") === "serial" && !teardown.closed) {
@@ -1372,71 +1478,36 @@ ${goneNoteLines.join(`
             worker.terminalOutcome = event.kind;
             worker.terminalCaptures = event.captures;
             worker.teardownDetail = this.teardownRecovery(worker);
-            event.detail = `${event.detail} Teardown is ambiguous: ${worker.teardownDetail}; no later serial worker will start until the record reconciles.`;
+            event.detail = `${event.detail ? `${event.detail} ` : ""}Teardown is ambiguous: ${worker.teardownDetail}; no later serial worker will start until the record reconciles.`;
           } else {
             toRemove.add(worker.agent);
           }
-          return event;
         }
-        let readResult;
-        try {
-          readResult = await this.herdr(buildAgentReadArgv(event.agent, BLOCKED_READ_LINES), signal);
-        } catch {
-          readResult = { code: 1, stdout: "", stderr: "" };
-        }
-        let truncated = looksTruncated(readResult.stdout, BLOCKED_READ_LINES);
-        if (truncated) {
-          try {
-            readResult = await this.herdr(buildAgentReadArgv(event.agent, BLOCKED_READ_LINES_RETRY), signal);
-            truncated = looksTruncated(readResult.stdout, BLOCKED_READ_LINES_RETRY);
-          } catch {
-            truncated = false;
-          }
-        }
-        event.rawPrompt = readResult.stdout || getResult.stdout;
-        event.truncated = truncated;
-        event.blockClass = this.picker.classifyBlock(event.rawPrompt);
-        event.options = this.picker.pickerLabels(event.rawPrompt);
-        const parkedAt = Date.now();
-        foldWorkingSegment(worker, parkedAt);
-        worker.awaitingRelaySinceMs = parkedAt;
-        worker.lifecycle = "awaiting_relay";
-      } else if (event.kind === "still_working") {} else {
-        const teardown = await this.harvestWorkerIOWithStatus(state, worker, signal);
-        event.captures = teardown.offers;
-        if ((state.mode ?? "concurrent") === "serial" && !teardown.closed) {
-          worker.lifecycle = "teardown_ambiguous";
-          worker.terminalOutcome = event.kind;
-          worker.terminalCaptures = event.captures;
-          worker.teardownDetail = this.teardownRecovery(worker);
-          event.detail = `${event.detail ? `${event.detail} ` : ""}Teardown is ambiguous: ${worker.teardownDetail}; no later serial worker will start until the record reconciles.`;
-        } else {
-          toRemove.add(worker.agent);
-        }
-      }
-      return event;
-    }));
+        return event;
+      })
+    );
     const events = processed.filter((e) => e !== null);
     if (toRemove.size > 0) {
       state.workers = state.workers.filter((w) => !toRemove.has(w.agent));
     }
     this.persist(state);
-    await Promise.all(events.filter((e) => e.kind === "finished").map(async (event) => {
-      try {
-        const result = await this.exec("python3", buildShowArgv(event.slug).slice(1), {
-          signal,
-          timeout: PROBE_TIMEOUT_MS
-        });
-        if (result.code !== 0)
-          return;
-        const shown = parseShownItem(result.stdout);
-        if (shown === null || event.detail !== undefined)
-          return;
-        if (isSuspiciousFinish(shown.status, (event.captures ?? []).length)) {
-          event.detail = `dev_status.py still shows status ${JSON.stringify(shown.status)} and zero ` + "captures were queued during this run -- verify the item's actual state " + "before treating this as complete.";
+    await Promise.all(
+      events.filter((e) => e.kind === "finished").map(async (event) => {
+        try {
+          const result = await this.exec("python3", buildShowArgv(event.slug).slice(1), {
+            signal,
+            timeout: PROBE_TIMEOUT_MS
+          });
+          if (result.code !== 0) return;
+          const shown = parseShownItem(result.stdout);
+          if (shown === null || event.detail !== void 0) return;
+          if (isSuspiciousFinish(shown.status, (event.captures ?? []).length)) {
+            event.detail = `dev_status.py still shows status ${JSON.stringify(shown.status)} and zero captures were queued during this run -- verify the item's actual state before treating this as complete.`;
+          }
+        } catch {
         }
-      } catch {}
-    }));
+      })
+    );
     const stalled = stalledRelayWorkers(state.workers, Date.now(), rt.stallMs);
     const stalledNote = stalled.length ? `
 
@@ -1459,9 +1530,7 @@ ${e.rawPrompt}`;
             }
             const captures = renderCaptureOffers(e.captures ?? []);
             return `${e.slug} (${e.agent}) ${e.kind}${e.detail ? `: ${e.detail}` : ""}${captures}`;
-          }).join(`
-
-`) : "No active workers to poll.") + stalledNote + resyncNote
+          }).join("\n\n") : "No active workers to poll.") + stalledNote + resyncNote
         }
       ],
       details: { events }
@@ -1486,7 +1555,7 @@ ${e.rawPrompt}`;
         content: [
           {
             type: "text",
-            text: `amend_refused: ${worker.agent} (${worker.slug}, pane ${worker.paneId}) is parked at a gate, ` + "and herdr agent prompt refuses a blocked agent -- nothing was sent. Answer it with " + "swarm_resolve_blocked first, then amend, or amend after it finishes and pick the item up again."
+            text: `amend_refused: ${worker.agent} (${worker.slug}, pane ${worker.paneId}) is parked at a gate, and herdr agent prompt refuses a blocked agent -- nothing was sent. Answer it with swarm_resolve_blocked first, then amend, or amend after it finishes and pick the item up again.`
           }
         ],
         details: { amended: false, slug: worker.slug, paneId: worker.paneId }
@@ -1510,7 +1579,7 @@ ${e.rawPrompt}`;
       content: [
         {
           type: "text",
-          text: `amended: ${worker.agent} (${worker.slug}, pane ${worker.paneId}) was told to re-read its item. ` + "Nothing confirms it has done so -- the instruction lands as its next input, which is a correction " + "while it is still planning and a rewrite of finished work if it is not. Watch its next poll event, " + "and say in the end-of-run digest that this item was amended mid-flight."
+          text: `amended: ${worker.agent} (${worker.slug}, pane ${worker.paneId}) was told to re-read its item. Nothing confirms it has done so -- the instruction lands as its next input, which is a correction while it is still planning and a rewrite of finished work if it is not. Watch its next poll event, and say in the end-of-run digest that this item was amended mid-flight.`
         }
       ],
       details: { amended: true, slug: worker.slug, paneId: worker.paneId }
@@ -1535,18 +1604,27 @@ ${e.rawPrompt}`;
     }
     let rawPrompt = "";
     try {
-      const readResult = await this.herdr(buildAgentReadArgv(params.agent, BLOCKED_READ_LINES), signal);
+      const readResult = await this.herdr(
+        buildAgentReadArgv(params.agent, BLOCKED_READ_LINES),
+        signal
+      );
       rawPrompt = readResult.stdout;
-    } catch {}
-    noteResolveFailure(worker, params.answer, "copilot workers require manual response", Date.now());
+    } catch {
+    }
+    noteResolveFailure(
+      worker,
+      params.answer,
+      "copilot workers require manual response",
+      Date.now()
+    );
     this.persist(state);
     return {
       content: [
         {
           type: "text",
-          text: `needs_manual: Copilot workers do not have a programmatic picker -- manual input required for ` + `${params.agent} (${worker.slug}, pane ${worker.paneId}). ` + `Attach directly (herdr agent attach ${params.agent}) or switch to pane ${worker.paneId} to respond.` + (rawPrompt ? `
+          text: `needs_manual: Copilot workers do not have a programmatic picker -- manual input required for ${params.agent} (${worker.slug}, pane ${worker.paneId}). Attach directly (herdr agent attach ${params.agent}) or switch to pane ${worker.paneId} to respond.` + (rawPrompt ? `
 Captured prompt:
-${rawPrompt.slice(-2000)}` : "")
+${rawPrompt.slice(-2e3)}` : "")
         }
       ],
       details: {
@@ -1579,20 +1657,35 @@ ${rawPrompt.slice(-2000)}` : "")
         }
       };
     };
-    if (!target || picker.selectedIndex === null)
-      return manual("no listed option matched");
+    if (!target || picker.selectedIndex === null) return manual("no listed option matched");
     const identity = await this.herdr(buildAgentGetArgv(worker.agent), signal);
     if (paneIdentityMismatch(identity.code, identity.stdout, worker.paneId))
       return manual("pane identity mismatch");
-    const keys = await this.herdr(buildAgentSendKeysArgv(worker.agent, navigationKeys(picker.selectedIndex, target.index)), signal);
+    const keys = await this.herdr(
+      buildAgentSendKeysArgv(worker.agent, navigationKeys(picker.selectedIndex, target.index)),
+      signal
+    );
     if (keys.code !== 0)
-      return this.relayFailure(state, worker, `could not send navigation keys to ${worker.agent}: ${keys.stderr || keys.stdout}`, signal);
-    const verify = await this.herdr(buildAgentWaitArgv(worker.agent, ["idle", "done", "working"], RESOLVE_VERIFY_TIMEOUT_MS), signal);
+      return this.relayFailure(
+        state,
+        worker,
+        `could not send navigation keys to ${worker.agent}: ${keys.stderr || keys.stdout}`,
+        signal
+      );
+    const verify = await this.herdr(
+      buildAgentWaitArgv(worker.agent, ["idle", "done", "working"], RESOLVE_VERIFY_TIMEOUT_MS),
+      signal
+    );
     if (verify.code !== 0)
-      return this.relayFailure(state, worker, `${worker.agent} did not resume within ${RESOLVE_VERIFY_TIMEOUT_MS} ms after "${target.label}" was submitted.`, signal);
+      return this.relayFailure(
+        state,
+        worker,
+        `${worker.agent} did not resume within ${RESOLVE_VERIFY_TIMEOUT_MS} ms after "${target.label}" was submitted.`,
+        signal
+      );
     worker.workingSinceMs = Date.now();
-    worker.awaitingRelaySinceMs = undefined;
-    worker.lastResolveFailure = undefined;
+    worker.awaitingRelaySinceMs = void 0;
+    worker.lastResolveFailure = void 0;
     worker.lifecycle = "active";
     this.persist(state);
     return {
@@ -1624,7 +1717,7 @@ ${rawPrompt.slice(-2000)}` : "")
       }
     };
   }
-}
+};
 export {
   PANE_CAPTURE_CHARS,
   SwarmToolContext,

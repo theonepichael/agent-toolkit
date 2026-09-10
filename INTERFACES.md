@@ -1507,8 +1507,6 @@ are copy-once seeds for exactly that reason.
 | `pi/AGENTS.md` | not symlinked by `links.toml` |
 | `pi/CLAUDE.md` | not symlinked by `links.toml` |
 | `pi/CLAUDE_CODE_PARITY.md` | not symlinked by `links.toml` |
-| `pi/bun.lock` | not symlinked by `links.toml` |
-| `pi/bunfig.toml` | not symlinked by `links.toml` |
 | `pi/extensions/compaction-backlog-sync.ts` | `~/.pi/agent/extensions/compaction-backlog-sync.ts` (pi) |
 | `pi/extensions/custom-footer.ts` | `~/.pi/agent/extensions/custom-footer.ts` (pi) |
 | `pi/extensions/cwd.ts` | `~/.pi/agent/extensions/cwd.ts` (pi) |
@@ -1536,6 +1534,7 @@ are copy-once seeds for exactly that reason.
 | `pi/extensions/to-tickets-tool.ts` | `~/.pi/agent/extensions/to-tickets-tool.ts` (pi) |
 | `pi/extensions/trust-session.ts` | `~/.pi/agent/extensions/trust-session.ts` (pi) |
 | `pi/extensions/vitals-promotion-tool.ts` | `~/.pi/agent/extensions/vitals-promotion-tool.ts` (pi) |
+| `pi/package-lock.json` | not symlinked by `links.toml` |
 | `pi/package.json` | not symlinked by `links.toml` |
 | `pi/prompts/analyze-sessions.md` | `~/.pi/agent/prompts/analyze-sessions.md` (pi) |
 | `pi/prompts/backlog-item.md` | `~/.pi/agent/prompts/backlog-item.md` (pi) |
@@ -1556,7 +1555,8 @@ are copy-once seeds for exactly that reason.
 | `pi/test/dev-status-tool.test.ts` | not symlinked by `links.toml` |
 | `pi/test/grill-tool.test.ts` | not symlinked by `links.toml` |
 | `pi/test/guard-rails.test.ts` | not symlinked by `links.toml` |
-| `pi/test/helpers/sanitize-test-env.ts` | not symlinked by `links.toml` |
+| `pi/test/helpers/sanitize-test-env.mjs` | not symlinked by `links.toml` |
+| `pi/test/helpers/tap.ts` | not symlinked by `links.toml` |
 | `pi/test/herdr-blocked-bridge.test.ts` | not symlinked by `links.toml` |
 | `pi/test/model-picker.test.ts` | not symlinked by `links.toml` |
 | `pi/test/notify.test.ts` | not symlinked by `links.toml` |

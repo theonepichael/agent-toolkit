@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "./helpers/tap";
 import toTicketsExtension, { assertFields, buildArgv } from "../extensions/to-tickets-tool";
 
 describe("assertFields", () => {

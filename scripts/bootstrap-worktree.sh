@@ -5,12 +5,15 @@
 # The repo has two dependency roots, and only the uv-managed one is obvious
 # from the repo root:
 #   - repo root: uv-managed Python venv (pyproject.toml + uv.lock)
-#   - pi/:       a separate bun project (package.json); its node_modules is
-#                untracked, so a fresh worktree never has it and the pi TS
-#                checks skip rather than fail until it is installed
+#   - pi/:       a separate npm project (package.json + package-lock.json); its
+#                node_modules is untracked, so a fresh worktree never has it and
+#                the pi TS checks fail rather than skip until it is installed
 #
-# Safe to rerun on an already-bootstrapped checkout: both underlying
-# installs are incremental.
+# Safe to rerun on an already-bootstrapped checkout: both underlying installs
+# are incremental. `npm install` rather than `npm ci` is deliberate -- `npm ci`
+# wipes node_modules and aborts on any package.json/lockfile drift, which would
+# break that rerun contract the moment someone adds a devDependency and
+# bootstraps again before committing the updated lockfile.
 set -euo pipefail
 
 if [ "$#" -ne 0 ]; then
@@ -32,14 +35,14 @@ else
   echo "WARNING: uv not found on PATH — skipping root venv sync (install it: https://docs.astral.sh/uv/)" >&2
 fi
 
-if command -v bun >/dev/null 2>&1; then
-  echo "==> bun install (pi/)"
-  (cd "$repo_root/pi" && bun install) || {
-    echo "ERROR: bun install failed (pi/)" >&2
+if command -v npm >/dev/null 2>&1; then
+  echo "==> npm install (pi/)"
+  (cd "$repo_root/pi" && npm install) || {
+    echo "ERROR: npm install failed (pi/)" >&2
     fail=1
   }
 else
-  echo "WARNING: bun not found on PATH — skipping pi/ install; the pi TS checks will skip until it is installed (install it: https://bun.sh)" >&2
+  echo "WARNING: npm not found on PATH — skipping pi/ install; the pi TS checks will fail until it is installed (install Node.js, which provides npm: https://nodejs.org)" >&2
 fi
 
 exit "$fail"

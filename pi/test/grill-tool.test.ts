@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "./helpers/tap";
 import grillExtension, {
   assertFields,
   buildArgv,
@@ -183,34 +183,38 @@ describe("buildArgv", () => {
     expect(buildArgv("plan", { action: "plan", path })).toEqual(["plan", path]);
   });
 
-  test("every action builds a non-empty argv", () => {
-    // Guards against a missing switch arm silently returning undefined.
-    const minimal: Record<string, GrillParams> = {
-      new: { action: "new", payload: { topic: "t" } },
-      ask: { action: "ask", payload: { id: "d", question: "?" } },
-      decide: { action: "decide", payload: { id: "d", decision: "x" } },
-      revise: { action: "revise", decisionId: "d", payload: { decision: "x" } },
-      rm: { action: "rm", decisionId: "d" },
-      verdict: {
-        action: "verdict",
-        decisionId: "d",
-        payload: { result: "UNVERIFIABLE" },
-      },
-      plan: { action: "plan", path: "/tmp/p.md" },
-      mark_pending_execution: { action: "mark_pending_execution" },
-      pending_plan: { action: "pending_plan" },
-      next: { action: "next" },
-      frontier: { action: "frontier" },
-      render: { action: "render" },
-      list: { action: "list" },
-      show: { action: "show" },
-    };
-    for (const [action, params] of Object.entries(minimal)) {
+  // Guards against a missing switch arm silently returning undefined.
+  const minimal: Record<string, GrillParams> = {
+    new: { action: "new", payload: { topic: "t" } },
+    ask: { action: "ask", payload: { id: "d", question: "?" } },
+    decide: { action: "decide", payload: { id: "d", decision: "x" } },
+    revise: { action: "revise", decisionId: "d", payload: { decision: "x" } },
+    rm: { action: "rm", decisionId: "d" },
+    verdict: {
+      action: "verdict",
+      decisionId: "d",
+      payload: { result: "UNVERIFIABLE" },
+    },
+    plan: { action: "plan", path: "/tmp/p.md" },
+    mark_pending_execution: { action: "mark_pending_execution" },
+    pending_plan: { action: "pending_plan" },
+    next: { action: "next" },
+    frontier: { action: "frontier" },
+    render: { action: "render" },
+    list: { action: "list" },
+    show: { action: "show" },
+  };
+
+  // Bun accepted a label as `expect`'s second argument; node:test's `expect`
+  // takes exactly one, so each action is its own named test instead -- which
+  // says *which* action failed in the test name rather than in a message.
+  for (const [action, params] of Object.entries(minimal)) {
+    test(`every action builds a non-empty argv: ${action}`, () => {
       const argv = buildArgv(params.action, params);
-      expect(argv.length, `action ${action}`).toBeGreaterThan(0);
-      expect(argv[0], `action ${action}`).not.toContain("_");
-    }
-  });
+      expect(argv.length).toBeGreaterThan(0);
+      expect(argv[0]).not.toContain("_");
+    });
+  }
 });
 
 describe("grillExtension execute", () => {

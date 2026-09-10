@@ -11,7 +11,7 @@ toolkit — not harness-runtime code. None of these scripts have a
 ## Hazards & Signposts
 
 - `bootstrap-worktree.sh` installs both of the repo's dependency roots (the
-  uv-managed root venv and the separate bun project in `pi/`) in one step.
+  uv-managed root venv and the separate npm project in `pi/`) in one step.
   Safe to rerun on an already-bootstrapped checkout. Run it right after
   `git worktree add` — a fresh worktree never has `pi/`'s `node_modules`
   until this runs.

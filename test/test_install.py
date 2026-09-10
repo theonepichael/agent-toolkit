@@ -962,8 +962,16 @@ _APPROVED_BASH_PATTERNS = frozenset(
         # dev_status with environment variable
         "DEVSTATUS_AGENT=1 python3 *",
         "env DEVSTATUS_AGENT=1 python3 *",
-        # bun / TypeScript tooling
-        "bun *",
+        # npm / TypeScript tooling -- enumerated rather than a bare `npm *`
+        # wildcard, mirroring the uv block below. `npm test*` is its own entry
+        # because test:clean invokes bare `npm test`, which `npm run test*`
+        # does not match.
+        "npm install*",
+        "npm test*",
+        "npm run test*",
+        "npm run lint*",
+        "npm run typecheck*",
+        "npm run format*",
         # local scripts
         "./scripts/bootstrap-worktree.sh*",
         "scripts/bootstrap-worktree.sh*",

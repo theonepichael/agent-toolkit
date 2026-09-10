@@ -48,8 +48,8 @@ Tests & CI
 
 TypeScript
 - One tree only: pi/ (extensions plus their specs under pi/test/), with opencode/plugin/*.ts and agy/hooks/*.js as single-file outliers that carry no toolchain of their own. The one exception with its own toolchain is copilot/extensions/swarm/src/ (the host registration adapter), built via scripts/build-copilot-swarm.sh — Copilot CLI extensions must be plain JS, so pi/'s live-TS-loading approach does not apply there. Scheduling, recovery, the shared SwarmToolContext, and both host picker adapters live in pi/extensions/swarm-lib/ and build into Copilot's artifacts from that single source. See pi/AGENTS.md.
-- Toolchain is bun-driven and declared in pi/package.json: `bun test`, `tsc --noEmit`, `oxlint extensions test`, `prettier --check extensions test`. Run from pi/, not the repo root.
-- test/test_pi_ts_checks.py drives all four stages from the Python suite, so they gate CI. They skip rather than fail when pi/node_modules is absent — run `bun install` in pi/ first, or a green suite has checked nothing.
+- Toolchain is npm-driven and declared in pi/package.json: `node --test` (via `tsx`) for specs, `tsc --noEmit`, `oxlint extensions test`, `prettier --check extensions test`. Run from pi/, not the repo root.
+- test/test_pi_ts_checks.py drives all four stages from the Python suite, so they gate CI. It **fails** rather than skips when pi/node_modules is absent — run `npm install` in pi/ first, or a green suite has checked nothing.
 - Lint and format are scoped to pi/extensions and pi/test, deliberately, so markdown at pi/ root is not swept by prettier. See pi/AGENTS.md.
 
 Formatting & linting
