@@ -60,7 +60,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`sessionstart_checks.py`](#agentscriptssessionstartcheckspy) | sessionstart_checks.py — run the SessionStart context checks concurrently. |
 | [`settings_seed.py`](#agentscriptssettingsseedpy) | Copy-once settings seeding, adoption, reseed, and drift detection. |
 | [`settings_seed_drift_check.py`](#agentscriptssettingsseeddriftcheckpy) | SessionStart hook + CLI: detect (and optionally fix) drift between the live ``~/.claude/settings.json`` / ``~/.config/opencode/opencode.jsonc`` / (under WSL) the Windows-side VS Code ``settings.json`` and ``keybindings.json`` and their seeds in this repo. |
-| [`standup.py`](#agentscriptsstanduppy) | standup.py — /standup skill CLI: local data gathering. |
+| [`standup.py`](#agentscriptsstanduppy) | standup.py — /standup skill CLI and read-only fetch service. |
 | [`standup_adapters.py`](#agentscriptsstandupadapterspy) | standup_adapters.py — provider-agnostic adapter interfaces for /standup. |
 | [`statusline.py`](#agentscriptsstatuslinepy) | Claude Code status line: render the model name and a color-coded context window usage bar with the used percentage, from the JSON session payload Claude Code pipes to this script on stdin. |
 | [`to_tickets_runner.py`](#agentscriptstoticketsrunnerpy) | to_tickets_runner.py — create a linked batch of dev_status.py backlog items from a confirmed vertical-slice/tracer-bullet ticket breakdown. |
@@ -1132,7 +1132,7 @@ SessionStart hook + CLI: detect (and optionally fix) drift between the live ``~/
 
 ### `agent-scripts/standup.py`
 
-standup.py — /standup skill CLI: local data gathering.
+standup.py — /standup skill CLI and read-only fetch service.
 
 - Installed at: `~/.claude/scripts/standup.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
@@ -1149,14 +1149,23 @@ standup.py — /standup skill CLI: local data gathering.
   - `CANONICAL_PENDING_FILE = Path.home() / '.claude' / 'data' / 'backlog' / 'pending_items.json'`
 - Explicit exit codes: `1`
 - Depends on: `cli_common.py`, `standup_adapters.py`
+- Exceptions:
+  - `class StandupConfigError(Exception)` — Raised when caller-supplied standup configuration is invalid.
+- Public classes:
+  - `class StandupConfig`
+  - `class StandupPaths`
+  - `class SkippedSource`
+  - `class StandupSources`
+  - `class StandupReport`
 - Public functions:
   - `today() -> str`
   - `last_working_day(ref: date) -> date`
-  - `find_previous_standup(before: date) -> dict[str, str] | None`
-  - `load_config() -> dict[str, object]`
-  - `load_canonical_pending() -> list[dict[str, object]]` — Read-only view of dev_status.py's pending-items store.
-  - `git_commits(repos: list[str], since_days: int) -> tuple[list[dict[str, str]], list[dict[str, str]]]`
-  - `backlog_items(prefixes: list[str], recent_done_days: int) -> tuple[list[dict[str, object]], list[dict[str, object]], list[dict[str, object]], list[dict[str, str]]]`
+  - `find_previous_standup(before: date, standup_data_dir: Path = DATA_DIR) -> dict[str, str] | None`
+  - `load_config(config_file: Path = CONFIG_FILE) -> dict[str, object]`
+  - `load_canonical_pending(pending_file: Path = CANONICAL_PENDING_FILE) -> list[dict[str, object]]` — Read-only view of dev_status.py's pending-items store.
+  - `git_commits(repos: list[str], since_days: int) -> tuple[list[dict[str, str]], list[SkippedSource]]`
+  - `backlog_items(prefixes: list[str], recent_done_days: int, backlog_file: Path = BACKLOG_FILE) -> tuple[list[dict[str, object]], list[dict[str, object]], list[dict[str, object]], list[SkippedSource]]`
+  - `fetch_standup(config: StandupConfig, sources: StandupSources, *, paths: StandupPaths, reference_date: date | None = None) -> StandupReport`
 - Subcommand handlers: `cmd_fetch`
 - Tested by: `agent-scripts/test_standup.py`
 
@@ -1184,7 +1193,7 @@ standup_adapters.py — provider-agnostic adapter interfaces for /standup.
   - `class StubEmailAdapter`
   - `class OutlookCalendarAdapter` — Calendar adapter communicating with Outlook on Windows host via PowerShell COM.
   - `class StubCalendarAdapter`
-- Tested by: `agent-scripts/test_gen_interfaces.py`, `agent-scripts/test_outlook_calendar.py`, `agent-scripts/test_outlook_email.py`
+- Tested by: `agent-scripts/test_gen_interfaces.py`, `agent-scripts/test_outlook_calendar.py`, `agent-scripts/test_outlook_email.py`, `agent-scripts/test_standup.py`
 
 ### `agent-scripts/statusline.py`
 
