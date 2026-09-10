@@ -1192,6 +1192,325 @@ class CmdReviewTests(unittest.TestCase):
         self.assertEqual(captured["model"], "gpt-4")
 
 
+class ReviewPlanTests(unittest.TestCase):
+    """Facade-level tests for review_plan(): the programmatic entry point.
+
+    The facade owns sanitize/prompt/size-preflight/candidate-fallback and
+    returns structured results; every stderr-bound diagnostic is *collected*
+    (ReviewResult.notices / AllBackendsFailedError.notices), never printed by
+    the facade itself. cmd_review stays the only printing/exit layer.
+    """
+
+    def test_review_plan_success_returns_result_fields(self) -> None:
+        captured: list[str] = []
+        with (
+            patch.dict(os.environ, {"SECOND_OPINION_AGY_MODEL": "Gemini 3.7 Flash (High)"}),
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(
+                second_opinion,
+                "BACKEND_RUNNERS",
+                {
+                    "agy": lambda p, model_index=None: (
+                        captured.append(p) or "the critique"
+                    )
+                },
+            ),
+        ):
+            result = second_opinion.review_plan(
+                second_opinion.ReviewRequest(plan_text="my plan", backend="agy")
+            )
+        self.assertIsInstance(result, second_opinion.ReviewResult)
+        self.assertEqual(result.response_text, "the critique")
+        self.assertEqual(result.backend_label, "agy (Gemini 3.7 Flash (High))")
+        self.assertEqual(result.bytes_saved, 0)
+        self.assertEqual(result.notices, ())
+        self.assertEqual(captured, [second_opinion.build_prompt("my plan", None)])
+
+    def test_review_plan_falls_back_to_second_backend(self) -> None:
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "SECOND_OPINION_AGY_MODEL": "Gemini 3.7 Flash (High)",
+                    "SECOND_OPINION_PI_MODEL": "pi-model",
+                },
+            ),
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(second_opinion, "available_backends", return_value=["agy", "pi"]),
+            patch.object(
+                second_opinion,
+                "BACKEND_RUNNERS",
+                {
+                    "agy": lambda p, model_index=None: (_ for _ in ()).throw(
+                        second_opinion.BackendError("agy broke")
+                    ),
+                    "pi": lambda p, model_index=None: "pi's critique",
+                },
+            ),
+        ):
+            result = second_opinion.review_plan(
+                second_opinion.ReviewRequest(plan_text="my plan"), verbose=True
+            )
+        self.assertEqual(result.response_text, "pi's critique")
+        self.assertIn("agy broke", "".join(result.notices))
+
+    def test_review_plan_all_fail_raises_all_backends_failed(self) -> None:
+        agy_exc = second_opinion.BackendError("agy broke")
+        pi_exc = second_opinion.BackendError("pi broke")
+        with (
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(second_opinion, "available_backends", return_value=["agy", "pi"]),
+            patch.object(
+                second_opinion,
+                "BACKEND_RUNNERS",
+                {
+                    "agy": lambda p, model_index=None: (_ for _ in ()).throw(agy_exc),
+                    "pi": lambda p, model_index=None: (_ for _ in ()).throw(pi_exc),
+                },
+            ),
+        ):
+            with self.assertRaises(second_opinion.AllBackendsFailedError) as cm:
+                second_opinion.review_plan(
+                    second_opinion.ReviewRequest(plan_text="my plan")
+                )
+        exc = cm.exception
+        # The exhaustion error IS a BackendError subclass, surfacing backend
+        # failures through the facade unconverted (audit contract).
+        self.assertIsInstance(exc, llm_backends.BackendError)
+        self.assertIn("all backends failed — ", str(exc))
+        self.assertIn("agy broke", str(exc))
+        self.assertIn("pi broke", str(exc))
+        self.assertEqual(exc.errors, (agy_exc, pi_exc))
+        self.assertEqual(
+            exc.failures,
+            ("agy: agy broke", "pi: pi broke"),
+        )
+        self.assertFalse(exc.size_rule_out)
+
+    def test_review_plan_surfaces_backend_error_subclass_single_backend(self) -> None:
+        timeout_exc = llm_backends.BackendTimeoutError("pi timed out")
+        with (
+            patch("shutil.which", return_value="/usr/bin/pi"),
+            patch.object(
+                second_opinion,
+                "BACKEND_RUNNERS",
+                {
+                    "pi": lambda p, model_index=None: (_ for _ in ()).throw(
+                        timeout_exc
+                    )
+                },
+            ),
+        ):
+            with self.assertRaises(llm_backends.BackendError) as cm:
+                second_opinion.review_plan(
+                    second_opinion.ReviewRequest(plan_text="my plan", backend="pi")
+                )
+        exc = cm.exception
+        self.assertIsInstance(exc, second_opinion.AllBackendsFailedError)
+        self.assertIn("pi timed out", str(exc))
+        self.assertIn(
+            "raise SECOND_OPINION_PI_TIMEOUT_SECONDS", "".join(exc.failures)
+        )
+        self.assertEqual(exc.errors, (timeout_exc,))
+
+    def test_review_plan_emits_nothing_to_stderr(self) -> None:
+        err = io.StringIO()
+        with (
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(
+                second_opinion,
+                "BACKEND_RUNNERS",
+                {"agy": lambda p, model_index=None: "ok"},
+            ),
+            patch("sys.stderr", err),
+        ):
+            second_opinion.review_plan(
+                second_opinion.ReviewRequest(
+                    plan_text="# Plan\n## Rejected Feedback\nold\n## Step\ngo"
+                )
+            )
+        self.assertEqual(err.getvalue(), "")
+
+    def test_review_plan_collects_debris_notice(self) -> None:
+        with (
+            patch.dict(os.environ, {"SECOND_OPINION_AGY_MODEL": "Gemini 3.7 Flash (High)"}),
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(
+                second_opinion,
+                "BACKEND_RUNNERS",
+                {"agy": lambda p, model_index=None: "ok"},
+            ),
+        ):
+            result = second_opinion.review_plan(
+                second_opinion.ReviewRequest(
+                    plan_text="# Plan\n## Rejected Feedback\nold\n## Step\ngo"
+                )
+            )
+        self.assertEqual(len(result.notices), 1)
+        self.assertIn("stripped inline review debris from plan", result.notices[0])
+        self.assertIn("bytes saved", result.notices[0])
+        self.assertGreater(result.bytes_saved, 0)
+
+    def test_review_plan_quiet_suppresses_absent_config_notice(self) -> None:
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(
+                second_opinion,
+                "BACKEND_RUNNERS",
+                {"agy": lambda p, model_index=None: "ok"},
+            ),
+        ):
+            quiet_result = second_opinion.review_plan(
+                second_opinion.ReviewRequest(plan_text="my plan"), quiet=True
+            )
+            loud_result = second_opinion.review_plan(
+                second_opinion.ReviewRequest(plan_text="my plan")
+            )
+        self.assertEqual(quiet_result.notices, ())
+        self.assertEqual(len(loud_result.notices), 1)
+        self.assertIn("no model pool configured", loud_result.notices[0])
+
+    def test_review_plan_threads_model_index_to_runner(self) -> None:
+        seen: list[int | None] = []
+        with (
+            patch.dict(
+                os.environ,
+                {"SECOND_OPINION_AGY_MODEL_POOL": "model-a,model-b"},
+            ),
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(
+                second_opinion,
+                "BACKEND_RUNNERS",
+                {
+                    "agy": lambda p, model_index=None: (
+                        seen.append(model_index) or "ok"
+                    )
+                },
+            ),
+        ):
+            result = second_opinion.review_plan(
+                second_opinion.ReviewRequest(
+                    plan_text="my plan", backend="agy", model_index=1
+                )
+            )
+        self.assertEqual(seen, [1])
+        self.assertIn("model-b", result.backend_label)
+
+    def test_review_plan_no_backend_available_raises(self) -> None:
+        with (
+            patch("shutil.which", return_value=None),
+            self.assertRaises(second_opinion.NoBackendAvailableError) as cm,
+        ):
+            second_opinion.review_plan(
+                second_opinion.ReviewRequest(plan_text="my plan")
+            )
+        self.assertIn("no backend available", str(cm.exception))
+
+    def test_review_plan_unknown_forced_backend_raises(self) -> None:
+        with (
+            patch("shutil.which", return_value=None),
+            self.assertRaises(second_opinion.UnknownBackendError) as cm,
+        ):
+            second_opinion.review_plan(
+                second_opinion.ReviewRequest(plan_text="my plan", backend="agy")
+            )
+        self.assertIn("agy not found on PATH", str(cm.exception))
+
+    def test_review_plan_model_index_config_error_raises_before_runner(self) -> None:
+        called: list[str] = []
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(
+                second_opinion,
+                "BACKEND_RUNNERS",
+                {
+                    "agy": lambda p, model_index=None: called.append("agy") or "ok",
+                    "pi": lambda p, model_index=None: called.append("pi") or "ok",
+                },
+            ),
+        ):
+            with self.assertRaises(second_opinion.ModelIndexConfigError) as cm:
+                second_opinion.review_plan(
+                    second_opinion.ReviewRequest(plan_text="my plan", model_index=0)
+                )
+        self.assertIn("--model-index 0 requires", str(cm.exception))
+        # Automatic selection must stop on the first config error, never
+        # silently skipping to the next candidate.
+        self.assertEqual(called, [])
+
+    def test_review_plan_global_size_rule_out(self) -> None:
+        with (
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(
+                second_opinion,
+                "BACKEND_RUNNERS",
+                {"agy": lambda p, model_index=None: "never"},
+            ),
+        ):
+            with self.assertRaises(second_opinion.AllBackendsFailedError) as cm:
+                second_opinion.review_plan(
+                    second_opinion.ReviewRequest(plan_text="p" * 105000)
+                )
+        exc = cm.exception
+        self.assertTrue(exc.size_rule_out)
+        self.assertIn("all backends ruled out by payload size", str(exc))
+        self.assertNotIn("never", str(exc))
+
+    def test_review_plan_verbose_collects_pi_preflight_skip_notice(self) -> None:
+        pi_called: list[str] = []
+        with (
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(
+                second_opinion,
+                "available_backends",
+                return_value=["pi", "agy"],
+            ),
+            patch.object(
+                second_opinion,
+                "BACKEND_RUNNERS",
+                {
+                    "pi": lambda p, model_index=None: pi_called.append("pi") or "x",
+                    "agy": lambda p, model_index=None: "agy critique",
+                },
+            ),
+        ):
+            result = second_opinion.review_plan(
+                second_opinion.ReviewRequest(plan_text="p" * 15000), verbose=True
+            )
+        self.assertEqual(pi_called, [])
+        self.assertEqual(result.response_text, "agy critique")
+        skip_notices = [n for n in result.notices if "skipped:" in n]
+        self.assertEqual(len(skip_notices), 1)
+        self.assertIn("exceeds pi limit", skip_notices[0])
+
+    def test_focus_hints_blank_variants_omit_section(self) -> None:
+        captured: list[str] = []
+        with (
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(
+                second_opinion,
+                "BACKEND_RUNNERS",
+                {
+                    "agy": lambda p, model_index=None: (
+                        captured.append(p) or "ok"
+                    )
+                },
+            ),
+        ):
+            prompts = []
+            for hints in (None, "", "   ", "\n"):
+                second_opinion.review_plan(
+                    second_opinion.ReviewRequest(
+                        plan_text="my plan", focus_hints=hints, backend="agy"
+                    )
+                )
+                prompts.append(captured[-1])
+        self.assertEqual(len(set(prompts)), 1)
+        self.assertEqual(prompts[0], second_opinion.build_prompt("my plan", None))
+
+
 class DefaultFallbackNoticeTests(unittest.TestCase):
     """The absent-config contract (decided 2026-09-03): a review that falls
     back to a backend's default model announces it on stderr, names the pool

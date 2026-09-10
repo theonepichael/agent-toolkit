@@ -308,7 +308,7 @@
     "arg review plan: ",
     "exit codes: 1",
     "handler detect: Handle ``detect``: print backend presence AND contract eligibility. Presence alone was misleading: an installed backend that cannot meet the isolation contract is never used, so reporting it as simply available invited the discovery to happen at the moment a critique was wanted rather than before. Each entry carries ``present``, ``eligible`` and, when ineligible, the ``reason``. The legacy boolean shape is preserved under each backend's ``present`` key so existing callers keep a one-line migration.",
-    "handler review: Handle ``review``: get one critique from the priority-selected backend. Tries each candidate backend in priority order (or just the forced ``--backend``, if given) until one succeeds; prints the first successful critique and returns. Exits nonzero only if every candidate fails.",
+    "handler review: Handle ``review``: get one critique from the priority-selected backend. Thin argv adapter over :func:`review_plan`: resolves the plan and focus file, builds a :class:`ReviewRequest`, prints the facade's collected notices, the first successful critique, and returns. Exits nonzero only if the facade raises (configuration error, or every candidate failed).",
     "subcommand detect: list available backends as JSON",
     "subcommand review: get one critique from the priority-selected backend"
   ],

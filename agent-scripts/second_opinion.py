@@ -15,6 +15,14 @@ template against it (see that script's own docstring), but a behavior change
 with no corresponding flag/name change isn't caught structurally. See
 CLAUDE.md's "Keeping skill docs in sync with their scripts".
 
+Programmatic API: review_plan(ReviewRequest) -> ReviewResult is the facade's
+only public entry point over the llm_backends boundary — it runs the same
+candidate loop the review subcommand runs, collects stderr-bound diagnostics
+on the result/exception instead of printing, and raises typed errors
+(ReviewError subclasses for configuration problems; AllBackendsFailedError —
+a BackendError subclass — when every candidate fails). cmd_review is a thin
+adapter over it.
+
 Flags
   --quiet, -q      suppress non-essential output
   --verbose, -v    emit extra diagnostic messages to stderr
@@ -98,6 +106,7 @@ import shutil
 import signal
 import sys
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from types import FrameType
 from typing import NoReturn
@@ -121,6 +130,102 @@ BACKEND_PRIORITY = llm_backends.BACKEND_PRIORITY
 DATA_DIR = Path.home() / ".claude" / "data" / "grill"
 
 MAX_FOCUS_FILE_BYTES = 8192
+
+
+# --- review_plan facade -----------------------------------------------------
+#
+# The facade's only public entry point is review_plan(): typed request/result
+# objects over the same orchestration cmd_review used to inline. All
+# subprocess/network effects stay delegated to the llm_backends-backed runner
+# wrappers (BACKEND_RUNNERS); the facade itself adds no new effect surface —
+# stderr-bound diagnostics are *collected* on the result/exception and printed
+# by the CLI layer, never by the facade.
+
+
+@dataclass(frozen=True)
+class ReviewRequest:
+    """One review request for :func:`review_plan`.
+
+    ``plan_text`` is the raw, pre-sanitization plan text; ``focus_hints`` is
+    the raw focus-file text (or ``None``). ``backend`` forces one backend;
+    ``None`` means priority-order fallback over all installed backends.
+    """
+
+    plan_text: str
+    focus_hints: str | None = None
+    backend: str | None = None
+    model_index: int | None = None
+
+
+@dataclass(frozen=True)
+class ReviewResult:
+    """A successful critique: the backend used, its response, and diagnostics.
+
+    ``bytes_saved`` counts UTF-8 bytes removed from the plan by
+    :func:`sanitize_plan_text` (focus-file truncation is not counted).
+    ``notices`` holds the stderr-bound diagnostic lines in emission order;
+    the CLI layer prints them, the facade never does.
+    """
+
+    backend_label: str
+    response_text: str
+    bytes_saved: int
+    notices: tuple[str, ...] = ()
+
+
+class ReviewError(Exception):
+    """Facade-level failure: configuration or request shape, not a backend.
+
+    Deliberately *not* an ``llm_backends.BackendError`` subclass — a caller
+    handling ``BackendError`` must never mistake a config error for a backend
+    outage. Raised before any backend runs.
+    """
+
+
+class NoBackendAvailableError(ReviewError):
+    """No backend is installed/on PATH and no ``--backend`` was forced."""
+
+
+class UnknownBackendError(ReviewError):
+    """The forced ``--backend`` is not present on PATH."""
+
+
+class ModelIndexConfigError(ReviewError):
+    """``--model-index`` names a pool that is unset/empty or an out-of-range
+    index. Raised on the first offending candidate, before any runner runs, so
+    automatic selection never silently skips to another backend.
+    """
+
+
+class AllBackendsFailedError(BackendError):
+    """Every candidate backend was tried and failed (or was size-ruled-out).
+
+    Subclasses :class:`llm_backends.BackendError` deliberately: an exhausted
+    review *is* a backend failure from the caller's perspective, and the
+    facade's contract is that backend failures escape as ``BackendError``
+    subclasses — never converted to ``SystemExit`` below the CLI. The caught
+    per-candidate exceptions are preserved unmodified on ``errors`` (same
+    order as ``failures``); ``failures``/``notices`` are the immutable string
+    copies.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        failures: tuple[str, ...] = (),
+        errors: tuple[BackendError, ...] = (),
+        size_rule_out: bool = False,
+        prompt_bytes: int = 0,
+        notices: tuple[str, ...] = (),
+    ) -> None:
+        super().__init__(message)
+        self.failures = tuple(failures)
+        self.errors = tuple(errors)
+        self.size_rule_out = size_rule_out
+        self.prompt_bytes = prompt_bytes
+        self.notices = tuple(notices)
+
 
 _MAX_BACKEND_TIMEOUT_SECONDS = 600  # hard ceiling on every timeout, default or
 # overridden -- sized above opencode's measured real-plan latency (200-270s,
@@ -365,33 +470,29 @@ def _resolve_agy_model(model_index: int | None) -> str:
     return single or DEFAULT_AGY_MODEL
 
 
-def _vprint_pool_choice(
-    backend: str, model_index: int | None, *, verbose: bool
-) -> None:
-    """Emit the one and only --verbose notice about pool/index resolution for ``backend``.
+def _pool_choice_notice(backend: str, model_index: int | None) -> str | None:
+    """Build the --verbose notice about pool/index resolution for ``backend``, or ``None``.
 
-    A manual/exploratory-CLI and --verbose-debugging convenience, not a
-    safety net against a caller forgetting --model-index: it only fires
-    under --verbose, so a non-verbose automated caller never sees it.
+    Pure. A manual/exploratory-CLI and --verbose-debugging convenience, not a
+    safety net against a caller forgetting --model-index: callers only surface
+    it under verbose mode, so a non-verbose automated caller never sees it.
     Automated multi-round callers are documented to always pass
     --model-index every round regardless of pool state (see SKILL.md /
     second-opinion.md) rather than relying on this to catch a missed flag.
     """
-    if backend not in _POOL_ENV_VARS or not verbose:
-        return
+    if backend not in _POOL_ENV_VARS:
+        return None
     pool_var, single_var = _POOL_ENV_VARS[backend]
     if model_index is None and _env_stripped(single_var):
-        return
+        return None
     pool = _parse_pool(pool_var)
     if not pool:
-        return
+        return None
     index = model_index if model_index is not None else 0
     if not (0 <= index < len(pool)):
-        return
+        return None
     chosen = pool[index]
-    cli_common.vprint(
-        f"[second_opinion] {pool_var} -> {chosen} (index {index})", verbose=verbose
-    )
+    return f"[second_opinion] {pool_var} -> {chosen} (index {index})"
 
 
 CRITIQUE_PROMPT = """\
@@ -792,34 +893,168 @@ def cmd_detect(args: argparse.Namespace) -> None:
     print(json.dumps(llm_backends.eligibility_report(), indent=2))
 
 
+def review_plan(
+    request: ReviewRequest, *, verbose: bool = False, quiet: bool = False
+) -> ReviewResult:
+    """Run one adversarial review of ``request.plan_text`` and return the result.
+
+    The facade's only public entry point. Tries each candidate backend in
+    priority order (or just the forced ``request.backend``, if given) until
+    one succeeds. All subprocess/network effects stay delegated to the
+    ``llm_backends``-backed runner wrappers in :data:`BACKEND_RUNNERS`; the
+    facade prints nothing — stderr-bound diagnostics are collected in
+    ``notices`` (emission order preserved) for the caller to print, and only
+    when ``verbose``/not ``quiet`` says so.
+
+    Raises:
+        NoBackendAvailableError: no backend installed and none forced.
+        UnknownBackendError: the forced backend is not on PATH.
+        ModelIndexConfigError: ``model_index`` needs a pool that is unset, or
+            is out of range — raised on the first offending candidate, before
+            any runner runs.
+        AllBackendsFailedError: a ``BackendError`` subclass, raised when every
+            candidate failed (or was payload-size-ruled-out); carries the
+            original exceptions on ``errors`` and the pre-exhaustion
+            diagnostics on ``notices``.
+    """
+    if request.backend:
+        if not shutil.which(request.backend):
+            raise UnknownBackendError(f"{request.backend} not found on PATH")
+        candidates = [request.backend]
+    else:
+        candidates = available_backends()
+        if not candidates:
+            raise NoBackendAvailableError(
+                "no backend available — install one of: " + ", ".join(BACKEND_PRIORITY)
+            )
+
+    notices: list[str] = []
+    plan_text, bytes_saved = sanitize_plan_text(request.plan_text)
+    if bytes_saved > 0:
+        notices.append(
+            f"[second_opinion] stripped inline review debris from plan ({bytes_saved} bytes saved)"
+        )
+    prompt = build_prompt(plan_text, request.focus_hints)
+    prompt_bytes = len(prompt.encode("utf-8"))
+    failures: list[str] = []
+    caught: list[BackendError] = []
+    size_rule_outs: list[llm_backends.BackendPayloadSizeError] = []
+
+    if prompt_bytes > llm_backends.GLOBAL_MAX_PROMPT_BYTES:
+        for backend in candidates:
+            exc = llm_backends.BackendPayloadSizeError(
+                f"prompt size ({prompt_bytes} bytes) exceeds command-line argument limit "
+                f"({llm_backends.GLOBAL_MAX_PROMPT_BYTES} bytes)"
+            )
+            size_rule_outs.append(exc)
+            caught.append(exc)
+            failures.append(f"{backend}: {exc}")
+        raise AllBackendsFailedError(
+            f"all backends ruled out by payload size ({prompt_bytes} bytes) — "
+            + "; ".join(failures),
+            failures=tuple(failures),
+            errors=tuple(caught),
+            size_rule_out=True,
+            prompt_bytes=prompt_bytes,
+            notices=tuple(notices),
+        )
+
+    for candidate_index, backend in enumerate(candidates, 1):
+        if backend == "pi" and prompt_bytes > llm_backends.PI_MAX_PROMPT_BYTES:
+            exc = llm_backends.BackendPayloadSizeError(
+                f"prompt size ({prompt_bytes} bytes) exceeds pi limit "
+                f"({llm_backends.PI_MAX_PROMPT_BYTES} bytes); pi's opencode-go gateway "
+                f"deterministically stalls on larger payloads"
+            )
+            size_rule_outs.append(exc)
+            caught.append(exc)
+            if verbose:
+                notices.append(
+                    f"[second_opinion] {backend_label(backend, model_index=request.model_index)} "
+                    f"skipped: {exc}"
+                )
+            failures.append(f"{backend}: {exc}")
+            continue
+
+        choice_notice = _pool_choice_notice(backend, request.model_index)
+        if verbose and choice_notice is not None:
+            notices.append(choice_notice)
+        if request.model_index is not None:
+            err = _validate_model_index(backend, request.model_index, os.environ)
+            if err:
+                raise ModelIndexConfigError(err)
+        # Absent-config announcement (decided 2026-09-03): emitted at the
+        # dispatch point — never inside the model-resolution helpers — so
+        # --help, validation, and pre-flight paths stay silent, and only a
+        # backend actually about to run can announce its default fallback.
+        if not quiet and _absent_pool_config(backend):
+            notices.append(_default_fallback_notice(backend))
+        try:
+            with cli_common.timing_span(
+                "backend", backend=backend, candidate=candidate_index
+            ):
+                critique = BACKEND_RUNNERS[backend](
+                    prompt, model_index=request.model_index
+                )
+        except BackendError as exc:
+            # A timeout is a budget problem, not an outage: name the env var
+            # that raises the budget and the hard ceiling, so the next
+            # reader doesn't misdiagnose a slow backend as a dead one
+            # (2026-09-03: exactly that misread cost a debugging session).
+            hint = ""
+            if isinstance(exc, llm_backends.BackendTimeoutError):
+                hint = (
+                    f" — raise SECOND_OPINION_{backend.upper()}_TIMEOUT_SECONDS "
+                    f"(hard ceiling {_MAX_BACKEND_TIMEOUT_SECONDS}s) to allow "
+                    "longer runs"
+                )
+            if isinstance(exc, llm_backends.BackendPayloadSizeError):
+                size_rule_outs.append(exc)
+            caught.append(exc)
+            if verbose:
+                notices.append(
+                    f"[second_opinion] {backend_label(backend, model_index=request.model_index)} "
+                    f"failed: {exc}{hint}"
+                )
+            failures.append(f"{backend}: {exc}{hint}")
+            continue
+        return ReviewResult(
+            backend_label=backend_label(backend, model_index=request.model_index),
+            response_text=critique,
+            bytes_saved=bytes_saved,
+            notices=tuple(notices),
+        )
+
+    if size_rule_outs and len(size_rule_outs) == len(candidates):
+        raise AllBackendsFailedError(
+            f"all backends ruled out by payload size ({prompt_bytes} bytes) — "
+            + "; ".join(failures),
+            failures=tuple(failures),
+            errors=tuple(caught),
+            size_rule_out=True,
+            prompt_bytes=prompt_bytes,
+            notices=tuple(notices),
+        )
+    raise AllBackendsFailedError(
+        "all backends failed — " + "; ".join(failures),
+        failures=tuple(failures),
+        errors=tuple(caught),
+        size_rule_out=False,
+        prompt_bytes=prompt_bytes,
+        notices=tuple(notices),
+    )
+
+
 def cmd_review(args: argparse.Namespace) -> None:
     """Handle ``review``: get one critique from the priority-selected backend.
 
-    Tries each candidate backend in priority order (or just the forced
-    ``--backend``, if given) until one succeeds; prints the first
-    successful critique and returns. Exits nonzero only if every candidate
-    fails.
+    Thin argv adapter over :func:`review_plan`: resolves the plan and focus
+    file, builds a :class:`ReviewRequest`, prints the facade's collected
+    notices, the first successful critique, and returns. Exits nonzero only
+    if the facade raises (configuration error, or every candidate failed).
     """
     with cli_common.timing_span("prepare"):
-        if args.backend:
-            if not shutil.which(args.backend):
-                die(f"{args.backend} not found on PATH")
-            candidates = [args.backend]
-        else:
-            candidates = available_backends()
-            if not candidates:
-                die(
-                    "no backend available — install one of: "
-                    + ", ".join(BACKEND_PRIORITY)
-                )
-
         plan_text = resolve_plan_text(args.plan)
-        plan_text, bytes_saved = sanitize_plan_text(plan_text)
-        if bytes_saved > 0:
-            print(
-                f"[second_opinion] stripped inline review debris from plan ({bytes_saved} bytes saved)",
-                file=sys.stderr,
-            )
         focus_hints = None
         if args.focus_file:
             focus_path = Path(args.focus_file).expanduser()
@@ -840,90 +1075,26 @@ def cmd_review(args: argparse.Namespace) -> None:
                 focus_hints = truncated
             else:
                 focus_hints = raw_focus
-        prompt = build_prompt(plan_text, focus_hints)
-        prompt_bytes = len(prompt.encode("utf-8"))
-    model_index = getattr(args, "model_index", None)
+    request = ReviewRequest(
+        plan_text=plan_text,
+        focus_hints=focus_hints,
+        backend=args.backend,
+        model_index=getattr(args, "model_index", None),
+    )
     verbose = getattr(args, "verbose", False)
     quiet = getattr(args, "quiet", False)
-    failures: list[str] = []
-    size_rule_outs: list[llm_backends.BackendPayloadSizeError] = []
-
-    if prompt_bytes > llm_backends.GLOBAL_MAX_PROMPT_BYTES:
-        for backend in candidates:
-            exc = llm_backends.BackendPayloadSizeError(
-                f"prompt size ({prompt_bytes} bytes) exceeds command-line argument limit "
-                f"({llm_backends.GLOBAL_MAX_PROMPT_BYTES} bytes)"
-            )
-            size_rule_outs.append(exc)
-            failures.append(f"{backend}: {exc}")
-        die(
-            f"all backends ruled out by payload size ({prompt_bytes} bytes) — "
-            + "; ".join(failures)
-        )
-
-    for candidate_index, backend in enumerate(candidates, 1):
-        if backend == "pi" and prompt_bytes > llm_backends.PI_MAX_PROMPT_BYTES:
-            exc = llm_backends.BackendPayloadSizeError(
-                f"prompt size ({prompt_bytes} bytes) exceeds pi limit "
-                f"({llm_backends.PI_MAX_PROMPT_BYTES} bytes); pi's opencode-go gateway "
-                f"deterministically stalls on larger payloads"
-            )
-            size_rule_outs.append(exc)
-            cli_common.vprint(
-                f"[second_opinion] {backend_label(backend, model_index=model_index)} "
-                f"skipped: {exc}",
-                verbose=verbose,
-            )
-            failures.append(f"{backend}: {exc}")
-            continue
-
-        _vprint_pool_choice(backend, model_index, verbose=verbose)
-        if model_index is not None:
-            err = _validate_model_index(backend, model_index, os.environ)
-            if err:
-                die(err)
-        # Absent-config announcement (decided 2026-09-03): emitted at the
-        # dispatch point — never inside the model-resolution helpers — so
-        # --help, validation, and pre-flight paths stay silent, and only a
-        # backend actually about to run can announce its default fallback.
-        if not quiet and _absent_pool_config(backend):
-            print(_default_fallback_notice(backend), file=sys.stderr)
-        try:
-            with cli_common.timing_span(
-                "backend", backend=backend, candidate=candidate_index
-            ):
-                critique = BACKEND_RUNNERS[backend](prompt, model_index=model_index)
-        except BackendError as exc:
-            # A timeout is a budget problem, not an outage: name the env var
-            # that raises the budget and the hard ceiling, so the next
-            # reader doesn't misdiagnose a slow backend as a dead one
-            # (2026-09-03: exactly that misread cost a debugging session).
-            hint = ""
-            if isinstance(exc, llm_backends.BackendTimeoutError):
-                hint = (
-                    f" — raise SECOND_OPINION_{backend.upper()}_TIMEOUT_SECONDS "
-                    f"(hard ceiling {_MAX_BACKEND_TIMEOUT_SECONDS}s) to allow "
-                    "longer runs"
-                )
-            if isinstance(exc, llm_backends.BackendPayloadSizeError):
-                size_rule_outs.append(exc)
-            cli_common.vprint(
-                f"[second_opinion] {backend_label(backend, model_index=model_index)} "
-                f"failed: {exc}{hint}",
-                verbose=verbose,
-            )
-            failures.append(f"{backend}: {exc}{hint}")
-            continue
-        print(f"Second opinion via {backend_label(backend, model_index=model_index)}:")
-        print(critique)
-        return
-
-    if size_rule_outs and len(size_rule_outs) == len(candidates):
-        die(
-            f"all backends ruled out by payload size ({prompt_bytes} bytes) — "
-            + "; ".join(failures)
-        )
-    die("all backends failed — " + "; ".join(failures))
+    try:
+        result = review_plan(request, verbose=verbose, quiet=quiet)
+    except AllBackendsFailedError as exc:
+        for notice in exc.notices:
+            print(notice, file=sys.stderr)
+        die(str(exc))
+    except ReviewError as exc:
+        die(str(exc))
+    for notice in result.notices:
+        print(notice, file=sys.stderr)
+    print(f"Second opinion via {result.backend_label}:")
+    print(result.response_text)
 
 
 def _non_negative_int(value: str) -> int:

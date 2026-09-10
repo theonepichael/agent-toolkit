@@ -1052,6 +1052,15 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
   - `DATA_DIR = Path.home() / '.claude' / 'data' / 'grill'`
 - Explicit exit codes: `1`
 - Depends on: `cli_common.py`, `llm_backends.py`
+- Exceptions:
+  - `class ReviewError(Exception)` — Facade-level failure: configuration or request shape, not a backend.
+  - `class NoBackendAvailableError(ReviewError)` — No backend is installed/on PATH and no ``--backend`` was forced.
+  - `class UnknownBackendError(ReviewError)` — The forced ``--backend`` is not present on PATH.
+  - `class ModelIndexConfigError(ReviewError)` — ``--model-index`` names a pool that is unset/empty or an out-of-range index.
+  - `class AllBackendsFailedError(BackendError)` — Every candidate backend was tried and failed (or was size-ruled-out).
+- Public classes:
+  - `class ReviewRequest` — One review request for :func:`review_plan`.
+  - `class ReviewResult` — A successful critique: the backend used, its response, and diagnostics.
 - Public functions:
   - `build_prompt(plan_text: str, focus_hints: str | None) -> str` — Build the critique prompt, optionally inserting plan-specific focus hints.
   - `die(msg: str) -> NoReturn` — Print an error to stderr, prefixed for this script, and exit with status 1.
@@ -1062,6 +1071,7 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
   - `run_copilot(prompt: str, *, model_index: int | None = None) -> str` — Run the ``copilot`` backend and return its critique text.
   - `run_pi(prompt: str, *, model_index: int | None = None) -> str` — Run the ``pi`` backend and return its critique text.
   - `backend_label(backend: str, *, model_index: int | None = None) -> str` — Return ``backend``'s display label, appending the resolved model if any.
+  - `review_plan(request: ReviewRequest, *, verbose: bool = False, quiet: bool = False) -> ReviewResult` — Run one adversarial review of ``request.plan_text`` and return the result.
   - `build_parser() -> argparse.ArgumentParser` — Build the full argument parser for every subcommand.
   - `ensure_data_dir() -> None` — Create ``DATA_DIR`` if it is missing.
 - Subcommand handlers: `cmd_detect`, `cmd_review`
