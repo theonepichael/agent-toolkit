@@ -24,10 +24,11 @@ The user named an item? Go to step 3 with that slug.
 
 {{SWARM_SCOPE_ASK}}
 
-Show `worker_safe: false` prefixes as unavailable and say why: that prefix
-names the harness repo, so a worker would be editing the code it is running.
-Those go to a normal session. The script refuses them anyway; explaining beats
-a bare error.
+For concurrent fan-out, show `worker_safe: false` prefixes as unavailable and
+say why. For an explicitly serial queue, a known prefix may be selected even
+when it is not concurrently worker-safe; `dev_status.py ready` classifies each
+item separately as `serial_safe`, and the scheduler reports permanent refusals
+without weakening concurrent policy.
 
 ## 3. Launch
 
@@ -45,13 +46,37 @@ python3 ~/.claude/scripts/herdr_delegate.py launch --swarm <N> --prefix <prefix>
 
 `--swarm` starts **one** orchestrator (pi by default, or copilot when `--kind copilot` is passed) and hands it `/backlog-item --swarm=N --prefix <prefix>`; `swarm_spawn` owns the fan-out from there. Default `N` to 3 unless the user says otherwise.
 
+The same prefix queue, one isolated worker at a time:
+
+```bash
+python3 ~/.claude/scripts/herdr_delegate.py launch --serial --prefix <prefix> [--model <model>] [--kind {pi,copilot}]
+```
+
+`--serial` hands the orchestrator `/backlog-item --serial --prefix <prefix>`.
+It uses per-item `serial_safe` classification, so a single-repository harness
+item may run while cross-repository, work/unknown, pathless, unresolved, or
+prefix-mismatched items are refused. The delegate refuses to launch either
+queue mode while a serial or concurrent orchestrator for that prefix is live.
+
 Mid-run, after orchestrator-side code has just landed (a `swarm-tool.ts`, `swarm-tool-logic.ts`, or `backlog-item.md` fix), the running orchestrator is still the old one. Restart it in place instead of hand-closing and hand-resuming:
 
 ```bash
 python3 ~/.claude/scripts/herdr_delegate.py restart --swarm <N> --prefix <prefix> [--run-id <runId>] [--model <model>] [--kind {pi,copilot}]
 ```
 
-It closes the orchestrator's tab (never the workers'), relaunches it, and prompts it with `/backlog-item --swarm=N resume <runId> --prefix <prefix>` so it picks up the same run's persisted state instead of starting fresh. The runId comes from `--run-id` when given, otherwise from the newest persisted state file matching the prefix; with nothing resumable the command refuses rather than silently launching a fresh run — pass `--run-id` or use `launch` explicitly when a fresh start is what you want.
+For a serial run, use the matching mode:
+
+```bash
+python3 ~/.claude/scripts/herdr_delegate.py restart --serial --prefix <prefix> [--run-id <runId>] [--model <model>] [--kind {pi,copilot}]
+```
+
+It closes the orchestrator's tab (never the workers'), relaunches it, and
+prompts it with the same mode plus `resume <runId> --prefix <prefix>` so it
+picks up the same persisted state instead of starting fresh. Discovery only
+considers state matching both prefix and mode; legacy state is concurrent.
+With nothing resumable the command refuses rather than silently launching a
+fresh run — pass `--run-id` or use `launch` explicitly when a fresh start is
+what you want.
 
 Picking a model:
 - For pi: check `pi --list-models <pattern>` before concluding one is unavailable. A model can resolve for pi while being absent from `~/.pi/agent/models.json`, because the fetched catalog in `models-store.json` is separate — this cost a wrong answer on 2026-09-03.
@@ -102,7 +127,7 @@ repeating its summary.
 It does not orchestrate. `swarm_spawn`, `swarm_poll`, `swarm_resolve_blocked`
 and `swarm_amend` live in `pi/extensions/swarm-tool.ts` (for pi) and
 `copilot/extensions/swarm/` (for copilot), and the procedure is
-`pi/prompts/backlog-item.md`'s or Copilot's `/backlog-item` `--swarm[=N]` section
+`pi/prompts/backlog-item.md`'s or Copilot's `/backlog-item` queue-runner section
 — read those files rather than restating it here. A second copy is a second thing to drift.
 
 ## Why the recipe is a script
@@ -117,7 +142,9 @@ Key invariants must be exactly right:
   belong after `--` on `agent start`. `tab create` omits `PI_AGENT_UNATTENDED`.
 - `--model` reaches the agent only after a bare `--`; herdr rejects it as its own
   unknown flag.
-- An item whose prefix names the harness repo never goes to a worker.
+- Concurrent workers never take a harness-repo item. Serial workers may take
+  one only when `dev_status.py ready` explicitly marks that single-repository
+  item `serial_safe: true`.
 
 For pi, that env var disarms **only** the bash permission ask. `guard-rails.ts` stays
 armed for protected-path writes and the git-commit-on-main worktree policy, and

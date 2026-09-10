@@ -23,6 +23,7 @@ import {
   staleWorkerRecords,
   stalledRelayWorkers,
   type ReadyItem,
+  type ExecutionMode,
   type SwarmState,
   type WorkerRecord,
 } from "./swarm-scheduling";
@@ -51,6 +52,7 @@ import {
   parseTabCreate,
   reasonHeadline,
   waitResultDetail,
+  tabPresence,
   type PollEventKind,
   type ProbeResult,
 } from "./swarm-herdr";
@@ -198,6 +200,10 @@ export function buildReadyArgv(prefix?: string): string[] {
 
 export function buildShowArgv(slug: string): string[] {
   return ["python3", devStatusPath(), "show", slug];
+}
+
+export function buildRenderArgv(): string[] {
+  return ["python3", devStatusPath(), "render"];
 }
 
 export function formatDuration(ms: number): string {
@@ -423,12 +429,20 @@ export class SwarmToolContext {
     for (const wake of waiting) wake();
   }
 
-  private async closeWorker(worker: WorkerRecord, signal?: AbortSignal): Promise<void> {
+  private async closeWorker(worker: WorkerRecord, signal?: AbortSignal): Promise<boolean> {
     try {
-      await this.herdr(buildWorkerCloseArgv(worker), signal);
+      const result = await this.herdr(buildWorkerCloseArgv(worker), signal);
+      return result.code === 0;
     } catch {
-      // Best effort
+      return false;
     }
+  }
+
+  private teardownRecovery(worker: WorkerRecord): string {
+    const close = worker.tabId
+      ? `herdr tab close ${worker.tabId}`
+      : `herdr pane close ${worker.paneId}`;
+    return `herdr did not confirm worker teardown. Run \`${close}\`, then poll or restart this run to reconcile it`;
   }
 
   /**
@@ -444,14 +458,38 @@ export class SwarmToolContext {
     worker: WorkerRecord,
     signal?: AbortSignal,
   ): Promise<CaptureOffer[]> {
+    return (await this.harvestWorkerIOWithStatus(state, worker, signal)).offers;
+  }
+
+  private async harvestWorkerIOWithStatus(
+    state: SwarmState,
+    worker: WorkerRecord,
+    signal?: AbortSignal,
+  ): Promise<{ offers: CaptureOffer[]; closed: boolean }> {
     const offers = readCaptureOffers(state.runId, worker.slug, this.stateDir);
-    await this.closeWorker(worker, signal);
+    let closed = await this.closeWorker(worker, signal);
+    if (!closed && (state.mode ?? "concurrent") === "serial") {
+      try {
+        const [agent, tabs] = await Promise.all([
+          this.herdr(buildAgentGetArgv(worker.agent), signal),
+          this.herdr(buildTabListArgv(), signal),
+        ]);
+        const agentAbsent =
+          classifyResyncGet(agent.code, agent.stdout, agent.stderr).action === "drop";
+        const tabAbsent = worker.tabId
+          ? tabs.code === 0 && tabPresence(tabs.stdout, worker.tabId) === false
+          : false;
+        closed = agentAbsent && tabAbsent;
+      } catch {
+        closed = false;
+      }
+    }
     try {
       rmSync(capturePath(state.runId, worker.slug, this.stateDir), { force: true });
     } catch {
       // Best effort
     }
-    return offers;
+    return { offers, closed };
   }
 
   public async teardownAndHarvestWorker(
@@ -459,10 +497,17 @@ export class SwarmToolContext {
     worker: WorkerRecord,
     signal?: AbortSignal,
   ): Promise<CaptureOffer[]> {
-    const offers = await this.harvestWorkerIO(state, worker, signal);
-    state.workers = state.workers.filter((w) => w.agent !== worker.agent);
+    const teardown = await this.harvestWorkerIOWithStatus(state, worker, signal);
+    if ((state.mode ?? "concurrent") === "serial" && !teardown.closed) {
+      worker.lifecycle = "teardown_ambiguous";
+      worker.terminalOutcome = "error";
+      worker.terminalCaptures = teardown.offers;
+      worker.teardownDetail = this.teardownRecovery(worker);
+    } else {
+      state.workers = state.workers.filter((w) => w.agent !== worker.agent);
+    }
     this.persist(state);
-    return offers;
+    return teardown.offers;
   }
 
   public async pruneStaleWorkers(state: SwarmState): Promise<string[]> {
@@ -480,35 +525,44 @@ export class SwarmToolContext {
 
     const stale = staleWorkerRecords(state, entries, Date.now());
     if (stale.length === 0) return [];
-    const staleAgents = new Set(stale.map((w) => w.agent));
-    state.workers = state.workers.filter((w) => !staleAgents.has(w.agent));
-    const rt = this.runtimes.get(state.runId);
-    if (rt) {
-      for (const w of stale) rt.inFlight.delete(w.agent);
-      rt.pendingEvents = rt.pendingEvents.filter((e) => !staleAgents.has(e.agent));
-      this.wakeWaiters(rt);
-    }
-
-    // Parallel, safely: state.workers already had every stale agent removed
-    // in one batch above, so teardownAndHarvestWorker's own per-call
-    // `state.workers = state.workers.filter(...)` is a no-op re-filter of an
-    // already-absent agent no matter how these calls interleave -- there is
-    // no shared array left to race on.
-    const lines = await Promise.all(
+    const results = await Promise.all(
       stale.map(async (w) => {
-        const status = entries.find((e) => e.id === w.agent)?.status;
-        const offers = await this.teardownAndHarvestWorker(state, w);
-        return (
+        const entry = entries.find((e) => e.id === w.agent);
+        const status = entry?.status;
+        const teardown = await this.harvestWorkerIOWithStatus(state, w);
+        const offers = [...(w.terminalCaptures ?? []), ...teardown.offers];
+        const confirmedGone = entry === undefined || teardown.closed;
+        if ((state.mode ?? "concurrent") === "serial" && !confirmedGone) {
+          w.lifecycle = "teardown_ambiguous";
+          w.teardownDetail = this.teardownRecovery(w);
+        }
+        const line =
           `${w.agent} (${w.slug}): stale worker record cleared -- herdr reports its agent ${
             status ?? "gone"
           } (finished or dead), but its finish was never reported through ` +
           "swarm_poll; outcome inferred, not observed. Verify the item's state before " +
-          `treating it as complete.${renderCaptureOffers(offers)}`
-        );
+          `treating it as complete.${renderCaptureOffers(offers)}`;
+        return { worker: w, confirmedGone, line };
       }),
     );
+    const removed = new Set(
+      results
+        .filter(({ confirmedGone }) => confirmedGone || (state.mode ?? "concurrent") !== "serial")
+        .map(({ worker }) => worker.agent),
+    );
+    state.workers = state.workers.filter((w) => !removed.has(w.agent));
+    const rt = this.runtimes.get(state.runId);
+    if (rt) {
+      for (const agent of removed) rt.inFlight.delete(agent);
+      rt.pendingEvents = rt.pendingEvents.filter((e) => !removed.has(e.agent));
+      this.wakeWaiters(rt);
+    }
     this.persist(state);
-    return lines;
+    return results.map(({ worker, confirmedGone, line }) =>
+      (state.mode ?? "concurrent") === "serial" && !confirmedGone
+        ? `${worker.agent} (${worker.slug}): teardown remains ambiguous -- ${worker.teardownDetail}; the serial queue is paused.`
+        : line,
+    );
   }
 
   /**
@@ -709,15 +763,26 @@ export class SwarmToolContext {
     concurrency: number,
     prefix?: string,
     pluginDir?: string,
+    requestedMode?: ExecutionMode,
   ): Promise<SwarmState> {
     const cached = this.activeRuns.get(runId);
-    if (cached) return cached;
+    if (cached) {
+      const recordedMode = cached.mode ?? "concurrent";
+      if (requestedMode !== undefined && requestedMode !== recordedMode) {
+        throw new Error(
+          `run ${runId} is persisted in ${recordedMode} mode; refusing requested ${requestedMode} mode`,
+        );
+      }
+      return cached;
+    }
 
     const loaded = loadState(runId, this.stateDir);
     if (!loaded) {
+      const mode = requestedMode ?? "concurrent";
       const fresh: SwarmState = {
         runId,
-        concurrency,
+        concurrency: mode === "serial" ? 1 : concurrency,
+        mode,
         nextCounter: 0,
         workers: [],
         ...(prefix !== undefined ? { prefix } : {}),
@@ -725,6 +790,13 @@ export class SwarmToolContext {
       };
       this.activeRuns.set(runId, fresh);
       return fresh;
+    }
+
+    const recordedMode = loaded.mode ?? "concurrent";
+    if (requestedMode !== undefined && requestedMode !== recordedMode) {
+      throw new Error(
+        `run ${runId} is persisted in ${recordedMode} mode; refusing requested ${requestedMode} mode`,
+      );
     }
 
     const listResult = await this.herdr(buildAgentListArgv());
@@ -753,7 +825,10 @@ export class SwarmToolContext {
       }
     }
 
-    const reconciled = entries === null ? loaded : reconcileState(loaded, liveIds).state;
+    const reconciled =
+      entries === null || recordedMode === "serial"
+        ? loaded
+        : reconcileState(loaded, liveIds).state;
     this.activeRuns.set(runId, reconciled);
     saveState(reconciled, this.stateDir);
     return reconciled;
@@ -886,6 +961,7 @@ export class SwarmToolContext {
     concurrency?: number;
     model?: string;
     pluginDir?: string;
+    mode?: ExecutionMode;
   }): Promise<{ content: { type: string; text: string }[]; details: Record<string, unknown> }> {
     if (!params.items && !params.prefix) {
       throw new Error(
@@ -893,14 +969,22 @@ export class SwarmToolContext {
           "unscoped would pull unrelated projects into this run.",
       );
     }
+    if (params.mode === "serial" && params.concurrency !== undefined && params.concurrency !== 1) {
+      throw new Error("serial mode requires concurrency 1 when concurrency is supplied");
+    }
     return this.withSpawnLock(params.runId, async () => {
       const state = await this.getOrInitState(
         params.runId,
-        params.concurrency ?? DEFAULT_CONCURRENCY,
+        params.mode === "serial" ? 1 : (params.concurrency ?? DEFAULT_CONCURRENCY),
         params.prefix,
         params.pluginDir,
+        params.mode,
       );
-      if (params.concurrency !== undefined) state.concurrency = params.concurrency;
+      if (state.mode === "serial") {
+        state.concurrency = 1;
+      } else if (params.concurrency !== undefined) {
+        state.concurrency = params.concurrency;
+      }
       if (params.pluginDir !== undefined) state.pluginDir = params.pluginDir;
 
       const pruneLines = await this.pruneStaleWorkers(state);
@@ -967,7 +1051,8 @@ export class SwarmToolContext {
         }
         candidates = parseReadyItems(readyResult.stdout);
         const attempted = new Set(state.attempted ?? []);
-        candidates = candidates.filter((c) => !attempted.has(c.id));
+        const refused = new Set((state.refused ?? []).map((entry) => entry.slug));
+        candidates = candidates.filter((c) => !attempted.has(c.id) && !refused.has(c.id));
       }
 
       const takenPaths: { path: string; holder: string }[] = [];
@@ -978,7 +1063,12 @@ export class SwarmToolContext {
       }
 
       const budget = spawnBudget(state, candidates.length);
-      const selection = selectSchedulable(candidates, takenPaths, budget);
+      const selection = selectSchedulable(
+        candidates,
+        takenPaths,
+        budget,
+        state.mode ?? "concurrent",
+      );
       const toSpawn = selection.slugs;
 
       const spawned: WorkerRecord[] = [];
@@ -1055,6 +1145,10 @@ export class SwarmToolContext {
       }
 
       state.attempted = [...new Set([...(state.attempted ?? []), ...toSpawn])];
+      const refusedBySlug = new Map(
+        [...(state.refused ?? []), ...selection.refused].map((entry) => [entry.slug, entry]),
+      );
+      state.refused = [...refusedBySlug.values()];
       this.persist(state);
 
       const rt = this.getRuntime(state.runId);
@@ -1069,7 +1163,7 @@ export class SwarmToolContext {
         `${failed.length} failed to spawn`,
         `${skipped.length} skipped (cap)`,
         `${deferred.length} deferred (file overlap)`,
-        `${refused.length} refused (not worker-safe)`,
+        `${refused.length} refused (not ${state.mode === "serial" ? "serial-safe" : "worker-safe"})`,
       ];
       const lines = [`${parts.join(", ")}.`];
       lines.push(...pruneLines);
@@ -1084,6 +1178,24 @@ export class SwarmToolContext {
         lines.push(
           "Nothing spawned and the remaining items are refused, not waiting: they are never schedulable by a worker. " +
             "This is the end of the swarm phase for this prefix -- report them as needing a normal session rather than polling or spawning again.",
+        );
+      }
+      if (
+        (state.mode ?? "concurrent") === "serial" &&
+        spawned.length === 0 &&
+        failed.length === 0 &&
+        skipped.length === 0 &&
+        deferred.length === 0 &&
+        refused.length === 0 &&
+        state.workers.length === 0
+      ) {
+        const dashboard = await this.exec("python3", buildRenderArgv().slice(1), {
+          timeout: PROBE_TIMEOUT_MS,
+        });
+        lines.push(
+          dashboard.code === 0
+            ? `Serial queue is quiescent. Current dashboard:\n${dashboard.stdout.trimEnd()}`
+            : `Serial queue is quiescent, but dev_status.py render failed: ${dashboard.stderr || dashboard.stdout}`,
         );
       }
 
@@ -1127,15 +1239,17 @@ export class SwarmToolContext {
         if (verdict.action === "drop") {
           rt.inFlight.delete(worker.agent);
           rt.pendingEvents.push({
-            kind: "finished",
+            kind: (state.mode ?? "concurrent") === "serial" ? "error" : "finished",
             agent: worker.agent,
             slug: worker.slug,
             paneId: worker.paneId,
             detail:
-              "resync: agent gone from herdr while its record said awaiting_relay -- " +
-              "its gate was likely answered out-of-band (direct pane keys) and the " +
-              "worker has since finished or exited; outcome inferred, not observed. " +
-              "Verify the item's state before treating it as complete.",
+              (state.mode ?? "concurrent") === "serial"
+                ? "resync: the worker disappeared while awaiting a relay; that relay is cancelled and the item outcome is failed, not inferred complete."
+                : "resync: agent gone from herdr while its record said awaiting_relay -- " +
+                  "its gate was likely answered out-of-band (direct pane keys) and the " +
+                  "worker has since finished or exited; outcome inferred, not observed. " +
+                  "Verify the item's state before treating it as complete.",
           });
         } else if (verdict.action === "unpark") {
           worker.workingSinceMs = resumedAt;
@@ -1163,6 +1277,7 @@ export class SwarmToolContext {
     if (active.length === 0 && rt.pendingEvents.length === 0) {
       const goneNoteLines = await this.pruneStaleWorkers(state);
       const awaitingRelay = state.workers.filter((w) => w.lifecycle === "awaiting_relay");
+      const ambiguous = state.workers.filter((w) => w.lifecycle === "teardown_ambiguous");
       const stalledHere = stalledRelayWorkers(state.workers, Date.now(), rt.stallMs);
       const stalledAgents = new Set(stalledHere.map((w) => w.agent));
       const describe = (w: WorkerRecord) =>
@@ -1178,7 +1293,11 @@ export class SwarmToolContext {
           ? `No active workers to poll. ${awaitingRelay.length} worker(s) awaiting a relay -- answer each with swarm_resolve_blocked before polling again: ${awaitingRelay
               .map(describe)
               .join(", ")}.`
-          : "No active workers to poll.") +
+          : ambiguous.length
+            ? `No active workers to poll. ${ambiguous.length} worker(s) have ambiguous teardown and still occupy the serial slot: ${ambiguous
+                .map((w) => `${w.agent} (${w.slug}, pane ${w.paneId})`)
+                .join(", ")}. Reconcile or close them before spawning the next item.`
+            : "No active workers to poll.") +
         (goneNoteLines.length ? `\n\n${goneNoteLines.join("\n")}` : "");
       return {
         content: [{ type: "text", text }],
@@ -1233,18 +1352,29 @@ export class SwarmToolContext {
             getResult.stderr,
           );
           if (resyncVerdict.action === "drop") {
-            event.kind = "finished";
+            event.kind = (state.mode ?? "concurrent") === "serial" ? "error" : "finished";
             event.detail =
-              "resync: agent gone from herdr while resolving blocked prompt -- " +
-              "worker has since finished or exited; outcome inferred, not observed. " +
-              "Verify the item's state before treating it as complete.";
+              (state.mode ?? "concurrent") === "serial"
+                ? "resync: the worker disappeared while resolving its blocked prompt; the relay is cancelled and the item outcome is failed."
+                : "resync: agent gone from herdr while resolving blocked prompt -- " +
+                  "worker has since finished or exited; outcome inferred, not observed. " +
+                  "Verify the item's state before treating it as complete.";
             // harvestWorkerIO, not teardownAndHarvestWorker: several events
             // in this same poll can each be tearing down a different
             // worker concurrently, and teardownAndHarvestWorker's own
             // filter-and-reassign of state.workers would race across them.
             // Removal happens once, in a single batch, after this Promise.all.
-            event.captures = await this.harvestWorkerIO(state, worker, signal);
-            toRemove.add(worker.agent);
+            const teardown = await this.harvestWorkerIOWithStatus(state, worker, signal);
+            event.captures = teardown.offers;
+            if ((state.mode ?? "concurrent") === "serial" && !teardown.closed) {
+              worker.lifecycle = "teardown_ambiguous";
+              worker.terminalOutcome = event.kind;
+              worker.terminalCaptures = event.captures;
+              worker.teardownDetail = this.teardownRecovery(worker);
+              event.detail = `${event.detail} Teardown is ambiguous: ${worker.teardownDetail}; no later serial worker will start until the record reconciles.`;
+            } else {
+              toRemove.add(worker.agent);
+            }
             return event;
           }
           let readResult: ExecResult;
@@ -1279,8 +1409,17 @@ export class SwarmToolContext {
         } else if (event.kind === "still_working") {
           // Check-in
         } else {
-          event.captures = await this.harvestWorkerIO(state, worker, signal);
-          toRemove.add(worker.agent);
+          const teardown = await this.harvestWorkerIOWithStatus(state, worker, signal);
+          event.captures = teardown.offers;
+          if ((state.mode ?? "concurrent") === "serial" && !teardown.closed) {
+            worker.lifecycle = "teardown_ambiguous";
+            worker.terminalOutcome = event.kind;
+            worker.terminalCaptures = event.captures;
+            worker.teardownDetail = this.teardownRecovery(worker);
+            event.detail = `${event.detail ? `${event.detail} ` : ""}Teardown is ambiguous: ${worker.teardownDetail}; no later serial worker will start until the record reconciles.`;
+          } else {
+            toRemove.add(worker.agent);
+          }
         }
         return event;
       }),
@@ -1561,8 +1700,17 @@ export class SwarmToolContext {
     signal?: AbortSignal,
   ): Promise<{ content: { type: string; text: string }[]; details: Record<string, unknown> }> {
     const captures = await this.teardownAndHarvestWorker(state, worker, signal);
+    const teardown =
+      worker.lifecycle === "teardown_ambiguous"
+        ? ` Teardown is ambiguous: ${worker.teardownDetail}; the serial queue remains paused.`
+        : "";
     return {
-      content: [{ type: "text", text: `relay_failed: ${reason}${renderCaptureOffers(captures)}` }],
+      content: [
+        {
+          type: "text",
+          text: `relay_failed: ${reason}${teardown}${renderCaptureOffers(captures)}`,
+        },
+      ],
       details: {
         relayFailed: true,
         needsManual: false,

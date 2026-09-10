@@ -721,7 +721,7 @@ an `out-of-scope add`), confirming or declining each in turn.""",
         "FRONTMATTER": """\
 ---
 name: backlog-item
-description: "Runs a dev_status.py backlog item end-to-end: resolve, worktree, spec (escalating to grill-me only for a genuinely open design branch), second-opinion critique, execution handoff, TDD implement, verify, commit/merge/push gates, review+approve. Use when the user says 'work on backlog item 4', 'pick up <slug>', 'let's do the next backlog item', or otherwise names a specific item to work end-to-end. Add --auto (optionally with a slug) for an unattended single-item or full-READY-batch run — commit and merge/push gates still stop live, per item. Also supports a --swarm[=N] mode (concurrent Copilot workers via herdr) — see the --swarm[=N] mode section below."
+description: "Runs a dev_status.py backlog item end-to-end: resolve, worktree, spec (escalating to grill-me only for a genuinely open design branch), second-opinion critique, execution handoff, TDD implement, verify, commit/merge/push gates, review+approve. Use when the user says 'work on backlog item 4', 'pick up <slug>', 'let's do the next backlog item', or otherwise names a specific item to work end-to-end. Add --auto (optionally with a slug) for an unattended single-item or full-READY-batch run — commit and merge/push gates still stop live, per item. Supports --swarm[=N] concurrent and --serial prefix-queue modes via herdr."
 allowed-tools: shell
 ---""",
         "OPENING_PARAGRAPH": """\
@@ -729,8 +729,9 @@ The target item is whatever slug or integer N the user named in their
 prompt (e.g. `/backlog-item 4`, "work on backlog item 4"). If the prompt
 also names `--auto` (with or without a target item), skip straight to the
 `--auto mode` section at the end of this file instead of running the
-numbered steps live. If the prompt names `--swarm` (e.g. `/backlog-item --swarm=3`),
-skip straight to the `--swarm[=N] mode` section at the end of this file.
+numbered steps live. If the prompt names `--swarm` (e.g. `/backlog-item --swarm=3`)
+or `--serial`, skip straight to the queue-runner modes section at the end of
+this file. Both require `--prefix` and neither accepts a single-item target.
 Otherwise, if no target item was named, ask which item — never guess.
 
 Work the named item to done, one step at a time. Every user-approval gate
@@ -957,11 +958,13 @@ environment variable:
         "SWARM_SECTION": """\
 ---
 
-## `--swarm[=N]` mode
+## `--swarm[=N]` and `--serial` queue-runner modes
 
-Runs the READY queue concurrently instead of one item at a time — `N`
-recursive Copilot workers (default 3, from `--swarm=N`), each in its own herdr
-tab, each running its own `/backlog-item --auto <slug>`. Requires
+Runs the READY queue through recursive Copilot workers, each in its own herdr
+tab and running `/backlog-item --auto <slug>`. `--swarm=N` runs up to N
+concurrently (default 3); `--serial` uses the same scheduler with
+`mode="serial"`, forces concurrency one, and waits for confirmed teardown
+before selecting another item. Both require
 `HERDR_ENV=1` (this session must itself be running inside a herdr-managed
 pane); if it isn't, say so and stop rather than falling back to `--auto`
 silently.
@@ -972,8 +975,10 @@ rather than a fixed list of slugs: it re-reads the READY set from
 `dev_status.py` on every call, so an item unblocked by a worker that just
 finished is picked up on the next spawn without you naming it. A `prefix` is
 required when you do not pass `items` — selecting from the whole READY queue
-unscoped would pull unrelated projects into one run. `--swarm` never takes a
-single-item target.
+unscoped would pull unrelated projects into one run. Neither mode takes a
+single-item target. Concurrent mode requires `worker_safe: true`; serial mode
+requires `serial_safe: true`, allowing single-repository harness work while
+refusing cross-repo, work/unknown, pathless, unresolved, or mismatched items.
 
 Uses the `swarm_spawn`, `swarm_poll`, `swarm_amend`, and `swarm_resolve_blocked` tools
 provided by the Copilot swarm extension (`copilot/extensions/swarm/`) — never hand-compose
@@ -981,7 +986,8 @@ provided by the Copilot swarm extension (`copilot/extensions/swarm/`) — never 
 a crash/restart, crash recovery, and concurrency-cap accounting.
 
 1. Pick a `runId` for this invocation (e.g. a short timestamp-based slug)
-   and call `swarm_spawn` with the run's `prefix` and the concurrency — it
+   and call `swarm_spawn` with the run's `prefix`, explicit `mode`, and (for
+   concurrent mode) concurrency — it
    spawns up to the cap, reporting any items skipped (cap), deferred (file
    overlap) or failed to spawn.
 
@@ -998,10 +1004,11 @@ a crash/restart, crash recovery, and concurrency-cap accounting.
    **Resume.** If the invocation carried `resume <runId> --prefix <prefix>`
    (sent by `herdr_delegate.py restart`, which closed and relaunched this
    orchestrator), do not pick a fresh runId: call `swarm_spawn` and
-   `swarm_poll` with that exact runId and prefix. State persistence loads the
+   `swarm_poll` with that exact runId, prefix, and mode. State persistence loads the
    persisted state for that runId, reconciles it against herdr's live agent
    list, and keeps already-tried items from being re-selected. Resuming an
-   unknown runId degrades safely to a fresh state under that id. Say in your
+   unknown runId degrades safely to a fresh state under that id. The persisted
+   mode is sticky and an explicit mismatch refuses. Say in your
    first turn that you are resuming `<runId>` rather than starting fresh.
 
    **Deferred is not skipped.** Two items whose `related_files` name the same
@@ -1029,13 +1036,16 @@ a crash/restart, crash recovery, and concurrency-cap accounting.
      active and within its working budget. Relay check-in status to the user
      if appropriate, then continue polling. It frees no concurrency slot.
    - **`finished`** / **`timed_out`** / **`error`** — record the outcome for
-     the end-of-run digest; all three close that worker's tab and free its slot.
-     A freed slot is the cue to call `swarm_spawn` again with the same `runId`
-     and `prefix` to pick up newly unblocked or queued items.
+     the end-of-run digest; all three normally close that worker's tab and free
+     its slot. In serial mode, `teardown_ambiguous` still occupies the slot:
+     follow the exact close-and-reconcile instruction before continuing. A
+     freed slot is the cue to call `swarm_spawn` again with the same `runId`,
+     `prefix`, and mode to re-read the dynamic topological READY frontier.
 
 3. Repeat steps 1 and 2 — spawn, poll, spawn again — until `swarm_spawn`
    reports nothing left to spawn, `swarm_poll` reports no active workers, and
-   the digest accounts for the whole queue.
+   the digest accounts for the whole queue. Serial quiescence includes a fresh
+   dashboard so descendants left BLOCKED by a failed item remain visible.
 
 4. **End of run** — a dashboard-style summary of every item processed (done,
    flagged, stopped on budget, failed), then walk any accumulated
@@ -1561,7 +1571,7 @@ each next entry.""",
         "FRONTMATTER": """\
 ---
 name: backlog-item
-description: "Runs a dev_status.py backlog item end-to-end: resolve, worktree, spec (escalating to grill-me only for a genuinely open design branch), second-opinion critique, execution handoff, TDD implement, verify, commit/merge/push gates, review+approve. Use when the user says 'work on backlog item 4', 'pick up <slug>', 'let's do the next backlog item', or otherwise names a specific item to work end-to-end. Add --auto (optionally with a slug) for an unattended single-item or full-READY-batch run — commit and merge/push gates still stop live, per item. Also supports a --swarm[=N] mode (concurrent recursive pi workers via herdr) -- see pi/prompts/backlog-item.md, the file /backlog-item actually runs, for that procedure; this generated copy only points at it."
+description: "Runs a dev_status.py backlog item end-to-end: resolve, worktree, spec (escalating to grill-me only for a genuinely open design branch), second-opinion critique, execution handoff, TDD implement, verify, commit/merge/push gates, review+approve. Use when the user says 'work on backlog item 4', 'pick up <slug>', 'let's do the next backlog item', or otherwise names a specific item to work end-to-end. Add --auto (optionally with a slug) for an unattended single-item or full-READY-batch run — commit and merge/push gates still stop live, per item. Supports --swarm[=N] concurrent and --serial prefix-queue modes via herdr; see pi/prompts/backlog-item.md for the full procedure."
 ---""",
         "OPENING_PARAGRAPH": """\
 Work the named item to done, one step at a time. If the invocation names
@@ -1765,19 +1775,18 @@ applies is decided by one environment variable:
         "SWARM_SECTION": """\
 ---
 
-## `--swarm[=N]` mode
+## `--swarm[=N]` and `--serial` queue-runner modes
 
-Runs the READY queue concurrently instead of one item at a time — `N`
-recursive pi workers via herdr fanning out over the full READY queue, instead
-of one item at a time. This generated copy only points at
+Runs the READY queue through recursive pi workers via herdr, concurrently for
+`--swarm=N` or one worker at a time for `--serial`. This generated copy only points at
 `pi/prompts/backlog-item.md` (the file `/backlog-item` actually runs in Pi) —
-read that file for the full `--swarm[=N] mode` procedure.""",
+read that file for the full queue-runner procedure.""",
     },
     "pi-prompt": {
         "FRONTMATTER": """\
 ---
-description: "Runs a dev_status.py backlog item end-to-end: resolve, worktree, spec (escalating to grill-me only for a genuinely open design branch), second-opinion critique, execution handoff, TDD implement, verify, commit/merge/push gates, review+approve. Use when the user says 'work on backlog item 4', 'pick up <slug>', 'let's do the next backlog item', or otherwise names a specific item to work end-to-end. Add --auto (optionally with a slug) for an unattended single-item or full-READY-batch run — commit and merge/push gates still stop live, per item. Add --swarm[=N] to fan the full-READY-batch run out across N (default 3) concurrent recursive pi workers via herdr, instead of running the queue one item at a time -- requires HERDR_ENV=1."
-argument-hint: [--auto] [--swarm[=N] [--prefix <prefix>]] [slug|N]
+description: "Runs a dev_status.py backlog item end-to-end: resolve, worktree, spec (escalating to grill-me only for a genuinely open design branch), second-opinion critique, execution handoff, TDD implement, verify, commit/merge/push gates, review+approve. Use when the user says 'work on backlog item 4', 'pick up <slug>', 'let's do the next backlog item', or otherwise names a specific item to work end-to-end. Add --auto for unattended single-item or READY-batch work, --swarm[=N] for a concurrent prefix queue, or --serial for a one-worker prefix queue. Queue modes require HERDR_ENV=1."
+argument-hint: [--auto] [--swarm[=N] | --serial] [--prefix <prefix>] [slug|N]
 ---""",
     },
 }
@@ -2908,23 +2917,25 @@ SWARM_PARAMS: dict[str, dict[str, str]] = {
         "FRONTMATTER": """\
 ---
 name: swarm
-description: "Hand READY backlog items to pi or copilot agents running in herdr tabs — a real fan-out across the queue by default, or a single item when one is named. Use when the user says 'swarm', 'swarm the backlog', 'hand this to pi', 'give <item> to a pi agent', 'hand this to copilot', or 'delegate to a swarm worker'. Requires HERDR_ENV=1; says so and stops otherwise."
+description: "Hand READY backlog items to pi or copilot agents running in herdr tabs — concurrently by default, serially when requested, or as one named item. Use when the user says 'swarm', 'run the queue serially', 'hand this to pi', 'give <item> to a pi agent', 'hand this to copilot', or 'delegate to a worker'. Requires HERDR_ENV=1; says so and stops otherwise."
 ---""",
         # Transcribed verbatim from the hand-authored dotfiles copy this
         # generated output replaces (ff05d19) -- byte-for-byte, so the
         # generated claude/commands/swarm.md differs from that original by
         # the do-not-edit marker only.
         "SWARM_SCOPE_ASK": """\
-Otherwise **ask via AskUserQuestion**, one option per worker-safe prefix,
-labelled with its real count, recommending the first row (the plan already
-orders the largest worker-safe prefix first). Never pick a prefix silently —
-the user asked for a swarm, not for a guess about which project.""",
+Otherwise **ask via AskUserQuestion**, one option per eligible prefix labelled
+with its real count, recommending the first row. For concurrent mode eligible
+means `worker_safe`; for an explicitly serial queue include every known
+personal prefix and let per-item `serial_safe` enforce the narrower boundary.
+Never pick a prefix silently — the user asked for a queue, not for a guess
+about which project.""",
     },
     "copilot": {
         "FRONTMATTER": """\
 ---
 name: swarm
-description: "Hand READY backlog items to pi or copilot agents running in herdr tabs — a real fan-out across the queue by default, or a single item when one is named. Use when the user says 'swarm', 'swarm the backlog', 'hand this to pi', 'give <item> to a pi agent', 'hand this to copilot', or 'delegate to a swarm worker'. Requires HERDR_ENV=1; says so and stops otherwise."
+description: "Hand READY backlog items to pi or copilot agents running in herdr tabs — concurrently by default, serially when requested, or as one named item. Use when the user says 'swarm', 'run the queue serially', 'hand this to pi', 'give <item> to a pi agent', 'hand this to copilot', or 'delegate to a worker'. Requires HERDR_ENV=1; says so and stops otherwise."
 allowed-tools: shell
 ---""",
         # Same mechanics adaptation as every copilot params entry: no
@@ -2935,11 +2946,12 @@ allowed-tools: shell
         # and the unattended-worker env mechanics belong to pi's
         # permission-gate.ts, not to the launching harness.
         "SWARM_SCOPE_ASK": """\
-Otherwise ask in plain text, listing the worker-safe prefixes together in
-the same message, numbered, each labelled with its real count and stating
-your recommendation first (the plan already orders the largest worker-safe
-prefix first). Never pick a prefix silently — the user asked for a swarm,
-not for a guess about which project.""",
+Otherwise ask in plain text, listing the eligible prefixes together in the
+same message, numbered, each labelled with its real count and stating your
+recommendation first. For concurrent mode eligible means `worker_safe`; for
+an explicitly serial queue include every known personal prefix and let
+per-item `serial_safe` enforce the narrower boundary. Never pick a prefix
+silently — the user asked for a queue, not for a guess about which project.""",
     },
 }
 

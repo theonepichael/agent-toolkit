@@ -60,12 +60,13 @@ export default function registerSwarmTools(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "swarm_spawn",
     label: "Swarm spawn",
-    description: "Spawn concurrent Pi workers for READY backlog items.",
+    description: "Spawn Pi workers for READY backlog items in concurrent or serial mode.",
     parameters: Type.Object({
       runId: Type.String(),
       items: Type.Optional(Type.Array(Type.String())),
       prefix: Type.Optional(Type.String()),
       concurrency: Type.Optional(Type.Number()),
+      mode: Type.Optional(Type.Union([Type.Literal("concurrent"), Type.Literal("serial")])),
       model: Type.Optional(Type.String()),
     }),
     async execute(_id, params) {

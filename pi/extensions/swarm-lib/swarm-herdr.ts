@@ -112,6 +112,20 @@ export function findTabByLabel(stdout: string, label: string): string | undefine
   }
 }
 
+/** Exact tab-id presence; null means the list response was inconclusive. */
+export function tabPresence(stdout: string, tabId: string): boolean | null {
+  try {
+    const parsed = JSON.parse(stdout) as {
+      result?: { tabs?: { tab_id?: unknown }[] };
+    };
+    const tabs = parsed.result?.tabs;
+    if (!Array.isArray(tabs)) return null;
+    return tabs.some((tab) => tab.tab_id === tabId);
+  } catch {
+    return null;
+  }
+}
+
 /** The two ids a worker needs: the pane to start its agent in, the tab to close when it is done. */
 export interface TabCreateResult {
   paneId: string;

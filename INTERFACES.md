@@ -252,6 +252,7 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `detect_cycle(start: str, new_dep: str, index: BacklogIndex) -> bool` — Check whether adding ``new_dep`` as a blocker of ``start`` would cycle.
   - `prefix_of(slug: str) -> str` — The slug's prefix, preferring the longest known one.
   - `is_worker_safe(prefix: str) -> bool` — Whether a swarm worker may be handed items under this prefix.
+  - `serial_safety(item: BacklogItem) -> tuple[bool, str | None]` — Whether one READY item is safe for isolated serial delegation.
   - `resolve_id(arg: str, items: list[BacklogItem], pending_items: list[PendingItem]) -> tuple[str, str]` — Resolve a display number or slug to a ``(kind, slug)`` pair.
   - `require_kind(cmd: str, arg: str, kind: str, expected: str) -> None` — Exit with a helpful message if ``kind`` doesn't match ``expected``.
   - `enforce_rev_guard(cmd: str, id_arg: str, if_rev_arg: int | None, current_rev: int, items: list[BacklogItem], pending_items: list[PendingItem]) -> None` — Refuse a numeric-id mutation that lacks a fresh ``--if-rev``.
@@ -710,16 +711,18 @@ Launch pi agents in herdr tabs to work backlog items.
 - CLI (`argparse`): Launch pi agents in herdr tabs to work backlog items.
 - Subcommands:
   - `plan` — READY queue grouped by prefix, as JSON
-  - `launch [--slug <SLUG>] [--swarm <SWARM>] [--prefix <PREFIX>] [--model <MODEL>] [--cwd <CWD>] [--kind {pi,copilot}]` — start a pi or copilot worker or orchestrator
+  - `launch [--slug <SLUG>] [--swarm <SWARM>] [--serial] [--prefix <PREFIX>] [--model <MODEL>] [--cwd <CWD>] [--kind {pi,copilot}]` — start a pi or copilot worker or orchestrator
     - `--slug` — single item for one unattended worker
     - `--swarm` — fan out across N workers
-    - `--prefix` — queue scope, required with --swarm
+    - `--serial` — run a prefix queue one worker at a time
+    - `--prefix` — queue scope, required with --swarm or --serial
     - `--model` — model passed through to harness after a bare --
     - `--cwd` — working directory
     - `--kind` — agent harness (pi or copilot; default: pi) (choices: pi, copilot; default: pi)
-  - `restart [--swarm <SWARM>] [--prefix <PREFIX>] [--run-id <RUN_ID>] [--model <MODEL>] [--cwd <CWD>] [--kind {pi,copilot}]` — close a live swarm orchestrator's tab, relaunch it, resume the same run
+  - `restart [--swarm <SWARM>] [--serial] [--prefix <PREFIX>] [--run-id <RUN_ID>] [--model <MODEL>] [--cwd <CWD>] [--kind {pi,copilot}]` — close a live swarm orchestrator's tab, relaunch it, resume the same run
     - `--swarm` — fan out across N workers
-    - `--prefix` — queue scope, required with --swarm
+    - `--serial` — resume a one-worker serial queue
+    - `--prefix` — queue scope, required with --swarm or --serial
     - `--run-id` — runId to resume; discovered from persisted state when omitted
     - `--model` — model passed through to harness after a bare --
     - `--cwd` — working directory
@@ -735,6 +738,8 @@ Launch pi agents in herdr tabs to work backlog items.
 - Public functions:
   - `require_herdr_env(env: dict[str, str] | os._Environ[str]) -> None` — Refuse unless this process is inside a herdr-managed pane.
   - `check_launchable(*, slug: str | None = None, prefix: str | None = None) -> None` — Refuse a launch that targets the harness's own repo.
+  - `canonical_prefix(prefix: str) -> str` — Slug-head form used in prompts, labels, state and comparisons.
+  - `check_serial_prefix(prefix: str) -> str` — Return a known canonical prefix; item-level serial safety is separate.
   - `group_by_prefix(slugs: list[str]) -> list[dict[str, object]]` — Group slugs by prefix, worker-safe prefixes first, then largest first.
   - `build_tab_argv(*, cwd: str, label: str, kind: str = 'pi') -> list[str]` — `herdr tab create` argv.
   - `agent_name_for(label: str) -> str` — The herdr agent name derived from a tab label.
@@ -744,13 +749,16 @@ Launch pi agents in herdr tabs to work backlog items.
   - `worker_prompt(slug: str, kind: str = 'pi') -> str` — One worker, one item, unattended.
   - `orchestrator_prompt(concurrency: int, prefix: str, kind: str = 'pi') -> str` — One orchestrator; `swarm_spawn` owns the fan-out from here.
   - `orchestrator_resume_prompt(concurrency: int, run_id: str, prefix: str, kind: str = 'pi') -> str` — One orchestrator, resuming an interrupted run.
+  - `serial_orchestrator_prompt(prefix: str) -> str` — One orchestrator running the shared scheduler with a single worker.
+  - `serial_orchestrator_resume_prompt(run_id: str, prefix: str) -> str` — Resume one serial orchestrator without changing its run identity.
   - `validate_run_id(run_id: str) -> str` — Refuse a runId the delegate cannot safely pass through.
   - `swarm_state_dir(kind: str = 'pi') -> Path` — Where swarm state is persisted for kind (same override, same default).
-  - `state_matches_prefix(state: object, prefix: str) -> bool` — Whether one parsed state file belongs to a run scoped to ``prefix``.
-  - `discover_run_id(prefix: str, kind: str = 'pi') -> str` — The runId of the newest state file belonging to ``prefix``.
-  - `resolve_resume_run_id(prefix: str, run_id: str | None, kind: str = 'pi') -> str` — The runId a restart will resume.
+  - `state_matches_prefix(state: object, prefix: str, mode: str = 'concurrent') -> bool` — Whether one parsed state file belongs to a run scoped to ``prefix``.
+  - `discover_run_id(prefix: str, kind: str = 'pi', mode: str = 'concurrent') -> str` — The runId of the newest state file belonging to ``prefix``.
+  - `resolve_resume_run_id(prefix: str, run_id: str | None, kind: str = 'pi', mode: str = 'concurrent') -> str` — The runId a restart will resume.
   - `parse_tab_list(listing: dict[str, object]) -> list[dict[str, object]]` — Tabs out of a `herdr tab list` envelope; [] on anything unexpected.
   - `live_tab_ids_with_label(label: str) -> list[str]` — Ids of every live tab carrying exactly ``label``.
+  - `live_queue_orchestrators(prefix: str) -> list[tuple[str, str]]` — Live serial or concurrent orchestrator tabs for one canonical prefix.
   - `parse_agent_names(listing: dict[str, object]) -> list[str]` — Agent names out of a `herdr agent list` envelope; [] on anything unexpected.
   - `wait_agent_deregistered(name: str, *, retry_advice: str = 'Retry `restart` (it relaunches once the name frees)') -> None` — Poll until no live agent carries ``name``, bounded; refuse if it persists.
   - `spawn_in_new_tab(*, cwd: str, label: str, prompt: str, model: str | None, kind: str = 'pi', session_id: str | None = None, allow_all_tools: bool = True, plugin_dir: str | None = None) -> dict[str, object]` — Create a tab, start pi or copilot in it, and hand it its prompt.
@@ -1335,7 +1343,7 @@ the file existing in the repo; the description is the canonical
 - **`/standup`** — Gather assigned work, chat signal, calendar events, pending replies, git commits, and backlog activity into a daily standup draft, saved to a dated file. Use when the user says 'standup', 'prep for standup', or wants their daily status pulled together.
   - Source: `claude/commands/standup.md`
   - Installed at: `~/.claude/commands/standup.md` (claude)
-- **`/swarm`** — Hand READY backlog items to pi or copilot agents running in herdr tabs — a real fan-out across the queue by default, or a single item when one is named. Use when the user says 'swarm', 'swarm the backlog', 'hand this to pi', 'give <item> to a pi agent', 'hand this to copilot', or 'delegate to a swarm worker'. Requires HERDR_ENV=1; says so and stops otherwise.
+- **`/swarm`** — Hand READY backlog items to pi or copilot agents running in herdr tabs — concurrently by default, serially when requested, or as one named item. Use when the user says 'swarm', 'run the queue serially', 'hand this to pi', 'give <item> to a pi agent', 'hand this to copilot', or 'delegate to a worker'. Requires HERDR_ENV=1; says so and stops otherwise.
   - Source: `claude/commands/swarm.md`
   - Installed at: `~/.claude/commands/swarm.md` (claude)
 - **`/to-tickets`** — Decompose a plan or spec into multiple linked dev_status.py backlog items — vertical-slice/tracer-bullet tickets joined by blocked_by edges — after confirming the breakdown with the user. Use when the user wants a plan broken into tickets, wants a spec turned into backlog items, or invokes /to-tickets.
@@ -1721,11 +1729,13 @@ named doc, not regenerating this file.
 | `claude/commands/recap.md` | OK |
 | `claude/commands/second-opinion.md` | OK |
 | `claude/commands/standup.md` | OK |
+| `claude/commands/swarm.md` | OK |
 | `copilot/skills/backlog-item/SKILL.md` | OK |
 | `copilot/skills/dashboard/SKILL.md` | OK |
 | `copilot/skills/recap/SKILL.md` | OK |
 | `copilot/skills/second-opinion/SKILL.md` | OK |
 | `copilot/skills/standup/SKILL.md` | OK |
+| `copilot/skills/swarm/SKILL.md` | OK |
 | `opencode/command/backlog-item.md` | OK |
 | `opencode/command/dashboard.md` | OK |
 | `opencode/command/recap.md` | OK |

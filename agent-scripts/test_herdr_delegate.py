@@ -474,6 +474,18 @@ class SmokeTests(DelegateTests):
         self.assertEqual(code, 2)
         self.assertIn("--prefix", err)
 
+    def test_launch_requires_prefix_with_serial(self) -> None:
+        code, _, err = self.run_main(["launch", "--serial"])
+        self.assertEqual(code, 2)
+        self.assertIn("--prefix", err)
+
+    def test_launch_serial_is_mutually_exclusive(self) -> None:
+        code, _, err = self.run_main(
+            ["launch", "--serial", "--swarm", "1", "--prefix", "atk"]
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("exactly one", err)
+
     def test_restart_requires_prefix_with_swarm(self) -> None:
         code, _, err = self.run_main(["restart", "--swarm", "3"])
         self.assertEqual(code, 2)
@@ -499,6 +511,18 @@ class PromptContractTests(unittest.TestCase):
             "/backlog-item --swarm=3 resume r1 --prefix atk",
         )
 
+    def test_serial_orchestrator_prompt(self) -> None:
+        self.assertEqual(
+            herdr_delegate.serial_orchestrator_prompt("atk-"),
+            "/backlog-item --serial --prefix atk",
+        )
+
+    def test_serial_orchestrator_resume_prompt(self) -> None:
+        self.assertEqual(
+            herdr_delegate.serial_orchestrator_resume_prompt("r1", "atk-"),
+            "/backlog-item --serial resume r1 --prefix atk",
+        )
+
 
 @mock.patch.dict(os.environ, {"HERDR_ENV": "1"})
 class LaunchTests(DelegateTests):
@@ -520,6 +544,50 @@ class LaunchTests(DelegateTests):
         self.assertEqual(len(prompts), 1)
         self.assertEqual(prompts[0][2], "swarm-atk")
         self.assertEqual(prompts[0][3], "/backlog-item --swarm=3 --prefix atk")
+
+    def test_serial_launch_allows_meta_and_uses_distinct_label(self) -> None:
+        code, out, _ = self.run_main(
+            ["launch", "--serial", "--prefix", "meta-", "--cwd", "/tmp"]
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["agent"], "serial-meta")
+        prompt = self.fake.named("agent", "prompt")[0]
+        self.assertEqual(prompt[2], "serial-meta")
+        self.assertEqual(prompt[3], "/backlog-item --serial --prefix meta")
+
+    def test_serial_launch_refuses_a_live_orchestrator_for_the_same_prefix(self) -> None:
+        self.fake.tabs = [{"tab_id": "w1:tS", "label": "serial-meta"}]
+
+        code, _, err = self.run_main(
+            ["launch", "--serial", "--prefix", "meta", "--cwd", "/tmp"]
+        )
+
+        self.assertEqual(code, 1)
+        self.assertIn("serial-meta", err)
+        self.assertIn("already live", err)
+        self.assertEqual(self.fake.named("tab", "create"), [])
+
+    def test_serial_launch_also_refuses_a_live_concurrent_orchestrator(self) -> None:
+        self.fake.tabs = [{"tab_id": "w1:tC", "label": "swarm-atk"}]
+
+        code, _, err = self.run_main(
+            ["launch", "--serial", "--prefix", "atk", "--cwd", "/tmp"]
+        )
+
+        self.assertEqual(code, 1)
+        self.assertIn("swarm-atk", err)
+        self.assertEqual(self.fake.named("tab", "create"), [])
+
+    def test_swarm_launch_refuses_a_live_serial_orchestrator(self) -> None:
+        self.fake.tabs = [{"tab_id": "w1:tS", "label": "serial-atk"}]
+
+        code, _, err = self.run_main(
+            ["launch", "--swarm", "2", "--prefix", "atk", "--cwd", "/tmp"]
+        )
+
+        self.assertEqual(code, 1)
+        self.assertIn("serial-atk", err)
+        self.assertEqual(self.fake.named("tab", "create"), [])
 
 
 @mock.patch.dict(os.environ, {"HERDR_ENV": "1"})
@@ -624,6 +692,30 @@ class RestartTests(DelegateTests):
         code, out, _ = self.restart()
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(out)["resumed"], "legacy")
+
+    def test_serial_discovery_refuses_multiple_runs_with_worker_records(self) -> None:
+        for run_id in ("serial-a", "serial-b"):
+            write_state(
+                self.state_dir,
+                f"swarm-{run_id}.json",
+                json.dumps(
+                    {
+                        "runId": run_id,
+                        "prefix": "meta",
+                        "mode": "serial",
+                        "workers": [{"slug": f"meta-{run_id}"}],
+                    }
+                ),
+            )
+
+        code, _, err = self.run_main(
+            ["restart", "--serial", "--prefix", "meta"]
+        )
+
+        self.assertEqual(code, 1)
+        self.assertIn("serial-a", err)
+        self.assertIn("serial-b", err)
+        self.assertEqual(self.fake.named("tab", "close"), [])
 
     def test_prefix_field_mismatch_never_matches(self) -> None:
         # Exact field beats slug-scan even when it does NOT match: a run
@@ -730,6 +822,29 @@ class RestartTests(DelegateTests):
         self.assertIn("swarm-atk", err)
         self.assertEqual(self.fake.named("tab", "close"), [])
         self.assertEqual(self.fake.named("tab", "create"), [])
+
+    def test_serial_restart_refuses_a_live_concurrent_orchestrator(self) -> None:
+        self.fake.tabs = [{"tab_id": "w1:tC", "label": "swarm-meta"}]
+        write_state(
+            self.state_dir,
+            "swarm-serial.json",
+            json.dumps(
+                {
+                    "runId": "serial",
+                    "prefix": "meta",
+                    "mode": "serial",
+                    "workers": [],
+                }
+            ),
+        )
+
+        code, _, err = self.run_main(
+            ["restart", "--serial", "--prefix", "meta"]
+        )
+
+        self.assertEqual(code, 1)
+        self.assertIn("swarm-meta", err)
+        self.assertEqual(self.fake.named("tab", "close"), [])
 
     # -- deregistration poll ---------------------------------------------------
 

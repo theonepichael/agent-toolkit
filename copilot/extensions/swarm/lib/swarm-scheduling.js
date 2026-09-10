@@ -8,9 +8,11 @@ var RECONCILE_MIN_AGE_MS = 60000;
 function staleWorkerRecords(state, live, now) {
   const statusById = new Map(live.map((e) => [e.id, e.status]));
   return state.workers.filter((w) => {
+    if (!statusById.has(w.agent))
+      return true;
     const status = statusById.get(w.agent);
     if (status === undefined)
-      return true;
+      return false;
     if (!isTerminalAgentStatus(status))
       return false;
     const began = w.workingSinceMs ?? w.awaitingRelaySinceMs;
@@ -71,7 +73,7 @@ function pathsCollide(a, b) {
     return true;
   return x.startsWith(`${y}/`) || y.startsWith(`${x}/`);
 }
-function selectSchedulable(candidates, takenPaths, headroom) {
+function selectSchedulable(candidates, takenPaths, headroom, mode = "concurrent") {
   const slugs = [];
   const deferred = [];
   const skipped = [];
@@ -82,10 +84,11 @@ function selectSchedulable(candidates, takenPaths, headroom) {
     if (seen.has(candidate.id))
       continue;
     seen.add(candidate.id);
-    if (candidate.worker_safe !== true) {
+    const eligibility = mode === "serial" ? candidate.serial_safe : candidate.worker_safe;
+    if (eligibility !== true) {
       refused.push({
         slug: candidate.id,
-        reason: candidate.worker_safe === false ? "the backlog reports this item is not worker-safe -- its prefix " + "names the harness repo, or is unrecognised. A worker would be " + "editing the code it is running. Work it in a normal session." : "dev_status.py ready reported no worker_safe field for this " + "item, so eligibility is unknown and it is refused rather than " + "assumed safe. Update the installed dev_status.py."
+        reason: mode === "serial" && typeof candidate.serial_safety_reason === "string" ? candidate.serial_safety_reason : eligibility === false ? "the backlog reports this item is not worker-safe -- its prefix " + "names the harness repo, or is unrecognised. A worker would be " + "editing the code it is running. Work it in a normal session." : `dev_status.py ready reported no ${mode === "serial" ? "serial_safe" : "worker_safe"} field for this ` + "item, so eligibility is unknown and it is refused rather than " + "assumed safe. Update the installed dev_status.py."
       });
       continue;
     }
@@ -123,6 +126,8 @@ function activeWorkerCount(state) {
   return state.workers.filter((w) => w.lifecycle === "active").length;
 }
 function canSpawnNew(state) {
+  if (state.mode === "serial")
+    return state.workers.length === 0;
   return activeWorkerCount(state) < state.concurrency;
 }
 function openPaneCount(state) {
@@ -135,6 +140,8 @@ function canOpenNewPane(state) {
   return openPaneCount(state) < openPaneSoftCap(state.concurrency);
 }
 function spawnBudget(state, readyCount) {
+  if (state.mode === "serial")
+    return state.workers.length === 0 && readyCount > 0 ? 1 : 0;
   const byConcurrency = Math.max(0, state.concurrency - activeWorkerCount(state));
   const byPaneCap = Math.max(0, openPaneSoftCap(state.concurrency) - openPaneCount(state));
   return Math.min(byConcurrency, byPaneCap, readyCount);

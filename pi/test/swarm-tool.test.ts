@@ -52,6 +52,7 @@ import registerSwarmTools, {
   openPaneSoftCap,
   paneIdentityMismatch,
   PANE_CAPTURE_CHARS,
+  RECONCILE_MIN_AGE_MS,
   parseAgentListIds,
   parsePicker,
   reconcileState,
@@ -1092,6 +1093,13 @@ describe("staleWorkerRecords / isTerminalAgentStatus", () => {
     }
   });
 
+  test("a listed agent with no status is inconclusive, not absent", () => {
+    const state = makeState({
+      workers: [makeWorker({ agent: "w1", workingSinceMs: 0 })],
+    });
+    expect(staleWorkerRecords(state, [{ id: "w1" }], RECONCILE_MIN_AGE_MS * 10)).toEqual([]);
+  });
+
   test("no age evidence fails open: a terminal status alone keeps the record", () => {
     // workingSinceMs and awaitingRelaySinceMs both absent (a pre-budgets
     // record): an inconclusive age never prunes.
@@ -1316,7 +1324,16 @@ describe("swarm_poll execute() wiring", () => {
   });
 
   /** Seeds one active worker on disk and returns the wired-up swarm_poll. */
-  function setup(waitStdout: string, waitCode = 0, waitStderr = "") {
+  function setup(
+    waitStdout: string,
+    waitCode = 0,
+    waitStderr = "",
+    options: {
+      mode?: "concurrent" | "serial";
+      closeFails?: boolean;
+      absentAfterClose?: boolean;
+    } = {},
+  ) {
     const runId = "execrun";
     const worker: WorkerRecord = {
       agent: "execrun-w1",
@@ -1325,7 +1342,13 @@ describe("swarm_poll execute() wiring", () => {
       tabId: "w1:tZ",
       lifecycle: "active",
     };
-    const state: SwarmState = { runId, concurrency: 2, nextCounter: 1, workers: [worker] };
+    const state: SwarmState = {
+      runId,
+      concurrency: options.mode === "serial" ? 1 : 2,
+      mode: options.mode,
+      nextCounter: 1,
+      workers: [worker],
+    };
     saveState(state, dir);
 
     const stub = makeStubPi((argv) => {
@@ -1348,10 +1371,23 @@ describe("swarm_poll execute() wiring", () => {
         return { code: waitCode, stdout: waitStdout, stderr: waitStderr };
       }
       if (a === "agent" && b === "get") {
+        if (options.absentAfterClose) {
+          return {
+            code: 1,
+            stdout: "",
+            stderr: JSON.stringify({ error: { code: "agent_not_found" } }),
+          };
+        }
         return { code: 0, stdout: realWaitEnvelope("blocked", "execrun-w1", "w1:pZ"), stderr: "" };
       }
       if (a === "agent" && b === "read") {
         return { code: 0, stdout: "Commit these changes?\n> Yes\n  No\n", stderr: "" };
+      }
+      if (a === "tab" && b === "close" && options.closeFails) {
+        return { code: 1, stdout: "", stderr: "close failed" };
+      }
+      if (a === "tab" && b === "list" && options.absentAfterClose) {
+        return { code: 0, stdout: JSON.stringify({ result: { tabs: [] } }), stderr: "" };
       }
       return { code: 0, stdout: "", stderr: "" };
     });
@@ -1430,6 +1466,41 @@ describe("swarm_poll execute() wiring", () => {
     expect(res.details.events.map((e) => e.kind)).toEqual(["finished"]);
     expect(workerCloses(stub)).toHaveLength(1);
     expect(loadState(runId, dir)?.workers).toHaveLength(0);
+  });
+
+  test("a serial close failure preserves the terminal outcome and blocks the next worker", async () => {
+    const { runId, poll, stub } = setup(realWaitEnvelope("idle", "execrun-w1", "w1:pZ"), 0, "", {
+      mode: "serial",
+      closeFails: true,
+    });
+
+    const result = (await poll.execute(
+      ...(["call-1", { runId, timeoutMs: 1000 }, undefined] as unknown as never[]),
+    )) as { details: { events: { kind: string; detail?: string }[] } };
+
+    expect(result.details.events[0]?.kind).toBe("finished");
+    expect(result.details.events[0]?.detail).toContain("Teardown is ambiguous");
+    const persisted = loadState(runId, dir)?.workers[0];
+    expect(persisted?.lifecycle).toBe("teardown_ambiguous");
+    expect(persisted?.terminalOutcome).toBe("finished");
+    expect(canSpawnNew(loadState(runId, dir)!)).toBe(false);
+    expect(workerCloses(stub)).toHaveLength(1);
+  });
+
+  test("a failed close with exact agent and tab absence still frees the serial slot", async () => {
+    const { runId, poll } = setup(realWaitEnvelope("idle", "execrun-w1", "w1:pZ"), 0, "", {
+      mode: "serial",
+      closeFails: true,
+      absentAfterClose: true,
+    });
+
+    const result = (await poll.execute(
+      ...(["call-1", { runId, timeoutMs: 1000 }, undefined] as unknown as never[]),
+    )) as { details: { events: { kind: string; detail?: string }[] } };
+
+    expect(result.details.events[0]?.kind).toBe("finished");
+    expect(result.details.events[0]?.detail ?? "").not.toContain("Teardown is ambiguous");
+    expect(loadState(runId, dir)?.workers).toEqual([]);
   });
 
   // The second original bug shape, at the wiring level. pi.exec's underlying
@@ -1799,7 +1870,12 @@ describe("swarm_spawn worker bootstrap", () => {
   const readyStub = () => ({
     code: 0,
     stdout: JSON.stringify(
-      BOOTSTRAP_SLUGS.map((id) => ({ id, worker_safe: true, related_files: [] })),
+      BOOTSTRAP_SLUGS.map((id) => ({
+        id,
+        worker_safe: true,
+        serial_safe: true,
+        related_files: [],
+      })),
     ),
     stderr: "",
   });
@@ -1926,6 +2002,91 @@ describe("swarm_spawn worker bootstrap", () => {
     );
 
     expect(loadState("scoped", dir)?.prefix).toBe("atk-");
+  });
+
+  test("a serial run persists its mode and forces concurrency one", async () => {
+    const { spawn } = stubFor(tabCreateOk);
+
+    await spawn.execute(
+      ...([
+        "call-1",
+        { runId: "serial", prefix: "atk-", mode: "serial", items: ["some-item"] },
+      ] as unknown as never[]),
+    );
+
+    const state = loadState("serial", dir);
+    expect(state?.mode).toBe("serial");
+    expect(state?.concurrency).toBe(1);
+  });
+
+  test("serial mode rejects an explicit concurrency other than one", async () => {
+    const { spawn } = stubFor(tabCreateOk);
+
+    await expect(
+      spawn.execute(
+        ...([
+          "call-1",
+          { runId: "bad-serial", prefix: "atk-", mode: "serial", concurrency: 2 },
+        ] as unknown as never[]),
+      ),
+    ).rejects.toThrow("concurrency");
+    expect(loadState("bad-serial", dir)).toBeNull();
+  });
+
+  test("a serial refusal is persisted once and quiescence includes the dashboard", async () => {
+    const { spawn } = stubFor((argv) => {
+      if (argv.includes("ready")) {
+        return {
+          code: 0,
+          stdout: JSON.stringify([
+            {
+              id: "meta-a",
+              worker_safe: false,
+              serial_safe: false,
+              serial_safety_reason: "related_files resolve to multiple repositories",
+            },
+          ]),
+          stderr: "",
+        };
+      }
+      if (argv.includes("render")) {
+        return { code: 0, stdout: "BLOCKED\n  meta-dependent", stderr: "" };
+      }
+      return tabCreateOk(argv);
+    });
+
+    const first = (await spawn.execute(
+      ...(["call-1", { runId: "refused", prefix: "meta", mode: "serial" }] as unknown as never[]),
+    )) as { details: { refused: { slug: string }[] } };
+    const second = (await spawn.execute(
+      ...(["call-2", { runId: "refused", prefix: "meta", mode: "serial" }] as unknown as never[]),
+    )) as { content: { text: string }[]; details: { refused: { slug: string }[] } };
+
+    expect(first.details.refused.map((entry) => entry.slug)).toEqual(["meta-a"]);
+    expect(loadState("refused", dir)?.refused).toEqual([
+      { slug: "meta-a", reason: "related_files resolve to multiple repositories" },
+    ]);
+    expect(second.details.refused).toEqual([]);
+    expect(second.content[0]?.text).toContain("meta-dependent");
+  });
+
+  test("an explicit mode mismatch refuses before mutating persisted state", async () => {
+    const { spawn } = stubFor(tabCreateOk);
+    saveState(
+      { runId: "sticky", concurrency: 1, mode: "serial", nextCounter: 0, workers: [] },
+      dir,
+    );
+    const before = loadState("sticky", dir);
+
+    await expect(
+      spawn.execute(
+        ...([
+          "call-2",
+          { runId: "sticky", prefix: "atk-", mode: "concurrent", concurrency: 1 },
+        ] as unknown as never[]),
+      ),
+    ).rejects.toThrow("mode");
+    expect(loadState("sticky", dir)).toEqual(before);
   });
 
   test("an items-only run omits the prefix field", async () => {
@@ -2757,6 +2918,7 @@ describe("swarm_resolve_blocked execute() wiring", () => {
   /** Seeds one worker parked at awaiting_relay -- the state swarm_poll leaves a blocked worker in. */
   function setup(
     respond: (argv: string[]) => { code: number; stdout: string; stderr: string } | undefined,
+    mode?: "concurrent" | "serial",
   ) {
     const worker: WorkerRecord = {
       agent: AGENT,
@@ -2765,7 +2927,16 @@ describe("swarm_resolve_blocked execute() wiring", () => {
       tabId: TAB,
       lifecycle: "awaiting_relay",
     };
-    saveState({ runId: RUN, concurrency: 2, nextCounter: 1, workers: [worker] }, dir);
+    saveState(
+      {
+        runId: RUN,
+        concurrency: mode === "serial" ? 1 : 2,
+        mode,
+        nextCounter: 1,
+        workers: [worker],
+      },
+      dir,
+    );
 
     const stub = makeStubPi((argv) => {
       const override = respond(argv);
@@ -2972,6 +3143,24 @@ describe("swarm_resolve_blocked execute() wiring", () => {
 
     expect(res.details.relayFailed).toBe(true);
     expect(res.content[0]?.text).toContain("did not resume");
+  });
+
+  test("a serial relay failure retains the slot when teardown is ambiguous", async () => {
+    const { resolve } = setup((argv) => {
+      if (argv[0] === "agent" && argv[1] === "send-keys") {
+        return { code: 1, stdout: "", stderr: "send-keys refused" };
+      }
+      if (argv[0] === "tab" && argv[1] === "close") {
+        return { code: 1, stdout: "", stderr: "close failed" };
+      }
+      return undefined;
+    }, "serial");
+
+    const res = await run(resolve);
+
+    expect(res.details.relayFailed).toBe(true);
+    expect(res.content[0]?.text).toContain("Teardown is ambiguous");
+    expect(loadState(RUN, dir)?.workers[0]?.lifecycle).toBe("teardown_ambiguous");
   });
 
   // THE REGRESSION. Both relay_failed paths drop the worker record and close
@@ -3463,6 +3652,51 @@ describe("selectSchedulable", () => {
     expect(res.slugs).toEqual([]);
     expect(res.deferred).toEqual([]);
     expect(res.skipped).toEqual(["a"]);
+  });
+
+  test("serial mode uses serial_safe without weakening concurrent eligibility", () => {
+    const candidate = {
+      id: "meta-safe",
+      worker_safe: false,
+      serial_safe: true,
+      related_files: [{ path: "/r/a" }],
+    };
+    expect(selectSchedulable([candidate], [], 1, "serial").slugs).toEqual(["meta-safe"]);
+    expect(selectSchedulable([candidate], [], 1, "concurrent").refused).toHaveLength(1);
+  });
+
+  test("serial mode fails closed and preserves the classifier reason", () => {
+    const result = selectSchedulable(
+      [
+        {
+          id: "meta-unsafe",
+          worker_safe: false,
+          serial_safe: false,
+          serial_safety_reason: "related_files resolve to multiple repositories",
+        },
+      ],
+      [],
+      1,
+      "serial",
+    );
+    expect(result.slugs).toEqual([]);
+    expect(result.refused[0]?.reason).toContain("multiple repositories");
+  });
+});
+
+describe("serial concurrency", () => {
+  test("every persisted worker lifecycle occupies the sole serial slot", () => {
+    for (const lifecycle of ["active", "awaiting_relay", "teardown_ambiguous"] as const) {
+      expect(
+        canSpawnNew(
+          makeState({
+            mode: "serial",
+            concurrency: 1,
+            workers: [makeWorker({ lifecycle })],
+          }),
+        ),
+      ).toBe(false);
+    }
   });
 });
 

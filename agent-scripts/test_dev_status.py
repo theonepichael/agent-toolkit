@@ -5095,6 +5095,131 @@ class BacklogTestCase(BacklogFixture):
         for item in json.loads(out.getvalue()):
             self.assertIn("worker_safe", item, item["id"])
 
+    def test_ws7_ready_reports_serial_safe_without_weakening_worker_safe(self):
+        atk = make_item("atk-a")
+        atk["related_files"] = [{"path": "/repos/agent-toolkit/a.py", "note": "a"}]
+        meta = make_item("meta-b")
+        meta["related_files"] = [{"path": "/repos/dotfiles/b.py", "note": "b"}]
+        mixed = make_item("meta-mixed")
+        mixed["related_files"] = [
+            {"path": "/repos/dotfiles/c.py", "note": "c"},
+            {"path": "/repos/agent-toolkit/d.py", "note": "d"},
+        ]
+        pathless = make_item("atk-pathless")
+        unknown = make_item("work-nope")
+        unknown["related_files"] = [{"path": "/repos/work/x.py", "note": "x"}]
+        self.write_items([atk, meta, mixed, pathless, unknown])
+
+        repo_by_path = {
+            "/repos/agent-toolkit/a.py": "agent-toolkit",
+            "/repos/dotfiles/b.py": "dotfiles",
+            "/repos/dotfiles/c.py": "dotfiles",
+            "/repos/agent-toolkit/d.py": "agent-toolkit",
+            "/repos/work/x.py": "work",
+        }
+        with patch.object(
+            dev_status,
+            "_serial_repo_name_for_path",
+            side_effect=lambda path: repo_by_path.get(path),
+        ):
+            out = io.StringIO()
+            with patch("sys.stdout", out):
+                dev_status.cmd_ready(_args(prefix=None))
+        by_id = {item["id"]: item for item in json.loads(out.getvalue())}
+
+        self.assertIs(by_id["atk-a"]["worker_safe"], True)
+        self.assertIs(by_id["atk-a"]["serial_safe"], True)
+        self.assertNotIn("serial_safety_reason", by_id["atk-a"])
+        self.assertIs(by_id["meta-b"]["worker_safe"], False)
+        self.assertIs(by_id["meta-b"]["serial_safe"], True)
+        self.assertIs(by_id["meta-mixed"]["serial_safe"], False)
+        self.assertIn("multiple repositories", by_id["meta-mixed"]["serial_safety_reason"])
+        self.assertIs(by_id["atk-pathless"]["serial_safe"], False)
+        self.assertIn("related_files", by_id["atk-pathless"]["serial_safety_reason"])
+        self.assertIs(by_id["work-nope"]["serial_safe"], False)
+        self.assertIn("unknown prefix", by_id["work-nope"]["serial_safety_reason"])
+
+    def test_ws8_serial_path_resolution_uses_file_parent_and_absolute_git_paths(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            worktree = repo / "worktree"
+            common = repo / ".git"
+            worktree.mkdir(parents=True)
+            common.mkdir()
+            target = worktree / "a.py"
+            target.write_text("x")
+            run = MagicMock(
+                returncode=0,
+                stdout=f"{worktree}\n{common}\n",
+            )
+            with patch.object(
+                dev_status.subprocess, "run", return_value=run
+            ) as run_mock:
+                self.assertEqual(
+                    dev_status._serial_repo_name_for_path(str(target)),
+                    "repo",
+                )
+            argv = run_mock.call_args[0][0]
+            self.assertEqual(argv[argv.index("-C") + 1], str(worktree))
+            self.assertIn("--path-format=absolute", argv)
+            self.assertIn("--show-toplevel", argv)
+            self.assertIn("--git-common-dir", argv)
+
+    def test_ws9_serial_safety_ignores_only_mandated_grill_artifacts(self):
+        item = make_item("atk-with-plan")
+        item["related_files"] = [
+            {"path": "/repos/agent-toolkit/a.py", "note": "target"},
+            {
+                "path": str(Path.home() / ".claude/data/grill/item-spec.md"),
+                "note": "durable plan",
+            },
+        ]
+        with patch.object(
+            dev_status,
+            "_serial_repo_name_for_path",
+            side_effect=lambda path: (
+                "agent-toolkit" if path == "/repos/agent-toolkit/a.py" else None
+            ),
+        ):
+            self.assertEqual(dev_status.serial_safety(item), (True, None))
+
+        artifacts_only = make_item("atk-artifacts-only")
+        artifacts_only["related_files"] = [
+            {
+                "path": str(Path.home() / ".claude/data/grill/only-plan.md"),
+                "note": "durable plan",
+            }
+        ]
+        safe, reason = dev_status.serial_safety(artifacts_only)
+        self.assertIs(safe, False)
+        self.assertIn("target repository", reason or "")
+
+    def test_ws10_serial_path_resolution_handles_future_leaves_and_symlink_escape(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            worktree = repo / "worktree"
+            outside = Path(td) / "outside"
+            common = repo / ".git"
+            worktree.mkdir(parents=True)
+            outside.mkdir()
+            common.mkdir()
+            escaped = worktree / "escaped"
+            escaped.symlink_to(outside, target_is_directory=True)
+            run = MagicMock(returncode=0, stdout=f"{worktree}\n{common}\n")
+
+            with patch.object(dev_status.subprocess, "run", return_value=run):
+                self.assertEqual(
+                    dev_status._serial_repo_name_for_path(
+                        str(worktree / "future" / "new.py")
+                    ),
+                    "repo",
+                )
+                self.assertIsNone(
+                    dev_status._serial_repo_name_for_path(str(escaped / "new.py"))
+                )
+
 
 # Every env var _detect_harness consults, in its documented resolution order.
 _HARNESS_ENV_VARS = (

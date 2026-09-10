@@ -11,7 +11,7 @@ await joinSession({
     {
       name: "swarm_spawn",
       description:
-        "Spawn concurrent workers for a batch of READY backlog items, one herdr tab each, up to concurrency cap.",
+        "Spawn workers for READY backlog items in concurrent or serial mode, one herdr tab each.",
       parameters: {
         type: "object",
         properties: {
@@ -33,6 +33,12 @@ await joinSession({
           concurrency: {
             type: "number",
             description: "Max concurrent active workers. Default 3.",
+          },
+          mode: {
+            type: "string",
+            enum: ["concurrent", "serial"],
+            description:
+              "Sticky execution mode for this run. Serial forces one worker and uses serial_safe eligibility.",
           },
           model: {
             type: "string",

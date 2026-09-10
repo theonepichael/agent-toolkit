@@ -1,15 +1,17 @@
 Work the named item to done, one step at a time. The invocation (or
 `$ARGUMENTS`) holds the target: strip a leading `--auto` or
-`--swarm`/`--swarm=N` token if present (note which one was given) — what
+`--swarm`/`--swarm=N` or `--serial` token if present (note which one was given) — what
 remains is the target item, a slug or an integer N. If `--auto` was given,
 skip straight to the `--auto mode` section at the end of this file instead of
 running the numbered steps live. If `--swarm`/`--swarm=N` was given, skip
-straight to the `--swarm[=N] mode` section instead — it does not take a
+straight to the queue-runner section instead — it does not take a
 single-item target; `--swarm <slug>` is a usage error, ask the user whether
-they meant `--auto <slug>`. A `--prefix <prefix>` tail (sent by
+they meant `--auto <slug>`. If `--serial` was given, skip to that same
+section in serial mode; it also requires a prefix and never takes a target.
+A `--prefix <prefix>` tail (sent by
 `herdr_delegate.py launch`) or a `resume <runId> --prefix <prefix>` tail (sent
-by `herdr_delegate.py restart`) also selects `--swarm` mode and carries that
-run's queue scope and/or resume directive — see that section's step 1.
+by `herdr_delegate.py restart`) carries that run's queue scope and/or resume
+directive without changing the selected mode — see that section's step 1.
 Otherwise, if no target item (slug or N) was named, ask the user which item —
 never guess. Every user-approval gate below (`## 10`, `## 11`) stops and waits
 for the user — never collapse two gates into one approval. Distinct from those:
@@ -314,11 +316,13 @@ applies is decided by one environment variable:
 
 ---
 
-## `--swarm[=N]` mode
+## `--swarm[=N]` and `--serial` queue-runner modes
 
-Runs the READY queue concurrently instead of one item at a time — `N`
-recursive pi workers (default 3, from `--swarm=N`), each in its own herdr
-tab, each running its own `/backlog-item --auto <slug>`. Requires
+Runs the READY queue through recursive workers, each in its own herdr tab and
+running `/backlog-item --auto <slug>`. `--swarm=N` runs up to N concurrently
+(default 3); `--serial` uses the same scheduler with `mode="serial"`, forces
+concurrency one, and does not launch the next item until the prior worker's
+terminal teardown is confirmed. Both require
 `HERDR_ENV=1` (this session must itself be running inside a herdr-managed
 pane); if it isn't, say so and stop rather than falling back to `--auto`
 silently. Full design: `~/.claude/data/grill/2026-09-01-pi-side-agent-swarm-orchestratio-plan.md`.
@@ -329,8 +333,15 @@ rather than a fixed list of slugs: it re-reads the READY set from
 `dev_status.py` on every call, so an item unblocked by a worker that just
 finished is picked up on the next spawn without you naming it. A `prefix` is
 required when you do not pass `items` — selecting from the whole READY queue
-unscoped would pull unrelated projects into one run. `--swarm` never takes a
-single-item target (see the invocation note above).
+unscoped would pull unrelated projects into one run. Neither queue mode takes
+a single-item target (see the invocation note above).
+
+Eligibility is mode-specific and fail-closed. Concurrent mode requires the
+existing `worker_safe: true`. Serial mode requires `serial_safe: true`, which
+allows a single-repository harness item such as dotfiles-only `meta-` work but
+refuses cross-repository catch-alls, work/unknown prefixes, missing target
+paths, and unresolved or prefix-mismatched repositories. Report permanent
+refusals once; do not wait or retry them in the same run.
 
 Uses the `swarm_spawn`, `swarm_poll`, and `swarm_resolve_blocked` tools
 (`pi/extensions/swarm-tool.ts`) — never hand-compose `herdr` bash commands
@@ -339,18 +350,20 @@ shell-interpolated), state persistence across a crash/restart, and the
 concurrency-cap accounting.
 
 1. Pick a `runId` for this invocation (e.g. a short timestamp-based slug)
-   and call `swarm_spawn` with the run's `prefix` and the concurrency — it
+   and call `swarm_spawn` with the run's `prefix`, explicit `mode`, and (for
+   concurrent mode) concurrency — it
    spawns up to the cap, reporting any items skipped (cap), deferred (file
    overlap) or failed to spawn.
 
    **Resume.** If the invocation carried `resume <runId> --prefix <prefix>`
    (sent by `herdr_delegate.py restart`, which closed and relaunched this
    orchestrator), do not pick a fresh runId: call `swarm_spawn` and
-   `swarm_poll` with that exact runId and prefix. `getOrInitState` loads the
+   `swarm_poll` with that exact runId, prefix, and mode. `getOrInitState` loads the
    persisted state for that runId, reconciles it against herdr's live agent
    list (workers that survived the restart are adopted and re-waited; dead
    ones are dropped and reported), and `attempted` keeps already-tried items
-   from being re-selected. Spawn with the given prefix exactly as passed —
+   from being re-selected. Persisted mode is sticky: omission inherits it,
+   while an explicit mismatch refuses. Spawn with the given prefix exactly as passed —
    it is the slug-head form (e.g. `atk`), which `swarm_spawn` and
    `dev_status.py ready --prefix` both accept. Resuming an unknown runId
    degrades safely: `getOrInitState` falls through to a fresh state under
@@ -462,11 +475,16 @@ concurrency-cap accounting.
      its tab and drop it; it now produces this and nothing else.
    - **`finished`** / **`timed_out`** / **`error`** — record the outcome for
      the end-of-run digest (approved / flagged / stopped on budget / failed);
-     all three have already closed that worker's tab and freed its slot, and
-     none is ever silently retried. A freed slot is the cue to call
-     `swarm_spawn` again with the same `runId` and `prefix`: that re-reads
-     READY, so a worker that just unblocked two items causes those items to
-     be picked up without anyone naming them. The three are deliberately
+     all three normally close that worker's tab and free its slot, and none is
+     ever silently retried. In serial mode, a failed or inconclusive close is
+     persisted as `teardown_ambiguous` and still occupies the sole slot; follow
+     the tool's exact close-and-reconcile instruction, then poll again. Never
+     start the next item merely because its predecessor reached a terminal
+     item outcome. A genuinely freed slot is the cue to call
+     `swarm_spawn` again with the same `runId`, `prefix`, and mode: that
+     re-reads READY in stable topological dashboard order, so a worker that
+     just unblocked two items causes the first newly READY item to be picked
+     up without anyone naming it. The three are deliberately
      different and must not be reported as one:
      - `timed_out` means the worker exceeded its whole-item **working-time
        budget** and was stopped deliberately — not that a wait deadline
@@ -503,7 +521,10 @@ concurrency-cap accounting.
    not the end of the run: when workers are still parked awaiting a relay,
    `swarm_poll` names them and the answer each is waiting on is still owed —
    resolve those with `swarm_resolve_blocked` before treating the queue as
-   drained, or the run ends with a live worker holding an open tab.
+   drained, or the run ends with a live worker holding an open tab. In serial
+   mode, `teardown_ambiguous` is likewise not drained. When the serial tool
+   reports quiescence, include its fresh dashboard: descendants of a failed
+   blocker remain visibly BLOCKED rather than disappearing from the digest.
 4. **End of run** — same shape as `--auto`'s: a dashboard-style summary of
    every item (done, flagged, stopped on budget, failed), then walk any accumulated
    proactive-capture digest entries exactly as `--auto`'s own end-of-run

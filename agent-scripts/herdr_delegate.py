@@ -37,7 +37,11 @@ Usage:
     herdr_delegate.py launch --slug <slug> [--model <model>] [--kind {pi,copilot}]
     herdr_delegate.py launch --swarm <N> --prefix <prefix> [--model <model>]
                              [--kind {pi,copilot}]
+    herdr_delegate.py launch --serial --prefix <prefix> [--model <model>]
+                             [--kind {pi,copilot}]
     herdr_delegate.py restart --swarm <N> --prefix <prefix> [--run-id <runId>]
+                              [--model <model>] [--kind {pi,copilot}]
+    herdr_delegate.py restart --serial --prefix <prefix> [--run-id <runId>]
                               [--model <model>] [--kind {pi,copilot}]
 """
 
@@ -150,6 +154,22 @@ def check_launchable(*, slug: str | None = None, prefix: str | None = None) -> N
         )
 
 
+def canonical_prefix(prefix: str) -> str:
+    """Slug-head form used in prompts, labels, state and comparisons."""
+    return prefix.removesuffix("-")
+
+
+def check_serial_prefix(prefix: str) -> str:
+    """Return a known canonical prefix; item-level serial safety is separate."""
+    canonical = canonical_prefix(prefix)
+    if canonical not in REPO_PREFIXES.values():
+        known = ", ".join(f"{p}-" for p in sorted(REPO_PREFIXES.values()))
+        raise RefusedError(
+            f"'{canonical}-' is not a known serial queue prefix. Known prefixes: {known}."
+        )
+    return canonical
+
+
 def group_by_prefix(slugs: list[str]) -> list[dict[str, object]]:
     """Group slugs by prefix, worker-safe prefixes first, then largest first.
 
@@ -252,6 +272,16 @@ def orchestrator_resume_prompt(
     return f"/backlog-item --swarm={concurrency} resume {run_id} --prefix {prefix}"
 
 
+def serial_orchestrator_prompt(prefix: str) -> str:
+    """One orchestrator running the shared scheduler with a single worker."""
+    return f"/backlog-item --serial --prefix {canonical_prefix(prefix)}"
+
+
+def serial_orchestrator_resume_prompt(run_id: str, prefix: str) -> str:
+    """Resume one serial orchestrator without changing its run identity."""
+    return f"/backlog-item --serial resume {run_id} --prefix {canonical_prefix(prefix)}"
+
+
 RUN_ID_PATTERN = re.compile(r"[A-Za-z0-9._-]+")
 RUN_ID_MAX_LEN = 64
 
@@ -288,7 +318,7 @@ def swarm_state_dir(kind: str = "pi") -> Path:
     return Path.home() / ".pi" / "agent" / "state"
 
 
-def state_matches_prefix(state: object, prefix: str) -> bool:
+def state_matches_prefix(state: object, prefix: str, mode: str = "concurrent") -> bool:
     """Whether one parsed state file belongs to a run scoped to ``prefix``.
 
     Exact field first -- swarm-tool stamps ``prefix`` on fresh state --
@@ -297,6 +327,9 @@ def state_matches_prefix(state: object, prefix: str) -> bool:
     is the deliberate answer, the scan is only for legacy files that lack it.
     """
     if not isinstance(state, dict):
+        return False
+    recorded_mode = state.get("mode", "concurrent")
+    if recorded_mode != mode:
         return False
     recorded = state.get("prefix")
     if recorded is not None:
@@ -311,7 +344,7 @@ def state_matches_prefix(state: object, prefix: str) -> bool:
     return any(isinstance(s, str) and s.startswith(f"{prefix}-") for s in slugs)
 
 
-def discover_run_id(prefix: str, kind: str = "pi") -> str:
+def discover_run_id(prefix: str, kind: str = "pi", mode: str = "concurrent") -> str:
     """The runId of the newest state file belonging to ``prefix``.
 
     Refuses rather than falling back to a fresh run: a restart that cannot
@@ -331,13 +364,14 @@ def discover_run_id(prefix: str, kind: str = "pi") -> str:
         state_dir.glob("swarm-*.json"), key=lambda p: p.stat().st_mtime, reverse=True
     )
     skipped: list[str] = []
+    matches: list[tuple[str, bool]] = []
     for path in files:
         try:
             state: object = json.loads(path.read_text())
         except (OSError, json.JSONDecodeError, ValueError):
             skipped.append(path.name)
             continue
-        if state_matches_prefix(state, prefix):
+        if state_matches_prefix(state, prefix, mode):
             run_id = ""
             if isinstance(state, dict):
                 candidate = state.get("runId")
@@ -345,7 +379,18 @@ def discover_run_id(prefix: str, kind: str = "pi") -> str:
                     run_id = candidate
             if not run_id:
                 run_id = path.stem.removeprefix("swarm-")
-            return run_id
+            workers = state.get("workers") if isinstance(state, dict) else None
+            matches.append((run_id, isinstance(workers, list) and bool(workers)))
+    active = [run_id for run_id, has_workers in matches if has_workers]
+    if len(active) > 1:
+        raise RefusedError(
+            f"multiple {mode} runs for prefix '{prefix}' still contain worker "
+            f"records ({', '.join(active)}); pass --run-id explicitly"
+        )
+    if active:
+        return active[0]
+    if matches:
+        return matches[0][0]
     detail = f" ({len(skipped)} unparseable, e.g. {skipped[0]})" if skipped else ""
     raise RefusedError(
         f"no swarm state file matches prefix '{prefix}'{detail}, so there is no "
@@ -354,11 +399,16 @@ def discover_run_id(prefix: str, kind: str = "pi") -> str:
     )
 
 
-def resolve_resume_run_id(prefix: str, run_id: str | None, kind: str = "pi") -> str:
+def resolve_resume_run_id(
+    prefix: str,
+    run_id: str | None,
+    kind: str = "pi",
+    mode: str = "concurrent",
+) -> str:
     """The runId a restart will resume. Explicit always wins; discovery next."""
     if run_id is not None:
         return validate_run_id(run_id)
-    return discover_run_id(prefix, kind=kind)
+    return discover_run_id(prefix, kind=kind, mode=mode)
 
 
 def parse_tab_list(listing: dict[str, object]) -> list[dict[str, object]]:
@@ -382,6 +432,17 @@ def live_tab_ids_with_label(label: str) -> list[str]:
         str(t["tab_id"])
         for t in parse_tab_list(listing)
         if t.get("label") == label and isinstance(t.get("tab_id"), str)
+    ]
+
+
+def live_queue_orchestrators(prefix: str) -> list[tuple[str, str]]:
+    """Live serial or concurrent orchestrator tabs for one canonical prefix."""
+    labels = {f"serial-{prefix}", f"swarm-{prefix}"}
+    listing = herdr(build_tab_list_argv())
+    return [
+        (str(tab["label"]), str(tab["tab_id"]))
+        for tab in parse_tab_list(listing)
+        if tab.get("label") in labels and isinstance(tab.get("tab_id"), str)
     ]
 
 
@@ -593,10 +654,24 @@ def cmd_launch(args: argparse.Namespace) -> None:
     if args.slug:
         check_launchable(slug=args.slug)
         label, prompt = args.slug, worker_prompt(args.slug, kind=kind)
+    elif args.serial:
+        prefix = check_serial_prefix(args.prefix)
+        label = f"serial-{prefix}"
+        prompt = serial_orchestrator_prompt(prefix)
     else:
-        check_launchable(prefix=args.prefix)
-        label = f"swarm-{args.prefix}"
-        prompt = orchestrator_prompt(args.swarm, args.prefix, kind=kind)
+        prefix = canonical_prefix(args.prefix)
+        check_launchable(prefix=prefix)
+        label = f"swarm-{prefix}"
+        prompt = orchestrator_prompt(args.swarm, prefix, kind=kind)
+
+    if not args.slug:
+        conflicts = live_queue_orchestrators(prefix)
+        if conflicts:
+            rendered = ", ".join(f"{other} in {tab}" for other, tab in conflicts)
+            raise RefusedError(
+                f"queue orchestrator already live for '{prefix}-': {rendered}; "
+                "resume or restart that run instead"
+            )
 
     print(
         json.dumps(
@@ -622,18 +697,31 @@ def cmd_restart(args: argparse.Namespace) -> None:
     only the orchestrator's own tab is a close candidate.
     """
     require_herdr_env(os.environ)
-    check_launchable(prefix=args.prefix)
+    mode = "serial" if args.serial else "concurrent"
+    prefix = canonical_prefix(args.prefix)
+    if args.serial:
+        prefix = check_serial_prefix(prefix)
+    else:
+        check_launchable(prefix=prefix)
     kind = getattr(args, "kind", "pi")
     plugin_dir = COPILOT_PLUGIN_DIR if kind == "copilot" else None
     # See cmd_launch: the relaunched orchestrator is a brand new copilot
     # process (its own tab was just closed below), so it gets its own fresh
     # session-id the same way, not the closed tab's.
     session_id = str(uuid.uuid4()) if kind == "copilot" else None
-    label = f"swarm-{args.prefix}"
+    label = f"serial-{prefix}" if args.serial else f"swarm-{prefix}"
 
-    run_id = resolve_resume_run_id(args.prefix, args.run_id, kind=kind)
+    run_id = resolve_resume_run_id(prefix, args.run_id, kind=kind, mode=mode)
 
-    matches = live_tab_ids_with_label(label)
+    orchestrators = live_queue_orchestrators(prefix)
+    conflicting = [(other, tab) for other, tab in orchestrators if other != label]
+    if conflicting:
+        rendered = ", ".join(f"{other} in {tab}" for other, tab in conflicting)
+        raise RefusedError(
+            f"another queue mode is already live for '{prefix}-': {rendered}; "
+            "stop it before restarting this run"
+        )
+    matches = [tab for other, tab in orchestrators if other == label]
     if len(matches) > 1:
         raise RefusedError(
             f"{len(matches)} live tabs carry the label '{label}' ({', '.join(matches)}); "
@@ -646,7 +734,11 @@ def cmd_restart(args: argparse.Namespace) -> None:
         herdr(["tab", "close", closed_tab])
         wait_agent_deregistered(agent_name_for(label))
 
-    prompt = orchestrator_resume_prompt(args.swarm, run_id, args.prefix, kind=kind)
+    prompt = (
+        serial_orchestrator_resume_prompt(run_id, prefix)
+        if args.serial
+        else orchestrator_resume_prompt(args.swarm, run_id, prefix, kind=kind)
+    )
     summary = spawn_in_new_tab(
         cwd=args.cwd,
         label=label,
@@ -678,7 +770,12 @@ def main() -> None:
     # reads as an unknown flag. Exclusivity is enforced below instead.
     launch.add_argument("--slug", help="single item for one unattended worker")
     launch.add_argument("--swarm", type=int, help="fan out across N workers")
-    launch.add_argument("--prefix", help="queue scope, required with --swarm")
+    launch.add_argument(
+        "--serial", action="store_true", help="run a prefix queue one worker at a time"
+    )
+    launch.add_argument(
+        "--prefix", help="queue scope, required with --swarm or --serial"
+    )
     launch.add_argument(
         "--model", help="model passed through to harness after a bare --"
     )
@@ -696,7 +793,12 @@ def main() -> None:
         help="close a live swarm orchestrator's tab, relaunch it, resume the same run",
     )
     restart.add_argument("--swarm", type=int, help="fan out across N workers")
-    restart.add_argument("--prefix", help="queue scope, required with --swarm")
+    restart.add_argument(
+        "--serial", action="store_true", help="resume a one-worker serial queue"
+    )
+    restart.add_argument(
+        "--prefix", help="queue scope, required with --swarm or --serial"
+    )
     restart.add_argument(
         "--run-id", help="runId to resume; discovered from persisted state when omitted"
     )
@@ -714,15 +816,23 @@ def main() -> None:
 
     args = parser.parse_args()
     if args.command == "launch":
-        if bool(args.slug) == bool(args.swarm):
-            parser.error("pass exactly one of --slug or --swarm")
-        if args.swarm and not args.prefix:
-            parser.error("--swarm requires --prefix; an unscoped queue mixes projects")
+        selectors = (
+            int(bool(args.slug)) + int(args.swarm is not None) + int(args.serial)
+        )
+        if selectors != 1:
+            parser.error("pass exactly one of --slug, --swarm, or --serial")
+        if (args.swarm is not None or args.serial) and not args.prefix:
+            parser.error(
+                "--swarm and --serial require --prefix; an unscoped queue mixes projects"
+            )
     if args.command == "restart":
-        if not args.swarm:
-            parser.error("--swarm is required for restart")
+        selectors = int(args.swarm is not None) + int(args.serial)
+        if selectors != 1:
+            parser.error("pass exactly one of --swarm or --serial for restart")
         if not args.prefix:
-            parser.error("--swarm requires --prefix; an unscoped queue mixes projects")
+            parser.error(
+                "--swarm and --serial require --prefix; an unscoped queue mixes projects"
+            )
         if args.run_id is not None:
             try:
                 args.run_id = validate_run_id(args.run_id)

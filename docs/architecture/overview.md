@@ -111,6 +111,16 @@ flowchart TD
 - **Spec & Gate Classification**: Tasks involving design choices or requirement interpretation trigger gate criteria (`gate-set`) and require an adversarial critique pass (`second_opinion.py`).
 - **Explicit Approval Gates**: Commits and repository merges require mandatory, separate user approval pauses.
 
+The Pi and Copilot queue runners wrap this same lifecycle rather than replacing
+it. `herdr_delegate.py` starts one orchestrator, while the shared TypeScript
+scheduler re-reads `dev_status.py ready --prefix` after each terminal worker.
+Concurrent mode admits only `worker_safe` items up to its configured cap;
+serial mode admits only `serial_safe` items, holds exactly one worker or relay
+tab, and waits for confirmed teardown before advancing through the dynamic
+topological READY frontier. Attempted and permanently refused items are
+persisted per run, and approval relays and capture offers retain the ordinary
+backlog-item gates.
+
 ---
 
 ### Lifecycle 2: Automated Guard Rails & Pre-Tool Enforcement

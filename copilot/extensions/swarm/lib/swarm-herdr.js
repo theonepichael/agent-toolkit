@@ -29,6 +29,17 @@ function findTabByLabel(stdout, label) {
     return;
   }
 }
+function tabPresence(stdout, tabId) {
+  try {
+    const parsed = JSON.parse(stdout);
+    const tabs = parsed.result?.tabs;
+    if (!Array.isArray(tabs))
+      return null;
+    return tabs.some((tab) => tab.tab_id === tabId);
+  } catch {
+    return null;
+  }
+}
 function parseTabCreate(stdout) {
   try {
     const parsed = JSON.parse(stdout);
@@ -255,6 +266,7 @@ export {
   parseAgentSession,
   parseTabCreate,
   reasonHeadline,
+  tabPresence,
   waitResultDetail,
   workerWorktreePath
 };

@@ -1498,6 +1498,121 @@ def is_worker_safe(prefix: str) -> bool:
     return prefix in WORKER_SAFE_PREFIXES
 
 
+def _serial_repo_name_for_path(path: str) -> str | None:
+    """Canonical repository name for one serial-runner related path.
+
+    Unlike :func:`_repo_name_for_path`, this is an eligibility boundary rather
+    than a best-effort reminder. It resolves symlinks (including the final
+    component), accepts future leaves by walking to their nearest existing
+    ancestor, verifies containment in the discovered worktree, and fails
+    closed whenever Git cannot provide both roots unambiguously.
+    """
+    candidate = Path(path).expanduser()
+    if not candidate.is_absolute():
+        return None
+    try:
+        canonical = candidate.resolve(strict=False)
+    except (OSError, RuntimeError):
+        return None
+
+    start: Path | None = None
+    if canonical.is_dir():
+        start = canonical
+    elif canonical.is_file():
+        start = canonical.parent
+    else:
+        for ancestor in canonical.parents:
+            if ancestor.is_dir():
+                start = ancestor
+                break
+    if start is None:
+        return None
+
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(start),
+                "rev-parse",
+                "--path-format=absolute",
+                "--show-toplevel",
+                "--git-common-dir",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    if len(lines) != 2:
+        return None
+    try:
+        worktree_root = Path(lines[0]).resolve(strict=True)
+        common_dir = Path(lines[1]).resolve(strict=False)
+        canonical.relative_to(worktree_root)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return common_dir.parent.name or None
+
+
+def _is_serial_context_artifact(path: str) -> bool:
+    """Whether a path is a mandated planning artifact, not a code target."""
+    try:
+        candidate = Path(path).resolve(strict=False)
+        artifact_root = (Path.home() / ".claude" / "data" / "grill").resolve(
+            strict=False
+        )
+        candidate.relative_to(artifact_root)
+    except (OSError, RuntimeError, ValueError):
+        return False
+    return True
+
+
+def serial_safety(item: BacklogItem) -> tuple[bool, str | None]:
+    """Whether one READY item is safe for isolated serial delegation."""
+    slug = str(item.get("id", ""))
+    prefix = prefix_of(slug)
+    repo_for_prefix = {value: key for key, value in REPO_PREFIXES.items()}
+    expected_repo = repo_for_prefix.get(prefix)
+    if expected_repo is None:
+        return False, f"unknown prefix '{prefix}-' has no configured repository"
+
+    related = item.get("related_files")
+    if not isinstance(related, list) or not related:
+        return False, "related_files must name at least one repository path"
+
+    repositories: set[str] = set()
+    for entry in related:
+        if not isinstance(entry, dict):
+            return False, "related_files contains a malformed entry"
+        path = entry.get("path")
+        if not isinstance(path, str) or not path or not Path(path).is_absolute():
+            return False, "related_files paths must be non-empty absolute strings"
+        if _is_serial_context_artifact(path):
+            continue
+        repo = _serial_repo_name_for_path(path)
+        if repo is None:
+            return False, f"cannot resolve related_files path to one repository: {path}"
+        repositories.add(repo)
+
+    if not repositories:
+        return False, "related_files must name at least one target repository path"
+    if len(repositories) != 1:
+        return False, "related_files resolve to multiple repositories"
+    actual_repo = next(iter(repositories))
+    if actual_repo != expected_repo:
+        return (
+            False,
+            f"prefix '{prefix}-' maps to {expected_repo}, but related_files resolve to {actual_repo}",
+        )
+    return True, None
+
+
 def _repo_name_for_path(path: str) -> str | None:
     """Resolve a file path to the directory name of the git repo containing it.
 
@@ -3148,10 +3263,17 @@ def cmd_ready(args: argparse.Namespace) -> None:
     # TypeScript and cannot import this module, and a second copy of the prefix
     # scheme there would drift the moment REPO_PREFIXES changed. Every item
     # carries it, because the consumer fails closed on a missing field.
-    stamped = [
-        {**item, "worker_safe": is_worker_safe(prefix_of(str(item["id"])))}
-        for item in ready
-    ]
+    stamped: list[dict[str, object]] = []
+    for item in ready:
+        serial_safe, serial_reason = serial_safety(item)
+        record: dict[str, object] = {
+            **item,
+            "worker_safe": is_worker_safe(prefix_of(str(item["id"]))),
+            "serial_safe": serial_safe,
+        }
+        if serial_reason is not None:
+            record["serial_safety_reason"] = serial_reason
+        stamped.append(record)
     print(json.dumps(stamped, indent=2))
 
 

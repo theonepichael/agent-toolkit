@@ -52,8 +52,9 @@ export function staleWorkerRecords(
 ): WorkerRecord[] {
   const statusById = new Map(live.map((e) => [e.id, e.status]));
   return state.workers.filter((w) => {
+    if (!statusById.has(w.agent)) return true; // absent: gone outright
     const status = statusById.get(w.agent);
-    if (status === undefined) return true; // absent: gone outright
+    if (status === undefined) return false; // present, status unknown: fail open
     if (!isTerminalAgentStatus(status)) return false;
     const began = w.workingSinceMs ?? w.awaitingRelaySinceMs;
     if (began === undefined) return false; // no age evidence: fail open
@@ -61,7 +62,9 @@ export function staleWorkerRecords(
   });
 }
 
-export type WorkerLifecycle = "active" | "awaiting_relay";
+export type ExecutionMode = "concurrent" | "serial";
+
+export type WorkerLifecycle = "active" | "awaiting_relay" | "teardown_ambiguous";
 
 export interface WorkerRecord {
   agent: string; // synthetic id, e.g. "w1" -- never the raw slug (herdr names cap at 32 chars)
@@ -164,6 +167,12 @@ export interface WorkerRecord {
    */
   amendments?: Amendment[];
   lifecycle: WorkerLifecycle;
+  /** Terminal event retained when serial teardown could not be confirmed. */
+  terminalOutcome?: "finished" | "timed_out" | "error";
+  /** Why teardown could not be confirmed; keeps restart behavior fail-closed. */
+  teardownDetail?: string;
+  /** Capture offers already harvested before an ambiguous teardown was persisted. */
+  terminalCaptures?: { kind: string; id: string; summary: string }[];
   /**
    * Copilot-only: the confirmed session id `attemptCrashRecovery` resumes
    * via `--resume=`. Unused by pi workers -- absent means recovery never
@@ -177,6 +186,8 @@ export interface WorkerRecord {
 export interface SwarmState {
   runId: string;
   concurrency: number;
+  /** Missing on legacy state files, where it means the historical concurrent mode. */
+  mode?: ExecutionMode;
   nextCounter: number;
   workers: WorkerRecord[];
   /**
@@ -200,6 +211,8 @@ export interface SwarmState {
    * run has attempted nothing it can prove, which is the old behaviour.
    */
   attempted?: string[];
+  /** Items this run classified as permanently ineligible for its execution mode. */
+  refused?: { slug: string; reason: string }[];
   /**
    * The slug prefix this run was scoped to, stamped when a fresh state is
    * initialized and carried through every save.
@@ -296,6 +309,10 @@ export interface ReadyItem {
    * lands in the same fail-closed branch.
    */
   worker_safe?: unknown;
+  /** Serial-run eligibility is stricter and permits isolated harness-repo work. */
+  serial_safe?: unknown;
+  /** Stable classifier explanation emitted by dev_status.py for a serial refusal. */
+  serial_safety_reason?: unknown;
   related_files?: { path?: unknown }[];
 }
 
@@ -415,6 +432,7 @@ export function selectSchedulable(
   candidates: readonly ReadyItem[],
   takenPaths: readonly { path: string; holder: string }[],
   headroom: number,
+  mode: ExecutionMode = "concurrent",
 ): SelectionResult {
   const slugs: string[] = [];
   const deferred: { slug: string; reason: string }[] = [];
@@ -432,17 +450,20 @@ export function selectSchedulable(
     // Before the cap and before the collision check: a refused item must never
     // be reported as skipped, which would promise it a later wave that will
     // never take it, nor as deferred, which would promise it a worker.
-    if (candidate.worker_safe !== true) {
+    const eligibility = mode === "serial" ? candidate.serial_safe : candidate.worker_safe;
+    if (eligibility !== true) {
       refused.push({
         slug: candidate.id,
         reason:
-          candidate.worker_safe === false
-            ? "the backlog reports this item is not worker-safe -- its prefix " +
-              "names the harness repo, or is unrecognised. A worker would be " +
-              "editing the code it is running. Work it in a normal session."
-            : "dev_status.py ready reported no worker_safe field for this " +
-              "item, so eligibility is unknown and it is refused rather than " +
-              "assumed safe. Update the installed dev_status.py.",
+          mode === "serial" && typeof candidate.serial_safety_reason === "string"
+            ? candidate.serial_safety_reason
+            : eligibility === false
+              ? "the backlog reports this item is not worker-safe -- its prefix " +
+                "names the harness repo, or is unrecognised. A worker would be " +
+                "editing the code it is running. Work it in a normal session."
+              : `dev_status.py ready reported no ${mode === "serial" ? "serial_safe" : "worker_safe"} field for this ` +
+                "item, so eligibility is unknown and it is refused rather than " +
+                "assumed safe. Update the installed dev_status.py.",
       });
       continue;
     }
@@ -496,6 +517,7 @@ export function activeWorkerCount(state: SwarmState): number {
 }
 
 export function canSpawnNew(state: SwarmState): boolean {
+  if (state.mode === "serial") return state.workers.length === 0;
   return activeWorkerCount(state) < state.concurrency;
 }
 
@@ -517,6 +539,7 @@ export function canOpenNewPane(state: SwarmState): boolean {
 
 /** How many new items can be spawned right now, bounded by both the concurrency cap and the open-pane soft cap. */
 export function spawnBudget(state: SwarmState, readyCount: number): number {
+  if (state.mode === "serial") return state.workers.length === 0 && readyCount > 0 ? 1 : 0;
   const byConcurrency = Math.max(0, state.concurrency - activeWorkerCount(state));
   const byPaneCap = Math.max(0, openPaneSoftCap(state.concurrency) - openPaneCount(state));
   return Math.min(byConcurrency, byPaneCap, readyCount);
