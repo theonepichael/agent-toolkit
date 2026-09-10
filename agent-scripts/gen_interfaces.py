@@ -83,7 +83,6 @@ ROOT_ENTRYPOINTS = (
     "install.py",
     "depart.py",
     "depart_exec.py",
-    "scripts/sync_from_dotfiles.py",
 )
 OUTPUT_NAME = "INTERFACES.md"
 

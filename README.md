@@ -8,13 +8,10 @@ A modular, multi-harness platform for AI agent workflows and paired development 
 - **Pi** (Lightweight extensible terminal assistant)
 - **Codex CLI** (OpenAI)
 
-> **Status: not yet independent, but no longer manual.** This repository
-> began as a snapshot of a personal dotfiles repo, which is still where
-> harness work lands first — reconciliation is now
-> `scripts/sync_from_dotfiles.py`, a repeatable command, not a hand-derived
-> diff. The GitHub remote is public (since 2026-09-08). See
-> [MIGRATION.md](MIGRATION.md) for what remains and the order it must be done
-> in.
+> **Status: independent.** Every file in this repository, including
+> `claude/CORE_INSTRUCTIONS.md`, is authored directly here — zero external
+> dependency. The GitHub remote is public (since 2026-09-08). See
+> [MIGRATION.md](MIGRATION.md) for the history of how this repo got here.
 
 ---
 

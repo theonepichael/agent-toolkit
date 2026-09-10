@@ -1665,36 +1665,6 @@ depart_exec.py — --depart execution: preflight, phases, confirmation, cleanup.
   - `do_depart(deps: Deps, ctx: DepartureContext) -> int` — Preview and execute a pristine-state departure.
 - Tested by: `test/test_depart_exec_layering.py`
 
-### `scripts/sync_from_dotfiles.py`
-
-sync_from_dotfiles.py — keep claude/CORE_INSTRUCTIONS.md current with dotfiles.
-
-- Installed at: not symlinked by `links.toml`
-- Entrypoint: not executable, `#!/usr/bin/env python3`
-- CLI (`argparse`): keep claude/CORE_INSTRUCTIONS.md current with dotfiles@HEAD (the one permanent post-cutover upstream relationship), then run the generator sweep; see the module docstring for the full contract
-  - `--apply` — apply the sync (default: report/diff only)
-  - `--dotfiles-path` — path to the dotfiles checkout (default: ~/dotfiles)
-  - `--quiet/-q`
-  - `--verbose/-v`
-- Filesystem constants:
-  - `REPO_ROOT = Path(__file__).resolve().parent.parent`
-  - `DEFAULT_DOTFILES_PATH = Path.home() / 'dotfiles'`
-- Explicit exit codes: `0`, `1`
-- Public functions:
-  - `state_path(repo_root: Path) -> Path` — Return the path to the committed sync-state marker.
-  - `load_state(repo_root: Path) -> dict[str, object] | None` — Load the sync-state marker, or None if absent or corrupt.
-  - `write_state(repo_root: Path, *, dotfiles_sha: str) -> None` — Record provenance for a successful content sync.
-  - `run_git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]` — Run a git command in ``repo``, capturing output as text.
-  - `resolve_head(repo: Path) -> str` — Return the current HEAD commit of ``repo``.
-  - `path_exists_at(repo: Path, ref: str, path: str) -> bool` — Return whether ``path`` exists in ``repo`` at ``ref``.
-  - `read_at(repo: Path, ref: str, path: str) -> bytes` — Return the raw bytes of ``path`` in ``repo`` at ``ref``.
-  - `last_commit_touching(repo: Path, ref: str, path: str) -> str` — The sha of the last commit in ``repo`` (at ``ref``) touching ``path``.
-  - `git_add(repo_root: Path, paths: list[str]) -> None` — Stage the given repo-relative paths.
-  - `apply_transform(text: str) -> tuple[str, int]` — Apply the registered transform; return (new text, substitution count).
-  - `run_generator_sweep(repo_root: Path, sweep: tuple[str, ...], *, quiet: bool, verbose: bool) -> None` — Run every generator in ``sweep`` so generated artifacts describe this repo.
-  - `build_parser() -> argparse.ArgumentParser` — Build the argument parser.
-- Tested by: `scripts/test_sync_from_dotfiles.py`
-
 ---
 
 ## 5. Skill/command doc contract coverage

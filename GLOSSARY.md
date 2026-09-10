@@ -42,13 +42,13 @@ Sound related, aren't:
 - **Seed / seed content** — settings.json (or similar config) content that
   gets installed or retained at install time. See `seed_hook_subset_guard.py`
   and README's "Seed Rewrite Guard".
-- **Composed instructions** — dotfiles layering its own personal-policy
-  overlay (a claude/personal-overlay.md file in the dotfiles repo, not here)
-  on top of `CORE_INSTRUCTIONS.md` before symlinking the result out to each
-  harness's global instructions file. See AGENTS.md's opening paragraph.
+- **Composed instructions** — a downstream personal-policy overlay layered
+  on top of `CORE_INSTRUCTIONS.md`, outside this repo, before the result is
+  symlinked out to each harness's global instructions file. See AGENTS.md's
+  opening paragraph.
 
 Seeding happens at install time to a harness's own config; composing
-happens in dotfiles before that config ever reaches this repo or a harness.
+happens downstream before that config ever reaches this repo or a harness.
 Neither implies the other.
 
 ## skill / command / slash command

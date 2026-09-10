@@ -35,7 +35,6 @@ wrap lives elsewhere (`agent-scripts/`, `pi/extensions/swarm-lib/`).
 
 No local test tier of its own — Copilot-specific behavior is covered by
 `agent-scripts/` tests that assert on generated output for all harnesses
-(see `agent-scripts/AGENTS.md`) plus `scripts/test_sync_from_dotfiles.py`
-for the shared instructions file. Regenerate skills with
+(see `agent-scripts/AGENTS.md`). Regenerate skills with
 `python3 agent-scripts/gen_skills.py`; rebuild the swarm extension with
 `scripts/build-copilot-swarm.sh`.

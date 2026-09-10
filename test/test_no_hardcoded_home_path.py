@@ -84,8 +84,7 @@ class NoHardcodedHomePathTests(unittest.TestCase):
 # Positive scope, not a repo-wide ban: "dotfiles" is a legitimate word
 # throughout this repo's own docs (AGENTS.md's harness-tiers section,
 # README.md, MIGRATION.md, CLAUDE_CODE_PARITY.md files describing the split
-# itself, scripts/sync_from_dotfiles.py's own name and --dotfiles-path
-# default). Only the generated-skill-doc set plus the generator source that
+# itself). Only the generated-skill-doc set plus the generator source that
 # produces it should never contain a literal `~/dotfiles` path -- these are
 # the files a coworker reads to find out where to edit something, and
 # dotfiles is never the right answer for agent-toolkit's own copy.

@@ -155,8 +155,7 @@ The toolkit uses a single manifest-driven system to synchronize configuration, i
 
 ```mermaid
 flowchart TD
-    Dotfiles[Dotfiles / Master Config] -->|sync_from_dotfiles.py| RepoRoot[Agent Toolkit Repo]
-    RepoRoot --> Manifest[links.toml]
+    RepoRoot[Agent Toolkit Repo] --> Manifest[links.toml]
     Manifest --> Installer[install.py]
     Installer --> Symlinks[Symlink Projections: ~/.claude, ~/.copilot, ~/.config/opencode, ~/.gemini, ~/.pi]
     Installer --> Copies[Copy Projections: ~/.codex/skills/ - Non-Symlinking Harvester]

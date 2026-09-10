@@ -2,13 +2,11 @@
 
 Project-specific pointers for agents working *in* this repo. Not to be
 confused with `claude/CORE_INSTRUCTIONS.md`: that file is the shareable
-global, cross-project workflow instructions — authored in dotfiles (synced
-here via `scripts/sync_from_dotfiles.py`), symlinked out to
+global, cross-project workflow instructions — authored directly here, like
+any other doc in this repo, and symlinked out unmodified to
 `~/.claude/CLAUDE.md`, `~/.copilot/copilot-instructions.md`,
 `~/.gemini/GEMINI.md`, `~/.pi/agent/AGENTS.md` (see `links.toml`), and read
-directly by opencode as its own global fallback. dotfiles composes it with
-its own personal-policy overlay before symlinking; agent-toolkit symlinks
-it unmodified.
+directly by opencode as its own global fallback.
 General workflow conventions (backlog via `dev_status.py`, git
 worktree-first policy, verification standards, etc.) are already loaded from
 there — this file doesn't repeat them, only points at what's specific to
@@ -82,9 +80,8 @@ not the rules themselves; the mechanics stay in the directory file.
 - **`herdr_remote/`** — every non-static route is its own auth-enforcement
   point; a world-readable token file is refused at load. See
   `herdr_remote/AGENTS.md`.
-- **`scripts/`** — repo-maintenance entrypoints, not harness-runtime code;
-  `sync_from_dotfiles.py` stops loudly rather than guessing on an
-  unexpected rewrite count. See `scripts/AGENTS.md`.
+- **`scripts/`** — repo-maintenance entrypoints, not harness-runtime code.
+  See `scripts/AGENTS.md`.
 
 ## The `AGENTS.md` + `CLAUDE.md` convention
 

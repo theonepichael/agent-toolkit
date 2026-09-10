@@ -136,14 +136,16 @@ genuine dependency there (install.py's own repo-local script imports,
 one-time config seeds, and the personal-overlay composition itself) — `git
 log` on `pi/`, `copilot/`, `agy/`, and the pruned parts of `claude/`
 in dotfiles shows the 2026-09-04 deletion commit for the full picture.
-`sync_from_dotfiles.py` keeps one narrow, permanent, and deliberate upstream
-relationship — `CORE_INSTRUCTIONS.md` is authored in dotfiles and synced in —
-which is the intended final shape, not a leftover. The repo has been public
+This repo has zero external dependency: `CORE_INSTRUCTIONS.md` is authored
+directly here, like any other doc in this repo. The repo has been public
 since 2026-09-08 (item 3) — nothing is still open there. (2026-09-09: the
-tool itself was retooled to match this final shape — from a whole-repo opt-out
-diff reconciler to a single-contract sync of `CORE_INSTRUCTIONS.md` plus the
-generator sweep — the whole-repo machinery having nothing left to reconcile
-after the cutover.)
+sync tool was first retooled to match the post-cutover shape — from a
+whole-repo opt-out diff reconciler to a single-contract sync of
+`CORE_INSTRUCTIONS.md` plus the generator sweep. 2026-09-10: that single
+remaining upstream dependency was removed entirely — the sync tool is
+deleted; this repo now authors `CORE_INSTRUCTIONS.md` itself, the same as
+every other file here. See `AGENTS.md`'s opening paragraph for the current
+shape.)
 
 ## A note on why this file exists
 

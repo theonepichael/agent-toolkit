@@ -76,17 +76,12 @@ MANAGED_DIR_DEST = "~/.claude/scripts"
 # Files where a bare `claude/scripts` mention is legitimate:
 # - MIGRATION.md: historical narrative describing the dotfiles repo's own
 #   claude/scripts (gen_core_instructions.py lives there, not here).
-# - scripts/sync_from_dotfiles.py + its test: their `claude/scripts`
-#   entries classify the dotfiles repo's own scripts (watchcommit_activity
-#   et al. are dotfiles-side, never moved).
 TEXT_SWEEP_ALLOWLIST: frozenset[Path] = frozenset(
     {
         # this file itself: its patterns, frozen dest literals, and failure
         # messages necessarily contain the old-path spelling
         Path("test/test_agent_scripts_layout.py"),
         Path("MIGRATION.md"),
-        Path("scripts/sync_from_dotfiles.py"),
-        Path("scripts/test_sync_from_dotfiles.py"),
     }
 )
 

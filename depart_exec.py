@@ -15,7 +15,7 @@ application, service/gitconfig capture) which is injected here via
 
 Repo-maintenance entrypoint category, same as ``install.py`` /
 ``depart.py``: no ``links.toml`` row, never installed to a harness config
-directory, never replayed by ``scripts/sync_from_dotfiles.py``.
+directory.
 
 Requires Python 3.12+.
 """
