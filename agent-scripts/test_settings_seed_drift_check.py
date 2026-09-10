@@ -242,6 +242,21 @@ class SettingsSeedDriftCheckTestCase(unittest.TestCase):
         result = ssdc._non_cosmetic_drift(seed, live, ssdc.SETTINGS_COSMETIC_KEYS)
         self.assertEqual(result, ["hooks", "permissions"])
 
+    def test_non_cosmetic_drift_routes_through_json_key_drift(self) -> None:
+        """Regression: the cosmetic filter must consume the shared
+        ``json_key_drift`` (settings_seed's canonical key-diff), not
+        re-derive the set difference locally and silently re-diverge."""
+        seed = {"b": 1, "theme": "x"}
+        live = {"b": 2, "theme": "y"}
+        with patch.object(
+            ssdc, "json_key_drift", return_value=["a", "b"]
+        ) as mock_diff:
+            result = ssdc._non_cosmetic_drift(
+                seed, live, ssdc.SETTINGS_COSMETIC_KEYS
+            )
+        self.assertEqual(mock_diff.call_count, 1)
+        self.assertEqual(result, ["a", "b"])  # filtered by cosmetics only
+
     # ── profile resolution (unchanged behavior) ─────────────────────────
 
     def test_resolve_profile_defaults_personal_no_marker(self) -> None:
@@ -1056,22 +1071,6 @@ class SettingsSeedDriftCheckTestCase(unittest.TestCase):
                 ssdc.main([cmd, *extra, "-q"])
             self.assertEqual(mock_cmd.call_args.kwargs.get("quiet"), True)
 
-    # ── _try_parse_json ───────────────────────────────────────────────────
-
-    def test_try_parse_json_returns_parsed_value(self) -> None:
-        path = Path(self.tmpdir) / "ok.json"
-        path.write_text('{"a": 1}')
-        self.assertEqual(ssdc._try_parse_json(path), {"a": 1})
-
-    def test_try_parse_json_returns_none_on_missing_file(self) -> None:
-        path = Path(self.tmpdir) / "missing.json"
-        self.assertIsNone(ssdc._try_parse_json(path))
-
-    def test_try_parse_json_returns_none_on_parse_failure_never_raises(self) -> None:
-        path = Path(self.tmpdir) / "bad.json"
-        path.write_text("// a comment\n{not valid json}")
-        self.assertIsNone(ssdc._try_parse_json(path))
-
     # ── vscode_drift ─────────────────────────────────────────────────────
 
     def test_vscode_drift_identical_content_is_no_drift(self) -> None:
@@ -1121,6 +1120,22 @@ class SettingsSeedDriftCheckTestCase(unittest.TestCase):
         live = Path(self.tmpdir) / "live.json"
         seed.write_text('{"a": 1}')
         self.assertEqual(ssdc.vscode_drift(seed, live), "")
+
+    def test_vscode_drift_delegates_to_describe_vscode_drift(self) -> None:
+        """Regression: vscode_drift must delegate to settings_seed's
+        describe_vscode_drift rather than reimplement the text-first,
+        parse-to-enrich logic locally (the silent-re-divergence hazard)."""
+        seed = Path(self.tmpdir) / "seed.json"
+        live = Path(self.tmpdir) / "live.json"
+        seed.write_text('{"a": 1}')
+        live.write_text('{"a": 2}')
+        with patch.object(
+            ssdc, "describe_vscode_drift", return_value="SHARED-HELPER"
+        ) as mock_describe:
+            result = ssdc.vscode_drift(seed, live)
+        self.assertEqual(mock_describe.call_count, 1)
+        self.assertEqual(mock_describe.call_args.args, (seed, live))
+        self.assertEqual(result, "SHARED-HELPER")
 
     # ── vscode_seed_path ─────────────────────────────────────────────────
 

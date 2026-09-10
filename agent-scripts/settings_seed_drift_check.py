@@ -224,7 +224,7 @@ from datetime import datetime
 from pathlib import Path
 
 import cli_common
-from settings_seed import json_key_drift, opencode_bypass_drift
+from settings_seed import describe_vscode_drift, json_key_drift, opencode_bypass_drift
 
 HOME = Path.home()
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -276,19 +276,25 @@ class DriftCheckError(Exception):
 # json_key_drift and opencode_bypass_drift are imported from
 # agent-scripts/settings_seed.py (see the import above) — the canonical
 # home of install.py's extracted drift layer, replacing the hand-vendored
-# copies this hook carried since the install.py:1173-1226 era. The original
-# reason for vendoring was failure isolation: importing a multi-thousand-
-# line installer into a leaf SessionStart hook meant any import error there
-# silently no-op'd the hook. That concern does not transfer to
-# settings_seed.py: it is small and stdlib-only, importing only its
-# cli_common sibling (already this hook's dependency), so the failure
-# surface of the import is the same directory of files that ship together.
-# The check path therefore regains settings_seed's full bypass curation for
-# free — the "keep in sync if it drifts" burden is gone.
+# copies this hook carried since the install.py:1173-1226 era.
+# describe_vscode_drift is delegated to the same way (vscode_drift below is
+# now a named alias of it, closing the last reimplemented helper).
+# The original reason for vendoring was failure isolation: importing a
+# multi-thousand-line installer into a leaf SessionStart hook meant any
+# import error there silently no-op'd the hook. That concern does not
+# transfer to settings_seed.py: it is small and stdlib-only, importing
+# only its cli_common sibling (already this hook's dependency), so the
+# failure surface of the import is the same directory of files that ship
+# together.
 #
 # Scope note: only the check path uses the imported (wider) bypass
 # curation. The fix path keeps its own OPENCODE_BYPASS_PATTERNS strip list
 # (see that constant's comment) — a deliberate, narrower policy, not drift.
+# Also deliberately NOT delegated: the strict loaders (_load_json_strict /
+# _load_json_pair — loud-fail on parse failure, unlike settings_seed's
+# silent-None model, which would disconnect the smoke detector from its
+# battery) and settings_drift/opencode_drift's cosmetic-denylist filtering
+# and message wording — this module's own policy, not duplication.
 
 
 def _vscode_wsl_user_dir() -> Path | None:
@@ -433,9 +439,9 @@ def _non_cosmetic_drift(
 ) -> list[str]:
     """Return non-cosmetic top-level keys whose values differ between
     seed and live. Everything in ``cosmetics`` is silently permitted to
-    drift; everything else is reported."""
-    keys = (set(seed) | set(live)) - cosmetics
-    return sorted(k for k in keys if seed.get(k) != live.get(k))
+    drift; everything else is reported. The key-diff itself is the shared
+    ``json_key_drift`` (already sorted), not a local re-derivation."""
+    return [k for k in json_key_drift(seed, live) if k not in cosmetics]
 
 
 def settings_drift(seed: Path, live: Path) -> list[str]:
@@ -468,45 +474,18 @@ def opencode_drift(seed: Path, live: Path) -> str:
     return ", ".join(drifted)
 
 
-def _try_parse_json(path: Path) -> object | None:
-    """Best-effort JSON parse of ``path``. Returns None on any read or
-    parse failure — never raises. Used only to enrich a drift message,
-    never to decide whether drift exists, so a commented (JSONC) VS Code
-    file doesn't loud-fail the way ``_load_json_strict`` would."""
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-
-
 def vscode_drift(seed: Path, live: Path) -> str:
     """Describe how a live VS Code settings.json/keybindings.json diverged
     from its seed, or "" if there's nothing to compare or nothing drifted.
 
-    Text equality is the definitive drift signal, not JSON equality — same
-    rationale as install.describe_vscode_drift: VS Code's live files are
-    legal JSONC (comments, trailing commas) that ``json.loads`` can't
-    parse, so a JSON-first check would miss real drift on a merely
-    commented file. ``_try_parse_json`` only runs after text drift is
-    already confirmed, purely to enrich the message. Never raises — there
-    is no loud-fail path for VS Code drift (see module docstring).
+    Delegates to settings_seed's ``describe_vscode_drift`` — the canonical
+    home of the text-equality-first, parse-to-enrich logic this module used
+    to reimplement by hand (see the "imported, not vendored" note above).
+    Never raises — there is no loud-fail path for VS Code drift (see module
+    docstring). Kept as a named wrapper because the tests and this module's
+    callers reference it directly.
     """
-    if not seed.is_file() or not live.is_file():
-        return ""
-    seed_text = seed.read_text(encoding="utf-8")
-    live_text = live.read_text(encoding="utf-8")
-    if seed_text == live_text:
-        return ""
-
-    seed_data = _try_parse_json(seed)
-    live_data = _try_parse_json(live)
-    if isinstance(seed_data, dict) and isinstance(live_data, dict):
-        return ", ".join(json_key_drift(seed_data, live_data))
-    if isinstance(seed_data, list) and isinstance(live_data, list):
-        if len(seed_data) != len(live_data):
-            return f"{len(live_data)} bindings live vs {len(seed_data)} in seed"
-        return f"binding definitions differ ({len(live_data)} bindings)"
-    return "content differs from the repo copy"
+    return describe_vscode_drift(seed, live)
 
 
 def _print_loud(msg: str) -> None:
