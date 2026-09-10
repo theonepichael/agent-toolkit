@@ -54,10 +54,9 @@ authoritative enforcement path, and `--force` (`-f`) is used only on explicit
 user instruction.
 
 Otherwise (item is open): call the `dev_status` tool with `action: "start",
-slug: "<resolved slug>"` (or the bash fallback named in step 1). On a
-main/master checkout, `start` now refuses (worktree guard), and the typed tool
-has no `--allow-main` escape hatch — do step 3 first, then run `start` from
-inside the fresh worktree.
+slug: "<resolved slug>"`. On a main/master checkout, `start` now refuses
+(worktree guard) unless the typed tool is given the fresh worktree via `cwd` —
+do step 3 first, then call `start` with `cwd` set to that worktree path.
 
 ## 3. Branch
 Create or reuse a dedicated worktree and bootstrap dependencies via `python3

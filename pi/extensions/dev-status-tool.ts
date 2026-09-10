@@ -83,7 +83,7 @@ const ACTION_FIELDS: Record<Action, ActionFields> = {
   add: { allowed: ["patch"], required: ["patch"] },
   update: { allowed: ["slug", "patch"], required: ["slug", "patch"] },
   start: {
-    allowed: ["slug", "force", "allowMain", "claimedBy"],
+    allowed: ["slug", "force", "allowMain", "claimedBy", "cwd"],
     required: ["slug"],
   },
   done: { allowed: ["slug"], required: ["slug"] },
@@ -318,7 +318,7 @@ export default function (pi: ExtensionAPI) {
       "dev_status covers everything dev_status.py's CLI does: render, list, ready, show, add, update, start, done, review, approve, reject, gate_set, gate_pass, run, runs, backfill_gate, rename, remove, block, unblock, prune, recap, pending_add, pending_update, pending_list, and the out_of_scope_* actions. If you're about to compose a `python3 ~/.claude/scripts/dev_status.py ...` bash command for any of these, use dev_status with the matching action instead.",
       "dev_status's patch field is a plain object, not a JSON string -- never hand-encode it.",
       'dev_status refuses a numeric slug on any mutating action -- call action: "show" first to resolve a numeric position to its real slug.',
-      "start refuses to run from a main/master checkout (worktree guard) or when the item is actively claimed by another live session (claim collision) -- pass allowMain or force respectively to override, or claimedBy to correct a wrong auto-detected harness name.",
+      "start refuses to run from a main/master checkout (worktree guard) or when the item is actively claimed by another live session (claim collision) -- pass cwd to evaluate the guard and stamp the claim from a dedicated worktree, allowMain to bypass the guard, force to take over a live claim, or claimedBy to correct a wrong auto-detected harness name.",
     ],
     parameters: Type.Object({
       action: StringEnum(ACTIONS),
@@ -394,7 +394,7 @@ export default function (pi: ExtensionAPI) {
       cwd: Type.Optional(
         Type.String({
           description:
-            "run: working directory for command execution (defaults to repo root of item's related_files, or session cwd).",
+            "run: working directory for command execution (defaults to repo root of item's related_files, or session cwd). start: working directory for worktree-guard evaluation and claim stamping.",
         }),
       ),
     }),
@@ -405,7 +405,8 @@ export default function (pi: ExtensionAPI) {
       assertFields(typed.action, typed);
 
       const argv = buildArgv(typed.action, typed);
-      const cwd = ctx ? getEffectiveCwd(ctx) : undefined;
+      const cwd =
+        typed.action === "start" && typed.cwd ? typed.cwd : ctx ? getEffectiveCwd(ctx) : undefined;
 
       // pi.exec's ExecOptions has no `env` field (confirmed against the
       // real, installed dist/core/exec.d.ts -- {signal?, timeout?, cwd?}

@@ -68,7 +68,7 @@ describe("assertFields", () => {
     expect(() => assertFields("prune", { action: "prune", force: true })).not.toThrow();
   });
 
-  test("start accepts optional force/allowMain/claimedBy", () => {
+  test("start accepts optional force/allowMain/claimedBy/cwd", () => {
     expect(() =>
       assertFields("start", {
         action: "start",
@@ -76,6 +76,7 @@ describe("assertFields", () => {
         force: true,
         allowMain: true,
         claimedBy: "pi",
+        cwd: "/worktree",
       }),
     ).not.toThrow();
     expect(() => assertFields("start", { action: "start", slug: "abc" })).not.toThrow();
@@ -146,7 +147,7 @@ describe("buildArgv", () => {
     expect(buildArgv("runs", { action: "runs", slug: "abc" })).toEqual(["runs", "abc"]);
   });
 
-  test("start carries optional force/allowMain/claimedBy flags", () => {
+  test("start carries optional force/allowMain/claimedBy flags and keeps cwd as exec option", () => {
     expect(buildArgv("start", { action: "start", slug: "abc" })).toEqual(["start", "abc"]);
     expect(buildArgv("start", { action: "start", slug: "abc", force: true })).toEqual([
       "start",
@@ -173,6 +174,10 @@ describe("buildArgv", () => {
         claimedBy: "pi",
       }),
     ).toEqual(["start", "abc", "--force", "--allow-main", "--claimed-by", "pi"]);
+    expect(buildArgv("start", { action: "start", slug: "abc", cwd: "/worktree" })).toEqual([
+      "start",
+      "abc",
+    ]);
   });
 
   test("patch actions serialize the patch", () => {
@@ -227,6 +232,40 @@ const _typeSurface: DevStatusParams = { action: "render" };
 void _typeSurface;
 
 describe("devStatusExtension execute", () => {
+  test("start accepts explicit cwd and passes it to pi.exec", async () => {
+    let capturedOptions: any;
+    let capturedArgv: string[] = [];
+    let toolDef: any;
+    const mockPi = {
+      registerTool: (_def: any) => {
+        toolDef = _def;
+      },
+      exec: async (_cmd: string, argv: string[], options: any) => {
+        capturedArgv = argv;
+        capturedOptions = options;
+        return { code: 0, stdout: "ok", stderr: "" };
+      },
+    } as any;
+    devStatusExtension(mockPi);
+
+    const mockCtx = {
+      cwd: "/launch/dir",
+      sessionManager: {
+        getBranch: () => [{ type: "custom", customType: "cwd-change", data: { cwd: "/tmp" } }],
+      },
+    } as any;
+
+    await toolDef.execute(
+      "call-0",
+      { action: "start", slug: "abc", cwd: "/worktree" },
+      undefined,
+      undefined,
+      mockCtx,
+    );
+    expect(capturedOptions.cwd).toBe("/worktree");
+    expect(capturedArgv).not.toContain("/worktree");
+  });
+
   test("passes restored cwd from branch to pi.exec", async () => {
     let capturedOptions: any;
     let toolDef: any;
