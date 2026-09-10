@@ -10,11 +10,11 @@ dest = "~/.agent-tools.zsh"
 # ── Claude Code wiring ───────────────────────────────────────────────────
 
 # All 4 entries below (and the copilot/agy/pi ones further down) source
-# CORE_INSTRUCTIONS.md, not global-instructions.md -- dotfiles' own links.toml
-# sources global-instructions.md instead (the composed core+personal file).
-# This is intentional, permanent divergence, not something to revert to
-# match dotfiles: agent-toolkit never had global-instructions.md at all
-# after this split.
+# CORE_INSTRUCTIONS.md, not global-instructions.md -- the origin repo's own
+# links.toml sources global-instructions.md instead (the composed
+# core+personal file). This is intentional, permanent divergence, not
+# something to revert: agent-toolkit never had global-instructions.md at
+# all after this split.
 [[link]]
 src = "claude/CORE_INSTRUCTIONS.md"
 dest = "~/.claude/CLAUDE.md"
@@ -86,7 +86,7 @@ dest = "~/.claude/commands/refresh-guidance.md"
 harness = "claude"
 
 # Generated from templates/swarm.md.tmpl (gen_skills.py SWARM_PARAMS). The
-# toolkit's own generated copy superseded dotfiles' hand-authored original --
+# toolkit's own generated copy superseded the origin repo's hand-authored original --
 # the swarm/herdr source-of-truth verdict leaves this repo as sole author.
 [[link]]
 src = "claude/commands/swarm.md"
@@ -181,10 +181,6 @@ src = "agent-scripts/gen_skills_params.py"
 dest = "~/.claude/scripts/gen_skills_params.py"
 
 [[link]]
-src = "agent-scripts/repo_identity.py"
-dest = "~/.claude/scripts/repo_identity.py"
-
-[[link]]
 src = "agent-scripts/grill.py"
 dest = "~/.claude/scripts/grill.py"
 
@@ -211,8 +207,8 @@ dest = "~/.claude/scripts/outlook_calendar.py"
 
 
 [[link]]
-src = "agent-scripts/dotfiles_sync_check.py"
-dest = "~/.claude/scripts/dotfiles_sync_check.py"
+src = "agent-scripts/bundle_drift_check.py"
+dest = "~/.claude/scripts/bundle_drift_check.py"
 
 [[link]]
 src = "agent-scripts/settings_seed.py"
@@ -758,13 +754,13 @@ dir = true
 
 [[managed_dir]]
 dest = "~/.claude/scripts"
-# dotfiles keeps symlinking these personal-only/dotfiles-authored scripts
+# The origin repo keeps symlinking these personal-only scripts
 # into this same directory permanently -- never moving to agent-toolkit, so
 # this exclusive-directory audit must not flag them as foreign. Same
 # precedent as herdr-agent-state.ts below (a legitimate third party in an
 # otherwise-exclusive directory). gen_core_instructions.py is CLAUDE.md's
-# own generator for CORE_INSTRUCTIONS.md -- authored and run from dotfiles,
-# the finished file synced into agent-toolkit by sync_from_dotfiles.py, per
+# own generator for CORE_INSTRUCTIONS.md -- authored and run from the
+# origin repo, the finished file synced into agent-toolkit, per
 # this repo's own CLAUDE.md -- found via a live scratch-HOME --check-links
 # run during that item's verification, not part of the original 4-script
 # investigation. (herdr_delegate.py was on this list until this item moved

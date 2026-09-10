@@ -84,7 +84,7 @@ the locally-installed CLI surface, except where noted.
   `.github/hooks/*.json`; `disableAllHooks` global toggle).
    This repo wires hooks under `copilot/hooks/` (symlinked to
    `~/.copilot/hooks/` via `links.toml` gated `platform = "mac"` / `"linux"`):
-   - `session-start.json` running `dev_status.py render` + `dotfiles_sync_check.py`
+   - `session-start.json` running `dev_status.py render` + `bundle_drift_check.py`
      on session start.
    - `post-tool-use.json` for tool tracking.
    - `agent-stop.json` on `agentStop` running `~/.claude/scripts/notify.py --harness Copilot`
@@ -186,7 +186,7 @@ backlog verbatim.
    `errorOccurred` / `agentStop`. `copilot/hooks/session-start.json` is
    symlinked into `~/.copilot/hooks/session-start.json` (via `links.toml`,
    macOS/Linux only)
-   and runs `dev_status.py render` + `dotfiles_sync_check.py` automatically
+   and runs `dev_status.py render` + `bundle_drift_check.py` automatically
   at session open — the auto-render dashboard affordance agy and opencode
   can't replicate (agy's `hooks.md` lists only `PreToolUse`/`PostToolUse`/
   `PreInvocation`/`PostInvocation`/`Stop` — no `SessionStart`; opencode
@@ -281,7 +281,7 @@ install.py) makes the destination's parent dir as needed,
 so a fresh `install.sh --harness=copilot` run
 creates the dir + symlink cleanly; no installer fix is warranted. The
 scoped manual fix `mkdir -p ~/.copilot/skills/dashboard && ln -s
-~/dotfiles/copilot/skills/dashboard/SKILL.md
+copilot/skills/dashboard/SKILL.md
 ~/.copilot/skills/dashboard/SKILL.md` was applied to this machine and
 verified via `copilot skill list` (dashboard now listed) plus the live
 invocation probe in §3. An orphaned `~/.copilot/skills/status/` from the

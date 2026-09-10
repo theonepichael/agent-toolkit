@@ -18,7 +18,7 @@ OVERALL=0
 for entry in "${DISTROS[@]}"; do
   distro="${entry%%:*}"
   dockerfile="${entry#*:}"
-  IMAGE="dotfiles-install-test-$distro"
+  IMAGE="agent-toolkit-install-test-$distro"
 
   echo "==> Building test image ($distro)..."
   if ! docker build -q -t "$IMAGE" -f "$dockerfile" "$HERE" >/dev/null; then

@@ -41,8 +41,7 @@ EXEMPT_PATHSPECS = (
 # shorthand for this specific user's home directory. NOT "/Users/yanil"
 # (macOS) -- checked, and it also matches opencode/opencode.jsonc's WSL
 # drive-mount permission entries (/mnt/c/Users/yanil/...), a different, real
-# finding also tracked under atk-pi-prompts-dotfiles-refs rather than
-# silently exempted here.
+# finding handled separately rather than silently exempted here.
 PATTERNS = ("/home/yanil", "~yanil")
 
 
@@ -78,67 +77,6 @@ class NoHardcodedHomePathTests(unittest.TestCase):
             "tracked file(s) hardcode this machine's home directory -- a "
             "coworker cloning the repo would get a config, fallback path, "
             "or doc example that only resolves here: " + ", ".join(hits),
-        )
-
-
-# Positive scope, not a repo-wide ban: "dotfiles" is a legitimate word
-# throughout this repo's own docs (AGENTS.md's harness-tiers section,
-# README.md, MIGRATION.md, CLAUDE_CODE_PARITY.md files describing the split
-# itself). Only the generated-skill-doc set plus the generator source that
-# produces it should never contain a literal `~/dotfiles` path -- these are
-# the files a coworker reads to find out where to edit something, and
-# dotfiles is never the right answer for agent-toolkit's own copy.
-#
-# agent-scripts/gen_skills_params.py (the generator SOURCE) is deliberately
-# not in this list, even though it's exactly the file this item fixed: its
-# per-repo phrasing helpers (edit_root/symlink_cmd/probe_add_dir) legitimately
-# embed the literal string "~/dotfiles" as dotfiles' own correct value in
-# their dotfiles-branch, permanently, by design -- a raw text scan of that
-# source file can't distinguish "defines the literal for the other repo" from
-# "a site bypassed the helper and hardcoded it again," so it isn't a useful
-# check. The generated OUTPUT below is what actually proves the helpers are
-# used everywhere they should be: if a site ever regresses back to a raw
-# string, --write reproduces it in one of these files and this test catches
-# it there instead.
-DOTFILES_REF_PATHSPECS = (
-    "claude/commands/*.md",
-    "opencode/command/*.md",
-    "opencode/skills/*/SKILL.md",
-    "copilot/skills/*/SKILL.md",
-    "agy/skills/*/SKILL.md",
-    "pi/prompts/*.md",
-    "pi/skills/*/SKILL.md",
-    "templates/*.tmpl",
-    # Known, separate finding, same bug class but a different root cause:
-    # claude/commands/skill-map.md is a hand-authored skill (not a
-    # gen_skills.py output) that also references ~/dotfiles/INTERFACES.md --
-    # this item's generator fix doesn't touch it since it was never part of
-    # the generator's SKILLS set. Worth its own fix, out of scope here.
-    ":!claude/commands/skill-map.md",
-)
-
-
-class NoDotfilesRefInGeneratedSkillDocsTests(unittest.TestCase):
-    @pytest.mark.allow_real_subprocess
-    def test_generated_skill_docs_and_generator_source_have_no_dotfiles_path(
-        self,
-    ) -> None:
-        result = subprocess.run(
-            ["git", "grep", "-I", "-l", "~/dotfiles", "--", *DOTFILES_REF_PATHSPECS],
-            cwd=REPO_ROOT,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if result.returncode not in (0, 1):
-            raise RuntimeError(f"git grep failed: {result.stderr}")
-        hits = [path for path in result.stdout.splitlines() if path]
-        self.assertEqual(
-            hits,
-            [],
-            "generated skill doc(s) or generator source hardcode a "
-            "~/dotfiles path -- these describe agent-toolkit's own repo to "
-            "whoever reads them, and dotfiles is the wrong repo: " + ", ".join(hits),
         )
 
 

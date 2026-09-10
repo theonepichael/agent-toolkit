@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 """Pristine-state departure mode: baseline capture and ownership tracking.
 
-Kept separate from ``install.py`` — see that file's module docstring and the
-execution plan this implements
-(``~/.claude/data/grill/2026-08-13-dotfiles-depart-mode-v2-narrowed-plan.md``)
-for the full design rationale. This module owns only the data model and
+Kept separate from ``install.py`` — see that file's module docstring for
+the full design rationale. This module owns only the data model and
 pure capture/comparison logic (Implementation Sequence step 1); CLI wiring,
 package-transaction tracking, and the actual cleanup live alongside it in
 ``install.py`` and later modules as the feature grows.

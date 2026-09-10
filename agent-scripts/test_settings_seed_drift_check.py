@@ -90,17 +90,17 @@ class SettingsSeedDriftCheckTestCase(unittest.TestCase):
         self.tmpdir = tempfile.mkdtemp()
         self.home = Path(self.tmpdir) / "home"
         self.home.mkdir()
-        self.dotfiles = Path(self.tmpdir) / "dotfiles"
-        self.claude_dir = self.dotfiles / "claude"
+        self.repo_root = Path(self.tmpdir) / "seed-repo"
+        self.claude_dir = self.repo_root / "claude"
         self.claude_dir.mkdir(parents=True)
-        self.opencode_dir = self.dotfiles / "opencode"
+        self.opencode_dir = self.repo_root / "opencode"
         self.opencode_dir.mkdir(parents=True)
-        self.state_dir = self.home / ".local" / "state" / "dotfiles"
+        self.state_dir = self.home / ".local" / "state" / "agent-toolkit"
         self.state_dir.mkdir(parents=True)
 
         self._patches = [
             patch.object(ssdc, "HOME", self.home),
-            patch.object(ssdc, "DOTFILES", self.dotfiles),
+            patch.object(ssdc, "REPO_ROOT", self.repo_root),
             patch.object(ssdc, "PROFILE_MARKER", self.state_dir / "profile"),
             # SessionStart refusal gate must not fire from any test that
             # isn't explicitly exercising it.
@@ -166,7 +166,7 @@ class SettingsSeedDriftCheckTestCase(unittest.TestCase):
         return d
 
     def write_vscode_seed(self, name: str, text: str) -> None:
-        d = self.dotfiles / "vscode"
+        d = self.repo_root / "vscode"
         d.mkdir(parents=True, exist_ok=True)
         (d / name).write_text(text)
 
@@ -190,7 +190,7 @@ class SettingsSeedDriftCheckTestCase(unittest.TestCase):
     def run_sync(self, root: Path | None = None) -> tuple[str, int]:
         out = io.StringIO()
         err = io.StringIO()
-        target_root = root if root is not None else self.dotfiles
+        target_root = root if root is not None else self.repo_root
         with patch("sys.stdout", out), patch("sys.stderr", err):
             code = ssdc.cmd_sync_to_seed(target_root)
         return out.getvalue().strip(), code
@@ -200,7 +200,7 @@ class SettingsSeedDriftCheckTestCase(unittest.TestCase):
     ) -> tuple[str, int]:
         out = io.StringIO()
         err = io.StringIO()
-        target_root = root if root is not None else self.dotfiles
+        target_root = root if root is not None else self.repo_root
         with patch("sys.stdout", out), patch("sys.stderr", err):
             code = ssdc.cmd_push_vscode(target_root, yes=yes)
         return out.getvalue().strip(), code
@@ -984,8 +984,8 @@ class SettingsSeedDriftCheckTestCase(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(self.load_settings_seed(), seed)
 
-    def test_sync_respects_dotfiles_root_override(self) -> None:
-        custom_root = Path(self.tmpdir) / "other-dotfiles"
+    def test_sync_respects_repo_root_override(self) -> None:
+        custom_root = Path(self.tmpdir) / "other-root"
         (custom_root / "claude").mkdir(parents=True)
         (custom_root / "claude" / "settings.json").write_text(
             json.dumps({"permissions": {"allow": []}})
@@ -997,7 +997,7 @@ class SettingsSeedDriftCheckTestCase(unittest.TestCase):
         self.assertEqual(seed_after["hooks"], {"X": []})
         self.assertFalse((self.claude_dir / "settings.json").exists())
 
-    def test_sync_rejects_missing_dotfiles_root(self) -> None:
+    def test_sync_rejects_missing_repo_root(self) -> None:
         nonexistent_root = Path(self.tmpdir) / "does-not-exist"
         out, code = self.run_sync(root=nonexistent_root)
         self.assertEqual(code, 1)
@@ -1030,7 +1030,7 @@ class SettingsSeedDriftCheckTestCase(unittest.TestCase):
         custom_root = Path(self.tmpdir) / "argparse-root"
         with patch.object(ssdc, "cmd_sync_to_seed") as mock_cmd:
             mock_cmd.return_value = 0
-            ssdc.main(["sync-to-seed", "--dotfiles-root", str(custom_root)])
+            ssdc.main(["sync-to-seed", "--repo-root", str(custom_root)])
         mock_cmd.assert_called_once_with(custom_root, quiet=False)
 
     def test_verbosity_flags_parse_after_every_leaf_subcommand(self) -> None:
@@ -1042,12 +1042,12 @@ class SettingsSeedDriftCheckTestCase(unittest.TestCase):
             "sync-to-seed": (
                 ssdc,
                 "cmd_sync_to_seed",
-                ["--dotfiles-root", str(custom_root)],
+                ["--repo-root", str(custom_root)],
             ),
             "push-vscode": (
                 ssdc,
                 "cmd_push_vscode",
-                ["--dotfiles-root", str(custom_root)],
+                ["--repo-root", str(custom_root)],
             ),
         }
         for cmd, (module, target, extra) in cases.items():
@@ -1127,12 +1127,12 @@ class SettingsSeedDriftCheckTestCase(unittest.TestCase):
     def test_vscode_seed_path_no_profile_split(self) -> None:
         self.assertEqual(
             ssdc.vscode_seed_path("settings.json"),
-            self.dotfiles / "vscode" / "settings.json",
+            self.repo_root / "vscode" / "settings.json",
         )
         self.mark_work()
         self.assertEqual(
             ssdc.vscode_seed_path("settings.json"),
-            self.dotfiles / "vscode" / "settings.json",
+            self.repo_root / "vscode" / "settings.json",
         )
 
     def test_vscode_seed_path_accepts_root_override(self) -> None:
@@ -1185,9 +1185,9 @@ class SettingsSeedDriftCheckTestCase(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("synced", out)
         self.assertEqual(
-            (self.dotfiles / "vscode" / "settings.json").read_text(), '{"a": 2}\n'
+            (self.repo_root / "vscode" / "settings.json").read_text(), '{"a": 2}\n'
         )
-        backups = list((self.dotfiles / "vscode").glob("settings.json.bak.*"))
+        backups = list((self.repo_root / "vscode").glob("settings.json.bak.*"))
         self.assertEqual(len(backups), 1)
         self.assertEqual(backups[0].read_text(), '{"a": 1}\n')
 
@@ -1201,7 +1201,7 @@ class SettingsSeedDriftCheckTestCase(unittest.TestCase):
             _out, code = self.run_sync()
         self.assertEqual(code, 0)
         self.assertEqual(
-            (self.dotfiles / "vscode" / "settings.json").read_text(), live_text
+            (self.repo_root / "vscode" / "settings.json").read_text(), live_text
         )
 
     def test_sync_vscode_noop_when_user_dir_none(self) -> None:
@@ -1211,7 +1211,7 @@ class SettingsSeedDriftCheckTestCase(unittest.TestCase):
         self.assertEqual(out, "")
         self.assertEqual(code, 0)
         self.assertEqual(
-            (self.dotfiles / "vscode" / "settings.json").read_text(), '{"a": 1}\n'
+            (self.repo_root / "vscode" / "settings.json").read_text(), '{"a": 1}\n'
         )
 
     def test_sync_vscode_noop_when_live_missing(self) -> None:
@@ -1221,10 +1221,10 @@ class SettingsSeedDriftCheckTestCase(unittest.TestCase):
         self.assertEqual(out, "")
         self.assertEqual(code, 0)
         self.assertEqual(
-            (self.dotfiles / "vscode" / "settings.json").read_text(), '{"a": 1}\n'
+            (self.repo_root / "vscode" / "settings.json").read_text(), '{"a": 1}\n'
         )
 
-    def test_sync_vscode_respects_dotfiles_root_override(self) -> None:
+    def test_sync_vscode_respects_repo_root_override(self) -> None:
         custom_root = Path(self.tmpdir) / "vscode-alt-root"
         (custom_root / "vscode").mkdir(parents=True)
         (custom_root / "vscode" / "settings.json").write_text('{"a": 1}\n')
@@ -1235,7 +1235,7 @@ class SettingsSeedDriftCheckTestCase(unittest.TestCase):
         self.assertEqual(
             (custom_root / "vscode" / "settings.json").read_text(), '{"a": 2}\n'
         )
-        self.assertFalse((self.dotfiles / "vscode" / "settings.json").exists())
+        self.assertFalse((self.repo_root / "vscode" / "settings.json").exists())
 
     # ── autoMode cosmetic key ────────────────────────────────────────────
 
@@ -1566,14 +1566,14 @@ class SettingsSeedDriftCheckTestCase(unittest.TestCase):
 
 
 class SettingsSeedDriftCheckDefaultRootTestCase(unittest.TestCase):
-    def test_dotfiles_default_derives_from_script_location_not_home(self) -> None:
-        # Regression: DOTFILES used to be hardcoded to ~/dotfiles, which
-        # breaks the moment the checkout has any other name (e.g. a
-        # worktree, or the ~/.dotfiles rename a GitHub-blocked work
-        # machine's zip-based transfer workflow produces). It must be
-        # derived from the script's own location instead, same convention
-        # install.py already uses.
-        self.assertEqual(ssdc.DOTFILES, REPO_ROOT)
+    def test_repo_root_default_derives_from_script_location_not_home(self) -> None:
+        # Regression: REPO_ROOT used to be hardcoded to a fixed
+        # home-anchored checkout path, which breaks the moment the checkout
+        # has any other name (e.g. a worktree, or the `~/.` rename a
+        # GitHub-blocked work machine's zip-based transfer workflow
+        # produces). It must be derived from the script's own location
+        # instead, same convention install.py already uses.
+        self.assertEqual(ssdc.REPO_ROOT, REPO_ROOT)
 
 
 if __name__ == "__main__":

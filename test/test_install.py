@@ -28,7 +28,7 @@ sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "agent-scripts"))
 
 # Matches install.py's own build_context()/Context.state_dir -- "agent-toolkit",
-# not "dotfiles", so this repo's manifest never collides with dotfiles' own
+# so this repo's manifest never collides with the origin repo's own
 # ~/.local/state/dotfiles/history.jsonl (see install.py's build_context
 # docstring comment for the orphan-cleanup collision this prevents).
 STATE_DIR_NAME = "agent-toolkit"
@@ -93,7 +93,7 @@ def make_ctx(
     report_uninstalled=False,
     system="Linux",
     is_wsl=False,
-    dotfiles=REPO_ROOT,
+    repo_root=REPO_ROOT,
     force_harness=True,
 ):
     """Build a Context pointed at a throwaway home and the real repo."""
@@ -113,7 +113,7 @@ def make_ctx(
     )
     state_dir = home / ".local" / "state" / STATE_DIR_NAME
     return install.Context(
-        dotfiles=dotfiles,
+        repo_root=repo_root,
         home=home,
         opts=opts,
         manifest=install.Manifest(state_dir / "history.jsonl", dry_run=dry_run),
@@ -368,7 +368,7 @@ def test_claude_script_links_use_correct_dest(links):
 def test_every_claude_command_has_a_links_entry(links):
     """The command-dir twin of test_every_claude_script_has_a_links_entry.
     swarm.md shipped as a generated command with no links.toml entry while
-    dotfiles still linked its hand-authored original -- the toolkit's copy
+    the origin repo still linked its hand-authored original -- the toolkit's copy
     was silently never installable, one of the two half-owned states the
     swarm/herdr source-of-truth verdict cleaned up. Every generated command
     must be linked, or it exists only in the checkout."""
@@ -956,7 +956,7 @@ _APPROVED_BASH_PATTERNS = frozenset(
         "python3 ~/.claude/scripts/grill.py *",
         "python3 ~/.claude/scripts/second_opinion.py *",
         "python3 ~/.claude/scripts/settings_seed_drift_check.py *",
-        "python3 ~/.claude/scripts/dotfiles_sync_check.py *",
+        "python3 ~/.claude/scripts/bundle_drift_check.py *",
         "python3 ~/.claude/scripts/vitals_promotion.py *",
         "python3 agent-scripts/vitals_promotion.py *",
         # dev_status with environment variable
@@ -1114,7 +1114,7 @@ def test_adopt_copies_live_claude_text_without_history_or_backup(
     seed.chmod(0o640)
     _stub_clean_git(monkeypatch)
 
-    ctx = make_ctx(home, harnesses=("claude",), adopt=True, dotfiles=repo)
+    ctx = make_ctx(home, harnesses=("claude",), adopt=True, repo_root=repo)
     _, drift = install.seed_claude_settings(ctx)
 
     assert drift == ""
@@ -1133,7 +1133,7 @@ def test_adopt_crlf_only_difference_is_a_noop(tmp_path, home, monkeypatch):
     dest.write_bytes(b'{"model":"same"}\r\n')
     _stub_clean_git(monkeypatch)
 
-    ctx = make_ctx(home, harnesses=("claude",), adopt=True, dotfiles=repo)
+    ctx = make_ctx(home, harnesses=("claude",), adopt=True, repo_root=repo)
     _, drift = install.seed_claude_settings(ctx)
 
     assert drift == ""
@@ -1154,7 +1154,7 @@ def test_adopt_copies_both_vscode_files_when_wsl_selected(tmp_path, home, monkey
     monkeypatch.setattr(install, "_vscode_wsl_user_dir", lambda: live_dir)
     _stub_clean_git(monkeypatch)
 
-    ctx = make_ctx(home, is_wsl=True, adopt=True, dotfiles=repo)
+    ctx = make_ctx(home, is_wsl=True, adopt=True, repo_root=repo)
     results = install.seed_vscode_settings(ctx)
 
     assert all(drift == "" for _, (_, drift) in results)
@@ -1177,7 +1177,7 @@ def test_adopt_refuses_malformed_live_opencode_with_live_path(
     dest.write_text('{"theme":}\n')
     _stub_clean_git(monkeypatch)
 
-    ctx = make_ctx(home, harnesses=("opencode",), adopt=True, dotfiles=repo)
+    ctx = make_ctx(home, harnesses=("opencode",), adopt=True, repo_root=repo)
     _, drift = install.seed_opencode_config(ctx)
     out = capsys.readouterr().out
 
@@ -1192,7 +1192,7 @@ def test_adopt_missing_live_file_is_a_silent_noop(tmp_path, home, monkeypatch):
     )
     _stub_clean_git(monkeypatch)
 
-    ctx = make_ctx(home, harnesses=("claude",), adopt=True, dotfiles=repo)
+    ctx = make_ctx(home, harnesses=("claude",), adopt=True, repo_root=repo)
     assert install.seed_claude_settings(ctx) == ("settings.json", "")
     assert not (home / ".claude" / "settings.json").exists()
     assert not ctx.reporter.skipped
@@ -1208,7 +1208,7 @@ def test_adopt_dry_run_does_not_change_seed(tmp_path, home, monkeypatch, capsys)
     dest.write_text('{"model":"live"}\n')
     _stub_clean_git(monkeypatch)
 
-    ctx = make_ctx(home, harnesses=("claude",), adopt=True, dry_run=True, dotfiles=repo)
+    ctx = make_ctx(home, harnesses=("claude",), adopt=True, dry_run=True, repo_root=repo)
     _, drift = install.seed_claude_settings(ctx)
 
     assert drift == ""
@@ -1226,7 +1226,7 @@ def test_adopt_refuses_dirty_repo_seed(tmp_path, home, monkeypatch, capsys):
     dest.write_text('{"model":"live"}\n')
     _stub_clean_git(monkeypatch, status=" M claude/settings.json\n")
 
-    ctx = make_ctx(home, harnesses=("claude",), adopt=True, dotfiles=repo)
+    ctx = make_ctx(home, harnesses=("claude",), adopt=True, repo_root=repo)
     _, drift = install.seed_claude_settings(ctx)
 
     assert drift == "model"
@@ -1248,7 +1248,7 @@ def test_adopt_refuses_untracked_repo_seed(tmp_path, home, monkeypatch, capsys):
         return install.CommandResult(False)
 
     monkeypatch.setattr(install, "run_command", _untracked)
-    ctx = make_ctx(home, harnesses=("claude",), adopt=True, dotfiles=repo)
+    ctx = make_ctx(home, harnesses=("claude",), adopt=True, repo_root=repo)
     _, drift = install.seed_claude_settings(ctx)
 
     assert drift == "model"
@@ -1270,7 +1270,7 @@ def test_adopt_refuses_symlinked_repo_seed_without_replacing_link(
     dest.parent.mkdir(parents=True)
     dest.write_text('{"model":"live"}\n')
 
-    ctx = make_ctx(home, harnesses=("claude",), adopt=True, dotfiles=repo)
+    ctx = make_ctx(home, harnesses=("claude",), adopt=True, repo_root=repo)
     _, drift = install.seed_claude_settings(ctx)
 
     assert drift
@@ -1289,7 +1289,7 @@ def test_adopt_opencode_blocks_live_bypass(tmp_path, home, monkeypatch, capsys):
     dest.write_text('{"permission":{"bash":{"xargs *":"allow"}}}\n')
     _stub_clean_git(monkeypatch)
 
-    ctx = make_ctx(home, harnesses=("opencode",), adopt=True, dotfiles=repo)
+    ctx = make_ctx(home, harnesses=("opencode",), adopt=True, repo_root=repo)
     _, drift = install.seed_opencode_config(ctx)
     out = capsys.readouterr().out
 
@@ -1309,7 +1309,7 @@ def test_adopt_opencode_repairs_malformed_repo_seed(tmp_path, home, monkeypatch)
     dest.write_text('{"theme":"custom"}\n')
     _stub_clean_git(monkeypatch)
 
-    ctx = make_ctx(home, harnesses=("opencode",), adopt=True, dotfiles=repo)
+    ctx = make_ctx(home, harnesses=("opencode",), adopt=True, repo_root=repo)
     _, drift = install.seed_opencode_config(ctx)
 
     assert drift == ""
@@ -1334,7 +1334,7 @@ def test_adopt_opencode_writes_the_validated_snapshot(tmp_path, home, monkeypatc
         return result
 
     monkeypatch.setattr(install, "_opencode_adopt_blocker", mutate_after_validation)
-    ctx = make_ctx(home, harnesses=("opencode",), adopt=True, dotfiles=repo)
+    ctx = make_ctx(home, harnesses=("opencode",), adopt=True, repo_root=repo)
     _, drift = install.seed_opencode_config(ctx)
 
     assert drift == ""
@@ -1348,7 +1348,7 @@ def test_adopt_empty_live_file_is_reported(tmp_path, home, monkeypatch, capsys):
     dest.write_text("")
     _stub_clean_git(monkeypatch)
 
-    ctx = make_ctx(home, harnesses=("claude",), adopt=True, dotfiles=repo)
+    ctx = make_ctx(home, harnesses=("claude",), adopt=True, repo_root=repo)
     _, drift = install.seed_claude_settings(ctx)
 
     assert drift != ""
@@ -1366,7 +1366,7 @@ def test_adopt_atomic_failure_preserves_seed(tmp_path, home, monkeypatch, capsys
     _stub_clean_git(monkeypatch)
     monkeypatch.setattr(install.os, "replace", _raise_oserror)
 
-    ctx = make_ctx(home, harnesses=("claude",), adopt=True, dotfiles=repo)
+    ctx = make_ctx(home, harnesses=("claude",), adopt=True, repo_root=repo)
     _, drift = install.seed_claude_settings(ctx)
 
     assert drift == "model"
@@ -3482,7 +3482,7 @@ platform = "mac"
 
 @pytest.fixture
 def fake_repo(tmp_path):
-    """A throwaway dotfiles repo with its own links.toml.
+    """A throwaway repo with its own links.toml.
 
     Deliberately not the real REPO_ROOT: these tests delete and rename
     sources to provoke findings, which must never touch tracked files.
@@ -3508,7 +3508,7 @@ def fake_repo(tmp_path):
 def wire_check_links(ctx, *pairs):
     """Symlink the given (src, dest) relative pairs, recording them as an install."""
     for src, dest in pairs:
-        install.symlink(ctx, ctx.dotfiles / src, install.expand_dest(dest, ctx.home))
+        install.symlink(ctx, ctx.repo_root / src, install.expand_dest(dest, ctx.home))
 
 
 def snapshot_tree(root):
@@ -3526,7 +3526,7 @@ def snapshot_tree(root):
 
 def check_links_ctx(home, fake_repo, **kwargs):
     kwargs.setdefault("harnesses", ("claude", "copilot"))
-    return make_ctx(home, dotfiles=fake_repo, **kwargs)
+    return make_ctx(home, repo_root=fake_repo, **kwargs)
 
 
 def test_check_links_clean_state_reports_nothing(home, fake_repo, capsys):
@@ -3693,7 +3693,7 @@ def test_check_links_audits_personal_overlay_normally_without_dotfiles(
 
 
 def make_checkout(root, *, main):
-    """Build a second dotfiles checkout that _is_dotfiles_checkout() accepts.
+    """Build a second checkout of this repo that _is_repo_checkout() accepts.
 
     `main` picks the git signature that tells the two apart on disk: a primary
     checkout carries `.git` as a directory, a `git worktree add` checkout
@@ -3855,7 +3855,7 @@ def test_check_links_changes_nothing_on_disk(home, fake_repo, capsys):
 def test_check_links_missing_links_toml_exits_2(home, tmp_path, monkeypatch, capsys):
     empty_repo = tmp_path / "empty"
     empty_repo.mkdir()
-    ctx = make_ctx(home, dotfiles=empty_repo)
+    ctx = make_ctx(home, repo_root=empty_repo)
     monkeypatch.setattr(install, "build_context", lambda opts: ctx)
 
     code = install.main(["--check-links"])
@@ -4190,7 +4190,7 @@ def test_check_links_skips_manifest_recorded_backup(home, managed_repo, capsys):
     """A backup whose destination is still present is live --rollback payload.
 
     Telling the user to delete it would destroy the only copy of their
-    pre-dotfiles original, so it must never read as a foreign file.
+    pre-install original, so it must never read as a foreign file.
     """
     ctx = check_links_ctx(home, managed_repo, harnesses=("claude",))
     target = home / ".claude/scripts/one.py"
@@ -4549,7 +4549,7 @@ def test_load_links_rejects_non_bool_dir(tmp_path):
 
 @pytest.fixture
 def dir_repo(tmp_path):
-    """A throwaway dotfiles repo with a work-only ``dir=true`` row.
+    """A throwaway repo with a work-only ``dir=true`` row.
 
     Mirrors the real design: the row is scoped to profile="work" so it's a
     no-op on personal, and its source directory starts empty — individual
@@ -4568,7 +4568,7 @@ def dir_repo(tmp_path):
 
 
 def dir_repo_ctx(home, dir_repo, *, profile="work", **kwargs):
-    return make_ctx(home, dotfiles=dir_repo, profile=profile, **kwargs)
+    return make_ctx(home, repo_root=dir_repo, profile=profile, **kwargs)
 
 
 def dir_true_spec(**overrides):
@@ -4701,7 +4701,8 @@ def test_build_context_uses_the_agent_toolkit_state_directory(monkeypatch, tmp_p
     """Direct regression test for build_context() itself, not just a
     simulated scenario: the manifest-scoping test below constructs its own
     Manifest objects and never calls build_context(), so it would not
-    catch a regression that re-hardcoded "dotfiles" back into
+    catch a regression that re-hardcoded the old shared state-directory
+    name back into
     build_context() specifically while leaving Context.state_dir's
     derivation intact. This test closes that gap by calling the real
     function."""
@@ -4726,21 +4727,21 @@ def test_orphan_cleanup_does_not_delete_a_different_repos_manifest_entries(
     another repo's install (a different state directory) recorded.
 
     Reproduces the real bug directly: install.py's build_context() and
-    Context.state_dir used to both hardcode "dotfiles" as the state
-    directory name, so agent-toolkit's install and dotfiles' install wrote
-    to the SAME manifest (~/.local/state/dotfiles/history.jsonl). Every
-    plain install runs orphan-cleanup, which deletes any manifest-recorded
-    symlink the CURRENT repo's own links.toml doesn't produce -- so
-    agent-toolkit's install treated dotfiles' personal-only symlinks
-    (recorded in that shared manifest) as its own stale orphans and
-    deleted them, with no warning under --quiet. Proven live against a
-    real scratch HOME during this item's investigation: fresh install of
-    dotfiles (4 personal-only scripts present), then agent-toolkit
-    installed on top, all 4 silently gone.
+    Context.state_dir used to both hardcode the origin repo's state
+    directory name, so agent-toolkit's install and the origin repo's
+    install wrote to the SAME manifest (~/.local/state/dotfiles/history.jsonl).
+    Every plain install runs orphan-cleanup, which deletes any
+    manifest-recorded symlink the CURRENT repo's own links.toml doesn't
+    produce -- so agent-toolkit's install treated the origin repo's
+    personal-only symlinks (recorded in that shared manifest) as its own
+    stale orphans and deleted them, with no warning under --quiet. Proven
+    live against a real scratch HOME during this item's investigation:
+    fresh install of the origin repo (4 personal-only scripts present),
+    then agent-toolkit installed on top, all 4 silently gone.
 
     This test simulates the two repos with two Manifest objects at
     different state directories (matching install.py's real, now-fixed
-    "agent-toolkit" vs. dotfiles' own "dotfiles" naming) rather than two
+    per-repo state-directory naming) rather than two
     real checkouts, and proves the destination the "other repo" manifest
     recorded survives a plain install run that doesn't know about it.
     """
@@ -4759,7 +4760,7 @@ def test_orphan_cleanup_does_not_delete_a_different_repos_manifest_entries(
 
     # This repo's own install: state_dir defaults to STATE_DIR_NAME
     # ("agent-toolkit"), a different directory than other_repo_state_dir
-    # ("dotfiles") -- the actual fix under test. Its own links.toml (here,
+    # -- the actual fix under test. Its own links.toml (here,
     # an empty spec list) has no entry for other_repo_dest at all.
     ctx = dir_repo_ctx(home, dir_repo)
     assert ctx.manifest.path.parent != other_repo_state_dir, (
@@ -4808,7 +4809,7 @@ def test_auto_cleanup_never_deletes_a_destination_another_tool_has_claimed(
     home, offline_install
 ):
     """2026-09-07 incident: install-with-agent-toolkit.sh runs agent-toolkit's
-    installer first, then dotfiles' second. When dotfiles' own links.toml no
+    installer first, then the origin repo's second. When the origin repo's own links.toml no
     longer produces a destination agent-toolkit's installer just claimed
     moments earlier in the same run, orphan-cleanup must leave that live
     symlink alone -- it belongs to whoever claimed it, not to a stale
@@ -5037,11 +5038,11 @@ def test_main_fails_loudly_when_harness_binary_missing(home, monkeypatch, capsys
 def test_manual_steps_never_name_watchcommit(home, capsys):
     """agent-toolkit does not ship watchcommit, so its summary must not.
 
-    The dotfiles-side install.py legitimately tells the user to run
+    The origin repo's install.py legitimately tells the user to run
     'claude login' so watchcommit can generate commit messages -- this
     repo's snapshot carried the line even though watchcommit itself is
-    dotfiles-only (empty MANAGED_SERVICES, load_watchcommit_agent never
-    called, scripts pruned per sync_from_dotfiles' BLOCKLIST/EXCLUDE).
+    origin-repo-only (empty MANAGED_SERVICES, load_watchcommit_agent never
+    called, scripts pruned when this tree was split off from the origin repo).
     """
     for profile in ("personal", "work"):
         ctx = make_ctx(home, harnesses=("claude",), profile=profile)
@@ -5056,9 +5057,9 @@ def test_symlink_step_output_never_names_watchcommit(home, capsys):
     """install_symlinks must not print a watchcommit exclusion line.
 
     The work-profile branch carried 'watchcommit: excluded (work
-    profile)' from the dotfiles snapshot, but this repo never installs
-    watchcommit (empty MANAGED_SERVICES, scripts pruned per
-    sync_from_dotfiles' BLOCKLIST/EXCLUDE) — claiming to exclude it is
+    profile)' from the origin repo's snapshot, but this repo never installs
+    watchcommit (empty MANAGED_SERVICES, scripts pruned when this tree
+    was split off from the origin repo) — claiming to exclude it is
     the same leak class as the manual-step message above.
     """
     for profile in ("personal", "work"):
@@ -5072,7 +5073,7 @@ def test_no_watchcommit_named_callables_on_install_module():
     """No install-module callable may carry a watchcommit name.
 
     load_watchcommit_agent (macOS launchd loader) shipped as dead code —
-    defined but never called, because watchcommit is dotfiles-only. The
+    defined but never called, because watchcommit is origin-repo-only. The
     guard keeps any successor remnant out: a watchcommit-named function
     here has no caller by construction.
     """

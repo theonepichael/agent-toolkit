@@ -10,7 +10,7 @@
 # One sanctioned exception: the watchcommit daemon (scripts/watchcommit.py).
 # Its whole job is loss-protection auto-commits of the watched repo, and its
 # design commits straight to main -- it predates this guard and is the
-# reason the watched dotfiles repo stays backed up at all. It sets
+# reason the watched repo stays backed up at all. It sets
 # WATCHCOMMIT_DAEMON=1 in its own process env at startup, which git passes
 # down to this hook, so only the daemon's process tree opens the bypass;
 # every human or agent commit on main stays blocked. Exact-value match:

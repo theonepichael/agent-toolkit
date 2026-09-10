@@ -89,7 +89,7 @@ const REAL_PICKER_OUTPUT = `
 
  ↑↓ navigate • Enter to select • Esc to cancel
 ─────────────────────────────────────────────────────────────────────────────────────
-~/dotfiles-meta-pi-swarm-orchestration (meta-pi-swarm-orchestration)
+~/agent-toolkit-meta-pi-swarm-orchestration (meta-pi-swarm-orchestration)
 ↑16k ↓65 $0.001 1.6%/1.0M (auto)                                 glm-5.3-flash • high`;
 
 function makeWorker(overrides: Partial<WorkerRecord> = {}): WorkerRecord {
@@ -355,7 +355,7 @@ const PICKER_BELOW_A_NUMBERED_PLAN = `
 
  ↑↓ navigate • Enter to select • Esc to cancel
 ─────────────────────────────────────────────────────────────────────────────────────
-~/dotfiles (main)`;
+~/agent-toolkit (main)`;
 
 // Verbatim from a real 42-column worker pane during the 2026-09-02 concurrent
 // swarm run. Three workers split a 168-column tab into four equal panes, and
@@ -388,7 +388,7 @@ const NARROW_PANE_PICKER = `
  \u2191\u2193 navigate \u2022 Enter to select \u2022 Esc to
  cancel
 ───────────────────────────────────────
-~/dotfiles (main)`;
+~/agent-toolkit (main)`;
 
 // Reconstructed from the 2026-09-07 swarm run's live mangle: a real worker pane's land-gate
 // picker whose option LABELS (not just descriptions) wrapped across lines. Today's parser
@@ -1237,7 +1237,7 @@ function realWaitEnvelope(agentStatus: string, name: string, paneId: string): st
       agent: {
         agent: "pi",
         agent_status: agentStatus,
-        cwd: "/home/yanil/dotfiles",
+        cwd: "/home/yanil/agent-toolkit",
         focused: false,
         interactive_ready: true,
         name,
@@ -2790,7 +2790,7 @@ describe("parseTabCreate", () => {
     result: {
       root_pane: {
         agent_status: "unknown",
-        cwd: "/home/yanil/dotfiles",
+        cwd: "/home/yanil/agent-toolkit",
         focused: false,
         pane_id: "w1:p2W",
         revision: 0,
@@ -3751,7 +3751,7 @@ describe("swarm_poll: an elapsed wait is a check-in, not a death certificate", (
       slug: "some-item",
       paneId: "w1:pZ",
       tabId: "w1:tZ",
-      cwd: "/home/yanil/dotfiles",
+      cwd: "/home/yanil/agent-toolkit",
       workingSinceMs: Date.now(),
       lifecycle: "active",
       ...overrides,
@@ -3869,7 +3869,7 @@ describe("swarm_poll: an elapsed wait is a check-in, not a death certificate", (
     expect(loadState(runId, dir)?.workers).toHaveLength(0);
     // The four things that had to be cleaned up by hand after the live run.
     const detail = res.details.events[0]?.detail ?? "";
-    expect(detail).toContain("/home/yanil/dotfiles-some-item");
+    expect(detail).toContain("/home/yanil/agent-toolkit-some-item");
     expect(detail).toContain("in-progress with a live claim");
     expect(detail).toContain("still reported working");
   });
@@ -4150,13 +4150,13 @@ describe("deliberate-stop reporting", () => {
     agent: "a1",
     slug: "some-item",
     paneId: "p",
-    cwd: "/home/yanil/dotfiles",
+    cwd: "/home/yanil/agent-toolkit",
     lifecycle: "active",
   };
 
   test("the worktree is derived as a sibling of the repo, per the repo convention", () => {
-    expect(workerWorktreePath("/home/yanil/dotfiles", "some-item")).toBe(
-      "/home/yanil/dotfiles-some-item",
+    expect(workerWorktreePath("/home/yanil/agent-toolkit", "some-item")).toBe(
+      "/home/yanil/agent-toolkit-some-item",
     );
   });
 
@@ -4167,7 +4167,7 @@ describe("deliberate-stop reporting", () => {
   test("a confirmed-live stop says the worker was working, and names the recovery path", () => {
     const detail = deadlineStopDetail(worker, 4 * 60 * 60 * 1000, { livenessConfirmed: true });
     expect(detail).toContain("still reported working");
-    expect(detail).toContain("/home/yanil/dotfiles-some-item");
+    expect(detail).toContain("/home/yanil/agent-toolkit-some-item");
     expect(detail).toContain("in-progress with a live claim");
   });
 
@@ -4182,7 +4182,7 @@ describe("deliberate-stop reporting", () => {
     expect(detail).not.toContain("still reported working");
     expect(detail).toContain("could NOT be verified");
     expect(detail).toContain("abandoned");
-    expect(detail).toContain("/home/yanil/dotfiles-some-item");
+    expect(detail).toContain("/home/yanil/agent-toolkit-some-item");
   });
 
   test("with no cwd, the report says the path is unavailable rather than inventing one", () => {

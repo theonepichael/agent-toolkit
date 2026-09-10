@@ -21,9 +21,8 @@ never as a side effect of an unrelated task.
      or add <repo-root>/refresh-guidance.toml`. If `<repo-root>` actually
      is the agent-toolkit checkout, retry once with `--doc-set
      agent-toolkit` appended. Otherwise the target repo has no
-     `refresh-guidance.toml` yet (as of 2026-09, this is true for
-     dotfiles — tracked as a separate, not-yet-landed backlog item to add
-     one there) — relay this message to the user as an actionable "this
+     `refresh-guidance.toml` yet (as of 2026-09, no other repo in this
+     setup has one) — relay this message to the user as an actionable "this
      repo isn't configured for refresh-guidance yet," not a tool failure,
      and stop.
 

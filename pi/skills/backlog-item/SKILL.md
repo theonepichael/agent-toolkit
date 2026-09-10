@@ -344,7 +344,7 @@ a single-item target (see the invocation note above).
 
 Eligibility is mode-specific and fail-closed. Concurrent mode requires the
 existing `worker_safe: true`. Serial mode requires `serial_safe: true`, which
-allows a single-repository harness item such as dotfiles-only `meta-` work but
+allows a single-repository harness item scoped to one repo's own prefix but
 refuses cross-repository catch-alls, work/unknown prefixes, missing target
 paths, and unresolved or prefix-mismatched repositories. Report permanent
 refusals once; do not wait or retry them in the same run.

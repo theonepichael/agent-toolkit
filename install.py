@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""install.py — dotfiles + AI-harness provisioner for macOS and Linux/WSL.
+"""install.py — agent-toolkit + AI-harness provisioner for macOS and Linux/WSL.
 
 Ported from the zsh ``install.sh`` this repo used through mid-2026; the
 shell script is now a thin bootstrap that locates a Python 3.12+ and execs
@@ -14,8 +14,8 @@ Two properties from the shell version are load-bearing and preserved here:
   summary; the exit code is 1 if anything was skipped, 0 otherwise.
 * **Every file mutation is recorded** to an append-only history log
   (``~/.local/state/agent-toolkit/history.jsonl`` -- a directory of its own,
-  distinct from dotfiles' ``~/.local/state/dotfiles/``, so this repo's
-  orphan-cleanup never treats dotfiles' still-wanted symlinks as its own
+  distinct from the origin repo's own state directory, so this repo's
+  orphan-cleanup never treats that repo's still-wanted symlinks as its own
   stale entries) that never gets truncated, so ``--rollback`` reverses
   *every* run ever recorded, not just the most recent one. Packages are
   reported but never uninstalled.
@@ -77,7 +77,7 @@ _path_exists = link_inspect.path_exists
 _link_target = link_inspect.link_target
 _same_path = link_inspect.same_path
 _implied_repo_root = link_inspect.implied_repo_root
-_is_dotfiles_checkout = link_inspect.is_dotfiles_checkout
+_is_repo_checkout = link_inspect.is_repo_checkout
 _is_main_checkout = link_inspect.is_main_checkout
 
 # Re-exports from settings_seed (the extracted copy-once-settings module in
@@ -161,8 +161,8 @@ usage: ./install.sh --harness=<claude,copilot,opencode,agy,pi,codex>[,...] [--pr
               --profile, or --force) — except --dry-run and --wipe, see
               below.
   --wipe      modifier for --rollback: instead of restoring the original
-              pre-dotfiles files from their .bak backups, deletes the
-              backups outright, so nothing dotfiles-related is left behind.
+              pre-install files from their .bak backups, deletes the
+              backups outright, so nothing installer-related is left behind.
               Also sweeps untracked state the installer creates but never
               records in its history — Neovim's XDG state dirs
               (~/.local/share/nvim, ~/.local/state/nvim, ~/.cache/nvim) and,
@@ -490,7 +490,7 @@ class Options:
 class Context:
     """Everything a step needs: paths, options, history, and the skip tally."""
 
-    dotfiles: Path
+    repo_root: Path
     home: Path
     opts: Options
     manifest: Manifest
@@ -542,9 +542,9 @@ class Context:
         return link_inspect.format_path(path, self.home)
 
 
-def build_context(opts: Options, dotfiles: Path | None = None) -> Context:
+def build_context(opts: Options, repo_root: Path | None = None) -> Context:
     """Assemble a :class:`Context` for a real run on this machine."""
-    root = dotfiles or Path(__file__).resolve().parent
+    root = repo_root or Path(__file__).resolve().parent
     home = Path.home()
     system = platform.system()
     # The manifest path lives in link_inspect.manifest_path (the auditor
@@ -556,14 +556,14 @@ def build_context(opts: Options, dotfiles: Path | None = None) -> Context:
     # links.toml doesn't produce. A shared state directory means each
     # repo's install treats the OTHER repo's still-wanted symlinks as its
     # own stale orphans and deletes them -- reproduced directly: a fresh
-    # machine with dotfiles installed, then agent-toolkit installed on top,
-    # loses dotfiles' personal-only scripts (dev_status_sync.py,
+    # machine with the origin repo installed, then agent-toolkit installed
+    # on top, loses the origin repo's personal-only scripts (dev_status_sync.py,
     # watchcommit_activity.py, herdr_delegate.py,
     # opencode_skills_sync_activity.py) with no warning under --quiet.
     # Giving agent-toolkit its own state directory makes this permanently
     # impossible, not just during a one-time cutover.
     return Context(
-        dotfiles=root,
+        repo_root=root,
         home=home,
         opts=opts,
         manifest=Manifest(manifest_path(home), dry_run=opts.dry_run),
@@ -916,7 +916,9 @@ def iter_concrete_links(
     spec: LinkSpec, ctx: Context
 ) -> Iterator[tuple[Path, Path, str]]:
     """Expand one ``links.toml`` row into concrete ``(src, dest, relative_src)`` triples."""
-    return link_inspect.iter_concrete_links(spec, dotfiles=ctx.dotfiles, home=ctx.home)
+    return link_inspect.iter_concrete_links(
+        spec, repo_root=ctx.repo_root, home=ctx.home
+    )
 
 
 def gather_links(
@@ -934,7 +936,7 @@ def gather_links(
     """
     return link_inspect.gather_links(
         specs,
-        dotfiles=ctx.dotfiles,
+        repo_root=ctx.repo_root,
         home=ctx.home,
         harnesses=ctx.opts.harnesses,
         is_mac=ctx.is_mac,
@@ -1148,7 +1150,7 @@ def install_symlinks(
     even though it's a symlink candidate everywhere else: see
     ``seed_vscode_settings``.
     """
-    _header("==> Symlinking dotfiles...", quiet=ctx.opts.quiet)
+    _header("==> Symlinking repo files...", quiet=ctx.opts.quiet)
 
     for src, dest, rel, applicable in links:
         if not applicable:
@@ -1214,7 +1216,7 @@ def seed_vscode_settings(ctx: Context) -> list[tuple[str, tuple[str, str]]]:
         return []
     results: list[tuple[str, tuple[str, str]]] = []
     for name in ("settings.json", "keybindings.json"):
-        seed = ctx.dotfiles / "vscode" / name
+        seed = ctx.repo_root / "vscode" / name
         dest = user_dir / name
         if not ctx.opts.adopt:
             _replace_stale_vscode_symlink(ctx, dest)
@@ -1241,7 +1243,7 @@ def seed_claude_settings(ctx: Context) -> tuple[str, str]:
     if not ctx.has_harness("claude"):
         return "", ""
     name = "settings.work.json" if ctx.opts.profile == "work" else "settings.json"
-    seed = ctx.dotfiles / "claude" / name
+    seed = ctx.repo_root / "claude" / name
     dest = ctx.home / ".claude" / "settings.json"
     return name, seed_file(
         ctx,
@@ -1271,7 +1273,7 @@ def seed_pi_settings(ctx: Context) -> tuple[str, str]:
     if not ctx.has_harness("pi"):
         return "", ""
     name = "settings.json"
-    seed = ctx.dotfiles / "pi" / name
+    seed = ctx.repo_root / "pi" / name
     dest = ctx.home / ".pi" / "agent" / "settings.json"
     return name, seed_file(
         ctx,
@@ -1298,7 +1300,7 @@ def seed_opencode_config(ctx: Context) -> tuple[str, str]:
     if not ctx.has_harness("opencode"):
         return "", ""
     name = "opencode.jsonc"
-    seed = ctx.dotfiles / "opencode" / name
+    seed = ctx.repo_root / "opencode" / name
     dest = ctx.home / ".config" / "opencode" / "opencode.jsonc"
     return name, seed_file(
         ctx,
@@ -1347,7 +1349,7 @@ def sync_codex_skills(ctx: Context) -> list[str]:
     """
     if not ctx.has_harness("codex"):
         return []
-    src_root = ctx.dotfiles / "codex" / "skills"
+    src_root = ctx.repo_root / "codex" / "skills"
     if not src_root.is_dir():
         return []
     updated: list[str] = []
@@ -1536,15 +1538,15 @@ def _global_git_hooks_path() -> str | None:
 
 def _managed_git_hooks_path(ctx: Context) -> str:
     """The value :func:`install_global_git_hooks_path` sets/expects."""
-    return str(ctx.dotfiles / "githooks-global")
+    return str(ctx.repo_root / "githooks-global")
 
 
 def capture_git_hooks_path_baseline(ctx: Context) -> None:
     """Capture the pre-existing global ``core.hooksPath``, immediately
     before :func:`install_global_git_hooks_path` runs -- capturing any later
-    would record dotfiles' own already-set value as if it were the original,
-    which would make departure "restore" dotfiles' own path instead of the
-    true pre-dotfiles value. ``Baseline.add_layer``'s own is-unrecorded rule
+    would record the origin repo's own already-set value as if it were the
+    original, which would make departure "restore" that repo's own path
+    instead of the true pre-install value. ``Baseline.add_layer``'s own is-unrecorded rule
     already makes this capture-once by construction: a second install run
     finds the key already recorded in layer 1 and skips it, the same way
     :func:`capture_service_baseline` relies on for services -- a scalar
@@ -1566,7 +1568,7 @@ def install_global_git_hooks_path(ctx: Context) -> None:
     without its own local override picks up the no-commit-on-main hook.
 
     Skipped entirely on a work-profile machine (spec constraint: this must
-    not apply to every repo on a work machine). This dotfiles checkout's own
+    not apply to every repo on a work machine). This repo's own
     local ``githooks/pre-commit`` hook is unaffected either way -- git's
     config precedence lets a repo-local ``core.hooksPath`` override the
     global value, so the local hook (which gets the same branch check added
@@ -1781,7 +1783,7 @@ def do_rollback(ctx: Context) -> int:
     """Reverse every file mutation recorded across every past run.
 
     Walks the history newest-to-oldest so a path mutated by several runs
-    ends up back at its oldest recorded state (the original pre-dotfiles
+    ends up back at its oldest recorded state (the original pre-install
     file, not an intermediate one). Nothing here aborts: anything that
     doesn't match what was recorded is reported and the walk continues.
 
@@ -2039,8 +2041,8 @@ def _rollback_copy(
     Skipped when ``dest`` is in ``restored_dests``: a newer (already
     processed, since this walk runs newest-to-oldest) ``file-backed-up``
     entry for the same path already correctly restored it this pass, so
-    unlinking here would delete that restored original rather than a
-    dotfiles-managed copy — see ``do_rollback``'s comment on
+    unlinking here would delete that restored original rather than an
+    installer-managed copy — see ``do_rollback``'s comment on
     ``restored_dests``.
     """
     dest = Path(str(entry.get("dest", "")))
@@ -2069,7 +2071,7 @@ def _rollback_backup(
     """Restore one ``file-backed-up`` entry from its ``.bak`` path.
 
     Under --wipe, the backup is deleted instead of restored — the original
-    pre-dotfiles file is discarded, not brought back.
+    pre-install file is discarded, not brought back.
     """
     dest = Path(str(entry.get("dest", "")))
     backup = Path(str(entry.get("backup", "")))
@@ -2179,7 +2181,7 @@ def print_summary(
         print("  - Open Karabiner-Elements → grant Input Monitoring + Accessibility")
         print("  - Open Rectangle → grant Accessibility permission")
     # No claude-login line here: watchcommit — the consumer that line was
-    # written for — is dotfiles-only (empty MANAGED_SERVICES above, and
+    # written for — is origin-repo-only (empty MANAGED_SERVICES above, and
     # this repo carries no watchcommit loader at all), so agent-toolkit's
     # install has nothing that auto-consumes claude credentials. Any other
     # repo whose install needs a login step prints its own manual step.
@@ -2209,7 +2211,7 @@ def _check_applicable_links(
     """Adapter for link_inspect.check_applicable_links; see it for detail."""
     return link_inspect.check_applicable_links(
         links,
-        dotfiles=ctx.dotfiles,
+        repo_root=ctx.repo_root,
         format_path=ctx.display,
         manifest_entries=ctx.manifest.entries(),
         report_uninstalled=report_uninstalled,
@@ -2373,12 +2375,12 @@ def do_check_links(ctx: Context) -> int:
     if not ctx.opts.harnesses:
         ctx = replace(ctx, opts=replace(ctx.opts, harnesses=VALID_HARNESSES))
 
-    specs = load_links(ctx.dotfiles / "links.toml")
-    managed_dirs = load_managed_dirs(ctx.dotfiles / "links.toml")
+    specs = load_links(ctx.repo_root / "links.toml")
+    managed_dirs = load_managed_dirs(ctx.repo_root / "links.toml")
     # The audit computation itself lives in link_inspect.audit_links now,
     # shared with the drift hook; only the printing below stays here.
     findings, foreign, dirs_audited = link_inspect.audit_links(
-        dotfiles=ctx.dotfiles,
+        repo_root=ctx.repo_root,
         home=ctx.home,
         harnesses=ctx.opts.harnesses,
         is_mac=ctx.is_mac,
@@ -2397,7 +2399,7 @@ def do_check_links(ctx: Context) -> int:
         print(
             PALETTE.dim(
                 f"  note: {count} link(s) point into {root} rather than this "
-                f"checkout ({ctx.dotfiles}) — you are running from a worktree, "
+                f"checkout ({ctx.repo_root}) — you are running from a worktree, "
                 "so those entries were not audited. Re-run --check-links from "
                 "that checkout to include them."
             )
@@ -2554,7 +2556,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
 
     try:
-        specs = load_links(ctx.dotfiles / "links.toml")
+        specs = load_links(ctx.repo_root / "links.toml")
     except (ValueError, TypeError) as exc:
         print(
             PALETTE.error(f"could not read the symlink table: {exc}"), file=sys.stderr

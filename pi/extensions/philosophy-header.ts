@@ -2,7 +2,7 @@
  * Philosophy Header
  *
  * Replaces pi's built-in header (logo + keybinding hints) with a π wordmark
- * and a tagline drawn from ~/dotfiles — STYLE.md and claude/global-instructions.md.
+ * and a tagline drawn from this repo — STYLE.md and claude/global-instructions.md.
  *
  * The tagline is picked once per session, so it stays stable while you work
  * but varies across sessions.
@@ -25,7 +25,7 @@ export const PI_LOGO: readonly string[] = [
   "  ███       ███  ",
 ];
 
-/** Verbatim or near-verbatim from ~/dotfiles. */
+/** Verbatim or near-verbatim from this repo's own instruction files. */
 export const TAGLINES: readonly string[] = [
   "prevent the whole class, not just this instance",
   "verification means running it",

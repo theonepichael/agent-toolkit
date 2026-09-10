@@ -294,7 +294,7 @@ describe("classify: per-pattern regression table", () => {
         "settings_seed_drift_check",
         "python3 ~/.claude/scripts/settings_seed_drift_check.py --check",
       ],
-      ["dotfiles_sync_check", "python3 ~/.claude/scripts/dotfiles_sync_check.py --status"],
+      ["bundle_drift_check", "python3 ~/.claude/scripts/bundle_drift_check.py --status"],
       ["git log", "git log --oneline -5"],
       ["git status", "git status"],
       ["git diff", "git diff HEAD~1"],

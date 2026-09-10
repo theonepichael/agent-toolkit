@@ -26,7 +26,7 @@ convention for a real citation.
 This is a shared engine, not a per-repo copy: which docs and script
 directories to scan is config (a ``DocSetConfig``), so the same checking
 logic runs against any repo. ``DOC_SETS`` holds only agent-toolkit's own,
-self-describing entry — every other repo (dotfiles included) supplies its
+self-describing entry — every other repo supplies its
 own config by placing a ``refresh-guidance.toml`` at its own repo root,
 auto-discovered by ``--repo-root`` (see ``load_external_doc_set``); this
 module carries no hardcoded knowledge of any other repo's internal layout.
@@ -142,9 +142,9 @@ class DocSetConfig:
     the resolved agent-toolkit root (see :data:`DEFAULT_AGENT_TOOLKIT_ROOT`),
     and path claim checks (both directory-qualified paths and bare-filename
     basename lookups) consult that checkout as well, matching the
-    `AGENT_TOOLKIT_PATH` convention `scripts/install-with-agent-toolkit.sh`
-    and `dotfiles/claude/scripts/test_dev_status_sync.py` already use.
-    Real, evidence-based need: post-cutover, dotfiles' own docs legitimately
+    `AGENT_TOOLKIT_PATH` convention the bundle-transfer installer on the
+    origin machine already uses.
+    Real, evidence-based need: post-cutover, the origin repo's own docs legitimately
     cite `dev_status.py`/`second_opinion.py`/etc. bare, meaning "the shared
     tool, now hosted in agent-toolkit", as well as shared docs/templates
     like `MIGRATION.md`, `claude/commands/swarm.md`, or `agent-toolkit/README.md`
@@ -157,7 +157,7 @@ class DocSetConfig:
     `CHANGELOG.md` is a historical narrative -- each entry describes what
     was true *at that commit*, not what's true now, so "this path from a
     six-month-old entry no longer exists" isn't staleness, it's the entry
-    doing its job (confirmed against dotfiles' real CHANGELOG.md: the
+    doing its job (confirmed against a real CHANGELOG.md: the
     overwhelming majority of a first real run's findings were exactly this
     -- scripts correctly described as added, then later moved to
     agent-toolkit by a *later* entry).
@@ -203,7 +203,7 @@ DOC_SETS: dict[str, DocSetConfig] = {
     ),
 }
 """The only built-in doc-set: agent-toolkit describing itself. Any other
-repo (dotfiles included) supplies its own config via an external
+repo supplies its own config via an external
 `refresh-guidance.toml` at its own repo root (see
 :func:`load_external_doc_set`) -- agent-toolkit's shared source carries no
 hardcoded knowledge of any other repo's internal layout."""

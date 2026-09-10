@@ -19,7 +19,7 @@ installed link dangled and the extension silently stopped loading.
 ## herdr-agent-state.ts is the standing exception
 
 `~/.pi/agent/extensions/herdr-agent-state.ts` is the one regular file in the
-installed extensions directory that dotfiles does not own. herdr installs it
+installed extensions directory that this repo does not own. herdr installs it
 itself (`herdr integration install pi`) and keeps it versioned there —
 `herdr integration status` reports `pi: current (vN)` for it. The swarm
 toolset's blocked-worker reporting depends on it.
@@ -39,7 +39,7 @@ pi`, not a hand-copied or vendored file.
 To load an in-progress extension in a real pi, pass it explicitly:
 
 ```bash
-pi -e /path/to/dotfiles-<slug>/pi/extensions/your-extension.ts
+pi -e /path/to/agent-toolkit-<slug>/pi/extensions/your-extension.ts
 ```
 
 `-e` can be repeated, and `-ne` disables the normal discovery scan if you

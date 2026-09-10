@@ -56,7 +56,7 @@ class LinkSpec:
 
 @dataclass(frozen=True)
 class ManagedDirSpec:
-    """One row of ``links.toml``: a directory dotfiles owns exclusively.
+    """One row of ``links.toml``: a directory this repo owns exclusively.
 
     Exclusivity is opt-in rather than inferred. Inferring it from every link's
     ``dest.parent`` surfaces 230 unmanaged entries to find 2 real ones, 68 of
@@ -133,8 +133,8 @@ def same_path(left: Path, right: Path) -> bool:
 def implied_repo_root(target: Path, relative_src: str) -> Path | None:
     """Return the repo root ``target`` implies, if it ends with ``relative_src``.
 
-    ``/home/u/dotfiles-wt/claude/global-instructions.md`` with a
-    ``claude/global-instructions.md`` entry implies ``/home/u/dotfiles-wt``.
+    ``/home/u/agent-toolkit-wt/claude/global-instructions.md`` with a
+    ``claude/global-instructions.md`` entry implies ``/home/u/agent-toolkit-wt``.
     None if the tail doesn't match, which means the link points at
     something unrelated rather than at the same file in a different
     checkout.
@@ -146,8 +146,10 @@ def implied_repo_root(target: Path, relative_src: str) -> Path | None:
     return Path(*parts[: -len(tail)])
 
 
-def is_dotfiles_checkout(root: Path) -> bool:
-    """Return whether ``root`` looks like another checkout of this repo."""
+def is_repo_checkout(root: Path) -> bool:
+    """Return whether ``root`` looks like a checkout of this repo family —
+    the standalone agent-toolkit checkout or the dotfiles repo checkout it
+    ships inside."""
     return (root / "links.toml").is_file() and (root / "install.py").is_file()
 
 
@@ -320,14 +322,14 @@ def detect_wsl(system: str) -> bool:
 def manifest_path(home: Path) -> Path:
     """Return the history-manifest path installs write under ``home``.
 
-    The directory name ("agent-toolkit", not "dotfiles") is load-bearing:
+    The directory name ("agent-toolkit") is load-bearing:
     both repos' install.py write a symlink-creation manifest under a shared
     state directory, and orphan-cleanup deletes any manifest-recorded symlink
     the reading repo's own links.toml doesn't produce — a shared name means
     each repo's install treats the OTHER repo's still-wanted symlinks as its
     own stale orphans and deletes them. Reproduced directly: a fresh machine
-    with dotfiles installed, then agent-toolkit installed on top, lost
-    dotfiles' personal-only scripts with no warning under --quiet. Giving
+    with the origin repo installed, then agent-toolkit installed on top,
+    lost the origin repo's personal-only scripts with no warning under --quiet. Giving
     agent-toolkit its own state directory makes this permanently impossible,
     not just during a one-time cutover. install.py (the writer) and
     link_drift_check.py (the auditor) both resolve the path through this
@@ -406,19 +408,19 @@ def link_applies(
 
 
 def iter_concrete_links(
-    spec: LinkSpec, *, dotfiles: Path, home: Path
+    spec: LinkSpec, *, repo_root: Path, home: Path
 ) -> Iterator[tuple[Path, Path, str]]:
     """Expand one ``links.toml`` row into concrete ``(src, dest, relative_src)`` triples.
 
     A normal row (``dir`` unset) yields exactly one triple. A ``dir=true``
     row recursively globs its source directory, skipping plain subdirectory
-    entries (walked into, never linked themselves) and junk — dotfiles and
+    entries (walked into, never linked themselves) and junk — dot files and
     editor swap/backup files — so those never get symlinked in. A missing,
     empty, or unreadable source directory yields nothing, with no error and
     no special-casing: see the plan's cleanup design for why "can't confirm"
     and "confirmed empty" are deliberately not distinguished.
     """
-    src_root = dotfiles / spec.src
+    src_root = repo_root / spec.src
     dest_root = expand_dest(spec.dest, home)
     if not spec.dir:
         yield src_root, dest_root, spec.src
@@ -457,7 +459,7 @@ def dir_applies(
     dir_spec: ManagedDirSpec,
     specs: Sequence[LinkSpec],
     *,
-    dotfiles: Path,
+    repo_root: Path,
     home: Path,
     harnesses: Iterable[str],
     is_mac: bool,
@@ -486,7 +488,7 @@ def dir_applies(
 def gather_links(
     specs: Sequence[LinkSpec],
     *,
-    dotfiles: Path,
+    repo_root: Path,
     home: Path,
     harnesses: Iterable[str],
     is_mac: bool,
@@ -508,7 +510,7 @@ def gather_links(
     result: list[tuple[Path, Path, str, bool]] = []
     for spec in specs:
         applicable = link_applies(spec, **scope)  # type: ignore[arg-type]
-        for src, dest, rel in iter_concrete_links(spec, dotfiles=dotfiles, home=home):
+        for src, dest, rel in iter_concrete_links(spec, repo_root=repo_root, home=home):
             result.append((src, dest, rel, applicable))
     return result
 
@@ -518,7 +520,7 @@ def gather_links(
 
 def audit_links(
     *,
-    dotfiles: Path,
+    repo_root: Path,
     home: Path,
     harnesses: Iterable[str],
     is_mac: bool,
@@ -541,7 +543,7 @@ def audit_links(
     can never drift apart about what counts as drift.
 
     Args:
-        dotfiles: This checkout's root — the target live links are expected
+        repo_root: This checkout's root — the target live links are expected
             to point at.
         home: The home directory destinations expand against.
         harnesses: The harness selection in scope (``do_check_links`` widens
@@ -562,19 +564,19 @@ def audit_links(
         the parsers' ``ValueError``/``TypeError`` so the caller decides how
         loudly to fail.
     """
-    links_toml = dotfiles / "links.toml"
+    links_toml = repo_root / "links.toml"
     if specs is None:
         specs = load_links(links_toml)
     if managed_dirs is None:
         managed_dirs = load_managed_dirs(links_toml)
     scope = _applies_kwargs(harnesses, is_mac, is_linux, is_wsl, profile)
     links = gather_links(  # type: ignore[arg-type]
-        specs, dotfiles=dotfiles, home=home, **scope
+        specs, repo_root=repo_root, home=home, **scope
     )
     entries = read_manifest_entries(manifest_file)
     findings, foreign = check_applicable_links(
         links,
-        dotfiles=dotfiles,
+        repo_root=repo_root,
         format_path=format_path,
         manifest_entries=entries,
         report_uninstalled=report_uninstalled,
@@ -589,7 +591,7 @@ def audit_links(
         home=home,
         format_path=format_path,
         dir_applies=lambda dir_spec: dir_applies(  # type: ignore[arg-type]
-            dir_spec, specs, dotfiles=dotfiles, home=home, **scope
+            dir_spec, specs, repo_root=repo_root, home=home, **scope
         ),
         findings=findings,
         manifest_entries=entries,
@@ -633,7 +635,7 @@ def personal_overlay_composed_target(home: Path) -> Path:
 def check_applicable_links(
     links: Sequence[tuple[Path, Path, str, bool]],
     *,
-    dotfiles: Path,
+    repo_root: Path,
     format_path: Callable[[Path], str],
     manifest_entries: Iterable[dict[str, object]] = (),
     report_uninstalled: bool = False,
@@ -653,7 +655,7 @@ def check_applicable_links(
 
     Args:
         links: Every gathered ``(src, dest, rel, applicable)`` triple.
-        dotfiles: This checkout's root — the target live links are expected
+        repo_root: This checkout's root — the target live links are expected
             to point at.
         format_path: Renders a Path for a findings message (``Context.display``
             in install.py; pure formatting, no I/O).
@@ -666,7 +668,7 @@ def check_applicable_links(
             default, and what every pre-existing caller passes) disables
             the exemption entirely rather than guessing at a home — a unit
             test exercising an unrelated entry has no reason to know about
-            dotfiles composition.
+            the composition convention.
 
     Returns:
         The findings by bucket, and a count per *other* checkout the live
@@ -732,8 +734,8 @@ def check_applicable_links(
             # and swarm-tool.ts on 2026-09-02.
             same_file_other_checkout = (
                 other_root is not None
-                and not same_path(other_root, dotfiles)
-                and is_dotfiles_checkout(other_root)
+                and not same_path(other_root, repo_root)
+                and is_repo_checkout(other_root)
                 and is_main_checkout(other_root)
             )
             if same_file_other_checkout:
@@ -779,7 +781,7 @@ def find_orphaned_links(
     manifest recorded creating is not orphaned — it's claimed. Some other
     tool (most commonly another repo's own installer, sharing this same
     destination) has already repointed it, and unlinking it here would
-    delete that tool's live symlink, not ours. 2026-09-07: dotfiles'
+    delete that tool's live symlink, not ours. 2026-09-07: another repo's
     orphan-cleanup deleted three ~/.claude/scripts/*.py symlinks
     agent-toolkit's installer had just created moments earlier in the same
     install-with-agent-toolkit.sh run, because this check didn't exist —
@@ -833,7 +835,7 @@ def live_backup_paths(manifest_entries: Iterable[dict[str, object]]) -> set[Path
     resolves": ``shutil.move(backup, dest)`` replaces a dangling symlink just
     as readily as a healthy one, so a broken link does not make its backup
     disposable. Reporting one would tell the user to delete the only copy of
-    their pre-dotfiles original, which is the opposite of what the backup is
+    their pre-install original, which is the opposite of what the backup is
     for.
     """
     live: set[Path] = set()
@@ -918,6 +920,6 @@ def check_unmanaged_files(
                 continue
             findings[CHECK_BUCKET_UNMANAGED].append(
                 f"{format_path(path)} — {dir_spec.dest} is declared exclusive "
-                "to dotfiles, but no links.toml entry produces it"
+                "to this repo, but no links.toml entry produces it"
             )
     return audited

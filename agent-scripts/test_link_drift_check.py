@@ -35,7 +35,7 @@ _FINGERPRINT_STUBS = (
 
 
 class Fixture:
-    """A temp dotfiles repo + temp home with real links and a temp manifest."""
+    """A temp repo + temp home with real links and a temp manifest."""
 
     def __init__(self, root: Path) -> None:
         self.root = root
@@ -92,7 +92,7 @@ class Fixture:
         buffer = io.StringIO()
         with redirect_stdout(buffer):
             ldc.cmd_check(
-                dotfiles=self.repo,
+                repo_root=self.repo,
                 home=self.home,
                 machine=(False, True, False),
                 **kwargs,
@@ -150,7 +150,7 @@ class CheckTests(unittest.TestCase):
         # worktree checkout of the same file after a hand-repoint for live
         # verification -- .git as a *file* is what marks a worktree, so this
         # is real drift, not the excusable foreign-main-checkout note.
-        other = fx.root / "dotfiles-wt"
+        other = fx.root / "repo-wt"
         (other / "claude").mkdir(parents=True)
         (other / "claude" / "global-instructions.md").write_text("wt\n")
         (other / "links.toml").write_text("")

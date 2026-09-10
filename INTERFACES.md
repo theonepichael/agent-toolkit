@@ -34,11 +34,11 @@ House style for these interfaces is in `STYLE.md`.
 | Module | Purpose |
 | --- | --- |
 | [`analyze_sessions.py`](#agentscriptsanalyzesessionspy) | analyze_sessions.py — multi-harness session analysis tool. |
-| [`cli_common.py`](#agentscriptsclicommonpy) | Shared CLI helpers used across dotfiles scripts. |
+| [`bundle_drift_check.py`](#agentscriptsbundledriftcheckpy) | SessionStart hook: flag when this repo has drifted from the last commit bundled over to a GitHub-blocked work machine. |
+| [`cli_common.py`](#agentscriptsclicommonpy) | Shared CLI helpers used across agent-toolkit scripts. |
 | [`dev_status.py`](#agentscriptsdevstatuspy) | dev_status.py v2 — slug IDs, structured dependency graph, pure render. |
 | [`dev_status_formatting.py`](#agentscriptsdevstatusformattingpy) | Pure text-formatting helpers shared by the backlog dashboard and recap. |
 | [`dev_status_storage.py`](#agentscriptsdevstatusstoragepy) | Backlog persistence, lock coordination, and journal primitives. |
-| [`dotfiles_sync_check.py`](#agentscriptsdotfilessynccheckpy) | SessionStart hook: flag when the dotfiles repo has drifted from the last commit bundled over to a GitHub-blocked work machine. |
 | [`gen_interfaces.py`](#agentscriptsgeninterfacespy) | gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources. |
 | [`gen_second_opinion.py`](#agentscriptsgensecondopinionpy) | gen_second_opinion.py — regenerate the second-opinion skill copies (one per harness, named in HARNESS_TABLE) from one canonical template. |
 | [`gen_shell_completion.py`](#agentscriptsgenshellcompletionpy) | Generate a zsh `#compdef` completion file for a harness CLI. |
@@ -55,12 +55,11 @@ House style for these interfaces is in `STYLE.md`.
 | [`outlook_calendar.py`](#agentscriptsoutlookcalendarpy) | outlook_calendar.py — CLI tool and agent interface for Windows Outlook Calendar via PowerShell COM. |
 | [`outlook_email.py`](#agentscriptsoutlookemailpy) | outlook_email.py — CLI tool and agent interface for Windows Outlook via PowerShell COM. |
 | [`refresh_guidance.py`](#agentscriptsrefreshguidancepy) | refresh_guidance.py — audit-by-inspection for hand-authored, agent-facing docs. |
-| [`repo_identity.py`](#agentscriptsrepoidentitypy) | repo_identity.py — which repo this checkout is. |
 | [`second_opinion.py`](#agentscriptssecondopinionpy) | second_opinion.py — one-shot adversarial critique of a plan from a non-Claude backend. Single-round by design: the multi-round loop, plan revision, and convergence judgment all require LLM reasoning and live in prose instructions, not here. |
 | [`seed_hook_subset_guard.py`](#agentscriptsseedhooksubsetguardpy) | seed_hook_subset_guard.py — refuse a commit that drops a seed's SessionStart hook groups. |
 | [`sessionstart_checks.py`](#agentscriptssessionstartcheckspy) | sessionstart_checks.py — run the SessionStart context checks concurrently. |
 | [`settings_seed.py`](#agentscriptssettingsseedpy) | Copy-once settings seeding, adoption, reseed, and drift detection. |
-| [`settings_seed_drift_check.py`](#agentscriptssettingsseeddriftcheckpy) | SessionStart hook + CLI: detect (and optionally fix) drift between the live ``~/.claude/settings.json`` / ``~/.config/opencode/opencode.jsonc`` / (under WSL) the Windows-side VS Code ``settings.json`` and ``keybindings.json`` and their seeds in the dotfiles repo. |
+| [`settings_seed_drift_check.py`](#agentscriptssettingsseeddriftcheckpy) | SessionStart hook + CLI: detect (and optionally fix) drift between the live ``~/.claude/settings.json`` / ``~/.config/opencode/opencode.jsonc`` / (under WSL) the Windows-side VS Code ``settings.json`` and ``keybindings.json`` and their seeds in this repo. |
 | [`standup.py`](#agentscriptsstanduppy) | standup.py — /standup skill CLI: local data gathering. |
 | [`standup_adapters.py`](#agentscriptsstandupadapterspy) | standup_adapters.py — provider-agnostic adapter interfaces for /standup. |
 | [`statusline.py`](#agentscriptsstatuslinepy) | Claude Code status line: render the model name and a color-coded context window usage bar with the used percentage, from the JSON session payload Claude Code pipes to this script on stdin. |
@@ -132,9 +131,34 @@ analyze_sessions.py — multi-harness session analysis tool.
 - Subcommand handlers: `cmd_cost`, `cmd_prompts`, `cmd_search`
 - Tested by: `agent-scripts/test_analyze_sessions.py`
 
+### `agent-scripts/bundle_drift_check.py`
+
+SessionStart hook: flag when this repo has drifted from the last commit bundled over to a GitHub-blocked work machine.
+
+- Installed at: `~/.claude/scripts/bundle_drift_check.py` (all harnesses)
+- Entrypoint: not executable, `#!/usr/bin/env python3`
+- CLI (`argparse`): Flag when this repo has drifted from the last commit bundled over to a GitHub-blocked work machine.
+  - `--quiet/-q`
+  - `--verbose/-v`
+- Subcommands:
+  - `check` — print a drift note if HEAD is ahead of the marker (default)
+  - `mark [<sha>]` — record the given (or current HEAD) commit as last-bundled
+    - `sha` — commit to record (defaults to HEAD) (nargs: ?)
+- Filesystem constants:
+  - `REPO = Path(__file__).resolve().parents[1]`
+  - `STATE_DIR = Path.home() / '.local' / 'state' / 'agent-toolkit'`
+  - `MARKER = STATE_DIR / 'last-bundled-commit'`
+- Explicit exit codes: `1`
+- Depends on: `cli_common.py`
+- Public functions:
+  - `git(*args: str) -> str | None`
+  - `build_parser() -> argparse.ArgumentParser`
+- Subcommand handlers: `cmd_check`, `cmd_mark`
+- Tested by: `agent-scripts/test_bundle_drift_check.py`
+
 ### `agent-scripts/cli_common.py`
 
-Shared CLI helpers used across dotfiles scripts.
+Shared CLI helpers used across agent-toolkit scripts.
 
 - Installed at: `~/.claude/scripts/cli_common.py` (all harnesses)
 - Entrypoint: not executable, no shebang
@@ -345,31 +369,6 @@ Backlog persistence, lock coordination, and journal primitives.
   - `save_recap_cache(backend: str, text: str, board_fingerprint: str, path: Path | None = None) -> None` — Atomically persist a recap result.
 - Tested by: `agent-scripts/test_dev_status.py`
 
-### `agent-scripts/dotfiles_sync_check.py`
-
-SessionStart hook: flag when the dotfiles repo has drifted from the last commit bundled over to a GitHub-blocked work machine.
-
-- Installed at: `~/.claude/scripts/dotfiles_sync_check.py` (all harnesses)
-- Entrypoint: not executable, `#!/usr/bin/env python3`
-- CLI (`argparse`): Flag when the dotfiles repo has drifted from the last commit bundled over to a GitHub-blocked work machine.
-  - `--quiet/-q`
-  - `--verbose/-v`
-- Subcommands:
-  - `check` — print a drift note if HEAD is ahead of the marker (default)
-  - `mark [<sha>]` — record the given (or current HEAD) commit as last-bundled
-    - `sha` — commit to record (defaults to HEAD) (nargs: ?)
-- Filesystem constants:
-  - `REPO = Path(__file__).resolve().parents[1]`
-  - `STATE_DIR = Path.home() / '.local' / 'state' / 'agent-toolkit'`
-  - `MARKER = STATE_DIR / 'last-bundled-commit'`
-- Explicit exit codes: `1`
-- Depends on: `cli_common.py`
-- Public functions:
-  - `git(*args: str) -> str | None`
-  - `build_parser() -> argparse.ArgumentParser`
-- Subcommand handlers: `cmd_check`, `cmd_mark`
-- Tested by: `agent-scripts/test_dotfiles_sync_check.py`
-
 ### `agent-scripts/gen_interfaces.py`
 
 gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources.
@@ -562,9 +561,8 @@ gen_skills_params.py — per-(skill, harness) content tables for gen_skills.py.
 - Installed at: `~/.claude/scripts/gen_skills_params.py` (all harnesses)
 - Entrypoint: not executable, no shebang
 - CLI: none (library module).
-- Depends on: `repo_identity.py`
 - Public functions:
-  - `edit_root(relpath: str, dotfiles_relpath: str | None = None) -> str` — Return self-contained "where to edit this file" markdown.
+  - `edit_root(relpath: str) -> str` — Return self-contained "where to edit this file" markdown.
   - `symlink_cmd(relpath: str, dest: str) -> str` — Return a self-contained, copy-pasteable `ln -s` command.
   - `probe_add_dir() -> str` — Return the bare --add-dir flag argument for claude's headless probe.
 - Tested by: `agent-scripts/test_gen_skills.py`
@@ -797,7 +795,7 @@ link_inspect.py — link inspection, path classification, drift finding, and the
 - Environment: `WSL_DISTRO_NAME`
 - Public classes:
   - `class LinkSpec` — One row of ``links.toml``: a repo file and where it gets linked.
-  - `class ManagedDirSpec` — One row of ``links.toml``: a directory dotfiles owns exclusively.
+  - `class ManagedDirSpec` — One row of ``links.toml``: a directory this repo owns exclusively.
 - Public functions:
   - `expand_dest(dest: str, home: Path) -> Path` — Expand a ``links.toml`` destination against ``home``.
   - `is_symlink(path: Path) -> bool` — Return whether ``path`` is a symlink, catching OSError when unreadable.
@@ -805,7 +803,7 @@ link_inspect.py — link inspection, path classification, drift finding, and the
   - `link_target(dest: Path) -> Path` — Return what ``dest`` points at, as an absolute path.
   - `same_path(left: Path, right: Path) -> bool` — Compare two paths that may or may not exist, ignoring symlinked parents.
   - `implied_repo_root(target: Path, relative_src: str) -> Path | None` — Return the repo root ``target`` implies, if it ends with ``relative_src``.
-  - `is_dotfiles_checkout(root: Path) -> bool` — Return whether ``root`` looks like another checkout of this repo.
+  - `is_repo_checkout(root: Path) -> bool` — Return whether ``root`` looks like a checkout of this repo family — the standalone agent-toolkit checkout or the dotfiles repo checkout it ships inside.
   - `is_main_checkout(root: Path) -> bool` — Return whether ``root`` is the repo's primary checkout, not a worktree.
   - `load_links(path: Path) -> list[LinkSpec]` — Parse ``links.toml`` into an ordered list of link specs.
   - `load_managed_dirs(path: Path) -> list[ManagedDirSpec]` — Parse the ``[[managed_dir]]`` rows declaring directories we own exclusively.
@@ -814,12 +812,12 @@ link_inspect.py — link inspection, path classification, drift finding, and the
   - `read_manifest_entries(path: Path) -> list[dict[str, object]]` — Read every recorded entry from a history manifest, oldest first.
   - `format_path(path: Path, home: Path) -> str` — Render ``path`` with the home directory shortened back to ``~``.
   - `link_applies(spec: LinkSpec, *, harnesses: Iterable[str], is_mac: bool, is_linux: bool, is_wsl: bool, profile: str) -> bool` — Return whether ``spec`` should be linked for this machine/options.
-  - `iter_concrete_links(spec: LinkSpec, *, dotfiles: Path, home: Path) -> Iterator[tuple[Path, Path, str]]` — Expand one ``links.toml`` row into concrete ``(src, dest, relative_src)`` triples.
-  - `dir_applies(dir_spec: ManagedDirSpec, specs: Sequence[LinkSpec], *, dotfiles: Path, home: Path, harnesses: Iterable[str], is_mac: bool, is_linux: bool, is_wsl: bool, profile: str) -> bool` — Return whether a declared directory is in scope for this run.
-  - `gather_links(specs: Sequence[LinkSpec], *, dotfiles: Path, home: Path, harnesses: Iterable[str], is_mac: bool, is_linux: bool, is_wsl: bool, profile: str) -> list[tuple[Path, Path, str, bool]]` — Expand every ``links.toml`` row into concrete triples, once per run.
-  - `audit_links(*, dotfiles: Path, home: Path, harnesses: Iterable[str], is_mac: bool, is_linux: bool, is_wsl: bool, profile: str, manifest_file: Path, format_path: Callable[[Path], str], report_uninstalled: bool = False, specs: Sequence[LinkSpec] | None = None, managed_dirs: Sequence[ManagedDirSpec] | None = None) -> tuple[dict[str, list[str]], dict[Path, int], int]` — Run the full read-only link audit and return its findings as plain data.
+  - `iter_concrete_links(spec: LinkSpec, *, repo_root: Path, home: Path) -> Iterator[tuple[Path, Path, str]]` — Expand one ``links.toml`` row into concrete ``(src, dest, relative_src)`` triples.
+  - `dir_applies(dir_spec: ManagedDirSpec, specs: Sequence[LinkSpec], *, repo_root: Path, home: Path, harnesses: Iterable[str], is_mac: bool, is_linux: bool, is_wsl: bool, profile: str) -> bool` — Return whether a declared directory is in scope for this run.
+  - `gather_links(specs: Sequence[LinkSpec], *, repo_root: Path, home: Path, harnesses: Iterable[str], is_mac: bool, is_linux: bool, is_wsl: bool, profile: str) -> list[tuple[Path, Path, str, bool]]` — Expand every ``links.toml`` row into concrete triples, once per run.
+  - `audit_links(*, repo_root: Path, home: Path, harnesses: Iterable[str], is_mac: bool, is_linux: bool, is_wsl: bool, profile: str, manifest_file: Path, format_path: Callable[[Path], str], report_uninstalled: bool = False, specs: Sequence[LinkSpec] | None = None, managed_dirs: Sequence[ManagedDirSpec] | None = None) -> tuple[dict[str, list[str]], dict[Path, int], int]` — Run the full read-only link audit and return its findings as plain data.
   - `personal_overlay_composed_target(home: Path) -> Path` — The file dotfiles actually composes and symlinks ``PERSONAL_OVERLAY_SRC_REL``'s destinations to, on a machine with both repos checked out.
-  - `check_applicable_links(links: Sequence[tuple[Path, Path, str, bool]], *, dotfiles: Path, format_path: Callable[[Path], str], manifest_entries: Iterable[dict[str, object]] = (), report_uninstalled: bool = False, home: Path | None = None) -> tuple[dict[str, list[str]], dict[Path, int]]` — Report inconsistencies on destinations in scope for this machine.
+  - `check_applicable_links(links: Sequence[tuple[Path, Path, str, bool]], *, repo_root: Path, format_path: Callable[[Path], str], manifest_entries: Iterable[dict[str, object]] = (), report_uninstalled: bool = False, home: Path | None = None) -> tuple[dict[str, list[str]], dict[Path, int]]` — Report inconsistencies on destinations in scope for this machine.
   - `find_orphaned_links(links: Sequence[tuple[Path, Path, str, bool]], *, manifest_entries: Iterable[dict[str, object]]) -> list[Path]` — Return manifest-recorded symlink destinations no current entry produces.
   - `check_orphaned_links(links: Sequence[tuple[Path, Path, str, bool]], findings: dict[str, list[str]], *, format_path: Callable[[Path], str], manifest_entries: Iterable[dict[str, object]]) -> None` — Add manifest-recorded symlinks that links.toml no longer produces.
   - `live_backup_paths(manifest_entries: Iterable[dict[str, object]]) -> set[Path]` — Return manifest-recorded backups that are still live ``--rollback`` payload.
@@ -1021,15 +1019,6 @@ refresh_guidance.py — audit-by-inspection for hand-authored, agent-facing docs
 - Subcommand handlers: `cmd_check`, `cmd_mark_reviewed`, `cmd_scaffold`
 - Tested by: `agent-scripts/test_refresh_guidance.py`
 
-### `agent-scripts/repo_identity.py`
-
-repo_identity.py — which repo this checkout is.
-
-- Installed at: `~/.claude/scripts/repo_identity.py` (all harnesses)
-- Entrypoint: not executable, `#!/usr/bin/env python3`
-- CLI: none (library module).
-- Tested by: `agent-scripts/test_gen_skills.py`
-
 ### `agent-scripts/second_opinion.py`
 
 second_opinion.py — one-shot adversarial critique of a plan from a non-Claude backend. Single-round by design: the multi-round loop, plan revision, and convergence judgment all require LLM reasoning and live in prose instructions, not here.
@@ -1109,7 +1098,7 @@ Copy-once settings seeding, adoption, reseed, and drift detection.
 
 ### `agent-scripts/settings_seed_drift_check.py`
 
-SessionStart hook + CLI: detect (and optionally fix) drift between the live ``~/.claude/settings.json`` / ``~/.config/opencode/opencode.jsonc`` / (under WSL) the Windows-side VS Code ``settings.json`` and ``keybindings.json`` and their seeds in the dotfiles repo.
+SessionStart hook + CLI: detect (and optionally fix) drift between the live ``~/.claude/settings.json`` / ``~/.config/opencode/opencode.jsonc`` / (under WSL) the Windows-side VS Code ``settings.json`` and ``keybindings.json`` and their seeds in this repo.
 
 - Installed at: `~/.claude/scripts/settings_seed_drift_check.py` (all harnesses)
 - Entrypoint: executable, `#!/usr/bin/env python3`
@@ -1119,19 +1108,19 @@ SessionStart hook + CLI: detect (and optionally fix) drift between the live ``~/
 - Subcommands:
   - `check`
   - `fix`
-  - `sync-to-seed [--dotfiles-root <DOTFILES_ROOT>]`
-  - `push-vscode [--dotfiles-root <DOTFILES_ROOT>] [--yes]`
+  - `sync-to-seed [--repo-root <REPO_ROOT>]`
+  - `push-vscode [--repo-root <REPO_ROOT>] [--yes]`
 - Environment: `PATH`
 - Filesystem constants:
   - `HOME = Path.home()`
-  - `DOTFILES = Path(__file__).resolve().parents[1]`
+  - `REPO_ROOT = Path(__file__).resolve().parents[1]`
   - `PROFILE_MARKER = HOME / '.local' / 'state' / 'agent-toolkit' / 'profile'`
 - Depends on: `cli_common.py`, `settings_seed.py`
 - Exceptions:
   - `class DriftCheckError(Exception)` — Raised when drift checking can't proceed (parse failure, not a missing file).
 - Public functions:
   - `resolve_profile() -> str` — Return "work" if this machine is work-provisioned, else "personal".
-  - `settings_seed_path(root: Path | None = None) -> Path` — Return the seed settings.json path for this machine's profile, under ``root`` (default the ``DOTFILES`` module constant — resolved at call time, not bound at import, so callers that don't pass ``root`` still pick up a patched/overridden ``DOTFILES``).
+  - `settings_seed_path(root: Path | None = None) -> Path` — Return the seed settings.json path for this machine's profile, under ``root`` (default the ``REPO_ROOT`` module constant — resolved at call time, not bound at import, so callers that don't pass ``root`` still pick up a patched/overridden ``REPO_ROOT``).
   - `opencode_seed_path(root: Path | None = None) -> Path | None` — Return the opencode.jsonc seed path under ``root``, or None on a work machine.
   - `vscode_seed_path(name: str, root: Path | None = None) -> Path` — Return the seed path for a VS Code file (``settings.json`` or ``keybindings.json``) under ``root``.
   - `settings_drift(seed: Path, live: Path) -> list[str]` — Return the non-cosmetic settings.json keys that diverged, or [] if either file is missing.
@@ -1334,7 +1323,7 @@ the file existing in the repo; the description is the canonical
 - **`/second-opinion`** — Send a plan to a non-Claude model for adversarial critique, then iterate — revise, re-send, repeat — until the critique stops surfacing anything new or a round cap is hit. Use when the user wants a second opinion, an outside critique, or to stress-test a plan against a different model.
   - Source: `claude/commands/second-opinion.md`
   - Installed at: `~/.claude/commands/second-opinion.md` (claude)
-- **`/skill-map`** — Shows how the dotfiles skills connect and flags any skill mentioned by another that no longer exists. Use when the user says "skill map", "show the skill map", "which skill for X", or asks how the skills chain together.
+- **`/skill-map`** — Shows how this repo's skills connect and flags any skill mentioned by another that no longer exists. Use when the user says "skill map", "show the skill map", "which skill for X", or asks how the skills chain together.
   - Source: `claude/commands/skill-map.md`
   - Installed at: `~/.claude/commands/skill-map.md` (claude)
 - **`/spec`** — Turn a vague coding task into a structured specification (objective, context, inputs, output format, constraints, evaluation criteria, edge cases, verification steps) before generation begins. Use when the user wants to formalize a task, write a spec, or invokes /spec.
@@ -1480,7 +1469,7 @@ forwarding argv unchanged.
 
 ### `install.py`
 
-install.py — dotfiles + AI-harness provisioner for macOS and Linux/WSL.
+install.py — agent-toolkit + AI-harness provisioner for macOS and Linux/WSL.
 
 - Installed at: not symlinked by `links.toml`
 - Entrypoint: executable, `#!/usr/bin/env python3`
@@ -1513,7 +1502,7 @@ install.py — dotfiles + AI-harness provisioner for macOS and Linux/WSL.
   - `class CommandResult` — Outcome of one external command: whether it succeeded, and its stdout.
   - `class ManagedService` — One systemd --user service this installer enables/disables/tracks.
 - Public functions:
-  - `build_context(opts: Options, dotfiles: Path | None = None) -> Context` — Assemble a :class:`Context` for a real run on this machine.
+  - `build_context(opts: Options, repo_root: Path | None = None) -> Context` — Assemble a :class:`Context` for a real run on this machine.
   - `check_harness_binaries(ctx: Context) -> list[str]` — Return error strings for requested harnesses whose binaries are not on PATH.
   - `parse_args(argv: Sequence[str]) -> Options` — Parse and validate the command line.
   - `run_command(cmd: Sequence[str] | str, *, shell: bool = False, capture: bool = False) -> CommandResult` — Run an external command, returning success rather than raising.
@@ -1530,7 +1519,7 @@ install.py — dotfiles + AI-harness provisioner for macOS and Linux/WSL.
   - `sync_codex_skills(ctx: Context) -> list[str]` — Copy each ``codex/skills/<name>/SKILL.md`` into ``~/.codex/skills/<name>/``.
   - `capture_service_baseline(ctx: Context) -> None` — Capture every managed service's service/linger state, immediately before :func:`enable_managed_services` runs — capturing any later would record the post-install enabled state as baseline and departure would never disable anything.
   - `enable_managed_services(ctx: Context) -> None` — Enable and start every managed systemd --user unit (Linux, non-work).
-  - `capture_git_hooks_path_baseline(ctx: Context) -> None` — Capture the pre-existing global ``core.hooksPath``, immediately before :func:`install_global_git_hooks_path` runs -- capturing any later would record dotfiles' own already-set value as if it were the original, which would make departure "restore" dotfiles' own path instead of the true pre-dotfiles value.
+  - `capture_git_hooks_path_baseline(ctx: Context) -> None` — Capture the pre-existing global ``core.hooksPath``, immediately before :func:`install_global_git_hooks_path` runs -- capturing any later would record the origin repo's own already-set value as if it were the original, which would make departure "restore" that repo's own path instead of the true pre-install value.
   - `install_global_git_hooks_path(ctx: Context) -> None` — Point global ``core.hooksPath`` at ``githooks-global/``, so every repo without its own local override picks up the no-commit-on-main hook.
   - `capture_departure_baseline(ctx: Context, specs: Sequence[LinkSpec]) -> None` — Thin shim — implementation in depart_exec.
   - `build_preflight_report(ctx: Context) -> dict[str, depart.Classification] | None` — Thin shim — implementation in depart_exec.
@@ -1655,7 +1644,7 @@ depart_exec.py — --depart execution: preflight, phases, confirmation, cleanup.
   - `build_preflight_report(deps: Deps, ctx: DepartureContext) -> dict[str, depart.Classification] | None` — Classify every tracked ownership key, or None if there's no baseline.
   - `build_package_preflight(deps: Deps, ctx: DepartureContext) -> list[depart.PackageClassification] | None` — Classify every requested/introduced package, or None if there's no baseline.
   - `execute_service_phase(deps: Deps, ctx: DepartureContext, baseline: depart.Baseline, ledger: depart.DepartureLedger) -> None` — Disable+stop every owned managed service, then reconcile linger once.
-  - `execute_gitconfig_phase(deps: Deps, ctx: DepartureContext, baseline: depart.Baseline, ledger: depart.DepartureLedger) -> None` — Restore the pre-dotfiles global core.hooksPath value, if this installer owns the current value.
+  - `execute_gitconfig_phase(deps: Deps, ctx: DepartureContext, baseline: depart.Baseline, ledger: depart.DepartureLedger) -> None` — Restore the pre-install global core.hooksPath value, if this installer owns the current value.
   - `execute_file_symlink_phase(deps: Deps, ctx: DepartureContext, baseline: depart.Baseline, report: dict[str, depart.Classification], ledger: depart.DepartureLedger) -> None` — Execute every owned ``file:``/``symlink:`` action, in pinned order.
   - `execute_directory_phase(deps: Deps, ctx: DepartureContext, baseline: depart.Baseline, report: dict[str, depart.Classification], ledger: depart.DepartureLedger) -> None` — Execute every owned ``directory:`` action, deepest-path-first.
   - `execute_runtime_phase(deps: Deps, ctx: DepartureContext, report: dict[str, depart.Classification], ledger: depart.DepartureLedger) -> None` — Remove the NVM root wholesale, if owned and not already done.

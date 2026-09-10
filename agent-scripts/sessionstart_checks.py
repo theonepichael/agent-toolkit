@@ -41,7 +41,7 @@ CHECKS: list[tuple[str, int]] = [
         15,
     ),
     ("python3 ~/.claude/scripts/grill.py pending-plan --consume", 15),
-    ("python3 ~/.claude/scripts/dotfiles_sync_check.py 2>/dev/null", 15),
+    ("python3 ~/.claude/scripts/bundle_drift_check.py 2>/dev/null", 15),
     ("python3 ~/.claude/scripts/settings_seed_drift_check.py", 15),
     (
         (

@@ -742,7 +742,7 @@ def execute_service_phase(
 
 def _execute_gitconfig_restore(deps: Deps, recorded: dict[str, object]) -> str:
     """Restore the global core.hooksPath value baseline recorded: unset if
-    it was absent before dotfiles set it, otherwise set it back."""
+    it was absent before the installer set it, otherwise set it back."""
     if recorded.get("state") == depart.STATE_ABSENT:
         ok = deps.run_command(
             ["git", "config", "--global", "--unset", deps.GLOBAL_GIT_HOOKS_PATH_KEY]
@@ -764,7 +764,7 @@ def execute_gitconfig_phase(
     baseline: depart.Baseline,
     ledger: depart.DepartureLedger,
 ) -> None:
-    """Restore the pre-dotfiles global core.hooksPath value, if this
+    """Restore the pre-install global core.hooksPath value, if this
     installer owns the current value."""
     key = depart.gitconfig_key(deps.GLOBAL_GIT_HOOKS_PATH_KEY)
     if key in ledger.completed_keys():

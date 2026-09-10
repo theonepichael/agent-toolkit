@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Installed via `git config --global core.hooksPath` (install.py, personal
 # profile only) so every repo without its own local core.hooksPath override
-# picks this up. A repo-local override -- this dotfiles checkout's own
+# picks this up. A repo-local override -- this checkout's own
 # githooks/pre-commit included -- takes precedence over the global value by
 # git's own config precedence, so it never runs here; that repo gets the
 # same check added directly instead.

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Tests for herdr_delegate.py. Run with: python3 test_herdr_delegate.py
 
-The script's source of truth is this repo (dotfiles' copy was retired in the
+The script's source of truth is this repo (the origin repo's copy was retired in the
 cutover; the live ~/.claude/scripts symlink points here). Everything is
 tested in process: herdr is faked at the module's herdr() boundary -- the
 only function that shells out -- so nothing here reaches the real herdr

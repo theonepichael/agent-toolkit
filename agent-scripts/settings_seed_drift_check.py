@@ -2,7 +2,7 @@
 """SessionStart hook + CLI: detect (and optionally fix) drift between the
 live ``~/.claude/settings.json`` / ``~/.config/opencode/opencode.jsonc`` /
 (under WSL) the Windows-side VS Code ``settings.json`` and
-``keybindings.json`` and their seeds in the dotfiles repo.
+``keybindings.json`` and their seeds in this repo.
 
 Why this exists
 ---------------
@@ -133,7 +133,7 @@ Subcommands
             sessions, then run ``fix``.
     sync-to-seed
             the reverse direction: mirror live settings back into the
-            dotfiles seed. For a live-first edit (e.g. testing a
+            repo seed. For a live-first edit (e.g. testing a
             SessionStart hook fix immediately in
             ``~/.claude/settings.json``) that needs forwarding into git.
 
@@ -154,13 +154,13 @@ Subcommands
             No active-session guard needed (unlike ``fix``) — this only
             writes the seed file, never the live files Claude Code/
             opencode hold in memory. Same backup-then-atomic-write pattern
-            as ``fix``. Accepts ``--dotfiles-root PATH`` to target a
+            as ``fix``. Accepts ``--repo-root PATH`` to target a
             worktree instead of the live checkout (the default, resolved
             from this script's own location) — point it at a fresh worktree
-            per the dotfiles-first git policy rather than writing directly
+            per the repo-first git policy rather than writing directly
             into the main checkout.
     push-vscode
-            the repo->live direction for VS Code: push the dotfiles seed's
+            the repo->live direction for VS Code: push the repo seed's
             ``settings.json`` / ``keybindings.json`` out to the live
             Windows user directory. WSL-only (see ``_vscode_wsl_user_dir``);
             refuses with an explicit error off WSL rather than a silent
@@ -182,7 +182,7 @@ Subcommands
             running" if ``tasklist.exe`` is missing, times out, or errors)
             and backup-protected, not a guarantee: each live file gets a
             timestamped ``.bak`` before being overwritten, same convention
-            as ``fix``/``sync-to-seed``. Accepts ``--dotfiles-root PATH``,
+            as ``fix``/``sync-to-seed``. Accepts ``--repo-root PATH``,
             same as ``sync-to-seed``.
 
 Usage
@@ -190,14 +190,14 @@ Usage
     settings_seed_drift_check.py           # check (default)
     settings_seed_drift_check.py check
     settings_seed_drift_check.py fix
-    settings_seed_drift_check.py sync-to-seed [--dotfiles-root PATH]
-    settings_seed_drift_check.py push-vscode [--dotfiles-root PATH] [--yes]
+    settings_seed_drift_check.py sync-to-seed [--repo-root PATH]
+    settings_seed_drift_check.py push-vscode [--repo-root PATH] [--yes]
 
 Exits 0 from ``check`` when there is no drift and no parse failure;
 exits nonzero from ``check`` on a parse failure (so the user notices),
 but never blocks the session otherwise. ``fix`` exits 1 when it refused
 to run (active sessions) or hit a parse failure, 0 otherwise.
-``sync-to-seed`` exits 1 on a parse failure or a ``--dotfiles-root`` that
+``sync-to-seed`` exits 1 on a parse failure or a ``--repo-root`` that
 doesn't exist, 0 otherwise. ``push-vscode`` exits 1 when it refused to run
 (off WSL, VS Code detected as running, or confirmation required on
 non-interactive stdin without ``--yes``), 0 otherwise (including "nothing
@@ -227,7 +227,7 @@ import cli_common
 from settings_seed import json_key_drift, opencode_bypass_drift
 
 HOME = Path.home()
-DOTFILES = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # Cosmetic keys — per-machine preferences explicitly allowed to drift
 # silently. Anything NOT in this set is reported as drift by default, so a
@@ -395,11 +395,11 @@ def resolve_profile() -> str:
 
 def settings_seed_path(root: Path | None = None) -> Path:
     """Return the seed settings.json path for this machine's profile,
-    under ``root`` (default the ``DOTFILES`` module constant — resolved at
+    under ``root`` (default the ``REPO_ROOT`` module constant — resolved at
     call time, not bound at import, so callers that don't pass ``root``
-    still pick up a patched/overridden ``DOTFILES``)."""
+    still pick up a patched/overridden ``REPO_ROOT``)."""
     name = "settings.work.json" if resolve_profile() == "work" else "settings.json"
-    return (root if root is not None else DOTFILES) / "claude" / name
+    return (root if root is not None else REPO_ROOT) / "claude" / name
 
 
 def opencode_seed_path(root: Path | None = None) -> Path | None:
@@ -412,7 +412,7 @@ def opencode_seed_path(root: Path | None = None) -> Path | None:
     """
     if resolve_profile() == "work":
         return None
-    return (root if root is not None else DOTFILES) / "opencode" / "opencode.jsonc"
+    return (root if root is not None else REPO_ROOT) / "opencode" / "opencode.jsonc"
 
 
 def vscode_seed_path(name: str, root: Path | None = None) -> Path:
@@ -422,7 +422,7 @@ def vscode_seed_path(name: str, root: Path | None = None) -> Path:
     No work/personal split like ``settings_seed_path`` — VS Code settings
     aren't profile-specific the way Claude Code's are.
     """
-    return (root if root is not None else DOTFILES) / "vscode" / name
+    return (root if root is not None else REPO_ROOT) / "vscode" / name
 
 
 # ── drift detection ──────────────────────────────────────────────────────────
@@ -986,7 +986,7 @@ def _fix_settings_file(live_path: Path, seed_path: Path, quiet: bool = False) ->
             f"{live_path}: the seed ({seed_path}) is missing SessionStart hook "
             f"group(s) the live file has ({'; '.join(lost_groups)}).\n"
             "  The seed looks corrupted (a lossy rewrite may have propagated it). "
-            "Repair the seed (git restore it in the dotfiles repo), or — if "
+            "Repair the seed (git restore it in this repo), or — if "
             "live's extra group(s) are intentional — run `sync-to-seed` to "
             "forward them into the seed. Live hooks left unchanged."
         )
@@ -1255,7 +1255,7 @@ def _push_vscode_to_live(seed_path: Path, live_path: Path) -> tuple[bool, str] |
     those live in :func:`cmd_push_vscode`, so the same confirm-then-check-
     then-write sequence covers both files exactly once.
 
-    ``seed_path`` must exist (it's the dotfiles repo's own seed). A missing
+    ``seed_path`` must exist (it's this repo's own seed). A missing
     ``live_path`` is treated as empty content — meaning this push will
     create the file.
 
@@ -1409,26 +1409,26 @@ def cmd_fix(quiet: bool = False) -> int:
     return exit_code
 
 
-def cmd_sync_to_seed(dotfiles_root: Path, quiet: bool = False) -> int:
-    """Mirror live settings back into the dotfiles seed (reverse of
+def cmd_sync_to_seed(repo_root: Path, quiet: bool = False) -> int:
+    """Mirror live settings back into the repo's seed files (reverse of
     fix()). No active-session guard needed — this only writes the seed
-    file in ``dotfiles_root``, never the live files Claude Code/opencode
+    file in ``repo_root``, never the live files Claude Code/opencode
     hold in memory for a session's lifetime."""
-    if not dotfiles_root.is_dir():
+    if not repo_root.is_dir():
         _print_loud(
-            f"[settings_seed_drift_check] --dotfiles-root {dotfiles_root} "
+            f"[settings_seed_drift_check] --repo-root {repo_root} "
             "does not exist or is not a directory."
         )
         return 1
 
     exit_code = 0
     settings_live = HOME / ".claude" / "settings.json"
-    settings_seed = settings_seed_path(dotfiles_root)
+    settings_seed = settings_seed_path(repo_root)
     exit_code = (
         _sync_settings_to_seed(settings_live, settings_seed, quiet=quiet) or exit_code
     )
 
-    oc_seed = opencode_seed_path(dotfiles_root)
+    oc_seed = opencode_seed_path(repo_root)
     if oc_seed is not None:
         oc_live = HOME / ".config" / "opencode" / "opencode.jsonc"
         exit_code = _sync_opencode_to_seed(oc_live, oc_seed, quiet=quiet) or exit_code
@@ -1437,7 +1437,7 @@ def cmd_sync_to_seed(dotfiles_root: Path, quiet: bool = False) -> int:
     if vscode_user_dir is not None:
         for name in ("settings.json", "keybindings.json"):
             vscode_live = vscode_user_dir / name
-            vscode_seed = vscode_seed_path(name, dotfiles_root)
+            vscode_seed = vscode_seed_path(name, repo_root)
             exit_code = (
                 _sync_vscode_to_seed(vscode_live, vscode_seed, quiet=quiet) or exit_code
             )
@@ -1462,8 +1462,8 @@ def _diff_summary(diff: str) -> str:
     return f"{added} lines added, {removed} removed"
 
 
-def cmd_push_vscode(dotfiles_root: Path, quiet: bool = False, yes: bool = False) -> int:
-    """Push the dotfiles seed's VS Code settings.json/keybindings.json out
+def cmd_push_vscode(repo_root: Path, quiet: bool = False, yes: bool = False) -> int:
+    """Push the repo seed's VS Code settings.json/keybindings.json out
     to the live Windows user directory (the repo->live direction; see the
     module docstring's ``push-vscode`` section for the full guard
     rationale).
@@ -1485,7 +1485,7 @@ def cmd_push_vscode(dotfiles_root: Path, quiet: bool = False, yes: bool = False)
 
     to_write: list[tuple[Path, Path, bool]] = []  # (seed, live, live_exists)
     for name in ("settings.json", "keybindings.json"):
-        seed = vscode_seed_path(name, dotfiles_root)
+        seed = vscode_seed_path(name, repo_root)
         live = vscode_user_dir / name
         result = _push_vscode_to_live(seed, live)
         if result is None:
@@ -1551,11 +1551,11 @@ def main(argv: list[str] | None = None) -> int:
     subparsers.add_parser("fix", parents=[verbosity_parent])
     sync_parser = subparsers.add_parser("sync-to-seed", parents=[verbosity_parent])
     sync_parser.add_argument(
-        "--dotfiles-root", type=Path, default=DOTFILES, dest="dotfiles_root"
+        "--repo-root", type=Path, default=REPO_ROOT, dest="repo_root"
     )
     push_parser = subparsers.add_parser("push-vscode", parents=[verbosity_parent])
     push_parser.add_argument(
-        "--dotfiles-root", type=Path, default=DOTFILES, dest="dotfiles_root"
+        "--repo-root", type=Path, default=REPO_ROOT, dest="repo_root"
     )
     push_parser.add_argument("--yes", "-y", action="store_true")
 
@@ -1567,8 +1567,8 @@ def main(argv: list[str] | None = None) -> int:
     if subcommand == "fix":
         return cmd_fix(quiet=quiet)
     if subcommand == "push-vscode":
-        return cmd_push_vscode(args.dotfiles_root, quiet=quiet, yes=args.yes)
-    return cmd_sync_to_seed(args.dotfiles_root, quiet=quiet)
+        return cmd_push_vscode(args.repo_root, quiet=quiet, yes=args.yes)
+    return cmd_sync_to_seed(args.repo_root, quiet=quiet)
 
 
 if __name__ == "__main__":

@@ -9,12 +9,12 @@
 # real machine.
 set -uo pipefail
 
-DOTFILES="$HOME/dotfiles"
-STATE_DIR="$HOME/.local/state/dotfiles"
+REPO_ROOT="$HOME/dotfiles"
+STATE_DIR="$HOME/.local/state/agent-toolkit"
 MANIFEST="$STATE_DIR/history.jsonl"
 MARKER="$STATE_DIR/profile"
 
-cd "$DOTFILES" || exit 1
+cd "$REPO_ROOT" || exit 1
 
 PASS=0
 FAIL=0
@@ -108,11 +108,11 @@ cat /tmp/install.out
 check "exit code 0 or 1 (0/1 = ok-with-skips, not a hard error)" \
   bash -c "[[ $code -eq 0 || $code -eq 1 ]]"
 check "manifest recorded profile=personal" manifest_has run profile=personal
-check "$HOME/.vimrc symlinks into repo" bash -c '[[ "$(readlink -f ~/.vimrc)" == "'"$DOTFILES"'/vim/.vimrc" ]]'
-check "$HOME/.zshrc symlinks into repo" bash -c '[[ "$(readlink -f ~/.zshrc)" == "'"$DOTFILES"'/zsh/.zshrc" ]]'
-check "$HOME/.claude/CLAUDE.md symlinks into repo" bash -c '[[ "$(readlink -f ~/.claude/CLAUDE.md)" == "'"$DOTFILES"'/claude/global-instructions.md" ]]'
+check "$HOME/.vimrc symlinks into repo" bash -c '[[ "$(readlink -f ~/.vimrc)" == "'"$REPO_ROOT"'/vim/.vimrc" ]]'
+check "$HOME/.zshrc symlinks into repo" bash -c '[[ "$(readlink -f ~/.zshrc)" == "'"$REPO_ROOT"'/zsh/.zshrc" ]]'
+check "$HOME/.claude/CLAUDE.md symlinks into repo" bash -c '[[ "$(readlink -f ~/.claude/CLAUDE.md)" == "'"$REPO_ROOT"'/claude/global-instructions.md" ]]'
 check "$HOME/.claude/settings.json copied (not symlinked)" bash -c '[[ -f ~/.claude/settings.json && ! -L ~/.claude/settings.json ]]'
-check "$HOME/.claude/settings.json matches personal seed" diff -q ~/.claude/settings.json "$DOTFILES/claude/settings.json"
+check "$HOME/.claude/settings.json matches personal seed" diff -q ~/.claude/settings.json "$REPO_ROOT/claude/settings.json"
 check "watchcommit symlinked on personal profile" bash -c '[[ -L ~/.local/bin/watchcommit ]]'
 check "watchcommit systemd unit symlinked on personal profile" bash -c '[[ -L ~/.config/systemd/user/watchcommit.service ]]'
 check "no profile marker written on personal run" bash -c '[[ ! -f "'"$MARKER"'" ]]'
@@ -180,7 +180,7 @@ cat /tmp/work.out
 check "profile marker written as 'work'" bash -c '[[ "$(cat "'"$MARKER"'")" == "work" ]]'
 check "watchcommit excluded on work profile" bash -c '[[ ! -e ~/.local/bin/watchcommit ]]'
 check "watchcommit systemd unit excluded on work profile" bash -c '[[ ! -e ~/.config/systemd/user/watchcommit.service ]]'
-check "$HOME/.claude/settings.json matches WORK seed" diff -q ~/.claude/settings.json "$DOTFILES/claude/settings.work.json"
+check "$HOME/.claude/settings.json matches WORK seed" diff -q ~/.claude/settings.json "$REPO_ROOT/claude/settings.work.json"
 check "Claude Code IS installed despite work profile (profile never restricts harness choice)" \
   bash -c '[[ -L ~/.claude/CLAUDE.md ]]'
 
@@ -290,7 +290,7 @@ check "repeated --harness=claude --harness=copilot selects claude" bash -c '[[ -
 check "repeated --harness=claude --harness=copilot ALSO selects copilot (not just the last flag)" \
   bash -c '[[ -e ~/.copilot/copilot-instructions.md ]]'
 check "copilot backlog-item skill symlinked" bash -c \
-  '[[ "$(readlink -f ~/.copilot/skills/backlog-item/SKILL.md)" == "'"$DOTFILES"'/copilot/skills/backlog-item/SKILL.md" ]]'
+  '[[ "$(readlink -f ~/.copilot/skills/backlog-item/SKILL.md)" == "'"$REPO_ROOT"'/copilot/skills/backlog-item/SKILL.md" ]]'
 
 echo ""
 echo "=== 9. Additive-only: narrowing --harness on a later run doesn't uninstall ==="
@@ -310,21 +310,21 @@ check "Claude Code wired (pi combo)" bash -c '[[ -L ~/.claude/CLAUDE.md ]]'
 check "Pi wired (combo)" bash -c '[[ -f ~/.pi/agent/settings.json ]]'
 check "Copilot still NOT wired (pi combo omits it)" bash -c '[[ ! -e ~/.copilot/copilot-instructions.md ]]'
 check "pi AGENTS.md symlinks into repo's shared CLAUDE.md" bash -c \
-  '[[ "$(readlink -f ~/.pi/agent/AGENTS.md)" == "'"$DOTFILES"'/claude/global-instructions.md" ]]'
+  '[[ "$(readlink -f ~/.pi/agent/AGENTS.md)" == "'"$REPO_ROOT"'/claude/global-instructions.md" ]]'
 check "pi dashboard prompt symlinked" bash -c \
-  '[[ "$(readlink -f ~/.pi/agent/prompts/dashboard.md)" == "'"$DOTFILES"'/pi/prompts/dashboard.md" ]]'
+  '[[ "$(readlink -f ~/.pi/agent/prompts/dashboard.md)" == "'"$REPO_ROOT"'/pi/prompts/dashboard.md" ]]'
 check "pi backlog-item prompt symlinked" bash -c \
-  '[[ "$(readlink -f ~/.pi/agent/prompts/backlog-item.md)" == "'"$DOTFILES"'/pi/prompts/backlog-item.md" ]]'
+  '[[ "$(readlink -f ~/.pi/agent/prompts/backlog-item.md)" == "'"$REPO_ROOT"'/pi/prompts/backlog-item.md" ]]'
 check "pi permission-gate extension symlinked" bash -c \
-  '[[ "$(readlink -f ~/.pi/agent/extensions/permission-gate.ts)" == "'"$DOTFILES"'/pi/extensions/permission-gate.ts" ]]'
+  '[[ "$(readlink -f ~/.pi/agent/extensions/permission-gate.ts)" == "'"$REPO_ROOT"'/pi/extensions/permission-gate.ts" ]]'
 check "pi ruff-format-on-edit extension symlinked" bash -c \
-  '[[ "$(readlink -f ~/.pi/agent/extensions/ruff-format-on-edit.ts)" == "'"$DOTFILES"'/pi/extensions/ruff-format-on-edit.ts" ]]'
+  '[[ "$(readlink -f ~/.pi/agent/extensions/ruff-format-on-edit.ts)" == "'"$REPO_ROOT"'/pi/extensions/ruff-format-on-edit.ts" ]]'
 check "pi guard-rails extension symlinked" bash -c \
-  '[[ "$(readlink -f ~/.pi/agent/extensions/guard-rails.ts)" == "'"$DOTFILES"'/pi/extensions/guard-rails.ts" ]]'
+  '[[ "$(readlink -f ~/.pi/agent/extensions/guard-rails.ts)" == "'"$REPO_ROOT"'/pi/extensions/guard-rails.ts" ]]'
 check "pi dev-status-tool extension symlinked" bash -c \
-  '[[ "$(readlink -f ~/.pi/agent/extensions/dev-status-tool.ts)" == "'"$DOTFILES"'/pi/extensions/dev-status-tool.ts" ]]'
+  '[[ "$(readlink -f ~/.pi/agent/extensions/dev-status-tool.ts)" == "'"$REPO_ROOT"'/pi/extensions/dev-status-tool.ts" ]]'
 check "pi settings.json copied (not symlinked)" bash -c '[[ -f ~/.pi/agent/settings.json && ! -L ~/.pi/agent/settings.json ]]'
-check "pi settings.json matches repo seed" diff -q ~/.pi/agent/settings.json "$DOTFILES/pi/settings.json"
+check "pi settings.json matches repo seed" diff -q ~/.pi/agent/settings.json "$REPO_ROOT/pi/settings.json"
 
 echo ""
 echo "--- 9c. Pi settings.json drift is reported, not silently overwritten ---"
@@ -339,7 +339,7 @@ echo ""
 echo "--- 9d. --reseed overwrites the drifted pi settings.json, backing up the drift first ---"
 ./install.sh --harness=claude,pi --reseed >/tmp/pi-reseed.out 2>&1
 cat /tmp/pi-reseed.out
-check "pi settings.json reseeded to match repo copy" diff -q ~/.pi/agent/settings.json "$DOTFILES/pi/settings.json"
+check "pi settings.json reseeded to match repo copy" diff -q ~/.pi/agent/settings.json "$REPO_ROOT/pi/settings.json"
 check "pi settings.json .bak preserves the drifted content" \
   bash -c '[[ "$(cat ~/.pi/agent/settings.json.bak)" == "{\"skills\": [\"/tmp/not-the-real-path\"]}" ]]'
 
@@ -364,7 +364,7 @@ echo ""
 echo "=== 10. opencode.jsonc: personal-only permission seeding ==="
 ./install.sh --harness=opencode >/tmp/oc-personal.out 2>&1
 cat /tmp/oc-personal.out
-check "opencode.jsonc seeded from personal file" diff -q ~/.config/opencode/opencode.jsonc "$DOTFILES/opencode/opencode.jsonc"
+check "opencode.jsonc seeded from personal file" diff -q ~/.config/opencode/opencode.jsonc "$REPO_ROOT/opencode/opencode.jsonc"
 check "personal opencode.jsonc has no xargs (allowlist bypass removed everywhere)" \
   bash -c '! grep -q "xargs" ~/.config/opencode/opencode.jsonc'
 check "personal opencode.jsonc has no awk (allowlist bypass removed everywhere)" \
@@ -375,11 +375,11 @@ check "personal opencode.jsonc does not allow curl (network calls need approval)
 # OR 1 (ok-with-skips) on success, so a typo'd src in links.toml would
 # otherwise surface only as a silent SKIPPED line, not a failed scenario.
 check "opencode backlog-item command symlinked" bash -c \
-  '[[ "$(readlink -f ~/.config/opencode/commands/backlog-item.md)" == "'"$DOTFILES"'/opencode/command/backlog-item.md" ]]'
+  '[[ "$(readlink -f ~/.config/opencode/commands/backlog-item.md)" == "'"$REPO_ROOT"'/opencode/command/backlog-item.md" ]]'
 check "opencode grill-me skill symlinked (backlog-item delegates via skill tool)" bash -c \
-  '[[ "$(readlink -f ~/.config/opencode/skills/grill-me/SKILL.md)" == "'"$DOTFILES"'/opencode/skills/grill-me/SKILL.md" ]]'
+  '[[ "$(readlink -f ~/.config/opencode/skills/grill-me/SKILL.md)" == "'"$REPO_ROOT"'/opencode/skills/grill-me/SKILL.md" ]]'
 check "opencode second-opinion skill symlinked (backlog-item delegates via skill tool)" bash -c \
-  '[[ "$(readlink -f ~/.config/opencode/skills/second-opinion/SKILL.md)" == "'"$DOTFILES"'/opencode/skills/second-opinion/SKILL.md" ]]'
+  '[[ "$(readlink -f ~/.config/opencode/skills/second-opinion/SKILL.md)" == "'"$REPO_ROOT"'/opencode/skills/second-opinion/SKILL.md" ]]'
 ./install.sh --rollback >/tmp/rb-oc1.out 2>&1
 
 rm -f "$MARKER"
@@ -781,7 +781,7 @@ echo "=== 17. dir=true directory-glob rows (Fidelity local-skill-fork mechanism)
 # ship a concrete dir=true row yet (deferred until a real local/ checkout
 # exists), so this section appends one to this container's own throwaway
 # copy of links.toml for its own duration, then restores the original.
-LOCAL_CMDS="$DOTFILES/local/claude/commands"
+LOCAL_CMDS="$REPO_ROOT/local/claude/commands"
 DEST="$HOME/.claude/scenario-local-commands"
 mkdir -p "$LOCAL_CMDS/sub"
 echo "foo" >"$LOCAL_CMDS/foo.md"
@@ -789,11 +789,11 @@ echo "bar" >"$LOCAL_CMDS/sub/bar.md"
 echo "junk" >"$LOCAL_CMDS/.DS_Store"
 echo "junk" >"$LOCAL_CMDS/foo.md.swp"
 
-cp "$DOTFILES/links.toml" /tmp/links.toml.bak
-restore_links_toml() { cp /tmp/links.toml.bak "$DOTFILES/links.toml"; }
+cp "$REPO_ROOT/links.toml" /tmp/links.toml.bak
+restore_links_toml() { cp /tmp/links.toml.bak "$REPO_ROOT/links.toml"; }
 trap restore_links_toml EXIT
 
-cat >>"$DOTFILES/links.toml" <<'TOML'
+cat >>"$REPO_ROOT/links.toml" <<'TOML'
 
 [[link]]
 src = "local/claude/commands"
@@ -831,7 +831,7 @@ echo ""
 echo "--- 17d. A destination collision between two entries aborts, no symlink created ---"
 mkdir -p "$LOCAL_CMDS"
 echo "same" >"$LOCAL_CMDS/collide.md"
-cat >>"$DOTFILES/links.toml" <<'TOML'
+cat >>"$REPO_ROOT/links.toml" <<'TOML'
 
 [[link]]
 src = "claude/global-instructions.md"
@@ -850,7 +850,7 @@ check "collision left the still-good sub/bar.md symlink untouched" bash -c '[[ -
 echo ""
 echo "--- 17e. --rollback reverts the dir=true-expanded symlink ---"
 restore_links_toml
-cat >>"$DOTFILES/links.toml" <<'TOML'
+cat >>"$REPO_ROOT/links.toml" <<'TOML'
 
 [[link]]
 src = "local/claude/commands"

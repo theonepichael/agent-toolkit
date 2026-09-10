@@ -21,7 +21,7 @@ so the module never imports install at runtime):
 - ``ctx.reporter.skip(label, reason)`` — the skip-and-report channel,
 - ``ctx.manifest.record_copy(dest)`` / ``ctx.manifest.has_backup(dest)`` /
   ``ctx.manifest.record_backup(dest, backup)`` — run-history bookkeeping,
-- ``ctx.dotfiles`` — the repo root, for the git-cleanliness safeguard.
+- ``ctx.repo_root`` — the repo root, for the git-cleanliness safeguard.
 
 Subprocess access is injected, not imported: ``seed_file`` takes a required
 keyword-only ``run_command`` (the installer's subprocess wrapper) so the
@@ -443,10 +443,10 @@ def _adopt_git_reason(
 ) -> str:
     """Return a refusal reason unless Git proves the seed is tracked and clean."""
     try:
-        relative = seed.relative_to(ctx.dotfiles).as_posix()
+        relative = seed.relative_to(ctx.repo_root).as_posix()
     except ValueError:
         return "repo seed is outside the Git checkout — repair the path manually"
-    prefix = ["git", "-C", str(ctx.dotfiles)]
+    prefix = ["git", "-C", str(ctx.repo_root)]
     tracked = run_command(
         [*prefix, "ls-files", "--error-unmatch", "--", relative], capture=True
     )
@@ -564,7 +564,7 @@ def _reseed_file(
     has_backup = ctx.manifest.has_backup(dest)
     backup_exists = backup.exists()
 
-    # A .bak this dotfiles tool never recorded — don't touch either file.
+    # A .bak this tool never recorded — don't touch either file.
     if not has_backup and backup_exists:
         if ctx.opts.dry_run:
             cli_common.preview(

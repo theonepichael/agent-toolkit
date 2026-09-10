@@ -1,4 +1,4 @@
-"""Shared CLI helpers used across dotfiles scripts.
+"""Shared CLI helpers used across agent-toolkit scripts.
 
 Environment
   AGENT_TOOLKIT_TIMING=1 enables timing_span records under

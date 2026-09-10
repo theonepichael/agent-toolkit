@@ -22,7 +22,7 @@ def test_shell_lint_passes() -> None:
         if shutil.which(binary) is None:
             pytest.fail(
                 f"{binary} is not on PATH — install it (e.g. "
-                "'apt-get install -y shellcheck shfmt', as dotfiles' shell-lint "
+                "'apt-get install -y shellcheck shfmt', as the origin repo's shell-lint "
                 "workflow does) so test/lint_shell.sh can run"
             )
     result = subprocess.run(

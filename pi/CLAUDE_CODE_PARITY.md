@@ -125,7 +125,7 @@ comment warns about) carries **no** `skills` key:
 All 8 skills are found purely through Pi's default, always-on scan of
 `~/.pi/agent/skills/`, which `links.toml` (§ below) symlinks straight to
 `pi/skills/`. An earlier version of this file explicitly listed
-`"skills": ["/home/yanil/dotfiles/pi/skills", "/home/yanil/dotfiles/agy/skills"]`
+`"skills": ["/home/yanil/agent-toolkit/pi/skills", "/home/yanil/agent-toolkit/agy/skills"]`
 — that was wrong, not just redundant: Pi's `skills` config is *additive* to
 the default scan, not a replacement for it (`docs/skills.md`), so listing
 `pi/skills` a second time made every one of the 8 skills resolve at two

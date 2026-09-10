@@ -1,5 +1,5 @@
 {
-  "name": "dotfiles-pi-extensions",
+  "name": "atk-pi-extensions",
   "private": true,
   "scripts": {
     "test": "bun test",

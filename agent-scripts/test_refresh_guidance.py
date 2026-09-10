@@ -222,7 +222,7 @@ class DiscoveryTestCase(unittest.TestCase):
 
 
 class CrossRepoScriptsTestCase(unittest.TestCase):
-    """A bare `dev_status.py`-style citation in a dotfiles-shaped repo must
+    """A bare `dev_status.py`-style citation in an external repo must
     resolve against a sibling agent-toolkit checkout, not read as broken."""
 
     def setUp(self) -> None:
@@ -237,7 +237,7 @@ class CrossRepoScriptsTestCase(unittest.TestCase):
             "    return parser\n"
         )
 
-        self.repo = Path(self.tmpdir) / "dotfiles"
+        self.repo = Path(self.tmpdir) / "external-repo"
         _init_repo(self.repo)
         _init_repo(self.agent_toolkit_root)
         _commit_all(self.agent_toolkit_root, "init toolkit")
@@ -448,7 +448,7 @@ class StateRoundTripTestCase(unittest.TestCase):
 
 class ExternalDocSetConfigTestCase(unittest.TestCase):
     """Covers loading <repo_root>/refresh-guidance.toml into a DocSetConfig
-    — the mechanism that lets a calling repo (dotfiles, or any future
+    — the mechanism that lets a calling repo (any future
     third repo) supply its own doc-set config without agent-toolkit
     hardcoding that repo's internal layout."""
 
@@ -562,7 +562,7 @@ class DocSetResolutionTestCase(unittest.TestCase):
         with self.assertRaises(rg.ConfigError):
             rg.resolve_doc_set(self.repo, "nonexistent-doc-set")
 
-    def test_dotfiles_leak_is_gone(self) -> None:
+    def test_repo_layout_leak_is_gone(self) -> None:
         """The leak this item exists to remove: DOC_SETS must carry no
         repo-specific config for anything other than agent-toolkit."""
         self.assertEqual(list(rg.DOC_SETS.keys()), ["agent-toolkit"])

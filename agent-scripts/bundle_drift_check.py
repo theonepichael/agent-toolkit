@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""SessionStart hook: flag when the dotfiles repo has drifted from the last
+"""SessionStart hook: flag when this repo has drifted from the last
 commit bundled over to a GitHub-blocked work machine.
 
 Usage:
-    dotfiles_sync_check.py check       print a drift note if HEAD is ahead of the marker (default)
-    dotfiles_sync_check.py mark [sha]  record the given (or current HEAD) commit as last-bundled
+    bundle_drift_check.py check       print a drift note if HEAD is ahead of the marker (default)
+    bundle_drift_check.py mark [sha]  record the given (or current HEAD) commit as last-bundled
 
 Flags
   --quiet, -q    suppress non-essential output
@@ -21,9 +21,8 @@ import cli_common
 REPO = Path(__file__).resolve().parents[1]
 # "agent-toolkit", matching install.py's own state directory for this
 # repo -- this script's own bundling-drift marker must not be written into
-# dotfiles' state directory (~/.local/state/dotfiles/), the same
-# cross-repo confusion install.py's manifest-scoping fix eliminated
-# elsewhere.
+# some other repo's state directory, the same cross-repo confusion
+# install.py's manifest-scoping fix eliminated elsewhere.
 STATE_DIR = Path.home() / ".local" / "state" / "agent-toolkit"
 MARKER = STATE_DIR / "last-bundled-commit"
 
@@ -54,7 +53,7 @@ def cmd_check(quiet: bool = False) -> None:
     if not count or count == "0":
         return
     cli_common.qprint(
-        f"dotfiles: {count} commit(s) ahead of last bundled transfer ({marker_sha[:7]})",
+        f"{count} commit(s) ahead of last bundled transfer ({marker_sha[:7]})",
         quiet=quiet,
     )
 
@@ -62,19 +61,19 @@ def cmd_check(quiet: bool = False) -> None:
 def cmd_mark(sha: str | None, quiet: bool = False) -> None:
     target = sha or git("rev-parse", "HEAD")
     if not target:
-        print("dotfiles_sync_check: could not resolve HEAD", file=sys.stderr)
+        print("bundle_drift_check: could not resolve HEAD", file=sys.stderr)
         sys.exit(1)
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     MARKER.write_text(target + "\n")
     cli_common.qprint(
-        f"dotfiles: marked {target[:7]} as last-bundled commit",
+        f"marked {target[:7]} as last-bundled commit",
         quiet=quiet,
     )
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Flag when the dotfiles repo has drifted from the last "
+        description="Flag when this repo has drifted from the last "
         "commit bundled over to a GitHub-blocked work machine."
     )
     # --quiet/-v are defined once, on every leaf subcommand parser only

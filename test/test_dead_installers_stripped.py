@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Reintroduction guard for the dead dotfiles-style installer strip.
+"""Reintroduction guard for the dead package-installer strip.
 
 The package/command/pref installer machinery (brew/apt/dnf batch installs,
 uv/ruff/oh-my-posh/nerd-font/neovim pinning, Rectangle prefs, caps-lock
-remap) is dotfiles' job — agent-toolkit's copies were an unwired port and
+remap) is the origin repo's job — agent-toolkit's copies were an unwired port and
 were deleted. This test pins them as gone: any reintroduction of a deleted
 symbol, flag, or manifest writer fails here.
 

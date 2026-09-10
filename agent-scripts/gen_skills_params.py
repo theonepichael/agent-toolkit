@@ -21,52 +21,35 @@ harness-specific fact directly instead.
 Requires Python 3.12+.
 """
 
-from repo_identity import REPO_IDENTITY
-
-# ── per-repo phrasing helpers ──────────────────────────────────────────────
+# ── phrasing helpers ───────────────────────────────────────────────────────
 #
-# The one class of content that must differ between the dotfiles and
-# agent-toolkit copies of this otherwise-shared file: where a human editing
-# a generated skill doc should go make that edit. dotfiles has a fixed,
-# long-standing, single-user clone path (~/dotfiles); agent-toolkit does not
-# (coworkers clone it wherever they like, and install.py never regenerates
-# these docs at clone time -- see AGENTS.md/README.md), so its phrasing must
-# be self-locating rather than a second baked-in absolute path.
+# Where a human editing a generated skill doc should go make that edit.
+# agent-toolkit is cloned wherever a user likes and install.py never
+# regenerates these docs at clone time (see AGENTS.md/README.md), so the
+# phrasing must be self-locating rather than a baked-in absolute path.
 #
 # edit_root()/symlink_cmd() return a self-contained markdown fragment,
 # backticks included -- a call site embeds the return value directly, never
-# wrapping it in its own backticks (dotfiles' literal-path form and
-# agent-toolkit's "the repo's `X`" prose form need different backtick
-# placement relative to the surrounding sentence, so the placement has to
-# travel with the value, not live at the call site). probe_add_dir() returns
-# a bare value with no backticks of its own, since its one call site already
-# wraps a whole `--add-dir <value>` command in a single pair of backticks.
+# wrapping it in its own backticks (the "the repo's `X`" prose form needs
+# particular backtick placement relative to the surrounding sentence, so
+# the placement has to travel with the value, not live at the call site).
+# probe_add_dir() returns a bare value with no backticks of its own, since
+# its one call site already wraps a whole `--add-dir <value>` command in a
+# single pair of backticks.
 
 
-def edit_root(relpath: str, dotfiles_relpath: str | None = None) -> str:
-    """Return self-contained "where to edit this file" markdown.
-
-    ``dotfiles_relpath`` covers files whose repo-side location diverges
-    between the two identities — e.g. the shared scripts moved to
-    ``agent-scripts/`` in agent-toolkit while the dotfiles checkout keeps
-    its own copies under ``~/dotfiles/claude/scripts/``.
-    """
-    if REPO_IDENTITY == "dotfiles":
-        return f"`~/dotfiles/{dotfiles_relpath or relpath}`"
+def edit_root(relpath: str) -> str:
+    """Return self-contained "where to edit this file" markdown."""
     return f"the repo's `{relpath}`"
 
 
 def symlink_cmd(relpath: str, dest: str) -> str:
     """Return a self-contained, copy-pasteable `ln -s` command."""
-    if REPO_IDENTITY == "dotfiles":
-        return f"`ln -s ~/dotfiles/{relpath} {dest}`"
     return f'`ln -s "$(git rev-parse --show-toplevel)/{relpath}" "{dest}"`'
 
 
 def probe_add_dir() -> str:
     """Return the bare --add-dir flag argument for claude's headless probe."""
-    if REPO_IDENTITY == "dotfiles":
-        return "~/dotfiles"
     return '"$(git rev-parse --show-toplevel)"'
 
 
@@ -2411,10 +2394,7 @@ propose adding it per CLAUDE.md's pending-item protocol.
 numbering (visible via `/dashboard`) also works, but its numbers shift as
 items change, so prefer the slug here since `standup.py`'s `fetch` output
 already gives you it directly.""",
-        "EDIT_ROOT": edit_root(
-            "agent-scripts/standup_adapters.py",
-            dotfiles_relpath="claude/scripts/standup_adapters.py",
-        ),
+        "EDIT_ROOT": edit_root("agent-scripts/standup_adapters.py"),
     },
     "opencode": {
         "FRONTMATTER": """\
@@ -2468,10 +2448,7 @@ already gives you it directly.
 `kind` is one of `email`, `chat`, `approval`. `source_ref` is a structured
 object appropriate to the kind (e.g. `{"to", "subject", "sent_date"}` for
 email) — not a free-text string.""",
-        "EDIT_ROOT": edit_root(
-            "agent-scripts/standup_adapters.py",
-            dotfiles_relpath="claude/scripts/standup_adapters.py",
-        ),
+        "EDIT_ROOT": edit_root("agent-scripts/standup_adapters.py"),
     },
     "pi": {
         "FRONTMATTER": """\
@@ -2522,10 +2499,7 @@ If the `dev_status` tool is genuinely unavailable, fall back to bash —
 `kind` is one of `email`, `chat`, `approval`. `source_ref` is a structured
 object appropriate to the kind (e.g. `{"to", "subject", "sent_date"}` for
 email) — not a free-text string.""",
-        "EDIT_ROOT": edit_root(
-            "agent-scripts/standup_adapters.py",
-            dotfiles_relpath="claude/scripts/standup_adapters.py",
-        ),
+        "EDIT_ROOT": edit_root("agent-scripts/standup_adapters.py"),
     },
     "pi-prompt": {
         "FRONTMATTER": """\
@@ -2587,10 +2561,7 @@ already gives you it directly.
 `kind` is one of `email`, `chat`, `approval`. `source_ref` is a structured
 object appropriate to the kind (e.g. `{"to", "subject", "sent_date"}` for
 email) — not a free-text string.""",
-        "EDIT_ROOT": edit_root(
-            "agent-scripts/standup_adapters.py",
-            dotfiles_relpath="claude/scripts/standup_adapters.py",
-        ),
+        "EDIT_ROOT": edit_root("agent-scripts/standup_adapters.py"),
     },
     "agy": {
         "FRONTMATTER": """\
@@ -2645,10 +2616,7 @@ already gives you it directly.
 `kind` is one of `email`, `chat`, `approval`. `source_ref` is a structured
 object appropriate to the kind (e.g. `{"to", "subject", "sent_date"}` for
 email) — not a free-text string.""",
-        "EDIT_ROOT": edit_root(
-            "agent-scripts/standup_adapters.py",
-            dotfiles_relpath="claude/scripts/standup_adapters.py",
-        ),
+        "EDIT_ROOT": edit_root("agent-scripts/standup_adapters.py"),
     },
     "codex": {
         "FRONTMATTER": """\
@@ -2703,10 +2671,7 @@ already gives you it directly.
 `kind` is one of `email`, `chat`, `approval`. `source_ref` is a structured
 object appropriate to the kind (e.g. `{"to", "subject", "sent_date"}` for
 email) — not a free-text string.""",
-        "EDIT_ROOT": edit_root(
-            "agent-scripts/standup_adapters.py",
-            dotfiles_relpath="claude/scripts/standup_adapters.py",
-        ),
+        "EDIT_ROOT": edit_root("agent-scripts/standup_adapters.py"),
     },
 }
 
@@ -2919,7 +2884,7 @@ SWARM_PARAMS: dict[str, dict[str, str]] = {
 name: swarm
 description: "Hand READY backlog items to pi or copilot agents running in herdr tabs — concurrently by default, serially when requested, or as one named item. Use when the user says 'swarm', 'run the queue serially', 'hand this to pi', 'give <item> to a pi agent', 'hand this to copilot', or 'delegate to a worker'. Requires HERDR_ENV=1; says so and stops otherwise."
 ---""",
-        # Transcribed verbatim from the hand-authored dotfiles copy this
+        # Transcribed verbatim from the hand-authored original this
         # generated output replaces (ff05d19) -- byte-for-byte, so the
         # generated claude/commands/swarm.md differs from that original by
         # the do-not-edit marker only.

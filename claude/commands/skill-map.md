@@ -1,6 +1,6 @@
 ---
 name: skill-map
-description: Shows how the dotfiles skills connect and flags any skill mentioned by another that no longer exists. Use when the user says "skill map", "show the skill map", "which skill for X", or asks how the skills chain together.
+description: Shows how this repo's skills connect and flags any skill mentioned by another that no longer exists. Use when the user says "skill map", "show the skill map", "which skill for X", or asks how the skills chain together.
 ---
 1. Run `python3 ~/.claude/scripts/gen_interfaces.py --check`. If it fails, stop and tell the user to regenerate `INTERFACES.md` first — an out-of-date file makes the map below untrustworthy.
 2. Read the repo's `INTERFACES.md`, section "## 6. Skill cross-reference graph".

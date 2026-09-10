@@ -7,7 +7,7 @@
       "python3 ~/.claude/scripts/grill.py *": "allow",
       "python3 ~/.claude/scripts/second_opinion.py *": "allow",
       "python3 ~/.claude/scripts/settings_seed_drift_check.py *": "allow",
-      "python3 ~/.claude/scripts/dotfiles_sync_check.py *": "allow",
+      "python3 ~/.claude/scripts/bundle_drift_check.py *": "allow",
       "python3 ~/.claude/scripts/vitals_promotion.py *": "allow",
       "python3 agent-scripts/vitals_promotion.py *": "allow",
       "DEVSTATUS_AGENT=1 python3 *": "allow",

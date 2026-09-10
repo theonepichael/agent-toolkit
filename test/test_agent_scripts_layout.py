@@ -41,7 +41,7 @@ FROZEN_SCRIPT_DESTS = frozenset(
         "dev_status_formatting.py",
         "dev_status_impl.py",
         "dev_status_storage.py",
-        "dotfiles_sync_check.py",
+        "bundle_drift_check.py",
         "gen_interfaces.py",
         "gen_second_opinion.py",
         "gen_shell_completion.py",
@@ -58,7 +58,6 @@ FROZEN_SCRIPT_DESTS = frozenset(
         "outlook_calendar.py",
         "outlook_email.py",
         "refresh_guidance.py",
-        "repo_identity.py",
         "second_opinion.py",
         "sessionstart_checks.py",
         "settings_seed.py",
@@ -74,7 +73,7 @@ FROZEN_SCRIPT_DESTS = frozenset(
 MANAGED_DIR_DEST = "~/.claude/scripts"
 
 # Files where a bare `claude/scripts` mention is legitimate:
-# - MIGRATION.md: historical narrative describing the dotfiles repo's own
+# - MIGRATION.md: historical narrative describing the origin repo's own
 #   claude/scripts (gen_core_instructions.py lives there, not here).
 TEXT_SWEEP_ALLOWLIST: frozenset[Path] = frozenset(
     {
@@ -123,7 +122,7 @@ def test_links_toml_srcs_live_in_agent_scripts() -> None:
         if isinstance(entry.get("src"), str)
         and "~/.claude/scripts" in str(entry.get("dest", ""))
     ]
-    assert len(script_links) == 34, f"expected 34 script links, got {len(script_links)}"
+    assert len(script_links) == 33, f"expected 33 script links, got {len(script_links)}"
     bad = [
         entry["src"]
         for entry in script_links
@@ -165,12 +164,9 @@ def test_no_dead_repo_path_references() -> None:
     # context: any preceding `.` means a home-anchored runtime form
     # (`~/.claude/scripts`, `$HOME/.claude/scripts`,
     # `${process.env.HOME}/.claude/scripts`, fake-home `".claude/scripts`
-    # fixtures) — the installed location, must stay. `dotfiles/claude/scripts`
-    # names the dotfiles repo's own tree; its del standup_adapters wiring is
-    # additionally exempted line-wise below. Everything else is a dead
-    # repo-path reference.
-    pattern = re.compile(r"(?<!\.)(?<!dotfiles/)claude/scripts")
-    dotfiles_side_line = re.compile(r"dotfiles_relpath\s*=|# dotfiles-repo-relative")
+    # fixtures) — the installed location, must stay. Everything else is a
+    # dead repo-path reference.
+    pattern = re.compile(r"(?<!\.)claude/scripts")
     offenders: list[tuple[Path, int]] = []
     for path in _tracked_files():
         if path in TEXT_SWEEP_ALLOWLIST:
@@ -183,12 +179,6 @@ def test_no_dead_repo_path_references() -> None:
         except UnicodeDecodeError:
             continue  # binary
         for lineno, line in enumerate(text.splitlines(), start=1):
-            if dotfiles_side_line.search(line):
-                # kwarg or trailing marker comment names a dotfiles-side path
-                # by contract -- refresh_guidance.py's DocSetConfig.script_dirs
-                # for the "dotfiles" doc-set is the same shape, marked inline
-                # rather than exempting the whole file.
-                continue
             if pattern.search(line):
                 offenders.append((path, lineno))
     assert not offenders, (

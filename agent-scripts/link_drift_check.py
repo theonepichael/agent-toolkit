@@ -222,7 +222,7 @@ def _audit(
     is_mac, is_linux, is_wsl = machine
     try:
         findings, _foreign, _dirs = link_inspect.audit_links(
-            dotfiles=repo,
+            repo_root=repo,
             home=home,
             harnesses=link_inspect.VALID_HARNESSES,
             is_mac=is_mac,
@@ -243,17 +243,17 @@ def _audit(
 def cmd_check(
     quiet: bool = False,
     *,
-    dotfiles: Path | None = None,
+    repo_root: Path | None = None,
     home: Path | None = None,
     machine: tuple[bool, bool, bool] | None = None,
 ) -> None:
     """Print one summary line per run of drifted buckets, or nothing.
 
-    ``dotfiles``/``home``/``machine`` are injectable so tests can point the
+    ``repo_root``/``home``/``machine`` are injectable so tests can point the
     hook at fixture state instead of this machine; production leaves them
     all defaulted.
     """
-    repo = dotfiles or REPO
+    repo = repo_root or REPO
     home = home or Path.home()
 
     try:

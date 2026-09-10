@@ -8,7 +8,7 @@ import tempfile
 from pathlib import Path
 
 _REAL_HOME = Path(os.path.expanduser("~")).resolve()
-_SANDBOX_HOME = tempfile.mkdtemp(prefix="dotfiles-pytest-home-")
+_SANDBOX_HOME = tempfile.mkdtemp(prefix="agent-toolkit-pytest-home-")
 os.environ["HOME"] = _SANDBOX_HOME
 atexit.register(shutil.rmtree, _SANDBOX_HOME, ignore_errors=True)
 

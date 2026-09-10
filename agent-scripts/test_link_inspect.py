@@ -84,10 +84,10 @@ class ClassifierTests(unittest.TestCase):
     def test_checkout_shape_checks(self) -> None:
         repo = self.home / "repo"
         repo.mkdir()
-        self.assertFalse(li.is_dotfiles_checkout(repo))
+        self.assertFalse(li.is_repo_checkout(repo))
         (repo / "links.toml").write_text("")
         (repo / "install.py").write_text("")
-        self.assertTrue(li.is_dotfiles_checkout(repo))
+        self.assertTrue(li.is_repo_checkout(repo))
         self.assertFalse(li.is_main_checkout(repo))  # .git absent: not primary
         (repo / ".git").mkdir()
         self.assertTrue(li.is_main_checkout(repo))
@@ -123,7 +123,7 @@ class CheckApplicableLinksTests(unittest.TestCase):
     def test_healthy_link_is_silent(self) -> None:
         triple = self.link("claude/x", str(self.repo / "claude" / "x"))
         findings, foreign = li.check_applicable_links(
-            [triple], dotfiles=self.repo, format_path=format_path
+            [triple], repo_root=self.repo, format_path=format_path
         )
         self.assertEqual(foreign, {})
         self.assertEqual({k: v for k, v in findings.items() if v}, {})
@@ -134,7 +134,7 @@ class CheckApplicableLinksTests(unittest.TestCase):
         dangling = self.link("claude/gone", str(self.repo / "claude" / "gone"))
         (self.repo / "claude" / "gone").unlink()
         findings, _ = li.check_applicable_links(
-            [wrong, dangling], dotfiles=self.repo, format_path=format_path
+            [wrong, dangling], repo_root=self.repo, format_path=format_path
         )
         self.assertEqual(len(findings[li.CHECK_BUCKET_WRONG_TARGET]), 1)
         self.assertEqual(len(findings[li.CHECK_BUCKET_BROKEN_SOURCE]), 1)
@@ -147,7 +147,7 @@ class CheckApplicableLinksTests(unittest.TestCase):
         dest.write_text("a real file")
         findings, _ = li.check_applicable_links(
             [(src, dest, "claude/realfile", True)],
-            dotfiles=self.repo,
+            repo_root=self.repo,
             format_path=format_path,
         )
         self.assertEqual(len(findings[li.CHECK_BUCKET_NOT_A_SYMLINK]), 1)
@@ -156,7 +156,7 @@ class CheckApplicableLinksTests(unittest.TestCase):
         triple = self.link("claude/x", str(self.home / "nowhere"))
         triple = (triple[0], triple[1], triple[2], False)
         findings, _ = li.check_applicable_links(
-            [triple], dotfiles=self.repo, format_path=format_path
+            [triple], repo_root=self.repo, format_path=format_path
         )
         self.assertEqual({k: v for k, v in findings.items() if v}, {})
 
@@ -398,7 +398,7 @@ class AuditLinksTests(unittest.TestCase):
             self.repo / "claude" / "elsewhere.md"
         )
         findings, foreign, dirs_audited = li.audit_links(
-            dotfiles=self.repo,
+            repo_root=self.repo,
             home=self.home,
             harnesses=li.VALID_HARNESSES,
             is_mac=False,
@@ -422,7 +422,7 @@ class AuditLinksTests(unittest.TestCase):
         (self.home / ".claude" / "g.md").symlink_to(self.repo / "claude" / "g.md")
         specs = li.load_links(self.repo / "links.toml")
         findings, _foreign, _dirs = li.audit_links(
-            dotfiles=self.repo,
+            repo_root=self.repo,
             home=self.home,
             harnesses=li.VALID_HARNESSES,
             is_mac=False,
@@ -458,7 +458,7 @@ class InstallAliasTests(unittest.TestCase):
         "_link_target",
         "_same_path",
         "_implied_repo_root",
-        "_is_dotfiles_checkout",
+        "_is_repo_checkout",
         "_is_main_checkout",
         "_check_applicable_links",
         "_find_orphaned_links",
@@ -497,7 +497,7 @@ class InstallAliasTests(unittest.TestCase):
             "_link_target": "link_target",
             "_same_path": "same_path",
             "_implied_repo_root": "implied_repo_root",
-            "_is_dotfiles_checkout": "is_dotfiles_checkout",
+            "_is_repo_checkout": "is_repo_checkout",
             "_is_main_checkout": "is_main_checkout",
             "expand_dest": "expand_dest",
         }

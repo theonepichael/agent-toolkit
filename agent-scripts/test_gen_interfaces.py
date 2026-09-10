@@ -850,7 +850,7 @@ class LinkTableTests(unittest.TestCase):
 
 
 class AssetFilterTests(unittest.TestCase):
-    def test_build_output_and_dotfiles_are_excluded(self) -> None:
+    def test_build_output_is_excluded(self) -> None:
         self.assertTrue(gi.is_generated_artifact("agent-scripts/__pycache__/x.pyc"))
         self.assertTrue(gi.is_generated_artifact("claude/.DS_Store"))
         self.assertFalse(gi.is_generated_artifact("copilot/aliases.zsh"))

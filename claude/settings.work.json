@@ -58,7 +58,7 @@
           },
           {
             "type": "command",
-            "command": "python3 ~/.claude/scripts/dotfiles_sync_check.py 2>/dev/null"
+            "command": "python3 ~/.claude/scripts/bundle_drift_check.py 2>/dev/null"
           },
           {
             "type": "command",

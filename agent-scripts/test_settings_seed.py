@@ -87,9 +87,9 @@ class FakeManifest:
 class FakeContext:
     """Duck-typed stand-in for install.Context's settings-seed surface."""
 
-    def __init__(self, home: Path, dotfiles: Path, **opts: bool | str) -> None:
+    def __init__(self, home: Path, repo_root: Path, **opts: bool | str) -> None:
         self.home = home
-        self.dotfiles = dotfiles
+        self.repo_root = repo_root
         self.opts = FakeOpts(**opts)  # type: ignore[arg-type]
         self.reporter = FakeReporter()
         self.manifest = FakeManifest()

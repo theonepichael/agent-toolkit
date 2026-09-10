@@ -365,7 +365,7 @@ def test_hook_allows_a_commit_from_detached_head(main_checkout: Path) -> None:
 def test_repo_local_override_hook_still_runs_its_own_checks(
     main_checkout: Path,
 ) -> None:
-    """A repo with its own local core.hooksPath override (like this dotfiles
+    """A repo with its own local core.hooksPath override (like this
     checkout's githooks/) picks up the branch check by direct addition, not
     by chaining to the global hook -- so a repo that has never pointed at
     githooks-global must still be protected once its own local hook sources

@@ -31,7 +31,7 @@ import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 // extension code, not a model-invoked "bash" tool call.
 const ALLOW_PATTERNS: string[] = [
   "python3 ~/.claude/scripts/settings_seed_drift_check.py *",
-  "python3 ~/.claude/scripts/dotfiles_sync_check.py *",
+  "python3 ~/.claude/scripts/bundle_drift_check.py *",
   "git log*",
   "git status*",
   "git diff*",

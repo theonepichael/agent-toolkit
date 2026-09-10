@@ -291,8 +291,8 @@ this doc, which had `Ctrl+R`/`Ctrl+O` swapped):
   memory matters more than the leader-key consistency.
 
 - **Leader key** — **decided (2026-07-24): keep default `ctrl+x`, no
-  remap needed.** No collision with tmux prefix (`C-a`, confirmed via
-  `~/dotfiles/tmux/`). User wants the leader shortcuts as-is — nothing to
+  remap needed.** No collision with tmux prefix (`C-a`, confirmed against
+  the user's tmux configuration). User wants the leader shortcuts as-is — nothing to
   configure, they already work out of the box. Reference list of what it
   gates (new
   session `<leader>n`, model list `<leader>m`, agent list `<leader>a`,
