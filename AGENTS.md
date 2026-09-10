@@ -25,6 +25,11 @@ this repo.
 - **House style** (Python/shell/TypeScript conventions, type hints, CLI
   ergonomics, config/secrets, logging, testing tiers, formatting/linting) —
   `STYLE.md`.
+- **Terms used in more than one sense, or that sound related without being
+  the same thing** (`dispatch`, `prefix`, `seed` vs. `composed
+  instructions`, skill/command/slash-command) — `GLOSSARY.md`. Most domain
+  terms don't need an entry there; it only covers where drift is real or
+  plausible.
 - **Harness script interface inventory** — `INTERFACES.md`, generated from
   source. Fix the docstrings/argparse definitions when an interface
   changes, not the file directly. Regenerate with
