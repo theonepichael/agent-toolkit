@@ -2,6 +2,7 @@
 """Tests for bundle_drift_check.py. Run with: python3 test_bundle_drift_check.py"""
 
 import io
+import os
 import shutil
 import subprocess
 import sys
@@ -18,12 +19,26 @@ import bundle_drift_check
 pytestmark = pytest.mark.allow_real_subprocess
 
 
+def git_env(repo: Path) -> dict[str, str]:
+    env = os.environ.copy()
+    env.update(
+        {
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_SYSTEM": os.devnull,
+            "HOME": str(repo / ".git-test-home"),
+            "XDG_CONFIG_HOME": str(repo / ".git-test-xdg"),
+        }
+    )
+    return env
+
+
 def git(repo: Path, *args: str) -> str:
     result = subprocess.run(
         ["git", "-C", str(repo), *args],
         capture_output=True,
         text=True,
         check=True,
+        env=git_env(repo),
     )
     return result.stdout.strip()
 
