@@ -39,6 +39,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`cli_common.py`](#agentscriptsclicommonpy) | Shared CLI helpers used across agent-toolkit scripts. |
 | [`dev_status.py`](#agentscriptsdevstatuspy) | dev_status.py v2 — slug IDs, structured dependency graph, pure render. |
 | [`dev_status_formatting.py`](#agentscriptsdevstatusformattingpy) | Pure text-formatting helpers shared by the backlog dashboard and recap. |
+| [`dev_status_read.py`](#agentscriptsdevstatusreadpy) | Pure read-only facade over the dev_status backlog store. |
 | [`dev_status_storage.py`](#agentscriptsdevstatusstoragepy) | Backlog persistence, lock coordination, and journal primitives. |
 | [`gen_interfaces.py`](#agentscriptsgeninterfacespy) | gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources. |
 | [`gen_second_opinion.py`](#agentscriptsgensecondopinionpy) | gen_second_opinion.py — regenerate the second-opinion skill copies (one per harness, named in HARNESS_TABLE) from one canonical template. |
@@ -158,7 +159,7 @@ Read-only snapshot lookup over the backlog store for guard consumers.
   - `class LocalClaimLookup` — Read-only snapshot view over the backlog store: the one item-reading implementation (moved here from guard_rails.py) until candidate 6 lands as the shared read facade.
 - Public functions:
   - `backlog_items_path() -> Path` — Where the backlog store lives.
-- Tested by: `agent-scripts/test_backlog_claim_lookup.py`, `agent-scripts/test_guard_rails.py`, `test/test_guard_rails_claim.py`
+- Tested by: `agent-scripts/test_backlog_claim_lookup.py`, `agent-scripts/test_dev_status_read.py`, `agent-scripts/test_guard_rails.py`, `test/test_guard_rails_claim.py`
 
 ### `agent-scripts/bundle_drift_check.py`
 
@@ -343,6 +344,26 @@ Pure text-formatting helpers shared by the backlog dashboard and recap.
   - `normalize_recap_text(raw: str, max_chars: int, min_keep: int, last_sentence_cut: Callable[[str, int, int], int | None] = recap_last_sentence_cut) -> str` — Strip presentation noise and fit backend recap prose within a budget.
 - Tested by: nothing
 
+### `agent-scripts/dev_status_read.py`
+
+Pure read-only facade over the dev_status backlog store.
+
+- Installed at: `~/.claude/scripts/dev_status_read.py` (all harnesses)
+- Entrypoint: not executable, `#!/usr/bin/env python3`
+- CLI: none (library module).
+- Depends on: `backlog_claim_lookup.py`, `dev_status_storage.py`
+- Public classes:
+  - `class BacklogQuery` — Optional filters for facade item queries.
+  - `class BacklogSnapshot` — In-memory read-only view over one backlog item snapshot.
+  - `class DevStatusClaimLookup` — ``BacklogClaimLookup`` implementation over one dev_status snapshot.
+- Public functions:
+  - `get_item(slug_or_id: str, *, items_path: Path | None = None) -> BacklogItem | None` — Load a fresh snapshot and return one exact stored-id match.
+  - `ready_items(query: BacklogQuery | None = None, *, items_path: Path | None = None) -> list[BacklogItem]` — Load a fresh snapshot and return its transitive READY items.
+  - `in_progress_items(*, items_path: Path | None = None) -> list[BacklogItem]` — Load a fresh snapshot and return its in-progress items.
+  - `item_status(slug_or_id: str, *, items_path: Path | None = None) -> str | None` — Load a fresh snapshot and return one item's status.
+  - `claim_info(slug_or_id: str, *, items_path: Path | None = None) -> ClaimInfo | None` — Load a fresh snapshot and return one item's claim info.
+- Tested by: `agent-scripts/test_dev_status_read.py`
+
 ### `agent-scripts/dev_status_storage.py`
 
 Backlog persistence, lock coordination, and journal primitives.
@@ -396,7 +417,7 @@ Backlog persistence, lock coordination, and journal primitives.
   - `append_run_record(record: RunRecord, *, runs_file: Path | None = None, data_dir: Path | None = None) -> bool` — Append one run-evidence row to :data:`RUNS_FILE` (best-effort).
   - `load_recap_cache(path: Path | None = None) -> dict[str, object] | None` — Load ``recap-cache.json``, or ``None`` if missing/corrupt/malformed.
   - `save_recap_cache(backend: str, text: str, board_fingerprint: str, path: Path | None = None) -> None` — Atomically persist a recap result.
-- Tested by: `agent-scripts/test_dev_status.py`
+- Tested by: `agent-scripts/test_dev_status.py`, `agent-scripts/test_dev_status_read.py`
 
 ### `agent-scripts/gen_interfaces.py`
 
