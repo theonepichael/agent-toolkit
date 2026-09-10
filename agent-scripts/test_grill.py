@@ -8,6 +8,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import patch
 
@@ -21,7 +22,9 @@ def ns(**kwargs: object) -> argparse.Namespace:
     return argparse.Namespace(**kwargs)
 
 
-class GrillTestCase(unittest.TestCase):
+class _GrillDataDirFixture:
+    """Shared fixture: sandboxed ``grill.DATA_DIR`` plus CLI helpers."""
+
     def setUp(self) -> None:
         self.tmpdir = tempfile.mkdtemp()
         self.data_dir = Path(self.tmpdir) / "grill"
@@ -47,6 +50,9 @@ class GrillTestCase(unittest.TestCase):
         }
         with patch("sys.stderr", io.StringIO()):
             grill.cmd_decide(ns(json=json.dumps(payload), session=slug))
+
+
+class GrillTestCase(_GrillDataDirFixture, unittest.TestCase):
 
     # ── new ──────────────────────────────────────────────────────────────────
 
@@ -1107,6 +1113,323 @@ class GrillTestCase(unittest.TestCase):
             grill.cmd_next(ns(session=slug, verbose=False))
         self.assertIn("decision-a", out.getvalue())
         self.assertNotIn("decision-b:", out.getvalue())
+
+
+class ServiceApiTests(_GrillDataDirFixture, unittest.TestCase):
+    """Direct service-API tests — call the functions, never argv.
+
+    Covers the typed error classes, cycle detection, stale-snapshot safety,
+    cross-thread lock serialization, and data_dir injection.
+    """
+
+    def _err(self, fn: Callable[[], object]) -> tuple[type[Exception], str]:
+        with self.assertRaises(Exception) as cm:
+            fn()
+        return type(cm.exception), str(cm.exception)
+
+    def test_service_open_roundtrip_and_all_sessions(self) -> None:
+        slug = self.new_session()
+        session = grill.open_session(slug, data_dir=self.data_dir)
+        self.assertEqual(session["topic"], "Auth token design")
+        self.assertEqual(
+            [s["slug"] for s in grill.all_sessions(data_dir=self.data_dir)], [slug]
+        )
+
+    def test_service_open_missing_slug_raises_session_not_found(self) -> None:
+        err_type, msg = self._err(
+            lambda: grill.open_session("no-such-session", data_dir=self.data_dir)
+        )
+        self.assertIs(err_type, grill.SessionNotFoundError)
+        self.assertIn("no-such-session", msg)
+
+    def test_service_open_corrupt_file_raises_session_file_error(self) -> None:
+        slug = self.new_session()
+        (self.data_dir / f"{slug}.json").write_text("{not json")
+        err_type, _ = self._err(
+            lambda: grill.open_session(slug, data_dir=self.data_dir)
+        )
+        self.assertIs(err_type, grill.SessionFileError)
+
+    def test_service_open_invalid_slug_format_raises(self) -> None:
+        err_type, _ = self._err(
+            lambda: grill.open_session("../evil", data_dir=self.data_dir)
+        )
+        self.assertIs(err_type, grill.SessionNotFoundError)
+
+    def test_service_ask_duplicate_id_raises_validation_error(self) -> None:
+        slug = self.new_session()
+        grill.ask_decision(
+            slug, "q1", {"question": "One?"}, data_dir=self.data_dir
+        )
+        err_type, msg = self._err(
+            lambda: grill.ask_decision(
+                slug, "q1", {"question": "Again?"}, data_dir=self.data_dir
+            )
+        )
+        self.assertIs(err_type, grill.ValidationError)
+        self.assertIn("duplicate decision id: q1", msg)
+
+    def test_service_ask_depends_on_unknown_id_raises(self) -> None:
+        slug = self.new_session()
+        err_type, msg = self._err(
+            lambda: grill.ask_decision(
+                slug, "q1", {"question": "One?", "depends_on": ["ghost"]},
+                data_dir=self.data_dir,
+            )
+        )
+        self.assertIs(err_type, grill.ValidationError)
+        self.assertIn("unknown decision id(s): ghost", msg)
+
+    def test_service_decide_create_and_resolve_paths_match_cli(self) -> None:
+        slug = self.new_session()
+        d = grill.record_decision(
+            slug,
+            "one-shot",
+            {"question": "Q?", "decision": "D", "source": "tested"},
+            data_dir=self.data_dir,
+        )
+        self.assertEqual(d["decision"], "D")
+        self.assertEqual(d["source"], "tested")
+        self.assertIsNone(d["verdict"])
+        # resolve path on an ask-registered open decision
+        grill.ask_decision(slug, "open-q", {"question": "Open?"},
+                           data_dir=self.data_dir)
+        d2 = grill.record_decision(
+            slug, "open-q", {"decision": "Now D"}, data_dir=self.data_dir
+        )
+        self.assertEqual(d2["decision"], "Now D")
+        self.assertEqual(grill.load_session(slug)["decisions"][1]["question"], "Open?")
+
+    def test_service_decide_already_decided_raises(self) -> None:
+        slug = self.new_session()
+        grill.record_decision(
+            slug, "d1", {"question": "Q?", "decision": "D"},
+            data_dir=self.data_dir,
+        )
+        err_type, msg = self._err(
+            lambda: grill.record_decision(
+                slug, "d1", {"decision": "D2"}, data_dir=self.data_dir
+            )
+        )
+        self.assertIs(err_type, grill.ValidationError)
+        self.assertIn("already decided", msg)
+
+    def test_service_revise_resets_verdict_and_rejects_unknown_field(self) -> None:
+        slug = self.new_session()
+        grill.record_decision(
+            slug, "d1", {"question": "Q?", "decision": "D"},
+            data_dir=self.data_dir,
+        )
+        grill.record_verdict(
+            slug, "d1", {"result": "UNVERIFIABLE", "evidence": "n/a"},
+            data_dir=self.data_dir,
+        )
+        d = grill.revise_decision(
+            slug, "d1", {"decision": "D-revised"}, data_dir=self.data_dir
+        )
+        self.assertIsNone(d["verdict"])
+        err_type, msg = self._err(
+            lambda: grill.revise_decision(
+                slug, "d1", {"bogus": "x"}, data_dir=self.data_dir
+            )
+        )
+        self.assertIs(err_type, grill.ValidationError)
+        self.assertIn("cannot revise field(s): bogus", msg)
+        err_type, _ = self._err(
+            lambda: grill.revise_decision(
+                slug, "d1", {"id": "rename"}, data_dir=self.data_dir
+            )
+        )
+        self.assertIs(err_type, grill.ValidationError)
+
+    def test_service_revise_cycle_raises_cycle_error(self) -> None:
+        slug = self.new_session()
+        grill.ask_decision(slug, "alpha", {"question": "A?"}, data_dir=self.data_dir)
+        grill.ask_decision(slug, "beta", {"question": "B?", "depends_on": ["alpha"]},
+                           data_dir=self.data_dir)
+        err_type, msg = self._err(
+            lambda: grill.revise_decision(
+                slug, "alpha", {"depends_on": ["beta"]}, data_dir=self.data_dir
+            )
+        )
+        self.assertIs(err_type, grill.CycleError)
+        self.assertIn("would introduce a cycle", msg)
+
+    def test_service_revise_3node_transitive_cycle_raises(self) -> None:
+        slug = self.new_session()
+        grill.ask_decision(slug, "alpha", {"question": "A?"}, data_dir=self.data_dir)
+        grill.ask_decision(slug, "beta", {"question": "B?", "depends_on": ["alpha"]},
+                           data_dir=self.data_dir)
+        grill.ask_decision(slug, "gamma", {"question": "C?", "depends_on": ["beta"]},
+                           data_dir=self.data_dir)
+        err_type, _ = self._err(
+            lambda: grill.revise_decision(
+                slug, "alpha", {"depends_on": ["gamma"]}, data_dir=self.data_dir
+            )
+        )
+        self.assertIs(err_type, grill.CycleError)
+
+    def test_service_revise_preexisting_dangling_dep_succeeds(self) -> None:
+        slug = self.new_session()
+        grill.ask_decision(slug, "alpha", {"question": "A?"}, data_dir=self.data_dir)
+        grill.ask_decision(slug, "beta", {"question": "B?", "depends_on": ["alpha"]},
+                           data_dir=self.data_dir)
+        grill.record_decision(
+            slug, "alpha", {"decision": "A decided"}, data_dir=self.data_dir
+        )
+        # --force removal leaves beta's depends_on dangling, as cmd_rm --force does
+        with patch("sys.stderr", io.StringIO()):
+            grill.cmd_rm(ns(decision_id="alpha", session=slug, force=True))
+        # beta is still revisable — the dangling dep is never re-validated
+        d = grill.revise_decision(
+            slug, "beta", {"question": "B revised?"}, data_dir=self.data_dir
+        )
+        self.assertEqual(d["question"], "B revised?")
+
+    def test_service_verdict_requires_evidence_for_verified(self) -> None:
+        slug = self.new_session()
+        grill.record_decision(
+            slug, "d1", {"question": "Q?", "decision": "D"},
+            data_dir=self.data_dir,
+        )
+        err_type, msg = self._err(
+            lambda: grill.record_verdict(
+                slug, "d1", {"result": "VERIFIED", "evidence": ""},
+                data_dir=self.data_dir,
+            )
+        )
+        self.assertIs(err_type, grill.ValidationError)
+        self.assertIn("requires 'evidence'", msg)
+
+    def test_service_verdict_on_open_decision_raises(self) -> None:
+        slug = self.new_session()
+        grill.ask_decision(slug, "q1", {"question": "Q?"}, data_dir=self.data_dir)
+        err_type, msg = self._err(
+            lambda: grill.record_verdict(
+                slug, "q1", {"result": "VERIFIED", "evidence": "e"},
+                data_dir=self.data_dir,
+            )
+        )
+        self.assertIs(err_type, grill.ValidationError)
+        self.assertIn("still open", msg)
+
+    def test_service_verdict_date_always_stamped(self) -> None:
+        slug = self.new_session()
+        grill.record_decision(
+            slug, "d1", {"question": "Q?", "decision": "D"},
+            data_dir=self.data_dir,
+        )
+        d = grill.record_verdict(
+            slug, "d1",
+            {"result": "VERIFIED", "evidence": "e", "date": "1999-01-01"},
+            data_dir=self.data_dir,
+        )
+        self.assertEqual(d["verdict"]["date"], grill.today())
+
+    def test_service_mutation_sees_concurrent_writers_change(self) -> None:
+        slug = self.new_session()
+        grill.ask_decision(slug, "q1", {"question": "Q?"}, data_dir=self.data_dir)
+        stale = grill.open_session(slug, data_dir=self.data_dir)  # pre-mutation read
+        grill.record_decision(
+            slug, "q1", {"decision": "Other writer decided"},
+            data_dir=self.data_dir,
+        )
+        # A verdict on q1 must succeed: the mutation reloads under the lock,
+        # so the pre-mutation "still open" snapshot is never consulted.
+        d = grill.record_verdict(
+            slug, "q1", {"result": "UNVERIFIABLE", "evidence": "n/a"},
+            data_dir=self.data_dir,
+        )
+        self.assertEqual(d["verdict"]["result"], "UNVERIFIABLE")
+        session = grill.open_session(slug, data_dir=self.data_dir)
+        target = grill._get_decision(session, "q1")
+        self.assertEqual(target["decision"], "Other writer decided")
+        del stale
+
+    def test_service_mutations_serialize_across_threads(self) -> None:
+        import threading
+
+        slug = self.new_session()
+        grill.ask_decision(slug, "q1", {"question": "Q?"}, data_dir=self.data_dir)
+        errors: list[Exception] = []
+
+        def worker(k: int) -> None:
+            try:
+                grill.record_decision(
+                    slug, f"w{k}",
+                    {"question": f"W{k}?", "decision": f"D{k}"},
+                    data_dir=self.data_dir,
+                )
+            except Exception as e:  # noqa: BLE001 — recorded and asserted below
+                errors.append(e)
+
+        threads = [threading.Thread(target=worker, args=(k,)) for k in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(errors, [])
+        session = grill.open_session(slug, data_dir=self.data_dir)
+        self.assertEqual(len(session["decisions"]), 6)  # q1 + w0..w4, none lost
+
+    def test_service_all_sessions_skips_corrupt_with_warning(self) -> None:
+        slug = self.new_session()
+        (self.data_dir / "broken.json").write_text("{bad")
+        err = io.StringIO()
+        with patch("sys.stderr", err):
+            sessions = grill.all_sessions(data_dir=self.data_dir)
+        self.assertEqual([s["slug"] for s in sessions], [slug])
+        self.assertIn("skipping unreadable grill session", err.getvalue())
+
+    def test_service_frontier_of_matches_frontier_alias(self) -> None:
+        slug = self.new_session()
+        grill.ask_decision(slug, "alpha", {"question": "A?"}, data_dir=self.data_dir)
+        grill.ask_decision(slug, "beta", {"question": "B?", "depends_on": ["alpha"]},
+                           data_dir=self.data_dir)
+        session = grill.open_session(slug, data_dir=self.data_dir)
+        self.assertEqual(
+            [d["id"] for d in grill.frontier_of(session)], ["alpha"]
+        )
+        self.assertEqual(grill.frontier_of(session), grill.frontier(session))
+
+
+class ServiceDataDirInjectionTests(unittest.TestCase):
+    """Injected data_dir wins over the module global — never the reverse.
+
+    Deliberately NOT under GrillTestCase's DATA_DIR patch: with the global
+    patched, a fallback to grill.DATA_DIR would be indistinguishable from
+    correct injection. Here grill.DATA_DIR is whatever the environment says
+    (the sandboxed HOME under pytest), and the session must land only in
+    the injected tempdir.
+    """
+
+    def setUp(self) -> None:
+        self.tmpdir = Path(tempfile.mkdtemp())
+        self.data_dir = self.tmpdir / "grill"
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmpdir)
+
+    def test_service_data_dir_injection_never_touches_real_data_dir(self) -> None:
+        session: grill.Session = {
+            "schema_version": grill.SCHEMA_VERSION,
+            "slug": "injection-check",
+            "topic": "injection",
+            "created": grill.now(),
+            "updated": grill.now(),
+            "plan_path": None,
+            "pending_execution": False,
+            "backlog_slug": None,
+            "decisions": [],
+        }
+        grill.save_session(session, data_dir=self.data_dir)
+        loaded = grill.open_session("injection-check", data_dir=self.data_dir)
+        self.assertEqual(loaded["topic"], "injection")
+        grill.ask_decision(
+            "injection-check", "q1", {"question": "Q?"}, data_dir=self.data_dir
+        )
+        self.assertTrue((self.data_dir / "injection-check.json").exists())
+        self.assertFalse((grill.DATA_DIR / "injection-check.json").exists())
 
 
 class ParserVerbosityTests(unittest.TestCase):

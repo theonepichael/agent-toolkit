@@ -611,29 +611,44 @@ grill.py — grill-me session state CLI. All session mutations go through here.
   - `DATA_DIR = Path.home() / '.claude' / 'data' / 'grill'`
 - Explicit exit codes: `1`
 - Depends on: `cli_common.py`
+- Exceptions:
+  - `class GrillSessionError(Exception)` — Base class for every typed session-service failure.
+  - `class SessionNotFoundError(GrillSessionError)` — No readable session exists for the requested slug.
+  - `class SessionFileError(GrillSessionError)` — A session file exists but is corrupt, not a JSON object, or has an unrecognized schema version.
+  - `class DecisionNotFoundError(GrillSessionError)` — The named decision id does not exist within the session.
+  - `class CycleError(GrillSessionError)` — A ``depends_on`` change would introduce a dependency cycle.
+  - `class ValidationError(GrillSessionError)` — A patch field value, state transition, or ``depends_on`` payload is invalid.
 - Public classes:
   - `class Verdict(TypedDict)` — A recorded verification result for one decision.
   - `class Decision(TypedDict)` — One decision point within a grill session.
   - `class Session(TypedDict)` — A grill session as stored at ``DATA_DIR/<slug>.json``.
+  - `class DecisionPatch(TypedDict, total=False)` — Partial-update payload for the decision-mutation service functions.
 - Public functions:
   - `today() -> str` — Return today's date as an ISO-8601 string (``YYYY-MM-DD``).
   - `now() -> str` — Return the current local time as a full ISO-8601 timestamp.
   - `die(context: str, msg: str) -> NoReturn` — Print an error to stderr and exit the process with status 1.
   - `slugify(text: str) -> str` — Lowercase ``text`` and collapse runs of non-alphanumerics to single hyphens.
-  - `validate_decision_id(decision_id: str, context: str) -> None` — Validate a decision id's format and length.
+  - `validate_decision_id(decision_id: str, context: str) -> None` — Validate a decision id's format and length (CLI contract: exits).
   - `parse_json_arg(raw: str, context: str) -> dict[str, object]` — Parse a CLI argument as a JSON object.
-  - `session_path(slug: str) -> Path` — Return the on-disk path for the session identified by ``slug``.
-  - `load_session(slug: str) -> Session` — Load one session by slug.
-  - `ensure_data_dir() -> None` — Create ``DATA_DIR`` if it is missing.
-  - `save_session(session: Session) -> None` — Atomically persist ``session`` to its slug-derived path.
-  - `all_session_slugs() -> list[str]` — Return every session slug on disk, sorted, or ``[]`` if none exist.
-  - `session_lock(slug: str) -> Iterator[None]` — Hold an exclusive lock over one session's read-modify-write cycle.
+  - `session_path(slug: str, data_dir: Path | None = None) -> Path` — Return the on-disk path for the session identified by ``slug``.
+  - `open_session(slug: str, *, data_dir: Path | None = None) -> Session` — Load one session by exact slug as a typed service operation.
+  - `load_session(slug: str) -> Session` — Load one session by slug, rendering service errors for the CLI.
+  - `ensure_data_dir(data_dir: Path | None = None) -> None` — Create the grill data directory if it is missing.
+  - `save_session(session: Session, data_dir: Path | None = None) -> None` — Atomically persist ``session`` to its slug-derived path.
+  - `all_session_slugs(data_dir: Path | None = None) -> list[str]` — Return every session slug on disk, sorted, or ``[]`` if none exist.
+  - `all_sessions(*, data_dir: Path | None = None) -> list[Session]` — Bulk-load every readable session, sorted by slug.
+  - `session_lock(slug: str, *, data_dir: Path | None = None) -> Iterator[None]` — Hold an exclusive lock over one session's read-modify-write cycle.
   - `resolve_session(arg: str | None, context: str) -> Session` — Resolve ``--session`` (see :func:`_resolve_slug`) and load it.
-  - `find_decision(session: Session, decision_id: str, context: str) -> Decision` — Find a decision by id within a session.
+  - `find_decision(session: Session, decision_id: str, context: str) -> Decision` — Find a decision by id within a session (CLI contract: exits on miss).
   - `is_open(decision: Decision) -> bool` — Return whether ``decision`` has not yet been decided.
-  - `confirm(context: str, session: Session, detail: str, verbose: bool = False) -> None` — Echo a mutating command's outcome to stderr.
+  - `confirm(context: str, slug: str, detail: str, verbose: bool = False) -> None` — Echo a mutating command's outcome to stderr.
   - `touch(session: Session) -> None` — Stamp ``session['updated']`` with the current timestamp, in place.
   - `frontier(session: Session) -> DecisionList` — Return every open decision whose dependencies are all resolved.
+  - `ask_decision(slug: str, decision_id: str, patch: DecisionPatch, *, data_dir: Path | None = None) -> Decision` — Register a new open decision point in the session.
+  - `record_decision(slug: str, decision_id: str, patch: DecisionPatch, *, data_dir: Path | None = None) -> Decision` — Resolve an open decision point, or add-and-decide in one shot.
+  - `revise_decision(slug: str, decision_id: str, patch: DecisionPatch, *, data_dir: Path | None = None) -> Decision` — Amend a decided decision's text, resetting its verdict.
+  - `record_verdict(slug: str, decision_id: str, verdict: Verdict, *, data_dir: Path | None = None) -> Decision` — Record a verification result for a decided decision.
+  - `frontier_of(session: Session) -> DecisionList` — Service-API name for :func:`frontier` — every open decision whose dependencies are all resolved.
   - `render_markdown(session: Session) -> str` — Render a session's status as a Markdown document.
 - Subcommand handlers: `cmd_new`, `cmd_ask`, `cmd_decide`, `cmd_revise`, `cmd_rm`, `cmd_verdict`, `cmd_plan`, `cmd_mark_pending_execution`, `cmd_pending_plan`, `cmd_next`, `cmd_frontier`, `cmd_render`, `cmd_list`, `cmd_show`
 - Tested by: `agent-scripts/test_grill.py`, `agent-scripts/test_second_opinion.py`, `agent-scripts/test_to_tickets_runner.py`
