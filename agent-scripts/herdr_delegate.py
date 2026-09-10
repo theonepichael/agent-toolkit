@@ -26,6 +26,14 @@ Refusing here is a convenience for the human watching, not a guarantee --
 ``swarm_spawn`` re-reads the READY set on every spawn call, so enforcement
 belongs there. That is a separate backlog item.
 
+Known limitation this script cannot detect or route around: when the
+calling session is a Claude Code session running in Auto Mode, every
+``herdr agent start`` call this module makes -- any ``--kind`` -- can be
+denied by Claude Code's own undocumented auto-mode classifier, a gate
+independent of settings.json permission rules. See ``claude/commands/
+swarm.md``'s "Known limitation" section (generated from
+``templates/swarm.md.tmpl``) for the full reproduction and workaround.
+
 A bare ``agent start`` timeout (herdr's own "timed out waiting for agent
 startup") has been observed to be transient, so ``spawn_in_new_tab`` retries
 it a bounded number of times -- each attempt against a brand new tab/pane,
