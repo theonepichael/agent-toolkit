@@ -229,9 +229,17 @@ describe("Copilot Swarm: SwarmToolContext Behavioral Tests", () => {
 
   test("crash recovery during getOrInitState restarts gone worker with --resume", async () => {
     const herdrCalls: string[][] = [];
-    const fakeExec = async (cmd: string, args: string[]) => {
+    const promptTimeouts: (number | undefined)[] = [];
+    const fakeExec = async (
+      cmd: string,
+      args: string[],
+      options?: { signal?: AbortSignal; timeout?: number },
+    ) => {
       if (cmd === "herdr") {
         herdrCalls.push(args);
+        if (args[0] === "agent" && args[1] === "prompt") {
+          promptTimeouts.push(options?.timeout);
+        }
         if (args[0] === "agent" && args[1] === "list") {
           // Worker is gone from herdr
           return { code: 0, stdout: JSON.stringify({ result: { agents: [] } }), stderr: "" };
@@ -294,6 +302,20 @@ describe("Copilot Swarm: SwarmToolContext Behavioral Tests", () => {
     const promptCall = herdrCalls.find((c) => c[0] === "agent" && c[1] === "prompt");
     expect(promptCall).toBeDefined();
     expect(promptCall?.[3]).toContain("Continue working on this backlog item where you left off.");
+    expect(promptCall?.slice(4)).toEqual([
+      "--wait",
+      "--until",
+      "working",
+      "--until",
+      "idle",
+      "--until",
+      "done",
+      "--until",
+      "blocked",
+      "--timeout",
+      "10000",
+    ]);
+    expect(promptTimeouts).toEqual([15_000]);
   });
 
   test("crash recovery capped at MAX_RECOVERY_ATTEMPTS", async () => {

@@ -303,10 +303,14 @@ export const AMEND_INSTRUCTION =
 export function buildAgentPromptArgv(
   agentId: string,
   prompt: string,
-  opts: { wait?: boolean } = {},
+  opts: { wait?: boolean; until?: readonly string[]; timeoutMs?: number } = {},
 ): string[] {
   const argv = ["agent", "prompt", agentId, prompt];
-  return opts.wait ? [...argv, "--wait"] : argv;
+  if (!opts.wait) return argv;
+  argv.push("--wait");
+  for (const status of opts.until ?? []) argv.push("--until", status);
+  if (opts.timeoutMs !== undefined) argv.push("--timeout", String(opts.timeoutMs));
+  return argv;
 }
 
 /**

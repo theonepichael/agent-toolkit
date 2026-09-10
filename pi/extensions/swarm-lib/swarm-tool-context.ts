@@ -83,6 +83,9 @@ const DEFAULT_WAIT_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_WORKER_DEADLINE_MS = 4 * 60 * 60 * 1000;
 const DEFAULT_RELAY_STALL_MS = 30 * 60 * 1000;
 const PROBE_TIMEOUT_MS = 15_000;
+const PROMPT_ACK_TIMEOUT_MS = 10_000;
+const PROMPT_ACK_PROCESS_TIMEOUT_MS = 15_000;
+const PROMPT_ACK_STATES = ["working", "idle", "done", "blocked"] as const;
 const RESOLVE_VERIFY_TIMEOUT_MS = 5_000;
 const BLOCKED_READ_LINES = 500;
 const BLOCKED_READ_LINES_RETRY = 2000;
@@ -357,8 +360,8 @@ export class SwarmToolContext {
     return (this.options.defaultPluginDir ?? copilotPluginDir)();
   }
 
-  private async herdr(argv: string[], signal?: AbortSignal): Promise<ExecResult> {
-    return this.exec("herdr", argv, { signal });
+  private async herdr(argv: string[], signal?: AbortSignal, timeout?: number): Promise<ExecResult> {
+    return this.exec("herdr", argv, { signal, timeout });
   }
 
   private getRuntime(runId: string): RunRuntime {
@@ -661,7 +664,20 @@ export class SwarmToolContext {
         // Best effort check
       }
 
-    const promptResult = await this.herdr(buildAgentPromptArgv(agentId, this.workerPrompt(slug)));
+    // `agent prompt` without --wait only confirms submission. Arming the
+    // terminal-state wait immediately afterward can then match the worker's
+    // pre-turn idle state and close its tab before the turn starts. herdr's
+    // prompt-specific wait requires an observed post-submit transition before
+    // matching any of these states, so a successful return is the handoff ack.
+    const promptResult = await this.herdr(
+      buildAgentPromptArgv(agentId, this.workerPrompt(slug), {
+        wait: true,
+        until: PROMPT_ACK_STATES,
+        timeoutMs: PROMPT_ACK_TIMEOUT_MS,
+      }),
+      undefined,
+      PROMPT_ACK_PROCESS_TIMEOUT_MS,
+    );
     if (promptResult.code !== 0) {
       return this.failWithTab(
         slug,
@@ -740,14 +756,30 @@ export class SwarmToolContext {
     }
 
     // Send explicit continuation prompt
+    // This newly started agent is idle, and the caller re-arms its terminal
+    // wait as soon as recovery returns. Require the same post-submit handoff
+    // acknowledgement as an initial spawn so that wait cannot consume the
+    // pre-turn idle state.
     const promptResult = await this.herdr(
       buildAgentPromptArgv(
         worker.agent,
         "Continue working on this backlog item where you left off.",
+        {
+          wait: true,
+          until: PROMPT_ACK_STATES,
+          timeoutMs: PROMPT_ACK_TIMEOUT_MS,
+        },
       ),
+      undefined,
+      PROMPT_ACK_PROCESS_TIMEOUT_MS,
     );
     if (promptResult.code !== 0) {
-      // Even if prompt stalls, tab and agent are up
+      try {
+        await this.herdr(buildTabCloseArgv(parsedTab.tabId));
+      } catch {
+        // Best effort
+      }
+      return false;
     }
 
     worker.paneId = parsedTab.paneId;

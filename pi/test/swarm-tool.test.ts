@@ -264,6 +264,32 @@ describe("herdr argv builders", () => {
     expect(argv.filter((a) => a.includes("rm -rf"))).toHaveLength(1);
   });
 
+  test("agent prompt: acknowledgement repeats post-submit states and bounds the wait", () => {
+    expect(
+      buildAgentPromptArgv("run1-w1", "do the item", {
+        wait: true,
+        until: ["working", "idle", "done", "blocked"],
+        timeoutMs: 10_000,
+      }),
+    ).toEqual([
+      "agent",
+      "prompt",
+      "run1-w1",
+      "do the item",
+      "--wait",
+      "--until",
+      "working",
+      "--until",
+      "idle",
+      "--until",
+      "done",
+      "--until",
+      "blocked",
+      "--timeout",
+      "10000",
+    ]);
+  });
+
   test("agent wait: --until repeats per state (herdr rejects a comma-joined list), timeout in ms", () => {
     expect(buildAgentWaitArgv("run1-w1", ["idle", "done", "blocked"], 5000)).toEqual([
       "agent",
@@ -1286,6 +1312,7 @@ const UNNAMED_CLAUDE_ENTRY: RealAgentListEntry = {
 
 interface ExecCall {
   argv: string[];
+  options?: { signal?: AbortSignal; timeout?: number };
 }
 
 type StubExecResult = { code: number; stdout: string; stderr: string };
@@ -1295,8 +1322,8 @@ function makeStubPi(respond: (argv: string[]) => StubExecResult | Promise<StubEx
   const calls: ExecCall[] = [];
   const tools = new Map<string, { execute: (...a: never[]) => Promise<unknown> }>();
   const pi = {
-    exec(_cmd: string, argv: string[]) {
-      calls.push({ argv });
+    exec(_cmd: string, argv: string[], options?: { signal?: AbortSignal; timeout?: number }) {
+      calls.push({ argv, options });
       return Promise.resolve(respond(argv));
     },
     registerTool(def: { name: string; execute: (...a: never[]) => Promise<unknown> }) {
@@ -2138,34 +2165,32 @@ describe("swarm_spawn worker bootstrap", () => {
     expect(prompts(stub).map((c) => c.argv[3] ?? "")).toEqual(["/backlog-item --auto some-item"]);
   });
 
-  // THE REGRESSION, kept because the constraint outlives the handshake that
-  // exposed it: `--wait` cannot succeed against a prompt that produces no
-  // observed lifecycle change, and a spawn must not read that as failure.
-  test("a healthy worker is spawned, not discarded on a --wait artefact", async () => {
-    const { spawn, stub } = stubFor((argv) =>
-      // Real herdr's answer to `agent prompt ... --wait` here: exit 1,
-      // agent_prompt_stalled, captured live on 2026-09-02.
-      argv.includes("--wait")
-        ? {
-            code: 1,
-            stdout: "",
-            stderr: JSON.stringify({
-              error: {
-                code: "agent_prompt_stalled",
-                message: "agent prompt produced no observed state change within 5000 ms",
-              },
-            }),
-          }
-        : tabCreateOk(argv),
-    );
+  // THE REGRESSION. A fire-and-forget item prompt followed immediately by
+  // `agent wait --until idle ...` can match the worker's pre-turn idle state,
+  // report a false finish, and close the tab before the submitted turn starts.
+  // Prompt-specific --wait requires a post-submit lifecycle transition first.
+  test("the initial item prompt is acknowledged before terminal polling is armed", async () => {
+    const { spawn, stub } = stubFor(tabCreateOk);
 
     const res = await spawnOne(spawn);
 
     expect(res.details.failed).toEqual([]);
     expect(res.details.spawned).toHaveLength(1);
-    // The submit is only meaningful without --wait: with it every submit
-    // failed regardless of outcome, so a non-zero exit said nothing.
-    expect(prompts(stub).some((c) => c.argv.includes("--wait"))).toBe(false);
+    const prompt = prompts(stub)[0];
+    expect(prompt?.argv.slice(4)).toEqual([
+      "--wait",
+      "--until",
+      "working",
+      "--until",
+      "idle",
+      "--until",
+      "done",
+      "--until",
+      "blocked",
+      "--timeout",
+      "10000",
+    ]);
+    expect(prompt?.options?.timeout).toBe(15_000);
   });
 
   // An orchestrator only ever reads `content`. Confirmed live on 2026-09-02:

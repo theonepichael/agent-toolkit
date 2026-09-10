@@ -254,7 +254,14 @@ var WORKER_UNATTENDED_ENV = "PI_AGENT_UNATTENDED=1";
 var AMEND_INSTRUCTION = "STOP and re-read your backlog item before doing anything else: run " + "`python3 ~/.claude/scripts/dev_status.py show <your slug>` and read the " + "whole record fresh. Its context or next_steps have been corrected since " + "you started, so any plan you formed from the earlier version may now be " + "wrong. Reconcile what you have already done against the updated record, " + "and say plainly what changes as a result before continuing.";
 function buildAgentPromptArgv(agentId, prompt, opts = {}) {
   const argv = ["agent", "prompt", agentId, prompt];
-  return opts.wait ? [...argv, "--wait"] : argv;
+  if (!opts.wait)
+    return argv;
+  argv.push("--wait");
+  for (const status of opts.until ?? [])
+    argv.push("--until", status);
+  if (opts.timeoutMs !== undefined)
+    argv.push("--timeout", String(opts.timeoutMs));
+  return argv;
 }
 function reasonHeadline(reason) {
   return reason.split(`
@@ -471,6 +478,9 @@ var DEFAULT_WAIT_TIMEOUT_MS = 30 * 60 * 1000;
 var DEFAULT_WORKER_DEADLINE_MS = 4 * 60 * 60 * 1000;
 var DEFAULT_RELAY_STALL_MS = 30 * 60 * 1000;
 var PROBE_TIMEOUT_MS = 15000;
+var PROMPT_ACK_TIMEOUT_MS = 1e4;
+var PROMPT_ACK_PROCESS_TIMEOUT_MS = 15000;
+var PROMPT_ACK_STATES = ["working", "idle", "done", "blocked"];
 var RESOLVE_VERIFY_TIMEOUT_MS = 5000;
 var BLOCKED_READ_LINES = 500;
 var BLOCKED_READ_LINES_RETRY = 2000;
@@ -654,8 +664,8 @@ class SwarmToolContext {
   defaultPluginDir() {
     return (this.options.defaultPluginDir ?? copilotPluginDir)();
   }
-  async herdr(argv, signal) {
-    return this.exec("herdr", argv, { signal });
+  async herdr(argv, signal, timeout) {
+    return this.exec("herdr", argv, { signal, timeout });
   }
   getRuntime(runId) {
     let rt = this.runtimes.get(runId);
@@ -867,7 +877,11 @@ ${capture}` } };
           }
         }
       } catch {}
-    const promptResult = await this.herdr(buildAgentPromptArgv(agentId, this.workerPrompt(slug)));
+    const promptResult = await this.herdr(buildAgentPromptArgv(agentId, this.workerPrompt(slug), {
+      wait: true,
+      until: PROMPT_ACK_STATES,
+      timeoutMs: PROMPT_ACK_TIMEOUT_MS
+    }), undefined, PROMPT_ACK_PROCESS_TIMEOUT_MS);
     if (promptResult.code !== 0) {
       return this.failWithTab(slug, paneId, tabId, `agent_prompt_stalled: ${promptResult.stderr || promptResult.stdout}`);
     }
@@ -920,8 +934,17 @@ ${capture}` } };
       } catch {}
       return false;
     }
-    const promptResult = await this.herdr(buildAgentPromptArgv(worker.agent, "Continue working on this backlog item where you left off."));
-    if (promptResult.code !== 0) {}
+    const promptResult = await this.herdr(buildAgentPromptArgv(worker.agent, "Continue working on this backlog item where you left off.", {
+      wait: true,
+      until: PROMPT_ACK_STATES,
+      timeoutMs: PROMPT_ACK_TIMEOUT_MS
+    }), undefined, PROMPT_ACK_PROCESS_TIMEOUT_MS);
+    if (promptResult.code !== 0) {
+      try {
+        await this.herdr(buildTabCloseArgv(parsedTab.tabId));
+      } catch {}
+      return false;
+    }
     worker.paneId = parsedTab.paneId;
     worker.tabId = parsedTab.tabId;
     worker.recoveryAttempts = attempts + 1;

@@ -95,7 +95,14 @@ var WORKER_UNATTENDED_ENV = "PI_AGENT_UNATTENDED=1";
 var AMEND_INSTRUCTION = "STOP and re-read your backlog item before doing anything else: run " + "`python3 ~/.claude/scripts/dev_status.py show <your slug>` and read the " + "whole record fresh. Its context or next_steps have been corrected since " + "you started, so any plan you formed from the earlier version may now be " + "wrong. Reconcile what you have already done against the updated record, " + "and say plainly what changes as a result before continuing.";
 function buildAgentPromptArgv(agentId, prompt, opts = {}) {
   const argv = ["agent", "prompt", agentId, prompt];
-  return opts.wait ? [...argv, "--wait"] : argv;
+  if (!opts.wait)
+    return argv;
+  argv.push("--wait");
+  for (const status of opts.until ?? [])
+    argv.push("--until", status);
+  if (opts.timeoutMs !== undefined)
+    argv.push("--timeout", String(opts.timeoutMs));
+  return argv;
 }
 function reasonHeadline(reason) {
   return reason.split(`
