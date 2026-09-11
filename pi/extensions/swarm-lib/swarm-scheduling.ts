@@ -64,6 +64,244 @@ export function staleWorkerRecords(
 
 export type ExecutionMode = "concurrent" | "serial";
 
+// ---------------------------------------------------------------------------
+// The worker's death certificate, and the orchestrator's reconciled outcome.
+//
+// Two records, because neither side can author the whole one: the worker knows
+// `stopReason` and nothing else about its own identity, and the orchestrator
+// knows the run id, the agent id and the backlog status and nothing about
+// `stopReason`. The worker writes the certificate (`fatal-error-exit.ts`,
+// synchronously, immediately before it exits); the orchestrator assembles the
+// `WorkerOutcome` from the certificate + herdr's process truth + its own
+// independent `dev_status.py show`.
+// ---------------------------------------------------------------------------
+
+/** The only payload version this reader understands. Anything else is absent. */
+export const SIDECAR_VERSION = 1;
+
+/** The only result a certificate may carry. See `parseFatalSidecar`. */
+export const FATAL_SIDECAR_RESULT = "fatal_error";
+
+/** What `fatal-error-exit.ts` writes before it exits 1. */
+export interface FatalSidecar {
+  v: number;
+  result: string;
+  stopReason: string;
+  model: string;
+  writtenAtMs: number;
+}
+
+/**
+ * Strict parse of a death certificate. Returns `null` for ABSENT.
+ *
+ * Deliberately unforgiving in one direction only: a certificate the reader
+ * cannot fully vouch for is treated as if the file were not there, which sends
+ * classification to the pane fallback rather than to a verdict invented from
+ * partial data. Unknown extra fields are tolerated (forward compatibility),
+ * but every field this plan promises must be present and correctly typed --
+ * otherwise arbitrary JSON written at that path could become authoritative
+ * fatal evidence.
+ *
+ * Pure: the file read belongs to the caller (`swarm-tool-context.ts`), which is
+ * where I/O lives; this module is state- and I/O-free by its own header rule.
+ */
+export function parseFatalSidecar(raw: string): FatalSidecar | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) return null;
+  const rec = parsed as Record<string, unknown>;
+  if (rec.v !== SIDECAR_VERSION) return null;
+  if (rec.result !== FATAL_SIDECAR_RESULT) return null;
+  if (typeof rec.stopReason !== "string") return null;
+  if (typeof rec.model !== "string") return null;
+  if (typeof rec.writtenAtMs !== "number" || !Number.isFinite(rec.writtenAtMs)) return null;
+  return {
+    v: SIDECAR_VERSION,
+    result: FATAL_SIDECAR_RESULT,
+    stopReason: rec.stopReason,
+    model: rec.model,
+    writtenAtMs: rec.writtenAtMs,
+  };
+}
+
+/**
+ * What happened to the worker's PROCESS, as far as can be known.
+ *
+ * `settled_alive` is named instead of `clean` on purpose: all that is known is
+ * that herdr reported the process alive at its prompt and nothing anywhere
+ * claims a death. That is the pre-existing status quo, not a stronger claim of
+ * successful completion -- and every normal completion lands here, because a
+ * healthy worker never writes a certificate.
+ *
+ * `unknown_crash` is a death with pane evidence but no in-process witness; it
+ * is deliberately distinct from `fatal_error`, which the worker itself stated.
+ */
+export type ProcessResult =
+  "fatal_error" | "unknown_crash" | "gone" | "deadline_stopped" | "settled_alive";
+
+/**
+ * Which observation produced `processResult`. Ranked: `fatal_sidecar` beats any
+ * pane evidence, which beats a bare herdr status. Two values record the ABSENCE
+ * of an observation rather than a conclusion (`no_observation`: nothing
+ * external could be read at all, e.g. an abandoned liveness probe; `pane_clear`:
+ * the pane was read and said nothing), because collapsing "looked and saw
+ * nothing" into "could not look" would hide exactly the difference this item is
+ * about.
+ */
+export type OutcomeEvidence =
+  | "fatal_sidecar"
+  | "pane_sentinel"
+  | "provider_wording"
+  | "pane_clear"
+  | "herdr_status"
+  | "no_observation";
+
+/** How the independent backlog read went. A failed subprocess is not "no status". */
+export type BacklogRead = "ok" | "failed" | "unparsed";
+
+/**
+ * What is known about a worker's process at the moment it was met, before the
+ * independent backlog read is folded in. Produced by `classifyOutcomeDraft`.
+ */
+export interface OutcomeDraft {
+  processResult: ProcessResult;
+  evidence: OutcomeEvidence;
+  sidecarProbed: boolean;
+  herdrStatus?: string;
+  note?: string;
+}
+
+/**
+ * The reconciled per-worker outcome: the orchestrator's answer to "what
+ * happened here", assembled before the worker's record is dropped and appended
+ * to the run's `outcomes` ledger.
+ */
+export interface WorkerOutcome {
+  /** From the run's own state, never self-reported by the worker. */
+  runId: string;
+  agent: string;
+  slug: string;
+  /** Copied for post-hoc legibility. Classification branches on the context's kind. */
+  kind: "pi" | "copilot";
+  processResult: ProcessResult;
+  evidence: OutcomeEvidence;
+  /** Whether a certificate was even looked for -- `false` for Copilot, always. */
+  sidecarProbed: boolean;
+  herdrStatus?: string;
+  backlogStatus?: string;
+  backlogRead: BacklogRead;
+  decidedAtMs: number;
+  note?: string;
+}
+
+/**
+ * Classify what happened to a worker, from the three witnesses that exist, in
+ * the only order that is safe: the worker's own statement first, pane evidence
+ * second, bare herdr status last.
+ *
+ * Pure, so the whole precedence question is testable without a fake herdr, and
+ * so no teardown path can invent its own evidence value.
+ *
+ * The invariant that makes this composable with the classification already done
+ * upstream in `settleWait` is that a certificate can only ever move an event
+ * TOWARD pessimism -- `finished` to `error`, never `error` to `finished`. So a
+ * reclassification can never need to be undone, and no precedence argument has
+ * to be settled between the two sites.
+ *
+ * `evidence` distinguishes "the pane was read and said nothing" (`pane_clear`)
+ * from "nothing external could be read at all" (`no_observation`) deliberately:
+ * collapsing them would hide the exact case the pane screens exist for.
+ */
+export function classifyOutcomeDraft(
+  kind: "finished" | "timed_out" | "error",
+  witnesses: {
+    /** The parsed certificate, or null when absent/untrusted. */
+    sidecar: FatalSidecar | null;
+    /** Whether a certificate was looked for at all (false for a Copilot worker). */
+    sidecarProbed: boolean;
+    /** What the pane screens concluded, or null when the pane was never consulted. */
+    paneMatch: "fatal_sentinel" | "provider_wording" | null;
+    /** Whether a pane read happened, matched or not. */
+    paneRead: boolean;
+    herdrStatus?: string;
+    livenessConfirmed?: boolean;
+  },
+): OutcomeDraft {
+  const base: Omit<OutcomeDraft, "processResult" | "evidence"> = {
+    sidecarProbed: witnesses.sidecarProbed,
+    ...(witnesses.herdrStatus !== undefined ? { herdrStatus: witnesses.herdrStatus } : {}),
+  };
+  if (witnesses.sidecar) {
+    return { ...base, processResult: "fatal_error", evidence: "fatal_sidecar" };
+  }
+  // Pane evidence is checked BEFORE the kind branches, not after. `kind` reaching
+  // here may already have been reclassified `finished` -> `error` by
+  // `screenFinishedForCrash`, and branching on that mutated kind first would
+  // discard the very evidence that caused the mutation -- reporting a bare
+  // `gone`/`herdr_status` for a death the pane screens positively identified.
+  // Ranking is: certificate > pane evidence > herdr status, which is also the
+  // order in which the witnesses are actually trustworthy.
+  if (witnesses.paneMatch === "fatal_sentinel") {
+    return { ...base, processResult: "unknown_crash", evidence: "pane_sentinel" };
+  }
+  if (witnesses.paneMatch === "provider_wording") {
+    return { ...base, processResult: "unknown_crash", evidence: "provider_wording" };
+  }
+  if (kind === "timed_out") {
+    return {
+      ...base,
+      processResult: "deadline_stopped",
+      evidence: witnesses.livenessConfirmed === false ? "no_observation" : "herdr_status",
+    };
+  }
+  if (kind === "error") {
+    // The wait envelope's own error code IS the herdr observation here, so this
+    // does not depend on a status field being parseable.
+    return { ...base, processResult: "gone", evidence: "herdr_status" };
+  }
+  return {
+    ...base,
+    processResult: "settled_alive",
+    evidence: witnesses.paneRead ? "pane_clear" : "no_observation",
+  };
+}
+
+/**
+ * Append an outcome to the run's ledger, replacing a re-reconciliation of the
+ * same observation instead of stacking a duplicate.
+ *
+ * The ledger lives on `SwarmState` rather than only on `WorkerRecord` because
+ * `swarmPoll` filters departing workers out of `state.workers` before it
+ * persists: an outcome stored solely on a record being removed is deleted with
+ * it and survives nowhere. Persisted here, it also survives an orchestrator
+ * restart, so the end-of-run digest can be read from recorded truth instead of
+ * re-derived from event prose.
+ *
+ * Key is `agent` + `decidedAtMs`, and a re-reconciliation (a serial
+ * `teardown_ambiguous` worker met again on a later poll) must carry the
+ * ORIGINAL `decidedAtMs` -- re-stamping it would make every pass a distinct key
+ * and grow the ledger without bound while the queue is stuck.
+ */
+export function appendOutcome(state: SwarmState, outcome: WorkerOutcome): WorkerOutcome[] {
+  const outcomes = state.outcomes ?? [];
+  const at = outcomes.findIndex(
+    (o) => o.agent === outcome.agent && o.decidedAtMs === outcome.decidedAtMs,
+  );
+  if (at >= 0) outcomes.splice(at, 1, outcome);
+  else outcomes.push(outcome);
+  state.outcomes = outcomes;
+  return outcomes;
+}
+
+/** The outcome already recorded for this agent, if any -- the re-stamp guard. */
+export function priorOutcome(state: SwarmState, agent: string): WorkerOutcome | undefined {
+  return (state.outcomes ?? []).find((o) => o.agent === agent);
+}
+
 export type WorkerLifecycle = "active" | "awaiting_relay" | "teardown_ambiguous";
 
 export interface WorkerRecord {
@@ -190,6 +428,16 @@ export interface WorkerRecord {
   /** Capture offers already harvested before an ambiguous teardown was persisted. */
   terminalCaptures?: { kind: string; id: string; summary: string }[];
   /**
+   * The reconciled outcome assembled when this worker was met at teardown.
+   *
+   * Kept on the record only so a re-reconciliation (serial
+   * `teardown_ambiguous`, met again on a later poll) can reuse its
+   * `decidedAtMs` rather than stamping a new key and duplicating the ledger
+   * entry; the durable copy is `SwarmState.outcomes`, because a record that
+   * leaves `state.workers` takes its fields with it.
+   */
+  outcome?: WorkerOutcome;
+  /**
    * Copilot-only: the confirmed session id `attemptCrashRecovery` resumes
    * via `--resume=`. Unused by pi workers -- absent means recovery never
    * applies, which is the correct behavior for a host with no such feature.
@@ -250,6 +498,15 @@ export interface SwarmState {
    * pi, which loads extensions live rather than via a plugin-dir flag.
    */
   pluginDir?: string;
+  /**
+   * Every reconciled worker outcome this run has observed, in decision order.
+   *
+   * Optional for the same reason every other field added here is optional:
+   * state files already on disk predate it. Absent means nothing has been
+   * reconciled yet, which is what an empty array also says, so no legacy file
+   * needs rewriting and no reader has to special-case the upgrade.
+   */
+  outcomes?: WorkerOutcome[];
 }
 
 // ---------------------------------------------------------------------------
@@ -518,6 +775,16 @@ export function providerCrashMatch(content: string): ProviderCrashMatch | null {
 // that screen hunts error-shaped WORDING, which is a heuristic with its own
 // blind spots; this one looks for a fixed token a worker writes to stderr
 // immediately before exiting 1, which is not a guess about the text at all.
+//
+// BOTH SCREENS ARE NOW THE FALLBACK. A worker that reaches its own fatal verdict
+// also writes a death certificate next to its capture file
+// (`fatal-error-exit.ts`, read by `swarm-tool-context.ts` as
+// `evidence: "fatal_sidecar"`), and that statement outranks anything inferred
+// from pane text. These two remain authoritative for exactly the cases with no
+// in-process witness: a Copilot worker (no pi to run the writer), and a pi
+// killed by SIGKILL/OOM or crashed inside pi itself, which never reaches the
+// handler at all. Deleting them would report every such death as a clean
+// finish, because `classifyWaitResult` maps herdr's `done` to `finished`.
 // ---------------------------------------------------------------------------
 
 /**

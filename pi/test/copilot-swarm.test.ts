@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "./helpers/tap";
@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, test } from "./helpers/tap";
 // PROJECT_PREFIXES-parity test to guard: drift between "the pi copy" and "the
 // copilot copy" is now structurally impossible, there being only one copy.
 import { providerCrashMatch, type SwarmState } from "../extensions/swarm-lib/swarm-scheduling.js";
+import { outcomePathOf } from "../extensions/swarm-lib/swarm-tool-context.js";
 
 import {
   buildAgentStartArgv,
@@ -753,5 +754,130 @@ describe("Copilot Swarm: provider-crash finish reclassification", () => {
     const reconciled = await ctx.getOrInitState("r1", 1);
     expect(reconciled.workers.length).toBe(1);
     expect(reconciled.workers[0]?.lifecycle).toBe("teardown_ambiguous");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Copilot parity under structured outcomes.
+//
+// A Copilot worker has no pi to run the certificate writer, so a certificate can
+// never exist for one. The point of these cases is not that Copilot "also
+// works" -- it is that the new absence must never be *read as a signal*, and
+// that the outcome row says `sidecarProbed: false` rather than claiming it
+// looked and found nothing. Per the settled decision this design copies, "a
+// missing sidecar is never an upgrade and never a loss", and the host kind is
+// what decides whether to look at all -- not inference from a file's absence.
+// ---------------------------------------------------------------------------
+
+describe("Copilot Swarm: structured outcomes leave this host's classification alone", () => {
+  let tempStateDir: string;
+
+  beforeEach(() => {
+    tempStateDir = mkdtempSync(join(tmpdir(), "swarm-copilot-outcome-"));
+    process.env.COPILOT_SWARM_STATE_DIR = tempStateDir;
+  });
+
+  afterEach(() => {
+    delete process.env.COPILOT_SWARM_STATE_DIR;
+    rmSync(tempStateDir, { recursive: true, force: true });
+  });
+
+  const fakeExecFor =
+    (paneStdout: string) =>
+    async (cmd: string, args: string[]): Promise<ExecResult> => {
+      if (cmd === "herdr") {
+        if (args[0] === "agent" && args[1] === "wait") {
+          return {
+            code: 0,
+            stdout: JSON.stringify({ result: { agent: { agent_status: "idle" } } }),
+            stderr: "",
+          };
+        }
+        if (args[0] === "pane" && args[1] === "read") {
+          return { code: 0, stdout: paneStdout, stderr: "" };
+        }
+      }
+      return { code: 0, stdout: JSON.stringify({ result: {} }), stderr: "" };
+    };
+
+  const seed = () => {
+    const state: SwarmState = {
+      runId: "cr1",
+      concurrency: 3,
+      nextCounter: 1,
+      workers: [
+        {
+          agent: "cr1-w1",
+          slug: "atk-copilot-item",
+          paneId: "w:p1",
+          tabId: "w:t1",
+          lifecycle: "active",
+          workingSinceMs: Date.now(),
+        },
+      ],
+    };
+    saveState(state, tempStateDir);
+  };
+
+  type OutcomeEvent = {
+    kind: string;
+    detail?: string;
+    outcome?: {
+      evidence: string;
+      processResult: string;
+      sidecarProbed: boolean;
+      kind: string;
+    };
+  };
+
+  test("a clean pane on Copilot is still a finished settle, with no certificate claim", async () => {
+    seed();
+    const ctx = new SwarmToolContext(fakeExecFor("All tests passed.\n> "));
+    const res = await ctx.swarmPoll({ runId: "cr1" });
+    const events = res.details.events as OutcomeEvent[];
+
+    expect(events[0]?.kind).toBe("finished");
+    // `pane_clear`, NOT anything sidecar-shaped: this host never looked.
+    expect(events[0]?.outcome).toMatchObject({
+      processResult: "settled_alive",
+      evidence: "pane_clear",
+      sidecarProbed: false,
+      kind: "copilot",
+    });
+  });
+
+  test("provider wording still reclassifies on Copilot -- the fallback is its primary", async () => {
+    seed();
+    const ctx = new SwarmToolContext(
+      fakeExecFor("Codex error: The usage limit has been reached\n> "),
+    );
+    const res = await ctx.swarmPoll({ runId: "cr1" });
+    const events = res.details.events as OutcomeEvent[];
+
+    expect(events[0]?.kind).toBe("error");
+    expect(events[0]?.outcome).toMatchObject({
+      processResult: "unknown_crash",
+      evidence: "provider_wording",
+      sidecarProbed: false,
+    });
+  });
+
+  test("a certificate file planted at the Copilot path changes nothing and is never probed", async () => {
+    // The regression this pins: if the read were gated on file existence instead
+    // of host kind, a stray file (an earlier pi run sharing a state dir, a
+    // hand-edited fixture) would let a Copilot worker be reported as having
+    // stated its own death.
+    seed();
+    writeFileSync(outcomePathOf("cr1", "atk-copilot-item", tempStateDir), "not even json");
+    const ctx = new SwarmToolContext(fakeExecFor("All tests passed.\n> "));
+    const res = await ctx.swarmPoll({ runId: "cr1" });
+    const events = res.details.events as OutcomeEvent[];
+
+    expect(events[0]?.kind).toBe("finished");
+    expect(events[0]?.outcome).toMatchObject({
+      evidence: "pane_clear",
+      sidecarProbed: false,
+      processResult: "settled_alive",
+    });
   });
 });

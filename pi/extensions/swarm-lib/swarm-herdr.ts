@@ -878,6 +878,26 @@ export function amendAckPath(captureFile: string): string {
   return join(dir, `${base}.amend-ack.json`);
 }
 
+/**
+ * The worker's death certificate, named off the capture file the same way the
+ * amend ack is: same directory, basename `-capture-` -> `-outcome-`, so a
+ * worker needs no second env var to find it and two workers in one state dir
+ * cannot collide.
+ *
+ * The worker-side writer (`fatal-error-exit.ts`) derives this path itself
+ * rather than importing it, for the same reason it duplicates
+ * `FATAL_ERROR_EXIT_TOKEN`: a pi worker has no reason to know `swarm-lib`
+ * exists, and `swarm-lib` is bundled into the Copilot swarm build. The two
+ * derivations are bound by a test in `pi/test/fatal-error-exit.test.ts`.
+ */
+export function outcomePath(captureFile: string): string {
+  const dir = dirname(captureFile);
+  const base = basename(captureFile);
+  const replaced = base.replace("-capture-", "-outcome-");
+  if (replaced !== base) return join(dir, replaced);
+  return join(dir, `${base}.outcome.json`);
+}
+
 export interface AmendAckPayload {
   t: number;
   streamingBehavior?: "steer" | "followUp" | null;
