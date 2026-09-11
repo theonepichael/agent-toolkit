@@ -840,6 +840,37 @@ class MutationServiceTestCase(MutationFixture):
         res_app = dev_status_mutation.approve_item("item-rev")
         self.assertEqual(res_app.status, "done")
 
+    @patch.object(
+        dev_status_mutation,
+        "_completion_merge_notice",
+        return_value="[item-guard] completion recorded but its worktree HEAD is not confirmed merged",
+    )
+    def test_done_records_unmerged_worktree_notice(self, _notice: MagicMock):
+        self.write_items([make_item("item-guard", status="in-progress")])
+
+        result = dev_status_mutation.done_item("item-guard")
+
+        self.assertEqual(result.status, "done")
+        self.assertEqual(len(result.notices), 1)
+        journal = self.journal_lines()
+        self.assertEqual(journal[-1]["cmd"], "unmerged-completion")
+        self.assertTrue(journal[-1]["diagnostic"])
+
+    @patch.object(
+        dev_status_mutation,
+        "_completion_merge_notice",
+        return_value="[item-guard] completion recorded but its worktree HEAD is not confirmed merged",
+    )
+    def test_approve_records_unmerged_worktree_notice(self, _notice: MagicMock):
+        self.write_items([make_item("item-guard", status="in-progress")])
+        dev_status_mutation.review_item("item-guard")
+
+        result = dev_status_mutation.approve_item("item-guard")
+
+        self.assertEqual(result.status, "done")
+        self.assertEqual(len(result.notices), 1)
+        self.assertEqual(self.journal_lines()[-1]["cmd"], "unmerged-completion")
+
     def test_reject_item_success(self):
         self.write_items([make_item("item-rej", status="in-progress")])
         dev_status_mutation.review_item("item-rej")
