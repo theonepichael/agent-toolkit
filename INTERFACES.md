@@ -615,9 +615,9 @@ Generate a zsh `#compdef` completion file for a harness CLI.
   - `--stdout` — print to stdout instead of writing
 - Filesystem constants:
   - `DEFAULT_OUT_DIR = Path.home() / '.zsh/completions'`
-- Depends on: `cli_common.py`
+- Depends on: `cli_common.py`, `harness_spec.py`
 - Public classes:
-  - `class HarnessSpec`
+  - `class HarnessAdapter`
   - `class Option`
   - `class Node`
 - Public functions:
@@ -632,15 +632,15 @@ Generate a zsh `#compdef` completion file for a harness CLI.
   - `build_tree(cli: str, path: tuple[str, ...], seen: set[tuple[str, ...]], *, verbose: bool = False) -> Node`
   - `collect_goflag_sections(text: str, *, is_root: bool) -> dict[str, list[str]]` — Split go-flag `--help`/`help <name>` output into Flags/Commands blocks.
   - `build_tree_goflag(cli: str, *, verbose: bool = False) -> Node` — Build a 2-level-deep tree: root flags/subcommands, one level of
-  - `run_native_passthrough(spec: HarnessSpec, *, verbose: bool = False) -> str | None`
+  - `run_native_passthrough(spec: HarnessAdapter, *, verbose: bool = False) -> str | None`
   - `option_label(opt: Option) -> str`
   - `esc_desc(s: str) -> str`
   - `format_option(opt: Option) -> str`
   - `sanitize(path: tuple[str, ...]) -> str`
   - `needs_function(node: Node) -> bool`
   - `emit_zsh(root: Node, cli: str) -> str`
-  - `generate(spec: HarnessSpec, *, verbose: bool = False) -> str | None`
-- Tested by: `agent-scripts/test_gen_shell_completion.py`
+  - `generate(spec: HarnessAdapter, *, verbose: bool = False) -> str | None`
+- Tested by: `agent-scripts/test_gen_shell_completion.py`, `agent-scripts/test_harness_spec.py`
 
 ### `agent-scripts/gen_skills.py`
 

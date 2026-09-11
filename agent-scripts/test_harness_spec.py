@@ -7,7 +7,7 @@ Guards the single declarative harness specification registry, asserting that:
 3. Historical CLI binaries and install hints are preserved.
 4. links.toml harness values are a subset of the registry.
 5. All in-scope consumers derive their views from harness_spec with ordered sequence parity.
-6. Deferred consumers (gen_skills, gen_shell_completion) are explicitly documented.
+6. Deferred consumer tracking documents that all consumers are unified.
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ import install
 import dev_status_mutation
 import gen_skills
 import harness_discovery_check
+import gen_shell_completion
 
 
 class TestHarnessSpecRegistry(unittest.TestCase):
@@ -164,14 +165,25 @@ class TestHarnessSpecRegistry(unittest.TestCase):
             harness_spec.HARNESSES["pi"].capability_facts(),
         )
 
-    def test_deferred_consumers_documented(self) -> None:
-        """Explicitly documents why gen_shell_completion is deferred.
+        # 7. gen_shell_completion
+        self.assertTrue(hasattr(gen_shell_completion, "HarnessAdapter"))
+        self.assertEqual(
+            tuple(gen_shell_completion.HARNESSES.keys()),
+            harness_spec.ALL_NAMES,
+        )
+        for name in harness_spec.ALL_NAMES:
+            adapter = gen_shell_completion.HARNESSES[name]
+            self.assertIsInstance(adapter, gen_shell_completion.HarnessAdapter)
+            self.assertEqual(adapter.cli, harness_spec.binary(name))
 
-        gen_shell_completion: Uses an adapter dataclass that will be unified
-        and renamed in a follow-up item without drifting the CLI set.
+    def test_deferred_consumers_documented(self) -> None:
+        """Explicitly documents that all known consumers are now unified.
+
+        gen_shell_completion was the final deferred consumer, now unified with
+        harness_spec.
         """
-        deferred = {"gen_shell_completion"}
-        self.assertEqual(len(deferred), 1)
+        deferred: set[str] = set()
+        self.assertEqual(len(deferred), 0)
 
 
 if __name__ == "__main__":
