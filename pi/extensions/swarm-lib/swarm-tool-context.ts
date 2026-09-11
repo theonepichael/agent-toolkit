@@ -11,6 +11,7 @@ import { spawn } from "node:child_process";
 import {
   canOpenNewPane,
   canSpawnNew,
+  fatalErrorExitMatch,
   isSuspiciousFinish,
   itemPaths,
   nextAgentId,
@@ -1206,6 +1207,13 @@ export class SwarmToolContext {
         buildAgentWaitArgv(worker.agent, ["idle", "done", "blocked"], timeoutMs),
       );
       let kind = classifyWaitResult(result.code, result.stdout, result.stderr);
+      // Which status the settle actually came from. `classifyWaitResult` folds
+      // `idle` and `done` into one kind, and `done` is the process-exiting
+      // signal herdr publishes ~0.17 s before the record vanishes, so the
+      // finished-screen needs the raw status to tell a parked worker from a dead
+      // one. Fail-safe: an unparseable/absent status reads `undefined`, which the
+      // screen treats as "no proof of life" rather than "alive".
+      let settleStatus = parseAgentStatus(result.stdout);
       let detail =
         kind === "timed_out" || kind === "error"
           ? waitResultDetail(result.stdout, result.stderr)
@@ -1249,6 +1257,10 @@ export class SwarmToolContext {
         }
 
         kind = verdict.kind;
+        // The verdict came from the probe, so the probe's envelope is the live
+        // truth about status -- not the timeout envelope above, which carries no
+        // agent at all.
+        settleStatus = parseAgentStatus(probe.stdout);
         detail =
           kind === "timed_out"
             ? deadlineStopDetail(worker, rt.deadlineMs, {
@@ -1274,7 +1286,7 @@ export class SwarmToolContext {
         if (decision.event) {
           event = decision.event;
           // A crash outranks the hold: the correction died with the worker.
-          await this.screenFinishedForProviderCrash(event, worker);
+          await this.screenFinishedForCrash(event, worker, settleStatus);
         } else {
           rearmAfter = decision.rearm ?? null;
           event = null;
@@ -1283,7 +1295,7 @@ export class SwarmToolContext {
         event = { kind, agent: worker.agent, slug: worker.slug, paneId: worker.paneId };
         if (detail !== undefined) event.detail = detail;
         if (kind === "finished") {
-          await this.screenFinishedForProviderCrash(event, worker);
+          await this.screenFinishedForCrash(event, worker, settleStatus);
         }
         if (pending && (kind === "error" || kind === "timed_out")) {
           // Never suppress these, but never let them read as a clean end either:
@@ -1336,25 +1348,47 @@ export class SwarmToolContext {
   }
 
   /**
-   * Screen a settled `finished` event for a provider-level crash.
+   * Screen a settled `finished` event for positive evidence that the worker did
+   * not actually finish.
    *
-   * A worker that died under a provider usage-limit error stays alive at its
-   * idle prompt, so the wait settles as `finished` and without this check the
-   * orchestrator records a clean completion the item may not have earned
-   * (observed live 2026-09-10). One pane read per resolved finish -- never on
-   * held/re-armed settles -- and the classifier owns its own line-based
-   * window, so no character slicing happens here.
+   * Two independent kinds of evidence, in descending confidence:
    *
-   * Detail combination is append-only: a detected crash PREPENDS its detail
-   * to whatever the branch already carries (e.g. an amend verdict); an
-   * unavailable capture APPENDS its verification note. An unreadable or empty
-   * pane never reclassifies the finish -- the wait settled cleanly, so an
-   * inconclusive probe must not manufacture an error -- but it is no longer
-   * silent about it.
+   * 1. **The fatal-exit sentinel.** `fatal-error-exit.ts` writes a fixed line
+   *    and then exits 1, but herdr publishes the terminal `done` status ~0.17 s
+   *    before the agent record disappears (measured live 2026-09-11), so the
+   *    armed wait resolves against `done` and `classifyWaitResult` calls it
+   *    `finished` exactly like the parked-at-prompt `idle` signal. Without this
+   *    branch the exit buys no classification advantage on the primary path at
+   *    all. Gated on `settleStatus !== "idle"`: `idle` is the only status that
+   *    positively proves the process is alive at its prompt, so a sentinel in an
+   *    `idle` worker's pane is stale prose (workers grep this repo and run its
+   *    tests, which print the line) rather than an exit. Anything else --
+   *    `done`, or no usable status -- is not proof of life, and the gate's
+   *    failure direction is the safe one: it can only turn a clean-looking
+   *    finish into a verify-me error.
+   * 2. **Provider-crash wording**, for a worker that died under a usage limit
+   *    and stayed alive at its prompt, so the wait legitimately settles `idle`
+   *    (observed live 2026-09-10).
+   *
+   * One pane read per resolved finish -- never on held/re-armed settles -- and
+   * each classifier owns its own line-based window, so no character slicing
+   * happens here. The read always precedes teardown: `closeWorker` is reached
+   * only from `harvestWorkerIOWithStatus`, downstream of the event being pushed,
+   * and `swarm_poll: a worker that exited on a fatal turn error...` asserts that
+   * ordering rather than trusting the call graph.
+   *
+   * Detail combination is append-only for both branches: a detected crash
+   * PREPENDS its detail to whatever the branch already carries (e.g. an amend
+   * verdict, whose record of whether the CORRECTION survived is separate
+   * evidence from whether the PROCESS did); an unavailable capture APPENDS its
+   * verification note. An unreadable or empty pane never reclassifies the finish
+   * -- the wait settled cleanly, so an inconclusive probe must not manufacture
+   * an error -- but it is no longer silent about it.
    */
-  private async screenFinishedForProviderCrash(
+  private async screenFinishedForCrash(
     event: PollEvent,
     worker: WorkerRecord,
+    settleStatus: string | undefined,
     signal?: AbortSignal,
   ): Promise<void> {
     if (event.kind !== "finished") return;
@@ -1368,6 +1402,19 @@ export class SwarmToolContext {
     if (pane === null || pane.trim() === "") {
       event.detail = `${event.detail ? `${event.detail} ` : ""}pane capture unavailable at settle -- verify the item's state before treating it as complete.`;
       return;
+    }
+    if (settleStatus !== "idle") {
+      const fatal = fatalErrorExitMatch(pane);
+      if (fatal) {
+        event.kind = "error";
+        event.detail =
+          `fatal_error_exit: pane carried the worker's ${fatal.signature} sentinel at a ` +
+          `${settleStatus ?? "status-less"} settle -- the process exited on a fatal turn error, ` +
+          `not a clean finish. Excerpt: "${fatal.excerpt}". ` +
+          "Verify the item's actual state before treating it as complete." +
+          (event.detail ? ` ${event.detail}` : "");
+        return;
+      }
     }
     const crash = providerCrashMatch(pane);
     if (!crash) return;

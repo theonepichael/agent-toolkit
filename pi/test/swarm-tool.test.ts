@@ -33,6 +33,10 @@ import registerSwarmTools, {
   canOpenNewPane,
   canSpawnNew,
   classifyWaitResult,
+  FATAL_ERROR_EXIT_SCAN_LINES,
+  FATAL_ERROR_EXIT_TOKEN,
+  fatalErrorExitMatch,
+  providerCrashMatch,
   findTabByLabel,
   itemPaths,
   parseReadyItems,
@@ -836,6 +840,15 @@ describe("classifyWaitResult", () => {
   });
 
   test("idle or done status maps to finished", () => {
+    // This mapping conflates "parked at the prompt" with "the process exited",
+    // and it is PINNED ON PURPOSE -- `done` is also what a clean worker exit
+    // looks like, so splitting them here would mislabel every worker that exits
+    // normally. Where the two are told apart is one layer up, at the finished
+    // settle: `screenFinishedForCrash` reads the pane for the fatal-exit
+    // sentinel whenever the settle was not `idle` and reclassifies the finish to
+    // `error`. See swarm-scheduling's `fatalErrorExitMatch` for the measured
+    // reason (herdr publishes `done` ~0.17 s before the record vanishes, so the
+    // armed wait can never see the gone-path itself).
     expect(classifyWaitResult(0, waitStdout("idle"), "")).toBe("finished");
     expect(classifyWaitResult(0, waitStdout("done"), "")).toBe("finished");
   });
@@ -5717,5 +5730,262 @@ describe("phantom events and stale worker closeout cleanup", () => {
 
     expect(nextPoll.details.events).toEqual([]);
     expect(nextPoll.content[0].text).toContain("No active workers to poll.");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The deterministic fatal-exit sentinel.
+//
+// `fatal-error-exit.ts` exits an unattended pi with code 1 when its run settles
+// on a fatal turn error, and writes `[fatal-error-exit] ...` to stderr first.
+// herdr publishes the terminal `done` status ~0.17 s before the agent record
+// disappears, so the armed wait resolves against `done` and
+// `classifyWaitResult` maps it to `finished` exactly like the normal
+// parked-at-prompt `idle` signal -- measured live 2026-09-11, where a real
+// swarm_poll of a dead fatal-error worker reported `finished`. The mapping is
+// left alone (it is pinned by its own test above, and `done` is also what a
+// clean worker exit looks like); the split happens in the finished-settle screen
+// instead, which can read the pane.
+// ---------------------------------------------------------------------------
+
+/** The exact line `fatal-error-exit.ts` writes, built here by hand so the matcher is not tested against its own copy of the string. */
+function fatalExitPane(noiseAfter = 0): string {
+  const line =
+    "[fatal-error-exit] run settled after a fatal turn error (openai-codex/gpt-5.5); " +
+    "exiting 1 for orchestrator visibility";
+  const noise = Array.from({ length: noiseAfter }, (_, i) => `post-exit output ${i}`);
+  return [line, ...noise].join("\n");
+}
+
+describe("fatalErrorExitMatch (pure)", () => {
+  test("matches the extension's emitted line", () => {
+    const m = fatalErrorExitMatch(fatalExitPane());
+    expect(m).not.toBeNull();
+    expect(m?.signature).toContain("fatal-error-exit");
+    expect(m?.excerpt).toContain("run settled after a fatal turn error");
+  });
+
+  test("matches under the same normalization providerCrashMatch needs: ANSI, wrapping, hard whitespace", () => {
+    // The real pane carries pi's TUI redraw residue and the line arrives
+    // word-wrapped by the pty; both must survive.
+    const wrapped =
+      "[fatal-error-exit] run settled after a fatal turn \r\n\x1b[0merror (openai-codex/gpt-5.5); exiting 1 for \r\n orchestrator visibility\r\n";
+    expect(fatalErrorExitMatch(wrapped)).not.toBeNull();
+  });
+
+  test("an unrelated fatal-looking pane does not match", () => {
+    expect(fatalErrorExitMatch("Error: ENOENT: no such file or directory\n> idle")).toBeNull();
+    expect(fatalErrorExitMatch("")).toBeNull();
+    expect(fatalErrorExitMatch("   \n  \n")).toBeNull();
+  });
+
+  test("matches the token alone: the tail guards nothing the status gate does not, and a mid-word wrap would break it", () => {
+    // Regression guard for the round-2 design's fragility. The sentence tail is
+    // ~135 chars at the widest legal model id, so a narrow pane can wrap it
+    // mid-word, and the window re-joins lines with a space the source never had.
+    // The short leading token cannot be split in any pane wider than 18 columns.
+    expect(fatalErrorExitMatch(`${FATAL_ERROR_EXIT_TOKEN} anything else entirely`)).not.toBeNull();
+  });
+
+  test("scans wider than the fuzzy-signature window, because a deterministic sentinel does not need scrollback protection", () => {
+    // providerCrashMatch's 10-line window exists to stop "usage limit" in old
+    // prose from matching. A post-exit shell prompt, a multiplexer redraw or a
+    // teardown banner must not be able to push the sentinel off the top.
+    expect(FATAL_ERROR_EXIT_SCAN_LINES).toBeGreaterThan(10);
+    // 20 lines of post-exit noise: invisible to a 10-line window, well inside
+    // the sentinel's own.
+    expect(fatalErrorExitMatch(fatalExitPane(20))).not.toBeNull();
+    expect(providerCrashMatch(fatalExitPane(20))).toBeNull();
+  });
+
+  test("an arbitrarily old sentinel outside the scan window does not match (documented bound)", () => {
+    const ancient = [
+      fatalExitPane(),
+      ...Array.from({ length: FATAL_ERROR_EXIT_SCAN_LINES }, (_, i) => `later output ${i}`),
+    ].join("\n");
+    expect(fatalErrorExitMatch(ancient)).toBeNull();
+  });
+});
+
+describe("swarm_poll: a worker that exited on a fatal turn error is never a clean finish", () => {
+  let dir: string;
+  let priorStateDir: string | undefined;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "swarm-fatal-finish-"));
+    priorStateDir = process.env.PI_SWARM_STATE_DIR;
+    process.env.PI_SWARM_STATE_DIR = dir;
+  });
+
+  afterEach(() => {
+    if (priorStateDir === undefined) delete process.env.PI_SWARM_STATE_DIR;
+    else process.env.PI_SWARM_STATE_DIR = priorStateDir;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  /**
+   * Seeds one active worker and answers the armed wait with `waitStatus`, in the
+   * REAL nested `result.agent` envelope shape (see realWaitEnvelope's own comment:
+   * a hand-written flat stub could never catch a path mismatch).
+   */
+  function setup(opts: { runId: string; waitStatus: string; pane: string; showStatus?: string }) {
+    const agentId = `${opts.runId}-w1`;
+    const worker: WorkerRecord = {
+      agent: agentId,
+      slug: "fatal-item",
+      paneId: "w1:pZ",
+      tabId: "w1:tZ",
+      lifecycle: "active",
+    };
+    saveState({ runId: opts.runId, concurrency: 2, nextCounter: 1, workers: [worker] }, dir);
+
+    const stub = makeStubPi((argv) => {
+      const [a, b] = argv;
+      if (a === "agent" && b === "list") {
+        return {
+          code: 0,
+          stdout: realAgentListEnvelope({
+            agent: "pi",
+            agent_status: opts.waitStatus,
+            name: agentId,
+            pane_id: "w1:pZ",
+          }),
+          stderr: "",
+        };
+      }
+      if (a === "agent" && b === "wait") {
+        return { code: 0, stdout: realWaitEnvelope(opts.waitStatus, agentId, "w1:pZ"), stderr: "" };
+      }
+      if (a === "pane" && b === "read") {
+        return { code: 0, stdout: opts.pane, stderr: "" };
+      }
+      if (b === "show") {
+        return {
+          code: 0,
+          stdout: JSON.stringify({ status: opts.showStatus ?? "done" }),
+          stderr: "",
+        };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    });
+
+    registerSwarmTools(stub.pi as unknown as Parameters<typeof registerSwarmTools>[0]);
+    const poll = stub.tools.get("swarm_poll");
+    if (!poll) throw new Error("swarm_poll was never registered");
+    return { poll, stub };
+  }
+
+  const pollOnce = async (poll: { execute: (...a: never[]) => Promise<unknown> }, runId: string) =>
+    (await poll.execute(
+      ...(["c1", { runId, timeoutMs: 1000 }, undefined] as unknown as never[]),
+    )) as { details: { events: { kind: string; detail?: string }[] } };
+
+  test("a `done` settle carrying the sentinel line settles as error, not finished", async () => {
+    const runId = "fatal-done";
+    const { poll } = setup({ runId, waitStatus: "done", pane: fatalExitPane() });
+
+    const res = await pollOnce(poll, runId);
+
+    expect(res.details.events.map((e) => e.kind)).toEqual(["error"]);
+    // Asserted on the detail prefix, not just the kind: a pane carrying provider
+    // wording would already settle as `error` pre-fix through providerCrashMatch,
+    // so a kind-only assertion can be green before the fix.
+    expect(res.details.events[0]?.detail).toContain("fatal_error_exit");
+  });
+
+  test("the same pane text at an `idle` settle stays finished -- the process is demonstrably alive", async () => {
+    const runId = "fatal-idle";
+    const { poll } = setup({ runId, waitStatus: "idle", pane: fatalExitPane() });
+
+    const res = await pollOnce(poll, runId);
+
+    expect(res.details.events.map((e) => e.kind)).toEqual(["finished"]);
+    expect(res.details.events[0]?.detail ?? "").not.toContain("fatal_error_exit");
+  });
+
+  test("a `done` settle with no sentinel keeps today's behaviour (documented residual)", async () => {
+    const runId = "fatal-absent";
+    const { poll } = setup({
+      runId,
+      waitStatus: "done",
+      pane: "Turn finished cleanly.\n> ",
+    });
+
+    const res = await pollOnce(poll, runId);
+
+    expect(res.details.events.map((e) => e.kind)).toEqual(["finished"]);
+    expect(res.details.events[0]?.detail ?? "").not.toContain("fatal_error_exit");
+  });
+
+  test("the sentinel branch composes append-only with an amend verdict rather than replacing it", async () => {
+    // The gate's own point: a `done` settle with the sentinel is evidence the
+    // PROCESS died; amend_unpicked is evidence the CORRECTION died with it. A
+    // human relaying the run needs both, and the second must not overwrite the
+    // first.
+    const runId = "fatal-amend";
+    const agentId = `${runId}-w1`;
+    const worker: WorkerRecord = {
+      agent: agentId,
+      slug: "fatal-item",
+      paneId: "w1:pZ",
+      tabId: "w1:tZ",
+      lifecycle: "active",
+      pendingAmend: {
+        requestedAtMs: Date.now() - 60_000,
+        checks: 3,
+        runWorkedAfterAmendMs: 120,
+        lastObservedSeq: null,
+      } as unknown as PendingAmend,
+    };
+    saveState({ runId, concurrency: 2, nextCounter: 1, workers: [worker] }, dir);
+    const stub = makeStubPi((argv) => {
+      const [a, b] = argv;
+      if (a === "agent" && b === "list") {
+        return {
+          code: 0,
+          stdout: realAgentListEnvelope({
+            agent: "pi",
+            agent_status: "done",
+            name: agentId,
+            pane_id: "w1:pZ",
+          }),
+          stderr: "",
+        };
+      }
+      if (a === "agent" && b === "wait") {
+        return { code: 0, stdout: realWaitEnvelope("done", agentId, "w1:pZ"), stderr: "" };
+      }
+      if (a === "pane" && b === "read") {
+        return { code: 0, stdout: fatalExitPane(), stderr: "" };
+      }
+      if (b === "show") {
+        return { code: 0, stdout: JSON.stringify({ status: "done" }), stderr: "" };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    });
+    registerSwarmTools(stub.pi as unknown as Parameters<typeof registerSwarmTools>[0]);
+    const poll = stub.tools.get("swarm_poll");
+    if (!poll) throw new Error("swarm_poll was never registered");
+
+    const res = await pollOnce(poll, runId);
+
+    expect(res.details.events.map((e) => e.kind)).toEqual(["error"]);
+    expect(res.details.events[0]?.detail).toContain("fatal_error_exit");
+    expect(res.details.events[0]?.detail).toContain("amend_");
+  });
+
+  test("the pane is read before the worker is closed, so the screen can never see an empty tab", async () => {
+    const runId = "fatal-order";
+    const { poll, stub } = setup({ runId, waitStatus: "done", pane: fatalExitPane() });
+
+    await pollOnce(poll, runId);
+
+    const closes = stub.calls.filter((c) => c.argv[0] === "tab" && c.argv[1] === "close");
+    const reads = stub.calls.filter((c) => c.argv[0] === "pane" && c.argv[1] === "read");
+    expect(closes).toHaveLength(1);
+    expect(reads.length).toBeGreaterThan(0);
+    // Enforced, not asserted in prose: the screen's read must index before the
+    // teardown's close, or this reclassification rests on a call-order guess.
+    expect(stub.calls.indexOf(reads[0]!)).toBeLessThan(stub.calls.indexOf(closes[0]!));
   });
 });

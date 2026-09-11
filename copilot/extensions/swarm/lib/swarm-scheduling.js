@@ -69,6 +69,10 @@ function stripTerminalNoise(text) {
   const c0 = new RegExp(`[\\x00-\\x08\\x0b-\\x1f\\x7f]`, "g");
   return text.replace(csi, "").replace(osc, "").replace(c0, "");
 }
+function normalizedPaneWindow(content, windowLines) {
+  const recent = content.split("\n").filter((line) => line.trim() !== "").slice(-windowLines).join(" ");
+  return stripTerminalNoise(recent).replace(/\s+/g, " ");
+}
 function occurrenceIndices(haystack, needle) {
   const lower = haystack.toLowerCase();
   const target = needle.toLowerCase();
@@ -81,8 +85,7 @@ function occurrenceIndices(haystack, needle) {
 var EXCERPT_BEFORE = 60;
 var EXCERPT_AFTER = 140;
 function providerCrashMatch(content) {
-  const recent = content.split("\n").filter((line) => line.trim() !== "").slice(-PROVIDER_CRASH_SCAN_LINES).join(" ");
-  const normalized = stripTerminalNoise(recent).replace(/\s+/g, " ");
+  const normalized = normalizedPaneWindow(content, PROVIDER_CRASH_SCAN_LINES);
   if (normalized.trim() === "") return null;
   for (const [keyword, verbs] of PROVIDER_CRASH_SIGNATURE_PAIRS) {
     const keywordIndices = occurrenceIndices(normalized, keyword);
@@ -102,6 +105,17 @@ function providerCrashMatch(content) {
     }
   }
   return null;
+}
+var FATAL_ERROR_EXIT_TOKEN = "[fatal-error-exit]";
+var FATAL_ERROR_EXIT_SCAN_LINES = 40;
+function fatalErrorExitMatch(content) {
+  const normalized = normalizedPaneWindow(content, FATAL_ERROR_EXIT_SCAN_LINES);
+  const at = normalized.indexOf(FATAL_ERROR_EXIT_TOKEN);
+  if (at === -1) return null;
+  const start = Math.max(0, at - EXCERPT_BEFORE);
+  const end = Math.min(normalized.length, at + FATAL_ERROR_EXIT_TOKEN.length + EXCERPT_AFTER);
+  const excerpt = (start > 0 ? "..." : "") + normalized.slice(start, end).trim() + (end < normalized.length ? "..." : "");
+  return { signature: FATAL_ERROR_EXIT_TOKEN, excerpt };
 }
 function itemPaths(item) {
   const paths = (item.related_files ?? []).map((f) => f?.path).filter((p) => typeof p === "string" && p.length > 0);
@@ -192,6 +206,8 @@ function spawnBudget(state, readyCount) {
   return Math.min(byConcurrency, byPaneCap, readyCount);
 }
 export {
+  FATAL_ERROR_EXIT_SCAN_LINES,
+  FATAL_ERROR_EXIT_TOKEN,
   PROJECT_PREFIXES,
   PROVIDER_CRASH_MAX_GAP,
   PROVIDER_CRASH_SCAN_LINES,
@@ -200,6 +216,7 @@ export {
   activeWorkerCount,
   canOpenNewPane,
   canSpawnNew,
+  fatalErrorExitMatch,
   isSuspiciousFinish,
   isTerminalAgentStatus,
   itemPaths,

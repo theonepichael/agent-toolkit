@@ -12,17 +12,23 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 // (classifyTimeoutProbe, staleWorkerRecords) read that as a non-finished
 // outcome.
 //
-// Measured live 2026-09-11, ONE caveat holds: the orchestrator's PRIMARY path
-// does not yet see the benefit. `settleWait` arms `herdr agent wait --until
-// idle --until done --until blocked`, and herdr publishes the terminal `done`
-// status ~0.17s before the agent record disappears, so the armed wait resolves
-// against `done` -- which `classifyWaitResult` maps to `finished` exactly like
-// the normal parked-at-prompt success signal. A real swarm_poll of a dead
-// fatal-error worker therefore still reports `finished`. The exit is still
-// worth having (the record does vanish, and the pane line is the stable hook a
-// classifier can key on), but closing that last gap is orchestrator-side: the
-// `idle or done -> finished` mapping conflates "process exited" with the
-// normal "parked at prompt" success signal, and is pinned by its own test.
+// Measured live 2026-09-11, and the gap that measurement found is now closed
+// orchestrator-side. herdr publishes the terminal `done` status ~0.17 s before
+// the agent record disappears, so the armed wait in `settleWait` resolves
+// against `done`, and `classifyWaitResult` maps `done` to `finished` exactly
+// like the normal parked-at-prompt success signal -- on its own, the exit buys
+// nothing on that primary path. The screen that settles a `finished` event
+// (`screenFinishedForCrash`) therefore reads this line's `[fatal-error-exit]`
+// sentinel out of the pane and reclassifies the finish to `error`, gated on the
+// settle NOT being `idle` (an `idle` worker is demonstrably alive, so a sentinel
+// in its pane is stale prose -- workers grep this repo and run its tests, which
+// print this line). That mapping is left alone on purpose, so the split happens
+// on pane evidence rather than in the classifier: `done` is also what a clean
+// worker exit looks like. See
+// `~/.claude/data/grill/atk-fatal-error-exit-live-smoke-findings.md` Defect 2
+// for the measurement, and the residual it leaves: a `done` settle whose pane
+// carries no sentinel -- an exit this extension did not make -- is still
+// reported `finished`.
 //
 // Detection is stateless and decision-point-local: `agent_settled` is the
 // event pi's own docs name for "pi will not continue automatically" (the
@@ -58,6 +64,22 @@ export interface FatalErrorExitDeps {
 /** Exactly "1" -- anything else leaves the session attended (fail closed). */
 const UNATTENDED = "1";
 
+/**
+ * The sentinel the orchestrator's finished-settle screen looks for, spelled
+ * literally here rather than imported from `swarm-lib`.
+ *
+ * A worker has no reason to know the orchestrator's module set exists, and
+ * `swarm-lib` is bundled into the Copilot swarm build, so this direction of the
+ * dependency is the one that stays clean. The duplication is bound by a test --
+ * `pi/test/fatal-error-exit.test.ts` feeds this line through the real matcher --
+ * so changing this string without changing `FATAL_ERROR_EXIT_TOKEN` in
+ * `swarm-lib/swarm-scheduling.ts` fails there. Keep the leading bracketed
+ * token exactly 18 characters wide if it is ever edited: it is short enough that
+ * no plausible pty width can wrap mid-token, which is why the screen matches the
+ * token and not the whole sentence.
+ */
+const SENTINEL = "[fatal-error-exit]";
+
 export function registerFatalErrorExit(pi: ExtensionAPI, deps?: Partial<FatalErrorExitDeps>): void {
   const env = deps?.env ?? process.env;
   const exit = deps?.exit ?? ((code: number) => process.exit(code as never));
@@ -79,8 +101,8 @@ export function registerFatalErrorExit(pi: ExtensionAPI, deps?: Partial<FatalErr
     if (!last || last.stopReason !== "error") return;
     const model = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "unknown model";
     stderr.write(
-      `[fatal-error-exit] run settled after a fatal turn error (${model}); ` +
-        `exiting 1 for orchestrator visibility\n`,
+      `${SENTINEL} run settled after a fatal turn error (${model}); ` +
+        "exiting 1 for orchestrator visibility\n",
     );
     exit(1);
   });

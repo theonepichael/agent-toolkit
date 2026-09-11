@@ -426,6 +426,26 @@ function stripTerminalNoise(text: string): string {
   );
 }
 
+/**
+ * The last `windowLines` non-empty lines of a pane capture, joined and
+ * normalized for substring matching: ANSI/CSI/OSC and other control characters
+ * stripped, whitespace collapsed.
+ *
+ * Shared by `providerCrashMatch` and `fatalErrorExitMatch` so the two screens
+ * cannot disagree about what the pane looked like: selecting by LINE before
+ * joining is what re-joins a banner the pty hard-wrapped, and the collapse is
+ * what survives TUI redraw residue. Both therefore see the same text the other
+ * sees, and a signature only has to survive one normalization.
+ */
+function normalizedPaneWindow(content: string, windowLines: number): string {
+  const recent = content
+    .split("\n")
+    .filter((line) => line.trim() !== "")
+    .slice(-windowLines)
+    .join(" ");
+  return stripTerminalNoise(recent).replace(/\s+/g, " ");
+}
+
 /** All occurrence start indices of `needle` in `haystack` (case-insensitive). */
 function occurrenceIndices(haystack: string, needle: string): number[] {
   const lower = haystack.toLowerCase();
@@ -465,12 +485,7 @@ const EXCERPT_AFTER = 140;
  * item failure.
  */
 export function providerCrashMatch(content: string): ProviderCrashMatch | null {
-  const recent = content
-    .split("\n")
-    .filter((line) => line.trim() !== "")
-    .slice(-PROVIDER_CRASH_SCAN_LINES)
-    .join(" ");
-  const normalized = stripTerminalNoise(recent).replace(/\s+/g, " ");
+  const normalized = normalizedPaneWindow(content, PROVIDER_CRASH_SCAN_LINES);
   if (normalized.trim() === "") return null;
 
   for (const [keyword, verbs] of PROVIDER_CRASH_SIGNATURE_PAIRS) {
@@ -494,6 +509,82 @@ export function providerCrashMatch(content: string): ProviderCrashMatch | null {
     }
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// The deterministic fatal-exit sentinel.
+//
+// Sibling of `providerCrashMatch` above, and deliberately separate from it:
+// that screen hunts error-shaped WORDING, which is a heuristic with its own
+// blind spots; this one looks for a fixed token a worker writes to stderr
+// immediately before exiting 1, which is not a guess about the text at all.
+// ---------------------------------------------------------------------------
+
+/**
+ * The sentinel `fatal-error-exit.ts` writes to stderr on its way out of an
+ * unattended pi whose run settled on a fatal turn error.
+ *
+ * This is a deliberate DUPLICATE of the extension's own literal, not an import:
+ * a worker has no reason to know the orchestrator's module set exists, and
+ * `swarm-lib` is bundled into the Copilot swarm build, so pulling pi-extension
+ * concerns in here would drag them along. `pi/test/fatal-error-exit.test.ts`
+ * binds the two copies by feeding the extension's real emitted line through
+ * `fatalErrorExitMatch`, so renaming either half fails that test.
+ *
+ * The token is only the START of the emitted sentence, which is what makes it
+ * the right thing to match: the full line runs past 130 characters at the
+ * widest legal model id, and a pty wrap in the middle of it would leave the
+ * pane carrying text the source never contained (the window below re-joins
+ * wrapped lines with a space). The 18-character sentinel needs a sub-19-column
+ * pane to split.
+ */
+export const FATAL_ERROR_EXIT_TOKEN = "[fatal-error-exit]";
+
+/**
+ * Non-empty lines at the end of a settled pane scanned for the sentinel.
+ *
+ * Deliberately wider than `PROVIDER_CRASH_SCAN_LINES`, and the reason is the
+ * difference in what the two windows defend against: the 10-line fuzzy window
+ * exists to stop "usage limit" in ordinary prose or old scrollback from
+ * matching, a risk a deterministic sentinel does not carry. Its own failure
+ * direction is the opposite one -- the sentinel is written immediately before
+ * `exit(1)`, and a shell prompt, a multiplexer redraw or a teardown banner can
+ * then land below it in the capture, so a 10-line window could drop the only
+ * evidence that the process died. The pane read is 200 lines
+ * (`PANE_CAPTURE_LINES`, `swarm-tool-context.ts`), so 40 costs nothing.
+ */
+export const FATAL_ERROR_EXIT_SCAN_LINES = 40;
+
+/**
+ * Detect the fatal-exit sentinel in a settled worker's pane text.
+ *
+ * Why this exists next to `providerCrashMatch` rather than as another entry in
+ * its signature pairs: herdr publishes the terminal `done` status ~0.17 s
+ * before the agent record disappears (measured live 2026-09-11), so the armed
+ * wait in `settleWait` always resolves against `done`, which
+ * `classifyWaitResult` maps to `finished` exactly like the parked-at-prompt
+ * `idle` signal. An exit-1 therefore buys no classification advantage on the
+ * primary path unless the finished settle is screened for it. That mapping is
+ * left alone deliberately -- `done` is also what a clean worker exit looks like
+ * -- so the split happens here, on positive evidence in the pane.
+ *
+ * Shares `providerCrashMatch`'s normalization through `normalizedPaneWindow`,
+ * so a pty-wrapped or TUI-residue-laden line still matches; only the window is
+ * its own. Returns the first hit, or null. The CALLER additionally gates on the
+ * settle status, because pane text is evidence of output only -- the status is
+ * what says the process is gone.
+ */
+export function fatalErrorExitMatch(content: string): ProviderCrashMatch | null {
+  const normalized = normalizedPaneWindow(content, FATAL_ERROR_EXIT_SCAN_LINES);
+  const at = normalized.indexOf(FATAL_ERROR_EXIT_TOKEN);
+  if (at === -1) return null;
+  const start = Math.max(0, at - EXCERPT_BEFORE);
+  const end = Math.min(normalized.length, at + FATAL_ERROR_EXIT_TOKEN.length + EXCERPT_AFTER);
+  const excerpt =
+    (start > 0 ? "..." : "") +
+    normalized.slice(start, end).trim() +
+    (end < normalized.length ? "..." : "");
+  return { signature: FATAL_ERROR_EXIT_TOKEN, excerpt };
 }
 
 /** The files an item declares it will touch. Absent or malformed entries simply contribute nothing. */
