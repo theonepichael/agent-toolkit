@@ -131,62 +131,56 @@ class TestHarnessFeatureCoverage(unittest.TestCase):
         self.assertIn("notify.py", pi_text)
         self.assertIn("agent_settled", pi_text)
 
-        # 6. Codex: codex/notify.py invokes notify.py
-        codex_path = REPO_ROOT / "codex" / "notify.py"
-        self.assertTrue(codex_path.is_file())
-        codex_text = codex_path.read_text()
-        self.assertIn("notify.py", codex_text)
-
-    def test_links_toml_contains_codex_notify(self) -> None:
-        """links.toml must contain a link row for codex/notify.py."""
-        links_path = REPO_ROOT / "links.toml"
-        with open(links_path, "rb") as f:
-            links = tomllib.load(f)
-        found = False
-        for entry in links.get("link", []):
-            if entry.get("src") == "codex/notify.py" and entry.get("harness") == "codex":
-                self.assertEqual(entry.get("dest"), "~/.codex/notify.py")
-                found = True
-                break
-        self.assertTrue(found, "codex/notify.py link not found in links.toml")
+        # 6. Codex: invokes ~/.claude/scripts/notify.py directly (documented in codex/CLAUDE_CODE_PARITY.md)
+        parity_path = REPO_ROOT / "codex" / "CLAUDE_CODE_PARITY.md"
+        self.assertTrue(parity_path.is_file())
+        parity_text = parity_path.read_text()
+        self.assertIn("~/.claude/scripts/notify.py", parity_text)
 
 
-class TestCodexNotifyAdapter(unittest.TestCase):
-    def test_codex_notify_parsing_and_dispatch(self) -> None:
-        """codex/notify.py parses JSON payload and dispatches to notify.py."""
-        import codex.notify as codex_notify
-
+class TestCodexNotifyHandling(unittest.TestCase):
+    def test_notify_py_parses_codex_payload_flag(self) -> None:
+        """notify.py parses --codex-payload JSON and dispatches with Codex branding."""
         payload = json.dumps({
             "type": "agent-turn-complete",
             "thread-id": "123",
             "last-assistant-message": "Done with task",
         })
 
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0)
-            codex_notify.handle_notify([payload])
+        with patch("notify.dispatch_notification") as mock_dispatch:
+            notify.main(["--codex-payload", payload])
+            self.assertTrue(mock_dispatch.called)
+            kwargs = mock_dispatch.call_args[1]
+            self.assertEqual(kwargs["harness"], "Codex")
+            self.assertEqual(kwargs["title"], "Codex CLI")
+            self.assertEqual(kwargs["message"], "Done with task")
+            self.assertEqual(kwargs["event_type"], "completed")
 
-            self.assertTrue(mock_run.called)
-            args = mock_run.call_args[0][0]
-            self.assertIn("--harness", args)
-            self.assertIn("Codex", args)
-            self.assertIn("--message", args)
-            self.assertIn("Done with task", args)
-            self.assertIn("--type", args)
-            self.assertIn("completed", args)
+    def test_notify_py_auto_detects_positional_codex_json(self) -> None:
+        """notify.py auto-detects Codex agent-turn-complete JSON passed as positional arg."""
+        payload = json.dumps({
+            "type": "agent-turn-complete",
+            "thread-id": "456",
+            "last-assistant-message": "Finished analyzing repo",
+        })
+
+        with patch("notify.dispatch_notification") as mock_dispatch:
+            notify.main([payload])
+            self.assertTrue(mock_dispatch.called)
+            kwargs = mock_dispatch.call_args[1]
+            self.assertEqual(kwargs["harness"], "Codex")
+            self.assertEqual(kwargs["title"], "Codex CLI")
+            self.assertEqual(kwargs["message"], "Finished analyzing repo")
+            self.assertEqual(kwargs["event_type"], "completed")
 
     def test_codex_notify_fallback_on_invalid_payload(self) -> None:
-        """codex/notify.py falls back cleanly when payload is empty or invalid JSON."""
-        import codex.notify as codex_notify
-
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0)
-            codex_notify.handle_notify(["not-json"])
-
-            self.assertTrue(mock_run.called)
-            args = mock_run.call_args[0][0]
-            self.assertIn("--message", args)
-            self.assertIn("Task completed", args)
+        """parse_codex_payload falls back cleanly when payload is empty or invalid JSON."""
+        self.assertEqual(notify.parse_codex_payload(""), "Task completed")
+        self.assertEqual(notify.parse_codex_payload("not-json"), "Task completed")
+        self.assertEqual(
+            notify.parse_codex_payload('{"type": "agent-turn-complete"}'),
+            "Task completed",
+        )
 
 
 if __name__ == "__main__":

@@ -565,11 +565,6 @@ src = "claude/CORE_INSTRUCTIONS.md"
 dest = "~/.codex/AGENTS.md"
 harness = "codex"
 
-# Codex notification adapter for agent-turn-complete
-[[link]]
-src = "codex/notify.py"
-dest = "~/.codex/notify.py"
-harness = "codex"
 
 # Codex's USER-scope skills (~/.codex/skills/<name>/SKILL.md, sibling to the
 # bundled .system/ skills) are DELIBERATELY NOT [[link]] rows. CORRECTED
