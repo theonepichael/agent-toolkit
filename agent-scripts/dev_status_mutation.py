@@ -120,15 +120,45 @@ _PRIORITY_RANK = {"high": 0, "normal": 1, "low": 2}
 KNOWN_PROJECT_PREFIXES = ("iron-lb", "ajhp", "meta", "work")
 
 HARNESS_REPO = "dotfiles"
+"""The repo holding the harness itself.
+
+Named rather than assumed so anything needing "is this the harness?" -- a
+swarm deciding whether an item is safe for a worker, say -- derives it from
+one place instead of hardcoding the prefix a second time.
+"""
+
 REPO_PREFIXES: dict[str, str] = {
     "iron-logbook": "iron-lb",
     "agent-toolkit": "atk",
     "dotfiles": "meta",
     "ai-job-hunter-pro": "ajhp",
 }
+"""Repo directory name -> the slug prefix items targeting it should carry.
+
+A prefix names the repo an item targets, so a swarm scoped by prefix has an
+unambiguous signal for which items a worker may safely take: ``atk-`` work is
+ordinary code, while ``meta-`` work edits the harness the worker is itself
+running. ``meta-`` is the established name dotfiles goes by rather than a
+literal directory name -- the safety property needs the mapping to be
+one-to-one, which it is, not the label to be literal.
+
+Keyed on the repo's directory name, never an absolute path: this script also
+ships in agent-toolkit, where a hardcoded ``/home/<user>/...`` would be exactly
+the undocumented machine-dependent coupling that install contract removed.
+"""
+
 WORKER_SAFE_PREFIXES: frozenset[str] = frozenset(
     prefix for repo, prefix in REPO_PREFIXES.items() if repo != HARNESS_REPO
 )
+"""Prefixes a swarm worker may be given items under.
+
+A whitelist, not a blacklist. An unknown prefix is unsafe: `pi-` and
+`dotfiles-` are both real prefixes in the store and both name dotfiles work, so
+an "unsafe only if `meta-`" rule classed the harness's own backlog as
+swarmable. `work-` has its own policy and must never reach a swarm either.
+Defaulting unknown to unsafe makes a new project explicitly opt in by being
+added to :data:`REPO_PREFIXES`, which is one edit in one place.
+"""
 
 _HASHED_CONTENT_FIELDS = ("summary", "context", "next_steps", "related_files")
 _SHELL_BASENAMES = {"sh", "bash", "zsh", "dash", "ksh", "fish", "csh", "tcsh"}

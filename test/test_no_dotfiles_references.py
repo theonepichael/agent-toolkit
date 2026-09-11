@@ -55,7 +55,7 @@ ALLOWLIST: dict[str, tuple[str, ...]] = {
         "dotfiles/scripts/install-with-agent-",  # recompose-exemption comment
     ),
     # ── dev_status repo-name mapping (prefix map pins "dotfiles": "meta") ──
-    "agent-scripts/dev_status_impl.py": (
+    "agent-scripts/dev_status_mutation.py": (
         'HARNESS_REPO = "dotfiles"',  # the mapping constant itself
         '"dotfiles": "meta"',  # the prefix-map row
         "name dotfiles goes by",  # docstring explaining the meta- prefix

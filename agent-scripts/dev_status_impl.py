@@ -39,6 +39,11 @@ import dev_status_formatting
 import dev_status_storage
 import llm_backends
 from dev_status_mutation import (
+    HARNESS_REPO as HARNESS_REPO,
+)
+from dev_status_mutation import (
+    KNOWN_PROJECT_PREFIXES,
+    REPO_PREFIXES,
     UNSET,
     BacklogMutationError,
     GatePassRequest,
@@ -332,7 +337,6 @@ _COLORS = {
     "prio_low": "\x1b[2m",
     "dim": "\x1b[2m",
 }
-KNOWN_PROJECT_PREFIXES = ("iron-lb", "ajhp", "meta", "work")
 
 
 # ── data model ───────────────────────────────────────────────────────────────
@@ -783,49 +787,6 @@ def _project_divider(
     """Render a horizontal divider row for a project group within a section."""
     line = dev_status_formatting.project_divider(project, count, width)
     return _colorize(line, _COLORS["dim"], color) if color else line
-
-
-HARNESS_REPO = "dotfiles"
-"""The repo holding the harness itself.
-
-Named rather than assumed so anything needing "is this the harness?" -- a
-swarm deciding whether an item is safe for a worker, say -- derives it from
-one place instead of hardcoding the prefix a second time.
-"""
-
-REPO_PREFIXES: dict[str, str] = {
-    "iron-logbook": "iron-lb",
-    "agent-toolkit": "atk",
-    "dotfiles": "meta",
-    "ai-job-hunter-pro": "ajhp",
-}
-"""Repo directory name -> the slug prefix items targeting it should carry.
-
-A prefix names the repo an item targets, so a swarm scoped by prefix has an
-unambiguous signal for which items a worker may safely take: ``atk-`` work is
-ordinary code, while ``meta-`` work edits the harness the worker is itself
-running. ``meta-`` is the established name dotfiles goes by rather than a
-literal directory name -- the safety property needs the mapping to be
-one-to-one, which it is, not the label to be literal.
-
-Keyed on the repo's directory name, never an absolute path: this script also
-ships in agent-toolkit, where a hardcoded ``/home/<user>/...`` would be exactly
-the undocumented machine-dependent coupling that install contract removed.
-"""
-
-
-WORKER_SAFE_PREFIXES: frozenset[str] = frozenset(
-    prefix for repo, prefix in REPO_PREFIXES.items() if repo != HARNESS_REPO
-)
-"""Prefixes a swarm worker may be given items under.
-
-A whitelist, not a blacklist. An unknown prefix is unsafe: `pi-` and
-`dotfiles-` are both real prefixes in the store and both name dotfiles work, so
-an "unsafe only if `meta-`" rule classed the harness's own backlog as
-swarmable. `work-` has its own policy and must never reach a swarm either.
-Defaulting unknown to unsafe makes a new project explicitly opt in by being
-added to :data:`REPO_PREFIXES`, which is one edit in one place.
-"""
 
 
 def _serial_repo_name_for_path(path: str) -> str | None:
