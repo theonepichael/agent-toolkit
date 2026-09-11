@@ -43,6 +43,7 @@ FROZEN_SCRIPT_DESTS = frozenset(
         "dev_status_mutation.py",
         "dev_status_read.py",
         "dev_status_storage.py",
+        "dev_status_types.py",
         "bundle_drift_check.py",
         "gen_interfaces.py",
         "gen_second_opinion.py",
@@ -128,7 +129,7 @@ def test_links_toml_srcs_live_in_agent_scripts() -> None:
         if isinstance(entry.get("src"), str)
         and "~/.claude/scripts" in str(entry.get("dest", ""))
     ]
-    assert len(script_links) == 38, f"expected 38 script links, got {len(script_links)}"
+    assert len(script_links) == 40, f"expected 40 script links, got {len(script_links)}"
     bad = [
         entry["src"]
         for entry in script_links

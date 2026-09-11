@@ -147,6 +147,10 @@ dest = "~/.claude/scripts/dev_status_read.py"
 src = "agent-scripts/dev_status_mutation.py"
 dest = "~/.claude/scripts/dev_status_mutation.py"
 
+[[link]]
+src = "agent-scripts/dev_status_types.py"
+dest = "~/.claude/scripts/dev_status_types.py"
+
 
 [[link]]
 src = "agent-scripts/sessionstart_checks.py"
