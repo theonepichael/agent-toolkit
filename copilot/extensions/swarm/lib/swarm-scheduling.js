@@ -17,6 +17,73 @@ function staleWorkerRecords(state, live, now) {
     return now - began >= RECONCILE_MIN_AGE_MS;
   });
 }
+var SIDECAR_VERSION = 1;
+var FATAL_SIDECAR_RESULT = "fatal_error";
+function parseFatalSidecar(raw) {
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) return null;
+  const rec = parsed;
+  if (rec.v !== SIDECAR_VERSION) return null;
+  if (rec.result !== FATAL_SIDECAR_RESULT) return null;
+  if (typeof rec.stopReason !== "string") return null;
+  if (typeof rec.model !== "string") return null;
+  if (typeof rec.writtenAtMs !== "number" || !Number.isFinite(rec.writtenAtMs)) return null;
+  return {
+    v: SIDECAR_VERSION,
+    result: FATAL_SIDECAR_RESULT,
+    stopReason: rec.stopReason,
+    model: rec.model,
+    writtenAtMs: rec.writtenAtMs
+  };
+}
+function classifyOutcomeDraft(kind, witnesses) {
+  const base = {
+    sidecarProbed: witnesses.sidecarProbed,
+    ...witnesses.herdrStatus !== void 0 ? { herdrStatus: witnesses.herdrStatus } : {}
+  };
+  if (witnesses.sidecar) {
+    return { ...base, processResult: "fatal_error", evidence: "fatal_sidecar" };
+  }
+  if (witnesses.paneMatch === "fatal_sentinel") {
+    return { ...base, processResult: "unknown_crash", evidence: "pane_sentinel" };
+  }
+  if (witnesses.paneMatch === "provider_wording") {
+    return { ...base, processResult: "unknown_crash", evidence: "provider_wording" };
+  }
+  if (kind === "timed_out") {
+    return {
+      ...base,
+      processResult: "deadline_stopped",
+      evidence: witnesses.livenessConfirmed === false ? "no_observation" : "herdr_status"
+    };
+  }
+  if (kind === "error") {
+    return { ...base, processResult: "gone", evidence: "herdr_status" };
+  }
+  return {
+    ...base,
+    processResult: "settled_alive",
+    evidence: witnesses.paneRead ? "pane_clear" : "no_observation"
+  };
+}
+function appendOutcome(state, outcome) {
+  const outcomes = state.outcomes ?? [];
+  const at = outcomes.findIndex(
+    (o) => o.agent === outcome.agent && o.decidedAtMs === outcome.decidedAtMs
+  );
+  if (at >= 0) outcomes.splice(at, 1, outcome);
+  else outcomes.push(outcome);
+  state.outcomes = outcomes;
+  return outcomes;
+}
+function priorOutcome(state, agent) {
+  return (state.outcomes ?? []).find((o) => o.agent === agent);
+}
 var PROJECT_PREFIXES = ["iron-lb-", "meta-", "work-", "atk-"];
 function nextAgentId(runId, counter, slug) {
   const cleanSlug = slug ? slug.replace(/[^a-zA-Z0-9_-]/g, "") : "";
@@ -208,14 +275,18 @@ function spawnBudget(state, readyCount) {
 export {
   FATAL_ERROR_EXIT_SCAN_LINES,
   FATAL_ERROR_EXIT_TOKEN,
+  FATAL_SIDECAR_RESULT,
   PROJECT_PREFIXES,
   PROVIDER_CRASH_MAX_GAP,
   PROVIDER_CRASH_SCAN_LINES,
   RECONCILE_MIN_AGE_MS,
+  SIDECAR_VERSION,
   TERMINAL_AGENT_STATUSES,
   activeWorkerCount,
+  appendOutcome,
   canOpenNewPane,
   canSpawnNew,
+  classifyOutcomeDraft,
   fatalErrorExitMatch,
   isSuspiciousFinish,
   isTerminalAgentStatus,
@@ -223,10 +294,12 @@ export {
   nextAgentId,
   openPaneCount,
   openPaneSoftCap,
+  parseFatalSidecar,
   parseReadyItems,
   parseShownItem,
   pendingAmendCount,
   pendingAmendWorkers,
+  priorOutcome,
   providerCrashMatch,
   selectSchedulable,
   spawnBudget,

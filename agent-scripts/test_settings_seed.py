@@ -487,18 +487,21 @@ class InstallAliasTests(unittest.TestCase):
 
     ALIASES = (
         "json_key_drift",
-        "_BYPASS_BASH_PATTERNS",
         "opencode_bypass_drift",
+        "describe_settings_drift",
+        "describe_opencode_drift",
+        "describe_vscode_drift",
+        "seed_file",
+    )
+
+    RETIRED_PRIVATE_ALIASES = (
+        "_BYPASS_BASH_PATTERNS",
         "_bash_permissions",
         "_load_json_pair_text",
         "_describe_settings_text",
         "_describe_opencode_text",
         "_describe_vscode_text",
-        "describe_settings_drift",
-        "describe_opencode_drift",
-        "describe_vscode_drift",
         "_load_json_pair",
-        "seed_file",
         "_adopt_seed",
         "_normalize_seed_text",
         "_adopt_git_reason",
@@ -512,6 +515,12 @@ class InstallAliasTests(unittest.TestCase):
 
         missing = [name for name in self.ALIASES if not hasattr(install, name)]
         self.assertEqual(missing, [])
+
+    def test_retired_private_aliases_not_reexported(self) -> None:
+        import install  # noqa: PLC0415 — needs repo root on sys.path
+
+        present = [name for name in self.RETIRED_PRIVATE_ALIASES if hasattr(install, name)]
+        self.assertEqual(present, [])
 
     def test_alias_bodies_identical_to_module_functions(self) -> None:
         import install  # noqa: PLC0415 — needs repo root on sys.path

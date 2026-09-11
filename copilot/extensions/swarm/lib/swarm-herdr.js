@@ -279,6 +279,13 @@ function amendAckPath(captureFile) {
   if (replaced !== base) return join(dir, replaced);
   return join(dir, `${base}.amend-ack.json`);
 }
+function outcomePath(captureFile) {
+  const dir = dirname(captureFile);
+  const base = basename(captureFile);
+  const replaced = base.replace("-capture-", "-outcome-");
+  if (replaced !== base) return join(dir, replaced);
+  return join(dir, `${base}.outcome.json`);
+}
 function parseAmendAck(raw) {
   try {
     const parsed = JSON.parse(raw);
@@ -350,6 +357,7 @@ export {
   classifyWaitResult,
   deadlineStopDetail,
   findTabByLabel,
+  outcomePath,
   paneIdentityMismatch,
   parseAgentList,
   parseAgentListIds,

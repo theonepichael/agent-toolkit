@@ -22,7 +22,7 @@ supply the machine facts (platform booleans, harnesses, profile) and get
 findings back as plain data.
 
 Interface preserved for existing callers: install.py re-exports every moved
-name (``install.CHECK_BUCKETS``, ``install._implied_repo_root``, ...), so
+name (``install.CHECK_BUCKETS``, ``install.audit_links``, ...), so
 tests and callers resolve them through ``install`` exactly as before.
 
 std library only; Python 3.12+. See ``test_link_inspect.py`` beside this
@@ -37,6 +37,8 @@ import tomllib
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+
+import harness_spec
 
 # ── links.toml row schema ─────────────────────────────────────────────────────
 
@@ -170,7 +172,7 @@ def is_main_checkout(root: Path) -> bool:
 
 # ── links.toml scope constants ───────────────────────────────────────────
 
-VALID_HARNESSES = ("claude", "copilot", "opencode", "agy", "pi", "codex")
+VALID_HARNESSES = harness_spec.ALL_NAMES
 VALID_PROFILES = ("personal", "work")
 DEFAULT_PROFILE = "personal"
 

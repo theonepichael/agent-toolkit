@@ -235,6 +235,10 @@ src = "agent-scripts/harness_discovery_check.py"
 dest = "~/.claude/scripts/harness_discovery_check.py"
 
 [[link]]
+src = "agent-scripts/harness_spec.py"
+dest = "~/.claude/scripts/harness_spec.py"
+
+[[link]]
 src = "agent-scripts/link_drift_check.py"
 dest = "~/.claude/scripts/link_drift_check.py"
 
@@ -564,6 +568,7 @@ harness = "agy"
 src = "claude/CORE_INSTRUCTIONS.md"
 dest = "~/.codex/AGENTS.md"
 harness = "codex"
+
 
 # Codex's USER-scope skills (~/.codex/skills/<name>/SKILL.md, sibling to the
 # bundled .system/ skills) are DELIBERATELY NOT [[link]] rows. CORRECTED

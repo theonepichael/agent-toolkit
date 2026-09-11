@@ -9,26 +9,34 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 import {
+  appendOutcome,
   canOpenNewPane,
   canSpawnNew,
+  classifyOutcomeDraft,
   fatalErrorExitMatch,
   isSuspiciousFinish,
   itemPaths,
   nextAgentId,
   openPaneCount,
   openPaneSoftCap,
+  parseFatalSidecar,
   parseReadyItems,
   parseShownItem,
   pendingAmendWorkers,
+  priorOutcome,
   providerCrashMatch,
   selectSchedulable,
   spawnBudget,
   staleWorkerRecords,
   stalledRelayWorkers,
+  type BacklogRead,
+  type FatalSidecar,
   type ReadyItem,
   type ExecutionMode,
+  type OutcomeDraft,
   type PendingAmend,
   type SwarmState,
+  type WorkerOutcome,
   type WorkerRecord,
 } from "./swarm-scheduling";
 import {
@@ -61,6 +69,7 @@ import {
   classifyWaitResult,
   deadlineStopDetail,
   findTabByLabel,
+  outcomePath,
   paneIdentityMismatch,
   parseAgentList,
   parseAgentSession,
@@ -132,6 +141,55 @@ export function capturePath(
   return join(stateDir, `swarm-${safeRun}-capture-${safeSlug}.json`);
 }
 
+/**
+ * Where a given worker's death certificate lives -- the orchestrator's side of
+ * the derivation `fatal-error-exit.ts` performs from `PI_SWARM_CAPTURE_FILE`.
+ * The two are bound by a test in `pi/test/fatal-error-exit.test.ts`, in the
+ * same way the sentinel literal is.
+ */
+export function outcomePathOf(
+  runId: string,
+  slug: string,
+  stateDir: string = herdrStateDir(),
+): string {
+  return outcomePath(capturePath(runId, slug, stateDir));
+}
+
+/**
+ * Read and strictly parse a worker's death certificate. `null` means ABSENT --
+ * unreadable, unparseable, or failing the strict contract -- which is never an
+ * error and never a verdict.
+ *
+ * Non-deleting on purpose: both `settleWait` (to classify, and to refuse to
+ * hold a dead worker for an amendment it can no longer read) and the harvest
+ * (to carry the value into the ledger before the file is deleted) need to look
+ * at the same file. Only the harvest deletes.
+ */
+export function readFatalSidecar(path: string): FatalSidecar | null {
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch {
+    return null;
+  }
+  return parseFatalSidecar(raw);
+}
+
+/**
+ * The human-facing headline for a worker-observed fatal settle, in the same
+ * append-only style as the two pane branches it outranks. `swarm_poll` renders
+ * `content[0].text` from `event.detail`, so a classification that lived only in
+ * `details.outcome` would surface to the orchestrator as a bare `error`.
+ */
+export function fatalSidecarDetail(sidecar: FatalSidecar): string {
+  return (
+    `fatal_error_sidecar: the worker recorded its own fatal settle before exiting ` +
+    `(stopReason=${sidecar.stopReason}, model=${sidecar.model}). This is the worker's own ` +
+    `statement, not an inference from pane text. ` +
+    "Verify the item's actual state before treating it as complete."
+  );
+}
+
 export function readAmendAck(path: string): AmendAckPayload | null {
   let raw: string;
   try {
@@ -185,6 +243,26 @@ export function readCaptureOffers(
   } catch {
     return [];
   }
+}
+
+/**
+ * One-line rendering of a reconciled outcome, for `swarm_poll`'s text.
+ *
+ * `swarm_poll`'s human-facing line is built from `event.detail`, so an outcome
+ * that existed only in `details.events` would be invisible to the orchestrator
+ * model that has to write the digest -- which is how "outcome inferred, not
+ * observed" became acceptable prose in the first place. Rendering it keeps the
+ * typed field authoritative and the text honest about its source: note that
+ * `evidence` is printed, because "what told us" is the whole point of the field.
+ */
+export function renderOutcome(outcome: WorkerOutcome): string {
+  const parts = [`outcome=${outcome.processResult}/${outcome.evidence}`];
+  if (outcome.backlogStatus !== undefined) {
+    parts.push(`backlog=${outcome.backlogStatus}`);
+  } else if (outcome.backlogRead !== "ok") {
+    parts.push(`backlog=${outcome.backlogRead}`);
+  }
+  return `[${parts.join(" ")}]`;
 }
 
 export function renderCaptureOffers(offers: CaptureOffer[]): string {
@@ -339,6 +417,23 @@ export interface PollEvent {
   detail?: string;
   elapsedMs?: number;
   checkIn?: number;
+  /**
+   * The reconciled outcome, present on every terminal event.
+   *
+   * Carried structurally so the orchestrator's end-of-run digest is a typed
+   * column per item rather than prose scraped out of `detail` -- and so the
+   * observation survives in the run's state file, where a restart can read it
+   * back.
+   */
+  outcome?: WorkerOutcome;
+  /**
+   * Set by the classification that happened upstream of the teardown, consumed
+   * by `recordOutcome`, which adds the independent backlog read and writes the
+   * ledger row. Split because classification happens in `settleWait` -- where
+   * the certificate and the pane still exist -- while recording happens in
+   * `swarmPoll`, where the removal is batched.
+   */
+  outcomeDraft?: OutcomeDraft;
 }
 
 type SpawnOutcome =
@@ -501,12 +596,29 @@ export class SwarmToolContext {
     return (await this.harvestWorkerIOWithStatus(state, worker, signal)).offers;
   }
 
+  /**
+   * The I/O half of tearing a worker down: read its queued capture offers and
+   * its death certificate, close it in herdr, then delete both sidecar files.
+   * The certificate is returned so the caller can still use the value after the
+   * file is gone, and is read BEFORE `closeWorker`.
+   *
+   * Does NOT touch state.workers or persist -- callers that process several
+   * workers at once (swarmPoll's event loop) run this in parallel across
+   * workers, then remove them from state.workers in one batch afterward, since
+   * concurrent per-worker filter-and-reassign calls on the same array would
+   * race.
+   *
+   * The read is gated on the host kind: a Copilot worker has no pi to run the
+   * writer, so probing for a certificate it could never have would let an
+   * outcome claim an absence that was never tested.
+   */
   private async harvestWorkerIOWithStatus(
     state: SwarmState,
     worker: WorkerRecord,
     signal?: AbortSignal,
-  ): Promise<{ offers: CaptureOffer[]; closed: boolean }> {
+  ): Promise<{ offers: CaptureOffer[]; closed: boolean; sidecar: FatalSidecar | null }> {
     const offers = readCaptureOffers(state.runId, worker.slug, this.stateDir);
+    const sidecar = this.kind === "pi" ? this.readSidecar(state, worker) : null;
     let closed = await this.closeWorker(worker, signal);
     if (!closed && (state.mode ?? "concurrent") === "serial") {
       try {
@@ -529,8 +641,163 @@ export class SwarmToolContext {
     } catch {
       // Best effort
     }
+    try {
+      // Unconditional across kinds on purpose: for a Copilot worker nothing
+      // exists at this path, `force: true` makes that a no-op, and it is
+      // cheaper than a second branch that must stay in sync with the read gate.
+      rmSync(outcomePathOf(state.runId, worker.slug, this.stateDir), { force: true });
+    } catch {
+      // Best effort
+    }
     this.unlinkWorkerAmendAck(state.runId, worker.slug);
-    return { offers, closed };
+    return { offers, closed, sidecar };
+  }
+
+  /** The certificate for one worker, or `null` when there is nothing to trust. */
+  private readSidecar(state: SwarmState, worker: WorkerRecord): FatalSidecar | null {
+    return this.sidecarForRun(state.runId, worker.slug);
+  }
+
+  /**
+   * Merge the classification made upstream (which saw the pane) with the
+   * certificate the harvest returned (which the upstream site may not have been
+   * able to read yet), then apply the pessimism rule.
+   *
+   * A certificate present at harvest but absent from the upstream draft upgrades
+   * the result -- the worker stated a death, and that outranks any inference.
+   * The reverse never happens: an upstream `fatal_error` is never softened, so
+   * this cannot turn a pessimistic classification optimistic and no ordering
+   * between the two sites can produce a contradiction.
+   */
+  private draftWithSidecar(
+    draft: OutcomeDraft | undefined,
+    kind: PollEventKind,
+    sidecar: FatalSidecar | null,
+  ): OutcomeDraft {
+    const terminal = kind === "finished" || kind === "error" || kind === "timed_out";
+    const fallback = classifyOutcomeDraft(terminal ? kind : "error", {
+      sidecar,
+      sidecarProbed: this.kind === "pi",
+      paneMatch: null,
+      paneRead: false,
+    });
+    if (!draft) return fallback;
+    if (sidecar && draft.evidence !== "fatal_sidecar") {
+      return { ...draft, processResult: "fatal_error", evidence: "fatal_sidecar" };
+    }
+    return draft;
+  }
+
+  /**
+   * The certificate by run/slug, so `settleWait` can consult it without holding
+   * a state reference. Returns `null` WITHOUT touching the filesystem for a
+   * Copilot host: a worker with no pi to run the writer has no certificate to
+   * be absent, and recording an absence that was never tested would be exactly
+   * the kind of claim this item is here to stop making.
+   */
+  private sidecarForRun(runId: string, slug: string): FatalSidecar | null {
+    if (this.kind !== "pi") return null;
+    return readFatalSidecar(outcomePathOf(runId, slug, this.stateDir));
+  }
+
+  /**
+   * Turn a classification into a persisted ledger row: the ONLY place a
+   * reconciled outcome is written, so every teardown path -- including the three
+   * that never ran `dev_status.py show` at all before this -- produces a row
+   * with a real backlog column instead of a blank one.
+   *
+   * The independent read is part of assembly rather than a later pass because
+   * the ledger append has to land before the removal filter, so the existing
+   * single `persist(state)` writes it. A re-reconciliation of the same worker
+   * (serial `teardown_ambiguous`, met again on a later poll) reuses the
+   * ORIGINAL `decidedAtMs`: re-stamping it would make every pass a distinct
+   * dedup key and grow the ledger without bound while the queue is stuck.
+   */
+  private async recordOutcome(
+    state: SwarmState,
+    worker: WorkerRecord,
+    draft: OutcomeDraft,
+    captureCount: number,
+    signal?: AbortSignal,
+    event?: PollEvent,
+  ): Promise<WorkerOutcome> {
+    const backlog = await this.readBacklogStatus(worker.slug, signal);
+    const prior = worker.outcome ?? priorOutcome(state, worker.agent);
+    const verification: string[] = [];
+    // Absence-of-progress is a NOTE on the outcome, never a gate on writing it.
+    // The pass this replaces returned early whenever the event already carried a
+    // detail, so an amend verdict or a pane-unavailable note silently suppressed
+    // the cross-check that this module's own comments call an independent check.
+    if (isSuspiciousFinish(backlog.status, captureCount)) {
+      verification.push(
+        `dev_status.py still shows status ${JSON.stringify(backlog.status)} and zero captures ` +
+          "were queued during this run -- verify the item's actual state before treating " +
+          "this as complete.",
+      );
+    }
+    if (backlog.read !== "ok") {
+      verification.push(
+        backlog.read === "unparsed"
+          ? "dev_status.py show answered, but its output did not parse; backlog state unknown."
+          : "dev_status.py show did not answer; backlog state unknown.",
+      );
+    }
+    // The note is recorded AND mirrored into `event.detail`. Moving it purely to
+    // the typed field would have dropped a signal three existing tests guard:
+    // `swarm_poll`'s text is built from `detail`, so an orchestrator model that
+    // never inspects `details.events` would stop seeing the warning. Fixing the
+    // suppression bug meant changing WHEN the check runs, not removing the
+    // channel it speaks on.
+    if (event && verification.length > 0) {
+      event.detail = `${event.detail ? `${event.detail} ` : ""}${verification.join(" ")}`;
+    }
+    const notes = [draft.note, ...verification].filter((n): n is string => Boolean(n));
+    const outcome: WorkerOutcome = {
+      runId: state.runId,
+      agent: worker.agent,
+      slug: worker.slug,
+      kind: this.kind,
+      processResult: draft.processResult,
+      evidence: draft.evidence,
+      sidecarProbed: draft.sidecarProbed,
+      ...(draft.herdrStatus !== undefined ? { herdrStatus: draft.herdrStatus } : {}),
+      ...(backlog.status !== undefined ? { backlogStatus: backlog.status } : {}),
+      backlogRead: backlog.read,
+      decidedAtMs: prior?.decidedAtMs ?? Date.now(),
+      ...(notes.length > 0 ? { note: notes.join(" ") } : {}),
+    };
+    worker.outcome = outcome;
+    appendOutcome(state, outcome);
+    return outcome;
+  }
+
+  /**
+   * The orchestrator's own read of the item's backlog status, independent of
+   * anything the worker claims.
+   *
+   * Three results, because the code this replaces collapsed all three into
+   * silence: a nonzero exit, output that will not parse, and a thrown exec call
+   * are different facts, and "the subprocess failed" must not read as "the item
+   * has no status".
+   */
+  private async readBacklogStatus(
+    slug: string,
+    signal?: AbortSignal,
+  ): Promise<{ status?: string; read: BacklogRead }> {
+    let result: ExecResult;
+    try {
+      result = await this.exec("python3", buildShowArgv(slug).slice(1), {
+        signal,
+        timeout: PROBE_TIMEOUT_MS,
+      });
+    } catch {
+      return { read: "failed" };
+    }
+    if (result.code !== 0) return { read: "failed" };
+    const shown = parseShownItem(result.stdout);
+    if (shown === null) return { read: "unparsed" };
+    const status = typeof shown.status === "string" ? shown.status : undefined;
+    return { status, read: status === undefined ? "unparsed" : "ok" };
   }
 
   public async teardownAndHarvestWorker(
@@ -547,6 +814,27 @@ export class SwarmToolContext {
     } else {
       state.workers = state.workers.filter((w) => w.agent !== worker.agent);
     }
+    // Recorded here too, so a worker torn down by a failed relay -- a path that
+    // never passes a settle and so has no classification from anywhere else --
+    // still gets a ledger row with a backlog column instead of vanishing from
+    // the run's record entirely.
+    await this.recordOutcome(
+      state,
+      worker,
+      {
+        ...classifyOutcomeDraft("error", {
+          sidecar: teardown.sidecar,
+          sidecarProbed: this.kind === "pi",
+          paneMatch: null,
+          paneRead: false,
+        }),
+        note:
+          "torn down without a settled outcome -- the worker was closed by an explicit " +
+          "teardown (a relay that could not be answered), not by anything it reported.",
+      },
+      teardown.offers.length,
+      signal,
+    );
     this.persist(state);
     return teardown.offers;
   }
@@ -577,11 +865,30 @@ export class SwarmToolContext {
           w.lifecycle = "teardown_ambiguous";
           w.teardownDetail = this.teardownRecovery(w);
         }
+        // A certificate found on this path converts "inferred, not observed"
+        // into an observed fatal error, which is the whole point of recording
+        // the outcome where the observation was made rather than where the
+        // prose is assembled. Appended before prune's own single persist.
+        const pruneDraft = classifyOutcomeDraft(entry === undefined ? "error" : "finished", {
+          sidecar: teardown.sidecar,
+          sidecarProbed: this.kind === "pi",
+          paneMatch: null,
+          paneRead: false,
+          ...(status === undefined ? {} : { herdrStatus: status }),
+        });
+        await this.recordOutcome(state, w, pruneDraft, offers.length);
         const line =
           `${w.agent} (${w.slug}): stale worker record cleared -- herdr reports its agent ${
             status ?? "gone"
-          } (finished or dead), but its finish was never reported through ` +
-          "swarm_poll; outcome inferred, not observed. Verify the item's state before " +
+          } (finished or dead), but its finish was never reported through swarm_poll; ` +
+          // The sentence used to be unconditional, which was honest only because
+          // nothing on this path could do better. A certificate read here IS an
+          // observation, so claiming inference over it would understate what is
+          // known -- and the digest line is what a human reads.
+          (pruneDraft.evidence === "fatal_sidecar"
+            ? "outcome observed from the worker's own death certificate"
+            : "outcome inferred, not observed") +
+          ". Verify the item's state before " +
           `treating it as complete.${
             // This path reaches a close without ever passing a settle, so an
             // outstanding amendment dies here. Closing anyway is correct -- a
@@ -913,19 +1220,38 @@ export class SwarmToolContext {
       for (const w of dropped) {
         const teardown = await this.harvestWorkerIOWithStatus(loaded, w);
         const offers = [...(w.terminalCaptures ?? []), ...teardown.offers];
+        const draft = classifyOutcomeDraft("error", {
+          sidecar: teardown.sidecar,
+          sidecarProbed: this.kind === "pi",
+          paneMatch: null,
+          paneRead: false,
+        });
+        // Appended to `reconciled`, not `loaded`: these records are already out
+        // of `reconciled.workers`, so `worker.outcome` alone would be written to
+        // an object that no longer survives -- which is precisely why the ledger
+        // exists. The saveState above ran BEFORE this loop, so it is repeated
+        // after it rather than trusted to have covered these rows.
+        const outcome = await this.recordOutcome(reconciled, w, draft, offers.length);
         rt.pendingEvents.push({
           kind: "error",
           agent: w.agent,
           slug: w.slug,
           paneId: w.paneId,
           captures: offers,
+          outcome,
           detail:
             `reconcile: agent gone from herdr between polls -- worker process vanished; ` +
-            `outcome inferred, not observed. Verify the item's state before treating it as complete.${
-              w.pendingAmend ? ` ${amendOutstandingNote(w.pendingAmend, Date.now())}` : ""
-            }`,
+            (outcome.evidence === "fatal_sidecar"
+              ? "the worker's own death certificate says why: a fatal settle, not a clean " +
+                "finish. Verify the item's state before treating it as complete."
+              : "outcome inferred, not observed. Verify the item's state before treating it as " +
+                "complete.") +
+            `${w.pendingAmend ? ` ${amendOutstandingNote(w.pendingAmend, Date.now())}` : ""}`,
         });
       }
+      // The saveState above ran before this loop, so these ledger rows would be
+      // lost without a second one.
+      saveState(reconciled, this.stateDir);
     }
 
     return reconciled;
@@ -1235,6 +1561,9 @@ export class SwarmToolContext {
       // one. Fail-safe: an unparseable/absent status reads `undefined`, which the
       // screen treats as "no proof of life" rather than "alive".
       let settleStatus = parseAgentStatus(result.stdout);
+      // Carried out of the timeout branch so the outcome can say whether liveness
+      // was actually confirmed before a stop, rather than implying it was.
+      let livenessConfirmed: boolean | undefined;
       let detail =
         kind === "timed_out" || kind === "error"
           ? waitResultDetail(result.stdout, result.stderr)
@@ -1282,6 +1611,7 @@ export class SwarmToolContext {
         // truth about status -- not the timeout envelope above, which carries no
         // agent at all.
         settleStatus = parseAgentStatus(probe.stdout);
+        livenessConfirmed = verdict.livenessConfirmed === true;
         detail =
           kind === "timed_out"
             ? deadlineStopDetail(worker, rt.deadlineMs, {
@@ -1295,6 +1625,22 @@ export class SwarmToolContext {
               : undefined;
       }
 
+      // The worker's own statement outranks every external witness, and it is
+      // read HERE -- before the amend-hold branch below -- deliberately. A
+      // worker that fatal-exited with a correction in flight used to be held
+      // through up to AMEND_ACK_MAX_CHECKS ack watches against a process that
+      // had already exited 1, because the `rearm` branch of that path runs no
+      // crash check at all; it then surfaced as a generic "worker vanished",
+      // which both wasted the window and reported the wrong fact. Flipping the
+      // kind here means the hold is never armed for a dead worker: the fatal
+      // evidence outranks it, exactly as a pane crash already outranks it in the
+      // branch that DID screen.
+      const sidecar = kind === "blocked" ? null : this.sidecarForRun(rt.runId, worker.slug);
+      if (kind === "finished" && sidecar) {
+        kind = "error";
+        detail = `${fatalSidecarDetail(sidecar)}${detail ? ` ${detail}` : ""}`;
+      }
+
       // A correction is in flight for this worker. Its turn may not have begun
       // yet, so this settle is not evidence of anything -- holding it is the
       // entire point, because the alternative is closing the tab with the
@@ -1302,12 +1648,16 @@ export class SwarmToolContext {
       // reach the orchestrator for relay or the run deadlocks on a picker
       // nobody will answer.
       const pending = worker.pendingAmend;
+      let paneMatch: "fatal_sentinel" | "provider_wording" | null = null;
+      let paneRead = false;
       if (pending && kind === "finished") {
         const decision = this.amendHoldDecision(rt, worker, pending, result.stdout);
         if (decision.event) {
           event = decision.event;
           // A crash outranks the hold: the correction died with the worker.
-          await this.screenFinishedForCrash(event, worker, settleStatus);
+          const screened = await this.screenFinishedForCrash(event, worker, settleStatus);
+          paneMatch = screened.match;
+          paneRead = screened.read;
         } else {
           rearmAfter = decision.rearm ?? null;
           event = null;
@@ -1315,8 +1665,14 @@ export class SwarmToolContext {
       } else {
         event = { kind, agent: worker.agent, slug: worker.slug, paneId: worker.paneId };
         if (detail !== undefined) event.detail = detail;
-        if (kind === "finished") {
-          await this.screenFinishedForCrash(event, worker, settleStatus);
+        if (kind === "finished" && !sidecar) {
+          // Only when the worker said nothing. A certificate is strictly better
+          // evidence than a bounded scan of the pane's last lines, and running
+          // the screen anyway would let a heuristic have an opinion about an
+          // event the process had already explained.
+          const screened = await this.screenFinishedForCrash(event, worker, settleStatus);
+          paneMatch = screened.match;
+          paneRead = screened.read;
         }
         if (pending && (kind === "error" || kind === "timed_out")) {
           // Never suppress these, but never let them read as a clean end either:
@@ -1324,6 +1680,19 @@ export class SwarmToolContext {
           event.detail =
             `${event.detail ?? ""} ${amendOutstandingNote(pending, Date.now())}`.trim();
         }
+      }
+      if (
+        event &&
+        (event.kind === "finished" || event.kind === "error" || event.kind === "timed_out")
+      ) {
+        event.outcomeDraft = classifyOutcomeDraft(event.kind, {
+          sidecar,
+          sidecarProbed: this.kind === "pi",
+          paneMatch,
+          paneRead,
+          ...(settleStatus !== undefined ? { herdrStatus: settleStatus } : {}),
+          ...(livenessConfirmed === undefined ? {} : { livenessConfirmed }),
+        });
       }
     } catch (err) {
       event = {
@@ -1405,14 +1774,19 @@ export class SwarmToolContext {
    * verification note. An unreadable or empty pane never reclassifies the finish
    * -- the wait settled cleanly, so an inconclusive probe must not manufacture
    * an error -- but it is no longer silent about it.
+   *
+   * Returns what was actually observed, because the outcome ledger has to say
+   * "the pane was read and said nothing" differently from "nothing could be
+   * read": the first is evidence of absence, the second is absence of evidence,
+   * and collapsing them would hide the exact case these screens exist for.
    */
   private async screenFinishedForCrash(
     event: PollEvent,
     worker: WorkerRecord,
     settleStatus: string | undefined,
     signal?: AbortSignal,
-  ): Promise<void> {
-    if (event.kind !== "finished") return;
+  ): Promise<{ read: boolean; match: "fatal_sentinel" | "provider_wording" | null }> {
+    if (event.kind !== "finished") return { read: false, match: null };
     let pane: string | null;
     try {
       const read = await this.herdr(buildPaneReadArgv(worker.paneId, PANE_CAPTURE_LINES), signal);
@@ -1422,7 +1796,7 @@ export class SwarmToolContext {
     }
     if (pane === null || pane.trim() === "") {
       event.detail = `${event.detail ? `${event.detail} ` : ""}pane capture unavailable at settle -- verify the item's state before treating it as complete.`;
-      return;
+      return { read: false, match: null };
     }
     if (settleStatus !== "idle") {
       const fatal = fatalErrorExitMatch(pane);
@@ -1434,17 +1808,18 @@ export class SwarmToolContext {
           `not a clean finish. Excerpt: "${fatal.excerpt}". ` +
           "Verify the item's actual state before treating it as complete." +
           (event.detail ? ` ${event.detail}` : "");
-        return;
+        return { read: true, match: "fatal_sentinel" };
       }
     }
     const crash = providerCrashMatch(pane);
-    if (!crash) return;
+    if (!crash) return { read: true, match: null };
     event.kind = "error";
     event.detail =
       `provider_crash: pane matched "${crash.signature}" near the idle prompt -- ` +
       `the worker most likely died under a provider limit, not a clean finish. ` +
       `Excerpt: "${crash.excerpt}". Verify the item's actual state before treating it as complete.` +
       (event.detail ? ` ${event.detail}` : "");
+    return { read: true, match: "provider_wording" };
   }
 
   public async swarmSpawn(params: {
@@ -1573,6 +1948,17 @@ export class SwarmToolContext {
       const tabs: { slug: string; created: { paneId: string; tabId: string } }[] = [];
       for (const slug of toSpawn) {
         const captureFile = capturePath(state.runId, slug, this.stateDir);
+        // Drop any death certificate an earlier generation left at this path
+        // BEFORE the tab exists, so a file this worker never wrote cannot vouch
+        // for what this worker did. Mirrors swarmAmend's unlink-before-the-action
+        // that produces a fresh ack. Unconditional across kinds: a Copilot worker
+        // has nothing there, and `force: true` makes that a no-op cheaper than a
+        // branch that has to stay in sync with the read gate.
+        try {
+          rmSync(outcomePathOf(state.runId, slug, this.stateDir), { force: true });
+        } catch {
+          // Best effort
+        }
         const tabCreated = await this.herdr(
           buildTabCreateArgv(process.cwd(), slug, { captureFile, kind: this.kind }),
         );
@@ -1863,6 +2249,14 @@ export class SwarmToolContext {
             // Removal happens once, in a single batch, after this Promise.all.
             const teardown = await this.harvestWorkerIOWithStatus(state, worker, signal);
             event.captures = teardown.offers;
+            event.outcome = await this.recordOutcome(
+              state,
+              worker,
+              this.draftWithSidecar(event.outcomeDraft, event.kind, teardown.sidecar),
+              teardown.offers.length,
+              signal,
+              event,
+            );
             if ((state.mode ?? "concurrent") === "serial" && !teardown.closed) {
               worker.lifecycle = "teardown_ambiguous";
               worker.terminalOutcome = event.kind;
@@ -1908,6 +2302,20 @@ export class SwarmToolContext {
         } else {
           const teardown = await this.harvestWorkerIOWithStatus(state, worker, signal);
           event.captures = teardown.offers;
+          // The classification was made upstream in `settleWait`, where the pane
+          // and the certificate still existed; the harvest's copy of the
+          // certificate is what survives the delete. Merging them here means the
+          // ledger row records the observation that was actually made, and an
+          // event that never passed a settle still gets a real draft rather than
+          // a blank one.
+          event.outcome = await this.recordOutcome(
+            state,
+            worker,
+            this.draftWithSidecar(event.outcomeDraft, event.kind, teardown.sidecar),
+            teardown.offers.length,
+            signal,
+            event,
+          );
           if ((state.mode ?? "concurrent") === "serial" && !teardown.closed) {
             worker.lifecycle = "teardown_ambiguous";
             worker.terminalOutcome = event.kind;
@@ -1927,29 +2335,14 @@ export class SwarmToolContext {
     }
     this.persist(state);
 
-    await Promise.all(
-      events
-        .filter((e) => e.kind === "finished")
-        .map(async (event) => {
-          try {
-            const result = await this.exec("python3", buildShowArgv(event.slug).slice(1), {
-              signal,
-              timeout: PROBE_TIMEOUT_MS,
-            });
-            if (result.code !== 0) return;
-            const shown = parseShownItem(result.stdout);
-            if (shown === null || event.detail !== undefined) return;
-            if (isSuspiciousFinish(shown.status, (event.captures ?? []).length)) {
-              event.detail =
-                `dev_status.py still shows status ${JSON.stringify(shown.status)} and zero ` +
-                "captures were queued during this run -- verify the item's actual state " +
-                "before treating this as complete.";
-            }
-          } catch {
-            // Inconclusive
-          }
-        }),
-    );
+    // The independent backlog read used to live HERE, after the removal, as a
+    // separate pass over `finished` events -- and it returned early on
+    // `event.detail !== undefined`, so any event that already carried a detail
+    // (an amend verdict, a pane-unavailable note) had its progress cross-check
+    // silently skipped, even though this module's own comments insist the two
+    // checks are independent. It is now part of `recordOutcome`, inside the
+    // per-event pass above: every terminal event gets a backlog column, and the
+    // ledger row is written before the record it describes is filtered out.
 
     const stalled = stalledRelayWorkers(state.workers, Date.now(), rt.stallMs);
     const stalledNote = stalled.length
@@ -1990,7 +2383,10 @@ export class SwarmToolContext {
                       return `${e.slug} (${e.agent}) still_working -- check-in ${e.checkIn}, ${formatDuration(e.elapsedMs ?? 0)} of working time so far against a ${formatDuration(rt.deadlineMs)} budget. Nothing settled and no slot was freed; poll again.`;
                     }
                     const captures = renderCaptureOffers(e.captures ?? []);
-                    return `${e.slug} (${e.agent}) ${e.kind}${e.detail ? `: ${e.detail}` : ""}${captures}`;
+                    const outcome = e.outcome ? ` ${renderOutcome(e.outcome)}` : "";
+                    return `${e.slug} (${e.agent}) ${e.kind}${
+                      e.detail ? `: ${e.detail}` : ""
+                    }${outcome}${captures}`;
                   })
                   .join("\n\n")
               : "No active workers to poll.") +

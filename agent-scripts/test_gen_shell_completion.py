@@ -6,6 +6,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).parent))
 from gen_shell_completion import (
     HARNESSES,
+    HarnessAdapter,
     HarnessSpec,
     Option,
     _split_entry,
@@ -20,6 +21,12 @@ from gen_shell_completion import (
 
 
 class TestGenShellCompletion(unittest.TestCase):
+    def test_harness_adapter_alias_and_dataclass(self):
+        self.assertIs(HarnessSpec, HarnessAdapter)
+        adapter = HarnessAdapter(cli="mycli", format="commander")
+        self.assertEqual(adapter.cli, "mycli")
+        self.assertEqual(adapter.format, "commander")
+
     def test_split_name_and_placeholder_bracket(self):
         name, ph = _split_name_and_placeholder("--allow-tool[=tools...]")
         self.assertEqual(name, "--allow-tool")

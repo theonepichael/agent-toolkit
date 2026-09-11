@@ -7,20 +7,23 @@ terminal sessions.
 
 Usage:
     notify.py [message] [flags]
+    notify.py --codex-payload <json_string>
 
 Flags:
-    --title, -t     Notification title (default: "Agent Notification")
-    --message, -m   Notification body text (or passed as positional argument)
-    --harness, -H   Originating harness name (e.g. Claude, Pi, AGY, OpenCode, Copilot)
-    --icon, -i      Path or name of custom icon
-    --urgency, -u   Urgency level: low, normal, critical (default: normal)
-    --type          Event type: completed, waiting_for_input, error (default: completed)
-    --quiet, -q     Suppress non-essential output
-    --verbose, -v   Emit extra diagnostic messages to stderr
+    --title, -t         Notification title (default: "Agent Notification")
+    --message, -m       Notification body text (or passed as positional argument)
+    --harness, -H       Originating harness name (e.g. Claude, Pi, AGY, OpenCode, Copilot, Codex)
+    --icon, -i          Path or name of custom icon
+    --urgency, -u       Urgency level: low, normal, critical (default: normal)
+    --type              Event type: completed, waiting_for_input, error (default: completed)
+    --codex-payload     Parse JSON payload directly from OpenAI Codex CLI turn-complete hook
+    --quiet, -q         Suppress non-essential output
+    --verbose, -v       Emit extra diagnostic messages to stderr
 """
 
 import argparse
 import contextlib
+import json
 import os
 import shutil
 import subprocess
@@ -28,18 +31,16 @@ import sys
 from pathlib import Path
 
 import cli_common
+import harness_spec
 
 ICONS_DIR = Path(__file__).resolve().parent.parent / "claude" / "icons"
 
-APP_REGISTRATIONS = {
-    "claude": {"id": "Agent.Claude", "name": "Claude Code", "icon": "claude.png"},
-    "agy": {"id": "Agent.AGY", "name": "Antigravity (AGY)", "icon": "agy.png"},
-    "gemini": {"id": "Agent.AGY", "name": "Antigravity (AGY)", "icon": "agy.png"},
-    "antigravity": {"id": "Agent.AGY", "name": "Antigravity (AGY)", "icon": "agy.png"},
-    "pi": {"id": "Agent.Pi", "name": "Pi Coding Agent", "icon": "pi.png"},
-    "copilot": {"id": "Agent.Copilot", "name": "GitHub Copilot", "icon": "copilot.png"},
-    "opencode": {"id": "Agent.OpenCode", "name": "OpenCode", "icon": "opencode.png"},
+APP_REGISTRATIONS: dict[str, dict[str, str]] = {
+    name: {"id": spec.app_id, "name": spec.display_name, "icon": spec.icon}
+    for name, spec in harness_spec.HARNESSES.items()
 }
+APP_REGISTRATIONS["gemini"] = APP_REGISTRATIONS["agy"]
+APP_REGISTRATIONS["antigravity"] = APP_REGISTRATIONS["agy"]
 
 
 def is_wsl() -> bool:
@@ -164,9 +165,10 @@ def send_wsl_toast(
     cache = sync_icons_to_windows()
     win_icon_path = ""
     if cache:
-        _, win_cache_dir = cache
-        icon_name = icon_path.name if icon_path else reg_info["icon"]
-        win_icon_path = f"{win_cache_dir}\\{icon_name}"
+        linux_cache_dir, win_cache_dir = cache
+        icon_name = icon_path.name if icon_path else reg_info.get("icon", "")
+        if icon_name and (linux_cache_dir / icon_name).exists():
+            win_icon_path = f"{win_cache_dir}\\{icon_name}"
 
     safe_title = _escape_xml(title)
     safe_msg = _escape_xml(message)
@@ -362,6 +364,21 @@ def dispatch_notification(
         )
 
 
+def parse_codex_payload(raw_payload: str) -> str:
+    """Extract a human-readable notification message from a Codex JSON event payload."""
+    if not raw_payload:
+        return "Task completed"
+    try:
+        data = json.loads(raw_payload)
+        if isinstance(data, dict):
+            msg = data.get("last-assistant-message")
+            if isinstance(msg, str) and msg.strip():
+                return msg.strip()
+    except (json.JSONDecodeError, ValueError):
+        pass
+    return "Task completed"
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Cross-platform agent notification dispatcher for WSL, macOS, and Linux."
@@ -372,7 +389,7 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="?",
         default=None,
         metavar="MESSAGE",
-        help="notification body text",
+        help="notification body text (or raw Codex JSON payload)",
     )
     parser.add_argument(
         "--title",
@@ -390,7 +407,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--harness",
         "-H",
         default=None,
-        help="originating harness name (e.g. Claude, Pi, AGY, OpenCode, Copilot)",
+        help="originating harness name (e.g. Claude, Pi, AGY, OpenCode, Copilot, Codex)",
     )
     parser.add_argument(
         "--icon",
@@ -411,29 +428,59 @@ def build_parser() -> argparse.ArgumentParser:
         default="completed",
         help="notification event type (default: completed)",
     )
+    parser.add_argument(
+        "--codex-payload",
+        default=None,
+        metavar="JSON",
+        help="explicit Codex JSON event payload from agent-turn-complete hook",
+    )
     return parser
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
-    message = args.message or args.positional_message
+    # 1. Handle explicit --codex-payload
+    if args.codex_payload:
+        harness = args.harness or "Codex"
+        title = args.title if args.title != "Agent Notification" else "Codex CLI"
+        message = parse_codex_payload(args.codex_payload)
+        event_type = args.type or "completed"
+    else:
+        # 2. Check if positional argument looks like a Codex JSON payload
+        pos = args.positional_message
+        if (
+            pos
+            and pos.strip().startswith("{")
+            and '"type"' in pos
+            and '"agent-turn-complete"' in pos
+        ):
+            harness = args.harness or "Codex"
+            title = args.title if args.title != "Agent Notification" else "Codex CLI"
+            message = parse_codex_payload(pos)
+            event_type = args.type or "completed"
+        else:
+            harness = args.harness
+            title = args.title
+            message = args.message or pos
+            event_type = args.type
+
     if not message:
-        if args.type == "waiting_for_input":
+        if event_type == "waiting_for_input":
             message = "Waiting for your input"
-        elif args.type == "error":
+        elif event_type == "error":
             message = "Encountered an error"
         else:
             message = "Task completed"
 
     dispatch_notification(
-        title=args.title,
+        title=title,
         message=message,
-        harness=args.harness,
+        harness=harness,
         icon=args.icon,
         urgency=args.urgency,
-        event_type=args.type,
+        event_type=event_type,
         verbose=args.verbose,
     )
 

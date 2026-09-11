@@ -35,6 +35,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import cli_common
+import harness_spec
 
 DEFAULT_OUT_DIR = Path.home() / ".zsh/completions"
 
@@ -55,19 +56,25 @@ MAX_DEPTH = 6
 
 
 @dataclass
-class HarnessSpec:
+class HarnessAdapter:
     cli: str  # binary name, e.g. "agy"
     format: str  # "commander" | "go-flag" | "native-passthrough"
     native_command: list[str] | None = None  # e.g. ["completion"] for opencode
 
 
-HARNESSES: dict[str, HarnessSpec] = {
-    "claude": HarnessSpec(cli="claude", format="commander"),
-    "copilot": HarnessSpec(cli="copilot", format="commander"),
-    "agy": HarnessSpec(cli="agy", format="go-flag"),
-    "opencode": HarnessSpec(
-        cli="opencode", format="native-passthrough", native_command=["completion"]
+# Backward-compatibility alias
+HarnessSpec = HarnessAdapter
+
+
+HARNESSES: dict[str, HarnessAdapter] = {
+    "claude": HarnessAdapter(cli=harness_spec.binary("claude"), format="commander"),
+    "copilot": HarnessAdapter(cli=harness_spec.binary("copilot"), format="commander"),
+    "opencode": HarnessAdapter(
+        cli=harness_spec.binary("opencode"),
+        format="native-passthrough",
+        native_command=["completion"],
     ),
+    "agy": HarnessAdapter(cli=harness_spec.binary("agy"), format="go-flag"),
     # Pi has no native completion subcommand (`pi --help` / `pi config --help`
     # checked, neither lists one). Its --help output is otherwise close
     # enough to Commander's shape (Usage:/Commands:/Options: sections, same
@@ -76,11 +83,13 @@ HARNESSES: dict[str, HarnessSpec] = {
     # token ("  pi install <source> ...") where claude/copilot start
     # straight with the subcommand name — parse_commands's strip_cli param
     # exists specifically to strip that repeated token for this harness.
-    "pi": HarnessSpec(cli="pi", format="commander"),
+    "pi": HarnessAdapter(cli=harness_spec.binary("pi"), format="commander"),
     # Codex (clap) ships a native zsh generator that takes the shell as an
     # argument: `codex completion zsh` emits a `#compdef codex` script.
-    "codex": HarnessSpec(
-        cli="codex", format="native-passthrough", native_command=["completion", "zsh"]
+    "codex": HarnessAdapter(
+        cli=harness_spec.binary("codex"),
+        format="native-passthrough",
+        native_command=["completion", "zsh"],
     ),
 }
 
@@ -452,7 +461,9 @@ def build_tree_goflag(cli: str, *, verbose: bool = False) -> Node:
 # -- native-passthrough adapter (opencode) ----------------------------------
 
 
-def run_native_passthrough(spec: HarnessSpec, *, verbose: bool = False) -> str | None:
+def run_native_passthrough(
+    spec: HarnessAdapter, *, verbose: bool = False
+) -> str | None:
     assert spec.native_command is not None
     argv = [spec.cli, *spec.native_command]
     out = _run(argv, verbose=verbose)
@@ -589,7 +600,7 @@ def emit_zsh(root: Node, cli: str) -> str:
 # -- CLI ---------------------------------------------------------------
 
 
-def generate(spec: HarnessSpec, *, verbose: bool = False) -> str | None:
+def generate(spec: HarnessAdapter, *, verbose: bool = False) -> str | None:
     if spec.format == "native-passthrough":
         return run_native_passthrough(spec, verbose=verbose)
 

@@ -91,6 +91,7 @@ from pathlib import Path
 from typing import TextIO
 
 import cli_common
+import harness_spec
 
 # ── version pins — keep in lockstep with README.md's harness table ──────────
 # README.md "Harness instruction-file discovery" table, 2026-08-30
@@ -104,32 +105,37 @@ CODEX_PINNED_VERSION: str = "0.153.4"
 # ── semantic expectations — which filenames each harness loads ──────────────
 # These encode the measured behavioral facts, not version-specific offsets.
 # See README.md "Harness instruction-file discovery" for provenance.
-CLAUDE_CODE_EXPECTED_FILENAMES: frozenset[str] = frozenset({"CLAUDE.md"})
-OPENCODE_EXPECTED_FILENAMES: frozenset[str] = frozenset({"AGENTS.md"})
-PI_PREFERRED_FILENAMES: frozenset[str] = frozenset({"AGENTS.md"})
+CLAUDE_CODE_EXPECTED_FILENAMES: frozenset[str] = harness_spec.HARNESSES[
+    "claude"
+].expected_filenames
+OPENCODE_EXPECTED_FILENAMES: frozenset[str] = harness_spec.HARNESSES[
+    "opencode"
+].expected_filenames
+PI_PREFERRED_FILENAMES: frozenset[str] = harness_spec.HARNESSES["pi"].expected_filenames
 PI_FALLBACK_FILENAMES: frozenset[str] = frozenset({"CLAUDE.md"})
-COPILOT_EXPECTED_FILENAMES: frozenset[str] = frozenset(
-    {"CLAUDE.md", "GEMINI.md", "AGENTS.md"}
-)
-AGY_EXPECTED_FILENAMES: frozenset[str] = frozenset()
+COPILOT_EXPECTED_FILENAMES: frozenset[str] = harness_spec.HARNESSES[
+    "copilot"
+].expected_filenames
+AGY_EXPECTED_FILENAMES: frozenset[str] = harness_spec.HARNESSES[
+    "agy"
+].expected_filenames
 # Codex reads project AGENTS.md natively (global ~/.codex/AGENTS.md too);
 # extra project names only via its project_doc_fallback_filenames config,
 # which this toolkit doesn't set. Verified against the 0.153.4 docs.
-CODEX_EXPECTED_FILENAMES: frozenset[str] = frozenset({"AGENTS.md"})
+CODEX_EXPECTED_FILENAMES: frozenset[str] = harness_spec.HARNESSES[
+    "codex"
+].expected_filenames
 
 # ── harness metadata ─────────────────────────────────────────────────────────
 
+DISCOVERY_TARGETS: tuple[str, ...] = harness_spec.DISCOVERY_TARGETS
+
 # Fallback paths tried before reporting UNVERIFIABLE (Linux/WSL only).
 _FALLBACK_PATHS: dict[str, list[str]] = {
-    "claude": ["~/.local/bin/claude"],
-    "opencode": ["~/.opencode/bin/opencode"],
-    "pi": ["~/.npm-global/bin/pi"],
-    "copilot": ["~/.npm-global/bin/copilot"],
-    "agy": ["~/.local/bin/agy"],
-    "codex": ["~/.npm-global/bin/codex"],
+    name: list(spec.fallback_paths) for name, spec in harness_spec.HARNESSES.items()
 }
 
-_LOAD_BEARING: tuple[str, ...] = ("claude", "opencode")
+_LOAD_BEARING: tuple[str, ...] = harness_spec.LOAD_BEARING_NAMES
 
 # Token names placed in fixture files so the probe can detect which were
 # loaded. Each must be a single substring unlikely to appear in model prose.
@@ -643,27 +649,12 @@ def cmd_probe(
     Rebuilds the audit fixture, probes the requested harnesses, and prints
     a per-row table. Exits nonzero if any row is BROKEN or ERROR.
     """
-    targets: list[str] = (
-        [harness]
-        if harness
-        else [
-            "claude",
-            "opencode",
-            "pi",
-            "copilot",
-            "agy",
-            "codex",
-        ]
-    )
+    targets: list[str] = [harness] if harness else list(DISCOVERY_TARGETS)
 
     # Expected root tokens per harness (semantic fact, not version-specific).
     expected_root: dict[str, set[str]] = {
-        "claude": {_TOKEN_CLAUDE_ROOT},
-        "opencode": {_TOKEN_AGENTS_ROOT},
-        "pi": {_TOKEN_AGENTS_ROOT},  # prefers AGENTS.md
-        "copilot": {_TOKEN_CLAUDE_ROOT, _TOKEN_GEMINI_ROOT, _TOKEN_AGENTS_ROOT},
-        "agy": set(),  # none at project level
-        "codex": {_TOKEN_AGENTS_ROOT},  # reads project AGENTS.md natively
+        name: set(spec.probe_expected_root)
+        for name, spec in harness_spec.HARNESSES.items()
     }
 
     with tempfile.TemporaryDirectory() as tmpdir:

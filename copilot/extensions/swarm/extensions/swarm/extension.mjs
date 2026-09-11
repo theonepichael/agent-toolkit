@@ -27,6 +27,73 @@ function staleWorkerRecords(state, live, now) {
     return now - began >= RECONCILE_MIN_AGE_MS;
   });
 }
+var SIDECAR_VERSION = 1;
+var FATAL_SIDECAR_RESULT = "fatal_error";
+function parseFatalSidecar(raw) {
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) return null;
+  const rec = parsed;
+  if (rec.v !== SIDECAR_VERSION) return null;
+  if (rec.result !== FATAL_SIDECAR_RESULT) return null;
+  if (typeof rec.stopReason !== "string") return null;
+  if (typeof rec.model !== "string") return null;
+  if (typeof rec.writtenAtMs !== "number" || !Number.isFinite(rec.writtenAtMs)) return null;
+  return {
+    v: SIDECAR_VERSION,
+    result: FATAL_SIDECAR_RESULT,
+    stopReason: rec.stopReason,
+    model: rec.model,
+    writtenAtMs: rec.writtenAtMs
+  };
+}
+function classifyOutcomeDraft(kind, witnesses) {
+  const base = {
+    sidecarProbed: witnesses.sidecarProbed,
+    ...witnesses.herdrStatus !== void 0 ? { herdrStatus: witnesses.herdrStatus } : {}
+  };
+  if (witnesses.sidecar) {
+    return { ...base, processResult: "fatal_error", evidence: "fatal_sidecar" };
+  }
+  if (witnesses.paneMatch === "fatal_sentinel") {
+    return { ...base, processResult: "unknown_crash", evidence: "pane_sentinel" };
+  }
+  if (witnesses.paneMatch === "provider_wording") {
+    return { ...base, processResult: "unknown_crash", evidence: "provider_wording" };
+  }
+  if (kind === "timed_out") {
+    return {
+      ...base,
+      processResult: "deadline_stopped",
+      evidence: witnesses.livenessConfirmed === false ? "no_observation" : "herdr_status"
+    };
+  }
+  if (kind === "error") {
+    return { ...base, processResult: "gone", evidence: "herdr_status" };
+  }
+  return {
+    ...base,
+    processResult: "settled_alive",
+    evidence: witnesses.paneRead ? "pane_clear" : "no_observation"
+  };
+}
+function appendOutcome(state, outcome) {
+  const outcomes = state.outcomes ?? [];
+  const at = outcomes.findIndex(
+    (o) => o.agent === outcome.agent && o.decidedAtMs === outcome.decidedAtMs
+  );
+  if (at >= 0) outcomes.splice(at, 1, outcome);
+  else outcomes.push(outcome);
+  state.outcomes = outcomes;
+  return outcomes;
+}
+function priorOutcome(state, agent) {
+  return (state.outcomes ?? []).find((o) => o.agent === agent);
+}
 var PROJECT_PREFIXES = ["iron-lb-", "meta-", "work-", "atk-"];
 function nextAgentId(runId, counter, slug) {
   const cleanSlug = slug ? slug.replace(/[^a-zA-Z0-9_-]/g, "") : "";
@@ -491,6 +558,13 @@ function amendAckPath(captureFile) {
   if (replaced !== base) return join(dir, replaced);
   return join(dir, `${base}.amend-ack.json`);
 }
+function outcomePath(captureFile) {
+  const dir = dirname(captureFile);
+  const base = basename(captureFile);
+  const replaced = base.replace("-capture-", "-outcome-");
+  if (replaced !== base) return join(dir, replaced);
+  return join(dir, `${base}.outcome.json`);
+}
 function parseAmendAck(raw) {
   try {
     const parsed = JSON.parse(raw);
@@ -620,6 +694,21 @@ function capturePath(runId, slug, stateDir = herdrStateDir()) {
   const safeSlug = (slug.split("/").pop() ?? "").replace(/[^A-Za-z0-9._-]/g, "_");
   return join2(stateDir, `swarm-${safeRun}-capture-${safeSlug}.json`);
 }
+function outcomePathOf(runId, slug, stateDir = herdrStateDir()) {
+  return outcomePath(capturePath(runId, slug, stateDir));
+}
+function readFatalSidecar(path) {
+  let raw;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch {
+    return null;
+  }
+  return parseFatalSidecar(raw);
+}
+function fatalSidecarDetail(sidecar) {
+  return `fatal_error_sidecar: the worker recorded its own fatal settle before exiting (stopReason=${sidecar.stopReason}, model=${sidecar.model}). This is the worker's own statement, not an inference from pane text. Verify the item's actual state before treating it as complete.`;
+}
 function readAmendAck(path) {
   let raw;
   try {
@@ -662,6 +751,15 @@ function readCaptureOffers(runId, slug, stateDir = herdrStateDir()) {
   } catch {
     return [];
   }
+}
+function renderOutcome(outcome) {
+  const parts = [`outcome=${outcome.processResult}/${outcome.evidence}`];
+  if (outcome.backlogStatus !== void 0) {
+    parts.push(`backlog=${outcome.backlogStatus}`);
+  } else if (outcome.backlogRead !== "ok") {
+    parts.push(`backlog=${outcome.backlogRead}`);
+  }
+  return `[${parts.join(" ")}]`;
 }
 function renderCaptureOffers(offers) {
   if (offers.length === 0) return "";
@@ -882,8 +980,25 @@ var SwarmToolContext = class {
   async harvestWorkerIO(state, worker, signal) {
     return (await this.harvestWorkerIOWithStatus(state, worker, signal)).offers;
   }
+  /**
+   * The I/O half of tearing a worker down: read its queued capture offers and
+   * its death certificate, close it in herdr, then delete both sidecar files.
+   * The certificate is returned so the caller can still use the value after the
+   * file is gone, and is read BEFORE `closeWorker`.
+   *
+   * Does NOT touch state.workers or persist -- callers that process several
+   * workers at once (swarmPoll's event loop) run this in parallel across
+   * workers, then remove them from state.workers in one batch afterward, since
+   * concurrent per-worker filter-and-reassign calls on the same array would
+   * race.
+   *
+   * The read is gated on the host kind: a Copilot worker has no pi to run the
+   * writer, so probing for a certificate it could never have would let an
+   * outcome claim an absence that was never tested.
+   */
   async harvestWorkerIOWithStatus(state, worker, signal) {
     const offers = readCaptureOffers(state.runId, worker.slug, this.stateDir);
+    const sidecar = this.kind === "pi" ? this.readSidecar(state, worker) : null;
     let closed = await this.closeWorker(worker, signal);
     if (!closed && (state.mode ?? "concurrent") === "serial") {
       try {
@@ -902,8 +1017,126 @@ var SwarmToolContext = class {
       rmSync(capturePath(state.runId, worker.slug, this.stateDir), { force: true });
     } catch {
     }
+    try {
+      rmSync(outcomePathOf(state.runId, worker.slug, this.stateDir), { force: true });
+    } catch {
+    }
     this.unlinkWorkerAmendAck(state.runId, worker.slug);
-    return { offers, closed };
+    return { offers, closed, sidecar };
+  }
+  /** The certificate for one worker, or `null` when there is nothing to trust. */
+  readSidecar(state, worker) {
+    return this.sidecarForRun(state.runId, worker.slug);
+  }
+  /**
+   * Merge the classification made upstream (which saw the pane) with the
+   * certificate the harvest returned (which the upstream site may not have been
+   * able to read yet), then apply the pessimism rule.
+   *
+   * A certificate present at harvest but absent from the upstream draft upgrades
+   * the result -- the worker stated a death, and that outranks any inference.
+   * The reverse never happens: an upstream `fatal_error` is never softened, so
+   * this cannot turn a pessimistic classification optimistic and no ordering
+   * between the two sites can produce a contradiction.
+   */
+  draftWithSidecar(draft, kind, sidecar) {
+    const terminal = kind === "finished" || kind === "error" || kind === "timed_out";
+    const fallback = classifyOutcomeDraft(terminal ? kind : "error", {
+      sidecar,
+      sidecarProbed: this.kind === "pi",
+      paneMatch: null,
+      paneRead: false
+    });
+    if (!draft) return fallback;
+    if (sidecar && draft.evidence !== "fatal_sidecar") {
+      return { ...draft, processResult: "fatal_error", evidence: "fatal_sidecar" };
+    }
+    return draft;
+  }
+  /**
+   * The certificate by run/slug, so `settleWait` can consult it without holding
+   * a state reference. Returns `null` WITHOUT touching the filesystem for a
+   * Copilot host: a worker with no pi to run the writer has no certificate to
+   * be absent, and recording an absence that was never tested would be exactly
+   * the kind of claim this item is here to stop making.
+   */
+  sidecarForRun(runId, slug) {
+    if (this.kind !== "pi") return null;
+    return readFatalSidecar(outcomePathOf(runId, slug, this.stateDir));
+  }
+  /**
+   * Turn a classification into a persisted ledger row: the ONLY place a
+   * reconciled outcome is written, so every teardown path -- including the three
+   * that never ran `dev_status.py show` at all before this -- produces a row
+   * with a real backlog column instead of a blank one.
+   *
+   * The independent read is part of assembly rather than a later pass because
+   * the ledger append has to land before the removal filter, so the existing
+   * single `persist(state)` writes it. A re-reconciliation of the same worker
+   * (serial `teardown_ambiguous`, met again on a later poll) reuses the
+   * ORIGINAL `decidedAtMs`: re-stamping it would make every pass a distinct
+   * dedup key and grow the ledger without bound while the queue is stuck.
+   */
+  async recordOutcome(state, worker, draft, captureCount, signal, event) {
+    const backlog = await this.readBacklogStatus(worker.slug, signal);
+    const prior = worker.outcome ?? priorOutcome(state, worker.agent);
+    const verification = [];
+    if (isSuspiciousFinish(backlog.status, captureCount)) {
+      verification.push(
+        `dev_status.py still shows status ${JSON.stringify(backlog.status)} and zero captures were queued during this run -- verify the item's actual state before treating this as complete.`
+      );
+    }
+    if (backlog.read !== "ok") {
+      verification.push(
+        backlog.read === "unparsed" ? "dev_status.py show answered, but its output did not parse; backlog state unknown." : "dev_status.py show did not answer; backlog state unknown."
+      );
+    }
+    if (event && verification.length > 0) {
+      event.detail = `${event.detail ? `${event.detail} ` : ""}${verification.join(" ")}`;
+    }
+    const notes = [draft.note, ...verification].filter((n) => Boolean(n));
+    const outcome = {
+      runId: state.runId,
+      agent: worker.agent,
+      slug: worker.slug,
+      kind: this.kind,
+      processResult: draft.processResult,
+      evidence: draft.evidence,
+      sidecarProbed: draft.sidecarProbed,
+      ...draft.herdrStatus !== void 0 ? { herdrStatus: draft.herdrStatus } : {},
+      ...backlog.status !== void 0 ? { backlogStatus: backlog.status } : {},
+      backlogRead: backlog.read,
+      decidedAtMs: prior?.decidedAtMs ?? Date.now(),
+      ...notes.length > 0 ? { note: notes.join(" ") } : {}
+    };
+    worker.outcome = outcome;
+    appendOutcome(state, outcome);
+    return outcome;
+  }
+  /**
+   * The orchestrator's own read of the item's backlog status, independent of
+   * anything the worker claims.
+   *
+   * Three results, because the code this replaces collapsed all three into
+   * silence: a nonzero exit, output that will not parse, and a thrown exec call
+   * are different facts, and "the subprocess failed" must not read as "the item
+   * has no status".
+   */
+  async readBacklogStatus(slug, signal) {
+    let result;
+    try {
+      result = await this.exec("python3", buildShowArgv(slug).slice(1), {
+        signal,
+        timeout: PROBE_TIMEOUT_MS
+      });
+    } catch {
+      return { read: "failed" };
+    }
+    if (result.code !== 0) return { read: "failed" };
+    const shown = parseShownItem(result.stdout);
+    if (shown === null) return { read: "unparsed" };
+    const status = typeof shown.status === "string" ? shown.status : void 0;
+    return { status, read: status === void 0 ? "unparsed" : "ok" };
   }
   async teardownAndHarvestWorker(state, worker, signal) {
     const teardown = await this.harvestWorkerIOWithStatus(state, worker, signal);
@@ -915,6 +1148,21 @@ var SwarmToolContext = class {
     } else {
       state.workers = state.workers.filter((w) => w.agent !== worker.agent);
     }
+    await this.recordOutcome(
+      state,
+      worker,
+      {
+        ...classifyOutcomeDraft("error", {
+          sidecar: teardown.sidecar,
+          sidecarProbed: this.kind === "pi",
+          paneMatch: null,
+          paneRead: false
+        }),
+        note: "torn down without a settled outcome -- the worker was closed by an explicit teardown (a relay that could not be answered), not by anything it reported."
+      },
+      teardown.offers.length,
+      signal
+    );
     this.persist(state);
     return teardown.offers;
   }
@@ -943,7 +1191,19 @@ var SwarmToolContext = class {
           w.lifecycle = "teardown_ambiguous";
           w.teardownDetail = this.teardownRecovery(w);
         }
-        const line = `${w.agent} (${w.slug}): stale worker record cleared -- herdr reports its agent ${status ?? "gone"} (finished or dead), but its finish was never reported through swarm_poll; outcome inferred, not observed. Verify the item's state before treating it as complete.${// This path reaches a close without ever passing a settle, so an
+        const pruneDraft = classifyOutcomeDraft(entry === void 0 ? "error" : "finished", {
+          sidecar: teardown.sidecar,
+          sidecarProbed: this.kind === "pi",
+          paneMatch: null,
+          paneRead: false,
+          ...status === void 0 ? {} : { herdrStatus: status }
+        });
+        await this.recordOutcome(state, w, pruneDraft, offers.length);
+        const line = `${w.agent} (${w.slug}): stale worker record cleared -- herdr reports its agent ${status ?? "gone"} (finished or dead), but its finish was never reported through swarm_poll; ` + // The sentence used to be unconditional, which was honest only because
+        // nothing on this path could do better. A certificate read here IS an
+        // observation, so claiming inference over it would understate what is
+        // known -- and the digest line is what a human reads.
+        (pruneDraft.evidence === "fatal_sidecar" ? "outcome observed from the worker's own death certificate" : "outcome inferred, not observed") + `. Verify the item's state before treating it as complete.${// This path reaches a close without ever passing a settle, so an
         // outstanding amendment dies here. Closing anyway is correct -- a
         // refusal would strand the serial queue on a worker herdr already
         // calls gone -- but the hold being discarded has to be said.
@@ -1185,15 +1445,24 @@ ${capture}` } };
       for (const w of dropped) {
         const teardown = await this.harvestWorkerIOWithStatus(loaded, w);
         const offers = [...w.terminalCaptures ?? [], ...teardown.offers];
+        const draft = classifyOutcomeDraft("error", {
+          sidecar: teardown.sidecar,
+          sidecarProbed: this.kind === "pi",
+          paneMatch: null,
+          paneRead: false
+        });
+        const outcome = await this.recordOutcome(reconciled, w, draft, offers.length);
         rt.pendingEvents.push({
           kind: "error",
           agent: w.agent,
           slug: w.slug,
           paneId: w.paneId,
           captures: offers,
-          detail: `reconcile: agent gone from herdr between polls -- worker process vanished; outcome inferred, not observed. Verify the item's state before treating it as complete.${w.pendingAmend ? ` ${amendOutstandingNote(w.pendingAmend, Date.now())}` : ""}`
+          outcome,
+          detail: `reconcile: agent gone from herdr between polls -- worker process vanished; ` + (outcome.evidence === "fatal_sidecar" ? "the worker's own death certificate says why: a fatal settle, not a clean finish. Verify the item's state before treating it as complete." : "outcome inferred, not observed. Verify the item's state before treating it as complete.") + `${w.pendingAmend ? ` ${amendOutstandingNote(w.pendingAmend, Date.now())}` : ""}`
         });
       }
+      saveState(reconciled, this.stateDir);
     }
     return reconciled;
   }
@@ -1432,6 +1701,7 @@ ${capture}` } };
       );
       let kind = classifyWaitResult(result.code, result.stdout, result.stderr);
       let settleStatus = parseAgentStatus(result.stdout);
+      let livenessConfirmed;
       let detail = kind === "timed_out" || kind === "error" ? waitResultDetail(result.stdout, result.stderr) : void 0;
       if (kind === "timed_out") {
         const probe = await this.probeLiveness(worker.agent);
@@ -1469,17 +1739,27 @@ ${capture}` } };
         }
         kind = verdict.kind;
         settleStatus = parseAgentStatus(probe.stdout);
+        livenessConfirmed = verdict.livenessConfirmed === true;
         detail = kind === "timed_out" ? deadlineStopDetail(worker, rt.deadlineMs, {
           livenessConfirmed: verdict.livenessConfirmed === true,
           probeDetail: probe.abandoned ? `the liveness probe did not answer within ${PROBE_TIMEOUT_MS} ms and was abandoned` : `probe: ${waitResultDetail(probe.stdout, probe.stderr)}`
         }) : kind === "error" ? `probe: ${waitResultDetail(probe.stdout, probe.stderr)}` : void 0;
       }
+      const sidecar = kind === "blocked" ? null : this.sidecarForRun(rt.runId, worker.slug);
+      if (kind === "finished" && sidecar) {
+        kind = "error";
+        detail = `${fatalSidecarDetail(sidecar)}${detail ? ` ${detail}` : ""}`;
+      }
       const pending = worker.pendingAmend;
+      let paneMatch = null;
+      let paneRead = false;
       if (pending && kind === "finished") {
         const decision = this.amendHoldDecision(rt, worker, pending, result.stdout);
         if (decision.event) {
           event = decision.event;
-          await this.screenFinishedForCrash(event, worker, settleStatus);
+          const screened = await this.screenFinishedForCrash(event, worker, settleStatus);
+          paneMatch = screened.match;
+          paneRead = screened.read;
         } else {
           rearmAfter = decision.rearm ?? null;
           event = null;
@@ -1487,12 +1767,24 @@ ${capture}` } };
       } else {
         event = { kind, agent: worker.agent, slug: worker.slug, paneId: worker.paneId };
         if (detail !== void 0) event.detail = detail;
-        if (kind === "finished") {
-          await this.screenFinishedForCrash(event, worker, settleStatus);
+        if (kind === "finished" && !sidecar) {
+          const screened = await this.screenFinishedForCrash(event, worker, settleStatus);
+          paneMatch = screened.match;
+          paneRead = screened.read;
         }
         if (pending && (kind === "error" || kind === "timed_out")) {
           event.detail = `${event.detail ?? ""} ${amendOutstandingNote(pending, Date.now())}`.trim();
         }
+      }
+      if (event && (event.kind === "finished" || event.kind === "error" || event.kind === "timed_out")) {
+        event.outcomeDraft = classifyOutcomeDraft(event.kind, {
+          sidecar,
+          sidecarProbed: this.kind === "pi",
+          paneMatch,
+          paneRead,
+          ...settleStatus !== void 0 ? { herdrStatus: settleStatus } : {},
+          ...livenessConfirmed === void 0 ? {} : { livenessConfirmed }
+        });
       }
     } catch (err) {
       event = {
@@ -1568,9 +1860,14 @@ ${capture}` } };
    * verification note. An unreadable or empty pane never reclassifies the finish
    * -- the wait settled cleanly, so an inconclusive probe must not manufacture
    * an error -- but it is no longer silent about it.
+   *
+   * Returns what was actually observed, because the outcome ledger has to say
+   * "the pane was read and said nothing" differently from "nothing could be
+   * read": the first is evidence of absence, the second is absence of evidence,
+   * and collapsing them would hide the exact case these screens exist for.
    */
   async screenFinishedForCrash(event, worker, settleStatus, signal) {
-    if (event.kind !== "finished") return;
+    if (event.kind !== "finished") return { read: false, match: null };
     let pane;
     try {
       const read = await this.herdr(buildPaneReadArgv(worker.paneId, PANE_CAPTURE_LINES), signal);
@@ -1580,20 +1877,21 @@ ${capture}` } };
     }
     if (pane === null || pane.trim() === "") {
       event.detail = `${event.detail ? `${event.detail} ` : ""}pane capture unavailable at settle -- verify the item's state before treating it as complete.`;
-      return;
+      return { read: false, match: null };
     }
     if (settleStatus !== "idle") {
       const fatal = fatalErrorExitMatch(pane);
       if (fatal) {
         event.kind = "error";
         event.detail = `fatal_error_exit: pane carried the worker's ${fatal.signature} sentinel at a ${settleStatus ?? "status-less"} settle -- the process exited on a fatal turn error, not a clean finish. Excerpt: "${fatal.excerpt}". Verify the item's actual state before treating it as complete.` + (event.detail ? ` ${event.detail}` : "");
-        return;
+        return { read: true, match: "fatal_sentinel" };
       }
     }
     const crash = providerCrashMatch(pane);
-    if (!crash) return;
+    if (!crash) return { read: true, match: null };
     event.kind = "error";
     event.detail = `provider_crash: pane matched "${crash.signature}" near the idle prompt -- the worker most likely died under a provider limit, not a clean finish. Excerpt: "${crash.excerpt}". Verify the item's actual state before treating it as complete.` + (event.detail ? ` ${event.detail}` : "");
+    return { read: true, match: "provider_wording" };
   }
   async swarmSpawn(params) {
     if (!params.items && !params.prefix) {
@@ -1694,6 +1992,10 @@ ${capture}` } };
       const tabs = [];
       for (const slug of toSpawn) {
         const captureFile = capturePath(state.runId, slug, this.stateDir);
+        try {
+          rmSync(outcomePathOf(state.runId, slug, this.stateDir), { force: true });
+        } catch {
+        }
         const tabCreated = await this.herdr(
           buildTabCreateArgv(process.cwd(), slug, { captureFile, kind: this.kind })
         );
@@ -1908,6 +2210,14 @@ ${goneNoteLines.join("\n")}` : "");
             event.detail = (state.mode ?? "concurrent") === "serial" ? "resync: the worker disappeared while resolving its blocked prompt; the relay is cancelled and the item outcome is failed." : "resync: agent gone from herdr while resolving blocked prompt -- worker has since finished or exited; outcome inferred, not observed. Verify the item's state before treating it as complete.";
             const teardown = await this.harvestWorkerIOWithStatus(state, worker, signal);
             event.captures = teardown.offers;
+            event.outcome = await this.recordOutcome(
+              state,
+              worker,
+              this.draftWithSidecar(event.outcomeDraft, event.kind, teardown.sidecar),
+              teardown.offers.length,
+              signal,
+              event
+            );
             if ((state.mode ?? "concurrent") === "serial" && !teardown.closed) {
               worker.lifecycle = "teardown_ambiguous";
               worker.terminalOutcome = event.kind;
@@ -1952,6 +2262,14 @@ ${goneNoteLines.join("\n")}` : "");
         } else {
           const teardown = await this.harvestWorkerIOWithStatus(state, worker, signal);
           event.captures = teardown.offers;
+          event.outcome = await this.recordOutcome(
+            state,
+            worker,
+            this.draftWithSidecar(event.outcomeDraft, event.kind, teardown.sidecar),
+            teardown.offers.length,
+            signal,
+            event
+          );
           if ((state.mode ?? "concurrent") === "serial" && !teardown.closed) {
             worker.lifecycle = "teardown_ambiguous";
             worker.terminalOutcome = event.kind;
@@ -1970,23 +2288,6 @@ ${goneNoteLines.join("\n")}` : "");
       state.workers = state.workers.filter((w) => !toRemove.has(w.agent));
     }
     this.persist(state);
-    await Promise.all(
-      events.filter((e) => e.kind === "finished").map(async (event) => {
-        try {
-          const result = await this.exec("python3", buildShowArgv(event.slug).slice(1), {
-            signal,
-            timeout: PROBE_TIMEOUT_MS
-          });
-          if (result.code !== 0) return;
-          const shown = parseShownItem(result.stdout);
-          if (shown === null || event.detail !== void 0) return;
-          if (isSuspiciousFinish(shown.status, (event.captures ?? []).length)) {
-            event.detail = `dev_status.py still shows status ${JSON.stringify(shown.status)} and zero captures were queued during this run -- verify the item's actual state before treating this as complete.`;
-          }
-        } catch {
-        }
-      })
-    );
     const stalled = stalledRelayWorkers(state.workers, Date.now(), rt.stallMs);
     const stalledNote = stalled.length ? `
 
@@ -2016,7 +2317,8 @@ ${e.rawPrompt}`;
               return `${e.slug} (${e.agent}) still_working -- check-in ${e.checkIn}, ${formatDuration(e.elapsedMs ?? 0)} of working time so far against a ${formatDuration(rt.deadlineMs)} budget. Nothing settled and no slot was freed; poll again.`;
             }
             const captures = renderCaptureOffers(e.captures ?? []);
-            return `${e.slug} (${e.agent}) ${e.kind}${e.detail ? `: ${e.detail}` : ""}${captures}`;
+            const outcome = e.outcome ? ` ${renderOutcome(e.outcome)}` : "";
+            return `${e.slug} (${e.agent}) ${e.kind}${e.detail ? `: ${e.detail}` : ""}${outcome}${captures}`;
           }).join("\n\n") : "No active workers to poll.") + stalledNote + resyncNote + amendNote
         }
       ],

@@ -42,7 +42,12 @@ import registerSwarmTools, {
   parseReadyItems,
   buildShowArgv,
   parseShownItem,
+  classifyOutcomeDraft,
   isSuspiciousFinish,
+  outcomePathOf,
+  parseFatalSidecar,
+  readFatalSidecar,
+  renderOutcome,
   isTerminalAgentStatus,
   parseAgentList,
   staleWorkerRecords,
@@ -72,6 +77,9 @@ import registerSwarmTools, {
   type SwarmState,
   type WorkerRecord,
   type PendingAmend,
+  type FatalSidecar,
+  type PollEvent,
+  type WorkerOutcome,
 } from "../extensions/swarm-tool";
 
 // Captured verbatim from a real herdr agent read against a live blocked
@@ -1663,7 +1671,22 @@ describe("swarm_poll: suspicious finish (no dev_status.py progress, no capture)"
   const execute = (poll: { execute: (...a: never[]) => Promise<unknown> }, runId: string) =>
     poll.execute(
       ...(["c1", { runId, timeoutMs: 1000 }, undefined] as unknown as never[]),
-    ) as Promise<{ details: { events: { kind: string; detail?: string }[] } }>;
+    ) as Promise<{
+      details: {
+        events: {
+          kind: string;
+          slug?: string;
+          detail?: string;
+          outcome?: {
+            processResult: string;
+            evidence: string;
+            backlogRead: string;
+            backlogStatus?: string;
+            sidecarProbed: boolean;
+          };
+        }[];
+      };
+    }>;
 
   test("status still in-progress, zero captures -- gets a verify-me detail", async () => {
     const runId = "suspicious-inprogress";
@@ -1703,7 +1726,15 @@ describe("swarm_poll: suspicious finish (no dev_status.py progress, no capture)"
     expect(res.details.events[0]?.detail).toBeUndefined();
   });
 
-  test("a failing show call -- fail open, no detail", async () => {
+  // CONTRACT CHANGE (structured outcomes). These three cases used to assert
+  // "fail open, no detail" -- total silence when the backlog read could not be
+  // trusted. Silence conflated three different facts (subprocess refused,
+  // subprocess answered nonsense, subprocess threw) with "the item is fine", so
+  // a run whose dev_status.py was broken looked identical to a clean finish.
+  // Each failure mode is now NAMED, in `detail` (the channel the orchestrator
+  // model actually reads) and in `outcome.backlogRead`. The fail-open half is
+  // unchanged: a bad read still never crashes the poll or changes the kind.
+  test("a failing show call -- named as a failed read, not swallowed as silence", async () => {
     const runId = "show-fails";
     const { poll } = setup({
       runId,
@@ -1712,10 +1743,15 @@ describe("swarm_poll: suspicious finish (no dev_status.py progress, no capture)"
 
     const res = await execute(poll, runId);
 
-    expect(res.details.events[0]?.detail).toBeUndefined();
+    expect(res.details.events[0]?.detail).toContain("did not answer");
+    expect(res.details.events[0]?.outcome?.backlogRead).toBe("failed");
+    expect(res.details.events[0]?.outcome?.backlogStatus).toBeUndefined();
+    // Fail open on the verdict itself: a broken read is not a reason to call a
+    // settled worker dead.
+    expect(res.details.events[0]?.kind).toBe("finished");
   });
 
-  test("a timed-out/garbage show call -- fail open, no detail", async () => {
+  test("a timed-out/garbage show call -- named as unparsed, distinct from failed", async () => {
     const runId = "show-garbage";
     const { poll } = setup({
       runId,
@@ -1724,7 +1760,9 @@ describe("swarm_poll: suspicious finish (no dev_status.py progress, no capture)"
 
     const res = await execute(poll, runId);
 
-    expect(res.details.events[0]?.detail).toBeUndefined();
+    expect(res.details.events[0]?.detail).toContain("did not parse");
+    expect(res.details.events[0]?.outcome?.backlogRead).toBe("unparsed");
+    expect(res.details.events[0]?.kind).toBe("finished");
   });
 
   test("a throwing show call -- fail open for this event, never crashes the poll", async () => {
@@ -1767,7 +1805,11 @@ describe("swarm_poll: suspicious finish (no dev_status.py progress, no capture)"
     const res = await execute(poll, runId);
 
     expect(res.details.events.map((e) => e.kind)).toEqual(["finished"]);
-    expect(res.details.events[0]?.detail).toBeUndefined();
+    // CONTRACT CHANGE, same as the two above: named instead of silent. What this
+    // test has always been about -- a throwing exec must not take the poll down
+    // -- is unchanged and still asserted by the `finished` kind above.
+    expect(res.details.events[0]?.detail).toContain("did not answer");
+    expect(res.details.events[0]?.outcome?.backlogRead).toBe("failed");
   });
 
   test("multiple finished events in one batch resolve independently", async () => {
@@ -1828,7 +1870,7 @@ describe("swarm_poll: suspicious finish (no dev_status.py progress, no capture)"
     expect(bySlug.get("item-b")).toBeUndefined();
   });
 
-  test("timed_out/error events are never checked or flagged", async () => {
+  test("timed_out/error events get a backlog read too, and are typed as such", async () => {
     const runId = "not-finished-kind";
     const worker: WorkerRecord = {
       agent: `${runId}-w1`,
@@ -1870,7 +1912,17 @@ describe("swarm_poll: suspicious finish (no dev_status.py progress, no capture)"
     const res = await execute(poll, runId);
 
     expect(res.details.events.map((e) => e.kind)).toEqual(["error"]);
-    expect(sawShowCall).toBe(false);
+    // CONTRACT CHANGE: the old pass filtered to `finished` events only, so an
+    // error or deadline stop had no backlog column at all and the digest could
+    // not say where the item actually stood. Every terminal kind is now read.
+    expect(sawShowCall).toBe(true);
+    // What did NOT change: the read is not allowed to relabel a death as a
+    // clean finish. `gone`/`herdr_status` says "the process question was
+    // answered by herdr and nothing else spoke", which is the honest version of
+    // the old "outcome inferred, not observed" prose.
+    expect(res.details.events[0]?.outcome?.processResult).toBe("gone");
+    expect(res.details.events[0]?.outcome?.evidence).toBe("herdr_status");
+    expect(res.details.events[0]?.outcome?.sidecarProbed).toBe(true);
   });
 });
 
@@ -6136,5 +6188,700 @@ describe("swarm_poll: a worker that exited on a fatal turn error is never a clea
     // Enforced, not asserted in prose: the screen's read must index before the
     // teardown's close, or this reclassification rests on a call-order guess.
     expect(stub.calls.indexOf(reads[0]!)).toBeLessThan(stub.calls.indexOf(closes[0]!));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Structured outcomes.
+//
+// The reason this suite exists separately from the pane-classifier tests above:
+// those assert inference from what a pane LOOKS like, and every one of them is a
+// heuristic with a documented blind spot. A death certificate is the worker
+// stating a fact about its own process, so the classification stops being a
+// guess. The cases below are mostly about the plumbing that makes the statement
+// usable -- that the value survives the file's own deletion, that it can only
+// ever move an event toward pessimism, and that it is recorded where it outlives
+// the worker record it describes.
+// ---------------------------------------------------------------------------
+
+describe("parseFatalSidecar (pure)", () => {
+  const good = {
+    v: 1,
+    result: "fatal_error",
+    stopReason: "error",
+    model: "p/m",
+    writtenAtMs: 1789000000000,
+  };
+
+  test("a well-formed certificate parses", () => {
+    expect(parseFatalSidecar(JSON.stringify(good))).toEqual(good);
+  });
+
+  test("unknown extra fields are tolerated (forward compatibility)", () => {
+    const parsed = parseFatalSidecar(JSON.stringify({ ...good, futureField: true }));
+    expect(parsed?.result).toBe("fatal_error");
+  });
+
+  // Strictness is the whole safety property: a file the reader cannot fully
+  // vouch for must be treated as ABSENT (so classification falls to the pane
+  // screens), never as a partial verdict. Anything looser lets arbitrary JSON
+  // written at that path become authoritative fatal evidence.
+  test("a version the reader does not understand is absent, not fatal", () => {
+    expect(parseFatalSidecar(JSON.stringify({ ...good, v: 2 }))).toBeNull();
+    expect(parseFatalSidecar(JSON.stringify({ ...good, v: "1" }))).toBeNull();
+    expect(parseFatalSidecar(JSON.stringify({ result: "fatal_error" }))).toBeNull();
+  });
+
+  test("a result other than fatal_error is absent", () => {
+    // There is no `clean` certificate anywhere in this design; a writer that
+    // invented one must not be read as a verdict.
+    expect(parseFatalSidecar(JSON.stringify({ ...good, result: "clean" }))).toBeNull();
+    expect(parseFatalSidecar(JSON.stringify({ ...good, result: "fatal_error " }))).toBeNull();
+  });
+
+  test("each missing or mistyped field is absent", () => {
+    for (const key of ["stopReason", "model", "writtenAtMs"] as const) {
+      const stripped = { ...good } as Record<string, unknown>;
+      delete stripped[key];
+      expect(parseFatalSidecar(JSON.stringify(stripped))).toBeNull();
+    }
+    expect(parseFatalSidecar(JSON.stringify({ ...good, writtenAtMs: "now" }))).toBeNull();
+    expect(parseFatalSidecar(JSON.stringify({ ...good, writtenAtMs: NaN }))).toBeNull();
+    expect(parseFatalSidecar(JSON.stringify({ ...good, stopReason: 7 }))).toBeNull();
+  });
+
+  test("unreadable shapes are absent, never thrown", () => {
+    for (const raw of ["", "   ", "not json", "{", "[]", "null", "42", '"str"']) {
+      expect(parseFatalSidecar(raw)).toBeNull();
+    }
+  });
+});
+
+describe("classifyOutcomeDraft (pure precedence)", () => {
+  const sidecar: FatalSidecar = {
+    v: 1,
+    result: "fatal_error",
+    stopReason: "error",
+    model: "p/m",
+    writtenAtMs: 1,
+  };
+  const none = {
+    sidecar: null,
+    sidecarProbed: true,
+    paneMatch: null,
+    paneRead: false,
+  } as const;
+
+  test("a certificate outranks everything, on any terminal kind", () => {
+    for (const kind of ["finished", "error", "timed_out"] as const) {
+      const d = classifyOutcomeDraft(kind, { ...none, sidecar });
+      expect(d.processResult).toBe("fatal_error");
+      expect(d.evidence).toBe("fatal_sidecar");
+    }
+  });
+
+  test("pane screens classify only when the worker said nothing", () => {
+    expect(
+      classifyOutcomeDraft("finished", { ...none, paneMatch: "fatal_sentinel", paneRead: true }),
+    ).toMatchObject({ processResult: "unknown_crash", evidence: "pane_sentinel" });
+    expect(
+      classifyOutcomeDraft("finished", { ...none, paneMatch: "provider_wording", paneRead: true }),
+    ).toMatchObject({ processResult: "unknown_crash", evidence: "provider_wording" });
+    // Read, and said nothing: evidence of absence, which is NOT the same fact as
+    // absence of evidence. The distinction is the point of `paneRead`.
+    expect(classifyOutcomeDraft("finished", { ...none, paneRead: true })).toMatchObject({
+      processResult: "settled_alive",
+      evidence: "pane_clear",
+    });
+    expect(classifyOutcomeDraft("finished", none)).toMatchObject({
+      processResult: "settled_alive",
+      evidence: "no_observation",
+    });
+  });
+
+  test("a deadline stop is its own result, and an abandoned probe says so", () => {
+    expect(classifyOutcomeDraft("timed_out", { ...none, herdrStatus: "working" })).toMatchObject({
+      processResult: "deadline_stopped",
+      evidence: "herdr_status",
+    });
+    expect(classifyOutcomeDraft("timed_out", { ...none, livenessConfirmed: false })).toMatchObject({
+      processResult: "deadline_stopped",
+      evidence: "no_observation",
+    });
+  });
+
+  test("a vanished worker is `gone`, never `fatal_error` it did not claim", () => {
+    expect(classifyOutcomeDraft("error", { ...none, herdrStatus: "idle" })).toMatchObject({
+      processResult: "gone",
+      evidence: "herdr_status",
+    });
+  });
+
+  test("no path yields a claim of successful completion", () => {
+    // `settled_alive` is deliberately not `clean`: nothing here knows the ITEM
+    // finished, only that the PROCESS was alive and settled. Item state is the
+    // backlog column's job, and it is read independently.
+    const all = [
+      classifyOutcomeDraft("finished", none),
+      classifyOutcomeDraft("finished", { ...none, sidecar }),
+      classifyOutcomeDraft("error", none),
+      classifyOutcomeDraft("timed_out", none),
+    ];
+    for (const d of all) {
+      expect(d.processResult).not.toBe("clean");
+      expect(d.processResult).not.toBe("completed");
+    }
+  });
+});
+
+describe("outcomePathOf / readFatalSidecar", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "swarm-outcome-path-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("the orchestrator's path matches the capture file's shape", () => {
+    expect(outcomePathOf("r1", "item", dir)).toBe(join(dir, "swarm-r1-outcome-item.json"));
+    expect(capturePath("r1", "item", dir)).toBe(join(dir, "swarm-r1-capture-item.json"));
+  });
+
+  test("a sluggy slug sanitizes identically for both files", () => {
+    const a = outcomePathOf("r/1", "some/item-name", dir);
+    const b = capturePath("r/1", "some/item-name", dir);
+    expect(a).toBe(b.replace("-capture-", "-outcome-"));
+  });
+
+  test("an absent file reads as null, and so does garbage", () => {
+    expect(readFatalSidecar(join(dir, "nope.json"))).toBeNull();
+    writeFileSync(join(dir, "swarm-r1-outcome-item.json"), "{ half-written");
+    expect(readFatalSidecar(outcomePathOf("r1", "item", dir))).toBeNull();
+  });
+
+  test("a valid certificate reads back", () => {
+    writeFileSync(
+      outcomePathOf("r1", "item", dir),
+      JSON.stringify({
+        v: 1,
+        result: "fatal_error",
+        stopReason: "error",
+        model: "p/m",
+        writtenAtMs: 5,
+      }),
+    );
+    expect(readFatalSidecar(outcomePathOf("r1", "item", dir))?.writtenAtMs).toBe(5);
+  });
+});
+
+describe("swarm_poll: a worker's own death certificate classifies the settle", () => {
+  let dir: string;
+  let priorStateDir: string | undefined;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "swarm-outcome-poll-"));
+    priorStateDir = process.env.PI_SWARM_STATE_DIR;
+    process.env.PI_SWARM_STATE_DIR = dir;
+  });
+  afterEach(() => {
+    if (priorStateDir === undefined) delete process.env.PI_SWARM_STATE_DIR;
+    else process.env.PI_SWARM_STATE_DIR = priorStateDir;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function seed(opts: {
+    runId: string;
+    slug?: string;
+    waitStatus?: string;
+    pane?: string;
+    showStatus?: string;
+    sidecar?: boolean;
+    pendingAmend?: boolean;
+    /** Make `agent wait` fail instead of settling, with a given herdr error code. */
+    waitError?: string;
+  }) {
+    const slug = opts.slug ?? "some-item";
+    const agentId = `${opts.runId}-w1`;
+    const worker: WorkerRecord = {
+      agent: agentId,
+      slug,
+      paneId: "w1:pZ",
+      tabId: "w1:tZ",
+      lifecycle: "active",
+      ...(opts.pendingAmend
+        ? {
+            pendingAmend: {
+              requestedAtMs: Date.now() - 1000,
+              seqAtRequest: null,
+              lastObservedSeq: null,
+              phase: "await_turn" as const,
+              checks: 0,
+              checkInReported: false,
+              runWorkedAfterAmendMs: -1,
+            },
+          }
+        : {}),
+    };
+    saveState({ runId: opts.runId, concurrency: 2, nextCounter: 1, workers: [worker] }, dir);
+    if (opts.sidecar) {
+      writeFileSync(
+        outcomePathOf(opts.runId, slug, dir),
+        JSON.stringify({
+          v: 1,
+          result: "fatal_error",
+          stopReason: "error",
+          model: "p/m",
+          writtenAtMs: Date.now(),
+        }),
+      );
+    }
+
+    const stub = makeStubPi((argv) => {
+      const [a, b] = argv;
+      if (a === "agent" && b === "list") {
+        return {
+          code: 0,
+          stdout: realAgentListEnvelope({
+            agent: "pi",
+            agent_status: "working",
+            name: agentId,
+            pane_id: "w1:pZ",
+          }),
+          stderr: "",
+        };
+      }
+      if (a === "agent" && b === "wait") {
+        if (opts.waitError) {
+          return {
+            code: 1,
+            stdout: "",
+            stderr: JSON.stringify({ error: { code: opts.waitError, message: "gone" } }),
+          };
+        }
+        return {
+          code: 0,
+          stdout: realWaitEnvelope(opts.waitStatus ?? "idle", agentId, "w1:pZ"),
+          stderr: "",
+        };
+      }
+      if (a === "pane" && b === "read") {
+        return { code: 0, stdout: opts.pane ?? "Turn finished cleanly.\n> ", stderr: "" };
+      }
+      if (b === "show") {
+        return {
+          code: 0,
+          stdout: JSON.stringify({ status: opts.showStatus ?? "in-review" }),
+          stderr: "",
+        };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    });
+    registerSwarmTools(stub.pi as unknown as Parameters<typeof registerSwarmTools>[0]);
+    const poll = stub.tools.get("swarm_poll");
+    if (!poll) throw new Error("swarm_poll was never registered");
+    return { poll, stub };
+  }
+
+  const runRaw = async (poll: { execute: (...a: never[]) => Promise<unknown> }, runId: string) =>
+    (await poll.execute(
+      ...(["c1", { runId, timeoutMs: 1000 }, undefined] as unknown as never[]),
+    )) as {
+      content: { type: string; text: string }[];
+      details: { events: PollEvent[] };
+    };
+
+  const run = async (
+    poll: { execute: (...a: never[]) => Promise<unknown> },
+    runId: string,
+  ): Promise<PollEvent[]> => (await runRaw(poll, runId)).details.events;
+
+  test("an idle settle the worker called fatal is an error, not a clean finish", async () => {
+    const runId = "sidecar-idle";
+    const { poll } = seed({ runId, sidecar: true });
+    const events = await run(poll, runId);
+
+    expect(events.map((e) => e.kind)).toEqual(["error"]);
+    expect(events[0]?.outcome).toMatchObject({
+      processResult: "fatal_error",
+      evidence: "fatal_sidecar",
+      sidecarProbed: true,
+      runId,
+      slug: "some-item",
+      kind: "pi",
+      backlogStatus: "in-review",
+      backlogRead: "ok",
+    });
+    // The human-facing channel: swarm_poll's text is built from `detail`, so a
+    // typed field nobody renders would leave the orchestrator reporting a bare
+    // `error` with no idea that the worker had stated its own cause.
+    expect(events[0]?.detail).toContain("fatal_error_sidecar");
+    expect(events[0]?.detail).toContain("not an inference from pane text");
+  });
+
+  test("this is the case pane text cannot reach: sentinel-free `idle` prose", async () => {
+    // The `idle`-status exemption in the pane screen exists because a live
+    // worker's pane can carry the sentinel as stale text (workers grep this repo
+    // and run its tests). A certificate has no such problem: the process that
+    // wrote it is the process that exited.
+    const runId = "sidecar-vs-stale-prose";
+    const { poll } = seed({ runId, sidecar: true, pane: "no sentinel here at all\n> " });
+    const events = await run(poll, runId);
+    expect(events[0]?.outcome?.evidence).toBe("fatal_sidecar");
+  });
+
+  test("the value survives the file's own deletion (the threading defect)", async () => {
+    // The read and the delete live in the same helper. If the delete won, the
+    // outcome would silently fall back to pane inference on exactly the path the
+    // certificate was added to make deterministic -- a degradation with no error
+    // anywhere, which is why it needs an assertion rather than a code comment.
+    const runId = "sidecar-consumed";
+    const { poll } = seed({ runId, sidecar: true });
+    const events = await run(poll, runId);
+    expect(events[0]?.outcome?.evidence).toBe("fatal_sidecar");
+    expect(existsSync(outcomePathOf(runId, "some-item", dir))).toBe(false);
+  });
+
+  test("the certificate is read before the tab is closed", async () => {
+    const runId = "sidecar-order";
+    const { poll, stub } = seed({ runId, sidecar: true });
+    await run(poll, runId);
+    const state = loadState(runId, dir);
+    expect(state?.outcomes?.[0]?.evidence).toBe("fatal_sidecar");
+    expect(stub.calls.some((c) => c.argv[0] === "tab" && c.argv[1] === "close")).toBe(true);
+  });
+
+  test("no certificate + clean pane + done settle is still settled_alive, not clean", async () => {
+    // A healthy worker never writes a certificate, so absence must never be a
+    // verdict. Had the design written `clean` records, this row would be the one
+    // that silently turned a mid-run settle into a claimed terminal finish.
+    const runId = "no-sidecar";
+    const { poll } = seed({ runId, waitStatus: "done" });
+    const events = await run(poll, runId);
+    expect(events.map((e) => e.kind)).toEqual(["finished"]);
+    expect(events[0]?.outcome).toMatchObject({
+      processResult: "settled_alive",
+      evidence: "pane_clear",
+      sidecarProbed: true,
+    });
+  });
+
+  test("a certificate on a non-clean settle never upgrades it", async () => {
+    // The monotonic rule the whole design rests on: a certificate may make an
+    // event LESS optimistic and never more. It matters most here, because this
+    // settle is already `error` -- a implementation that treated "the worker
+    // said something" as evidence of a resolved outcome would turn a vanished
+    // process into a reported finish.
+    const runId = "sidecar-on-error";
+    const { poll } = seed({ runId, sidecar: true, waitError: "agent_not_found" });
+    const events = await run(poll, runId);
+
+    expect(events.map((e) => e.kind)).toEqual(["error"]);
+    expect(events[0]?.outcome).toMatchObject({
+      processResult: "fatal_error",
+      evidence: "fatal_sidecar",
+    });
+  });
+
+  test("the pane fallback still fires when the worker wrote nothing", async () => {
+    // SIGKILL/OOM/a crash inside pi reach no handler at all. Demoting the pane
+    // screens to fallback is safe precisely because they still classify these;
+    // deleting them (which the item's word "replace" invites) would report every
+    // unwitnessed death as a clean finish.
+    const runId = "pane-fallback-intact";
+    const { poll } = seed({ runId, waitStatus: "done", pane: fatalExitPane() });
+    const events = await run(poll, runId);
+    expect(events.map((e) => e.kind)).toEqual(["error"]);
+    expect(events[0]?.outcome).toMatchObject({
+      processResult: "unknown_crash",
+      evidence: "pane_sentinel",
+    });
+  });
+
+  test("a provider banner still reaches the finish via the fallback", async () => {
+    const runId = "provider-fallback";
+    const { poll } = seed({
+      runId,
+      pane: "Codex error: The usage limit has been reached\n> ",
+    });
+    const events = await run(poll, runId);
+    expect(events[0]?.outcome).toMatchObject({
+      processResult: "unknown_crash",
+      evidence: "provider_wording",
+    });
+  });
+
+  test("an amendment in flight never holds a worker that already died", async () => {
+    // Before the certificate was read here, a fatal exit with an amendment
+    // outstanding took the amend-hold path, whose `rearm` branch runs no crash
+    // check at all: the run armed up to AMEND_ACK_MAX_CHECKS watches against a
+    // process that had already exited 1, then reported a generic "worker
+    // vanished" -- the wrong fact, arriving late.
+    const runId = "sidecar-beats-hold";
+    const { poll, stub } = seed({ runId, sidecar: true, pendingAmend: true });
+    const events = await run(poll, runId);
+
+    expect(events.map((e) => e.kind)).toEqual(["error"]);
+    expect(events[0]?.outcome?.evidence).toBe("fatal_sidecar");
+    // No ack watch armed: nothing waited on a dead process.
+    const ackWaits = stub.calls.filter(
+      (c) =>
+        c.argv[0] === "agent" &&
+        c.argv[1] === "wait" &&
+        c.argv.includes("working") &&
+        !c.argv.includes("idle"),
+    );
+    expect(ackWaits).toHaveLength(0);
+  });
+
+  test("the ledger row outlives the worker record it describes", async () => {
+    // The reason the ledger exists at all: `swarmPoll` filters departing workers
+    // out of state.workers BEFORE it persists, so an outcome stored only on the
+    // record is deleted with it and survives nowhere. Asserting on the persisted
+    // file (not the returned event) is what keeps that ordering from regressing.
+    const runId = "ledger-persisted";
+    const { poll } = seed({ runId, sidecar: true });
+    await run(poll, runId);
+
+    const state = loadState(runId, dir);
+    expect(state?.workers.map((w) => w.agent)).not.toContain(`${runId}-w1`);
+    expect(state?.outcomes).toHaveLength(1);
+    expect(state?.outcomes?.[0]).toMatchObject({
+      agent: `${runId}-w1`,
+      slug: "some-item",
+      processResult: "fatal_error",
+      evidence: "fatal_sidecar",
+      backlogRead: "ok",
+    });
+  });
+
+  test("the outcome reaches the rendered TEXT, not only the structured details", async () => {
+    // `swarm_poll`'s orchestrator is a model reading `content[0].text`. A field
+    // that exists only in `details` is invisible to it, which is how "outcome
+    // inferred, not observed" became acceptable prose in the first place.
+    const runId = "render-in-text";
+    const { poll } = seed({ runId, sidecar: true });
+    const res = await runRaw(poll, runId);
+    expect(res.content[0]?.text).toContain("outcome=fatal_error/fatal_sidecar");
+    expect(res.content[0]?.text).toContain("backlog=in-review");
+    expect(res.details.events[0]?.outcome?.evidence).toBe("fatal_sidecar");
+  });
+
+  test("renderOutcome names the source, not just the verdict", () => {
+    const base: WorkerOutcome = {
+      runId: "r",
+      agent: "a",
+      slug: "s",
+      kind: "pi",
+      processResult: "fatal_error",
+      evidence: "fatal_sidecar",
+      sidecarProbed: true,
+      backlogStatus: "in-review",
+      backlogRead: "ok",
+      decidedAtMs: 1,
+    };
+    expect(renderOutcome(base)).toBe("[outcome=fatal_error/fatal_sidecar backlog=in-review]");
+    expect(renderOutcome({ ...base, backlogStatus: undefined, backlogRead: "failed" })).toBe(
+      "[outcome=fatal_error/fatal_sidecar backlog=failed]",
+    );
+  });
+
+  test("a foreign or malformed certificate at that path is absent, not fatal", async () => {
+    for (const body of ["garbage", JSON.stringify({ v: 9, result: "fatal_error" })]) {
+      const runId = `bogus-sidecar-${body.length}`;
+      writeFileSync(outcomePathOf(runId, "some-item", dir), body);
+      const { poll } = seed({ runId });
+      const events = await run(poll, runId);
+      expect(events[0]?.kind).toBe("finished");
+      expect(events[0]?.outcome?.evidence).not.toBe("fatal_sidecar");
+      expect(events[0]?.outcome?.sidecarProbed).toBe(true);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The reconcile path that has no settle at all.
+//
+// A worker whose agent vanished between polls never passes `settleWait`, so it
+// has no pane read and no armed wait -- the only thing that can say what
+// happened is a certificate left on disk. This path also persists differently
+// from every other one: `reconcileState` has already excluded the record and
+// `saveState` has already run by the time the dropped loop is entered, so an
+// outcome appended here is written to the state file or it is written nowhere.
+// ---------------------------------------------------------------------------
+
+describe("getOrInitState's dropped-worker path records an observed outcome", () => {
+  let dir: string;
+  let priorStateDir: string | undefined;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "swarm-drop-reconcile-"));
+    priorStateDir = process.env.PI_SWARM_STATE_DIR;
+    process.env.PI_SWARM_STATE_DIR = dir;
+  });
+  afterEach(() => {
+    if (priorStateDir === undefined) delete process.env.PI_SWARM_STATE_DIR;
+    else process.env.PI_SWARM_STATE_DIR = priorStateDir;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function stubFor(runId: string, withSidecar: boolean) {
+    const agentId = `${runId}-w1`;
+    saveState(
+      {
+        runId,
+        concurrency: 2,
+        nextCounter: 1,
+        workers: [
+          {
+            agent: agentId,
+            slug: "gone-item",
+            paneId: "w1:pZ",
+            tabId: "w1:tZ",
+            lifecycle: "active",
+          },
+        ],
+      },
+      dir,
+    );
+    if (withSidecar) {
+      writeFileSync(
+        outcomePathOf(runId, "gone-item", dir),
+        JSON.stringify({
+          v: 1,
+          result: "fatal_error",
+          stopReason: "error",
+          model: "p/m",
+          writtenAtMs: 1,
+        }),
+      );
+    }
+    const s = makeStubPi((argv) => {
+      const [a, b] = argv;
+      if (a === "agent" && b === "list") {
+        // Empty: the worker's agent is gone outright, which is what makes this
+        // the reconcile path rather than the settle path.
+        return { code: 0, stdout: realAgentListEnvelope(), stderr: "" };
+      }
+      return { code: 0, stdout: JSON.stringify({ result: {} }), stderr: "" };
+    });
+    registerSwarmTools(s.pi as unknown as Parameters<typeof registerSwarmTools>[0]);
+    const poll = s.tools.get("swarm_poll");
+    if (!poll) throw new Error("swarm_poll was never registered");
+    return { poll, stub: s };
+  }
+
+  test("a certificate turns 'inferred, not observed' into an observed fatal error", async () => {
+    const runId = "dropped-with-sidecar";
+    const { poll } = stubFor(runId, true);
+    await poll.execute(...(["c1", { runId, timeoutMs: 1000 }, undefined] as unknown as never[]));
+
+    const state = loadState(runId, dir);
+    expect(state?.workers).toHaveLength(0);
+    // The row must be in the FILE, not merely on the record that was just
+    // dropped from it -- that distinction is the entire reason the ledger exists.
+    expect(state?.outcomes).toHaveLength(1);
+    expect(state?.outcomes?.[0]).toMatchObject({
+      agent: `${runId}-w1`,
+      slug: "gone-item",
+      processResult: "fatal_error",
+      evidence: "fatal_sidecar",
+      sidecarProbed: true,
+    });
+  });
+
+  test("no certificate keeps the honest 'inferred' classification", async () => {
+    const runId = "dropped-no-sidecar";
+    const { poll } = stubFor(runId, false);
+    await poll.execute(...(["c1", { runId, timeoutMs: 1000 }, undefined] as unknown as never[]));
+
+    const state = loadState(runId, dir);
+    expect(state?.outcomes).toHaveLength(1);
+    expect(state?.outcomes?.[0]).toMatchObject({
+      processResult: "gone",
+      evidence: "herdr_status",
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The generation guard: a certificate left by an earlier worker must never
+// vouch for a later one.
+//
+// Unlink happens at spawn rather than being solved with a token inside the
+// payload, because the worker cannot obtain anything the orchestrator could
+// compare against: herdr's status report is emitted by a PEER `agent_settled`
+// listener (`herdr-agent-state.ts`) which the worker's own `exit(1)` may
+// preempt, so a `state_change_seq` stamped at write time has no stable
+// relationship to the settle the orchestrator later observes. Reachability was
+// checked from inside a live worker -- `herdr agent get $HERDR_PANE_ID` does
+// return its own AgentInfo with a seq -- and it is dropped anyway, for that
+// reason rather than the cruder "a worker cannot reach herdr", which is false.
+// ---------------------------------------------------------------------------
+
+describe("swarm_spawn clears a stale death certificate before the tab exists", () => {
+  let dir: string;
+  let priorStateDir: string | undefined;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "swarm-spawn-sidecar-"));
+    priorStateDir = process.env.PI_SWARM_STATE_DIR;
+    process.env.PI_SWARM_STATE_DIR = dir;
+  });
+  afterEach(() => {
+    if (priorStateDir === undefined) delete process.env.PI_SWARM_STATE_DIR;
+    else process.env.PI_SWARM_STATE_DIR = priorStateDir;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const stub = () => {
+    const s = makeStubPi((argv) => {
+      if (argv.includes("ready")) {
+        return {
+          code: 0,
+          stdout: JSON.stringify([{ id: "some-item", worker_safe: true, related_files: [] }]),
+          stderr: "",
+        };
+      }
+      if (argv[0] === "tab" && argv[1] === "create") {
+        return {
+          code: 0,
+          stdout: JSON.stringify({
+            result: { root_pane: { pane_id: "w1:pN" }, tab: { tab_id: "w1:tN" } },
+          }),
+          stderr: "",
+        };
+      }
+      return { code: 0, stdout: JSON.stringify({ result: {} }), stderr: "" };
+    });
+    registerSwarmTools(s.pi as unknown as Parameters<typeof registerSwarmTools>[0]);
+    const spawn = s.tools.get("swarm_spawn");
+    if (!spawn) throw new Error("swarm_spawn was never registered");
+    return spawn;
+  };
+
+  test("a leftover certificate is gone before the worker can be handed the item", async () => {
+    const runId = "stalegen";
+    const path = outcomePathOf(runId, "some-item", dir);
+    writeFileSync(
+      path,
+      JSON.stringify({
+        v: 1,
+        result: "fatal_error",
+        stopReason: "error",
+        model: "p/m",
+        writtenAtMs: 1,
+      }),
+    );
+    expect(existsSync(path)).toBe(true);
+
+    const res = (await stub().execute(
+      ...(["call-1", { runId, items: ["some-item"], concurrency: 1 }] as unknown as never[]),
+    )) as { details: { spawned: unknown[] } };
+    expect(res.details.spawned).toHaveLength(1);
+    // Without this, a worker that crashed in an earlier attempt would have its
+    // death attributed to the retry that followed -- and the retry is the one
+    // the digest would then report as failed.
+    expect(existsSync(path)).toBe(false);
   });
 });

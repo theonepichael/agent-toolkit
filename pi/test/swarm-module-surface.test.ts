@@ -21,11 +21,17 @@ import type {
 import * as scheduling from "../extensions/swarm-lib/swarm-scheduling";
 import type {
   Amendment,
+  BacklogRead,
+  FatalSidecar,
+  OutcomeDraft,
+  OutcomeEvidence,
+  ProcessResult,
   ReadyItem,
   SelectionResult,
   ShownItem,
   SwarmState,
   WorkerLifecycle,
+  WorkerOutcome,
   WorkerRecord,
 } from "../extensions/swarm-lib/swarm-scheduling";
 import * as herdr from "../extensions/swarm-lib/swarm-herdr";
@@ -70,6 +76,15 @@ const SCHEDULING_VALUES = [
   "canOpenNewPane",
   "spawnBudget",
   "stalledRelayWorkers",
+  // Structured outcomes. All three live here because this module owns the
+  // persisted state shape and stays I/O-free by its own header rule: the
+  // certificate PARSE is pure, the file READ belongs to swarm-tool-context.
+  "parseFatalSidecar",
+  "classifyOutcomeDraft",
+  "appendOutcome",
+  "priorOutcome",
+  "SIDECAR_VERSION",
+  "FATAL_SIDECAR_RESULT",
 ] as const;
 
 const HERDR_VALUES = [
@@ -104,9 +119,18 @@ const HERDR_VALUES = [
   "paneIdentityMismatch",
   "waitResultDetail",
   "parseAgentSession",
+  "outcomePath",
 ] as const;
 
-const CONTEXT_VALUES = ["SwarmToolContext", "defaultExec", "isValidUuid"] as const;
+const CONTEXT_VALUES = [
+  "SwarmToolContext",
+  "defaultExec",
+  "isValidUuid",
+  "outcomePathOf",
+  "readFatalSidecar",
+  "fatalSidecarDetail",
+  "renderOutcome",
+] as const;
 
 // The pre-extraction import surface of swarm-tool.ts: every moved symbol
 // plus the ones that never moved. A missing entry here is a compatibility
@@ -132,6 +156,10 @@ const SURFACE_VALUES = [
   "buildShowArgv",
   "formatDuration",
   "looksTruncated",
+  "outcomePathOf",
+  "readFatalSidecar",
+  "fatalSidecarDetail",
+  "renderOutcome",
   "SwarmToolContext",
   "defaultExec",
   "isValidUuid",
@@ -167,6 +195,12 @@ function typeExportsExist(): boolean {
     undefined as ExecFn | undefined,
     undefined as ExecResult | undefined,
     undefined as SwarmToolContextOptions | undefined,
+    undefined as FatalSidecar | undefined,
+    undefined as WorkerOutcome | undefined,
+    undefined as OutcomeDraft | undefined,
+    undefined as ProcessResult | undefined,
+    undefined as OutcomeEvidence | undefined,
+    undefined as BacklogRead | undefined,
   ];
   return probes.every((v) => v === undefined);
 }

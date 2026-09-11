@@ -50,6 +50,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`grill.py`](#agentscriptsgrillpy) | grill.py — grill-me session state CLI. All session mutations go through here. |
 | [`guard_rails.py`](#agentscriptsguardrailspy) | Pre-tool guard shared by every harness: refuse a write into a repository's main checkout while a backlog item for that repository is in progress, warn when the current worktree's base has fallen behind ``origin/main``, (Bash, Claude Code only) deny the git-native ways to defeat the no-commit-on-main git hook (``githooks/pre-commit`` / ``githooks-global/pre-commit``), and require an active backlog-item claim before a write that points at an in-progress item. |
 | [`harness_discovery_check.py`](#agentscriptsharnessdiscoverycheckpy) | SessionStart hook + CLI: detect when a harness's instruction-file discovery behavior may have drifted from the version-pinned facts in README.md. |
+| [`harness_spec.py`](#agentscriptsharnessspecpy) | Declarative harness specification registry. |
 | [`herdr_delegate.py`](#agentscriptsherdrdelegatepy) | Launch pi agents in herdr tabs to work backlog items. |
 | [`link_drift_check.py`](#agentscriptslinkdriftcheckpy) | SessionStart hook + CLI: flag when a managed symlink on this machine no longer points where links.toml says it should. |
 | [`link_inspect.py`](#agentscriptslinkinspectpy) | link_inspect.py — link inspection, path classification, drift finding, and the self-contained audit assembly for install.py's ``--check-links`` audit and link_drift_check.py's SessionStart hook. |
@@ -355,7 +356,7 @@ Typed mutation service and transaction manager for dev_status (Candidate 12).
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI: none (library module).
 - Environment: `AGY_SESSION`, `AI_AGENT`, `ANTHROPIC_CLI`, `ANTIGRAVITY`, `ANTIGRAVITY_AGENT`, `ANTIGRAVITY_CONVERSATION_ID`, `CLAUDE_CODE`, `COPILOT`, `DEVSTATUS_CLAIM_TTL_SECONDS`, `DEVSTATUS_HARNESS`, `GITHUB_COPILOT`, `OPENCODE`, `OPENCODE_GATEWAY`, `PI_CODING_AGENT`, `PI_SESSION`
-- Depends on: `dev_status_formatting.py`, `dev_status_storage.py`, `worktree_provenance.py`
+- Depends on: `dev_status_formatting.py`, `dev_status_storage.py`, `harness_spec.py`, `worktree_provenance.py`
 - Exceptions:
   - `class BacklogMutationError(Exception)` — Base class for all typed mutation refusals.
   - `class RevisionConflictError(BacklogMutationError)` — Refusal when --if-rev is missing or stale on numeric position mutations.
@@ -405,7 +406,7 @@ Typed mutation service and transaction manager for dev_status (Candidate 12).
   - `add_pending_item(request: PendingAddRequest, *, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Track a new waiting-on-someone-else item.
   - `update_pending_item(slug_or_id: str, request: PendingUpdateRequest, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Merge an update request into a pending item.
   - `mutation_transaction(*, items_path: Path | None = None, verbose: bool = False) -> Iterator[BacklogTransaction]` — Hold backlog_lock once for batch operations; yields BacklogTransaction.
-- Tested by: `agent-scripts/test_dev_status.py`, `agent-scripts/test_dev_status_mutation.py`, `test/test_worktree_provenance.py`
+- Tested by: `agent-scripts/test_dev_status.py`, `agent-scripts/test_dev_status_mutation.py`, `agent-scripts/test_harness_spec.py`, `test/test_worktree_provenance.py`
 
 ### `agent-scripts/dev_status_read.py`
 
@@ -497,7 +498,7 @@ gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources.
   - `--repo-root` — repository root (default: inferred from this script's path)
   - `--output`
 - Explicit exit codes: `1`, `2`, `3`
-- Depends on: `cli_common.py`
+- Depends on: `cli_common.py`, `harness_spec.py`
 - Public classes:
   - `class CliArgument` — One ``add_argument`` call, reduced to what a reader needs.
   - `class Subcommand` — One ``add_parser`` call and the arguments attached to it.
@@ -552,7 +553,7 @@ gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources.
   - `is_generated_artifact(relpath: str) -> bool` — Report whether a path is build output or a dotfile rather than a source.
   - `tracked_files(repo_root: Path) -> set[str] | None` — Return every git-tracked path under ``repo_root``, or None if unavailable.
   - `render_assets(repo_root: Path, links: LinkTable, tracked: set[str] | None = None) -> list[str]` — Render the non-Python, non-skill harness assets and where they install.
-  - `discover_doc_paths(repo_root: Path) -> list[Path]` — Return every skill/command doc across the four harnesses, sorted.
+  - `discover_doc_paths(repo_root: Path) -> list[Path]` — Return every skill/command doc across all registry harnesses, sorted.
   - `code_regions(text: str) -> list[str]` — Return every inline code span and fenced code block's inner text.
   - `tokenize_invocation_line(line: str) -> list[str]` — Shell-tokenize one line, after stripping argparse-usage brackets.
   - `invocation_tokens(tokens: list[str], script_basename: str) -> list[str] | None` — Return the token stream starting at ``script_basename``, or None.
@@ -572,7 +573,7 @@ gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources.
   - `anchor(relpath: str) -> str` — Return the GitHub heading anchor for a module section.
   - `default_repo_root() -> Path` — Return the repo root inferred from this script's real location.
 - Subcommand handlers: `cmd_function_name`
-- Tested by: `agent-scripts/test_gen_interfaces.py`, `test/test_dev_status_tool_action_coverage.py`
+- Tested by: `agent-scripts/test_gen_interfaces.py`, `agent-scripts/test_harness_spec.py`, `test/test_dev_status_tool_action_coverage.py`
 
 ### `agent-scripts/gen_second_opinion.py`
 
@@ -615,9 +616,9 @@ Generate a zsh `#compdef` completion file for a harness CLI.
   - `--stdout` — print to stdout instead of writing
 - Filesystem constants:
   - `DEFAULT_OUT_DIR = Path.home() / '.zsh/completions'`
-- Depends on: `cli_common.py`
+- Depends on: `cli_common.py`, `harness_spec.py`
 - Public classes:
-  - `class HarnessSpec`
+  - `class HarnessAdapter`
   - `class Option`
   - `class Node`
 - Public functions:
@@ -632,15 +633,15 @@ Generate a zsh `#compdef` completion file for a harness CLI.
   - `build_tree(cli: str, path: tuple[str, ...], seen: set[tuple[str, ...]], *, verbose: bool = False) -> Node`
   - `collect_goflag_sections(text: str, *, is_root: bool) -> dict[str, list[str]]` — Split go-flag `--help`/`help <name>` output into Flags/Commands blocks.
   - `build_tree_goflag(cli: str, *, verbose: bool = False) -> Node` — Build a 2-level-deep tree: root flags/subcommands, one level of
-  - `run_native_passthrough(spec: HarnessSpec, *, verbose: bool = False) -> str | None`
+  - `run_native_passthrough(spec: HarnessAdapter, *, verbose: bool = False) -> str | None`
   - `option_label(opt: Option) -> str`
   - `esc_desc(s: str) -> str`
   - `format_option(opt: Option) -> str`
   - `sanitize(path: tuple[str, ...]) -> str`
   - `needs_function(node: Node) -> bool`
   - `emit_zsh(root: Node, cli: str) -> str`
-  - `generate(spec: HarnessSpec, *, verbose: bool = False) -> str | None`
-- Tested by: `agent-scripts/test_gen_shell_completion.py`
+  - `generate(spec: HarnessAdapter, *, verbose: bool = False) -> str | None`
+- Tested by: `agent-scripts/test_gen_shell_completion.py`, `agent-scripts/test_harness_spec.py`
 
 ### `agent-scripts/gen_skills.py`
 
@@ -655,7 +656,7 @@ gen_skills.py — regenerate the dashboard/recap/grill-me/backlog-item/ make-ski
   - `--stdout` — print the rendered copies, write nothing
   - `--repo-root` — repository root (default: inferred from this script's path)
 - Explicit exit codes: `1`, `2`
-- Depends on: `cli_common.py`, `gen_skills_params.py`
+- Depends on: `cli_common.py`, `gen_skills_params.py`, `harness_spec.py`
 - Public functions:
   - `template_path_for(skill: str, harness: str) -> str` — Return the template path this (skill, harness) pair renders from.
   - `do_not_edit_marker(skill: str, harness: str) -> str` — Return this (skill, harness) pair's marker, naming its real template.
@@ -665,7 +666,7 @@ gen_skills.py — regenerate the dashboard/recap/grill-me/backlog-item/ make-ski
   - `render_one(skill: str, harness: str, template_text: str, params: dict) -> str` — Render one (skill, harness) pair's complete file.
   - `render_all(repo_root: Path, skill_params: dict[str, dict[str, dict]]) -> dict[str, str]` — Render every (skill, harness) pair, keyed by its repo-relative output path.
   - `default_repo_root() -> Path` — Return the repo root inferred from this script's real location.
-- Tested by: `agent-scripts/test_gen_skills.py`
+- Tested by: `agent-scripts/test_gen_skills.py`, `agent-scripts/test_harness_spec.py`
 
 ### `agent-scripts/gen_skills_params.py`
 
@@ -815,7 +816,7 @@ SessionStart hook + CLI: detect when a harness's instruction-file discovery beha
   - `probe [--harness {claude,opencode,pi,copilot,agy,codex}]` — on-demand live semantic verification (~10-15 API calls)
     - `--harness` — probe a single harness instead of all supported ones (choices: claude, opencode, pi, copilot, agy, codex)
 - Environment: `CODEX_PROBE_MODEL`, `OPENCODE_PROBE_MODEL`, `XDG_CACHE_HOME`
-- Depends on: `cli_common.py`
+- Depends on: `cli_common.py`, `harness_spec.py`
 - Exceptions:
   - `class HarnessCheckError(Exception)` — Raised when a harness check can't proceed (subprocess failure, not a missing binary).
 - Public functions:
@@ -823,7 +824,29 @@ SessionStart hook + CLI: detect when a harness's instruction-file discovery beha
   - `run_version(name: str, binary: Path, run_command: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run) -> str` — Run ``<binary> --version`` and return the extracted version string.
   - `build_parser() -> argparse.ArgumentParser`
 - Subcommand handlers: `cmd_check`, `cmd_probe`
-- Tested by: `agent-scripts/test_harness_discovery_check.py`
+- Tested by: `agent-scripts/test_harness_discovery_check.py`, `agent-scripts/test_harness_spec.py`
+
+### `agent-scripts/harness_spec.py`
+
+Declarative harness specification registry.
+
+- Installed at: `~/.claude/scripts/harness_spec.py` (all harnesses)
+- Entrypoint: not executable, `#!/usr/bin/env python3`
+- CLI: none (library module).
+- Public classes:
+  - `class FeatureSupportState(StrEnum)` — Lifecycle support states for a required feature declaration.
+  - `class FeatureImplementation` — Declaration of a harness's implementation of a required feature.
+  - `class HarnessSpec` — Specification and discovery facts for a single AI agent harness.
+- Public functions:
+  - `spec(name: str) -> HarnessSpec` — Return the HarnessSpec for the given harness name.
+  - `binary(name: str) -> str` — Return the CLI binary name for the given harness.
+  - `install_hint(name: str) -> str` — Return the installation hint for the given harness.
+  - `fallback_paths(name: str) -> tuple[str, ...]` — Return the fallback probe paths for the given harness.
+  - `expected_filenames(name: str) -> frozenset[str]` — Return the expected instruction filenames loaded by the given harness.
+  - `probe_expected_root(name: str) -> frozenset[str]` — Return the fixture root tokens expected for the given harness.
+  - `feature_spec(harness: str, feature: str) -> FeatureImplementation` — Return the FeatureImplementation declaration for a harness and feature.
+  - `assert_feature_coverage(repo_root: Path | None = None) -> None` — Validate that all active harnesses have declared valid implementations for all required features.
+- Tested by: `agent-scripts/test_harness_feature_coverage.py`, `agent-scripts/test_harness_spec.py`
 
 ### `agent-scripts/herdr_delegate.py`
 
@@ -920,6 +943,7 @@ link_inspect.py — link inspection, path classification, drift finding, and the
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI: none (library module).
 - Environment: `WSL_DISTRO_NAME`
+- Depends on: `harness_spec.py`
 - Public classes:
   - `class LinkSpec` — One row of ``links.toml``: a repo file and where it gets linked.
   - `class ManagedDirSpec` — One row of ``links.toml``: a directory this repo owns exclusively.
@@ -953,7 +977,7 @@ link_inspect.py — link inspection, path classification, drift finding, and the
   - `check_orphaned_links(links: Sequence[tuple[Path, Path, str, bool]], *, manifest_entries: Iterable[dict[str, object]]) -> list[LinkFinding]` — Return typed findings for manifest-recorded symlinks that links.toml no longer produces.
   - `live_backup_paths(manifest_entries: Iterable[dict[str, object]]) -> set[Path]` — Return manifest-recorded backups that are still live ``--rollback`` payload.
   - `check_unmanaged_files(managed_dirs: Sequence[ManagedDirSpec], links: Sequence[tuple[Path, Path, str, bool]], *, home: Path, dir_applies: Callable[[ManagedDirSpec], bool], manifest_entries: Iterable[dict[str, object]] = ()) -> tuple[list[LinkFinding], int]` — Report foreign entries in directories ``links.toml`` owns exclusively.
-- Tested by: `agent-scripts/test_link_drift_check.py`, `agent-scripts/test_link_inspect.py`
+- Tested by: `agent-scripts/test_harness_spec.py`, `agent-scripts/test_link_drift_check.py`, `agent-scripts/test_link_inspect.py`, `test/test_install.py`
 
 ### `agent-scripts/llm_backends.py`
 
@@ -996,17 +1020,18 @@ Cross-platform agent notification dispatcher.
 - CLI (`argparse`): Cross-platform agent notification dispatcher for WSL, macOS, and Linux.
   - `--quiet/-q`
   - `--verbose/-v`
-  - `positional_message` — notification body text (nargs: ?)
+  - `positional_message` — notification body text (or raw Codex JSON payload) (nargs: ?)
   - `--title/-t` — notification title (default: 'Agent Notification') (default: Agent Notification)
   - `--message/-m` — notification body text (overrides positional message)
-  - `--harness/-H` — originating harness name (e.g. Claude, Pi, AGY, OpenCode, Copilot)
+  - `--harness/-H` — originating harness name (e.g. Claude, Pi, AGY, OpenCode, Copilot, Codex)
   - `--icon/-i` — custom icon path or name
   - `--urgency/-u` — urgency level (default: normal) (choices: low, normal, critical; default: normal)
   - `--type` — notification event type (default: completed) (choices: completed, waiting_for_input, error; default: completed)
+  - `--codex-payload` — explicit Codex JSON event payload from agent-turn-complete hook
 - Environment: `TMUX`, `WSL_DISTRO_NAME`, `WSL_INTEROP`
 - Filesystem constants:
   - `ICONS_DIR = Path(__file__).resolve().parent.parent / 'claude' / 'icons'`
-- Depends on: `cli_common.py`
+- Depends on: `cli_common.py`, `harness_spec.py`
 - Public functions:
   - `is_wsl() -> bool` — Detect whether running inside Windows Subsystem for Linux.
   - `get_harness_icon(harness: str | None, custom_icon: str | None = None) -> Path | None` — Resolve the icon file path for a given harness.
@@ -1016,8 +1041,9 @@ Cross-platform agent notification dispatcher.
   - `send_linux_notification(title: str, message: str, icon_path: Path | None = None, urgency: str = 'normal', verbose: bool = False) -> bool` — Send a desktop notification on native Linux via notify-send.
   - `send_terminal_osc(title: str, message: str, verbose: bool = False) -> bool` — Emit OSC 777 and OSC 9 escape sequences to the controlling TTY.
   - `dispatch_notification(title: str, message: str, harness: str | None = None, icon: str | None = None, urgency: str = 'normal', event_type: str = 'completed', verbose: bool = False) -> None` — Route notification to terminal OSC and appropriate OS bridge with icon.
+  - `parse_codex_payload(raw_payload: str) -> str` — Extract a human-readable notification message from a Codex JSON event payload.
   - `build_parser() -> argparse.ArgumentParser`
-- Tested by: `agent-scripts/test_notify.py`
+- Tested by: `agent-scripts/test_harness_feature_coverage.py`, `agent-scripts/test_notify.py`
 
 ### `agent-scripts/outlook_calendar.py`
 
@@ -1239,7 +1265,7 @@ Copy-once settings seeding, adoption, reseed, and drift detection.
   - `describe_opencode_drift(seed: Path, live: Path) -> str` — Describe how a live opencode.jsonc diverged from its seed.
   - `describe_vscode_drift(seed: Path, live: Path) -> str` — Describe how a live VS Code settings/keybindings file diverged from its seed.
   - `seed_file(ctx: Context, seed: Path, dest: Path, *, skip_label: str, drift: Callable[[Path, Path], str], adopt_drift: Callable[[str, str], str] | None = None, adopt_blocker: Callable[[Context, Path, Path, str, str], str | None] | None = None, run_command: Callable[..., CommandOutcome]) -> str` — Copy ``seed`` to ``dest`` once, or report drift if it's already there.
-- Tested by: `agent-scripts/test_settings_seed.py`
+- Tested by: `agent-scripts/test_settings_seed.py`, `test/test_install.py`
 
 ### `agent-scripts/settings_seed_drift_check.py`
 
@@ -1483,22 +1509,22 @@ Each harness gets a port of the same skill surface. Presence below is
 the file existing in the repo; the description is the canonical
 `claude/commands/` frontmatter.
 
-| Skill | claude | copilot | opencode | agy | pi |
-| --- | --- | --- | --- | --- | --- |
-| `/analyze-sessions` | yes | yes | yes | yes | yes |
-| `/backlog-item` | yes | yes | yes | yes | yes |
-| `/dashboard` | yes | yes | yes | yes | yes |
-| `/draft-voice` | yes | — | — | — | — |
-| `/grill-me` | yes | yes | yes | yes | yes |
-| `/make-skill` | yes | yes | yes | yes | yes |
-| `/recap` | yes | yes | yes | yes | yes |
-| `/refresh-guidance` | yes | yes | yes | yes | yes |
-| `/second-opinion` | yes | yes | yes | yes | yes |
-| `/skill-map` | yes | — | — | — | — |
-| `/spec` | yes | yes | yes | yes | yes |
-| `/standup` | yes | yes | yes | yes | yes |
-| `/swarm` | yes | yes | — | — | — |
-| `/to-tickets` | yes | yes | yes | yes | yes |
+| Skill | claude | copilot | opencode | agy | pi | codex |
+| --- | --- | --- | --- | --- | --- | --- |
+| `/analyze-sessions` | yes | yes | yes | yes | yes | — |
+| `/backlog-item` | yes | yes | yes | yes | yes | yes |
+| `/dashboard` | yes | yes | yes | yes | yes | yes |
+| `/draft-voice` | yes | — | — | — | — | — |
+| `/grill-me` | yes | yes | yes | yes | yes | yes |
+| `/make-skill` | yes | yes | yes | yes | yes | yes |
+| `/recap` | yes | yes | yes | yes | yes | yes |
+| `/refresh-guidance` | yes | yes | yes | yes | yes | yes |
+| `/second-opinion` | yes | yes | yes | yes | yes | yes |
+| `/skill-map` | yes | — | — | — | — | — |
+| `/spec` | yes | yes | yes | yes | yes | yes |
+| `/standup` | yes | yes | yes | yes | yes | yes |
+| `/swarm` | yes | yes | — | — | — | — |
+| `/to-tickets` | yes | yes | yes | yes | yes | yes |
 
 - **`/analyze-sessions`** — Analyze coding-agent sessions across pi, Claude Code, opencode, Copilot CLI, and agy: calculate token/USD cost rollups, list user prompts, or search message transcripts. Use when the user asks about session costs, token usage, previous prompts, or wants to search past coding session transcripts across harnesses.
   - Source: `claude/commands/analyze-sessions.md`
@@ -1558,6 +1584,7 @@ are copy-once seeds for exactly that reason.
 | `claude/CORE_INSTRUCTIONS.md` | `~/.claude/CLAUDE.md` (claude), `~/.copilot/copilot-instructions.md` (copilot), `~/.gemini/GEMINI.md` (agy), `~/.pi/agent/AGENTS.md` (pi), `~/.codex/AGENTS.md` (codex) |
 | `claude/icons/agy.png` | not symlinked by `links.toml` |
 | `claude/icons/claude.png` | not symlinked by `links.toml` |
+| `claude/icons/codex.png` | not symlinked by `links.toml` |
 | `claude/icons/copilot.png` | not symlinked by `links.toml` |
 | `claude/icons/opencode.png` | not symlinked by `links.toml` |
 | `claude/icons/pi.png` | not symlinked by `links.toml` |
@@ -1665,6 +1692,7 @@ are copy-once seeds for exactly that reason.
 | `pi/test/toggle-check.test.ts` | not symlinked by `links.toml` |
 | `pi/test/vitals-promotion-tool.test.ts` | not symlinked by `links.toml` |
 | `pi/tsconfig.json` | not symlinked by `links.toml` |
+| `codex/CLAUDE_CODE_PARITY.md` | not symlinked by `links.toml` |
 
 ---
 
@@ -1861,7 +1889,7 @@ depart_exec.py — --depart execution: preflight, phases, confirmation, cleanup.
   - `execute_package_phase(deps: Deps, ctx: DepartureContext, baseline: depart.Baseline, ledger: depart.DepartureLedger) -> bool` — Remove/downgrade owned packages, reverse transactions order.
   - `execute_departure(deps: Deps, ctx: DepartureContext, baseline: depart.Baseline, report: dict[str, depart.Classification]) -> depart.DepartureLedger` — Perform every safe ``owned`` action, retry-safe via the departure ledger.
   - `do_depart(deps: Deps, ctx: DepartureContext) -> int` — Preview and execute a pristine-state departure.
-- Tested by: `test/test_depart_exec_layering.py`
+- Tested by: `test/test_depart_exec_layering.py`, `test/test_install.py`
 
 ---
 
@@ -1898,6 +1926,11 @@ named doc, not regenerating this file.
 | `claude/commands/second-opinion.md` | OK |
 | `claude/commands/standup.md` | OK |
 | `claude/commands/swarm.md` | OK |
+| `codex/skills/backlog-item/SKILL.md` | OK |
+| `codex/skills/dashboard/SKILL.md` | OK |
+| `codex/skills/recap/SKILL.md` | OK |
+| `codex/skills/second-opinion/SKILL.md` | OK |
+| `codex/skills/standup/SKILL.md` | OK |
 | `copilot/skills/backlog-item/SKILL.md` | OK |
 | `copilot/skills/dashboard/SKILL.md` | OK |
 | `copilot/skills/recap/SKILL.md` | OK |
@@ -1935,6 +1968,11 @@ named doc, not regenerating this file.
 | `claude/commands/second-opinion.md` | OK |
 | `claude/commands/spec.md` | OK |
 | `claude/commands/to-tickets.md` | OK |
+| `codex/skills/backlog-item/SKILL.md` | OK |
+| `codex/skills/grill-me/SKILL.md` | OK |
+| `codex/skills/second-opinion/SKILL.md` | OK |
+| `codex/skills/spec/SKILL.md` | OK |
+| `codex/skills/to-tickets/SKILL.md` | OK |
 | `copilot/skills/backlog-item/SKILL.md` | OK |
 | `copilot/skills/grill-me/SKILL.md` | OK |
 | `copilot/skills/second-opinion/SKILL.md` | OK |
@@ -1967,6 +2005,7 @@ named doc, not regenerating this file.
 | --- | --- |
 | `agy/skills/refresh-guidance/SKILL.md` | OK |
 | `claude/commands/refresh-guidance.md` | OK |
+| `codex/skills/refresh-guidance/SKILL.md` | OK |
 | `copilot/skills/refresh-guidance/SKILL.md` | OK |
 | `opencode/skills/refresh-guidance/SKILL.md` | OK |
 
@@ -1981,6 +2020,10 @@ named doc, not regenerating this file.
 | `claude/commands/grill-me.md` | OK |
 | `claude/commands/second-opinion.md` | OK |
 | `claude/commands/spec.md` | OK |
+| `codex/skills/backlog-item/SKILL.md` | OK |
+| `codex/skills/grill-me/SKILL.md` | OK |
+| `codex/skills/second-opinion/SKILL.md` | OK |
+| `codex/skills/spec/SKILL.md` | OK |
 | `copilot/skills/backlog-item/SKILL.md` | OK |
 | `copilot/skills/grill-me/SKILL.md` | OK |
 | `copilot/skills/second-opinion/SKILL.md` | OK |
@@ -2001,6 +2044,7 @@ named doc, not regenerating this file.
 | --- | --- |
 | `agy/skills/standup/SKILL.md` | OK |
 | `claude/commands/standup.md` | OK |
+| `codex/skills/standup/SKILL.md` | OK |
 | `copilot/skills/standup/SKILL.md` | OK |
 | `opencode/command/standup.md` | OK |
 | `pi/skills/standup/SKILL.md` | OK |
@@ -2011,6 +2055,7 @@ named doc, not regenerating this file.
 | --- | --- |
 | `agy/skills/to-tickets/SKILL.md` | OK |
 | `claude/commands/to-tickets.md` | OK |
+| `codex/skills/to-tickets/SKILL.md` | OK |
 | `copilot/skills/to-tickets/SKILL.md` | OK |
 | `opencode/command/to-tickets.md` | OK |
 | `pi/skills/to-tickets/SKILL.md` | OK |
@@ -2021,6 +2066,7 @@ named doc, not regenerating this file.
 | --- | --- |
 | `agy/skills/grill-me/SKILL.md` | OK |
 | `claude/commands/grill-me.md` | OK |
+| `codex/skills/grill-me/SKILL.md` | OK |
 | `copilot/skills/grill-me/SKILL.md` | OK |
 | `opencode/command/grill-me.md` | OK |
 | `opencode/skills/grill-me/SKILL.md` | OK |

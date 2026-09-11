@@ -76,8 +76,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import cli_common
+import harness_spec
 
-HARNESS_DIRS = ("claude", "copilot", "opencode", "agy", "pi")
+HARNESS_DIRS = harness_spec.ALL_NAMES
 SCRIPTS_DIR = "agent-scripts"
 ROOT_ENTRYPOINTS = (
     "install.py",
@@ -1411,7 +1412,7 @@ class DriftProblem:
 
 
 def discover_doc_paths(repo_root: Path) -> list[Path]:
-    """Return every skill/command doc across the four harnesses, sorted."""
+    """Return every skill/command doc across all registry harnesses, sorted."""
     paths: list[Path] = []
     for harness in HARNESS_DIRS:
         base = repo_root / harness
