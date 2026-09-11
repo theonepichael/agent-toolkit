@@ -116,7 +116,14 @@
     "arg update --if-rev: \u2014 required when <id> is numeric; get the current value from render/list/show immediately before this call",
     "arg update id: ",
     "arg update patch: ",
-    "exit codes: 1",
+    "arg worktree --branch: \u2014 Branch name for worktree",
+    "arg worktree --dest: \u2014 Explicit destination path for the worktree",
+    "arg worktree --force/-f: \u2014 Pass --force to git worktree add (default: False)",
+    "arg worktree --json: \u2014 Emit structured result as JSON (default: False)",
+    "arg worktree --repo: \u2014 Path to git repository",
+    "arg worktree --skip-bootstrap: \u2014 Skip dependency bootstrapping (default: False)",
+    "arg worktree item: \u2014 Backlog item slug, numeric position, or branch name (nargs: ?)",
+    "exit codes: 1, 2",
     "handler add: Handle ``add``: append a new backlog item. ``args.json`` must decode to an object with at least ``id`` and ``summary``; see :data:`BacklogItem` for the full field set.",
     "handler approve: Handle ``approve``: accept an in-review item, marking it done.",
     "handler backfill-gate: Handle ``backfill-gate``: stamp an explicit inert gate on legacy items. Items created before ``gate`` existed have no ``gate`` key at all \u2014 code already treats that as inert (see :func:`_gate_blocks`). Leaving it implicit means only ``show <id>``'s raw JSON can distinguish \"not yet classified\" from \"classified, not required\" \u2014 the dashboard intentionally renders both the same way (see ``_gate_suffix``, and ``test_41p``). This makes the distinction explicit in storage, for tooling/audits that read the JSON directly. There's no reliable signal in the existing schema (no per-item verdict data) to infer a *required* gate from, so this never sets ``required: true`` -- that only ever happens via a deliberate ``gate-set`` call. Dry run by default; ``--apply`` writes.",
@@ -148,6 +155,7 @@
     "handler start: Handle ``start``: mark a backlog item in-progress.",
     "handler unblock: Handle ``unblock``: remove a blocker from a backlog item.",
     "handler update: Handle ``update``: merge a JSON patch into a backlog item.",
+    "handler worktree: Handle ``worktree``: create or reuse a git worktree and bootstrap dependencies.",
     "subcommand add: append a new item (id required in JSON)",
     "subcommand approve: approve an in-review item, marking it done",
     "subcommand backfill-gate: stamp an explicit inert gate on legacy items",
@@ -180,7 +188,8 @@
     "subcommand show: print full JSON for an item",
     "subcommand start: mark item in-progress",
     "subcommand unblock: remove a blocker from an item",
-    "subcommand update: merge JSON patch into an item"
+    "subcommand update: merge JSON patch into an item",
+    "subcommand worktree: create or reuse a git worktree and bootstrap dependencies"
   ],
   "gen_interfaces.py": [
     "arg (top-level) --check: \u2014 exit 3 (with a report on stderr) if a doc's shown command example no longer matches its script, else exit 1 if the file on disk is stale",

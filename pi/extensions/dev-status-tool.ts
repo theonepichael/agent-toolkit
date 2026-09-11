@@ -37,6 +37,7 @@ const ACTIONS = [
   "unblock",
   "prune",
   "recap",
+  "worktree",
   "pending_add",
   "pending_update",
   "pending_list",
@@ -67,7 +68,10 @@ export type Field =
   | "reasonFile"
   | "command"
   | "timeout"
-  | "cwd";
+  | "cwd"
+  | "skipBootstrap"
+  | "repo"
+  | "branch";
 
 interface ActionFields {
   readonly allowed: readonly Field[];
@@ -101,6 +105,10 @@ const ACTION_FIELDS: Record<Action, ActionFields> = {
   unblock: { allowed: ["slug", "secondarySlug"], required: ["slug", "secondarySlug"] },
   prune: { allowed: ["force"], required: ["force"] },
   recap: { allowed: ["refresh", "backend"], required: [] },
+  worktree: {
+    allowed: ["slug", "force", "skipBootstrap", "repo", "branch"],
+    required: [],
+  },
   pending_add: { allowed: ["patch"], required: ["patch"] },
   pending_update: { allowed: ["slug", "patch"], required: ["slug", "patch"] },
   pending_list: { allowed: [], required: [] },
@@ -168,6 +176,9 @@ export interface DevStatusParams {
   command?: string[];
   timeout?: number;
   cwd?: string;
+  skipBootstrap?: boolean;
+  repo?: string;
+  branch?: string;
 }
 
 export function assertNotNumericIdentity(action: Action, params: DevStatusParams): void {
@@ -208,6 +219,10 @@ export function assertFields(action: Action, params: DevStatusParams): void {
 
   if (action === "prune" && params.force !== true) {
     throw new Error('action "prune" requires force: true to run');
+  }
+
+  if (action === "worktree" && !params.slug && !params.repo) {
+    throw new Error('action "worktree" requires slug or repo');
   }
 }
 
@@ -279,6 +294,15 @@ export function buildArgv(action: Action, params: DevStatusParams): string[] {
         ...(params.refresh ? ["--refresh"] : []),
         ...(params.backend ? ["--backend", params.backend] : []),
       ];
+    case "worktree":
+      return [
+        "worktree",
+        ...(params.slug ? [params.slug] : []),
+        ...(params.repo ? ["--repo", params.repo] : []),
+        ...(params.branch ? ["--branch", params.branch] : []),
+        ...(params.skipBootstrap ? ["--skip-bootstrap"] : []),
+        ...(params.force ? ["--force"] : []),
+      ];
     case "pending_add":
       return ["pending", "add", patchJson()];
     case "pending_update":
@@ -315,10 +339,11 @@ export default function (pi: ExtensionAPI) {
     promptSnippet: "Read or mutate the personal backlog/pending store",
     promptGuidelines: [
       "Never invoke dev_status.py via bash, for any reason, including a plain read like listing pending items or checking status -- always use dev_status instead. This applies to every action, not just ones a slash command already told you to use dev_status for.",
-      "dev_status covers everything dev_status.py's CLI does: render, list, ready, show, add, update, start, done, review, approve, reject, gate_set, gate_pass, run, runs, backfill_gate, rename, remove, block, unblock, prune, recap, pending_add, pending_update, pending_list, and the out_of_scope_* actions. If you're about to compose a `python3 ~/.claude/scripts/dev_status.py ...` bash command for any of these, use dev_status with the matching action instead.",
+      "dev_status covers everything dev_status.py's CLI does: render, list, ready, show, add, update, start, done, review, approve, reject, gate_set, gate_pass, run, runs, backfill_gate, rename, remove, block, unblock, prune, recap, worktree, pending_add, pending_update, pending_list, and the out_of_scope_* actions. If you're about to compose a `python3 ~/.claude/scripts/dev_status.py ...` bash command for any of these, use dev_status with the matching action instead.",
       "dev_status's patch field is a plain object, not a JSON string -- never hand-encode it.",
       'dev_status refuses a numeric slug on any mutating action -- call action: "show" first to resolve a numeric position to its real slug.',
       "start refuses to run from a main/master checkout (worktree guard) or when the item is actively claimed by another live session (claim collision) -- pass cwd to evaluate the guard and stamp the claim from a dedicated worktree, allowMain to bypass the guard, force to take over a live claim, or claimedBy to correct a wrong auto-detected harness name.",
+      "worktree creates or reuses a git worktree and bootstraps project dependencies for a backlog item (by slug) or repository (by repo). Never create worktrees manually with git worktree add or bare bootstrap scripts.",
     ],
     parameters: Type.Object({
       action: StringEnum(ACTIONS),
@@ -360,7 +385,7 @@ export default function (pi: ExtensionAPI) {
         Type.Boolean({
           description:
             "prune: must be true -- confirms the destructive prune. start: take over " +
-            "an item actively claimed by another live session.",
+            "an item actively claimed by another live session. worktree: pass --force to git worktree add.",
         }),
       ),
       allowMain: Type.Optional(
@@ -372,6 +397,19 @@ export default function (pi: ExtensionAPI) {
       claimedBy: Type.Optional(
         Type.String({
           description: "start: override the auto-detected claiming harness name.",
+        }),
+      ),
+      skipBootstrap: Type.Optional(
+        Type.Boolean({ description: "worktree: skip dependency bootstrapping." }),
+      ),
+      repo: Type.Optional(
+        Type.String({
+          description: "worktree: path to git repository (when not resolving from backlog item).",
+        }),
+      ),
+      branch: Type.Optional(
+        Type.String({
+          description: "worktree: explicit branch name for worktree.",
         }),
       ),
       refresh: Type.Optional(Type.Boolean({ description: "recap: bypass the freshness cache." })),

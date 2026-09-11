@@ -315,6 +315,7 @@ SUBCOMMANDS = (
     "unblock",
     "prune",
     "recap",
+    "worktree",
 )
 RESERVED_SLUGS = set(SUBCOMMANDS) | {"pending", "out-of-scope", "all", "help", "new"}
 SLUG_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)+$")
@@ -1962,6 +1963,50 @@ def cmd_recap(args: argparse.Namespace) -> None:
         print("[recap] no recap available", file=sys.stderr)
 
 
+def cmd_worktree(args: argparse.Namespace) -> None:
+    """Handle ``worktree``: create or reuse a git worktree and bootstrap dependencies."""
+    import worktree
+
+    if not args.item and not args.repo:
+        print(
+            "[dev_status] error: either a backlog item slug/id or --repo must be provided",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    try:
+        config = worktree.resolve_worktree_config(
+            slug_or_id=args.item,
+            repo=args.repo,
+            branch=args.branch,
+            dest=args.dest,
+            skip_bootstrap=args.skip_bootstrap,
+            force=args.force,
+            quiet=getattr(args, "quiet", False),
+        )
+        result = worktree.create_and_bootstrap_worktree(config)
+
+        if not getattr(args, "quiet", False):
+            for diag in result.diagnostics:
+                print(f"[worktree] {diag}", file=sys.stderr)
+
+        if getattr(args, "json", False):
+            payload = {
+                "worktree_path": str(result.worktree_path),
+                "branch": result.branch,
+                "reused": result.reused,
+                "bootstrap_executed": result.bootstrap_executed,
+                "bootstrap_command": result.bootstrap_command,
+                "diagnostics": list(result.diagnostics),
+            }
+            print(json.dumps(payload, indent=2))
+        else:
+            print(str(result.worktree_path))
+    except worktree.WorktreeError as err:
+        print(f"[worktree] error: {err}", file=sys.stderr)
+        sys.exit(1)
+
+
 # ── mutation infrastructure ───────────────────────────────────────────────────
 
 
@@ -3442,6 +3487,7 @@ dispatch: dict[str, Callable[[argparse.Namespace], None]] = {
     "unblock": cmd_unblock,
     "prune": cmd_prune,
     "recap": cmd_recap,
+    "worktree": cmd_worktree,
 }
 
 if __name__ == "__main__" and set(dispatch) != set(SUBCOMMANDS):
@@ -3789,6 +3835,52 @@ def build_parser() -> argparse.ArgumentParser:
         choices=llm_backends.BACKEND_PRIORITY,
         default=None,
         help="force this backend instead of priority-order fallback",
+    )
+
+    p = sub.add_parser(
+        "worktree",
+        help="create or reuse a git worktree and bootstrap dependencies",
+        parents=[verbosity_parent],
+    )
+    p.add_argument(
+        "item",
+        nargs="?",
+        default=None,
+        help="Backlog item slug, numeric position, or branch name",
+    )
+    p.add_argument(
+        "--repo",
+        default=None,
+        help="Path to git repository",
+    )
+    p.add_argument(
+        "--branch",
+        default=None,
+        help="Branch name for worktree",
+    )
+    p.add_argument(
+        "--dest",
+        default=None,
+        help="Explicit destination path for the worktree",
+    )
+    p.add_argument(
+        "--skip-bootstrap",
+        action="store_true",
+        default=False,
+        help="Skip dependency bootstrapping",
+    )
+    p.add_argument(
+        "--force",
+        "-f",
+        action="store_true",
+        default=False,
+        help="Pass --force to git worktree add",
+    )
+    p.add_argument(
+        "--json",
+        action="store_true",
+        default=False,
+        help="Emit structured result as JSON",
     )
 
     # No `parents=[verbosity_parent]` here: `pending` has its own nested

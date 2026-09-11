@@ -268,6 +268,14 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `recap [--refresh] [--backend <BACKEND>]` — print a friendly prose recap of recent activity
     - `--refresh` — bypass the freshness cache and regenerate the recap now
     - `--backend` — force this backend instead of priority-order fallback (choices computed at runtime)
+  - `worktree [<item>] [--repo <REPO>] [--branch <BRANCH>] [--dest <DEST>] [--skip-bootstrap] [--force] [--json]` — create or reuse a git worktree and bootstrap dependencies
+    - `item` — Backlog item slug, numeric position, or branch name (nargs: ?)
+    - `--repo` — Path to git repository
+    - `--branch` — Branch name for worktree
+    - `--dest` — Explicit destination path for the worktree
+    - `--skip-bootstrap` — Skip dependency bootstrapping (default: False)
+    - `--force/-f` — Pass --force to git worktree add (default: False)
+    - `--json` — Emit structured result as JSON (default: False)
   - `pending` — manage pending (waiting-on-reply) items
   - `pending add '{"id", "description", "kind", ["source_ref"], ["context"], ["next_steps"], ["blocking"]}'` — track a new pending item
   - `pending update <slug|N> '{"status": "reply_received", ...}' [--if-rev <N>]` — merge a JSON patch into an existing pending item
@@ -282,8 +290,8 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `out-of-scope list` — list rejected concepts, newest-first
   - `out-of-scope show <concept-slug>` — print a rejected concept's full record
 - Environment: `DEVSTATUS_AGENT`, `DEVSTATUS_RECAP_AGY_MODEL`, `DEVSTATUS_RECAP_DISABLE`, `DEVSTATUS_RECAP_TIMEOUT_SECONDS`
-- Explicit exit codes: `1`
-- Depends on: `cli_common.py`, `dev_status_formatting.py`, `dev_status_mutation.py`, `dev_status_storage.py`, `llm_backends.py`
+- Explicit exit codes: `1`, `2`
+- Depends on: `cli_common.py`, `dev_status_formatting.py`, `dev_status_mutation.py`, `dev_status_storage.py`, `llm_backends.py`, `worktree.py`
 - Public classes:
   - `class Gate(TypedDict)` — A judgment-step verification checkpoint on a backlog item.
   - `class RunRecord(TypedDict)` — One recorded command execution — a row of the ``runs.jsonl`` sidecar.
@@ -309,7 +317,7 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `read_journal_entries(within_hours: float | None = None, *, verbose: bool = False) -> list[dict[str, object]]` — Read journal entries, optionally filtered to the last ``within_hours``.
   - `confirm_resolution(cmd: str, arg: str | int, item: BacklogItem | PendingItem, summary_key: str = 'summary', *, quiet: bool = False) -> None` — Echo what a mutating command resolved to, so misresolution is visible.
   - `build_parser() -> argparse.ArgumentParser` — Build the full argument parser for every subcommand.
-- Subcommand handlers: `cmd_internal_regen`, `cmd_recap`, `cmd_render`, `cmd_ready`, `cmd_list`, `cmd_show`, `cmd_add`, `cmd_update`, `cmd_start`, `cmd_done`, `cmd_review`, `cmd_approve`, `cmd_reject`, `cmd_gate_set`, `cmd_gate_pass`, `cmd_run`, `cmd_runs`, `cmd_backfill_gate`, `cmd_rename`, `cmd_block`, `cmd_unblock`, `cmd_out_of_scope_add`, `cmd_out_of_scope_link`, `cmd_out_of_scope_unlink`, `cmd_out_of_scope_remove`, `cmd_out_of_scope_list`, `cmd_out_of_scope_show`, `cmd_pending_add`, `cmd_pending_update`, `cmd_pending_list`, `cmd_remove`, `cmd_prune`
+- Subcommand handlers: `cmd_internal_regen`, `cmd_recap`, `cmd_worktree`, `cmd_render`, `cmd_ready`, `cmd_list`, `cmd_show`, `cmd_add`, `cmd_update`, `cmd_start`, `cmd_done`, `cmd_review`, `cmd_approve`, `cmd_reject`, `cmd_gate_set`, `cmd_gate_pass`, `cmd_run`, `cmd_runs`, `cmd_backfill_gate`, `cmd_rename`, `cmd_block`, `cmd_unblock`, `cmd_out_of_scope_add`, `cmd_out_of_scope_link`, `cmd_out_of_scope_unlink`, `cmd_out_of_scope_remove`, `cmd_out_of_scope_list`, `cmd_out_of_scope_show`, `cmd_pending_add`, `cmd_pending_update`, `cmd_pending_list`, `cmd_remove`, `cmd_prune`
 - Tested by: `agent-scripts/test_dev_status.py`, `agent-scripts/test_dev_status_mutation.py`, `agent-scripts/test_sweep_dead_claims.py`, `agent-scripts/test_to_tickets_runner.py`
 
 ### `agent-scripts/dev_status_formatting.py`
