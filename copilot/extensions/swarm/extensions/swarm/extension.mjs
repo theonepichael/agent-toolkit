@@ -470,6 +470,33 @@ function amendHoldMs(pending, now) {
 function amendHoldExpired(pending, now) {
   return pending.checks >= AMEND_ACK_MAX_CHECKS || amendHoldMs(pending, now) >= AMEND_HOLD_MAX_MS;
 }
+function amendAckPath(captureFile) {
+  const dir = dirname(captureFile);
+  const base = basename(captureFile);
+  const replaced = base.replace("-capture-", "-amend-ack-");
+  if (replaced !== base) return join(dir, replaced);
+  return join(dir, `${base}.amend-ack.json`);
+}
+function parseAmendAck(raw) {
+  try {
+    const parsed = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null) return null;
+    const t = parsed.t;
+    if (typeof t !== "number" || !Number.isFinite(t)) return null;
+    const sb = parsed.streamingBehavior;
+    const streamingBehavior = sb === "steer" || sb === "followUp" || sb === null || typeof sb === "undefined" ? sb : void 0;
+    return { t, streamingBehavior };
+  } catch {
+    return null;
+  }
+}
+function amendAckConfirms(ack, requestedAtMs) {
+  return ack.t >= requestedAtMs;
+}
+function sidecarUpgradesHold(kind, ack, requestedAtMs) {
+  if (kind !== "pi" || ack === null) return false;
+  return amendAckConfirms(ack, requestedAtMs);
+}
 function amendVerdictDetail(verdict, worker, holdMs) {
   const held = `${Math.round(holdMs / 1e3)}s`;
   switch (verdict) {
@@ -578,6 +605,21 @@ function capturePath(runId, slug, stateDir = herdrStateDir()) {
   const safeRun = runId.replace(/[^A-Za-z0-9._-]/g, "_");
   const safeSlug = (slug.split("/").pop() ?? "").replace(/[^A-Za-z0-9._-]/g, "_");
   return join2(stateDir, `swarm-${safeRun}-capture-${safeSlug}.json`);
+}
+function readAmendAck(path) {
+  let raw;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch {
+    return null;
+  }
+  return parseAmendAck(raw);
+}
+function unlinkAmendAck(path) {
+  try {
+    rmSync(path, { force: true });
+  } catch {
+  }
 }
 function readCaptureOffers(runId, slug, stateDir = herdrStateDir()) {
   const path = capturePath(runId, slug, stateDir);
@@ -846,6 +888,7 @@ var SwarmToolContext = class {
       rmSync(capturePath(state.runId, worker.slug, this.stateDir), { force: true });
     } catch {
     }
+    this.unlinkWorkerAmendAck(state.runId, worker.slug);
     return { offers, closed };
   }
   async teardownAndHarvestWorker(state, worker, signal) {
@@ -1168,6 +1211,22 @@ ${capture}` } };
     const state = this.activeRuns.get(rt.runId);
     if (state) this.persist(state);
   }
+  unlinkWorkerAmendAck(runId, slug) {
+    if (this.kind !== "pi") return;
+    unlinkAmendAck(amendAckPath(capturePath(runId, slug, this.stateDir)));
+  }
+  /**
+   * Two-axis verdict, upgraded to confirmed when a pi sidecar proves receipt.
+   * Copilot and a missing/stale file fall through to steered/unpicked.
+   */
+  holdVerdict(rt, worker, pending, now) {
+    const runWorkedMs = pending.runWorkedAfterAmendMs >= 0 ? pending.runWorkedAfterAmendMs : Math.max(0, now - pending.requestedAtMs);
+    const ack = this.kind === "pi" ? readAmendAck(amendAckPath(capturePath(rt.runId, worker.slug, this.stateDir))) : null;
+    return amendHoldVerdict({
+      turnObserved: sidecarUpgradesHold(this.kind, ack, pending.requestedAtMs),
+      runWorkedMs
+    });
+  }
   /**
    * Decide what a terminal settle means while an amendment is outstanding.
    *
@@ -1198,10 +1257,7 @@ ${capture}` } };
       pending.runWorkedAfterAmendMs = Math.max(0, now - pending.requestedAtMs);
     }
     if (amendHoldExpired(pending, now)) {
-      const verdict = amendHoldVerdict({
-        turnObserved: false,
-        runWorkedMs: pending.runWorkedAfterAmendMs
-      });
+      const verdict = this.holdVerdict(rt, worker, pending, now);
       const detail = amendVerdictDetail(verdict, worker, amendHoldMs(pending, now));
       worker.pendingAmend = void 0;
       this.persistRun(rt);
@@ -1296,8 +1352,7 @@ ${capture}` } };
         case "inconclusive": {
           pending.checks += 1;
           if (amendHoldExpired(pending, now)) {
-            const runWorkedMs = pending.runWorkedAfterAmendMs >= 0 ? pending.runWorkedAfterAmendMs : Math.max(0, now - pending.requestedAtMs);
-            const verdict = amendHoldVerdict({ turnObserved: false, runWorkedMs });
+            const verdict = this.holdVerdict(rt, worker, pending, now);
             const heldMs = amendHoldMs(pending, now);
             worker.pendingAmend = void 0;
             this.persistRun(rt);
@@ -1931,6 +1986,8 @@ ${e.rawPrompt}`;
         details: { amended: false, slug: worker.slug, paneId: worker.paneId }
       };
     }
+    this.unlinkWorkerAmendAck(params.runId, worker.slug);
+    const requestedAtMs = Date.now();
     const result = await this.herdr(buildAgentPromptArgv(worker.agent, AMEND_INSTRUCTION), signal);
     if (result.code !== 0) {
       return {
@@ -1947,7 +2004,7 @@ ${e.rawPrompt}`;
     const existing = worker.pendingAmend;
     const seq = await this.herdr(buildAgentGetArgv(worker.agent), signal);
     worker.pendingAmend = {
-      requestedAtMs: Date.now(),
+      requestedAtMs,
       seqAtRequest: parseAgentStateSeq(seq.stdout) ?? null,
       lastObservedSeq: parseAgentStateSeq(seq.stdout) ?? null,
       phase: "await_turn",

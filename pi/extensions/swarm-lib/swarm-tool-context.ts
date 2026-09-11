@@ -34,11 +34,14 @@ import {
   AMEND_ACK_MAX_CHECKS,
   AMEND_ACK_TIMEOUT_MS,
   AMEND_INSTRUCTION,
+  amendAckPath,
   amendHoldExpired,
   amendHoldMs,
   amendHoldVerdict,
   amendOutstandingNote,
   amendVerdictDetail,
+  parseAmendAck,
+  sidecarUpgradesHold,
   buildAgentGetArgv,
   buildAgentListArgv,
   buildAgentPromptArgv,
@@ -67,6 +70,7 @@ import {
   waitResultDetail,
   tabPresence,
   type AmendAckOutcome,
+  type AmendAckPayload,
   type PollEventKind,
   type ProbeResult,
 } from "./swarm-herdr";
@@ -125,6 +129,24 @@ export function capturePath(
   const safeRun = runId.replace(/[^A-Za-z0-9._-]/g, "_");
   const safeSlug = (slug.split("/").pop() ?? "").replace(/[^A-Za-z0-9._-]/g, "_");
   return join(stateDir, `swarm-${safeRun}-capture-${safeSlug}.json`);
+}
+
+export function readAmendAck(path: string): AmendAckPayload | null {
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch {
+    return null;
+  }
+  return parseAmendAck(raw);
+}
+
+export function unlinkAmendAck(path: string): void {
+  try {
+    rmSync(path, { force: true });
+  } catch {
+    // Best effort: a leftover sidecar is ignored by t >= requestedAtMs.
+  }
 }
 
 export function readCaptureOffers(
@@ -506,6 +528,7 @@ export class SwarmToolContext {
     } catch {
       // Best effort
     }
+    this.unlinkWorkerAmendAck(state.runId, worker.slug);
     return { offers, closed };
   }
 
@@ -934,6 +957,35 @@ export class SwarmToolContext {
     if (state) this.persist(state);
   }
 
+  private unlinkWorkerAmendAck(runId: string, slug: string): void {
+    if (this.kind !== "pi") return;
+    unlinkAmendAck(amendAckPath(capturePath(runId, slug, this.stateDir)));
+  }
+
+  /**
+   * Two-axis verdict, upgraded to confirmed when a pi sidecar proves receipt.
+   * Copilot and a missing/stale file fall through to steered/unpicked.
+   */
+  private holdVerdict(
+    rt: RunRuntime,
+    worker: WorkerRecord,
+    pending: PendingAmend,
+    now: number,
+  ): ReturnType<typeof amendHoldVerdict> {
+    const runWorkedMs =
+      pending.runWorkedAfterAmendMs >= 0
+        ? pending.runWorkedAfterAmendMs
+        : Math.max(0, now - pending.requestedAtMs);
+    const ack =
+      this.kind === "pi"
+        ? readAmendAck(amendAckPath(capturePath(rt.runId, worker.slug, this.stateDir)))
+        : null;
+    return amendHoldVerdict({
+      turnObserved: sidecarUpgradesHold(this.kind, ack, pending.requestedAtMs),
+      runWorkedMs,
+    });
+  }
+
   /**
    * Decide what a terminal settle means while an amendment is outstanding.
    *
@@ -976,10 +1028,7 @@ export class SwarmToolContext {
     }
 
     if (amendHoldExpired(pending, now)) {
-      const verdict = amendHoldVerdict({
-        turnObserved: false,
-        runWorkedMs: pending.runWorkedAfterAmendMs,
-      });
+      const verdict = this.holdVerdict(rt, worker, pending, now);
       const detail = amendVerdictDetail(verdict, worker, amendHoldMs(pending, now));
       worker.pendingAmend = undefined;
       this.persistRun(rt);
@@ -1103,12 +1152,9 @@ export class SwarmToolContext {
             // The steering axis is measured at the hold, where the armed wait
             // first reported the run over; re-deriving it from `now` here would
             // count the ack watches themselves as working time and turn every
-            // expiry into a false `amend_steered`.
-            const runWorkedMs =
-              pending.runWorkedAfterAmendMs >= 0
-                ? pending.runWorkedAfterAmendMs
-                : Math.max(0, now - pending.requestedAtMs);
-            const verdict = amendHoldVerdict({ turnObserved: false, runWorkedMs });
+            // expiry into a false `amend_steered`. holdVerdict keeps that
+            // axis and only upgrades when a pi sidecar proves receipt.
+            const verdict = this.holdVerdict(rt, worker, pending, now);
             const heldMs = amendHoldMs(pending, now);
             worker.pendingAmend = undefined;
             this.persistRun(rt);
@@ -1923,6 +1969,13 @@ export class SwarmToolContext {
       };
     }
 
+    // Drop a leftover sidecar before this submission so a previous hold's ack
+    // cannot confirm this one. Done before the prompt so a fast receipt is not
+    // deleted out from under the extension. requestedAtMs is taken here so an
+    // ack written during the prompt itself still satisfies t >= requestedAtMs.
+    this.unlinkWorkerAmendAck(params.runId, worker.slug);
+    const requestedAtMs = Date.now();
+
     const result = await this.herdr(buildAgentPromptArgv(worker.agent, AMEND_INSTRUCTION), signal);
     if (result.code !== 0) {
       return {
@@ -1945,7 +1998,7 @@ export class SwarmToolContext {
     const existing = worker.pendingAmend;
     const seq = await this.herdr(buildAgentGetArgv(worker.agent), signal);
     worker.pendingAmend = {
-      requestedAtMs: Date.now(),
+      requestedAtMs,
       seqAtRequest: parseAgentStateSeq(seq.stdout) ?? null,
       lastObservedSeq: parseAgentStateSeq(seq.stdout) ?? null,
       phase: "await_turn",

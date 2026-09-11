@@ -751,6 +751,11 @@ dest = "~/.pi/agent/extensions/exit-alias.ts"
 harness = "pi"
 
 [[link]]
+src = "pi/extensions/swarm-amend-ack.ts"
+dest = "~/.pi/agent/extensions/swarm-amend-ack.ts"
+harness = "pi"
+
+[[link]]
 src = "pi/extensions/notify.ts"
 dest = "~/.pi/agent/extensions/notify.ts"
 harness = "pi"
