@@ -61,6 +61,12 @@ ALLOWLIST: dict[str, tuple[str, ...]] = {
         "name dotfiles goes by",  # docstring explaining the meta- prefix
         "name dotfiles work",  # docstring: which prefixes mean that repo
     ),
+    "agent-scripts/dev_status_mutation.py": (
+        'HARNESS_REPO = "dotfiles"',  # the mapping constant itself
+        '"dotfiles": "meta"',  # the prefix-map row
+        "name dotfiles goes by",  # docstring explaining the meta- prefix
+        "name dotfiles work",  # docstring: which prefixes mean that repo
+    ),
     # ── notify.py Windows icon cache lives under the origin repo's AppData dir ──
     "agent-scripts/notify.py": (
         '"dotfiles" / "icons"',  # pathlib literal

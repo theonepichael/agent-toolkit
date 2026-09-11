@@ -1343,7 +1343,7 @@ to_tickets_runner.py — create a linked batch of dev_status.py backlog items fr
 - Filesystem constants:
   - `DATA_DIR = Path.home() / '.claude' / 'data' / 'to-tickets'`
 - Explicit exit codes: `1`
-- Depends on: `dev_status.py`
+- Depends on: `dev_status.py`, `dev_status_mutation.py`, `dev_status_storage.py`
 - Exceptions:
   - `class BatchError(Exception)` — A problem with the batch itself: bad schema, a cycle, an unknown slug.
   - `class SlugCollisionError(Exception)` — A drafted slug collides with an unrelated, pre-existing item.
@@ -1352,10 +1352,13 @@ to_tickets_runner.py — create a linked batch of dev_status.py backlog items fr
 - Public functions:
   - `ensure_data_dir() -> None` — Create ``DATA_DIR`` if it is missing.
   - `load_batch(path: Path) -> list[Ticket]` — Load and validate the batch file at ``path``.
+  - `validate_batch(path: Path) -> list[Ticket]` — Validate and load the batch file at ``path``.
   - `compute_order(tickets: list[Ticket], index: dev_status.BacklogIndex) -> list[str]` — Compute a safe creation order for ``tickets`` from their ``blocked_by`` edges.
+  - `plan_order(tickets: list[Ticket], index: dev_status_storage.BacklogIndex) -> list[str]` — Compute a safe creation order for ``tickets`` given existing ``index``.
   - `load_state(batch_path: Path) -> dict[str, object] | None` — Load the state file for ``batch_path``, or ``None`` if absent/unreadable.
   - `write_state(batch_path: Path, state: dict[str, object]) -> None` — Atomically write ``state`` to ``batch_path``'s state file.
   - `delete_state(batch_path: Path) -> None` — Remove ``batch_path``'s state file, if any.
+  - `run_batch(batch_path: Path, open_transaction: Callable[[], AbstractContextManager[dev_status_mutation.BacklogTransaction]] = dev_status_mutation.mutation_transaction) -> list[str]` — Create every ticket in ``batch_path``'s batch, resuming if interrupted before.
   - `run(batch_path: Path) -> list[str]` — Create every ticket in ``batch_path``'s batch, resuming if interrupted before.
   - `build_parser() -> argparse.ArgumentParser`
 - Subcommand handlers: `cmd_run`

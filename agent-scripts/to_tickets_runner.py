@@ -56,11 +56,15 @@ import argparse
 import hashlib
 import json
 import sys
+from collections.abc import Callable
+from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import TypedDict, cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import dev_status  # noqa: E402 — must follow the sys.path.insert above
+import dev_status_mutation  # noqa: E402
+import dev_status_storage  # noqa: E402
 
 DATA_DIR = Path.home() / ".claude" / "data" / "to-tickets"
 
@@ -169,6 +173,14 @@ def load_batch(path: Path) -> list[Ticket]:
     return _validate_batch_schema(data)
 
 
+def validate_batch(path: Path) -> list[Ticket]:
+    """Validate and load the batch file at ``path``.
+
+    Wraps :func:`load_batch`.
+    """
+    return load_batch(path)
+
+
 def compute_order(tickets: list[Ticket], index: dev_status.BacklogIndex) -> list[str]:
     """Compute a safe creation order for ``tickets`` from their ``blocked_by`` edges.
 
@@ -217,6 +229,16 @@ def compute_order(tickets: list[Ticket], index: dev_status.BacklogIndex) -> list
     return order
 
 
+def plan_order(
+    tickets: list[Ticket], index: dev_status_storage.BacklogIndex
+) -> list[str]:
+    """Compute a safe creation order for ``tickets`` given existing ``index``.
+
+    Wraps :func:`compute_order`.
+    """
+    return compute_order(tickets, index)
+
+
 def _state_path(batch_path: Path) -> Path:
     return batch_path.with_suffix(".state.json")
 
@@ -249,7 +271,12 @@ def delete_state(batch_path: Path) -> None:
     _state_path(batch_path).unlink(missing_ok=True)
 
 
-def run(batch_path: Path) -> list[str]:
+def run_batch(
+    batch_path: Path,
+    open_transaction: Callable[
+        [], AbstractContextManager[dev_status_mutation.BacklogTransaction]
+    ] = dev_status_mutation.mutation_transaction,
+) -> list[str]:
     """Create every ticket in ``batch_path``'s batch, resuming if interrupted before.
 
     Returns:
@@ -264,7 +291,7 @@ def run(batch_path: Path) -> list[str]:
             (or pending) store, and the state file does not already record
             it as created by a prior run of this exact batch.
     """
-    tickets = load_batch(batch_path)
+    tickets = validate_batch(batch_path)
     by_id = {t["id"]: t for t in tickets}
     batch_hash = _batch_hash(batch_path)
 
@@ -280,12 +307,11 @@ def run(batch_path: Path) -> list[str]:
     )
 
     created: list[str] = []
-    with dev_status.backlog_lock():
-        items = dev_status.load_items()
-        pending = dev_status.load_pending()
-        index = dev_status.build_index(items)
+    with open_transaction() as tx:
+        index = tx.index()
+        pending = tx.pending_items()
 
-        order = compute_order(tickets, index)
+        order = plan_order(tickets, index)
 
         for slug in order:
             if added.get(slug):
@@ -302,28 +328,16 @@ def run(batch_path: Path) -> list[str]:
                 )
 
             ticket = by_id[slug]
-            new_item: dev_status.BacklogItem = {
-                "id": slug,
-                "created": dev_status.today(),
-                "updated": dev_status.today(),
-                "status": "open",
-                "summary": ticket["summary"],
-                "category": ticket["category"],
-                "blocked_by": ticket["blocked_by"],
-                "related_files": ticket["related_files"],
-                "context": ticket["context"],
-                "next_steps": ticket["next_steps"],
-            }
-            items.append(new_item)
-            index[slug] = new_item
-
-            new_rev = dev_status.bump_rev()
-            dev_status.save_items(items)
-            dev_status.append_journal_event(
-                dev_status._journal_entry(
-                    "add", "backlog", new_rev, slug=slug, summary=ticket["summary"]
-                )
+            req = dev_status_mutation.NewItemRequest(
+                id=slug,
+                summary=ticket["summary"],
+                category=ticket["category"],
+                context=ticket["context"],
+                next_steps=ticket["next_steps"],
+                related_files=tuple(ticket["related_files"]),
+                blocked_by=tuple(ticket["blocked_by"]),
             )
+            tx.add_item(req)
 
             added[slug] = True
             created.append(slug)
@@ -333,10 +347,18 @@ def run(batch_path: Path) -> list[str]:
     return created
 
 
+def run(batch_path: Path) -> list[str]:
+    """Create every ticket in ``batch_path``'s batch, resuming if interrupted before.
+
+    Backward-compatible convenience wrapper delegating to :func:`run_batch`.
+    """
+    return run_batch(batch_path)
+
+
 def cmd_run(args: argparse.Namespace) -> None:
     batch_path = Path(args.batch_file).expanduser()
     try:
-        created = run(batch_path)
+        created = run_batch(batch_path)
     except (BatchError, SlugCollisionError) as e:
         print(f"[to-tickets] {e}", file=sys.stderr)
         sys.exit(1)

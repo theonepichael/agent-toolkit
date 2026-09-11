@@ -410,5 +410,80 @@ class DataDirSelfEnsureTests(unittest.TestCase):
             self._patch.start()
 
 
+class Candidate13ServiceTests(RunnerTestCase):
+    """Verify Candidate 13 service seams: validate_batch, plan_order, run_batch with transaction factory."""
+
+    def test_validate_batch_loads_and_validates(self) -> None:
+        self.write_batch([make_ticket("item-1", summary="One")])
+        tickets = runner.validate_batch(self.batch_path)
+        self.assertEqual(len(tickets), 1)
+        self.assertEqual(tickets[0]["id"], "item-1")
+        self.assertEqual(tickets[0]["summary"], "One")
+
+    def test_plan_order_computes_dependency_order(self) -> None:
+        tickets = [
+            make_ticket("b-item", blocked_by=["a-item"]),
+            make_ticket("a-item"),
+        ]
+        order = runner.plan_order(tickets, {})
+        self.assertEqual(order, ["a-item", "b-item"])
+
+    def test_run_batch_uses_injected_open_transaction_factory(self) -> None:
+        self.write_batch([make_ticket("custom-tx-item")])
+        called = False
+
+        class FakeTransaction:
+            def __init__(self) -> None:
+                self._items: list[dict[str, object]] = []
+                self._index: dict[str, dict[str, object]] = {}
+
+            def index(self) -> dict[str, dict[str, object]]:
+                return self._index
+
+            def pending_items(self) -> list[dict[str, object]]:
+                return []
+
+            def add_item(self, req: object) -> None:
+                nonlocal called
+                called = True
+                self._index[req.id] = {"id": req.id}
+                return None
+
+        from contextlib import contextmanager
+
+        @contextmanager
+        def fake_open_transaction():
+            yield FakeTransaction()
+
+        created = runner.run_batch(
+            self.batch_path, open_transaction=fake_open_transaction
+        )
+        self.assertTrue(called)
+        self.assertEqual(created, ["custom-tx-item"])
+
+    def test_mid_batch_collision_aborts_immediately(self) -> None:
+        # 3 tickets in order: t1, t2, t3.
+        # t2 collides with pre-existing store item.
+        self.seed_items([make_item("batch-mid-coll-2")])
+        self.write_batch(
+            [
+                make_ticket("batch-mid-coll-1"),
+                make_ticket("batch-mid-coll-2", blocked_by=["batch-mid-coll-1"]),
+                make_ticket("batch-mid-coll-3", blocked_by=["batch-mid-coll-2"]),
+            ]
+        )
+        with self.assertRaises(runner.SlugCollisionError):
+            runner.run_batch(self.batch_path)
+
+        # t1 was committed and recorded in state before collision
+        state = runner.load_state(self.batch_path)
+        self.assertIsNotNone(state)
+        self.assertTrue(state.get("added", {}).get("batch-mid-coll-1"))
+        # t3 was never created
+        items = {i["id"]: i for i in self.load_items()}
+        self.assertIn("batch-mid-coll-1", items)
+        self.assertNotIn("batch-mid-coll-3", items)
+
+
 if __name__ == "__main__":
     unittest.main()
