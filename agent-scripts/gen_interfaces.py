@@ -76,8 +76,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import cli_common
+import harness_spec
 
-HARNESS_DIRS = ("claude", "copilot", "opencode", "agy", "pi")
+HARNESS_DIRS = harness_spec.ALL_NAMES
 SCRIPTS_DIR = "agent-scripts"
 ROOT_ENTRYPOINTS = (
     "install.py",

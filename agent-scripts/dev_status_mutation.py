@@ -32,6 +32,7 @@ from typing import Final, Protocol, cast
 
 import dev_status_formatting
 import dev_status_storage
+import harness_spec
 
 # Re-exported storage types
 BacklogItem = dev_status_storage.BacklogItem
@@ -162,7 +163,7 @@ added to :data:`REPO_PREFIXES`, which is one edit in one place.
 
 _HASHED_CONTENT_FIELDS = ("summary", "context", "next_steps", "related_files")
 _SHELL_BASENAMES = {"sh", "bash", "zsh", "dash", "ksh", "fish", "csh", "tcsh"}
-_HARNESS_BASENAMES = {"agy", "claude", "opencode", "pi", "copilot"}
+_HARNESS_BASENAMES = set(harness_spec.HARNESS_BASENAMES)
 _DAEMON_BASENAMES = {
     "tmux",
     "screen",

@@ -235,6 +235,10 @@ src = "agent-scripts/harness_discovery_check.py"
 dest = "~/.claude/scripts/harness_discovery_check.py"
 
 [[link]]
+src = "agent-scripts/harness_spec.py"
+dest = "~/.claude/scripts/harness_spec.py"
+
+[[link]]
 src = "agent-scripts/link_drift_check.py"
 dest = "~/.claude/scripts/link_drift_check.py"
 

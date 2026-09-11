@@ -50,6 +50,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`grill.py`](#agentscriptsgrillpy) | grill.py — grill-me session state CLI. All session mutations go through here. |
 | [`guard_rails.py`](#agentscriptsguardrailspy) | Pre-tool guard shared by every harness: refuse a write into a repository's main checkout while a backlog item for that repository is in progress, warn when the current worktree's base has fallen behind ``origin/main``, (Bash, Claude Code only) deny the git-native ways to defeat the no-commit-on-main git hook (``githooks/pre-commit`` / ``githooks-global/pre-commit``), and require an active backlog-item claim before a write that points at an in-progress item. |
 | [`harness_discovery_check.py`](#agentscriptsharnessdiscoverycheckpy) | SessionStart hook + CLI: detect when a harness's instruction-file discovery behavior may have drifted from the version-pinned facts in README.md. |
+| [`harness_spec.py`](#agentscriptsharnessspecpy) | Declarative harness specification registry. |
 | [`herdr_delegate.py`](#agentscriptsherdrdelegatepy) | Launch pi agents in herdr tabs to work backlog items. |
 | [`link_drift_check.py`](#agentscriptslinkdriftcheckpy) | SessionStart hook + CLI: flag when a managed symlink on this machine no longer points where links.toml says it should. |
 | [`link_inspect.py`](#agentscriptslinkinspectpy) | link_inspect.py — link inspection, path classification, drift finding, and the self-contained audit assembly for install.py's ``--check-links`` audit and link_drift_check.py's SessionStart hook. |
@@ -351,7 +352,7 @@ Typed mutation service and transaction manager for dev_status (Candidate 12).
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI: none (library module).
 - Environment: `AGY_SESSION`, `AI_AGENT`, `ANTHROPIC_CLI`, `ANTIGRAVITY`, `ANTIGRAVITY_AGENT`, `ANTIGRAVITY_CONVERSATION_ID`, `CLAUDE_CODE`, `COPILOT`, `DEVSTATUS_CLAIM_TTL_SECONDS`, `DEVSTATUS_HARNESS`, `GITHUB_COPILOT`, `OPENCODE`, `OPENCODE_GATEWAY`, `PI_CODING_AGENT`, `PI_SESSION`
-- Depends on: `dev_status_formatting.py`, `dev_status_storage.py`
+- Depends on: `dev_status_formatting.py`, `dev_status_storage.py`, `harness_spec.py`
 - Exceptions:
   - `class BacklogMutationError(Exception)` — Base class for all typed mutation refusals.
   - `class RevisionConflictError(BacklogMutationError)` — Refusal when --if-rev is missing or stale on numeric position mutations.
@@ -400,7 +401,7 @@ Typed mutation service and transaction manager for dev_status (Candidate 12).
   - `add_pending_item(request: PendingAddRequest, *, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Track a new waiting-on-someone-else item.
   - `update_pending_item(slug_or_id: str, request: PendingUpdateRequest, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Merge an update request into a pending item.
   - `mutation_transaction(*, items_path: Path | None = None, verbose: bool = False) -> Iterator[BacklogTransaction]` — Hold backlog_lock once for batch operations; yields BacklogTransaction.
-- Tested by: `agent-scripts/test_dev_status.py`, `agent-scripts/test_dev_status_mutation.py`
+- Tested by: `agent-scripts/test_dev_status.py`, `agent-scripts/test_dev_status_mutation.py`, `agent-scripts/test_harness_spec.py`
 
 ### `agent-scripts/dev_status_read.py`
 
@@ -492,7 +493,7 @@ gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources.
   - `--repo-root` — repository root (default: inferred from this script's path)
   - `--output`
 - Explicit exit codes: `1`, `2`, `3`
-- Depends on: `cli_common.py`
+- Depends on: `cli_common.py`, `harness_spec.py`
 - Public classes:
   - `class CliArgument` — One ``add_argument`` call, reduced to what a reader needs.
   - `class Subcommand` — One ``add_parser`` call and the arguments attached to it.
@@ -567,7 +568,7 @@ gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources.
   - `anchor(relpath: str) -> str` — Return the GitHub heading anchor for a module section.
   - `default_repo_root() -> Path` — Return the repo root inferred from this script's real location.
 - Subcommand handlers: `cmd_function_name`
-- Tested by: `agent-scripts/test_gen_interfaces.py`, `test/test_dev_status_tool_action_coverage.py`
+- Tested by: `agent-scripts/test_gen_interfaces.py`, `agent-scripts/test_harness_spec.py`, `test/test_dev_status_tool_action_coverage.py`
 
 ### `agent-scripts/gen_second_opinion.py`
 
@@ -810,7 +811,7 @@ SessionStart hook + CLI: detect when a harness's instruction-file discovery beha
   - `probe [--harness {claude,opencode,pi,copilot,agy,codex}]` — on-demand live semantic verification (~10-15 API calls)
     - `--harness` — probe a single harness instead of all supported ones (choices: claude, opencode, pi, copilot, agy, codex)
 - Environment: `CODEX_PROBE_MODEL`, `OPENCODE_PROBE_MODEL`, `XDG_CACHE_HOME`
-- Depends on: `cli_common.py`
+- Depends on: `cli_common.py`, `harness_spec.py`
 - Exceptions:
   - `class HarnessCheckError(Exception)` — Raised when a harness check can't proceed (subprocess failure, not a missing binary).
 - Public functions:
@@ -818,7 +819,25 @@ SessionStart hook + CLI: detect when a harness's instruction-file discovery beha
   - `run_version(name: str, binary: Path, run_command: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run) -> str` — Run ``<binary> --version`` and return the extracted version string.
   - `build_parser() -> argparse.ArgumentParser`
 - Subcommand handlers: `cmd_check`, `cmd_probe`
-- Tested by: `agent-scripts/test_harness_discovery_check.py`
+- Tested by: `agent-scripts/test_harness_discovery_check.py`, `agent-scripts/test_harness_spec.py`
+
+### `agent-scripts/harness_spec.py`
+
+Declarative harness specification registry.
+
+- Installed at: `~/.claude/scripts/harness_spec.py` (all harnesses)
+- Entrypoint: not executable, `#!/usr/bin/env python3`
+- CLI: none (library module).
+- Public classes:
+  - `class HarnessSpec` — Specification and discovery facts for a single AI agent harness.
+- Public functions:
+  - `spec(name: str) -> HarnessSpec` — Return the HarnessSpec for the given harness name.
+  - `binary(name: str) -> str` — Return the CLI binary name for the given harness.
+  - `install_hint(name: str) -> str` — Return the installation hint for the given harness.
+  - `fallback_paths(name: str) -> tuple[str, ...]` — Return the fallback probe paths for the given harness.
+  - `expected_filenames(name: str) -> frozenset[str]` — Return the expected instruction filenames loaded by the given harness.
+  - `probe_expected_root(name: str) -> frozenset[str]` — Return the fixture root tokens expected for the given harness.
+- Tested by: `agent-scripts/test_harness_spec.py`
 
 ### `agent-scripts/herdr_delegate.py`
 
@@ -915,6 +934,7 @@ link_inspect.py — link inspection, path classification, drift finding, and the
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI: none (library module).
 - Environment: `WSL_DISTRO_NAME`
+- Depends on: `harness_spec.py`
 - Public classes:
   - `class LinkSpec` — One row of ``links.toml``: a repo file and where it gets linked.
   - `class ManagedDirSpec` — One row of ``links.toml``: a directory this repo owns exclusively.
@@ -948,7 +968,7 @@ link_inspect.py — link inspection, path classification, drift finding, and the
   - `check_orphaned_links(links: Sequence[tuple[Path, Path, str, bool]], *, manifest_entries: Iterable[dict[str, object]]) -> list[LinkFinding]` — Return typed findings for manifest-recorded symlinks that links.toml no longer produces.
   - `live_backup_paths(manifest_entries: Iterable[dict[str, object]]) -> set[Path]` — Return manifest-recorded backups that are still live ``--rollback`` payload.
   - `check_unmanaged_files(managed_dirs: Sequence[ManagedDirSpec], links: Sequence[tuple[Path, Path, str, bool]], *, home: Path, dir_applies: Callable[[ManagedDirSpec], bool], manifest_entries: Iterable[dict[str, object]] = ()) -> tuple[list[LinkFinding], int]` — Report foreign entries in directories ``links.toml`` owns exclusively.
-- Tested by: `agent-scripts/test_link_drift_check.py`, `agent-scripts/test_link_inspect.py`
+- Tested by: `agent-scripts/test_harness_spec.py`, `agent-scripts/test_link_drift_check.py`, `agent-scripts/test_link_inspect.py`
 
 ### `agent-scripts/llm_backends.py`
 
@@ -1459,22 +1479,22 @@ Each harness gets a port of the same skill surface. Presence below is
 the file existing in the repo; the description is the canonical
 `claude/commands/` frontmatter.
 
-| Skill | claude | copilot | opencode | agy | pi |
-| --- | --- | --- | --- | --- | --- |
-| `/analyze-sessions` | yes | yes | yes | yes | yes |
-| `/backlog-item` | yes | yes | yes | yes | yes |
-| `/dashboard` | yes | yes | yes | yes | yes |
-| `/draft-voice` | yes | — | — | — | — |
-| `/grill-me` | yes | yes | yes | yes | yes |
-| `/make-skill` | yes | yes | yes | yes | yes |
-| `/recap` | yes | yes | yes | yes | yes |
-| `/refresh-guidance` | yes | yes | yes | yes | yes |
-| `/second-opinion` | yes | yes | yes | yes | yes |
-| `/skill-map` | yes | — | — | — | — |
-| `/spec` | yes | yes | yes | yes | yes |
-| `/standup` | yes | yes | yes | yes | yes |
-| `/swarm` | yes | yes | — | — | — |
-| `/to-tickets` | yes | yes | yes | yes | yes |
+| Skill | claude | copilot | opencode | agy | pi | codex |
+| --- | --- | --- | --- | --- | --- | --- |
+| `/analyze-sessions` | yes | yes | yes | yes | yes | — |
+| `/backlog-item` | yes | yes | yes | yes | yes | yes |
+| `/dashboard` | yes | yes | yes | yes | yes | yes |
+| `/draft-voice` | yes | — | — | — | — | — |
+| `/grill-me` | yes | yes | yes | yes | yes | yes |
+| `/make-skill` | yes | yes | yes | yes | yes | yes |
+| `/recap` | yes | yes | yes | yes | yes | yes |
+| `/refresh-guidance` | yes | yes | yes | yes | yes | yes |
+| `/second-opinion` | yes | yes | yes | yes | yes | yes |
+| `/skill-map` | yes | — | — | — | — | — |
+| `/spec` | yes | yes | yes | yes | yes | yes |
+| `/standup` | yes | yes | yes | yes | yes | yes |
+| `/swarm` | yes | yes | — | — | — | — |
+| `/to-tickets` | yes | yes | yes | yes | yes | yes |
 
 - **`/analyze-sessions`** — Analyze coding-agent sessions across pi, Claude Code, opencode, Copilot CLI, and agy: calculate token/USD cost rollups, list user prompts, or search message transcripts. Use when the user asks about session costs, token usage, previous prompts, or wants to search past coding session transcripts across harnesses.
   - Source: `claude/commands/analyze-sessions.md`
@@ -1641,6 +1661,7 @@ are copy-once seeds for exactly that reason.
 | `pi/test/toggle-check.test.ts` | not symlinked by `links.toml` |
 | `pi/test/vitals-promotion-tool.test.ts` | not symlinked by `links.toml` |
 | `pi/tsconfig.json` | not symlinked by `links.toml` |
+| `codex/CLAUDE_CODE_PARITY.md` | not symlinked by `links.toml` |
 
 ---
 
@@ -1874,6 +1895,11 @@ named doc, not regenerating this file.
 | `claude/commands/second-opinion.md` | OK |
 | `claude/commands/standup.md` | OK |
 | `claude/commands/swarm.md` | OK |
+| `codex/skills/backlog-item/SKILL.md` | OK |
+| `codex/skills/dashboard/SKILL.md` | OK |
+| `codex/skills/recap/SKILL.md` | OK |
+| `codex/skills/second-opinion/SKILL.md` | OK |
+| `codex/skills/standup/SKILL.md` | OK |
 | `copilot/skills/backlog-item/SKILL.md` | OK |
 | `copilot/skills/dashboard/SKILL.md` | OK |
 | `copilot/skills/recap/SKILL.md` | OK |
@@ -1911,6 +1937,11 @@ named doc, not regenerating this file.
 | `claude/commands/second-opinion.md` | OK |
 | `claude/commands/spec.md` | OK |
 | `claude/commands/to-tickets.md` | OK |
+| `codex/skills/backlog-item/SKILL.md` | OK |
+| `codex/skills/grill-me/SKILL.md` | OK |
+| `codex/skills/second-opinion/SKILL.md` | OK |
+| `codex/skills/spec/SKILL.md` | OK |
+| `codex/skills/to-tickets/SKILL.md` | OK |
 | `copilot/skills/backlog-item/SKILL.md` | OK |
 | `copilot/skills/grill-me/SKILL.md` | OK |
 | `copilot/skills/second-opinion/SKILL.md` | OK |
@@ -1943,6 +1974,7 @@ named doc, not regenerating this file.
 | --- | --- |
 | `agy/skills/refresh-guidance/SKILL.md` | OK |
 | `claude/commands/refresh-guidance.md` | OK |
+| `codex/skills/refresh-guidance/SKILL.md` | OK |
 | `copilot/skills/refresh-guidance/SKILL.md` | OK |
 | `opencode/skills/refresh-guidance/SKILL.md` | OK |
 
@@ -1957,6 +1989,10 @@ named doc, not regenerating this file.
 | `claude/commands/grill-me.md` | OK |
 | `claude/commands/second-opinion.md` | OK |
 | `claude/commands/spec.md` | OK |
+| `codex/skills/backlog-item/SKILL.md` | OK |
+| `codex/skills/grill-me/SKILL.md` | OK |
+| `codex/skills/second-opinion/SKILL.md` | OK |
+| `codex/skills/spec/SKILL.md` | OK |
 | `copilot/skills/backlog-item/SKILL.md` | OK |
 | `copilot/skills/grill-me/SKILL.md` | OK |
 | `copilot/skills/second-opinion/SKILL.md` | OK |
@@ -1977,6 +2013,7 @@ named doc, not regenerating this file.
 | --- | --- |
 | `agy/skills/standup/SKILL.md` | OK |
 | `claude/commands/standup.md` | OK |
+| `codex/skills/standup/SKILL.md` | OK |
 | `copilot/skills/standup/SKILL.md` | OK |
 | `opencode/command/standup.md` | OK |
 | `pi/skills/standup/SKILL.md` | OK |
@@ -1987,6 +2024,7 @@ named doc, not regenerating this file.
 | --- | --- |
 | `agy/skills/to-tickets/SKILL.md` | OK |
 | `claude/commands/to-tickets.md` | OK |
+| `codex/skills/to-tickets/SKILL.md` | OK |
 | `copilot/skills/to-tickets/SKILL.md` | OK |
 | `opencode/command/to-tickets.md` | OK |
 | `pi/skills/to-tickets/SKILL.md` | OK |
@@ -1997,6 +2035,7 @@ named doc, not regenerating this file.
 | --- | --- |
 | `agy/skills/grill-me/SKILL.md` | OK |
 | `claude/commands/grill-me.md` | OK |
+| `codex/skills/grill-me/SKILL.md` | OK |
 | `copilot/skills/grill-me/SKILL.md` | OK |
 | `opencode/command/grill-me.md` | OK |
 | `opencode/skills/grill-me/SKILL.md` | OK |

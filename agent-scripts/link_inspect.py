@@ -38,6 +38,8 @@ from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+import harness_spec
+
 # ── links.toml row schema ─────────────────────────────────────────────────────
 
 
@@ -170,7 +172,7 @@ def is_main_checkout(root: Path) -> bool:
 
 # ── links.toml scope constants ───────────────────────────────────────────
 
-VALID_HARNESSES = ("claude", "copilot", "opencode", "agy", "pi", "codex")
+VALID_HARNESSES = harness_spec.ALL_NAMES
 VALID_PROFILES = ("personal", "work")
 DEFAULT_PROFILE = "personal"
 
