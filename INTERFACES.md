@@ -39,6 +39,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`cli_common.py`](#agentscriptsclicommonpy) | Shared CLI helpers used across agent-toolkit scripts. |
 | [`dev_status.py`](#agentscriptsdevstatuspy) | dev_status.py v2 — slug IDs, structured dependency graph, pure render. |
 | [`dev_status_formatting.py`](#agentscriptsdevstatusformattingpy) | Pure text-formatting helpers shared by the backlog dashboard and recap. |
+| [`dev_status_mutation.py`](#agentscriptsdevstatusmutationpy) | Typed mutation service and transaction manager for dev_status (Candidate 12). |
 | [`dev_status_read.py`](#agentscriptsdevstatusreadpy) | Pure read-only facade over the dev_status backlog store. |
 | [`dev_status_storage.py`](#agentscriptsdevstatusstoragepy) | Backlog persistence, lock coordination, and journal primitives. |
 | [`gen_interfaces.py`](#agentscriptsgeninterfacespy) | gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources. |
@@ -280,9 +281,9 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `out-of-scope remove <concept-slug>` — delete a rejected concept's record
   - `out-of-scope list` — list rejected concepts, newest-first
   - `out-of-scope show <concept-slug>` — print a rejected concept's full record
-- Environment: `AGY_SESSION`, `AI_AGENT`, `ANTHROPIC_CLI`, `ANTIGRAVITY`, `ANTIGRAVITY_AGENT`, `ANTIGRAVITY_CONVERSATION_ID`, `CLAUDE_CODE`, `COPILOT`, `DEVSTATUS_AGENT`, `DEVSTATUS_CLAIM_TTL_SECONDS`, `DEVSTATUS_HARNESS`, `DEVSTATUS_RECAP_AGY_MODEL`, `DEVSTATUS_RECAP_DISABLE`, `DEVSTATUS_RECAP_TIMEOUT_SECONDS`, `GITHUB_COPILOT`, `OPENCODE`, `OPENCODE_GATEWAY`, `PI_CODING_AGENT`, `PI_SESSION`
+- Environment: `DEVSTATUS_AGENT`, `DEVSTATUS_RECAP_AGY_MODEL`, `DEVSTATUS_RECAP_DISABLE`, `DEVSTATUS_RECAP_TIMEOUT_SECONDS`
 - Explicit exit codes: `1`
-- Depends on: `cli_common.py`, `dev_status_formatting.py`, `dev_status_storage.py`, `llm_backends.py`
+- Depends on: `cli_common.py`, `dev_status_formatting.py`, `dev_status_mutation.py`, `dev_status_storage.py`, `llm_backends.py`
 - Public classes:
   - `class Gate(TypedDict)` — A judgment-step verification checkpoint on a backlog item.
   - `class RunRecord(TypedDict)` — One recorded command execution — a row of the ``runs.jsonl`` sidecar.
@@ -290,9 +291,7 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `class PendingItem(TypedDict)` — A single waiting-on-someone-else item as stored in ``pending_items.json``.
 - Public functions:
   - `format_compact_confirmation(cmd: str, slug: str, status: str, rev: int, ref: str | int | None = None, detail: str = '') -> str` — Format a single-line structured confirmation for mutating commands under compact mode.
-  - `today() -> str` — Return today's date as an ISO-8601 string (``YYYY-MM-DD``).
   - `machine_id() -> str` — Return this machine's stable short id, creating it on first use.
-  - `validate_slug(slug: str, context: str = '') -> str | None` — Validate a candidate item slug.
   - `load_items() -> list[BacklogItem]` — Load all backlog items from :data:`ITEMS_FILE`.
   - `save_items(items: list[BacklogItem]) -> None` — Atomically persist ``items`` to :data:`ITEMS_FILE`.
   - `load_pending() -> list[PendingItem]` — Load all pending items from :data:`PENDING_FILE`.
@@ -301,15 +300,7 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `out_of_scope_lock() -> Iterator[None]` — Hold an exclusive lock over an out-of-scope command's read-modify-write cycle.
   - `load_rev() -> int` — Read the current revision counter.
   - `bump_rev() -> int` — Increment and persist the revision counter.
-  - `build_index(items: list[BacklogItem]) -> BacklogIndex` — Build a slug → item lookup for ``items``.
-  - `effective_blockers(item: BacklogItem, index: BacklogIndex) -> list[str]` — Return ``item``'s ``blocked_by`` slugs whose referent isn't done.
-  - `detect_cycle(start: str, new_dep: str, index: BacklogIndex) -> bool` — Check whether adding ``new_dep`` as a blocker of ``start`` would cycle.
-  - `prefix_of(slug: str) -> str` — The slug's prefix, preferring the longest known one.
-  - `is_worker_safe(prefix: str) -> bool` — Whether a swarm worker may be handed items under this prefix.
   - `serial_safety(item: BacklogItem) -> tuple[bool, str | None]` — Whether one READY item is safe for isolated serial delegation.
-  - `resolve_id(arg: str, items: list[BacklogItem], pending_items: list[PendingItem]) -> tuple[str, str]` — Resolve a display number or slug to a ``(kind, slug)`` pair.
-  - `require_kind(cmd: str, arg: str, kind: str, expected: str) -> None` — Exit with a helpful message if ``kind`` doesn't match ``expected``.
-  - `enforce_rev_guard(cmd: str, id_arg: str, if_rev_arg: int | None, current_rev: int, items: list[BacklogItem], pending_items: list[PendingItem]) -> None` — Refuse a numeric-id mutation that lacks a fresh ``--if-rev``.
   - `render(items: list[BacklogItem] | None = None, pending_items: list[PendingItem] | None = None, *, out: TextIO | None = None, err: TextIO | None = None, rev: int | None = None, dispatch: bool = False) -> None` — Render the full dashboard: pending items, then the five backlog sections.
   - `append_journal_event(entry: dict[str, object], *, verbose: bool = False) -> None` — Append one event to the journal, best-effort.
   - `load_runs(item: str | None = None) -> list[RunRecord]` — Load run-evidence rows from :data:`RUNS_FILE`, optionally for one item.
@@ -319,7 +310,7 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `confirm_resolution(cmd: str, arg: str | int, item: BacklogItem | PendingItem, summary_key: str = 'summary', *, quiet: bool = False) -> None` — Echo what a mutating command resolved to, so misresolution is visible.
   - `build_parser() -> argparse.ArgumentParser` — Build the full argument parser for every subcommand.
 - Subcommand handlers: `cmd_internal_regen`, `cmd_recap`, `cmd_render`, `cmd_ready`, `cmd_list`, `cmd_show`, `cmd_add`, `cmd_update`, `cmd_start`, `cmd_done`, `cmd_review`, `cmd_approve`, `cmd_reject`, `cmd_gate_set`, `cmd_gate_pass`, `cmd_run`, `cmd_runs`, `cmd_backfill_gate`, `cmd_rename`, `cmd_block`, `cmd_unblock`, `cmd_out_of_scope_add`, `cmd_out_of_scope_link`, `cmd_out_of_scope_unlink`, `cmd_out_of_scope_remove`, `cmd_out_of_scope_list`, `cmd_out_of_scope_show`, `cmd_pending_add`, `cmd_pending_update`, `cmd_pending_list`, `cmd_remove`, `cmd_prune`
-- Tested by: `agent-scripts/test_dev_status.py`, `agent-scripts/test_sweep_dead_claims.py`, `agent-scripts/test_to_tickets_runner.py`
+- Tested by: `agent-scripts/test_dev_status.py`, `agent-scripts/test_dev_status_mutation.py`, `agent-scripts/test_sweep_dead_claims.py`, `agent-scripts/test_to_tickets_runner.py`
 
 ### `agent-scripts/dev_status_formatting.py`
 
@@ -343,6 +334,65 @@ Pure text-formatting helpers shared by the backlog dashboard and recap.
   - `recap_last_sentence_cut(text: str, budget: int, min_keep: int, is_abbrev_boundary: Callable[[str, int], bool] = recap_is_abbrev_boundary) -> int | None` — Return the last acceptable sentence boundary within ``budget``.
   - `normalize_recap_text(raw: str, max_chars: int, min_keep: int, last_sentence_cut: Callable[[str, int, int], int | None] = recap_last_sentence_cut) -> str` — Strip presentation noise and fit backend recap prose within a budget.
 - Tested by: nothing
+
+### `agent-scripts/dev_status_mutation.py`
+
+Typed mutation service and transaction manager for dev_status (Candidate 12).
+
+- Installed at: `~/.claude/scripts/dev_status_mutation.py` (all harnesses)
+- Entrypoint: not executable, `#!/usr/bin/env python3`
+- CLI: none (library module).
+- Environment: `AGY_SESSION`, `AI_AGENT`, `ANTHROPIC_CLI`, `ANTIGRAVITY`, `ANTIGRAVITY_AGENT`, `ANTIGRAVITY_CONVERSATION_ID`, `CLAUDE_CODE`, `COPILOT`, `DEVSTATUS_CLAIM_TTL_SECONDS`, `DEVSTATUS_HARNESS`, `GITHUB_COPILOT`, `OPENCODE`, `OPENCODE_GATEWAY`, `PI_CODING_AGENT`, `PI_SESSION`
+- Depends on: `dev_status_formatting.py`, `dev_status_storage.py`
+- Exceptions:
+  - `class BacklogMutationError(Exception)` — Base class for all typed mutation refusals.
+  - `class RevisionConflictError(BacklogMutationError)` — Refusal when --if-rev is missing or stale on numeric position mutations.
+  - `class GateUnmetError(BacklogMutationError)` — Refusal when completing an item whose verification gate is unmet.
+  - `class NotFoundError(BacklogMutationError)` — Refusal when a slug or numeric position cannot be found.
+  - `class ClaimCollisionError(BacklogMutationError)` — Refusal when start is attempted on an item actively claimed elsewhere.
+  - `class DuplicateSlugError(BacklogMutationError)` — Refusal when a proposed slug collides with an existing item or pool.
+  - `class InvalidItemStateError(BacklogMutationError)` — Refusal when an item's current state forbids the requested transition.
+  - `class ValidationError(BacklogMutationError)` — Refusal when request payload fails semantic validation rules.
+  - `class CycleError(ValidationError)` — Refusal when adding a dependency would create a cycle.
+- Public classes:
+  - `class MutationResult` — Carries post-mutation snapshot and metadata for the adapter to render.
+  - `class RunResult` — Distinct result shape for cmd_run execution and evidence recording.
+  - `class NewItemRequest`
+  - `class ItemUpdateRequest`
+  - `class GateSetRequest`
+  - `class GatePassRequest`
+  - `class PendingAddRequest`
+  - `class PendingUpdateRequest`
+  - `class BacklogTransaction(Protocol)` — Transaction interface providing single-lock fail-fast batch adds.
+- Public functions:
+  - `today() -> str` — Return today's date as an ISO-8601 string (``YYYY-MM-DD``).
+  - `validate_slug(slug: str, context: str = '') -> str | None` — Validate a candidate item slug.
+  - `build_index(items: list[BacklogItem]) -> BacklogIndex` — Build a slug -> item lookup for ``items``.
+  - `effective_blockers(item: BacklogItem, index: BacklogIndex) -> list[str]` — Return ``item``'s ``blocked_by`` slugs whose referent isn't done.
+  - `detect_cycle(start: str, new_dep: str, index: BacklogIndex) -> bool` — Check whether adding ``new_dep`` as a blocker of ``start`` would cycle.
+  - `prefix_of(slug: str) -> str` — The slug's prefix, preferring the longest known one.
+  - `is_worker_safe(prefix: str) -> bool` — Whether a swarm worker may be handed items under this prefix.
+  - `resolve_id(arg: str, items: list[BacklogItem], pending_items: list[PendingItem]) -> tuple[str, str]` — Resolve a display number or slug to a ``(kind, slug)`` pair.
+  - `require_kind(cmd: str, arg: str, kind: str, expected: str) -> None` — Raise ValidationError if ``kind`` doesn't match ``expected``.
+  - `enforce_rev_guard(cmd: str, id_arg: str, if_rev_arg: int | None, current_rev: int, items: list[BacklogItem], pending_items: list[PendingItem]) -> None` — Refuse a numeric-id mutation that lacks a fresh --if-rev.
+  - `add_item(request: NewItemRequest, *, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Append a new backlog item.
+  - `update_item(slug_or_id: str, request: ItemUpdateRequest, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Merge an update request into a backlog item.
+  - `start_item(slug_or_id: str, *, if_rev: int | None = None, claimed_by: str | None = None, force: bool = False, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Mark a backlog item in-progress.
+  - `done_item(slug_or_id: str, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Mark a backlog item done.
+  - `review_item(slug_or_id: str, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Submit (or re-submit) an item for review.
+  - `approve_item(slug_or_id: str, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Accept an in-review item, marking it done.
+  - `reject_item(slug_or_id: str, feedback: str, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Send an in-review item back to in-progress with feedback.
+  - `block_item(slug_or_id: str, blocker_slug_or_id: str, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Add a blocker to a backlog item.
+  - `unblock_item(slug_or_id: str, blocker_slug_or_id: str, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Remove a blocker from a backlog item.
+  - `set_gate(slug_or_id: str, request: GateSetRequest, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Classify an item's judgment-step verification gate.
+  - `pass_gate(slug_or_id: str, request: GatePassRequest, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Record that an item's gate criteria are satisfied.
+  - `rename_item(old_slug_or_id: str, new_slug: str, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Rename a slug and rewrite every reference to it across both pools.
+  - `remove_item(slug_or_id: str, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Permanently delete one backlog item.
+  - `run_item(slug_or_id: str, command: Sequence[str], *, if_rev: int | None = None, timeout: float | None = None, cwd: str | None = None, items_path: Path | None = None) -> RunResult` — Execute a command and record it as run evidence.
+  - `add_pending_item(request: PendingAddRequest, *, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Track a new waiting-on-someone-else item.
+  - `update_pending_item(slug_or_id: str, request: PendingUpdateRequest, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Merge an update request into a pending item.
+  - `mutation_transaction(*, items_path: Path | None = None, verbose: bool = False) -> Iterator[BacklogTransaction]` — Hold backlog_lock once for batch operations; yields BacklogTransaction.
+- Tested by: `agent-scripts/test_dev_status.py`, `agent-scripts/test_dev_status_mutation.py`
 
 ### `agent-scripts/dev_status_read.py`
 
@@ -417,7 +467,7 @@ Backlog persistence, lock coordination, and journal primitives.
   - `append_run_record(record: RunRecord, *, runs_file: Path | None = None, data_dir: Path | None = None) -> bool` — Append one run-evidence row to :data:`RUNS_FILE` (best-effort).
   - `load_recap_cache(path: Path | None = None) -> dict[str, object] | None` — Load ``recap-cache.json``, or ``None`` if missing/corrupt/malformed.
   - `save_recap_cache(backend: str, text: str, board_fingerprint: str, path: Path | None = None) -> None` — Atomically persist a recap result.
-- Tested by: `agent-scripts/test_dev_status.py`, `agent-scripts/test_dev_status_read.py`
+- Tested by: `agent-scripts/test_dev_status.py`, `agent-scripts/test_dev_status_mutation.py`, `agent-scripts/test_dev_status_read.py`
 
 ### `agent-scripts/gen_interfaces.py`
 

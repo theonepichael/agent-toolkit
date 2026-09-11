@@ -23,6 +23,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
 import dev_status
+import dev_status_mutation
 import llm_backends
 
 
@@ -661,8 +662,8 @@ class BacklogTestCase(BacklogFixture):
         second_fsync_fd = fsync_mock.call_args_list[1].args[0]
         self.assertEqual(second_fsync_fd, dir_fd)
 
-    # ── 14d: _backlog_mutation bumps rev before its post-yield save, and on
-    # a mid-block exception the rev is still bumped but the save is skipped ──
+    # ── 14d: mutation service bumps rev before saving, and on
+    # a save exception the rev is still bumped ──────────────────────────────
 
     def test_14d_backlog_mutation_bumps_rev_before_any_write(self):
         self.write_items([make_item("my-item")])
@@ -678,8 +679,9 @@ class BacklogTestCase(BacklogFixture):
         ):
             manager.attach_mock(bump_mock, "bump_rev")
             manager.attach_mock(save_mock, "save_items")
-            with dev_status._backlog_mutation("test", "my-item", None):
-                pass
+            dev_status_mutation.update_item(
+                "my-item", dev_status_mutation.ItemUpdateRequest(summary="new")
+            )
 
         call_strs = [str(c) for c in manager.mock_calls]
         bump_positions = [
@@ -700,18 +702,19 @@ class BacklogTestCase(BacklogFixture):
                 dev_status, "bump_rev", wraps=dev_status.bump_rev
             ) as bump_mock,
             patch.object(
-                dev_status, "save_items", wraps=dev_status.save_items
+                dev_status, "save_items", side_effect=RuntimeError("boom")
             ) as save_mock,
             self.assertRaises(RuntimeError),
         ):
-            with dev_status._backlog_mutation("test", "my-item", None):
-                raise RuntimeError("boom")
+            dev_status_mutation.update_item(
+                "my-item", dev_status_mutation.ItemUpdateRequest(summary="new")
+            )
 
         bump_mock.assert_called_once()
-        save_mock.assert_not_called()
+        save_mock.assert_called_once()
 
     # ── 14e: the set of commands that bump-and-save manually (outside
-    # _backlog_mutation) is exactly the six known ones -- a future 7th site
+    # dev_status_mutation) is exactly the known ones -- a future site
     # must be added here or this fails by name ──────────────────────────────
 
     def test_14e_manual_mutation_site_list_is_exhaustive(self):
@@ -727,16 +730,11 @@ class BacklogTestCase(BacklogFixture):
                 "save_items" in fn.__code__.co_names
                 or "save_pending" in fn.__code__.co_names
             )
-            and "_backlog_mutation" not in fn.__code__.co_names
         }
         self.assertEqual(
             manual_sites,
             {
-                "cmd_add",
                 "cmd_backfill_gate",
-                "cmd_rename",
-                "cmd_pending_add",
-                "cmd_pending_update",
                 "cmd_prune",
                 # Read paths with one conditional write: the claim-liveness
                 # sweep saves (bump-then-save) only when it actually reverts

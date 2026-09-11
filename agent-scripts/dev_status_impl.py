@@ -28,19 +28,145 @@ import re
 import subprocess
 import sys
 import textwrap
-import time
-import uuid
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import NotRequired, TextIO, TypedDict, cast
+from typing import NoReturn, NotRequired, TextIO, TypedDict, cast
 
 import cli_common
 import dev_status_formatting
 import dev_status_storage
 import llm_backends
+from dev_status_mutation import (
+    UNSET,
+    BacklogMutationError,
+    GatePassRequest,
+    GateSetRequest,
+    ItemUpdateRequest,
+    MutationResult,
+    NewItemRequest,
+    PendingAddRequest,
+    PendingUpdateRequest,
+    RevisionConflictError,
+    _claim_uses_ttl,
+    _claim_within_ttl,
+    _concat_order,
+    _done_selection,
+    _done_selection_stamp,
+    _gate_blocks,
+    _is_pid_alive,
+    _pending_render_order,
+    _purge_inbound_refs,
+    _render_order,
+    _run_state,
+    _unified_order,
+    add_item,
+    add_pending_item,
+    approve_item,
+    block_item,
+    build_index,
+    done_item,
+    effective_blockers,
+    is_worker_safe,
+    pass_gate,
+    prefix_of,
+    reject_item,
+    remove_item,
+    rename_item,
+    require_kind,
+    resolve_id,
+    review_item,
+    run_item,
+    set_gate,
+    start_item,
+    today,
+    unblock_item,
+    update_item,
+    update_pending_item,
+    validate_slug,
+)
+from dev_status_mutation import (
+    BacklogTransaction as BacklogTransaction,
+)
+from dev_status_mutation import (
+    ClaimCollisionError as ClaimCollisionError,
+)
+from dev_status_mutation import (
+    CycleError as CycleError,
+)
+from dev_status_mutation import (
+    DuplicateSlugError as DuplicateSlugError,
+)
+from dev_status_mutation import (
+    GateUnmetError as GateUnmetError,
+)
+from dev_status_mutation import (
+    InvalidItemStateError as InvalidItemStateError,
+)
+from dev_status_mutation import (
+    NotFoundError as NotFoundError,
+)
+from dev_status_mutation import (
+    RunResult as RunResult,
+)
+from dev_status_mutation import (
+    ValidationError as ValidationError,
+)
+from dev_status_mutation import (
+    _argv0_basename as _argv0_basename,
+)
+from dev_status_mutation import (
+    _check_claim_collision as _check_claim_collision,
+)
+from dev_status_mutation import (
+    _claim_ttl_seconds as _claim_ttl_seconds,
+)
+from dev_status_mutation import (
+    _detect_harness as _detect_harness,
+)
+from dev_status_mutation import (
+    _find_owner_pid as _find_owner_pid,
+)
+from dev_status_mutation import (
+    _gate_block_message as _gate_block_message,
+)
+from dev_status_mutation import (
+    _gate_pass_refusal as _gate_pass_refusal,
+)
+from dev_status_mutation import (
+    _is_ephemeral_shell as _is_ephemeral_shell,
+)
+from dev_status_mutation import (
+    _is_unanchored_claim as _is_unanchored_claim,
+)
+from dev_status_mutation import (
+    _make_claim as _make_claim,
+)
+from dev_status_mutation import (
+    _pid_namespace_identity as _pid_namespace_identity,
+)
+from dev_status_mutation import (
+    _priority_rank as _priority_rank,
+)
+from dev_status_mutation import (
+    _proc_info as _proc_info,
+)
+from dev_status_mutation import (
+    _repo_root_for_path as _repo_root_for_path,
+)
+from dev_status_mutation import (
+    _validate_run_citation as _validate_run_citation,
+)
+from dev_status_mutation import (
+    detect_cycle as detect_cycle,
+)
+from dev_status_mutation import (
+    enforce_rev_guard as enforce_rev_guard,
+)
+from dev_status_mutation import (
+    mutation_transaction as mutation_transaction,
+)
 
 DATA_DIR = dev_status_storage.DATA_DIR
 ITEMS_FILE = dev_status_storage.ITEMS_FILE
@@ -332,356 +458,12 @@ type RenderOrder = tuple[
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 
-def today() -> str:
-    """Return today's date as an ISO-8601 string (``YYYY-MM-DD``)."""
-    return date.today().isoformat()
-
-
-_HASHED_CONTENT_FIELDS = ("summary", "context", "next_steps", "related_files")
-
-
-def _content_hash(item: BacklogItem) -> str:
-    """SHA-256 over the reviewer-visible content fields, stable serialization.
-
-    Missing fields hash as ``None`` via ``.get(k)`` (not ``.get(k, "")``) —
-    a field appearing later where it was previously absent counts as
-    content drift, same as any other change. ``related_files`` list order
-    is significant: reordering entries is a content change. Nested dict key
-    order is not (``sort_keys=True`` recurses).
-    """
-    payload = json.dumps(
-        {k: cast(dict[str, object], item).get(k) for k in _HASHED_CONTENT_FIELDS},
-        sort_keys=True,
-    )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-def _detect_harness(explicit: str | None = None) -> str:
-    """Detect current agent/environment harness name.
-
-    Priority:
-    1. explicit argument / --claimed-by flag
-    2. DEVSTATUS_HARNESS environment variable
-    3. PI_SESSION / PI_CODING_AGENT -> 'pi'
-    4. CLAUDE_CODE / ANTHROPIC_CLI -> 'claude'
-    5. ANTIGRAVITY / AGY_SESSION / ANTIGRAVITY_AGENT / ANTIGRAVITY_CONVERSATION_ID / AI_AGENT -> 'agy'
-    6. OPENCODE_GATEWAY / OPENCODE -> 'opencode'
-    7. GITHUB_COPILOT / COPILOT -> 'copilot'
-    8. Fallback: 'cli'
-    """
-    if explicit:
-        return explicit.strip()
-    if env := os.environ.get("DEVSTATUS_HARNESS"):
-        return env.strip()
-    if os.environ.get("PI_SESSION") or os.environ.get("PI_CODING_AGENT"):
-        return "pi"
-    if os.environ.get("CLAUDE_CODE") or os.environ.get("ANTHROPIC_CLI"):
-        return "claude"
-    if (
-        os.environ.get("ANTIGRAVITY")
-        or os.environ.get("AGY_SESSION")
-        or os.environ.get("ANTIGRAVITY_AGENT")
-        or os.environ.get("ANTIGRAVITY_CONVERSATION_ID")
-        or os.environ.get("AI_AGENT") == "antigravity"
-    ):
-        return "agy"
-    if os.environ.get("OPENCODE_GATEWAY") or os.environ.get("OPENCODE"):
-        return "opencode"
-    if os.environ.get("GITHUB_COPILOT") or os.environ.get("COPILOT"):
-        return "copilot"
-    return "cli"
-
-
-def _claim_ttl_seconds() -> float:
-    """Return configured claim TTL in seconds."""
-    try:
-        return float(
-            os.environ.get(
-                "DEVSTATUS_CLAIM_TTL_SECONDS", str(DEFAULT_CLAIM_TTL_SECONDS)
-            )
-        )
-    except (ValueError, TypeError):
-        return float(DEFAULT_CLAIM_TTL_SECONDS)
-
-
-def _claim_within_ttl(claim_last_active: str) -> bool:
-    """True if a claim's activity stamp is parseable and inside the claim TTL.
-
-    Used for cross-machine claims, which cannot be PID-checked: a stamp
-    within :func:`_claim_ttl_seconds` means the claim must be assumed live.
-    An unparseable or missing stamp returns ``False`` (an unknowable claim
-    is not treated as a confirmed-live theft victim).
-    """
-    if not claim_last_active:
-        return False
-    try:
-        ts_str = claim_last_active.replace("Z", "+00:00")
-        dt = datetime.fromisoformat(ts_str)
-    except (ValueError, TypeError):
-        return False
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=UTC)
-    elapsed = (datetime.now(UTC) - dt).total_seconds()
-    return elapsed < _claim_ttl_seconds()
-
-
-def _is_unanchored_claim(claim: dict[str, object]) -> bool:
-    """Return whether owner discovery fell back to the invoking child PID.
-
-    A claim with equal positive ``pid`` and ``owner_pid`` has no observable
-    durable owner. Its PID is therefore not a liveness signal; callers must
-    use the activity TTL instead. Legacy claims omit ``owner_pid`` and remain
-    PID-anchored.
-    """
-    pid = int(claim.get("pid") or 0) if str(claim.get("pid", "")).isdigit() else 0
-    owner_pid = (
-        int(claim.get("owner_pid")) if str(claim.get("owner_pid", "")).isdigit() else 0
-    )
-    return pid > 0 and owner_pid == pid
-
-
-def _pid_namespace_identity() -> str | None:
-    """Return the current Linux PID-namespace identity, if observable."""
-    try:
-        return os.readlink("/proc/self/ns/pid")
-    except OSError:
-        return None
-
-
-def _claim_uses_ttl(claim: dict[str, object]) -> bool:
-    """Return whether a claim's PIDs cannot safely be checked by this process.
-
-    An owner-discovery fallback has no durable PID anchor. Newer claims also
-    record their PID namespace: equal machine IDs do not make numeric PIDs
-    comparable across namespaces, where a recycled PID can name an unrelated
-    host process. Records written before namespace identity was introduced
-    retain the prior PID-based behavior for compatibility.
-    """
-    if _is_unanchored_claim(claim):
-        return True
-    if "pid_namespace" not in claim:
-        return False
-    claim_namespace = claim.get("pid_namespace")
-    current_namespace = _pid_namespace_identity()
-    return (
-        not isinstance(claim_namespace, str)
-        or not claim_namespace
-        or current_namespace is None
-        or claim_namespace != current_namespace
-    )
-
-
-def _is_pid_alive(pid: int) -> bool:
-    """Check whether a process with `pid` is currently alive on the local machine."""
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except PermissionError:
-        # Process exists but belongs to another user
-        return True
-    except ProcessLookupError:
-        # ESRCH: no such process
-        return False
-    except OSError as e:
-        import errno
-
-        if e.errno == errno.EPERM:
-            return True
-        if e.errno == errno.ESRCH:
-            return False
-        return False
-    else:
-        return True
-
-
-def _proc_info(pid: int) -> tuple[int, str] | None:
-    """Return (ppid, space-joined cmdline) for pid, or None if unreadable.
-
-    Linux reads /proc/<pid>/stat (ppid is field 4, split after the closing
-    paren because comm may contain spaces) and /proc/<pid>/cmdline
-    (NUL-delimited). An empty cmdline (e.g. a zombie process) comes back as
-    (ppid, "") — still walkable via ppid, but not owner-eligible. Off-Linux,
-    falls back to `ps -o ppid= -o command=`.
-    """
-    result: tuple[int, str] | None = None
-    try:
-        stat = Path(f"/proc/{pid}/stat").read_text()
-        fields = stat[stat.rfind(")") + 2 :].split()
-        ppid = int(fields[1])
-        cmdline = (
-            Path(f"/proc/{pid}/cmdline")
-            .read_bytes()
-            .replace(b"\x00", b" ")
-            .decode("utf-8", "replace")
-            .strip()
-        )
-        result = (ppid, cmdline)
-    except (OSError, ValueError, IndexError):
-        result = None
-    if result is not None:
-        return result
-    try:
-        res = subprocess.run(
-            ["ps", "-o", "ppid=", "-o", "command=", "-p", str(pid)],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=5,
-        )
-        if res.returncode != 0:
-            return None
-        parts = res.stdout.strip().split(None, 1)
-        if len(parts) != 2:
-            return None
-        return (int(parts[0]), parts[1].strip())
-    except (OSError, ValueError, subprocess.SubprocessError):
-        return None
-
-
-_SHELL_BASENAMES = {"sh", "bash", "zsh", "dash", "ksh", "fish", "csh", "tcsh"}
-_HARNESS_BASENAMES = {"agy", "claude", "opencode", "pi", "copilot"}
-# Processes that outlive any single pane/session: never owner-eligible, and
-# the walk ends when it would step past one. The interactive-shell stop below
-# is the primary containment; this set is the belt-and-braces backstop for
-# chains with no interactive shell below the daemon.
-_DAEMON_BASENAMES = {
-    "tmux",
-    "screen",
-    "herdr",
-    "sshd",
-    "systemd",
-    "login",
-    "ssh-agent",
-    "containerd",
-    "dockerd",
-}
-_OWNER_HOP_CAP = 10
-_ANCESTOR_CMD_MAX = 120
-
-
-def _argv0_basename(cmd: str) -> str:
-    """Basename of a cmdline's first token, stripping a leading login dash."""
-    argv0 = cmd.split(" ", 1)[0].strip()
-    argv0 = argv0.removeprefix("-")
-    return os.path.basename(argv0)
-
-
-def _is_ephemeral_shell(cmd: str) -> bool:
-    """Check whether a shell command invocation is an ephemeral subshell/script.
-
-    Interactive shells (login shells, bare shells without arguments, or shells
-    with -i) represent durable session/pane boundaries. Ephemeral shells are
-    those executing an inline command string (-c, -lc, -ec, -xc, --command) or
-    a script file (first non-option argument).
-    """
-    tokens = cmd.split()
-    if len(tokens) <= 1:
-        return False
-    for arg in tokens[1:]:
-        if arg == "--":
-            continue
-        if arg.startswith("-") and not arg.startswith("--"):
-            if "c" in arg:
-                return True
-        elif arg.startswith("--command") or not arg.startswith("-"):
-            return True
-    return False
-
-
-def _find_owner_pid(
-    start_pid: int | None = None,
-) -> tuple[int, list[dict[str, object]]]:
-    """Find the session-owner PID for a claim, walking the ancestor chain.
-
-    The invoking process (this script) is short-lived, so its own pid dies
-    within seconds of the claim being written — a live session then reads as
-    dead. The durable anchor is an ancestor: the nearest process that is
-    neither an ephemeral subshell (a shell invoked with -c, -lc, or running a
-    script) nor a daemon, bounded by the first interactive shell (pane/login
-    shell) or a daemon / pid-1 boundary. If a harness process (pi, claude, agy,
-    ...) sits between the child and that boundary, it is the owner — it dies
-    with the actual agent session, which is more precise than the pane shell.
-    With nothing non-shell in between (bare CLI), the interactive shell itself
-    is the owner. Falls back to the invoking pid when the chain yields nothing
-    usable, which is exactly the pre-change behavior.
-
-    Returns (owner_pid, ancestors) — ancestors is the walked chain from the
-    child up to and including the owner (bounded, cmds truncated), kept for
-    incident forensics.
-    """
-    pid = start_pid if start_pid is not None else os.getpid()
-    seen: list[tuple[int, str]] = []
-    candidates: list[int] = []
-    owner: int | None = None
-    cur = pid
-    for _ in range(_OWNER_HOP_CAP):
-        info = _proc_info(cur)
-        if info is None:
-            break
-        ppid, cmd = info
-        seen.append((cur, cmd))
-        at_boundary = ppid <= 1
-        if cmd:
-            base = _argv0_basename(cmd)
-            if base in _DAEMON_BASENAMES:
-                break
-            if base in _HARNESS_BASENAMES and cur != pid:
-                owner = cur
-                break
-            if base in _SHELL_BASENAMES:
-                if _is_ephemeral_shell(cmd):
-                    if at_boundary:
-                        break
-                    cur = ppid  # ephemeral tool-runner subshell: skip
-                    continue
-                if not candidates:
-                    owner = cur  # bare CLI: the pane/login shell itself
-                break  # interactive shell: pane/session boundary; stop upward
-            if cur != pid:  # the invoking process itself is never owner-eligible
-                candidates.append(cur)
-        if at_boundary:
-            break
-        cur = ppid
-    if owner is None:
-        owner = candidates[0] if candidates else pid
-    owner_cmd = next((c for p, c in seen if p == owner), "")
-    kept = seen[:4]
-    ancestors = [{"pid": p, "cmd": c[:_ANCESTOR_CMD_MAX]} for p, c in kept]
-    if owner != pid and all(a["pid"] != owner for a in ancestors):
-        ancestors.append({"pid": owner, "cmd": owner_cmd[:_ANCESTOR_CMD_MAX]})
-    return owner, ancestors
-
-
 def machine_id() -> str:
     """Return this machine's stable short id, creating it on first use."""
     return dev_status_storage.machine_id(MACHINE_ID_FILE, DATA_DIR)
 
 
 _machine_id = machine_id
-
-
-def _make_claim(harness: str | None = None) -> dict[str, object]:
-    """Create a fresh claim dictionary for the current session.
-
-    `pid` is the short-lived invoking process; `owner_pid` is the durable
-    session anchor found by walking the ancestor chain. `pid_namespace`
-    makes those numeric PIDs comparable only to readers in the same Linux
-    PID namespace; otherwise liveness falls back to the claim TTL.
-    """
-    h = _detect_harness(harness)
-    now_iso = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    owner_pid, ancestors = _find_owner_pid()
-    return {
-        "harness": h,
-        "machine_id": machine_id(),
-        "pid": os.getpid(),
-        "owner_pid": owner_pid,
-        "pid_namespace": _pid_namespace_identity(),
-        "ancestors": ancestors,
-        "claimed_at": now_iso,
-        "last_active": now_iso,
-    }
 
 
 def _check_worktree_guard(allow_main: bool = False, quiet: bool = False) -> None:
@@ -727,209 +509,6 @@ def _check_worktree_guard(allow_main: bool = False, quiet: bool = False) -> None
         pass
 
 
-def _check_claim_collision(
-    item: BacklogItem,
-    current_harness: str,
-    current_machine: str,
-    current_pid: int,
-    force: bool = False,
-    quiet: bool = False,
-    current_owner_pid: int = 0,
-) -> None:
-    """Refuse start if item is already actively claimed by another session."""
-    claim = cast(dict[str, object], item.get("claimed_by"))
-    if not isinstance(claim, dict):
-        return
-    claim_harness = str(claim.get("harness", "unknown"))
-    claim_machine = str(claim.get("machine_id", ""))
-    claim_pid = int(claim.get("pid") or 0) if str(claim.get("pid", "")).isdigit() else 0
-    claim_owner_pid = (
-        int(claim.get("owner_pid")) if str(claim.get("owner_pid", "")).isdigit() else 0
-    )
-    claim_last_active = str(claim.get("last_active") or claim.get("claimed_at") or "")
-    ttl_only = _claim_uses_ttl(claim)
-
-    if (
-        not ttl_only
-        and claim_machine == current_machine
-        and claim_pid == current_pid
-        and current_pid > 0
-    ):
-        return
-
-    # Same session re-entering via its owner PID is not a takeover either.
-    if (
-        not ttl_only
-        and claim_machine == current_machine
-        and claim_owner_pid > 0
-        and claim_owner_pid == current_owner_pid
-        and current_owner_pid > 0
-    ):
-        return
-
-    if force:
-        # A forced takeover of a *live* claim is claim theft — journal it for
-        # forensics. (We're inside the caller's ``backlog_lock`` critical
-        # section, so this append is serialized with every other journal
-        # write.) Own-claim re-entries above are not theft and are never
-        # journaled; a --force over an already-dead or expired claim is the
-        # ordinary takeover path, also not journaled.
-        anchor_pid = claim_owner_pid if claim_owner_pid > 0 else claim_pid
-        if claim_machine == current_machine:
-            stolen_live = (
-                _claim_within_ttl(claim_last_active)
-                if ttl_only
-                else anchor_pid > 0 and _is_pid_alive(anchor_pid)
-            )
-        else:
-            stolen_live = _claim_within_ttl(claim_last_active)
-        if stolen_live:
-            append_journal_event(
-                _journal_entry(
-                    "claim-theft",
-                    "backlog",
-                    load_rev(),
-                    slug=str(item.get("id", "?")),
-                    detail=(
-                        f"--force took over live {claim_harness} claim "
-                        f"(PID {anchor_pid}, machine {claim_machine[:6]})"
-                    ),
-                    diagnostic=True,
-                )
-            )
-        return
-
-    # Owner-anchored claims: the owner PID, not the ephemeral child pid, is
-    # the liveness anchor — and a matching owner means the same session is
-    # re-entering, not a collision (an exact owner match already returned
-    # above, so the block below only handles mismatched/dead owners).
-    if claim_machine == current_machine and not ttl_only and claim_owner_pid > 0:
-        if _is_pid_alive(claim_owner_pid):
-            print(
-                f"[start] {item.get('id', '?')} is actively claimed by {claim_harness} "
-                f"(PID {claim_owner_pid} on this machine). Use --force to take over the claim.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        else:
-            if not _agent_quiet() and not quiet:
-                print(
-                    f"[start] Previous claim by {claim_harness} (PID {claim_owner_pid}) is dead. "
-                    "Taking over claim.",
-                    file=sys.stderr,
-                )
-            return
-
-    if claim_machine == current_machine and not ttl_only and claim_pid > 0:
-        if _is_pid_alive(claim_pid):
-            print(
-                f"[start] {item.get('id', '?')} is actively claimed by {claim_harness} "
-                f"(PID {claim_pid} on this machine). Use --force to take over the claim.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        else:
-            if not _agent_quiet() and not quiet:
-                print(
-                    f"[start] Previous claim by {claim_harness} (PID {claim_pid}) is dead. "
-                    "Taking over claim.",
-                    file=sys.stderr,
-                )
-            return
-
-    ttl = _claim_ttl_seconds()
-    if claim_last_active:
-        try:
-            ts_str = claim_last_active.replace("Z", "+00:00")
-            dt = datetime.fromisoformat(ts_str)
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=UTC)
-            now = datetime.now(UTC)
-            elapsed = (now - dt).total_seconds()
-            if elapsed < ttl:
-                rem_mins = int((ttl - elapsed) / 60)
-                print(
-                    f"[start] {item.get('id', '?')} was claimed by {claim_harness} on machine {claim_machine[:6]} "
-                    f"{int(elapsed / 60)}m ago (active for {rem_mins}m more). Use --force to take over.",
-                    file=sys.stderr,
-                )
-                sys.exit(1)
-            else:
-                if not _agent_quiet() and not quiet:
-                    print(
-                        f"[start] Previous claim by {claim_harness} expired (idle {int(elapsed / 60)}m). "
-                        "Taking over claim.",
-                        file=sys.stderr,
-                    )
-        except (ValueError, TypeError):
-            pass
-
-
-def _apply_status_transition(
-    item: dict[str, object], new_status: str, stamp_field: str, done_value: str
-) -> None:
-    """Stamp or clear a completion timestamp as an item's status changes.
-
-    Stamps ``stamp_field`` with today's date when ``new_status`` enters
-    ``done_value``, and clears it when the item's status leaves
-    ``done_value``. Called from every path that can change status, so the
-    stamp can't be bypassed or left stale. Also clears ``claimed_by``
-    when transitioning away from ``in-progress``.
-
-    Args:
-        item: The backlog or pending item being mutated, in place.
-        new_status: The status value about to be applied.
-        stamp_field: Name of the field to stamp/clear (e.g.
-            ``"completed_at"`` for backlog items, ``"resolved_at"`` for
-            pending items).
-        done_value: The status value that triggers stamping (e.g.
-            ``"done"`` or ``"resolved"``).
-    """
-    old_status = item.get("status")
-    if new_status == done_value and old_status != done_value:
-        item[stamp_field] = today()
-    elif old_status == done_value and new_status != done_value:
-        item.pop(stamp_field, None)
-    if new_status != "in-progress":
-        item.pop("claimed_by", None)
-
-
-def _gate_blocks(gate: Mapping[str, object] | None) -> bool:
-    """Return True if `gate` blocks a done-transition (required, unpassed)."""
-    return bool(gate) and bool(gate.get("required")) and gate.get("passed_at") is None
-
-
-def _gate_block_message(cmd: str, item: BacklogItem) -> str | None:
-    """Return a refusal message if ``item``'s gate blocks a done-transition.
-
-    ``None`` means the gate doesn't block: absent, not required, or already
-    passed. Called from both :func:`cmd_done` and :func:`cmd_approve` —
-    either command can complete an item, so both need the same check.
-
-    Args:
-        cmd: Command name to prefix onto the message.
-        item: The item being transitioned to done.
-    """
-    gate = item.get("gate")
-    if not _gate_blocks(gate):
-        return None
-    n = len(gate.get("criteria", []))
-    return (
-        f"[{cmd}] {item.get('id', '?')} has an unmet gate ({n} criterion/criteria "
-        "unconfirmed) -- record evidence with 'run <id> -- <command>' then pass "
-        "'gate-pass <id>' with a coverage payload; 'show <id>' to "
-        "review the criteria."
-    )
-
-
-def _check_gate_or_exit(cmd: str, item: BacklogItem) -> None:
-    """Print a refusal and exit(1) if item's gate blocks `cmd`'s transition."""
-    gate_msg = _gate_block_message(cmd, item)
-    if gate_msg:
-        print(gate_msg, file=sys.stderr)
-        sys.exit(1)
-
-
 def _category_tag(category: str) -> str:
     """Render a category as a bracketed line prefix, e.g. ``"[bug] "``.
 
@@ -965,47 +544,6 @@ def _age_days(updated_str: str) -> int | None:
     return (date.today() - d).days
 
 
-def _normalize_done_stamp(raw: object) -> datetime | None:
-    """Normalize a non-empty ISO completion stamp to an aware UTC datetime."""
-    if not isinstance(raw, str) or not raw.strip():
-        return None
-    try:
-        dt = datetime.fromisoformat(raw.strip())
-    except ValueError:
-        return None
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=UTC)
-    return dt.astimezone(UTC)
-
-
-def _done_selection_stamp(item: BacklogItem) -> datetime | None:
-    """Return the normalized completion key for a done item.
-
-    ``completed_at`` takes precedence when it contains a non-empty value.
-    Empty values are treated as absent for legacy data and fall back to
-    ``updated``; a non-empty invalid value remains ineligible.
-    """
-    completed_at = item.get("completed_at")
-    if completed_at is None or (
-        isinstance(completed_at, str) and not completed_at.strip()
-    ):
-        completed_at = item.get("updated")
-    return _normalize_done_stamp(completed_at)
-
-
-def _done_selection(items: list[BacklogItem]) -> list[BacklogItem]:
-    """Return the five newest eligible done items with deterministic ties."""
-    candidates = [
-        (item, stamp)
-        for item in items
-        if item.get("status") == "done"
-        and (stamp := _done_selection_stamp(item)) is not None
-    ]
-    candidates.sort(key=lambda pair: pair[0]["id"])
-    candidates.sort(key=lambda pair: pair[1], reverse=True)
-    return [item for item, _stamp in candidates[:DONE_MAX_ITEMS]]
-
-
 def _use_color(out: TextIO) -> bool:
     """Return whether ANSI color codes should be written to ``out``."""
     return hasattr(out, "isatty") and out.isatty()
@@ -1021,30 +559,6 @@ def _colorize(text: str, color_code: str, enabled: bool) -> str:
             :func:`_use_color`).
     """
     return f"{color_code}{text}{_RESET}" if enabled else text
-
-
-def validate_slug(slug: str, context: str = "") -> str | None:
-    """Validate a candidate item slug.
-
-    Args:
-        slug: The candidate slug.
-        context: Optional command name to prefix onto the error message.
-
-    Returns:
-        ``None`` if ``slug`` is valid, otherwise a human-readable error
-        message describing which rule it violates.
-    """
-    prefix = f"[{context}] " if context else ""
-    if slug in RESERVED_SLUGS:
-        return f"{prefix}slug '{slug}' is a reserved word"
-    if not SLUG_RE.match(slug):
-        return (
-            f"{prefix}invalid slug '{slug}' — must match "
-            r"^[a-z0-9]+(-[a-z0-9]+)+$ (lowercase, hyphen-separated segments)"
-        )
-    if not (SLUG_MIN <= len(slug) <= SLUG_MAX):
-        return f"{prefix}slug '{slug}' length {len(slug)} out of range [{SLUG_MIN},{SLUG_MAX}]"
-    return None
 
 
 def _parse_json_arg(raw: str, context: str) -> dict[str, object]:
@@ -1220,117 +734,6 @@ backup_before_bulk_delete = _backup_before_bulk_delete
 # ── graph helpers ─────────────────────────────────────────────────────────────
 
 
-def build_index(items: list[BacklogItem]) -> BacklogIndex:
-    """Build a slug → item lookup for ``items``."""
-    return {i["id"]: i for i in items}
-
-
-def effective_blockers(item: BacklogItem, index: BacklogIndex) -> list[str]:
-    """Return ``item``'s ``blocked_by`` slugs whose referent isn't done.
-
-    A blocker slug that no longer resolves in ``index`` still counts as
-    unresolved — it's returned as-is. ``index`` is a *backlog* index, so
-    this fallback is also what makes a pending-item blocker (``blocked_by``
-    can hold a pending slug — see :func:`cmd_block`) correctly keep an item
-    out of READY, with no separate pending-aware branch needed here.
-    Otherwise (a genuinely dangling slug) this only fires for legacy or
-    hand-edited data now that :func:`cmd_remove`/:func:`cmd_prune` purge
-    inbound ``blocked_by`` references on delete.
-
-    A stored ``blocked_by`` that isn't a list (legacy corruption — a
-    string value would previously be iterated character-by-character) is
-    coerced to ``[]`` with a stderr warning so :func:`render` doesn't
-    walk a string one character at a time and emit a slot per character.
-
-    Args:
-        item: The item to check.
-        index: Slug → item lookup, as built by :func:`build_index`.
-    """
-    bb = item.get("blocked_by", [])
-    if not isinstance(bb, list):
-        print(
-            f"[effective_blockers] {item.get('id', '?')}.blocked_by is "
-            f"{type(bb).__name__}, not list — coercing to []",
-            file=sys.stderr,
-        )
-        return []
-    result = []
-    for s in bb:
-        dep = index.get(s)
-        if dep is None or dep.get("status") != "done":
-            result.append(s)
-    return result
-
-
-def detect_cycle(start: str, new_dep: str, index: BacklogIndex) -> bool:
-    """Check whether adding ``new_dep`` as a blocker of ``start`` would cycle.
-
-    Args:
-        start: Slug of the item that would gain ``new_dep`` as a blocker.
-        new_dep: Slug of the proposed blocker.
-        index: Slug → item lookup, as built by :func:`build_index`.
-
-    Returns:
-        ``True`` if ``new_dep`` (transitively, via its own blockers)
-        already depends on ``start``.
-    """
-    visited: set[str] = set()
-    stack = [new_dep]
-    while stack:
-        node = stack.pop()
-        if node == start:
-            return True
-        if node in visited:
-            continue
-        visited.add(node)
-        dep = index.get(node)
-        if dep:
-            stack.extend(dep.get("blocked_by", []))
-    return False
-
-
-def _purge_inbound_refs(
-    removed_slugs: set[str],
-    items: list[BacklogItem],
-    pending_items: list[PendingItem],
-) -> None:
-    """Strip every reference to ``removed_slugs`` from surviving records.
-
-    Purges ``removed_slugs`` from backlog items' ``blocked_by`` lists and
-    pending items' ``blocking`` lists. Without this, a deleted blocker
-    would remain in its dependents' ``blocked_by`` and
-    :func:`effective_blockers` would treat the missing slug as unresolved,
-    retroactively flipping dependents from READY into BLOCKED.
-
-    Mutates the passed records in place.
-    """
-    if not removed_slugs:
-        return
-    for item in items:
-        if item.get("id") in removed_slugs:
-            continue
-        bb = item.get("blocked_by") or []
-        if any(s in removed_slugs for s in bb):
-            item["blocked_by"] = [s for s in bb if s not in removed_slugs]
-    for p in pending_items:
-        if p.get("id") in removed_slugs:
-            continue
-        blocking = p.get("blocking") or []
-        if any(s in removed_slugs for s in blocking):
-            p["blocking"] = [s for s in blocking if s not in removed_slugs]
-
-
-# ── render order ──────────────────────────────────────────────────────────────
-
-
-def _priority_rank(item: BacklogItem) -> int:
-    """Sort rank for ``item``'s priority; lower sorts first.
-
-    Absence and any unrecognized value both collapse to ``"normal"``'s rank.
-    """
-    return _PRIORITY_RANK.get(item.get("priority", "normal"), 1)
-
-
 def _priority_glyph(item: BacklogItem, color: bool) -> str:
     """Render the leading 2-char priority gutter for one dashboard line.
 
@@ -1382,52 +785,6 @@ def _project_divider(
     return _colorize(line, _COLORS["dim"], color) if color else line
 
 
-def _render_order(items: list[BacklogItem]) -> RenderOrder:
-    """Bucket and sort backlog items into dashboard render order.
-
-    Returns:
-        A 5-tuple of ``(in_progress, ready, blocked, in_review, done)``,
-        where ``done`` contains at most :data:`DONE_MAX_ITEMS` eligible done
-        items, sorted most-recently-completed first. Completion ordering uses
-        normalized ``completed_at`` values, falling back to ``updated`` for
-        legacy items, with ascending id ties. The dashboard omits the DONE
-        section entirely when this is empty.
-
-    Note:
-        DONE-section membership changes only when the backlog data changes,
-        aside from malformed data being repaired outside this renderer.
-    """
-    index = build_index(items)
-
-    in_progress = sorted(
-        [i for i in items if i.get("status") == "in-progress"],
-        key=lambda i: i.get("updated", ""),
-        reverse=True,
-    )
-    in_progress = sorted(in_progress, key=_priority_rank)  # stable
-    open_items = [i for i in items if i.get("status") == "open"]
-    ready = sorted(
-        [i for i in open_items if not effective_blockers(i, index)],
-        key=lambda i: i.get("created", ""),
-    )
-    ready = sorted(ready, key=_priority_rank)  # stable
-    ready = sorted(ready, key=lambda i: _project_prefix(i.get("id", "")))  # stable
-    blocked = sorted(
-        [i for i in open_items if effective_blockers(i, index)],
-        key=lambda i: (len(effective_blockers(i, index)), i.get("updated", "")),
-    )
-    blocked = sorted(blocked, key=_priority_rank)  # stable
-    blocked = sorted(blocked, key=lambda i: _project_prefix(i.get("id", "")))  # stable
-    in_review = sorted(
-        [i for i in items if i.get("status") == "in-review"],
-        key=lambda i: i.get("updated", ""),
-    )
-    in_review = sorted(in_review, key=_priority_rank)  # stable
-    done = _done_selection(items)
-
-    return in_progress, ready, blocked, in_review, done
-
-
 HARNESS_REPO = "dotfiles"
 """The repo holding the harness itself.
 
@@ -1469,33 +826,6 @@ swarmable. `work-` has its own policy and must never reach a swarm either.
 Defaulting unknown to unsafe makes a new project explicitly opt in by being
 added to :data:`REPO_PREFIXES`, which is one edit in one place.
 """
-
-
-def prefix_of(slug: str) -> str:
-    """The slug's prefix, preferring the longest known one.
-
-    ``iron-lb-x`` is ``iron-lb``, not the ``iron`` a split on the first dash
-    would give.
-    """
-    for known in sorted(REPO_PREFIXES.values(), key=len, reverse=True):
-        if slug.startswith(f"{known}-"):
-            return known
-    return slug.split("-")[0]
-
-
-def is_worker_safe(prefix: str) -> bool:
-    """Whether a swarm worker may be handed items under this prefix.
-
-    The harness's own prefix is unsafe because a worker would be editing the
-    code it is running. Everything unrecognised is unsafe too -- see
-    :data:`WORKER_SAFE_PREFIXES`.
-
-    This is the single source of truth for the fact, in Python and beyond:
-    ``cmd_ready`` stamps it onto every emitted item so ``swarm_spawn`` in
-    ``pi/extensions/swarm-tool.ts`` can read it without a second copy of the
-    scheme in TypeScript.
-    """
-    return prefix in WORKER_SAFE_PREFIXES
 
 
 def _serial_repo_name_for_path(path: str) -> str | None:
@@ -1663,85 +993,6 @@ def _repo_name_for_path(path: str) -> str | None:
     return Path(common).parent.name or None
 
 
-def _repo_root_for_path(path: str) -> Path | None:
-    """Resolve a file or directory path to its enclosing git repository/worktree root.
-
-    Uses ``git rev-parse --show-toplevel`` so inside a worktree, the worktree
-    root itself is returned (where work is actually being executed), not the
-    parent repo. Returns None if path does not exist, git fails, or path is
-    not in a git repository.
-    """
-    candidate = Path(path).expanduser()
-    start: Path | None = None
-    if candidate.is_dir():
-        start = candidate
-    else:
-        for ancestor in candidate.parents:
-            if ancestor.is_dir():
-                start = ancestor
-                break
-    if start is None:
-        return None
-    try:
-        result = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(start),
-                "rev-parse",
-                "--path-format=absolute",
-                "--show-toplevel",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if result.returncode != 0:
-        return None
-    top = result.stdout.strip()
-    if not top:
-        return None
-    p = Path(top)
-    return p if p.is_dir() else None
-
-
-def _derive_run_cwd(item: BacklogItem | None, explicit_cwd: str | None) -> Path:
-    """Determine the working directory for a command run under ``dev_status run``.
-
-    Order of precedence:
-    1. Explicit ``--cwd <path>`` passed on the CLI. If given but invalid/not a
-       directory, exits with code 1.
-    2. Enclosing git repository / worktree root of the first entry in the item's
-       ``related_files`` that resolves via :func:`_repo_root_for_path`.
-    3. The current session working directory (:func:`Path.cwd`).
-    """
-    if explicit_cwd is not None:
-        p = Path(explicit_cwd).expanduser().resolve()
-        if not p.is_dir():
-            print(
-                f"[run] specified cwd '{explicit_cwd}' is not a directory",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        return p
-
-    if item is not None:
-        for entry in item.get("related_files", []):
-            if not isinstance(entry, Mapping):
-                continue
-            raw = str(entry.get("path", "")).strip()
-            if not raw:
-                continue
-            repo_root = _repo_root_for_path(raw)
-            if repo_root is not None and repo_root.is_dir():
-                return repo_root
-
-    return Path.cwd()
-
-
 def _prefix_check_reminder(
     item: BacklogItem,
     *,
@@ -1885,163 +1136,6 @@ def _out_of_scope_check_reminder(
         quiet=(quiet or _agent_quiet()),
         file=err,
     )
-
-
-def _pending_render_order(pending_items: list[PendingItem]) -> list[PendingItem]:
-    """Order unresolved pending items: reply_received group first, each newest-first."""
-    unresolved = [p for p in pending_items if p.get("status") != "resolved"]
-    by_recency = sorted(unresolved, key=lambda p: p.get("updated", ""), reverse=True)
-    return sorted(
-        by_recency, key=lambda p: 0 if p.get("status") == "reply_received" else 1
-    )
-
-
-# ── number resolution ─────────────────────────────────────────────────────────
-
-
-def _concat_order(
-    pending_ordered: list[PendingItem], buckets: RenderOrder
-) -> list[BacklogItem | PendingItem]:
-    """Concatenate pending + all five backlog buckets into one flat render order."""
-    in_progress, ready, blocked, in_review, done = buckets
-    return [*pending_ordered, *in_progress, *ready, *blocked, *in_review, *done]
-
-
-def _unified_order(
-    items: list[BacklogItem], pending_items: list[PendingItem]
-) -> list[BacklogItem | PendingItem]:
-    """Return the full cross-section render order: pending first, then backlog."""
-    return _concat_order(_pending_render_order(pending_items), _render_order(items))
-
-
-def resolve_id(
-    arg: str, items: list[BacklogItem], pending_items: list[PendingItem]
-) -> tuple[str, str]:
-    """Resolve a display number or slug to a ``(kind, slug)`` pair.
-
-    Args:
-        arg: A 1-based display number (as printed by ``render``) or a slug.
-        items: The current backlog items.
-        pending_items: The current pending items.
-
-    Returns:
-        ``(kind, slug)`` where ``kind`` is ``"backlog"`` or ``"pending"``.
-        For a non-numeric ``arg``, ``kind`` is inferred by checking which
-        pool the slug belongs to.
-
-    Raises:
-        SystemExit: If ``arg`` is numeric but out of range for the current
-            render order, or if a non-numeric ``arg`` matches no item in
-            either pool. Exits with status 1 after printing to stderr.
-    """
-    try:
-        n = int(arg)
-    except ValueError:
-        pending_ids = {p["id"] for p in pending_items}
-        if arg in pending_ids:
-            return "pending", arg
-        backlog_ids = {i["id"] for i in items}
-        if arg in backlog_ids:
-            return "backlog", arg
-        # Unknown slug — surface not-found here, before require_kind gets
-        # a chance to mis-resolve it as "wrong kind" (the previous
-        # `("backlog", arg)` default made `pending update typo-slug ...`
-        # claim the slug was "a backlog item" when no such item existed).
-        print(f"[resolve] not found: {arg}", file=sys.stderr)
-        sys.exit(1)
-
-    ordered = _unified_order(items, pending_items)
-    if not (1 <= n <= len(ordered)):
-        print(f"[resolve] no item at position {n}", file=sys.stderr)
-        sys.exit(1)
-    resolved = ordered[n - 1]
-    pending_ids = {p["id"] for p in pending_items}
-    kind = "pending" if resolved["id"] in pending_ids else "backlog"
-    return kind, resolved["id"]
-
-
-def require_kind(cmd: str, arg: str, kind: str, expected: str) -> None:
-    """Exit with a helpful message if ``kind`` doesn't match ``expected``.
-
-    Args:
-        cmd: Command name to prefix onto the error message.
-        arg: The original id argument, echoed back to the user.
-        kind: The kind actually resolved (``"backlog"`` or ``"pending"``).
-        expected: The kind this command requires.
-
-    Raises:
-        SystemExit: If ``kind != expected``. Exits with status 1.
-    """
-    if kind != expected:
-        other = (
-            "pending update/list"
-            if expected == "backlog"
-            else "update/start/done/block/unblock"
-        )
-        print(
-            f"[{cmd}] position {arg} is a {kind} item — use '{other}' instead",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-
-def enforce_rev_guard(
-    cmd: str,
-    id_arg: str,
-    if_rev_arg: int | None,
-    current_rev: int,
-    items: list[BacklogItem],
-    pending_items: list[PendingItem],
-) -> None:
-    """Refuse a numeric-id mutation that lacks a fresh ``--if-rev``.
-
-    Slug id args are exempt — slug identity never goes stale, only a
-    numeric position can point at the wrong item after a concurrent
-    change.
-
-    Args:
-        cmd: Command name to prefix onto any error message.
-        id_arg: The raw id argument as given on the command line.
-        if_rev_arg: The ``--if-rev`` value supplied, or ``None``.
-        current_rev: The revision currently on disk.
-        items: The current backlog items (used to re-render on refusal).
-        pending_items: The current pending items (used to re-render on
-            refusal).
-
-    Raises:
-        SystemExit: If ``id_arg`` is numeric and ``if_rev_arg`` is missing
-            or doesn't match ``current_rev``. Exits with status 1 after
-            re-rendering the dashboard so the caller can retry with a
-            fresh revision.
-    """
-    try:
-        int(id_arg)
-    except (ValueError, TypeError):
-        return  # slug-based call, no guard needed
-
-    if if_rev_arg is None:
-        print(
-            f"[{cmd}] numeric id '{id_arg}' requires --if-rev <N> to guard "
-            f"against a stale position — refusing (no write).",
-            file=sys.stderr,
-        )
-        print(
-            f"[{cmd}] current rev is {current_rev}. Re-confirm your target "
-            f"below, then retry with --if-rev {current_rev}.",
-            file=sys.stderr,
-        )
-        render(items, pending_items, rev=current_rev)
-        sys.exit(1)
-
-    if if_rev_arg != current_rev:
-        print(
-            f"[{cmd}] stale rev: --if-rev {if_rev_arg} given, current is "
-            f"{current_rev} — the backlog changed since you last read it. "
-            f"Refusing (no write).",
-            file=sys.stderr,
-        )
-        render(items, pending_items, rev=current_rev)
-        sys.exit(1)
 
 
 # ── render ────────────────────────────────────────────────────────────────────
@@ -2380,13 +1474,6 @@ def append_run_record(record: RunRecord) -> bool:
     return dev_status_storage.append_run_record(
         record, runs_file=RUNS_FILE, data_dir=DATA_DIR
     )
-
-
-def _run_state(run: RunRecord) -> str:
-    """Render a run's outcome as one short token (``exit=N``/``timeout``)."""
-    if run.get("timed_out"):
-        return "timeout"
-    return f"exit={run.get('exit_code')}"
 
 
 def read_journal_entries(
@@ -2935,182 +2022,49 @@ def confirm_resolution(
     )
 
 
-@dataclass
-class _MutationResult:
-    """Working set threaded through a :func:`_backlog_mutation` block.
-
-    ``item``, ``items``, ``pending_items``, ``slug``, and ``new_rev`` are
-    all populated before the caller's block runs — ``new_rev`` is bumped
-    *before* yielding, ahead of any write, so a crash between the bump and
-    the eventual write(s) never leaves changed data under a stale rev (see
-    :func:`_backlog_mutation`'s docstring). It's still named ``new_rev``
-    rather than folded into the constructor call above for API stability —
-    existing callers read it post-``with`` via ``m.new_rev``.
-
-    ``pending_items`` is exposed so mutators can render with the in-memory
-    pending set instead of re-reading it unlocked post-lock (mixed-snapshot
-    fix — the render call now belongs inside the lock).
-
-    ``journal_extra`` lets a caller's block stuff command-specific journal
-    fields (e.g. ``update``'s patched ``fields``, ``reject``'s ``feedback``)
-    that :func:`_backlog_mutation`'s generic cleanup can't otherwise infer —
-    it only auto-detects ``from_status``/``to_status`` by diffing status
-    before/after the block runs.
-    """
-
-    item: BacklogItem
-    items: list[BacklogItem]
-    pending_items: list[PendingItem]
-    slug: str
-    new_rev: int | None = None
-    journal_extra: dict[str, object] = field(default_factory=dict)
-    compact_detail: str | None = None
-    compact_status: str | None = None
-    ref: str | int | None = None
+def _handle_mutation_error(cmd: str, err: BacklogMutationError) -> NoReturn:
+    if (
+        isinstance(err, RevisionConflictError)
+        and err.items is not None
+        and err.pending_items is not None
+    ):
+        print(err.message, file=sys.stderr)
+        render(list(err.items), list(err.pending_items), rev=err.rev)
+        sys.exit(err.exit_code)
+    print(err.message, file=sys.stderr)
+    sys.exit(err.exit_code)
 
 
-@contextmanager
-def _backlog_mutation(
-    cmd: str,
-    id_arg: str,
-    if_rev_arg: int | None,
-    announce: bool = False,
+def _render_mutation_result(
+    res: MutationResult,
     *,
+    announce: bool = False,
+    id_arg: str | None = None,
     quiet: bool = False,
-    verbose: bool = False,
     compact: bool | None = None,
-) -> Iterator[_MutationResult]:
-    """Run the shared skeleton for update/start/done/block/unblock/remove
-    (also review/approve/reject/gate-set/gate-pass — every command sharing
-    this shape).
-
-    Acquires the lock, enforces the rev guard, resolves the target id, and
-    refuses if it isn't a backlog item. Yields a :class:`_MutationResult`
-    for the caller to mutate in place (or, for ``remove``, to reassign
-    ``items`` to a filtered list). After the caller's block completes,
-    saves ``items`` while still holding the lock, appends one journal event
-    (status transition auto-detected; command-specific extras come from
-    ``result.journal_extra``), then renders — matching the
-    bump-then-write-then-journal-then-optionally-announce-then-render order
-    every extracted command used before this helper existed. ``announce=True``
-    calls :func:`confirm_resolution` (still inside the lock) for the
-    update/start/done shape; ``block``/``unblock`` stay silent and
-    ``remove`` announces its own message inside the caller's block, before
-    this cleanup runs, using the pre-removal item. Once the lock is
-    released, :func:`_maybe_dispatch_recap_regen` runs once for every
-    caller of this helper — the single hook site covers all of them.
-
-    The rev is bumped *before* yielding — ahead of every write, including
-    ones a caller's block makes itself (e.g. ``remove``'s extra
-    ``save_pending`` call) — not after the caller's block completes. A
-    crash between the bump and any of those writes only burns a rev number
-    (harmless: the guard just sees a numbering gap), rather than the
-    reverse order's hazard, where a crash between a write and the bump
-    left changed data sitting under a stale rev — silently letting a
-    genuinely-stale numeric ``--if-rev`` call pass the guard, since the rev
-    it was checked against hadn't advanced to reflect the change. One
-    accepted side effect: a caller's block that refuses mid-way (e.g.
-    ``block``'s cycle-detection check) now also burns a rev number even
-    though nothing was written — harmless for the same reason, and
-    preferable to threading a "did we already bump" flag through every
-    caller just to preserve a no-op call leaving rev untouched, which
-    nothing downstream relies on.
-
-    The render call lives here — after the write(s) — rather than in each
-    caller's block body: a caller-side ``render(m.items, rev=m.new_rev)``
-    would run *before* this cleanup (a ``with`` block's body always
-    finishes before the code after ``yield``), so it would render against
-    ``result.items`` before the caller's own in-block writes (like
-    ``remove``'s ``save_pending``) even though ``m.new_rev`` itself is
-    already set by then.
-
-    Args:
-        cmd: Command name, used in error messages and announcements.
-        id_arg: The raw id argument (slug or numeric position).
-        if_rev_arg: The ``--if-rev`` value supplied, or ``None``.
-        announce: Whether to call :func:`confirm_resolution` on success.
-        quiet: Threaded to :func:`confirm_resolution` and
-            :func:`append_journal_event`.
-        verbose: Threaded to :func:`append_journal_event`.
-        compact: Force compact structured output on stdout or None for auto.
-
-    Yields:
-        A :class:`_MutationResult` for the caller to mutate.
-
-    Raises:
-        SystemExit: Via :func:`enforce_rev_guard`, :func:`require_kind`, or
-            directly, if the target can't be resolved.
-    """
-    with backlog_lock():
-        items = load_items()
-        pending_items = load_pending()
-        current_rev = load_rev()
-        enforce_rev_guard(cmd, id_arg, if_rev_arg, current_rev, items, pending_items)
-
-        kind, slug = resolve_id(id_arg, items, pending_items)
-        require_kind(cmd, id_arg, kind, "backlog")
-
-        index = build_index(items)
-        item = index.get(slug)
-        if item is None:
-            print(f"[{cmd}] not found: {slug}", file=sys.stderr)
-            sys.exit(1)
-
-        old_status = item.get("status")
-        new_rev = bump_rev()
-        result = _MutationResult(
-            item=item,
-            items=items,
-            pending_items=pending_items,
-            slug=slug,
-            new_rev=new_rev,
-            ref=id_arg,
+) -> None:
+    is_compact_run = _agent_quiet() if compact is None else compact
+    if is_compact_run:
+        line = format_compact_confirmation(
+            cmd=res.cmd,
+            slug=res.slug,
+            status=res.status,
+            rev=res.rev,
+            ref=res.ref,
+            detail=res.detail,
         )
-
-        yield result
-
-        save_items(result.items)
-        new_status = result.item.get("status")
-        append_journal_event(
-            _journal_entry(
-                cmd,
-                "backlog",
-                cast(int, result.new_rev),
-                slug=result.slug,
-                summary=cast(str, result.item.get("summary", "")),
-                from_status=old_status if old_status != new_status else None,
-                to_status=new_status if old_status != new_status else None,
-                fields=cast(list[str] | None, result.journal_extra.get("fields")),
-                feedback=cast(str | None, result.journal_extra.get("feedback")),
-                count=cast(int | None, result.journal_extra.get("count")),
-            ),
-            verbose=verbose,
-        )
-        is_compact_run = _agent_quiet() if compact is None else compact
-        if is_compact_run:
-            detail = (
-                result.compact_detail
-                if result.compact_detail is not None
-                else cast(str, result.item.get("summary", ""))
+        print(line)
+    else:
+        for notice in res.notices:
+            print(notice, file=sys.stderr)
+        if announce:
+            confirm_resolution(
+                res.cmd,
+                id_arg or str(res.ref or res.slug),
+                dict(res.item),
+                quiet=quiet,
             )
-            status = (
-                result.compact_status
-                if result.compact_status is not None
-                else cast(str, result.item.get("status", ""))
-            )
-            line = format_compact_confirmation(
-                cmd=cmd,
-                slug=result.slug,
-                status=status,
-                rev=cast(int, result.new_rev),
-                ref=result.ref,
-                detail=detail,
-            )
-            print(line)
-        else:
-            if announce:
-                confirm_resolution(cmd, id_arg, result.item, quiet=quiet)
-            render(result.items, result.pending_items, rev=result.new_rev)
+        render(list(res.items), list(res.pending_items), rev=res.rev)
     _maybe_dispatch_recap_regen()
 
 
@@ -3393,7 +2347,10 @@ def cmd_show(args: argparse.Namespace) -> None:
             bump_rev()
             save_items(items)
         pending_items = load_pending()
-        kind, slug = resolve_id(args.id, items, pending_items)
+        try:
+            kind, slug = resolve_id(args.id, items, pending_items)
+        except BacklogMutationError as exc:
+            _handle_mutation_error("show", exc)
         index: dict[str, object] = (
             cast(dict[str, object], {p["id"]: p for p in pending_items})
             if kind == "pending"
@@ -3441,98 +2398,31 @@ def cmd_add(args: argparse.Namespace) -> None:
         )
         sys.exit(1)
 
-    err = validate_slug(slug, "add")
-    if err:
-        print(err, file=sys.stderr)
-        sys.exit(1)
+    req = NewItemRequest(
+        id=slug,
+        summary=_str_field(patch, "summary").strip(),
+        category=_str_field(patch, "category", "feature"),
+        context=_str_field(patch, "context"),
+        next_steps=_str_field(patch, "next_steps"),
+        related_files=tuple(
+            cast(dict[str, object], rf)
+            for rf in _list_field(patch, "related_files")
+            if isinstance(rf, dict)
+        ),
+        blocked_by=tuple(str(dep) for dep in _list_field(patch, "blocked_by")),
+        priority=cast(str, patch["priority"]) if "priority" in patch else None,
+    )
+    try:
+        res = add_item(req, verbose=getattr(args, "verbose", False))
+    except BacklogMutationError as exc:
+        _handle_mutation_error("add", exc)
 
-    if not _str_field(patch, "summary").strip():
-        print("[add] 'summary' is required", file=sys.stderr)
-        sys.exit(1)
-
-    if "priority" in patch and patch["priority"] not in VALID_PRIORITIES:
-        print(
-            f"[add] invalid priority '{patch['priority']}' — must be one of: "
-            f"{', '.join(sorted(VALID_PRIORITIES))}",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    with backlog_lock():
-        items = load_items()
-        pending_items = load_pending()
-        index = build_index(items)
-
-        if slug in index:
-            print(f"[add] duplicate slug: {slug}", file=sys.stderr)
-            sys.exit(1)
-        # Cross-pool uniqueness: a pending item with the same id would
-        # otherwise make resolve_id treat the backlog record as pending,
-        # permanently orphaning it (it gets no number in the item-map at all).
-        if any(p["id"] == slug for p in pending_items):
-            print(
-                f"[add] slug '{slug}' already exists as a pending item — "
-                "remove or rename the pending item first",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-
-        blocked_by = cast(list[str], _list_field(patch, "blocked_by"))
-        pending_ids = {p["id"] for p in pending_items}
-        for dep in blocked_by:
-            if dep not in index and dep not in pending_ids:
-                print(
-                    f"[add] blocked_by references unknown slug: {dep}", file=sys.stderr
-                )
-                sys.exit(1)
-
-        item: BacklogItem = {
-            "id": slug,
-            "created": today(),
-            "updated": today(),
-            "status": "open",
-            "summary": _str_field(patch, "summary").strip(),
-            "category": _str_field(patch, "category", "feature"),
-            "blocked_by": blocked_by,
-            "related_files": cast(
-                list[dict[str, object]], _list_field(patch, "related_files")
-            ),
-            "context": _str_field(patch, "context"),
-            "next_steps": _str_field(patch, "next_steps"),
-        }
-        if "priority" in patch:
-            item["priority"] = cast(str, patch["priority"])
-
-        items.append(item)
-        # Bump the revision before writing data: a crash between this and
-        # the write below only burns a rev number (harmless — the guard
-        # just sees a gap), rather than leaving changed data under a stale
-        # rev, which would let a genuinely-stale numeric --if-rev call
-        # silently pass the guard.
-        new_rev = bump_rev()
-        save_items(items)
-        append_journal_event(
-            _journal_entry(
-                "add", "backlog", new_rev, slug=slug, summary=item["summary"]
-            ),
-            verbose=args.verbose,
-        )
-        if _is_compact(args):
-            line = format_compact_confirmation(
-                cmd="add",
-                slug=slug,
-                status="open",
-                rev=new_rev,
-                ref=None,
-                detail=cast(str, item["summary"]),
-            )
-            print(line)
-        else:
-            render(items, pending_items, rev=new_rev)
-    _maybe_dispatch_recap_regen()
-    _blocker_check_reminder(items, slug, cmd="add", quiet=args.quiet)
-    _out_of_scope_check_reminder("add", quiet=args.quiet)
-    _prefix_check_reminder(item, cmd="add")
+    _render_mutation_result(res, compact=_is_compact(args))
+    _blocker_check_reminder(
+        list(res.items), res.slug, cmd="add", quiet=getattr(args, "quiet", False)
+    )
+    _out_of_scope_check_reminder("add", quiet=getattr(args, "quiet", False))
+    _prefix_check_reminder(dict(res.item), cmd="add")
 
 
 def cmd_update(args: argparse.Namespace) -> None:
@@ -3575,38 +2465,6 @@ def cmd_update(args: argparse.Namespace) -> None:
         )
         sys.exit(1)
 
-    if "status" in patch and patch["status"] not in VALID_STATUSES:
-        print(
-            f"[update] invalid status '{patch['status']}' — must be one of: "
-            f"{', '.join(sorted(VALID_STATUSES))}",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    # `priority: null` means "unset" — revert to the no-priority/normal
-    # state cmd_add allows by omission — not a rejected value.
-    unset_priority = "priority" in patch and patch["priority"] is None
-    if (
-        "priority" in patch
-        and not unset_priority
-        and patch["priority"] not in VALID_PRIORITIES
-    ):
-        print(
-            f"[update] invalid priority '{patch['priority']}' — must be one of: "
-            f"{', '.join(sorted(VALID_PRIORITIES))}",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    # `blocked_by` is rejected on `update` outright, even though it's listed in
-    # BACKLOG_MUTABLE_FIELDS — the raw `dict.update(patch)` merge bypasses every
-    # guard `block`/`unblock` enforces (existence, self-block, cycle detection),
-    # and CLAUDE.md already routes blocked_by edits through `block`/`unblock`.
-    # Refusing here removes the bypass path by construction instead of trying
-    # to mirror block's validation into update and keep both code paths in
-    # sync. `unblock` cannot be done via update either (removing a slug from
-    # `blocked_by` via raw replacement would skip its "is the slug actually
-    # present" check), so the same error redirects both directions.
     if "blocked_by" in patch:
         print(
             "[update] cannot modify 'blocked_by' directly — use "
@@ -3623,40 +2481,50 @@ def cmd_update(args: argparse.Namespace) -> None:
         ("summary", "category", "related_files", "context", "next_steps"),
     )
 
-    with _backlog_mutation(
-        "update",
-        args.id,
-        args.if_rev,
-        announce=True,
-        quiet=args.quiet,
-        verbose=args.verbose,
-        compact=_is_compact(args),
-    ) as m:
-        m.journal_extra["fields"] = sorted(patch)
-        if "status" in patch:
-            _apply_status_transition(
-                cast(dict[str, object], m.item),
-                cast(str, patch["status"]),
-                "completed_at",
-                "done",
+    unset_priority = "priority" in patch and patch["priority"] is None
+
+    req = ItemUpdateRequest(
+        summary=cast(str, patch["summary"]) if "summary" in patch else UNSET,
+        category=cast(str, patch["category"]) if "category" in patch else UNSET,
+        context=cast(str, patch["context"]) if "context" in patch else UNSET,
+        next_steps=cast(str, patch["next_steps"]) if "next_steps" in patch else UNSET,
+        related_files=(
+            tuple(
+                cast(dict[str, object], rf)
+                for rf in _list_field(patch, "related_files")
             )
-        if unset_priority:
-            m.item.pop("priority", None)
-            del patch["priority"]
-        if "status" in patch:
-            new_st = patch["status"]
-            if new_st != "in-progress":
-                m.item.pop("claimed_by", None)
-            elif (
-                new_st == "in-progress"
-                and "claimed_by" not in patch
-                and "claimed_by" not in m.item
-            ):
-                m.item["claimed_by"] = _make_claim()
-        cast(dict[str, object], m.item).update(patch)
-        m.item["updated"] = today()
-        fields_str = ", ".join(sorted(patch.keys()))
-        m.compact_detail = f"updated {fields_str}: {m.item.get('summary', '')}"
+            if "related_files" in patch
+            else UNSET
+        ),
+        status=cast(str, patch["status"]) if "status" in patch else UNSET,
+        priority=(
+            None
+            if unset_priority
+            else (cast(str, patch["priority"]) if "priority" in patch else UNSET)
+        ),
+        claimed_by=(
+            cast(dict[str, object], patch["claimed_by"])
+            if "claimed_by" in patch
+            else UNSET
+        ),
+    )
+    try:
+        res = update_item(
+            args.id,
+            req,
+            if_rev=args.if_rev,
+            verbose=getattr(args, "verbose", False),
+        )
+    except BacklogMutationError as exc:
+        _handle_mutation_error("update", exc)
+
+    _render_mutation_result(
+        res,
+        announce=True,
+        id_arg=args.id,
+        quiet=getattr(args, "quiet", False),
+        compact=_is_compact(args),
+    )
 
 
 def cmd_start(args: argparse.Namespace) -> None:
@@ -3666,69 +2534,46 @@ def cmd_start(args: argparse.Namespace) -> None:
             getattr(args, "allow_main", False)
             or getattr(args, "no_worktree_check", False)
         ),
-        quiet=args.quiet,
+        quiet=getattr(args, "quiet", False),
     )
-    with _backlog_mutation(
-        "start",
-        args.id,
-        args.if_rev,
-        announce=True,
-        quiet=args.quiet,
-        verbose=args.verbose,
-        compact=_is_compact(args),
-    ) as m:
-        if m.item.get("status") == "in-review":
-            print(
-                f"[start] {m.slug} is in-review -- use 'approve <id>' to "
-                "accept it or 'reject <id> <feedback>' to send it back to "
-                "in-progress.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        _check_claim_collision(
-            m.item,
-            current_harness=_detect_harness(getattr(args, "claimed_by", None)),
-            current_machine=_machine_id(),
-            current_pid=os.getpid(),
-            current_owner_pid=_find_owner_pid()[0],
+    try:
+        res = start_item(
+            args.id,
+            if_rev=args.if_rev,
+            claimed_by=getattr(args, "claimed_by", None),
             force=bool(getattr(args, "force", False)),
-            quiet=args.quiet,
+            verbose=getattr(args, "verbose", False),
         )
-        # Use the shared transition helper so completed_at is cleared when
-        # moving an item off "done", mirroring cmd_done's behavior.
-        _apply_status_transition(
-            cast(dict[str, object], m.item), "in-progress", "completed_at", "done"
-        )
-        m.item["status"] = "in-progress"
-        m.item["claimed_by"] = _make_claim(getattr(args, "claimed_by", None))
-        m.item["updated"] = today()
+    except BacklogMutationError as exc:
+        _handle_mutation_error("start", exc)
+
+    _render_mutation_result(
+        res,
+        announce=True,
+        id_arg=args.id,
+        quiet=getattr(args, "quiet", False),
+        compact=_is_compact(args),
+    )
 
 
 def cmd_done(args: argparse.Namespace) -> None:
     """Handle ``done``: mark a backlog item done."""
-    with _backlog_mutation(
-        "done",
-        args.id,
-        args.if_rev,
-        announce=True,
-        quiet=args.quiet,
-        verbose=args.verbose,
-        compact=_is_compact(args),
-    ) as m:
-        if m.item.get("status") == "in-review":
-            print(
-                f"[done] {m.slug} is in-review -- use 'approve <id>' to "
-                "complete it or 'reject <id> <feedback>' to send it back to "
-                "in-progress.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        _check_gate_or_exit("done", m.item)
-        _apply_status_transition(
-            cast(dict[str, object], m.item), "done", "completed_at", "done"
+    try:
+        res = done_item(
+            args.id,
+            if_rev=args.if_rev,
+            verbose=getattr(args, "verbose", False),
         )
-        m.item["status"] = "done"
-        m.item["updated"] = today()
+    except BacklogMutationError as exc:
+        _handle_mutation_error("done", exc)
+
+    _render_mutation_result(
+        res,
+        announce=True,
+        id_arg=args.id,
+        quiet=getattr(args, "quiet", False),
+        compact=_is_compact(args),
+    )
 
 
 def cmd_review(args: argparse.Namespace) -> None:
@@ -3738,64 +2583,42 @@ def cmd_review(args: argparse.Namespace) -> None:
     itself (re-pins the content hash after a drift refusal, clearing any
     stale feedback, without changing status).
     """
-    with _backlog_mutation(
-        "review",
-        args.id,
-        args.if_rev,
-        announce=True,
-        quiet=args.quiet,
-        verbose=args.verbose,
-        compact=_is_compact(args),
-    ) as m:
-        if m.item.get("status") not in ("in-progress", "in-review"):
-            print(
-                f"[review] {m.slug} is '{m.item.get('status')}' -- only an "
-                "in-progress (or already in-review) item can be submitted "
-                "for review.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        _apply_status_transition(
-            cast(dict[str, object], m.item), "in-review", "completed_at", "done"
+    try:
+        res = review_item(
+            args.id,
+            if_rev=args.if_rev,
+            verbose=getattr(args, "verbose", False),
         )
-        m.item["status"] = "in-review"
-        m.item["review_content_hash"] = _content_hash(m.item)
-        m.item.pop("review_feedback", None)
-        m.item["updated"] = today()
+    except BacklogMutationError as exc:
+        _handle_mutation_error("review", exc)
+
+    _render_mutation_result(
+        res,
+        announce=True,
+        id_arg=args.id,
+        quiet=getattr(args, "quiet", False),
+        compact=_is_compact(args),
+    )
 
 
 def cmd_approve(args: argparse.Namespace) -> None:
     """Handle ``approve``: accept an in-review item, marking it done."""
-    with _backlog_mutation(
-        "approve",
-        args.id,
-        args.if_rev,
-        announce=True,
-        quiet=args.quiet,
-        verbose=args.verbose,
-        compact=_is_compact(args),
-    ) as m:
-        if m.item.get("status") != "in-review":
-            print(
-                f"[approve] {m.slug} is '{m.item.get('status')}', not "
-                "in-review -- nothing to approve.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        if m.item.get("review_content_hash") != _content_hash(m.item):
-            print(
-                f"[approve] {m.slug}'s content changed since it was "
-                "submitted for review -- run 'review <id>' again to re-pin "
-                "the current content before approving.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        _check_gate_or_exit("approve", m.item)
-        _apply_status_transition(
-            cast(dict[str, object], m.item), "done", "completed_at", "done"
+    try:
+        res = approve_item(
+            args.id,
+            if_rev=args.if_rev,
+            verbose=getattr(args, "verbose", False),
         )
-        m.item["status"] = "done"
-        m.item["updated"] = today()
+    except BacklogMutationError as exc:
+        _handle_mutation_error("approve", exc)
+
+    _render_mutation_result(
+        res,
+        announce=True,
+        id_arg=args.id,
+        quiet=getattr(args, "quiet", False),
+        compact=_is_compact(args),
+    )
 
 
 def cmd_reject(args: argparse.Namespace) -> None:
@@ -3804,39 +2627,23 @@ def cmd_reject(args: argparse.Namespace) -> None:
     if not feedback:
         print("[reject] feedback is required and cannot be empty", file=sys.stderr)
         sys.exit(1)
-    with _backlog_mutation(
-        "reject",
-        args.id,
-        args.if_rev,
-        announce=True,
-        quiet=args.quiet,
-        verbose=args.verbose,
-        compact=_is_compact(args),
-    ) as m:
-        if m.item.get("status") != "in-review":
-            print(
-                f"[reject] {m.slug} is '{m.item.get('status')}', not "
-                "in-review -- nothing to reject.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        if m.item.get("review_content_hash") != _content_hash(m.item):
-            print(
-                f"[reject] {m.slug}'s content changed since it was "
-                "submitted for review -- run 'review <id>' again to re-pin "
-                "the current content, then reject with feedback that "
-                "applies to what's actually there.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        m.journal_extra["feedback"] = feedback
-        _apply_status_transition(
-            cast(dict[str, object], m.item), "in-progress", "completed_at", "done"
+    try:
+        res = reject_item(
+            args.id,
+            feedback=feedback,
+            if_rev=args.if_rev,
+            verbose=getattr(args, "verbose", False),
         )
-        m.item["status"] = "in-progress"
-        m.item["review_feedback"] = feedback
-        m.item.pop("review_content_hash", None)
-        m.item["updated"] = today()
+    except BacklogMutationError as exc:
+        _handle_mutation_error("reject", exc)
+
+    _render_mutation_result(
+        res,
+        announce=True,
+        id_arg=args.id,
+        quiet=getattr(args, "quiet", False),
+        compact=_is_compact(args),
+    )
 
 
 def cmd_gate_set(args: argparse.Namespace) -> None:
@@ -3859,7 +2666,7 @@ def cmd_gate_set(args: argparse.Namespace) -> None:
             file=sys.stderr,
         )
         sys.exit(1)
-    criteria = cast(list[str], criteria_raw)
+    criteria = tuple(cast(list[str], criteria_raw))
 
     if required and not criteria:
         print(
@@ -3868,96 +2675,24 @@ def cmd_gate_set(args: argparse.Namespace) -> None:
         )
         sys.exit(1)
 
-    with _backlog_mutation(
-        "gate-set",
-        args.id,
-        args.if_rev,
+    req = GateSetRequest(required=required, criteria=criteria)
+    try:
+        res = set_gate(
+            args.id,
+            req,
+            if_rev=args.if_rev,
+            verbose=getattr(args, "verbose", False),
+        )
+    except BacklogMutationError as exc:
+        _handle_mutation_error("gate-set", exc)
+
+    _render_mutation_result(
+        res,
         announce=True,
-        quiet=args.quiet,
-        verbose=args.verbose,
+        id_arg=args.id,
+        quiet=getattr(args, "quiet", False),
         compact=_is_compact(args),
-    ) as m:
-        m.compact_detail = (
-            f"gate set ({len(criteria)} criteria, required={str(required).lower()})"
-        )
-        m.item["gate"] = {
-            "required": required,
-            "criteria": criteria,
-            "passed_at": None,
-            # Full aware-UTC timestamp, not a date: gate-pass compares run
-            # evidence's started_at against this, so a date-only stamp would
-            # let same-day runs recorded *before* this re-classification
-            # count as evidence. Starting a new generation shifts set_at,
-            # automatically orphaning older runs (the audit trail in
-            # runs.jsonl is never deleted).
-            "set_at": datetime.now(UTC).isoformat(),
-        }
-        m.item["updated"] = today()
-
-
-def _gate_pass_refusal(slug: str, problems: list[str], runs: list[RunRecord]) -> str:
-    """Build a copy-pasteable refusal listing every coverage problem.
-
-    Names each uncovered/invalid criterion with its reason and appends the
-    item's recent runs (newest last) so the caller can pick a valid
-    ``run:<run_id>`` citation without a second lookup.
-    """
-    lines = [f"[gate-pass] coverage invalid for {slug}:"]
-    lines.extend(f"  {problem}" for problem in problems)
-    if runs:
-        lines.append(f"recent runs for {slug} (cite as run:<run_id>):")
-        for run in runs[-5:]:
-            lines.append(
-                f"  {run.get('run_id', '?')}  {_run_state(run)}  "
-                f"{run.get('started_at', '?')}  {run.get('command', '?')}"
-            )
-    else:
-        lines.append(
-            f"no runs recorded for {slug} -- record one with: "
-            "dev_status run <id> -- <command...>"
-        )
-    return "\n".join(lines)
-
-
-def _validate_run_citation(
-    criterion: str, run_id: str, runs: list[RunRecord], gate: Mapping[str, object]
-) -> tuple[str | None, dict[str, str] | None]:
-    """Validate one ``run:<run_id>`` citation against the recorded evidence.
-
-    Returns ``(problem, coverage_entry)`` — exactly one is ``None``. A run
-    counts only when it exists for this item, exited 0, didn't time out,
-    and started at or after the gate's ``set_at`` (gates without ``set_at``
-    — classified before the stamp existed — impose no lower bound).
-    """
-    run = next((r for r in runs if r.get("run_id") == run_id), None)
-    if run is None:
-        message = (
-            f"criterion {criterion}: unknown run id '{run_id}' "
-            "(no such run recorded for this item)"
-        )
-        return (message, None)
-    if run.get("timed_out") or run.get("exit_code") != 0:
-        message = (
-            f"criterion {criterion}: cited run {run_id} is failed or "
-            f"timed out (exit={run.get('exit_code')}, "
-            f"timed_out={run.get('timed_out')})"
-        )
-        return (message, None)
-    started_at = _parse_journal_ts(run.get("started_at"))
-    set_at = _parse_journal_ts(gate.get("set_at"))
-    if started_at is None:
-        return (
-            f"criterion {criterion}: cited run {run_id} has no parseable started_at",
-            None,
-        )
-    if set_at is not None and started_at < set_at:
-        message = (
-            f"criterion {criterion}: cited run {run_id} is stale "
-            f"(started_at {run.get('started_at')} pre-dates gate set_at "
-            f"{gate.get('set_at')})"
-        )
-        return (message, None)
-    return None, {"kind": "run", "run_id": run_id}
+    )
 
 
 def cmd_gate_pass(args: argparse.Namespace) -> None:
@@ -3975,101 +2710,33 @@ def cmd_gate_pass(args: argparse.Namespace) -> None:
     patch = (
         _parse_json_arg(args.json, "gate-pass") if getattr(args, "json", None) else {}
     )
-
-    with _backlog_mutation(
-        "gate-pass",
-        args.id,
-        args.if_rev,
-        announce=True,
-        quiet=args.quiet,
-        verbose=args.verbose,
-        compact=_is_compact(args),
-    ) as m:
-        gate = m.item.get("gate")
-        if not gate or not gate.get("required"):
-            print(
-                f"[gate-pass] {m.slug} has no required gate -- nothing to pass",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        coverage_raw = patch.get("coverage")
-        if not isinstance(coverage_raw, dict):
-            print(
-                "[gate-pass] a coverage payload is required: "
-                '{"coverage": {"<criterion#>": "run:<run_id>" or '
-                '"manual:<note>"}} — every criterion needs recorded run '
-                "evidence ('dev_status run <id> -- <command...>') or a manual note",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        criteria = cast(list[str], gate.get("criteria", []))
-        n = len(criteria)
-        runs = load_runs(m.slug)
-        problems: list[str] = []
-        covered: dict[str, dict[str, str]] = {}
-        for key, value in coverage_raw.items():
-            if not isinstance(key, str) or not key.isdigit():
-                problems.append(
-                    f"coverage key {key!r}: not a criterion number "
-                    f"(criteria are 1..{n})"
-                )
-                continue
-            if not 1 <= int(key) <= n:
-                problems.append(
-                    f"coverage key '{key}': criterion number out of range "
-                    f"(criteria are 1..{n})"
-                )
-                continue
-            # Canonicalize before using the key as a dict key or in the
-            # "not covered" membership check below -- otherwise a
-            # non-canonical but validly-in-range key like "01" satisfies
-            # every check above yet never matches str(i)'s canonical form,
-            # so genuinely-covered criterion 1 still reports "not covered".
-            key = str(int(key))
-            if not isinstance(value, str):
-                problems.append(
-                    f"criterion {key}: value must be a string "
-                    "('run:<run_id>' or 'manual:<note>')"
-                )
-                continue
-            if value.startswith("run:"):
-                problem, entry = _validate_run_citation(
-                    key, value[len("run:") :].strip(), runs, gate
-                )
-                if problem:
-                    problems.append(problem)
-                else:
-                    covered[key] = cast(dict[str, str], entry)
-            elif value.startswith("manual:"):
-                note = value[len("manual:") :].strip()
-                if not note:
-                    problems.append(f"criterion {key}: empty manual note")
-                else:
-                    covered[key] = {"kind": "manual", "note": note}
-            else:
-                problems.append(
-                    f"criterion {key}: value must be 'run:<run_id>' or 'manual:<note>'"
-                )
-        for i in range(1, n + 1):
-            if str(i) not in covered and not any(
-                p.startswith(f"criterion {i}:") for p in problems
-            ):
-                problems.append(f"criterion {i}: not covered")
-        if problems:
-            print(_gate_pass_refusal(m.slug, problems, runs), file=sys.stderr)
-            sys.exit(1)
-        kinds = {entry["kind"] for entry in covered.values()}
-        gate["passed_at"] = today()
-        gate["passed_via"] = (
-            "manual"
-            if kinds == {"manual"}
-            else "run-evidence"
-            if kinds == {"run"}
-            else "mixed"
+    coverage_raw = patch.get("coverage") if isinstance(patch, dict) else None
+    coverage = (
+        {
+            str(k): str(v) if isinstance(v, str) else cast(str, v)
+            for k, v in coverage_raw.items()
+        }
+        if isinstance(coverage_raw, dict)
+        else None
+    )
+    req = GatePassRequest(coverage=coverage)
+    try:
+        res = pass_gate(
+            args.id,
+            req,
+            if_rev=args.if_rev,
+            verbose=getattr(args, "verbose", False),
         )
-        gate["coverage"] = covered
-        m.compact_detail = f"gate passed via {gate['passed_via']}"
-        m.item["updated"] = today()
+    except BacklogMutationError as exc:
+        _handle_mutation_error("gate-pass", exc)
+
+    _render_mutation_result(
+        res,
+        announce=True,
+        id_arg=args.id,
+        quiet=getattr(args, "quiet", False),
+        compact=_is_compact(args),
+    )
 
 
 def cmd_run(args: argparse.Namespace) -> None:
@@ -4083,31 +2750,15 @@ def cmd_run(args: argparse.Namespace) -> None:
     Lock scope: the item-existence check and the append each take
     :func:`backlog_lock` briefly; the subprocess itself runs **outside** the
     lock — holding it across a long test run would freeze every other
-    harness session sharing the store.
-
-    A numeric ``id`` is resolved against the full pending+backlog pool
-    (matching ``render``'s own numbering) and then checked with
-    :func:`require_kind` — resolving against the backlog pool alone would
-    silently misnumber every position once any pending item exists, since
-    pending items always come first in the dashboard's numbering. Like
-    every other numeric-id command, a stale position is caught by
-    :func:`enforce_rev_guard` rather than silently attributing this run's
+    harness session sharing the store. A numeric ``id`` is resolved against
+    the full pending+backlog pool (matching ``render``'s own numbering) and
+    then checked with :func:`require_kind` — resolving against the backlog
+    pool alone would silently misnumber every position once any pending item
+    exists, since pending items always come first in the dashboard's
+    numbering. Like every other numeric-id command, a stale position is caught
+    by :func:`enforce_rev_guard` rather than silently attributing this run's
     evidence to the wrong item.
     """
-    with backlog_lock():
-        items = load_items()
-        pending_items = load_pending()
-        current_rev = load_rev()
-        enforce_rev_guard(
-            "run", args.id, args.if_rev, current_rev, items, pending_items
-        )
-        kind, slug = resolve_id(args.id, items, pending_items)
-        require_kind("run", args.id, kind, "backlog")
-        item = build_index(items).get(slug)
-    # argparse's native "--" handling (see the parser's nargs="*" comment)
-    # already strips a leading "--" separator, so args.command is the
-    # command as typed -- no manual stripping here, which would otherwise
-    # eat a second, user-supplied "--" as the command's own first argument.
     command = list(args.command or [])
     if not command:
         print(
@@ -4116,65 +2767,31 @@ def cmd_run(args: argparse.Namespace) -> None:
         )
         sys.exit(1)
 
-    explicit_cwd = getattr(args, "cwd", None)
-    run_cwd = _derive_run_cwd(item, explicit_cwd)
-
-    # DEVSTATUS_AGENT scrubbed from the child's environment: CLAUDE.md's own
-    # convention has agents prefix it on dev_status.py mutating calls
-    # (suppresses a stderr echo), and `run` -- needing --if-rev like every
-    # other numeric-id mutation -- reasonably looks like one of those calls.
-    # But `run`'s "mutating call" is really the *recorded command*, which
-    # can itself invoke dev_status.py (e.g. this repo's own test suite);
-    # left unscrubbed, that inherited DEVSTATUS_AGENT=1 changes the command's
-    # own behavior and produces false evidence -- reproduced live: an
-    # unrelated `dev_status.py run ... -- uv run pytest -q` command run this
-    # way spuriously failed 45 dev_status.py tests that assert on the exact
-    # stderr echo DEVSTATUS_AGENT suppresses.
-    child_env = {k: v for k, v in os.environ.items() if k != "DEVSTATUS_AGENT"}
-    started_at = datetime.now(UTC).isoformat()
-    start_mono = time.monotonic()
     try:
-        proc = subprocess.run(
+        res = run_item(
+            args.id,
             command,
+            if_rev=args.if_rev,
             timeout=args.timeout,
-            env=child_env,
-            cwd=str(run_cwd),
+            cwd=getattr(args, "cwd", None),
         )
-        exit_code: int | None = proc.returncode
-        timed_out = False
-    except subprocess.TimeoutExpired:
+    except BacklogMutationError as exc:
+        _handle_mutation_error("run", exc)
+
+    if res.timed_out:
         print(
             f"[run] command timed out after {args.timeout}s",
             file=sys.stderr,
         )
-        exit_code, timed_out = None, True
-    duration_s = round(time.monotonic() - start_mono, 3)
-
-    record: RunRecord = {
-        "run_id": uuid.uuid4().hex,
-        "item": slug,
-        "command": " ".join(command),
-        "exit_code": exit_code,
-        "timed_out": timed_out,
-        "started_at": started_at,
-        "duration_s": duration_s,
-        "cwd": str(run_cwd),
-    }
-    with backlog_lock():
-        appended = append_run_record(record)
-    state = "timed out" if timed_out else f"exit {exit_code}"
-    if appended:
+    state = "timed out" if res.timed_out else f"exit {res.exit_code}"
+    if res.appended:
         cli_common.qprint(
-            f"[run] recorded {record['run_id']} for {slug}: {state} after {duration_s}s",
+            f"[run] recorded {res.run_id} for {res.item}: {state} after {res.duration_s}s",
             quiet=args.quiet,
         )
     else:
-        # append_run_record already printed the failure reason -- this just
-        # makes sure stdout never claims evidence was saved when it wasn't,
-        # since a later gate-pass citing run_id would otherwise fail with a
-        # confusing "unknown run id" and no obvious link back to this line.
         print(
-            f"[run] ran {slug}: {state} after {duration_s}s -- NOT recorded, "
+            f"[run] ran {res.item}: {state} after {res.duration_s}s -- NOT recorded, "
             "see the error above",
             file=sys.stderr,
         )
@@ -4185,8 +2802,11 @@ def cmd_runs(args: argparse.Namespace) -> None:
     with backlog_lock():
         items = load_items()
         pending_items = load_pending()
-        kind, slug = resolve_id(args.id, items, pending_items)
-        require_kind("runs", args.id, kind, "backlog")
+        try:
+            kind, slug = resolve_id(args.id, items, pending_items)
+            require_kind("runs", args.id, kind, "backlog")
+        except BacklogMutationError as exc:
+            _handle_mutation_error("runs", exc)
         runs = load_runs(slug)
     if not runs:
         cli_common.qprint(f"[runs] {slug}: no runs recorded", quiet=args.quiet)
@@ -4270,128 +2890,34 @@ def cmd_rename(args: argparse.Namespace) -> None:
     because ``-`` is a non-word char, so ``\\bfoo-bar\\b`` matches the
     ``foo-bar`` prefix of the unrelated sibling slug ``foo-bar-baz``.
     """
-    old_slug_arg = args.old_slug
-    new_slug = args.new_slug
-
-    err = validate_slug(new_slug, "rename")
-    if err:
-        print(err, file=sys.stderr)
-        sys.exit(1)
-
-    with backlog_lock():
-        items = load_items()
-        pending_items = load_pending()
-        current_rev = load_rev()
-        enforce_rev_guard(
-            "rename", old_slug_arg, args.if_rev, current_rev, items, pending_items
+    try:
+        res = rename_item(
+            args.old_slug,
+            args.new_slug,
+            if_rev=args.if_rev,
+            verbose=getattr(args, "verbose", False),
         )
+    except BacklogMutationError as exc:
+        _handle_mutation_error("rename", exc)
 
-        kind, old_slug = resolve_id(old_slug_arg, items, pending_items)
-        require_kind("rename", old_slug_arg, kind, "backlog")
-
-        index = build_index(items)
-        pending_index = {p["id"]: p for p in pending_items}
-
-        # Cross-pool collision check: new_slug must not exist in either pool
-        # (old_slug is already guaranteed to be a backlog item, not a
-        # pending one, by require_kind above).
-        if new_slug in index:
-            print(f"[rename] collision: '{new_slug}' already exists", file=sys.stderr)
-            sys.exit(1)
-        if new_slug in pending_index:
-            print(
-                f"[rename] collision: '{new_slug}' already exists as a pending item",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-
-        # Boundary anchored on the slug alphabet (not \w) so `foo-bar` does
-        # not match the prefix of `foo-bar-baz`.
-        word_re = re.compile(r"(?<![a-z0-9-])" + re.escape(old_slug) + r"(?![a-z0-9-])")
-
-        def _rewrite_prose(text: str) -> str:
-            if old_slug in text:
-                return word_re.sub(new_slug, text)
-            return text
-
-        renamed_item: BacklogItem | None = None
-        for item in items:
-            if item["id"] == old_slug:
-                item["id"] = new_slug
-                renamed_item = item
-            item["blocked_by"] = [
-                new_slug if s == old_slug else s for s in item.get("blocked_by", [])
-            ]
-            fields = cast(dict[str, str], item)
-            for field in ("summary", "context", "next_steps"):
-                fields[field] = _rewrite_prose(fields.get(field, ""))
-            for rf in item.get("related_files", []):
-                note = rf.get("note", "") if isinstance(rf, dict) else ""
-                if isinstance(note, str) and note:
-                    rf["note"] = _rewrite_prose(note)
-
-        for p in pending_items:
-            p["blocking"] = [
-                new_slug if s == old_slug else s for s in p.get("blocking", [])
-            ]
-            fields = cast(dict[str, str], p)
-            for field in ("description", "context"):
-                fields[field] = _rewrite_prose(fields.get(field, ""))
-            for step_idx, step in enumerate(p.get("next_steps", [])):
-                if isinstance(step, str):
-                    p["next_steps"][step_idx] = _rewrite_prose(step)
-            for rf in p.get("related_files", []):
-                note = rf.get("note", "") if isinstance(rf, dict) else ""
-                if isinstance(note, str) and note:
-                    rf["note"] = _rewrite_prose(note)
-
-        # Bump before either write (see _backlog_mutation's docstring for
-        # why this order matters): a crash mid-way here burns a rev number
-        # rather than leaving one or both files changed under a stale rev.
-        new_rev = bump_rev()
-        save_items(items)
-        save_pending(pending_items)
-        # runs.jsonl rows reference the old slug as their `item` field —
-        # rewrite them in the same pass (same policy as blocked_by), so
-        # recorded evidence survives a rename instead of dangling.
-        runs = load_runs()
-        renamed_runs = 0
-        for run in runs:
-            if run.get("item") == old_slug:
-                run["item"] = new_slug
-                renamed_runs += 1
-        if renamed_runs:
-            write_runs_file(runs)
-        # renamed_item is guaranteed set: resolve_id/require_kind above
-        # already confirmed old_slug names a backlog item in `items`.
-        renamed_summary = cast(BacklogItem, renamed_item)["summary"]
-        append_journal_event(
-            _journal_entry(
-                "rename",
-                "backlog",
-                new_rev,
-                slug=new_slug,
-                summary=f"renamed an item ({renamed_summary})",
-            ),
-            verbose=args.verbose,
+    is_compact_run = _is_compact(args)
+    if is_compact_run:
+        line = format_compact_confirmation(
+            cmd="rename",
+            slug=res.slug,
+            status=res.status,
+            rev=res.rev,
+            ref=res.ref,
+            detail=res.detail,
         )
-        if _is_compact(args):
-            line = format_compact_confirmation(
-                cmd="rename",
-                slug=new_slug,
-                status=cast(str, cast(BacklogItem, renamed_item).get("status", "open")),
-                rev=new_rev,
-                ref=old_slug,
-                detail=f"renamed from {old_slug}",
-            )
-            print(line)
-        else:
-            cli_common.qprint(
-                f"[rename] {old_slug} → {new_slug}",
-                quiet=(args.quiet or _agent_quiet()),
-                file=sys.stderr,
-            )
-            render(items, pending_items, rev=new_rev)
+        print(line)
+    else:
+        cli_common.qprint(
+            f"[rename] {res.ref} → {res.slug}",
+            quiet=(getattr(args, "quiet", False) or _agent_quiet()),
+            file=sys.stderr,
+        )
+        render(list(res.items), list(res.pending_items), rev=res.rev)
     _maybe_dispatch_recap_regen()
 
 
@@ -4409,53 +2935,44 @@ def cmd_block(args: argparse.Namespace) -> None:
 
     Refuses duplicates and cycle-creating blockers.
     """
-    blocker = args.blocker
-    with _backlog_mutation(
-        "block",
-        args.id,
-        args.if_rev,
-        quiet=args.quiet,
-        verbose=args.verbose,
-        compact=_is_compact(args),
-    ) as m:
-        index = build_index(m.items)
-        pending_ids = {p["id"] for p in m.pending_items}
-        if blocker not in index and blocker not in pending_ids:
-            print(f"[block] blocker not found: {blocker}", file=sys.stderr)
-            sys.exit(1)
-        if blocker in m.item.get("blocked_by", []):
-            print(f"[block] {m.slug} already blocked by {blocker}", file=sys.stderr)
-            sys.exit(1)
-        if detect_cycle(m.slug, blocker, index):
-            print(
-                f"[block] would create a cycle: {blocker} already depends on {m.slug}",
-                file=sys.stderr,
-            )
-            sys.exit(1)
+    try:
+        res = block_item(
+            args.id,
+            args.blocker,
+            if_rev=args.if_rev,
+            verbose=getattr(args, "verbose", False),
+        )
+    except BacklogMutationError as exc:
+        _handle_mutation_error("block", exc)
 
-        m.item.setdefault("blocked_by", []).append(blocker)
-        m.item["updated"] = today()
-        m.compact_detail = f"blocked by {blocker}"
+    _render_mutation_result(
+        res,
+        announce=False,
+        id_arg=args.id,
+        quiet=getattr(args, "quiet", False),
+        compact=_is_compact(args),
+    )
 
 
 def cmd_unblock(args: argparse.Namespace) -> None:
     """Handle ``unblock``: remove a blocker from a backlog item."""
-    blocker = args.blocker
-    with _backlog_mutation(
-        "unblock",
-        args.id,
-        args.if_rev,
-        quiet=args.quiet,
-        verbose=args.verbose,
-        compact=_is_compact(args),
-    ) as m:
-        if blocker not in m.item.get("blocked_by", []):
-            print(f"[unblock] {m.slug} is not blocked by {blocker}", file=sys.stderr)
-            sys.exit(1)
+    try:
+        res = unblock_item(
+            args.id,
+            args.blocker,
+            if_rev=args.if_rev,
+            verbose=getattr(args, "verbose", False),
+        )
+    except BacklogMutationError as exc:
+        _handle_mutation_error("unblock", exc)
 
-        m.item["blocked_by"] = [s for s in m.item["blocked_by"] if s != blocker]
-        m.item["updated"] = today()
-        m.compact_detail = f"unblocked from {blocker}"
+    _render_mutation_result(
+        res,
+        announce=False,
+        id_arg=args.id,
+        quiet=getattr(args, "quiet", False),
+        compact=_is_compact(args),
+    )
 
 
 def _read_reason_file(path_str: str) -> str:
@@ -4654,76 +3171,42 @@ def cmd_pending_add(args: argparse.Namespace) -> None:
         )
         sys.exit(1)
 
-    with backlog_lock():
-        pending_items = load_pending()
-        if any(p["id"] == slug for p in pending_items):
-            print(f"[pending add] duplicate id: {slug}", file=sys.stderr)
-            sys.exit(1)
+    req = PendingAddRequest(
+        id=slug,
+        description=description,
+        kind=kind,
+        source_ref=_dict_field(patch, "source_ref"),
+        context=_str_field(patch, "context"),
+        next_steps=tuple(str(s) for s in _list_field(patch, "next_steps")),
+        blocking=tuple(str(dep) for dep in _list_field(patch, "blocking")),
+    )
+    try:
+        res = add_pending_item(req, verbose=getattr(args, "verbose", False))
+    except BacklogMutationError as exc:
+        _handle_mutation_error("pending add", exc)
 
-        backlog_items = load_items()
-        index = build_index(backlog_items)
-        # Cross-pool uniqueness: a backlog item with the same id would
-        # otherwise make resolve_id treat the pending record as backlog
-        # (resolve_id looks at the pending pool first for non-numeric args),
-        # permanently orphaning the pending item.
-        if slug in index:
-            print(
-                f"[pending add] slug '{slug}' already exists as a backlog item — "
-                "remove or rename the backlog item first",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-
-        blocking = cast(list[str], _list_field(patch, "blocking"))
-        for dep in blocking:
-            if dep not in index:
-                print(
-                    f"[pending add] blocking references unknown slug: {dep}",
-                    file=sys.stderr,
-                )
-                sys.exit(1)
-
-        pending_items.append(
-            {
-                "id": slug,
-                "created": today(),
-                "updated": today(),
-                "status": "waiting_for_reply",
-                "description": description,
-                "kind": kind,
-                "source_ref": _dict_field(patch, "source_ref"),
-                "context": _str_field(patch, "context"),
-                "next_steps": cast(list[str], _list_field(patch, "next_steps")),
-                "blocking": blocking,
-                "outcome": None,
-            }
+    if _is_compact(args):
+        line = format_compact_confirmation(
+            cmd="pending add",
+            slug=res.slug,
+            status=res.status,
+            rev=res.rev,
+            ref=None,
+            detail=res.detail,
         )
-        new_rev = bump_rev()
-        save_pending(pending_items)
-        append_journal_event(
-            _journal_entry("add", "pending", new_rev, slug=slug, summary=description),
-            verbose=args.verbose,
+        print(line)
+    else:
+        cli_common.qprint(
+            f"[pending add] {res.slug} — {res.detail[:60]}",
+            quiet=(getattr(args, "quiet", False) or _agent_quiet()),
+            file=sys.stderr,
         )
-        if _is_compact(args):
-            line = format_compact_confirmation(
-                cmd="pending add",
-                slug=slug,
-                status="waiting_for_reply",
-                rev=new_rev,
-                ref=None,
-                detail=description,
-            )
-            print(line)
-        else:
-            cli_common.qprint(
-                f"[pending add] {slug} — {description[:60]}",
-                quiet=(args.quiet or _agent_quiet()),
-                file=sys.stderr,
-            )
-            render(backlog_items, pending_items, rev=new_rev)
+        render(list(res.items), list(res.pending_items), rev=res.rev)
     _maybe_dispatch_recap_regen()
-    _blocker_check_reminder(backlog_items, None, cmd="pending add", quiet=args.quiet)
-    _out_of_scope_check_reminder("pending add", quiet=args.quiet)
+    _blocker_check_reminder(
+        list(res.items), None, cmd="pending add", quiet=getattr(args, "quiet", False)
+    )
+    _out_of_scope_check_reminder("pending add", quiet=getattr(args, "quiet", False))
 
 
 def cmd_pending_update(args: argparse.Namespace) -> None:
@@ -4745,89 +3228,64 @@ def cmd_pending_update(args: argparse.Namespace) -> None:
         )
         sys.exit(1)
 
-    # `outcome: null` is legitimate (that's its state until resolution), so
-    # it's deliberately excluded here — everything else in this allowlist
-    # is always-present/never-null per PendingItem's schema.
     _reject_null_fields(
         "pending update",
         patch,
         ("description", "context", "next_steps", "blocking", "source_ref"),
     )
 
-    with backlog_lock():
-        items = load_items()
-        pending_items = load_pending()
-        current_rev = load_rev()
-        enforce_rev_guard(
-            "pending update", args.id, args.if_rev, current_rev, items, pending_items
+    req = PendingUpdateRequest(
+        description=(
+            cast(str, patch["description"]) if "description" in patch else UNSET
+        ),
+        context=cast(str, patch["context"]) if "context" in patch else UNSET,
+        outcome=cast(str | None, patch["outcome"]) if "outcome" in patch else UNSET,
+        status=cast(str, patch["status"]) if "status" in patch else UNSET,
+        source_ref=(
+            cast(dict[str, object], patch["source_ref"])
+            if "source_ref" in patch
+            else UNSET
+        ),
+        next_steps=(
+            tuple(str(s) for s in _list_field(patch, "next_steps"))
+            if "next_steps" in patch
+            else UNSET
+        ),
+        blocking=(
+            tuple(str(dep) for dep in _list_field(patch, "blocking"))
+            if "blocking" in patch
+            else UNSET
+        ),
+    )
+    try:
+        res = update_pending_item(
+            args.id,
+            req,
+            if_rev=args.if_rev,
+            verbose=getattr(args, "verbose", False),
         )
+    except BacklogMutationError as exc:
+        _handle_mutation_error("pending update", exc)
 
-        kind, slug = resolve_id(args.id, items, pending_items)
-        require_kind("pending update", args.id, kind, "pending")
-
-        index = {p["id"]: p for p in pending_items}
-        item = index.get(slug)
-        if item is None:
-            print(f"[pending update] not found: {slug}", file=sys.stderr)
-            sys.exit(1)
-        # Validate `blocking` slugs against the backlog index, mirroring
-        # `pending add`'s validation — without this, a typo'd slug slips in
-        # here and CLAUDE.md routes post-add blocker edits through this path.
-        if "blocking" in patch:
-            backlog_index = build_index(items)
-            blocking_patch = cast(list[str], _list_field(patch, "blocking"))
-            for dep in blocking_patch:
-                if dep not in backlog_index:
-                    print(
-                        f"[pending update] blocking references unknown slug: {dep}",
-                        file=sys.stderr,
-                    )
-                    sys.exit(1)
-        old_status = item.get("status")
-        if "status" in patch:
-            _apply_status_transition(
-                cast(dict[str, object], item),
-                cast(str, patch["status"]),
-                "resolved_at",
-                "resolved",
-            )
-        cast(dict[str, object], item).update(patch)
-        item["updated"] = today()
-        new_status = item.get("status")
-        new_rev = bump_rev()
-        save_pending(pending_items)
-        append_journal_event(
-            _journal_entry(
-                "update",
-                "pending",
-                new_rev,
-                slug=slug,
-                summary=cast(str, item.get("description", "")),
-                from_status=old_status if old_status != new_status else None,
-                to_status=new_status if old_status != new_status else None,
-                fields=sorted(patch),
-            ),
-            verbose=args.verbose,
+    if _is_compact(args):
+        line = format_compact_confirmation(
+            cmd="pending update",
+            slug=res.slug,
+            status=res.status,
+            rev=res.rev,
+            ref=args.id,
+            detail=res.detail,
         )
-        if _is_compact(args):
-            line = format_compact_confirmation(
-                cmd="pending update",
-                slug=slug,
-                status=cast(str, item.get("status", "")),
-                rev=new_rev,
-                ref=args.id,
-                detail=cast(str, item.get("description", "")),
-            )
-            print(line)
-        else:
-            confirm_resolution(
-                "pending update",
-                args.id,
-                item,
-                summary_key="description",
-                quiet=args.quiet,
-            )
-            render(items, pending_items, rev=new_rev)
+        print(line)
+    else:
+        confirm_resolution(
+            "pending update",
+            args.id,
+            dict(res.item),
+            summary_key="description",
+            quiet=getattr(args, "quiet", False),
+        )
+        render(list(res.items), list(res.pending_items), rev=res.rev)
     _maybe_dispatch_recap_regen()
 
 
@@ -4840,30 +3298,41 @@ def cmd_pending_list(args: argparse.Namespace) -> None:
 def cmd_remove(args: argparse.Namespace) -> None:
     """Handle ``remove``: permanently delete one backlog item.
 
-    Purges the removed slug from every surviving item's ``blocked_by``
-    list and every pending item's ``blocking`` list, so deleting a
-    completed blocker doesn't retroactively flip its dependents from READY
-    into BLOCKED via :func:`effective_blockers`'s missing-slug-is-unresolved
+    Purges the removed slug from every surviving item's ``blocked_by`` list
+    and every pending item's ``blocking`` list, so deleting a completed
+    blocker doesn't retroactively flip its dependents from READY into
+    BLOCKED via :func:`effective_blockers`'s missing-slug-is-unresolved
     fallback. The pending-side purge is saved explicitly here —
     :func:`_backlog_mutation`'s cleanup only persists ``items``, so a
     ``blocking``-list edit made only in memory would otherwise vanish the
     moment this process exits, leaving the stale slug on disk for the next
     command to reload.
     """
-    with _backlog_mutation(
-        "remove",
-        args.id,
-        args.if_rev,
-        verbose=args.verbose,
-        compact=_is_compact(args),
-    ) as m:
-        m.items = [i for i in m.items if i["id"] != m.slug]
-        _purge_inbound_refs({m.slug}, m.items, m.pending_items)
-        save_pending(m.pending_items)
-        m.compact_status = "removed"
-        m.compact_detail = cast(str, m.item.get("summary", ""))
-        if not _is_compact(args):
-            confirm_resolution("remove", args.id, m.item, quiet=args.quiet)
+    try:
+        res = remove_item(
+            args.id,
+            if_rev=args.if_rev,
+            verbose=getattr(args, "verbose", False),
+        )
+    except BacklogMutationError as exc:
+        _handle_mutation_error("remove", exc)
+
+    if _is_compact(args):
+        line = format_compact_confirmation(
+            cmd="remove",
+            slug=res.slug,
+            status=res.status,
+            rev=res.rev,
+            ref=res.ref,
+            detail=res.detail,
+        )
+        print(line)
+    else:
+        confirm_resolution(
+            "remove", args.id, dict(res.item), quiet=getattr(args, "quiet", False)
+        )
+        render(list(res.items), list(res.pending_items), rev=res.rev)
+    _maybe_dispatch_recap_regen()
 
 
 def cmd_prune(args: argparse.Namespace) -> None:

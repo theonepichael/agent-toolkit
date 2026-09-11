@@ -143,6 +143,10 @@ dest = "~/.claude/scripts/backlog_claim_lookup.py"
 src = "agent-scripts/dev_status_read.py"
 dest = "~/.claude/scripts/dev_status_read.py"
 
+[[link]]
+src = "agent-scripts/dev_status_mutation.py"
+dest = "~/.claude/scripts/dev_status_mutation.py"
+
 
 [[link]]
 src = "agent-scripts/sessionstart_checks.py"
