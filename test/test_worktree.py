@@ -315,3 +315,40 @@ class TestWorktree:
         assert res.returncode == 0, res.stderr
         assert res.stderr.strip() == ""
 
+    def test_dev_status_worktree_cli(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path / "repo-devstatus-wt")
+        script_path = REPO_ROOT / "agent-scripts" / "dev_status.py"
+
+        res = subprocess.run(
+            [
+                sys.executable,
+                str(script_path),
+                "worktree",
+                "--repo",
+                str(repo),
+                "--branch",
+                "devstatus-branch",
+                "--skip-bootstrap",
+                "--json",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        assert res.returncode == 0, res.stderr
+        data = json.loads(res.stdout)
+        expected_dest = str((tmp_path / "repo-devstatus-wt-devstatus-branch").resolve())
+        assert data["worktree_path"] == expected_dest
+        assert data["branch"] == "devstatus-branch"
+        assert not data["reused"]
+        assert not data["bootstrap_executed"]
+
+    def test_dev_status_worktree_missing_args(self) -> None:
+        script_path = REPO_ROOT / "agent-scripts" / "dev_status.py"
+        res = subprocess.run(
+            [sys.executable, str(script_path), "worktree"],
+            capture_output=True,
+            text=True,
+        )
+        assert res.returncode == 2
+        assert "either a backlog item slug/id or --repo must be provided" in res.stderr
+

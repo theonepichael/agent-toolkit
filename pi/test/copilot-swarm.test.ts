@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, test } from "./helpers/tap";
 // from, so there is nothing left for a
 // PROJECT_PREFIXES-parity test to guard: drift between "the pi copy" and "the
 // copilot copy" is now structurally impossible, there being only one copy.
-import { type SwarmState } from "../extensions/swarm-lib/swarm-scheduling.js";
+import { providerCrashMatch, type SwarmState } from "../extensions/swarm-lib/swarm-scheduling.js";
 
 import {
   buildAgentStartArgv,
@@ -28,6 +28,7 @@ import {
   isValidUuid,
   saveState,
   SwarmToolContext,
+  type ExecResult,
 } from "../extensions/swarm-lib/swarm-tool-context.js";
 
 describe("Copilot Swarm: Staleness and Build Consistency", () => {
@@ -489,5 +490,268 @@ describe("Copilot Swarm: defaultExec timeout handling", () => {
     // read as a clean exit, which every caller treats as success.
     expect(result.code).not.toBe(0);
     expect(result.stderr).toContain("timed out");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Provider-crash detection on settled finishes (atk-swarm-usage-limit-crash):
+// a worker whose provider hit a usage limit goes idle at its prompt, herdr
+// reports `idle`, and without this the settle is reported as a clean
+// `finished` while the item's real state is unknown.
+
+describe("Copilot Swarm: providerCrashMatch (pure)", () => {
+  test("matches the observed usage-limit wording, case-insensitively", () => {
+    expect(providerCrashMatch("Codex error: The usage limit has been reached")).not.toBeNull();
+    expect(providerCrashMatch("you have reached your usage limit")).not.toBeNull();
+    expect(providerCrashMatch("USAGE LIMIT EXCEEDED")).not.toBeNull();
+  });
+
+  test("matches rate-limit wording", () => {
+    expect(providerCrashMatch("error: rate limit exceeded")).not.toBeNull();
+    expect(providerCrashMatch("you hit your rate limit")).not.toBeNull();
+  });
+
+  test("matches a signature hard-wrapped across two captured lines", () => {
+    expect(providerCrashMatch("Codex error: The usage limit has\nbeen reached")).not.toBeNull();
+  });
+
+  test("never matches on a bare keyword without the error phrasing nearby", () => {
+    // Both halves present, but far apart: prose, not an error banner.
+    const prose =
+      "The docs discuss usage limit handling at length, including retries, backoff and " +
+      "client configuration; the section on being reached by users of the API follows.";
+    expect(providerCrashMatch(prose)).toBeNull();
+  });
+
+  test("misses a banner pushed beyond the recent-output window (accepted blind spot)", () => {
+    const filler = Array.from({ length: 20 }, (_, i) => `line ${i} of post-error output`);
+    const capture = ["Codex error: The usage limit has been reached", ...filler].join("\n");
+    expect(providerCrashMatch(capture)).toBeNull();
+  });
+
+  test("first qualifying match wins when several are present, no combining", () => {
+    const m = providerCrashMatch(
+      "Codex error: The usage limit has been reached\nerror: rate limit exceeded",
+    );
+    expect(m).not.toBeNull();
+    expect(m?.signature).toContain("usage limit");
+  });
+
+  test("strips ANSI escape sequences, survives malformed ones without throwing", () => {
+    expect(
+      providerCrashMatch("\x1b[31mCodex error: The usage limit has been reached\x1b[0m"),
+    ).not.toBeNull();
+    // Malformed / unterminated CSI: must not throw, must not match.
+    expect(providerCrashMatch("\x1b[3unterminated")).toBeNull();
+    expect(
+      providerCrashMatch("\x1b]0;title\x07Codex error: The usage limit has been reached"),
+    ).not.toBeNull();
+  });
+
+  test("returns null for empty or whitespace-only content", () => {
+    expect(providerCrashMatch("")).toBeNull();
+    expect(providerCrashMatch("  \n \n ")).toBeNull();
+  });
+
+  test("excerpt bounds the matched region for the detail string", () => {
+    const m = providerCrashMatch("Codex error: The usage limit has been reached");
+    expect(m?.excerpt.length ?? 0).toBeLessThanOrEqual(400);
+    expect(m?.excerpt).toContain("usage limit");
+  });
+});
+
+describe("Copilot Swarm: provider-crash finish reclassification", () => {
+  let tempStateDir: string;
+
+  beforeEach(() => {
+    tempStateDir = mkdtempSync(join(tmpdir(), "swarm-crash-test-"));
+    process.env.COPILOT_SWARM_STATE_DIR = tempStateDir;
+  });
+
+  afterEach(() => {
+    delete process.env.COPILOT_SWARM_STATE_DIR;
+    rmSync(tempStateDir, { recursive: true, force: true });
+  });
+
+  const CRASH_PANE = "Some turn output\nCodex error: The usage limit has been reached\n> ";
+
+  const activeWorker = (over: Partial<SwarmState["workers"][number]> = {}) => ({
+    agent: "r1-w1",
+    slug: "atk-one",
+    paneId: "w:p1",
+    tabId: "w:t1",
+    lifecycle: "active" as const,
+    workingSinceMs: Date.now(),
+    ...over,
+  });
+
+  const fakeExecFor =
+    (paneRead: { code: number; stdout: string }) =>
+    async (cmd: string, args: string[]): Promise<ExecResult> => {
+      if (cmd === "herdr") {
+        if (args[0] === "agent" && args[1] === "wait") {
+          return {
+            code: 0,
+            stdout: JSON.stringify({ result: { agent: { agent_status: "idle" } } }),
+            stderr: "",
+          };
+        }
+        if (args[0] === "pane" && args[1] === "read") {
+          return { ...paneRead, stderr: "" };
+        }
+        if (args[0] === "agent" && args[1] === "get") {
+          return {
+            code: 0,
+            stdout: JSON.stringify({ result: { agent: { agent_status: "idle" } } }),
+            stderr: "",
+          };
+        }
+      }
+      return { code: 0, stdout: JSON.stringify({ result: {} }), stderr: "" };
+    };
+
+  test("a finished settle whose pane shows a usage-limit crash is reported as error, not finished", async () => {
+    const ctx = new SwarmToolContext(fakeExecFor({ code: 0, stdout: CRASH_PANE }));
+    const state: SwarmState = {
+      runId: "r1",
+      concurrency: 3,
+      nextCounter: 1,
+      workers: [activeWorker()],
+    };
+    saveState(state, tempStateDir);
+
+    const result = await ctx.swarmPoll({ runId: "r1" });
+    const events = result.details.events as { agent: string; kind: string; detail?: string }[];
+    expect(events.length).toBe(1);
+    expect(events[0]?.kind).toBe("error");
+    expect(events[0]?.detail).toContain("provider_crash");
+    expect(events[0]?.detail).toContain("usage limit");
+
+    const reconciled = await ctx.getOrInitState("r1", 3);
+    expect(reconciled.workers.length).toBe(0);
+  });
+
+  test("a finished settle with a clean pane is still reported as finished", async () => {
+    const ctx = new SwarmToolContext(fakeExecFor({ code: 0, stdout: "All tests passed.\n> " }));
+    const state: SwarmState = {
+      runId: "r1",
+      concurrency: 3,
+      nextCounter: 1,
+      workers: [activeWorker()],
+    };
+    saveState(state, tempStateDir);
+
+    const result = await ctx.swarmPoll({ runId: "r1" });
+    const events = result.details.events as { agent: string; kind: string; detail?: string }[];
+    expect(events.length).toBe(1);
+    expect(events[0]?.kind).toBe("finished");
+    expect(events[0]?.detail ?? "").not.toContain("provider_crash");
+  });
+
+  test("an unavailable pane read still reports finished, with a verification note", async () => {
+    const ctx = new SwarmToolContext(fakeExecFor({ code: 1, stdout: "" }));
+    const state: SwarmState = {
+      runId: "r1",
+      concurrency: 3,
+      nextCounter: 1,
+      workers: [activeWorker()],
+    };
+    saveState(state, tempStateDir);
+
+    const result = await ctx.swarmPoll({ runId: "r1" });
+    const events = result.details.events as { agent: string; kind: string; detail?: string }[];
+    expect(events.length).toBe(1);
+    expect(events[0]?.kind).toBe("finished");
+    expect(events[0]?.detail).toContain("pane capture unavailable");
+  });
+
+  test("a crash during an amend-held confirmed finish outranks the hold", async () => {
+    const ctx = new SwarmToolContext(fakeExecFor({ code: 0, stdout: CRASH_PANE }));
+    const state: SwarmState = {
+      runId: "r1",
+      concurrency: 3,
+      nextCounter: 1,
+      workers: [
+        activeWorker({
+          pendingAmend: {
+            requestedAtMs: Date.now(),
+            seqAtRequest: null,
+            lastObservedSeq: null,
+            runWorkedAfterAmendMs: 1200,
+            phase: "await_terminal",
+            checks: 1,
+            checkInReported: true,
+          },
+        }),
+      ],
+    };
+    saveState(state, tempStateDir);
+
+    const result = await ctx.swarmPoll({ runId: "r1" });
+    const events = result.details.events as { agent: string; kind: string; detail?: string }[];
+    expect(events.length).toBe(1);
+    expect(events[0]?.kind).toBe("error");
+    expect(events[0]?.detail).toContain("provider_crash");
+    // Append-only combination: the amend verdict's own detail survives.
+    expect(events[0]?.detail).toContain("amend_confirmed");
+  });
+
+  test("serial mode: a crash-classified worker whose close fails lands in teardown_ambiguous", async () => {
+    // worker close fails; agent get reports the agent present (idle), so the
+    // serial ambiguity branch -- not a drop -- must be taken.
+    const exec = async (cmd: string, args: string[]) => {
+      if (cmd === "herdr") {
+        if (args[0] === "agent" && args[1] === "wait") {
+          return {
+            code: 0,
+            stdout: JSON.stringify({ result: { agent: { agent_status: "idle" } } }),
+            stderr: "",
+          };
+        }
+        if (args[0] === "pane" && args[1] === "read") {
+          return { code: 0, stdout: CRASH_PANE, stderr: "" };
+        }
+        if (args[0] === "worker" && args[1] === "close") {
+          return { code: 1, stdout: "", stderr: "close failed" };
+        }
+        if (args[0] === "tab" && args[1] === "close") {
+          return { code: 1, stdout: "", stderr: "close failed" };
+        }
+        if (args[0] === "agent" && args[1] === "get") {
+          return {
+            code: 0,
+            stdout: JSON.stringify({ result: { agent: { agent_status: "idle" } } }),
+            stderr: "",
+          };
+        }
+        if (args[0] === "tab" && args[1] === "list") {
+          return {
+            code: 0,
+            stdout: JSON.stringify({ result: { tabs: [{ id: "w:t1", label: "atk-one" }] } }),
+            stderr: "",
+          };
+        }
+      }
+      return { code: 0, stdout: JSON.stringify({ result: {} }), stderr: "" };
+    };
+    const ctx = new SwarmToolContext(exec);
+    const state: SwarmState = {
+      runId: "r1",
+      concurrency: 1,
+      mode: "serial",
+      nextCounter: 1,
+      workers: [activeWorker()],
+    };
+    saveState(state, tempStateDir);
+
+    const result = await ctx.swarmPoll({ runId: "r1" });
+    const events = result.details.events as { agent: string; kind: string; detail?: string }[];
+    expect(events.length).toBe(1);
+    expect(events[0]?.kind).toBe("error");
+    expect(events[0]?.detail).toContain("provider_crash");
+
+    const reconciled = await ctx.getOrInitState("r1", 1);
+    expect(reconciled.workers.length).toBe(1);
+    expect(reconciled.workers[0]?.lifecycle).toBe("teardown_ambiguous");
   });
 });

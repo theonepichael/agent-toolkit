@@ -220,7 +220,7 @@ class CheckUnmanagedFilesTests(unittest.TestCase):
         self.managed = self.home / ".claude" / "scripts"
         self.managed.mkdir(parents=True)
 
-    def test_foreign_file_reported_managed_and_hidden_skipped(self) -> None:
+    def test_foreign_file_reports_structured_managed_directory(self) -> None:
         (self.managed / "foreign.py").write_text("x")
         (self.managed / ".hidden").write_text("x")
         (self.managed / "keep.py~").write_text("x")
@@ -236,7 +236,8 @@ class CheckUnmanagedFilesTests(unittest.TestCase):
         self.assertEqual(audited, 1)
         self.assertEqual([f.kind for f in findings], [li.CHECK_BUCKET_UNMANAGED])
         self.assertEqual(findings[0].path, self.managed / "foreign.py")
-        self.assertIn("~/.claude/scripts", findings[0].detail)
+        self.assertEqual(findings[0].managed_dir_root, self.managed)
+        self.assertEqual(findings[0].managed_dir_decl, "~/.claude/scripts")
 
     def test_out_of_scope_directory_not_audited(self) -> None:
         dir_spec = li.ManagedDirSpec(dest="~/.claude/scripts")
@@ -498,15 +499,29 @@ class CollectLinkFindingsTests(unittest.TestCase):
         self.assertEqual(result.foreign, {})
         self.assertEqual(result.dirs_audited, 1)
 
-    def test_wrong_target_record_names_expected_and_actual(self) -> None:
+    def test_wrong_target_record_has_expected_and_actual_paths(self) -> None:
         result = self.collect()
         wrong = next(
             f
             for f in result.findings
             if f.kind == li.CHECK_BUCKET_WRONG_TARGET
         )
-        self.assertIn("links.toml says", wrong.detail)
-        self.assertIn(str(self.repo / "claude" / "g.md"), wrong.detail)
+        self.assertEqual(wrong.repo_source_path, self.repo / "claude" / "g.md")
+        self.assertEqual(
+            wrong.symlink_target_path, self.repo / "claude" / "elsewhere.md"
+        )
+
+    def test_broken_source_record_has_expected_and_actual_paths(self) -> None:
+        result = self.collect()
+        broken = next(
+            f
+            for f in result.findings
+            if f.kind == li.CHECK_BUCKET_BROKEN_SOURCE
+        )
+        expected = self.repo / "claude" / "gone.md"
+        self.assertEqual(broken.repo_source_path, expected)
+        self.assertEqual(broken.symlink_target_path, expected)
+        self.assertTrue(broken.source_missing)
 
     def test_matches_audit_links_string_output(self) -> None:
         """collect + render reproduce audit_links' bucket strings exactly."""
@@ -531,28 +546,27 @@ class CollectLinkFindingsTests(unittest.TestCase):
 
 
 class RenderFindingsTests(unittest.TestCase):
-    """The composition invariant: every rendered message is
-    f"{format_path(path)} — {detail}", grouped by kind in CHECK_BUCKETS
-    order with all buckets present."""
+    """The structured-record adapter preserves rendered bucket messages."""
 
     def test_one_finding_per_kind_renders_exactly(self) -> None:
         findings = [
             li.LinkFinding(
                 li.CHECK_BUCKET_WRONG_TARGET,
                 Path("/h/.claude/g.md"),
-                "points at /x, but links.toml says claude/g.md",
+                repo_source_path=Path("claude/g.md"),
+                symlink_target_path=Path("/x"),
             ),
             li.LinkFinding(
                 li.CHECK_BUCKET_ORPHANED,
                 Path("/h/.claude/stale.py"),
-                "recorded by a past install run, but no links.toml entry "
-                "produces it anymore; still present as a real file",
+                entry_kind="file",
             ),
             li.LinkFinding(
                 li.CHECK_BUCKET_UNMANAGED,
                 Path("/h/.claude/scripts"),
-                "declared exclusive, but unreadable (denied), so it could "
-                "not be audited",
+                managed_dir_root=Path("/h/.claude/scripts"),
+                managed_dir_decl="~/.claude/scripts",
+                error_text="denied",
             ),
         ]
         buckets = li.render_findings(findings, lambda path: f"<{path}>")
@@ -572,13 +586,37 @@ class RenderFindingsTests(unittest.TestCase):
 
     def test_order_within_bucket_is_preserved(self) -> None:
         findings = [
-            li.LinkFinding(li.CHECK_BUCKET_UNMANAGED, Path("/a"), "one"),
-            li.LinkFinding(li.CHECK_BUCKET_UNMANAGED, Path("/b"), "two"),
+            li.LinkFinding(
+                li.CHECK_BUCKET_UNMANAGED,
+                Path("/a"),
+                managed_dir_root=Path("/managed"),
+                managed_dir_decl="~/managed",
+            ),
+            li.LinkFinding(
+                li.CHECK_BUCKET_UNMANAGED,
+                Path("/b"),
+                managed_dir_root=Path("/managed"),
+                managed_dir_decl="~/managed",
+            ),
         ]
         buckets = li.render_findings(findings, str)
         self.assertEqual(
-            buckets[li.CHECK_BUCKET_UNMANAGED], ["/a — one", "/b — two"]
+            buckets[li.CHECK_BUCKET_UNMANAGED],
+            [
+                "/a — ~/managed is declared exclusive to this repo, but no "
+                "links.toml entry produces it",
+                "/b — ~/managed is declared exclusive to this repo, but no "
+                "links.toml entry produces it",
+            ],
         )
+
+    def test_invalid_required_fields_are_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "repo_source_path"):
+            li.LinkFinding(
+                li.CHECK_BUCKET_WRONG_TARGET,
+                Path("/h/.claude/g.md"),
+                symlink_target_path=Path("/x"),
+            )
 
 
 class InstallAliasTests(unittest.TestCase):

@@ -520,21 +520,45 @@ def gather_links(
 
 @dataclass(frozen=True)
 class LinkFinding:
-    """One drift finding as typed data: the audit's render-free result unit.
+    """One render-free audit finding with structured, kind-specific facts.
 
-    ``kind`` is one of :data:`CHECK_BUCKETS`; ``path`` is the audited
-    destination (or managed directory); ``detail`` is the message suffix
-    rendered as ``f"{format_path(path)} — {detail}"`` by
-    :func:`render_findings`. The detail string is deliberately unstructured
-    prose — the expected/actual target fields a fully structured finding
-    would carry are a follow-up, not this extraction's scope — but it never
-    embeds a *formatted* path: raw targets, ``spec.src``, and ``spec.dest``
-    strings appear verbatim, so rendering stays entirely the caller's.
+    ``kind`` selects the applicable optional fields. ``path`` is always the
+    audited destination, managed root, or unmanaged child; raw paths stay
+    unformatted until :func:`render_findings` adapts the record for display.
     """
 
     kind: str
     path: Path
-    detail: str
+    repo_source_path: Path | None = None
+    symlink_target_path: Path | None = None
+    managed_dir_root: Path | None = None
+    managed_dir_decl: str | None = None
+    entry_kind: str | None = None
+    error_text: str | None = None
+    source_missing: bool = False
+
+    def __post_init__(self) -> None:
+        """Reject records missing the facts their finding variant requires."""
+        required: dict[str, tuple[str, ...]] = {
+            CHECK_BUCKET_NEVER_INSTALLED: ("repo_source_path",),
+            CHECK_BUCKET_NOT_A_SYMLINK: ("repo_source_path", "entry_kind"),
+            CHECK_BUCKET_WRONG_TARGET: ("repo_source_path", "symlink_target_path"),
+            CHECK_BUCKET_BROKEN_SOURCE: ("repo_source_path", "symlink_target_path"),
+            CHECK_BUCKET_UNMANAGED: ("managed_dir_root", "managed_dir_decl"),
+        }
+        for field in required.get(self.kind, ()):
+            if getattr(self, field) is None:
+                raise ValueError(f"{self.kind} finding requires {field}")
+        if self.kind == CHECK_BUCKET_ORPHANED and (
+            self.symlink_target_path is None and self.entry_kind is None
+        ):
+            raise ValueError("orphaned finding requires a target or entry kind")
+        if (
+            self.kind == CHECK_BUCKET_UNMANAGED
+            and self.error_text is not None
+            and self.path != self.managed_dir_root
+        ):
+            raise ValueError("unreadable managed finding path must be its root")
 
 
 @dataclass(frozen=True)
@@ -629,7 +653,53 @@ def render_findings(
     """
     buckets: dict[str, list[str]] = {bucket: [] for bucket in CHECK_BUCKETS}
     for finding in findings:
-        buckets[finding.kind].append(f"{format_path(finding.path)} — {finding.detail}")
+        if finding.kind == CHECK_BUCKET_NEVER_INSTALLED:
+            detail = (
+                f"{finding.repo_source_path} exists in the repo but was never linked "
+                "here; run install.sh to link it"
+            )
+        elif finding.kind == CHECK_BUCKET_NOT_A_SYMLINK:
+            detail = (
+                f"a real {finding.entry_kind} sits where a symlink to "
+                f"{finding.repo_source_path} belongs; the next install run would "
+                "back it up and replace it"
+            )
+        elif finding.kind == CHECK_BUCKET_WRONG_TARGET:
+            detail = (
+                f"points at {finding.symlink_target_path}, but links.toml says "
+                f"{finding.repo_source_path}"
+            )
+        elif finding.kind == CHECK_BUCKET_BROKEN_SOURCE:
+            suffix = (
+                "in the repo (dangling symlink)"
+                if finding.source_missing
+                else "(dangling symlink)"
+            )
+            detail = f"links to {finding.symlink_target_path}, which no longer exists {suffix}"
+        elif finding.kind == CHECK_BUCKET_ORPHANED:
+            detail = (
+                f"still symlinked → {finding.symlink_target_path}"
+                if finding.symlink_target_path is not None
+                else f"still present as a real {finding.entry_kind}"
+            )
+            detail = (
+                "recorded by a past install run, but no links.toml entry produces "
+                f"it anymore; {detail}"
+            )
+        elif finding.kind == CHECK_BUCKET_UNMANAGED:
+            if finding.error_text is not None:
+                detail = (
+                    f"declared exclusive, but unreadable ({finding.error_text}), so "
+                    "it could not be audited"
+                )
+            else:
+                detail = (
+                    f"{finding.managed_dir_decl} is declared exclusive to this repo, "
+                    "but no links.toml entry produces it"
+                )
+        else:
+            raise ValueError(f"unknown finding kind: {finding.kind}")
+        buckets[finding.kind].append(f"{format_path(finding.path)} — {detail}")
     return buckets
 
 
@@ -797,8 +867,7 @@ def check_applicable_links(
                     LinkFinding(
                         CHECK_BUCKET_NEVER_INSTALLED,
                         dest,
-                        f"{src} exists in the repo but was never linked here; "
-                        "run install.sh to link it",
+                        repo_source_path=src,
                     )
                 )
             continue
@@ -812,9 +881,8 @@ def check_applicable_links(
                     LinkFinding(
                         CHECK_BUCKET_NOT_A_SYMLINK,
                         dest,
-                        f"a real {'directory' if dest.is_dir() else 'file'} "
-                        f"sits where a symlink to {src} belongs; the next "
-                        "install run would back it up and replace it",
+                        repo_source_path=src,
+                        entry_kind="directory" if dest.is_dir() else "file",
                     )
                 )
             continue
@@ -855,8 +923,9 @@ def check_applicable_links(
                         LinkFinding(
                             CHECK_BUCKET_BROKEN_SOURCE,
                             dest,
-                            f"links to {target}, which no longer exists "
-                            "(dangling symlink)",
+                            repo_source_path=src,
+                            symlink_target_path=target,
+                            source_missing=False,
                         )
                     )
                 else:
@@ -867,7 +936,8 @@ def check_applicable_links(
                 LinkFinding(
                     CHECK_BUCKET_WRONG_TARGET,
                     dest,
-                    f"points at {target}, but links.toml says {src}",
+                    repo_source_path=src,
+                    symlink_target_path=target,
                 )
             )
             continue
@@ -877,8 +947,9 @@ def check_applicable_links(
                 LinkFinding(
                     CHECK_BUCKET_BROKEN_SOURCE,
                     dest,
-                    f"links to {src}, which no longer exists in the repo "
-                    "(dangling symlink)",
+                    repo_source_path=src,
+                    symlink_target_path=src,
+                    source_missing=True,
                 )
             )
     return findings, foreign
@@ -940,17 +1011,18 @@ def check_orphaned_links(
     findings: list[LinkFinding] = []
     for dest in find_orphaned_links(links, manifest_entries=manifest_entries):
         if is_symlink(dest):
-            detail = f"still symlinked → {link_target(dest)}"
-        else:
-            detail = "still present as a real file"
-        findings.append(
-            LinkFinding(
+            finding = LinkFinding(
                 CHECK_BUCKET_ORPHANED,
                 dest,
-                f"recorded by a past install run, but no links.toml entry "
-                f"produces it anymore; {detail}",
+                symlink_target_path=link_target(dest),
             )
-        )
+        else:
+            finding = LinkFinding(
+                CHECK_BUCKET_ORPHANED,
+                dest,
+                entry_kind="file",
+            )
+        findings.append(finding)
     return findings
 
 
@@ -1029,8 +1101,9 @@ def check_unmanaged_files(
                 LinkFinding(
                     CHECK_BUCKET_UNMANAGED,
                     directory,
-                    f"declared exclusive, but unreadable ({exc.strerror or exc}), "
-                    "so it could not be audited",
+                    managed_dir_root=directory,
+                    managed_dir_decl=dir_spec.dest,
+                    error_text=str(exc.strerror or exc),
                 )
             )
             continue
@@ -1050,8 +1123,8 @@ def check_unmanaged_files(
                 LinkFinding(
                     CHECK_BUCKET_UNMANAGED,
                     path,
-                    f"{dir_spec.dest} is declared exclusive to this repo, but "
-                    "no links.toml entry produces it",
+                    managed_dir_root=directory,
+                    managed_dir_decl=dir_spec.dest,
                 )
             )
     return findings, audited

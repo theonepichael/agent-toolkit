@@ -374,6 +374,128 @@ export function isSuspiciousFinish(shownStatus: unknown, captureCount: number): 
   return shownStatus === "open" || shownStatus === "in-progress";
 }
 
+// ---------------------------------------------------------------------------
+// Provider-crash detection on a settled finish.
+//
+// A worker whose provider hits a usage limit keeps its process alive at the
+// idle prompt -- herdr sees `idle`, `classifyWaitResult` maps that to
+// `finished`, and the orchestrator tears the worker down as a clean finish
+// while the item's real state is unknown (observed live 2026-09-10, where
+// workers died mid-commit/mid-merge under "The usage limit has been reached"
+// and the run recorded them as complete). This classifier detects the
+// positive evidence of death in the pane's last lines; the caller reclassifies
+// the finish to `error`. Distinct from `isSuspiciousFinish`, which detects the
+// ABSENCE of progress evidence: absence-of-evidence and evidence-of-failure
+// stay separate checks.
+
+/** How many non-empty lines at the end of a settled pane are examined. */
+export const PROVIDER_CRASH_SCAN_LINES = 10;
+
+/** Maximum normalized-text character distance between the two halves of a signature pair. */
+export const PROVIDER_CRASH_MAX_GAP = 80;
+
+/**
+ * Error-shaped signature pairs: both halves must appear (case-insensitive)
+ * within `PROVIDER_CRASH_MAX_GAP` characters of each other, in either order,
+ * so a bare keyword in prose or task output cannot match on its own. A future
+ * provider's wording is a one-line addition here.
+ */
+const PROVIDER_CRASH_SIGNATURE_PAIRS: ReadonlyArray<readonly [string, readonly string[]]> = [
+  ["usage limit", ["reached", "exceeded"]],
+  ["rate limit", ["exceeded", "hit"]],
+];
+
+/** CSI/OSC escape sequences, then any remaining C0 control characters (tab kept). */
+function stripTerminalNoise(text: string): string {
+  // The patterns contain control characters by design (they strip terminal
+  // escape sequences), so the no-control-regex rule is suppressed per line.
+  // eslint-disable-next-line no-control-regex
+  const csi = /\x1b\[[0-9;?]*[ -/]*[@-~]/g;
+  // eslint-disable-next-line no-control-regex
+  const osc = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
+  // eslint-disable-next-line no-control-regex
+  const c0 = new RegExp(`[\\x00-\\x08\\x0b-\\x1f\\x7f]`, "g");
+  return (
+    text
+      // CSI: ESC [ params final-byte; allow malformed/unterminated to survive
+      // the replace (they then get dropped by the control-char pass below).
+      .replace(csi, "")
+      // OSC: ESC ] ... BEL or ST.
+      .replace(osc, "")
+      .replace(c0, "")
+  );
+}
+
+/** All occurrence start indices of `needle` in `haystack` (case-insensitive). */
+function occurrenceIndices(haystack: string, needle: string): number[] {
+  const lower = haystack.toLowerCase();
+  const target = needle.toLowerCase();
+  const indices: number[] = [];
+  for (let i = lower.indexOf(target); i !== -1; i = lower.indexOf(target, i + 1)) {
+    indices.push(i);
+  }
+  return indices;
+}
+
+export interface ProviderCrashMatch {
+  /** Human-readable signature name, e.g. `usage limit ~ reached`. */
+  signature: string;
+  /** Bounded surrounding text from the normalized pane, for the event detail. */
+  excerpt: string;
+}
+
+const EXCERPT_BEFORE = 60;
+const EXCERPT_AFTER = 140;
+
+/**
+ * Detect a provider-level crash in a settled worker's pane text.
+ *
+ * Normalization: the last `PROVIDER_CRASH_SCAN_LINES` non-empty lines (a
+ * provider error banner sits immediately above the idle prompt a crash leaves
+ * behind; selecting by line before joining also re-joins hard-wrapped
+ * banners), then ANSI/CSI/OSC and other control characters are stripped, then
+ * whitespace is collapsed -- so a banner wrapped across captured lines still
+ * matches. A banner pushed more than 10 lines above the prompt by post-error
+ * output is missed: accepted blind spot, fail-safe direction (the finish then
+ * still passes `isSuspiciousFinish`'s cross-check).
+ *
+ * Returns the first qualifying match (signature name plus a bounded excerpt)
+ * or null. Pane text is evidence of output, not proof of death -- the caller
+ * reports the outcome as a verification-needed error, never as a definitive
+ * item failure.
+ */
+export function providerCrashMatch(content: string): ProviderCrashMatch | null {
+  const recent = content
+    .split("\n")
+    .filter((line) => line.trim() !== "")
+    .slice(-PROVIDER_CRASH_SCAN_LINES)
+    .join(" ");
+  const normalized = stripTerminalNoise(recent).replace(/\s+/g, " ");
+  if (normalized.trim() === "") return null;
+
+  for (const [keyword, verbs] of PROVIDER_CRASH_SIGNATURE_PAIRS) {
+    const keywordIndices = occurrenceIndices(normalized, keyword);
+    if (keywordIndices.length === 0) continue;
+    for (const verb of verbs) {
+      const verbIndices = occurrenceIndices(normalized, verb);
+      for (const ki of keywordIndices) {
+        for (const vi of verbIndices) {
+          if (Math.abs(ki - vi) <= PROVIDER_CRASH_MAX_GAP) {
+            const start = Math.max(0, Math.min(ki, vi) - EXCERPT_BEFORE);
+            const end = Math.min(normalized.length, Math.max(ki, vi) + EXCERPT_AFTER);
+            const excerpt =
+              (start > 0 ? "..." : "") +
+              normalized.slice(start, end).trim() +
+              (end < normalized.length ? "..." : "");
+            return { signature: `${keyword} ~ ${verb}`, excerpt };
+          }
+        }
+      }
+    }
+  }
+  return null;
+}
+
 /** The files an item declares it will touch. Absent or malformed entries simply contribute nothing. */
 export function itemPaths(item: ReadyItem): string[] {
   const paths = (item.related_files ?? [])

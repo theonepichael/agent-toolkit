@@ -81,6 +81,25 @@ describe("assertFields", () => {
     ).not.toThrow();
     expect(() => assertFields("start", { action: "start", slug: "abc" })).not.toThrow();
   });
+
+  test("worktree requires slug or repo and accepts optional flags", () => {
+    expect(() => assertFields("worktree", { action: "worktree" })).toThrow(
+      'action "worktree" requires slug or repo',
+    );
+    expect(() => assertFields("worktree", { action: "worktree", slug: "atk-1" })).not.toThrow();
+    expect(() =>
+      assertFields("worktree", { action: "worktree", repo: "/path/to/repo" }),
+    ).not.toThrow();
+    expect(() =>
+      assertFields("worktree", {
+        action: "worktree",
+        slug: "atk-1",
+        force: true,
+        skipBootstrap: true,
+        branch: "feat",
+      }),
+    ).not.toThrow();
+  });
 });
 
 describe("buildArgv", () => {
@@ -178,6 +197,24 @@ describe("buildArgv", () => {
       "start",
       "abc",
     ]);
+  });
+
+  test("worktree action builds argv with flags", () => {
+    expect(buildArgv("worktree", { action: "worktree", slug: "abc" })).toEqual(["worktree", "abc"]);
+    expect(buildArgv("worktree", { action: "worktree", repo: "/path/to/repo" })).toEqual([
+      "worktree",
+      "--repo",
+      "/path/to/repo",
+    ]);
+    expect(
+      buildArgv("worktree", {
+        action: "worktree",
+        slug: "abc",
+        branch: "feat",
+        skipBootstrap: true,
+        force: true,
+      }),
+    ).toEqual(["worktree", "abc", "--branch", "feat", "--skip-bootstrap", "--force"]);
   });
 
   test("patch actions serialize the patch", () => {

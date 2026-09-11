@@ -19,6 +19,7 @@ import {
   parseReadyItems,
   parseShownItem,
   pendingAmendWorkers,
+  providerCrashMatch,
   selectSchedulable,
   spawnBudget,
   staleWorkerRecords,
@@ -1226,6 +1227,8 @@ export class SwarmToolContext {
         const decision = this.amendHoldDecision(rt, worker, pending, result.stdout);
         if (decision.event) {
           event = decision.event;
+          // A crash outranks the hold: the correction died with the worker.
+          await this.screenFinishedForProviderCrash(event, worker);
         } else {
           rearmAfter = decision.rearm ?? null;
           event = null;
@@ -1233,6 +1236,9 @@ export class SwarmToolContext {
       } else {
         event = { kind, agent: worker.agent, slug: worker.slug, paneId: worker.paneId };
         if (detail !== undefined) event.detail = detail;
+        if (kind === "finished") {
+          await this.screenFinishedForProviderCrash(event, worker);
+        }
         if (pending && (kind === "error" || kind === "timed_out")) {
           // Never suppress these, but never let them read as a clean end either:
           // the correction died here, and that has to be said.
@@ -1281,6 +1287,50 @@ export class SwarmToolContext {
       worker.workingSinceMs = now;
     }
     return elapsedWorkingMs(worker, now);
+  }
+
+  /**
+   * Screen a settled `finished` event for a provider-level crash.
+   *
+   * A worker that died under a provider usage-limit error stays alive at its
+   * idle prompt, so the wait settles as `finished` and without this check the
+   * orchestrator records a clean completion the item may not have earned
+   * (observed live 2026-09-10). One pane read per resolved finish -- never on
+   * held/re-armed settles -- and the classifier owns its own line-based
+   * window, so no character slicing happens here.
+   *
+   * Detail combination is append-only: a detected crash PREPENDS its detail
+   * to whatever the branch already carries (e.g. an amend verdict); an
+   * unavailable capture APPENDS its verification note. An unreadable or empty
+   * pane never reclassifies the finish -- the wait settled cleanly, so an
+   * inconclusive probe must not manufacture an error -- but it is no longer
+   * silent about it.
+   */
+  private async screenFinishedForProviderCrash(
+    event: PollEvent,
+    worker: WorkerRecord,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    if (event.kind !== "finished") return;
+    let pane: string | null;
+    try {
+      const read = await this.herdr(buildPaneReadArgv(worker.paneId, PANE_CAPTURE_LINES), signal);
+      pane = read.code === 0 ? read.stdout : null;
+    } catch {
+      pane = null;
+    }
+    if (pane === null || pane.trim() === "") {
+      event.detail = `${event.detail ? `${event.detail} ` : ""}pane capture unavailable at settle -- verify the item's state before treating it as complete.`;
+      return;
+    }
+    const crash = providerCrashMatch(pane);
+    if (!crash) return;
+    event.kind = "error";
+    event.detail =
+      `provider_crash: pane matched "${crash.signature}" near the idle prompt -- ` +
+      `the worker most likely died under a provider limit, not a clean finish. ` +
+      `Excerpt: "${crash.excerpt}". Verify the item's actual state before treating it as complete.` +
+      (event.detail ? ` ${event.detail}` : "");
   }
 
   public async swarmSpawn(params: {

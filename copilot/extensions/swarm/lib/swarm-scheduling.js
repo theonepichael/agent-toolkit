@@ -57,6 +57,52 @@ function isSuspiciousFinish(shownStatus, captureCount) {
   if (captureCount > 0) return false;
   return shownStatus === "open" || shownStatus === "in-progress";
 }
+var PROVIDER_CRASH_SCAN_LINES = 10;
+var PROVIDER_CRASH_MAX_GAP = 80;
+var PROVIDER_CRASH_SIGNATURE_PAIRS = [
+  ["usage limit", ["reached", "exceeded"]],
+  ["rate limit", ["exceeded", "hit"]]
+];
+function stripTerminalNoise(text) {
+  const csi = /\x1b\[[0-9;?]*[ -/]*[@-~]/g;
+  const osc = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
+  const c0 = new RegExp(`[\\x00-\\x08\\x0b-\\x1f\\x7f]`, "g");
+  return text.replace(csi, "").replace(osc, "").replace(c0, "");
+}
+function occurrenceIndices(haystack, needle) {
+  const lower = haystack.toLowerCase();
+  const target = needle.toLowerCase();
+  const indices = [];
+  for (let i = lower.indexOf(target); i !== -1; i = lower.indexOf(target, i + 1)) {
+    indices.push(i);
+  }
+  return indices;
+}
+var EXCERPT_BEFORE = 60;
+var EXCERPT_AFTER = 140;
+function providerCrashMatch(content) {
+  const recent = content.split("\n").filter((line) => line.trim() !== "").slice(-PROVIDER_CRASH_SCAN_LINES).join(" ");
+  const normalized = stripTerminalNoise(recent).replace(/\s+/g, " ");
+  if (normalized.trim() === "") return null;
+  for (const [keyword, verbs] of PROVIDER_CRASH_SIGNATURE_PAIRS) {
+    const keywordIndices = occurrenceIndices(normalized, keyword);
+    if (keywordIndices.length === 0) continue;
+    for (const verb of verbs) {
+      const verbIndices = occurrenceIndices(normalized, verb);
+      for (const ki of keywordIndices) {
+        for (const vi of verbIndices) {
+          if (Math.abs(ki - vi) <= PROVIDER_CRASH_MAX_GAP) {
+            const start = Math.max(0, Math.min(ki, vi) - EXCERPT_BEFORE);
+            const end = Math.min(normalized.length, Math.max(ki, vi) + EXCERPT_AFTER);
+            const excerpt = (start > 0 ? "..." : "") + normalized.slice(start, end).trim() + (end < normalized.length ? "..." : "");
+            return { signature: `${keyword} ~ ${verb}`, excerpt };
+          }
+        }
+      }
+    }
+  }
+  return null;
+}
 function itemPaths(item) {
   const paths = (item.related_files ?? []).map((f) => f?.path).filter((p) => typeof p === "string" && p.length > 0);
   return [...new Set(paths)];
@@ -147,6 +193,8 @@ function spawnBudget(state, readyCount) {
 }
 export {
   PROJECT_PREFIXES,
+  PROVIDER_CRASH_MAX_GAP,
+  PROVIDER_CRASH_SCAN_LINES,
   RECONCILE_MIN_AGE_MS,
   TERMINAL_AGENT_STATUSES,
   activeWorkerCount,
@@ -162,6 +210,7 @@ export {
   parseShownItem,
   pendingAmendCount,
   pendingAmendWorkers,
+  providerCrashMatch,
   selectSchedulable,
   spawnBudget,
   staleWorkerRecords,
