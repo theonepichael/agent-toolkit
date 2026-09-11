@@ -1592,6 +1592,8 @@ describe("swarm_poll: suspicious finish (no dev_status.py progress, no capture)"
     runId: string;
     show: Result | ((slug: string) => Result);
     slug?: string;
+    /** Pane-read response; a plain string becomes a clean (code 0) read. */
+    pane?: string | Result;
   }) {
     const agentId = `${opts.runId}-w1`;
     const slug = opts.slug ?? "some-item";
@@ -1623,6 +1625,14 @@ describe("swarm_poll: suspicious finish (no dev_status.py progress, no capture)"
       }
       if (a === "agent" && b === "wait") {
         return { code: 0, stdout: realWaitEnvelope("idle", agentId, "w1:pZ"), stderr: "" };
+      }
+      if (a === "pane" && b === "read") {
+        // Default to a clean, non-empty pane: the provider-crash screen must
+        // find nothing here, so these tests exercise the suspicious-finish
+        // detail path, not the crash reclassification.
+        return typeof opts.pane === "string"
+          ? { code: 0, stdout: opts.pane, stderr: "" }
+          : (opts.pane ?? { code: 0, stdout: "Turn finished cleanly.\n> ", stderr: "" });
       }
       if (b === "show") {
         return typeof opts.show === "function" ? opts.show(argv[2] ?? "") : opts.show;
@@ -1730,6 +1740,9 @@ describe("swarm_poll: suspicious finish (no dev_status.py progress, no capture)"
       if (a === "agent" && b === "wait") {
         return { code: 0, stdout: realWaitEnvelope("idle", `${runId}-w1`, "w1:pZ"), stderr: "" };
       }
+      if (a === "pane" && b === "read") {
+        return { code: 0, stdout: "Turn finished cleanly.\n> ", stderr: "" };
+      }
       if (b === "show") throw new Error("spawn failed");
       return { code: 0, stdout: "", stderr: "" };
     });
@@ -1777,6 +1790,9 @@ describe("swarm_poll: suspicious finish (no dev_status.py progress, no capture)"
       if (a === "agent" && b === "wait") {
         // Both workers settle idle in the same poll.
         return { code: 0, stdout: realWaitEnvelope("idle", `${runId}-w1`, "w1:pA"), stderr: "" };
+      }
+      if (a === "pane" && b === "read") {
+        return { code: 0, stdout: "Turn finished cleanly.\n> ", stderr: "" };
       }
       if (b === "show") {
         return slug === "item-a"

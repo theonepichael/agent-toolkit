@@ -67,6 +67,52 @@ function isSuspiciousFinish(shownStatus, captureCount) {
   if (captureCount > 0) return false;
   return shownStatus === "open" || shownStatus === "in-progress";
 }
+var PROVIDER_CRASH_SCAN_LINES = 10;
+var PROVIDER_CRASH_MAX_GAP = 80;
+var PROVIDER_CRASH_SIGNATURE_PAIRS = [
+  ["usage limit", ["reached", "exceeded"]],
+  ["rate limit", ["exceeded", "hit"]]
+];
+function stripTerminalNoise(text) {
+  const csi = /\x1b\[[0-9;?]*[ -/]*[@-~]/g;
+  const osc = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
+  const c0 = new RegExp(`[\\x00-\\x08\\x0b-\\x1f\\x7f]`, "g");
+  return text.replace(csi, "").replace(osc, "").replace(c0, "");
+}
+function occurrenceIndices(haystack, needle) {
+  const lower = haystack.toLowerCase();
+  const target = needle.toLowerCase();
+  const indices = [];
+  for (let i = lower.indexOf(target); i !== -1; i = lower.indexOf(target, i + 1)) {
+    indices.push(i);
+  }
+  return indices;
+}
+var EXCERPT_BEFORE = 60;
+var EXCERPT_AFTER = 140;
+function providerCrashMatch(content) {
+  const recent = content.split("\n").filter((line) => line.trim() !== "").slice(-PROVIDER_CRASH_SCAN_LINES).join(" ");
+  const normalized = stripTerminalNoise(recent).replace(/\s+/g, " ");
+  if (normalized.trim() === "") return null;
+  for (const [keyword, verbs] of PROVIDER_CRASH_SIGNATURE_PAIRS) {
+    const keywordIndices = occurrenceIndices(normalized, keyword);
+    if (keywordIndices.length === 0) continue;
+    for (const verb of verbs) {
+      const verbIndices = occurrenceIndices(normalized, verb);
+      for (const ki of keywordIndices) {
+        for (const vi of verbIndices) {
+          if (Math.abs(ki - vi) <= PROVIDER_CRASH_MAX_GAP) {
+            const start = Math.max(0, Math.min(ki, vi) - EXCERPT_BEFORE);
+            const end = Math.min(normalized.length, Math.max(ki, vi) + EXCERPT_AFTER);
+            const excerpt = (start > 0 ? "..." : "") + normalized.slice(start, end).trim() + (end < normalized.length ? "..." : "");
+            return { signature: `${keyword} ~ ${verb}`, excerpt };
+          }
+        }
+      }
+    }
+  }
+  return null;
+}
 function itemPaths(item) {
   const paths = (item.related_files ?? []).map((f) => f?.path).filter((p) => typeof p === "string" && p.length > 0);
   return [...new Set(paths)];
@@ -1347,6 +1393,7 @@ ${capture}` } };
         const decision = this.amendHoldDecision(rt, worker, pending, result.stdout);
         if (decision.event) {
           event = decision.event;
+          await this.screenFinishedForProviderCrash(event, worker);
         } else {
           rearmAfter = decision.rearm ?? null;
           event = null;
@@ -1354,6 +1401,9 @@ ${capture}` } };
       } else {
         event = { kind, agent: worker.agent, slug: worker.slug, paneId: worker.paneId };
         if (detail !== void 0) event.detail = detail;
+        if (kind === "finished") {
+          await this.screenFinishedForProviderCrash(event, worker);
+        }
         if (pending && (kind === "error" || kind === "timed_out")) {
           event.detail = `${event.detail ?? ""} ${amendOutstandingNote(pending, Date.now())}`.trim();
         }
@@ -1394,6 +1444,41 @@ ${capture}` } };
       worker.workingSinceMs = now;
     }
     return elapsedWorkingMs(worker, now);
+  }
+  /**
+   * Screen a settled `finished` event for a provider-level crash.
+   *
+   * A worker that died under a provider usage-limit error stays alive at its
+   * idle prompt, so the wait settles as `finished` and without this check the
+   * orchestrator records a clean completion the item may not have earned
+   * (observed live 2026-09-10). One pane read per resolved finish -- never on
+   * held/re-armed settles -- and the classifier owns its own line-based
+   * window, so no character slicing happens here.
+   *
+   * Detail combination is append-only: a detected crash PREPENDS its detail
+   * to whatever the branch already carries (e.g. an amend verdict); an
+   * unavailable capture APPENDS its verification note. An unreadable or empty
+   * pane never reclassifies the finish -- the wait settled cleanly, so an
+   * inconclusive probe must not manufacture an error -- but it is no longer
+   * silent about it.
+   */
+  async screenFinishedForProviderCrash(event, worker, signal) {
+    if (event.kind !== "finished") return;
+    let pane;
+    try {
+      const read = await this.herdr(buildPaneReadArgv(worker.paneId, PANE_CAPTURE_LINES), signal);
+      pane = read.code === 0 ? read.stdout : null;
+    } catch {
+      pane = null;
+    }
+    if (pane === null || pane.trim() === "") {
+      event.detail = `${event.detail ? `${event.detail} ` : ""}pane capture unavailable at settle -- verify the item's state before treating it as complete.`;
+      return;
+    }
+    const crash = providerCrashMatch(pane);
+    if (!crash) return;
+    event.kind = "error";
+    event.detail = `provider_crash: pane matched "${crash.signature}" near the idle prompt -- the worker most likely died under a provider limit, not a clean finish. Excerpt: "${crash.excerpt}". Verify the item's actual state before treating it as complete.` + (event.detail ? ` ${event.detail}` : "");
   }
   async swarmSpawn(params) {
     if (!params.items && !params.prefix) {
