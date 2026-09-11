@@ -1412,7 +1412,7 @@ class DriftProblem:
 
 
 def discover_doc_paths(repo_root: Path) -> list[Path]:
-    """Return every skill/command doc across the four harnesses, sorted."""
+    """Return every skill/command doc across all registry harnesses, sorted."""
     paths: list[Path] = []
     for harness in HARNESS_DIRS:
         base = repo_root / harness

@@ -1079,7 +1079,12 @@ class DocDriftTests(unittest.TestCase):
         self.assertEqual(problems, [])
         self.assertGreater(sum(len(docs) for docs in coverage.values()), 0)
 
-    def _write_synthetic_repo(self, root: Path, doc_invocation: str) -> None:
+    def _write_synthetic_repo(
+        self,
+        root: Path,
+        doc_invocation: str,
+        doc_relpath: str = "claude/commands/foo.md",
+    ) -> None:
         scripts = root / gi.SCRIPTS_DIR
         scripts.mkdir(parents=True)
         (scripts / "foo.py").write_text(
@@ -1101,9 +1106,9 @@ class DocDriftTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
-        commands = root / "claude" / "commands"
-        commands.mkdir(parents=True)
-        (commands / "foo.md").write_text(doc_invocation, encoding="utf-8")
+        doc = root / doc_relpath
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text(doc_invocation, encoding="utf-8")
         for harness in ("copilot", "opencode", "agy"):
             (root / harness).mkdir()
 
@@ -1129,6 +1134,77 @@ class DocDriftTests(unittest.TestCase):
             problems, _ = gi.check_doc_drift(root, [module])
             self.assertEqual(len(problems), 1)
             self.assertIn("--fast", problems[0].detail)
+
+    def test_discover_doc_paths_includes_codex_skill_docs(self) -> None:
+        """Codex is one of the registry harnesses, so its SKILL.md docs must be
+        discovered — the bug this guards is codex silently dropping out of the
+        discovery scan even though codex skills are generated and installed."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_synthetic_repo(
+                root,
+                "Use `foo.py run --slow` to go.\n",
+                doc_relpath="codex/skills/foo/SKILL.md",
+            )
+            discovered = gi.discover_doc_paths(root)
+            self.assertIn(
+                root / "codex" / "skills" / "foo" / "SKILL.md", discovered
+            )
+
+    def test_codex_skill_doc_drift_is_caught(self) -> None:
+        """An invalid invocation shown only in a Codex skill doc must be reported
+        as drift, naming that doc — this is the isolated (fingerprint-free)
+        proof that codex docs participate in invocation scanning."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_synthetic_repo(
+                root,
+                "Use `foo.py run --fast` to go.\n",
+                doc_relpath="codex/skills/foo/SKILL.md",
+            )
+            links = gi.load_link_table(root)
+            module = gi.analyze_module(
+                scripts_path(root, "foo.py"), root, {"foo"}, links
+            )
+            problems, coverage = gi.check_doc_drift(root, [module])
+            self.assertEqual(len(problems), 1)
+            self.assertEqual(problems[0].doc, "codex/skills/foo/SKILL.md")
+            self.assertIn("--fast", problems[0].detail)
+            self.assertEqual(list(coverage["foo.py"]), ["codex/skills/foo/SKILL.md"])
+
+    @pytest.mark.allow_real_subprocess
+    def test_check_exits_3_for_codex_skill_doc_drift(self) -> None:
+        """End-to-end: the ONLY drifted invocation in the repo lives in a Codex
+        skill doc, and `--check` must name that doc on stderr.
+
+        Asserting the specific doc-drift line matters: with no INTERFACES.md and
+        no fingerprints file on disk, exit 3 would also be reachable from the
+        contract-fingerprint branch (an unmatched `cmd_run` handler, then a
+        missing recorded fingerprint), so the exit code alone cannot prove codex
+        docs were scanned.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_synthetic_repo(
+                root,
+                "Use `foo.py run --fast` to go.\n",
+                doc_relpath="codex/skills/foo/SKILL.md",
+            )
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(REPO_ROOT / gi.SCRIPTS_DIR / "gen_interfaces.py"),
+                    "--check",
+                    "--repo-root",
+                    str(root),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 3, result.stderr)
+            self.assertIn("doc drift", result.stderr)
+            self.assertIn("codex/skills/foo/SKILL.md", result.stderr)
 
     @pytest.mark.allow_real_subprocess
     def test_check_exits_3_for_doc_drift_even_when_the_file_is_also_stale(
