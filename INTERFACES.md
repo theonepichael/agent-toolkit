@@ -1572,6 +1572,7 @@ are copy-once seeds for exactly that reason.
 | `pi/extensions/delegate-tool.ts` | `~/.pi/agent/extensions/delegate-tool.ts` (pi) |
 | `pi/extensions/dev-status-tool.ts` | `~/.pi/agent/extensions/dev-status-tool.ts` (pi) |
 | `pi/extensions/exit-alias.ts` | `~/.pi/agent/extensions/exit-alias.ts` (pi) |
+| `pi/extensions/fatal-error-exit.ts` | `~/.pi/agent/extensions/fatal-error-exit.ts` (pi) |
 | `pi/extensions/grill-tool.ts` | `~/.pi/agent/extensions/grill-tool.ts` (pi) |
 | `pi/extensions/guard-rails.ts` | `~/.pi/agent/extensions/guard-rails.ts` (pi) |
 | `pi/extensions/herdr-blocked-bridge.ts` | `~/.pi/agent/extensions/herdr-blocked-bridge.ts` (pi) |
@@ -1612,6 +1613,7 @@ are copy-once seeds for exactly that reason.
 | `pi/test/cwd.test.ts` | not symlinked by `links.toml` |
 | `pi/test/delegate-tool.test.ts` | not symlinked by `links.toml` |
 | `pi/test/dev-status-tool.test.ts` | not symlinked by `links.toml` |
+| `pi/test/fatal-error-exit.test.ts` | not symlinked by `links.toml` |
 | `pi/test/grill-tool.test.ts` | not symlinked by `links.toml` |
 | `pi/test/guard-rails.test.ts` | not symlinked by `links.toml` |
 | `pi/test/helpers/sanitize-test-env.mjs` | not symlinked by `links.toml` |

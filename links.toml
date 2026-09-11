@@ -681,6 +681,11 @@ dest = "~/.pi/agent/extensions/vitals-promotion-tool.ts"
 harness = "pi"
 
 [[link]]
+src = "pi/extensions/fatal-error-exit.ts"
+dest = "~/.pi/agent/extensions/fatal-error-exit.ts"
+harness = "pi"
+
+[[link]]
 src = "pi/extensions/to-tickets-tool.ts"
 dest = "~/.pi/agent/extensions/to-tickets-tool.ts"
 harness = "pi"
