@@ -271,6 +271,7 @@ To update, start, or complete an item — pass the integer directly to the scrip
 ```bash
 DEVSTATUS_AGENT=1 python3 ~/.claude/scripts/dev_status.py start <slug|N>
 DEVSTATUS_AGENT=1 python3 ~/.claude/scripts/dev_status.py done <slug|N>
+DEVSTATUS_AGENT=1 python3 ~/.claude/scripts/dev_status.py reopen <slug|N>
 DEVSTATUS_AGENT=1 python3 ~/.claude/scripts/dev_status.py update <slug|N> '{"field": "value"}'
 python3 ~/.claude/scripts/dev_status.py show <slug|N>
 ```
@@ -284,10 +285,10 @@ DEVSTATUS_AGENT=1 python3 ~/.claude/scripts/dev_status.py approve <slug|N>
 DEVSTATUS_AGENT=1 python3 ~/.claude/scripts/dev_status.py reject <slug|N> "<feedback>"
 ```
 
-When passing a numeric position (not a slug) to `start`/`done`/`update`/`block`/
-`unblock`/`pending update`/`review`/`approve`/`reject`/`run`/`gate-set`/
-`gate-pass`/`remove`/`rename` (rename's numeric position is its `old_slug`
-argument), fetch the current rev first —
+When passing a numeric position (not a slug) to `start`/`done`/`reopen`/
+`update`/`block`/`unblock`/`pending update`/`review`/`approve`/`reject`/`run`/
+`gate-set`/`gate-pass`/`remove`/`rename` (rename's numeric position is its
+`old_slug` argument), fetch the current rev first —
 the `item-map:` line of `render` (or `# rev=N` of `list`/`show`) output — in the
 same tool-call step immediately before the mutating call, and pass it as
 `--if-rev <N>`. This pre-mutation `render` must run **without**
@@ -300,10 +301,13 @@ render printed for retry, it never silently mutates the wrong item.
 Slug-based calls are exempt and need nothing extra.
 
 When work is ready, submit it with `review`; once a reviewer approves it (or
-you're working solo and are confident it's ready), use `approve` to mark it done.
-`done` alone now refuses on an in-review item — go through the review cycle
-(`approve` to complete, `reject <feedback>` to send back) rather than patching
-`status` directly, which is also refused for in-review items.
+you're working solo and are confident it's ready), use `approve` to mark it
+done. `done` alone now refuses on an in-review item — go through the review
+cycle (`approve` to complete, `reject <feedback>` to send back). Patching
+`status` directly is refused by `update` outright now (as is `claimed_by`):
+every lifecycle move goes through the command for its edge — `start`,
+`review`, `approve`, `reject`, `done`, or `reopen` (in-progress or done →
+open, releasing the claim and invalidating a passed gate).
 
 If `approve`/`done` runs from the item's own slug-named worktree and that
 worktree's HEAD isn't confirmed merged into the default branch, both print an
@@ -320,15 +324,15 @@ records an executed command; `"manual:<note>"` covers genuinely-manual
 checks) and retry. A bare `gate-pass` without coverage is refused.
 `gate` can't be set via a raw `update` patch — always `gate-set`/`gate-pass`.
 
-Under `DEVSTATUS_AGENT=1`, mutating commands (`start`, `done`, `update`,
-`review`, `approve`, `reject`, `add`, `pending *`, `block`, `unblock`,
-`gate-*`, `rename`, `remove`) emit a single structured confirmation line on
-stdout: `[<cmd>] slug=<slug> status=<status> rev=<rev> [ref=<ref>]
-detail="<detail>"`. Because the harness tool runner displays stdout directly
-to the user, do not copy or narrate the confirmation back. Verify against
-misresolution by checking that `slug`, `ref` (if numeric), and `detail`
-match the item intended; if they don't, revert (`update <slug> '{"status":
-"open"}'` or similar) and ask.
+Under `DEVSTATUS_AGENT=1`, mutating commands (`start`, `done`, `reopen`,
+`update`, `review`, `approve`, `reject`, `add`, `pending *`, `block`,
+`unblock`, `gate-*`, `rename`, `remove`) emit a single structured
+confirmation line on stdout: `[<cmd>] slug=<slug> status=<status> rev=<rev>
+[ref=<ref>] detail="<detail>"`. Because the harness tool runner displays
+stdout directly to the user, do not copy or narrate the confirmation back.
+Verify against misresolution by checking that `slug`, `ref` (if numeric), and
+`detail` match the item intended; if they don't, revert (`reopen <slug>` or
+similar) and ask.
 
 If the item's work touched a real project repo and left actual file
 changes, offer to commit — and if the repo has a remote, offer to push too

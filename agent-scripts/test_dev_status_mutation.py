@@ -327,6 +327,17 @@ class MutationCliCharacterizationTestCase(MutationFixture):
         )
         self.assertIn("claimed_by", self._item_by_id("item-one"))
 
+    def test_reopen_compact_line(self):
+        self.write_items([make_item("item-one", status="in-progress")])
+        out, _ = self.run_cmd(dev_status.cmd_reopen, _Args(id="item-one"))
+        line = self._compact(out)
+        rev = self.read_rev()
+        self.assertEqual(
+            line,
+            f'[reopen] slug=item-one status=open rev={rev} '
+            f'detail="Summary of item-one"',
+        )
+
     def test_start_numeric_ref_in_compact_line(self):
         self.write_items([make_item("item-one")])
         out, _ = self.run_cmd(dev_status.cmd_start, _Args(id="1", if_rev=0))
@@ -1204,6 +1215,265 @@ class LockContentionTestCase(MutationFixture):
         with dev_status_mutation.mutation_transaction() as tx:
             tx.add_item(dev_status_mutation.NewItemRequest(id="item-no-deadlock-1", summary="1"))
             tx.add_item(dev_status_mutation.NewItemRequest(id="item-no-deadlock-2", summary="2"))
+
+
+# ── Lifecycle-transition guard: update back-door closed + reopen_item ────────
+
+
+def _recent_claim(harness="other", pid=999999):
+    """A foreign claim stamped now (unanchored pid==owner_pid -> TTL-governed)."""
+    now_iso = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return {
+        "harness": harness,
+        "machine_id": None,  # filled per-test with the current machine id
+        "pid": pid,
+        "owner_pid": pid,
+        "claimed_at": now_iso,
+        "last_active": now_iso,
+    }
+
+
+class UpdateStatusBackdoorTestCase(MutationFixture):
+    """`update` must never move lifecycle status or claims (the audited hole).
+
+    Regression: a sandboxed run moved an in-progress item straight to done
+    with `update '{"status": "done"}'`, bypassing gate, review-cycle,
+    claim-collision, and worktree checks entirely.
+    """
+
+    def test_cli_update_status_patch_refused(self):
+        self.write_items([make_item("task-a", status="in-progress")])
+        rev_before = self.read_rev()
+        err, code = self.run_cmd_exits(
+            dev_status.cmd_update,
+            _Args(id="task-a", patch='{"status": "done"}'),
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("status", err)
+        self.assertIn("reopen", err)
+        self.assertIn("start", err)
+        self.assertIn("review", err)
+        self.assertEqual(self._item_by_id("task-a")["status"], "in-progress")
+        self.assertEqual(self.read_rev(), rev_before)
+
+    def test_cli_update_status_open_patch_refused(self):
+        self.write_items([make_item("task-a", status="in-progress")])
+        err, code = self.run_cmd_exits(
+            dev_status.cmd_update,
+            _Args(id="task-a", patch='{"status": "open"}'),
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("reopen", err)
+        self.assertEqual(self._item_by_id("task-a")["status"], "in-progress")
+
+    def test_cli_update_claimed_by_patch_refused(self):
+        self.write_items([make_item("task-a", status="in-progress")])
+        err, code = self.run_cmd_exits(
+            dev_status.cmd_update,
+            _Args(id="task-a", patch='{"claimed_by": {"harness": "forged"}}'),
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("claimed_by", err)
+        self.assertIn("no manual patch equivalent", err)
+        self.assertNotIn("forged", json.dumps(self._item_by_id("task-a")))
+
+    def test_service_update_request_rejects_status(self):
+        # A Python caller is now a construction-time programmer error, not a
+        # silent write: the typed request has no status/claimed_by fields.
+        with self.assertRaises(TypeError):
+            dev_status_mutation.ItemUpdateRequest(status="done")
+        with self.assertRaises(TypeError):
+            dev_status_mutation.ItemUpdateRequest(claimed_by={"harness": "x"})
+
+
+class ReopenItemTestCase(MutationFixture):
+    """`reopen_item`: the only sanctioned ->open edge."""
+
+    def _seed_claim(self, item, **over):
+        claim = _recent_claim()
+        claim["machine_id"] = dev_status.machine_id()
+        claim.update(over)
+        item["claimed_by"] = claim
+        return item
+
+    def test_reopen_from_in_progress_releases_claim(self):
+        # No claim seeded: reopen's core transition + journal shape.
+        item = make_item("task-a", status="in-progress")
+        self.write_items([item])
+        res = dev_status_mutation.reopen_item("task-a")
+        self.assertEqual(res.cmd, "reopen")
+        self.assertEqual(res.status, "open")
+        stored = self._item_by_id("task-a")
+        self.assertEqual(stored["status"], "open")
+        self.assertNotIn("claimed_by", stored)
+        journal = self.journal_lines()
+        self.assertEqual(journal[-1]["cmd"], "reopen")
+        self.assertEqual(journal[-1]["from_status"], "in-progress")
+        self.assertEqual(journal[-1]["to_status"], "open")
+
+    def test_reopen_preserves_review_feedback_and_hash(self):
+        # reject preserves review_feedback; approve retains the hash as an
+        # audit trail (test_40b). reopen must not destroy either.
+        item = make_item(
+            "task-a",
+            status="in-progress",
+            review_feedback="fix the thing",
+            review_content_hash="abc123",
+        )
+        self.write_items([item])
+        dev_status_mutation.reopen_item("task-a")
+        stored = self._item_by_id("task-a")
+        self.assertEqual(stored["review_feedback"], "fix the thing")
+        self.assertEqual(stored["review_content_hash"], "abc123")
+
+    def test_reopen_from_done_clears_completed_at_keeps_hash(self):
+        item = make_item(
+            "task-a", status="done", review_content_hash="audit-hash"
+        )
+        item["completed_at"] = "2026-01-01"
+        self.write_items([item])
+        res = dev_status_mutation.reopen_item("task-a")
+        self.assertEqual(res.status, "open")
+        stored = self._item_by_id("task-a")
+        self.assertNotIn("completed_at", stored)
+        self.assertEqual(stored["review_content_hash"], "audit-hash")
+
+    def test_reopen_repairs_malformed_completed_at_on_in_progress(self):
+        # _apply_status_transition pops completed_at only when the old status
+        # is done; reopen must pop it unconditionally to repair stragglers.
+        item = make_item("task-a", status="in-progress")
+        item["completed_at"] = "2026-01-01"
+        self.write_items([item])
+        dev_status_mutation.reopen_item("task-a")
+        self.assertNotIn("completed_at", self._item_by_id("task-a"))
+
+    def test_reopen_from_open_refuses_without_write(self):
+        self.write_items([make_item("task-a", status="open")])
+        rev_before = self.read_rev()
+        with self.assertRaises(dev_status_mutation.InvalidItemStateError):
+            dev_status_mutation.reopen_item("task-a")
+        self.assertEqual(self.read_rev(), rev_before)
+        self.assertEqual(self.journal_lines(), [])
+
+    def test_reopen_from_in_review_points_to_reject(self):
+        self.write_items([make_item("task-a", status="in-review")])
+        with self.assertRaises(dev_status_mutation.InvalidItemStateError) as ctx:
+            dev_status_mutation.reopen_item("task-a")
+        self.assertIn("reject", str(ctx.exception))
+
+    def test_foreign_live_claim_requires_force(self):
+        item = self._seed_claim(make_item("task-a", status="in-progress"))
+        self.write_items([item])
+        with self.assertRaises(dev_status_mutation.ClaimCollisionError) as ctx:
+            dev_status_mutation.reopen_item("task-a")
+        msg = str(ctx.exception)
+        self.assertIn("[reopen]", msg)
+        self.assertIn("release", msg)
+        # A bare [start]->[reopen] label swap would keep this wrong wording.
+        self.assertNotIn("take over", msg)
+        self.assertEqual(self._item_by_id("task-a")["status"], "in-progress")
+
+    def test_force_release_journals_diagnostic(self):
+        item = self._seed_claim(make_item("task-a", status="in-progress"))
+        self.write_items([item])
+        res = dev_status_mutation.reopen_item("task-a", force=True)
+        self.assertEqual(res.status, "open")
+        theft = [
+            j for j in self.journal_lines() if j["cmd"] == "claim-theft"
+        ]
+        self.assertEqual(len(theft), 1)
+        self.assertIn("released", theft[0]["detail"])
+
+    def test_expired_claim_releases_without_force(self):
+        item = self._seed_claim(
+            make_item("task-a", status="in-progress"),
+            last_active="2020-01-01T00:00:00Z",
+        )
+        self.write_items([item])
+        res = dev_status_mutation.reopen_item("task-a")
+        self.assertEqual(res.status, "open")
+        self.assertTrue(
+            any("Releasing" in n for n in res.notices), res.notices
+        )
+
+    def test_done_with_foreign_live_claim_still_guarded(self):
+        # Release guard keys on claim presence, not status: a malformed done
+        # item must not silently discard a live claim.
+        item = self._seed_claim(make_item("task-a", status="done"))
+        self.write_items([item])
+        with self.assertRaises(dev_status_mutation.ClaimCollisionError):
+            dev_status_mutation.reopen_item("task-a")
+        res = dev_status_mutation.reopen_item("task-a", force=True)
+        self.assertEqual(res.status, "open")
+
+    def test_numeric_id_requires_if_rev(self):
+        self.write_items([make_item("task-a", status="in-progress")])
+        with self.assertRaises(dev_status_mutation.RevisionConflictError):
+            dev_status_mutation.reopen_item("1")
+
+    def test_start_collision_wording_unchanged(self):
+        # Regression guard for parameterizing _check_claim_collision: start's
+        # refusal strings must keep the exact [start]/take-over vocabulary.
+        item = self._seed_claim(make_item("task-a", status="in-progress"))
+        self.write_items([item])
+        with self.assertRaises(dev_status_mutation.ClaimCollisionError) as ctx:
+            dev_status_mutation.start_item("task-a")
+        msg = str(ctx.exception)
+        self.assertIn("[start]", msg)
+        self.assertIn("take over", msg)
+
+    def test_reopen_invalidates_passed_gate(self):
+        gate = {
+            "required": True,
+            "criteria": ["c1"],
+            "passed_at": "2026-01-01",
+            "set_at": "2025-12-31T00:00:00+00:00",
+            "passed_via": "manual",
+            "coverage": {"1": {"kind": "manual", "note": "ok"}},
+        }
+        item = make_item("task-a", status="done", gate=gate)
+        item["completed_at"] = "2026-01-01"
+        self.write_items([item])
+        dev_status_mutation.reopen_item("task-a")
+        stored = self._item_by_id("task-a")
+        self.assertIsNone(stored["gate"]["passed_at"])
+        self.assertNotIn("passed_via", stored["gate"])
+        self.assertNotIn("coverage", stored["gate"])
+        self.assertEqual(stored["gate"]["criteria"], ["c1"])
+        self.assertTrue(stored["gate"]["required"])
+
+    def test_reopen_rearms_stale_run_evidence(self):
+        # After reopen, a run recorded before the reopen must no longer pass
+        # gate-pass (set_at refreshed -> started_at < set_at is stale).
+        gate = {
+            "required": True,
+            "criteria": ["c1"],
+            "passed_at": "2026-01-01",
+            "set_at": "2025-12-31T00:00:00+00:00",
+            "coverage": {"1": {"kind": "run", "run_id": "r-old"}},
+        }
+        item = make_item("task-a", status="done", gate=gate)
+        item["completed_at"] = "2026-01-01"
+        self.write_items([item])
+        self.runs_file.write_text(
+            json.dumps(
+                {
+                    "run_id": "r-old",
+                    "item": "task-a",
+                    "command": "pytest -q",
+                    "exit_code": 0,
+                    "timed_out": False,
+                    "started_at": "2026-01-01T12:00:00+00:00",
+                }
+            )
+            + "\n"
+        )
+        dev_status_mutation.reopen_item("task-a")
+        with self.assertRaises(dev_status_mutation.ValidationError) as ctx:
+            dev_status_mutation.pass_gate(
+                "task-a", dev_status_mutation.GatePassRequest(coverage={"1": "run:r-old"})
+            )
+        self.assertIn("stale", str(ctx.exception))
 
 
 # ── Tier 3: Crash-Safety Characterization Tests ───────────────────────────────

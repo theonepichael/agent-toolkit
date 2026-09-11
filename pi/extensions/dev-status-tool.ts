@@ -23,6 +23,7 @@ const ACTIONS = [
   "update",
   "start",
   "done",
+  "reopen",
   "review",
   "approve",
   "reject",
@@ -91,6 +92,7 @@ const ACTION_FIELDS: Record<Action, ActionFields> = {
     required: ["slug"],
   },
   done: { allowed: ["slug"], required: ["slug"] },
+  reopen: { allowed: ["slug", "force"], required: ["slug"] },
   review: { allowed: ["slug"], required: ["slug"] },
   approve: { allowed: ["slug"], required: ["slug"] },
   reject: { allowed: ["slug", "feedback"], required: ["slug", "feedback"] },
@@ -139,6 +141,7 @@ const MUTATING_ACTIONS: ReadonlySet<Action> = new Set([
   "update",
   "start",
   "done",
+  "reopen",
   "review",
   "approve",
   "reject",
@@ -255,6 +258,8 @@ export function buildArgv(action: Action, params: DevStatusParams): string[] {
       ];
     case "done":
       return ["done", params.slug!];
+    case "reopen":
+      return ["reopen", params.slug!, ...(params.force ? ["--force"] : [])];
     case "review":
       return ["review", params.slug!];
     case "approve":
@@ -339,10 +344,11 @@ export default function (pi: ExtensionAPI) {
     promptSnippet: "Read or mutate the personal backlog/pending store",
     promptGuidelines: [
       "Never invoke dev_status.py via bash, for any reason, including a plain read like listing pending items or checking status -- always use dev_status instead. This applies to every action, not just ones a slash command already told you to use dev_status for.",
-      "dev_status covers everything dev_status.py's CLI does: render, list, ready, show, add, update, start, done, review, approve, reject, gate_set, gate_pass, run, runs, backfill_gate, rename, remove, block, unblock, prune, recap, worktree, pending_add, pending_update, pending_list, and the out_of_scope_* actions. If you're about to compose a `python3 ~/.claude/scripts/dev_status.py ...` bash command for any of these, use dev_status with the matching action instead.",
+      "dev_status covers everything dev_status.py's CLI does: render, list, ready, show, add, update, start, done, reopen, review, approve, reject, gate_set, gate_pass, run, runs, backfill_gate, rename, remove, block, unblock, prune, recap, worktree, pending_add, pending_update, pending_list, and the out_of_scope_* actions. If you're about to compose a `python3 ~/.claude/scripts/dev_status.py ...` bash command for any of these, use dev_status with the matching action instead.",
       "dev_status's patch field is a plain object, not a JSON string -- never hand-encode it.",
       'dev_status refuses a numeric slug on any mutating action -- call action: "show" first to resolve a numeric position to its real slug.',
       "start refuses to run from a main/master checkout (worktree guard) or when the item is actively claimed by another live session (claim collision) -- pass cwd to evaluate the guard and stamp the claim from a dedicated worktree, allowMain to bypass the guard, force to take over a live claim, or claimedBy to correct a wrong auto-detected harness name.",
+      "Lifecycle status moves go through the dedicated actions (start/review/approve/reject/done/reopen) -- the update action's patch refuses status and claimed_by; reopen (in-progress or done -> open) releases the claim and invalidates a passed gate, force to release a foreign live claim.",
       "worktree creates or reuses a git worktree and bootstraps project dependencies for a backlog item (by slug) or repository (by repo). Never create worktrees manually with git worktree add or bare bootstrap scripts.",
     ],
     parameters: Type.Object({
@@ -364,8 +370,10 @@ export default function (pi: ExtensionAPI) {
           description:
             "JSON patch body for update/gate_set/pending_update, or the new-item body for add/pending_add " +
             "(id goes inside patch, e.g. patch.id -- never also pass slug for those two actions). Common keys: " +
-            "summary, context, next_steps, priority, category, status, related_files (array of {path, note}), " +
-            "blocked_by (array of slugs); gate_set wants {required: boolean, criteria: string[]}; gate_pass " +
+            "summary, context, next_steps, priority, category, related_files (array of {path, note}), " +
+            "blocked_by (array of slugs, add only); update refuses status/claimed_by/gate/blocked_by -- " +
+            "lifecycle moves use the start/review/approve/reject/done/reopen actions. gate_set " +
+            "wants {required: boolean, criteria: string[]}; gate_pass " +
             'wants {coverage: {"<criterion#>": "run:<run_id>" or "manual:<note>"}}; pending_add ' +
             "wants {id, description, kind, source_ref?, context?, next_steps?}.",
         }),
@@ -385,7 +393,8 @@ export default function (pi: ExtensionAPI) {
         Type.Boolean({
           description:
             "prune: must be true -- confirms the destructive prune. start: take over " +
-            "an item actively claimed by another live session. worktree: pass --force to git worktree add.",
+            "an item actively claimed by another live session. reopen: release a claim " +
+            "another live session holds. worktree: pass --force to git worktree add.",
         }),
       ),
       allowMain: Type.Optional(

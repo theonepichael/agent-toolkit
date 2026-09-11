@@ -82,6 +82,17 @@ describe("assertFields", () => {
     expect(() => assertFields("start", { action: "start", slug: "abc" })).not.toThrow();
   });
 
+  test("reopen accepts optional force but not the start-only flags", () => {
+    expect(() => assertFields("reopen", { action: "reopen", slug: "abc" })).not.toThrow();
+    expect(() =>
+      assertFields("reopen", { action: "reopen", slug: "abc", force: true }),
+    ).not.toThrow();
+    expect(() =>
+      assertFields("reopen", { action: "reopen", slug: "abc", allowMain: true }),
+    ).toThrow("does not accept: allowMain");
+    expect(() => assertFields("reopen", { action: "reopen" })).toThrow(/requires: slug/);
+  });
+
   test("worktree requires slug or repo and accepts optional flags", () => {
     expect(() => assertFields("worktree", { action: "worktree" })).toThrow(
       'action "worktree" requires slug or repo',
@@ -107,6 +118,15 @@ describe("buildArgv", () => {
     expect(buildArgv("render", { action: "render" })).toEqual(["render"]);
     expect(buildArgv("pending_list", { action: "pending_list" })).toEqual(["pending", "list"]);
     expect(buildArgv("prune", { action: "prune", force: true })).toEqual(["prune", "--force"]);
+  });
+
+  test("reopen carries --force only when asked", () => {
+    expect(buildArgv("reopen", { action: "reopen", slug: "abc" })).toEqual(["reopen", "abc"]);
+    expect(buildArgv("reopen", { action: "reopen", slug: "abc", force: true })).toEqual([
+      "reopen",
+      "abc",
+      "--force",
+    ]);
   });
 
   test("flag-carrying actions", () => {
