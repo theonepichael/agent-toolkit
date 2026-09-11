@@ -236,6 +236,9 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
     - `--claimed-by` — override claimed harness/session identifier
   - `done <slug|N> [--if-rev <N>]` — mark item done
     - `--if-rev` — required when <id> is numeric; get the current value from render/list/show immediately before this call
+  - `reopen <slug|N> [--if-rev <N>] [--force]` — return an in-progress or done item to open (releases claim)
+    - `--if-rev` — required when <id> is numeric; get the current value from render/list/show immediately before this call
+    - `--force/-f` — release the claim even while another session actively holds it
   - `review <slug|N> [--if-rev <N>]` — submit (or re-submit) an item for review
     - `--if-rev` — required when <id> is numeric; get the current value from render/list/show immediately before this call
   - `approve <slug|N> [--if-rev <N>]` — approve an in-review item, marking it done
@@ -317,7 +320,7 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `read_journal_entries(within_hours: float | None = None, *, verbose: bool = False) -> list[dict[str, object]]` — Read journal entries, optionally filtered to the last ``within_hours``.
   - `confirm_resolution(cmd: str, arg: str | int, item: BacklogItem | PendingItem, summary_key: str = 'summary', *, quiet: bool = False) -> None` — Echo what a mutating command resolved to, so misresolution is visible.
   - `build_parser() -> argparse.ArgumentParser` — Build the full argument parser for every subcommand.
-- Subcommand handlers: `cmd_internal_regen`, `cmd_recap`, `cmd_worktree`, `cmd_render`, `cmd_ready`, `cmd_list`, `cmd_show`, `cmd_add`, `cmd_update`, `cmd_start`, `cmd_done`, `cmd_review`, `cmd_approve`, `cmd_reject`, `cmd_gate_set`, `cmd_gate_pass`, `cmd_run`, `cmd_runs`, `cmd_backfill_gate`, `cmd_rename`, `cmd_block`, `cmd_unblock`, `cmd_out_of_scope_add`, `cmd_out_of_scope_link`, `cmd_out_of_scope_unlink`, `cmd_out_of_scope_remove`, `cmd_out_of_scope_list`, `cmd_out_of_scope_show`, `cmd_pending_add`, `cmd_pending_update`, `cmd_pending_list`, `cmd_remove`, `cmd_prune`
+- Subcommand handlers: `cmd_internal_regen`, `cmd_recap`, `cmd_worktree`, `cmd_render`, `cmd_ready`, `cmd_list`, `cmd_show`, `cmd_add`, `cmd_update`, `cmd_start`, `cmd_done`, `cmd_reopen`, `cmd_review`, `cmd_approve`, `cmd_reject`, `cmd_gate_set`, `cmd_gate_pass`, `cmd_run`, `cmd_runs`, `cmd_backfill_gate`, `cmd_rename`, `cmd_block`, `cmd_unblock`, `cmd_out_of_scope_add`, `cmd_out_of_scope_link`, `cmd_out_of_scope_unlink`, `cmd_out_of_scope_remove`, `cmd_out_of_scope_list`, `cmd_out_of_scope_show`, `cmd_pending_add`, `cmd_pending_update`, `cmd_pending_list`, `cmd_remove`, `cmd_prune`
 - Tested by: `agent-scripts/test_dev_status.py`, `agent-scripts/test_dev_status_mutation.py`, `agent-scripts/test_sweep_dead_claims.py`, `agent-scripts/test_to_tickets_runner.py`
 
 ### `agent-scripts/dev_status_formatting.py`
@@ -366,7 +369,7 @@ Typed mutation service and transaction manager for dev_status (Candidate 12).
   - `class MutationResult` — Carries post-mutation snapshot and metadata for the adapter to render.
   - `class RunResult` — Distinct result shape for cmd_run execution and evidence recording.
   - `class NewItemRequest`
-  - `class ItemUpdateRequest`
+  - `class ItemUpdateRequest` — Content-field update; lifecycle fields are not requestable here.
   - `class GateSetRequest`
   - `class GatePassRequest`
   - `class PendingAddRequest`
@@ -390,6 +393,7 @@ Typed mutation service and transaction manager for dev_status (Candidate 12).
   - `review_item(slug_or_id: str, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Submit (or re-submit) an item for review.
   - `approve_item(slug_or_id: str, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Accept an in-review item, marking it done.
   - `reject_item(slug_or_id: str, feedback: str, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Send an in-review item back to in-progress with feedback.
+  - `reopen_item(slug_or_id: str, *, if_rev: int | None = None, force: bool = False, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Return an in-progress or done item to ``open``, releasing its claim.
   - `block_item(slug_or_id: str, blocker_slug_or_id: str, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Add a blocker to a backlog item.
   - `unblock_item(slug_or_id: str, blocker_slug_or_id: str, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Remove a blocker from a backlog item.
   - `set_gate(slug_or_id: str, request: GateSetRequest, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Classify an item's judgment-step verification gate.

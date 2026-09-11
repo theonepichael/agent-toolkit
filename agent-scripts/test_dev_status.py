@@ -1728,10 +1728,12 @@ class BacklogTestCase(BacklogFixture):
         self.assertEqual(self.read_rev(), rev_before)
 
     def test_50_update_mutable_fields_all_accepted(self):
-        # blocked_by is excluded from this test: cmd_update refuses
-        # blocked_by patches outright (see test_bug03), redirecting to
-        # block/unblock so update's raw merge can't bypass their
-        # existence/cycle/self-block checks.
+        # blocked_by, status, and claimed_by are excluded from this test:
+        # cmd_update refuses them outright (see test_bug03 and
+        # UpdateStatusBackdoorTestCase), redirecting to block/unblock and to
+        # the lifecycle commands (start/review/approve/reject/done/reopen)
+        # so update's raw merge can't bypass their existence/cycle/claim/
+        # worktree/gate checks.
         self.write_items([make_item("a"), make_item("b")])
         patch_json = json.dumps(
             {
@@ -1741,7 +1743,6 @@ class BacklogTestCase(BacklogFixture):
                 "context": "ctx",
                 "next_steps": "next",
                 "priority": "high",
-                "status": "in-progress",
             }
         )
         dev_status.cmd_update(_args(id="a", patch=patch_json))
@@ -1752,7 +1753,7 @@ class BacklogTestCase(BacklogFixture):
         self.assertEqual(item["context"], "ctx")
         self.assertEqual(item["next_steps"], "next")
         self.assertEqual(item["priority"], "high")
-        self.assertEqual(item["status"], "in-progress")
+        self.assertEqual(item["status"], "open")
 
     def test_51_update_priority_null_unsets_key(self):
         self.write_items([make_item("a", priority="high")])
@@ -5350,18 +5351,18 @@ class ClaimMarkerAndWorktreeGuardTestCase(BacklogFixture):
         item_b = make_item("task-b", status="open")
         self.write_items([item_a, item_b])
         dev_status.cmd_start(_args(id="task-a", claimed_by="claude", force=False))
-        dev_status.cmd_update(_args(id="task-a", patch='{"status": "open"}'))
+        dev_status.cmd_reopen(_args(id="task-a"))
         dev_status.cmd_block(_args(id="task-a", blocker="task-b"))
         items = dev_status.load_items()
         self.assertEqual(items[0]["status"], "open")
         self.assertNotIn("claimed_by", items[0])
 
     @patch("dev_status._check_worktree_guard")
-    def test_claim_cleared_on_update_status_open(self, mock_wt):
+    def test_claim_cleared_on_reopen(self, mock_wt):
         item = make_item("task-a", status="open")
         self.write_items([item])
         dev_status.cmd_start(_args(id="task-a", claimed_by="claude", force=False))
-        dev_status.cmd_update(_args(id="task-a", patch='{"status": "open"}'))
+        dev_status.cmd_reopen(_args(id="task-a"))
         items = dev_status.load_items()
         self.assertEqual(items[0]["status"], "open")
         self.assertNotIn("claimed_by", items[0])

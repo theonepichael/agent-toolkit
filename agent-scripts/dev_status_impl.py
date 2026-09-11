@@ -39,9 +39,7 @@ import dev_status_formatting
 import dev_status_storage
 import llm_backends
 from dev_status_mutation import (
-    HARNESS_REPO as HARNESS_REPO,
-)
-from dev_status_mutation import (
+    BACKLOG_MUTABLE_FIELDS,
     KNOWN_PROJECT_PREFIXES,
     REPO_PREFIXES,
     UNSET,
@@ -79,6 +77,7 @@ from dev_status_mutation import (
     reject_item,
     remove_item,
     rename_item,
+    reopen_item,
     require_kind,
     resolve_id,
     review_item,
@@ -90,6 +89,9 @@ from dev_status_mutation import (
     update_item,
     update_pending_item,
     validate_slug,
+)
+from dev_status_mutation import (
+    HARNESS_REPO as HARNESS_REPO,
 )
 from dev_status_mutation import (
     BacklogTransaction as BacklogTransaction,
@@ -272,17 +274,12 @@ PENDING_MUTABLE_FIELDS = {
     "source_ref",
 }
 IMMUTABLE_FIELDS = {"id", "created", "completed_at"}
-BACKLOG_MUTABLE_FIELDS = {
-    "summary",
-    "category",
-    "blocked_by",
-    "related_files",
-    "context",
-    "next_steps",
-    "priority",
-    "status",
-    "claimed_by",
-}
+# BACKLOG_MUTABLE_FIELDS is imported from dev_status_mutation -- the single
+# definition that drives cmd_update's unknown-field admission, replacing the
+# duplicated set literal that used to live here and drift from its twin.
+# Lifecycle-bearing fields (status, claimed_by, gate, blocked_by) are
+# excluded there; cmd_update names each refused field with its own pointer
+# message before the generic unknown-field check can fire.
 DEFAULT_CLAIM_TTL_SECONDS = 2 * 60 * 60  # 2 hours
 # Subcommand names blocked from use as item slugs. Match is exact: only a
 # slug equal to one of these bare verbs is refused — `remove-probe`,
@@ -301,6 +298,7 @@ SUBCOMMANDS = (
     "update",
     "start",
     "done",
+    "reopen",
     "review",
     "approve",
     "reject",
@@ -2125,9 +2123,10 @@ def _sweep_dead_claims(items: list[BacklogItem]) -> list[str]:
     when a *new* ``start`` is attempted on the exact claimed item, so a dead
     session's claim otherwise sits dashboard-visible as IN PROGRESS until a
     fresh start attempt or the full claim TTL elapses. The read paths
-    (``render``/``list``/``show``) call this sweep so the reversion that
-    used to need a manual ``update <slug> '{"status": "open"}'` happens
-    proactively.
+    (``render``/``list``/``show``) call this sweep so the reversion that a
+    live claim must otherwise take via ``reopen <slug>`` (which refuses a
+    foreign *live* claim without ``--force``) happens proactively for dead
+    ones.
 
     Scope, mirroring :func:`_check_claim_collision`'s own ordering:
 
@@ -2504,6 +2503,28 @@ def cmd_update(args: argparse.Namespace) -> None:
         )
         sys.exit(1)
 
+    if "status" in patch:
+        print(
+            "[update] cannot modify 'status' directly — lifecycle moves go "
+            "through the command for the edge: 'start' (-> in-progress), "
+            "'review' (-> in-review), 'approve'/'reject' (from in-review), "
+            "'done' (-> done), or 'reopen' (-> open). update's raw merge "
+            "bypasses the claim-collision, worktree, review-cycle, and gate "
+            "checks those commands enforce.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if "claimed_by" in patch:
+        print(
+            "[update] cannot modify 'claimed_by' directly — there is no "
+            "manual patch equivalent: claims are minted by 'start' and "
+            "released by 'reopen'/'done' (and the automatic dead-claim "
+            "sweep on read paths).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     unknown = set(patch) - BACKLOG_MUTABLE_FIELDS - IMMUTABLE_FIELDS
     if unknown:
         print(
@@ -2547,16 +2568,10 @@ def cmd_update(args: argparse.Namespace) -> None:
             if "related_files" in patch
             else UNSET
         ),
-        status=cast(str, patch["status"]) if "status" in patch else UNSET,
         priority=(
             None
             if unset_priority
             else (cast(str, patch["priority"]) if "priority" in patch else UNSET)
-        ),
-        claimed_by=(
-            cast(dict[str, object], patch["claimed_by"])
-            if "claimed_by" in patch
-            else UNSET
         ),
     )
     try:
@@ -2617,6 +2632,33 @@ def cmd_done(args: argparse.Namespace) -> None:
         )
     except BacklogMutationError as exc:
         _handle_mutation_error("done", exc)
+
+    _render_mutation_result(
+        res,
+        announce=True,
+        id_arg=args.id,
+        quiet=getattr(args, "quiet", False),
+        compact=_is_compact(args),
+    )
+
+
+def cmd_reopen(args: argparse.Namespace) -> None:
+    """Handle ``reopen``: return an in-progress or done item to open.
+
+    Deliberately no worktree guard: reopen moves items *out* of work, so it
+    must stay usable to clean up after a session that died before creating a
+    worktree. Claim release still guards foreign live claims (--force to
+    override), and a passed gate is invalidated as part of the transition.
+    """
+    try:
+        res = reopen_item(
+            args.id,
+            if_rev=args.if_rev,
+            force=bool(getattr(args, "force", False)),
+            verbose=getattr(args, "verbose", False),
+        )
+    except BacklogMutationError as exc:
+        _handle_mutation_error("reopen", exc)
 
     _render_mutation_result(
         res,
@@ -3518,6 +3560,7 @@ dispatch: dict[str, Callable[[argparse.Namespace], None]] = {
     "update": cmd_update,
     "start": cmd_start,
     "done": cmd_done,
+    "reopen": cmd_reopen,
     "review": cmd_review,
     "approve": cmd_approve,
     "reject": cmd_reject,
@@ -3717,6 +3760,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_id_arg(p)
     _add_if_rev_arg(p)
+
+    p = sub.add_parser(
+        "reopen",
+        help="return an in-progress or done item to open (releases claim)",
+        parents=[verbosity_parent, compact_parent],
+    )
+    _add_id_arg(p)
+    _add_if_rev_arg(p)
+    p.add_argument(
+        "--force",
+        "-f",
+        action="store_true",
+        help="release the claim even while another session actively holds it",
+    )
 
     p = sub.add_parser(
         "review",

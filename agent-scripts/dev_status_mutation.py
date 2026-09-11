@@ -62,15 +62,21 @@ BACKLOG_MUTABLE_FIELDS: frozenset[str] = frozenset(
     {
         "summary",
         "category",
-        "status",
         "blocked_by",
         "related_files",
         "context",
         "next_steps",
         "priority",
-        "claimed_by",
     }
 )
+"""Fields a generic ``update`` patch may merge, and nothing else.
+
+Lifecycle-bearing fields are deliberately absent: ``status``/``claimed_by``
+move through the validating commands (``start``/``review``/``approve``/
+``reject``/``done``/``reopen``), never a raw merge that would skip their
+claim-collision, worktree, review-cycle, and gate enforcement -- the same
+reason ``gate`` and ``blocked_by`` were excluded before them.
+"""
 PENDING_MUTABLE_FIELDS: frozenset[str] = frozenset(
     {
         "description",
@@ -92,6 +98,7 @@ SUBCOMMANDS: tuple[str, ...] = (
     "update",
     "start",
     "done",
+    "reopen",
     "review",
     "approve",
     "reject",
@@ -236,14 +243,20 @@ class NewItemRequest:
 
 @dataclass(frozen=True)
 class ItemUpdateRequest:
+    """Content-field update; lifecycle fields are not requestable here.
+
+    ``status`` and ``claimed_by`` are deliberately absent -- passing them is a
+    construction-time ``TypeError`` (a programmer error), and transitions go
+    through ``start_item``/``review_item``/``approve_item``/``reject_item``/
+    ``done_item``/``reopen_item``, each of which enforces its own invariants.
+    """
+
     summary: str | _Unset | None = UNSET
     category: str | _Unset | None = UNSET
     context: str | _Unset | None = UNSET
     next_steps: str | list[str] | _Unset | None = UNSET
     related_files: tuple[Mapping[str, object], ...] | _Unset = UNSET
-    status: str | _Unset | None = UNSET
     priority: str | _Unset | None = UNSET
-    claimed_by: Mapping[str, object] | _Unset | None = UNSET
 
 
 @dataclass(frozen=True)
@@ -997,8 +1010,19 @@ def _check_claim_collision(
     current_rev: int = 0,
     journal_path: Path | None = None,
     verbose: bool = False,
+    cmd: str = "start",
 ) -> str | None:
-    """Check claim collision, raising ClaimCollisionError or returning takeover notice."""
+    """Check claim collision, raising ClaimCollisionError or returning takeover notice.
+
+    ``cmd`` selects the message vocabulary: ``start`` acquires a claim ("take
+    over"/"Taking over claim."), while ``reopen`` releases one and mints no
+    replacement ("release"/"Releasing claim.") — the semantics differ enough
+    that reusing start's wording verbatim would point users at the wrong
+    command's ``--force`` and describe a takeover that does not happen.
+    """
+    take_phrase = "release" if cmd == "reopen" else "take over"
+    notice_phrase = "Releasing" if cmd == "reopen" else "Taking over"
+    past_phrase = "released" if cmd == "reopen" else "took over"
     claim = cast(dict[str, object], item.get("claimed_by"))
     if not isinstance(claim, dict):
         return None
@@ -1046,7 +1070,7 @@ def _check_claim_collision(
                     current_rev,
                     slug=str(item.get("id", "?")),
                     detail=(
-                        f"--force took over live {claim_harness} claim "
+                        f"--force {past_phrase} live {claim_harness} claim "
                         f"(PID {anchor_pid}, machine {claim_machine[:6]})"
                     ),
                     diagnostic=True,
@@ -1059,23 +1083,23 @@ def _check_claim_collision(
     if claim_machine == current_machine and not ttl_only and claim_owner_pid > 0:
         if _is_pid_alive(claim_owner_pid):
             raise ClaimCollisionError(
-                f"[start] {item.get('id', '?')} is actively claimed by {claim_harness} "
-                f"(PID {claim_owner_pid} on this machine). Use --force to take over the claim."
+                f"[{cmd}] {item.get('id', '?')} is actively claimed by {claim_harness} "
+                f"(PID {claim_owner_pid} on this machine). Use --force to {take_phrase} the claim."
             )
         return (
-            f"[start] Previous claim by {claim_harness} (PID {claim_owner_pid}) is dead. "
-            "Taking over claim."
+            f"[{cmd}] Previous claim by {claim_harness} (PID {claim_owner_pid}) is dead. "
+            f"{notice_phrase} claim."
         )
 
     if claim_machine == current_machine and not ttl_only and claim_pid > 0:
         if _is_pid_alive(claim_pid):
             raise ClaimCollisionError(
-                f"[start] {item.get('id', '?')} is actively claimed by {claim_harness} "
-                f"(PID {claim_pid} on this machine). Use --force to take over the claim."
+                f"[{cmd}] {item.get('id', '?')} is actively claimed by {claim_harness} "
+                f"(PID {claim_pid} on this machine). Use --force to {take_phrase} the claim."
             )
         return (
-            f"[start] Previous claim by {claim_harness} (PID {claim_pid}) is dead. "
-            "Taking over claim."
+            f"[{cmd}] Previous claim by {claim_harness} (PID {claim_pid}) is dead. "
+            f"{notice_phrase} claim."
         )
 
     ttl = _claim_ttl_seconds()
@@ -1090,12 +1114,12 @@ def _check_claim_collision(
             if elapsed < ttl:
                 rem_mins = int((ttl - elapsed) / 60)
                 raise ClaimCollisionError(
-                    f"[start] {item.get('id', '?')} was claimed by {claim_harness} on machine {claim_machine[:6]} "
-                    f"{int(elapsed / 60)}m ago (active for {rem_mins}m more). Use --force to take over."
+                    f"[{cmd}] {item.get('id', '?')} was claimed by {claim_harness} on machine {claim_machine[:6]} "
+                    f"{int(elapsed / 60)}m ago (active for {rem_mins}m more). Use --force to {take_phrase}."
                 )
             return (
-                f"[start] Previous claim by {claim_harness} expired (idle {int(elapsed / 60)}m). "
-                "Taking over claim."
+                f"[{cmd}] Previous claim by {claim_harness} expired (idle {int(elapsed / 60)}m). "
+                f"{notice_phrase} claim."
             )
         except (ValueError, TypeError):
             pass
@@ -1409,17 +1433,13 @@ def update_item(
     verbose: bool = False,
     items_path: Path | None = None,
 ) -> MutationResult:
-    """Merge an update request into a backlog item."""
+    """Merge an update request into a backlog item.
+
+    Content fields only: ``status`` and ``claimed_by`` cannot be requested
+    here (see :class:`ItemUpdateRequest`); lifecycle transitions go through
+    the validating command for the edge.
+    """
     # Pre-lock defensive validations
-    if (
-        request.status is not UNSET
-        and request.status is not None
-        and request.status not in VALID_STATUSES
-    ):
-        raise ValidationError(
-            f"[update] invalid status '{request.status}' — must be one of: "
-            f"{', '.join(sorted(VALID_STATUSES))}"
-        )
     if (
         request.priority is not UNSET
         and request.priority is not None
@@ -1464,7 +1484,6 @@ def update_item(
         if item is None:
             raise NotFoundError(f"[update] not found: {slug}")
 
-        old_status = item.get("status")
         fields: list[str] = []
 
         if request.summary is not UNSET and request.summary is not None:
@@ -1492,31 +1511,8 @@ def update_item(
                 item.pop("priority", None)
             else:
                 item["priority"] = request.priority
-        if request.claimed_by is not UNSET:
-            fields.append("claimed_by")
-            if request.claimed_by is None:
-                item.pop("claimed_by", None)
-            else:
-                item["claimed_by"] = dict(request.claimed_by)
-        if request.status is not UNSET and request.status is not None:
-            fields.append("status")
-            new_st = request.status
-            _apply_status_transition(item, new_st, "completed_at", "done")
-            if new_st != "in-progress":
-                item.pop("claimed_by", None)
-            elif (
-                new_st == "in-progress"
-                and request.claimed_by is UNSET
-                and "claimed_by" not in item
-            ):
-                item["claimed_by"] = _make_claim(
-                    data_dir=paths["data_dir"],
-                    machine_id_file=paths["machine_id_file"],
-                )
-            item["status"] = new_st
 
         item["updated"] = today()
-        new_status = item.get("status")
         new_rev = _bump_rev(paths["meta_path"])
         _save_items(items, paths["items_path"])
 
@@ -1527,8 +1523,6 @@ def update_item(
                 new_rev,
                 slug=slug,
                 summary=cast(str, item.get("summary", "")),
-                from_status=old_status if old_status != new_status else None,
-                to_status=new_status if old_status != new_status else None,
                 fields=sorted(fields),
             ),
             journal_file=paths["journal_path"],
@@ -1964,6 +1958,126 @@ def reject_item(
             item=item,
             items=items,
             pending_items=pending_items,
+        )
+
+
+def reopen_item(
+    slug_or_id: str,
+    *,
+    if_rev: int | None = None,
+    force: bool = False,
+    verbose: bool = False,
+    items_path: Path | None = None,
+) -> MutationResult:
+    """Return an in-progress or done item to ``open``, releasing its claim.
+
+    The only sanctioned ``-> open`` edge. Unlike ``start``, ``reopen``
+    deliberately has no worktree guard (it moves items *out* of work, and
+    must stay usable to clean up after a session that died before creating
+    a worktree -- the documented revert-a-mis-resolution case) and no gate
+    block (a passed gate must not lock the completion it justified against
+    being undone). It refuses ``open`` as a no-op and ``in-review`` with a
+    pointer to ``reject``, which mandates feedback -- symmetric with
+    ``start``'s own in-review refusal.
+
+    A prior gate *pass* is always invalidated: ``passed_at``/``passed_via``/
+    ``coverage`` are cleared and ``set_at`` refreshed, so a
+    ``done -> reopen -> rework -> done`` cycle cannot re-complete on stale
+    evidence and runs recorded before the reopen fail gate-pass's staleness
+    check until re-run. ``review_content_hash`` and ``review_feedback`` are
+    preserved: the hash is the approval audit trail ``approve`` keeps
+    deliberately (``review`` overwrites it on resubmission anyway) and the
+    feedback survives ``reject`` the same way. ``completed_at`` is popped
+    unconditionally -- not via ``_apply_status_transition``'s done-only
+    branch -- to also repair a malformed in-progress record carrying a
+    stale stamp.
+    """
+    paths = _storage_bundle(items_path)
+    with dev_status_storage.backlog_lock(paths["data_dir"], paths["lock_file"]):
+        items = dev_status_storage.load_items(paths["items_path"])
+        pending_items = dev_status_storage.load_pending(paths["pending_path"])
+        current_rev = dev_status_storage.load_rev(paths["meta_path"])
+        enforce_rev_guard(
+            "reopen", slug_or_id, if_rev, current_rev, items, pending_items
+        )
+
+        kind, slug = resolve_id(slug_or_id, items, pending_items)
+        require_kind("reopen", slug_or_id, kind, "backlog")
+
+        index = build_index(items)
+        item = index.get(slug)
+        if item is None:
+            raise NotFoundError(f"[reopen] not found: {slug}")
+
+        old_status = item.get("status")
+        if old_status == "open":
+            raise InvalidItemStateError(
+                f"[reopen] {slug} is already open -- nothing to reopen."
+            )
+        if old_status == "in-review":
+            raise InvalidItemStateError(
+                f"[reopen] {slug} is in-review -- use 'reject <id> <feedback>' "
+                "to send it back to in-progress first (feedback is mandatory "
+                "from review); 'reopen' then returns it to open."
+            )
+
+        # The release guard keys on claim presence, not status: a malformed
+        # done item still carrying a live foreign claim must hit the same
+        # refusal/--force audit path rather than silently discard it.
+        mid = dev_status_storage.machine_id(paths["machine_id_file"], paths["data_dir"])
+        notice = _check_claim_collision(
+            item,
+            current_harness=_detect_harness(None),
+            current_machine=mid,
+            current_pid=os.getpid(),
+            current_owner_pid=_find_owner_pid()[0],
+            force=force,
+            cmd="reopen",
+            current_rev=current_rev,
+            journal_path=paths["journal_path"],
+            verbose=verbose,
+        )
+
+        item["status"] = "open"
+        item.pop("completed_at", None)
+        item.pop("claimed_by", None)
+        gate = item.get("gate")
+        if isinstance(gate, dict):
+            gate["passed_at"] = None
+            gate.pop("passed_via", None)
+            gate.pop("coverage", None)
+            gate["set_at"] = datetime.now(UTC).isoformat()
+        item["updated"] = today()
+
+        new_rev = _bump_rev(paths["meta_path"])
+        _save_items(items, paths["items_path"])
+
+        _append_journal_event(
+            dev_status_storage.journal_entry(
+                "reopen",
+                "backlog",
+                new_rev,
+                slug=slug,
+                summary=cast(str, item.get("summary", "")),
+                from_status=old_status,
+                to_status="open",
+            ),
+            journal_file=paths["journal_path"],
+            verbose=verbose,
+        )
+
+        notices = (notice,) if notice else ()
+        return MutationResult(
+            cmd="reopen",
+            slug=slug,
+            status="open",
+            rev=new_rev,
+            ref=slug_or_id,
+            detail=cast(str, item.get("summary", "")),
+            item=item,
+            items=items,
+            pending_items=pending_items,
+            notices=notices,
         )
 
 
