@@ -285,15 +285,15 @@ describe("rowLabel", () => {
   });
 });
 
+function makeAgentDir(): string {
+  return mkdtempSync(join(tmpdir(), "model-picker-test-"));
+}
+
+function readGlobalSettings(agentDir: string): Record<string, unknown> {
+  return JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8"));
+}
+
 describe("settings persistence", () => {
-  function makeAgentDir(): string {
-    return mkdtempSync(join(tmpdir(), "model-picker-test-"));
-  }
-
-  function readGlobalSettings(agentDir: string): Record<string, unknown> {
-    return JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8"));
-  }
-
   test("saveDefaultModel writes defaultProvider and defaultModel", async () => {
     const agentDir = makeAgentDir();
     try {
@@ -673,5 +673,86 @@ describe("command wiring", () => {
     component.handleInput("\t");
     expect(component.render(120).join("\n")).toContain("sort: name");
     void pending;
+  });
+
+  test("Ctrl+S saves the highlighted model as the default via handleInput", async () => {
+    const { commands, notifications, pi, makeCtx } = makeHarness();
+    registerModelPicker(pi);
+    const agentDir = makeAgentDir();
+    const savedEnv = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    try {
+      const { ctx, getComponent } = makeCtx("tui");
+      const pending = commands.models.handler("", ctx);
+      await Promise.resolve();
+
+      // \x13 is the raw ctrl+s byte: the same bytes matchesKey sees from a
+      // legacy terminal (Kitty CSI-u form is matched too, but \x13 is the
+      // form a plain session sends).
+      getComponent()!.handleInput("\x13");
+
+      // The save is fire-and-forget (`void …then`): poll until the settings
+      // file lands rather than racing a fixed timeout.
+      const settingsPath = join(agentDir, "settings.json");
+      let settings: Record<string, unknown> | undefined;
+      for (let i = 0; i < 100 && !settings; i++) {
+        await new Promise((r) => setTimeout(r, 10));
+        try {
+          settings = JSON.parse(readFileSync(settingsPath, "utf-8"));
+        } catch {
+          /* not flushed yet */
+        }
+      }
+      expect(settings).toBeDefined();
+      expect(settings!.defaultProvider).toBe("anthropic");
+      expect(settings!.defaultModel).toBe("claude-opus");
+      // First catalogue entry is highlighted by default.
+      expect(
+        notifications.some((n) => n.message === "Default model saved: anthropic/claude-opus"),
+      ).toBe(true);
+      void pending;
+    } finally {
+      if (savedEnv === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = savedEnv;
+      rmSync(agentDir, { recursive: true, force: true });
+    }
+  });
+
+  test("Ctrl+A unions the shown models into enabledModels via handleInput", async () => {
+    const { commands, notifications, pi, makeCtx } = makeHarness();
+    registerModelPicker(pi);
+    const agentDir = makeAgentDir();
+    const savedEnv = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    try {
+      // Seed a restricted list so the union is observable: Ctrl+A over all
+      // shown models covers every id, collapsing back to null (all-enabled).
+      await saveEnabledModels(tmpdir(), ["openai/gpt-5"], agentDir);
+      expect(readGlobalSettings(agentDir).enabledModels).toEqual(["openai/gpt-5"]);
+
+      const { ctx, getComponent } = makeCtx("tui");
+      const pending = commands.models.handler("", ctx);
+      await Promise.resolve();
+      getComponent()!.handleInput("\x01");
+
+      let settings: Record<string, unknown> | undefined;
+      for (let i = 0; i < 100 && !settings; i++) {
+        await new Promise((r) => setTimeout(r, 10));
+        try {
+          settings = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8"));
+        } catch {
+          /* not flushed yet */
+        }
+      }
+      expect(settings).toBeDefined();
+      // Full coverage of the shown refs collapses the restriction to null.
+      expect(settings!.enabledModels).toBeUndefined();
+      expect(notifications.some((n) => n.message === "Enabled models saved (2 shown)")).toBe(true);
+      void pending;
+    } finally {
+      if (savedEnv === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = savedEnv;
+      rmSync(agentDir, { recursive: true, force: true });
+    }
   });
 });
