@@ -1541,6 +1541,48 @@ class CrashSafetyTestCase(MutationFixture):
 
         self.assertEqual(calls, ["bump", "save", "journal"])
 
+    def test_completion_merge_notice_emits_for_unmerged_worktree(self):
+        import worktree_provenance
+
+        prov = worktree_provenance.WorktreeProvenance(
+            git_dir=Path("/repo/.git/worktrees/proj-slug"),
+            toplevel=Path("/repo-slug"),
+            branch="slug",
+            marker_slug="slug",
+            is_linked_worktree=True,
+        )
+
+        def mock_subp(cmd, *args, **kwargs):
+            if "symbolic-ref" in cmd:
+                return unittest.mock.Mock(
+                    returncode=0, stdout="refs/remotes/origin/main\n"
+                )
+            if "merge-base" in cmd:
+                return unittest.mock.Mock(returncode=1, stdout="")
+            return unittest.mock.Mock(returncode=0, stdout="")
+
+        with (
+            patch.object(worktree_provenance, "classify", return_value=prov),
+            patch("subprocess.run", side_effect=mock_subp),
+        ):
+            notice = dev_status_mutation._completion_merge_notice("slug")
+            self.assertIsNotNone(notice)
+            self.assertIn("not confirmed merged", notice)
+
+    def test_completion_merge_notice_silent_from_foreign_cwd(self):
+        import worktree_provenance
+
+        prov = worktree_provenance.WorktreeProvenance(
+            git_dir=Path("/repo/.git/worktrees/proj-other"),
+            toplevel=Path("/repo-other"),
+            branch="other",
+            marker_slug="other",
+            is_linked_worktree=True,
+        )
+        with patch.object(worktree_provenance, "classify", return_value=prov):
+            notice = dev_status_mutation._completion_merge_notice("slug")
+            self.assertIsNone(notice)
+
 
 if __name__ == "__main__":
     unittest.main()

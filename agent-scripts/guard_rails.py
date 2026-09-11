@@ -24,7 +24,12 @@ tier); their Bash calls fall through unrecognized, same as before.
 
 R4, the claim check: a write "points at" an in-progress backlog item when it
 targets exactly one of the item's ``related_files`` paths, or lands in a
-linked worktree whose branch name is the item's slug. Such a write is denied
+linked worktree attributed to the item by worktree provenance -- the
+``$(git rev-parse --git-dir)/devstatus_item`` marker stamped by
+``worktree.py`` (rename-proof, and a live marker attributes a worktree to
+exactly one item so concurrent same-repo items never deny each other),
+falling back to the slug-named branch heuristic where no live marker exists.
+Such a write is denied
 unless the calling session holds an active claim on that item. Session
 identity is the claim's ``owner_pid`` -- the harness process the claim's
 ``dev_status.py start`` run anchored to by walking its ancestor chain --
@@ -89,6 +94,7 @@ from pathlib import Path
 
 import cli_common
 from backlog_claim_lookup import BacklogClaimLookup, ClaimInfo, LocalClaimLookup
+from worktree_provenance import read_marker, worktree_points_at_item
 
 GUARD_RAILS_LOG_PATH = Path.home() / ".claude" / "data" / "guard_rails_audit.jsonl"
 PROTECTED_BRANCHES = {"main", "master"}
@@ -140,6 +146,12 @@ class RepoInfo:
     is_worktree: bool
     is_bare: bool
     branch: str
+    # Linked-worktree git metadata dir (where the provenance marker lives)
+    # and the slug stamped there. Both defaulted: the many existing test
+    # fixtures construct RepoInfo with the original five fields, and for
+    # them the marker simply reads as absent.
+    git_dir: str = ""
+    marker_slug: str | None = None
 
 
 def tool_family(name: object) -> str:
@@ -229,12 +241,20 @@ def repo_info(directory: str) -> RepoInfo | None:
     is_bare = lines[2].strip() == "true"
     toplevel = git("-C", directory, "rev-parse", "--show-toplevel") or ""
     branch = git("-C", directory, "branch", "--show-current") or ""
+    is_worktree = git_dir != common_dir
+    # Read the per-worktree provenance marker once, at snapshot time -- never
+    # per in-progress item; _evaluate_claim's loop must stay git/disk-free.
+    # Main checkouts never consult a marker (write_marker refuses one there;
+    # R2 owns main-checkout enforcement anyway).
+    marker = read_marker(Path(git_dir)) if is_worktree and not is_bare else None
     return RepoInfo(
         toplevel=toplevel,
         common_dir=common_dir,
-        is_worktree=git_dir != common_dir,
+        is_worktree=is_worktree,
         is_bare=is_bare,
         branch=branch,
+        git_dir=git_dir,
+        marker_slug=marker,
     )
 
 
@@ -341,17 +361,31 @@ def _claim_holder_alive(claim: ClaimInfo | None, current_machine: str) -> bool:
     )
 
 
-def _pointed_at(req: Request, info: RepoInfo, item: dict) -> bool:
+def _pointed_at(
+    req: Request,
+    info: RepoInfo,
+    item: dict,
+    in_progress_ids: set[str],
+) -> bool:
     """Whether a write request points at an in-progress item: exact
-    related_files path match, or the item's slug-named worktree. Deliberately
-    no parent-directory widening -- an item listing a top-level file must not
-    blanket-lock its repository."""
+    related_files path match, or worktree provenance -- the shared
+    ``worktree_points_at_item`` precedence (a live marker decides the
+    worktree alone; unmarked/stale falls back to branch == slug). This
+    replaces the branch-name-only heuristic and is why a worktree whose
+    branch was renamed away from the slug stays protected. Deliberately no
+    parent-directory or shared-repo widening -- attributing a worktree by
+    repository identity would make _evaluate_claim deny a legitimately-
+    claimed item's writes on every concurrent same-repo item's account."""
     if req.path:
         target = os.path.realpath(req.path)
         if target in {os.path.realpath(p) for p in _related_paths(item)}:
             return True
-    return bool(
-        info.is_worktree and info.branch and info.branch == str(item.get("id") or "")
+    return worktree_points_at_item(
+        marker_slug=info.marker_slug,
+        is_linked_worktree=info.is_worktree,
+        branch=info.branch,
+        item_id=str(item.get("id") or ""),
+        in_progress_ids=in_progress_ids,
     )
 
 
@@ -365,7 +399,8 @@ def _evaluate_claim(
     ``items`` is the lookup's in-progress snapshot -- the same list the R2
     busy check saw, so one evaluation never straddles two store reads.
     """
-    pointed = [item for item in items if _pointed_at(req, info, item)]
+    in_progress_ids = {str(item.get("id") or "") for item in items}
+    pointed = [item for item in items if _pointed_at(req, info, item, in_progress_ids)]
     if not pointed:
         return Verdict("allow")
 

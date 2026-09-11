@@ -38,6 +38,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import cli_common
+import worktree_provenance
 
 
 class WorktreeError(Exception):
@@ -54,6 +55,11 @@ class WorktreeConfig:
     skip_bootstrap: bool = False
     force: bool = False
     quiet: bool = False
+    # Backlog item slug this worktree was created for, when a real item was
+    # resolved (independent of how the repo was selected: `worktree.py <item>
+    # --repo <repo>` is the documented multi-repo invocation and must still
+    # stamp). None for ad-hoc --repo/--branch work.
+    slug: str | None = None
 
 
 @dataclass(frozen=True)
@@ -137,6 +143,15 @@ def resolve_worktree_config(
     Resolves via explicit repository and branch, from backlog item related_files,
     or from the current working directory.
     """
+    # Resolve the backlog item once, up front: the slug matters for the
+    # provenance marker even when --repo selects the repository explicitly.
+    matched_item = (
+        resolve_backlog_item(slug_or_id, items_path=items_path)
+        if slug_or_id is not None
+        else None
+    )
+    item_slug = str(matched_item["id"]) if matched_item is not None else None
+
     repo_root: Path | None = None
     branch_name: str | None = None
 
@@ -152,9 +167,8 @@ def resolve_worktree_config(
                 "Branch name must be specified via --branch or item argument."
             )
     elif slug_or_id is not None:
-        matched_item = resolve_backlog_item(slug_or_id, items_path=items_path)
         if matched_item is not None:
-            slug = str(matched_item["id"])
+            slug = item_slug or str(matched_item["id"])
             branch_name = branch or slug
             repos: set[Path] = set()
             for rf in matched_item.get("related_files", []):
@@ -210,6 +224,7 @@ def resolve_worktree_config(
         skip_bootstrap=skip_bootstrap,
         force=force,
         quiet=quiet,
+        slug=item_slug,
     )
 
 
@@ -407,6 +422,18 @@ def create_and_bootstrap_worktree(config: WorktreeConfig) -> WorktreeResult:
         if res_add.returncode != 0:
             error_detail = res_add.stderr.strip() or res_add.stdout.strip()
             raise WorktreeError(f"git worktree add failed: {error_detail}")
+
+    if config.slug:
+        try:
+            stamped = worktree_provenance.write_marker(
+                config.worktree_path, config.slug
+            )
+        except OSError as err:
+            raise WorktreeError(f"Failed to write provenance marker: {err}") from err
+        if not stamped:
+            raise WorktreeError(
+                f"Failed to write provenance marker for '{config.slug}' in '{config.worktree_path}'."
+            )
 
     bootstrap_executed = False
     bootstrap_cmd = None

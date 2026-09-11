@@ -425,6 +425,115 @@ class TestClaimEnforcementEndToEnd:
         assert _write(repo_pair["repo"] / "tracked.txt", store).decision == "allow"
 
 
+# ── per-worktree provenance marker (atk-guardrail-mutation-authority) ──────
+
+
+class TestWorktreeProvenanceMarker:
+    """The marker attributes a worktree to its item even when the branch name
+    no longer says so — and a LIVE marker decides attribution alone, which is
+    what keeps concurrent same-repo items from false-denying each other."""
+
+    def test_renamed_branch_still_attributed_via_marker(
+        self, repo_pair, store, as_own_session
+    ) -> None:
+        """Branch renamed off the slug: branch==slug is gone; only the
+        marker keeps the worktree protected. Unclaimed -> deny, own claim ->
+        allow."""
+        wt = repo_pair["wt"]
+        _git("branch", "-m", "renamed-elsewhere", cwd=wt)
+        _stamp_marker(wt, "demo-slug")
+        _set_store(store, [_item("demo-slug", [], None)])
+        assert _write(wt / "new-file.txt", store).decision == "deny"
+        _set_store(store, [_item("demo-slug", [], _claim(_OWN_OWNER))])
+        assert _write(wt / "new-file.txt", store).decision == "allow"
+
+    def test_live_marker_decides_and_branch_cannot_double_attribute(
+        self, repo_pair, store, as_own_session
+    ) -> None:
+        """Worktree marked for in-progress item-a, branch re-tagged to
+        in-progress item-b's slug: the live marker wins, so the write points
+        ONLY at item-a. Holding item-b's claim does not rescue a write into
+        item-a's marked worktree (true-positive denial), and the old
+        every-pointed-item claim rule cannot deny an item-a holder via
+        item-b double-attribution."""
+        repo, wt = repo_pair["repo"], repo_pair["wt"]
+        wt_b = repo.parent / "proj-item-b"
+        _git("worktree", "add", "-q", str(wt_b), "-b", "item-b-branch", cwd=repo)
+        _stamp_marker(wt_b, "item-b")
+        _stamp_marker(wt, "item-a")
+        _git("branch", "-m", "item-b", cwd=wt)
+        _set_store(
+            store,
+            [
+                _item("item-a", [], None),
+                _item("item-b", [], _claim(_OWN_OWNER)),
+            ],
+        )
+        verdict = _write(wt / "new-file.txt", store)
+        assert verdict.decision == "deny"
+        assert "item-a" in verdict.reason
+        # Holding item-a's claim while item-b is unclaimed allows writing to wt
+        # (no double-attribution to item-b).
+        _set_store(
+            store,
+            [
+                _item("item-a", [], _claim(_OWN_OWNER)),
+                _item("item-b", [], None),
+            ],
+        )
+        assert _write(wt / "new-file.txt", store).decision == "allow"
+        # …and the same session writing in item-b's own worktree is allowed:
+        # item-b's worktree has no marker naming item-a, so no double-attribution.
+        _set_store(
+            store,
+            [
+                _item("item-a", [], _claim(_OWN_OWNER)),
+                _item("item-b", [], _claim(_OWN_OWNER)),
+            ],
+        )
+        assert _write(wt_b / "other.txt", store).decision == "allow"
+
+    def test_stale_marker_falls_back_to_branch(
+        self, repo_pair, store, as_own_session
+    ) -> None:
+        """Marker names an item that is no longer in progress (completed,
+        worktree kept): attribution falls back to branch==slug so a later
+        slug-matched worktree is never silently un-attributed."""
+        wt = repo_pair["wt"]
+        _stamp_marker(wt, "gone-item")
+        _set_store(
+            store,
+            [
+                _item("demo-slug", [], _claim(_OWN_OWNER)),
+                _item("gone-item", [], None, status="done"),
+            ],
+        )
+        assert _write(wt / "new-file.txt", store).decision == "allow"
+
+    def test_two_same_repo_items_no_false_denial_via_repo_identity(
+        self, repo_pair, store, as_own_session
+    ) -> None:
+        """Regression for the rejected common_dir-widening idea: item-b
+        shares the repository and is unclaimed, but item-a's marked,
+        claimed worktree must stay writable for its own holder."""
+        wt = repo_pair["wt"]
+        _stamp_marker(wt, "demo-slug")
+        _set_store(
+            store,
+            [
+                _item("demo-slug", [], _claim(_OWN_OWNER)),
+                _item("other-slug", [str(repo_pair["repo"] / "tracked.txt")], None),
+            ],
+        )
+        assert _write(wt / "new-file.txt", store).decision == "allow"
+
+
+def _stamp_marker(worktree: Path, slug: str) -> None:
+    import worktree_provenance
+
+    assert worktree_provenance.write_marker(worktree, slug) is True
+
+
 def _write(path: Path, store: Path) -> guard_rails.Verdict:
     path.parent.mkdir(parents=True, exist_ok=True)
     return guard_rails.evaluate(

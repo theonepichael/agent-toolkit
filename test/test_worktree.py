@@ -100,6 +100,208 @@ class TestWorktree:
         assert result.worktree_path.exists()
         assert not result.reused
 
+    def test_backlog_item_worktree_stamps_provenance_marker(
+        self, tmp_path: Path
+    ) -> None:
+        """worktree.py <slug> stamps $(git rev-parse --git-dir)/devstatus_item
+        so guard_rails can attribute the worktree even after a branch rename."""
+        import worktree_provenance
+
+        repo = _init_repo(tmp_path / "proj-mark")
+        (repo / "code.py").write_text("x\n")
+        subprocess.run(["git", "-C", str(repo), "add", "code.py"], check=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "commit", "-qm", "code"], check=True
+        )
+        items = {
+            "schema_version": 2,
+            "items": [
+                {
+                    "id": "marked-item",
+                    "status": "in-progress",
+                    "summary": "s",
+                    "related_files": [{"path": str(repo / "code.py")}],
+                }
+            ],
+        }
+        backlog_file = tmp_path / "items.json"
+        backlog_file.write_text(json.dumps(items))
+        config = worktree.resolve_worktree_config(
+            "marked-item", items_path=backlog_file, skip_bootstrap=True
+        )
+        assert config.slug == "marked-item"
+        worktree.create_and_bootstrap_worktree(config)
+        wt = tmp_path / "proj-mark-marked-item"
+        assert worktree_provenance.read_marker_for_worktree(wt) == "marked-item"
+
+    def test_repo_flag_with_backlog_item_still_stamps(self, tmp_path: Path) -> None:
+        """`worktree.py <item> --repo <repo>` — documented answer for
+        multi-repo items — must still resolve the slug and stamp."""
+        import worktree_provenance
+
+        repo = _init_repo(tmp_path / "two-repo")
+        (repo / "code.py").write_text("x\n")
+        subprocess.run(["git", "-C", str(repo), "add", "code.py"], check=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "commit", "-qm", "code"], check=True
+        )
+        items = {
+            "schema_version": 2,
+            "items": [
+                {
+                    "id": "multi-repo-item",
+                    "status": "in-progress",
+                    "summary": "s",
+                    "related_files": [{"path": str(repo / "code.py")}],
+                }
+            ],
+        }
+        backlog_file = tmp_path / "items.json"
+        backlog_file.write_text(json.dumps(items))
+        config = worktree.resolve_worktree_config(
+            "multi-repo-item",
+            repo=repo,
+            items_path=backlog_file,
+            skip_bootstrap=True,
+        )
+        assert config.slug == "multi-repo-item"
+        worktree.create_and_bootstrap_worktree(config)
+        wt = tmp_path / "two-repo-multi-repo-item"
+        assert worktree_provenance.read_marker_for_worktree(wt) == "multi-repo-item"
+
+    def test_explicit_repo_and_branch_writes_no_marker(self, tmp_path: Path) -> None:
+        """Ad-hoc --repo/--branch work (no backlog item) gets no marker —
+        the write path stays attributed by branch==slug only."""
+        import worktree_provenance
+
+        repo = _init_repo(tmp_path / "adhoc")
+        config = worktree.resolve_worktree_config(
+            repo=repo, branch="adhoc-branch", skip_bootstrap=True
+        )
+        assert config.slug is None
+        worktree.create_and_bootstrap_worktree(config)
+        wt = tmp_path / "adhoc-adhoc-branch"
+        assert worktree_provenance.read_marker_for_worktree(wt) is None
+
+    def test_reuse_rewrites_marker_idempotently(self, tmp_path: Path) -> None:
+        """Second run on the same item's worktree (reuse path) keeps the
+        marker — the retag lifecycle."""
+        import worktree_provenance
+
+        repo = _init_repo(tmp_path / "reused")
+        (repo / "code.py").write_text("x\n")
+        subprocess.run(["git", "-C", str(repo), "add", "code.py"], check=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "commit", "-qm", "code"], check=True
+        )
+        items = {
+            "schema_version": 2,
+            "items": [
+                {
+                    "id": "reused-item",
+                    "status": "in-progress",
+                    "summary": "s",
+                    "related_files": [{"path": str(repo / "code.py")}],
+                }
+            ],
+        }
+        backlog_file = tmp_path / "items.json"
+        backlog_file.write_text(json.dumps(items))
+        config = worktree.resolve_worktree_config(
+            "reused-item", items_path=backlog_file, skip_bootstrap=True
+        )
+        worktree.create_and_bootstrap_worktree(config)
+        wt = tmp_path / "reused-reused-item"
+        assert worktree_provenance.write_marker(wt, "other") is True
+        result2 = worktree.create_and_bootstrap_worktree(config)
+        assert result2.reused
+        assert worktree_provenance.read_marker_for_worktree(wt) == "reused-item"
+
+    def test_reuse_on_renamed_branch_raises(self, tmp_path: Path) -> None:
+        """worktree.py <slug> reuse on a renamed branch raises WorktreeError;
+        rerun with --branch <new> is the documented re-stamp path."""
+        repo = _init_repo(tmp_path / "renamed-repo")
+        (repo / "code.py").write_text("x\n")
+        subprocess.run(["git", "-C", str(repo), "add", "code.py"], check=True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-qm", "code"], check=True)
+        items = {
+            "schema_version": 2,
+            "items": [
+                {
+                    "id": "renamed-item",
+                    "status": "in-progress",
+                    "summary": "s",
+                    "related_files": [{"path": str(repo / "code.py")}],
+                }
+            ],
+        }
+        backlog_file = tmp_path / "items.json"
+        backlog_file.write_text(json.dumps(items))
+        config = worktree.resolve_worktree_config(
+            "renamed-item", items_path=backlog_file, skip_bootstrap=True
+        )
+        worktree.create_and_bootstrap_worktree(config)
+        wt = tmp_path / "renamed-repo-renamed-item"
+        subprocess.run(["git", "-C", str(wt), "branch", "-m", "new-branch"], check=True)
+        with pytest.raises(worktree.WorktreeError, match="not 'renamed-item'"):
+            worktree.create_and_bootstrap_worktree(config)
+
+        # Documented re-stamp path: specify --branch new-branch --dest <path>
+        config_restamp = worktree.resolve_worktree_config(
+            "renamed-item",
+            branch="new-branch",
+            dest=wt,
+            items_path=backlog_file,
+            skip_bootstrap=True,
+        )
+        result = worktree.create_and_bootstrap_worktree(config_restamp)
+        assert result.reused
+
+    def test_marker_write_failure_aborts_before_bootstrap(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failure to write the marker raises WorktreeError immediately and
+        aborts before bootstrap is run."""
+        import worktree_provenance
+
+        repo = _init_repo(tmp_path / "fail-repo")
+        (repo / "code.py").write_text("x\n")
+        subprocess.run(["git", "-C", str(repo), "add", "code.py"], check=True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-qm", "code"], check=True)
+        items = {
+            "schema_version": 2,
+            "items": [
+                {
+                    "id": "fail-item",
+                    "status": "in-progress",
+                    "summary": "s",
+                    "related_files": [{"path": str(repo / "code.py")}],
+                }
+            ],
+        }
+        backlog_file = tmp_path / "items.json"
+        backlog_file.write_text(json.dumps(items))
+        config = worktree.resolve_worktree_config(
+            "fail-item", items_path=backlog_file, skip_bootstrap=False
+        )
+
+        def mock_write_marker(path, slug):
+            raise OSError("disk unwritable")
+
+        bootstrap_called = False
+
+        def mock_bootstrap(path, quiet=False):
+            nonlocal bootstrap_called
+            bootstrap_called = True
+            return True, "cmd", []
+
+        monkeypatch.setattr(worktree_provenance, "write_marker", mock_write_marker)
+        monkeypatch.setattr(worktree, "bootstrap_worktree", mock_bootstrap)
+
+        with pytest.raises(worktree.WorktreeError, match="Failed to write provenance marker"):
+            worktree.create_and_bootstrap_worktree(config)
+        assert not bootstrap_called
+
     def test_idempotent_reuse_of_existing_worktree(self, tmp_path: Path) -> None:
         repo = _init_repo(tmp_path / "repo-reuse")
         config = worktree.resolve_worktree_config(

@@ -32,6 +32,7 @@ from typing import Final, Protocol, cast
 
 import dev_status_formatting
 import dev_status_storage
+import worktree_provenance
 
 # Re-exported storage types
 BacklogItem = dev_status_storage.BacklogItem
@@ -1170,23 +1171,23 @@ def _completion_merge_notice(slug: str) -> str | None:
     """Return a warning if this item completes from an unmerged worktree.
 
     The check is deliberately advisory: approve-before-merge remains valid.
-    It only applies when the current Git worktree is the canonical slug-named
-    one, so invoking dev_status from another repository cannot create a false
+    It only applies when the current Git worktree is attributed to the item
+    via worktree provenance (or the legacy slug-named branch heuristic), so
+    invoking dev_status from another repository cannot create a false
     warning. Failures and missing default-branch metadata stay silent.
     """
     try:
-        root_result = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True,
-            text=True,
-            timeout=2,
-            check=False,
-        )
-        if root_result.returncode != 0:
+        prov = worktree_provenance.classify(Path.cwd())
+        if prov is None or prov.toplevel is None:
             return None
-        root = Path(root_result.stdout.strip())
-        if root.name != slug:
+        if not worktree_provenance.worktree_belongs_to_slug(
+            marker_slug=prov.marker_slug,
+            is_linked_worktree=prov.is_linked_worktree,
+            branch=prov.branch,
+            slug=slug,
+        ):
             return None
+        root = prov.toplevel
         default_result = subprocess.run(
             [
                 "git",

@@ -69,6 +69,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`to_tickets_runner.py`](#agentscriptstoticketsrunnerpy) | to_tickets_runner.py — create a linked batch of dev_status.py backlog items from a confirmed vertical-slice/tracer-bullet ticket breakdown. |
 | [`vitals_promotion.py`](#agentscriptsvitalspromotionpy) | vitals-promotion.py — mechanical vitals-promotion pass over grill session data. |
 | [`worktree.py`](#agentscriptsworktreepy) | worktree.py — automated worktree creation and dependency bootstrapping. |
+| [`worktree_provenance.py`](#agentscriptsworktreeprovenancepy) | Per-worktree backlog provenance: one explicit marker, shared predicates. |
 
 ### `agent-scripts/analyze_sessions.py`
 
@@ -354,7 +355,7 @@ Typed mutation service and transaction manager for dev_status (Candidate 12).
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI: none (library module).
 - Environment: `AGY_SESSION`, `AI_AGENT`, `ANTHROPIC_CLI`, `ANTIGRAVITY`, `ANTIGRAVITY_AGENT`, `ANTIGRAVITY_CONVERSATION_ID`, `CLAUDE_CODE`, `COPILOT`, `DEVSTATUS_CLAIM_TTL_SECONDS`, `DEVSTATUS_HARNESS`, `GITHUB_COPILOT`, `OPENCODE`, `OPENCODE_GATEWAY`, `PI_CODING_AGENT`, `PI_SESSION`
-- Depends on: `dev_status_formatting.py`, `dev_status_storage.py`
+- Depends on: `dev_status_formatting.py`, `dev_status_storage.py`, `worktree_provenance.py`
 - Exceptions:
   - `class BacklogMutationError(Exception)` — Base class for all typed mutation refusals.
   - `class RevisionConflictError(BacklogMutationError)` — Refusal when --if-rev is missing or stale on numeric position mutations.
@@ -404,7 +405,7 @@ Typed mutation service and transaction manager for dev_status (Candidate 12).
   - `add_pending_item(request: PendingAddRequest, *, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Track a new waiting-on-someone-else item.
   - `update_pending_item(slug_or_id: str, request: PendingUpdateRequest, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Merge an update request into a pending item.
   - `mutation_transaction(*, items_path: Path | None = None, verbose: bool = False) -> Iterator[BacklogTransaction]` — Hold backlog_lock once for batch operations; yields BacklogTransaction.
-- Tested by: `agent-scripts/test_dev_status.py`, `agent-scripts/test_dev_status_mutation.py`
+- Tested by: `agent-scripts/test_dev_status.py`, `agent-scripts/test_dev_status_mutation.py`, `test/test_worktree_provenance.py`
 
 ### `agent-scripts/dev_status_read.py`
 
@@ -781,7 +782,7 @@ Pre-tool guard shared by every harness: refuse a write into a repository's main 
 - Environment: `GUARD_RAILS_OFF`
 - Filesystem constants:
   - `GUARD_RAILS_LOG_PATH = Path.home() / '.claude' / 'data' / 'guard_rails_audit.jsonl'`
-- Depends on: `backlog_claim_lookup.py`, `cli_common.py`, `dev_status_impl.py`
+- Depends on: `backlog_claim_lookup.py`, `cli_common.py`, `dev_status_impl.py`, `worktree_provenance.py`
 - Public classes:
   - `class Request` — A normalized tool call: what family, from where, against which path (write-family) or command (bash-family).
   - `class Verdict`
@@ -1440,7 +1441,7 @@ worktree.py — automated worktree creation and dependency bootstrapping.
   - `--force/-f` — Pass --force to git worktree add (default: False)
   - `--json` — Emit structured result as JSON (default: False)
 - Explicit exit codes: `1`
-- Depends on: `cli_common.py`, `dev_status_impl.py`, `dev_status_storage.py`
+- Depends on: `cli_common.py`, `dev_status_impl.py`, `dev_status_storage.py`, `worktree_provenance.py`
 - Exceptions:
   - `class WorktreeError(Exception)` — Raised when worktree resolution, creation, or bootstrapping fails.
 - Public classes:
@@ -1454,6 +1455,25 @@ worktree.py — automated worktree creation and dependency bootstrapping.
   - `create_and_bootstrap_worktree(config: WorktreeConfig) -> WorktreeResult` — Create or reuse a git worktree and bootstrap dependencies.
   - `build_parser() -> argparse.ArgumentParser` — Build command-line parser for worktree.py.
 - Tested by: `test/test_worktree.py`
+
+### `agent-scripts/worktree_provenance.py`
+
+Per-worktree backlog provenance: one explicit marker, shared predicates.
+
+- Installed at: `~/.claude/scripts/worktree_provenance.py` (all harnesses)
+- Entrypoint: not executable, `#!/usr/bin/env python3`
+- CLI: none (library module).
+- Public classes:
+  - `class WorktreeProvenance` — Git facts that answer "which item owns this directory's worktree?".
+- Public functions:
+  - `marker_path(git_dir: Path) -> Path` — Where a worktree's provenance marker lives, given its git dir.
+  - `read_marker(git_dir: Path | None) -> str | None` — The slug in a git dir's marker, or None when absent/unreadable.
+  - `read_marker_for_worktree(worktree_dir: Path | str) -> str | None` — Resolve the worktree's own git dir, then read its marker.
+  - `write_marker(worktree_dir: Path | str, slug: str) -> bool` — Stamp the provenance marker in a *linked* worktree.
+  - `classify(directory: str | Path) -> WorktreeProvenance | None` — Full provenance snapshot for one directory, or None outside any repo.
+  - `worktree_points_at_item(*, marker_slug: str | None, is_linked_worktree: bool, branch: str, item_id: str, in_progress_ids: set[str]) -> bool` — Whether a write in this worktree points at backlog ``item_id``.
+  - `worktree_belongs_to_slug(*, marker_slug: str | None, is_linked_worktree: bool, branch: str, slug: str) -> bool` — Advisory per-item attribution for the completion notice.
+- Tested by: `agent-scripts/test_dev_status_mutation.py`, `test/test_guard_rails_claim.py`, `test/test_worktree.py`, `test/test_worktree_provenance.py`
 
 ---
 

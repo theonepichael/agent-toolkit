@@ -106,5 +106,6 @@ def test_the_guard_script_is_stdlib_only() -> None:
         "pathlib",
         "cli_common",
         "backlog_claim_lookup",
+        "worktree_provenance",
     }
     assert set(imports) <= allowed, set(imports) - allowed
