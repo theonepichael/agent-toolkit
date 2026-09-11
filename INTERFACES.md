@@ -910,7 +910,7 @@ link_inspect.py — link inspection, path classification, drift finding, and the
 - Public classes:
   - `class LinkSpec` — One row of ``links.toml``: a repo file and where it gets linked.
   - `class ManagedDirSpec` — One row of ``links.toml``: a directory this repo owns exclusively.
-  - `class LinkFinding` — One drift finding as typed data: the audit's render-free result unit.
+  - `class LinkFinding` — One render-free audit finding with structured, kind-specific facts.
   - `class LinkAuditResult` — What one full link audit produced: typed findings plus the two aggregates that are deliberately *not* findings (see :func:`check_applicable_links` for ``foreign``).
 - Public functions:
   - `expand_dest(dest: str, home: Path) -> Path` — Expand a ``links.toml`` destination against ``home``.
