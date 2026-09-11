@@ -93,7 +93,7 @@ class BacklogItem(TypedDict):
     blocked_by: list[str]
     related_files: list[dict[str, object]]
     context: str
-    next_steps: str
+    next_steps: str | list[str]
     priority: NotRequired[str]
     completed_at: NotRequired[str]
     review_feedback: NotRequired[str]

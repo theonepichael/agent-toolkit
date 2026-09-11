@@ -421,7 +421,7 @@ class BacklogItem(TypedDict):
     blocked_by: list[str]
     related_files: list[dict[str, object]]
     context: str
-    next_steps: str
+    next_steps: str | list[str]
     priority: NotRequired[str]
     completed_at: NotRequired[str]
     review_feedback: NotRequired[str]
@@ -631,6 +631,47 @@ def _list_field(patch: dict[str, object], key: str) -> list[object]:
         )
         sys.exit(1)
     return cast(list[object], value)
+
+
+def _normalize_next_steps(value: object) -> str | list[str]:
+    """Normalize a ``next_steps`` value to either a ``str`` or ``list[str]``.
+
+    The stored type is a union, not list-only: a bare string is a valid
+    single-step breakdown and several documented write paths supply one
+    (the backlog-item grill-resume pointer, ``to_tickets_runner``), so
+    rejecting a string would break live flows. What this refuses is silent
+    *coercion* — the bug where ``add`` ran the value through ``_str_field``
+    and a JSON list collapsed to its ``str()`` repr blob while ``update``
+    stored the same list verbatim, so the two paths disagreed about the
+    stored shape. Both now funnel through here, and each element of a list
+    is validated as a ``str`` (a non-str element or a bare non-str/non-list
+    value is refused with a clear message, mirroring :func:`_list_field`).
+
+    A ``None`` value (absent key, or explicit ``null`` on ``add``) returns
+    ``""`` to preserve ``add``'s prior default. ``update`` rejects ``null``
+    earlier via :func:`_reject_null_fields`, so it never reaches this helper
+    with ``None``; an empty list is a valid value and stays ``[]``.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        for idx, step in enumerate(value):
+            if not isinstance(step, str):
+                print(
+                    f"field 'next_steps' element {idx} must be a string, "
+                    f"got {type(step).__name__}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+        return cast(list[str], value)
+    print(
+        f"field 'next_steps' must be a string or a list of strings, "
+        f"got {type(value).__name__}",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 
 def _dict_field(patch: dict[str, object], key: str) -> dict[str, object]:
@@ -2409,7 +2450,7 @@ def cmd_add(args: argparse.Namespace) -> None:
         summary=_str_field(patch, "summary").strip(),
         category=_str_field(patch, "category", "feature"),
         context=_str_field(patch, "context"),
-        next_steps=_str_field(patch, "next_steps"),
+        next_steps=_normalize_next_steps(patch.get("next_steps")),
         related_files=tuple(
             cast(dict[str, object], rf)
             for rf in _list_field(patch, "related_files")
@@ -2493,7 +2534,11 @@ def cmd_update(args: argparse.Namespace) -> None:
         summary=cast(str, patch["summary"]) if "summary" in patch else UNSET,
         category=cast(str, patch["category"]) if "category" in patch else UNSET,
         context=cast(str, patch["context"]) if "context" in patch else UNSET,
-        next_steps=cast(str, patch["next_steps"]) if "next_steps" in patch else UNSET,
+        next_steps=(
+            _normalize_next_steps(patch["next_steps"])
+            if "next_steps" in patch
+            else UNSET
+        ),
         related_files=(
             tuple(
                 cast(dict[str, object], rf)

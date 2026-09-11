@@ -23,7 +23,7 @@ import subprocess
 import sys
 import time
 import uuid
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
@@ -228,7 +228,7 @@ class NewItemRequest:
     summary: str
     category: str = "feature"
     context: str = ""
-    next_steps: str = ""
+    next_steps: str | list[str] = ""
     related_files: tuple[Mapping[str, object], ...] = ()
     blocked_by: tuple[str, ...] = ()
     priority: str | None = None
@@ -239,7 +239,7 @@ class ItemUpdateRequest:
     summary: str | _Unset | None = UNSET
     category: str | _Unset | None = UNSET
     context: str | _Unset | None = UNSET
-    next_steps: str | _Unset | None = UNSET
+    next_steps: str | list[str] | _Unset | None = UNSET
     related_files: tuple[Mapping[str, object], ...] | _Unset = UNSET
     status: str | _Unset | None = UNSET
     priority: str | _Unset | None = UNSET
@@ -2344,6 +2344,29 @@ def rename_item(
                 return word_re.sub(new_slug, text)
             return text
 
+        def _rewrite_next_steps(
+            value: object, rewrite: Callable[[str], str]
+        ) -> str | list[str]:
+            """Rewrite slug references in a ``next_steps`` field of either type.
+
+            Backlog ``next_steps`` is a ``str | list[str]`` union and the
+            pending field is a ``list[str]``, so both branches funnel through
+            this one helper: a ``str`` is rewritten whole, a ``list`` per
+            element (an ``isinstance`` guard skips any non-str element
+            defensively, mirroring the old pending loop). The prior backlog
+            code ran :func:`_rewrite_prose` over the whole field, so a
+            list-valued field fell into an ``in`` membership test, missed,
+            and was silently left un-rewritten.
+            """
+            if isinstance(value, str):
+                return rewrite(value)
+            if isinstance(value, list):
+                return [
+                    rewrite(step) if isinstance(step, str) else cast(str, step)
+                    for step in value
+                ]
+            return cast(str, value)
+
         renamed_item: BacklogItem | None = None
         for item in items:
             if item["id"] == old_slug:
@@ -2352,9 +2375,12 @@ def rename_item(
             item["blocked_by"] = [
                 new_slug if s == old_slug else s for s in item.get("blocked_by", [])
             ]
-            fields = cast(dict[str, str], item)
-            for field in ("summary", "context", "next_steps"):
-                fields[field] = _rewrite_prose(fields.get(field, ""))
+            str_fields = cast(dict[str, str], item)
+            for field in ("summary", "context"):
+                str_fields[field] = _rewrite_prose(str_fields.get(field, ""))
+            item["next_steps"] = _rewrite_next_steps(
+                item.get("next_steps", ""), _rewrite_prose
+            )
             for rf in item.get("related_files", []):
                 note = rf.get("note", "") if isinstance(rf, dict) else ""
                 if isinstance(note, str) and note:
@@ -2367,9 +2393,9 @@ def rename_item(
             p_fields = cast(dict[str, str], p)
             for field in ("description", "context"):
                 p_fields[field] = _rewrite_prose(p_fields.get(field, ""))
-            for step_idx, step in enumerate(p.get("next_steps", [])):
-                if isinstance(step, str):
-                    p["next_steps"][step_idx] = _rewrite_prose(step)
+            p["next_steps"] = _rewrite_next_steps(
+                p.get("next_steps", []), _rewrite_prose
+            )
             for rf in p.get("related_files", []):
                 note = rf.get("note", "") if isinstance(rf, dict) else ""
                 if isinstance(note, str) and note:

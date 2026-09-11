@@ -787,6 +787,147 @@ class MutationCliCharacterizationTestCase(MutationFixture):
 
 
 
+class NextStepsTypeTestCase(MutationFixture):
+    """next_steps has one normalization on add/update and rename walks lists.
+
+    Regression tests for the split str/list handling: add used to
+    ``str()``-repr a list into a blob, update used to ``cast`` it verbatim,
+    and rename's backlog branch used to ``in``-test the whole field so a
+    list-valued next_steps was silently never rewritten (the adjacent
+    pending branch already handled it per element).
+    """
+
+    def test_add_with_list_stores_a_list(self):
+        self.run_cmd(
+            dev_status.cmd_add,
+            _Args(
+                json='{"id": "my-feature", "summary": "S", '
+                '"next_steps": ["step a", "step b"]}'
+            ),
+        )
+        self.assertEqual(
+            self._item_by_id("my-feature")["next_steps"], ["step a", "step b"]
+        )
+
+    def test_add_with_str_keeps_a_str(self):
+        self.run_cmd(
+            dev_status.cmd_add,
+            _Args(
+                json='{"id": "my-feature", "summary": "S", '
+                '"next_steps": "do the thing"}'
+            ),
+        )
+        self.assertEqual(
+            self._item_by_id("my-feature")["next_steps"], "do the thing"
+        )
+
+    def test_add_with_empty_list_stores_empty_list(self):
+        self.run_cmd(
+            dev_status.cmd_add,
+            _Args(json='{"id": "my-feature", "summary": "S", "next_steps": []}'),
+        )
+        self.assertEqual(self._item_by_id("my-feature")["next_steps"], [])
+
+    def test_add_list_with_non_str_element_refuses(self):
+        err, code = self.run_cmd_exits(
+            dev_status.cmd_add,
+            _Args(
+                json='{"id": "my-feature", "summary": "S", '
+                '"next_steps": ["a", 5]}'
+            ),
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("next_steps", err)
+
+    def test_add_bare_non_str_non_list_value_refuses(self):
+        err, code = self.run_cmd_exits(
+            dev_status.cmd_add,
+            _Args(
+                json='{"id": "my-feature", "summary": "S", "next_steps": 5}'
+            ),
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("next_steps", err)
+
+    def test_update_with_list_round_trips(self):
+        self.write_items([make_item("item-one", next_steps="was a string")])
+        self.run_cmd(
+            dev_status.cmd_update,
+            _Args(id="item-one", patch='{"next_steps": ["step a", "step b"]}'),
+        )
+        self.assertEqual(
+            self._item_by_id("item-one")["next_steps"], ["step a", "step b"]
+        )
+
+    def test_update_with_str_keeps_str(self):
+        self.write_items([make_item("item-one", next_steps=["old", "steps"])])
+        self.run_cmd(
+            dev_status.cmd_update,
+            _Args(id="item-one", patch='{"next_steps": "now a string"}'),
+        )
+        self.assertEqual(self._item_by_id("item-one")["next_steps"], "now a string")
+
+    def test_update_absent_next_steps_leaves_field_unchanged(self):
+        self.write_items([make_item("item-one", next_steps=["keep", "me"])])
+        self.run_cmd(
+            dev_status.cmd_update,
+            _Args(id="item-one", patch='{"context": "touched"}'),
+        )
+        self.assertEqual(self._item_by_id("item-one")["next_steps"], ["keep", "me"])
+
+    def test_update_with_null_still_refused(self):
+        self.write_items([make_item("item-one", next_steps="x")])
+        err, code = self.run_cmd_exits(
+            dev_status.cmd_update,
+            _Args(id="item-one", patch='{"next_steps": null}'),
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("cannot be null", err)
+
+    def test_update_list_with_non_str_element_refuses(self):
+        self.write_items([make_item("item-one", next_steps="x")])
+        err, code = self.run_cmd_exits(
+            dev_status.cmd_update,
+            _Args(id="item-one", patch='{"next_steps": ["a", 5]}'),
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("next_steps", err)
+
+    def test_rename_rewrites_slug_inside_list_next_steps(self):
+        self.write_items(
+            [
+                make_item(
+                    "item-one",
+                    next_steps=["work on item-one first", "unrelated"],
+                ),
+                make_item("two-slug"),
+            ]
+        )
+        self.run_cmd(
+            dev_status.cmd_rename,
+            _Args(old_slug="item-one", new_slug="renamed-one"),
+        )
+        self.assertEqual(
+            self._item_by_id("renamed-one")["next_steps"],
+            ["work on renamed-one first", "unrelated"],
+        )
+
+    def test_rename_still_rewrites_str_valued_next_steps(self):
+        self.write_items(
+            [
+                make_item("item-one", next_steps="see item-one later"),
+                make_item("two-slug"),
+            ]
+        )
+        self.run_cmd(
+            dev_status.cmd_rename,
+            _Args(old_slug="item-one", new_slug="renamed-one"),
+        )
+        self.assertEqual(
+            self._item_by_id("renamed-one")["next_steps"], "see renamed-one later"
+        )
+
+
 # ── Tier 2: Service Unit Tests ───────────────────────────────────────────────
 
 
