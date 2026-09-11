@@ -305,6 +305,11 @@ you're working solo and are confident it's ready), use `approve` to mark it done
 (`approve` to complete, `reject <feedback>` to send back) rather than patching
 `status` directly, which is also refused for in-review items.
 
+If `approve`/`done` runs from the item's own slug-named worktree and that
+worktree's HEAD isn't confirmed merged into the default branch, both print an
+advisory warning (completion still succeeds — this is a flag, not a guard).
+Don't skip the merge step just because the command didn't stop you.
+
 An item whose implementation plan had judgment-call steps may also carry a
 `gate` (set via `gate-set` when the plan was classified — see backlog-item.md
 step 5). Both `done` and `approve` refuse when `gate.required` is true and
@@ -379,17 +384,18 @@ and prose cross-references, use slugs for any item references — never raw hex 
 #### Starting work on a backlog item
 
 Follow the Git section's worktree-first policy below: before touching the repo
-under `related_files` or branching in main, run the worktree automation tool:
+under `related_files` or branching in main, run the worktree subcommand:
 
 ```bash
-python3 ~/.claude/scripts/worktree.py <slug|N>
+python3 ~/.claude/scripts/dev_status.py worktree <slug|N>
 ```
 
 This resolves the target repository from the item's `related_files`, sets up
 or reuses the worktree at the sibling path, and bootstraps its dependencies in
-a single step. Never create worktrees manually with bare `git worktree add` or
-invoke bootstrap scripts by hand when working a backlog item — `worktree.py`
-owns both steps.
+a single step (it delegates to `worktree.py` internally — that script is an
+implementation detail now, not the entry point). Never create worktrees
+manually with bare `git worktree add` or invoke bootstrap scripts by hand
+when working a backlog item.
 
 `dev_status.py start` now enforces part of this itself, as a backstop: it
 refuses to run from a main/master checkout of a git repository (exit 1,
@@ -437,14 +443,15 @@ used for backlog capture.
   work — regardless of whether the checkout is currently clean or dirty,
   and even in solo sessions with no concurrent activity — create a fresh
   worktree for it rather than branching in the existing checkout. Always
-  use the canonical automation tool:
+  use the canonical automation entry point:
 
   ```bash
-  python3 ~/.claude/scripts/worktree.py <slug|N>
+  python3 ~/.claude/scripts/dev_status.py worktree <slug|N>
   ```
 
-  `worktree.py` automatically resolves the repository from the backlog item,
-  handles branch creation or attachment, reuses existing worktrees idempotently,
+  This delegates to `worktree.py` internally, which automatically resolves
+  the repository from the backlog item, handles branch creation or
+  attachment, reuses existing worktrees idempotently,
   and bootstraps project dependencies in a single step. Do not manually run
   `git worktree add` or execute bare bootstrap scripts (`scripts/bootstrap-worktree.sh`,
   etc.) for backlog items.

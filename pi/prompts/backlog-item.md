@@ -59,10 +59,12 @@ slug: "<resolved slug>"`. On a main/master checkout, `start` now refuses
 do step 3 first, then call `start` with `cwd` set to that worktree path.
 
 ## 3. Branch
-Create or reuse a dedicated worktree and bootstrap dependencies via `python3
-~/.claude/scripts/worktree.py <slug|N>`. (If multiple project repos are
-involved or resolution fails, specify `--repo <path>`). Reuse a worktree this
-session already made for this item instead of a second one.
+Create or reuse a dedicated worktree and bootstrap dependencies by calling
+the `dev_status` tool with `action: "worktree"` and `slug` (or `repo` if
+multiple project repos are involved or resolution fails) — never shell out to
+`worktree.py` or `dev_status.py worktree` directly; the tool's own
+`worktree` action wraps the same logic. Reuse a worktree this session
+already made for this item instead of a second one.
 
 ## 4. Baseline
 Run that repo's test suite (or the most relevant targeted subset) in the
@@ -506,7 +508,12 @@ concurrency-cap accounting.
        the raw reason after the kind. A *transient* failure of the liveness
        check is not an error and never appears here: it re-arms, because
        killing a healthy worker on an inconclusive signal is the defect this
-       tool was fixed for.
+       tool was fixed for. A worker can also surface as `error` when a
+       state reconcile between polls finds it simply gone from herdr's
+       tracked list — that case is explicitly **inferred, not observed**
+       (the detail says so): verify the item's real state before treating
+       it as complete, the same caution `timed_out`'s confirmed-vs-inferred
+       split already asks for above.
 
      **`swarm_poll` does not spawn anything.** It arms waits, drains events
      and closes finished workers' tabs; that is all. When an event frees a

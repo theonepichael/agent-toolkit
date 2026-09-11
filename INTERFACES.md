@@ -2006,10 +2006,7 @@ named doc, not regenerating this file.
 
 | Doc | Status |
 | --- | --- |
-| `agy/skills/backlog-item/SKILL.md` | OK |
-| `claude/commands/backlog-item.md` | OK |
-| `copilot/skills/backlog-item/SKILL.md` | OK |
-| `opencode/command/backlog-item.md` | OK |
+| `pi/skills/backlog-item/SKILL.md` | OK |
 
 ---
 

@@ -7,7 +7,7 @@
 {{STEP2_BODY}}
 
 ## 3. Branch
-Create or reuse a dedicated worktree and bootstrap dependencies via `python3 ~/.claude/scripts/worktree.py <slug|N>`. (If multiple project repos are involved or resolution fails, specify `--repo <path>`). Reuse a worktree this session already made for this item instead of a second one.
+Create or reuse a dedicated worktree and bootstrap dependencies via `python3 ~/.claude/scripts/dev_status.py worktree <slug|N>`. (If multiple project repos are involved or resolution fails, specify `--repo <path>`). Reuse a worktree this session already made for this item instead of a second one.
 
 ## 4. Baseline
 Run that repo's test suite (or the most relevant targeted subset) in the fresh worktree before touching anything ({{INSTRUCTIONS_REF}} "Baseline tests before starting code work").
