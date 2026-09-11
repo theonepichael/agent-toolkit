@@ -1174,9 +1174,24 @@ ${capture}` } };
         if (recovered) liveIds.push(agent);
       }
     }
-    const reconciled = entries === null || recordedMode === "serial" ? loaded : reconcileState(loaded, liveIds).state;
+    const { state: reconciled, dropped } = entries === null || recordedMode === "serial" ? { state: loaded, dropped: [] } : reconcileState(loaded, liveIds);
     this.activeRuns.set(runId, reconciled);
     saveState(reconciled, this.stateDir);
+    if (dropped.length > 0) {
+      const rt = this.getRuntime(runId);
+      for (const w of dropped) {
+        const teardown = await this.harvestWorkerIOWithStatus(loaded, w);
+        const offers = [...w.terminalCaptures ?? [], ...teardown.offers];
+        rt.pendingEvents.push({
+          kind: "error",
+          agent: w.agent,
+          slug: w.slug,
+          paneId: w.paneId,
+          captures: offers,
+          detail: `reconcile: agent gone from herdr between polls -- worker process vanished; outcome inferred, not observed. Verify the item's state before treating it as complete.${w.pendingAmend ? ` ${amendOutstandingNote(w.pendingAmend, Date.now())}` : ""}`
+        });
+      }
+    }
     return reconciled;
   }
   persist(state) {
@@ -1835,7 +1850,7 @@ ${dashboard.stdout.trimEnd()}` : `Serial queue is quiescent, but dev_status.py r
       const stalledHere = stalledRelayWorkers(state.workers, Date.now(), rt.stallMs);
       const stalledAgents = new Set(stalledHere.map((w) => w.agent));
       const describe = (w) => `${w.agent} (${w.slug}, pane ${w.paneId})` + (stalledAgents.has(w.agent) ? ` -- STALLED, over ${formatDuration(rt.stallMs)} with no answer` : "") + (w.lastResolveFailure ? ` -- a previous answer ${JSON.stringify(w.lastResolveFailure.answer)} failed to land (${w.lastResolveFailure.reason}); re-read the pane and answer with its EXACT rendered label` : "");
-      const text = (awaitingRelay.length ? `No active workers to poll. ${awaitingRelay.length} worker(s) awaiting a relay -- answer each with swarm_resolve_blocked before polling again: ${awaitingRelay.map(describe).join(", ")}.` : ambiguous.length ? `No active workers to poll. ${ambiguous.length} worker(s) have ambiguous teardown and still occupy the serial slot: ${ambiguous.map((w) => `${w.agent} (${w.slug}, pane ${w.paneId})`).join(", ")}. Reconcile or close them before spawning the next item.` : "No active workers to poll.") + (goneNoteLines.length ? `
+      const text = (awaitingRelay.length ? `No active workers to poll. ${awaitingRelay.length} worker(s) awaiting a relay -- answer each with swarm_resolve_blocked before polling again: ${awaitingRelay.map(describe).join(", ")}.` : ambiguous.length ? `No active workers to poll. ${ambiguous.length} worker(s) have ambiguous teardown and still occupy the serial slot: ${ambiguous.map((w) => `${w.agent} (${w.slug}, pane ${w.paneId})`).join(", ")}. Reconcile or close them before spawning the next item.` : goneNoteLines.length ? "No active workers to poll (all tracked workers vanished or were cleared before settling):" : "No active workers to poll.") + (goneNoteLines.length ? `
 
 ${goneNoteLines.join("\n")}` : "");
       return {
@@ -1870,7 +1885,9 @@ ${goneNoteLines.join("\n")}` : "");
     const processed = await Promise.all(
       rawEvents.map(async (event) => {
         const worker = workersByAgent.get(event.agent);
-        if (!worker) return null;
+        if (!worker) {
+          return event.detail?.startsWith("reconcile: ") ? event : null;
+        }
         if (event.kind === "blocked") {
           let getResult;
           try {

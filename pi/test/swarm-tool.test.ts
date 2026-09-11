@@ -4494,6 +4494,155 @@ describe("a stranded awaiting_relay record is reconciled on a warm poll", () => 
   });
 });
 
+describe("cold-load / between-polls reconciliation of dead workers", () => {
+  let dir: string;
+  let priorStateDir: string | undefined;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "swarm-reconcile-drop-"));
+    priorStateDir = process.env.PI_SWARM_STATE_DIR;
+    process.env.PI_SWARM_STATE_DIR = dir;
+  });
+
+  afterEach(() => {
+    if (priorStateDir === undefined) delete process.env.PI_SWARM_STATE_DIR;
+    else process.env.PI_SWARM_STATE_DIR = priorStateDir;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("a worker that vanished between polls surfaces as an error event on cold load, not bare 'No active workers'", async () => {
+    const runId = "drop-run";
+    saveState(
+      {
+        runId,
+        concurrency: 2,
+        nextCounter: 1,
+        workers: [
+          {
+            agent: "drop-run-w1",
+            slug: "vanished-item",
+            paneId: "w1:pA",
+            tabId: "w1:tA",
+            lifecycle: "active",
+          },
+        ],
+      },
+      dir,
+    );
+
+    const stub = makeStubPi((argv) =>
+      argv[0] === "agent" && argv[1] === "list"
+        ? {
+            code: 0,
+            stdout: realAgentListEnvelope(UNNAMED_CLAUDE_ENTRY), // empty live list
+            stderr: "",
+          }
+        : { code: 0, stdout: "", stderr: "" },
+    );
+    registerSwarmTools(stub.pi as unknown as Parameters<typeof registerSwarmTools>[0]);
+    const poll = stub.tools.get("swarm_poll");
+    if (!poll) throw new Error("swarm_poll was never registered");
+
+    const res = (await poll.execute(
+      ...(["c1", { runId, timeoutMs: 1000 }, undefined] as unknown as never[]),
+    )) as {
+      content: { text: string }[];
+      details: { events: { kind: string; agent: string; slug: string; detail?: string }[] };
+    };
+
+    expect(res.details.events).toHaveLength(1);
+    expect(res.details.events[0].kind).toBe("error");
+    expect(res.details.events[0].agent).toBe("drop-run-w1");
+    expect(res.details.events[0].slug).toBe("vanished-item");
+    expect(res.details.events[0].detail).toContain("worker process vanished");
+    expect(res.content[0].text).toContain("vanished-item (drop-run-w1) error");
+    expect(res.content[0].text).not.toBe("No active workers to poll.");
+    // Worker record is dropped from disk
+    expect(loadState(runId, dir)?.workers).toEqual([]);
+  });
+
+  test("a legitimately drained queue reports bare 'No active workers to poll.'", async () => {
+    const runId = "empty-run";
+    saveState(
+      {
+        runId,
+        concurrency: 2,
+        nextCounter: 0,
+        workers: [],
+      },
+      dir,
+    );
+
+    const stub = makeStubPi(() => ({ code: 0, stdout: "", stderr: "" }));
+    registerSwarmTools(stub.pi as unknown as Parameters<typeof registerSwarmTools>[0]);
+    const poll = stub.tools.get("swarm_poll");
+    if (!poll) throw new Error("swarm_poll was never registered");
+
+    const res = (await poll.execute(
+      ...(["c1", { runId, timeoutMs: 1000 }, undefined] as unknown as never[]),
+    )) as { content: { text: string }[]; details: { events: unknown[] } };
+
+    expect(res.details.events).toEqual([]);
+    expect(res.content[0].text).toBe("No active workers to poll.");
+  });
+
+  test("an all-workers-vanished prune report is distinguishable from a drained queue", async () => {
+    const runId = "prune-all-run";
+    saveState(
+      {
+        runId,
+        concurrency: 2,
+        nextCounter: 1,
+        workers: [
+          {
+            agent: "prune-w1",
+            slug: "stale-item",
+            paneId: "w1:pA",
+            tabId: "w1:tA",
+            lifecycle: "awaiting_relay",
+          },
+        ],
+      },
+      dir,
+    );
+
+    let agentAlive = true;
+    const stub = makeStubPi((argv) =>
+      argv[0] === "agent" && argv[1] === "list"
+        ? {
+            code: 0,
+            stdout: agentAlive
+              ? realAgentListEnvelope(UNNAMED_CLAUDE_ENTRY, {
+                  agent: "pi",
+                  agent_status: "idle",
+                  name: "prune-w1",
+                  pane_id: "w1:pA",
+                })
+              : realAgentListEnvelope(UNNAMED_CLAUDE_ENTRY),
+            stderr: "",
+          }
+        : { code: 0, stdout: "", stderr: "" },
+    );
+    registerSwarmTools(stub.pi as unknown as Parameters<typeof registerSwarmTools>[0]);
+    const poll = stub.tools.get("swarm_poll");
+    if (!poll) throw new Error("swarm_poll was never registered");
+
+    // First poll: agent is live
+    await poll.execute(...(["c1", { runId, timeoutMs: 1000 }, undefined] as unknown as never[]));
+
+    // Agent vanishes in warm state; second poll prunes it
+    agentAlive = false;
+    const second = (await poll.execute(
+      ...(["c2", { runId, timeoutMs: 1000 }, undefined] as unknown as never[]),
+    )) as { content: { text: string }[]; details: { events: unknown[] } };
+
+    expect(second.content[0].text).toContain(
+      "No active workers to poll (all tracked workers vanished or were cleared before settling):",
+    );
+    expect(second.content[0].text).toContain("stale worker record cleared");
+  });
+});
+
 describe("worker capture offers travel to the orchestrator", () => {
   let dir: string;
   let priorStateDir: string | undefined;

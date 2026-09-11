@@ -901,12 +901,33 @@ export class SwarmToolContext {
       }
     }
 
-    const reconciled =
+    const { state: reconciled, dropped } =
       entries === null || recordedMode === "serial"
-        ? loaded
-        : reconcileState(loaded, liveIds).state;
+        ? { state: loaded, dropped: [] }
+        : reconcileState(loaded, liveIds);
     this.activeRuns.set(runId, reconciled);
     saveState(reconciled, this.stateDir);
+
+    if (dropped.length > 0) {
+      const rt = this.getRuntime(runId);
+      for (const w of dropped) {
+        const teardown = await this.harvestWorkerIOWithStatus(loaded, w);
+        const offers = [...(w.terminalCaptures ?? []), ...teardown.offers];
+        rt.pendingEvents.push({
+          kind: "error",
+          agent: w.agent,
+          slug: w.slug,
+          paneId: w.paneId,
+          captures: offers,
+          detail:
+            `reconcile: agent gone from herdr between polls -- worker process vanished; ` +
+            `outcome inferred, not observed. Verify the item's state before treating it as complete.${
+              w.pendingAmend ? ` ${amendOutstandingNote(w.pendingAmend, Date.now())}` : ""
+            }`,
+        });
+      }
+    }
+
     return reconciled;
   }
 
@@ -1769,7 +1790,9 @@ export class SwarmToolContext {
             ? `No active workers to poll. ${ambiguous.length} worker(s) have ambiguous teardown and still occupy the serial slot: ${ambiguous
                 .map((w) => `${w.agent} (${w.slug}, pane ${w.paneId})`)
                 .join(", ")}. Reconcile or close them before spawning the next item.`
-            : "No active workers to poll.") +
+            : goneNoteLines.length
+              ? "No active workers to poll (all tracked workers vanished or were cleared before settling):"
+              : "No active workers to poll.") +
         (goneNoteLines.length ? `\n\n${goneNoteLines.join("\n")}` : "");
       return {
         content: [{ type: "text", text }],
@@ -1810,7 +1833,9 @@ export class SwarmToolContext {
     const processed = await Promise.all(
       rawEvents.map(async (event): Promise<PollEvent | null> => {
         const worker = workersByAgent.get(event.agent);
-        if (!worker) return null;
+        if (!worker) {
+          return event.detail?.startsWith("reconcile: ") ? event : null;
+        }
         if (event.kind === "blocked") {
           let getResult: ExecResult;
           try {
