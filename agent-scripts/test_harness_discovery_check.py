@@ -319,6 +319,28 @@ class ProbeTestCase(unittest.TestCase):
         self.assertIn("pi", output)
         self.assertNotIn("claude", output)
 
+    def test_probe_env_pwd_matches_cwd(self) -> None:
+        """subprocess ``cwd=`` alone doesn't update the inherited ``PWD``
+        env var, and opencode resolves its project root from ``$PWD`` —
+        not the real working directory — so a probe left with a stale
+        ``PWD`` silently reads the caller's own repo instead of the
+        fixture, misreporting ERROR. ``env["PWD"]`` must track ``cwd``."""
+        seen_env: dict[str, object] = {}
+
+        def recording_run(cmd, **kwargs):
+            seen_env["env"] = kwargs.get("env")
+            seen_env["cwd"] = kwargs.get("cwd")
+            return _make_result(stdout=hdc._TOKEN_AGENTS_ROOT)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir) / "fixture"
+            repo.mkdir()
+            hdc._run_probe("opencode", repo, run_command=recording_run)
+
+        env = seen_env["env"]
+        self.assertIsNotNone(env, "run_command must be called with an env kwarg")
+        self.assertEqual(env.get("PWD"), str(seen_env["cwd"]))
+
 
 def counting_run_factory(
     versions: dict[str, str],

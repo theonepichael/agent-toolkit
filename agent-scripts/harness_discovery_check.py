@@ -543,6 +543,12 @@ def _run_probe(
         return set(), f"{name}: binary not found"
     prompt = _probe_prompt(_ALL_TOKENS)
     cmd = _harness_probe_command(name, prompt)
+    # `cwd=` alone chdir()s the child but leaves the inherited `PWD` env var
+    # stale at the caller's own directory. opencode resolves its project
+    # root from `$PWD`, not the real working directory, so a stale PWD here
+    # makes it silently probe the caller's own repo instead of the fixture.
+    env = dict(os.environ)
+    env["PWD"] = str(cwd)
     try:
         result = run_command(
             cmd,
@@ -550,6 +556,7 @@ def _run_probe(
             text=True,
             timeout=120,
             cwd=cwd,
+            env=env,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return set(), f"{name}: probe invocation failed: {exc}"
