@@ -2,6 +2,10 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { describe, expect, test } from "./helpers/tap";
 
 import { registerFatalErrorExit, type FatalErrorExitDeps } from "../extensions/fatal-error-exit.js";
+import {
+  FATAL_ERROR_EXIT_TOKEN,
+  fatalErrorExitMatch,
+} from "../extensions/swarm-lib/swarm-scheduling.js";
 
 /**
  * pi's `SessionManager.getEntries()` returns `SessionEntry` values. A chat
@@ -132,5 +136,26 @@ describe("fatal-error-exit extension", () => {
       ]),
     );
     expect(h.exitCalls).toEqual([1]);
+  });
+});
+
+/**
+ * Drift bound between the writer and the reader, in the direction that keeps
+ * the worker-side extension standalone: `fatal-error-exit.ts` does NOT import
+ * the orchestrator's constant (a pi worker has no reason to know `swarm-lib`
+ * exists, and `swarm-lib` is bundled into the Copilot swarm build, so pulling
+ * the extension's concern in there would drag pi-specific code with it). The
+ * token is therefore duplicated by design, and this test is what stops the two
+ * copies from separating. The emitted line is fed through the REAL matcher as
+ * well, so a wording change that keeps the token but breaks the window
+ * normalization is caught here too.
+ */
+describe("fatal-error-exit <-> swarm-scheduling sentinel contract", () => {
+  test("the emitted line carries the token the orchestrator screens for", async () => {
+    const h = setup(unattended);
+    await h.fire("agent_settled", ctxWith([assistant("error", "usage limit")]));
+    expect(h.exitCalls).toEqual([1]);
+    expect(h.stderrLines[0]).toContain(FATAL_ERROR_EXIT_TOKEN);
+    expect(fatalErrorExitMatch(h.stderrLines[0] ?? "")).not.toBeNull();
   });
 });
