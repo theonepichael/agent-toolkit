@@ -967,7 +967,7 @@ llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, open
 - Public functions:
   - `containment_available() -> bool` — Whether OS containment can actually be established on this host.
   - `daemon_listening(backend: str) -> bool` — Whether a daemon belonging to ``backend`` currently holds a listening socket.
-  - `build_isolated_command(backend: str, prompt: str, *, model: str | None) -> list[str]` — Build the only command any caller may run for ``backend``.
+  - `build_isolated_command(backend: str, prompt: str, *, model: str | None = None, mode: str = 'text-only', target_dir: Path | None = None) -> list[str]` — Build the only command any caller may run for ``backend``.
   - `eligibility_report() -> dict[str, dict[str, object]]` — Per-backend presence and contract eligibility, with a reason when not.
   - `check_prompt_size(prompt: str, max_bytes: int = GLOBAL_MAX_PROMPT_BYTES) -> None` — Raise :class:`BackendPayloadSizeError` if ``prompt`` exceeds ``max_bytes``.
   - `available_backends() -> list[str]` — Return the backends in :data:`BACKEND_PRIORITY` that are on ``PATH``.
@@ -975,10 +975,11 @@ llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, open
   - `resolve_backend() -> str | None` — Return the highest-priority eligible backend, or ``None`` if none is.
   - `run_with_fallback(runner: 'Callable[[str], str]', *, backends: list[str] | None = None) -> tuple[str, str]` — Try each eligible backend in turn; return ``(backend, output)``.
   - `run_backend_command(cmd: list[str], timeout: float) -> str` — Run a backend CLI command and return its critique/prose text.
-  - `run_agy(prompt: str, *, model: str, timeout: float) -> str` — Run the ``agy`` backend with the given model and return its text output.
-  - `run_copilot(prompt: str, *, model: str | None, timeout: float) -> str` — Run the ``copilot`` backend and return its text output.
-  - `run_pi(prompt: str, *, model: str | None, timeout: float) -> str` — Run Pi's headless mode and return its text output.
-  - `run_opencode(prompt: str, *, model: str | None, timeout: float) -> str` — Run opencode's default agent (no ``--agent`` override) and return its text output.
+  - `run_codex(prompt: str, *, model: str | None = None, timeout: float = 120, mode: str = 'text-only', target_dir: Path | None = None) -> str` — Run Codex CLI non-interactively and return its critique text.
+  - `run_agy(prompt: str, *, model: str, timeout: float, mode: str = 'text-only', target_dir: Path | None = None) -> str` — Run the ``agy`` backend with the given model and return its text output.
+  - `run_copilot(prompt: str, *, model: str | None, timeout: float, mode: str = 'text-only', target_dir: Path | None = None) -> str` — Run the ``copilot`` backend and return its text output.
+  - `run_pi(prompt: str, *, model: str | None, timeout: float, mode: str = 'text-only', target_dir: Path | None = None) -> str` — Run Pi's headless mode and return its text output.
+  - `run_opencode(prompt: str, *, model: str | None, timeout: float, mode: str = 'text-only', target_dir: Path | None = None) -> str` — Run opencode's default agent (no ``--agent`` override) and return its text output.
 - Tested by: `agent-scripts/test_dev_status.py`, `agent-scripts/test_gen_interfaces.py`, `agent-scripts/test_llm_backends.py`, `agent-scripts/test_second_opinion.py`, `agent-scripts/test_timing.py`, `test/test_backend_isolation.py`, `test/test_backend_isolation_live.py`
 
 ### `agent-scripts/notify.py`
@@ -1156,11 +1157,13 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
   - `--verbose/-v`
 - Subcommands:
   - `detect` — list available backends as JSON
-  - `review <plan-file-or-text> [--backend <BACKEND>] [--focus-file <FOCUS_FILE>] [--model-index N]` — get one critique from the priority-selected backend
+  - `review <plan-file-or-text> [--backend <BACKEND>] [--dir <DIR>] [--text-only] [--focus-file <FOCUS_FILE>] [--model-index N]` — get one critique from the priority-selected backend
     - `--backend` — force this backend instead of priority-order fallback (choices computed at runtime)
+    - `--dir` — root directory of the codebase to inspect in grounded review (defaults to current working directory)
+    - `--text-only` — disable codebase exploration and run ungrounded text-only critique (default: False)
     - `--focus-file` — path to a file of plan-specific risk hints, appended to the critique prompt as areas to scrutinize (supplements, not replaces, the generic adversarial mandate)
-    - `--model-index` — 0-based index into the backend model pool (SECOND_OPINION_{AGY,PI,OPENCODE,COPILOT}_MODEL_POOL) for this call -- round 1 of a rotation is index 0, round 2 is index 1, etc. Supported for agy/pi/opencode/copilot; an explicit index selects the pool even when a single-model override is set, and is a hard error if the pool is unset/empty or the index is out of range (was previously a silent no-op/fallback).
-- Environment: `SECOND_OPINION_AGY_MODEL`, `SECOND_OPINION_AGY_MODEL_POOL`, `SECOND_OPINION_AGY_TIMEOUT_SECONDS`, `SECOND_OPINION_COPILOT_MODEL`, `SECOND_OPINION_COPILOT_MODEL_POOL`, `SECOND_OPINION_COPILOT_TIMEOUT_SECONDS`, `SECOND_OPINION_OPENCODE_MODEL`, `SECOND_OPINION_OPENCODE_MODEL_POOL`, `SECOND_OPINION_OPENCODE_TIMEOUT_SECONDS`, `SECOND_OPINION_PI_MODEL`, `SECOND_OPINION_PI_MODEL_POOL`, `SECOND_OPINION_PI_TIMEOUT_SECONDS`, `SECOND_OPINION_TIMEOUT_SECONDS`
+    - `--model-index` — 0-based index into the backend model pool (SECOND_OPINION_{CODEX,AGY,PI,OPENCODE,COPILOT}_MODEL_POOL) for this call -- round 1 of a rotation is index 0, round 2 is index 1, etc. Supported for codex/agy/pi/opencode/copilot; an explicit index selects the pool even when a single-model override is set, and is a hard error if the pool is unset/empty or the index is out of range (was previously a silent no-op/fallback).
+- Environment: `SECOND_OPINION_AGY_MODEL`, `SECOND_OPINION_AGY_MODEL_POOL`, `SECOND_OPINION_AGY_TIMEOUT_SECONDS`, `SECOND_OPINION_CODEX_MODEL`, `SECOND_OPINION_CODEX_MODEL_POOL`, `SECOND_OPINION_CODEX_TIMEOUT_SECONDS`, `SECOND_OPINION_COPILOT_MODEL`, `SECOND_OPINION_COPILOT_MODEL_POOL`, `SECOND_OPINION_COPILOT_TIMEOUT_SECONDS`, `SECOND_OPINION_OPENCODE_MODEL`, `SECOND_OPINION_OPENCODE_MODEL_POOL`, `SECOND_OPINION_OPENCODE_TIMEOUT_SECONDS`, `SECOND_OPINION_PI_MODEL`, `SECOND_OPINION_PI_MODEL_POOL`, `SECOND_OPINION_PI_TIMEOUT_SECONDS`, `SECOND_OPINION_TIMEOUT_SECONDS`
 - Filesystem constants:
   - `DATA_DIR = Path.home() / '.claude' / 'data' / 'grill'`
 - Explicit exit codes: `1`
@@ -1175,14 +1178,15 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
   - `class ReviewRequest` — One review request for :func:`review_plan`.
   - `class ReviewResult` — A successful critique: the backend used, its response, and diagnostics.
 - Public functions:
-  - `build_prompt(plan_text: str, focus_hints: str | None) -> str` — Build the critique prompt, optionally inserting plan-specific focus hints.
+  - `build_prompt(plan_text: str, focus_hints: str | None, *, grounded: bool = True) -> str` — Build the critique prompt, optionally inserting plan-specific focus hints.
   - `die(msg: str) -> NoReturn` — Print an error to stderr, prefixed for this script, and exit with status 1.
   - `sanitize_plan_text(plan_text: str) -> tuple[str, int]` — Strip ephemeral review debris headers/sections from a plan.
   - `resolve_plan_text(arg: str) -> str` — Resolve a CLI argument to plan text: a file's contents, or the arg itself.
-  - `run_agy(prompt: str, *, model_index: int | None = None) -> str` — Run the ``agy`` backend and return its critique text.
-  - `run_opencode(prompt: str, *, model_index: int | None = None) -> str` — Run the ``opencode`` backend's adversary agent and return its critique text.
-  - `run_copilot(prompt: str, *, model_index: int | None = None) -> str` — Run the ``copilot`` backend and return its critique text.
-  - `run_pi(prompt: str, *, model_index: int | None = None) -> str` — Run the ``pi`` backend and return its critique text.
+  - `run_codex(prompt: str, *, model_index: int | None = None, mode: str | None = None, target_dir: Path | None = None) -> str` — Run the ``codex`` backend and return its critique text.
+  - `run_agy(prompt: str, *, model_index: int | None = None, mode: str | None = None, target_dir: Path | None = None) -> str` — Run the ``agy`` backend and return its critique text.
+  - `run_opencode(prompt: str, *, model_index: int | None = None, mode: str | None = None, target_dir: Path | None = None) -> str` — Run the ``opencode`` backend's adversary agent and return its critique text.
+  - `run_copilot(prompt: str, *, model_index: int | None = None, mode: str | None = None, target_dir: Path | None = None) -> str` — Run the ``copilot`` backend and return its critique text.
+  - `run_pi(prompt: str, *, model_index: int | None = None, mode: str | None = None, target_dir: Path | None = None) -> str` — Run the ``pi`` backend and return its critique text.
   - `backend_label(backend: str, *, model_index: int | None = None) -> str` — Return ``backend``'s display label, appending the resolved model if any.
   - `review_plan(request: ReviewRequest, *, verbose: bool = False, quiet: bool = False) -> ReviewResult` — Run one adversarial review of ``request.plan_text`` and return the result.
   - `build_parser() -> argparse.ArgumentParser` — Build the full argument parser for every subcommand.

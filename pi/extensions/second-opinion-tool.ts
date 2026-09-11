@@ -18,7 +18,7 @@ const ACTIONS = ["detect", "review"] as const;
 
 export type Action = (typeof ACTIONS)[number];
 
-export type Field = "planFile" | "backend" | "focusFile" | "modelIndex";
+export type Field = "planFile" | "backend" | "focusFile" | "modelIndex" | "dir" | "textOnly";
 
 interface ActionFields {
   readonly allowed: readonly Field[];
@@ -28,7 +28,7 @@ interface ActionFields {
 const ACTION_FIELDS: Record<Action, ActionFields> = {
   detect: { allowed: [], required: [] },
   review: {
-    allowed: ["planFile", "backend", "focusFile", "modelIndex"],
+    allowed: ["planFile", "backend", "focusFile", "modelIndex", "dir", "textOnly"],
     required: ["planFile"],
   },
 };
@@ -39,6 +39,8 @@ export interface SecondOpinionParams {
   backend?: string;
   focusFile?: string;
   modelIndex?: number;
+  dir?: string;
+  textOnly?: boolean;
 }
 
 export function assertFields(action: Action, params: SecondOpinionParams): void {
@@ -80,6 +82,8 @@ export function buildArgv(action: Action, params: SecondOpinionParams): string[]
         "review",
         params.planFile!,
         ...(params.backend ? ["--backend", params.backend] : []),
+        ...(params.dir ? ["--dir", params.dir] : []),
+        ...(params.textOnly ? ["--text-only"] : []),
         ...(params.focusFile ? ["--focus-file", params.focusFile] : []),
         // Compared against undefined, not truthiness: index 0 is round 1 of
         // the rotation, and dropping it would silently fall back to the
@@ -99,7 +103,7 @@ export default function (pi: ExtensionAPI) {
     promptGuidelines: [
       "Never invoke second_opinion.py via bash -- always use second_opinion instead.",
       'second_opinion covers everything second_opinion.py does: action "detect" lists available backends as JSON, and action "review" returns one critique of the plan at planFile. If you are about to compose a `python3 ~/.claude/scripts/second_opinion.py ...` bash command, use second_opinion instead.',
-      "Never shell out to agy, opencode, pi, or copilot directly for a critique -- all backend I/O goes through this tool.",
+      "Never shell out to codex, agy, pi, opencode, or copilot directly for a critique -- all backend I/O goes through this tool.",
       "It is single-round: one call, one critique. The multi-round loop, the plan revision between rounds, and the convergence judgment are yours, not the tool's.",
       "Always pass planFile as a path. Never inline plan text -- write the plan to a file first.",
       "modelIndex is 0-based: round 1 is 0, round 2 is 1. If a call fails with a pool configuration error naming --model-index, retry that same round once with modelIndex omitted. That is the valid fallback, not a skipped round.",
@@ -116,6 +120,18 @@ export default function (pi: ExtensionAPI) {
         Type.String({
           description:
             "review: force this backend instead of priority-order fallback. Use action detect to see what is available.",
+        }),
+      ),
+      dir: Type.Optional(
+        Type.String({
+          description:
+            "review: root directory of the codebase to inspect in grounded review (defaults to current working directory).",
+        }),
+      ),
+      textOnly: Type.Optional(
+        Type.Boolean({
+          description:
+            "review: disable codebase exploration and run ungrounded text-only critique (default: false).",
         }),
       ),
       focusFile: Type.Optional(

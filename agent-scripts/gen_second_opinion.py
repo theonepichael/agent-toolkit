@@ -81,7 +81,15 @@ for harness-specific wording, then regenerate -->"""
 # (not its top-level --quiet/-q / --verbose/-v, which are cli_common
 # plumbing common to every script in this repo and were never part of any
 # skill doc's documented usage).
-CONTRACT_TOKENS = ("detect", "review", "--backend", "--focus-file", "--model-index")
+CONTRACT_TOKENS = (
+    "detect",
+    "review",
+    "--backend",
+    "--dir",
+    "--focus-file",
+    "--model-index",
+    "--text-only",
+)
 
 
 @dataclass(frozen=True)
@@ -117,11 +125,11 @@ allowed-tools: [Read, Write, AskUserQuestion, "Bash(python3 ~/.claude/scripts/se
         # claude reads $ARGUMENTS directly, the harness's own invocation
         # convention (checked against claude/commands/*.md's own house
         # style, 2026-08-19)
-        backends_never="`agy`/`opencode`/`pi`/`copilot`",
-        # claude can shell to all four backends, so "no backend available"
-        # names all four (checked against llm_backends.py, 2026-08-30 —
-        # pi joined the list alongside opencode, not in place of it)
-        backends_none="none of `agy`, `opencode`, `pi`, or `copilot`",
+        backends_never="`codex`/`agy`/`opencode`/`pi`/`copilot`",
+        # claude can shell to all five backends, so "no backend available"
+        # names all five (checked against llm_backends.py, 2026-09-11 —
+        # codex joined as 1st priority)
+        backends_none="none of `codex`, `agy`, `opencode`, `pi`, or `copilot`",
         # claude reads $ARGUMENTS directly (checked against
         # claude/commands/*.md's own house style, 2026-08-19)
         target_source_opening=(
@@ -159,6 +167,8 @@ allowed-tools: [Read, Write, AskUserQuestion, "Bash(python3 ~/.claude/scripts/se
 ```
 second_opinion.py detect                        # which backends are present (JSON)
 second_opinion.py review <plan-file-or-text> \\
+    [--dir <path>] \\
+    [--text-only] \\
     [--focus-file <path>] \\
     [--model-index N]                            # one critique from the
                                                   # priority-selected backend,
@@ -190,10 +200,9 @@ description: "Send a plan to a non-Claude model for adversarial critique, then i
 """,
         # opencode's user-typed command form also reads $ARGUMENTS, per
         # opencode's own command-file docs (2026-08-19)
-        backends_never="`agy`/`opencode`/`pi`/`copilot`",
-        # opencode can shell to all four backends, 2026-08-30 (pi added
-        # alongside opencode, not in place of it)
-        backends_none="none of `agy`, `opencode`, `pi`, or `copilot`",
+        backends_never="`codex`/`agy`/`opencode`/`pi`/`copilot`",
+        # opencode can shell to all five backends, 2026-09-11 (codex added)
+        backends_none="none of `codex`, `agy`, `opencode`, `pi`, or `copilot`",
         # the user-typed command form reads $ARGUMENTS, same as claude's,
         # per opencode's own command-file docs (2026-08-19)
         target_source_opening=(
@@ -231,6 +240,8 @@ description: "Send a plan to a non-Claude model for adversarial critique, then i
 ```
 second_opinion.py detect                        # which backends are present (JSON)
 second_opinion.py review <plan-file-or-text> \\
+    [--dir <path>] \\
+    [--text-only] \\
     [--focus-file <path>] \\
     [--model-index N]                            # one critique from the
                                                   # priority-selected backend,
@@ -261,11 +272,11 @@ name: second-opinion
 description: Send a plan to a non-Claude model for adversarial critique, then iterate — revise, re-send, repeat — until the critique stops surfacing anything new or a round cap is hit. Use when the user wants a second opinion, an outside critique, or to stress-test a plan against a different model.
 ---
 """,
-        # opencode can shell to all four backends regardless of
-        # invocation layer, 2026-08-30 (pi added alongside opencode)
-        backends_never="`agy`/`opencode`/`pi`/`copilot`",
-        # opencode can shell to all four backends, 2026-08-30
-        backends_none="none of `agy`, `opencode`, `pi`, or `copilot`",
+        # opencode can shell to all five backends regardless of
+        # invocation layer, 2026-09-11 (codex added)
+        backends_never="`codex`/`agy`/`opencode`/`pi`/`copilot`",
+        # opencode can shell to all five backends, 2026-09-11
+        backends_none="none of `codex`, `agy`, `opencode`, `pi`, or `copilot`",
         # the model-invoked skill form has no $ARGUMENTS; it only sees the
         # invoking message, per opencode's own skill-invocation docs
         # (2026-08-19)
@@ -302,6 +313,8 @@ description: Send a plan to a non-Claude model for adversarial critique, then it
 ```
 second_opinion.py detect                        # which backends are present (JSON)
 second_opinion.py review <plan-file-or-text> \\
+    [--dir <path>] \\
+    [--text-only] \\
     [--focus-file <path>] \\
     [--model-index N]                            # one critique from the
                                                   # priority-selected backend,
@@ -334,14 +347,14 @@ allowed-tools: shell
 ---
 """,
         # copilot cannot shell to a sibling harness's CLI directly; the
-        # skill still names all four since copilot itself can be the
+        # skill still names all five since copilot itself can be the
         # backend (unlike agy, which never can), per copilot skills docs
-        # (2026-08-19; pi added 2026-08-30 alongside opencode)
-        backends_never="`agy`/`opencode`/`pi`/`copilot`",
-        # copilot can be a backend for the other three harnesses even
+        # (2026-09-11; codex added)
+        backends_never="`codex`/`agy`/`opencode`/`pi`/`copilot`",
+        # copilot can be a backend for the other harnesses even
         # though it can't shell out itself, so "no backend available"
-        # still names all four, 2026-08-30
-        backends_none="none of `agy`, `opencode`, `pi`, or `copilot`",
+        # still names all five, 2026-09-11
+        backends_none="none of `codex`, `agy`, `opencode`, `pi`, or `copilot`",
         # copilot CLI has no $ARGUMENTS equivalent; it only sees what the
         # user typed or pasted, per copilot skills docs (2026-08-19)
         target_source_opening=(
@@ -381,6 +394,8 @@ allowed-tools: shell
 ```
 second_opinion.py detect                        # which backends are present (JSON)
 second_opinion.py review <plan-file-or-text> \\
+    [--dir <path>] \\
+    [--text-only] \\
     [--focus-file <path>] \\
     [--model-index N]                            # one critique from the
                                                   # priority-selected backend,
@@ -411,13 +426,12 @@ name: second-opinion
 description: Send a plan to a non-Claude model for adversarial critique, then iterate — revise, re-send, repeat — until the critique stops surfacing anything new or a round cap is hit. Use when the user wants a second opinion, an outside critique, or to stress-test a plan against a different model.
 ---
 """,
-        # agy can shell to agy/opencode/pi only — it cannot reach copilot,
-        # per agy's own backshelling docs (2026-08-19; pi added 2026-08-30
-        # as the same class of CLI tool as opencode)
-        backends_never="`agy`/`opencode`/`pi`",
-        # agy can only ever see agy, opencode, or pi as a backend, so "no
-        # backend available" names those three, 2026-08-30
-        backends_none="none of `agy`, `opencode`, or `pi`",
+        # agy can shell to codex/agy/opencode/pi — it cannot reach copilot,
+        # per agy's own backshelling docs (2026-09-11; codex added)
+        backends_never="`codex`/`agy`/`opencode`/`pi`",
+        # agy can only ever see codex, agy, opencode, or pi as a backend, so "no
+        # backend available" names those four, 2026-09-11 (codex added)
+        backends_none="none of `codex`, `agy`, `opencode`, or `pi`",
         # agy CLI has no $ARGUMENTS equivalent; it only sees what the user
         # typed or pasted, per agy's own skills docs (2026-08-19)
         target_source_opening=(
@@ -455,6 +469,8 @@ description: Send a plan to a non-Claude model for adversarial critique, then it
 ```
 second_opinion.py detect                        # which backends are present (JSON)
 second_opinion.py review <plan-file-or-text> \\
+    [--dir <path>] \\
+    [--text-only] \\
     [--focus-file <path>] \\
     [--model-index N]                            # one critique from the
                                                   # priority-selected backend,
@@ -488,10 +504,10 @@ argument-hint: [plan file or text]
         # Pi's user-typed prompt-template form reads $ARGUMENTS with the
         # same placeholder syntax as opencode's command form (verified live
         # against a real Pi install, 2026-08-30) and, like opencode, has no
-        # restriction on which backend CLIs it can shell out to
-        backends_never="`agy`/`opencode`/`pi`/`copilot`",
-        # same reasoning as opencode's rows above, 2026-08-30
-        backends_none="none of `agy`, `opencode`, `pi`, or `copilot`",
+        # restriction on which backend CLIs it can shell out to (2026-09-11)
+        backends_never="`codex`/`agy`/`opencode`/`pi`/`copilot`",
+        # same reasoning as opencode's rows above, 2026-09-11 (codex added)
+        backends_none="none of `codex`, `agy`, `opencode`, `pi`, or `copilot`",
         # Pi's prompt-template form reads $ARGUMENTS, same as opencode's
         # command form, 2026-08-30
         target_source_opening=(
@@ -537,8 +553,8 @@ argument-hint: [plan file or text]
             "Call the `second_opinion` tool. Action `detect` lists the "
             "available backends as JSON. Action `review` returns one "
             "critique of the plan at `planFile`, optionally scoped with "
-            "`focusFile` and `modelIndex`. Never run `second_opinion.py` "
-            "via bash."
+            "`focusFile`, `modelIndex`, `dir`, and `textOnly`. Never run "
+            "`second_opinion.py` via bash."
         ),
         # the loop's per-round call, naming the tool and its parameter
         # names rather than the script and its CLI flags, 2026-08-30
@@ -571,10 +587,10 @@ description: "Send a plan to a non-Claude model for adversarial critique, then i
 ---
 """,
         # Pi's skill form has no restriction on which backend CLIs it can
-        # shell out to, same as pi/prompts/second-opinion.md (2026-09-01)
-        backends_never="`agy`/`opencode`/`pi`/`copilot`",
-        # same reasoning as pi/prompts/second-opinion.md above, 2026-09-01
-        backends_none="none of `agy`, `opencode`, `pi`, or `copilot`",
+        # shell out to, same as pi/prompts/second-opinion.md (2026-09-11)
+        backends_never="`codex`/`agy`/`opencode`/`pi`/`copilot`",
+        # same reasoning as pi/prompts/second-opinion.md above, 2026-09-11
+        backends_none="none of `codex`, `agy`, `opencode`, `pi`, or `copilot`",
         # the model-invoked/slash-invoked skill form has no $ARGUMENTS; it
         # sees what the user named or pasted, 2026-09-01
         target_source_opening=(
@@ -617,8 +633,8 @@ description: "Send a plan to a non-Claude model for adversarial critique, then i
             "Call the `second_opinion` tool. Action `detect` lists the "
             "available backends as JSON. Action `review` returns one "
             "critique of the plan at `planFile`, optionally scoped with "
-            "`focusFile` and `modelIndex`. Never run `second_opinion.py` "
-            "via bash."
+            "`focusFile`, `modelIndex`, `dir`, and `textOnly`. Never run "
+            "`second_opinion.py` via bash."
         ),
         # the loop's per-round call, naming the tool and its parameter
         # names rather than the script and its CLI flags, 2026-09-01
@@ -630,9 +646,9 @@ description: "Send a plan to a non-Claude model for adversarial critique, then i
 """,
         # the same call without the index, for the no-pool retry, 2026-09-01
         review_call_retry="""\
-    critique = second_opinion review
-                   planFile = <current_plan>
-                   [focusFile = <focus-hints-path>]   # retry, no index —\
+        critique = second_opinion review
+                       planFile = <current_plan>
+                       [focusFile = <focus-hints-path>]   # retry, no index —\
 """,
         # Pi reaches grill.py only through its native grill tool
         # (pi/extensions/grill-tool.ts); grill.py is off permission-gate.ts's
@@ -642,6 +658,79 @@ description: "Send a plan to a non-Claude model for adversarial critique, then i
             "the most recent session's `plan_path` from the `grill` tool's "
             "`show` action"
         ),
+    ),
+    "codex/skills/second-opinion/SKILL.md": HarnessParams(
+        frontmatter="""\
+---
+name: second-opinion
+description: Send a plan to a non-Claude model for adversarial critique, then iterate — revise, re-send, repeat — until the critique stops surfacing anything new or a round cap is hit. Use when the user wants a second opinion, an outside critique, or to stress-test a plan against a different model.
+---
+""",
+        # codex CLI can shell to all five backends, 2026-09-11
+        backends_never="`codex`/`agy`/`opencode`/`pi`/`copilot`",
+        # codex can shell to all five backends, 2026-09-11
+        backends_none="none of `codex`, `agy`, `opencode`, `pi`, or `copilot`",
+        # codex CLI has no $ARGUMENTS equivalent; it only sees what the user
+        # typed or pasted, per codex skills docs (2026-09-11)
+        target_source_opening=(
+            "If the user named a specific file path or pasted plan text, "
+            "treat that as the target."
+        ),
+        # echoes the same user-typed/pasted convention as the opening
+        # sentence above, 2026-09-11
+        target_source_echo="pasted text",
+        # codex CLI has no structured multi-choice widget; plain text per
+        # the shared instructions file's harnesses-without-a-widget
+        # convention, same as copilot and agy (2026-09-11)
+        ask_choose_overwrite=(
+            "apply the shared instructions file's convention for asking the "
+            "user to choose: overwrite (recommended) or leave as-is"
+        ),
+        # same plain-text convention as the overwrite choice above,
+        # 2026-09-11
+        ask_choose_cap=(
+            "apply the shared instructions file's convention for asking the "
+            "user to choose: keep your approach (recommended), use the "
+            "reviewer's suggestion, or let the user decide manually"
+        ),
+        # codex has no CLAUDE.md equivalent, 2026-09-11
+        instructions_ref="the shared instructions file's",
+        # codex is naming opencode's `adversary` agent but leaves it
+        # unnamed, same as copilot/agy, 2026-09-11
+        adversary_ref="the",
+        # every harness but Pi shells out to the script itself,
+        # 2026-09-11
+        io_entrypoint="`python3 ~/.claude/scripts/second_opinion.py`",
+        # every harness but Pi invokes the script through bash, so the
+        # usage block stays a runnable command block, 2026-09-11
+        usage_block="""\
+```
+second_opinion.py detect                        # which backends are present (JSON)
+second_opinion.py review <plan-file-or-text> \\
+    [--dir <path>] \\
+    [--text-only] \\
+    [--focus-file <path>] \\
+    [--model-index N]                            # one critique from the
+                                                  # priority-selected backend,
+                                                  # optionally scoped with
+                                                  # plan-specific risk hints
+```\
+""",
+        # the loop's per-round call, matching the bash usage block above,
+        # 2026-09-11
+        review_call="""\
+    critique = second_opinion.py review <current_plan> \\
+                   [--focus-file <focus-hints-path>] \\
+                   --model-index <round - 1>   # one call\
+""",
+        # the same call without the index, for the no-pool retry, 2026-09-11
+        review_call_retry="""\
+        critique = second_opinion.py review <current_plan> \\
+                       [--focus-file <focus-hints-path>]   # retry, no index —\
+""",
+        # every harness but Pi still reaches grill.py through bash, so the
+        # plan-path lookup stays a CLI invocation, 2026-09-11
+        grill_plan_lookup="`grill.py show`'s most recent session `plan_path`",
     ),
 }
 

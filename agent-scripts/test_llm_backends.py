@@ -112,7 +112,7 @@ class AvailableBackendsTests(unittest.TestCase):
         with patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"):
             self.assertEqual(
                 llm_backends.available_backends(),
-                ["agy", "pi", "opencode", "copilot"],
+                ["codex", "agy", "pi", "opencode", "copilot"],
             )
 
     def test_16_only_installed_backends_returned(self) -> None:
@@ -134,14 +134,17 @@ class AvailableBackendsTests(unittest.TestCase):
             patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
             patch.object(llm_backends, "containment_available", lambda: True),
         ):
-            self.assertEqual(llm_backends.resolve_backend(), "agy")
+            self.assertEqual(llm_backends.resolve_backend(), "codex")
 
     def test_18b_resolve_backend_skips_a_backend_it_cannot_isolate(self) -> None:
-        """On a host with no working namespaces, agy and opencode are
+        """On a host with no working namespaces and no codex, agy and opencode are
         ineligible (both need containment) and resolution falls to pi, which
         isolates by flags alone."""
         with (
-            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch(
+                "shutil.which",
+                side_effect=lambda b: f"/usr/bin/{b}" if b != "codex" else None,
+            ),
             patch.object(llm_backends, "containment_available", lambda: False),
         ):
             self.assertEqual(llm_backends.resolve_backend(), "pi")
@@ -428,6 +431,29 @@ class RunAgyTests(_ContainmentStubbed):
         self.assertIn('mount -t tmpfs tmpfs "$H"', script)
         self.assertIn("mount -t tmpfs tmpfs /tmp", script)
         self.assertIn("SB_SHADOW_OMIT=GEMINI.md", script)
+
+    def test_33c_containment_stages_target_dir_in_grounded_mode(self) -> None:
+        """In grounded mode, containment must stage SB_TARGET_DIR into $STAGE/target
+        before $HOME tmpfs is mounted and bind it into $H/workspace read-only."""
+        with patch.object(
+            llm_backends, "run_backend_command", return_value="t"
+        ) as mock_run:
+            llm_backends.run_agy(
+                "p",
+                model="m",
+                timeout=60,
+                mode="grounded",
+                target_dir=Path("/test/repo"),
+            )
+        argv = mock_run.call_args[0][0]
+        script = " ".join(argv)
+        self.assertIn("SB_TARGET_DIR=/test/repo", argv)
+        self.assertIn('mount --bind "$SB_TARGET_DIR" "$STAGE/target"', script)
+        self.assertIn('mount --bind "$STAGE/target" "$H/workspace"', script)
+        self.assertIn('mount -o remount,ro,bind "$H/workspace"', script)
+        stage_idx = script.index('mount --bind "$SB_TARGET_DIR" "$STAGE/target"')
+        tmpfs_h_idx = script.index('mount -t tmpfs tmpfs "$H"')
+        self.assertLess(stage_idx, tmpfs_h_idx)
 
 
 class RunCopilotTests(unittest.TestCase):
@@ -1222,6 +1248,78 @@ class RunCommandEnvSanitizationTests(unittest.TestCase):
             self.assertIsNotNone(passed_env)
             self.assertNotIn("HUGE_BLOB", passed_env)
             self.assertEqual(passed_env.get("NORMAL_VAR"), "normal")
+
+class CodexBackendTests(unittest.TestCase):
+    def test_codex_in_backend_priority(self) -> None:
+        self.assertEqual(llm_backends.BACKEND_PRIORITY[0], "codex")
+        self.assertEqual(
+            llm_backends.BACKEND_PRIORITY,
+            ["codex", "agy", "pi", "opencode", "copilot"],
+        )
+
+    def test_codex_text_only_command(self) -> None:
+        cmd = llm_backends.build_isolated_command(
+            "codex", "my prompt", model=None, mode="text-only"
+        )
+        self.assertIn("codex", cmd)
+        self.assertIn("exec", cmd)
+        self.assertIn("--color", cmd)
+        self.assertIn("never", cmd)
+        self.assertIn("--ephemeral", cmd)
+        self.assertIn("--ignore-rules", cmd)
+        self.assertIn("--ignore-user-config", cmd)
+        self.assertIn("--disable", cmd)
+        self.assertIn("shell_tool", cmd)
+        self.assertIn("my prompt", cmd)
+
+    def test_codex_grounded_command(self) -> None:
+        target = Path("/tmp/sample-repo")
+        cmd = llm_backends.build_isolated_command(
+            "codex", "my prompt", model="o3", mode="grounded", target_dir=target
+        )
+        self.assertIn("codex", cmd)
+        self.assertIn("exec", cmd)
+        self.assertIn("-s", cmd)
+        self.assertIn("read-only", cmd)
+        self.assertIn("-C", cmd)
+        self.assertIn(str(target), cmd)
+        self.assertIn("-m", cmd)
+        self.assertIn("o3", cmd)
+        self.assertIn("--ephemeral", cmd)
+        self.assertIn("my prompt", cmd)
+
+    def test_run_codex_json_parsing(self) -> None:
+        stdout = (
+            '{"type":"thread.started","thread_id":"123"}\n'
+            '{"type":"turn.started"}\n'
+            '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"critique content"}}\n'
+            '{"type":"turn.completed","usage":{}}\n'
+        )
+        with patch.object(
+            llm_backends, "_run_command", return_value=(0, stdout, "")
+        ) as mock_run:
+            result = llm_backends.run_codex("prompt", model=None, timeout=60)
+        self.assertEqual(result, "critique content")
+
+
+class GroundedModeTests(unittest.TestCase):
+    def test_pi_grounded_command(self) -> None:
+        target = Path("/tmp/sample-repo")
+        cmd = llm_backends.build_isolated_command(
+            "pi", "my prompt", model=None, mode="grounded", target_dir=target
+        )
+        self.assertIn("--tools", cmd)
+        self.assertIn("read,grep,find,ls", cmd)
+        self.assertNotIn("--no-tools", cmd)
+
+    def test_copilot_grounded_command(self) -> None:
+        target = Path("/tmp/sample-repo")
+        cmd = llm_backends.build_isolated_command(
+            "copilot", "my prompt", model=None, mode="grounded", target_dir=target
+        )
+        self.assertIn("--available-tools", cmd)
+        self.assertIn("view,grep,glob", cmd)
+        self.assertIn("--allow-tool=view", cmd)
 
 
 if __name__ == "__main__":

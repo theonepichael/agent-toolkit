@@ -35,6 +35,8 @@ import second_opinion
 # implementation: enumerated here explicitly and asserted against the
 # implementation's mapping so cleanup cannot silently hide a mapping omission.
 EXPECTED_MODEL_ENV_VARS = [
+    "SECOND_OPINION_CODEX_MODEL_POOL",
+    "SECOND_OPINION_CODEX_MODEL",
     "SECOND_OPINION_AGY_MODEL_POOL",
     "SECOND_OPINION_AGY_MODEL",
     "SECOND_OPINION_OPENCODE_MODEL_POOL",
@@ -107,6 +109,10 @@ class ModelEnvMappingTests(unittest.TestCase):
         self.assertEqual(
             second_opinion._POOL_ENV_VARS,
             {
+                "codex": (
+                    "SECOND_OPINION_CODEX_MODEL_POOL",
+                    "SECOND_OPINION_CODEX_MODEL",
+                ),
                 "agy": (
                     "SECOND_OPINION_AGY_MODEL_POOL",
                     "SECOND_OPINION_AGY_MODEL",
@@ -126,13 +132,13 @@ class ModelEnvMappingTests(unittest.TestCase):
             },
         )
 
-    def test_69b_mapping_yields_exactly_eight_expected_vars(self) -> None:
+    def test_69b_mapping_yields_exactly_ten_expected_vars(self) -> None:
         flat = [v for pair in second_opinion._POOL_ENV_VARS.values() for v in pair]
         self.assertEqual(sorted(flat), sorted(EXPECTED_MODEL_ENV_VARS))
-        self.assertEqual(len(flat), 8)
+        self.assertEqual(len(flat), 10)
 
     def test_69c_backend_tables_share_keys_and_order(self) -> None:
-        keys = ["agy", "pi", "opencode", "copilot"]
+        keys = ["codex", "agy", "pi", "opencode", "copilot"]
         self.assertEqual(list(second_opinion.BACKEND_PRIORITY), keys)
         self.assertEqual(list(second_opinion.BACKEND_RUNNERS.keys()), keys)
         self.assertEqual(list(second_opinion.BACKEND_LABELS.keys()), keys)
@@ -855,10 +861,10 @@ class CmdDetectTests(unittest.TestCase):
         ):
             second_opinion.cmd_detect(ns())
         report = json.loads(out.getvalue())
-        self.assertEqual(sorted(report), ["agy", "copilot", "opencode", "pi"])
+        self.assertEqual(sorted(report), ["agy", "codex", "copilot", "opencode", "pi"])
         self.assertTrue(report["agy"]["present"])
         self.assertTrue(report["agy"]["eligible"])
-        for absent in ("opencode", "pi", "copilot"):
+        for absent in ("codex", "opencode", "pi", "copilot"):
             self.assertFalse(report[absent]["present"], absent)
             self.assertFalse(report[absent]["eligible"], absent)
             self.assertEqual(report[absent]["reason"], "not installed", absent)
@@ -1136,7 +1142,7 @@ class CmdReviewTests(unittest.TestCase):
     def test_50d_automatic_selection_stops_on_first_candidate_config_error(
         self,
     ) -> None:
-        # agy is first in priority; an empty agy pool with an explicit index
+        # codex is first in priority; an empty codex pool with an explicit index
         # must stop selection (configuration error), NOT silently fall through
         # to opencode even though opencode is configured.
         err = io.StringIO()
@@ -1150,8 +1156,8 @@ class CmdReviewTests(unittest.TestCase):
         ):
             second_opinion.cmd_review(ns(plan="text", model_index=0))
         self.assertEqual(cm.exception.code, 1)
-        self.assertIn("SECOND_OPINION_AGY_MODEL_POOL", err.getvalue())
-        self.assertIn("for backend agy", err.getvalue())
+        self.assertIn("SECOND_OPINION_CODEX_MODEL_POOL", err.getvalue())
+        self.assertIn("for backend codex", err.getvalue())
 
     def test_50e_agy_index_resolves_pool_model(self) -> None:
         captured: dict[str, object] = {}
@@ -2260,6 +2266,95 @@ class PayloadSizePreflightTests(unittest.TestCase):
             second_opinion.cmd_review(ns(plan=plan, backend=None))
         self.assertEqual(cm.exception.code, 1)
         self.assertIn("all backends ruled out by payload size", err.getvalue())
+
+
+class GroundedReviewTests(unittest.TestCase):
+    """Verifies grounded review is the default, --text-only opts out, and --dir works."""
+
+    def test_review_plan_grounded_by_default(self) -> None:
+        captured: dict[str, object] = {}
+
+        def fake_runner(prompt: str, *, model_index=None, mode="grounded", target_dir=None):
+            captured["prompt"] = prompt
+            captured["mode"] = mode
+            captured["target_dir"] = target_dir
+            return "critique"
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/codex"),
+            patch.dict(second_opinion.BACKEND_RUNNERS, {"codex": fake_runner}),
+        ):
+            res = second_opinion.review_plan(
+                second_opinion.ReviewRequest(plan_text="inspect code", backend="codex")
+            )
+        self.assertEqual(captured["mode"], "grounded")
+        self.assertEqual(captured["target_dir"], Path.cwd().resolve())
+        self.assertIn("read-only access to the codebase", str(captured["prompt"]))
+
+    def test_review_plan_text_only_flag(self) -> None:
+        captured: dict[str, object] = {}
+
+        def fake_runner(prompt: str, *, model_index=None, mode="grounded", target_dir=None):
+            captured["prompt"] = prompt
+            captured["mode"] = mode
+            captured["target_dir"] = target_dir
+            return "critique"
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/codex"),
+            patch.dict(second_opinion.BACKEND_RUNNERS, {"codex": fake_runner}),
+        ):
+            res = second_opinion.review_plan(
+                second_opinion.ReviewRequest(
+                    plan_text="inspect code", backend="codex", text_only=True
+                )
+            )
+        self.assertEqual(captured["mode"], "text-only")
+        self.assertIn("you have no tools", str(captured["prompt"]))
+        self.assertNotIn("read-only access to the codebase", str(captured["prompt"]))
+
+    def test_cmd_review_dir_flag(self) -> None:
+        captured: dict[str, object] = {}
+
+        def fake_runner(prompt: str, *, model_index=None, mode="grounded", target_dir=None):
+            captured["target_dir"] = target_dir
+            return "critique"
+
+        custom_dir = Path("/tmp/my-repo")
+        with (
+            patch("shutil.which", return_value="/usr/bin/codex"),
+            patch.dict(second_opinion.BACKEND_RUNNERS, {"codex": fake_runner}),
+            patch("sys.stdout", io.StringIO()),
+        ):
+            second_opinion.cmd_review(
+                ns(plan="text", backend="codex", dir=custom_dir, text_only=False)
+            )
+        self.assertEqual(captured["target_dir"], custom_dir.resolve())
+
+    def test_run_codex_wrapper(self) -> None:
+        captured: dict[str, object] = {}
+
+        def fake_run_codex(prompt: str, *, model=None, timeout=120, mode="text-only", target_dir=None):
+            captured["prompt"] = prompt
+            captured["model"] = model
+            captured["mode"] = mode
+            captured["target_dir"] = target_dir
+            return "codex critique"
+
+        with (
+            patch.dict(os.environ, {"SECOND_OPINION_CODEX_MODEL_POOL": "gpt-5,o3"}),
+            patch.object(second_opinion.llm_backends, "run_codex", side_effect=fake_run_codex),
+        ):
+            out = second_opinion.run_codex(
+                "my prompt",
+                model_index=1,
+                mode="grounded",
+                target_dir=Path("/repo"),
+            )
+        self.assertEqual(out, "codex critique")
+        self.assertEqual(captured["model"], "o3")
+        self.assertEqual(captured["mode"], "grounded")
+        self.assertEqual(captured["target_dir"], Path("/repo"))
 
 
 if __name__ == "__main__":

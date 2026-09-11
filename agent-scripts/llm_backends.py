@@ -23,7 +23,7 @@ from pathlib import Path
 
 import cli_common
 
-BACKEND_PRIORITY = ["agy", "pi", "opencode", "copilot"]
+BACKEND_PRIORITY = ["codex", "agy", "pi", "opencode", "copilot"]
 
 # ── isolation contract ────────────────────────────────────────────────────
 #
@@ -80,6 +80,19 @@ NOT_APPLICABLE = object()
 # Every mechanism below was verified by running it — see the plan artifact at
 # ~/.claude/data/grill/2026-08-31-meta-second-opinion-backend-isol-plan.md.
 BACKEND_ISOLATION: dict[str, dict[str, object]] = {
+    # Verified: in text-only mode, --disable shell_tool disables shell tools;
+    # --ignore-rules and --ignore-user-config drop rulebooks and configs.
+    # In grounded mode, -s read-only -C <dir> natively sandboxes execution.
+    "codex": {
+        "_base": ["codex", "exec", "--color", "never"],
+        "tools_execution": ["--disable", "shell_tool"],
+        "tools_reach": NOT_APPLICABLE,
+        "skills": ["--disable", "shell_tool"],
+        "mcp": ["--disable", "shell_tool"],
+        "context": ["--ignore-rules", "--ignore-user-config"],
+        "templates": ["--ignore-user-config"],
+        "session": ["--ephemeral"],
+    },
     # Verified: --no-tools reports "no tools are available in this session";
     # -nc/-np leave no instruction text in context. Skills and MCP servers
     # reach pi as tools, so --no-tools covers them too.
@@ -246,9 +259,18 @@ def _uncovered_clauses(spec: dict[str, object]) -> list[str]:
 
 
 def build_isolated_command(
-    backend: str, prompt: str, *, model: str | None
+    backend: str,
+    prompt: str,
+    *,
+    model: str | None = None,
+    mode: str = "text-only",
+    target_dir: Path | None = None,
 ) -> list[str]:
     """Build the only command any caller may run for ``backend``.
+
+    In ``mode="grounded"``, code exploration tools are allowed
+    read-only access to ``target_dir`` (or cwd), while file writes are strictly
+    prevented. In ``mode="text-only"`` (default), all tools and filesystem access are disabled.
 
     Refuses rather than degrading: an incomplete descriptor, an unknown
     backend, or a containment-dependent backend on a host that cannot contain
@@ -288,7 +310,100 @@ def build_isolated_command(
             "or unprivileged user namespaces are disabled)"
         )
 
-    cmd: list[str] = list(spec["_base"])  # type: ignore[arg-type]
+    if backend == "codex":
+        if mode == "grounded":
+            cmd = [
+                "codex",
+                "exec",
+                "--color",
+                "never",
+                "--ephemeral",
+                "-s",
+                "read-only",
+            ]
+            if target_dir:
+                cmd += ["-C", str(target_dir)]
+            if model:
+                cmd += ["-m", model]
+            cmd.append(prompt)
+            return cmd
+        cmd = [
+            "codex",
+            "exec",
+            "--color",
+            "never",
+            "--ephemeral",
+            "--ignore-rules",
+            "--ignore-user-config",
+            "--disable",
+            "shell_tool",
+        ]
+        if model:
+            cmd += ["-m", model]
+        cmd.append(prompt)
+        return cmd
+
+    if backend == "pi" and mode == "grounded":
+        cmd = [
+            "pi",
+            "-p",
+            "--no-session",
+            "--provider",
+            "opencode-go",
+            "--no-context-files",
+            "--no-prompt-templates",
+            "--no-extensions",
+            "--no-skills",
+            "--tools",
+            "read,grep,find,ls",
+        ]
+        if model:
+            cmd += ["--model", model]
+        cmd.append(prompt)
+        return cmd
+
+    if backend == "copilot" and mode == "grounded":
+        cmd = [
+            "copilot",
+            "--silent",
+            "-p",
+            prompt,
+            "--no-custom-instructions",
+            "--available-tools",
+            "view,grep,glob",
+            "--allow-tool=view",
+            "--allow-tool=grep",
+            "--allow-tool=glob",
+            "--deny-tool=write",
+            "--deny-tool=shell",
+        ]
+        if model:
+            cmd += ["--model", model]
+        return cmd
+
+    if backend == "opencode" and mode == "grounded":
+        cmd = [
+            "opencode",
+            "run",
+            "--auto",
+            "--format",
+            "json",
+            "--agent",
+            "grounded_adversary",
+        ]
+        if model:
+            cmd += ["-m", model]
+        cmd.append(prompt)
+        if contained:
+            cmd = _wrap_in_containment(
+                cmd,
+                spec.get("_contain", {}),
+                target_dir=target_dir,
+                mode=mode,
+            )
+        return cmd
+
+    cmd = list(spec["_base"])  # type: ignore[arg-type]
     if spec.get("_prompt_follows_base"):
         cmd.append(prompt)
     for clause in ISOLATION_CLAUSES:
@@ -304,7 +419,12 @@ def build_isolated_command(
         cmd.append(prompt)
 
     if contained:
-        cmd = _wrap_in_containment(cmd, spec.get("_contain", {}))  # type: ignore[arg-type]
+        cmd = _wrap_in_containment(
+            cmd,
+            spec.get("_contain", {}),
+            target_dir=target_dir,
+            mode=mode,  # type: ignore[arg-type]
+        )
     return cmd
 
 
@@ -327,6 +447,10 @@ done
 if [ -n "$SB_SHADOW_DIR" ] && [ -d "$H/$SB_SHADOW_DIR" ]; then
     mkdir -p "$STAGE/real"
     mount --bind "$H/$SB_SHADOW_DIR" "$STAGE/real"
+fi
+if [ -n "${SB_TARGET_DIR:-}" ] && [ -d "$SB_TARGET_DIR" ]; then
+    mkdir -p "$STAGE/target"
+    mount --bind "$SB_TARGET_DIR" "$STAGE/target"
 fi
 
 mount -t tmpfs tmpfs "$H"
@@ -361,19 +485,34 @@ if [ -d "$STAGE/real" ]; then
     done
 fi
 
-# Blank /tmp and land in an empty cwd. $HOME alone is not the user's data:
-# scratch files, worktrees and anything the caller happens to be sitting in
-# are all reachable otherwise, and a reviewer that can read the tree it is
-# reviewing is not an outside opinion.
+if [ -d "$STAGE/target" ]; then
+    mkdir -p "$H/workspace"
+    mount --bind "$STAGE/target" "$H/workspace"
+    mount -o remount,ro,bind "$H/workspace"
+fi
+
+# Blank /tmp and land in the target directory (or empty cwd). $HOME alone is not
+# the user's data: scratch files, worktrees and anything the caller happens to
+# be sitting in are all reachable otherwise.
 mount -t tmpfs tmpfs /tmp
-mkdir -p /tmp/cwd
-cd /tmp/cwd
+if [ -d "$H/workspace" ]; then
+    cd "$H/workspace"
+else
+    mkdir -p /tmp/cwd
+    cd /tmp/cwd
+fi
 
 exec "$@"
 """
 
 
-def _wrap_in_containment(cmd: list[str], contain: dict[str, object]) -> list[str]:
+def _wrap_in_containment(
+    cmd: list[str],
+    contain: dict[str, object],
+    *,
+    target_dir: Path | None = None,
+    mode: str = "text-only",
+) -> list[str]:
     """Wrap ``cmd`` so it runs with the user's home blanked.
 
     Everything under $HOME disappears except what the backend needs to
@@ -393,15 +532,22 @@ def _wrap_in_containment(cmd: list[str], contain: dict[str, object]) -> list[str
     shadow_dir = next(iter(shadow_spec), "")
     omit = shadow_spec.get(shadow_dir, []) if shadow_dir else []
 
+    env_vars = [
+        f"SB_HOME={home}",
+        f"SB_EXPOSE={' '.join(expose)}",
+        f"SB_SHADOW_DIR={shadow_dir}",
+        f"SB_SHADOW_OMIT={' '.join(omit)}",
+    ]
+    if mode == "grounded":
+        effective_target = (target_dir or Path.cwd()).resolve()
+        env_vars.append(f"SB_TARGET_DIR={effective_target}")
+
     return [
         "unshare",
         "-Urm",
         "--map-root-user",
         "env",
-        f"SB_HOME={home}",
-        f"SB_EXPOSE={' '.join(expose)}",
-        f"SB_SHADOW_DIR={shadow_dir}",
-        f"SB_SHADOW_OMIT={' '.join(omit)}",
+        *env_vars,
         "/bin/sh",
         "-c",
         _CONTAINMENT_SCRIPT,
@@ -904,7 +1050,69 @@ def _track_backend_call(backend: str, model: str | None, prompt: str) -> Iterato
         _last_attempt_outcome = outcome
 
 
-def run_agy(prompt: str, *, model: str, timeout: float) -> str:
+def run_codex(
+    prompt: str,
+    *,
+    model: str | None = None,
+    timeout: float = 120,
+    mode: str = "text-only",
+    target_dir: Path | None = None,
+) -> str:
+    """Run Codex CLI non-interactively and return its critique text.
+
+    In ``mode="grounded"``, codex runs under native read-only
+    sandboxing (``-s read-only -C <dir>``), exploring real repository files while
+    preventing any filesystem modifications. In ``mode="text-only"`` (default), shell_tool
+    is disabled and ambient user instructions/rules are stripped.
+
+    Raises:
+        BackendError: If the process exits nonzero, fails to produce output,
+            or emits fatal error events.
+    """
+    check_prompt_size(prompt)
+    kwargs: dict[str, object] = {}
+    if mode != "text-only":
+        kwargs["mode"] = mode
+    if target_dir is not None:
+        kwargs["target_dir"] = target_dir
+    cmd = build_isolated_command("codex", prompt, model=model, **kwargs)
+    with _track_backend_call("codex", model, prompt):
+        returncode, stdout, stderr = _run_command(cmd, timeout)
+        if returncode != 0:
+            raise BackendError(
+                f"codex exited {returncode}: {stderr.strip() or stdout.strip()[:200]}"
+            )
+        messages: list[str] = []
+        for line in stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(data, dict) and data.get("type") == "item.completed":
+                item = data.get("item")
+                if isinstance(item, dict) and item.get("type") == "agent_message":
+                    text = item.get("text")
+                    if isinstance(text, str) and text.strip():
+                        messages.append(text.strip())
+        if messages:
+            return messages[-1]
+        stripped = stdout.strip()
+        if stripped:
+            return stripped
+        raise BackendError(f"no text output from codex: {stderr.strip()[:200]}")
+
+
+def run_agy(
+    prompt: str,
+    *,
+    model: str,
+    timeout: float,
+    mode: str = "text-only",
+    target_dir: Path | None = None,
+) -> str:
     """Run the ``agy`` backend with the given model and return its text output.
 
     Raises IsolationError before running anything if this host cannot contain
@@ -914,12 +1122,24 @@ def run_agy(prompt: str, *, model: str, timeout: float) -> str:
     built, so an IsolationError is never logged as an attempt.
     """
     check_prompt_size(prompt)
-    cmd = build_isolated_command("agy", prompt, model=model)
+    kwargs: dict[str, object] = {}
+    if mode != "text-only":
+        kwargs["mode"] = mode
+    if target_dir is not None:
+        kwargs["target_dir"] = target_dir
+    cmd = build_isolated_command("agy", prompt, model=model, **kwargs)
     with _track_backend_call("agy", model, prompt):
         return run_backend_command(cmd, timeout)
 
 
-def run_copilot(prompt: str, *, model: str | None, timeout: float) -> str:
+def run_copilot(
+    prompt: str,
+    *,
+    model: str | None,
+    timeout: float,
+    mode: str = "text-only",
+    target_dir: Path | None = None,
+) -> str:
     """Run the ``copilot`` backend and return its text output.
 
     No tool-permission flags are passed. Copilot CLI's permission system
@@ -944,7 +1164,12 @@ def run_copilot(prompt: str, *, model: str | None, timeout: float) -> str:
     working backend into a silent regression.
     """
     check_prompt_size(prompt)
-    cmd = build_isolated_command("copilot", prompt, model=model)
+    kwargs: dict[str, object] = {}
+    if mode != "text-only":
+        kwargs["mode"] = mode
+    if target_dir is not None:
+        kwargs["target_dir"] = target_dir
+    cmd = build_isolated_command("copilot", prompt, model=model, **kwargs)
     with _track_backend_call("copilot", model, prompt):
         try:
             return run_backend_command(cmd, timeout)
@@ -966,7 +1191,14 @@ def run_copilot(prompt: str, *, model: str | None, timeout: float) -> str:
 _DEFAULT_PI_PROVIDER = "opencode-go"
 
 
-def run_pi(prompt: str, *, model: str | None, timeout: float) -> str:
+def run_pi(
+    prompt: str,
+    *,
+    model: str | None,
+    timeout: float,
+    mode: str = "text-only",
+    target_dir: Path | None = None,
+) -> str:
     """Run Pi's headless mode and return its text output.
 
     Generic invocation for callers that just want a plain completion (e.g.
@@ -1010,7 +1242,12 @@ def run_pi(prompt: str, *, model: str | None, timeout: float) -> str:
             f"({PI_MAX_PROMPT_BYTES} bytes); pi's opencode-go gateway "
             f"deterministically stalls on larger payloads"
         )
-    cmd = build_isolated_command("pi", prompt, model=model)
+    kwargs: dict[str, object] = {}
+    if mode != "text-only":
+        kwargs["mode"] = mode
+    if target_dir is not None:
+        kwargs["target_dir"] = target_dir
+    cmd = build_isolated_command("pi", prompt, model=model, **kwargs)
     with _track_backend_call("pi", model, prompt):
         text = run_backend_command(cmd, timeout)
         _raise_on_emitted_tool_call(text, context="pi")
@@ -1041,31 +1278,33 @@ def _opencode_json_events(raw_output: str) -> list[dict[str, object]]:
 
 
 def _opencode_text_chunks(events: list[dict[str, object]]) -> list[str]:
-    """Extract text chunks from opencode's parsed event stream."""
+    """Extract text parts from opencode's event stream.
+
+    Collects the string at ``e["part"]["text"]`` from any event whose
+    ``type == "text"``, preserving order.
+    """
     chunks = []
     for e in events:
-        if e.get("type") != "text":
-            continue
-        text = _safe_get(e, "part", "text")
-        if isinstance(text, str) and text:
-            chunks.append(text)
+        if e.get("type") == "text":
+            text = _safe_get(e, "part", "text")
+            if isinstance(text, str) and text:
+                chunks.append(text)
     return chunks
 
 
 def _opencode_tool_use_events(
     events: list[dict[str, object]],
 ) -> list[dict[str, object]]:
-    """Return the subset of opencode events that represent a tool invocation.
-
-    opencode's ``--format json`` stream emits one ``tool_use`` event per
-    completed or failed tool call. A text-only caller (an adversarial
-    critique, a recap) must never see one: its presence means the agent took
-    a real shell/file action instead of replying with prose.
-    """
+    """Filter opencode's event stream to tool_use events."""
     return [e for e in events if e.get("type") == "tool_use"]
 
 
-def _raise_on_tool_use(events: list[dict[str, object]], *, context: str) -> None:
+def _raise_on_tool_use(
+    events: list[dict[str, object]],
+    *,
+    context: str,
+    allowed_tools: set[str] | frozenset[str] | None = None,
+) -> None:
     """Raise :class:`BackendError` if any opencode event is a tool invocation.
 
     Defense in depth on top of per-agent permission config: a future agent
@@ -1076,10 +1315,12 @@ def _raise_on_tool_use(events: list[dict[str, object]], *, context: str) -> None
     Args:
         events: Parsed opencode ``--format json`` events.
         context: Label for the failing caller, used in the error message.
+        allowed_tools: Optional set of allowed tool names (e.g. read tools
+            in grounded mode). Any invocation outside this set raises.
 
     Raises:
-        BackendError: If any event in ``events`` has ``type == "tool_use"``,
-            naming the tools that were invoked.
+        BackendError: If any event in ``events`` has ``type == "tool_use"``
+            outside ``allowed_tools``, naming the tools that were invoked.
     """
     tool_uses = _opencode_tool_use_events(events)
     if not tool_uses:
@@ -1087,6 +1328,11 @@ def _raise_on_tool_use(events: list[dict[str, object]], *, context: str) -> None
     tools = sorted(
         {str(tool) for e in tool_uses if (tool := _safe_get(e, "part", "tool"))}
     )
+    if allowed_tools is not None:
+        disallowed = [t for t in tools if t not in allowed_tools]
+        if not disallowed:
+            return
+        tools = disallowed
     names = ", ".join(tools) if tools else "unknown tools"
     raise BackendError(f"{context} used tools instead of returning text: {names}")
 
@@ -1155,7 +1401,14 @@ def _finalize_text_response(chunks: list[str], *, context: str) -> str:
     return text
 
 
-def run_opencode(prompt: str, *, model: str | None, timeout: float) -> str:
+def run_opencode(
+    prompt: str,
+    *,
+    model: str | None,
+    timeout: float,
+    mode: str = "text-only",
+    target_dir: Path | None = None,
+) -> str:
     """Run opencode's default agent (no ``--agent`` override) and return its text output.
 
     Generic invocation for callers that just want a plain completion (e.g.
@@ -1183,11 +1436,17 @@ def run_opencode(prompt: str, *, model: str | None, timeout: float) -> str:
     4-10%).
     """
     check_prompt_size(prompt)
-    cmd = build_isolated_command("opencode", prompt, model=model)
+    kwargs: dict[str, object] = {}
+    if mode != "text-only":
+        kwargs["mode"] = mode
+    if target_dir is not None:
+        kwargs["target_dir"] = target_dir
+    cmd = build_isolated_command("opencode", prompt, model=model, **kwargs)
     with _track_backend_call("opencode", model, prompt):
         _, stdout, stderr = _run_command(cmd, timeout, retries=1)
         events = _opencode_json_events(stdout)
-        _raise_on_tool_use(events, context="opencode")
+        allowed = {"read", "grep", "glob"} if mode == "grounded" else None
+        _raise_on_tool_use(events, context="opencode", allowed_tools=allowed)
         chunks = _opencode_text_chunks(events)
         if chunks:
             return _finalize_text_response(chunks, context="opencode")

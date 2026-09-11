@@ -69,6 +69,7 @@ COPIES = (
     "agy/skills/second-opinion/SKILL.md",
     "pi/prompts/second-opinion.md",
     "pi/skills/second-opinion/SKILL.md",
+    "codex/skills/second-opinion/SKILL.md",
 )
 
 

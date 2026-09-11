@@ -8,45 +8,47 @@ edit the body template for shared wording or the per-harness parameter table
 for harness-specific wording, then regenerate -->
 
 All backend I/O goes through the `second_opinion` tool — never shell out to
-`agy`/`opencode`/`pi`/`copilot` directly. Two operations: `detect` reports each
-backend's presence AND whether it currently meets the isolation contract (with
-the reason when it does not), `review` returns one critique. It is
-single-round: one call, one critique. The multi-round loop and plan revision
-are your job, not the script's.
+`codex`/`agy`/`opencode`/`pi`/`copilot` directly. Two operations: `detect`
+reports each backend's presence AND whether it currently meets the isolation
+contract (with the reason when it does not), `review` returns one critique. It
+is single-round: one call, one critique. The multi-round loop and plan revision
+are your job, not the script's. By default, reviews are grounded in the target
+codebase (`--dir` or current working directory) with read-only tools enabled;
+use `--text-only` to opt out.
 
 Call the `second_opinion` tool. Action `detect` lists the available backends as
 JSON. Action `review` returns one critique of the plan at `planFile`,
-optionally scoped with `focusFile` and `modelIndex`. Never run
-`second_opinion.py` via bash.
+optionally scoped with `focusFile`, `modelIndex`, `dir`, and `textOnly`. Never
+run `second_opinion.py` via bash.
 
 `--model-index` is a 0-based index into a per-machine model pool
-(`SECOND_OPINION_AGY_MODEL_POOL` / `_PI_MODEL_POOL` / `_OPENCODE_MODEL_POOL` /
-`_COPILOT_MODEL_POOL`, set by the user, not this skill) — round 1 of the loop
-below is index 0, round 2 is index 1, etc. All four backends share the same
-indexed-pool contract. Copilot-specific tier note: copilot's `--model` flag
-requires a GitHub Copilot Pro or Enterprise plan, so `_COPILOT_MODEL_POOL` only
-works on an account with that entitlement — on a free tier, leave it unset so
-copilot uses its default model; a set pool there fails with an entitlement
-error naming the variable, not a bad-id error. An explicit index selects the
-pool entry for that call even when a single-model override
-(`SECOND_OPINION_<BACKEND>_MODEL`) is also set; without `--model-index` the
-single override (or the backend default) applies. An explicit index is a hard
-error if the selected backend's pool is unset/empty or the index is out of
-range — it no longer silently falls back. Because of that, don't assume a pool
-is configured: pass `--model-index` every round as before, but if that call
-exits nonzero with a `--model-index ... requires ... POOL ...` configuration
-error (not a backend-failure message), retry that same round's call once,
-identical except omitting `--model-index` — this is the safe, always-valid
-fallback (single-model override or backend default), not a skipped round. See
-the loop below for exactly where this retry sits. If only some backends are
-pool-configured, automatic selection stops on the first priority candidate with
-a pool config error; use `--backend <configured-backend>` to target a working
-one. On a machine with no pool at all for the dispatched backend, the script
-itself prints a one-line stderr notice (suppressed by `--quiet`) naming the
-absent pool variable, where to set it, and a realistic example — the run still
-proceeds with the backend's default model, so nothing to act on unless you want
-pool rotation. See the toolkit README's "What you supply vs. what the toolkit
-creates" section for the full config contract.
+(`SECOND_OPINION_CODEX_MODEL_POOL` / `_AGY_MODEL_POOL` / `_PI_MODEL_POOL` /
+`_OPENCODE_MODEL_POOL` / `_COPILOT_MODEL_POOL`, set by the user, not this
+skill) — round 1 of the loop below is index 0, round 2 is index 1, etc. All
+five backends share the same indexed-pool contract. Copilot-specific tier note:
+copilot's `--model` flag requires a GitHub Copilot Pro or Enterprise plan, so
+`_COPILOT_MODEL_POOL` only works on an account with that entitlement — on a
+free tier, leave it unset so copilot uses its default model; a set pool there
+fails with an entitlement error naming the variable, not a bad-id error. An
+explicit index selects the pool entry for that call even when a single-model
+override (`SECOND_OPINION_<BACKEND>_MODEL`) is also set; without
+`--model-index` the single override (or the backend default) applies. An
+explicit index is a hard error if the selected backend's pool is unset/empty or
+the index is out of range — it no longer silently falls back. Because of that,
+don't assume a pool is configured: pass `--model-index` every round as before,
+but if that call exits nonzero with a `--model-index ... requires ... POOL ...`
+configuration error (not a backend-failure message), retry that same round's
+call once, identical except omitting `--model-index` — this is the safe,
+always-valid fallback (single-model override or backend default), not a skipped
+round. See the loop below for exactly where this retry sits. If only some
+backends are pool-configured, automatic selection stops on the first priority
+candidate with a pool config error; use `--backend <configured-backend>` to
+target a working one. On a machine with no pool at all for the dispatched
+backend, the script itself prints a one-line stderr notice (suppressed by
+`--quiet`) naming the absent pool variable, where to set it, and a realistic
+example — the run still proceeds with the backend's default model, so nothing
+to act on unless you want pool rotation. See the toolkit README's "What you
+supply vs. what the toolkit creates" section for the full config contract.
 
 ## Resolving the target plan
 
@@ -90,14 +92,14 @@ for the final plan and critique-notes file only, per the section below).
 
 Caller check for tooling changes: when `current_plan` modifies a script under
 `agent-scripts/` or a harness skill file (`claude/commands/`,
-`opencode/skills/`, `copilot/skills/`, `agy/skills/`, `pi/prompts/`), grep the
-repo for that script's callers before deriving hints and add a focus hint
-naming them — e.g. "The plan changes `<script>`; verify it against its
-documented callers in `<paths>` — does the change break any caller's documented
-invocation (flags, env vars, exit behavior)?" A non-Claude reviewer won't
-surface this on its own: the 12 adversarial rounds that let the `--model-index`
-hard-error ship never inspected the skill files that invoke the script. Name
-the callers the grep actually finds, not a generic reminder.
+`opencode/skills/`, `copilot/skills/`, `agy/skills/`, `pi/prompts/`,
+`codex/skills/`), grep the repo for that script's callers before deriving hints
+and add a focus hint naming them — e.g. "The plan changes `<script>`; verify it
+against its documented callers in `<paths>` — does the change break any
+caller's documented invocation (flags, env vars, exit behavior)?" A non-Claude
+reviewer won't surface this on its own: the 12 adversarial rounds that let the
+`--model-index` hard-error ship never inspected the skill files that invoke the
+script. Name the callers the grep actually finds, not a generic reminder.
 
 The point of these hints is to sharpen the critique on this plan's actual risk
 surface, not to narrow the reviewer's attention to only what you anticipated —
@@ -120,9 +122,9 @@ loop:
                    modelIndex = <round - 1>   # one call
     if that call exited nonzero with a "--model-index ... requires
        ... POOL ..." configuration error (not a backend-failure message):
-    critique = second_opinion review
-                   planFile = <current_plan>
-                   [focusFile = <focus-hints-path>]   # retry, no index —
+        critique = second_opinion review
+                       planFile = <current_plan>
+                       [focusFile = <focus-hints-path>]   # retry, no index —
                                                             # no pool configured
                                                             # for this backend,
                                                             # not an error to
@@ -223,8 +225,8 @@ first) or updating an existing one.
 ## No backend available
 
 `second_opinion.py review` exits nonzero with a clear message when none of
-`agy`, `opencode`, `pi`, or `copilot` is on `PATH`, or when the available
-backend(s) fail (e.g. the `adversary` agent errors out — check with `opencode
-run --agent adversary --auto --format json <text> 2>&1` if that happens). Relay
-that message and stop — don't retry or fall back to critiquing the plan
-yourself.
+`codex`, `agy`, `opencode`, `pi`, or `copilot` is on `PATH`, or when the
+available backend(s) fail (e.g. the `adversary` agent errors out — check with
+`opencode run --agent adversary --auto --format json <text> 2>&1` if that
+happens). Relay that message and stop — don't retry or fall back to critiquing
+the plan yourself.

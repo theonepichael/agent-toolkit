@@ -98,6 +98,7 @@
       "~/dotfiles/**": "allow",
       "~/dotfiles-*/**": "allow",
       "~/Workspace/**": "allow",
+      "~/workspace/**": "allow",
       "/tmp/**": "allow",
       "/mnt/c/Users/yanil/Downloads/**": "allow",
       "/mnt/c/Users/yanil/OneDrive/Pictures/Screenshots/**": "allow"
@@ -110,6 +111,25 @@
       "model": "opencode-go/deepseek-v4-flash",
       "permission": "deny",
       "prompt": "You are a text-only adversarial reviewer. No tools are available: every tool call is denied, so never attempt one. Never emit tool-call markup of any kind — XML like <tool_calls> or <invoke name=...>, JSON tool-call blocks, or fenced tool invocations. Respond in plain prose only; if a tool would have helped, say in the critique what you were unable to check."
+    },
+    "grounded_adversary": {
+      "description": "Grounded adversarial critique agent for second_opinion.py's opencode backend. Read-only codebase exploration allowed; write, edit, bash, and task tools denied.",
+      "mode": "all",
+      "model": "opencode-go/deepseek-v4-flash",
+      "tools": {
+        "read": true,
+        "grep": true,
+        "glob": true,
+        "write": false,
+        "edit": false,
+        "bash": false,
+        "task": false,
+        "todowrite": false,
+        "webfetch": false,
+        "websearch": false,
+        "skill": false
+      },
+      "prompt": "You are an adversarial reviewer evaluating an implementation plan against a real codebase. Use read-only inspection tools (read, grep, glob) to examine existing code, interfaces, tests, and call sites. You cannot modify files or execute bash commands. Respond with a rigorous critique grounded in what the code actually does."
     }
   }
 }

@@ -26,18 +26,27 @@ adapter over it.
 Flags
   --quiet, -q      suppress non-essential output
   --verbose, -v    emit extra diagnostic messages to stderr
-   --model-index N  (review only) 0-based index into the backend model pool
-                    (SECOND_OPINION_<BACKEND>_MODEL_POOL) for this call, e.g.
-                    round 1 of a rotation is index 0, round 2 is index 1.
-                    Supported for agy, pi, opencode, and copilot. An explicit
-                    index selects the pool even when a single-model override
-                    is set, and is a hard error if the selected backend has no
-                    configured pool or the index is out of range — it no
-                    longer silently falls back. Must be non-negative.
+  --dir <path>     (review only) root directory of the codebase to inspect in grounded review (default: current working directory)
+  --text-only      (review only) disable codebase exploration and run ungrounded text-only critique
+  --model-index N  (review only) 0-based index into the backend model pool
+                   (SECOND_OPINION_<BACKEND>_MODEL_POOL) for this call, e.g.
+                   round 1 of a rotation is index 0, round 2 is index 1.
+                   Supported for codex, agy, pi, opencode, and copilot. An explicit
+                   index selects the pool even when a single-model override
+                   is set, and is a hard error if the selected backend has no
+                   configured pool or the index is out of range — it no
+                   longer silently falls back. Must be non-negative.
 
 Env vars
   AGENT_TOOLKIT_TIMING=1           opt-in timing JSONL under $XDG_STATE_HOME/agent-toolkit
                                     (default ~/.local/state); no prompts or argv
+  SECOND_OPINION_CODEX_MODEL        force the Codex CLI model (default: unset)
+  SECOND_OPINION_CODEX_MODEL_POOL   comma-separated Codex model pool for
+                                    --model-index rotation (default: unset,
+                                    no rotation). SECOND_OPINION_CODEX_MODEL, if
+                                    set without --model-index, wins outright
+                                    over the pool; an explicit --model-index
+                                    selects the pool regardless.
   SECOND_OPINION_AGY_MODEL          force the agy model (default "Gemini 3.7 Flash (High)")
   SECOND_OPINION_AGY_MODEL_POOL     comma-separated agy model pool for
                                     --model-index rotation (default: unset,
@@ -71,6 +80,7 @@ Env vars
                                       leave the pool unset there so copilot
                                       uses its default.
   SECOND_OPINION_TIMEOUT_SECONDS    default per-backend timeout in seconds (default 120)
+  SECOND_OPINION_CODEX_TIMEOUT_SECONDS override the timeout for codex calls only
   SECOND_OPINION_AGY_TIMEOUT_SECONDS      override the timeout for agy calls only
   SECOND_OPINION_PI_TIMEOUT_SECONDS       override the timeout for pi calls only
   SECOND_OPINION_OPENCODE_TIMEOUT_SECONDS override the timeout for opencode calls only
@@ -155,6 +165,8 @@ class ReviewRequest:
     focus_hints: str | None = None
     backend: str | None = None
     model_index: int | None = None
+    text_only: bool = False
+    target_dir: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -297,6 +309,7 @@ def _resolve_timeout(env_var: str, default: int | None = None) -> int:
 # its single override is SECOND_OPINION_AGY_MODEL and its pool is
 # SECOND_OPINION_AGY_MODEL_POOL.
 _POOL_ENV_VARS = {
+    "codex": ("SECOND_OPINION_CODEX_MODEL_POOL", "SECOND_OPINION_CODEX_MODEL"),
     "agy": ("SECOND_OPINION_AGY_MODEL_POOL", "SECOND_OPINION_AGY_MODEL"),
     "pi": ("SECOND_OPINION_PI_MODEL_POOL", "SECOND_OPINION_PI_MODEL"),
     "opencode": ("SECOND_OPINION_OPENCODE_MODEL_POOL", "SECOND_OPINION_OPENCODE_MODEL"),
@@ -363,6 +376,7 @@ def _resolve_pooled_model(
 # Illustrative, not prescriptive: the notice shows what a pool line looks
 # like, it doesn't recommend specific ids.
 _EXAMPLE_POOL_VALUES = {
+    "codex": "gpt-5.6-luna,o3",
     "agy": "Gemini 3.7 Flash (High),Gemini 3.7 Pro (High)",
     "pi": "opencode-go/glm-5.2,opencode-go/glm-5.3-flash",
     "opencode": "opencode-go/glm-5.2,opencode-go/glm-5.3-flash",
@@ -520,6 +534,32 @@ agreement with praise. Skip preamble.
 {plan_text}
 """
 
+GROUNDED_CRITIQUE_PROMPT = """\
+You are reviewing a plan written by another AI assistant.
+Your job is to find problems, not to summarize or agree.
+
+You have read-only access to the codebase. Use your read/grep/find tools to inspect
+cited files, verify method signatures, check existing patterns, and validate
+assumptions against real code before rendering your critique. Base your critique
+on actual facts found in the codebase. Never attempt to write or edit files.
+
+Be specific and concrete:
+- What could go wrong or is underspecified?
+- What did the author miss or assume without justification?
+- Where do you disagree, and why?
+- Is there a simpler approach?
+
+Keep critiques focused and concise: do not emit full replacement implementations,
+long code listings, or boilerplate rewrites. Critique mechanisms, invariants,
+interfaces, and failure modes directly in prose.
+{focus_section}
+If the plan is genuinely solid, say so briefly — but don't pad
+agreement with praise. Skip preamble.
+
+---
+{plan_text}
+"""
+
 FOCUS_SECTION = """
 The plan's author flagged these as this plan's specific risk points —
 scrutinize them closely, but don't let them limit the rest of your review:
@@ -527,13 +567,18 @@ scrutinize them closely, but don't let them limit the rest of your review:
 """
 
 
-def build_prompt(plan_text: str, focus_hints: str | None) -> str:
+def build_prompt(
+    plan_text: str, focus_hints: str | None, *, grounded: bool = True
+) -> str:
     """Build the critique prompt, optionally inserting plan-specific focus hints.
 
     Args:
         plan_text: The plan to review.
         focus_hints: Bullet-point text naming risk areas specific to this
             plan, or ``None``/blank to omit the section entirely.
+        grounded: When True (default), prompt models to inspect actual codebase
+            files using read-only tools. When False, instructs models that no tools
+            are available.
 
     Returns:
         The fully-formatted critique prompt.
@@ -543,7 +588,8 @@ def build_prompt(plan_text: str, focus_hints: str | None) -> str:
         if focus_hints and focus_hints.strip()
         else ""
     )
-    return CRITIQUE_PROMPT.format(plan_text=plan_text, focus_section=focus_section)
+    tmpl = GROUNDED_CRITIQUE_PROMPT if grounded else CRITIQUE_PROMPT
+    return tmpl.format(plan_text=plan_text, focus_section=focus_section)
 
 
 def die(msg: str) -> NoReturn:
@@ -687,10 +733,61 @@ def _run_command(
     )
 
 
+def _filter_runner_kwargs(func: object, **kwargs: object) -> dict[str, object]:
+    """Filter kwargs to those accepted by func's signature."""
+    target = (
+        getattr(func, "side_effect", None) or getattr(func, "_mock_wraps", None) or func
+    )
+    try:
+        import inspect
+
+        sig = inspect.signature(target)  # type: ignore[arg-type]
+        has_varkw = any(
+            p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+        )
+        if has_varkw:
+            return {k: v for k, v in kwargs.items() if v is not None}
+        return {
+            k: v for k, v in kwargs.items() if v is not None and k in sig.parameters
+        }
+    except (TypeError, ValueError):
+        return {k: v for k, v in kwargs.items() if v is not None}
+
+
 DEFAULT_AGY_MODEL = "Gemini 3.7 Flash (High)"
 
 
-def run_agy(prompt: str, *, model_index: int | None = None) -> str:
+def run_codex(
+    prompt: str,
+    *,
+    model_index: int | None = None,
+    mode: str | None = None,
+    target_dir: Path | None = None,
+) -> str:
+    """Run the ``codex`` backend and return its critique text."""
+    model = _resolve_pooled_model(
+        "SECOND_OPINION_CODEX_MODEL_POOL",
+        "SECOND_OPINION_CODEX_MODEL",
+        model_index,
+    )
+    extra = _filter_runner_kwargs(
+        llm_backends.run_codex, mode=mode, target_dir=target_dir
+    )
+    return llm_backends.run_codex(
+        prompt,
+        model=model,
+        timeout=_resolve_timeout("SECOND_OPINION_CODEX_TIMEOUT_SECONDS"),
+        **extra,
+    )
+
+
+def run_agy(
+    prompt: str,
+    *,
+    model_index: int | None = None,
+    mode: str | None = None,
+    target_dir: Path | None = None,
+) -> str:
     """Run the ``agy`` backend and return its critique text.
 
     The model is resolved via :func:`_resolve_agy_model`: without
@@ -703,14 +800,24 @@ def run_agy(prompt: str, *, model_index: int | None = None) -> str:
     indexed-pool contract.
     """
     model = _resolve_agy_model(model_index)
+    extra = _filter_runner_kwargs(
+        llm_backends.run_agy, mode=mode, target_dir=target_dir
+    )
     return llm_backends.run_agy(
         prompt,
         model=model,
         timeout=_resolve_timeout("SECOND_OPINION_AGY_TIMEOUT_SECONDS"),
+        **extra,
     )
 
 
-def run_opencode(prompt: str, *, model_index: int | None = None) -> str:
+def run_opencode(
+    prompt: str,
+    *,
+    model_index: int | None = None,
+    mode: str | None = None,
+    target_dir: Path | None = None,
+) -> str:
     """Run the ``opencode`` backend's adversary agent and return its critique text.
 
     Not routed through :func:`llm_backends.run_opencode` (the generic
@@ -723,37 +830,6 @@ def run_opencode(prompt: str, *, model_index: int | None = None) -> str:
     ``model_index`` picks an entry from ``SECOND_OPINION_OPENCODE_MODEL_POOL``
     if that's set; otherwise unset/empty means the live opencode config's
     model.
-
-    Raises:
-        BackendError: If the event stream contains a ``tool_use`` event — the
-            adversary agent must be stateless and text-only, so a swapped-in
-            model taking real shell/file actions is a hard failure, not a
-            silently swallowed event — if the returned text is dominated by
-            leaked tool-call markup (a tool-starved model's denied tool
-            invocation leaking through as text instead of a real ``tool_use``
-            event), or if it has no text chunks: either an explicit error
-            event was emitted, or nothing recognizable was produced at all.
-
-            Some models (e.g. gpt-5.6-luna, as of 2026-08) fail this last way
-            unconditionally under this agent's ``permission: deny`` — reliably
-            reproduced even with a prompt that never attempts a tool call, and
-            reproduced identically under a bare-string ``deny`` and a
-            granular per-capability ``deny`` object, while the same model
-            works fine on the default (unrestricted) agent. That points to an
-            opencode/provider-side bug specific to restricted permission on
-            this model, not a "tool-hungry model" trait — but the practical
-            fix is the same either way: pin a model that tolerates this
-            agent's restriction via ``SECOND_OPINION_OPENCODE_MODEL``.
-
-    Retries once on a timeout (``retries=1``): confirmed via direct
-    bisection (2026-08-17) that opencode's CLI intermittently stalls its
-    event stream (emits ``step_start`` and then nothing, no ``text``/
-    ``step_finish``/error — a genuine stall, not merely slow) at roughly a
-    20-33% rate on prompts around 20KB, independent of exact byte count,
-    the model-pool index, and whether the prompt is passed inline or via
-    ``-f``/``--file`` — no fix is available at this layer, so one retry is
-    the practical mitigation (drops the practical failure rate to roughly
-    4-10%).
     """
     model = _resolve_pooled_model(
         "SECOND_OPINION_OPENCODE_MODEL_POOL",
@@ -761,10 +837,10 @@ def run_opencode(prompt: str, *, model_index: int | None = None) -> str:
         model_index,
     )
     llm_backends.check_prompt_size(prompt)
-    # Built by llm_backends, not here. This function used to assemble its own
-    # argv, which is how it ended up as the only invocation path in the repo
-    # carrying the adversary agent while every other one ran unisolated.
-    cmd = llm_backends.build_isolated_command("opencode", prompt, model=model)
+    extra = _filter_runner_kwargs(
+        llm_backends.build_isolated_command, mode=mode, target_dir=target_dir
+    )
+    cmd = llm_backends.build_isolated_command("opencode", prompt, model=model, **extra)
     _, stdout, stderr = _run_command(
         cmd,
         timeout=_resolve_timeout(
@@ -774,7 +850,8 @@ def run_opencode(prompt: str, *, model_index: int | None = None) -> str:
         retries=1,
     )
     events = _opencode_json_events(stdout)
-    _raise_on_tool_use(events, context="adversary agent")
+    allowed = {"read", "grep", "glob"} if mode == "grounded" else None
+    _raise_on_tool_use(events, context="adversary agent", allowed_tools=allowed)
     chunks = _opencode_text_chunks(events)
     if chunks:
         return _finalize_text_response(chunks, context="adversary agent")
@@ -785,7 +862,13 @@ def run_opencode(prompt: str, *, model_index: int | None = None) -> str:
     raise BackendError(f"no text output: {stderr.strip() or stdout.strip()[:200]}")
 
 
-def run_copilot(prompt: str, *, model_index: int | None = None) -> str:
+def run_copilot(
+    prompt: str,
+    *,
+    model_index: int | None = None,
+    mode: str | None = None,
+    target_dir: Path | None = None,
+) -> str:
     """Run the ``copilot`` backend and return its critique text.
 
     The model is resolved via :func:`_resolve_pooled_model`:
@@ -794,6 +877,9 @@ def run_copilot(prompt: str, *, model_index: int | None = None) -> str:
     if that's set; otherwise ``None`` (no ``--model`` flag — see
     :func:`llm_backends.run_copilot` for why that's the safe default).
     """
+    extra = _filter_runner_kwargs(
+        llm_backends.run_copilot, mode=mode, target_dir=target_dir
+    )
     return llm_backends.run_copilot(
         prompt,
         model=_resolve_pooled_model(
@@ -802,10 +888,17 @@ def run_copilot(prompt: str, *, model_index: int | None = None) -> str:
             model_index,
         ),
         timeout=_resolve_timeout("SECOND_OPINION_COPILOT_TIMEOUT_SECONDS"),
+        **extra,
     )
 
 
-def run_pi(prompt: str, *, model_index: int | None = None) -> str:
+def run_pi(
+    prompt: str,
+    *,
+    model_index: int | None = None,
+    mode: str | None = None,
+    target_dir: Path | None = None,
+) -> str:
     """Run the ``pi`` backend and return its critique text.
 
     The model is resolved via :func:`_resolve_pooled_model`:
@@ -814,22 +907,26 @@ def run_pi(prompt: str, *, model_index: int | None = None) -> str:
     that's set; otherwise ``None`` (Pi's own default model choice for the
     ``opencode-go`` provider — see :func:`llm_backends.run_pi`).
     """
+    extra = _filter_runner_kwargs(llm_backends.run_pi, mode=mode, target_dir=target_dir)
     return llm_backends.run_pi(
         prompt,
         model=_resolve_pooled_model(
             "SECOND_OPINION_PI_MODEL_POOL", "SECOND_OPINION_PI_MODEL", model_index
         ),
         timeout=_resolve_timeout("SECOND_OPINION_PI_TIMEOUT_SECONDS"),
+        **extra,
     )
 
 
 BACKEND_RUNNERS = {
+    "codex": run_codex,
     "agy": run_agy,
     "pi": run_pi,
     "opencode": run_opencode,
     "copilot": run_copilot,
 }
 BACKEND_LABELS = {
+    "codex": "Codex CLI",
     "agy": f"agy ({DEFAULT_AGY_MODEL})",
     "pi": "pi (opencode-go gateway)",
     "opencode": "opencode (adversary agent)",
@@ -848,6 +945,15 @@ def backend_label(backend: str, *, model_index: int | None = None) -> str:
     pool or not.
     """
     label = BACKEND_LABELS[backend]
+    if backend == "codex":
+        model = _resolve_pooled_model(
+            "SECOND_OPINION_CODEX_MODEL_POOL",
+            "SECOND_OPINION_CODEX_MODEL",
+            model_index,
+        )
+        if model:
+            return f"{label} ({model})"
+        return label
     if backend == "agy":
         model = _resolve_agy_model(model_index)
         if model != DEFAULT_AGY_MODEL:
@@ -922,7 +1028,7 @@ def review_plan(
             raise UnknownBackendError(f"{request.backend} not found on PATH")
         candidates = [request.backend]
     else:
-        candidates = available_backends()
+        candidates = [b for b in available_backends() if b in BACKEND_RUNNERS]
         if not candidates:
             raise NoBackendAvailableError(
                 "no backend available — install one of: " + ", ".join(BACKEND_PRIORITY)
@@ -934,7 +1040,9 @@ def review_plan(
         notices.append(
             f"[second_opinion] stripped inline review debris from plan ({bytes_saved} bytes saved)"
         )
-    prompt = build_prompt(plan_text, request.focus_hints)
+    target_dir = (request.target_dir or Path.cwd()).resolve()
+    mode = "text-only" if request.text_only else "grounded"
+    prompt = build_prompt(plan_text, request.focus_hints, grounded=(mode == "grounded"))
     prompt_bytes = len(prompt.encode("utf-8"))
     failures: list[str] = []
     caught: list[BackendError] = []
@@ -993,9 +1101,14 @@ def review_plan(
             with cli_common.timing_span(
                 "backend", backend=backend, candidate=candidate_index
             ):
-                critique = BACKEND_RUNNERS[backend](
-                    prompt, model_index=request.model_index
+                runner = BACKEND_RUNNERS[backend]
+                runner_kwargs = _filter_runner_kwargs(
+                    runner,
+                    model_index=request.model_index,
+                    mode=mode,
+                    target_dir=target_dir,
                 )
+                critique = runner(prompt, **runner_kwargs)
         except BackendError as exc:
             # A timeout is a budget problem, not an outage: name the env var
             # that raises the budget and the hard ceiling, so the next
@@ -1080,6 +1193,8 @@ def cmd_review(args: argparse.Namespace) -> None:
         focus_hints=focus_hints,
         backend=args.backend,
         model_index=getattr(args, "model_index", None),
+        text_only=getattr(args, "text_only", False),
+        target_dir=getattr(args, "dir", None),
     )
     verbose = getattr(args, "verbose", False)
     quiet = getattr(args, "quiet", False)
@@ -1146,6 +1261,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="force this backend instead of priority-order fallback",
     )
     p.add_argument(
+        "--dir",
+        type=Path,
+        default=None,
+        help="root directory of the codebase to inspect in grounded review "
+        "(defaults to current working directory)",
+    )
+    p.add_argument(
+        "--text-only",
+        action="store_true",
+        default=False,
+        help="disable codebase exploration and run ungrounded text-only critique",
+    )
+    p.add_argument(
         "--focus-file",
         default=None,
         help="path to a file of plan-specific risk hints, appended to the "
@@ -1158,9 +1286,9 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="N",
         help="0-based index into the backend model pool "
-        "(SECOND_OPINION_{AGY,PI,OPENCODE,COPILOT}_MODEL_POOL) for this call "
+        "(SECOND_OPINION_{CODEX,AGY,PI,OPENCODE,COPILOT}_MODEL_POOL) for this call "
         "-- round 1 of a rotation is index 0, round 2 is index 1, etc. "
-        "Supported for agy/pi/opencode/copilot; an explicit index selects the "
+        "Supported for codex/agy/pi/opencode/copilot; an explicit index selects the "
         "pool even when a single-model override is set, and is a hard error "
         "if the pool is unset/empty or the index is out of range (was "
         "previously a silent no-op/fallback).",
