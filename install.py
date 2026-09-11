@@ -50,6 +50,7 @@ from uuid import uuid4
 sys.path.insert(0, str(Path(__file__).resolve().parent / "agent-scripts"))
 
 import cli_common  # noqa: E402 — sibling dir inserted above
+import harness_spec  # noqa: E402 — sibling dir inserted above
 import link_inspect  # noqa: E402 — sibling dir inserted above
 import settings_seed  # noqa: E402 — sibling dir inserted above
 
@@ -594,21 +595,11 @@ def _fail(message: str, *, show_usage: bool = False) -> NoReturn:
 
 
 HARNESS_BINARIES: dict[str, str] = {
-    "claude": "claude",
-    "copilot": "copilot",
-    "opencode": "opencode",
-    "agy": "agy",
-    "pi": "pi",
-    "codex": "codex",
+    name: spec.cli for name, spec in harness_spec.HARNESSES.items()
 }
 
 HARNESS_INSTALL_HINTS: dict[str, str] = {
-    "claude": "npm install -g @anthropic-ai/claude-code",
-    "copilot": "npm install -g @github/copilot",
-    "opencode": "curl -fsSL https://opencode.ai/install | bash",
-    "agy": "internal workstation installation",
-    "pi": "npm install -g @mariozechner/pi-cli",
-    "codex": "npm install -g @openai/codex",
+    name: spec.install_hint for name, spec in harness_spec.HARNESSES.items()
 }
 
 
