@@ -552,7 +552,7 @@ gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources.
   - `is_generated_artifact(relpath: str) -> bool` — Report whether a path is build output or a dotfile rather than a source.
   - `tracked_files(repo_root: Path) -> set[str] | None` — Return every git-tracked path under ``repo_root``, or None if unavailable.
   - `render_assets(repo_root: Path, links: LinkTable, tracked: set[str] | None = None) -> list[str]` — Render the non-Python, non-skill harness assets and where they install.
-  - `discover_doc_paths(repo_root: Path) -> list[Path]` — Return every skill/command doc across the four harnesses, sorted.
+  - `discover_doc_paths(repo_root: Path) -> list[Path]` — Return every skill/command doc across all registry harnesses, sorted.
   - `code_regions(text: str) -> list[str]` — Return every inline code span and fenced code block's inner text.
   - `tokenize_invocation_line(line: str) -> list[str]` — Shell-tokenize one line, after stripping argparse-usage brackets.
   - `invocation_tokens(tokens: list[str], script_basename: str) -> list[str] | None` — Return the token stream starting at ``script_basename``, or None.
