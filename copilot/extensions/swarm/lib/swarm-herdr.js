@@ -272,6 +272,33 @@ function amendHoldMs(pending, now) {
 function amendHoldExpired(pending, now) {
   return pending.checks >= AMEND_ACK_MAX_CHECKS || amendHoldMs(pending, now) >= AMEND_HOLD_MAX_MS;
 }
+function amendAckPath(captureFile) {
+  const dir = dirname(captureFile);
+  const base = basename(captureFile);
+  const replaced = base.replace("-capture-", "-amend-ack-");
+  if (replaced !== base) return join(dir, replaced);
+  return join(dir, `${base}.amend-ack.json`);
+}
+function parseAmendAck(raw) {
+  try {
+    const parsed = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null) return null;
+    const t = parsed.t;
+    if (typeof t !== "number" || !Number.isFinite(t)) return null;
+    const sb = parsed.streamingBehavior;
+    const streamingBehavior = sb === "steer" || sb === "followUp" || sb === null || typeof sb === "undefined" ? sb : void 0;
+    return { t, streamingBehavior };
+  } catch {
+    return null;
+  }
+}
+function amendAckConfirms(ack, requestedAtMs) {
+  return ack.t >= requestedAtMs;
+}
+function sidecarUpgradesHold(kind, ack, requestedAtMs) {
+  if (kind !== "pi" || ack === null) return false;
+  return amendAckConfirms(ack, requestedAtMs);
+}
 function amendVerdictDetail(verdict, worker, holdMs) {
   const held = `${Math.round(holdMs / 1e3)}s`;
   switch (verdict) {
@@ -297,6 +324,8 @@ export {
   AMEND_INSTRUCTION,
   AMEND_STEERING_WINDOW_MS,
   WORKER_UNATTENDED_ENV,
+  amendAckConfirms,
+  amendAckPath,
   amendHoldExpired,
   amendHoldMs,
   amendHoldVerdict,
@@ -327,8 +356,10 @@ export {
   parseAgentSession,
   parseAgentStateSeq,
   parseAgentStatus,
+  parseAmendAck,
   parseTabCreate,
   reasonHeadline,
+  sidecarUpgradesHold,
   tabPresence,
   waitResultDetail,
   workerWorktreePath

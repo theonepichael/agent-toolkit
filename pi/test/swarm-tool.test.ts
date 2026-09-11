@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "./helpers/tap";
@@ -22,6 +22,7 @@ import registerSwarmTools, {
   buildAgentSendKeysArgv,
   buildAgentStartArgv,
   buildAgentWaitArgv,
+  amendAckPath,
   amendHoldExpired,
   AMEND_HOLD_MAX_MS,
   buildPaneCloseArgv,
@@ -4927,6 +4928,46 @@ describe("swarm_amend: the hold that keeps a correction from being torn down", (
     expect(detail).toContain("NOT positively confirmed");
   });
 
+  test("a pi sidecar whose t is at or after requestedAtMs upgrades steered to confirmed", async () => {
+    const { runId, poll } = setupHold({
+      waits: [{ code: 0, stdout: envelopeWithSeq("idle", "holdrun-w1", 140), stderr: "" }],
+      pendingAmend: { checks: 3, runWorkedAfterAmendMs: 45_000 },
+    });
+    const ackPath = amendAckPath(capturePath(runId, "some-item", dir));
+    writeFileSync(ackPath, JSON.stringify({ t: Date.now() }));
+
+    const res = await runPoll(poll, runId);
+
+    expect(res.details.events.map((e) => e.kind)).toEqual(["finished"]);
+    expect(res.details.events[0]?.detail).toContain("amend_confirmed");
+    expect(res.details.events[0]?.detail).not.toContain("NOT positively confirmed");
+  });
+
+  test("a zombie sidecar from before the hold does not upgrade steered", async () => {
+    const { runId, poll } = setupHold({
+      waits: [{ code: 0, stdout: envelopeWithSeq("idle", "holdrun-w1", 140), stderr: "" }],
+      pendingAmend: { checks: 3, runWorkedAfterAmendMs: 45_000, requestedAtMs: Date.now() },
+    });
+    const ackPath = amendAckPath(capturePath(runId, "some-item", dir));
+    writeFileSync(ackPath, JSON.stringify({ t: Date.now() - 60_000 }));
+
+    const res = await runPoll(poll, runId);
+
+    expect(res.details.events[0]?.detail).toContain("amend_steered");
+  });
+
+  test("a missing sidecar is not a loss and not a confirm -- steered still steered", async () => {
+    const { runId, poll } = setupHold({
+      waits: [{ code: 0, stdout: envelopeWithSeq("idle", "holdrun-w1", 140), stderr: "" }],
+      pendingAmend: { checks: 3, runWorkedAfterAmendMs: 45_000 },
+    });
+    expect(existsSync(amendAckPath(capturePath(runId, "some-item", dir)))).toBe(false);
+
+    const res = await runPoll(poll, runId);
+
+    expect(res.details.events[0]?.detail).toContain("amend_steered");
+  });
+
   test("a run that settled immediately and started no turn releases as amend_unpicked", async () => {
     // The named shape of the bug: the worker finished before any boundary at
     // which pi could have taken the correction.
@@ -5049,6 +5090,18 @@ describe("swarm_amend: the hold that keeps a correction from being torn down", (
     // The correction channel stays content-free: the instruction is byte-identical.
     const prompts = stub.calls.filter((c) => c.argv[0] === "agent" && c.argv[1] === "prompt");
     expect(prompts[0]?.argv).toContain(AMEND_INSTRUCTION);
+  });
+
+  test("swarm_amend unlinks a leftover sidecar so a zombie cannot confirm this hold", async () => {
+    const { runId, amend } = setupHold({ waits: [], pendingAmend: null });
+    const ackPath = amendAckPath(capturePath(runId, "some-item", dir));
+    writeFileSync(ackPath, JSON.stringify({ t: 1 }));
+
+    await amend.execute(
+      ...(["c1", { runId, agent: `${runId}-w1` }, undefined] as unknown as never[]),
+    );
+
+    expect(existsSync(ackPath)).toBe(false);
   });
 
   test("a second amendment re-arms the one hold rather than stacking a second", async () => {

@@ -865,6 +865,60 @@ export function amendHoldExpired(pending: PendingAmend, now: number): boolean {
 }
 
 /**
+ * Sidecar written by the worker-side `input` extension when it sees
+ * `AMEND_INSTRUCTION`. Named from the capture file so two workers in one
+ * state dir cannot share an ack. The extension reads `PI_SWARM_CAPTURE_FILE`
+ * and derives this path -- no extra env var.
+ */
+export function amendAckPath(captureFile: string): string {
+  const dir = dirname(captureFile);
+  const base = basename(captureFile);
+  const replaced = base.replace("-capture-", "-amend-ack-");
+  if (replaced !== base) return join(dir, replaced);
+  return join(dir, `${base}.amend-ack.json`);
+}
+
+export interface AmendAckPayload {
+  t: number;
+  streamingBehavior?: "steer" | "followUp" | null;
+}
+
+export function parseAmendAck(raw: string): AmendAckPayload | null {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null) return null;
+    const t = (parsed as { t?: unknown }).t;
+    if (typeof t !== "number" || !Number.isFinite(t)) return null;
+    const sb = (parsed as { streamingBehavior?: unknown }).streamingBehavior;
+    const streamingBehavior =
+      sb === "steer" || sb === "followUp" || sb === null || typeof sb === "undefined"
+        ? sb
+        : undefined;
+    return { t, streamingBehavior };
+  } catch {
+    return null;
+  }
+}
+
+export function amendAckConfirms(ack: AmendAckPayload, requestedAtMs: number): boolean {
+  return ack.t >= requestedAtMs;
+}
+
+/**
+ * Whether a sidecar may upgrade a two-axis hold from steered/unpicked to
+ * confirmed. Copilot never looks; a missing or stale file is not a confirm
+ * and not a loss.
+ */
+export function sidecarUpgradesHold(
+  kind: "pi" | "copilot",
+  ack: AmendAckPayload | null,
+  requestedAtMs: number,
+): boolean {
+  if (kind !== "pi" || ack === null) return false;
+  return amendAckConfirms(ack, requestedAtMs);
+}
+
+/**
  * The `detail` text for a released terminal event, naming what was actually
  * observed about the amendment. Each verdict is written to be read by the
  * orchestrator relaying the run to a human, so the uncertain ones say they are

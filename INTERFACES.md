@@ -1585,6 +1585,7 @@ are copy-once seeds for exactly that reason.
 | `pi/extensions/ruff-format-on-edit.ts` | `~/.pi/agent/extensions/ruff-format-on-edit.ts` (pi) |
 | `pi/extensions/second-opinion-tool.ts` | `~/.pi/agent/extensions/second-opinion-tool.ts` (pi) |
 | `pi/extensions/standup-tool.ts` | `~/.pi/agent/extensions/standup-tool.ts` (pi) |
+| `pi/extensions/swarm-amend-ack.ts` | `~/.pi/agent/extensions/swarm-amend-ack.ts` (pi) |
 | `pi/extensions/swarm-lib/swarm-herdr.ts` | not symlinked by `links.toml` |
 | `pi/extensions/swarm-lib/swarm-picker-copilot.ts` | not symlinked by `links.toml` |
 | `pi/extensions/swarm-lib/swarm-picker.ts` | not symlinked by `links.toml` |
@@ -1628,6 +1629,7 @@ are copy-once seeds for exactly that reason.
 | `pi/test/ruff-format-on-edit.test.ts` | not symlinked by `links.toml` |
 | `pi/test/second-opinion-tool.test.ts` | not symlinked by `links.toml` |
 | `pi/test/standup-tool.test.ts` | not symlinked by `links.toml` |
+| `pi/test/swarm-amend-ack.test.ts` | not symlinked by `links.toml` |
 | `pi/test/swarm-module-surface.test.ts` | not symlinked by `links.toml` |
 | `pi/test/swarm-tool.test.ts` | not symlinked by `links.toml` |
 | `pi/test/test-env.test.ts` | not symlinked by `links.toml` |
