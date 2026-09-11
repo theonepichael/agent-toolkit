@@ -7,17 +7,37 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 // error (or any other fatal turn error) exhausts its auto-retries, so herdr
 // only ever sees `idle` and the swarm orchestrator's interim detector has to
 // infer the crash from pane text (providerCrashMatch, with its documented
-// blind spots). This makes the crash first-class instead: the worker is
-// genuinely gone, and every orchestrator path that can observe a vanished
-// agent (classifyWaitResult, classifyTimeoutProbe, staleWorkerRecords)
-// already classifies that as a non-finished outcome.
+// blind spots). This makes the crash genuinely terminal instead: the worker's
+// process is gone, and the orchestrator's post-mortem gone-paths
+// (classifyTimeoutProbe, staleWorkerRecords) read that as a non-finished
+// outcome.
+//
+// Measured live 2026-09-11, ONE caveat holds: the orchestrator's PRIMARY path
+// does not yet see the benefit. `settleWait` arms `herdr agent wait --until
+// idle --until done --until blocked`, and herdr publishes the terminal `done`
+// status ~0.17s before the agent record disappears, so the armed wait resolves
+// against `done` -- which `classifyWaitResult` maps to `finished` exactly like
+// the normal parked-at-prompt success signal. A real swarm_poll of a dead
+// fatal-error worker therefore still reports `finished`. The exit is still
+// worth having (the record does vanish, and the pane line is the stable hook a
+// classifier can key on), but closing that last gap is orchestrator-side: the
+// `idle or done -> finished` mapping conflates "process exited" with the
+// normal "parked at prompt" success signal, and is pinned by its own test.
 //
 // Detection is stateless and decision-point-local: `agent_settled` is the
 // event pi's own docs name for "pi will not continue automatically" (the
 // auto-retry machinery runs BEFORE it), and the verdict is read directly
-// from the last assistant entry's stopReason at that moment. An
+// from the last assistant message's stopReason at that moment. An
 // errored-then-retried-and-recovered run has a later successful assistant
 // message as the last one, so nothing stale can misfire.
+//
+// Entry shape: `getEntries()` returns `SessionEntry` values, and a chat
+// message is wrapped -- `{ type: "message", message: { role, stopReason, ... } }`.
+// `role` and `stopReason` are NOT on the entry itself. Verified live against
+// the installed bundle, and mirrored by pi's own footer, which iterates
+// `entry.type === "message" && entry.message.role === "assistant"`. Reading
+// `entry.role` returns undefined for every entry and silently disables this
+// extension (the original bug this note records).
 //
 // Attended sessions are never touched: a human can switch models and
 // continue. The gate is exactly PI_AGENT_UNATTENDED === "1", mirroring the
@@ -45,13 +65,12 @@ export function registerFatalErrorExit(pi: ExtensionAPI, deps?: Partial<FatalErr
 
   pi.on("agent_settled", async (_event, ctx) => {
     if (env.PI_AGENT_UNATTENDED !== UNATTENDED) return;
-    const entries = ctx.sessionManager.getEntries() as unknown[];
-    // Filter-then-last: non-assistant entries (custom, log) may be
-    // interleaved after the final assistant message.
+    // Filter-then-last over message entries: change/custom/log entries carry no
+    // assistant message, and non-assistant messages may follow the last one.
     let last: { stopReason?: unknown } | undefined;
-    for (const entry of entries) {
-      if ((entry as { role?: unknown })?.role === "assistant") {
-        last = entry as { stopReason?: unknown };
+    for (const entry of ctx.sessionManager.getEntries()) {
+      if (entry.type === "message" && entry.message.role === "assistant") {
+        last = entry.message as { stopReason?: unknown };
       }
     }
     // Exact-string whitelist, type-checked: a non-string or absent
