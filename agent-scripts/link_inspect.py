@@ -582,7 +582,8 @@ def collect_link_findings(
     is_wsl: bool,
     profile: str,
     manifest_file: Path,
-    report_uninstalled: bool = False,
+    report_uninstalled: bool = True,
+    force_uninstalled: bool = False,
     specs: Sequence[LinkSpec] | None = None,
     managed_dirs: Sequence[ManagedDirSpec] | None = None,
 ) -> LinkAuditResult:
@@ -621,6 +622,8 @@ def collect_link_findings(
         manifest_entries=entries,
         report_uninstalled=report_uninstalled,
         home=home,
+        specs=specs,
+        force_uninstalled=force_uninstalled,
     )
     orphaned = check_orphaned_links(links, manifest_entries=entries)
     unmanaged, dirs_audited = check_unmanaged_files(
@@ -714,7 +717,8 @@ def audit_links(
     profile: str,
     manifest_file: Path,
     format_path: Callable[[Path], str],
-    report_uninstalled: bool = False,
+    report_uninstalled: bool = True,
+    force_uninstalled: bool = False,
     specs: Sequence[LinkSpec] | None = None,
     managed_dirs: Sequence[ManagedDirSpec] | None = None,
 ) -> tuple[dict[str, list[str]], dict[Path, int], int]:
@@ -738,6 +742,8 @@ def audit_links(
         format_path: Renders a Path for a findings message (pure formatting).
         report_uninstalled: Also flag destinations the manifest never
             recorded creating; see :func:`check_applicable_links`.
+        force_uninstalled: Also flag missing destinations for unprovisioned
+            harnesses when report_uninstalled is set.
         specs, managed_dirs: Pre-parsed links.toml rows, for a caller that
             already parsed the table (the drift hook fingerprints it); parsed
             here when omitted.
@@ -763,6 +769,7 @@ def audit_links(
         profile=profile,
         manifest_file=manifest_file,
         report_uninstalled=report_uninstalled,
+        force_uninstalled=force_uninstalled,
         specs=specs,
         managed_dirs=managed_dirs,
     )
@@ -813,6 +820,8 @@ def check_applicable_links(
     manifest_entries: Iterable[dict[str, object]] = (),
     report_uninstalled: bool = False,
     home: Path | None = None,
+    specs: Sequence[LinkSpec] | None = None,
+    force_uninstalled: bool = False,
 ) -> tuple[list[LinkFinding], dict[Path, int]]:
     """Report inconsistencies on destinations in scope for this machine.
 
@@ -840,6 +849,10 @@ def check_applicable_links(
             the exemption entirely rather than guessing at a home — a unit
             test exercising an unrelated entry has no reason to know about
             the composition convention.
+        specs: Optional link declarations to filter never-installed checks to
+            provisioned harnesses (unless force_uninstalled is set).
+        force_uninstalled: When set, flag missing destinations even for
+            unprovisioned harnesses.
 
     Returns:
         The typed findings (construction order preserved), and a count per
@@ -858,11 +871,53 @@ def check_applicable_links(
             for entry in manifest_entries
             if entry.get("kind") == "symlink-created" and "dest" in entry
         }
+    dest_home = home or Path.home()
+    dest_to_harness: dict[Path, str | None] = {}
+    dir_specs: list[tuple[Path, str | None]] = []
+    provisioned_harnesses: set[str] = set()
+
+    if specs is not None and not force_uninstalled:
+        for spec in specs:
+            expanded = expand_dest(spec.dest, dest_home)
+            if spec.dir:
+                dir_specs.append((expanded, spec.harness))
+                if (
+                    spec.harness is not None
+                    and spec.harness not in provisioned_harnesses
+                    and (
+                        any(e.is_relative_to(expanded) for e in installed_dests)
+                        or is_symlink(expanded)
+                        or path_exists(expanded)
+                    )
+                ):
+                    provisioned_harnesses.add(spec.harness)
+            else:
+                dest_to_harness[expanded] = spec.harness
+                if (
+                    spec.harness is not None
+                    and spec.harness not in provisioned_harnesses
+                    and (
+                        expanded in installed_dests
+                        or is_symlink(expanded)
+                        or path_exists(expanded)
+                    )
+                ):
+                    provisioned_harnesses.add(spec.harness)
+
     for src, dest, rel, applicable in links:
         if not applicable:
             continue
         if not is_symlink(dest) and not path_exists(dest):
             if report_uninstalled and path_exists(src) and dest not in installed_dests:
+                if specs is not None and not force_uninstalled:
+                    harness = dest_to_harness.get(dest)
+                    if harness is None and dir_specs:
+                        for d_root, h in dir_specs:
+                            if dest.is_relative_to(d_root):
+                                harness = h
+                                break
+                    if harness is not None and harness not in provisioned_harnesses:
+                        continue
                 findings.append(
                     LinkFinding(
                         CHECK_BUCKET_NEVER_INSTALLED,

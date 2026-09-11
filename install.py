@@ -234,13 +234,12 @@ usage: ./install.sh --harness=<claude,copilot,opencode,agy,pi,codex>[,...] [--pr
               same file in a different checkout of this repo — the normal
               state of affairs when auditing from a worktree — are
               collapsed into a single informational note instead of one
-              finding each, and do not affect the exit code. --report-
-              uninstalled additionally reports never-installed: an
-              applicable row whose repo source exists but whose
-              destination was never linked here at all, as opposed to one
-              that was linked once and later removed, which stays silent
-              either way; off by default, since a machine that simply
-              hasn't run install.sh yet for some entries is not a defect.
+              finding each, and do not affect the exit code. never-installed
+              reports an applicable row whose repo source exists but whose
+              destination was never linked here at all (enabled by default
+              for provisioned harnesses and unharnessed links; --no-report-
+              uninstalled suppresses this check, while --report-uninstalled
+              forces it across all harnesses).
               No other flag may be combined with --check-links.
               Exits 0 when nothing is wrong, 1 when any bucket is
               non-empty, 2 if links.toml itself cannot be read.
@@ -254,7 +253,7 @@ Examples:
   ./install.sh --dry-run --rollback
   ./install.sh --rollback --wipe        # full rollback to a blank slate
   ./install.sh --check-links            # read-only symlink audit
-  ./install.sh --check-links --report-uninstalled  # also flag never-installed links
+  ./install.sh --check-links --no-report-uninstalled  # skip never-installed links
 
 Exits 0 if every step ran, 1 if any step was skipped (see summary)."""
 
@@ -480,7 +479,8 @@ class Options:
     depart: bool = False
     yes: bool = False
     check_links: bool = False
-    report_uninstalled: bool = False
+    report_uninstalled: bool = True
+    force_uninstalled: bool = False
     quiet: bool = False
     verbose: bool = False
     force_harness: bool = False
@@ -662,6 +662,9 @@ def parse_args(argv: Sequence[str]) -> Options:
     parser.add_argument(
         "--report-uninstalled", dest="report_uninstalled", action="store_true"
     )
+    parser.add_argument(
+        "--no-report-uninstalled", dest="no_report_uninstalled", action="store_true"
+    )
     parser.add_argument("-h", "--help", dest="help", action="store_true")
 
     args, extras = parser.parse_known_args(list(argv))
@@ -763,6 +766,14 @@ def parse_args(argv: Sequence[str]) -> Options:
     if args.report_uninstalled and not args.check_links:
         _fail("--report-uninstalled can only be used with --check-links")
 
+    if args.no_report_uninstalled and not args.check_links:
+        _fail("--no-report-uninstalled can only be used with --check-links")
+
+    if args.report_uninstalled and args.no_report_uninstalled:
+        _fail(
+            "--report-uninstalled and --no-report-uninstalled cannot be used together"
+        )
+
     if (
         not args.rollback
         and not args.depart
@@ -794,7 +805,8 @@ def parse_args(argv: Sequence[str]) -> Options:
         depart=args.depart,
         yes=args.yes,
         check_links=args.check_links,
-        report_uninstalled=args.report_uninstalled,
+        report_uninstalled=not args.no_report_uninstalled,
+        force_uninstalled=args.report_uninstalled,
         quiet=args.quiet,
         verbose=args.verbose,
         force_harness=args.force_harness,
@@ -2207,6 +2219,8 @@ def _check_applicable_links(
     links: Sequence[tuple[Path, Path, str, bool]],
     *,
     report_uninstalled: bool = False,
+    specs: Sequence[LinkSpec] | None = None,
+    force_uninstalled: bool = False,
 ) -> tuple[dict[str, list[str]], dict[Path, int]]:
     """Adapter for link_inspect.check_applicable_links; see it for detail."""
     typed, foreign = link_inspect.check_applicable_links(
@@ -2215,6 +2229,8 @@ def _check_applicable_links(
         manifest_entries=ctx.manifest.entries(),
         report_uninstalled=report_uninstalled,
         home=ctx.home,
+        specs=specs,
+        force_uninstalled=force_uninstalled,
     )
     return link_inspect.render_findings(typed, ctx.display), foreign
 
@@ -2390,6 +2406,7 @@ def do_check_links(ctx: Context) -> int:
         manifest_file=ctx.manifest.path,
         format_path=ctx.display,
         report_uninstalled=ctx.opts.report_uninstalled,
+        force_uninstalled=ctx.opts.force_uninstalled,
         specs=specs,
         managed_dirs=managed_dirs,
     )

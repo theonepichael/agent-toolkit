@@ -233,7 +233,7 @@ def _audit(
             is_wsl=is_wsl,
             profile=link_inspect.DEFAULT_PROFILE,
             manifest_file=link_inspect.manifest_path(home),
-            report_uninstalled=False,
+            report_uninstalled=True,
             specs=specs,
             managed_dirs=managed_dirs,
         )

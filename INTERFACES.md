@@ -939,11 +939,11 @@ link_inspect.py — link inspection, path classification, drift finding, and the
   - `iter_concrete_links(spec: LinkSpec, *, repo_root: Path, home: Path) -> Iterator[tuple[Path, Path, str]]` — Expand one ``links.toml`` row into concrete ``(src, dest, relative_src)`` triples.
   - `dir_applies(dir_spec: ManagedDirSpec, specs: Sequence[LinkSpec], *, repo_root: Path, home: Path, harnesses: Iterable[str], is_mac: bool, is_linux: bool, is_wsl: bool, profile: str) -> bool` — Return whether a declared directory is in scope for this run.
   - `gather_links(specs: Sequence[LinkSpec], *, repo_root: Path, home: Path, harnesses: Iterable[str], is_mac: bool, is_linux: bool, is_wsl: bool, profile: str) -> list[tuple[Path, Path, str, bool]]` — Expand every ``links.toml`` row into concrete triples, once per run.
-  - `collect_link_findings(*, repo_root: Path, home: Path, harnesses: Iterable[str], is_mac: bool, is_linux: bool, is_wsl: bool, profile: str, manifest_file: Path, report_uninstalled: bool = False, specs: Sequence[LinkSpec] | None = None, managed_dirs: Sequence[ManagedDirSpec] | None = None) -> LinkAuditResult` — Run the full read-only link audit and return typed findings.
+  - `collect_link_findings(*, repo_root: Path, home: Path, harnesses: Iterable[str], is_mac: bool, is_linux: bool, is_wsl: bool, profile: str, manifest_file: Path, report_uninstalled: bool = True, force_uninstalled: bool = False, specs: Sequence[LinkSpec] | None = None, managed_dirs: Sequence[ManagedDirSpec] | None = None) -> LinkAuditResult` — Run the full read-only link audit and return typed findings.
   - `render_findings(findings: Iterable[LinkFinding], format_path: Callable[[Path], str]) -> dict[str, list[str]]` — Render typed findings into the audit's bucket-of-messages shape.
-  - `audit_links(*, repo_root: Path, home: Path, harnesses: Iterable[str], is_mac: bool, is_linux: bool, is_wsl: bool, profile: str, manifest_file: Path, format_path: Callable[[Path], str], report_uninstalled: bool = False, specs: Sequence[LinkSpec] | None = None, managed_dirs: Sequence[ManagedDirSpec] | None = None) -> tuple[dict[str, list[str]], dict[Path, int], int]` — Run the full read-only link audit and return its findings as plain data.
+  - `audit_links(*, repo_root: Path, home: Path, harnesses: Iterable[str], is_mac: bool, is_linux: bool, is_wsl: bool, profile: str, manifest_file: Path, format_path: Callable[[Path], str], report_uninstalled: bool = True, force_uninstalled: bool = False, specs: Sequence[LinkSpec] | None = None, managed_dirs: Sequence[ManagedDirSpec] | None = None) -> tuple[dict[str, list[str]], dict[Path, int], int]` — Run the full read-only link audit and return its findings as plain data.
   - `personal_overlay_composed_target(home: Path) -> Path` — The file dotfiles actually composes and symlinks ``PERSONAL_OVERLAY_SRC_REL``'s destinations to, on a machine with both repos checked out.
-  - `check_applicable_links(links: Sequence[tuple[Path, Path, str, bool]], *, repo_root: Path, manifest_entries: Iterable[dict[str, object]] = (), report_uninstalled: bool = False, home: Path | None = None) -> tuple[list[LinkFinding], dict[Path, int]]` — Report inconsistencies on destinations in scope for this machine.
+  - `check_applicable_links(links: Sequence[tuple[Path, Path, str, bool]], *, repo_root: Path, manifest_entries: Iterable[dict[str, object]] = (), report_uninstalled: bool = False, home: Path | None = None, specs: Sequence[LinkSpec] | None = None, force_uninstalled: bool = False) -> tuple[list[LinkFinding], dict[Path, int]]` — Report inconsistencies on destinations in scope for this machine.
   - `find_orphaned_links(links: Sequence[tuple[Path, Path, str, bool]], *, manifest_entries: Iterable[dict[str, object]]) -> list[Path]` — Return manifest-recorded symlink destinations no current entry produces.
   - `check_orphaned_links(links: Sequence[tuple[Path, Path, str, bool]], *, manifest_entries: Iterable[dict[str, object]]) -> list[LinkFinding]` — Return typed findings for manifest-recorded symlinks that links.toml no longer produces.
   - `live_backup_paths(manifest_entries: Iterable[dict[str, object]]) -> set[Path]` — Return manifest-recorded backups that are still live ``--rollback`` payload.
@@ -1673,6 +1673,7 @@ install.py — agent-toolkit + AI-harness provisioner for macOS and Linux/WSL.
   - `--yes`
   - `--check-links`
   - `--report-uninstalled`
+  - `--no-report-uninstalled`
   - `-h/--help`
 - Environment: `AGENT_TOOLKIT_INSTALL_WRAPPER`, `LOGNAME`, `PATH`, `USER`
 - Filesystem constants:

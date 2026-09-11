@@ -190,6 +190,24 @@ dest = "~/.claude/gone.md"
             f"links: broken-source (1); wrong-target (1) — run {fx.pointer()}\n",
         )
 
+    def test_never_installed_bucket_is_reported(self) -> None:
+        fx = self.fixture()
+        # A declared link whose source exists but destination was never installed:
+        fx.source("claude/new.md")
+        fx.write_links(
+            BASE_LINKS
+            + """
+[[link]]
+src = "claude/new.md"
+dest = "~/.claude/new.md"
+"""
+        )
+        out = fx.check()
+        self.assertEqual(
+            out,
+            f"links: never-installed (1) — run {fx.pointer()}\n",
+        )
+
     def test_quiet_suppresses_the_note(self) -> None:
         fx = self.fixture()
         fx.link_to(

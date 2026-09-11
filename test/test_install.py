@@ -90,7 +90,7 @@ def make_ctx(
     depart=False,
     yes=False,
     check_links=False,
-    report_uninstalled=False,
+    report_uninstalled=True,
     system="Linux",
     is_wsl=False,
     repo_root=REPO_ROOT,
@@ -3591,6 +3591,7 @@ def test_check_links_detects_orphaned_link(home, fake_repo, capsys):
 def test_check_links_ignores_orphan_already_removed(home, fake_repo, capsys):
     """A recorded dest that a past rollback already deleted is not a finding."""
     ctx = check_links_ctx(home, fake_repo)
+    wire_check_links(ctx, ("zsh/.zshrc", "~/.zshrc"))
     ctx.manifest.record_symlink(home / ".oldrc", fake_repo / "zsh" / ".zshrc")
     capsys.readouterr()
 
@@ -3600,6 +3601,7 @@ def test_check_links_ignores_orphan_already_removed(home, fake_repo, capsys):
 def test_check_links_ignores_gated_off_entry_as_orphan(home, fake_repo, capsys):
     """A mac-only entry seen from Linux is gated off, not removed from links.toml."""
     ctx = check_links_ctx(home, fake_repo, system="Linux")
+    wire_check_links(ctx, ("zsh/.zshrc", "~/.zshrc"))
     karabiner = home / ".config" / "karabiner" / "karabiner.json"
     karabiner.parent.mkdir(parents=True)
     karabiner.symlink_to(fake_repo / "karabiner" / "karabiner.json")
@@ -3791,9 +3793,9 @@ def test_check_links_ignores_unrelated_files(home, fake_repo, capsys):
     assert install.do_check_links(ctx) == 0
 
 
-def test_check_links_ignores_uninstalled_entries(home, fake_repo, capsys):
-    """A dest that simply was never installed is not yet a problem."""
-    ctx = check_links_ctx(home, fake_repo)
+def test_check_links_ignores_uninstalled_entries_when_opted_out(home, fake_repo, capsys):
+    """A dest that simply was never installed is ignored with report_uninstalled=False."""
+    ctx = check_links_ctx(home, fake_repo, report_uninstalled=False)
     capsys.readouterr()
 
     assert install.do_check_links(ctx) == 0
@@ -3876,6 +3878,7 @@ def test_main_dispatches_check_links_without_installing(
     home, fake_repo, monkeypatch, capsys
 ):
     ctx = check_links_ctx(home, fake_repo)
+    wire_check_links(ctx, ("zsh/.zshrc", "~/.zshrc"))
     monkeypatch.setattr(install, "build_context", lambda opts: ctx)
     monkeypatch.setattr(
         install,
@@ -3962,9 +3965,23 @@ def test_check_links_never_installed_fires_with_flag(home, fake_repo, capsys):
     assert "never-installed" in out
 
 
-def test_check_links_never_installed_silent_without_flag(home, fake_repo, capsys):
-    """Same gap, but the opt-in flag was never passed: default stays silent."""
+def test_check_links_never_installed_fires_without_flag(home, fake_repo, capsys):
+    """An applicable missing link fires never-installed by default (no flag needed)."""
     ctx = check_links_ctx(home, fake_repo)
+    capsys.readouterr()
+
+    code = install.do_check_links(ctx)
+
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "never-installed" in out
+
+
+def test_check_links_never_installed_silent_with_no_report_uninstalled_flag(
+    home, fake_repo, capsys
+):
+    """The opt-out flag suppresses never-installed detection."""
+    ctx = check_links_ctx(home, fake_repo, report_uninstalled=False)
     capsys.readouterr()
 
     code = install.do_check_links(ctx)
@@ -4231,10 +4248,10 @@ def test_check_links_reports_unrecorded_bak_in_declared_dir(home, managed_repo, 
 def test_check_links_absent_declared_dir_is_silent(home, managed_repo, capsys):
     """A directory that was never provisioned here has nothing to audit."""
     ctx = check_links_ctx(home, managed_repo, harnesses=("pi",))
+    wire_check_links(ctx, ("scripts/one.py", "~/.claude/scripts/one.py"))
     capsys.readouterr()
 
     assert install.do_check_links(ctx) == 0
-
     assert "unmanaged (" not in capsys.readouterr().out
 
 
@@ -4243,7 +4260,11 @@ def test_check_links_declared_dir_inherits_harness_from_its_rows(
 ):
     """Scoping the run to claude must not audit a pi-only directory."""
     wire_ctx = check_links_ctx(home, managed_repo, harnesses=("pi",))
-    wire_check_links(wire_ctx, ("ext/one.ts", "~/.pi/agent/extensions/one.ts"))
+    wire_check_links(
+        wire_ctx,
+        ("ext/one.ts", "~/.pi/agent/extensions/one.ts"),
+        ("scripts/one.py", "~/.claude/scripts/one.py"),
+    )
     (home / ".pi/agent/extensions/stray.ts").write_text("not ours\n")
 
     claude_only = check_links_ctx(home, managed_repo, harnesses=("claude",))
