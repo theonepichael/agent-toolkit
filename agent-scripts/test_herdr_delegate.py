@@ -1065,5 +1065,117 @@ class CopilotKindTests(DelegateTests):
             self.assertEqual(summary["session_id"], session_id)
 
 
+class FakeClaimsLookup:
+    """Fake BacklogClaimLookup for testing readiness selection."""
+
+    def __init__(self, ready: list[dict[str, object]] | None = None) -> None:
+        self.ready = list(ready or [])
+
+    def in_progress_items(self) -> list[dict[str, object]]:
+        return []
+
+    def ready_items(self, prefix: str | None = None) -> list[dict[str, object]]:
+        if prefix is not None:
+            return [
+                item
+                for item in self.ready
+                if str(item.get("id", "")).startswith(prefix)
+            ]
+        return list(self.ready)
+
+    def claim_info(self, slug: str) -> None:
+        return None
+
+
+class QueueFacadeTests(unittest.TestCase):
+    """Unit tests for select_ready, build_launch_plan, and ready_slugs."""
+
+    def test_select_ready_unscoped(self) -> None:
+        fake = FakeClaimsLookup([
+            {"id": "atk-one", "status": "open"},
+            {"id": "iron-lb-two", "status": "open"},
+        ])
+        items = herdr_delegate.select_ready(None, fake)
+        self.assertEqual([i["id"] for i in items], ["atk-one", "iron-lb-two"])
+
+    def test_select_ready_prefix_scoped(self) -> None:
+        fake = FakeClaimsLookup([
+            {"id": "atk-one", "status": "open"},
+            {"id": "iron-lb-two", "status": "open"},
+            {"id": "atk-three", "status": "open"},
+        ])
+        items = herdr_delegate.select_ready("atk", fake)
+        self.assertEqual([i["id"] for i in items], ["atk-one", "atk-three"])
+
+    def test_select_ready_empty(self) -> None:
+        fake = FakeClaimsLookup([])
+        items = herdr_delegate.select_ready("iron-lb", fake)
+        self.assertEqual(items, [])
+
+    def test_ready_slugs_with_claims(self) -> None:
+        fake = FakeClaimsLookup([
+            {"id": "atk-one", "status": "open"},
+            {"id": "atk-two", "status": "open"},
+        ])
+        slugs = herdr_delegate.ready_slugs(fake)
+        self.assertEqual(slugs, ["atk-one", "atk-two"])
+
+    def test_build_launch_plan_pi(self) -> None:
+        items = [
+            {"id": "atk-one", "status": "open"},
+            {"id": "atk-two", "status": "open"},
+        ]
+        plan = herdr_delegate.build_launch_plan(items, kind="pi", cwd="/workspace")
+        self.assertEqual(len(plan), 2)
+        self.assertEqual(
+            plan[0],
+            [
+                "tab",
+                "create",
+                "--cwd",
+                "/workspace",
+                "--label",
+                "atk-one",
+                "--env",
+                "PI_AGENT_UNATTENDED=1",
+                "--no-focus",
+            ],
+        )
+        self.assertEqual(
+            plan[1],
+            [
+                "tab",
+                "create",
+                "--cwd",
+                "/workspace",
+                "--label",
+                "atk-two",
+                "--env",
+                "PI_AGENT_UNATTENDED=1",
+                "--no-focus",
+            ],
+        )
+
+    def test_build_launch_plan_copilot(self) -> None:
+        items = [{"id": "iron-lb-one", "status": "open"}]
+        plan = herdr_delegate.build_launch_plan(
+            items, kind="copilot", cwd="/custom/dir"
+        )
+        self.assertEqual(len(plan), 1)
+        self.assertEqual(
+            plan[0],
+            [
+                "tab",
+                "create",
+                "--cwd",
+                "/custom/dir",
+                "--label",
+                "iron-lb-one",
+                "--no-focus",
+            ],
+        )
+        self.assertNotIn("--env", plan[0])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -378,9 +378,18 @@ and prose cross-references, use slugs for any item references — never raw hex 
 
 #### Starting work on a backlog item
 
-Follow the Git section's worktree-first policy below: create a fresh
-worktree scoped to the item's slug before touching the repo under
-`related_files`, rather than branching in the main checkout.
+Follow the Git section's worktree-first policy below: before touching the repo
+under `related_files` or branching in main, run the worktree automation tool:
+
+```bash
+python3 ~/.claude/scripts/worktree.py <slug|N>
+```
+
+This resolves the target repository from the item's `related_files`, sets up
+or reuses the worktree at the sibling path, and bootstraps its dependencies in
+a single step. Never create worktrees manually with bare `git worktree add` or
+invoke bootstrap scripts by hand when working a backlog item — `worktree.py`
+owns both steps.
 
 `dev_status.py start` now enforces part of this itself, as a backstop: it
 refuses to run from a main/master checkout of a git repository (exit 1,
@@ -427,27 +436,25 @@ used for backlog capture.
 - Never commit directly to `main`/`master`, in any repo. Before starting new
   work — regardless of whether the checkout is currently clean or dirty,
   and even in solo sessions with no concurrent activity — create a fresh
-  worktree for it rather than branching in the existing checkout. Use the
-  canonical automation tool:
+  worktree for it rather than branching in the existing checkout. Always
+  use the canonical automation tool:
 
   ```bash
   python3 ~/.claude/scripts/worktree.py <slug|N>
   ```
 
-  Or manually:
-
-  ```bash
-  git -C <repo> worktree add ../<repo-name>-<slug> -b <slug>
-  ```
-
   `worktree.py` automatically resolves the repository from the backlog item,
   handles branch creation or attachment, reuses existing worktrees idempotently,
-  and bootstraps project dependencies. If doing it manually: a fresh worktree has
-  no installed dependencies — package managers install into an untracked local
-  folder (`node_modules`, `.venv`, `target`, etc.), and worktrees don't share it.
-  Install dependencies right after creating the worktree, before running tests,
-  lint, or a dev/build command. Check the repo's manifest/lock file to find the
-  right install command for its ecosystem.
+  and bootstraps project dependencies in a single step. Do not manually run
+  `git worktree add` or execute bare bootstrap scripts (`scripts/bootstrap-worktree.sh`,
+  etc.) for backlog items.
+
+  For ad-hoc work outside of any backlog item, create the worktree manually:
+
+  ```bash
+  git -C <repo> worktree add ../<repo-name>-<branch> -b <branch>
+  ```
+  Then install dependencies immediately before running tests, lint, or dev/build commands.
 
   This sidesteps concurrent-session collisions by construction — repos
   routinely get worked from more than one tool in parallel against the same

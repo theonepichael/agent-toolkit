@@ -75,12 +75,17 @@ from pathlib import Path
 # same as any other file open.
 sys.path.insert(0, str(Path(__file__).parent))
 
+from backlog_claim_lookup import (  # noqa: E402
+    BacklogClaimLookup,
+    LocalClaimLookup,
+)
 from dev_status import (  # noqa: E402
     HARNESS_REPO,
     REPO_PREFIXES,
     is_worker_safe,
     prefix_of,
 )
+from dev_status_storage import BacklogItem  # noqa: E402
 
 UNATTENDED_ENV = "PI_AGENT_UNATTENDED=1"
 """Set on the tab so it is in pi's environment before pi starts."""
@@ -592,19 +597,37 @@ def spawn_in_new_tab(
     raise AssertionError("unreachable: loop always returns or raises")
 
 
-def ready_slugs() -> list[str]:
-    """Slugs currently in READY, straight from ``dev_status.py ready``."""
-    result = subprocess.run(
-        [sys.executable, str(DEV_STATUS), "ready"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        raise RefusedError(f"dev_status.py ready failed: {result.stderr.strip()}")
-    text = result.stdout
-    items = json.loads(text[text.index("[") :])
-    return [str(item["id"]) for item in items]
+def select_ready(
+    prefix: str | None = None,
+    claims: BacklogClaimLookup | None = None,
+) -> list[BacklogItem]:
+    """Select open backlog items matching an optional prefix using claims lookup."""
+    if claims is None:
+        claims = LocalClaimLookup()
+    return claims.ready_items(prefix)
+
+
+def build_launch_plan(
+    items: list[BacklogItem],
+    *,
+    kind: str = "pi",
+    cwd: str = ".",
+) -> list[list[str]]:
+    """Construct herdr tab-creation argvs for a list of backlog items.
+
+    Pure/read-only: computes the argv lists without executing them or
+    spawning any tabs. Actual execution is left to spawn_in_new_tab / herdr.
+    """
+    return [
+        build_tab_argv(cwd=cwd, label=str(item["id"]), kind=kind)
+        for item in items
+        if "id" in item
+    ]
+
+
+def ready_slugs(claims: BacklogClaimLookup | None = None) -> list[str]:
+    """Slugs currently in READY, sourced via select_ready()."""
+    return [str(item["id"]) for item in select_ready(claims=claims) if "id" in item]
 
 
 def herdr(argv: list[str]) -> dict[str, object]:

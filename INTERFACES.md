@@ -842,7 +842,7 @@ Launch pi agents in herdr tabs to work backlog items.
   - `DEV_STATUS = Path(__file__).parent / 'dev_status.py'`
   - `COPILOT_PLUGIN_DIR = str(Path(__file__).resolve().parent.parent / 'copilot' / 'extensions' / 'swarm')`
 - Explicit exit codes: `1`
-- Depends on: `dev_status.py`
+- Depends on: `backlog_claim_lookup.py`, `dev_status.py`, `dev_status_storage.py`
 - Exceptions:
   - `class RefusedError(RuntimeError)` — A launch that must not proceed, with a reason fit to show the user.
 - Public functions:
@@ -872,7 +872,9 @@ Launch pi agents in herdr tabs to work backlog items.
   - `parse_agent_names(listing: dict[str, object]) -> list[str]` — Agent names out of a `herdr agent list` envelope; [] on anything unexpected.
   - `wait_agent_deregistered(name: str, *, retry_advice: str = 'Retry `restart` (it relaunches once the name frees)') -> None` — Poll until no live agent carries ``name``, bounded; refuse if it persists.
   - `spawn_in_new_tab(*, cwd: str, label: str, prompt: str, model: str | None, kind: str = 'pi', session_id: str | None = None, allow_all_tools: bool = True, plugin_dir: str | None = None) -> dict[str, object]` — Create a tab, start pi or copilot in it, and hand it its prompt.
-  - `ready_slugs() -> list[str]` — Slugs currently in READY, straight from ``dev_status.py ready``.
+  - `select_ready(prefix: str | None = None, claims: BacklogClaimLookup | None = None) -> list[BacklogItem]` — Select open backlog items matching an optional prefix using claims lookup.
+  - `build_launch_plan(items: list[BacklogItem], *, kind: str = 'pi', cwd: str = '.') -> list[list[str]]` — Construct herdr tab-creation argvs for a list of backlog items.
+  - `ready_slugs(claims: BacklogClaimLookup | None = None) -> list[str]` — Slugs currently in READY, sourced via select_ready().
   - `herdr(argv: list[str]) -> dict[str, object]` — Run a herdr command and return its parsed JSON result.
 - Subcommand handlers: `cmd_plan`, `cmd_launch`, `cmd_restart`
 - Tested by: `agent-scripts/test_herdr_delegate.py`
