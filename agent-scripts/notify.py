@@ -28,18 +28,16 @@ import sys
 from pathlib import Path
 
 import cli_common
+import harness_spec
 
 ICONS_DIR = Path(__file__).resolve().parent.parent / "claude" / "icons"
 
-APP_REGISTRATIONS = {
-    "claude": {"id": "Agent.Claude", "name": "Claude Code", "icon": "claude.png"},
-    "agy": {"id": "Agent.AGY", "name": "Antigravity (AGY)", "icon": "agy.png"},
-    "gemini": {"id": "Agent.AGY", "name": "Antigravity (AGY)", "icon": "agy.png"},
-    "antigravity": {"id": "Agent.AGY", "name": "Antigravity (AGY)", "icon": "agy.png"},
-    "pi": {"id": "Agent.Pi", "name": "Pi Coding Agent", "icon": "pi.png"},
-    "copilot": {"id": "Agent.Copilot", "name": "GitHub Copilot", "icon": "copilot.png"},
-    "opencode": {"id": "Agent.OpenCode", "name": "OpenCode", "icon": "opencode.png"},
+APP_REGISTRATIONS: dict[str, dict[str, str]] = {
+    name: {"id": spec.app_id, "name": spec.display_name, "icon": spec.icon}
+    for name, spec in harness_spec.HARNESSES.items()
 }
+APP_REGISTRATIONS["gemini"] = APP_REGISTRATIONS["agy"]
+APP_REGISTRATIONS["antigravity"] = APP_REGISTRATIONS["agy"]
 
 
 def is_wsl() -> bool:
@@ -164,9 +162,10 @@ def send_wsl_toast(
     cache = sync_icons_to_windows()
     win_icon_path = ""
     if cache:
-        _, win_cache_dir = cache
-        icon_name = icon_path.name if icon_path else reg_info["icon"]
-        win_icon_path = f"{win_cache_dir}\\{icon_name}"
+        linux_cache_dir, win_cache_dir = cache
+        icon_name = icon_path.name if icon_path else reg_info.get("icon", "")
+        if icon_name and (linux_cache_dir / icon_name).exists():
+            win_icon_path = f"{win_cache_dir}\\{icon_name}"
 
     safe_title = _escape_xml(title)
     safe_msg = _escape_xml(message)

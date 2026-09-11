@@ -8,6 +8,28 @@ renderers, installers, link inspection, and discovery probes.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
+from pathlib import Path
+
+
+class FeatureSupportState(StrEnum):
+    """Lifecycle support states for a required feature declaration."""
+
+    SUPPORTED = "supported"
+    UNSUPPORTED = "unsupported"
+    WAIVED = "waived"
+
+
+@dataclass(frozen=True)
+class FeatureImplementation:
+    """Declaration of a harness's implementation of a required feature."""
+
+    state: FeatureSupportState
+    source: str = ""
+    install_mapping: str = ""
+    event_mapping: tuple[str, ...] = ()
+    verification: str = ""
+    rationale: str = ""
 
 
 @dataclass(frozen=True)
@@ -31,6 +53,9 @@ class HarnessSpec:
     skill_ref_dir: str = "ref"
     probe_command: str = ""
     commit_scope: str = ""
+    display_name: str = ""
+    app_id: str = ""
+    icon: str = ""
 
     def process_basename(self) -> str:
         """Return process basename for claim detection, falling back to name."""
@@ -74,6 +99,9 @@ HARNESSES: dict[str, HarnessSpec] = {
         skill_ref_dir="ref",
         probe_command="claude -p",
         commit_scope="claude",
+        display_name="Claude Code",
+        app_id="Agent.Claude",
+        icon="claude.png",
     ),
     "copilot": HarnessSpec(
         name="copilot",
@@ -98,6 +126,9 @@ HARNESSES: dict[str, HarnessSpec] = {
         skill_ref_dir="ref",
         probe_command="copilot -p",
         commit_scope="copilot",
+        display_name="GitHub Copilot",
+        app_id="Agent.Copilot",
+        icon="copilot.png",
     ),
     "opencode": HarnessSpec(
         name="opencode",
@@ -116,6 +147,9 @@ HARNESSES: dict[str, HarnessSpec] = {
         skill_ref_dir="ref",
         probe_command="opencode -p",
         commit_scope="opencode",
+        display_name="OpenCode",
+        app_id="Agent.OpenCode",
+        icon="opencode.png",
     ),
     "agy": HarnessSpec(
         name="agy",
@@ -134,6 +168,9 @@ HARNESSES: dict[str, HarnessSpec] = {
         skill_ref_dir="references",
         probe_command="agy -p",
         commit_scope="agy",
+        display_name="Antigravity (AGY)",
+        app_id="Agent.AGY",
+        icon="agy.png",
     ),
     "pi": HarnessSpec(
         name="pi",
@@ -152,6 +189,9 @@ HARNESSES: dict[str, HarnessSpec] = {
         skill_ref_dir="references",
         probe_command="pi -p",
         commit_scope="pi",
+        display_name="Pi Coding Agent",
+        app_id="Agent.Pi",
+        icon="pi.png",
     ),
     "codex": HarnessSpec(
         name="codex",
@@ -170,6 +210,9 @@ HARNESSES: dict[str, HarnessSpec] = {
         skill_ref_dir="ref",
         probe_command="codex exec",
         commit_scope="codex",
+        display_name="Codex CLI",
+        app_id="Agent.Codex",
+        icon="codex.png",
     ),
 }
 
@@ -222,3 +265,112 @@ def expected_filenames(name: str) -> frozenset[str]:
 def probe_expected_root(name: str) -> frozenset[str]:
     """Return the fixture root tokens expected for the given harness."""
     return HARNESSES[name].probe_expected_root
+
+
+# ── Feature coverage matrix ──────────────────────────────────────────────
+
+REQUIRED_FEATURES: tuple[str, ...] = ("notifications",)
+
+FEATURE_MATRIX: dict[tuple[str, str], FeatureImplementation] = {
+    ("claude", "notifications"): FeatureImplementation(
+        state=FeatureSupportState.SUPPORTED,
+        source="claude/settings.json",
+        install_mapping="~/.claude/settings.json",
+        event_mapping=("waiting_for_input", "completed"),
+        verification="agent-scripts/test_harness_feature_coverage.py",
+    ),
+    ("copilot", "notifications"): FeatureImplementation(
+        state=FeatureSupportState.SUPPORTED,
+        source="copilot/hooks/agent-stop.json",
+        install_mapping="~/.copilot/hooks/agent-stop.json",
+        event_mapping=("agentStop",),
+        verification="agent-scripts/test_harness_feature_coverage.py",
+    ),
+    ("opencode", "notifications"): FeatureImplementation(
+        state=FeatureSupportState.SUPPORTED,
+        source="opencode/plugin/notify.ts",
+        install_mapping="~/.config/opencode/plugin/notify.ts",
+        event_mapping=("session.idle",),
+        verification="agent-scripts/test_harness_feature_coverage.py",
+    ),
+    ("agy", "notifications"): FeatureImplementation(
+        state=FeatureSupportState.SUPPORTED,
+        source="agy/hooks.json",
+        install_mapping="~/.gemini/config/hooks.json",
+        event_mapping=("Stop",),
+        verification="agent-scripts/test_harness_feature_coverage.py",
+    ),
+    ("pi", "notifications"): FeatureImplementation(
+        state=FeatureSupportState.SUPPORTED,
+        source="pi/extensions/notify.ts",
+        install_mapping="~/.pi/agent/extensions/notify.ts",
+        event_mapping=("agent_settled",),
+        verification="pi/test/notify.test.ts",
+    ),
+    ("codex", "notifications"): FeatureImplementation(
+        state=FeatureSupportState.SUPPORTED,
+        source="codex/notify.py",
+        install_mapping="~/.codex/notify.py",
+        event_mapping=("agent-turn-complete",),
+        verification="agent-scripts/test_harness_feature_coverage.py",
+    ),
+}
+
+
+def feature_spec(harness: str, feature: str) -> FeatureImplementation:
+    """Return the FeatureImplementation declaration for a harness and feature."""
+    if harness not in HARNESSES:
+        raise KeyError(f"Unknown harness: {harness}")
+    if feature not in REQUIRED_FEATURES:
+        raise KeyError(f"Unknown feature: {feature}")
+    try:
+        return FEATURE_MATRIX[(harness, feature)]
+    except KeyError:
+        raise KeyError(
+            f"No feature implementation declared for ({harness}, {feature})"
+        ) from None
+
+
+def assert_feature_coverage(repo_root: Path | None = None) -> None:
+    """Validate that all active harnesses have declared valid implementations for all required features."""
+    root = repo_root or Path(__file__).resolve().parent.parent
+    for feat in REQUIRED_FEATURES:
+        for name in ALL_NAMES:
+            key = (name, feat)
+            assert key in FEATURE_MATRIX, (
+                f"Missing required feature declaration for {key}"
+            )
+            impl = FEATURE_MATRIX[key]
+            assert isinstance(impl, FeatureImplementation), (
+                f"{key} is not a FeatureImplementation"
+            )
+            if impl.state == FeatureSupportState.SUPPORTED:
+                assert impl.source, f"{key} supported state requires non-empty source"
+                assert impl.install_mapping, (
+                    f"{key} supported state requires non-empty install_mapping"
+                )
+                assert impl.event_mapping, (
+                    f"{key} supported state requires non-empty event_mapping"
+                )
+                assert impl.verification, (
+                    f"{key} supported state requires non-empty verification"
+                )
+                src_file = root / impl.source
+                assert src_file.exists(), (
+                    f"{key} source file does not exist: {src_file}"
+                )
+                ver_file = root / impl.verification
+                assert ver_file.exists(), (
+                    f"{key} verification file does not exist: {ver_file}"
+                )
+            elif impl.state in (
+                FeatureSupportState.UNSUPPORTED,
+                FeatureSupportState.WAIVED,
+            ):
+                assert impl.rationale, (
+                    f"{key} {impl.state} state requires non-empty rationale"
+                )
+            else:
+                raise AssertionError(
+                    f"Unknown FeatureSupportState {impl.state} for {key}"
+                )

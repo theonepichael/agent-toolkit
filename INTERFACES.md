@@ -833,6 +833,8 @@ Declarative harness specification registry.
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI: none (library module).
 - Public classes:
+  - `class FeatureSupportState(StrEnum)` — Lifecycle support states for a required feature declaration.
+  - `class FeatureImplementation` — Declaration of a harness's implementation of a required feature.
   - `class HarnessSpec` — Specification and discovery facts for a single AI agent harness.
 - Public functions:
   - `spec(name: str) -> HarnessSpec` — Return the HarnessSpec for the given harness name.
@@ -841,7 +843,9 @@ Declarative harness specification registry.
   - `fallback_paths(name: str) -> tuple[str, ...]` — Return the fallback probe paths for the given harness.
   - `expected_filenames(name: str) -> frozenset[str]` — Return the expected instruction filenames loaded by the given harness.
   - `probe_expected_root(name: str) -> frozenset[str]` — Return the fixture root tokens expected for the given harness.
-- Tested by: `agent-scripts/test_harness_spec.py`
+  - `feature_spec(harness: str, feature: str) -> FeatureImplementation` — Return the FeatureImplementation declaration for a harness and feature.
+  - `assert_feature_coverage(repo_root: Path | None = None) -> None` — Validate that all active harnesses have declared valid implementations for all required features.
+- Tested by: `agent-scripts/test_harness_feature_coverage.py`, `agent-scripts/test_harness_spec.py`
 
 ### `agent-scripts/herdr_delegate.py`
 
@@ -1025,7 +1029,7 @@ Cross-platform agent notification dispatcher.
 - Environment: `TMUX`, `WSL_DISTRO_NAME`, `WSL_INTEROP`
 - Filesystem constants:
   - `ICONS_DIR = Path(__file__).resolve().parent.parent / 'claude' / 'icons'`
-- Depends on: `cli_common.py`
+- Depends on: `cli_common.py`, `harness_spec.py`
 - Public functions:
   - `is_wsl() -> bool` — Detect whether running inside Windows Subsystem for Linux.
   - `get_harness_icon(harness: str | None, custom_icon: str | None = None) -> Path | None` — Resolve the icon file path for a given harness.
@@ -1036,7 +1040,7 @@ Cross-platform agent notification dispatcher.
   - `send_terminal_osc(title: str, message: str, verbose: bool = False) -> bool` — Emit OSC 777 and OSC 9 escape sequences to the controlling TTY.
   - `dispatch_notification(title: str, message: str, harness: str | None = None, icon: str | None = None, urgency: str = 'normal', event_type: str = 'completed', verbose: bool = False) -> None` — Route notification to terminal OSC and appropriate OS bridge with icon.
   - `build_parser() -> argparse.ArgumentParser`
-- Tested by: `agent-scripts/test_notify.py`
+- Tested by: `agent-scripts/test_harness_feature_coverage.py`, `agent-scripts/test_notify.py`
 
 ### `agent-scripts/outlook_calendar.py`
 
@@ -1558,6 +1562,7 @@ are copy-once seeds for exactly that reason.
 | `claude/CORE_INSTRUCTIONS.md` | `~/.claude/CLAUDE.md` (claude), `~/.copilot/copilot-instructions.md` (copilot), `~/.gemini/GEMINI.md` (agy), `~/.pi/agent/AGENTS.md` (pi), `~/.codex/AGENTS.md` (codex) |
 | `claude/icons/agy.png` | not symlinked by `links.toml` |
 | `claude/icons/claude.png` | not symlinked by `links.toml` |
+| `claude/icons/codex.png` | not symlinked by `links.toml` |
 | `claude/icons/copilot.png` | not symlinked by `links.toml` |
 | `claude/icons/opencode.png` | not symlinked by `links.toml` |
 | `claude/icons/pi.png` | not symlinked by `links.toml` |
