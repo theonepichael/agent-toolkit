@@ -32,7 +32,8 @@ a session-start warning about the checker rather than the machine.
 
 A fingerprint cache memoizes the findings keyed on the exact state of
 links.toml, this file, install.py, link_inspect.py, the history manifest,
-and all managed symlink targets, reducing a repeat run to a cache read.
+all managed symlink targets, and the directory listing of each declared
+``[[managed_dir]]``, reducing a repeat run to a cache read.
 
 Usage:
     link_drift_check.py check   print a line per drifted bucket (default)
@@ -57,8 +58,9 @@ REPO = Path(__file__).resolve().parents[1]
 
 # Audit cache configuration. Memoizing the audit result keyed on the exact
 # state of links.toml, this file, install.py, link_inspect.py, the history
-# manifest, and all managed symlink targets keeps a repeat invocation from
-# re-walking every destination.
+# manifest, all managed symlink targets, and each declared managed_dir's
+# directory listing keeps a repeat invocation from re-walking every
+# destination.
 _CACHE_REPO_DIRNAME: str = "agent-toolkit"
 _CACHE_FILENAME: str = "link-drift-check-cache.json"
 # Bumped whenever the payload shape changes; an entry without a matching
@@ -133,11 +135,21 @@ def _fingerprint(
     repo: Path,
     home: Path,
     manifest: Path,
+    managed_dirs: list[link_inspect.ManagedDirSpec] | None = None,
 ) -> str | None:
     """Compute a cryptographic hash representing the state everything the
     audit's findings depend on: the repo-side files in _FINGERPRINT_FILES,
-    the history manifest, each ``dir=true`` row's source root, and the live
-    managed symlink destinations.
+    the history manifest, each ``dir=true`` row's source root, the live
+    managed symlink destinations, and the directory listing of each
+    declared ``[[managed_dir]]``.
+
+    The directory listing matters because ``check_unmanaged_files`` reports
+    foreign entries by walking ``os.listdir()`` at check time -- a listing
+    the fingerprint used to never touch. Without it, a file appearing in or
+    vanishing from an exclusive directory changed the audit's own findings
+    but not the fingerprint, so a cached clean (or dirty) result could
+    replay forever, stale, until some unrelated fingerprinted file happened
+    to change.
 
     Returns None if any fingerprinted repo file cannot be stat'd. Per-link
     problems are not fatal: an unreadable destination is recorded as a
@@ -149,6 +161,7 @@ def _fingerprint(
     for rel in _FINGERPRINT_FILES:
         if not _file_records(repo, rel, records):
             return None
+    managed_dirs = managed_dirs or []
     try:
         st = manifest.stat()
         records.extend([str(manifest), st.st_mtime_ns, st.st_size])
@@ -173,6 +186,14 @@ def _fingerprint(
                 records.append([str(dest), "f", st.st_mtime_ns, st.st_size])
             except OSError:
                 records.append([str(dest), "m"])
+    for dir_spec in managed_dirs:
+        directory = link_inspect.expand_dest(dir_spec.dest, home)
+        try:
+            entries = sorted(os.listdir(directory))
+        except OSError:
+            records.append([str(directory), "dir-unreadable"])
+        else:
+            records.append([str(directory), "listing", entries])
     return hashlib.sha256(json.dumps(records, sort_keys=True).encode()).hexdigest()
 
 
@@ -271,7 +292,9 @@ def cmd_check(
     cached_entry = cache.get("audit") if isinstance(cache, dict) else None
     fp: str | None = None
     if isinstance(cached_entry, dict) and cache.get("schema") == _CACHE_SCHEMA:
-        fp = _fingerprint(specs, repo, home, link_inspect.manifest_path(home))
+        fp = _fingerprint(
+            specs, repo, home, link_inspect.manifest_path(home), managed_dirs
+        )
         if (
             fp is not None
             and cached_entry.get("fingerprint") == fp
@@ -291,7 +314,9 @@ def cmd_check(
         1 if any(findings[bucket] for bucket in link_inspect.CHECK_BUCKETS) else 0
     )
     if fp is None:
-        fp = _fingerprint(specs, repo, home, link_inspect.manifest_path(home))
+        fp = _fingerprint(
+            specs, repo, home, link_inspect.manifest_path(home), managed_dirs
+        )
     if fp is not None:
         _write_cache(
             cache_path,

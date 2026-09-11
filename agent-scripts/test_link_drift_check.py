@@ -330,6 +330,20 @@ class CacheTests(unittest.TestCase):
         self.cache_file.write_text("not json!!!")
         self.assertEqual(self.fx.check(), "")
 
+    def test_managed_dir_foreign_file_invalidates_cache(self) -> None:
+        """A file appearing in an exclusive directory changes what the
+        audit finds, but the fingerprint never fingerprinted the directory
+        *listing* — only the declared link destinations inside it — so a
+        cached clean result would replay forever even after a foreign file
+        (or a since-removed one) changes what's actually there."""
+        self.fx.write_links(BASE_LINKS + '\n[[managed_dir]]\ndest = "~/.claude"\n')
+        self.assertEqual(self.fx.check(), "")
+
+        foreign = self.fx.expand("~/.claude") / "stray.py"
+        foreign.write_text("x\n")
+        second = self.fx.check()
+        self.assertIn("unmanaged (1)", second)
+
     def test_pre_schema2_cache_is_treated_as_a_miss(self) -> None:
         """A cache written by the old stdout-parsing hook must never be
         misread as findings data."""
