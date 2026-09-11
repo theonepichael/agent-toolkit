@@ -22,7 +22,7 @@ supply the machine facts (platform booleans, harnesses, profile) and get
 findings back as plain data.
 
 Interface preserved for existing callers: install.py re-exports every moved
-name (``install.CHECK_BUCKETS``, ``install._implied_repo_root``, ...), so
+name (``install.CHECK_BUCKETS``, ``install.audit_links``, ...), so
 tests and callers resolve them through ``install`` exactly as before.
 
 std library only; Python 3.12+. See ``test_link_inspect.py`` beside this

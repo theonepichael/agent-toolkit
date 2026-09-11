@@ -14,7 +14,7 @@ Covers three layers:
   with only its own directory on sys.path — no repo root, no install
   module (no circular or hidden dependency);
 * the alias contract: every name install.py must keep re-exporting so
-  existing tests and callers (``install._implied_repo_root`` etc.)
+  existing tests and callers (``install.audit_links`` etc.)
   resolve unchanged.
 """
 
@@ -634,14 +634,6 @@ class InstallAliasTests(unittest.TestCase):
         "LinkSpec",
         "ManagedDirSpec",
         "expand_dest",
-        "_JUNK_SUFFIXES",
-        "_is_symlink",
-        "_path_exists",
-        "_link_target",
-        "_same_path",
-        "_implied_repo_root",
-        "_is_repo_checkout",
-        "_is_main_checkout",
         "_check_applicable_links",
         "_find_orphaned_links",
         "_check_orphaned_links",
@@ -664,23 +656,33 @@ class InstallAliasTests(unittest.TestCase):
         "dir_applies",
     )
 
+    RETIRED_PRIVATE_ALIASES = (
+        "_JUNK_SUFFIXES",
+        "_is_symlink",
+        "_path_exists",
+        "_link_target",
+        "_same_path",
+        "_implied_repo_root",
+        "_is_repo_checkout",
+        "_is_main_checkout",
+    )
+
     def test_install_module_reexports_every_moved_name(self) -> None:
         import install  # noqa: PLC0415 — needs repo root on sys.path
 
         missing = [name for name in self.ALIASES if not hasattr(install, name)]
         self.assertEqual(missing, [])
 
+    def test_retired_private_aliases_not_reexported(self) -> None:
+        import install  # noqa: PLC0415 — needs repo root on sys.path
+
+        present = [name for name in self.RETIRED_PRIVATE_ALIASES if hasattr(install, name)]
+        self.assertEqual(present, [])
+
     def test_alias_bodies_identical_to_module_functions(self) -> None:
         import install  # noqa: PLC0415 — needs repo root on sys.path
 
         pairs = {
-            "_is_symlink": "is_symlink",
-            "_path_exists": "path_exists",
-            "_link_target": "link_target",
-            "_same_path": "same_path",
-            "_implied_repo_root": "implied_repo_root",
-            "_is_repo_checkout": "is_repo_checkout",
-            "_is_main_checkout": "is_main_checkout",
             "expand_dest": "expand_dest",
         }
         for install_name, module_name in pairs.items():

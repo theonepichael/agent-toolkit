@@ -972,7 +972,7 @@ link_inspect.py — link inspection, path classification, drift finding, and the
   - `check_orphaned_links(links: Sequence[tuple[Path, Path, str, bool]], *, manifest_entries: Iterable[dict[str, object]]) -> list[LinkFinding]` — Return typed findings for manifest-recorded symlinks that links.toml no longer produces.
   - `live_backup_paths(manifest_entries: Iterable[dict[str, object]]) -> set[Path]` — Return manifest-recorded backups that are still live ``--rollback`` payload.
   - `check_unmanaged_files(managed_dirs: Sequence[ManagedDirSpec], links: Sequence[tuple[Path, Path, str, bool]], *, home: Path, dir_applies: Callable[[ManagedDirSpec], bool], manifest_entries: Iterable[dict[str, object]] = ()) -> tuple[list[LinkFinding], int]` — Report foreign entries in directories ``links.toml`` owns exclusively.
-- Tested by: `agent-scripts/test_harness_spec.py`, `agent-scripts/test_link_drift_check.py`, `agent-scripts/test_link_inspect.py`
+- Tested by: `agent-scripts/test_harness_spec.py`, `agent-scripts/test_link_drift_check.py`, `agent-scripts/test_link_inspect.py`, `test/test_install.py`
 
 ### `agent-scripts/llm_backends.py`
 
@@ -1258,7 +1258,7 @@ Copy-once settings seeding, adoption, reseed, and drift detection.
   - `describe_opencode_drift(seed: Path, live: Path) -> str` — Describe how a live opencode.jsonc diverged from its seed.
   - `describe_vscode_drift(seed: Path, live: Path) -> str` — Describe how a live VS Code settings/keybindings file diverged from its seed.
   - `seed_file(ctx: Context, seed: Path, dest: Path, *, skip_label: str, drift: Callable[[Path, Path], str], adopt_drift: Callable[[str, str], str] | None = None, adopt_blocker: Callable[[Context, Path, Path, str, str], str | None] | None = None, run_command: Callable[..., CommandOutcome]) -> str` — Copy ``seed`` to ``dest`` once, or report drift if it's already there.
-- Tested by: `agent-scripts/test_settings_seed.py`
+- Tested by: `agent-scripts/test_settings_seed.py`, `test/test_install.py`
 
 ### `agent-scripts/settings_seed_drift_check.py`
 
@@ -1862,7 +1862,7 @@ depart_exec.py — --depart execution: preflight, phases, confirmation, cleanup.
   - `execute_package_phase(deps: Deps, ctx: DepartureContext, baseline: depart.Baseline, ledger: depart.DepartureLedger) -> bool` — Remove/downgrade owned packages, reverse transactions order.
   - `execute_departure(deps: Deps, ctx: DepartureContext, baseline: depart.Baseline, report: dict[str, depart.Classification]) -> depart.DepartureLedger` — Perform every safe ``owned`` action, retry-safe via the departure ledger.
   - `do_depart(deps: Deps, ctx: DepartureContext) -> int` — Preview and execute a pristine-state departure.
-- Tested by: `test/test_depart_exec_layering.py`
+- Tested by: `test/test_depart_exec_layering.py`, `test/test_install.py`
 
 ---
 

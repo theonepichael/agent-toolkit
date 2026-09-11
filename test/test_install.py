@@ -37,7 +37,10 @@ STATE_DIR_NAME = "agent-toolkit"
 import settings_seed_drift_check  # noqa: E402 — must follow sys.path.insert above
 
 import depart  # noqa: E402 — must follow sys.path.insert above
+import depart_exec  # noqa: E402 — must follow sys.path.insert above
 import install  # noqa: E402 — must follow sys.path.insert above
+import link_inspect  # noqa: E402 — must follow sys.path.insert above
+import settings_seed  # noqa: E402 — must follow sys.path.insert above
 
 # ── fixtures ──────────────────────────────────────────────────────────────────
 
@@ -1334,14 +1337,14 @@ def test_adopt_opencode_writes_the_validated_snapshot(tmp_path, home, monkeypatc
     original = '{"theme":"validated"}\n'
     dest.write_text(original)
     _stub_clean_git(monkeypatch)
-    blocker = install._opencode_adopt_blocker
+    blocker = settings_seed._opencode_adopt_blocker
 
     def mutate_after_validation(ctx, seed_path, dest_path, seed_text, live_text):
         result = blocker(ctx, seed_path, dest_path, seed_text, live_text)
         dest_path.write_text('{"theme":"changed-after-check"}\n')
         return result
 
-    monkeypatch.setattr(install, "_opencode_adopt_blocker", mutate_after_validation)
+    monkeypatch.setattr(settings_seed, "_opencode_adopt_blocker", mutate_after_validation)
     ctx = make_ctx(home, harnesses=("opencode",), adopt=True, repo_root=repo)
     _, drift = install.seed_opencode_config(ctx)
 
@@ -2581,10 +2584,14 @@ def test_execute_file_symlink_phase_leaves_guarded_key_unresolved_when_running_o
     assert not unguarded.exists()  # unaffected — still removed
     outcomes = {e["key"]: e["outcome"] for e in ledger.entries()}
     assert outcomes[depart.file_key(guarded)].startswith(
-        install._VSCODE_GUARD_UNRESOLVED_PREFIX
+        depart_exec._VSCODE_GUARD_UNRESOLVED_PREFIX
     )
     assert "VS Code" in outcomes[depart.file_key(guarded)]
     assert outcomes[depart.file_key(unguarded)] == "ok"
+
+
+def test_install_does_not_reexport_vscode_guard_unresolved_prefix():
+    assert not hasattr(install, "_VSCODE_GUARD_UNRESOLVED_PREFIX")
 
 
 def test_execute_file_symlink_phase_checks_process_running_exactly_once(
@@ -4548,12 +4555,17 @@ def test_check_links_unrelated_target_is_still_wrong_target(
 
 
 def test_implied_repo_root_requires_a_full_tail_match():
-    assert install._implied_repo_root(Path("/a/b/zsh/.zshrc"), "zsh/.zshrc") == Path(
-        "/a/b"
+    assert link_inspect.implied_repo_root(
+        Path("/a/b/zsh/.zshrc"), "zsh/.zshrc"
+    ) == Path("/a/b")
+    assert (
+        link_inspect.implied_repo_root(Path("/a/b/other/.zshrc"), "zsh/.zshrc")
+        is None
     )
-    assert install._implied_repo_root(Path("/a/b/other/.zshrc"), "zsh/.zshrc") is None
-    assert install._implied_repo_root(Path("/zsh/.zshrc"), "zsh/.zshrc") == Path("/")
-    assert install._implied_repo_root(Path("/zsh"), "zsh/.zshrc") is None
+    assert link_inspect.implied_repo_root(
+        Path("/zsh/.zshrc"), "zsh/.zshrc"
+    ) == Path("/")
+    assert link_inspect.implied_repo_root(Path("/zsh"), "zsh/.zshrc") is None
 
 
 # ── dir=true directory-glob rows (Fidelity local-skill-fork mechanism) ─────────

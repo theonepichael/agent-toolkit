@@ -58,11 +58,10 @@ import depart  # noqa: E402 — sibling dir on path above
 import depart_exec  # noqa: E402 — sibling dir on path above
 
 # Re-exports from link_inspect (the extracted links.toml-audit module in
-# agent-scripts/): every moved name keeps resolving through install for
-# existing tests and callers. Assignment style, so ruff's F401 has nothing
+# agent-scripts/): public names keep resolving through install for
+# existing callers. Assignment style, so ruff's F401 has nothing
 # to flag — these are the interface, not unused accidents.
 JUNK_SUFFIXES = link_inspect.JUNK_SUFFIXES
-_JUNK_SUFFIXES = link_inspect.JUNK_SUFFIXES
 CHECK_BUCKET_BROKEN_SOURCE = link_inspect.CHECK_BUCKET_BROKEN_SOURCE
 CHECK_BUCKET_WRONG_TARGET = link_inspect.CHECK_BUCKET_WRONG_TARGET
 CHECK_BUCKET_NOT_A_SYMLINK = link_inspect.CHECK_BUCKET_NOT_A_SYMLINK
@@ -73,17 +72,10 @@ CHECK_BUCKETS = link_inspect.CHECK_BUCKETS
 LinkSpec = link_inspect.LinkSpec
 ManagedDirSpec = link_inspect.ManagedDirSpec
 expand_dest = link_inspect.expand_dest
-_is_symlink = link_inspect.is_symlink
-_path_exists = link_inspect.path_exists
-_link_target = link_inspect.link_target
-_same_path = link_inspect.same_path
-_implied_repo_root = link_inspect.implied_repo_root
-_is_repo_checkout = link_inspect.is_repo_checkout
-_is_main_checkout = link_inspect.is_main_checkout
 
 # Re-exports from settings_seed (the extracted copy-once-settings module in
-# agent-scripts/): every moved name keeps resolving through install for
-# existing tests and callers — same assignment style as the link_inspect
+# agent-scripts/): public names keep resolving through install for
+# existing callers — same assignment style as the link_inspect
 # block above. Palette/color_enabled/PALETTE moved to cli_common, which both
 # install.py and settings_seed.py import; main() mutates PALETTE.enabled on
 # that single canonical object rather than rebinding the name.
@@ -91,24 +83,11 @@ PALETTE = cli_common.PALETTE
 Palette = cli_common.Palette
 color_enabled = cli_common.color_enabled
 json_key_drift = settings_seed.json_key_drift
-_BYPASS_BASH_PATTERNS = settings_seed._BYPASS_BASH_PATTERNS
 opencode_bypass_drift = settings_seed.opencode_bypass_drift
-_bash_permissions = settings_seed._bash_permissions
-_load_json_pair_text = settings_seed._load_json_pair_text
-_describe_settings_text = settings_seed._describe_settings_text
-_describe_opencode_text = settings_seed._describe_opencode_text
-_describe_vscode_text = settings_seed._describe_vscode_text
 describe_settings_drift = settings_seed.describe_settings_drift
 describe_opencode_drift = settings_seed.describe_opencode_drift
 describe_vscode_drift = settings_seed.describe_vscode_drift
-_load_json_pair = settings_seed._load_json_pair
 seed_file = settings_seed.seed_file
-_adopt_seed = settings_seed._adopt_seed
-_normalize_seed_text = settings_seed._normalize_seed_text
-_adopt_git_reason = settings_seed._adopt_git_reason
-_adopt_file = settings_seed._adopt_file
-_opencode_adopt_blocker = settings_seed._opencode_adopt_blocker
-_reseed_file = settings_seed._reseed_file
 
 # VALID_HARNESSES/VALID_PROFILES re-export from link_inspect rather than a
 # second literal here: install.py used to keep its own copy alongside
@@ -386,7 +365,7 @@ class Manifest:
         ``--rollback`` try (harmlessly, but confusingly) to remove
         something that no longer exists. A whole-file rewrite rather than
         an append, since this drops entries instead of adding one — same
-        temp-file + ``os.replace`` convention as :func:`_adopt_file`.
+        temp-file + ``os.replace`` convention as :func:`settings_seed._adopt_file`.
         """
         if self.dry_run or not self.path.is_file():
             return
@@ -1229,7 +1208,7 @@ def seed_vscode_settings(ctx: Context) -> list[tuple[str, tuple[str, str]]]:
             dest,
             skip_label=f"{name} seed",
             drift=describe_vscode_drift,
-            adopt_drift=_describe_vscode_text,
+            adopt_drift=settings_seed._describe_vscode_text,
             run_command=run_command,
         )
         results.append((ctx.display(dest), (name, drift)))
@@ -1254,7 +1233,7 @@ def seed_claude_settings(ctx: Context) -> tuple[str, str]:
         dest,
         skip_label="settings.json seed",
         drift=describe_settings_drift,
-        adopt_drift=_describe_settings_text,
+        adopt_drift=settings_seed._describe_settings_text,
         run_command=run_command,
     )
 
@@ -1284,7 +1263,7 @@ def seed_pi_settings(ctx: Context) -> tuple[str, str]:
         dest,
         skip_label="pi settings.json seed",
         drift=describe_settings_drift,
-        adopt_drift=_describe_settings_text,
+        adopt_drift=settings_seed._describe_settings_text,
         run_command=run_command,
     )
 
@@ -1311,10 +1290,10 @@ def seed_opencode_config(ctx: Context) -> tuple[str, str]:
         dest,
         skip_label="opencode.jsonc seed",
         drift=describe_opencode_drift,
-        adopt_drift=lambda seed_text, live_text: _describe_opencode_text(
+        adopt_drift=lambda seed_text, live_text: settings_seed._describe_opencode_text(
             seed_text, live_text, adopt=True
         ),
-        adopt_blocker=_opencode_adopt_blocker,
+        adopt_blocker=settings_seed._opencode_adopt_blocker,
         run_command=run_command,
     )
 
@@ -1629,11 +1608,6 @@ def _departure_deps() -> depart_exec.Deps:
         managed_services=MANAGED_SERVICES,
         GLOBAL_GIT_HOOKS_PATH_KEY=GLOBAL_GIT_HOOKS_PATH_KEY,
     )
-
-
-# Re-export so existing install._VSCODE_GUARD_UNRESOLVED_PREFIX references
-# (test contract on the ledger outcome prefix) keep resolving.
-_VSCODE_GUARD_UNRESOLVED_PREFIX = depart_exec._VSCODE_GUARD_UNRESOLVED_PREFIX
 
 
 def capture_departure_baseline(ctx: Context, specs: Sequence[LinkSpec]) -> None:
