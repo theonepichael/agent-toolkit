@@ -58,6 +58,7 @@ import sys
 from pathlib import Path
 
 import cli_common
+import harness_spec
 
 SKILLS = (
     "dashboard",
@@ -70,7 +71,7 @@ SKILLS = (
     "to-tickets",
     "swarm",
 )
-HARNESSES = ("claude", "copilot", "opencode", "agy", "pi", "codex")
+HARNESSES = harness_spec.ALL_NAMES
 
 # Per skill, which harnesses get a generated copy. All 6 harnesses are in
 # _ACTIVE_TIER (full active parity, decided 2026-09-08). swarm deviates:
@@ -147,64 +148,13 @@ def template_path_for(skill: str, harness: str) -> str:
 
 
 OUTPUT_PATHS: dict[tuple[str, str], str] = {
-    ("dashboard", "claude"): "claude/commands/dashboard.md",
-    ("dashboard", "copilot"): "copilot/skills/dashboard/SKILL.md",
-    ("dashboard", "opencode"): "opencode/command/dashboard.md",
-    ("dashboard", "agy"): "agy/skills/dashboard/SKILL.md",
-    ("dashboard", "pi"): "pi/skills/dashboard/SKILL.md",
-    ("recap", "claude"): "claude/commands/recap.md",
-    ("recap", "copilot"): "copilot/skills/recap/SKILL.md",
-    ("recap", "opencode"): "opencode/command/recap.md",
-    ("recap", "agy"): "agy/skills/recap/SKILL.md",
-    ("recap", "pi"): "pi/skills/recap/SKILL.md",
-    ("grill-me", "claude"): "claude/commands/grill-me.md",
-    ("grill-me", "copilot"): "copilot/skills/grill-me/SKILL.md",
-    ("grill-me", "opencode"): "opencode/command/grill-me.md",
-    ("grill-me", "agy"): "agy/skills/grill-me/SKILL.md",
-    ("grill-me", "pi"): "pi/skills/grill-me/SKILL.md",
-    ("backlog-item", "claude"): "claude/commands/backlog-item.md",
-    ("backlog-item", "copilot"): "copilot/skills/backlog-item/SKILL.md",
-    ("backlog-item", "opencode"): "opencode/command/backlog-item.md",
-    ("backlog-item", "agy"): "agy/skills/backlog-item/SKILL.md",
-    ("backlog-item", "pi"): "pi/skills/backlog-item/SKILL.md",
-    ("make-skill", "claude"): "claude/commands/make-skill.md",
-    ("make-skill", "copilot"): "copilot/skills/make-skill/SKILL.md",
-    ("make-skill", "opencode"): "opencode/command/make-skill.md",
-    ("make-skill", "agy"): "agy/skills/make-skill/SKILL.md",
-    ("dashboard", "codex"): "codex/skills/dashboard/SKILL.md",
-    ("recap", "codex"): "codex/skills/recap/SKILL.md",
-    ("grill-me", "codex"): "codex/skills/grill-me/SKILL.md",
-    ("backlog-item", "codex"): "codex/skills/backlog-item/SKILL.md",
-    ("make-skill", "codex"): "codex/skills/make-skill/SKILL.md",
-    ("make-skill", "pi"): "pi/skills/make-skill/SKILL.md",
-    ("spec", "claude"): "claude/commands/spec.md",
-    ("spec", "copilot"): "copilot/skills/spec/SKILL.md",
-    ("spec", "opencode"): "opencode/command/spec.md",
-    ("spec", "agy"): "agy/skills/spec/SKILL.md",
-    ("spec", "pi"): "pi/skills/spec/SKILL.md",
-    ("spec", "codex"): "codex/skills/spec/SKILL.md",
-    ("standup", "claude"): "claude/commands/standup.md",
-    ("standup", "copilot"): "copilot/skills/standup/SKILL.md",
-    ("standup", "opencode"): "opencode/command/standup.md",
-    ("standup", "agy"): "agy/skills/standup/SKILL.md",
-    ("standup", "pi"): "pi/skills/standup/SKILL.md",
-    ("standup", "codex"): "codex/skills/standup/SKILL.md",
-    ("to-tickets", "claude"): "claude/commands/to-tickets.md",
-    ("to-tickets", "copilot"): "copilot/skills/to-tickets/SKILL.md",
-    ("to-tickets", "opencode"): "opencode/command/to-tickets.md",
-    ("to-tickets", "agy"): "agy/skills/to-tickets/SKILL.md",
-    ("to-tickets", "pi"): "pi/skills/to-tickets/SKILL.md",
-    ("to-tickets", "codex"): "codex/skills/to-tickets/SKILL.md",
-    ("swarm", "claude"): "claude/commands/swarm.md",
-    ("swarm", "copilot"): "copilot/skills/swarm/SKILL.md",
-    ("dashboard", "pi-prompt"): "pi/prompts/dashboard.md",
-    ("recap", "pi-prompt"): "pi/prompts/recap.md",
-    ("grill-me", "pi-prompt"): "pi/prompts/grill-me.md",
-    ("backlog-item", "pi-prompt"): "pi/prompts/backlog-item.md",
-    ("make-skill", "pi-prompt"): "pi/prompts/make-skill.md",
-    ("spec", "pi-prompt"): "pi/prompts/spec.md",
-    ("standup", "pi-prompt"): "pi/prompts/standup.md",
-    ("to-tickets", "pi-prompt"): "pi/prompts/to-tickets.md",
+    (skill, harness): (
+        f"pi/prompts/{skill}.md"
+        if harness == "pi-prompt"
+        else harness_spec.HARNESSES[harness].skill_output_path(skill)
+    )
+    for skill in SKILLS
+    for harness in SKILL_HARNESSES[skill]
 }
 
 # A line that is nothing but one `{{TOKEN}}` -- see render_body.
@@ -230,156 +180,12 @@ def do_not_edit_marker(skill: str, harness: str) -> str:
     )
 
 
-# ── shared per-harness capability facts ────────────────────────────────────
-#
-# One dict, keyed by harness name, of facts referenced by more than one
-# template's placeholders. Not every skill uses every fact (CLAUDE.md's
-# plan §3) -- e.g. only grill-me and backlog-item need STRUCTURED_CHOICE.
-#
-# Sources: `copilot/CLAUDE_CODE_PARITY.md`, `opencode/CLAUDE_CODE_PARITY.md`,
-# `agy/CLAUDE_CODE_PARITY.md`, `pi/CLAUDE_CODE_PARITY.md` (each harness's own
-# confirmed-facts doc, re-checked while writing this table, not assumed from
-# the pre-fix hand-forked copies -- those are exactly what was wrong).
-
+# Derived from agent-scripts/harness_spec.py (single source of truth).
+# "pi-prompt" mirrors "pi" facts for make-skill's prompt-mode output.
 CAPABILITY_TABLE: dict[str, dict[str, str | bool]] = {
-    "codex": {
-        # Verified against Codex CLI 0.153.4's official docs and --help
-        # surface (2026-09-08): no AskUserQuestion-style structured
-        # multi-choice widget exists; judgment calls go through plain text.
-        "structured_choice": "",
-        "instructions_ref": "the shared instructions file's",
-        "instructions_ref_bare": "the shared instructions file",
-        # Codex itself has SessionStart hook events, but this toolkit
-        # provisions no codex hooks: every non-managed codex hook needs
-        # per-definition trust review (/hooks, hash-tracked) before it runs,
-        # a poor fit for provisioned files.
-        "has_session_start_hook": False,
-        "skill_src_pattern": "codex/skills/<name>/SKILL.md",
-        # Codex's USER-scope skills dir, sibling to the bundled .system/ one
-        # -- confirmed live via `codex debug prompt-input`'s skill-roots
-        # table and Codex's own skill-installer skill (2026-09-08,
-        # atk-codex-skill-root-fix); ~/.agents/skills/ is never scanned.
-        # UPDATE 2026-09-08 (atk-codex-skill-copy-fix): this destination is
-        # reached by install.py's sync_codex_skills() copying the file into
-        # place, not a links.toml [[link]] symlink row like every other
-        # harness here -- Codex's skill scanner does not follow symlinks for
-        # USER-scope discovery (confirmed live the same way). The 5
-        # generated skills are still self-contained, no ref/ dirs.
-        "skill_dest_pattern": "~/.codex/skills/<name>/SKILL.md",
-        "skill_ref_dir": "ref",
-        "probe_command": "codex exec",
-        "commit_scope": "codex",
-    },
-    "claude": {
-        # Claude Code's structured multi-choice UI is AskUserQuestion.
-        "structured_choice": "AskUserQuestion",
-        "instructions_ref": "CLAUDE.md's",
-        "instructions_ref_bare": "CLAUDE.md",
-        # Claude Code hooks include a real SessionStart event, wired in
-        # this repo (claude/settings.json).
-        "has_session_start_hook": True,
-        "skill_src_pattern": "claude/commands/<name>.md",
-        "skill_dest_pattern": "~/.claude/commands/<name>.md",
-        "skill_ref_dir": "ref",
-        "probe_command": "claude -p",
-        "commit_scope": "claude",
-    },
-    "copilot": {
-        # Confirmed: no AskUserQuestion-style widget anywhere in Copilot
-        # CLI's docs/help surface as of the 2026-08-19 re-check (parity
-        # doc §1); `ask_user` exists only behind an untested `--plan`/TUI
-        # mode, not the `-p` invocation these skills run under.
-        "structured_choice": "",
-        "instructions_ref": "the shared instructions file's",
-        "instructions_ref_bare": "the shared instructions file",
-        # Copilot's sessionStart hook is confirmed live (parity doc §1/§3):
-        # `copilot/hooks/session-start.json` runs `dev_status.py render`
-        # at session open.
-        "has_session_start_hook": True,
-        "skill_src_pattern": "copilot/skills/<name>/SKILL.md",
-        "skill_dest_pattern": "~/.copilot/skills/<name>/SKILL.md",
-        "skill_ref_dir": "ref",
-        "probe_command": "copilot -p",
-        "commit_scope": "copilot",
-    },
-    "opencode": {
-        # opencode has its own structured `question` tool (parity doc §1,
-        # corroborated by opencode's own command/skill files).
-        "structured_choice": "the `question` tool",
-        "instructions_ref": "the shared instructions file's",
-        "instructions_ref_bare": "the shared instructions file",
-        # No SessionStart-equivalent: Claude Code hooks have no
-        # declarative equivalent in opencode, only a TypeScript plugin
-        # system, and the dashboard-on-open port is explicitly deferred
-        # (parity doc §5).
-        "has_session_start_hook": False,
-        "skill_src_pattern": "opencode/command/<name>.md",
-        "skill_dest_pattern": "~/.config/opencode/commands/<name>.md",
-        "skill_ref_dir": "ref",
-        "probe_command": "opencode -p",
-        "commit_scope": "opencode",
-    },
-    "agy": {
-        # Confirmed: no AskUserQuestion-style widget in --help, agent/plugin
-        # subcommands, or agy's own customization docs (parity doc §3).
-        "structured_choice": "",
-        "instructions_ref": "the shared instructions file's",
-        "instructions_ref_bare": "the shared instructions file",
-        # hooks.md lists exactly PreToolUse/PostToolUse/PreInvocation/
-        # PostInvocation/Stop -- no SessionStart event exists (parity
-        # doc §3).
-        "has_session_start_hook": False,
-        "skill_src_pattern": "agy/skills/<name>/SKILL.md",
-        "skill_dest_pattern": "~/.gemini/antigravity-cli/skills/<name>/SKILL.md",
-        "skill_ref_dir": "references",
-        "probe_command": "agy -p",
-        "commit_scope": "agy",
-    },
-    "pi": {
-        # Pi has no built-in question/select tool (docs/usage.md's built-in
-        # list is read/bash/powershell/edit/write/grep/find/ls), but this
-        # repo ships one as an extension (`question-tool.ts`, pi/CLAUDE_CODE_PARITY.md
-        # §5) -- unit-tested, recommendation-first enforced, a hard error
-        # (not a silent fallback) in headless `-p`/JSON modes where there's
-        # no UI to prompt through.
-        "structured_choice": "the `question` tool",
-        # Pi loads AGENTS.md with CLAUDE.md as a fallback name (pi/CLAUDE_CODE_PARITY.md
-        # §1) -- same generic phrasing as every other non-Claude harness,
-        # since neither name is Pi's own coinage.
-        "instructions_ref": "the shared instructions file's",
-        "instructions_ref_bare": "the shared instructions file",
-        # `session_start` is a real extension event (docs/extensions.md),
-        # but no extension hooked to it ships in this repo yet (pi/CLAUDE_CODE_PARITY.md
-        # §8, "out of scope for this port") -- so, same as opencode/agy,
-        # nothing auto-surfaces anything at session open today.
-        "has_session_start_hook": False,
-        "skill_src_pattern": "pi/skills/<name>/SKILL.md",
-        "skill_dest_pattern": "~/.pi/agent/skills/<name>/SKILL.md",
-        # Pi implements the Agent Skills standard (pi/CLAUDE_CODE_PARITY.md
-        # §1), the same spec agy/skills/ already follows -- references/ is
-        # that standard's subdirectory name, not claude/copilot's ref/.
-        "skill_ref_dir": "references",
-        "probe_command": "pi -p",
-        "commit_scope": "pi",
-    },
-    # Synthetic harness for pi/prompts/{name}.md's second output surface --
-    # not a real member of HARNESSES (see TEMPLATE_PATH_OVERRIDES above).
-    # Same facts as "pi": it's still pi under the hood, just a different
-    # invocation surface, so make-skill's shared-template rendering (the
-    # only "pi-prompt" consumer that actually substitutes these tokens)
-    # gets identical values to pi/skills/make-skill/SKILL.md's.
-    "pi-prompt": {
-        "structured_choice": "the `question` tool",
-        "instructions_ref": "the shared instructions file's",
-        "instructions_ref_bare": "the shared instructions file",
-        "has_session_start_hook": False,
-        "skill_src_pattern": "pi/skills/<name>/SKILL.md",
-        "skill_dest_pattern": "~/.pi/agent/skills/<name>/SKILL.md",
-        "skill_ref_dir": "references",
-        "probe_command": "pi -p",
-        "commit_scope": "pi",
-    },
+    name: spec.capability_facts() for name, spec in harness_spec.HARNESSES.items()
 }
+CAPABILITY_TABLE["pi-prompt"] = dict(CAPABILITY_TABLE["pi"])
 
 
 def capability_tokens(harness: str) -> dict[str, str]:

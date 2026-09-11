@@ -22,10 +22,37 @@ class HarnessSpec:
     fallback_paths: tuple[str, ...] = ()
     load_bearing: bool = False
     probe_expected_root: frozenset[str] = frozenset()
+    structured_choice: str = ""
+    instructions_ref: str = "the shared instructions file's"
+    instructions_ref_bare: str = "the shared instructions file"
+    has_session_start_hook: bool = False
+    skill_src_pattern: str = ""
+    skill_dest_pattern: str = ""
+    skill_ref_dir: str = "ref"
+    probe_command: str = ""
+    commit_scope: str = ""
 
     def process_basename(self) -> str:
         """Return process basename for claim detection, falling back to name."""
         return self.process_name or self.name
+
+    def skill_output_path(self, skill: str) -> str:
+        """Return repo-relative output path for a skill."""
+        return self.skill_src_pattern.replace("<name>", skill)
+
+    def capability_facts(self) -> dict[str, str | bool]:
+        """Return dict of capability facts for skill template rendering."""
+        return {
+            "structured_choice": self.structured_choice,
+            "instructions_ref": self.instructions_ref,
+            "instructions_ref_bare": self.instructions_ref_bare,
+            "has_session_start_hook": self.has_session_start_hook,
+            "skill_src_pattern": self.skill_src_pattern,
+            "skill_dest_pattern": self.skill_dest_pattern,
+            "skill_ref_dir": self.skill_ref_dir,
+            "probe_command": self.probe_command,
+            "commit_scope": self.commit_scope,
+        }
 
 
 # Authoring order is the canonical render order across all consumers.
@@ -38,6 +65,15 @@ HARNESSES: dict[str, HarnessSpec] = {
         fallback_paths=("~/.local/bin/claude",),
         load_bearing=True,
         probe_expected_root=frozenset({"FIXTURE_TOKEN_CLAUDE_ROOT"}),
+        structured_choice="AskUserQuestion",
+        instructions_ref="CLAUDE.md's",
+        instructions_ref_bare="CLAUDE.md",
+        has_session_start_hook=True,
+        skill_src_pattern="claude/commands/<name>.md",
+        skill_dest_pattern="~/.claude/commands/<name>.md",
+        skill_ref_dir="ref",
+        probe_command="claude -p",
+        commit_scope="claude",
     ),
     "copilot": HarnessSpec(
         name="copilot",
@@ -53,6 +89,15 @@ HARNESSES: dict[str, HarnessSpec] = {
                 "FIXTURE_TOKEN_AGENTS_ROOT",
             }
         ),
+        structured_choice="",
+        instructions_ref="the shared instructions file's",
+        instructions_ref_bare="the shared instructions file",
+        has_session_start_hook=True,
+        skill_src_pattern="copilot/skills/<name>/SKILL.md",
+        skill_dest_pattern="~/.copilot/skills/<name>/SKILL.md",
+        skill_ref_dir="ref",
+        probe_command="copilot -p",
+        commit_scope="copilot",
     ),
     "opencode": HarnessSpec(
         name="opencode",
@@ -62,6 +107,15 @@ HARNESSES: dict[str, HarnessSpec] = {
         fallback_paths=("~/.opencode/bin/opencode",),
         load_bearing=True,
         probe_expected_root=frozenset({"FIXTURE_TOKEN_AGENTS_ROOT"}),
+        structured_choice="the `question` tool",
+        instructions_ref="the shared instructions file's",
+        instructions_ref_bare="the shared instructions file",
+        has_session_start_hook=False,
+        skill_src_pattern="opencode/command/<name>.md",
+        skill_dest_pattern="~/.config/opencode/commands/<name>.md",
+        skill_ref_dir="ref",
+        probe_command="opencode -p",
+        commit_scope="opencode",
     ),
     "agy": HarnessSpec(
         name="agy",
@@ -71,6 +125,15 @@ HARNESSES: dict[str, HarnessSpec] = {
         fallback_paths=("~/.local/bin/agy",),
         load_bearing=False,
         probe_expected_root=frozenset(),
+        structured_choice="",
+        instructions_ref="the shared instructions file's",
+        instructions_ref_bare="the shared instructions file",
+        has_session_start_hook=False,
+        skill_src_pattern="agy/skills/<name>/SKILL.md",
+        skill_dest_pattern="~/.gemini/antigravity-cli/skills/<name>/SKILL.md",
+        skill_ref_dir="references",
+        probe_command="agy -p",
+        commit_scope="agy",
     ),
     "pi": HarnessSpec(
         name="pi",
@@ -80,6 +143,15 @@ HARNESSES: dict[str, HarnessSpec] = {
         fallback_paths=("~/.npm-global/bin/pi",),
         load_bearing=False,
         probe_expected_root=frozenset({"FIXTURE_TOKEN_AGENTS_ROOT"}),
+        structured_choice="the `question` tool",
+        instructions_ref="the shared instructions file's",
+        instructions_ref_bare="the shared instructions file",
+        has_session_start_hook=False,
+        skill_src_pattern="pi/skills/<name>/SKILL.md",
+        skill_dest_pattern="~/.pi/agent/skills/<name>/SKILL.md",
+        skill_ref_dir="references",
+        probe_command="pi -p",
+        commit_scope="pi",
     ),
     "codex": HarnessSpec(
         name="codex",
@@ -89,6 +161,15 @@ HARNESSES: dict[str, HarnessSpec] = {
         fallback_paths=("~/.npm-global/bin/codex",),
         load_bearing=False,
         probe_expected_root=frozenset({"FIXTURE_TOKEN_AGENTS_ROOT"}),
+        structured_choice="",
+        instructions_ref="the shared instructions file's",
+        instructions_ref_bare="the shared instructions file",
+        has_session_start_hook=False,
+        skill_src_pattern="codex/skills/<name>/SKILL.md",
+        skill_dest_pattern="~/.codex/skills/<name>/SKILL.md",
+        skill_ref_dir="ref",
+        probe_command="codex exec",
+        commit_scope="codex",
     ),
 }
 

@@ -26,6 +26,7 @@ import link_inspect
 import gen_interfaces
 import install
 import dev_status_mutation
+import gen_skills
 import harness_discovery_check
 
 
@@ -150,18 +151,27 @@ class TestHarnessSpecRegistry(unittest.TestCase):
         self.assertEqual(tuple(harness_discovery_check._FALLBACK_PATHS.keys()), harness_spec.ALL_NAMES)
         self.assertEqual(harness_discovery_check.DISCOVERY_TARGETS, harness_spec.DISCOVERY_TARGETS)
 
-    def test_deferred_consumers_documented(self) -> None:
-        """Explicitly documents why gen_skills and gen_shell_completion are deferred.
+        # 6. gen_skills
+        self.assertEqual(gen_skills.HARNESSES, harness_spec.ALL_NAMES)
+        self.assertEqual(
+            set(gen_skills.CAPABILITY_TABLE.keys()),
+            set(harness_spec.ALL_NAMES) | {"pi-prompt"},
+        )
+        for name, spec in harness_spec.HARNESSES.items():
+            self.assertEqual(gen_skills.CAPABILITY_TABLE[name], spec.capability_facts())
+        self.assertEqual(
+            gen_skills.CAPABILITY_TABLE["pi-prompt"],
+            harness_spec.HARNESSES["pi"].capability_facts(),
+        )
 
-        gen_skills: Its render surface uses 35 template tokens fed largely by
-        per-skill SKILL_PARAMS, not a pure per-harness fact table. Migrating it
-        touches 58 byte-checked files, so it is deferred to a follow-up item.
+    def test_deferred_consumers_documented(self) -> None:
+        """Explicitly documents why gen_shell_completion is deferred.
 
         gen_shell_completion: Uses an adapter dataclass that will be unified
         and renamed in a follow-up item without drifting the CLI set.
         """
-        deferred = {"gen_skills", "gen_shell_completion"}
-        self.assertEqual(len(deferred), 2)
+        deferred = {"gen_shell_completion"}
+        self.assertEqual(len(deferred), 1)
 
 
 if __name__ == "__main__":

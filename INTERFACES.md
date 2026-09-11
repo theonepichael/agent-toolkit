@@ -655,7 +655,7 @@ gen_skills.py — regenerate the dashboard/recap/grill-me/backlog-item/ make-ski
   - `--stdout` — print the rendered copies, write nothing
   - `--repo-root` — repository root (default: inferred from this script's path)
 - Explicit exit codes: `1`, `2`
-- Depends on: `cli_common.py`, `gen_skills_params.py`
+- Depends on: `cli_common.py`, `gen_skills_params.py`, `harness_spec.py`
 - Public functions:
   - `template_path_for(skill: str, harness: str) -> str` — Return the template path this (skill, harness) pair renders from.
   - `do_not_edit_marker(skill: str, harness: str) -> str` — Return this (skill, harness) pair's marker, naming its real template.
@@ -665,7 +665,7 @@ gen_skills.py — regenerate the dashboard/recap/grill-me/backlog-item/ make-ski
   - `render_one(skill: str, harness: str, template_text: str, params: dict) -> str` — Render one (skill, harness) pair's complete file.
   - `render_all(repo_root: Path, skill_params: dict[str, dict[str, dict]]) -> dict[str, str]` — Render every (skill, harness) pair, keyed by its repo-relative output path.
   - `default_repo_root() -> Path` — Return the repo root inferred from this script's real location.
-- Tested by: `agent-scripts/test_gen_skills.py`
+- Tested by: `agent-scripts/test_gen_skills.py`, `agent-scripts/test_harness_spec.py`
 
 ### `agent-scripts/gen_skills_params.py`
 
