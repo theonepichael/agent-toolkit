@@ -1,21 +1,20 @@
 #!/usr/bin/env python3
 """vitals-promotion.py — mechanical vitals-promotion pass over grill session data.
 
-Reads every grill session under DATA_DIR, classifies each closed decision
-into AUTO_PROMOTE / NEEDS_REVIEW / PENDING_VERIFICATION / SCHEMA_ANOMALY, and
-(when --apply is passed) writes AUTO_PROMOTE decisions out as vitals records.
-A supersede pass keeps previously-promoted vitals records honest against the
-session data's current state: a promoted decision that got removed,
-reopened, revised, or that no longer classifies as AUTO_PROMOTE has its
-vitals record flipped to "superseded" (never deleted) so a fresh promotion
-can replace it.
+Classifies each closed decision in a set of grill sessions into AUTO_PROMOTE /
+NEEDS_REVIEW / PENDING_VERIFICATION / SCHEMA_ANOMALY, and — on the write path —
+promotes AUTO_PROMOTE decisions out as vitals records. A supersede pass keeps
+previously-promoted vitals records honest against the session data's current
+state: a promoted decision that got removed, reopened, revised, or that no
+longer classifies as AUTO_PROMOTE has its vitals record flipped to "superseded"
+(never deleted) so a fresh promotion can replace it.
 
 This is a mechanical, rerunnable pass — no cross-session contradiction
-detection, no curation. Dry-run by default; pass --apply to write.
+detection, no curation. The CLI is dry-run by default; pass --apply to write.
 
-Also supports --search <query> to look up already-promoted vitals records
-by keyword without loading the whole store, so a caller (e.g. grill-me's
-own pre-step) can check for already-settled facts cheaply.
+Also supports --search <query> to look up already-promoted vitals records by
+keyword without loading the whole store, so a caller (e.g. grill-me's own
+pre-step) can check for already-settled facts cheaply.
 
 Flags
   --quiet, -q             suppress non-essential output
@@ -24,6 +23,33 @@ Flags
   --backlog-slug <slug>   with --search, also search <slug>.json
   --include-superseded    with --search, also match superseded records
   --json                  with --search, emit JSON instead of plain text
+
+Service API
+  Beyond argv, the module splits its effects by function name — there is no
+  ``apply`` flag below the CLI, and none may be added to ``promote``:
+
+    ``search_vitals(vitals_dir, keywords, include_superseded, backlog_slug=None)``
+      read-only lookup over ``_global.json`` plus at most one backlog file.
+    ``classify(sessions, *, vitals_dir)``
+      read-only pass; previews pending promotions *and* supersedes and never
+      writes — it has no write call, not a disabled one.
+    ``promote(sessions, *, vitals_dir)``
+      the only write path; always writes exactly the files the pass dirtied.
+
+  ``vitals_dir`` is required on both because a defaulted write target would
+  silently mean the live ``~/.claude/data/grill/vitals`` store. Both take a
+  caller-supplied ``list[Session]`` (``grill.Session`` — this module reads
+  grill's schema, it does not own it) and never mutate it: each call parses the
+  store afresh, so a dry run followed by a write on the same list reports the
+  same numbers as the write alone.
+
+  Session completeness is the CLI adapter's job: ``main()`` loads sessions via
+  ``grill.all_sessions()`` — which skips an unreadable session with a warning
+  rather than failing — and refuses to run at all when the count of loaded
+  sessions is below the count of session files on disk, because a skipped
+  session is indistinguishable from a deleted one to the supersede pass. A
+  library caller passes its own list and owns that guarantee: hand it a partial
+  list and you can supersede vitals records whose source sessions are fine.
 
 Requires Python 3.12+.
 """
@@ -40,6 +66,8 @@ from pathlib import Path
 from typing import TextIO, TypedDict, cast
 
 import cli_common
+import grill
+from grill import Decision, Session, is_open
 
 DATA_DIR = Path.home() / ".claude" / "data" / "grill"
 VITALS_DIR = DATA_DIR / "vitals"
@@ -54,34 +82,13 @@ SCHEMA_ANOMALY = "SCHEMA_ANOMALY"
 BUCKETS = (AUTO_PROMOTE, NEEDS_REVIEW, PENDING_VERIFICATION, SCHEMA_ANOMALY)
 
 
-# ── data model (subset of grill.py's schema; read-only consumer here) ────────
-
-
-class Verdict(TypedDict):
-    result: str
-    evidence: str
-    date: str
-
-
-class Decision(TypedDict):
-    id: str
-    question: str
-    reasoning: str
-    decision: str | None
-    source: str | None
-    verdict: Verdict | None
-
-
-class Session(TypedDict):
-    schema_version: int
-    slug: str
-    topic: str
-    created: str
-    updated: str
-    plan_path: str | None
-    pending_execution: bool
-    backlog_slug: str | None
-    decisions: list[Decision]
+# ── data model ───────────────────────────────────────────────────────────────
+#
+# Grill's session shape is imported above rather than restated here:
+# ``grill.Session`` is the schema, and loading it through
+# ``grill.all_sessions()`` is what keeps this consumer from breaking when that
+# schema evolves. ``VitalsRecord`` stays defined here because this module owns
+# the vitals store format.
 
 
 class VitalsRecord(TypedDict, total=False):
@@ -107,19 +114,6 @@ def now_iso() -> str:
     return datetime.now().isoformat()
 
 
-def is_open(decision: Decision) -> bool:
-    return decision.get("decision") is None
-
-
-def load_all_sessions(data_dir: Path) -> list[Session]:
-    if not data_dir.exists():
-        return []
-    sessions: list[Session] = []
-    for path in sorted(data_dir.glob("*.json")):
-        sessions.append(cast(Session, json.loads(path.read_text())))
-    return sessions
-
-
 def build_decision_lookup(sessions: list[Session]) -> dict[DecisionKey, Decision]:
     lookup: dict[DecisionKey, Decision] = {}
     for session in sessions:
@@ -129,6 +123,11 @@ def build_decision_lookup(sessions: list[Session]) -> dict[DecisionKey, Decision
 
 
 def atomic_write_json(path: Path, payload: object) -> None:
+    """Write ``payload`` atomically, creating the parent directory if needed.
+
+    This ``mkdir`` is the module's only one, and this is reached only from
+    ``promote()``'s write loop -- so a dry run cannot create the store.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(dir=path.parent, prefix=".vitals_tmp_")
     try:
@@ -142,6 +141,9 @@ def atomic_write_json(path: Path, payload: object) -> None:
 
 
 def load_vitals_file(path: Path) -> list[VitalsRecord]:
+    """Parse one vitals file. Returns brand-new dicts on every call (json.loads),
+    which is what keeps the supersede pass's in-place edits invisible to
+    callers and to any other pass in the same process."""
     if not path.exists():
         return []
     return cast(list[VitalsRecord], json.loads(path.read_text()))
@@ -181,6 +183,12 @@ def search_vitals(
     matches come first, then backlog-scoped matches, each in on-disk record
     order. `backlog_slug == "_global"` is a no-op, not a second load of the
     same file.
+
+    The mirror-image decision lives in ``_plan()``'s supersede pass, which
+    *does* glob the whole store -- it has to see every record to keep it
+    honest. Those two loaders stay separate on purpose; sharing one would
+    either make search leak across projects or make the supersede pass blind
+    to backlog-scoped files.
     """
     if not keywords:
         raise ValueError("keywords must not be empty")
@@ -308,21 +316,27 @@ class Report(TypedDict):
     dirty_vitals_paths: list[Path]
 
 
-def run(data_dir: Path, apply: bool) -> Report:
-    vitals_dir = data_dir / "vitals"
+Store = dict[Path, list[VitalsRecord]]
 
-    sessions = load_all_sessions(data_dir)
+
+def _plan(sessions: list[Session], vitals_dir: Path) -> tuple[Report, Store]:
+    """Compute the whole promotion pass without writing anything.
+
+    Returns the report plus the full post-pass store (every file the pass read
+    or would write, keyed by path) so the caller can persist it. Reads are
+    complete before this returns, so a malformed vitals file aborts here --
+    before any caller gets a chance to write a half-applied store.
+    """
     lookup = build_decision_lookup(sessions)
 
     # supersede pass — load every existing vitals file and re-check each
-    # active record against current session state.
+    # active record against current session state. This globs the whole store
+    # on purpose (see search_vitals' opposite choice).
     existing_paths = sorted(vitals_dir.glob("*.json")) if vitals_dir.exists() else []
-    vitals_by_path: dict[Path, list[VitalsRecord]] = {
-        p: load_vitals_file(p) for p in existing_paths
-    }
+    store: Store = {p: load_vitals_file(p) for p in existing_paths}
     superseded_count = 0
     dirty_paths: set[Path] = set()
-    for path, records in vitals_by_path.items():
+    for path, records in store.items():
         for record in records:
             if record.get("status") != "active":
                 continue
@@ -361,7 +375,7 @@ def run(data_dir: Path, apply: bool) -> Report:
     promoted_count = 0
     for session, decision in auto_promote_items:
         path = vitals_path(vitals_dir, session.get("backlog_slug"))
-        records = vitals_by_path.setdefault(path, [])
+        records = store.setdefault(path, [])
         already_promoted = any(
             r.get("status") == "active"
             and r.get("source_slug") == session["slug"]
@@ -387,11 +401,7 @@ def run(data_dir: Path, apply: bool) -> Report:
         promoted_count += 1
         dirty_paths.add(path)
 
-    if apply:
-        for path in dirty_paths:
-            atomic_write_json(path, vitals_by_path[path])
-
-    return {
+    report: Report = {
         "sessions_scanned": len(sessions),
         "total_decisions": total_decisions,
         "open_decisions": open_decisions,
@@ -401,6 +411,33 @@ def run(data_dir: Path, apply: bool) -> Report:
         "anomaly_entries": anomaly_entries,
         "dirty_vitals_paths": sorted(dirty_paths),
     }
+    return report, store
+
+
+def classify(sessions: list[Session], *, vitals_dir: Path) -> Report:
+    """Run the whole pass read-only: report what it *would* promote and supersede.
+
+    Read-only by construction, not by a flag -- there is no write call here, and
+    it cannot create ``vitals_dir`` (the only ``mkdir`` is inside
+    ``atomic_write_json``, reached only from ``promote()``). Pass a complete
+    session list: an incomplete one previews a bogus set of supersedes (the CLI
+    guards this; see the Service API section of the module docstring).
+    """
+    report, _store = _plan(sessions, vitals_dir)
+    return report
+
+
+def promote(sessions: list[Session], *, vitals_dir: Path) -> Report:
+    """Run the pass and write every file it dirtied. Always writes.
+
+    The module's only mutating entry point. ``vitals_dir`` is required so no
+    call can write the live store by omission; a run with nothing dirty writes
+    nothing, and the store directory is not created.
+    """
+    report, store = _plan(sessions, vitals_dir)
+    for path in report["dirty_vitals_paths"]:
+        atomic_write_json(path, store[path])
+    return report
 
 
 def print_report(report: Report, apply: bool, quiet: bool = False) -> None:
@@ -428,7 +465,18 @@ def print_report(report: Report, apply: bool, quiet: bool = False) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
+    # Literal, not ``__doc__``: argparse's description is also the text
+    # ``gen_interfaces.py`` extracts for INTERFACES.md's ``CLI (argparse)`` line,
+    # and its resolver reads only a string literal or a bare ``__doc__`` name --
+    # an expression like ``__doc__.splitlines()[0]`` extracts as "no
+    # ``description=`` set", silently dropping the description from the
+    # inventory. A bare ``__doc__`` would work but dumps the whole docstring
+    # (Flags and Service API sections included) into --help. Same tradeoff
+    # grill.py already made. ``CliPassTests`` pins this string to the
+    # docstring's first line so the two cannot drift.
+    parser = argparse.ArgumentParser(
+        description="vitals-promotion.py — mechanical vitals-promotion pass over grill session data."
+    )
     cli_common.add_verbosity_args(parser)
     parser.add_argument(
         "--data-dir",
@@ -465,6 +513,8 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    # --search reads only the vitals store, so it dispatches before sessions are
+    # loaded: the strict-input guard below must never block a cheap lookup.
     if args.search is not None:
         keywords = args.search.split()
         if not keywords:
@@ -482,7 +532,30 @@ def main() -> None:
         print_search_results(results, args.json, quiet=getattr(args, "quiet", False))
         return
 
-    report = run(args.data_dir, args.apply)
+    # grill.all_sessions() is tolerant by design (a corrupt or wrong-version
+    # session is skipped with a warning), which is right for a read API and
+    # wrong for this pass unguarded: a skipped session looks exactly like a
+    # deleted one to the supersede pass, so --apply would flip still-valid
+    # records to "superseded" off a partial read. all_session_slugs() globs the
+    # same `*.json` in the same call (and the vitals store is a subdirectory,
+    # which that glob does not recurse into), so a count difference can only
+    # mean a file failed to open. Refuse both modes rather than preview a
+    # misleading report.
+    slugs = grill.all_session_slugs(args.data_dir)
+    sessions = grill.all_sessions(data_dir=args.data_dir)
+    if len(sessions) != len(slugs):
+        print(
+            f"Error: {len(slugs) - len(sessions)} of {len(slugs)} grill session "
+            f"file(s) in {args.data_dir} could not be read; refusing to run.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    vitals_dir = args.data_dir / "vitals"
+    if args.apply:
+        report = promote(sessions, vitals_dir=vitals_dir)
+    else:
+        report = classify(sessions, vitals_dir=vitals_dir)
     print_report(report, args.apply, quiet=getattr(args, "quiet", False))
 
 

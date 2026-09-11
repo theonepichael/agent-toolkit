@@ -1385,20 +1385,15 @@ vitals-promotion.py — mechanical vitals-promotion pass over grill session data
   - `DATA_DIR = Path.home() / '.claude' / 'data' / 'grill'`
   - `VITALS_DIR = DATA_DIR / 'vitals'`
 - Explicit exit codes: `1`
-- Depends on: `cli_common.py`
+- Depends on: `cli_common.py`, `grill.py`
 - Public classes:
-  - `class Verdict(TypedDict)`
-  - `class Decision(TypedDict)`
-  - `class Session(TypedDict)`
   - `class VitalsRecord(TypedDict, total=False)`
   - `class Report(TypedDict)`
 - Public functions:
   - `now_iso() -> str`
-  - `is_open(decision: Decision) -> bool`
-  - `load_all_sessions(data_dir: Path) -> list[Session]`
   - `build_decision_lookup(sessions: list[Session]) -> dict[DecisionKey, Decision]`
-  - `atomic_write_json(path: Path, payload: object) -> None`
-  - `load_vitals_file(path: Path) -> list[VitalsRecord]`
+  - `atomic_write_json(path: Path, payload: object) -> None` — Write ``payload`` atomically, creating the parent directory if needed.
+  - `load_vitals_file(path: Path) -> list[VitalsRecord]` — Parse one vitals file.
   - `vitals_path(vitals_dir: Path, backlog_slug: str | None) -> Path`
   - `matches_query(record: VitalsRecord, keywords: list[str]) -> bool` — True iff every keyword is a case-insensitive substring of text or reasoning.
   - `search_vitals(vitals_dir: Path, keywords: list[str], include_superseded: bool, backlog_slug: str | None = None) -> list[VitalsRecord]` — Search _global.json (plus <backlog_slug>.json if given) for matches.
@@ -1407,7 +1402,8 @@ vitals-promotion.py — mechanical vitals-promotion pass over grill session data
   - `classify_decision(decision: Decision) -> str` — Classify one closed decision.
   - `needs_review_reason(decision: Decision) -> str` — Which NEEDS_REVIEW sub-condition fired, in priority order (for the breakdown).
   - `supersede_reason(record: VitalsRecord, lookup: dict[DecisionKey, Decision]) -> str | None` — Return why ``record`` should be superseded, or None if it's still valid.
-  - `run(data_dir: Path, apply: bool) -> Report`
+  - `classify(sessions: list[Session], *, vitals_dir: Path) -> Report` — Run the whole pass read-only: report what it *would* promote and supersede.
+  - `promote(sessions: list[Session], *, vitals_dir: Path) -> Report` — Run the pass and write every file it dirtied.
   - `print_report(report: Report, apply: bool, quiet: bool = False) -> None`
 - Tested by: `agent-scripts/test_vitals_promotion.py`
 
