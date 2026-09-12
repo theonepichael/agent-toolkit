@@ -21,9 +21,12 @@ from collections.abc import Iterator, Sequence
 from contextlib import contextmanager, suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import NotRequired, TypedDict, cast
+from typing import cast
 
 import cli_common
+from dev_status_types import BacklogIndex as BacklogIndex
+from dev_status_types import BacklogItem, PendingItem, RunRecord
+from dev_status_types import Gate as Gate
 
 DATA_DIR = Path.home() / ".claude" / "data" / "backlog"
 ITEMS_FILE = DATA_DIR / "items.json"
@@ -52,73 +55,6 @@ def _resolve_path(var_name: str, fallback: Path) -> Path:
     if isinstance(curr, (Path, str)):
         return Path(curr)
     return fallback
-
-
-# ── data model ───────────────────────────────────────────────────────────────
-
-
-class Gate(TypedDict):
-    """A judgment-step verification checkpoint on a backlog item."""
-
-    required: bool
-    criteria: list[str]
-    passed_at: str | None
-    set_at: NotRequired[str]
-    passed_via: NotRequired[str]
-    coverage: NotRequired[dict[str, dict[str, str]]]
-
-
-class RunRecord(TypedDict):
-    """One recorded command execution — a row of the runs.jsonl sidecar."""
-
-    run_id: str
-    item: str
-    command: str
-    exit_code: int | None
-    timed_out: bool
-    started_at: str
-    duration_s: float
-    cwd: str
-
-
-class BacklogItem(TypedDict):
-    """A single backlog item as stored in items.json (schema v2)."""
-
-    id: str
-    created: str
-    updated: str
-    status: str
-    summary: str
-    category: str
-    blocked_by: list[str]
-    related_files: list[dict[str, object]]
-    context: str
-    next_steps: str | list[str]
-    priority: NotRequired[str]
-    completed_at: NotRequired[str]
-    review_feedback: NotRequired[str]
-    review_content_hash: NotRequired[str]
-    gate: NotRequired[Gate]
-
-
-class PendingItem(TypedDict):
-    """A single waiting-on-someone-else item as stored in pending_items.json."""
-
-    id: str
-    created: str
-    updated: str
-    status: str
-    description: str
-    kind: str
-    source_ref: dict[str, object]
-    context: str
-    next_steps: list[str]
-    blocking: list[str]
-    outcome: str | None
-    resolved_at: NotRequired[str]
-
-
-type BacklogIndex = dict[str, BacklogItem]
 
 
 # ── machine id ───────────────────────────────────────────────────────────────

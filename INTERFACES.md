@@ -42,6 +42,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`dev_status_mutation.py`](#agentscriptsdevstatusmutationpy) | Typed mutation service and transaction manager for dev_status (Candidate 12). |
 | [`dev_status_read.py`](#agentscriptsdevstatusreadpy) | Pure read-only facade over the dev_status backlog store. |
 | [`dev_status_storage.py`](#agentscriptsdevstatusstoragepy) | Backlog persistence, lock coordination, and journal primitives. |
+| [`dev_status_types.py`](#agentscriptsdevstatustypespy) | Backlog data model — the on-disk shapes shared across the dev_status stack. |
 | [`gen_interfaces.py`](#agentscriptsgeninterfacespy) | gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources. |
 | [`gen_second_opinion.py`](#agentscriptsgensecondopinionpy) | gen_second_opinion.py — regenerate the second-opinion skill copies (one per harness, named in HARNESS_TABLE) from one canonical template. |
 | [`gen_shell_completion.py`](#agentscriptsgenshellcompletionpy) | Generate a zsh `#compdef` completion file for a harness CLI. |
@@ -296,12 +297,7 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `out-of-scope show <concept-slug>` — print a rejected concept's full record
 - Environment: `DEVSTATUS_AGENT`, `DEVSTATUS_RECAP_AGY_MODEL`, `DEVSTATUS_RECAP_DISABLE`, `DEVSTATUS_RECAP_TIMEOUT_SECONDS`
 - Explicit exit codes: `1`, `2`
-- Depends on: `cli_common.py`, `dev_status_formatting.py`, `dev_status_mutation.py`, `dev_status_storage.py`, `llm_backends.py`, `worktree.py`
-- Public classes:
-  - `class Gate(TypedDict)` — A judgment-step verification checkpoint on a backlog item.
-  - `class RunRecord(TypedDict)` — One recorded command execution — a row of the ``runs.jsonl`` sidecar.
-  - `class BacklogItem(TypedDict)` — A single backlog item as stored in ``items.json`` (schema v2).
-  - `class PendingItem(TypedDict)` — A single waiting-on-someone-else item as stored in ``pending_items.json``.
+- Depends on: `cli_common.py`, `dev_status_formatting.py`, `dev_status_mutation.py`, `dev_status_storage.py`, `dev_status_types.py`, `llm_backends.py`, `worktree.py`
 - Public functions:
   - `format_compact_confirmation(cmd: str, slug: str, status: str, rev: int, ref: str | int | None = None, detail: str = '') -> str` — Format a single-line structured confirmation for mutating commands under compact mode.
   - `machine_id() -> str` — Return this machine's stable short id, creating it on first use.
@@ -450,12 +446,7 @@ Backlog persistence, lock coordination, and journal primitives.
   - `OUT_OF_SCOPE_INDEX_FILE = OUT_OF_SCOPE_DIR / 'index.json'`
   - `OUT_OF_SCOPE_LOCK_FILE = OUT_OF_SCOPE_DIR / '.out-of-scope.lock'`
 - Explicit exit codes: `1`
-- Depends on: `cli_common.py`
-- Public classes:
-  - `class Gate(TypedDict)` — A judgment-step verification checkpoint on a backlog item.
-  - `class RunRecord(TypedDict)` — One recorded command execution — a row of the runs.jsonl sidecar.
-  - `class BacklogItem(TypedDict)` — A single backlog item as stored in items.json (schema v2).
-  - `class PendingItem(TypedDict)` — A single waiting-on-someone-else item as stored in pending_items.json.
+- Depends on: `cli_common.py`, `dev_status_types.py`
 - Public functions:
   - `machine_id(machine_id_file: Path | None = None, data_dir: Path | None = None) -> str` — Return this machine's stable short id, creating it on first use.
   - `atomic_write_json(path: Path, payload: str, prefix: str) -> None` — Write text to ``path`` via a temp file in its directory + ``os.replace``.
@@ -482,6 +473,20 @@ Backlog persistence, lock coordination, and journal primitives.
   - `load_recap_cache(path: Path | None = None) -> dict[str, object] | None` — Load ``recap-cache.json``, or ``None`` if missing/corrupt/malformed.
   - `save_recap_cache(backend: str, text: str, board_fingerprint: str, path: Path | None = None) -> None` — Atomically persist a recap result.
 - Tested by: `agent-scripts/test_dev_status.py`, `agent-scripts/test_dev_status_mutation.py`, `agent-scripts/test_dev_status_read.py`
+
+### `agent-scripts/dev_status_types.py`
+
+Backlog data model — the on-disk shapes shared across the dev_status stack.
+
+- Installed at: `~/.claude/scripts/dev_status_types.py` (all harnesses)
+- Entrypoint: not executable, no shebang
+- CLI: none (library module).
+- Public classes:
+  - `class Gate(TypedDict)` — A judgment-step verification checkpoint on a backlog item.
+  - `class RunRecord(TypedDict)` — One recorded command execution — a row of the ``runs.jsonl`` sidecar.
+  - `class BacklogItem(TypedDict)` — A single backlog item as stored in ``items.json`` (schema v2).
+  - `class PendingItem(TypedDict)` — A single waiting-on-someone-else item as stored in ``pending_items.json``.
+- Tested by: nothing
 
 ### `agent-scripts/gen_interfaces.py`
 
