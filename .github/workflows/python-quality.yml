@@ -1,0 +1,37 @@
+name: python-quality
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Install shellcheck / shfmt
+        run: sudo apt-get update && sudo apt-get install -y shellcheck shfmt
+
+      - name: uv sync
+        run: uv sync --locked --dev
+
+      - name: npm install (pi/)
+        working-directory: pi
+        run: npm install
+
+      - name: ruff check
+        run: uv run ruff check .
+
+      - name: ruff format --check
+        run: uv run ruff format --check .
+
+      - name: pytest
+        run: uv run pytest
