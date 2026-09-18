@@ -8,10 +8,11 @@
  * context window size, per-1M-token input/output cost, reasoning/vision
  * badges, and a `no key` tag when the provider has no configured auth — so
  * unconfigured catalogue entries are visible before Enter rather than
- * discovered by failure.
+ * discovered by failure. Models are grouped under uppercase provider
+ * headers, matching the reference mockup.
  *
  * Keys:
- *   ↑/↓        move highlight (wraps)
+ *   ↑/↓        move highlight (wraps, skipping over provider headers)
  *   type/bksp  filter rows (fuzzy match on provider/id)
  *   ←/→        move the reasoning-effort segment for the highlighted model
  *   Tab        cycle sort (name → price: low→high → price: high→low)
@@ -22,6 +23,10 @@
  *
  * The dialog renders as a true floating overlay ({ overlay: true }) drawn as
  * a solid panel — bg-filled rows and side borders, matching the modal mockup.
+ * Row layout has no native "section header" support in pi-tui's SelectList
+ * (it indexes a flat item array directly), so the list here is hand-rolled:
+ * its own selection index, scroll window, and provider-header insertion —
+ * see `listHolder` in `openPicker`.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -33,8 +38,6 @@ import {
   fuzzyFilter,
   Key,
   matchesKey,
-  type SelectItem,
-  SelectList,
   truncateToWidth,
   visibleWidth,
   type TUI,
@@ -233,62 +236,13 @@ export async function saveEnabledModels(
   }
 }
 
-/** Badge suffix for a row ("  [reasoning, vision]"), or "" when none apply. */
-export function badgesFor(
-  model: AnyModel,
-  opts: { isActive?: boolean; hasAuth?: boolean } = {},
-): string {
+/** Bracketed badge chips for a row ("  [reasoning] [vision] [no key]"), or "" when none apply. */
+export function badgesFor(model: AnyModel, opts: { hasAuth?: boolean } = {}): string {
   const badges: string[] = [];
-  if (model.reasoning) badges.push("reasoning");
-  if (model.input?.includes("image")) badges.push("vision");
-  if (opts.hasAuth === false) badges.push("no key");
-  if (opts.isActive) badges.push("active");
-  return badges.length > 0 ? `  [${badges.join(", ")}]` : "";
-}
-
-/** Plain-text row for a model: "provider/id  200K ctx  $3.00 / $15.00" + badges. */
-export function rowLabel(
-  model: AnyModel,
-  opts: {
-    isActive?: boolean;
-    hasAuth?: boolean;
-    refWidth?: number;
-    ctxWidth?: number;
-    costWidth?: number;
-  } = {},
-): string {
-  const badgeText = badgesFor(model, opts);
-  let ref = modelRef(model);
-  if (opts.refWidth) {
-    ref = ref.length > opts.refWidth ? `${ref.slice(0, Math.max(1, opts.refWidth - 1))}…` : ref;
-    ref = ref.padEnd(opts.refWidth);
-  }
-  const ctx = formatContext(model.contextWindow);
-  const ctxText = opts.ctxWidth ? ctx.padEnd(opts.ctxWidth) : ctx;
-  const cost = formatCost(model.cost);
-  const costText = opts.costWidth ? cost.padEnd(opts.costWidth) : cost;
-  return `${ref}  ${ctxText} ctx  ${costText}${badgeText}`;
-}
-
-/**
- * Column widths that align the id, context, and cost columns across rows.
- */
-export function columnWidths(
-  models: AnyModel[],
-  opts: { maxBadgeLen?: number; maxRefWidth?: number } = {},
-): {
-  refWidth: number;
-  ctxWidth: number;
-  costWidth: number;
-} {
-  let refWidth = models.length > 0 ? Math.max(...models.map((m) => modelRef(m).length)) : 1;
-  if (opts.maxRefWidth !== undefined) refWidth = Math.min(refWidth, opts.maxRefWidth);
-  return {
-    refWidth: Math.max(1, refWidth),
-    ctxWidth:
-      models.length > 0 ? Math.max(...models.map((m) => formatContext(m.contextWindow).length)) : 1,
-    costWidth: models.length > 0 ? Math.max(...models.map((m) => formatCost(m.cost).length)) : 1,
-  };
+  if (model.reasoning) badges.push("[reasoning]");
+  if (model.input?.includes("image")) badges.push("[vision]");
+  if (opts.hasAuth === false) badges.push("[no key]");
+  return badges.length > 0 ? `  ${badges.join(" ")}` : "";
 }
 
 /**
@@ -324,68 +278,148 @@ export function effortBar(
   return { filled: Math.max(0, levels.indexOf(current)), total };
 }
 
-/** Muted "provider/" prefix + "no key" dimming + badge styling for a row. */
-function styleRowLabel(
-  ref: string,
-  rest: string,
-  theme: Theme,
-  opts: { hasAuth?: boolean; query?: string; isSelected?: boolean },
+/** Plain (unstyled) fields shared by `rowLabel` and the interactive row renderer. */
+interface RowFields {
+  dot: string;
+  ref: string;
+  badgeText: string;
+  ctxText: string;
+  costText: string;
+  pad: number;
+}
+
+/**
+ * Compute the plain-text pieces of a row: the active-model dot, the
+ * (possibly truncated) provider/id ref, badges, width-padded context/cost
+ * values, and the left/right gap. `rowWidth`, when given, right-aligns the
+ * context/cost block to a fixed column by truncating the ref (never the
+ * badges or values) to fit; omitted, the row is simply "left  right".
+ */
+function computeRowFields(
+  model: AnyModel,
+  opts: {
+    isActive?: boolean;
+    hasAuth?: boolean;
+    ctxWidth?: number;
+    costWidth?: number;
+    rowWidth?: number;
+  },
+): RowFields {
+  const badgeText = badgesFor(model, opts);
+  const dot = opts.isActive ? "● " : "";
+  let ref = modelRef(model);
+  const ctx = formatContext(model.contextWindow);
+  const ctxText = opts.ctxWidth ? ctx.padStart(opts.ctxWidth) : ctx;
+  const cost = formatCost(model.cost);
+  const costText = opts.costWidth ? cost.padStart(opts.costWidth) : cost;
+  const rightLen = ctxText.length + " context".length + 2 + costText.length;
+
+  let pad = 2;
+  if (opts.rowWidth !== undefined) {
+    const availableForLeft = Math.max(1, opts.rowWidth - rightLen - 2);
+    const fixedLen = dot.length + badgeText.length;
+    if (fixedLen + ref.length > availableForLeft) {
+      const maxRefLen = Math.max(1, availableForLeft - fixedLen);
+      ref = ref.length > maxRefLen ? `${ref.slice(0, Math.max(1, maxRefLen - 1))}…` : ref;
+    }
+    const leftLen = dot.length + ref.length + badgeText.length;
+    pad = Math.max(2, opts.rowWidth - leftLen - rightLen);
+  }
+
+  return { dot, ref, badgeText, ctxText, costText, pad };
+}
+
+/**
+ * Plain-text row: "● provider/id  [badges]   200K context  $3.00 / $15.00".
+ * Context and cost right-align within `rowWidth` when given, truncating the
+ * ref (never the badges/values) if the name doesn't fit.
+ */
+export function rowLabel(
+  model: AnyModel,
+  opts: {
+    isActive?: boolean;
+    hasAuth?: boolean;
+    ctxWidth?: number;
+    costWidth?: number;
+    rowWidth?: number;
+  } = {},
 ): string {
+  const f = computeRowFields(model, opts);
+  return `${f.dot}${f.ref}${f.badgeText}${" ".repeat(f.pad)}${f.ctxText} context  ${f.costText}`;
+}
+
+/**
+ * Column widths (over the current filtered/sorted set) that keep context and
+ * cost values the same width across rows, so the right-aligned block lands
+ * on the same column regardless of which rows are visible.
+ */
+export function columnWidths(models: AnyModel[]): { ctxWidth: number; costWidth: number } {
+  return {
+    ctxWidth:
+      models.length > 0 ? Math.max(...models.map((m) => formatContext(m.contextWindow).length)) : 1,
+    costWidth: models.length > 0 ? Math.max(...models.map((m) => formatCost(m.cost).length)) : 1,
+  };
+}
+
+/**
+ * Styled row for the interactive overlay: reuses `computeRowFields` so the
+ * colored output has exactly the same field widths/positions as the plain
+ * `rowLabel` text above — coloring never changes layout.
+ */
+function styleModelRow(
+  model: AnyModel,
+  theme: Theme,
+  opts: {
+    isActive?: boolean;
+    hasAuth?: boolean;
+    isSelected?: boolean;
+    query?: string;
+    ctxWidth?: number;
+    costWidth?: number;
+    rowWidth?: number;
+  },
+): string {
+  const marker = opts.isSelected ? theme.fg("accent", theme.bold("› ")) : "  ";
+  const f = computeRowFields(model, opts);
+
   if (opts.hasAuth === false) {
-    return theme.fg("dim", ref + rest);
+    const plain = `${f.dot}${f.ref}${f.badgeText}${" ".repeat(f.pad)}${f.ctxText} context  ${f.costText}`;
+    return marker + theme.fg("dim", plain);
   }
 
-  let styledRef = "";
+  const dotStyled = f.dot ? theme.fg("success", f.dot) : "";
+
+  let refStyled: string;
   if (opts.query) {
-    const hits = new Set(matchIndices(ref, opts.query));
-    for (let i = 0; i < ref.length; i++) {
-      styledRef += hits.has(i) ? theme.fg("accent", theme.bold(ref[i])) : ref[i];
+    const hits = new Set(matchIndices(f.ref, opts.query));
+    let s = "";
+    for (let i = 0; i < f.ref.length; i++) {
+      s += hits.has(i) ? theme.fg("accent", theme.bold(f.ref[i])) : f.ref[i];
     }
+    refStyled = s;
   } else {
-    const slash = ref.indexOf("/");
-    if (slash === -1) {
-      styledRef = theme.bold(ref);
-    } else {
-      styledRef = theme.fg("dim", ref.slice(0, slash + 1)) + theme.bold(ref.slice(slash + 1));
-    }
+    const slash = f.ref.indexOf("/");
+    refStyled =
+      slash === -1
+        ? theme.bold(f.ref)
+        : theme.fg("dim", f.ref.slice(0, slash + 1)) + theme.bold(f.ref.slice(slash + 1));
   }
 
-  // Parse rest to colorize context, cost, badges
-  let styledRest = rest;
-  const ctxIdx = rest.indexOf(" ctx  ");
-  if (ctxIdx !== -1) {
-    const ctxVal = rest.slice(0, ctxIdx);
-    const afterCtx = rest.slice(ctxIdx + 6);
-    const badgeIdx = afterCtx.indexOf("  [");
-    const costVal = badgeIdx !== -1 ? afterCtx.slice(0, badgeIdx) : afterCtx;
-    const badgeVal = badgeIdx !== -1 ? afterCtx.slice(badgeIdx) : "";
+  const badgeStyled = f.badgeText.replace(/\[(\w+)\]/g, (_match, name: string) => {
+    if (name === "reasoning") return theme.fg("accent", `[${name}]`);
+    if (name === "vision") return theme.fg("success", `[${name}]`);
+    return `[${name}]`;
+  });
 
-    const coloredCtx = theme.fg("text", ctxVal) + theme.fg("dim", " ctx  ");
-    const coloredCost =
-      costVal.trim() === "free"
-        ? theme.fg("success", costVal)
-        : costVal.trim() === "—"
-          ? theme.fg("dim", costVal)
-          : theme.fg("warning", costVal);
+  const costStyled =
+    f.costText.trim() === "free"
+      ? theme.fg("success", f.costText)
+      : f.costText.trim() === "—"
+        ? theme.fg("dim", f.costText)
+        : theme.fg("warning", f.costText);
+  const ctxStyled = theme.fg("text", f.ctxText) + theme.fg("dim", " context  ");
 
-    let coloredBadges = "";
-    if (badgeVal) {
-      coloredBadges = badgeVal.replace(/\[(.*?)\]/, (_match, p1: string) => {
-        const parts = p1.split(", ").map((badge) => {
-          if (badge === "reasoning") return theme.fg("accent", "[reasoning]");
-          if (badge === "vision") return theme.fg("success", "[vision]");
-          if (badge === "no key") return theme.fg("error", "[no key]");
-          if (badge === "active") return theme.fg("success", "● active");
-          return theme.fg("dim", `[${badge}]`);
-        });
-        return "  " + parts.join(" ");
-      });
-    }
-
-    styledRest = coloredCtx + coloredCost + coloredBadges;
-  }
-
-  return styledRef + styledRest;
+  return marker + dotStyled + refStyled + badgeStyled + " ".repeat(f.pad) + ctxStyled + costStyled;
 }
 
 /** The models the picker offers: scoped models when non-empty, else the full catalogue. */
@@ -446,96 +480,16 @@ export default function modelPicker(pi: ExtensionAPI) {
       (tui: TUI, theme, _kb, done) => {
         let filter = "";
         let sortMode: SortMode = "name";
-        let innerPanelWidth = 110;
-        const effortIndexByRef = new Map<string, number>();
-        const allRefs = models.map(modelRef);
-
+        let selectedIndex = 0;
         let widths = columnWidths(models);
+        const effortIndexByRef = new Map<string, number>();
 
         const getFilteredModels = (query: string): AnyModel[] => {
           const matched = fuzzyFilter(models, query, (m) => modelRef(m));
           return matched.slice().sort((a, b) => compareModels(a, b, sortMode));
         };
 
-        const buildItems = (query: string, columnWidthsForView: typeof widths): SelectItem[] =>
-          getFilteredModels(query).map((model) => {
-            const ref = modelRef(model);
-            const full = rowLabel(model, {
-              isActive: ref === activeRef,
-              hasAuth: hasAuth(model.provider),
-              ...columnWidthsForView,
-            });
-            const paddedRef = full.slice(0, columnWidthsForView.refWidth);
-            return {
-              value: ref,
-              label: styleRowLabel(paddedRef, full.slice(columnWidthsForView.refWidth), theme, {
-                hasAuth: hasAuth(model.provider),
-                query,
-              }),
-            };
-          });
-
-        const makeSelectList = (query: string, columnWidthsForView: typeof widths): SelectList => {
-          const list = new SelectList(
-            buildItems(query, columnWidthsForView),
-            Math.min(models.length, 12),
-            {
-              selectedPrefix: (_text) => theme.fg("accent", theme.bold("› ")),
-              selectedText: (text) => text,
-              description: (text) => theme.fg("muted", text),
-              scrollInfo: (text) => theme.fg("dim", text),
-              noMatch: (text) => theme.fg("warning", text),
-            },
-          );
-          list.onSelect = (item) => {
-            const model = models.find((m) => modelRef(m) === item.value);
-            if (!model) return;
-            const level: ModelThinkingLevel = model.reasoning ? effortFor(model) : "off";
-            done({ model, level });
-          };
-          list.onCancel = () => done(null);
-          list.onSelectionChange = () => {
-            prefillHighlighted();
-            refresh();
-          };
-          return list;
-        };
-
-        let selectList = makeSelectList("", widths);
-
-        function relayout(): void {
-          const filtered = getFilteredModels(filter);
-          const ctxWidth =
-            filtered.length > 0
-              ? Math.max(...filtered.map((m) => formatContext(m.contextWindow).length))
-              : 1;
-          const costWidth =
-            filtered.length > 0 ? Math.max(...filtered.map((m) => formatCost(m.cost).length)) : 1;
-          const badgeMax =
-            filtered.length > 0
-              ? Math.max(
-                  ...filtered.map(
-                    (m) =>
-                      badgesFor(m, {
-                        isActive: modelRef(m) === activeRef,
-                        hasAuth: hasAuth(m.provider),
-                      }).length,
-                  ),
-                )
-              : 0;
-          const budget = Math.max(40, innerPanelWidth - 7);
-          const refMax = budget - (2 + ctxWidth + 4 + 2 + costWidth + badgeMax);
-          widths = columnWidths(filtered, {
-            maxBadgeLen: badgeMax,
-            maxRefWidth: Math.max(12, refMax),
-          });
-          widths = { ...widths, maxBadgeLen: undefined } as typeof widths;
-          selectList = makeSelectList(filter, widths);
-          prefillHighlighted();
-        }
-
-        const highlighted = (): AnyModel | undefined =>
-          models.find((m) => modelRef(m) === selectList.getSelectedItem()?.value);
+        const highlighted = (): AnyModel | undefined => getFilteredModels(filter)[selectedIndex];
 
         const effortFor = (model: AnyModel): ModelThinkingLevel => {
           const levels = effortLevelsFor(model);
@@ -553,6 +507,32 @@ export default function modelPicker(pi: ExtensionAPI) {
         };
 
         const refresh = () => tui.requestRender();
+
+        function moveSelection(delta: 1 | -1): void {
+          const filtered = getFilteredModels(filter);
+          if (filtered.length === 0) return;
+          selectedIndex = (selectedIndex + delta + filtered.length) % filtered.length;
+        }
+
+        function relayout(): void {
+          widths = columnWidths(getFilteredModels(filter));
+          selectedIndex = 0;
+          prefillHighlighted();
+        }
+
+        function applyFilterDelta(delta: string): void {
+          filter = delta;
+          relayout();
+          refresh();
+        }
+
+        function cycleSort(): void {
+          if (sortMode === "name") sortMode = "price-asc";
+          else if (sortMode === "price-asc") sortMode = "price-desc";
+          else sortMode = "name";
+          relayout();
+          refresh();
+        }
 
         /** Format segmented buttons for reasoning effort */
         function formatSegmentedButtons(
@@ -599,20 +579,6 @@ export default function modelPicker(pi: ExtensionAPI) {
           );
         }
 
-        function applyFilterDelta(delta: string): void {
-          filter = delta;
-          relayout();
-          refresh();
-        }
-
-        function cycleSort(): void {
-          if (sortMode === "name") sortMode = "price-asc";
-          else if (sortMode === "price-asc") sortMode = "price-desc";
-          else sortMode = "name";
-          relayout();
-          refresh();
-        }
-
         function handleInput(data: string): void {
           if (matchesKey(data, Key.tab)) {
             cycleSort();
@@ -635,8 +601,8 @@ export default function modelPicker(pi: ExtensionAPI) {
             return;
           }
           if (matchesKey(data, Key.ctrl("a"))) {
-            const ids = filter ? buildItems(filter, widths).map((item) => item.value) : allRefs;
-            const allIds = allRefs;
+            const ids = getFilteredModels(filter).map(modelRef);
+            const allIds = models.map(modelRef);
             let currentPatterns: string[] | null;
             try {
               currentPatterns = SettingsManager.create(ctx.cwd).getEnabledModels() ?? null;
@@ -657,15 +623,28 @@ export default function modelPicker(pi: ExtensionAPI) {
             return;
           }
 
-          if (
-            matchesKey(data, Key.up) ||
-            matchesKey(data, Key.down) ||
-            matchesKey(data, Key.enter) ||
-            matchesKey(data, Key.escape)
-          ) {
-            selectList.handleInput(data);
+          if (matchesKey(data, Key.up)) {
+            moveSelection(-1);
             prefillHighlighted();
             refresh();
+            return;
+          }
+          if (matchesKey(data, Key.down)) {
+            moveSelection(1);
+            prefillHighlighted();
+            refresh();
+            return;
+          }
+          if (matchesKey(data, Key.enter)) {
+            const model = highlighted();
+            if (model) {
+              const level: ModelThinkingLevel = model.reasoning ? effortFor(model) : "off";
+              done({ model, level });
+            }
+            return;
+          }
+          if (matchesKey(data, Key.escape)) {
+            done(null);
             return;
           }
 
@@ -695,18 +674,10 @@ export default function modelPicker(pi: ExtensionAPI) {
 
         const container = new Container();
 
-        // Title row: left-aligned title, esc hint right-aligned.
+        // Title row: left-aligned title (Esc is already in the footer pills).
         const titleHolder = {
-          render(width: number): string[] {
-            const title = "⚙ Switch Model";
-            const escHint = "esc";
-            const pad = Math.max(1, width - 4 - visibleWidth(title) - visibleWidth(escHint));
-            return [
-              "  " +
-                theme.fg("accent", theme.bold(title)) +
-                " ".repeat(pad) +
-                theme.fg("dim", escHint),
-            ];
+          render(): string[] {
+            return ["  " + theme.fg("accent", theme.bold("⚙ Switch Model"))];
           },
           invalidate(): void {},
         };
@@ -751,30 +722,52 @@ export default function modelPicker(pi: ExtensionAPI) {
         };
         container.addChild(dividerHolder);
 
-        // Column header: model, ctx, cost
-        const headerHolder = {
-          render(): string[] {
-            return [
-              "  " +
-                theme.fg("dim", "model") +
-                " ".repeat(Math.max(1, widths.refWidth + widths.ctxWidth - 2)) +
-                theme.fg("dim", "ctx") +
-                theme.fg("dim", "  ") +
-                theme.fg("dim", "cost $in / $out per 1M tokens"),
-            ];
-          },
-          invalidate(): void {},
-        };
-        container.addChild(headerHolder);
-
-        // Model list holder
+        // Model list holder: hand-rolled selection/scroll + provider-grouped headers.
         const listHolder = {
           render(width: number): string[] {
-            return selectList.render(width);
+            const filtered = getFilteredModels(filter);
+            if (filtered.length === 0) {
+              return ["  " + theme.fg("warning", "No matching models")];
+            }
+            if (selectedIndex >= filtered.length) selectedIndex = filtered.length - 1;
+            if (selectedIndex < 0) selectedIndex = 0;
+
+            const maxVisible = Math.min(filtered.length, 12);
+            const startIndex = Math.max(
+              0,
+              Math.min(selectedIndex - Math.floor(maxVisible / 2), filtered.length - maxVisible),
+            );
+            const endIndex = Math.min(startIndex + maxVisible, filtered.length);
+            const rowWidth = Math.max(20, width - 4);
+
+            const lines: string[] = [];
+            for (let i = startIndex; i < endIndex; i++) {
+              const model = filtered[i]!;
+              const prevProvider = i > 0 ? filtered[i - 1]!.provider : undefined;
+              if (model.provider !== prevProvider) {
+                if (i > startIndex) lines.push("");
+                lines.push("  " + theme.fg("dim", theme.bold(model.provider.toUpperCase())));
+              }
+              const ref = modelRef(model);
+              lines.push(
+                "  " +
+                  styleModelRow(model, theme, {
+                    isActive: ref === activeRef,
+                    hasAuth: hasAuth(model.provider),
+                    isSelected: i === selectedIndex,
+                    query: filter || undefined,
+                    ctxWidth: widths.ctxWidth,
+                    costWidth: widths.costWidth,
+                    rowWidth,
+                  }),
+              );
+            }
+            if (startIndex > 0 || endIndex < filtered.length) {
+              lines.push("  " + theme.fg("dim", `(${selectedIndex + 1}/${filtered.length})`));
+            }
+            return lines;
           },
-          invalidate(): void {
-            selectList.invalidate();
-          },
+          invalidate(): void {},
         };
         container.addChild(listHolder);
 
@@ -830,8 +823,7 @@ export default function modelPicker(pi: ExtensionAPI) {
 
         return {
           render(width: number): string[] {
-            innerPanelWidth = Math.max(1, width - 4);
-            return renderPanel(container.render(innerPanelWidth), width, theme);
+            return renderPanel(container.render(Math.max(1, width - 4)), width, theme);
           },
           invalidate(): void {
             container.invalidate();

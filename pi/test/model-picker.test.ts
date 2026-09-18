@@ -245,31 +245,29 @@ describe("effortBar", () => {
 describe("rowLabel", () => {
   test("shows provider/id, context, and per-1M cost", () => {
     expect(rowLabel(model({ reasoning: false }))).toBe(
-      "anthropic/claude-sonnet-4-5  200K ctx  $3.00 / $15.00",
+      "anthropic/claude-sonnet-4-5  200K context  $3.00 / $15.00",
     );
   });
 
-  test("badges mark reasoning, vision, missing auth, and the active model", () => {
+  test("badges mark reasoning, vision, and missing auth; the active model gets a dot", () => {
     const m = model({ reasoning: false, input: ["text", "image"] });
     expect(rowLabel(m)).toContain("[vision]");
     expect(rowLabel(model({ reasoning: false }), { hasAuth: false })).toContain("[no key]");
-    expect(rowLabel(model(), { isActive: true })).toContain("active");
+    expect(rowLabel(model(), { isActive: true })).toContain("●");
   });
 
-  test("columnWidths + rowLabel align id, context, and cost into columns", () => {
+  test("columnWidths + rowWidth right-align context and cost regardless of name length", () => {
     const models = [
       model({ id: "a" }),
       model({ provider: "opencode-go", id: "a-very-long-model-id", contextWindow: 1_048_576 }),
       model({ provider: "x", id: "b", cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }),
     ];
     const widths = columnWidths(models);
-    const rows = models.map((m) => rowLabel(m, { ...widths, refWidth: widths.refWidth }));
-    const costStart = rows.map((r) => r.indexOf("  ctx"));
-    expect(costStart.every((c) => c === costStart[0])).toBe(true);
-    const badgeStart = rows.map((r) =>
-      r.indexOf("$") === -1 ? r.indexOf("free") : r.indexOf("$"),
-    );
-    expect(badgeStart.every((c) => c === badgeStart[0])).toBe(true);
+    const rowWidth = 80;
+    const rows = models.map((m) => rowLabel(m, { ...widths, rowWidth }));
+    const ctxStart = rows.map((r) => r.indexOf(" context"));
+    expect(ctxStart.every((c) => c === ctxStart[0])).toBe(true);
+    expect(rows.every((r) => r.length === rowWidth)).toBe(true);
   });
 
   test("missing metadata degrades inside the row instead of NaN", () => {
@@ -281,7 +279,7 @@ describe("rowLabel", () => {
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         }),
       ),
-    ).toBe("anthropic/claude-sonnet-4-5  — ctx  free");
+    ).toBe("anthropic/claude-sonnet-4-5  — context  free");
   });
 });
 
@@ -607,20 +605,13 @@ describe("command wiring", () => {
     expect(rendered).toContain("no key");
     expect(rendered).toContain("unkeyed/m1");
 
-    // Regression: the ref column stays padded in the composed overlay rows,
-    // so the context column starts at the same offset on every row.
+    // Regression: context/cost right-align to the same column on every row
+    // (including the dimmed no-auth row), regardless of name length.
     const lines = rendered.split("\n");
-    const rowLines = lines.filter((l) => l.includes(" ctx ") && !l.includes("cost $in"));
+    const rowLines = lines.filter((l) => l.includes(" context"));
     expect(rowLines.length).toBeGreaterThan(1);
-    const ctxCols = rowLines.map((l) => l.indexOf(" ctx "));
+    const ctxCols = rowLines.map((l) => l.indexOf(" context"));
     expect(new Set(ctxCols).size).toBe(1);
-
-    // Header labels sit over the same columns: "ctx" over the ctx literal
-    // (one char after the space preceding it), "cost …" six chars later.
-    const headerLine = lines.find((l) => l.includes("cost $in / $out"));
-    expect(headerLine).toBeDefined();
-    expect(headerLine!.indexOf("ctx")).toBe(ctxCols[0] + 1);
-    expect(headerLine!.indexOf("cost")).toBe(ctxCols[0] + 6);
     void pending;
   });
 
