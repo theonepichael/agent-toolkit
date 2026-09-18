@@ -18,18 +18,19 @@ Exposes (HTTP, all JSON):
 
 - `GET /api/agents` — live agent list (name, agent, status, tab/pane, cwd,
   title) derived from herdr `agent.list`.
-- `GET /api/agents/{name}/read?lines=N` — recent terminal output (herdr
+- `GET /api/agents/{id}/read?lines=N` — recent terminal output (herdr
   `agent.read`, source `recent`).
-- `POST /api/agents/{name}/prompt` — submit a prompt (herdr `agent.prompt`,
+- `POST /api/agents/{id}/prompt` — submit a prompt (herdr `agent.prompt`,
   no wait).
 - `GET /api/events` — SSE: full-snapshot `state` events on any agent status
   change (backed by per-agent `agent.wait` long-polls), 15 s keep-alive
   comments, flush per write.
-- `GET /api/health`, static PWA at `/` (unauthenticated by design).
+- `GET /api/health` (herdr `ping`), static PWA at `/` (unauthenticated by
+  design).
 
-Consumes: herdr RPC methods `session.snapshot`, `agent.list/get/read/
-prompt/wait/send_keys` — and only those; `server.stop`/`server.live_handoff`
-are never sent.
+Consumes: herdr RPC methods `agent.list`, `agent.wait`, `agent.read`,
+`agent.prompt`, `ping` — and only those; `session.snapshot`, `agent.get`,
+`agent.send_keys`, `server.stop`, and `server.live_handoff` are never sent.
 
 ## Non-goals
 

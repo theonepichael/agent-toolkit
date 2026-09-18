@@ -5,8 +5,8 @@ confused with `claude/CORE_INSTRUCTIONS.md`: that file is the shareable
 global, cross-project workflow instructions — authored directly here, like
 any other doc in this repo, and symlinked out unmodified to
 `~/.claude/CLAUDE.md`, `~/.copilot/copilot-instructions.md`,
-`~/.gemini/GEMINI.md`, `~/.pi/agent/AGENTS.md` (see `links.toml`), and read
-directly by opencode as its own global fallback.
+`~/.gemini/GEMINI.md`, `~/.pi/agent/AGENTS.md`, `~/.codex/AGENTS.md` (see
+`links.toml`), and read directly by opencode as its own global fallback.
 General workflow conventions (backlog via `dev_status.py`, git
 worktree-first policy, verification standards, etc.) are already loaded from
 there — this file doesn't repeat them, only points at what's specific to
@@ -32,14 +32,17 @@ this repo.
   source. Fix the docstrings/argparse definitions when an interface
   changes, not the file directly. Regenerate with
   `python3 agent-scripts/gen_interfaces.py`, or check for staleness with
-  `--check` (exit 1 if stale — this is what the test suite asserts).
+  `--check` (exit 1 if the committed file is stale, exit 3 if a doc's own
+  shown command example no longer matches the script's real contract —
+  both are what the test suite asserts).
 - **User-facing command/behavior differences across harnesses** (Claude
   Code, Copilot, opencode, agy, Pi, Codex CLI) — `README.md`.
 - **System architecture overview** (component map, cross-harness dispatch,
   lifecycle mechanics) — `docs/architecture/overview.md`.
 - **Per-harness porting and verification notes** —
   `copilot/CLAUDE_CODE_PARITY.md`, `agy/CLAUDE_CODE_PARITY.md`,
-  `opencode/CLAUDE_CODE_PARITY.md`, `pi/CLAUDE_CODE_PARITY.md`.
+  `opencode/CLAUDE_CODE_PARITY.md`, `pi/CLAUDE_CODE_PARITY.md`,
+  `codex/CLAUDE_CODE_PARITY.md`.
 
 ## Harness maintenance tiers
 

@@ -6,9 +6,9 @@ comprehensive — most domain terms here (`backlog item` vs. `pending item`,
 `gate`/`gate-set`/`gate-pass`, `claim`/`claimed_by`, `out-of-scope`,
 `rev`/`--if-rev`, `worktree`) are already single-sourced and consistently
 documented in `agent-scripts/dev_status_impl.py`'s docstrings and in
-CLAUDE.md, so a second definition here would just be one more place for
-that description to go stale. This file exists only for the terms where
-that single-sourcing doesn't hold.
+`claude/CORE_INSTRUCTIONS.md`, so a second definition here would just be
+one more place for that description to go stale. This file exists only
+for the terms where that single-sourcing doesn't hold.
 
 ## `dispatch`
 
@@ -17,9 +17,9 @@ Three distinct senses share this word — know which one a given doc means:
 - **Argparse routing.** Inside a script like `grill.py`, `second_opinion.py`,
   or `herdr_delegate.py`, "parse arguments and dispatch" just means routing
   to the subcommand handler. Generic, not a domain concept.
-- **Cross-harness dispatch.** In `docs/architecture/overview.md` and
-  README.md ("a review whose dispatched backend..."), dispatch means
-  picking which harness/backend a request runs against.
+- **Cross-harness dispatch.** In README.md ("a review whose dispatched
+  backend..."), dispatch means picking which harness/backend a request
+  runs against — the `second_opinion.py`/`herdr_delegate.py` sense.
 - **Swarm fan-out.** Related to but not synonymous with the swarm skill's
   fan-out mechanism (see `fan-out` below) — a swarm worker is one thing a
   dispatch can send work to, not the definition of dispatch itself.
@@ -31,7 +31,8 @@ docstrings (`argv0.removeprefix`, line-prefix rendering, "prefix onto the
 error message"). The one domain-specific sense is the **backlog item
 prefix**: the kebab-case string at the front of a backlog id (`atk-`,
 `iron-lb-`, `meta-`, ...) that maps 1:1 to a repo, per the prefix table in
-CLAUDE.md, and gates which items `--swarm[=N]` is allowed to pull in. When
+`claude/CORE_INSTRUCTIONS.md`, and gates which items `--swarm[=N]` is
+allowed to pull in. When
 this file or any other doc says "prefix" without qualification, check which
 sense is meant — don't assume the domain one.
 

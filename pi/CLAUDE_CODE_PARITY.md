@@ -4,7 +4,10 @@ Goal: make Pi (`earendil-works/pi`, npm `@earendil-works/pi-coding-agent`,
 formerly `badlogic/pi-mono`) feel like Claude Code for this workflow — same
 shared instructions, same skills, same backlog/pending-items/git
 conventions — as a 5th harness alongside Claude Code, Copilot, opencode,
-and agy. Compiled 2026-08-30 from the docs bundled with the installed
+and agy (a 6th, Codex CLI, joined the toolkit 2026-09-08, after this intro
+was written — see root `AGENTS.md`'s "Harness maintenance tiers"; the rest
+of this doc, §3/§7 included, already reflects the current 8-skill/6-harness
+state). Compiled 2026-08-30 from the docs bundled with the installed
 package (`~/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/docs/`,
 version 0.84.4 at time of writing) and from live probes against that same
 install, not from search-engine summaries.

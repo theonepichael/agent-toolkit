@@ -6,9 +6,11 @@
 
 Authenticated HTTP+SSE bridge in front of the herdr socket, serving a phone
 PWA for check-in-and-drive control of herdr-managed agents. Full boundary,
-topology, and interface writeup — including the grill-recorded auth
-decisions — lives in `docs/architecture/herdr-remote.md`; read that first,
-this file only adds the two hazards below.
+topology, and interface writeup lives in `docs/architecture/herdr-remote.md`
+— read that first for the shape of the system. The two grill-recorded auth
+decisions themselves (`auth-model`, `auth-enforcement-point`) aren't
+restated there; their content is inline in the hazards below and in
+`config.py`'s/`bridge.py`'s own docstrings.
 
 ## Hazards & Signposts
 

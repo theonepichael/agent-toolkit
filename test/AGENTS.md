@@ -54,9 +54,10 @@ consolidating the location, not the style below).
   colocated.
 
 Both styles are collected by the same `uv run pytest` from the repo root
-— `pyproject.toml` sets `testpaths = ["test"]` — so the `conftest.py`
-guards above apply to the unittest-style files too when they run that way,
-and not when they are run directly with `python3`.
+— `pyproject.toml` sets `testpaths = ["test", "scripts"]` (`scripts/` has
+no `test_*.py` of its own; the entry currently collects nothing there) —
+so the `conftest.py` guards above apply to the unittest-style files too
+when they run that way, and not when they are run directly with `python3`.
 
 ## `scenarios.sh` is container-only
 

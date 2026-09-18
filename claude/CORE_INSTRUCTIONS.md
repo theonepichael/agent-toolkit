@@ -1,7 +1,7 @@
 # CLAUDE.md
 
-<!-- Shared with ~/.copilot/copilot-instructions.md and ~/.gemini/GEMINI.md (same
-     symlink target). -->
+<!-- Shared with ~/.copilot/copilot-instructions.md, ~/.gemini/GEMINI.md,
+     ~/.pi/agent/AGENTS.md, and ~/.codex/AGENTS.md (same symlink target). -->
 
 ## Planning Gate
 
