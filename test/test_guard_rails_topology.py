@@ -58,6 +58,14 @@ def _init_repo(path: Path, branch: str = "main") -> Path:
     _git("init", "-q", "-b", branch, ".", cwd=path)
     _git("config", "user.email", "t@example.invalid", cwd=path)
     _git("config", "user.name", "t", cwd=path)
+    # Disable git's background maintenance -- it can create/remove a
+    # maintenance.lock file well after commit returns. Confirmed live in CI
+    # (2026-09-18) racing an explicit shutil.rmtree() teardown elsewhere in
+    # this repo (test_bundle_drift_check.py); this repo's own tests use
+    # pytest's tmp_path here instead, so the same immediate race is less
+    # likely, but the config costs nothing and removes the class of risk.
+    _git("config", "gc.auto", "0", cwd=path)
+    _git("config", "maintenance.auto", "false", cwd=path)
     (path / "f.txt").write_text("a\n")
     _git("add", "f.txt", cwd=path)
     _git("commit", "-q", "-m", "init", cwd=path)

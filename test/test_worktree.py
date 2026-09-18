@@ -25,6 +25,14 @@ def _init_repo(path: Path) -> Path:
     subprocess.run(["git", "init", "-b", "main", str(path)], check=True, capture_output=True)
     subprocess.run(["git", "-C", str(path), "config", "user.name", "Test User"], check=True)
     subprocess.run(["git", "-C", str(path), "config", "user.email", "test@example.com"], check=True)
+    # Disable git's background maintenance -- it can create/remove a
+    # maintenance.lock file well after commit returns. Confirmed live in CI
+    # (2026-09-18) racing an explicit shutil.rmtree() teardown elsewhere in
+    # this repo (test_bundle_drift_check.py); this repo's own tests use
+    # pytest's tmp_path here instead, so the same immediate race is less
+    # likely, but the config costs nothing and removes the class of risk.
+    subprocess.run(["git", "-C", str(path), "config", "gc.auto", "0"], check=True)
+    subprocess.run(["git", "-C", str(path), "config", "maintenance.auto", "false"], check=True)
     readme = path / "README.md"
     readme.write_text("# Test Repo\n")
     subprocess.run(["git", "-C", str(path), "add", "README.md"], check=True)

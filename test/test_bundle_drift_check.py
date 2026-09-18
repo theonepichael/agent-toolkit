@@ -51,6 +51,14 @@ class BundleDriftCheckTestCase(unittest.TestCase):
         git(self.repo, "init", "-q")
         git(self.repo, "config", "user.email", "test@example.com")
         git(self.repo, "config", "user.name", "Test")
+        # Git's own background maintenance can create/remove a
+        # maintenance.lock file inside .git/ well after a commit returns,
+        # racing tearDown's shutil.rmtree(self.tmpdir) under load (observed
+        # live in CI, 2026-09-18: FileNotFoundError unlinking
+        # 'maintenance.lock' mid-rmtree). Disable it for this throwaway
+        # repo -- there is nothing here worth maintaining.
+        git(self.repo, "config", "gc.auto", "0")
+        git(self.repo, "config", "maintenance.auto", "false")
         (self.repo / "file.txt").write_text("v1")
         git(self.repo, "add", "file.txt")
         git(self.repo, "commit", "-q", "-m", "initial")
