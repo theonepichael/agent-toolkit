@@ -144,7 +144,7 @@ models, these are the contract:
 | `SECOND_OPINION_PI_MODEL` / `_PI_MODEL_POOL` | Same contract for the pi backend | pi's own default for the `opencode-go` provider |
 | `SECOND_OPINION_OPENCODE_MODEL` / `_OPENCODE_MODEL_POOL` | Same contract for the opencode backend | opencode's live config |
 | `SECOND_OPINION_COPILOT_MODEL` / `_COPILOT_MODEL_POOL` | Same contract for the copilot backend | copilot's implicit default routing |
-| `SECOND_OPINION_TIMEOUT_SECONDS` (+ per-backend `_<BACKEND>_TIMEOUT_SECONDS`) | Per-call timeout budget in seconds | 120 (hard ceiling 300) |
+| `SECOND_OPINION_TIMEOUT_SECONDS` (+ per-backend `_<BACKEND>_TIMEOUT_SECONDS`) | Per-call timeout budget in seconds | 120 (hard ceiling 600) |
 
 Two things worth knowing before you copy someone else's pool values:
 
@@ -210,12 +210,14 @@ Run the test suite:
 uv run pytest
 ```
 
-Check interface and skill documentation consistency:
+Check interface and skill documentation consistency (each `--check` exits
+non-zero and prints a diff if its generated copies are stale — omitting
+`--check` regenerates and overwrites them in place instead):
 
 ```bash
 python3 agent-scripts/gen_interfaces.py --check
-python3 agent-scripts/gen_skills.py
-python3 agent-scripts/gen_second_opinion.py
+python3 agent-scripts/gen_skills.py --check
+python3 agent-scripts/gen_second_opinion.py --check
 ```
 
 

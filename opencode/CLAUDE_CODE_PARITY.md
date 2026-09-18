@@ -85,6 +85,12 @@ delegates planning/critique to `grill-me`/`second-opinion` at runtime, the
 port also introduced this repo's first two opencode **skills** (see the
 Commands-vs-skills subsection below).
 
+**Update, 2026-09-18: 9 commands.** `recap.md` and `to-tickets.md` were
+added at `opencode/command/`, same generated-via-`gen_skills.py`/linked-via-
+`links.toml` mechanism as `spec.md` above. Current full set:
+`backlog-item`, `dashboard`, `grill-me`, `make-skill`, `recap`,
+`second-opinion`, `spec`, `standup`, `to-tickets`.
+
 ### Format (informed by the official Commands doc, `opencode.ai/docs/commands/`)
 
 opencode's custom-command format is nearly identical to Claude Code's, with
@@ -141,10 +147,12 @@ opencode exposes two distinct extension surfaces that the official docs keep
 separate (see `opencode.ai/docs/commands/` vs `opencode.ai/docs/skills/`):
 
 - **Commands** (used by this repo): user-typed `/x` invocation, file body IS
-  the prompt template. The 7 commands in this repo are deliberately
+  the prompt template. The commands in this repo are deliberately
   user-typed — `/dashboard`, `/grill-me`, `/standup`, `/second-opinion`,
-  `/make-skill`, `/backlog-item`, `/spec` — because the user explicitly
-  initiates each one in a session the same way they would in Claude Code.
+  `/make-skill`, `/backlog-item`, `/spec`, plus `/recap` and `/to-tickets`
+  added 2026-09-18 (9 total; see the "Update, 2026-09-18" note above) —
+  because the user explicitly initiates each one in a session the same way
+  they would in Claude Code.
 - **Skills** (used by this repo as of 2026-08-03, for `backlog-item`'s
   delegation): model-invoked via the **native `skill` tool** — agents see
   the available-skills list (name + description in a `<available_skills>`
@@ -152,7 +160,7 @@ separate (see `opencode.ai/docs/commands/` vs `opencode.ai/docs/skills/`):
   opencode's `skill` tool only loads `SKILL.md` files — commands are
   invisible to it — so `backlog-item`'s runtime delegation to
   grill-me/second-opinion/spec (which Claude Code does through its own Skill
-  tool) needs real skills here. This repo tracks three,
+  tool) needs real skills here. This repo originally tracked three,
   `opencode/skills/grill-me/SKILL.md`,
   `opencode/skills/second-opinion/SKILL.md`, and
   `opencode/skills/spec/SKILL.md` (added 2026-08-12, once `backlog-item`
@@ -161,7 +169,13 @@ separate (see `opencode.ai/docs/commands/` vs `opencode.ai/docs/skills/`):
   model-invoked copies of the same protocols the user-typed `/grill-me`,
   `/second-opinion`, and `/spec` commands carry — deliberate full
   duplication, one copy per layer, each adapted to how its layer is
-  invoked. Skills are
+  invoked. **Update, 2026-09-18:** two more joined them,
+  `opencode/skills/analyze-sessions/SKILL.md` and
+  `opencode/skills/refresh-guidance/SKILL.md` — 5 total now. Unlike the
+  original three, these aren't `backlog-item` delegation copies; they're
+  standalone skills meant for spontaneous model-invocation rather than a
+  user-typed command surface, which is why they exist as skills only, with
+  no `opencode/command/` counterpart. Skills are
   auto-discovered from `~/.config/opencode/skills/<name>/SKILL.md`,
   `.opencode/skills/<name>/`, and **also from the Claude-Code-compat
   paths** `~/.claude/skills/<name>/` and `~/.agents/skills/<name>/` (per
@@ -434,6 +448,7 @@ conflicting keys), same pattern as Claude Code's `~/.claude/settings.json` +
 
 - **`ruff-format-on-edit.ts`** — auto-formats Python files on `tool.execute.after` for `edit` and `write`.
 - **`notify.ts`** — listens to `session.idle` event and dispatches cross-platform desktop toasts with the official OpenCode logo via `~/.claude/scripts/notify.py`.
+- **`guard-rails.ts`** — delegates to `agent-scripts/guard_rails.py` on `tool.execute.before`; this list previously omitted it despite it being covered in detail in the "Pre-tool guard" section below — see that section for the verified payload shape and the no-warn-channel limitation.
 
 ## Sources
 
@@ -471,7 +486,11 @@ with nothing in between. The stale-worktree-base warning is therefore *not*
 surfaced on this harness — a `warn` verdict degrades to a silent allow. This
 is a real gap, not an oversight: Claude Code has `additionalContext`, Pi has
 `ctx.ui.notify`, agy can return `decision: allow` with a `reason`, and
-opencode has no equivalent.
+opencode has no equivalent — same as Copilot, which also honours only the
+hook's exit code and surfaces no reason at all (see
+`copilot/CLAUDE_CODE_PARITY.md`'s "Copilot honours the exit code only"
+finding). Codex isn't part of this comparison: this repo provisions no
+`guard_rails.py` hook for it at all.
 
 **Bash-family payload, confirmed live 2026-09-01** the same way (a
 throwaway `tool.execute.before` plugin dumping raw `input`/`output`, run

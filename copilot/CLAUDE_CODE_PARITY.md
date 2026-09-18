@@ -122,7 +122,22 @@ All 7 (`backlog-item`, `dashboard`, `grill-me`, `make-skill`,
 `second-opinion`, `spec`, `standup`) live in the repo at
 `copilot/skills/<name>/SKILL.md` and are symlinked into
 `~/.copilot/skills/<name>/SKILL.md` by the `copilot/skills/*` entries in
-`links.toml`. `backlog-item` orchestrates `grill-me`/`second-opinion`/`spec`
+`links.toml`.
+
+**Update, 2026-09-18:** `copilot/skills/` now has 12, not 7 — the 5 added
+since this section was last written are `analyze-sessions`, `recap`,
+`refresh-guidance`, `to-tickets`, and `swarm` (all generated the same as
+the original 7, via `agent-scripts/gen_skills.py` from
+`templates/*.tmpl`). `swarm` is the one skill this repo restricts to
+Claude Code and Copilot only (no Claude Code equivalent to port from,
+since it's Copilot-and-Claude-specific) — its actual orchestration logic
+is hand-authored in `copilot/extensions/swarm/`, built from
+`pi/extensions/swarm-lib/` by `scripts/build-copilot-swarm.sh`; only the
+`SKILL.md` wrapper is generated. The verification narrative below
+covers only the original 7; the 5 newer ones haven't had an equivalent
+live-CLI recheck logged here yet.
+
+`backlog-item` orchestrates `grill-me`/`second-opinion`/`spec`
 via mid-skill delegation (see the 2026-08-03 finding in section 3 below,
 verified the same day `backlog-item` was added — `spec` was added later,
 2026-08-12, and follows the same delegation shape). The other 5 (excluding

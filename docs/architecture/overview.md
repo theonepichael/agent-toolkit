@@ -54,7 +54,7 @@ The repository is structured into distinct functional layers:
 
 ### Directory Roles
 
-- **`agent-scripts/`**: Standard-library-only Python tools implementing core workflow logic (`dev_status.py`, `grill.py`, `second_opinion.py`, `refresh_guidance.py`) and artifact generators (`gen_skills.py`, `gen_interfaces.py`, `gen_second_opinion.py`).
+- **`agent-scripts/`**: Standard-library-only Python tools implementing core workflow logic (`dev_status.py`, `grill.py`, `second_opinion.py`, `refresh_guidance.py`) and artifact generators (`gen_skills.py`, `gen_interfaces.py`, `gen_second_opinion.py`). `dev_status.py`'s own backend is itself split across several modules (`dev_status_impl.py`, `dev_status_mutation.py`, `dev_status_storage.py`, `dev_status_formatting.py`, `dev_status_read.py`, `dev_status_types.py`) — see `agent-scripts/AGENTS.md`'s "dev_status stack: module map" for what each owns.
 - **`claude/`**, **`copilot/`**, **`opencode/`**, **`agy/`**, **`pi/`**, **`codex/`**: Harness-specific configuration adapters, prompts, slash commands, and plugins mapped into user environments via [links.toml](../../links.toml).
 - **`pi/`**: TypeScript ecosystem for the Pi assistant, housing custom extensions (such as `question-tool.ts` and `swarm-tool.ts`) with dedicated Node test suites (run through `node:test` + the `expect` package).
 - **`herdr_remote/`**: Independent remote-control bridge daemon (`aiohttp`) and static PWA for monitoring and prompting headless agent sessions over Tailscale (see [herdr-remote.md](herdr-remote.md)).

@@ -74,7 +74,16 @@ missing.
 
 `backlog-item` ported 2026-08-13 to `agy/skills/backlog-item/SKILL.md`,
 closing the last skill-count gap with `claude/commands`, `copilot/skills`,
-and `opencode/command` (all 7 now). The open question this port had been
+and `opencode/command` (all 7 at the time).
+
+**Update, 2026-09-18:** `agy/skills/` now has 11, not 7 — `analyze-sessions`,
+`recap`, `refresh-guidance`, and `to-tickets` were added since (all
+generated via `agent-scripts/gen_skills.py`, same mechanism as the
+original 7). agy has no `swarm` (that skill is restricted to Claude Code
+and Copilot only), so 11 is agy's full current count, not a gap relative
+to another harness.
+
+The open question this port had been
 waiting on — whether agy's model-decision-only skill activation (no
 `skill` subcommand, unlike opencode's native `skill` tool) can support
 `backlog-item`'s mid-run delegation to `grill-me`/`second-opinion` — was
