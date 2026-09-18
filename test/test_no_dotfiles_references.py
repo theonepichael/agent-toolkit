@@ -100,7 +100,7 @@ ALLOWLIST: dict[str, tuple[str, ...]] = {
         "without_dotfiles",  # compose-guard test name
         "No ~/dotfiles checkout",  # compose-guard docstring
     ),
-    "agent-scripts/test_dev_status.py": (
+    "test/test_dev_status.py": (
         '"dotfiles"',  # pins the prefix-map row values
         "/dotfiles",  # fixture repo paths the prefix map resolves
         "`dotfiles-`",  # pins the real prefix list

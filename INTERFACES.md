@@ -144,7 +144,7 @@ analyze_sessions.py — multi-harness session analysis tool.
   - `load_all_records(harness: str = 'all', since_dt: datetime | None = None, until_dt: datetime | None = None, cwd_filter: str | None = None, model_filter: str | None = None, session_filter: str | None = None, *, include_subagents: bool = True, pi_dir: Path | None = None, claude_dir: Path | None = None, opencode_db: Path | None = None, copilot_db: Path | None = None, agy_dir: Path | None = None) -> list[SessionRecord]` — Legacy shim: same positional contract and bare-list return as always.
   - `build_parser() -> argparse.ArgumentParser`
 - Subcommand handlers: `cmd_cost`, `cmd_prompts`, `cmd_search`
-- Tested by: `agent-scripts/test_analyze_sessions.py`
+- Tested by: `test/test_analyze_sessions.py`
 
 ### `agent-scripts/backlog_claim_lookup.py`
 
@@ -163,7 +163,7 @@ Read-only snapshot lookup over the backlog store for guard consumers.
   - `class LocalClaimLookup` — Read-only snapshot view over the backlog store: the one item-reading implementation (moved here from guard_rails.py) until candidate 6 lands as the shared read facade.
 - Public functions:
   - `backlog_items_path() -> Path` — Where the backlog store lives.
-- Tested by: `agent-scripts/test_backlog_claim_lookup.py`, `agent-scripts/test_dev_status_read.py`, `agent-scripts/test_guard_rails.py`, `test/test_guard_rails_claim.py`
+- Tested by: `test/test_backlog_claim_lookup.py`, `test/test_dev_status_read.py`, `test/test_guard_rails.py`, `test/test_guard_rails_claim.py`
 
 ### `agent-scripts/bundle_drift_check.py`
 
@@ -188,7 +188,7 @@ SessionStart hook: flag when this repo has drifted from the last commit bundled 
   - `git(*args: str) -> str | None`
   - `build_parser() -> argparse.ArgumentParser`
 - Subcommand handlers: `cmd_check`, `cmd_mark`
-- Tested by: `agent-scripts/test_bundle_drift_check.py`
+- Tested by: `test/test_bundle_drift_check.py`
 
 ### `agent-scripts/cli_common.py`
 
@@ -210,7 +210,7 @@ Shared CLI helpers used across agent-toolkit scripts.
   - `append_jsonl(path: Path, record: dict[str, object]) -> None` — Best-effort: append one JSON record to `path` as a single JSONL line.
   - `redact_secrets(text: str, *, max_length: int = 200) -> str` — Mask secret-shaped substrings, then truncate to max_length.
   - `timing_span(name: str, **fields: str | int) -> Iterator[dict[str, object]]` — Opt-in nested timings; callers must supply only fixed operational labels.
-- Tested by: `agent-scripts/test_cli_common.py`, `agent-scripts/test_settings_seed.py`, `agent-scripts/test_timing.py`
+- Tested by: `test/test_cli_common.py`, `test/test_settings_seed.py`, `test/test_timing.py`
 
 ### `agent-scripts/dev_status.py`
 
@@ -319,7 +319,7 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `confirm_resolution(cmd: str, arg: str | int, item: BacklogItem | PendingItem, summary_key: str = 'summary', *, quiet: bool = False) -> None` — Echo what a mutating command resolved to, so misresolution is visible.
   - `build_parser() -> argparse.ArgumentParser` — Build the full argument parser for every subcommand.
 - Subcommand handlers: `cmd_internal_regen`, `cmd_recap`, `cmd_worktree`, `cmd_render`, `cmd_ready`, `cmd_list`, `cmd_show`, `cmd_add`, `cmd_update`, `cmd_start`, `cmd_done`, `cmd_reopen`, `cmd_review`, `cmd_approve`, `cmd_reject`, `cmd_gate_set`, `cmd_gate_pass`, `cmd_run`, `cmd_runs`, `cmd_backfill_gate`, `cmd_rename`, `cmd_block`, `cmd_unblock`, `cmd_out_of_scope_add`, `cmd_out_of_scope_link`, `cmd_out_of_scope_unlink`, `cmd_out_of_scope_remove`, `cmd_out_of_scope_list`, `cmd_out_of_scope_show`, `cmd_pending_add`, `cmd_pending_update`, `cmd_pending_list`, `cmd_remove`, `cmd_prune`
-- Tested by: `agent-scripts/test_dev_status.py`, `agent-scripts/test_dev_status_mutation.py`, `agent-scripts/test_sweep_dead_claims.py`, `agent-scripts/test_to_tickets_runner.py`
+- Tested by: `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_sweep_dead_claims.py`, `test/test_to_tickets_runner.py`
 
 ### `agent-scripts/dev_status_formatting.py`
 
@@ -402,7 +402,7 @@ Typed mutation service and transaction manager for dev_status (Candidate 12).
   - `add_pending_item(request: PendingAddRequest, *, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Track a new waiting-on-someone-else item.
   - `update_pending_item(slug_or_id: str, request: PendingUpdateRequest, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Merge an update request into a pending item.
   - `mutation_transaction(*, items_path: Path | None = None, verbose: bool = False) -> Iterator[BacklogTransaction]` — Hold backlog_lock once for batch operations; yields BacklogTransaction.
-- Tested by: `agent-scripts/test_dev_status.py`, `agent-scripts/test_dev_status_mutation.py`, `agent-scripts/test_harness_spec.py`, `test/test_worktree_provenance.py`
+- Tested by: `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_harness_spec.py`, `test/test_worktree_provenance.py`
 
 ### `agent-scripts/dev_status_read.py`
 
@@ -422,7 +422,7 @@ Pure read-only facade over the dev_status backlog store.
   - `in_progress_items(*, items_path: Path | None = None) -> list[BacklogItem]` — Load a fresh snapshot and return its in-progress items.
   - `item_status(slug_or_id: str, *, items_path: Path | None = None) -> str | None` — Load a fresh snapshot and return one item's status.
   - `claim_info(slug_or_id: str, *, items_path: Path | None = None) -> ClaimInfo | None` — Load a fresh snapshot and return one item's claim info.
-- Tested by: `agent-scripts/test_dev_status_read.py`
+- Tested by: `test/test_dev_status_read.py`
 
 ### `agent-scripts/dev_status_storage.py`
 
@@ -472,7 +472,7 @@ Backlog persistence, lock coordination, and journal primitives.
   - `append_run_record(record: RunRecord, *, runs_file: Path | None = None, data_dir: Path | None = None) -> bool` — Append one run-evidence row to :data:`RUNS_FILE` (best-effort).
   - `load_recap_cache(path: Path | None = None) -> dict[str, object] | None` — Load ``recap-cache.json``, or ``None`` if missing/corrupt/malformed.
   - `save_recap_cache(backend: str, text: str, board_fingerprint: str, path: Path | None = None) -> None` — Atomically persist a recap result.
-- Tested by: `agent-scripts/test_dev_status.py`, `agent-scripts/test_dev_status_mutation.py`, `agent-scripts/test_dev_status_read.py`
+- Tested by: `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_dev_status_read.py`
 
 ### `agent-scripts/dev_status_types.py`
 
@@ -578,7 +578,7 @@ gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources.
   - `anchor(relpath: str) -> str` — Return the GitHub heading anchor for a module section.
   - `default_repo_root() -> Path` — Return the repo root inferred from this script's real location.
 - Subcommand handlers: `cmd_function_name`
-- Tested by: `agent-scripts/test_gen_interfaces.py`, `agent-scripts/test_harness_spec.py`, `test/test_dev_status_tool_action_coverage.py`
+- Tested by: `test/test_dev_status_tool_action_coverage.py`, `test/test_gen_interfaces.py`, `test/test_harness_spec.py`
 
 ### `agent-scripts/gen_second_opinion.py`
 
@@ -605,7 +605,7 @@ gen_second_opinion.py — regenerate the second-opinion skill copies (one per ha
   - `check_contract_shape(repo_root: Path, template_text: str) -> list[str]` — Return problems where a CONTRACT_TOKENS entry is missing from the template.
   - `check_row_comments(repo_root: Path) -> list[str]` — Return problems where a HARNESS_TABLE keyword argument has no comment on the line immediately above it.
   - `default_repo_root() -> Path` — Return the repo root inferred from this script's real location.
-- Tested by: `agent-scripts/test_gen_second_opinion.py`
+- Tested by: `test/test_gen_second_opinion.py`
 
 ### `agent-scripts/gen_shell_completion.py`
 
@@ -646,7 +646,7 @@ Generate a zsh `#compdef` completion file for a harness CLI.
   - `needs_function(node: Node) -> bool`
   - `emit_zsh(root: Node, cli: str) -> str`
   - `generate(spec: HarnessAdapter, *, verbose: bool = False) -> str | None`
-- Tested by: `agent-scripts/test_gen_shell_completion.py`, `agent-scripts/test_harness_spec.py`
+- Tested by: `test/test_gen_shell_completion.py`, `test/test_harness_spec.py`
 
 ### `agent-scripts/gen_skills.py`
 
@@ -671,7 +671,7 @@ gen_skills.py — regenerate the dashboard/recap/grill-me/backlog-item/ make-ski
   - `render_one(skill: str, harness: str, template_text: str, params: dict) -> str` — Render one (skill, harness) pair's complete file.
   - `render_all(repo_root: Path, skill_params: dict[str, dict[str, dict]]) -> dict[str, str]` — Render every (skill, harness) pair, keyed by its repo-relative output path.
   - `default_repo_root() -> Path` — Return the repo root inferred from this script's real location.
-- Tested by: `agent-scripts/test_gen_skills.py`, `agent-scripts/test_harness_spec.py`
+- Tested by: `test/test_gen_skills.py`, `test/test_harness_spec.py`
 
 ### `agent-scripts/gen_skills_params.py`
 
@@ -684,7 +684,7 @@ gen_skills_params.py — per-(skill, harness) content tables for gen_skills.py.
   - `edit_root(relpath: str) -> str` — Return self-contained "where to edit this file" markdown.
   - `symlink_cmd(relpath: str, dest: str) -> str` — Return a self-contained, copy-pasteable `ln -s` command.
   - `probe_add_dir() -> str` — Return the bare --add-dir flag argument for claude's headless probe.
-- Tested by: `agent-scripts/test_gen_skills.py`
+- Tested by: `test/test_gen_skills.py`
 
 ### `agent-scripts/grill.py`
 
@@ -769,7 +769,7 @@ grill.py — grill-me session state CLI. All session mutations go through here.
   - `frontier_of(session: Session) -> DecisionList` — Service-API name for :func:`frontier` — every open decision whose dependencies are all resolved.
   - `render_markdown(session: Session) -> str` — Render a session's status as a Markdown document.
 - Subcommand handlers: `cmd_new`, `cmd_ask`, `cmd_decide`, `cmd_revise`, `cmd_rm`, `cmd_verdict`, `cmd_plan`, `cmd_mark_pending_execution`, `cmd_pending_plan`, `cmd_next`, `cmd_frontier`, `cmd_render`, `cmd_list`, `cmd_show`
-- Tested by: `agent-scripts/test_grill.py`, `agent-scripts/test_second_opinion.py`, `agent-scripts/test_to_tickets_runner.py`
+- Tested by: `test/test_grill.py`, `test/test_second_opinion.py`, `test/test_to_tickets_runner.py`
 
 ### `agent-scripts/guard_rails.py`
 
@@ -803,7 +803,7 @@ Pre-tool guard shared by every harness: refuse a write into a repository's main 
   - `parse_payload(harness: str, payload: object) -> Request | None` — Normalize a harness's native hook payload.
   - `render(harness: str | None, verdict: Verdict) -> tuple[str, int]` — Shape a verdict into the harness's own reply.
   - `build_parser() -> argparse.ArgumentParser`
-- Tested by: `agent-scripts/test_guard_rails.py`, `test/test_guard_rails_claim.py`, `test/test_guard_rails_topology.py`
+- Tested by: `test/test_guard_rails.py`, `test/test_guard_rails_claim.py`, `test/test_guard_rails_topology.py`
 
 ### `agent-scripts/harness_discovery_check.py`
 
@@ -829,7 +829,7 @@ SessionStart hook + CLI: detect when a harness's instruction-file discovery beha
   - `run_version(name: str, binary: Path, run_command: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run) -> str` — Run ``<binary> --version`` and return the extracted version string.
   - `build_parser() -> argparse.ArgumentParser`
 - Subcommand handlers: `cmd_check`, `cmd_probe`
-- Tested by: `agent-scripts/test_harness_discovery_check.py`, `agent-scripts/test_harness_spec.py`
+- Tested by: `test/test_harness_discovery_check.py`, `test/test_harness_spec.py`
 
 ### `agent-scripts/harness_spec.py`
 
@@ -851,7 +851,7 @@ Declarative harness specification registry.
   - `probe_expected_root(name: str) -> frozenset[str]` — Return the fixture root tokens expected for the given harness.
   - `feature_spec(harness: str, feature: str) -> FeatureImplementation` — Return the FeatureImplementation declaration for a harness and feature.
   - `assert_feature_coverage(repo_root: Path | None = None) -> None` — Validate that all active harnesses have declared valid implementations for all required features.
-- Tested by: `agent-scripts/test_harness_feature_coverage.py`, `agent-scripts/test_harness_spec.py`
+- Tested by: `test/test_harness_feature_coverage.py`, `test/test_harness_spec.py`
 
 ### `agent-scripts/herdr_delegate.py`
 
@@ -918,7 +918,7 @@ Launch pi agents in herdr tabs to work backlog items.
   - `ready_slugs(claims: BacklogClaimLookup | None = None) -> list[str]` — Slugs currently in READY, sourced via select_ready().
   - `herdr(argv: list[str]) -> dict[str, object]` — Run a herdr command and return its parsed JSON result.
 - Subcommand handlers: `cmd_plan`, `cmd_launch`, `cmd_restart`
-- Tested by: `agent-scripts/test_herdr_delegate.py`
+- Tested by: `test/test_herdr_delegate.py`
 
 ### `agent-scripts/link_drift_check.py`
 
@@ -938,7 +938,7 @@ SessionStart hook + CLI: flag when a managed symlink on this machine no longer p
 - Public functions:
   - `build_parser() -> argparse.ArgumentParser`
 - Subcommand handlers: `cmd_check`
-- Tested by: `agent-scripts/test_link_drift_check.py`
+- Tested by: `test/test_link_drift_check.py`
 
 ### `agent-scripts/link_inspect.py`
 
@@ -982,7 +982,7 @@ link_inspect.py — link inspection, path classification, drift finding, and the
   - `check_orphaned_links(links: Sequence[tuple[Path, Path, str, bool]], *, manifest_entries: Iterable[dict[str, object]]) -> list[LinkFinding]` — Return typed findings for manifest-recorded symlinks that links.toml no longer produces.
   - `live_backup_paths(manifest_entries: Iterable[dict[str, object]]) -> set[Path]` — Return manifest-recorded backups that are still live ``--rollback`` payload.
   - `check_unmanaged_files(managed_dirs: Sequence[ManagedDirSpec], links: Sequence[tuple[Path, Path, str, bool]], *, home: Path, dir_applies: Callable[[ManagedDirSpec], bool], manifest_entries: Iterable[dict[str, object]] = ()) -> tuple[list[LinkFinding], int]` — Report foreign entries in directories ``links.toml`` owns exclusively.
-- Tested by: `agent-scripts/test_harness_spec.py`, `agent-scripts/test_link_drift_check.py`, `agent-scripts/test_link_inspect.py`, `test/test_install.py`
+- Tested by: `test/test_harness_spec.py`, `test/test_install.py`, `test/test_link_drift_check.py`, `test/test_link_inspect.py`
 
 ### `agent-scripts/llm_backends.py`
 
@@ -1014,7 +1014,7 @@ llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, open
   - `run_copilot(prompt: str, *, model: str | None, timeout: float, mode: str = 'text-only', target_dir: Path | None = None) -> str` — Run the ``copilot`` backend and return its text output.
   - `run_pi(prompt: str, *, model: str | None, timeout: float, mode: str = 'text-only', target_dir: Path | None = None) -> str` — Run Pi's headless mode and return its text output.
   - `run_opencode(prompt: str, *, model: str | None, timeout: float, mode: str = 'text-only', target_dir: Path | None = None) -> str` — Run opencode's default agent (no ``--agent`` override) and return its text output.
-- Tested by: `agent-scripts/test_dev_status.py`, `agent-scripts/test_gen_interfaces.py`, `agent-scripts/test_llm_backends.py`, `agent-scripts/test_second_opinion.py`, `agent-scripts/test_timing.py`, `test/test_backend_isolation.py`, `test/test_backend_isolation_live.py`
+- Tested by: `test/test_backend_isolation.py`, `test/test_backend_isolation_live.py`, `test/test_dev_status.py`, `test/test_gen_interfaces.py`, `test/test_llm_backends.py`, `test/test_second_opinion.py`, `test/test_timing.py`
 
 ### `agent-scripts/notify.py`
 
@@ -1048,7 +1048,7 @@ Cross-platform agent notification dispatcher.
   - `dispatch_notification(title: str, message: str, harness: str | None = None, icon: str | None = None, urgency: str = 'normal', event_type: str = 'completed', verbose: bool = False) -> None` — Route notification to terminal OSC and appropriate OS bridge with icon.
   - `parse_codex_payload(raw_payload: str) -> str` — Extract a human-readable notification message from a Codex JSON event payload.
   - `build_parser() -> argparse.ArgumentParser`
-- Tested by: `agent-scripts/test_harness_feature_coverage.py`, `agent-scripts/test_notify.py`
+- Tested by: `test/test_harness_feature_coverage.py`, `test/test_notify.py`
 
 ### `agent-scripts/outlook_calendar.py`
 
@@ -1075,7 +1075,7 @@ outlook_calendar.py — CLI tool and agent interface for Windows Outlook Calenda
   - `run_powershell_json(script: str, timeout: float = 20.0, runner: Callable[[str], str] | None = None) -> dict[str, object]` — Execute a PowerShell script and parse the returned JSON payload.
   - `get_calendar_events_range(start_date: date | None = None, end_date: date | None = None, limit: int = 50, runner: Callable[[str], str] | None = None) -> list[dict[str, object]]` — Query Outlook calendar appointments within a bounded date range.
   - `get_appointment(entry_id: str, runner: Callable[[str], str] | None = None) -> dict[str, object]` — Retrieve appointment details by EntryID.
-- Tested by: `agent-scripts/test_outlook_calendar.py`
+- Tested by: `test/test_outlook_calendar.py`
 
 ### `agent-scripts/outlook_email.py`
 
@@ -1115,7 +1115,7 @@ outlook_email.py — CLI tool and agent interface for Windows Outlook via PowerS
   - `create_draft(to: str, subject: str, body: str, cc: str | None = None, display: bool = True, runner: Callable[[str], str] | None = None) -> dict[str, object]` — Create a draft email in Outlook and optionally display inspector modal.
   - `get_email(entry_id: str, runner: Callable[[str], str] | None = None) -> dict[str, object]` — Retrieve detailed email content by EntryID.
   - `get_recent_correspondence(since: date | None = None, limit: int = 50, runner: Callable[[str], str] | None = None) -> list[dict[str, object]]` — Retrieve recent emails received in Inbox.
-- Tested by: `agent-scripts/test_outlook_email.py`
+- Tested by: `test/test_outlook_email.py`
 
 ### `agent-scripts/refresh_guidance.py`
 
@@ -1180,7 +1180,7 @@ refresh_guidance.py — audit-by-inspection for hand-authored, agent-facing docs
   - `mark_reviewed(repo_root: Path, doc_set: DocSetConfig, doc: str, heading: str, result: CheckResult, *, commit: str | None = None, date: str | None = None, reviewed_by: str = 'human-confirmed') -> None` — Record human sign-off that one doc's ``## <heading>`` section is current — the sole supported state-writer in this module.
   - `build_parser() -> argparse.ArgumentParser`
 - Subcommand handlers: `cmd_check`, `cmd_mark_reviewed`, `cmd_scaffold`
-- Tested by: `agent-scripts/test_refresh_guidance.py`
+- Tested by: `test/test_refresh_guidance.py`
 
 ### `agent-scripts/second_opinion.py`
 
@@ -1228,7 +1228,7 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
   - `build_parser() -> argparse.ArgumentParser` — Build the full argument parser for every subcommand.
   - `ensure_data_dir() -> None` — Create ``DATA_DIR`` if it is missing.
 - Subcommand handlers: `cmd_detect`, `cmd_review`
-- Tested by: `agent-scripts/test_second_opinion.py`, `agent-scripts/test_timing.py`
+- Tested by: `test/test_second_opinion.py`, `test/test_timing.py`
 
 ### `agent-scripts/seed_hook_subset_guard.py`
 
@@ -1251,7 +1251,7 @@ sessionstart_checks.py — run the SessionStart context checks concurrently.
 - CLI: none (library module).
 - Public functions:
   - `run_checks(checks: list[tuple[str, int]] | None = None) -> str` — Run all checks concurrently, returning their outputs concatenated in the original list order — not completion order — so the session-start context stays stable and reviewable run over run.
-- Tested by: `agent-scripts/test_sessionstart_checks.py`
+- Tested by: `test/test_sessionstart_checks.py`
 
 ### `agent-scripts/settings_seed.py`
 
@@ -1270,7 +1270,7 @@ Copy-once settings seeding, adoption, reseed, and drift detection.
   - `describe_opencode_drift(seed: Path, live: Path) -> str` — Describe how a live opencode.jsonc diverged from its seed.
   - `describe_vscode_drift(seed: Path, live: Path) -> str` — Describe how a live VS Code settings/keybindings file diverged from its seed.
   - `seed_file(ctx: Context, seed: Path, dest: Path, *, skip_label: str, drift: Callable[[Path, Path], str], adopt_drift: Callable[[str, str], str] | None = None, adopt_blocker: Callable[[Context, Path, Path, str, str], str | None] | None = None, run_command: Callable[..., CommandOutcome]) -> str` — Copy ``seed`` to ``dest`` once, or report drift if it's already there.
-- Tested by: `agent-scripts/test_settings_seed.py`, `test/test_install.py`
+- Tested by: `test/test_install.py`, `test/test_settings_seed.py`
 
 ### `agent-scripts/settings_seed_drift_check.py`
 
@@ -1303,7 +1303,7 @@ SessionStart hook + CLI: detect (and optionally fix) drift between the live ``~/
   - `opencode_drift(seed: Path, live: Path) -> str` — Return a drift description for opencode.jsonc non-cosmetic keys, or "".
   - `vscode_drift(seed: Path, live: Path) -> str` — Describe how a live VS Code settings.json/keybindings.json diverged from its seed, or "" if there's nothing to compare or nothing drifted.
 - Subcommand handlers: `cmd_check`, `cmd_fix`, `cmd_sync_to_seed`, `cmd_push_vscode`
-- Tested by: `agent-scripts/test_settings_seed_drift_check.py`, `test/test_install.py`
+- Tested by: `test/test_install.py`, `test/test_settings_seed_drift_check.py`
 
 ### `agent-scripts/standup.py`
 
@@ -1342,7 +1342,7 @@ standup.py — /standup skill CLI and read-only fetch service.
   - `backlog_items(prefixes: list[str], recent_done_days: int, backlog_file: Path = BACKLOG_FILE) -> tuple[list[dict[str, object]], list[dict[str, object]], list[dict[str, object]], list[SkippedSource]]`
   - `fetch_standup(config: StandupConfig, sources: StandupSources, *, paths: StandupPaths, reference_date: date | None = None) -> StandupReport`
 - Subcommand handlers: `cmd_fetch`
-- Tested by: `agent-scripts/test_standup.py`
+- Tested by: `test/test_standup.py`
 
 ### `agent-scripts/standup_adapters.py`
 
@@ -1368,7 +1368,7 @@ standup_adapters.py — provider-agnostic adapter interfaces for /standup.
   - `class StubEmailAdapter`
   - `class OutlookCalendarAdapter` — Calendar adapter communicating with Outlook on Windows host via PowerShell COM.
   - `class StubCalendarAdapter`
-- Tested by: `agent-scripts/test_gen_interfaces.py`, `agent-scripts/test_outlook_calendar.py`, `agent-scripts/test_outlook_email.py`, `agent-scripts/test_standup.py`
+- Tested by: `test/test_gen_interfaces.py`, `test/test_outlook_calendar.py`, `test/test_outlook_email.py`, `test/test_standup.py`
 
 ### `agent-scripts/statusline.py`
 
@@ -1378,7 +1378,7 @@ Claude Code status line: render the model name and a color-coded context window 
 - Entrypoint: executable, `#!/usr/bin/env python3`
 - CLI: none (library module).
 - Explicit exit codes: `0`
-- Tested by: `agent-scripts/test_statusline.py`
+- Tested by: `test/test_statusline.py`
 
 ### `agent-scripts/to_tickets_runner.py`
 
@@ -1412,7 +1412,7 @@ to_tickets_runner.py — create a linked batch of dev_status.py backlog items fr
   - `run(batch_path: Path) -> list[str]` — Create every ticket in ``batch_path``'s batch, resuming if interrupted before.
   - `build_parser() -> argparse.ArgumentParser`
 - Subcommand handlers: `cmd_run`
-- Tested by: `agent-scripts/test_to_tickets_runner.py`
+- Tested by: `test/test_to_tickets_runner.py`
 
 ### `agent-scripts/vitals_promotion.py`
 
@@ -1453,7 +1453,7 @@ vitals-promotion.py — mechanical vitals-promotion pass over grill session data
   - `classify(sessions: list[Session], *, vitals_dir: Path) -> Report` — Run the whole pass read-only: report what it *would* promote and supersede.
   - `promote(sessions: list[Session], *, vitals_dir: Path) -> Report` — Run the pass and write every file it dirtied.
   - `print_report(report: Report, apply: bool, quiet: bool = False) -> None`
-- Tested by: `agent-scripts/test_vitals_promotion.py`
+- Tested by: `test/test_vitals_promotion.py`
 
 ### `agent-scripts/worktree.py`
 
@@ -1504,7 +1504,7 @@ Per-worktree backlog provenance: one explicit marker, shared predicates.
   - `classify(directory: str | Path) -> WorktreeProvenance | None` — Full provenance snapshot for one directory, or None outside any repo.
   - `worktree_points_at_item(*, marker_slug: str | None, is_linked_worktree: bool, branch: str, item_id: str, in_progress_ids: set[str]) -> bool` — Whether a write in this worktree points at backlog ``item_id``.
   - `worktree_belongs_to_slug(*, marker_slug: str | None, is_linked_worktree: bool, branch: str, slug: str) -> bool` — Advisory per-item attribution for the completion notice.
-- Tested by: `agent-scripts/test_dev_status_mutation.py`, `test/test_guard_rails_claim.py`, `test/test_worktree.py`, `test/test_worktree_provenance.py`
+- Tested by: `test/test_dev_status_mutation.py`, `test/test_guard_rails_claim.py`, `test/test_worktree.py`, `test/test_worktree_provenance.py`
 
 ---
 
@@ -1781,7 +1781,7 @@ install.py — agent-toolkit + AI-harness provisioner for macOS and Linux/WSL.
   - `print_summary(ctx: Context, settings: tuple[str, str], opencode: tuple[str, str], vscode: Sequence[tuple[str, tuple[str, str]]] = (), pi_settings: tuple[str, str] = ('', '')) -> None` — Print the loud end-of-run summary: skips, drift, and next steps.
   - `do_check_links(ctx: Context) -> int` — Audit the live symlinks against ``links.toml`` and report, changing nothing.
   - `run_install(ctx: Context, specs: Sequence[LinkSpec]) -> int` — Run every install step in order and return the process exit status.
-- Tested by: `test/test_dead_installers_stripped.py`, `test/test_install.py`
+- Tested by: `test/test_dead_installers_stripped.py`, `test/test_harness_spec.py`, `test/test_install.py`, `test/test_link_inspect.py`, `test/test_settings_seed.py`
 
 ### `depart.py`
 
