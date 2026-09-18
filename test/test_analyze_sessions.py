@@ -6,6 +6,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 import re
 import sqlite3
 import sys
@@ -914,15 +915,17 @@ class TestSessionQueryService(unittest.TestCase):
         self.assertIsNone(decodes[-1].line_number)
 
     def test_unreadable_file_io_skip(self) -> None:
+        # chmod 0o000 correctly clears the read bit even as root -- it's the
+        # *read itself* that root bypasses (CAP_DAC_OVERRIDE), so checking
+        # the resulting stat mode never detects root and this skip must
+        # check the effective uid directly instead.
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            self.skipTest("running as root — chmod unreadable ineffective")
         pi_dir = self.root / "pi" / "sess"
         locked = pi_dir / "pi_locked.jsonl"
         locked.write_text("{}\n", encoding="utf-8")
         locked.chmod(0o000)
         try:
-            with contextlib.suppress(OSError):
-                locked.read_text()
-            if locked.stat().st_mode & 0o400:
-                self.skipTest("running as root — chmod unreadable ineffective")
             result = self._query(harnesses=frozenset({"pi"}))
             io_skips = [s for s in result.skipped_records if s.kind == "io"]
             self.assertEqual(len(io_skips), 1)

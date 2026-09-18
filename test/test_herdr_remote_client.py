@@ -11,11 +11,12 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import pytest  # noqa: E402
 
+from fake_herdr import FakeHerdrServer, sample_agents  # noqa: E402
 from herdr_remote.herdr_client import HerdrClient, HerdrError  # noqa: E402
-from test.fake_herdr import FakeHerdrServer, sample_agents  # noqa: E402
 
 
 @pytest.fixture()
