@@ -477,10 +477,8 @@ class Context:
     reporter: Reporter
     system: str
     is_wsl: bool
-    neovim_fallback_failure: str | None = None
-    # Set by capture_departure_baseline (Linux, non-dry-run only); package/
-    # npm-harness installers record transactions onto it as they run, and
-    # run_install saves it back to baseline.json once, after every step.
+    # Set by capture_departure_baseline (Linux, non-dry-run only); departure
+    # records are saved by run_install after every step.
     departure_baseline: depart.Baseline | None = None
 
     @property
