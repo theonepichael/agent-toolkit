@@ -50,6 +50,13 @@ def _init_repo(root: Path) -> None:
     _git(root, "init", "-q")
     _git(root, "config", "user.email", "test@example.com")
     _git(root, "config", "user.name", "Test")
+    # Git's own background maintenance can create/remove a maintenance.lock
+    # file inside .git/ well after a commit returns, racing tearDown's
+    # shutil.rmtree(self.tmpdir) under load (observed live in CI, 2026-09-18:
+    # FileNotFoundError unlinking 'maintenance.lock' mid-rmtree). Disable it
+    # for these throwaway repos -- there is nothing here worth maintaining.
+    _git(root, "config", "gc.auto", "0")
+    _git(root, "config", "maintenance.auto", "false")
 
 
 def _commit_all(root: Path, message: str) -> str:

@@ -306,6 +306,49 @@ it up automatically.
 
 ---
 
+## 5. Native multi-agent / remote-session capabilities (2026-09-16, CLI 1.0.85)
+
+Verified directly against an installed `@github/copilot` 1.0.85 (`copilot
+--help`, `copilot help commands`, `copilot help environment`) — not from
+docs or web summaries, which for `--fleet` specifically turned out to
+disagree with each other on details this section doesn't repeat until
+they're independently confirmed. Copilot CLI did not have these
+capabilities when the original swarm-parity work in this file was done;
+they're new since. This section is a capability inventory only — it does
+not conclude whether any of it should replace or simplify this repo's own
+`copilot/extensions/swarm/` plugin (see `AGENTS.md`'s "swarm remains
+intentionally restricted" note and section 2 above); that's a design
+decision for later, not implied by anything below.
+
+- **`--fleet`** (top-level flag): "Run the prompt in fleet mode (parallel
+  subagent orchestration); combine with `-i`, `-p`, or piped stdin" —
+  confirmed non-interactive-capable (works with `-p`), so it's scriptable.
+  Interactive form is `/fleet`.
+- **`/subagents`**: configure default and per-agent subagent models.
+- **`/worktree`** / **`/move`**: native git-worktree-per-session creation,
+  tied directly to starting a new conversation in the new worktree.
+- **`--remote`** / **`--connect [<sessionId>]`** / **`/remote`**: "remote
+  control of your session from GitHub web and mobile, **or directly with
+  another CLI**" / "Connect directly to a remote session." This is the
+  closest native analog to what `herdr` + `herdr_remote/` give this repo
+  for Copilot specifically (Pi has no equivalent, native or otherwise, so
+  herdr can't be replaced wholesale on this basis alone).
+- `COPILOT_MULTIPLEXER` env var literally recognizes `"herdr"` as a named
+  value alongside `"tmux"`/`"none"` — Copilot CLI has first-party awareness
+  of the multiplexer this repo's swarm tooling runs on.
+
+What this section does **not** establish: whether `--fleet` subagents get
+isolated git worktrees automatically (unverified — this sandbox has no
+authenticated `copilot` account to run one live), and whether `--fleet`'s
+task-decomposition model could substitute for `dev_status.py`'s
+backlog-queue scheduling, `worker_safe`/`serial_safe` classification, or
+resumable run-ids — `--fleet` has no visible concept of any of those; it
+decomposes one prompt inside one session, which is a different shape from
+this repo's swarm (independently spawned, worktree-isolated, cross-machine
+worker *processes*, not in-session subagents).
+
+---
+
 ## Sources
 
 Official Copilot CLI docs (`docs.github.com/copilot/how-tos/copilot-cli/`):
