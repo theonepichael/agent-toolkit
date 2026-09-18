@@ -328,7 +328,7 @@ def test_every_claude_script_has_a_links_entry(links):
     pre-existing manual symlink papering over a missing entry, then
     vitals_promotion.py shipping with no entry at all, found via a live
     grill-me spot-check). Test files are excluded: they're always run
-    in-repo (``python3 test_X.py`` from agent-scripts/), never invoked via
+    in-repo (``python3 test_X.py`` from test/), never invoked via
     the deployed ~/.claude/scripts/ path by any skill or production script.
     """
     linked_srcs = {spec.src for spec in links}
@@ -351,7 +351,8 @@ def test_no_test_file_has_a_links_entry(links):
     linked_test_files = [
         spec.src
         for spec in links
-        if spec.src.startswith("agent-scripts/test_") and spec.src.endswith(".py")
+        if (spec.src.startswith("agent-scripts/test_") or spec.src.startswith("test/test_"))
+        and spec.src.endswith(".py")
     ]
     assert not linked_test_files, (
         f"unnecessary test-file links.toml entries: {linked_test_files}"

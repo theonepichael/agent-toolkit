@@ -277,28 +277,28 @@ FEATURE_MATRIX: dict[tuple[str, str], FeatureImplementation] = {
         source="claude/settings.json",
         install_mapping="~/.claude/settings.json",
         event_mapping=("waiting_for_input", "completed"),
-        verification="agent-scripts/test_harness_feature_coverage.py",
+        verification="test/test_harness_feature_coverage.py",
     ),
     ("copilot", "notifications"): FeatureImplementation(
         state=FeatureSupportState.SUPPORTED,
         source="copilot/hooks/agent-stop.json",
         install_mapping="~/.copilot/hooks/agent-stop.json",
         event_mapping=("agentStop",),
-        verification="agent-scripts/test_harness_feature_coverage.py",
+        verification="test/test_harness_feature_coverage.py",
     ),
     ("opencode", "notifications"): FeatureImplementation(
         state=FeatureSupportState.SUPPORTED,
         source="opencode/plugin/notify.ts",
         install_mapping="~/.config/opencode/plugin/notify.ts",
         event_mapping=("session.idle",),
-        verification="agent-scripts/test_harness_feature_coverage.py",
+        verification="test/test_harness_feature_coverage.py",
     ),
     ("agy", "notifications"): FeatureImplementation(
         state=FeatureSupportState.SUPPORTED,
         source="agy/hooks.json",
         install_mapping="~/.gemini/config/hooks.json",
         event_mapping=("Stop",),
-        verification="agent-scripts/test_harness_feature_coverage.py",
+        verification="test/test_harness_feature_coverage.py",
     ),
     ("pi", "notifications"): FeatureImplementation(
         state=FeatureSupportState.SUPPORTED,
@@ -312,7 +312,7 @@ FEATURE_MATRIX: dict[tuple[str, str], FeatureImplementation] = {
         source="agent-scripts/notify.py",
         install_mapping="~/.claude/scripts/notify.py",
         event_mapping=("agent-turn-complete",),
-        verification="agent-scripts/test_harness_feature_coverage.py",
+        verification="test/test_harness_feature_coverage.py",
     ),
 }
 

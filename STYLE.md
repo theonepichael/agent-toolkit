@@ -4,7 +4,7 @@ House style (short, prescriptive)
 
 Scope & philosophy
 - Uniformity is paramount. Keep interfaces small, explicit, and testable.
-- No runtime third-party dependencies in harness code. The agent-scripts tools and their colocated tests must stay runnable with the system Python and the standard library alone.
+- No runtime third-party dependencies in harness code. The agent-scripts tools and their tests (test/test_*.py, one per module) must stay runnable with the system Python and the standard library alone.
 - Development tooling is a separate concern: test/ and CI use uv with pinned pytest and ruff. Keep those dependencies out of anything that runs at harness runtime.
 
 Python
@@ -37,13 +37,13 @@ Logging & output
 - Keep prompts and secrets out of logs by default.
 
 Tests & CI
-- Two intentional test tiers; keep new tests in whichever tier matches the code under test.
-- test/ — pytest suites covering the top-level tooling: the installer and departure mode, the lint gates, and the cross-harness invariant guards. Run with `uv run pytest test/`.
-- agent-scripts/test_*.py — standard library unittest, colocated with the scripts they cover and deliberately dependency-free so those tools stay runnable without a `uv sync`. Runnable directly as `python3 test_X.py` from agent-scripts/, and also collected by `uv run pytest` from the repo root, since `testpaths` in pyproject.toml is `["test", "agent-scripts"]`.
+- One directory (test/), two intentional styles; keep a new test in whichever style matches the code under test.
+- Most of test/ — pytest suites covering the top-level tooling: the installer and departure mode, the lint gates, and the cross-harness invariant guards. Run with `uv run pytest test/`.
+- test/test_*.py covering an agent-scripts/ module (test_dev_status.py, test_grill.py, and the rest) — standard library unittest, deliberately dependency-free so those tools stay verifiable without a `uv sync`. Each opens with `sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))` before importing its sibling module; that line is what makes the file runnable both directly (`python3 test_X.py` from test/) and via `uv run pytest` from the repo root (`testpaths` in pyproject.toml is `["test"]`) — moved here 2026-09-18 off of agent-scripts/, where they used to sit colocated with the modules they covered.
 - The repo-root conftest.py sandboxes `HOME` and blocks unmarked real subprocess calls and production-path writes, for the whole suite. A test that needs either must opt in with a marker, and the failure when it does not is a RuntimeError that reads like broken code rather than a missing marker — read test/AGENTS.md before writing one. (Marker names live there, not here, so there is only one place to update if they change.)
 - Dev tooling is declared in the `dev` dependency group in pyproject.toml (pytest and ruff, both pinned) and managed with uv; uv.lock is committed and CI installs from it.
 - Tests should not require network or live LLMs. Mock at the subprocess boundary (`_run_command` / `run_backend_command`) rather than invoking real agy/opencode/copilot binaries.
-- CI (.github/workflows/python-quality.yml) runs on pushes to main and on every pull request: `uv sync --locked --dev`, then `uv run ruff check .`, `uv run ruff format --check .`, then a bare `uv run pytest` — which covers both tiers via `testpaths`, rather than naming individual files or running a separate unittest discovery step.
+- CI (.github/workflows/python-quality.yml) runs on pushes to main and on every pull request: `uv sync --locked --dev`, then `uv run ruff check .`, `uv run ruff format --check .`, then a bare `uv run pytest` — which covers both styles via `testpaths`, rather than naming individual files or running a separate unittest discovery step.
 - test/run.sh drives the containerized install.sh scenario suite (test/scenarios.sh) against Ubuntu and Fedora images. It needs Docker/Podman and is run locally, not in CI. Never run scenarios.sh directly on a real machine — it mutates real state.
 
 TypeScript

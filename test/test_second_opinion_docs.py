@@ -76,7 +76,7 @@ COPIES = (
 def missing_markers(rel_path: str, text: str) -> list[str]:
     """Return the contract markers absent from one copy's ``text``.
 
-    Shared with ``agent-scripts/test_gen_second_opinion.py``'s end-to-end
+    Shared with ``test/test_gen_second_opinion.py``'s end-to-end
     check so the marker logic has one source of truth.
 
     Markers are matched whitespace-insensitively: gen_second_opinion.py

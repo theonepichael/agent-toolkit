@@ -22,9 +22,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # Fixture/example paths in test data are not live config -- excluded.
 # Verified: git pathspec ":!test" excludes only the test/ directory tree by
-# prefix, not any path merely containing the substring "test" --
-# agent-scripts/test_dev_status.py, for example, still matches a grep
-# scoped with this exclusion.
+# prefix, not any path merely containing the substring "test". Every
+# *_test.py file lives under test/ (2026-09-18: the former
+# agent-scripts/test_*.py colocated tests moved there too), so this
+# exclusion now covers the whole test suite -- a hardcoded path in a
+# fixture is expected and not a live-config leak.
 #
 # pi/CLAUDE_CODE_PARITY.md:128 is a deliberate exemption, not a fixture: it
 # quotes a past bug's exact wrong value on purpose, as a postmortem record

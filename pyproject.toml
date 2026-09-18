@@ -10,7 +10,7 @@ dependencies = [
 package = false
 
 [tool.pytest.ini_options]
-testpaths = ["test", "agent-scripts", "scripts"]
+testpaths = ["test", "scripts"]
 asyncio_mode = "auto"
 markers = [
     "allow_real_subprocess: permits real subprocess.Popen/subprocess.run calls in this test",

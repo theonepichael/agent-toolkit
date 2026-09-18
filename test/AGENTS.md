@@ -32,19 +32,31 @@ exception, and each one should carry a comment saying why.
 Note the asymmetry: `allow_production_paths` also puts the **real** `HOME`
 back for that test. It is not just a write permit.
 
-## Two tiers, and they are not interchangeable
+## One directory, two styles — and they are not interchangeable
 
-- **`test/`** — pytest. Covers the top-level tooling: the installer,
-  departure mode, lint gates, and the cross-harness guards.
-- **`agent-scripts/test_*.py`** — standard library `unittest`, colocated
-  with the scripts they cover and deliberately dependency-free, so those
-  tools stay runnable on a machine that has never run `uv sync`. Keep them
-  importable and runnable as `python3 test_X.py` from `agent-scripts/`.
+Every test in the repo lives here now (moved 2026-09-18 off of
+`agent-scripts/`, where `test_*.py` used to sit colocated with the modules
+they covered — two homes for tests was the actual complaint; the fix was
+consolidating the location, not the style below).
 
-Both are collected by `uv run pytest` — `pyproject.toml` sets
-`testpaths = ["test", "agent-scripts"]` — so the `conftest.py` guards above
-apply to the colocated tests too when they run that way, and not when they
-are run directly with `python3`.
+- **Most of `test/`** — pytest. Covers the top-level tooling: the
+  installer, departure mode, lint gates, and the cross-harness guards.
+- **The former `agent-scripts/test_*.py` files** (`test_dev_status.py`,
+  `test_grill.py`, `test_second_opinion.py`, and the rest covering
+  `agent-scripts/` modules) — standard library `unittest`, still
+  deliberately dependency-free so those tools stay verifiable on a machine
+  that has never run `uv sync`. Each does
+  `sys.path.insert(0, str(Path(__file__).resolve().parent.parent /
+  "agent-scripts"))` before importing its sibling production module — that
+  line is why the file works both as `python3 test_X.py` from `test/` and
+  under pytest from the repo root; don't delete it when editing one of
+  these, and give a new one the same line rather than relying on being
+  colocated.
+
+Both styles are collected by the same `uv run pytest` from the repo root
+— `pyproject.toml` sets `testpaths = ["test"]` — so the `conftest.py`
+guards above apply to the unittest-style files too when they run that way,
+and not when they are run directly with `python3`.
 
 ## `scenarios.sh` is container-only
 
