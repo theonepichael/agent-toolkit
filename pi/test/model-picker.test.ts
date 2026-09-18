@@ -590,6 +590,34 @@ describe("command wiring", () => {
     void pending;
   });
 
+  test("Ctrl+P / Shift+Ctrl+P move the highlight like ↓/↑", async () => {
+    const { commands, pi, makeCtx } = makeHarness();
+    registerModelPicker(pi);
+    const { ctx, getComponent } = makeCtx("tui");
+    const pending = commands.models.handler("", ctx);
+    await Promise.resolve();
+    const component = getComponent()!;
+
+    // Highlight starts on the first row (anthropic/claude-opus, marked ›).
+    const start = component.render(120).join("\n");
+    expect(start).toContain("› anthropic/claude-opus");
+
+    // Ctrl+P (forward, raw legacy byte) selects the next row.
+    component.handleInput("\x10");
+    const afterCtrlP = component.render(120).join("\n");
+    expect(afterCtrlP).toContain("› openai/gpt-5");
+    expect(afterCtrlP).not.toContain("› anthropic/claude-opus");
+
+    // Shift+Ctrl+P (backward, Kitty CSI-u form) moves back up.
+    component.handleInput("\x1b[112;6u");
+    expect(component.render(120).join("\n")).toContain("› anthropic/claude-opus");
+
+    // Shift+Ctrl+P at the top wraps to the last row.
+    component.handleInput("\x1b[112;6u");
+    expect(component.render(120).join("\n")).toContain("› openai/gpt-5");
+    void pending;
+  });
+
   test("the overlay marks models without configured auth before Enter", async () => {
     const { commands, pi, makeCtx } = makeHarness();
     registerModelPicker(pi);

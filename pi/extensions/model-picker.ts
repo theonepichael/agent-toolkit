@@ -13,6 +13,9 @@
  *
  * Keys:
  *   ↑/↓        move highlight (wraps, skipping over provider headers)
+ *   ctrl+p     move highlight down (same as ↓; matches the global
+ *              next-model cycle key)
+ *   shift+ctrl+p move highlight up (same as ↑)
  *   type/bksp  filter rows (fuzzy match on provider/id)
  *   ←/→        move the reasoning-effort segment for the highlighted model
  *   Tab        cycle sort (name → price: low→high → price: high→low)
@@ -635,6 +638,22 @@ export default function modelPicker(pi: ExtensionAPI) {
             refresh();
             return;
           }
+          // Reuse the global Ctrl+P / Shift+Ctrl+P next/previous-model cycle
+          // semantics while the overlay is open, so cycling works the same
+          // with or without the picker in front. ctrlShift is checked before
+          // the plain chord, matching the ←/→ tandem checks below.
+          if (matchesKey(data, Key.ctrlShift("p"))) {
+            moveSelection(-1);
+            prefillHighlighted();
+            refresh();
+            return;
+          }
+          if (matchesKey(data, Key.ctrl("p"))) {
+            moveSelection(1);
+            prefillHighlighted();
+            refresh();
+            return;
+          }
           if (matchesKey(data, Key.enter)) {
             const model = highlighted();
             if (model) {
@@ -807,6 +826,7 @@ export default function modelPicker(pi: ExtensionAPI) {
               "  " +
                 [
                   pill("↑", "") + pill("↓", "navigate"),
+                  pill("Ctrl+P", "") + pill("⇧Ctrl+P", "cycle"),
                   pill("Tab", sortLabel),
                   pill("Enter", "select"),
                   pill("Esc", "cancel"),
