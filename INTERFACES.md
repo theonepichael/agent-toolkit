@@ -342,7 +342,7 @@ Pure text-formatting helpers shared by the backlog dashboard and recap.
   - `recap_is_abbrev_boundary(text: str, dot: int) -> bool` — True when the dot at ``dot`` is an abbreviation or initial.
   - `recap_last_sentence_cut(text: str, budget: int, min_keep: int, is_abbrev_boundary: Callable[[str, int], bool] = recap_is_abbrev_boundary) -> int | None` — Return the last acceptable sentence boundary within ``budget``.
   - `normalize_recap_text(raw: str, max_chars: int, min_keep: int, last_sentence_cut: Callable[[str, int, int], int | None] = recap_last_sentence_cut) -> str` — Strip presentation noise and fit backend recap prose within a budget.
-- Tested by: nothing
+- Tested by: `test/test_dev_status_formatting.py`
 
 ### `agent-scripts/dev_status_mutation.py`
 

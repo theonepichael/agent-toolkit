@@ -10,8 +10,8 @@ out of dev_status_impl.py, and this file was never testing that logic in
 isolation to begin with, only the CLI's end-to-end behavior. The one
 direct unit-test class for an extracted module that *had* stayed behind
 (BacklogStorageExtractionTestCase) moved to test_dev_status_storage.py on
-2026-09-18; dev_status_formatting.py still has no direct unit tests of its
-own, only indirect coverage through this file's CLI-output assertions.
+2026-09-18; dev_status_formatting.py got its own direct unit tests the
+same day, in test_dev_status_formatting.py.
 """
 
 import fcntl
