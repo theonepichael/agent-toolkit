@@ -55,6 +55,15 @@ See `test/AGENTS.md` before writing a new one. A new file added here still
 needs a `links.toml` entry (previous section) — its test does not, and
 `test/test_install.py` rejects one if added by habit.
 
+Those unittest-style files also share the sandbox machinery in
+`agent-scripts/test_bootstrap.py`: each imports `test_bootstrap` at the top
+(after its `sys.path.insert` — the sandbox must exist before sibling
+modules bake `Path.home()`-rooted constants) and ends with
+`test_bootstrap.run_unittest_main()` in `__main__`, so a direct
+`python3 test_X.py` run is sandboxed the same way pytest is. The
+direct-run divergences (subprocess guard off, no path-guard opt-out) and
+the `@pytest.mark.regression` marker contract are in `test/AGENTS.md`.
+
 ## The `dev_status` stack: module map
 
 The backlog engine is the largest thing in this directory and split across

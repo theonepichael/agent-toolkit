@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))
+import test_bootstrap  # noqa: E402
 import refresh_guidance as rg
 
 pytestmark = (
@@ -1018,5 +1019,5 @@ class CliParsingTestCase(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    test_bootstrap.run_unittest_main()
 

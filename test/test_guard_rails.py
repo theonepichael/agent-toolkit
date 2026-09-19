@@ -18,6 +18,7 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))
+import test_bootstrap  # noqa: E402
 
 import guard_rails  # noqa: E402
 import backlog_claim_lookup  # noqa: E402
@@ -717,4 +718,4 @@ class AuditLogTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    test_bootstrap.run_unittest_main()

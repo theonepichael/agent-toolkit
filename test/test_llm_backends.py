@@ -25,6 +25,7 @@ from unittest.mock import patch
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))
+import test_bootstrap  # noqa: E402
 import llm_backends
 
 
@@ -1323,4 +1324,4 @@ class GroundedModeTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main(verbosity=1)
+    test_bootstrap.run_unittest_main(verbosity=1)

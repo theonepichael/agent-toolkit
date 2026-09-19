@@ -6,8 +6,12 @@ below. Run with: python3 test_hooks_config.py
 
 import json
 import re
+import sys
 import unittest
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))  # noqa: E402
+import test_bootstrap  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SETTINGS_FILES = [
@@ -73,4 +77,4 @@ class HooksConfigTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main(verbosity=2)
+    test_bootstrap.run_unittest_main(verbosity=2)

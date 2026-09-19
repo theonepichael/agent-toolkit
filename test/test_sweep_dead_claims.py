@@ -15,6 +15,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))
+import test_bootstrap  # noqa: E402
 
 import dev_status  # noqa: E402
 from test_dev_status import BacklogFixture, _args, make_item  # noqa: E402
@@ -257,4 +258,4 @@ class SweepDeadClaimsTestCase(BacklogFixture):
 
 
 if __name__ == "__main__":
-    unittest.main(verbosity=2)
+    test_bootstrap.run_unittest_main(verbosity=2)

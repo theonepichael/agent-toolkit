@@ -1,0 +1,166 @@
+#!/usr/bin/env python3
+"""Tests proving direct python3 test_X.py entrypoints are sandboxed."""
+
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+import test_bootstrap
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+@pytest.mark.allow_real_subprocess
+def test_direct_run_redirects_home(tmp_path):
+    driver = tmp_path / "driver_home.py"
+    driver.write_text(
+        "import os, sys\n"
+        "from pathlib import Path\n"
+        f"sys.path.insert(0, {str(REPO_ROOT / 'agent-scripts')!r})\n"
+        "import test_bootstrap\n"
+        "assert Path.home() != test_bootstrap.REAL_HOME\n"
+        "assert os.environ['HOME'] != str(test_bootstrap.REAL_HOME)\n"
+    )
+    env = os.environ.copy()
+    env["HOME"] = str(test_bootstrap.REAL_HOME)
+    result = subprocess.run(
+        [sys.executable, str(driver)],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, f"stdout: {result.stdout}, stderr: {result.stderr}"
+
+
+@pytest.mark.allow_real_subprocess
+def test_direct_run_path_guard_blocks_real_home_write(tmp_path):
+    driver = tmp_path / "driver_write.py"
+    probe_target = test_bootstrap.REAL_HOME / ".claude" / f"sandbox-probe-{os.getpid()}.txt"
+    driver.write_text(
+        "import sys\n"
+        "from pathlib import Path\n"
+        f"sys.path.insert(0, {str(REPO_ROOT / 'agent-scripts')!r})\n"
+        "import test_bootstrap\n"
+        "test_bootstrap.activate(subprocess=False, paths=True)\n"
+        f"open({str(probe_target)!r}, 'w').close()\n"
+    )
+    env = os.environ.copy()
+    env["HOME"] = str(test_bootstrap.REAL_HOME)
+    result = subprocess.run(
+        [sys.executable, str(driver)],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "allow_production_paths" in result.stderr
+    assert not probe_target.exists()
+
+
+@pytest.mark.allow_real_subprocess
+def test_direct_run_sample_entrypoints():
+    # 1. Pytest-free entrypoint: test_analyze_sessions.py
+    target1 = REPO_ROOT / "test" / "test_analyze_sessions.py"
+    result1 = subprocess.run(
+        [sys.executable, str(target1)],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result1.returncode == 0, f"target1 failed: {result1.stderr}"
+
+    # 2. Heavy real entrypoint: test_dev_status.py
+    target2 = REPO_ROOT / "test" / "test_dev_status.py"
+    result2 = subprocess.run(
+        [sys.executable, str(target2)],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result2.returncode == 0, f"target2 failed: {result2.stderr}"
+
+
+NEW_GUARDED_APIS = [
+    "pathlib.Path.touch",
+    "pathlib.Path.chmod",
+    "pathlib.Path.symlink_to",
+    "pathlib.Path.hardlink_to",
+    "os.link",
+    "os.symlink",
+    "os.chmod",
+    "os.utime",
+    "os.truncate",
+    "shutil.move",
+    "shutil.copy",
+    "shutil.copyfile",
+    "shutil.copytree",
+]
+
+
+@pytest.mark.regression(
+    "sandbox-guards-new-mutation-apis",
+    "Failed: DID NOT RAISE <class 'RuntimeError'>",
+)
+@pytest.mark.parametrize("api_name", NEW_GUARDED_APIS)
+def test_newly_covered_mutation_apis_raise_guard_error(tmp_path, api_name):
+    fake_home = tmp_path / "fake_home"
+    fake_claude = fake_home / ".claude"
+    fake_claude.mkdir(parents=True)
+
+    orig_subdirs = list(test_bootstrap.GUARDED_HOME_SUBDIRS)
+    test_bootstrap.GUARDED_HOME_SUBDIRS[:] = [fake_claude]
+    try:
+        with test_bootstrap.guards(paths=True):
+            spec = test_bootstrap.GUARDED_MUTATION_APIS[api_name]
+            with pytest.raises(RuntimeError, match="allow_production_paths"):
+                spec.probe(fake_home)
+    finally:
+        test_bootstrap.GUARDED_HOME_SUBDIRS[:] = orig_subdirs
+
+
+def test_guarded_mutation_apis_probe_delegation_when_inactive(tmp_path):
+    fake_home = tmp_path / "fake_home"
+    fake_claude = fake_home / ".claude"
+    fake_claude.mkdir(parents=True)
+
+    # Setup files/directories so probes don't crash when underlying function is called
+    (fake_claude / "probe.txt").write_text("probe")
+    (fake_claude / "a.txt").write_text("a")
+    (fake_claude / "empty").mkdir()
+    (fake_claude / "tree").mkdir()
+
+    orig_subdirs = list(test_bootstrap.GUARDED_HOME_SUBDIRS)
+    test_bootstrap.GUARDED_HOME_SUBDIRS[:] = [fake_claude]
+    try:
+        with test_bootstrap.guards(paths=False):
+            for name, spec in test_bootstrap.GUARDED_MUTATION_APIS.items():
+                # Clean up between probes
+                (fake_claude / "probe.txt").touch()
+                (fake_claude / "a.txt").touch()
+                (fake_claude / "link").unlink(missing_ok=True)
+                (fake_claude / "link.txt").unlink(missing_ok=True)
+                (fake_claude / "b.txt").unlink(missing_ok=True)
+                shutil.rmtree(fake_claude / "tree2", ignore_errors=True)
+                if not (fake_claude / "empty").exists():
+                    (fake_claude / "empty").mkdir()
+                if not (fake_claude / "tree").exists():
+                    (fake_claude / "tree").mkdir()
+
+                try:
+                    spec.probe(fake_home)
+                except RuntimeError as e:
+                    if "allow_production_paths" in str(e):
+                        pytest.fail(f"API {name} raised guard RuntimeError under paths=False")
+                except Exception:
+                    # Non-guard exceptions (e.g. underlying OS errors if unsupported) are fine
+                    pass
+    finally:
+        test_bootstrap.GUARDED_HOME_SUBDIRS[:] = orig_subdirs

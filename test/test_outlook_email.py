@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))
+import test_bootstrap  # noqa: E402
 
 import outlook_email  # noqa: E402
 from standup_adapters import (  # noqa: E402
@@ -312,4 +313,4 @@ class TestOutlookEmailAdapter(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    test_bootstrap.run_unittest_main()

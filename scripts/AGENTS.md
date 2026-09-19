@@ -18,3 +18,6 @@ toolkit — not harness-runtime code. None of these scripts have a
 - `build-copilot-swarm.sh` bundles `pi/extensions/swarm-lib/` TypeScript
   into `copilot/extensions/swarm/` — copilot's swarm extension has a build
   step that pi's own native orchestration does not.
+- `check_regressions.py` statically checks `@pytest.mark.regression(label, red)`
+  usage across test suites, enforcing literal arguments and the non-zero marks
+  invariant.

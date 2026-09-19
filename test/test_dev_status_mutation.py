@@ -35,6 +35,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))
+import test_bootstrap  # noqa: E402
 import dev_status  # noqa: E402  (path insert above)
 import dev_status_mutation
 import dev_status_storage
@@ -1585,4 +1586,4 @@ class CrashSafetyTestCase(MutationFixture):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    test_bootstrap.run_unittest_main()

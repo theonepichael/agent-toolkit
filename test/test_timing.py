@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))
+import test_bootstrap  # noqa: E402
 import cli_common
 import llm_backends
 import second_opinion
@@ -103,4 +104,4 @@ class TimingTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    test_bootstrap.run_unittest_main()
