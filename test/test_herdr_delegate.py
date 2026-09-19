@@ -30,6 +30,7 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))
+import test_bootstrap  # noqa: E402
 import herdr_delegate
 
 
@@ -1178,4 +1179,4 @@ class QueueFacadeTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    test_bootstrap.run_unittest_main()

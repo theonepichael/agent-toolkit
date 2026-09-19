@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))
+import test_bootstrap  # noqa: E402
 from gen_shell_completion import (
     HARNESSES,
     HarnessAdapter,
@@ -263,4 +264,4 @@ Flags:
 
 
 if __name__ == "__main__":
-    unittest.main()
+    test_bootstrap.run_unittest_main()

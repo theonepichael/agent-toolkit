@@ -30,6 +30,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))
+import test_bootstrap  # noqa: E402
 import gen_skills as gs
 import gen_skills_params
 from gen_skills_params import SKILL_PARAMS
@@ -500,4 +501,4 @@ class EndToEndTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    test_bootstrap.run_unittest_main()

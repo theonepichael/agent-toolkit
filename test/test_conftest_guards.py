@@ -33,6 +33,10 @@ def test_real_subprocess_allowed_with_marker():
     assert result.returncode == 0
 
 
+@pytest.mark.regression(
+    "sandbox-guard-blocks-real-home-write",
+    "Failed: DID NOT RAISE RuntimeError",
+)
 def test_real_home_write_blocked_without_marker(tmp_path):
     target = _REAL_HOME / ".claude" / f"conftest-guard-probe-{os.getpid()}.txt"
     with pytest.raises(RuntimeError, match="allow_production_paths"):

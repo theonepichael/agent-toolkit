@@ -57,7 +57,44 @@ Both styles are collected by the same `uv run pytest` from the repo root
 — `pyproject.toml` sets `testpaths = ["test", "scripts"]` (`scripts/` has
 no `test_*.py` of its own; the entry currently collects nothing there) —
 so the `conftest.py` guards above apply to the unittest-style files too
-when they run that way, and not when they are run directly with `python3`.
+when they run that way, and — since the shared bootstrap below — when
+they are run directly with `python3` as well.
+
+## Both tiers share a common bootstrap
+
+The safety machinery above lives in `agent-scripts/test_bootstrap.py`, not
+in `conftest.py`: the sandboxed `HOME`, the guarded mutation-API patches,
+and the activation flags. `conftest.py` only wires pytest to it (bootstrap
+at import, then per-test guard activation honoring the markers), and each
+unittest-style file calls `test_bootstrap.run_unittest_main()` from its
+`__main__` block, so a direct run is sandboxed too:
+
+- `HOME` is redirected to a throwaway sandbox directory before any test
+  runs (also before any production module that bakes `Path.home()`-rooted
+  constants is imported — that is why the `import test_bootstrap` line
+  sits at the top of the file, not in `__main__`).
+- Path mutation guards are active for both tiers: writes to `~/.claude`,
+  `~/.config`, and `~/.local/state/agent-toolkit` are blocked.
+
+### Direct-run divergences from pytest
+
+1. **Subprocess guard is off for direct runs**: plain unittest has no
+   marker machinery like `@pytest.mark.allow_real_subprocess`, and the
+   unittest-style tests frequently spawn subprocesses (`git`, child
+   python interpreters). The sandboxed `HOME` limits blast radius.
+2. **Path guard has no direct-run opt-out**: there is no
+   `allow_production_paths` equivalent under plain unittest. Any test
+   requiring access to real production paths must run under pytest.
+
+## Regression markers
+
+A regression test carries `@pytest.mark.regression(label, red)` where
+`label` is a kebab-case name describing the regression itself (e.g.
+`sandbox-guard-blocks-real-home-write`) and `red` is the verbatim pre-fix
+failure string actually observed during the red run. Keep ticket linkage
+in the backlog store, not in git history — the label is deliberately not
+a ticket id. Enforced statically across `test/` via
+`scripts/check_regressions.py`. Bare `@mark.regression` is disallowed.
 
 ## `scenarios.sh` is container-only
 

@@ -15,6 +15,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))
+import test_bootstrap  # noqa: E402
 import gen_second_opinion as gso
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -161,4 +162,4 @@ class EndToEndTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main(verbosity=1)
+    test_bootstrap.run_unittest_main(verbosity=1)

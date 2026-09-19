@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))
+import test_bootstrap  # noqa: E402
 import dev_status
 import to_tickets_runner as runner
 
@@ -486,4 +487,4 @@ class Candidate13ServiceTests(RunnerTestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    test_bootstrap.run_unittest_main()

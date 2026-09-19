@@ -13,8 +13,12 @@ exempted below rather than fixed by a substring substitution.
 """
 
 import subprocess
+import sys
 import unittest
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))  # noqa: E402
+import test_bootstrap  # noqa: E402
 
 import pytest
 
@@ -83,4 +87,4 @@ class NoHardcodedHomePathTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    test_bootstrap.run_unittest_main()

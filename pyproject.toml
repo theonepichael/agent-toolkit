@@ -16,6 +16,7 @@ markers = [
     "allow_real_subprocess: permits real subprocess.Popen/subprocess.run calls in this test",
     "allow_production_paths: restores the real HOME (instead of the session sandbox) for this test",
     "live_backends: launches real backend CLIs and spends real API calls; deselected by default",
+    "regression: regression test; args (label, expected pre-fix failure string) — see test/AGENTS.md",
 ]
 # The live isolation canaries cost an API call each and depend on an upstream
 # gateway that stalls intermittently, so they never run in a normal pass. Opt

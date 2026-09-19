@@ -14,6 +14,7 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))
+import test_bootstrap  # noqa: E402
 
 import dev_status_formatting as fmt  # noqa: E402
 
@@ -251,4 +252,4 @@ class RecapTextNormalizationTestCase(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    test_bootstrap.run_unittest_main()

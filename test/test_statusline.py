@@ -23,6 +23,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))
+import test_bootstrap  # noqa: E402
 import statusline  # noqa: E402
 
 GREEN = "\033[32m"
@@ -565,4 +566,4 @@ class ProcessTestCase(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    test_bootstrap.run_unittest_main()

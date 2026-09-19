@@ -19,6 +19,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))
+import test_bootstrap  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import harness_spec
@@ -184,4 +185,4 @@ class TestCodexNotifyHandling(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    test_bootstrap.run_unittest_main()
