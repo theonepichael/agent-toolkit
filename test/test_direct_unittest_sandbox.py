@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -164,3 +165,38 @@ def test_guarded_mutation_apis_probe_delegation_when_inactive(tmp_path):
                     pass
     finally:
         test_bootstrap.GUARDED_HOME_SUBDIRS[:] = orig_subdirs
+
+
+def test_toolkit_home_is_in_the_guarded_set():
+    assert test_bootstrap.REAL_HOME / ".agent-toolkit" in test_bootstrap.GUARDED_HOME_SUBDIRS
+    assert ".agent-toolkit" in test_bootstrap._PATH_PREFILTER_MARKERS
+
+
+@pytest.mark.regression(
+    "sandbox-guard-blocks-toolkit-home-write",
+    "Failed: DID NOT RAISE RuntimeError",
+)
+def test_toolkit_home_write_blocked_by_its_own_prefilter_marker():
+    # A fake guarded root, never the real one, so the red run cannot touch
+    # real state. The probe path must carry no other prefilter marker, or the
+    # test would pass through an ancestor like .config instead of proving the
+    # .agent-toolkit marker itself.
+    root = Path(tempfile.mkdtemp(prefix="guard-probe-"))
+    fake_toolkit = root / ".agent-toolkit"
+    fake_toolkit.mkdir()
+    target = fake_toolkit / "probe.txt"
+    other_markers = [
+        m for m in test_bootstrap._PATH_PREFILTER_MARKERS if m != ".agent-toolkit"
+    ]
+    assert not any(m in str(target) for m in other_markers), target
+
+    orig_subdirs = list(test_bootstrap.GUARDED_HOME_SUBDIRS)
+    test_bootstrap.GUARDED_HOME_SUBDIRS[:] = [fake_toolkit.resolve()]
+    try:
+        with test_bootstrap.guards(paths=True):
+            with pytest.raises(RuntimeError, match="allow_production_paths"):
+                target.write_text("should never land on disk")
+        assert not target.exists()
+    finally:
+        test_bootstrap.GUARDED_HOME_SUBDIRS[:] = orig_subdirs
+        shutil.rmtree(root, ignore_errors=True)

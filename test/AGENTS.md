@@ -12,7 +12,14 @@ runs. It:
 - blocks every real `subprocess.Popen` (so `run`, `call` and
   `check_output` too),
 - blocks writes, deletes, renames and `mkdir` under the **real**
-  `~/.claude` and `~/.config`.
+  `~/.claude`, `~/.config`, `~/.local/state/agent-toolkit`, and
+  `~/.agent-toolkit`.
+
+The path guard only checks path arguments whose raw string names a guarded
+root (absolute or `~`-prefixed paths). A relative path, a `..` path from
+inside a guarded root, a symlink alias, a `dir_fd=` call, or a keyword path
+argument gets past it. The sandboxed `HOME` is what keeps those off real
+state, so do not build test paths from the real home.
 
 A test that trips one of these dies with a `RuntimeError`, not a normal
 assertion failure, and the message does not look like a missing-marker
@@ -74,7 +81,8 @@ unittest-style file calls `test_bootstrap.run_unittest_main()` from its
   constants is imported — that is why the `import test_bootstrap` line
   sits at the top of the file, not in `__main__`).
 - Path mutation guards are active for both tiers: writes to `~/.claude`,
-  `~/.config`, and `~/.local/state/agent-toolkit` are blocked.
+  `~/.config`, `~/.local/state/agent-toolkit`, and `~/.agent-toolkit` are
+  blocked.
 
 ### Direct-run divergences from pytest
 
