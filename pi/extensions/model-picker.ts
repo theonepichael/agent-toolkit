@@ -484,6 +484,9 @@ export default function modelPicker(pi: ExtensionAPI) {
         let filter = "";
         let sortMode: SortMode = "name";
         let selectedIndex = 0;
+        // Transient save-status line shown in the footer while the overlay is
+        // open; null until a save resolves, cleared on the next keypress.
+        let saveStatus: { text: string; error: boolean } | null = null;
         let widths = columnWidths(models);
         const effortIndexByRef = new Map<string, number>();
 
@@ -583,6 +586,11 @@ export default function modelPicker(pi: ExtensionAPI) {
         }
 
         function handleInput(data: string): void {
+          // Any keypress dismisses the transient save-status line rendered in
+          // the footer (set below). A save triggered by this same keypress
+          // re-sets saveStatus in its async .then, which runs after this
+          // handler returns — so the clear here can never clobber a save.
+          saveStatus = null;
           if (matchesKey(data, Key.tab)) {
             cycleSort();
             return;
@@ -592,12 +600,13 @@ export default function modelPicker(pi: ExtensionAPI) {
             const model = highlighted();
             if (model) {
               void saveDefaultModel(ctx.cwd, model.provider, model.id).then((outcome) => {
-                ctx.ui.notify(
-                  outcome.ok
-                    ? `Default model saved: ${modelRef(model)}`
-                    : `Failed to save default model: ${outcome.error}`,
-                  outcome.ok ? "info" : "error",
-                );
+                const text = outcome.ok
+                  ? `Default model saved: ${modelRef(model)}`
+                  : `Failed to save default model: ${outcome.error}`;
+                // Surface the outcome inside the overlay's footer (the post-close
+                // notify below still fires once the picker is dismissed).
+                saveStatus = { text, error: !outcome.ok };
+                ctx.ui.notify(text, outcome.ok ? "info" : "error");
                 refresh();
               });
             }
@@ -614,12 +623,11 @@ export default function modelPicker(pi: ExtensionAPI) {
             }
             void saveEnabledModels(ctx.cwd, unionEnabled(currentPatterns, ids, allIds)).then(
               (outcome) => {
-                ctx.ui.notify(
-                  outcome.ok
-                    ? `Enabled models saved (${ids.length} shown)`
-                    : `Failed to save enabled models: ${outcome.error}`,
-                  outcome.ok ? "info" : "error",
-                );
+                const text = outcome.ok
+                  ? `Enabled models saved (${ids.length} shown)`
+                  : `Failed to save enabled models: ${outcome.error}`;
+                saveStatus = { text, error: !outcome.ok };
+                ctx.ui.notify(text, outcome.ok ? "info" : "error");
                 refresh();
               },
             );
@@ -822,18 +830,24 @@ export default function modelPicker(pi: ExtensionAPI) {
                   ? "sort: price ↑"
                   : "sort: price ↓";
 
-            return [
+            const pills =
               "  " +
-                [
-                  pill("↑", "") + pill("↓", "navigate"),
-                  pill("Ctrl+P", "") + pill("⇧Ctrl+P", "cycle"),
-                  pill("Tab", sortLabel),
-                  pill("Enter", "select"),
-                  pill("Esc", "cancel"),
-                  pill("Ctrl+S", "save default"),
-                  pill("Ctrl+A", "enable all"),
-                ].join("  "),
-            ];
+              [
+                pill("↑", "") + pill("↓", "navigate"),
+                pill("Ctrl+P", "") + pill("⇧Ctrl+P", "cycle"),
+                pill("Tab", sortLabel),
+                pill("Enter", "select"),
+                pill("Esc", "cancel"),
+                pill("Ctrl+S", "save default"),
+                pill("Ctrl+A", "enable all"),
+              ].join("  ");
+
+            if (saveStatus) {
+              const marker = saveStatus.error ? "✗" : "✓";
+              const color: "success" | "error" = saveStatus.error ? "error" : "success";
+              return ["  " + theme.fg(color, `${marker} ${saveStatus.text}`), pills];
+            }
+            return [pills];
           },
           invalidate(): void {},
         };
