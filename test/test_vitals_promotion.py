@@ -308,6 +308,98 @@ class PromoteTests(TempDirTestCase):
             vp.promote([promoted()])  # type: ignore[call-arg]
 
 
+# ── load_vitals_file schema enforcement (criterion 6) ──────────────────────
+
+
+class LoadVitalsFileSchemaTests(TempDirTestCase):
+    """load_vitals_file enforces the version-1 container shape and version."""
+
+    def _write(self, name: str, text: str) -> Path:
+        self.vitals_dir.mkdir(parents=True, exist_ok=True)
+        path = self.vitals_dir / name
+        path.write_text(text)
+        return path
+
+    def test_valid_list_accepted_unchanged(self) -> None:
+        records = [make_vitals_record(text="settled"), make_vitals_record(text="other")]
+        path = self._write("_global.json", json.dumps(records))
+        self.assertEqual(vp.load_vitals_file(path), records)
+
+    def test_missing_file_returns_empty(self) -> None:
+        self.assertEqual(vp.load_vitals_file(self.vitals_dir / "absent.json"), [])
+
+    def test_schema_version_constant_is_one(self) -> None:
+        self.assertEqual(vp.VITALS_SCHEMA_VERSION, 1)
+
+    def test_unreadable_file_raises_with_path(self) -> None:
+        path = self._write("ro.json", json.dumps([make_vitals_record()]))
+        os.chmod(path, 0o000)
+        try:
+            with self.assertRaises(vp.VitalsSchemaError) as ctx:
+                vp.load_vitals_file(path)
+            self.assertEqual(ctx.exception.path, path)
+            self.assertIn("cannot read", str(ctx.exception))
+        finally:
+            os.chmod(path, 0o644)
+
+    def test_non_utf8_bytes_raise_with_path(self) -> None:
+        self.vitals_dir.mkdir(parents=True, exist_ok=True)
+        path = self.vitals_dir / "bad.json"
+        path.write_bytes(b"\xff\xff")  # invalid UTF-8
+        with self.assertRaises(vp.VitalsSchemaError) as ctx:
+            vp.load_vitals_file(path)
+        self.assertEqual(ctx.exception.path, path)
+        self.assertIn("cannot read", str(ctx.exception))
+
+    def test_invalid_json_raises_with_path(self) -> None:
+        path = self._write("broken.json", "{not json")
+        with self.assertRaises(vp.VitalsSchemaError) as ctx:
+            vp.load_vitals_file(path)
+        self.assertEqual(ctx.exception.path, path)
+        self.assertIn("invalid JSON", str(ctx.exception))
+
+    def test_schema_1_object_raises(self) -> None:
+        path = self._write("_global.json", json.dumps({"schema": 1}))
+        with self.assertRaises(vp.VitalsSchemaError) as ctx:
+            vp.load_vitals_file(path)
+        self.assertEqual(ctx.exception.path, path)
+        self.assertIn("top-level JSON list", str(ctx.exception))
+
+    def test_schema_2_object_raises(self) -> None:
+        path = self._write("_global.json", json.dumps({"schema": 2}))
+        with self.assertRaises(vp.VitalsSchemaError) as ctx:
+            vp.load_vitals_file(path)
+        self.assertEqual(ctx.exception.path, path)
+        self.assertIn("unsupported vitals schema 2", str(ctx.exception))
+
+    def test_non_integer_schema_raises(self) -> None:
+        path = self._write("_global.json", json.dumps({"schema": "2"}))
+        with self.assertRaises(vp.VitalsSchemaError) as ctx:
+            vp.load_vitals_file(path)
+        self.assertEqual(ctx.exception.path, path)
+        self.assertIn("invalid schema value", str(ctx.exception))
+
+    def test_object_without_schema_raises(self) -> None:
+        path = self._write("_global.json", json.dumps({"not": "schema"}))
+        with self.assertRaises(vp.VitalsSchemaError) as ctx:
+            vp.load_vitals_file(path)
+        self.assertEqual(ctx.exception.path, path)
+
+    def test_scalar_raises(self) -> None:
+        path = self._write("_global.json", json.dumps(42))
+        with self.assertRaises(vp.VitalsSchemaError) as ctx:
+            vp.load_vitals_file(path)
+        self.assertEqual(ctx.exception.path, path)
+
+    def test_list_with_non_object_item_raises(self) -> None:
+        path = self._write(
+            "_global.json", json.dumps([make_vitals_record(), "not an object"])
+        )
+        with self.assertRaises(vp.VitalsSchemaError) as ctx:
+            vp.load_vitals_file(path)
+        self.assertEqual(ctx.exception.path, path)
+
+
 # ── supersede pass (via promote) ─────────────────────────────────────────────
 
 
@@ -426,12 +518,14 @@ class SupersedeTests(TempDirTestCase):
 
     def test_malformed_vitals_file_writes_nothing(self) -> None:
         """All loads precede all writes: an unparsable store file aborts the
-        write pass with zero files rewritten."""
+        write pass with zero files rewritten. Raising changes from
+        json.JSONDecodeError to VitalsSchemaError."""
         self.write_vitals("proj-x", [make_vitals_record(text="good file")])
         self.vitals_dir.joinpath("broken.json").write_text("{not json")
         sessions = [promoted()]
-        with self.assertRaises(json.JSONDecodeError):
+        with self.assertRaises(vp.VitalsSchemaError) as ctx:
             vp.promote(sessions, vitals_dir=self.vitals_dir)
+        self.assertEqual(ctx.exception.path, self.vitals_dir / "broken.json")
         # the untouched sibling file proves no partial application happened
         records = json.loads(self.vitals_file("proj-x").read_text())
         self.assertEqual(records[0]["status"], "active")
@@ -728,6 +822,47 @@ class CliPassTests(TempDirTestCase):
         result = self.run_cli("--search", "vitals query")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("the vitals query design", result.stdout)
+
+    def test_search_fails_nonzero_on_malformed_store(self) -> None:
+        """Criterion 7: a malformed store makes --search exit nonzero with a
+        one-line error and no traceback."""
+        self.vitals_dir.mkdir(parents=True)
+        (self.vitals_dir / "_global.json").write_text(json.dumps({"schema": 2}))
+        result = self.run_cli("--search", "anything")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("vitals schema", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_dry_run_fails_nonzero_on_malformed_store(self) -> None:
+        """Criterion 7: a malformed store makes the dry run exit nonzero with a
+        one-line error, store untouched."""
+        self.write_session(promoted())
+        self.vitals_dir.mkdir(parents=True)
+        (self.vitals_dir / "_global.json").write_text(json.dumps({"schema": 2}))
+        result = self.run_cli()
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("vitals schema", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(
+            json.loads((self.vitals_dir / "_global.json").read_text()), {"schema": 2}
+        )
+
+    def test_apply_fails_nonzero_and_writes_nothing_on_malformed_store(self) -> None:
+        """Criterion 7: --apply on a malformed store exits nonzero, and writes
+        nothing (bytes and mtime of every file unchanged)."""
+        self.write_session(promoted())
+        self.vitals_dir.mkdir(parents=True)
+        malformed = self.vitals_dir / "_global.json"
+        malformed.write_text(json.dumps({"schema": 2}))
+        before_mtime = malformed.stat().st_mtime
+        result = self.run_cli("--apply")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("vitals schema", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        # only the original malformed file exists, unchanged
+        self.assertEqual(sorted(p.name for p in self.vitals_dir.iterdir()), ["_global.json"])
+        self.assertEqual(json.loads(malformed.read_text()), {"schema": 2})
+        self.assertEqual(malformed.stat().st_mtime, before_mtime)
 
 
 if __name__ == "__main__":

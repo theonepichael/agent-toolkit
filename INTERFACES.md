@@ -199,6 +199,8 @@ Shared CLI helpers used across agent-toolkit scripts.
 - Entrypoint: not executable, no shebang
 - CLI: none (library module).
 - Environment: `AGENT_TOOLKIT_TIMING`, `NO_COLOR`, `TERM`, `XDG_STATE_HOME`
+- Exceptions:
+  - `class JsonlWriteError(Exception)` — Raised by append_jsonl(..., on_error="raise") when the write fails.
 - Public classes:
   - `class Palette` — ANSI colorizer that no-ops when color isn't appropriate.
 - Public functions:
@@ -208,8 +210,9 @@ Shared CLI helpers used across agent-toolkit scripts.
   - `color_enabled(stream: object) -> bool` — Return whether ANSI codes should be emitted to ``stream``.
   - `preview(message: str, *, quiet: bool = False) -> None` — Print a dry-run preview line.
   - `get_logger(name: str, *, verbose: bool = False, quiet: bool = False) -> logging.Logger` — Return a stderr-only diagnostic logger, a structured complement to vprint.
-  - `append_jsonl(path: Path, record: dict[str, object]) -> None` — Best-effort: append one JSON record to `path` as a single JSONL line.
+  - `append_jsonl(path: Path, record: dict[str, object], *, on_error: OnError = 'log', mode: int = 438) -> None` — Append one JSON record to ``path`` as a single JSONL line, opt-in failure reporting.
   - `redact_secrets(text: str, *, max_length: int = 200) -> str` — Mask secret-shaped substrings, then truncate to max_length.
+  - `timing_log_path() -> Path` — The timing log path: $XDG_STATE_HOME/agent-toolkit/timing.jsonl.
   - `timing_span(name: str, **fields: str | int) -> Iterator[dict[str, object]]` — Opt-in nested timings; callers must supply only fixed operational labels.
 - Tested by: `test/test_cli_common.py`, `test/test_settings_seed.py`, `test/test_timing.py`
 
@@ -1446,6 +1449,8 @@ vitals-promotion.py — mechanical vitals-promotion pass over grill session data
   - `VITALS_DIR = DATA_DIR / 'vitals'`
 - Explicit exit codes: `1`
 - Depends on: `cli_common.py`, `grill.py`
+- Exceptions:
+  - `class VitalsSchemaError(ValueError)` — A vitals store file is unreadable, not the version-1 list shape, or a schema this pass doesn't understand.
 - Public classes:
   - `class VitalsRecord(TypedDict, total=False)`
   - `class Report(TypedDict)`
@@ -1453,7 +1458,7 @@ vitals-promotion.py — mechanical vitals-promotion pass over grill session data
   - `now_iso() -> str`
   - `build_decision_lookup(sessions: list[Session]) -> dict[DecisionKey, Decision]`
   - `atomic_write_json(path: Path, payload: object) -> None` — Write ``payload`` atomically, creating the parent directory if needed.
-  - `load_vitals_file(path: Path) -> list[VitalsRecord]` — Parse one vitals file.
+  - `load_vitals_file(path: Path) -> list[VitalsRecord]` — Parse one vitals file and enforce the version-1 container shape.
   - `vitals_path(vitals_dir: Path, backlog_slug: str | None) -> Path`
   - `matches_query(record: VitalsRecord, keywords: list[str]) -> bool` — True iff every keyword is a case-insensitive substring of text or reasoning.
   - `search_vitals(vitals_dir: Path, keywords: list[str], include_superseded: bool, backlog_slug: str | None = None) -> list[VitalsRecord]` — Search _global.json (plus <backlog_slug>.json if given) for matches.

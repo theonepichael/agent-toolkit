@@ -801,8 +801,9 @@ def render(harness: str | None, verdict: Verdict) -> tuple[str, int]:
 def _audit_verdict(harness: str, req: Request | None, verdict: Verdict) -> None:
     """Best-effort durable audit trail: one JSONL record per delivered
     verdict, appended strictly after the verdict has already been written to
-    stdout. append_jsonl never touches stdout/stderr and never raises, so
-    the harness IPC contract is unaffected by this entirely. ``decision``
+    stdout. append_jsonl is best-effort: on a write failure it logs one line
+    to stderr (always; its default mode forces DEBUG level) but never raises, so a full log disk still cannot
+    block the harness IPC — the audit line is merely lost. ``decision``
     stays a strict two-value enum: warn (and a disabled guard) record as
     "allow", with the deciding rule named separately ("GUARD_RAILS_OFF" for
     a disabled guard). The bash-family target is the command; the
