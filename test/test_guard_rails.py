@@ -20,6 +20,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))
 import test_bootstrap  # noqa: E402
 
+import agent_toolkit_paths  # noqa: E402
 import guard_rails  # noqa: E402
 import backlog_claim_lookup  # noqa: E402
 
@@ -715,6 +716,118 @@ class AuditLogTests(unittest.TestCase):
             out, code = self._run(["--harness", "claude"], payload)
         self.assertEqual(code, 0)
         self.assertIn("hookSpecificOutput", out)
+
+
+class LayoutErrorTests(unittest.TestCase):
+    """Layout errors in hook modules must emit a blocking verdict."""
+
+    def test_guard_module_layout_error_blocks_via_main(self) -> None:
+        err = agent_toolkit_paths.LayoutError("bad pointer")
+        with (
+            mock.patch.object(guard_rails, "LAYOUT_ERROR", err),
+            mock.patch.object(guard_rails, "GUARD_RAILS_LOG_PATH", None),
+            mock.patch.object(backlog_claim_lookup, "LAYOUT_ERROR", None),
+            mock.patch.object(backlog_claim_lookup, "DEFAULT_BACKLOG_ITEMS", None),
+        ):
+            out, code = MainTests()._run(
+                ["--harness", "claude"],
+                json.dumps(
+                    {
+                        "cwd": "/repo",
+                        "tool_name": "Edit",
+                        "tool_input": {"file_path": "/repo/a.py"},
+                    }
+                ),
+            )
+        self.assertEqual(code, 0)
+        parsed = json.loads(out)
+        self.assertEqual(parsed["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertIn("bad pointer", parsed["hookSpecificOutput"]["permissionDecisionReason"])
+
+    def test_claim_lookup_layout_error_blocks_via_main(self) -> None:
+        err = agent_toolkit_paths.LayoutError("bad pointer")
+        with (
+            mock.patch.object(guard_rails, "LAYOUT_ERROR", None),
+            mock.patch.object(guard_rails, "GUARD_RAILS_LOG_PATH", None),
+            mock.patch.object(backlog_claim_lookup, "LAYOUT_ERROR", err),
+            mock.patch.object(backlog_claim_lookup, "DEFAULT_BACKLOG_ITEMS", None),
+        ):
+            out, code = MainTests()._run(
+                ["--harness", "claude"],
+                json.dumps(
+                    {
+                        "cwd": "/repo",
+                        "tool_name": "Edit",
+                        "tool_input": {"file_path": "/repo/a.py"},
+                    }
+                ),
+            )
+        self.assertEqual(code, 0)
+        parsed = json.loads(out)
+        self.assertEqual(parsed["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertIn("bad pointer", parsed["hookSpecificOutput"]["permissionDecisionReason"])
+
+    def test_layout_error_raised_by_claims_becomes_blocking_verdict(self) -> None:
+        class BrokenLookup:
+            def in_progress_items(self) -> list[dict]:
+                raise agent_toolkit_paths.LayoutError("store unreadable")
+
+            def ready_items(self, prefix: str | None = None) -> list[dict]:
+                return []
+
+            def claim_info(self, slug: str) -> object:
+                return None
+
+        info = guard_rails.RepoInfo(
+            toplevel="/repo",
+            common_dir="/repo/.git",
+            is_worktree=False,
+            is_bare=False,
+            branch="feature",
+        )
+        with (
+            mock.patch.object(guard_rails, "LAYOUT_ERROR", None),
+            mock.patch.object(guard_rails, "repo_info", return_value=info),
+        ):
+            req = guard_rails.Request(tool="write", cwd="/repo", path="/repo/a.py")
+            verdict = guard_rails.evaluate(req, BrokenLookup())
+        self.assertEqual(verdict.decision, "deny")
+        self.assertIn("store unreadable", verdict.reason)
+
+    def test_layout_error_main_harness_blocks_and_skips_audit(self) -> None:
+        err = agent_toolkit_paths.LayoutError("bad pointer")
+        with (
+            mock.patch.object(guard_rails, "LAYOUT_ERROR", err),
+            mock.patch.object(guard_rails, "GUARD_RAILS_LOG_PATH", None),
+            mock.patch.object(backlog_claim_lookup, "LAYOUT_ERROR", None),
+            mock.patch.object(backlog_claim_lookup, "DEFAULT_BACKLOG_ITEMS", None),
+        ):
+            out, code = MainTests()._run(
+                ["--harness", "claude"],
+                json.dumps(
+                    {
+                        "cwd": "/repo",
+                        "tool_name": "Edit",
+                        "tool_input": {"file_path": "/repo/a.py"},
+                    }
+                ),
+            )
+        self.assertEqual(code, 0)
+        parsed = json.loads(out)
+        self.assertEqual(parsed["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertIn("bad pointer", parsed["hookSpecificOutput"]["permissionDecisionReason"])
+
+    def test_layout_error_bypassed_when_guard_rails_off(self) -> None:
+        err = agent_toolkit_paths.LayoutError("bad pointer")
+        with (
+            mock.patch.dict(os.environ, {"GUARD_RAILS_OFF": "1"}),
+            mock.patch.object(guard_rails, "LAYOUT_ERROR", err),
+            mock.patch.object(backlog_claim_lookup, "LAYOUT_ERROR", None),
+            mock.patch.object(backlog_claim_lookup, "DEFAULT_BACKLOG_ITEMS", None),
+        ):
+            req = guard_rails.Request(tool="write", cwd="/repo", path="/repo/a.py")
+            verdict = guard_rails.evaluate(req, FakeLookup())
+        self.assertEqual(verdict.decision, "allow")
 
 
 if __name__ == "__main__":

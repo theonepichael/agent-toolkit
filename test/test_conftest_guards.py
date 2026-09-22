@@ -78,6 +78,10 @@ def test_os_open_write_blocked_without_marker(tmp_path):
         os.open(str(target), os.O_WRONLY | os.O_CREAT)
 
 
+def test_agent_toolkit_home_is_cleared_by_sandbox():
+    assert "AGENT_TOOLKIT_HOME" not in os.environ
+
+
 def test_tmp_path_writes_allowed_without_marker(tmp_path):
     target = tmp_path / "normal_test_file.txt"
     target.write_text("allowed")

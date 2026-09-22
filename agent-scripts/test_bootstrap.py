@@ -425,6 +425,7 @@ def install_sandbox_home() -> Path:
         return _SANDBOX_HOME
     sandbox = Path(tempfile.mkdtemp(prefix="agent-toolkit-test-home-"))
     os.environ["HOME"] = str(sandbox)
+    os.environ.pop("AGENT_TOOLKIT_HOME", None)
     atexit.register(shutil.rmtree, str(sandbox), ignore_errors=True)
     _SANDBOX_HOME = sandbox
     return sandbox

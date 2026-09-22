@@ -62,11 +62,12 @@ from pathlib import Path
 from typing import TypedDict, cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import dev_status  # noqa: E402 — must follow the sys.path.insert above
+import agent_toolkit_paths  # noqa: E402 — must follow the sys.path.insert above
+import dev_status  # noqa: E402
 import dev_status_mutation  # noqa: E402
 import dev_status_storage  # noqa: E402
 
-DATA_DIR = Path.home() / ".claude" / "data" / "to-tickets"
+DATA_DIR = agent_toolkit_paths.path_for("ticket-batches")
 
 
 def ensure_data_dir() -> None:

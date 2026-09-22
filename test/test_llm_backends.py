@@ -26,7 +26,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))
 import test_bootstrap  # noqa: E402
+import agent_toolkit_paths  # noqa: E402
 import llm_backends
+
+LayoutError = agent_toolkit_paths.LayoutError
 
 
 def py(code: str) -> list[str]:
@@ -921,6 +924,12 @@ class LogBackendCallTests(_LogPathRedirected):
     def test_69_write_failure_swallowed_not_raised(self) -> None:
         with patch.object(Path, "open", side_effect=OSError("disk full")):
             llm_backends._log_backend_call("agy", "m", "error", 0.1, 1)  # no raise
+
+    def test_69b_layout_error_in_path_resolution_is_swallowed(self) -> None:
+        with patch.object(
+            llm_backends, "_backend_call_log_path", side_effect=LayoutError("bad layout")
+        ):
+            llm_backends._log_backend_call("agy", "m", "success", 0.1, 1)  # no raise
 
     def test_70_two_calls_append_two_separate_lines(self) -> None:
         llm_backends._log_backend_call("agy", "m1", "success", 0.1, 1)

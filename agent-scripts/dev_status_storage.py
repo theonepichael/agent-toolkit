@@ -23,12 +23,13 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
+import agent_toolkit_paths
 import cli_common
 from dev_status_types import BacklogIndex as BacklogIndex
 from dev_status_types import BacklogItem, PendingItem, RunRecord
 from dev_status_types import Gate as Gate
 
-DATA_DIR = Path.home() / ".claude" / "data" / "backlog"
+DATA_DIR = agent_toolkit_paths.path_for("work-items")
 ITEMS_FILE = DATA_DIR / "items.json"
 PENDING_FILE = DATA_DIR / "pending_items.json"
 META_FILE = DATA_DIR / "_meta.json"
@@ -39,7 +40,7 @@ MACHINE_ID_FILE = DATA_DIR / "_machine_id"
 RECAP_CACHE_FILE = DATA_DIR / "recap-cache.json"
 RECAP_REGEN_LOCK_FILE = DATA_DIR / "recap-regen.lock"
 
-OUT_OF_SCOPE_DIR = Path.home() / ".claude" / "data" / "backlog-out-of-scope"
+OUT_OF_SCOPE_DIR = agent_toolkit_paths.path_for("out-of-scope")
 OUT_OF_SCOPE_INDEX_FILE = OUT_OF_SCOPE_DIR / "index.json"
 OUT_OF_SCOPE_LOCK_FILE = OUT_OF_SCOPE_DIR / ".out-of-scope.lock"
 

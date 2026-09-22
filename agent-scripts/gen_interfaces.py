@@ -898,34 +898,68 @@ def extract_exit_codes(tree: ast.Module) -> list[int]:
 def extract_path_constants(tree: ast.Module) -> list[str]:
     """Collect module-level uppercase constants that name a filesystem location.
 
-    A constant qualifies if its value mentions ``Path`` or is derived from a
-    constant that already qualified, so chains like ``DATA_DIR = Path.home() /
-    ...`` followed by ``ITEMS_FILE = DATA_DIR / "items.json"`` are both caught.
+    A constant qualifies if its value mentions ``Path``, calls
+    ``agent_toolkit_paths.path_for(...)``, or is derived from a constant that
+    already qualified, so chains like ``DATA_DIR = Path.home() / ...``
+    followed by ``ITEMS_FILE = DATA_DIR / "items.json"`` are both caught.
+
+    Constants wrapped in module-level ``try/except`` blocks are scanned too;
+    assignments to ``None`` (typically the fallback in an except handler) are
+    skipped so the real path constant from the ``try`` body is preserved.
     """
     constants: list[str] = []
     known: set[str] = set()
-    for statement in tree.body:
-        if isinstance(statement, ast.Assign):
-            targets = statement.targets
-            value = statement.value
-        elif isinstance(statement, ast.AnnAssign) and statement.value is not None:
-            targets = [statement.target]
-            value = statement.value
-        else:
-            continue
-        if len(targets) != 1 or not isinstance(targets[0], ast.Name):
-            continue
-        name = targets[0].id
-        if not name.isupper():
-            continue
-        rendered = ast.unparse(value)
-        referenced = {
-            child.id for child in ast.walk(value) if isinstance(child, ast.Name)
-        }
-        if "Path" in rendered or referenced & known:
-            known.add(name)
-            constants.append(f"{name} = {rendered}")
+
+    def _is_none(node: ast.AST | None) -> bool:
+        return isinstance(node, ast.Constant) and node.value is None
+
+    def _process_block(block: list[ast.stmt]) -> None:
+        for statement in block:
+            if isinstance(statement, ast.Assign):
+                targets = statement.targets
+                value = statement.value
+            elif isinstance(statement, ast.AnnAssign) and statement.value is not None:
+                targets = [statement.target]
+                value = statement.value
+            elif isinstance(statement, ast.Try):
+                _process_block(statement.body)
+                for handler in statement.handlers:
+                    _process_block(handler.body)
+                continue
+            else:
+                continue
+            if len(targets) != 1 or not isinstance(targets[0], ast.Name):
+                continue
+            name = targets[0].id
+            if not name.isupper():
+                continue
+            if _is_none(value):
+                continue
+            rendered = ast.unparse(value)
+            referenced = {
+                child.id for child in ast.walk(value) if isinstance(child, ast.Name)
+            }
+            has_path_for = any(
+                _is_agent_toolkit_paths_call(child) for child in ast.walk(value)
+            )
+            if "Path" in rendered or has_path_for or referenced & known:
+                known.add(name)
+                constants.append(f"{name} = {rendered}")
+
+    _process_block(tree.body)
     return constants
+
+
+def _is_agent_toolkit_paths_call(node: ast.AST) -> bool:
+    """Whether ``node`` is a call to ``agent_toolkit_paths.path_for(...)``."""
+    if not isinstance(node, ast.Call):
+        return False
+    func = node.func
+    if not isinstance(func, ast.Attribute):
+        return False
+    if func.attr != "path_for":
+        return False
+    return isinstance(func.value, ast.Name) and func.value.id == "agent_toolkit_paths"
 
 
 def extract_internal_imports(tree: ast.Module, siblings: set[str]) -> list[str]:

@@ -34,6 +34,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import NoReturn, TextIO, cast
 
+import agent_toolkit_paths
 import cli_common
 import dev_status_formatting
 import dev_status_storage
@@ -793,9 +794,7 @@ def _is_serial_context_artifact(path: str) -> bool:
     """Whether a path is a mandated planning artifact, not a code target."""
     try:
         candidate = Path(path).resolve(strict=False)
-        artifact_root = (Path.home() / ".claude" / "data" / "grill").resolve(
-            strict=False
-        )
+        artifact_root = agent_toolkit_paths.path_for("decisions").resolve(strict=False)
         candidate.relative_to(artifact_root)
     except (OSError, RuntimeError, ValueError):
         return False

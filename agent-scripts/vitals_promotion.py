@@ -80,11 +80,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import TextIO, TypedDict, cast
 
+import agent_toolkit_paths
 import cli_common
 import grill
 from grill import Decision, Session, is_open
 
-DATA_DIR = Path.home() / ".claude" / "data" / "grill"
+DATA_DIR = agent_toolkit_paths.path_for("decisions")
 VITALS_DIR = DATA_DIR / "vitals"
 
 VALID_SOURCES = {"user", "defaulted", "assumed", "tested"}

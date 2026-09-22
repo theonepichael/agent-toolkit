@@ -33,6 +33,7 @@ House style for these interfaces is in `STYLE.md`.
 
 | Module | Purpose |
 | --- | --- |
+| [`agent_toolkit_paths.py`](#agentscriptsagenttoolkitpathspy) | Single source of truth for toolkit data paths. |
 | [`analyze_sessions.py`](#agentscriptsanalyzesessionspy) | analyze_sessions.py — multi-harness session analysis tool. |
 | [`backlog_claim_lookup.py`](#agentscriptsbacklogclaimlookuppy) | Read-only snapshot lookup over the backlog store for guard consumers. |
 | [`bundle_drift_check.py`](#agentscriptsbundledriftcheckpy) | SessionStart hook: flag when this repo has drifted from the last commit bundled over to a GitHub-blocked work machine. |
@@ -73,6 +74,26 @@ House style for these interfaces is in `STYLE.md`.
 | [`vitals_promotion.py`](#agentscriptsvitalspromotionpy) | vitals-promotion.py — mechanical vitals-promotion pass over grill session data. |
 | [`worktree.py`](#agentscriptsworktreepy) | worktree.py — automated worktree creation and dependency bootstrapping. |
 | [`worktree_provenance.py`](#agentscriptsworktreeprovenancepy) | Per-worktree backlog provenance: one explicit marker, shared predicates. |
+
+### `agent-scripts/agent_toolkit_paths.py`
+
+Single source of truth for toolkit data paths.
+
+- Installed at: `~/.claude/scripts/agent_toolkit_paths.py` (all harnesses)
+- Entrypoint: not executable, `#!/usr/bin/env python3`
+- CLI: none (library module).
+- Filesystem constants:
+  - `POINTER_RELPATH = Path('.claude') / 'data' / 'toolkit_state.json'`
+- Exceptions:
+  - `class LayoutError(Exception)` — Raised when the layout pointer is malformed or the override is invalid.
+  - `class UnknownDomainError(ValueError)` — Raised when :func:`path_for` is asked for an unregistered domain.
+- Public classes:
+  - `class Resolver` — Resolve toolkit data paths with per-process caching.
+- Public functions:
+  - `path_for(domain: str) -> Path` — Resolve ``domain`` using :data:`DEFAULT_RESOLVER`.
+  - `current_layout() -> Layout` — Return the current layout using :data:`DEFAULT_RESOLVER`.
+  - `write_pointer(home: Path, layout: Layout) -> None` — Atomically write the layout pointer under ``home``.
+- Tested by: `agent-scripts/test_layouts.py`, `test/test_agent_toolkit_paths.py`, `test/test_gen_interfaces.py`, `test/test_guard_rails.py`, `test/test_llm_backends.py`
 
 ### `agent-scripts/analyze_sessions.py`
 
@@ -156,8 +177,8 @@ Read-only snapshot lookup over the backlog store for guard consumers.
 - CLI: none (library module).
 - Environment: `GUARD_RAILS_STORE`
 - Filesystem constants:
-  - `DEFAULT_BACKLOG_ITEMS = Path.home() / '.claude' / 'data' / 'backlog' / 'items.json'`
-- Depends on: `dev_status_storage.py`
+  - `DEFAULT_BACKLOG_ITEMS = agent_toolkit_paths.path_for('work-items') / 'items.json'`
+- Depends on: `agent_toolkit_paths.py`, `dev_status_storage.py`
 - Public classes:
   - `class ClaimInfo` — The fields of a claim record the guard's verdict logic reads.
   - `class BacklogClaimLookup(Protocol)` — Read-only view of the backlog store, as guard consumers need it.
@@ -301,7 +322,7 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `out-of-scope show <concept-slug>` — print a rejected concept's full record
 - Environment: `DEVSTATUS_AGENT`, `DEVSTATUS_RECAP_AGY_MODEL`, `DEVSTATUS_RECAP_DISABLE`, `DEVSTATUS_RECAP_TIMEOUT_SECONDS`
 - Explicit exit codes: `1`, `2`
-- Depends on: `cli_common.py`, `dev_status_formatting.py`, `dev_status_mutation.py`, `dev_status_storage.py`, `dev_status_types.py`, `llm_backends.py`, `worktree.py`
+- Depends on: `agent_toolkit_paths.py`, `cli_common.py`, `dev_status_formatting.py`, `dev_status_mutation.py`, `dev_status_storage.py`, `dev_status_types.py`, `llm_backends.py`, `worktree.py`
 - Public functions:
   - `format_compact_confirmation(cmd: str, slug: str, status: str, rev: int, ref: str | int | None = None, detail: str = '') -> str` — Format a single-line structured confirmation for mutating commands under compact mode.
   - `machine_id() -> str` — Return this machine's stable short id, creating it on first use.
@@ -436,7 +457,7 @@ Backlog persistence, lock coordination, and journal primitives.
 - Entrypoint: not executable, no shebang
 - CLI: none (library module).
 - Filesystem constants:
-  - `DATA_DIR = Path.home() / '.claude' / 'data' / 'backlog'`
+  - `DATA_DIR = agent_toolkit_paths.path_for('work-items')`
   - `ITEMS_FILE = DATA_DIR / 'items.json'`
   - `PENDING_FILE = DATA_DIR / 'pending_items.json'`
   - `META_FILE = DATA_DIR / '_meta.json'`
@@ -446,11 +467,11 @@ Backlog persistence, lock coordination, and journal primitives.
   - `MACHINE_ID_FILE = DATA_DIR / '_machine_id'`
   - `RECAP_CACHE_FILE = DATA_DIR / 'recap-cache.json'`
   - `RECAP_REGEN_LOCK_FILE = DATA_DIR / 'recap-regen.lock'`
-  - `OUT_OF_SCOPE_DIR = Path.home() / '.claude' / 'data' / 'backlog-out-of-scope'`
+  - `OUT_OF_SCOPE_DIR = agent_toolkit_paths.path_for('out-of-scope')`
   - `OUT_OF_SCOPE_INDEX_FILE = OUT_OF_SCOPE_DIR / 'index.json'`
   - `OUT_OF_SCOPE_LOCK_FILE = OUT_OF_SCOPE_DIR / '.out-of-scope.lock'`
 - Explicit exit codes: `1`
-- Depends on: `cli_common.py`, `dev_status_types.py`
+- Depends on: `agent_toolkit_paths.py`, `cli_common.py`, `dev_status_types.py`
 - Public functions:
   - `machine_id(machine_id_file: Path | None = None, data_dir: Path | None = None) -> str` — Return this machine's stable short id, creating it on first use.
   - `atomic_write_json(path: Path, payload: str, prefix: str) -> None` — Write text to ``path`` via a temp file in its directory + ``os.replace``.
@@ -741,9 +762,9 @@ grill.py — grill-me session state CLI. All session mutations go through here.
     - `decision_id` (nargs: ?)
     - `--session/-s` — session slug or unique substring (default: most recent)
 - Filesystem constants:
-  - `DATA_DIR = Path.home() / '.claude' / 'data' / 'grill'`
+  - `DATA_DIR = agent_toolkit_paths.path_for('decisions')`
 - Explicit exit codes: `1`
-- Depends on: `cli_common.py`
+- Depends on: `agent_toolkit_paths.py`, `cli_common.py`
 - Exceptions:
   - `class GrillSessionError(Exception)` — Base class for every typed session-service failure.
   - `class SessionNotFoundError(GrillSessionError)` — No readable session exists for the requested slug.
@@ -802,8 +823,8 @@ Pre-tool guard shared by every harness: refuse a write into a repository's main 
   - `--verbose/-v`
 - Environment: `GUARD_RAILS_OFF`
 - Filesystem constants:
-  - `GUARD_RAILS_LOG_PATH = Path.home() / '.claude' / 'data' / 'guard_rails_audit.jsonl'`
-- Depends on: `backlog_claim_lookup.py`, `cli_common.py`, `dev_status_impl.py`, `worktree_provenance.py`
+  - `GUARD_RAILS_LOG_PATH = agent_toolkit_paths.path_for('guard-rail-log')`
+- Depends on: `agent_toolkit_paths.py`, `backlog_claim_lookup.py`, `cli_common.py`, `dev_status_impl.py`, `worktree_provenance.py`
 - Public classes:
   - `class Request` — A normalized tool call: what family, from where, against which path (write-family) or command (bash-family).
   - `class Verdict`
@@ -1006,7 +1027,7 @@ llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, open
 - Installed at: `~/.claude/scripts/llm_backends.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI: none (library module).
-- Depends on: `cli_common.py`
+- Depends on: `agent_toolkit_paths.py`, `cli_common.py`
 - Exceptions:
   - `class IsolationError(RuntimeError)` — A backend cannot be invoked because it does not meet the contract.
   - `class BackendError(Exception)` — A backend was invoked but failed (timeout or nonzero exit).
@@ -1216,9 +1237,9 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
     - `--model-index` — 0-based index into the backend model pool (SECOND_OPINION_{CODEX,AGY,PI,OPENCODE,COPILOT}_MODEL_POOL) for this call -- round 1 of a rotation is index 0, round 2 is index 1, etc. Supported for codex/agy/pi/opencode/copilot; an explicit index selects the pool even when a single-model override is set, and is a hard error if the pool is unset/empty or the index is out of range (was previously a silent no-op/fallback).
 - Environment: `SECOND_OPINION_AGY_MODEL`, `SECOND_OPINION_AGY_MODEL_POOL`, `SECOND_OPINION_AGY_TIMEOUT_SECONDS`, `SECOND_OPINION_CODEX_MODEL`, `SECOND_OPINION_CODEX_MODEL_POOL`, `SECOND_OPINION_CODEX_TIMEOUT_SECONDS`, `SECOND_OPINION_COPILOT_MODEL`, `SECOND_OPINION_COPILOT_MODEL_POOL`, `SECOND_OPINION_COPILOT_TIMEOUT_SECONDS`, `SECOND_OPINION_OPENCODE_MODEL`, `SECOND_OPINION_OPENCODE_MODEL_POOL`, `SECOND_OPINION_OPENCODE_TIMEOUT_SECONDS`, `SECOND_OPINION_PI_MODEL`, `SECOND_OPINION_PI_MODEL_POOL`, `SECOND_OPINION_PI_TIMEOUT_SECONDS`, `SECOND_OPINION_TIMEOUT_SECONDS`
 - Filesystem constants:
-  - `DATA_DIR = Path.home() / '.claude' / 'data' / 'grill'`
+  - `DATA_DIR = agent_toolkit_paths.path_for('decisions')`
 - Explicit exit codes: `1`
-- Depends on: `cli_common.py`, `llm_backends.py`
+- Depends on: `agent_toolkit_paths.py`, `cli_common.py`, `llm_backends.py`
 - Exceptions:
   - `class ReviewError(Exception)` — Facade-level failure: configuration or request shape, not a backend.
   - `class NoBackendAvailableError(ReviewError)` — No backend is installed/on PATH and no ``--backend`` was forced.
@@ -1333,12 +1354,13 @@ standup.py — /standup skill CLI and read-only fetch service.
   - `fetch [--date <DATE>]` — gather all sources as JSON
     - `--date` — override reference date (YYYY-MM-DD) — for re-running after a gap (holiday, PTO) where the default last-working-day boundary would miss it
 - Filesystem constants:
-  - `DATA_DIR = Path.home() / '.claude' / 'data' / 'standup'`
+  - `DATA_DIR = agent_toolkit_paths.path_for('standups')`
   - `CONFIG_FILE = DATA_DIR / 'config.json'`
-  - `BACKLOG_FILE = Path.home() / '.claude' / 'data' / 'backlog' / 'items.json'`
-  - `CANONICAL_PENDING_FILE = Path.home() / '.claude' / 'data' / 'backlog' / 'pending_items.json'`
+  - `_BACKLOG_DIR = agent_toolkit_paths.path_for('work-items')`
+  - `BACKLOG_FILE = _BACKLOG_DIR / 'items.json'`
+  - `CANONICAL_PENDING_FILE = _BACKLOG_DIR / 'pending_items.json'`
 - Explicit exit codes: `1`
-- Depends on: `cli_common.py`, `standup_adapters.py`
+- Depends on: `agent_toolkit_paths.py`, `cli_common.py`, `standup_adapters.py`
 - Exceptions:
   - `class StandupConfigError(Exception)` — Raised when caller-supplied standup configuration is invalid.
 - Public classes:
@@ -1406,9 +1428,9 @@ to_tickets_runner.py — create a linked batch of dev_status.py backlog items fr
   - `run <batch_file>` — create every ticket in a batch file
     - `batch_file` — path to the batch JSON file
 - Filesystem constants:
-  - `DATA_DIR = Path.home() / '.claude' / 'data' / 'to-tickets'`
+  - `DATA_DIR = agent_toolkit_paths.path_for('ticket-batches')`
 - Explicit exit codes: `1`
-- Depends on: `dev_status.py`, `dev_status_mutation.py`, `dev_status_storage.py`
+- Depends on: `agent_toolkit_paths.py`, `dev_status.py`, `dev_status_mutation.py`, `dev_status_storage.py`
 - Exceptions:
   - `class BatchError(Exception)` — A problem with the batch itself: bad schema, a cycle, an unknown slug.
   - `class SlugCollisionError(Exception)` — A drafted slug collides with an unrelated, pre-existing item.
@@ -1445,10 +1467,10 @@ vitals-promotion.py — mechanical vitals-promotion pass over grill session data
   - `--include-superseded` — with --search, also match superseded records
   - `--json` — with --search, emit matching records as a JSON list instead of plain text
 - Filesystem constants:
-  - `DATA_DIR = Path.home() / '.claude' / 'data' / 'grill'`
+  - `DATA_DIR = agent_toolkit_paths.path_for('decisions')`
   - `VITALS_DIR = DATA_DIR / 'vitals'`
 - Explicit exit codes: `1`
-- Depends on: `cli_common.py`, `grill.py`
+- Depends on: `agent_toolkit_paths.py`, `cli_common.py`, `grill.py`
 - Exceptions:
   - `class VitalsSchemaError(ValueError)` — A vitals store file is unreadable, not the version-1 list shape, or a schema this pass doesn't understand.
 - Public classes:

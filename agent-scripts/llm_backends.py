@@ -15,6 +15,7 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
@@ -948,7 +949,9 @@ def _backend_call_log_path() -> Path:
     takes effect — a module-level constant would freeze whatever HOME was
     set at import.
     """
-    return Path.home() / ".claude" / "data" / "backend_calls.jsonl"
+    import agent_toolkit_paths
+
+    return agent_toolkit_paths.path_for("backend-log")
 
 
 def _log_backend_call(
@@ -997,7 +1000,11 @@ def _log_backend_call(
     # now — shared with every other durable-JSONL writer in this repo — but
     # the atomicity property is identical to what this module proven out:
     # exactly one unbuffered write(2) under O_APPEND per line.
-    cli_common.append_jsonl(_backend_call_log_path(), record)
+    try:
+        log_path = _backend_call_log_path()
+        cli_common.append_jsonl(log_path, record)
+    except Exception as exc:  # noqa: BLE001 — logging must never raise
+        print(f"[llm_backends] logging failed: {exc}", file=sys.stderr)
 
 
 @contextmanager

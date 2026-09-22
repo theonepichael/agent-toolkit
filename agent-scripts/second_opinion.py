@@ -121,6 +121,7 @@ from pathlib import Path
 from types import FrameType
 from typing import NoReturn
 
+import agent_toolkit_paths
 import cli_common
 import llm_backends
 from llm_backends import (
@@ -137,7 +138,7 @@ BACKEND_PRIORITY = llm_backends.BACKEND_PRIORITY
 
 # Shared artifact storage, same directory grill.py owns. Kept in sync with
 # grill.py's DATA_DIR by test_second_opinion.py's DataDirSelfEnsureTests.
-DATA_DIR = Path.home() / ".claude" / "data" / "grill"
+DATA_DIR = agent_toolkit_paths.path_for("decisions")
 
 MAX_FOCUS_FILE_BYTES = 8192
 
