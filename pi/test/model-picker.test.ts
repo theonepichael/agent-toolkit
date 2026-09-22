@@ -775,3 +775,146 @@ describe("command wiring", () => {
     }
   });
 });
+
+describe("in-overlay save feedback", () => {
+  // saveStatus is assigned in the same .then as the notify, so a newly
+  // pushed notification is a deterministic signal that the footer reflects
+  // the outcome — no file I/O polling, no flake under root.
+  async function waitForSave(notifications: { message: string; kind: string }[]): Promise<void> {
+    const before = notifications.length;
+    for (let i = 0; i < 100 && notifications.length === before; i++) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+  }
+
+  // The picker keeps the overlay open on save (done is never called), so
+  // customPromise must still be pending after the save resolves.
+  async function expectStillOpen(customPromise: Promise<unknown>): Promise<void> {
+    const stillOpen = await Promise.race([
+      customPromise.then(() => false),
+      new Promise<boolean>((r) => setTimeout(() => r(true), 20)),
+    ]);
+    expect(stillOpen).toBe(true);
+  }
+
+  test("Ctrl+S shows the confirmation in the overlay footer while still open", async () => {
+    const { commands, notifications, pi, makeCtx } = makeHarness();
+    registerModelPicker(pi);
+    const agentDir = makeAgentDir();
+    const savedEnv = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    try {
+      const { ctx, getComponent, customPromise } = makeCtx("tui");
+      const pending = commands.models.handler("", ctx);
+      await Promise.resolve();
+
+      getComponent()!.handleInput("\x13");
+      await waitForSave(notifications);
+
+      const lines = getComponent()!.render(80);
+      expect(
+        lines.some(
+          (l) => l.includes("✓") && l.includes("Default model saved: anthropic/claude-opus"),
+        ),
+      ).toBe(true);
+      await expectStillOpen(customPromise);
+      void pending;
+    } finally {
+      if (savedEnv === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = savedEnv;
+      rmSync(agentDir, { recursive: true, force: true });
+    }
+  });
+
+  test("a subsequent keypress clears the in-overlay save status", async () => {
+    const { commands, notifications, pi, makeCtx } = makeHarness();
+    registerModelPicker(pi);
+    const agentDir = makeAgentDir();
+    const savedEnv = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    try {
+      const { ctx, getComponent } = makeCtx("tui");
+      const pending = commands.models.handler("", ctx);
+      await Promise.resolve();
+
+      getComponent()!.handleInput("\x13");
+      await waitForSave(notifications);
+      expect(
+        getComponent()!
+          .render(80)
+          .some((l) => l.includes("✓")),
+      ).toBe(true);
+
+      // A non-save keypress dismisses the line (the clear runs at the top of
+      // handleInput, before any specific key matches).
+      getComponent()!.handleInput("z");
+      expect(
+        getComponent()!
+          .render(80)
+          .some((l) => l.includes("✓")),
+      ).toBe(false);
+      void pending;
+    } finally {
+      if (savedEnv === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = savedEnv;
+      rmSync(agentDir, { recursive: true, force: true });
+    }
+  });
+
+  test("Ctrl+A shows its own enable-all confirmation with the same lifecycle", async () => {
+    const { commands, notifications, pi, makeCtx } = makeHarness();
+    registerModelPicker(pi);
+    const agentDir = makeAgentDir();
+    const savedEnv = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    try {
+      const { ctx, getComponent, customPromise } = makeCtx("tui");
+      const pending = commands.models.handler("", ctx);
+      await Promise.resolve();
+
+      getComponent()!.handleInput("\x01");
+      await waitForSave(notifications);
+
+      const lines = getComponent()!.render(80);
+      expect(
+        lines.some((l) => l.includes("✓") && l.includes("Enabled models saved (2 shown)")),
+      ).toBe(true);
+      await expectStillOpen(customPromise);
+      void pending;
+    } finally {
+      if (savedEnv === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = savedEnv;
+      rmSync(agentDir, { recursive: true, force: true });
+    }
+  });
+
+  test("a failed save renders the error variant in the footer", async () => {
+    const { commands, notifications, pi, makeCtx } = makeHarness();
+    registerModelPicker(pi);
+    const agentDir = makeAgentDir();
+    mkdirSync(agentDir, { recursive: true });
+    // Root-proof failure: a settings file that is not valid JSON makes
+    // saveDefaultModel return { ok: false, error } without touching the disk.
+    writeFileSync(join(agentDir, "settings.json"), "{ this is not json");
+    const savedEnv = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    try {
+      const { ctx, getComponent } = makeCtx("tui");
+      const pending = commands.models.handler("", ctx);
+      await Promise.resolve();
+
+      getComponent()!.handleInput("\x13");
+      await waitForSave(notifications);
+
+      const lines = getComponent()!.render(80);
+      expect(lines.some((l) => l.includes("✗") && l.includes("Failed to save default model"))).toBe(
+        true,
+      );
+      void pending;
+    } finally {
+      if (savedEnv === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = savedEnv;
+      rmSync(agentDir, { recursive: true, force: true });
+    }
+  });
+});
