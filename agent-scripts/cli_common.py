@@ -19,11 +19,11 @@ import sys
 import time
 import uuid
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TextIO
+from typing import Literal, TextIO
 
 _SUPPRESSED_LEVEL = logging.CRITICAL + 1
 _MODULE_LOGGER_NAME = "cli_common"
@@ -173,29 +173,107 @@ def get_logger(
     return logger
 
 
-def append_jsonl(path: Path, record: dict[str, object]) -> None:
-    """Best-effort: append one JSON record to `path` as a single JSONL line.
+class JsonlWriteError(Exception):
+    """Raised by append_jsonl(..., on_error="raise") when the write fails.
 
-    Never raises to the caller: a write failure (bad data, disk full,
-    permissions) is swallowed and debug-logged via get_logger so a --verbose
-    operator can still see it. Logging a record is not part of any caller's
-    contract.
+    Not an OSError subclass: it also wraps serialisation failures (a record
+    json.dumps cannot encode is never an OSError). The original error is the
+    __cause__; ``path`` names the log file the write targeted.
+    """
 
-    Concurrency-safe across processes by construction: lazy parent mkdir,
-    then one unbuffered, single write() of the whole line under O_APPEND
-    ("ab", buffering=0) — exactly one write(2) syscall for a line well under
-    PIPE_BUF, which makes concurrent writers' lines interleaving-free. A
-    buffered text-mode open(path, "a") does not carry that guarantee.
+    path: Path
+
+
+OnError = Literal["log", "silent", "raise"]
+
+
+def append_jsonl(
+    path: Path,
+    record: dict[str, object],
+    *,
+    on_error: OnError = "log",
+    mode: int = 0o666,
+) -> None:
+    """Append one JSON record to ``path`` as a single JSONL line, opt-in failure reporting.
+
+    The default ``on_error="log"`` preserves today's best-effort contract: a
+    write failure (serialisation, bad parent, permissions, disk full, a short
+    or failed write, a close error) is swallowed and logged as one line on
+    stderr (always: the logger is forced to DEBUG level, whatever the
+    caller's verbosity), and the function never raises to the caller. ``on_error="silent"`` swallows the same failures with no output at
+    all. ``on_error="raise"`` raises JsonlWriteError naming ``path`` and
+    chaining the original error, so a caller that must honour a refusal (e.g. a
+    locked write) can. No caller in this repo is switched to ``raise`` by this
+    module; the choice is the caller's.
+
+    The record is serialised to bytes BEFORE anything is opened, so a
+    serialisation failure leaves no partial line behind. The line is written
+    with ONE os.write on a descriptor opened O_WRONLY | O_CREAT | O_APPEND with
+    the given ``mode`` (applied only when the file is created, masked by the
+    umask as usual — the default 0o666 reproduces today's creation permissions).
+    A short write (fewer bytes written than the line length) is itself a
+    failure: os.write does not raise for it, so the function builds its own
+    OSError and treats it like any other failure. If the write fails and the
+    close then also fails, the close error is suppressed so the original write
+    error is what surfaces; a close failure after a successful write is itself
+    the failure. The descriptor is always closed.
+
+    Concurrency: one unbuffered write under O_APPEND keeps appends to a regular
+    file from interleaving on the local filesystem; the concurrency test covers
+    the property on the tested filesystem but it is not claimed as an
+    unconditional cross-platform guarantee. A short write may already have
+    appended a partial line before the error is reported — raising callers must
+    not retry the append automatically, since a retry would concatenate onto
+    the fragment.
     """
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        line = (json.dumps(record) + "\n").encode()
-        with path.open("ab", buffering=0) as f:
-            f.write(line)
+        line_bytes = (json.dumps(record) + "\n").encode()
     except Exception as exc:
-        get_logger(_MODULE_LOGGER_NAME, verbose=True).debug(
-            "append_jsonl failed for %s: %s", path, exc
-        )
+        _report_jsonl_failure(exc, path, on_error)
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, mode)
+    except Exception as exc:
+        _report_jsonl_failure(exc, path, on_error)
+        return
+    write_err: Exception | None = None
+    try:
+        written = os.write(fd, line_bytes)
+        if written < len(line_bytes):
+            write_err = OSError(
+                f"short write: wrote {written} of {len(line_bytes)} bytes"
+            )
+    except Exception as exc:  # os.write failure
+        write_err = exc
+    # Explicit close: a plain ``try/finally: os.close(fd)`` would let a close
+    # error mask a pending write error, so close independently and only treat a
+    # close failure as the failure when the write already succeeded.
+    try:
+        os.close(fd)
+    except Exception as close_exc:
+        if write_err is not None:
+            # Write already failed: report it, not the close error that
+            # followed it.
+            _report_jsonl_failure(write_err, path, on_error)
+            return
+        _report_jsonl_failure(close_exc, path, on_error)
+        return
+    if write_err is not None:
+        _report_jsonl_failure(write_err, path, on_error)
+
+
+def _report_jsonl_failure(exc: Exception, path: Path, on_error: OnError) -> None:
+    """Surface (or swallow) an append_jsonl failure per ``on_error``."""
+    if on_error == "raise":
+        err = JsonlWriteError(f"append_jsonl failed for {path}: {exc}")
+        err.path = path
+        raise err from exc
+    if on_error == "silent":
+        return
+    get_logger(_MODULE_LOGGER_NAME, verbose=True).debug(
+        "append_jsonl failed for %s: %s", path, exc
+    )
 
 
 # Named, high-confidence, structural secret patterns only. Deliberately no
@@ -223,6 +301,23 @@ def redact_secrets(text: str, *, max_length: int = 200) -> str:
     for pattern in _REDACT_PATTERNS:
         clamped = pattern.sub("[REDACTED]", clamped)
     return clamped[:max_length]
+
+
+def timing_log_path() -> Path:
+    """The timing log path: $XDG_STATE_HOME/agent-toolkit/timing.jsonl.
+
+    Mirrors the rule timing_span has always used, extracted so the timing
+    writer can resolve it inside its own exception boundary — path resolution
+    can fail before append_jsonl is entered, and that failure must stay silent
+    (never raise, never change exit behaviour), exactly like a write failure.
+    """
+    state = os.environ.get("XDG_STATE_HOME")
+    base = (
+        Path(state)
+        if state and Path(state).is_absolute()
+        else Path.home() / ".local/state"
+    )
+    return base / "agent-toolkit/timing.jsonl"
 
 
 _TIMING_PARENT: ContextVar[tuple[str, str] | None] = ContextVar(
@@ -272,18 +367,5 @@ def timing_span(name: str, **fields: str | int) -> Iterator[dict[str, object]]:
     finally:
         record["duration_seconds"] = round(time.monotonic() - start, 6)
         _TIMING_PARENT.reset(token)
-        try:
-            state = os.environ.get("XDG_STATE_HOME")
-            base = (
-                Path(state)
-                if state and Path(state).is_absolute()
-                else Path.home() / ".local/state"
-            )
-            path = base / "agent-toolkit/timing.jsonl"
-            path.parent.mkdir(parents=True, exist_ok=True)
-            data = (json.dumps(record) + "\n").encode()
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-            with os.fdopen(fd, "ab", buffering=0) as stream:
-                stream.write(data)
-        except Exception:
-            pass
+        with suppress(Exception):
+            append_jsonl(timing_log_path(), record, on_error="silent", mode=0o600)

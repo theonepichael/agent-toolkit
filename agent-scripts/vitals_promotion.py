@@ -24,6 +24,21 @@ Flags
   --include-superseded    with --search, also match superseded records
   --json                  with --search, emit JSON instead of plain text
 
+Files read/written
+  The store lives under ``VITALS_DIR`` (``~/.claude/data/grill/vitals``): a
+  ``_global.json`` plus one ``<backlog_slug>.json`` per scope — today 7 real
+  files. Each file is a top-level JSON list of vitals records (VITALS_SCHEMA_VERSION
+  == 1). A list item is a JSON object (a VitalsRecord); that is the whole of
+  the version-1 shape. load_vitals_file enforces this container shape and
+  raises VitalsSchemaError on anything else: an unreadable or non-UTF-8 file,
+  invalid JSON, a list with a non-object item, a JSON object (with or without a
+  ``schema`` key), or any scalar. Any later schema is a JSON object carrying an
+  integer ``schema`` key; a ``schema`` that is not an integer, or an integer
+  other than 1, is an unsupported schema. Only the container shape and version
+  are checked — field-level validation of each record is out of scope. No file
+  is rewritten by this ticket; the writer is unchanged and today's 7 files stay
+  exactly as they are on disk.
+
 Service API
   Beyond argv, the module splits its effects by function name — there is no
   ``apply`` flag below the CLI, and none may be added to ``promote``:
@@ -75,6 +90,12 @@ VITALS_DIR = DATA_DIR / "vitals"
 VALID_SOURCES = {"user", "defaulted", "assumed", "tested"}
 VALID_RESULTS = {"VERIFIED", "DISPUTED", "UNVERIFIABLE"}
 
+# Version 1 is today's on-disk shape: a top-level JSON list whose items are all
+# objects. Declared here so readers/CLI can name it; the writer is unchanged and
+# no existing file is rewritten. Any later schema is a JSON object carrying an
+# integer "schema" key (see load_vitals_file).
+VITALS_SCHEMA_VERSION = 1
+
 AUTO_PROMOTE = "AUTO_PROMOTE"
 NEEDS_REVIEW = "NEEDS_REVIEW"
 PENDING_VERIFICATION = "PENDING_VERIFICATION"
@@ -102,6 +123,22 @@ class VitalsRecord(TypedDict, total=False):
     status: str
     superseded_at: str
     reason: str
+
+
+class VitalsSchemaError(ValueError):
+    """A vitals store file is unreadable, not the version-1 list shape, or a
+    schema this pass doesn't understand.
+
+    Names the offending file in ``path`` and says what is wrong in the message.
+    The CLI turns it into a one-line nonzero-exit error with no traceback, so a
+    malformed store fails loudly instead of crashing on a downstream field.
+    """
+
+    path: Path
+
+    def __init__(self, message: str, path: Path) -> None:
+        super().__init__(message)
+        self.path = path
 
 
 DecisionKey = tuple[str, str]
@@ -141,12 +178,58 @@ def atomic_write_json(path: Path, payload: object) -> None:
 
 
 def load_vitals_file(path: Path) -> list[VitalsRecord]:
-    """Parse one vitals file. Returns brand-new dicts on every call (json.loads),
-    which is what keeps the supersede pass's in-place edits invisible to
-    callers and to any other pass in the same process."""
+    """Parse one vitals file and enforce the version-1 container shape.
+
+    Version 1 is today's on-disk shape: a top-level JSON list whose items are
+    all objects. An unreadable or non-UTF-8 file, invalid JSON, a list with a
+    non-object item, an object (with or without a ``schema`` key), or any other
+    scalar all raise VitalsSchemaError naming ``path``. The writer is unchanged
+    and no existing file is rewritten — only the reader gains this guard. Scope
+    is the container shape and version only; field-level validation of each
+    record is a non-goal of this module.
+    """
     if not path.exists():
         return []
-    return cast(list[VitalsRecord], json.loads(path.read_text()))
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise VitalsSchemaError(f"cannot read {path}: {exc}", path) from exc
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise VitalsSchemaError(f"invalid JSON in {path}: {exc}", path) from exc
+    if isinstance(data, list):
+        if all(isinstance(item, dict) for item in data):
+            return cast(list[VitalsRecord], data)
+        raise VitalsSchemaError(
+            f"vitals schema 1 is a list of objects, but {path} holds a "
+            "non-object list item",
+            path,
+        )
+    if isinstance(data, dict):
+        if "schema" not in data:
+            raise VitalsSchemaError(
+                f"vitals file {path} is a JSON object without a 'schema' key; "
+                "version 1 is a top-level list",
+                path,
+            )
+        schema = data.get("schema")
+        if isinstance(schema, bool) or not isinstance(schema, int):
+            raise VitalsSchemaError(
+                f"invalid schema value {schema!r} in {path}: 'schema' must be an integer",
+                path,
+            )
+        if schema == 1:
+            raise VitalsSchemaError(
+                f"vitals schema 1 is a top-level JSON list, not an object, in {path}",
+                path,
+            )
+        raise VitalsSchemaError(f"unsupported vitals schema {schema} in {path}", path)
+    raise VitalsSchemaError(
+        f"vitals file {path} must be a top-level JSON list (schema 1), not "
+        f"{type(data).__name__}",
+        path,
+    )
 
 
 def vitals_path(vitals_dir: Path, backlog_slug: str | None) -> Path:
@@ -523,12 +606,16 @@ def main() -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
-        results = search_vitals(
-            args.data_dir / "vitals",
-            keywords,
-            args.include_superseded,
-            args.backlog_slug,
-        )
+        try:
+            results = search_vitals(
+                args.data_dir / "vitals",
+                keywords,
+                args.include_superseded,
+                args.backlog_slug,
+            )
+        except VitalsSchemaError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
         print_search_results(results, args.json, quiet=getattr(args, "quiet", False))
         return
 
@@ -552,10 +639,14 @@ def main() -> None:
         sys.exit(1)
 
     vitals_dir = args.data_dir / "vitals"
-    if args.apply:
-        report = promote(sessions, vitals_dir=vitals_dir)
-    else:
-        report = classify(sessions, vitals_dir=vitals_dir)
+    try:
+        if args.apply:
+            report = promote(sessions, vitals_dir=vitals_dir)
+        else:
+            report = classify(sessions, vitals_dir=vitals_dir)
+    except VitalsSchemaError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
     print_report(report, args.apply, quiet=getattr(args, "quiet", False))
 
 

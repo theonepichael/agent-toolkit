@@ -41,6 +41,45 @@ class TimingTests(unittest.TestCase):
                 pass
         self.assertEqual(output.getvalue(), "")
 
+    def test_timing_write_failure_is_silent(self) -> None:
+        """Criterion 8: a timing write failure (real append_jsonl on_error=
+        "silent") stays silent and creates no file."""
+        real_write = os.write
+
+        def bad(fd: int, data: bytes) -> int:
+            raise OSError("disk full")
+
+        with patch.object(cli_common.os, "write", side_effect=bad):
+            with cli_common.timing_span("boom"):
+                pass
+        # O_CREAT makes the file appear empty, but no record line is written.
+        self.assertEqual(self.path.read_bytes(), b"")
+
+    def test_failing_timing_log_path_is_silent(self) -> None:
+        """Criterion 8: path resolution failing before append_jsonl is entered
+        must stay silent, never raise — it is inside the finally's own
+        exception boundary."""
+        with patch.object(
+            cli_common, "timing_log_path", side_effect=OSError("no home")
+        ):
+            with cli_common.timing_span("boom"):
+                pass
+        self.assertFalse(self.path.exists())
+
+    def test_timing_write_failure_while_body_raises_propagates_body(self) -> None:
+        """Criterion 8: a span-body raise propagates unchanged even when the
+        timing write also fails, and stderr stays empty."""
+        output = io.StringIO()
+        with patch.object(
+            cli_common,
+            "append_jsonl",
+            side_effect=cli_common.JsonlWriteError("write failed", self.path),
+        ), redirect_stderr(output):
+            with self.assertRaises(ValueError):
+                with cli_common.timing_span("boom"):
+                    raise ValueError("body boom")
+        self.assertEqual(output.getvalue(), "")
+
     def test_nested_identity_and_exceptions(self) -> None:
         with cli_common.timing_span("outer"):
             with self.assertRaisesRegex(ValueError, "private"):

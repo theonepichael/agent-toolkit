@@ -143,9 +143,23 @@ def _recover(toy: dict[str, Path], *extra: str) -> str:
 def _process_gone(pid: int) -> bool:
     try:
         stat = Path(f"/proc/{pid}/stat").read_text()
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
         return True
     return stat.rsplit(")", 1)[1].split()[0] == "Z"
+
+
+@pytest.mark.regression(
+    "process-gone-check-races-with-process-exit",
+    "ProcessLookupError: [Errno 3] No such process",
+)
+def test_process_gone_treats_a_vanishing_process_as_gone(monkeypatch):
+    # A process that exits between open() and read() of /proc/<pid>/stat
+    # raises ESRCH (ProcessLookupError), not FileNotFoundError.
+    def vanish(self, *args, **kwargs):
+        raise ProcessLookupError(3, "No such process")
+
+    monkeypatch.setattr(Path, "read_text", vanish)
+    assert _process_gone(123456)
 
 
 # ── fault_checkpoint.checkpoint ───────────────────────────────────────────────

@@ -499,6 +499,23 @@ class EndToEndTests(unittest.TestCase):
                 self.assertNotIn('action: "render"', text, f"{skill} on {harness}")
                 self.assertNotIn('action: "recap"', text, f"{skill} on {harness}")
 
+    def test_grill_me_outputs_carry_vitals_failure_guidance(self) -> None:
+        """Criterion 9: both grill-me templates carry the vitals failure
+        guidance; the generator's drift check only compares each output with its
+        own template, so it would not catch a missing sentence — assert it in
+        all seven generated grill-me outputs directly."""
+        rendered = gs.render_all(REPO_ROOT, SKILL_PARAMS)
+        search_guidance = "a failed search is an error to report, not 'no settled facts'"
+        apply_guidance = "An `--apply` that fails on a malformed vitals file promoted nothing"
+        for harness in ("claude", "copilot", "opencode", "agy", "codex", "pi", "pi-prompt"):
+            text = rendered[gs.OUTPUT_PATHS[("grill-me", harness)]]
+            self.assertIn(
+                search_guidance, text, f"search guidance missing in grill-me/{harness}"
+            )
+            self.assertIn(
+                apply_guidance, text, f"apply guidance missing in grill-me/{harness}"
+            )
+
 
 if __name__ == "__main__":
     test_bootstrap.run_unittest_main()

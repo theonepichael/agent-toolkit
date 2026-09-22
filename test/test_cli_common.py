@@ -4,6 +4,7 @@ import argparse
 import io
 import json
 import logging
+import os
 import subprocess
 import sys
 import tempfile
@@ -193,14 +194,21 @@ class AppendJsonlTests(unittest.TestCase):
         cli_common.append_jsonl(path, {"ok": True})
         self.assertTrue(path.exists())
 
-    def test_single_write_call_under_append_binary_mode(self) -> None:
+    def test_single_os_write_call_writes_whole_line(self) -> None:
+        """The record travels as one bytes buffer written with a single os.write
+        under O_APPEND — replaced the old Path.open("ab") assertion."""
         path = self.tmp / "out.jsonl"
-        real_open = Path.open
-        with patch.object(
-            Path, "open", autospec=True, side_effect=real_open
-        ) as mock_open:
+        writes: list[tuple[int, bytes]] = []
+        real_write = os.write
+
+        def count_write(fd: int, data: bytes) -> int:
+            writes.append((fd, data))
+            return real_write(fd, data)
+
+        with patch.object(os, "write", side_effect=count_write):
             cli_common.append_jsonl(path, {"i": 1})
-        mock_open.assert_called_once_with(path, "ab", buffering=0)
+        self.assertEqual(len(writes), 1)
+        self.assertEqual(json.loads(writes[0][1].decode())["i"], 1)
 
     def test_never_raises_when_parent_is_a_file(self) -> None:
         blocker = self.tmp / "blocker"
@@ -221,6 +229,137 @@ class AppendJsonlTests(unittest.TestCase):
             cli_common.get_logger("cli_common", verbose=True)
             cli_common.append_jsonl(blocker / "child" / "out.jsonl", {"i": 1})
         self.assertIn("append_jsonl failed", captured.getvalue())
+
+    def test_default_mode_failure_emits_todays_stderr_unconfigured(self) -> None:
+        """Criterion 11: a default-mode failure test with NO preconfigured
+        logger must still show today's stderr output (the call forces the
+        verbose debug level itself)."""
+        blocker = self.tmp / "blocker"
+        blocker.write_text("not a directory")
+        captured = io.StringIO()
+        with patch("sys.stderr", new=captured):
+            cli_common.append_jsonl(blocker / "child" / "out.jsonl", {"i": 1})
+        self.assertIn("append_jsonl failed", captured.getvalue())
+
+    def test_silent_mode_emits_no_stderr(self) -> None:
+        blocker = self.tmp / "blocker"
+        blocker.write_text("not a directory")
+        captured = io.StringIO()
+        with patch("sys.stderr", new=captured):
+            cli_common.append_jsonl(
+                blocker / "child" / "out.jsonl", {"i": 1}, on_error="silent"
+            )
+        self.assertEqual(captured.getvalue(), "")
+
+    def test_log_mode_swallows_and_debug_logs(self) -> None:
+        blocker = self.tmp / "blocker"
+        blocker.write_text("not a directory")
+        captured = io.StringIO()
+        with patch("sys.stderr", new=captured):
+            cli_common.get_logger("cli_common", verbose=True)
+            cli_common.append_jsonl(
+                blocker / "child" / "out.jsonl", {"i": 1}, on_error="log"
+            )
+        self.assertIn("append_jsonl failed", captured.getvalue())
+
+    def test_raise_mode_unserializable_record_sets_path(self) -> None:
+        """Criterion 1: an unserialisable record raises, before any file is
+        opened, with the target path and no partial line."""
+        path = self.tmp / "out.jsonl"
+        with self.assertRaises(cli_common.JsonlWriteError) as ctx:
+            cli_common.append_jsonl(path, {"bad": object()}, on_error="raise")
+        self.assertEqual(ctx.exception.path, path)
+        self.assertFalse(path.exists())
+
+    def test_raise_mode_unwritable_parent_sets_path(self) -> None:
+        blocker = self.tmp / "blocker"
+        blocker.write_text("not a directory")
+        path = blocker / "child" / "out.jsonl"
+        with self.assertRaises(cli_common.JsonlWriteError) as ctx:
+            cli_common.append_jsonl(path, {"i": 1}, on_error="raise")
+        self.assertEqual(ctx.exception.path, path)
+
+    def test_raise_mode_unopenable_path_sets_path(self) -> None:
+        path = self.tmp / "dir"
+        path.mkdir()
+        with self.assertRaises(cli_common.JsonlWriteError) as ctx:
+            cli_common.append_jsonl(path, {"i": 1}, on_error="raise")
+        self.assertEqual(ctx.exception.path, path)
+
+    def test_raise_mode_short_write_sets_path(self) -> None:
+        """Criterion 1: a short write is a failure — os.write does not raise,
+        so append_jsonl builds its own OSError and raises it."""
+        path = self.tmp / "out.jsonl"
+        path.write_text("")
+        real_write = os.write
+
+        def short_write(fd: int, data: bytes) -> int:
+            return real_write(fd, data[:2])
+
+        with patch.object(os, "write", side_effect=short_write):
+            with self.assertRaises(cli_common.JsonlWriteError) as ctx:
+                cli_common.append_jsonl(path, {"i": 1}, on_error="raise")
+        self.assertEqual(ctx.exception.path, path)
+        self.assertIn("short write", str(ctx.exception.__cause__))
+
+    def test_raise_mode_write_and_close_failure_surfaces_write(self) -> None:
+        """Criterion 12: when write and close both fail, the write error
+        surfaces and the close error is suppressed."""
+        path = self.tmp / "out.jsonl"
+        path.write_text("")
+
+        def bad_write(fd: int, data: bytes) -> int:
+            raise OSError("write boom")
+
+        with patch.object(os, "write", side_effect=bad_write), patch.object(
+            os, "close", side_effect=OSError("close boom")
+        ):
+            with self.assertRaises(cli_common.JsonlWriteError) as ctx:
+                cli_common.append_jsonl(path, {"i": 1}, on_error="raise")
+        self.assertIn("write boom", str(ctx.exception.__cause__))
+        self.assertNotIn("close boom", str(ctx.exception.__cause__))
+
+    def test_raise_mode_close_failure_after_write_sets_path(self) -> None:
+        """Criterion 12: a close failure after a successful write is itself
+        the failure."""
+        path = self.tmp / "out.jsonl"
+        path.write_text("")
+
+        def bad_close(fd: int) -> None:
+            raise OSError("close boom")
+
+        with patch.object(os, "close", side_effect=bad_close):
+            with self.assertRaises(cli_common.JsonlWriteError) as ctx:
+                cli_common.append_jsonl(path, {"i": 1}, on_error="raise")
+        self.assertEqual(ctx.exception.path, path)
+        self.assertIn("close boom", str(ctx.exception.__cause__))
+
+    def test_default_mode_uses_todays_creation_mode(self) -> None:
+        """Criterion 3: a new file gets today's default mode (0o666 masked),
+        not 0o600 — set the umask so the assertion is umask-independent."""
+        old = os.umask(0o022)
+        try:
+            path = self.tmp / "out.jsonl"
+            cli_common.append_jsonl(path, {"i": 1})
+            self.assertEqual(path.stat().st_mode & 0o777, 0o666 & ~0o022)
+        finally:
+            os.umask(old)
+
+    def test_explicit_mode_600_for_new_file(self) -> None:
+        old = os.umask(0o022)
+        try:
+            path = self.tmp / "out.jsonl"
+            cli_common.append_jsonl(path, {"i": 1}, mode=0o600)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600 & ~0o022)
+        finally:
+            os.umask(old)
+
+    def test_existing_file_mode_unchanged(self) -> None:
+        path = self.tmp / "out.jsonl"
+        path.write_text("")
+        os.chmod(path, 0o600)
+        cli_common.append_jsonl(path, {"i": 1}, mode=0o666)
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
 
 class RedactSecretsTests(unittest.TestCase):
