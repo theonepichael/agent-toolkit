@@ -104,6 +104,7 @@ def test_the_guard_script_is_stdlib_only() -> None:
         "sys",
         "dataclasses",
         "pathlib",
+        "agent_toolkit_paths",
         "cli_common",
         "backlog_claim_lookup",
         "worktree_provenance",

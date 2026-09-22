@@ -26,7 +26,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-# Frozen dest set (32 script links + the managed_dir audit entry), updated
+# Frozen dest set (33 script links + the managed_dir audit entry), updated
 # in lockstep with each deliberate new agent-scripts/ addition -- a drift
 # here must be an intentional edit to this list, never a silent add/remove.
 # agent-toolkit's links.toml must keep exactly these dests pointing at
@@ -35,6 +35,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 FROZEN_SCRIPT_DESTS = frozenset(
     f"~/.claude/scripts/{name}"
     for name in (
+        "agent_toolkit_paths.py",
         "analyze_sessions.py",
         "cli_common.py",
         "fault_checkpoint.py",
@@ -130,7 +131,7 @@ def test_links_toml_srcs_live_in_agent_scripts() -> None:
         if isinstance(entry.get("src"), str)
         and "~/.claude/scripts" in str(entry.get("dest", ""))
     ]
-    assert len(script_links) == 41, f"expected 41 script links, got {len(script_links)}"
+    assert len(script_links) == 42, f"expected 42 script links, got {len(script_links)}"
     bad = [
         entry["src"]
         for entry in script_links

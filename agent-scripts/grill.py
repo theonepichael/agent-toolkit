@@ -43,9 +43,10 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import NoReturn, NotRequired, TypedDict, cast
 
+import agent_toolkit_paths
 import cli_common
 
-DATA_DIR = Path.home() / ".claude" / "data" / "grill"
+DATA_DIR = agent_toolkit_paths.path_for("decisions")
 SCHEMA_VERSION = 1
 
 VALID_SOURCES = {"user", "defaulted", "assumed", "tested"}

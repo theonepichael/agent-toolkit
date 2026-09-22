@@ -24,6 +24,7 @@ from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+import agent_toolkit_paths
 import cli_common
 from standup_adapters import (
     ADAPTERS,
@@ -37,12 +38,11 @@ from standup_adapters import (
     NotConfiguredError,
 )
 
-DATA_DIR = Path.home() / ".claude" / "data" / "standup"
+DATA_DIR = agent_toolkit_paths.path_for("standups")
 CONFIG_FILE = DATA_DIR / "config.json"
-BACKLOG_FILE = Path.home() / ".claude" / "data" / "backlog" / "items.json"
-CANONICAL_PENDING_FILE = (
-    Path.home() / ".claude" / "data" / "backlog" / "pending_items.json"
-)
+_BACKLOG_DIR = agent_toolkit_paths.path_for("work-items")
+BACKLOG_FILE = _BACKLOG_DIR / "items.json"
+CANONICAL_PENDING_FILE = _BACKLOG_DIR / "pending_items.json"
 
 
 class StandupConfigError(Exception):

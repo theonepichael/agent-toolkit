@@ -45,7 +45,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-Layout = Literal["legacy", "toolkit-home"]
+import agent_toolkit_paths
+
+Layout = agent_toolkit_paths.Layout
 PointerWriter = Callable[[Path, Layout], None]
 """``(home, layout)``: writes the layout pointer under ``home``."""
 
@@ -62,17 +64,7 @@ LEGACY_DATA_FILES: tuple[str, ...] = (
 )
 LEGACY_DATA_ENTRIES: tuple[str, ...] = LEGACY_DATA_DIRS + LEGACY_DATA_FILES
 TOOLKIT_HOME_DIRS: tuple[str, ...] = ("data", "scripts", "hooks", "config")
-POINTER_RELPATH = Path(".claude") / "data" / "toolkit_state.json"
-
-
-def provisional_pointer_writer(home: Path, layout: Layout) -> None:
-    """PROVISIONAL placeholder: writes ``{"layout": <layout>}`` as JSON.
-
-    The path resolver owns the pointer's real format and replaces this.
-    """
-    path = home / POINTER_RELPATH
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"layout": layout}) + "\n")
+POINTER_RELPATH = agent_toolkit_paths.POINTER_RELPATH
 
 
 @dataclass
@@ -95,15 +87,18 @@ class SandboxHome:
     @contextmanager
     def activated(self) -> Iterator[Path]:
         """Set ``HOME`` to this home for the block; always restore it."""
-        previous = os.environ.get("HOME")
+        previous_home = os.environ.get("HOME")
+        previous_override = os.environ.pop("AGENT_TOOLKIT_HOME", None)
         os.environ["HOME"] = str(self.home)
         try:
             yield self.home
         finally:
-            if previous is None:
+            if previous_home is None:
                 os.environ.pop("HOME", None)
             else:
-                os.environ["HOME"] = previous
+                os.environ["HOME"] = previous_home
+            if previous_override is not None:
+                os.environ["AGENT_TOOLKIT_HOME"] = previous_override
 
 
 @dataclass
@@ -122,7 +117,7 @@ def _build_legacy(data: Path) -> None:
 def build_two_layout_homes(
     root: Path,
     *,
-    pointer_writer: PointerWriter = provisional_pointer_writer,
+    pointer_writer: PointerWriter = agent_toolkit_paths.write_pointer,
     initial: Layout = "legacy",
 ) -> TwoLayoutHomes:
     """Build ``root/local`` (both layouts) and ``root/peer`` (legacy only)."""

@@ -671,6 +671,57 @@ class ModuleFactExtractionTests(unittest.TestCase):
             ],
         )
 
+    def test_path_constants_recognize_agent_toolkit_paths_call(self) -> None:
+        tree = parse(
+            """
+            import agent_toolkit_paths
+
+            DATA_DIR = agent_toolkit_paths.path_for("work-items")
+            ITEMS_FILE = DATA_DIR / "items.json"
+            """
+        )
+        self.assertEqual(
+            gi.extract_path_constants(tree),
+            [
+                "DATA_DIR = agent_toolkit_paths.path_for('work-items')",
+                "ITEMS_FILE = DATA_DIR / 'items.json'",
+            ],
+        )
+
+    def test_unqualified_path_for_is_not_a_path_constant(self) -> None:
+        tree = parse(
+            """
+            def path_for(domain):
+                return None
+
+            DATA_DIR = path_for("work-items")
+            """
+        )
+        self.assertEqual(gi.extract_path_constants(tree), [])
+
+    def test_path_constant_inside_module_try_block_is_found(self) -> None:
+        tree = parse(
+            """
+            import agent_toolkit_paths
+
+            LAYOUT_ERROR = None
+            try:
+                DATA_DIR = agent_toolkit_paths.path_for("work-items")
+            except agent_toolkit_paths.LayoutError:
+                DATA_DIR = None
+                LAYOUT_ERROR = "bad"
+
+            ITEMS_FILE = DATA_DIR / "items.json"
+            """
+        )
+        self.assertEqual(
+            gi.extract_path_constants(tree),
+            [
+                "DATA_DIR = agent_toolkit_paths.path_for('work-items')",
+                "ITEMS_FILE = DATA_DIR / 'items.json'",
+            ],
+        )
+
     def test_internal_imports_only_match_siblings(self) -> None:
         tree = parse(
             """

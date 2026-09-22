@@ -120,6 +120,10 @@ src = "claude/icons"
 dest = "~/.claude/icons"
 
 [[link]]
+src = "agent-scripts/agent_toolkit_paths.py"
+dest = "~/.claude/scripts/agent_toolkit_paths.py"
+
+[[link]]
 src = "agent-scripts/dev_status.py"
 dest = "~/.claude/scripts/dev_status.py"
 

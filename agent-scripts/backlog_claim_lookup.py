@@ -47,10 +47,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
+import agent_toolkit_paths
+
 if TYPE_CHECKING:
     from dev_status_storage import BacklogItem
 
-DEFAULT_BACKLOG_ITEMS = Path.home() / ".claude" / "data" / "backlog" / "items.json"
+LAYOUT_ERROR: agent_toolkit_paths.LayoutError | None = None
+try:
+    DEFAULT_BACKLOG_ITEMS = agent_toolkit_paths.path_for("work-items") / "items.json"
+except agent_toolkit_paths.LayoutError as _exc:
+    DEFAULT_BACKLOG_ITEMS = None  # type: ignore[assignment]
+    LAYOUT_ERROR = _exc
 
 
 def backlog_items_path() -> Path:
@@ -60,7 +67,12 @@ def backlog_items_path() -> Path:
     the environment the harness was launched in -- an agent's own shell
     cannot reach the hook's environment."""
     override = os.environ.get("GUARD_RAILS_STORE")
-    return Path(override) if override else DEFAULT_BACKLOG_ITEMS
+    if override:
+        return Path(override)
+    if DEFAULT_BACKLOG_ITEMS is None:
+        assert LAYOUT_ERROR is not None
+        raise LAYOUT_ERROR
+    return DEFAULT_BACKLOG_ITEMS
 
 
 @dataclass(frozen=True)

@@ -92,11 +92,18 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+import agent_toolkit_paths
+import backlog_claim_lookup
 import cli_common
 from backlog_claim_lookup import BacklogClaimLookup, ClaimInfo, LocalClaimLookup
 from worktree_provenance import read_marker, worktree_points_at_item
 
-GUARD_RAILS_LOG_PATH = Path.home() / ".claude" / "data" / "guard_rails_audit.jsonl"
+LAYOUT_ERROR: agent_toolkit_paths.LayoutError | None = None
+try:
+    GUARD_RAILS_LOG_PATH = agent_toolkit_paths.path_for("guard-rail-log")
+except agent_toolkit_paths.LayoutError as _exc:
+    GUARD_RAILS_LOG_PATH = None
+    LAYOUT_ERROR = _exc
 PROTECTED_BRANCHES = {"main", "master"}
 GIT_TIMEOUT = 2.0
 
@@ -694,7 +701,15 @@ def evaluate(req: Request, claims: BacklogClaimLookup) -> Verdict:
     if info is None or info.is_bare:
         return Verdict("allow")
 
-    items = claims.in_progress_items()
+    try:
+        items = claims.in_progress_items()
+    except agent_toolkit_paths.LayoutError as exc:
+        return Verdict(
+            "deny",
+            str(exc),
+            rule="layout-error",
+        )
+
     if not info.is_worktree and info.branch in PROTECTED_BRANCHES and items:
         slug = _busy_item(info.common_dir, items)
         if slug is not None:
@@ -809,6 +824,8 @@ def _audit_verdict(harness: str, req: Request | None, verdict: Verdict) -> None:
     a disabled guard). The bash-family target is the command; the
     write-family target is the file path; both pass through
     redact_secrets before storage."""
+    if GUARD_RAILS_LOG_PATH is None:
+        return
     target = "" if req is None else (req.command if req.tool == "bash" else req.path)
     cli_common.append_jsonl(
         GUARD_RAILS_LOG_PATH,
@@ -844,9 +861,47 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _layout_error_reason() -> str | None:
+    """Return a blocking reason if either hook module hit a layout error."""
+    if LAYOUT_ERROR is not None:
+        return str(LAYOUT_ERROR)
+    if backlog_claim_lookup.LAYOUT_ERROR is not None:
+        return str(backlog_claim_lookup.LAYOUT_ERROR)
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    claims = LocalClaimLookup()
+
+    if os.environ.get("GUARD_RAILS_OFF") == "1":
+        # Bypass every rule, including layout errors, exactly as before.
+        claims = LocalClaimLookup()
+    else:
+        layout_reason = _layout_error_reason()
+        if layout_reason is not None:
+            verdict = Verdict(
+                "deny",
+                layout_reason,
+                rule="layout-error",
+            )
+            if args.harness:
+                out, code = render(args.harness, verdict)
+                if args.harness == "copilot" and verdict.reason:
+                    print(verdict.reason, file=sys.stderr)
+                print(out)
+                _audit_verdict(args.harness, None, verdict)
+                return code
+            req = Request(
+                tool=tool_family(args.tool),
+                cwd=args.cwd or "",
+                path=args.path or "",
+                command=args.command or "",
+            )
+            out, code = render(None, verdict)
+            print(out)
+            _audit_verdict("", req, verdict)
+            return code
+        claims = LocalClaimLookup()
 
     if args.harness:
         try:
