@@ -23,6 +23,7 @@ test_bootstrap.bootstrap()
 _REAL_HOME = test_bootstrap.REAL_HOME
 
 import pytest  # noqa: E402
+import test_layouts  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -41,3 +42,13 @@ def guard_production_paths(
         monkeypatch.setenv("HOME", str(test_bootstrap.REAL_HOME))
     with test_bootstrap.guards(paths=not allowed):
         yield
+
+
+@pytest.fixture
+def two_layout_homes(tmp_path: Path) -> test_layouts.TwoLayoutHomes:
+    """A home holding both layouts plus a legacy-only fake peer home.
+
+    See ``agent-scripts/test_layouts.py`` for what this does and does not
+    prove.
+    """
+    return test_layouts.build_two_layout_homes(tmp_path)

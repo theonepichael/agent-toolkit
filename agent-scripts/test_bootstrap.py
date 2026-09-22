@@ -63,8 +63,15 @@ GUARDED_HOME_SUBDIRS: list[Path] = [
     REAL_HOME / ".claude",
     REAL_HOME / ".config",
     REAL_HOME / ".local" / "state" / "agent-toolkit",
+    REAL_HOME / ".agent-toolkit",
 ]
 """Real-home subtrees a guarded write may never touch.
+
+The guard only sees path arguments whose raw string contains one of
+:data:`_PATH_PREFILTER_MARKERS` (absolute or ``~``-prefixed paths). A
+marker-free relative path, a ``..`` path from inside a guarded root, a
+marker-free symlink alias, a ``dir_fd=`` call, or a keyword path argument
+is not checked. Every root in this list has that same reach.
 
 A mutable module attribute on purpose: the suite's probe test swaps in a
 ``tmp_path``-rooted copy to exercise every guarded API without aiming at the
@@ -73,7 +80,7 @@ developer's real state.
 
 _WRITE_MODE_CHARS = frozenset("wax+")
 _WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT
-_PATH_PREFILTER_MARKERS = (".claude", ".config", ".local/state", "~")
+_PATH_PREFILTER_MARKERS = (".claude", ".config", ".local/state", ".agent-toolkit", "~")
 
 _ACTIVE = {"subprocess": False, "paths": False}
 _INSTALLED = False

@@ -43,6 +43,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`dev_status_read.py`](#agentscriptsdevstatusreadpy) | Pure read-only facade over the dev_status backlog store. |
 | [`dev_status_storage.py`](#agentscriptsdevstatusstoragepy) | Backlog persistence, lock coordination, and journal primitives. |
 | [`dev_status_types.py`](#agentscriptsdevstatustypespy) | Backlog data model — the on-disk shapes shared across the dev_status stack. |
+| [`fault_checkpoint.py`](#agentscriptsfaultcheckpointpy) | Named crash points for proving what a killed process leaves behind. |
 | [`gen_interfaces.py`](#agentscriptsgeninterfacespy) | gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources. |
 | [`gen_second_opinion.py`](#agentscriptsgensecondopinionpy) | gen_second_opinion.py — regenerate the second-opinion skill copies (one per harness, named in HARNESS_TABLE) from one canonical template. |
 | [`gen_shell_completion.py`](#agentscriptsgenshellcompletionpy) | Generate a zsh `#compdef` completion file for a harness CLI. |
@@ -487,6 +488,17 @@ Backlog data model — the on-disk shapes shared across the dev_status stack.
   - `class BacklogItem(TypedDict)` — A single backlog item as stored in ``items.json`` (schema v2).
   - `class PendingItem(TypedDict)` — A single waiting-on-someone-else item as stored in ``pending_items.json``.
 - Tested by: nothing
+
+### `agent-scripts/fault_checkpoint.py`
+
+Named crash points for proving what a killed process leaves behind.
+
+- Installed at: `~/.claude/scripts/fault_checkpoint.py` (all harnesses)
+- Entrypoint: not executable, no shebang
+- CLI: none (library module).
+- Public functions:
+  - `checkpoint(name: str) -> None` — Die here by SIGKILL if the harness armed this checkpoint; else return.
+- Tested by: `agent-scripts/test_fault_injection.py`, `test/test_fault_checkpoint.py`
 
 ### `agent-scripts/gen_interfaces.py`
 

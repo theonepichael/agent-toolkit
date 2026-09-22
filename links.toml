@@ -169,6 +169,10 @@ src = "agent-scripts/cli_common.py"
 dest = "~/.claude/scripts/cli_common.py"
 
 [[link]]
+src = "agent-scripts/fault_checkpoint.py"
+dest = "~/.claude/scripts/fault_checkpoint.py"
+
+[[link]]
 src = "agent-scripts/llm_backends.py"
 dest = "~/.claude/scripts/llm_backends.py"
 
