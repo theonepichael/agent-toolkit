@@ -362,7 +362,7 @@ def test_generated_output_test_tree_and_exempt_file_are_not_scanned(tmp_path):
     problems = hand(
         tmp_path,
         files,
-        exempt={"agent-scripts/*.py": "owned elsewhere"},
+        exempt={"agent-scripts/y.py": "owned elsewhere"},
         table={"g": gen(["out.md"])},
     )
     assert problems == []
@@ -370,9 +370,9 @@ def test_generated_output_test_tree_and_exempt_file_are_not_scanned(tmp_path):
 
 def test_stale_exemption_is_reported(tmp_path):
     rel = write(tmp_path, "agent-scripts/y.py", "no legacy paths here\n")
-    problems = hand(tmp_path, [rel], exempt={"agent-scripts/*.py": "owned elsewhere"})
+    problems = hand(tmp_path, [rel], exempt={"agent-scripts/y.py": "owned elsewhere"})
     assert len(problems) == 1
-    assert "agent-scripts/*.py" in problems[0]
+    assert "agent-scripts/y.py" in problems[0]
     assert "stale" in problems[0]
 
 
@@ -384,3 +384,14 @@ def test_hand_authored_cli_exit_codes(tmp_path, monkeypatch, capsys):
     assert "a.md:1" in capsys.readouterr().out
     monkeypatch.setattr(c, "hand_authored_legacy_references", lambda repo: [])
     assert c.main(["hand-authored"]) == 0
+
+
+@pytest.mark.allow_real_subprocess  # git ls-files on this checkout
+def test_exemption_rows_name_single_tracked_files():
+    """A wildcard row once hid live code (session-start hook commands, user
+    hints) behind a docstring-only owner: each row must name one file, so
+    its owner and its staleness are exact."""
+    tracked = set(c.tracked_files(c.REPO))
+    for pattern in c.LEGACY_PATH_EXEMPT:
+        assert not any(ch in pattern for ch in "*?["), pattern
+        assert pattern in tracked, pattern

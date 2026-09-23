@@ -45,7 +45,6 @@ from __future__ import annotations
 
 import argparse
 import ast
-import fnmatch
 import importlib
 import re
 import subprocess
@@ -818,29 +817,39 @@ def generated_legacy_references(
 
 
 LEGACY_PATH_EXEMPT: dict[str, str] = {
+    # One tracked file per row, so each row's owner and staleness are exact.
     # Permanent: these name the legacy layout on purpose.
     "agent-scripts/agent_toolkit_paths.py": "resolves the legacy layout",
     "migrate_toolkit_home.py": "migrates from the legacy layout",
     "scripts/check_toolkit_paths.py": "classifies legacy paths",
     # Owned by other release-1 changes; delete the row when that change lands.
-    "agent-scripts/*.py": (
-        "module docstrings move in the docstring-paths change; the notify.py "
-        "install mapping in harness_spec.py moves with links.toml"
+    **dict.fromkeys(
+        (
+            "agent-scripts/analyze_sessions.py",
+            "agent-scripts/dev_status.py",
+            "agent-scripts/dev_status_impl.py",
+            "agent-scripts/dev_status_storage.py",
+            "agent-scripts/gen_interfaces.py",
+            "agent-scripts/guard_rails.py",
+            "agent-scripts/harness_discovery_check.py",
+            "agent-scripts/herdr_delegate.py",
+            "agent-scripts/link_inspect.py",
+            "agent-scripts/llm_backends.py",
+            "agent-scripts/sessionstart_checks.py",
+            "agent-scripts/settings_seed_drift_check.py",
+            "agent-scripts/to_tickets_runner.py",
+            "agent-scripts/vitals_promotion.py",
+            "agent-scripts/worktree.py",
+        ),
+        "docstrings, comments, hint strings and session-start commands move "
+        "in the agent-scripts paths change",
     ),
+    "agent-scripts/harness_spec.py": "the notify.py install mapping moves with links.toml",
+    "agent-scripts/notify.py": "the icons directory moves with links.toml",
     "links.toml": "install destinations move with the links and settings change",
     "install.py": "install destinations move with the links and settings change",
     "claude/CORE_INSTRUCTIONS.md": "synced from its origin repository, moved there",
 }
-
-
-def _exempt_row(rel: str, exempt: dict[str, str]) -> str | None:
-    """The first exemption pattern covering ``rel``, exact names first."""
-    if rel in exempt:
-        return rel
-    for pattern in exempt:
-        if fnmatch.fnmatchcase(rel, pattern):
-            return pattern
-    return None
 
 
 def hand_authored_legacy_references(
@@ -872,9 +881,8 @@ def hand_authored_legacy_references(
         legacy = [r for r in references_in(rel, text) if r.cls == "toolkit"]
         if not legacy:
             continue
-        row = _exempt_row(rel, exempt)
-        if row is not None:
-            used.add(row)
+        if rel in exempt:
+            used.add(rel)
             continue
         for ref in legacy:
             shown = "/".join((".claude",) + ref.segments)
