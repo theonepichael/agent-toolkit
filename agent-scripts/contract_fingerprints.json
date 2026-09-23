@@ -161,6 +161,7 @@
     "handler start: Handle ``start``: mark a backlog item in-progress.",
     "handler unblock: Handle ``unblock``: remove a blocker from a backlog item.",
     "handler update: Handle ``update``: merge a JSON patch into a backlog item.",
+    "handler validate: Read-only store validation used as the release-1 migration's post-commit check. Loads, parses, and schema-checks every toolkit store, renders the work dashboard WITHOUT the dead-claim sweep, lists every grill decision session, validates every ticket batch, and resolves each item's ``related_files`` paths -- all as pure reads. It performs no write and takes no migration scope: it reads the stores directly (the ``load_*`` helpers take no lock) rather than through :func:`backlog_lock` (which would enter ``migration_lock.shared`` and be refused while the migrator holds the lock exclusively). See the Release-1 cutover plan's \"Validation must not mutate the data it validates\" section. Args: args: Parsed ``validate`` arguments (currently none).",
     "handler worktree: Handle ``worktree``: create or reuse a git worktree and bootstrap dependencies.",
     "subcommand add: append a new item (id required in JSON)",
     "subcommand approve: approve an in-review item, marking it done",
@@ -197,6 +198,7 @@
     "subcommand start: mark item in-progress",
     "subcommand unblock: remove a blocker from an item",
     "subcommand update: merge JSON patch into an item",
+    "subcommand validate: read-only store validation: load, parse, schema-check every store, render the dashboard without the claim sweep, list grill sessions, validate ticket batches, and resolve related_files paths -- no writes, no migration scope",
     "subcommand worktree: create or reuse a git worktree and bootstrap dependencies"
   ],
   "gen_interfaces.py": [

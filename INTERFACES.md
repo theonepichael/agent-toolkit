@@ -259,6 +259,7 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `ready [--prefix <PREFIX>]` — print the READY bucket as JSON (open, unblocked, full records)
     - `--prefix` — only items whose slug starts with this (e.g. meta-)
   - `show <slug|N>` — print full JSON for an item
+  - `validate` — read-only store validation: load, parse, schema-check every store, render the dashboard without the claim sweep, list grill sessions, validate ticket batches, and resolve related_files paths -- no writes, no migration scope
   - `add '{"id": "my-slug", "summary": "...", "priority": "high"}'` — append a new item (id required in JSON)
   - `update <slug|N> '{"field": "value", "priority": "high"}' [--if-rev <N>]` — merge JSON patch into an item
     - `--if-rev` — required when <id> is numeric; get the current value from render/list/show immediately before this call
@@ -329,7 +330,7 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `out-of-scope show <concept-slug>` — print a rejected concept's full record
 - Environment: `DEVSTATUS_AGENT`, `DEVSTATUS_RECAP_AGY_MODEL`, `DEVSTATUS_RECAP_DISABLE`, `DEVSTATUS_RECAP_TIMEOUT_SECONDS`
 - Explicit exit codes: `1`, `2`
-- Depends on: `agent_toolkit_paths.py`, `cli_common.py`, `dev_status_formatting.py`, `dev_status_mutation.py`, `dev_status_storage.py`, `dev_status_types.py`, `llm_backends.py`, `migration_lock.py`, `worktree.py`
+- Depends on: `agent_toolkit_paths.py`, `cli_common.py`, `dev_status_formatting.py`, `dev_status_mutation.py`, `dev_status_storage.py`, `dev_status_types.py`, `grill.py`, `llm_backends.py`, `migration_lock.py`, `to_tickets_runner.py`, `worktree.py`
 - Public functions:
   - `format_compact_confirmation(cmd: str, slug: str, status: str, rev: int, ref: str | int | None = None, detail: str = '') -> str` — Format a single-line structured confirmation for mutating commands under compact mode.
   - `machine_id() -> str` — Return this machine's stable short id, creating it on first use.
@@ -350,8 +351,8 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `read_journal_entries(within_hours: float | None = None, *, verbose: bool = False) -> list[dict[str, object]]` — Read journal entries, optionally filtered to the last ``within_hours``.
   - `confirm_resolution(cmd: str, arg: str | int, item: BacklogItem | PendingItem, summary_key: str = 'summary', *, quiet: bool = False) -> None` — Echo what a mutating command resolved to, so misresolution is visible.
   - `build_parser() -> argparse.ArgumentParser` — Build the full argument parser for every subcommand.
-- Subcommand handlers: `cmd_internal_regen`, `cmd_recap`, `cmd_worktree`, `cmd_render`, `cmd_ready`, `cmd_list`, `cmd_show`, `cmd_add`, `cmd_update`, `cmd_start`, `cmd_done`, `cmd_reopen`, `cmd_review`, `cmd_approve`, `cmd_reject`, `cmd_gate_set`, `cmd_gate_pass`, `cmd_run`, `cmd_machine_id`, `cmd_runs`, `cmd_backfill_gate`, `cmd_rename`, `cmd_block`, `cmd_unblock`, `cmd_out_of_scope_add`, `cmd_out_of_scope_link`, `cmd_out_of_scope_unlink`, `cmd_out_of_scope_remove`, `cmd_out_of_scope_list`, `cmd_out_of_scope_show`, `cmd_pending_add`, `cmd_pending_update`, `cmd_pending_list`, `cmd_remove`, `cmd_prune`
-- Tested by: `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_dev_status_storage.py`, `test/test_path_for_per_use.py`, `test/test_sweep_dead_claims.py`, `test/test_to_tickets_runner.py`
+- Subcommand handlers: `cmd_internal_regen`, `cmd_recap`, `cmd_worktree`, `cmd_render`, `cmd_ready`, `cmd_list`, `cmd_show`, `cmd_validate`, `cmd_add`, `cmd_update`, `cmd_start`, `cmd_done`, `cmd_reopen`, `cmd_review`, `cmd_approve`, `cmd_reject`, `cmd_gate_set`, `cmd_gate_pass`, `cmd_run`, `cmd_machine_id`, `cmd_runs`, `cmd_backfill_gate`, `cmd_rename`, `cmd_block`, `cmd_unblock`, `cmd_out_of_scope_add`, `cmd_out_of_scope_link`, `cmd_out_of_scope_unlink`, `cmd_out_of_scope_remove`, `cmd_out_of_scope_list`, `cmd_out_of_scope_show`, `cmd_pending_add`, `cmd_pending_update`, `cmd_pending_list`, `cmd_remove`, `cmd_prune`
+- Tested by: `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_dev_status_storage.py`, `test/test_dev_status_validate.py`, `test/test_path_for_per_use.py`, `test/test_sweep_dead_claims.py`, `test/test_to_tickets_runner.py`
 
 ### `agent-scripts/dev_status_formatting.py`
 
@@ -1094,7 +1095,7 @@ Machine-wide migration lock: writers share it, the toolkit-home migrator owns it
   - `exclusive(site: str) -> Iterator[None]` — Hold the lock exclusively (the migrator).
   - `build_parser() -> argparse.ArgumentParser`
 - Subcommand handlers: `cmd_status`, `cmd_hold`, `cmd_observations`
-- Tested by: `test/test_guard_rails_claim.py`, `test/test_migration_lock.py`, `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`
+- Tested by: `test/test_dev_status_validate.py`, `test/test_guard_rails_claim.py`, `test/test_migration_lock.py`, `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`
 
 ### `agent-scripts/notify.py`
 

@@ -338,6 +338,7 @@ SUBCOMMANDS = (
     "remove",
     "block",
     "unblock",
+    "validate",
     "prune",
     "recap",
     "worktree",
@@ -2368,6 +2369,158 @@ def cmd_show(args: argparse.Namespace) -> None:
         print(json.dumps(item, indent=2))
 
 
+def _load_store_readonly(
+    label: str, loader: Callable[[], object], problems: list[str]
+) -> object | None:
+    """Load one store via its read helper, recording a problem on failure.
+
+    ``load_items``/``load_pending`` call ``sys.exit(1)`` on a corrupt or
+    wrong-schema store rather than raising, so a validator must catch that
+    and report it as a problem instead of aborting the whole check set.
+    A missing store is not an error: both helpers return ``[]`` for it, and
+    an empty store is a valid (if unusual) post-migration state.
+    """
+    try:
+        return loader()
+    except SystemExit:
+        problems.append(f"{label}: failed to parse or schema-check (see stderr)")
+        return None
+
+
+def _validate_out_of_scope_store() -> list[str]:
+    """Schema-check the out-of-scope concept index as a pure read."""
+    problems: list[str] = []
+    index_file = dev_status_storage.out_of_scope_index_file()
+    if not index_file.exists():
+        return problems
+    try:
+        dev_status_storage.load_out_of_scope_index()
+    except (json.JSONDecodeError, ValueError) as e:
+        problems.append(f"out-of-scope index at {index_file} is not valid JSON ({e})")
+    return problems
+
+
+def _validate_grill_sessions() -> list[str]:
+    """List and schema-check every grill decision session as a pure read.
+
+    Mirrors :func:`grill.all_sessions`'s tolerant bulk scan: a file whose
+    stem is not a session slug is not a session and is skipped; a file that
+    is a session slug but fails to parse or carries the wrong schema is a
+    genuine defect and is reported.
+    """
+    import grill as _grill
+
+    problems: list[str] = []
+    base = Path(agent_toolkit_paths.path_for("decisions"))
+    if not base.exists():
+        return problems
+    for path in sorted(base.glob("*.json")):
+        if not _grill.ID_RE.match(path.stem):
+            continue
+        try:
+            _grill.open_session(path.stem, data_dir=base)
+        except _grill.GrillSessionError as e:
+            problems.append(f"grill session {path.stem}: {e}")
+    return problems
+
+
+def _validate_ticket_batches() -> list[str]:
+    """Validate every ticket batch file as a pure read."""
+    import to_tickets_runner as _to_tickets
+
+    problems: list[str] = []
+    base = Path(agent_toolkit_paths.path_for("ticket-batches"))
+    if not base.exists():
+        return problems
+    for path in sorted(base.glob("*.json")):
+        if path.name.endswith(".state.json"):
+            continue
+        try:
+            _to_tickets.validate_batch(path)
+        except _to_tickets.BatchError as e:
+            problems.append(f"ticket batch {path.name}: {e}")
+    return problems
+
+
+def _resolve_related_files(items: list[BacklogItem]) -> list[str]:
+    """Resolve each item's ``related_files`` paths; report any that don't exist.
+
+    A dangling reference is reported as a warning, not a hard failure: a
+    backlog item may legitimately point at a plan or artifact that has not
+    been created yet, so an unresolved path is not by itself a store
+    defect. The migration's own completion criteria check these references
+    separately.
+    """
+    warnings: list[str] = []
+    for item in items:
+        for rf in item.get("related_files") or []:
+            if not isinstance(rf, dict):
+                continue
+            path = rf.get("path")
+            if not isinstance(path, str) or not path:
+                continue
+            p = Path(path)
+            if not p.is_absolute():
+                continue
+            if not p.exists():
+                warnings.append(
+                    f"item {item.get('id')}: related file not found: {path}"
+                )
+    return warnings
+
+
+def cmd_validate(args: argparse.Namespace) -> None:
+    """Read-only store validation used as the release-1 migration's post-commit check.
+
+    Loads, parses, and schema-checks every toolkit store, renders the work
+    dashboard WITHOUT the dead-claim sweep, lists every grill decision
+    session, validates every ticket batch, and resolves each item's
+    ``related_files`` paths -- all as pure reads. It performs no write and
+    takes no migration scope: it reads the stores directly (the ``load_*``
+    helpers take no lock) rather than through :func:`backlog_lock` (which
+    would enter ``migration_lock.shared`` and be refused while the migrator
+    holds the lock exclusively). See the Release-1 cutover plan's
+    "Validation must not mutate the data it validates" section.
+
+    Args:
+        args: Parsed ``validate`` arguments (currently none).
+    """
+    problems: list[str] = []
+    warnings: list[str] = []
+
+    items = cast(
+        "list[BacklogItem]",
+        _load_store_readonly("backlog items", load_items, problems) or [],
+    )
+    pending_items = cast(
+        "list[PendingItem]",
+        _load_store_readonly("pending items", load_pending, problems) or [],
+    )
+    rev = load_rev()
+
+    # Render the dashboard without the sweep. dispatch=False so no detached
+    # recap-regen child is spawned and no recap-cache write occurs.
+    render(items, pending_items, rev=rev, dispatch=False)
+
+    problems.extend(_validate_out_of_scope_store())
+    problems.extend(_validate_grill_sessions())
+    problems.extend(_validate_ticket_batches())
+    warnings.extend(_resolve_related_files(items))
+
+    for warning in warnings:
+        print(warning, file=sys.stderr)
+    if problems:
+        for problem in problems:
+            print(problem, file=sys.stderr)
+        print(f"validate: FAILED ({len(problems)} problem(s))", file=sys.stderr)
+        sys.exit(1)
+    print(
+        "validate: passed -- every store parsed and schema-checked; "
+        "dashboard rendered; sessions listed; batches validated",
+        file=sys.stderr,
+    )
+
+
 def cmd_add(args: argparse.Namespace) -> None:
     """Handle ``add``: append a new backlog item.
 
@@ -3560,6 +3713,7 @@ dispatch: dict[str, Callable[[argparse.Namespace], None]] = {
     "remove": cmd_remove,
     "block": cmd_block,
     "unblock": cmd_unblock,
+    "validate": cmd_validate,
     "prune": cmd_prune,
     "recap": cmd_recap,
     "worktree": cmd_worktree,
@@ -3694,6 +3848,15 @@ def build_parser() -> argparse.ArgumentParser:
         "show", help="print full JSON for an item", parents=[verbosity_parent]
     )
     _add_id_arg(p)
+
+    p = sub.add_parser(
+        "validate",
+        help="read-only store validation: load, parse, schema-check every store, "
+        "render the dashboard without the claim sweep, list grill sessions, "
+        "validate ticket batches, and resolve related_files paths -- no writes, "
+        "no migration scope",
+        parents=[verbosity_parent],
+    )
 
     p = sub.add_parser(
         "add",
