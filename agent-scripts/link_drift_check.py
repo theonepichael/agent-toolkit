@@ -30,6 +30,16 @@ nothing to have running. Also silent when the audit cannot run at all
 (links.toml missing or malformed): a broken checker must not itself become
 a session-start warning about the checker rather than the machine.
 
+One bucket prints louder than the summary: ``uninstalled-imported`` — a
+never-installed .py module that an installed sibling imports, so the importer
+would fail with ModuleNotFoundError on any sys.path holding the unlinked
+directory (the 2026-09-22 agent_toolkit_paths incident) — renders its full
+message, naming the importers and the absolute-path fix command, on every
+run even under ``--quiet``. The cache replay includes it: the buckets are
+cached verbatim, and the cache key hashes the installed Python modules'
+contents so an importer edit (adding or removing such an import) raises and
+lowers the escalation instead of replaying stale.
+
 A fingerprint cache memoizes the findings keyed on the exact state of
 links.toml, this file, install.py, link_inspect.py, the history manifest,
 all managed symlink targets, and the directory listing of each declared
@@ -117,6 +127,38 @@ def _write_cache(path: Path, entries: dict[str, object]) -> None:
         pass
 
 
+def _py_dir_records(directory: Path) -> list[object]:
+    """Hash the installed Python modules in ``directory`` for the cache key.
+
+    An installed module's *content* is something the audit depends on (the
+    uninstalled-imported escalation scans these files for imports of a
+    never-installed sibling) but the plain listing and the per-dest records
+    never covered: editing an importer to add or remove such an import
+    changes neither its mtime-as-a-link-target nor any directory name, so a
+    cached result could replay the escalation — or its absence — stale until
+    an unrelated fingerprinted file happened to change. Each ``*.py`` entry
+    is recorded with its mtime and size, so an edit flips the fingerprint in
+    both directions; a file that cannot be stat'd is recorded as a marker, a
+    missing directory as unreadable.
+    """
+    try:
+        listing = sorted(os.listdir(directory))
+    except OSError:
+        return [str(directory), "dir-unreadable"]
+    py_entries: list[object] = ["py-listing"]
+    for name in listing:
+        if not name.endswith(".py"):
+            continue
+        path = directory / name
+        try:
+            st = path.stat()
+        except OSError:
+            py_entries.append([name, "unreadable"])
+        else:
+            py_entries.append([name, st.st_mtime_ns, st.st_size])
+    return [str(directory), *py_entries]
+
+
 def _file_records(repo: Path, rel: str, records: list[object]) -> bool:
     """Append ``rel``'s (path, mtime, size) to ``records``; False on OSError.
 
@@ -189,6 +231,12 @@ def _fingerprint(
                 records.append([str(dest), "f", st.st_mtime_ns, st.st_size])
             except OSError:
                 records.append([str(dest), "m"])
+        if dest.suffix == ".py":
+            # The importer directory of a potential never-installed module:
+            # its contents must reach the fingerprint even when no
+            # [[managed_dir]] row declares it, or the escalation and its
+            # de-escalation replay stale behind a cache hit.
+            records.append(_py_dir_records(dest.parent))
     for dir_spec in managed_dirs:
         directory = link_inspect.expand_dest(dir_spec.dest, home)
         try:
@@ -197,6 +245,7 @@ def _fingerprint(
             records.append([str(directory), "dir-unreadable"])
         else:
             records.append([str(directory), "listing", entries])
+        records.append(_py_dir_records(directory))
     return hashlib.sha256(json.dumps(records, sort_keys=True).encode()).hexdigest()
 
 
@@ -226,6 +275,12 @@ def _report(findings: dict[str, list[str]], quiet: bool, repo: Path) -> None:
         f"links: {summary} — run `python3 {repo}/install.py --check-links`",
         quiet=quiet,
     )
+    for message in findings.get(link_inspect.CHECK_BUCKET_UNINSTALLED_IMPORTED, ()):
+        # The escalation is essential output, not a note: a failing importer
+        # breaks session-start code, so it prints even under --quiet, and on
+        # every run — the cached replay includes it because the cache stores
+        # the rendered buckets verbatim.
+        print(message)
 
 
 def _audit(
@@ -264,7 +319,9 @@ def _audit(
     except (OSError, ValueError, TypeError):
         return None
     return link_inspect.render_findings(
-        result.findings, lambda path: link_inspect.format_path(path, home)
+        result.findings,
+        lambda path: link_inspect.format_path(path, home),
+        repo_root=repo,
     )
 
 

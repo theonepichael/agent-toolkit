@@ -219,7 +219,13 @@ usage: ./install.sh --harness=<claude,copilot,opencode,agy,pi,codex>[,...] [--pr
               destination was never linked here at all (enabled by default
               for provisioned harnesses and unharnessed links; --no-report-
               uninstalled suppresses this check, while --report-uninstalled
-              forces it across all harnesses).
+              forces it across all harnesses). uninstalled-imported
+              escalates one of those to a loud warning — the never-installed
+              module is a .py file that an installed sibling imports, so
+              session-start code needing it would fail with
+              ModuleNotFoundError — naming the importers and the absolute-path
+              fix command; link_drift_check prints these messages on every
+              run, even under --quiet.
               No other flag may be combined with --check-links.
               Exits 0 when nothing is wrong, 1 when any bucket is
               non-empty, 2 if links.toml itself cannot be read.
@@ -2195,7 +2201,9 @@ def _check_applicable_links(
         specs=specs,
         force_uninstalled=force_uninstalled,
     )
-    return link_inspect.render_findings(typed, ctx.display), foreign
+    return link_inspect.render_findings(
+        typed, ctx.display, repo_root=ctx.repo_root
+    ), foreign
 
 
 def _find_orphaned_links(

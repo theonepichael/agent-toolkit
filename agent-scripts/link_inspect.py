@@ -30,6 +30,7 @@ file for the isolated unit coverage; ``test/test_install.py`` still owns
 the end-to-end audit coverage through the unchanged entrypoint.
 """
 
+import ast
 import fnmatch
 import json
 import os
@@ -541,6 +542,7 @@ class LinkFinding:
     entry_kind: str | None = None
     error_text: str | None = None
     source_missing: bool = False
+    importers: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         """Reject records missing the facts their finding variant requires."""
@@ -650,6 +652,8 @@ def collect_link_findings(
 def render_findings(
     findings: Iterable[LinkFinding],
     format_path: Callable[[Path], str],
+    *,
+    repo_root: Path | None = None,
 ) -> dict[str, list[str]]:
     """Render typed findings into the audit's bucket-of-messages shape.
 
@@ -658,6 +662,10 @@ def render_findings(
     :data:`CHECK_BUCKETS` keys are present (empty list when a bucket found
     nothing) and each bucket keeps the findings list's order, matching
     what the pre-rendered construction appended in the same sequence.
+
+    ``repo_root`` supplies the absolute repository path the escalated
+    bucket's fix command names — an absolute path the caller already knows,
+    not a cwd assumption (a session may start anywhere).
     """
     buckets: dict[str, list[str]] = {bucket: [] for bucket in CHECK_BUCKETS}
     for finding in findings:
@@ -665,6 +673,18 @@ def render_findings(
             detail = (
                 f"{finding.repo_source_path} exists in the repo but was never linked "
                 "here; run install.sh to link it"
+            )
+        elif finding.kind == CHECK_BUCKET_UNINSTALLED_IMPORTED:
+            fix = (
+                f"python3 {repo_root}/install.py"
+                if repo_root is not None
+                else "run install.py"
+            )
+            detail = (
+                f"{finding.repo_source_path} exists in the repo but was never linked "
+                f"here, and {', '.join(finding.importers)} imports it — session-start "
+                f"code that needs it will fail with ModuleNotFoundError; "
+                f"fix now: {fix}"
             )
         elif finding.kind == CHECK_BUCKET_NOT_A_SYMLINK:
             detail = (
@@ -779,7 +799,7 @@ def audit_links(
         managed_dirs=managed_dirs,
     )
     return (
-        render_findings(result.findings, format_path),
+        render_findings(result.findings, format_path, repo_root=repo_root),
         result.foreign,
         result.dirs_audited,
     )
@@ -793,6 +813,7 @@ CHECK_BUCKET_NOT_A_SYMLINK = "not-a-symlink"
 CHECK_BUCKET_ORPHANED = "orphaned"
 CHECK_BUCKET_UNMANAGED = "unmanaged"
 CHECK_BUCKET_NEVER_INSTALLED = "never-installed"
+CHECK_BUCKET_UNINSTALLED_IMPORTED = "uninstalled-imported"
 
 CHECK_BUCKETS = (
     CHECK_BUCKET_BROKEN_SOURCE,
@@ -801,6 +822,7 @@ CHECK_BUCKETS = (
     CHECK_BUCKET_ORPHANED,
     CHECK_BUCKET_UNMANAGED,
     CHECK_BUCKET_NEVER_INSTALLED,
+    CHECK_BUCKET_UNINSTALLED_IMPORTED,
 )
 
 
@@ -816,6 +838,53 @@ def personal_overlay_composed_target(home: Path) -> Path:
     """The file dotfiles actually composes and symlinks ``PERSONAL_OVERLAY_SRC_REL``'s
     destinations to, on a machine with both repos checked out."""
     return home / "dotfiles" / "claude" / "global-instructions.md"
+
+
+def scan_importers(import_dir: Path, module_name: str) -> list[str]:
+    """Return the installed modules in ``import_dir`` that import ``module_name``.
+
+    Pure apart from filesystem reads: ast-parses each ``*.py`` file directly
+    in the directory (a flat top-level scripts directory — subdirectories are
+    package-style layout, out of scope), counting ``import <name>`` and
+    ``from <name> import ...`` statements whose top-level name matches —
+    top-level and function-local alike, since a guarded import still fails
+    when the module is missing. Relative imports (``from . import X``) are
+    ignored and documented as such: in a flat top-level directory they are
+    not sibling imports of a top-level module. A file that fails to parse is
+    skipped, not raised — one broken module must not silence the scan for
+    every other one.
+    """
+    importers: list[str] = []
+    try:
+        entries = sorted(os.listdir(import_dir))
+    except OSError:
+        return importers
+    for entry in entries:
+        if not entry.endswith(".py"):
+            continue
+        path = import_dir / entry
+        try:
+            source = path.read_text(encoding="utf-8")
+            tree = ast.parse(source, filename=str(path))
+        except (OSError, SyntaxError, ValueError):
+            continue
+        imported = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                if any(alias.name.split(".")[0] == module_name for alias in node.names):
+                    imported = True
+                    break
+            elif (
+                isinstance(node, ast.ImportFrom)
+                and node.level == 0
+                and node.module
+                and node.module.split(".")[0] == module_name
+            ):
+                imported = True
+                break
+        if imported:
+            importers.append(path.stem)
+    return importers
 
 
 def check_applicable_links(
@@ -923,13 +992,34 @@ def check_applicable_links(
                                 break
                     if harness is not None and harness not in provisioned_harnesses:
                         continue
-                findings.append(
-                    LinkFinding(
-                        CHECK_BUCKET_NEVER_INSTALLED,
-                        dest,
-                        repo_source_path=src,
+                importers: tuple[str, ...] = ()
+                if dest.suffix == ".py":
+                    # A never-installed module that an installed sibling
+                    # imports is louder than an absent-but-unimported one:
+                    # the importer will fail with ModuleNotFoundError on any
+                    # sys.path that holds the unlinked directory (the
+                    # dev_status_sync / agent_toolkit_paths incident), not
+                    # merely stay unloaded. The scan keys on the destination
+                    # itself — a .py file's own sibling directory is the
+                    # import scope that reaches it.
+                    importers = tuple(scan_importers(dest.parent, dest.stem))
+                if importers:
+                    findings.append(
+                        LinkFinding(
+                            CHECK_BUCKET_UNINSTALLED_IMPORTED,
+                            dest,
+                            repo_source_path=src,
+                            importers=importers,
+                        )
                     )
-                )
+                else:
+                    findings.append(
+                        LinkFinding(
+                            CHECK_BUCKET_NEVER_INSTALLED,
+                            dest,
+                            repo_source_path=src,
+                        )
+                    )
             continue
 
         if not is_symlink(dest):

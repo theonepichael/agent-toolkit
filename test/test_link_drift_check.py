@@ -363,6 +363,89 @@ class CacheTests(unittest.TestCase):
         self.assertEqual(data["schema"], 2)
 
 
+class UninstalledImportedTests(unittest.TestCase):
+    """A never-installed module that an installed module imports is loud."""
+
+    def setUp(self) -> None:
+        self.tmpdir = Path(tempfile.mkdtemp(prefix="test-link-drift-check-"))
+        self._env_patch = patch.dict(os.environ, {"XDG_CACHE_HOME": str(self.tmpdir)})
+        self._env_patch.start()
+
+    def tearDown(self) -> None:
+        self._env_patch.stop()
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def fixture_with_importer(self, importer_content: str = "import new_module\n") -> Fixture:
+        fx = Fixture(self.tmpdir / "fx")
+        fx.write_links(BASE_LINKS)
+        fx.source("claude/global-instructions.md")
+        fx.link("claude/global-instructions.md", "~/.claude/global-instructions.md")
+        # An installed sibling imports the module whose link is missing.
+        fx.source("agent-scripts/installed.py", importer_content)
+        fx.link("agent-scripts/installed.py", "~/.claude/scripts/installed.py")
+        fx.source("agent-scripts/new_module.py")
+        fx.write_links(
+            BASE_LINKS
+            + """
+[[link]]
+src = "agent-scripts/new_module.py"
+dest = "~/.claude/scripts/new_module.py"
+"""
+        )
+        return fx
+
+    def loud_dest(self) -> str:
+        # As formatted for display: ~ relative to the fixture home.
+        return "~/.claude/scripts/new_module.py"
+
+    def expected_loud(self, fx: Fixture) -> str:
+        return (
+            f"{self.loud_dest()} — {fx.repo / 'agent-scripts' / 'new_module.py'} "
+            f"exists in the repo but was never linked here, and installed imports "
+            f"it — session-start code that needs it will fail with "
+            f"ModuleNotFoundError; fix now: python3 {fx.repo}/install.py"
+        )
+
+    def test_imported_never_installed_escalates(self) -> None:
+        fx = self.fixture_with_importer()
+        out = fx.check()
+        self.assertIn(f"links: uninstalled-imported (1) — run {fx.pointer()}\n", out)
+        self.assertIn(f"{self.expected_loud(fx)}\n", out)
+        self.assertNotIn("links: never-installed (1)", out)
+
+    def test_unimported_never_installed_stays_quiet(self) -> None:
+        fx = self.fixture_with_importer("x = 1\n")
+        self.assertEqual(
+            fx.check(),
+            f"links: never-installed (1) — run {fx.pointer()}\n",
+        )
+
+    def test_importer_edit_invalidates_the_cache_both_ways(self) -> None:
+        fx = self.fixture_with_importer("x = 1\n")
+        self.assertEqual(
+            fx.check(),
+            f"links: never-installed (1) — run {fx.pointer()}\n",
+        )
+        # Adding the import escalates on the next run, not after a stale hit.
+        fx.source(
+            "agent-scripts/installed.py",
+            "import new_module\n",
+        )
+        self.assertIn("uninstalled-imported (1)", fx.check())
+        # Removing it de-escalates on the next run too.
+        fx.source("agent-scripts/installed.py", "x = 1\n")
+        self.assertNotIn("uninstalled-imported", fx.check())
+
+    def test_escalated_message_prints_on_cache_hit(self) -> None:
+        fx = self.fixture_with_importer()
+        first = fx.check()
+        self.assertIn("uninstalled-imported (1)", first)
+        # Second run replays the cached buckets — the loud line must survive.
+        second = fx.check()
+        self.assertIn(f"uninstalled-imported (1)", second)
+        self.assertIn(f"{self.expected_loud(fx)}\n", second)
+
+
 class ParserTests(unittest.TestCase):
     def test_check_is_the_default_subcommand(self) -> None:
         args = ldc.build_parser().parse_args([])

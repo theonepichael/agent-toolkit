@@ -622,6 +622,60 @@ class RenderFindingsTests(unittest.TestCase):
             )
 
 
+class ScanImportersTests(unittest.TestCase):
+    """The never-installed-but-imported escalation's module scan."""
+
+    def _dir(self) -> Path:
+        path = Path(tempfile.mkdtemp(prefix="test-scan-importers-"))
+        self.addCleanup(shutil.rmtree, path, ignore_errors=True)
+        return path
+
+    def test_top_level_and_from_imports_match(self) -> None:
+        directory = self._dir()
+        (directory / "a.py").write_text("import new_module\n")
+        (directory / "b.py").write_text("from new_module import thing\n")
+        (directory / "c.py").write_text("x = 1\n")
+        self.assertEqual(li.scan_importers(directory, "new_module"), ["a", "b"])
+
+    def test_function_local_import_counts(self) -> None:
+        directory = self._dir()
+        (directory / "a.py").write_text(
+            "def go():\n    import new_module\n    return new_module\n"
+        )
+        self.assertEqual(li.scan_importers(directory, "new_module"), ["a"])
+
+    def test_dotted_names_match_on_their_top_level_component(self) -> None:
+        directory = self._dir()
+        (directory / "a.py").write_text("import new_module.sub\n")
+        (directory / "b.py").write_text("from new_module.sub import thing\n")
+        self.assertEqual(li.scan_importers(directory, "new_module"), ["a", "b"])
+
+    def test_other_modules_do_not_match(self) -> None:
+        directory = self._dir()
+        (directory / "a.py").write_text("import other_module\n")
+        self.assertEqual(li.scan_importers(directory, "new_module"), [])
+
+    def test_relative_imports_are_ignored(self) -> None:
+        directory = self._dir()
+        (directory / "a.py").write_text("from . import new_module\n")
+        (directory / "b.py").write_text("from .sibling import new_module\n")
+        self.assertEqual(li.scan_importers(directory, "new_module"), [])
+
+    def test_unparseable_file_is_skipped_not_raised(self) -> None:
+        directory = self._dir()
+        (directory / "a.py").write_text("def broken(:\n")
+        (directory / "b.py").write_text("import new_module\n")
+        self.assertEqual(li.scan_importers(directory, "new_module"), ["b"])
+
+    def test_missing_directory_returns_empty(self) -> None:
+        self.assertEqual(li.scan_importers(Path("/nonexistent"), "x"), [])
+
+    def test_non_py_dest_is_never_escalated(self) -> None:
+        directory = self._dir()
+        (directory / "a.py").write_text("import new_module\n")
+        self.assertEqual(li.scan_importers(directory, "new_module.md"), [])
+
+
 class InstallAliasTests(unittest.TestCase):
     """Every name install.py must keep re-exporting after the extraction."""
 
