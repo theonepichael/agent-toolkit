@@ -35,6 +35,15 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+try:
+    import pytest
+except ModuleNotFoundError:
+    # Direct unittest runs have no pytest dependency; retain the marker's
+    # identity decorator behavior when pytest is unavailable.
+    pytest = SimpleNamespace(
+        mark=SimpleNamespace(regression=lambda *_args: lambda test: test)
+    )
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))
 import test_bootstrap  # noqa: E402
 import test_layouts  # noqa: E402
@@ -1674,6 +1683,58 @@ class CommittedWorkGuardTestCase(MutationFixture):
             with self.assertRaises(dev_status_mutation.InvalidItemStateError) as cm:
                 dev_status_mutation.done_item("item-guard")
         self.assertIn("git status failed", str(cm.exception.message))
+
+    @pytest.mark.regression(
+        "committed-work-prepass-read-fails-closed",
+        "AssertionError: InvalidItemStateError not raised",
+    )
+    def test_transient_prepass_store_read_refuses_transitions(self) -> None:
+        commands = {
+            "done": dev_status_mutation.done_item,
+            "review": dev_status_mutation.review_item,
+            "approve": dev_status_mutation.approve_item,
+        }
+        for loader_name in ("load_items", "load_pending"):
+            for command, transition in commands.items():
+                with self.subTest(loader=loader_name, command=command):
+                    self._committed_item()
+                    if command == "approve":
+                        with self._guard(self.CLEAN):
+                            dev_status_mutation.review_item("item-guard")
+                    items_before = self.read_items()
+                    rev_before = self.read_rev()
+                    journal_before = self.journal_lines()
+                    real_loader = getattr(dev_status_storage, loader_name)
+                    calls = 0
+
+                    def fail_once(path: Path) -> object:
+                        nonlocal calls
+                        calls += 1
+                        if calls == 1:
+                            raise OSError("transient prepass read failure")
+                        return real_loader(path)
+
+                    inspector = MagicMock(return_value=self.CLEAN)
+                    with (
+                        patch.object(
+                            dev_status_storage, loader_name, side_effect=fail_once
+                        ),
+                        patch.object(
+                            worktree_provenance,
+                            "inspect_item_worktrees",
+                            inspector,
+                        ),
+                        self.assertRaises(
+                            dev_status_mutation.InvalidItemStateError
+                        ) as cm,
+                    ):
+                        transition("item-guard")
+                    self.assertIn("committed-work", str(cm.exception.message))
+                    self.assertEqual(calls, 2)
+                    inspector.assert_not_called()
+                    self.assertEqual(self.read_items(), items_before)
+                    self.assertEqual(self.read_rev(), rev_before)
+                    self.assertEqual(self.journal_lines(), journal_before)
 
     def test_refusal_leaves_store_untouched(self):
         self._committed_item()

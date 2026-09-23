@@ -1242,25 +1242,32 @@ class _PrepassVerdict:
     integration_branch: str | None
 
 
+@dataclass(frozen=True)
+class _PrepassReadFailure:
+    """The unlocked store read failed before committed-work inspection."""
+
+
 def _prepass_committed_work(
     cmd: str,
     slug_or_id: str,
     paths: Mapping[str, Path | None],
-) -> _PrepassVerdict | None:
+) -> _PrepassVerdict | _PrepassReadFailure | None:
     """Unlocked advisory pre-pass for review/approve/done: resolve the item
     and run the read-only git inspection OUTSIDE the storage lock, so
     bounded subprocess calls never stall a concurrent session's mutation.
 
-    Returns the verdict (empty refusals = allow), or None whenever any
-    pre-check cannot pass — the locked section re-runs every validation
-    authoritatively and raises its own typed error with the right
-    precedence, so None only means "don't consult the verdict here".
+    Returns the verdict (empty refusals = allow), ``_PrepassReadFailure``
+    when an unlocked store load fails, or None for an expected validation
+    refusal that the locked section will raise with authoritative precedence.
     The inspection call itself sits outside every broad except: its
     failures arrive as ``problem`` entries (deny), and a genuine bug
     propagates loudly rather than collapsing into an allow."""
     try:
         items = dev_status_storage.load_items(paths["items_path"])
         pending_items = dev_status_storage.load_pending(paths["pending_path"])
+    except Exception:
+        return _PrepassReadFailure()
+    try:
         kind, slug = resolve_id(slug_or_id, items, pending_items)
         if kind != "backlog":
             return None
@@ -1284,8 +1291,6 @@ def _prepass_committed_work(
             return None
     except BacklogMutationError:
         return None  # resolve_id's typed refusal — the locked section raises its own
-    except Exception:
-        return None  # store-read hiccup — the locked section's read decides
     return _PrepassVerdict(
         refusals=_committed_work_refusals(cmd, slug, item),
         integration_branch=item.get("integration_branch"),
@@ -1293,13 +1298,21 @@ def _prepass_committed_work(
 
 
 def _raise_on_prepass(
-    cmd: str, slug: str, item: BacklogItem, verdict: _PrepassVerdict | None
+    cmd: str,
+    slug: str,
+    item: BacklogItem,
+    verdict: _PrepassVerdict | _PrepassReadFailure | None,
 ) -> None:
     """Locked-section consumer of the pre-pass: refuse when the item's
     ``integration_branch`` changed since the verdict was computed (a racing
     ``update``), then on any refusal line."""
     if verdict is None:
         return
+    if isinstance(verdict, _PrepassReadFailure):
+        raise InvalidItemStateError(
+            f"[{cmd}] {slug}: refusing — committed-work precheck could not read "
+            "the backlog store — retry"
+        )
     if verdict.integration_branch != item.get("integration_branch"):
         raise InvalidItemStateError(
             f"[{cmd}] {slug}: refusing — integration_branch changed while the "
