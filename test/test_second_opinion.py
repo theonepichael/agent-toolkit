@@ -2382,6 +2382,27 @@ class BackendListFallbackTests(unittest.TestCase):
         defaults.update(kw)
         return second_opinion.ReviewRequest(**defaults)  # type: ignore[arg-type]
 
+    @pytest.mark.regression(
+        "explicit-backend-cli-list-normalization",
+        "AttributeError: 'list' object has no attribute 'split'",
+    )
+    def test_cmd_review_normalizes_the_parsed_backend_list(self) -> None:
+        args = second_opinion.build_parser().parse_args(
+            ["review", "my plan", "--backend", "agy"]
+        )
+        captured: dict[str, object] = {}
+
+        def fake_review(request, **_kwargs):
+            captured["backend"] = request.backend
+            return second_opinion.ReviewResult("agy", "critique", 0)
+
+        with (
+            patch.object(second_opinion, "review_plan", side_effect=fake_review),
+            patch("sys.stdout", io.StringIO()),
+        ):
+            second_opinion.cmd_review(args)
+        self.assertEqual(captured["backend"], "agy")
+
     def test_list_falls_back_to_second_entry_on_runtime_failure(self) -> None:
         with (
             patch.dict(os.environ, self.ENV),

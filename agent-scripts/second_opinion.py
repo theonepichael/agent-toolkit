@@ -1342,7 +1342,9 @@ def cmd_review(args: argparse.Namespace) -> None:
     request = ReviewRequest(
         plan_text=plan_text,
         focus_hints=focus_hints,
-        backend=args.backend,
+        backend=(
+            ",".join(args.backend) if isinstance(args.backend, list) else args.backend
+        ),
         model_index=getattr(args, "model_index", None),
         text_only=getattr(args, "text_only", False),
         target_dir=getattr(args, "dir", None),
