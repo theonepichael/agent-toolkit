@@ -95,6 +95,7 @@ from pathlib import Path
 import agent_toolkit_paths
 import backlog_claim_lookup
 import cli_common
+import migration_lock
 from backlog_claim_lookup import BacklogClaimLookup, ClaimInfo, LocalClaimLookup
 from worktree_provenance import read_marker, worktree_points_at_item
 
@@ -421,6 +422,9 @@ def _evaluate_claim(
         # crashing the hook (a crash gives no verdict and some adapters then
         # fail open).
         return Verdict("deny", str(exc), rule="machine-id")
+    except migration_lock.MigrationLockBusy as exc:
+        # A missing id cannot be created while a migration holds the lock.
+        return Verdict("deny", str(exc), rule="migration-lock")
     unclaimed = [
         item
         for item in pointed
@@ -836,17 +840,23 @@ def _audit_verdict(harness: str, req: Request | None, verdict: Verdict) -> None:
     if GUARD_RAILS_LOG_PATH is None:
         return
     target = "" if req is None else (req.command if req.tool == "bash" else req.path)
-    cli_common.append_jsonl(
-        GUARD_RAILS_LOG_PATH,
-        {
-            "ts": datetime.now(UTC).isoformat(),
-            "harness": harness,
-            "tool": req.tool if req is not None else "",
-            "target": cli_common.redact_secrets(target),
-            "rule": verdict.rule or "default-allow",
-            "decision": "deny" if verdict.decision == "deny" else "allow",
-        },
-    )
+    record = {
+        "ts": datetime.now(UTC).isoformat(),
+        "harness": harness,
+        "tool": req.tool if req is not None else "",
+        "target": cli_common.redact_secrets(target),
+        "rule": verdict.rule or "default-allow",
+        "decision": "deny" if verdict.decision == "deny" else "allow",
+    }
+    # Telemetry never blocks the verdict: if the migration lock refuses the
+    # append, the line is skipped and the refusal is recorded instead.
+    try:
+        with migration_lock.shared("guard-rail-log", quiet=True):
+            cli_common.append_jsonl(GUARD_RAILS_LOG_PATH, record)
+    except migration_lock.MigrationLockBusy as exc:
+        migration_lock.observe(
+            "guard-rail-log", "refused-telemetry", str(exc), quiet=True
+        )
 
 
 def build_parser() -> argparse.ArgumentParser:

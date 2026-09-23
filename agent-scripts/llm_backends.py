@@ -1000,9 +1000,14 @@ def _log_backend_call(
     # now — shared with every other durable-JSONL writer in this repo — but
     # the atomicity property is identical to what this module proven out:
     # exactly one unbuffered write(2) under O_APPEND per line.
+    import migration_lock  # lazy: keep this module's import cost unchanged
+
     try:
         log_path = _backend_call_log_path()
-        cli_common.append_jsonl(log_path, record)
+        with migration_lock.shared("backend-log", quiet=True):
+            cli_common.append_jsonl(log_path, record)
+    except migration_lock.MigrationLockBusy as exc:
+        migration_lock.observe("backend-log", "refused-telemetry", str(exc), quiet=True)
     except Exception as exc:  # noqa: BLE001 — logging must never raise
         print(f"[llm_backends] logging failed: {exc}", file=sys.stderr)
 

@@ -33,6 +33,8 @@ Exit codes
   0  success
   1  usage, validation, or state errors (the command's message says which)
   3  this machine's id is unavailable (see "Machine identity" above)
+  75 a write was refused because a toolkit migration holds the migration
+     lock (only once enforcement is switched on; see migration_lock.py)
 
 Requires Python 3.12+.
 """
@@ -57,6 +59,7 @@ import cli_common
 import dev_status_formatting
 import dev_status_storage
 import llm_backends
+import migration_lock
 from dev_status_mutation import (
     BACKLOG_MUTABLE_FIELDS,
     KNOWN_PROJECT_PREFIXES,
@@ -1485,17 +1488,22 @@ def _regen_lock(*, blocking: bool) -> Iterator[bool]:
     lock. Blocking mode (used by the synchronous ``recap`` subcommand) waits
     for that in-flight regen to finish and always yields ``True``.
     """
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    with open(RECAP_REGEN_LOCK_FILE, "w") as f:
-        try:
-            fcntl.flock(f, fcntl.LOCK_EX if blocking else fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            yield False
-            return
-        try:
-            yield True
-        finally:
-            fcntl.flock(f, fcntl.LOCK_UN)
+    with migration_lock.shared("recap"):
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        with open(RECAP_REGEN_LOCK_FILE, "w") as f:
+            try:
+                fcntl.flock(
+                    f, fcntl.LOCK_EX if blocking else fcntl.LOCK_EX | fcntl.LOCK_NB
+                )
+            except OSError:
+                yield False
+                return
+            migration_lock.note_store_lock_acquired()
+            try:
+                yield True
+            finally:
+                migration_lock.note_store_lock_released()
+                fcntl.flock(f, fcntl.LOCK_UN)
 
 
 def _maybe_dispatch_recap_regen() -> None:
@@ -4110,6 +4118,9 @@ def main() -> None:
     except dev_status_storage.MachineIdError as exc:
         print(f"[{args.cmd}] {exc}", file=sys.stderr)
         sys.exit(MACHINE_ID_EXIT_CODE)
+    except migration_lock.MigrationLockBusy as exc:
+        print(f"[{args.cmd}] {exc}", file=sys.stderr)
+        sys.exit(migration_lock.REFUSAL_EXIT_CODE)
 
 
 def _dispatch_command(

@@ -66,6 +66,7 @@ import agent_toolkit_paths  # noqa: E402 — must follow the sys.path.insert abo
 import dev_status  # noqa: E402
 import dev_status_mutation  # noqa: E402
 import dev_status_storage  # noqa: E402
+import migration_lock  # noqa: E402
 
 DATA_DIR = agent_toolkit_paths.path_for("ticket-batches")
 
@@ -81,7 +82,8 @@ def ensure_data_dir() -> None:
     never ``grill.py``'s — that one is globbed as a private session store and
     cannot tolerate a non-session file landing in it.
     """
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    with migration_lock.shared("ticket-batches"):
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
 class Ticket(TypedDict):
@@ -278,6 +280,22 @@ def run_batch(
         [], AbstractContextManager[dev_status_mutation.BacklogTransaction]
     ] = dev_status_mutation.mutation_transaction,
 ) -> list[str]:
+    """Run :func:`_run_batch_unlocked` inside ONE migration scope.
+
+    One scope covers the whole batch, from the backlog transaction through
+    deleting the state file, so a migration cannot start between creating
+    the tickets and cleaning up after them.
+    """
+    with migration_lock.shared("ticket-batches"):
+        return _run_batch_unlocked(batch_path, open_transaction)
+
+
+def _run_batch_unlocked(
+    batch_path: Path,
+    open_transaction: Callable[
+        [], AbstractContextManager[dev_status_mutation.BacklogTransaction]
+    ] = dev_status_mutation.mutation_transaction,
+) -> list[str]:
     """Create every ticket in ``batch_path``'s batch, resuming if interrupted before.
 
     Returns:
@@ -386,11 +404,20 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> None:
+def _main() -> None:
     ensure_data_dir()
     parser = build_parser()
     args = parser.parse_args()
     args.func(args)
+
+
+def main() -> None:
+    """Run the CLI; a write refused by the migration lock exits 75 with one line."""
+    try:
+        _main()
+    except migration_lock.MigrationLockBusy as exc:
+        print(f"[to-tickets] {exc}", file=sys.stderr)
+        sys.exit(migration_lock.REFUSAL_EXIT_CODE)
 
 
 if __name__ == "__main__":

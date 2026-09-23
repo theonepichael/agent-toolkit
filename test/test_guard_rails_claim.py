@@ -639,3 +639,20 @@ class TestBrokenMachineId:
         assert verdict.decision == "deny"
         assert verdict.rule == "machine-id"
         assert "machine-id --repair" in verdict.reason
+
+
+class TestMigrationLockDuringIdentity:
+    def test_refused_identity_creation_denies_instead_of_crashing(
+        self, repo_pair, store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import migration_lock
+
+        def busy() -> tuple[str, int, list[int]]:
+            raise migration_lock.MigrationLockBusy("migration lock held")
+
+        monkeypatch.setattr(guard_rails, "_session_identity", busy)
+        repo = repo_pair["repo"]
+        _set_store(store, [_item("demo-slug", [str(repo / "tracked.txt")], None)])
+        verdict = _write(repo / "tracked.txt", store)
+        assert verdict.decision == "deny"
+        assert verdict.rule == "migration-lock"

@@ -19,7 +19,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Iterator, Sequence
-from contextlib import contextmanager, suppress
+from contextlib import ExitStack, contextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -29,6 +29,7 @@ from typing import cast
 import agent_toolkit_paths
 import cli_common
 import fault_checkpoint
+import migration_lock
 from dev_status_types import BacklogIndex as BacklogIndex
 from dev_status_types import BacklogItem, PendingItem, RunRecord
 from dev_status_types import Gate as Gate
@@ -198,15 +199,18 @@ def machine_id(
     if existing is not None:
         return existing
     try:
-        d_dir.mkdir(parents=True, exist_ok=True)
-        mid_file.parent.mkdir(parents=True, exist_ok=True)
-        with _machine_id_init_lock(mid_file):
-            existing = _read_machine_id(mid_file)
-            if existing is not None:
-                return existing
-            published = _publish_new_machine_id(mid_file)
-            if published is not None:
-                return published
+        # Creating the id writes into the work-items domain, so it takes the
+        # migration scope (only here, never for a plain read).
+        with migration_lock.shared("machine-id"):
+            d_dir.mkdir(parents=True, exist_ok=True)
+            mid_file.parent.mkdir(parents=True, exist_ok=True)
+            with _machine_id_init_lock(mid_file):
+                existing = _read_machine_id(mid_file)
+                if existing is not None:
+                    return existing
+                published = _publish_new_machine_id(mid_file)
+                if published is not None:
+                    return published
     except MachineIdError:
         raise
     except OSError as exc:
@@ -259,9 +263,11 @@ def repair_machine_id(
     mid_file = machine_id_file or _resolve_path("MACHINE_ID_FILE", MACHINE_ID_FILE)
     d_dir = data_dir or _resolve_path("DATA_DIR", DATA_DIR)
     try:
-        d_dir.mkdir(parents=True, exist_ok=True)
-        mid_file.parent.mkdir(parents=True, exist_ok=True)
-        with _machine_id_init_lock(mid_file):
+        with ExitStack() as scope:
+            scope.enter_context(migration_lock.shared("machine-id"))
+            d_dir.mkdir(parents=True, exist_ok=True)
+            mid_file.parent.mkdir(parents=True, exist_ok=True)
+            scope.enter_context(_machine_id_init_lock(mid_file))
             try:
                 raw = mid_file.read_bytes()
             except FileNotFoundError:
@@ -518,14 +524,21 @@ def backlog_lock(
             )
         token = None
         acquired_fd = -1
+        noted = False
+        # The migration scope is entered first and closed last (after the
+        # store unlock), so the migration lock is always outermost.
+        migration = ExitStack()
         _backlog_lock_count += 1
         try:
             if outermost:
+                migration.enter_context(migration_lock.shared("backlog"))
                 d_dir.mkdir(parents=True, exist_ok=True)
                 acquired_fd = os.open(str(l_file), os.O_WRONLY | os.O_CREAT, 0o644)
                 wait_start = time.monotonic()
                 fcntl.flock(acquired_fd, fcntl.LOCK_EX)
                 wait_seconds = time.monotonic() - wait_start
+                migration_lock.note_store_lock_acquired()
+                noted = True
                 _backlog_lock_fd = acquired_fd
                 _backlog_lock_dir = dir_key
             if require_identity and _OPERATION_IDENTITY.get() is None:
@@ -561,6 +574,9 @@ def backlog_lock(
                     os.close(acquired_fd)
             if _backlog_lock_count == 0:
                 _backlog_lock_dir = None
+            if noted:
+                migration_lock.note_store_lock_released()
+            migration.close()
 
 
 _out_of_scope_lock_rlock = threading.RLock()
@@ -579,22 +595,36 @@ def out_of_scope_lock(
     l_file = lock_file or _resolve_path(
         "OUT_OF_SCOPE_LOCK_FILE", OUT_OF_SCOPE_LOCK_FILE
     )
-    oos_dir.mkdir(parents=True, exist_ok=True)
     with _out_of_scope_lock_rlock:
+        outermost = _out_of_scope_lock_count == 0
+        noted = False
+        migration = ExitStack()
         _out_of_scope_lock_count += 1
-        if _out_of_scope_lock_count == 1:
-            _out_of_scope_lock_fd = os.open(
-                str(l_file), os.O_WRONLY | os.O_CREAT, 0o644
-            )
-            fcntl.flock(_out_of_scope_lock_fd, fcntl.LOCK_EX)
         try:
+            if outermost:
+                migration.enter_context(migration_lock.shared("out-of-scope"))
+                oos_dir.mkdir(parents=True, exist_ok=True)
+                fd = os.open(str(l_file), os.O_WRONLY | os.O_CREAT, 0o644)
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX)
+                except BaseException:
+                    os.close(fd)
+                    raise
+                _out_of_scope_lock_fd = fd
+                migration_lock.note_store_lock_acquired()
+                noted = True
             yield
         finally:
             _out_of_scope_lock_count -= 1
-            if _out_of_scope_lock_count == 0:
-                fcntl.flock(_out_of_scope_lock_fd, fcntl.LOCK_UN)
-                os.close(_out_of_scope_lock_fd)
+            if _out_of_scope_lock_count == 0 and _out_of_scope_lock_fd != -1:
+                with suppress(OSError):
+                    fcntl.flock(_out_of_scope_lock_fd, fcntl.LOCK_UN)
+                with suppress(OSError):
+                    os.close(_out_of_scope_lock_fd)
                 _out_of_scope_lock_fd = -1
+            if noted:
+                migration_lock.note_store_lock_released()
+            migration.close()
 
 
 # ── out-of-scope storage ─────────────────────────────────────────────────────
