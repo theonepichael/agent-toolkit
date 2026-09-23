@@ -35,6 +35,13 @@ REQUIRED_MARKERS = (
     # the critique-notes companion-file path convention those same callers
     # depend on
     "-critique-notes.md",
+    # a model the user names must not be overridden by --model-index
+    "Pinning a model the user names",
+    # a timeout gets one retry with the per-backend timeout raised
+    "_TIMEOUT_SECONDS",
+    # a grounded run denied a tool falls back to text-only, never to
+    # loosened permissions
+    "never loosen the backend's permissions",
 )
 
 # The usage block and the loop's per-round call are the two sections whose

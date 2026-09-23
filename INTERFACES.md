@@ -51,7 +51,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`gen_skills.py`](#agentscriptsgenskillspy) | gen_skills.py — regenerate the dashboard/recap/grill-me/backlog-item/ make-skill/spec/standup/to-tickets/swarm skill copies from one template per skill, plus a shared per-harness capability table. dashboard/recap/ grill-me/backlog-item/make-skill/spec/standup/to-tickets cover all 6 harnesses (claude, copilot, opencode, agy, pi, codex); swarm covers only claude/copilot (user-directed; pi already owns the orchestration surface) — see `SKILL_HARNESSES` below and AGENTS.md's "Harness maintenance tiers" section. |
 | [`gen_skills_params.py`](#agentscriptsgenskillsparamspy) | gen_skills_params.py — per-(skill, harness) content tables for gen_skills.py. |
 | [`grill.py`](#agentscriptsgrillpy) | grill.py — grill-me session state CLI. All session mutations go through here. |
-| [`guard_rails.py`](#agentscriptsguardrailspy) | Pre-tool guard shared by every harness: refuse a write into a repository's main checkout while a backlog item for that repository is in progress, warn when the current worktree's base has fallen behind ``origin/main``, (Bash, Claude Code only) deny the git-native ways to defeat the no-commit-on-main git hook (``githooks/pre-commit`` / ``githooks-global/pre-commit``), and require an active backlog-item claim before a write that points at an in-progress item. |
+| [`guard_rails.py`](#agentscriptsguardrailspy) | Pre-tool guard shared by every harness: refuse a write into a repository's main checkout while a backlog item for that repository is in progress, warn when the current worktree's base has fallen behind ``origin/main`` (or ``origin/<integration_branch>`` for an item that declares one), (Bash, Claude Code only) deny the git-native ways to defeat the no-commit-on-main git hook (``githooks/pre-commit`` / ``githooks-global/pre-commit``), and require an active backlog-item claim before a write that points at an in-progress item. |
 | [`harness_discovery_check.py`](#agentscriptsharnessdiscoverycheckpy) | SessionStart hook + CLI: detect when a harness's instruction-file discovery behavior may have drifted from the version-pinned facts in README.md. |
 | [`harness_spec.py`](#agentscriptsharnessspecpy) | Declarative harness specification registry. |
 | [`herdr_delegate.py`](#agentscriptsherdrdelegatepy) | Launch pi agents in herdr tabs to work backlog items. |
@@ -99,7 +99,7 @@ Single source of truth for toolkit data paths.
   - `check_not_stale(path: Path) -> None` — Refuse a path from the non-current layout using :data:`DEFAULT_RESOLVER`.
   - `current_layout() -> Layout` — Return the current layout using :data:`DEFAULT_RESOLVER`.
   - `write_pointer(home: Path, layout: Layout) -> None` — Atomically write the layout pointer under ``home``.
-- Tested by: `agent-scripts/test_layouts.py`, `test/test_agent_toolkit_paths.py`, `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_dev_status_storage.py`, `test/test_gen_interfaces.py`, `test/test_grill.py`, `test/test_guard_rails.py`, `test/test_llm_backends.py`, `test/test_machine_id.py`, `test/test_migrate_path_transform.py`, `test/test_migrate_toolkit_home.py`, `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`, `test/test_second_opinion.py`, `test/test_to_tickets_runner.py`
+- Tested by: `agent-scripts/test_layouts.py`, `test/test_agent_toolkit_paths.py`, `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_dev_status_storage.py`, `test/test_gen_interfaces.py`, `test/test_grill.py`, `test/test_guard_rails.py`, `test/test_llm_backends.py`, `test/test_machine_id.py`, `test/test_migrate_path_transform.py`, `test/test_migrate_toolkit_home.py`, `test/test_migrate_toolkit_home_moves.py`, `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`, `test/test_second_opinion.py`, `test/test_to_tickets_runner.py`
 
 ### `agent-scripts/analyze_sessions.py`
 
@@ -190,7 +190,7 @@ Read-only snapshot lookup over the backlog store for guard consumers.
 - Public functions:
   - `layout_error() -> agent_toolkit_paths.LayoutError | None` — The layout error that stops the backlog store resolving now, if any.
   - `backlog_items_path() -> Path` — Where the backlog store lives.
-- Tested by: `test/test_backlog_claim_lookup.py`, `test/test_dev_status_read.py`, `test/test_guard_rails.py`, `test/test_guard_rails_claim.py`, `test/test_path_for_per_use.py`
+- Tested by: `test/test_backlog_claim_lookup.py`, `test/test_dev_status_read.py`, `test/test_guard_rails.py`, `test/test_guard_rails_claim.py`, `test/test_guard_rails_stale_base.py`, `test/test_path_for_per_use.py`
 
 ### `agent-scripts/bundle_drift_check.py`
 
@@ -309,11 +309,12 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `recap [--refresh] [--backend <BACKEND>]` — print a friendly prose recap of recent activity
     - `--refresh` — bypass the freshness cache and regenerate the recap now
     - `--backend` — force this backend instead of priority-order fallback (choices computed at runtime)
-  - `worktree [<item>] [--repo <REPO>] [--branch <BRANCH>] [--dest <DEST>] [--skip-bootstrap] [--force] [--json]` — create or reuse a git worktree and bootstrap dependencies
+  - `worktree [<item>] [--repo <REPO>] [--branch <BRANCH>] [--dest <DEST>] [--base <BASE>] [--skip-bootstrap] [--force] [--json]` — create or reuse a git worktree and bootstrap dependencies
     - `item` — Backlog item slug, numeric position, or branch name (nargs: ?)
     - `--repo` — Path to git repository
     - `--branch` — Branch name for worktree
     - `--dest` — Explicit destination path for the worktree
+    - `--base` — Start point for a newly created branch (default: the item's integration_branch, else HEAD)
     - `--skip-bootstrap` — Skip dependency bootstrapping (default: False)
     - `--force/-f` — Pass --force to git worktree add (default: False)
     - `--json` — Emit structured result as JSON (default: False)
@@ -437,7 +438,7 @@ Typed mutation service and transaction manager for dev_status (Candidate 12).
   - `add_pending_item(request: PendingAddRequest, *, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Track a new waiting-on-someone-else item.
   - `update_pending_item(slug_or_id: str, request: PendingUpdateRequest, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Merge an update request into a pending item.
   - `mutation_transaction(*, items_path: Path | None = None, verbose: bool = False) -> Iterator[BacklogTransaction]` — Hold backlog_lock once for batch operations; yields BacklogTransaction.
-- Tested by: `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_harness_spec.py`, `test/test_machine_id.py`, `test/test_migrate_path_transform.py`, `test/test_migration_lock_adoption.py`
+- Tested by: `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_harness_spec.py`, `test/test_machine_id.py`, `test/test_migrate_path_transform.py`, `test/test_migrate_toolkit_home_moves.py`, `test/test_migration_lock_adoption.py`
 
 ### `agent-scripts/dev_status_read.py`
 
@@ -823,7 +824,7 @@ grill.py — grill-me session state CLI. All session mutations go through here.
 
 ### `agent-scripts/guard_rails.py`
 
-Pre-tool guard shared by every harness: refuse a write into a repository's main checkout while a backlog item for that repository is in progress, warn when the current worktree's base has fallen behind ``origin/main``, (Bash, Claude Code only) deny the git-native ways to defeat the no-commit-on-main git hook (``githooks/pre-commit`` / ``githooks-global/pre-commit``), and require an active backlog-item claim before a write that points at an in-progress item.
+Pre-tool guard shared by every harness: refuse a write into a repository's main checkout while a backlog item for that repository is in progress, warn when the current worktree's base has fallen behind ``origin/main`` (or ``origin/<integration_branch>`` for an item that declares one), (Bash, Claude Code only) deny the git-native ways to defeat the no-commit-on-main git hook (``githooks/pre-commit`` / ``githooks-global/pre-commit``), and require an active backlog-item claim before a write that points at an in-progress item.
 
 - Installed at: `~/.agent-toolkit/scripts/guard_rails.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
@@ -851,7 +852,7 @@ Pre-tool guard shared by every harness: refuse a write into a repository's main 
   - `parse_payload(harness: str, payload: object) -> Request | None` — Normalize a harness's native hook payload.
   - `render(harness: str | None, verdict: Verdict) -> tuple[str, int]` — Shape a verdict into the harness's own reply.
   - `build_parser() -> argparse.ArgumentParser`
-- Tested by: `test/test_guard_rails.py`, `test/test_guard_rails_claim.py`, `test/test_guard_rails_topology.py`, `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`
+- Tested by: `test/test_guard_rails.py`, `test/test_guard_rails_claim.py`, `test/test_guard_rails_stale_base.py`, `test/test_guard_rails_topology.py`, `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`
 
 ### `agent-scripts/harness_discovery_check.py`
 
@@ -1032,7 +1033,7 @@ link_inspect.py — link inspection, path classification, drift finding, and the
   - `check_orphaned_links(links: Sequence[tuple[Path, Path, str, bool]], *, manifest_entries: Iterable[dict[str, object]]) -> list[LinkFinding]` — Return typed findings for manifest-recorded symlinks that links.toml no longer produces.
   - `live_backup_paths(manifest_entries: Iterable[dict[str, object]]) -> set[Path]` — Return manifest-recorded backups that are still live ``--rollback`` payload.
   - `check_unmanaged_files(managed_dirs: Sequence[ManagedDirSpec], links: Sequence[tuple[Path, Path, str, bool]], *, home: Path, dir_applies: Callable[[ManagedDirSpec], bool], manifest_entries: Iterable[dict[str, object]] = ()) -> tuple[list[LinkFinding], int]` — Report foreign entries in directories ``links.toml`` owns exclusively.
-- Tested by: `test/test_check_toolkit_paths.py`, `test/test_harness_spec.py`, `test/test_install.py`, `test/test_link_drift_check.py`, `test/test_link_inspect.py`
+- Tested by: `test/test_check_toolkit_paths.py`, `test/test_harness_spec.py`, `test/test_install.py`, `test/test_link_drift_check.py`, `test/test_link_inspect.py`, `test/test_migrate_toolkit_home_moves.py`
 
 ### `agent-scripts/llm_backends.py`
 
@@ -1098,7 +1099,7 @@ Machine-wide migration lock: writers share it, the toolkit-home migrator owns it
   - `exclusive(site: str, *, blocking: bool = True) -> Iterator[None]` — Hold the lock exclusively (the migrator).
   - `build_parser() -> argparse.ArgumentParser`
 - Subcommand handlers: `cmd_status`, `cmd_hold`, `cmd_observations`
-- Tested by: `test/test_dev_status_validate.py`, `test/test_guard_rails_claim.py`, `test/test_migrate_path_transform.py`, `test/test_migrate_toolkit_home.py`, `test/test_migration_lock.py`, `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`
+- Tested by: `test/test_dev_status_validate.py`, `test/test_guard_rails_claim.py`, `test/test_migrate_path_transform.py`, `test/test_migrate_toolkit_home.py`, `test/test_migrate_toolkit_home_moves.py`, `test/test_migration_lock.py`, `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`
 
 ### `agent-scripts/notify.py`
 
@@ -1546,6 +1547,7 @@ worktree.py — automated worktree creation and dependency bootstrapping.
   - `--repo` — Path to git repository
   - `--branch` — Branch name for worktree
   - `--dest` — Explicit destination path for the worktree
+  - `--base` — Start point for a newly created branch (default: the item's integration_branch, else HEAD)
   - `--skip-bootstrap` — Skip dependency bootstrapping (default: False)
   - `--force/-f` — Pass --force to git worktree add (default: False)
   - `--json` — Emit structured result as JSON (default: False)
@@ -1557,9 +1559,10 @@ worktree.py — automated worktree creation and dependency bootstrapping.
   - `class WorktreeConfig` — Configuration for worktree creation and bootstrapping.
   - `class WorktreeResult` — Outcome of a worktree creation or reuse operation.
 - Public functions:
+  - `result_payload(result: WorktreeResult) -> dict[str, object]` — JSON payload for a worktree result, shared by both CLIs.
   - `find_repo_for_path(path: Path) -> Path | None` — Find the enclosing git repository root for a given path.
   - `resolve_backlog_item(slug_or_id: str, items_path: Path | None = None) -> dict[str, object] | None` — Look up a backlog item by slug or numeric position using dev_status_storage.
-  - `resolve_worktree_config(slug_or_id: str | None = None, *, repo: Path | str | None = None, branch: str | None = None, dest: Path | str | None = None, skip_bootstrap: bool = False, force: bool = False, quiet: bool = False, items_path: Path | None = None) -> WorktreeConfig` — Resolve worktree target repository, branch name, and destination path.
+  - `resolve_worktree_config(slug_or_id: str | None = None, *, repo: Path | str | None = None, branch: str | None = None, dest: Path | str | None = None, base: str | None = None, skip_bootstrap: bool = False, force: bool = False, quiet: bool = False, items_path: Path | None = None) -> WorktreeConfig` — Resolve worktree target repository, branch name, and destination path.
   - `bootstrap_worktree(worktree_path: Path, *, quiet: bool = False) -> tuple[bool, list[str] | None, list[str]]` — Execute dependency bootstrapping for the target worktree.
   - `create_and_bootstrap_worktree(config: WorktreeConfig) -> WorktreeResult` — Create or reuse a git worktree and bootstrap dependencies.
   - `build_parser() -> argparse.ArgumentParser` — Build command-line parser for worktree.py.
@@ -1582,8 +1585,9 @@ Per-worktree backlog provenance: one explicit marker, shared predicates.
   - `write_marker(worktree_dir: Path | str, slug: str) -> bool` — Stamp the provenance marker in a *linked* worktree.
   - `classify(directory: str | Path) -> WorktreeProvenance | None` — Full provenance snapshot for one directory, or None outside any repo.
   - `worktree_points_at_item(*, marker_slug: str | None, is_linked_worktree: bool, branch: str, item_id: str, in_progress_ids: set[str]) -> bool` — Whether a write in this worktree points at backlog ``item_id``.
-  - `inspect_item_worktrees(*, related_files: object, slug: str, cwd: str | Path | None = None) -> list[WorktreeInspection]` — Read-only committed-work facts for every target attributable to ``slug``: linked worktrees marked for the item (marker wins over the branch heuristic), the caller's current checkout when its branch equals the slug, and — only when no attributed worktree exists — each discovered repository's surviving slug branch.
-- Tested by: `test/test_dev_status_mutation.py`, `test/test_guard_rails_claim.py`, `test/test_worktree.py`, `test/test_worktree_provenance.py`
+  - `branch_name_problem(name: object) -> str | None` — Why ``name`` is not a usable bare local branch name, or None when it is.
+  - `inspect_item_worktrees(*, related_files: object, slug: str, cwd: str | Path | None = None, target_branch: str | None = None) -> list[WorktreeInspection]` — Read-only committed-work facts for every target attributable to ``slug``: linked worktrees marked for the item (marker wins over the branch heuristic), the caller's current checkout when its branch equals the slug, and — only when no attributed worktree exists — each discovered repository's surviving slug branch.
+- Tested by: `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_guard_rails_claim.py`, `test/test_worktree.py`, `test/test_worktree_provenance.py`
 
 ---
 
@@ -1607,6 +1611,7 @@ the workflow's template plus its generator's capability/parameter tables.
 | `/recap` | template | yes | yes | yes | yes | yes | yes |
 | `/refresh-guidance` | hand-authored | yes | yes | yes | yes | yes | yes |
 | `/second-opinion` | template | yes | yes | yes | yes | yes | yes |
+| `/skill-drift-audit` | hand-authored | yes | — | — | — | — | — |
 | `/skill-map` | hand-authored | yes | — | — | — | — | — |
 | `/spec` | template | yes | yes | yes | yes | yes | yes |
 | `/standup` | template | yes | yes | yes | yes | yes | yes |
@@ -1646,6 +1651,9 @@ the workflow's template plus its generator's capability/parameter tables.
   - Generated from: `templates/second_opinion.md.tmpl` by `gen_second_opinion.py`
   - `claude/commands/{name}.md` is the rendered Claude Code port — edit the template or generator, then regenerate.
   - Installed at: `~/.claude/commands/second-opinion.md` (claude)
+- **`/skill-drift-audit`** — Audit agent-toolkit's skill docs against the current behavior of the scripts they invoke — stale wording the scripts now contradict, and new script functionality the skills don't use yet — for everything changed since the last audit. Use when the user says 'audit the skills', 'skill drift', 'are the skills stale', 'check the skills against the scripts', or asks after a batch of script changes whether any skills need updating.
+  - Source: `claude/commands/skill-drift-audit.md` (hand-authored)
+  - Installed at: `~/.claude/commands/skill-drift-audit.md` (claude)
 - **`/skill-map`** — Shows how this repo's skills connect and flags any skill mentioned by another that no longer exists. Use when the user says "skill map", "show the skill map", "which skill for X", or asks how the skills chain together.
   - Source: `claude/commands/skill-map.md` (hand-authored)
   - Installed at: `~/.claude/commands/skill-map.md` (claude)
@@ -1828,6 +1836,8 @@ install.py — agent-toolkit + AI-harness provisioner for macOS and Linux/WSL.
   - `--cross-filesystem`
   - `--skip-reconciliation`
   - `--migration-id`
+  - `--rollback-toolkit-home-migration`
+  - `--finalize-toolkit-home-migration`
   - `-h/--help`
 - Environment: `AGENT_TOOLKIT_INSTALL_WRAPPER`, `LOGNAME`, `PATH`, `USER`
 - Filesystem constants:
@@ -1878,7 +1888,7 @@ install.py — agent-toolkit + AI-harness provisioner for macOS and Linux/WSL.
   - `print_summary(ctx: Context, settings: tuple[str, str], opencode: tuple[str, str], vscode: Sequence[tuple[str, tuple[str, str]]] = (), pi_settings: tuple[str, str] = ('', '')) -> None` — Print the loud end-of-run summary: skips, drift, and next steps.
   - `do_check_links(ctx: Context) -> int` — Audit the live symlinks against ``links.toml`` and report, changing nothing.
   - `run_install(ctx: Context, specs: Sequence[LinkSpec]) -> int` — Run every install step in order and return the process exit status.
-- Tested by: `test/test_dead_installers_stripped.py`, `test/test_harness_spec.py`, `test/test_install.py`, `test/test_link_inspect.py`, `test/test_migrate_toolkit_home.py`, `test/test_settings_seed.py`
+- Tested by: `test/test_dead_installers_stripped.py`, `test/test_harness_spec.py`, `test/test_install.py`, `test/test_link_inspect.py`, `test/test_migrate_toolkit_home.py`, `test/test_migrate_toolkit_home_moves.py`, `test/test_settings_seed.py`
 
 ### `depart.py`
 
@@ -2060,7 +2070,20 @@ named doc, not regenerating this file.
 
 | Doc | Status |
 | --- | --- |
+| `claude/commands/skill-drift-audit.md` | OK |
 | `claude/commands/skill-map.md` | OK |
+
+### `gen_second_opinion.py`
+
+| Doc | Status |
+| --- | --- |
+| `claude/commands/skill-drift-audit.md` | OK |
+
+### `gen_skills.py`
+
+| Doc | Status |
+| --- | --- |
+| `claude/commands/skill-drift-audit.md` | OK |
 
 ### `grill.py`
 
@@ -2207,6 +2230,7 @@ new one, `--check` catches it the same as any other stale content.
 | `/recap` | — |
 | `/refresh-guidance` | — |
 | `/second-opinion` | — |
+| `/skill-drift-audit` | — |
 | `/skill-map` | — |
 | `/spec` | `backlog-item`, `grill-me`, `second-opinion` |
 | `/standup` | `dashboard` |

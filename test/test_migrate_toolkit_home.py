@@ -4,7 +4,8 @@
 Every test builds a sandbox HOME (and XDG state dir) holding legacy toolkit
 stores and a fake installed runtime, then runs the command in-process via
 ``migrate_toolkit_home.run`` (or install.py's parser for flag rules). The
-crash tests run install.py in a child process killed at a named checkpoint.
+fresh-process validation is stubbed to pass. The data phases, recovery by
+the flip rule, and the crash tests live in test_migrate_toolkit_home_moves.py.
 """
 
 import json
@@ -23,7 +24,6 @@ import agent_toolkit_paths  # noqa: E402
 import install  # noqa: E402
 import migrate_toolkit_home as mth  # noqa: E402
 import migration_lock  # noqa: E402
-import test_fault_injection as fi  # noqa: E402
 
 pytestmark = pytest.mark.usefixtures("sandbox")
 
@@ -43,11 +43,25 @@ def sandbox(tmp_path, monkeypatch):
     migration_lock._reset_for_tests()
 
 
+@pytest.fixture(autouse=True)
+def passing_validation(monkeypatch):
+    """The sandbox has no installed runtime to validate against."""
+    monkeypatch.setattr(mth, "_run_validation", lambda _ctx: (True, []))
+
+
 def _installed_runtime(home: Path, *, enforce: bool = True) -> None:
+    """A fake installed runtime, linked into place the way install.py links it."""
+    real = home / "fake-runtime"
+    real.mkdir(exist_ok=True)
+    (real / "migration_lock.py").write_text(f"ENFORCE: bool = {enforce}\n")
+    (real / "agent_toolkit_paths.py").write_text("# installed\n")
     scripts = home / ".claude" / "scripts"
     scripts.mkdir(parents=True, exist_ok=True)
-    (scripts / "migration_lock.py").write_text(f"ENFORCE: bool = {enforce}\n")
-    (scripts / "agent_toolkit_paths.py").write_text("# installed\n")
+    for module in ("migration_lock.py", "agent_toolkit_paths.py"):
+        link = scripts / module
+        if link.is_symlink():
+            link.unlink()
+        link.symlink_to(real / module)
 
 
 def _legacy_stores(home: Path) -> Path:
@@ -275,24 +289,22 @@ def test_dry_run_reports_a_busy_lock_as_warning(machine, capsys):
 # ── real run ────────────────────────────────────────────────────────────────
 
 
-def test_real_run_writes_only_journal_inventory_and_history(machine, capsys):
-    data_before = _tree(machine / ".claude")
+def test_real_run_writes_journal_inventory_and_history(machine, capsys):
     code, report = _run(capsys)
     assert code == 0, report
-    assert _tree(machine / ".claude") == data_before
     [jdir] = _journal_dirs(machine)
     assert jdir.name == report["migration_id"]
     assert sorted(p.name for p in jdir.iterdir()) == ["inventory.json", "journal.jsonl"]
     records = _records(jdir)
     assert records[-1]["event"] == "end"
-    assert records[-1]["detail"]["outcome"] == "stopped:stages-not-built"
+    assert records[-1]["detail"]["outcome"] == "committed"
     inventory = jdir / "inventory.json"
     assert stat.S_IMODE(inventory.stat().st_mode) == 0o444
     assert json.loads(inventory.read_text())["migration_id"] == jdir.name
     history = (_installer_state(machine) / "history.jsonl").read_text().splitlines()
-    migration = [json.loads(line) for line in history if '"migration"' in line]
+    entries = [json.loads(line) for line in history]
+    migration = [e for e in entries if e.get("kind") == "migration"]
     assert [r["id"] for r in migration] == [jdir.name]
-    assert not agent_toolkit_paths.path_for_layout("work-items", "toolkit-home").exists()
 
 
 def test_real_run_on_a_fresh_machine_has_an_empty_inventory(sandbox, capsys):
@@ -524,7 +536,7 @@ def test_stray_temp_inventory_is_removed_before_abandon(machine, capsys):
 
 
 def test_terminal_journal_without_history_is_repaired_once(machine, capsys):
-    end = json.dumps({"seq": 2, "id": "x", "phase": "run", "event": "end", "detail": {"outcome": "stopped:stages-not-built"}})
+    end = json.dumps({"seq": 2, "id": "x", "phase": "run", "event": "end", "detail": {"outcome": "committed"}})
     jdir = _crashed_journal(
         machine, "mig-20260101T000000Z-dddddd", (BEGIN + "\n" + end + "\n").encode()
     )
@@ -541,15 +553,14 @@ def test_terminal_journal_without_history_is_repaired_once(machine, capsys):
             continue
     ids = [e["id"] for e in parsed if e.get("kind") == "migration"]
     assert ids.count(jdir.name) == 1
-    code, _ = _run(capsys)
-    assert code == 0
+    _run(capsys)  # refused: the first run left the layout at toolkit-home
     parsed2 = [json.loads(line) for line in history.read_text().splitlines() if line.startswith("{\"kind\": \"migration\"") or '"kind": "migration"' in line and line.endswith("}")]
     assert [e["id"] for e in parsed2].count(jdir.name) == 1
 
 
 def test_journal_refuses_a_second_terminal_record(sandbox):
     journal = mth.Journal.open(_installer_state(sandbox), mth.new_migration_id())
-    journal.end("stopped:stages-not-built")
+    journal.end("committed")
     with pytest.raises(mth.JournalError):
         journal.end("aborted")
 
@@ -596,86 +607,6 @@ def test_fsync_order_record_before_action(machine, capsys, monkeypatch):
     assert f"fsync:{jdir}" in after  # dir fsynced after the rename
     assert f"fsync:{journal}" in after  # "done" recorded after the action
     assert f"fsync:{jdir.parent}" in events[:first_journal_sync]
-
-
-# ── crash at every checkpoint ───────────────────────────────────────────────
-
-
-def _install_args(home: Path) -> list[str]:
-    return [
-        "--migrate-toolkit-home",
-        "--harness=claude",
-        "--skip-reconciliation",
-        "--json",
-        "--quiet",
-    ]
-
-
-def _oracle_rows() -> list[fi.OracleRow]:
-    rows: list[fi.OracleRow] = []
-    for name, expected in mth.RECOVERY_ORACLE.items():
-
-        def check(root: Path, _exp=expected) -> None:
-            data = root / ".claude" / "data" / "backlog" / "items.json"
-            assert json.loads(data.read_text())["items"] == [{"id": "x-one"}]
-            assert not (root / ".agent-toolkit" / "data" / "backlog").exists()
-
-        rows.append(fi.OracleRow(checkpoint=name, expected=expected.action, check=check))
-    return rows
-
-
-def _assert_crash_state(home: Path, expected: mth.Expected) -> None:
-    """What the crash left on disk, before any recovery runs, matches the oracle."""
-    dirs = _journal_dirs(home)
-    if expected.action == "none" and not expected.journal_file:
-        assert dirs == []
-        return
-    [jdir] = dirs
-    journal = jdir / mth.JOURNAL_NAME
-    assert journal.exists() is expected.journal_file
-    records = _records(jdir)
-    last = records[-1]["event"] if records else None
-    assert last == expected.last_event
-    assert (jdir / mth.INVENTORY_NAME).exists() is expected.inventory
-    assert (jdir.name in mth.history_ids(_installer_state(home) / "history.jsonl")) is expected.history
-
-
-def test_oracle_covers_every_checkpoint():
-    fi.check_oracle_complete(mth.CHECKPOINTS, _oracle_rows())
-
-
-@pytest.mark.allow_real_subprocess  # the migrator runs in a child killed by SIGKILL
-@pytest.mark.parametrize("checkpoint", mth.CHECKPOINTS)
-def test_crash_at_checkpoint_recovers_by_the_oracle(machine, checkpoint):
-    import subprocess
-
-    fi.run_killed_at(
-        checkpoint,
-        REPO / "install.py",
-        _install_args(machine),
-        home=machine,
-        declared=mth.CHECKPOINTS,
-    )
-    _assert_crash_state(machine, mth.RECOVERY_ORACLE[checkpoint])
-    migration_lock._reset_for_tests()
-    result = subprocess.run(
-        [sys.executable, str(REPO / "install.py"), *_install_args(machine)],
-        env=fi.sandbox_env(machine),
-        cwd=str(machine),
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=60,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-    report = json.loads(result.stdout)
-    actions = {r["action"] for r in report["recovered"]}
-    observed = actions.pop() if actions else "none"
-    assert not actions, report["recovered"]
-    row = next(r for r in _oracle_rows() if r.checkpoint == checkpoint)
-    fi.assert_recovery(row, observed, machine)
-    for jdir in _journal_dirs(machine):
-        assert mth.is_terminal(jdir), jdir
 
 
 @pytest.mark.regression(

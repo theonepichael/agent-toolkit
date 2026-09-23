@@ -562,3 +562,178 @@ class TestWorktree:
         assert res.returncode == 2
         assert "either a backlog item slug/id or --repo must be provided" in res.stderr
 
+
+
+def _git(repo: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(repo), *args], capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+
+def _repo_with_release_branch(path: Path) -> tuple[Path, str, str]:
+    """Repo whose main and release-1 have diverged; returns (repo, main_sha, rel_sha)."""
+    repo = _init_repo(path)
+    _git(repo, "branch", "release-1")
+    _git(repo, "checkout", "-q", "release-1")
+    (repo / "rel.txt").write_text("rel\n")
+    _git(repo, "add", "rel.txt")
+    _git(repo, "commit", "-qm", "release work")
+    rel_sha = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "-q", "main")
+    (repo / "main.txt").write_text("main\n")
+    _git(repo, "add", "main.txt")
+    _git(repo, "commit", "-qm", "main work")
+    return repo, _git(repo, "rev-parse", "HEAD"), rel_sha
+
+
+def _items_file(tmp_path: Path, repo: Path, slug: str, **extra: object) -> Path:
+    item: dict[str, object] = {
+        "id": slug,
+        "status": "in-progress",
+        "summary": "s",
+        "related_files": [{"path": str(repo / "README.md")}],
+        **extra,
+    }
+    backlog_file = tmp_path / "items.json"
+    backlog_file.write_text(json.dumps({"schema_version": 2, "items": [item]}))
+    return backlog_file
+
+
+@pytest.mark.allow_real_subprocess  # runs git commands against temporary repos in tmp_path
+class TestWorktreeBase:
+    def test_integration_branch_is_the_start_point(self, tmp_path: Path) -> None:
+        repo, _main_sha, rel_sha = _repo_with_release_branch(tmp_path / "ib")
+        items = _items_file(tmp_path, repo, "rel-item", integration_branch="release-1")
+        config = worktree.resolve_worktree_config(
+            "rel-item", items_path=items, skip_bootstrap=True
+        )
+        result = worktree.create_and_bootstrap_worktree(config)
+        assert _git(result.worktree_path, "rev-parse", "HEAD") == rel_sha
+        assert result.base == "release-1"
+        assert result.base_source == "integration_branch"
+        assert result.base_commit == rel_sha
+        assert result.warnings == ()
+        # Branched from a SHA: no upstream is configured for the item branch.
+        res = subprocess.run(
+            ["git", "-C", str(repo), "config", "branch.rel-item.merge"],
+            capture_output=True,
+        )
+        assert res.returncode != 0
+
+    def test_explicit_base_wins_over_integration_branch(self, tmp_path: Path) -> None:
+        repo, main_sha, _rel_sha = _repo_with_release_branch(tmp_path / "ov")
+        _git(repo, "branch", "other", "main~1")
+        other_sha = _git(repo, "rev-parse", "other")
+        items = _items_file(tmp_path, repo, "ov-item", integration_branch="release-1")
+        config = worktree.resolve_worktree_config(
+            "ov-item", base="other", items_path=items, skip_bootstrap=True
+        )
+        result = worktree.create_and_bootstrap_worktree(config)
+        assert _git(result.worktree_path, "rev-parse", "HEAD") == other_sha != main_sha
+        assert (result.base, result.base_source) == ("other", "--base")
+
+    def test_explicit_base_for_adhoc_repo_branch(self, tmp_path: Path) -> None:
+        repo, _main_sha, rel_sha = _repo_with_release_branch(tmp_path / "adhoc")
+        config = worktree.resolve_worktree_config(
+            repo=repo, branch="adhoc", base="release-1", skip_bootstrap=True
+        )
+        result = worktree.create_and_bootstrap_worktree(config)
+        assert _git(result.worktree_path, "rev-parse", "HEAD") == rel_sha
+        assert result.base_source == "--base"
+
+    def test_default_base_is_head(self, tmp_path: Path) -> None:
+        repo, main_sha, _rel_sha = _repo_with_release_branch(tmp_path / "def")
+        items = _items_file(tmp_path, repo, "plain-item")
+        config = worktree.resolve_worktree_config(
+            "plain-item", items_path=items, skip_bootstrap=True
+        )
+        result = worktree.create_and_bootstrap_worktree(config)
+        assert _git(result.worktree_path, "rev-parse", "HEAD") == main_sha
+        assert (result.base, result.base_source, result.base_commit) == (
+            "HEAD",
+            "HEAD",
+            main_sha,
+        )
+
+    def test_empty_integration_branch_is_unset(self, tmp_path: Path) -> None:
+        repo, main_sha, _rel_sha = _repo_with_release_branch(tmp_path / "empty")
+        items = _items_file(tmp_path, repo, "e-item", integration_branch="")
+        config = worktree.resolve_worktree_config(
+            "e-item", items_path=items, skip_bootstrap=True
+        )
+        result = worktree.create_and_bootstrap_worktree(config)
+        assert result.base_source == "HEAD"
+        assert _git(result.worktree_path, "rev-parse", "HEAD") == main_sha
+
+    def test_reuse_and_attach_report_no_base(self, tmp_path: Path) -> None:
+        repo, _main_sha, _rel_sha = _repo_with_release_branch(tmp_path / "ra")
+        items = _items_file(tmp_path, repo, "ra-item", integration_branch="release-1")
+        config = worktree.resolve_worktree_config(
+            "ra-item", items_path=items, skip_bootstrap=True
+        )
+        worktree.create_and_bootstrap_worktree(config)
+        reused = worktree.create_and_bootstrap_worktree(config)
+        assert reused.reused
+        assert (reused.base, reused.base_source, reused.base_commit) == (None, None, None)
+        assert reused.warnings == ()
+
+    def test_attach_with_implied_base_is_diagnostic_not_warning(
+        self, tmp_path: Path
+    ) -> None:
+        repo, main_sha, _rel_sha = _repo_with_release_branch(tmp_path / "att")
+        _git(repo, "branch", "att-item")  # pre-created off main
+        items = _items_file(tmp_path, repo, "att-item", integration_branch="release-1")
+        config = worktree.resolve_worktree_config(
+            "att-item", items_path=items, skip_bootstrap=True
+        )
+        result = worktree.create_and_bootstrap_worktree(config)
+        assert _git(result.worktree_path, "rev-parse", "HEAD") == main_sha
+        assert result.base is None
+        assert result.warnings == ()
+        assert any("release-1" in d for d in result.diagnostics)
+
+    def test_attach_with_explicit_base_warns(self, tmp_path: Path) -> None:
+        repo, main_sha, _rel_sha = _repo_with_release_branch(tmp_path / "attw")
+        _git(repo, "branch", "existing")
+        config = worktree.resolve_worktree_config(
+            repo=repo, branch="existing", base="release-1", skip_bootstrap=True
+        )
+        result = worktree.create_and_bootstrap_worktree(config)
+        assert _git(result.worktree_path, "rev-parse", "HEAD") == main_sha
+        assert len(result.warnings) == 1
+        assert "release-1" in result.warnings[0]
+
+    def test_unresolvable_base_errors_before_worktree_add(
+        self, tmp_path: Path
+    ) -> None:
+        repo = _init_repo(tmp_path / "missing")
+        items = _items_file(tmp_path, repo, "m-item", integration_branch="release-9")
+        config = worktree.resolve_worktree_config(
+            "m-item", items_path=items, skip_bootstrap=True
+        )
+        with pytest.raises(worktree.WorktreeError, match="release-9") as exc:
+            worktree.create_and_bootstrap_worktree(config)
+        assert "integration_branch" in str(exc.value)
+        assert "git branch release-9 origin/release-9" in str(exc.value)
+        assert not (tmp_path / "missing-m-item").exists()
+        res = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "--verify", "--quiet", "refs/heads/m-item"],
+            capture_output=True,
+        )
+        assert res.returncode != 0
+
+    @pytest.mark.parametrize("entry", ["worktree.py", "dev_status.py"])
+    def test_cli_base_flag_and_json_keys(self, tmp_path: Path, entry: str) -> None:
+        repo, _main_sha, rel_sha = _repo_with_release_branch(tmp_path / "cli")
+        cmd = [sys.executable, str(REPO_ROOT / "agent-scripts" / entry)]
+        if entry == "dev_status.py":
+            cmd.append("worktree")
+        cmd += ["--repo", str(repo), "--branch", "cli-b", "--base", "release-1",
+                "--skip-bootstrap", "--json"]
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        assert res.returncode == 0, res.stderr
+        data = json.loads(res.stdout)
+        assert data["base"] == "release-1"
+        assert data["base_source"] == "--base"
+        assert data["base_commit"] == rel_sha
+        assert data["warnings"] == []
