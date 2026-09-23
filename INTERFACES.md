@@ -432,7 +432,7 @@ Typed mutation service and transaction manager for dev_status (Candidate 12).
   - `add_pending_item(request: PendingAddRequest, *, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Track a new waiting-on-someone-else item.
   - `update_pending_item(slug_or_id: str, request: PendingUpdateRequest, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Merge an update request into a pending item.
   - `mutation_transaction(*, items_path: Path | None = None, verbose: bool = False) -> Iterator[BacklogTransaction]` — Hold backlog_lock once for batch operations; yields BacklogTransaction.
-- Tested by: `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_harness_spec.py`, `test/test_machine_id.py`, `test/test_migration_lock_adoption.py`, `test/test_worktree_provenance.py`
+- Tested by: `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_harness_spec.py`, `test/test_machine_id.py`, `test/test_migration_lock_adoption.py`
 
 ### `agent-scripts/dev_status_read.py`
 
@@ -1580,6 +1580,7 @@ Per-worktree backlog provenance: one explicit marker, shared predicates.
 - CLI: none (library module).
 - Public classes:
   - `class WorktreeProvenance` — Git facts that answer "which item owns this directory's worktree?".
+  - `class WorktreeInspection` — Facts about one target attributable to a backlog item.
 - Public functions:
   - `marker_path(git_dir: Path) -> Path` — Where a worktree's provenance marker lives, given its git dir.
   - `read_marker(git_dir: Path | None) -> str | None` — The slug in a git dir's marker, or None when absent/unreadable.
@@ -1587,7 +1588,7 @@ Per-worktree backlog provenance: one explicit marker, shared predicates.
   - `write_marker(worktree_dir: Path | str, slug: str) -> bool` — Stamp the provenance marker in a *linked* worktree.
   - `classify(directory: str | Path) -> WorktreeProvenance | None` — Full provenance snapshot for one directory, or None outside any repo.
   - `worktree_points_at_item(*, marker_slug: str | None, is_linked_worktree: bool, branch: str, item_id: str, in_progress_ids: set[str]) -> bool` — Whether a write in this worktree points at backlog ``item_id``.
-  - `worktree_belongs_to_slug(*, marker_slug: str | None, is_linked_worktree: bool, branch: str, slug: str) -> bool` — Advisory per-item attribution for the completion notice.
+  - `inspect_item_worktrees(*, related_files: object, slug: str, cwd: str | Path | None = None) -> list[WorktreeInspection]` — Read-only committed-work facts for every target attributable to ``slug``: linked worktrees marked for the item (marker wins over the branch heuristic), the caller's current checkout when its branch equals the slug, and — only when no attributed worktree exists — each discovered repository's surviving slug branch.
 - Tested by: `test/test_dev_status_mutation.py`, `test/test_guard_rails_claim.py`, `test/test_worktree.py`, `test/test_worktree_provenance.py`
 
 ---

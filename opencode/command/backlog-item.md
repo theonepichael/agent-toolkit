@@ -156,7 +156,14 @@ orphaned directory directly (`rm -rf <worktree-path>`) and retry
 
 ## 12. Close
 `dev_status.py review $ARGUMENTS` then `approve $ARGUMENTS` — never a bare
-`done` on an in-review item. If `approve` refuses citing an unmet gate,
+`done` on an in-review item. The lifecycle order is commit → local merge →
+review → approve → done: all three refuse with a typed error while the
+item's attributable local work is uncommitted or not merged into the
+repo's local default branch (merge ancestry is the contract — a
+squash/rebase merge clears the check only by deleting the stale local
+branch or worktree, after a human confirms the content reached the
+default branch; planning-only items with no attributable local work
+pass). If `approve` refuses citing an unmet gate,
 actually check each criterion from `show $ARGUMENTS` against the diff —
 don't pass it reflexively — then cover every criterion with evidence:
 `dev_status.py run $ARGUMENTS -- <command>` executes and records a command,
