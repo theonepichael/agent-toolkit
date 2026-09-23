@@ -308,11 +308,12 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `recap [--refresh] [--backend <BACKEND>]` — print a friendly prose recap of recent activity
     - `--refresh` — bypass the freshness cache and regenerate the recap now
     - `--backend` — force this backend instead of priority-order fallback (choices computed at runtime)
-  - `worktree [<item>] [--repo <REPO>] [--branch <BRANCH>] [--dest <DEST>] [--skip-bootstrap] [--force] [--json]` — create or reuse a git worktree and bootstrap dependencies
+  - `worktree [<item>] [--repo <REPO>] [--branch <BRANCH>] [--dest <DEST>] [--base <BASE>] [--skip-bootstrap] [--force] [--json]` — create or reuse a git worktree and bootstrap dependencies
     - `item` — Backlog item slug, numeric position, or branch name (nargs: ?)
     - `--repo` — Path to git repository
     - `--branch` — Branch name for worktree
     - `--dest` — Explicit destination path for the worktree
+    - `--base` — Start point for a newly created branch (default: the item's integration_branch, else HEAD)
     - `--skip-bootstrap` — Skip dependency bootstrapping (default: False)
     - `--force/-f` — Pass --force to git worktree add (default: False)
     - `--json` — Emit structured result as JSON (default: False)
@@ -1544,6 +1545,7 @@ worktree.py — automated worktree creation and dependency bootstrapping.
   - `--repo` — Path to git repository
   - `--branch` — Branch name for worktree
   - `--dest` — Explicit destination path for the worktree
+  - `--base` — Start point for a newly created branch (default: the item's integration_branch, else HEAD)
   - `--skip-bootstrap` — Skip dependency bootstrapping (default: False)
   - `--force/-f` — Pass --force to git worktree add (default: False)
   - `--json` — Emit structured result as JSON (default: False)
@@ -1555,9 +1557,10 @@ worktree.py — automated worktree creation and dependency bootstrapping.
   - `class WorktreeConfig` — Configuration for worktree creation and bootstrapping.
   - `class WorktreeResult` — Outcome of a worktree creation or reuse operation.
 - Public functions:
+  - `result_payload(result: WorktreeResult) -> dict[str, object]` — JSON payload for a worktree result, shared by both CLIs.
   - `find_repo_for_path(path: Path) -> Path | None` — Find the enclosing git repository root for a given path.
   - `resolve_backlog_item(slug_or_id: str, items_path: Path | None = None) -> dict[str, object] | None` — Look up a backlog item by slug or numeric position using dev_status_storage.
-  - `resolve_worktree_config(slug_or_id: str | None = None, *, repo: Path | str | None = None, branch: str | None = None, dest: Path | str | None = None, skip_bootstrap: bool = False, force: bool = False, quiet: bool = False, items_path: Path | None = None) -> WorktreeConfig` — Resolve worktree target repository, branch name, and destination path.
+  - `resolve_worktree_config(slug_or_id: str | None = None, *, repo: Path | str | None = None, branch: str | None = None, dest: Path | str | None = None, base: str | None = None, skip_bootstrap: bool = False, force: bool = False, quiet: bool = False, items_path: Path | None = None) -> WorktreeConfig` — Resolve worktree target repository, branch name, and destination path.
   - `bootstrap_worktree(worktree_path: Path, *, quiet: bool = False) -> tuple[bool, list[str] | None, list[str]]` — Execute dependency bootstrapping for the target worktree.
   - `create_and_bootstrap_worktree(config: WorktreeConfig) -> WorktreeResult` — Create or reuse a git worktree and bootstrap dependencies.
   - `build_parser() -> argparse.ArgumentParser` — Build command-line parser for worktree.py.

@@ -1953,6 +1953,7 @@ def cmd_worktree(args: argparse.Namespace) -> None:
             repo=args.repo,
             branch=args.branch,
             dest=args.dest,
+            base=args.base,
             skip_bootstrap=args.skip_bootstrap,
             force=args.force,
             quiet=getattr(args, "quiet", False),
@@ -1962,17 +1963,11 @@ def cmd_worktree(args: argparse.Namespace) -> None:
         if not getattr(args, "quiet", False):
             for diag in result.diagnostics:
                 print(f"[worktree] {diag}", file=sys.stderr)
+        for warning in result.warnings:
+            print(f"[worktree] warning: {warning}", file=sys.stderr)
 
         if getattr(args, "json", False):
-            payload = {
-                "worktree_path": str(result.worktree_path),
-                "branch": result.branch,
-                "reused": result.reused,
-                "bootstrap_executed": result.bootstrap_executed,
-                "bootstrap_command": result.bootstrap_command,
-                "diagnostics": list(result.diagnostics),
-            }
-            print(json.dumps(payload, indent=2))
+            print(json.dumps(worktree.result_payload(result), indent=2))
         else:
             print(str(result.worktree_path))
     except worktree.WorktreeError as err:
@@ -4136,6 +4131,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--dest",
         default=None,
         help="Explicit destination path for the worktree",
+    )
+    p.add_argument(
+        "--base",
+        default=None,
+        help=(
+            "Start point for a newly created branch "
+            "(default: the item's integration_branch, else HEAD)"
+        ),
     )
     p.add_argument(
         "--skip-bootstrap",
