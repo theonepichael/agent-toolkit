@@ -658,6 +658,22 @@ class BackendPayloadSizeError(BackendError):
     """
 
 
+class BackendToolUseError(BackendError):
+    """A backend answered with a tool-use transcript instead of a critique.
+
+    Raised by :func:`_raise_on_tool_use` (a real ``tool_use`` event in the
+    stream) and :func:`_raise_on_emitted_tool_call` (the call leaked through
+    as markup inside a text event) — the two shapes of the same failure
+    mode. A dedicated type, so a caller can quarantine the failing
+    (backend, model) pair by exception type without matching vendor message
+    wording: keying a fallback on error text a vendor can reword would turn
+    a working backend into a silent regression.
+
+    A strict BackendError subclass: every existing ``except BackendError``
+    call site keeps catching this unchanged.
+    """
+
+
 class BackendModelPolicyError(BackendError):
     """A backend rejected a model because the ACCOUNT cannot select models
     through the model flag -- an entitlement failure, not a bad model id.
@@ -1334,8 +1350,9 @@ def _raise_on_tool_use(
             in grounded mode). Any invocation outside this set raises.
 
     Raises:
-        BackendError: If any event in ``events`` has ``type == "tool_use"``
-            outside ``allowed_tools``, naming the tools that were invoked.
+        BackendToolUseError: If any event in ``events`` has ``type ==
+            "tool_use"`` outside ``allowed_tools``, naming the tools that
+            were invoked.
     """
     tool_uses = _opencode_tool_use_events(events)
     if not tool_uses:
@@ -1349,7 +1366,9 @@ def _raise_on_tool_use(
             return
         tools = disallowed
     names = ", ".join(tools) if tools else "unknown tools"
-    raise BackendError(f"{context} used tools instead of returning text: {names}")
+    raise BackendToolUseError(
+        f"{context} used tools instead of returning text: {names}"
+    )
 
 
 def _raise_on_emitted_tool_call(text: str, *, context: str) -> None:
@@ -1379,7 +1398,8 @@ def _raise_on_emitted_tool_call(text: str, *, context: str) -> None:
         context: Label for the failing caller, used in the error message.
 
     Raises:
-        BackendError: If ``text`` is dominated by a leaked tool-call block.
+        BackendToolUseError: If ``text`` is dominated by a leaked tool-call
+            block.
     """
     scanned = text[:_TOOL_CALL_LEAK_SCAN_LIMIT]
     spans = sorted(
@@ -1398,7 +1418,7 @@ def _raise_on_emitted_tool_call(text: str, *, context: str) -> None:
     matched_chars = sum(end - start for start, end in merged)
     if matched_chars / len(scanned) < _TOOL_CALL_LEAK_DOMINANCE_RATIO:
         return
-    raise BackendError(f"{context} returned tool-call markup instead of prose")
+    raise BackendToolUseError(f"{context} returned tool-call markup instead of prose")
 
 
 def _finalize_text_response(chunks: list[str], *, context: str) -> str:

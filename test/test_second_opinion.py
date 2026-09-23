@@ -20,7 +20,7 @@ import sys
 import tempfile
 import unittest
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stderr
 from pathlib import Path
 from unittest.mock import patch
 
@@ -2360,3 +2360,163 @@ class GroundedReviewTests(unittest.TestCase):
 
 if __name__ == "__main__":
     test_bootstrap.run_unittest_main(verbosity=1)
+
+
+class BackendListFallbackTests(unittest.TestCase):
+    """--backend accepts a comma-separated list; runtime failures rotate.
+
+    First success wins. A single-name run keeps today's strict
+    one-backend-only contract; a list entry that is not installed is
+    skipped with a one-line notice. Tool-use transcripts quarantine the
+    (backend, model) pair for the process; a fresh process starts clean.
+    """
+
+    ENV = {
+        "SECOND_OPINION_AGY_MODEL": "Gemini 3.7 Flash (High)",
+        "SECOND_OPINION_OPENCODE_MODEL_POOL": "model-a,model-b",
+    }
+
+    def setUp(self) -> None:
+        # The quarantine set is process-lifetime by design; tests must not
+        # leak entries into other tests in the same pytest worker process.
+        self.addCleanup(second_opinion._UNFIT_MODELS.clear)
+
+    def _plan(self, **kw: object) -> second_opinion.ReviewRequest:
+        defaults: dict[str, object] = {"plan_text": "my plan"}
+        defaults.update(kw)
+        return second_opinion.ReviewRequest(**defaults)  # type: ignore[arg-type]
+
+    def test_list_falls_back_to_second_entry_on_runtime_failure(self) -> None:
+        with (
+            patch.dict(os.environ, self.ENV),
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(
+                second_opinion,
+                "BACKEND_RUNNERS",
+                {
+                    "agy": lambda p, model_index=None: (_ for _ in ()).throw(
+                        second_opinion.BackendError("agy broke")
+                    ),
+                    "opencode": lambda p, model_index=None: "opencode's critique",
+                },
+            ),
+        ):
+            result = second_opinion.review_plan(
+                self._plan(backend="agy,opencode"), verbose=True
+            )
+        self.assertEqual(result.response_text, "opencode's critique")
+        self.assertIn("agy broke", "".join(result.notices))
+
+    def test_list_skips_entry_not_on_path_with_notice(self) -> None:
+        err = io.StringIO()
+        with (
+            patch.dict(os.environ, self.ENV),
+            patch(
+                "shutil.which",
+                side_effect=lambda b: f"/usr/bin/{b}" if b == "opencode" else None,
+            ),
+            patch.object(
+                second_opinion,
+                "BACKEND_RUNNERS",
+                {"opencode": lambda p, model_index=None: "opencode's critique"},
+            ),
+            redirect_stderr(err),
+        ):
+            result = second_opinion.review_plan(
+                self._plan(backend="agy,opencode"), verbose=True
+            )
+        self.assertEqual(result.response_text, "opencode's critique")
+        self.assertIn("agy not found on PATH", "".join(result.notices))
+
+    def test_list_all_missing_raises_all_backends_failed(self) -> None:
+        with (
+            patch.dict(os.environ, self.ENV),
+            patch("shutil.which", side_effect=lambda b: None),
+            patch.object(
+                second_opinion,
+                "BACKEND_RUNNERS",
+                {"agy": lambda p, model_index=None: "never runs"},
+            ),
+        ):
+            with self.assertRaises(second_opinion.AllBackendsFailedError) as cm:
+                second_opinion.review_plan(self._plan(backend="agy,opencode"))
+        self.assertIn("all backends failed", str(cm.exception))
+
+    def test_single_name_failure_still_dies_without_fallback(self) -> None:
+        with (
+            patch.dict(os.environ, self.ENV),
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(
+                second_opinion,
+                "BACKEND_RUNNERS",
+                {
+                    "agy": lambda p, model_index=None: (_ for _ in ()).throw(
+                        second_opinion.BackendError("agy broke")
+                    ),
+                    "opencode": lambda p, model_index=None: "never reached",
+                },
+            ),
+        ):
+            with self.assertRaises(second_opinion.AllBackendsFailedError) as cm:
+                second_opinion.review_plan(self._plan(backend="agy"))
+        self.assertIn("agy broke", str(cm.exception))
+        self.assertNotIn("opencode", str(cm.exception))
+
+    def test_whitespace_only_critique_counts_as_failure(self) -> None:
+        with (
+            patch.dict(os.environ, self.ENV),
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(
+                second_opinion,
+                "BACKEND_RUNNERS",
+                {
+                    "agy": lambda p, model_index=None: "   \n  ",
+                    "opencode": lambda p, model_index=None: "opencode's critique",
+                },
+            ),
+        ):
+            result = second_opinion.review_plan(
+                self._plan(backend="agy,opencode"), verbose=True
+            )
+        self.assertEqual(result.response_text, "opencode's critique")
+        self.assertIn("empty output", "".join(result.notices))
+
+    def test_single_backend_whitespace_only_raises(self) -> None:
+        with (
+            patch.dict(os.environ, self.ENV),
+            patch("shutil.which", return_value="/usr/bin/agy"),
+            patch.object(
+                second_opinion,
+                "BACKEND_RUNNERS",
+                {"agy": lambda p, model_index=None: "  \t\n"},
+            ),
+        ):
+            with self.assertRaises(second_opinion.AllBackendsFailedError) as cm:
+                second_opinion.review_plan(self._plan(backend="agy"))
+        self.assertIn("empty output", "".join(cm.exception.failures))
+
+    def test_tool_use_transcript_quarantines_pair_for_process(self) -> None:
+        calls: list[int | None] = []
+
+        def opencode_runner(
+            prompt: str, *, model_index: int | None = None, **kw: object
+        ) -> str:
+            calls.append(model_index)
+            if model_index in (None, 0):
+                raise llm_backends.BackendToolUseError(
+                    "adversary agent used tools instead of returning text"
+                )
+            return f"critique from pool index {model_index}"
+
+        with (
+            patch.dict(os.environ, self.ENV),
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(
+                second_opinion, "BACKEND_RUNNERS", {"opencode": opencode_runner}
+            ),
+        ):
+            first = second_opinion.review_plan(self._plan(backend="opencode"))
+            self.assertEqual(first.response_text, "critique from pool index 1")
+            second = second_opinion.review_plan(self._plan(backend="opencode"))
+        self.assertEqual(second.response_text, "critique from pool index 1")
+        self.assertEqual(calls, [0, 1, 1])

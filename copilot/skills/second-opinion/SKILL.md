@@ -51,12 +51,22 @@ always-valid fallback (single-model override or backend default), not a skipped
 round. See the loop below for exactly where this retry sits. If only some
 backends are pool-configured, automatic selection stops on the first priority
 candidate with a pool config error; use `--backend <configured-backend>` to
-target a working one. On a machine with no pool at all for the dispatched
-backend, the script itself prints a one-line stderr notice (suppressed by
-`--quiet`) naming the absent pool variable, where to set it, and a realistic
-example — the run still proceeds with the backend's default model, so nothing
-to act on unless you want pool rotation. See the toolkit README's "What you
-supply vs. what the toolkit creates" section for the full config contract.
+target a working one, or `--backend <name>,<name>,...` (comma-separated, tried
+in order, first success wins) to make the script itself fall through at runtime
+— a list skips an entry that is not installed with a one-line notice and never
+touches the priority order; a single name keeps the strict one-backend-only
+contract (that call fails outright with no fallback). A model whose run
+answered with a tool-use transcript instead of a critique is quarantined for
+the process — pool rotation skips it for later requests in the same process,
+while a fresh CLI invocation starts clean — so do not pin `--model-index`
+across rounds on a machine whose pool is known to contain a tool-hungry model;
+let the list rotate instead. On a machine with no pool at all for the
+dispatched backend, the script itself prints a one-line stderr notice
+(suppressed by `--quiet`) naming the absent pool variable, where to set it, and
+a realistic example — the run still proceeds with the backend's default model,
+so nothing to act on unless you want pool rotation. See the toolkit README's
+"What you supply vs. what the toolkit creates" section for the full config
+contract.
 
 ## Resolving the target plan
 

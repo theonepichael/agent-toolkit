@@ -1045,6 +1045,7 @@ llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, open
   - `class BackendError(Exception)` — A backend was invoked but failed (timeout or nonzero exit).
   - `class BackendTimeoutError(BackendError)` — A backend call failed because every attempt (initial + retries) timed out -- the specific silent-stall failure mode instrumentation exists to measure, distinct from a normal nonzero-exit or empty-output failure.
   - `class BackendPayloadSizeError(BackendError)` — A backend call was rejected before invocation because the payload exceeds the maximum size known to work reliably for that backend.
+  - `class BackendToolUseError(BackendError)` — A backend answered with a tool-use transcript instead of a critique.
   - `class BackendModelPolicyError(BackendError)` — A backend rejected a model because the ACCOUNT cannot select models through the model flag -- an entitlement failure, not a bad model id.
 - Public functions:
   - `containment_available() -> bool` — Whether OS containment can actually be established on this host.
@@ -1274,8 +1275,8 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
   - `--verbose/-v`
 - Subcommands:
   - `detect` — list available backends as JSON
-  - `review <plan-file-or-text> [--backend <BACKEND>] [--dir <DIR>] [--text-only] [--focus-file <FOCUS_FILE>] [--model-index N]` — get one critique from the priority-selected backend
-    - `--backend` — force this backend instead of priority-order fallback (choices computed at runtime)
+  - `review <plan-file-or-text> [--backend NAME[,NAME...]] [--dir <DIR>] [--text-only] [--focus-file <FOCUS_FILE>] [--model-index N]` — get one critique from the priority-selected backend
+    - `--backend` — force backend(s) in order, first success wins (comma-separated list allowed) instead of priority-order fallback; a single name keeps the strict one-backend-only contract, while a list skips an entry that is not installed with a notice
     - `--dir` — root directory of the codebase to inspect in grounded review (defaults to current working directory)
     - `--text-only` — disable codebase exploration and run ungrounded text-only critique (default: False)
     - `--focus-file` — path to a file of plan-specific risk hints, appended to the critique prompt as areas to scrutinize (supplements, not replaces, the generic adversarial mandate)
@@ -1304,7 +1305,7 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
   - `run_opencode(prompt: str, *, model_index: int | None = None, mode: str | None = None, target_dir: Path | None = None) -> str` — Run the ``opencode`` backend's adversary agent and return its critique text.
   - `run_copilot(prompt: str, *, model_index: int | None = None, mode: str | None = None, target_dir: Path | None = None) -> str` — Run the ``copilot`` backend and return its critique text.
   - `run_pi(prompt: str, *, model_index: int | None = None, mode: str | None = None, target_dir: Path | None = None) -> str` — Run the ``pi`` backend and return its critique text.
-  - `backend_label(backend: str, *, model_index: int | None = None) -> str` — Return ``backend``'s display label, appending the resolved model if any.
+  - `backend_label(backend: str, *, model_index: int | None = None, model: object = _UNSET) -> str` — Return ``backend``'s display label, appending the resolved model if any.
   - `review_plan(request: ReviewRequest, *, verbose: bool = False, quiet: bool = False) -> ReviewResult` — Run one adversarial review of ``request.plan_text`` and return the result.
   - `build_parser() -> argparse.ArgumentParser` — Build the full argument parser for every subcommand.
   - `ensure_data_dir() -> None` — Create ``DATA_DIR`` if it is missing.

@@ -162,8 +162,13 @@ class ReviewRequest:
     """One review request for :func:`review_plan`.
 
     ``plan_text`` is the raw, pre-sanitization plan text; ``focus_hints`` is
-    the raw focus-file text (or ``None``). ``backend`` forces one backend;
-    ``None`` means priority-order fallback over all installed backends.
+    the raw focus-file text (or ``None``). ``backend`` forces one backend, or
+    a comma-separated candidate list tried in order with first success winning
+    (a single name keeps the strict one-backend-only contract; a list skips an
+    entry that is not installed with a notice); ``None`` means priority-order
+    fallback over all installed backends. Direct callers get the same
+    comma-split validation as the CLI — the same helper runs inside
+    :func:`review_plan`, so both entrances share one contract.
     """
 
     plan_text: str
@@ -212,6 +217,12 @@ class ModelIndexConfigError(ReviewError):
     index. Raised on the first offending candidate, before any runner runs, so
     automatic selection never silently skips to another backend.
     """
+
+
+_UNSET = object()
+"""Sentinel for :func:`backend_label`'s ``model`` parameter: "re-resolve"
+versus an explicit captured model (``None`` means "resolved to nothing").
+"""
 
 
 class AllBackendsFailedError(BackendError):
@@ -487,6 +498,92 @@ def _resolve_agy_model(model_index: int | None) -> str:
         idx = model_index if 0 <= model_index < len(pool) else 0
         return pool[idx]
     return single or DEFAULT_AGY_MODEL
+
+
+def _split_backend_list(raw: str) -> list[str]:
+    """Split a comma-separated ``--backend`` value into deduped, checked names.
+
+    Split on ``,``, strip whitespace, reject a value with no names at all
+    (empty/comma-only) and unknown names with a clean ``ValueError`` —
+    argparse wraps this as an ``ArgumentTypeError`` for the CLI, and
+    :func:`review_plan` lets the same error surface directly for direct
+    ``ReviewRequest`` callers, so both entrances share one contract.
+    Duplicates are removed preserving first-seen order (``a,a`` runs once,
+    as a one-entry list-mode run).
+    """
+    names = [m.strip() for m in raw.split(",") if m.strip()]
+    if not names:
+        raise ValueError(
+            f"no backend name in --backend value {raw!r} "
+            f"(comma-separated list allowed: e.g. 'opencode,agy')"
+        )
+    unknown = sorted(set(names) - set(BACKEND_PRIORITY))
+    if unknown:
+        raise ValueError(
+            f"unknown backend(s) in --backend: {', '.join(unknown)} "
+            f"(valid: {', '.join(BACKEND_PRIORITY)})"
+        )
+    return list(dict.fromkeys(names))
+
+
+def _backend_list_arg(value: str) -> list[str]:
+    """argparse ``type=`` for ``--backend``: wrap :func:`_split_backend_list`."""
+    try:
+        return _split_backend_list(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
+_UNFIT_MODELS: set[tuple[str, str]] = set()
+"""(backend, model) pairs whose adversarial run answered with a tool-use
+transcript instead of a critique.
+
+Process-lifetime: a fresh process starts clean, and nothing here is persisted
+to disk — a later CLI invocation (the second-opinion skill's separate calls)
+can select a model quarantined by an earlier one, deliberately. A quarantined
+pair is skipped by pool rotation within the process (see
+:func:`_attempts_for`), so a model that answers the critique prompt by driving
+an agent's tools is not re-selected request after request.
+"""
+
+
+def _resolved_model(backend: str, model_index: int | None) -> str | None:
+    """Resolve the model one attempt would use — the same helpers the runner uses.
+
+    One source of truth with the runner wrappers: ``agy`` through
+    :func:`_resolve_agy_model`, everything else through
+    :func:`_resolve_pooled_model` with that backend's pool/single vars — so an
+    attempt list can never name a model the runner would not select.
+    """
+    if backend == "agy":
+        return _resolve_agy_model(model_index)
+    pool_var, single_var = _POOL_ENV_VARS[backend]
+    return _resolve_pooled_model(pool_var, single_var, model_index)
+
+
+def _attempts_for(
+    backend: str, model_index: int | None
+) -> list[tuple[int | None, str | None]]:
+    """The ``(model_index, model)`` attempts for one backend candidate.
+
+    Rotation applies only when the caller did not pin the model: a pool-backed
+    candidate with no explicit ``--model-index`` and no single-model override
+    tries every unquarantined pool entry in index order — a model whose run
+    answered with a tool-use transcript was already quarantined by the attempt
+    that hit it (:data:`_UNFIT_MODELS`). An explicit ``--model-index`` or a
+    single-model override is pinned: exactly one attempt — the caller named
+    the model, so there is no silent replacement. Resolved via the same
+    helpers the runner uses (:func:`_resolved_model`), so the attempt list can
+    never name a model the runner would not select.
+    """
+    if model_index is not None:
+        return [(model_index, _resolved_model(backend, model_index))]
+    pool_var, single_var = _POOL_ENV_VARS[backend]
+    single = _env_stripped(single_var)
+    pool = _parse_pool(pool_var)
+    if not single and pool:
+        return [(i, m) for i, m in enumerate(pool) if (backend, m) not in _UNFIT_MODELS]
+    return [(None, _resolved_model(backend, None))]
 
 
 def _pool_choice_notice(backend: str, model_index: int | None) -> str | None:
@@ -939,7 +1036,12 @@ BACKEND_LABELS = {
 }
 
 
-def backend_label(backend: str, *, model_index: int | None = None) -> str:
+def backend_label(
+    backend: str,
+    *,
+    model_index: int | None = None,
+    model: object = _UNSET,
+) -> str:
     """Return ``backend``'s display label, appending the resolved model if any.
 
     For ``agy``, resolution goes through :func:`_resolve_agy_model`; for
@@ -948,44 +1050,32 @@ def backend_label(backend: str, *, model_index: int | None = None) -> str:
     when no index, else pool + ``model_index``) — one source of truth, so
     the printed label always matches the model the runner actually used,
     pool or not.
+
+    ``model`` (keyword-only) passes a captured model string straight
+    through, skipping re-resolution. Callers that know the model that was
+    actually attempted (e.g. a failure notice after quarantining that
+    model) must pass it here: re-resolving after a quarantine change could
+    name a different model than the one that failed — or surface an
+    exhausted-pool error inside a diagnostic path — so the failure report
+    always names the model that was attempted, not the one rotation picked
+    next.
     """
     label = BACKEND_LABELS[backend]
-    if backend == "codex":
-        model = _resolve_pooled_model(
-            "SECOND_OPINION_CODEX_MODEL_POOL",
-            "SECOND_OPINION_CODEX_MODEL",
-            model_index,
-        )
-        if model:
-            return f"{label} ({model})"
-        return label
+    if model is _UNSET:
+        if backend == "agy":
+            model = _resolve_agy_model(model_index)
+        else:
+            pool_var, single_var = _POOL_ENV_VARS[backend]
+            model = _resolve_pooled_model(pool_var, single_var, model_index)
     if backend == "agy":
-        model = _resolve_agy_model(model_index)
-        if model != DEFAULT_AGY_MODEL:
-            return f"agy ({model})"
-        return label
-    if backend == "copilot":
-        model = _resolve_pooled_model(
-            "SECOND_OPINION_COPILOT_MODEL_POOL",
-            "SECOND_OPINION_COPILOT_MODEL",
-            model_index,
-        )
-        if model:
-            return f"{label} ({model})"
-    if backend == "opencode":
-        model = _resolve_pooled_model(
-            "SECOND_OPINION_OPENCODE_MODEL_POOL",
-            "SECOND_OPINION_OPENCODE_MODEL",
-            model_index,
-        )
-        if model:
-            return f"{label} ({model})"
-    if backend == "pi":
-        model = _resolve_pooled_model(
-            "SECOND_OPINION_PI_MODEL_POOL", "SECOND_OPINION_PI_MODEL", model_index
-        )
-        if model:
-            return f"{label} ({model})"
+        # agy's label text already names its default model, and a
+        # non-default override replaces the whole label (matching the
+        # pre-refactor shape).
+        if model is None or model == DEFAULT_AGY_MODEL:
+            return label
+        return f"agy ({model})"
+    if model:
+        return f"{label} ({model})"
     return label
 
 
@@ -1029,9 +1119,12 @@ def review_plan(
             diagnostics on ``notices``.
     """
     if request.backend:
-        if not shutil.which(request.backend):
-            raise UnknownBackendError(f"{request.backend} not found on PATH")
-        candidates = [request.backend]
+        candidates = _split_backend_list(request.backend)
+        if len(candidates) == 1 and not shutil.which(candidates[0]):
+            # Single-name run: exactly today's contract — a strict pre-check,
+            # no fallback. A multi-entry list skips a missing install lazily
+            # (see the per-candidate check below).
+            raise UnknownBackendError(f"{candidates[0]} not found on PATH")
     else:
         candidates = [b for b in available_backends() if b in BACKEND_RUNNERS]
         if not candidates:
@@ -1089,59 +1182,105 @@ def review_plan(
             failures.append(f"{backend}: {exc}")
             continue
 
-        choice_notice = _pool_choice_notice(backend, request.model_index)
-        if verbose and choice_notice is not None:
-            notices.append(choice_notice)
-        if request.model_index is not None:
-            err = _validate_model_index(backend, request.model_index, os.environ)
-            if err:
-                raise ModelIndexConfigError(err)
-        # Absent-config announcement (decided 2026-09-03): emitted at the
-        # dispatch point — never inside the model-resolution helpers — so
-        # --help, validation, and pre-flight paths stay silent, and only a
-        # backend actually about to run can announce its default fallback.
-        if not quiet and _absent_pool_config(backend):
-            notices.append(_default_fallback_notice(backend))
-        try:
-            with cli_common.timing_span(
-                "backend", backend=backend, candidate=candidate_index
-            ):
-                runner = BACKEND_RUNNERS[backend]
-                runner_kwargs = _filter_runner_kwargs(
-                    runner,
-                    model_index=request.model_index,
-                    mode=mode,
-                    target_dir=target_dir,
-                )
-                critique = runner(prompt, **runner_kwargs)
-        except BackendError as exc:
-            # A timeout is a budget problem, not an outage: name the env var
-            # that raises the budget and the hard ceiling, so the next
-            # reader doesn't misdiagnose a slow backend as a dead one
-            # (2026-09-03: exactly that misread cost a debugging session).
-            hint = ""
-            if isinstance(exc, llm_backends.BackendTimeoutError):
-                hint = (
-                    f" — raise SECOND_OPINION_{backend.upper()}_TIMEOUT_SECONDS "
-                    f"(hard ceiling {_MAX_BACKEND_TIMEOUT_SECONDS}s) to allow "
-                    "longer runs"
-                )
-            if isinstance(exc, llm_backends.BackendPayloadSizeError):
-                size_rule_outs.append(exc)
-            caught.append(exc)
+        if request.backend and len(candidates) > 1 and not shutil.which(backend):
+            # List-mode entry missing on PATH: a list is a fallback order,
+            # so a missing install is a skipped candidate with a notice
+            # naming it — not the strict single-name config error. Still
+            # recorded as that candidate's failure so exhaustion reports
+            # every entry, and a run with at least one installed entry
+            # proceeds to it.
+            skipped = UnknownBackendError(f"{backend} not found on PATH")
+            caught.append(skipped)
             if verbose:
-                notices.append(
-                    f"[second_opinion] {backend_label(backend, model_index=request.model_index)} "
-                    f"failed: {exc}{hint}"
-                )
-            failures.append(f"{backend}: {exc}{hint}")
+                notices.append(f"[second_opinion] {skipped} — skipped")
+            failures.append(f"{backend}: {skipped}")
             continue
-        return ReviewResult(
-            backend_label=backend_label(backend, model_index=request.model_index),
-            response_text=critique,
-            bytes_saved=bytes_saved,
-            notices=tuple(notices),
-        )
+
+        for model_index, model in _attempts_for(backend, request.model_index):
+            choice_notice = _pool_choice_notice(backend, model_index)
+            if verbose and choice_notice is not None:
+                notices.append(choice_notice)
+            if model_index is not None:
+                err = _validate_model_index(backend, model_index, os.environ)
+                if err:
+                    raise ModelIndexConfigError(err)
+            # Absent-config announcement (decided 2026-09-03): emitted at the
+            # dispatch point — never inside the model-resolution helpers — so
+            # --help, validation, and pre-flight paths stay silent, and only a
+            # backend actually about to run can announce its default fallback.
+            if not quiet and _absent_pool_config(backend):
+                notices.append(_default_fallback_notice(backend))
+            try:
+                with cli_common.timing_span(
+                    "backend", backend=backend, candidate=candidate_index
+                ):
+                    runner = BACKEND_RUNNERS[backend]
+                    runner_kwargs = _filter_runner_kwargs(
+                        runner,
+                        model_index=model_index,
+                        mode=mode,
+                        target_dir=target_dir,
+                    )
+                    critique = runner(prompt, **runner_kwargs)
+                if not critique.strip():
+                    # Empty output is a failed candidate, not a critique: a
+                    # backend that exits 0 with nothing usable (agy headless
+                    # auto-denying a tool's command permission, a mocked
+                    # runner returning "") would otherwise have its silence
+                    # returned as the critique. Recorded like any other
+                    # runtime failure so rotation continues.
+                    raise llm_backends.BackendError(
+                        f"empty output ({prompt_bytes}-byte prompt, no usable text)"
+                    )
+            except BackendError as exc:
+                # A timeout is a budget problem, not an outage: name the env
+                # var that raises the budget and the hard ceiling, so the next
+                # reader doesn't misdiagnose a slow backend as a dead one
+                # (2026-09-03: exactly that misread cost a debugging session).
+                hint = ""
+                if isinstance(exc, llm_backends.BackendTimeoutError):
+                    hint = (
+                        f" — raise SECOND_OPINION_{backend.upper()}_TIMEOUT_SECONDS "
+                        f"(hard ceiling {_MAX_BACKEND_TIMEOUT_SECONDS}s) to allow "
+                        "longer runs"
+                    )
+                if (
+                    isinstance(exc, llm_backends.BackendToolUseError)
+                    and model is not None
+                ):
+                    # A tool-use transcript quarantines the (backend, model)
+                    # pair for this process: a model that answered the critique
+                    # prompt by taking actions would be re-selected for the
+                    # very next request otherwise. Rotation continues to the
+                    # next pool entry immediately when the caller did not pin
+                    # the model; a pinned run fails the candidate outright.
+                    _UNFIT_MODELS.add((backend, model))
+                    caught.append(exc)
+                    if verbose:
+                        notices.append(
+                            f"[second_opinion] "
+                            f"{backend_label(backend, model=model)} "
+                            f"failed: {exc}"
+                        )
+                    failures.append(f"{backend}: {exc}")
+                    continue
+                if isinstance(exc, llm_backends.BackendPayloadSizeError):
+                    size_rule_outs.append(exc)
+                caught.append(exc)
+                if verbose:
+                    notices.append(
+                        f"[second_opinion] "
+                        f"{backend_label(backend, model=model)} "
+                        f"failed: {exc}{hint}"
+                    )
+                failures.append(f"{backend}: {exc}{hint}")
+                break
+            return ReviewResult(
+                backend_label=backend_label(backend, model=model),
+                response_text=critique,
+                bytes_saved=bytes_saved,
+                notices=tuple(notices),
+            )
 
     if size_rule_outs and len(size_rule_outs) == len(candidates):
         raise AllBackendsFailedError(
@@ -1261,9 +1400,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("plan", metavar="<plan-file-or-text>")
     p.add_argument(
         "--backend",
-        choices=BACKEND_PRIORITY,
+        type=_backend_list_arg,
         default=None,
-        help="force this backend instead of priority-order fallback",
+        metavar="NAME[,NAME...]",
+        help="force backend(s) in order, first success wins "
+        "(comma-separated list allowed) instead of priority-order fallback; "
+        "a single name keeps the strict one-backend-only contract, while a "
+        "list skips an entry that is not installed with a notice",
     )
     p.add_argument(
         "--dir",
