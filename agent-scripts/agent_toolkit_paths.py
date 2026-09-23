@@ -298,8 +298,9 @@ def current_layout() -> Layout:
 def write_pointer(home: Path, layout: Layout) -> None:
     """Atomically write the layout pointer under ``home``.
 
-    Creates the parent directory. The write is atomic via a temporary file
-    in the same directory followed by ``os.replace``.
+    Creates the parent directory. The write is atomic and durable: a
+    temporary file in the same directory is fsynced, renamed over the
+    pointer with ``os.replace``, and the directory is fsynced.
     """
     pointer = home / POINTER_RELPATH
     pointer.parent.mkdir(parents=True, exist_ok=True)
@@ -312,5 +313,12 @@ def write_pointer(home: Path, layout: Layout) -> None:
         delete=False,
     ) as fh:
         fh.write(payload)
+        fh.flush()
+        os.fsync(fh.fileno())
         tmp_path = Path(fh.name)
     os.replace(tmp_path, pointer)
+    fd = os.open(pointer.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
