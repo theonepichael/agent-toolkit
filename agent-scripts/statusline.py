@@ -38,6 +38,9 @@ import math
 import sys
 import time
 
+# What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
+TOOLKIT_DATA = "none"
+
 GREEN = "\033[32m"
 YELLOW = "\033[33m"
 RED = "\033[31m"

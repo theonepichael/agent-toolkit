@@ -33,6 +33,9 @@ from pathlib import Path
 import cli_common
 import harness_spec
 
+# What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
+TOOLKIT_DATA = "none"
+
 ICONS_DIR = Path(__file__).resolve().parent.parent / "claude" / "icons"
 
 APP_REGISTRATIONS: dict[str, dict[str, str]] = {

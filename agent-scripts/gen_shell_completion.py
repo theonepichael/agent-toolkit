@@ -37,6 +37,9 @@ from pathlib import Path
 import cli_common
 import harness_spec
 
+# What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
+TOOLKIT_DATA = "none"
+
 DEFAULT_OUT_DIR = Path.home() / ".zsh/completions"
 
 SECTION_RE = re.compile(r"^(Arguments|Options|Commands):\s*$")

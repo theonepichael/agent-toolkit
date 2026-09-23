@@ -63,6 +63,9 @@ from pathlib import Path
 
 import cli_common
 
+# What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
+TOOLKIT_DATA = "none"
+
 TEMPLATE_PATH = "templates/second_opinion.md.tmpl"
 INTERFACES_PATH = "INTERFACES.md"
 SCRIPT_RELPATH = "agent-scripts/gen_second_opinion.py"

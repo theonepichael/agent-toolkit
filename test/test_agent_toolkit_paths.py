@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 import agent_toolkit_paths  # noqa: E402
 from agent_toolkit_paths import (  # noqa: E402
@@ -258,15 +259,41 @@ def test_no_module_other_than_resolver_constructs_toolkit_data_path():
 
 
 def _constructs_toolkit_data_path(tree: ast.AST) -> bool:
-    for node in ast.walk(tree):
-        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
-            rendered = ast.unparse(node)
-            if '".claude"' in rendered and '"data"' in rendered:
-                return True
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-            if node.func.id in ("Path", "expanduser"):
-                for arg in node.args:
-                    if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
-                        if ".claude/data" in arg.value:
-                            return True
-    return False
+    """True if ``tree`` builds a ``.claude/data`` path in code (not in prose).
+
+    Uses the repository check's own extractor, so this guard and
+    scripts/check_toolkit_paths.py can never disagree about what counts.
+    """
+    import check_toolkit_paths
+
+    return any(
+        segs[:1] == ("data",) for _line, segs in check_toolkit_paths.python_references(tree)
+    )
+
+@pytest.mark.regression(
+    "ast-guard-never-matches-single-quoted-unparse",
+    "AssertionError: assert False",
+)
+@pytest.mark.parametrize(
+    "source",
+    [
+        'Path.home() / ".claude" / "data" / "x"',
+        "Path.home() / '.claude' / 'data' / 'grill'",
+        'Path("~/.claude/data/backlog").expanduser()',
+        'BASE = Path.home() / ".claude"\nD = BASE / "data" / "x"',
+    ],
+)
+def test_ast_guard_catches_real_constructions(source):
+    assert _constructs_toolkit_data_path(ast.parse(source))
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'Path.home() / ".claude" / "projects"',
+        '"see ~/.claude/data/grill in the docs"',
+        'agent_toolkit_paths.path_for("decisions")',
+    ],
+)
+def test_ast_guard_ignores_non_constructions(source):
+    assert not _constructs_toolkit_data_path(ast.parse(source))

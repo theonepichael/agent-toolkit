@@ -11,6 +11,9 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
+# What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
+TOOLKIT_DATA = "none"
+
 
 class FeatureSupportState(StrEnum):
     """Lifecycle support states for a required feature declaration."""

@@ -86,6 +86,9 @@ import grill
 import migration_lock
 from grill import Decision, Session, is_open
 
+# What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
+TOOLKIT_DATA = "writer"
+
 DATA_DIR = agent_toolkit_paths.path_for("decisions")
 VITALS_DIR = DATA_DIR / "vitals"
 

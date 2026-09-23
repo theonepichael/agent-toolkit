@@ -10,6 +10,9 @@ import re
 from collections.abc import Callable, Sequence
 from datetime import datetime
 
+# What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
+TOOLKIT_DATA = "none"
+
 RECAP_PROMPT = """\
 You are writing a short "welcome back" recap for a personal task dashboard, \
 in the style of an away-summary: second person, warm, plain text, no emoji, \

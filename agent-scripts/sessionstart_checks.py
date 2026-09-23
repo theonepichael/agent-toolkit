@@ -27,6 +27,9 @@ import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 
+# What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
+TOOLKIT_DATA = "none"
+
 # (shell command, hang-guard timeout in seconds). Verbatim from the
 # SessionStart list this wrapper replaced — keep in lockstep with it. The
 # two entries with an inner `timeout` need a guard strictly larger than

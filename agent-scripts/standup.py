@@ -38,6 +38,9 @@ from standup_adapters import (
     NotConfiguredError,
 )
 
+# What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
+TOOLKIT_DATA = "reader"
+
 DATA_DIR = agent_toolkit_paths.path_for("standups")
 CONFIG_FILE = DATA_DIR / "config.json"
 _BACKLOG_DIR = agent_toolkit_paths.path_for("work-items")

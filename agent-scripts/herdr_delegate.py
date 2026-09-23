@@ -87,6 +87,10 @@ from dev_status import (  # noqa: E402
 )
 from dev_status_storage import BacklogItem  # noqa: E402
 
+# What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
+TOOLKIT_DATA = "reader"
+TOOLKIT_DATA_VIA = ("dev_status_storage",)
+
 UNATTENDED_ENV = "PI_AGENT_UNATTENDED=1"
 """Set on the tab so it is in pi's environment before pi starts."""
 

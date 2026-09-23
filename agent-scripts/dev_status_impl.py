@@ -200,6 +200,9 @@ from dev_status_types import BacklogIndex as BacklogIndex
 from dev_status_types import BacklogItem, PendingItem, RunRecord
 from dev_status_types import Gate as Gate
 
+# What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
+TOOLKIT_DATA = "writer"
+
 DATA_DIR = dev_status_storage.DATA_DIR
 ITEMS_FILE = dev_status_storage.ITEMS_FILE
 PENDING_FILE = dev_status_storage.PENDING_FILE

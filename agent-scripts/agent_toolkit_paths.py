@@ -47,6 +47,9 @@ import tempfile
 from pathlib import Path
 from typing import Literal
 
+# What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
+TOOLKIT_DATA = "infrastructure"
+
 Layout = Literal["legacy", "toolkit-home"]
 
 DOMAINS: tuple[str, ...] = (

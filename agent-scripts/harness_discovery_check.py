@@ -93,6 +93,9 @@ from typing import TextIO
 import cli_common
 import harness_spec
 
+# What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
+TOOLKIT_DATA = "none"
+
 # ── version pins — keep in lockstep with README.md's harness table ──────────
 # README.md "Harness instruction-file discovery" table, 2026-08-30
 CLAUDE_CODE_PINNED_VERSION: str = "2.1.252"

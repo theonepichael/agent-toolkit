@@ -57,6 +57,9 @@ from typing import Literal, TextIO
 
 import cli_common
 
+# What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
+TOOLKIT_DATA = "harness-owned"
+
 CLAUDE_PRICING: dict[str, tuple[float, float, float, float]] = {
     # per 1,000,000 tokens: (input, output, cache_read, cache_write[5m]).
     # Verified against platform.claude.com/docs/en/about-claude/pricing

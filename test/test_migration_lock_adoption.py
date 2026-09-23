@@ -445,3 +445,27 @@ def test_grill_and_second_opinion_directory_creation_take_a_scope(monkeypatch, t
     monkeypatch.setattr(second_opinion, "DATA_DIR", tmp_path / "so")
     second_opinion.ensure_data_dir()
     assert sites == ["grill", "decisions"]
+
+
+def test_dev_status_mutation_writes_inside_the_migration_scope(tmp_path, monkeypatch):
+    # dev_status_mutation writes through dev_status_storage (TOOLKIT_DATA_VIA);
+    # prove a real mutation's save happens inside the scope.
+    import dev_status_mutation
+
+    d = tmp_path / "backlog"
+    d.mkdir()
+    (d / "_machine_id").write_text("0ee2ec8d")
+    depths: list[int] = []
+    real_save = dev_status_storage.save_items
+
+    def spy(*a, **k):
+        depths.append(migration_lock._depth())
+        return real_save(*a, **k)
+
+    monkeypatch.setattr(dev_status_storage, "save_items", spy)
+    dev_status_mutation.add_item(
+        dev_status_mutation.NewItemRequest(id="scoped-item", summary="s"),
+        items_path=d / "items.json",
+    )
+    assert depths and all(depth >= 1 for depth in depths)
+    assert_all_released()

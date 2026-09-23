@@ -19,6 +19,10 @@ import dev_status_storage
 from backlog_claim_lookup import BacklogClaimLookup, ClaimInfo
 from dev_status_storage import BacklogItem
 
+# What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
+TOOLKIT_DATA = "reader"
+TOOLKIT_DATA_VIA = ("dev_status_storage",)
+
 
 @dataclass(frozen=True)
 class BacklogQuery:

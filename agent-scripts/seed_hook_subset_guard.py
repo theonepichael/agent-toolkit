@@ -45,6 +45,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+# What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
+TOOLKIT_DATA = "harness-owned"
+
 SEED_PATHS = ("claude/settings.json", "claude/settings.work.json")
 BYPASS_ENV = "SEED_HOOK_ALLOW_DROP"
 

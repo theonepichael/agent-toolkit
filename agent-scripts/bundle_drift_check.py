@@ -18,6 +18,9 @@ from pathlib import Path
 
 import cli_common
 
+# What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
+TOOLKIT_DATA = "none"
+
 REPO = Path(__file__).resolve().parents[1]
 # "agent-toolkit", matching install.py's own state directory for this
 # repo -- this script's own bundling-drift marker must not be written into
