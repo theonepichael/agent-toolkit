@@ -247,6 +247,14 @@ describe("buildArgv", () => {
     expect(buildArgv("add", { action: "add", patch })).toEqual(["add", JSON.stringify(patch)]);
   });
 
+  test("machine_id repairs only when asked", () => {
+    expect(buildArgv("machine_id", { action: "machine_id" })).toEqual(["machine-id"]);
+    expect(buildArgv("machine_id", { action: "machine_id", repair: true })).toEqual([
+      "machine-id",
+      "--repair",
+    ]);
+  });
+
   test("backfill_gate applies only when asked", () => {
     expect(buildArgv("backfill_gate", { action: "backfill_gate" })).toEqual(["backfill-gate"]);
     expect(buildArgv("backfill_gate", { action: "backfill_gate", apply: true })).toEqual([

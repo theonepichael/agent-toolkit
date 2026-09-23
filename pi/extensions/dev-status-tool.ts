@@ -39,6 +39,7 @@ const ACTIONS = [
   "prune",
   "recap",
   "worktree",
+  "machine_id",
   "pending_add",
   "pending_update",
   "pending_list",
@@ -72,7 +73,8 @@ export type Field =
   | "cwd"
   | "skipBootstrap"
   | "repo"
-  | "branch";
+  | "branch"
+  | "repair";
 
 interface ActionFields {
   readonly allowed: readonly Field[];
@@ -111,6 +113,7 @@ const ACTION_FIELDS: Record<Action, ActionFields> = {
     allowed: ["slug", "force", "skipBootstrap", "repo", "branch"],
     required: [],
   },
+  machine_id: { allowed: ["repair"], required: [] },
   pending_add: { allowed: ["patch"], required: ["patch"] },
   pending_update: { allowed: ["slug", "patch"], required: ["slug", "patch"] },
   pending_list: { allowed: [], required: [] },
@@ -182,6 +185,7 @@ export interface DevStatusParams {
   skipBootstrap?: boolean;
   repo?: string;
   branch?: string;
+  repair?: boolean;
 }
 
 export function assertNotNumericIdentity(action: Action, params: DevStatusParams): void {
@@ -308,6 +312,8 @@ export function buildArgv(action: Action, params: DevStatusParams): string[] {
         ...(params.skipBootstrap ? ["--skip-bootstrap"] : []),
         ...(params.force ? ["--force"] : []),
       ];
+    case "machine_id":
+      return ["machine-id", ...(params.repair ? ["--repair"] : [])];
     case "pending_add":
       return ["pending", "add", patchJson()];
     case "pending_update":
@@ -344,11 +350,12 @@ export default function (pi: ExtensionAPI) {
     promptSnippet: "Read or mutate the personal backlog/pending store",
     promptGuidelines: [
       "Never invoke dev_status.py via bash, for any reason, including a plain read like listing pending items or checking status -- always use dev_status instead. This applies to every action, not just ones a slash command already told you to use dev_status for.",
-      "dev_status covers everything dev_status.py's CLI does: render, list, ready, show, add, update, start, done, reopen, review, approve, reject, gate_set, gate_pass, run, runs, backfill_gate, rename, remove, block, unblock, prune, recap, worktree, pending_add, pending_update, pending_list, and the out_of_scope_* actions. If you're about to compose a `python3 ~/.claude/scripts/dev_status.py ...` bash command for any of these, use dev_status with the matching action instead.",
+      "dev_status covers everything dev_status.py's CLI does: render, list, ready, show, add, update, start, done, reopen, review, approve, reject, gate_set, gate_pass, run, runs, backfill_gate, rename, remove, block, unblock, prune, recap, worktree, machine_id, pending_add, pending_update, pending_list, and the out_of_scope_* actions. If you're about to compose a `python3 ~/.claude/scripts/dev_status.py ...` bash command for any of these, use dev_status with the matching action instead.",
       "dev_status's patch field is a plain object, not a JSON string -- never hand-encode it.",
       'dev_status refuses a numeric slug on any mutating action -- call action: "show" first to resolve a numeric position to its real slug.',
       "start refuses to run from a main/master checkout (worktree guard) or when the item is actively claimed by another live session (claim collision) -- pass cwd to evaluate the guard and stamp the claim from a dedicated worktree, allowMain to bypass the guard, force to take over a live claim, or claimedBy to correct a wrong auto-detected harness name.",
       "Lifecycle status moves go through the dedicated actions (start/review/approve/reject/done/reopen) -- the update action's patch refuses status and claimed_by; reopen (in-progress or done -> open) releases the claim and invalidates a passed gate, force to release a foreign live claim.",
+      "machine_id prints this machine's id; with repair: true it creates a missing id file or backs up and replaces an invalid one (never a valid or unreadable one). Use it when start or another mutation fails naming the machine id file.",
       "worktree creates or reuses a git worktree and bootstraps project dependencies for a backlog item (by slug) or repository (by repo). Never create worktrees manually with git worktree add or bare bootstrap scripts.",
     ],
     parameters: Type.Object({
@@ -410,6 +417,12 @@ export default function (pi: ExtensionAPI) {
       ),
       skipBootstrap: Type.Optional(
         Type.Boolean({ description: "worktree: skip dependency bootstrapping." }),
+      ),
+      repair: Type.Optional(
+        Type.Boolean({
+          description:
+            "machine_id: create a missing id file, or back up and replace an invalid one.",
+        }),
       ),
       repo: Type.Optional(
         Type.String({

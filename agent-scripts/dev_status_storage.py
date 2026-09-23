@@ -12,6 +12,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
 import secrets
 import sys
 import tempfile
@@ -19,12 +20,15 @@ import threading
 import time
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager, suppress
+from contextvars import ContextVar
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
 import agent_toolkit_paths
 import cli_common
+import fault_checkpoint
 from dev_status_types import BacklogIndex as BacklogIndex
 from dev_status_types import BacklogItem, PendingItem, RunRecord
 from dev_status_types import Gate as Gate
@@ -61,25 +65,250 @@ def _resolve_path(var_name: str, fallback: Path) -> Path:
 # ── machine id ───────────────────────────────────────────────────────────────
 
 
+MACHINE_ID_RE = re.compile(r"^[0-9a-f]{8}$")
+"""The format of every id this module creates."""
+EXISTING_MACHINE_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+"""What an existing id file may hold. Wider than MACHINE_ID_RE on purpose:
+ids created by older code on other machines must keep validating, because
+the point is a stable identity, not a particular format. Still refuses what
+is clearly broken (empty, binary, whitespace, several lines, path
+characters)."""
+MACHINE_ID_REPAIR_HINT = "python3 ~/.claude/scripts/dev_status.py machine-id --repair"
+
+
+class MachineIdError(RuntimeError):
+    """This machine's id file cannot be read, is invalid, or cannot be created.
+
+    The message names the file, what is wrong, and the repair command. The id
+    is never replaced by a throwaway value, so claims and journal entries can
+    always be attributed to one stable machine.
+    """
+
+    def __init__(self, message: str, path: Path) -> None:
+        super().__init__(f"{message} (repair: {MACHINE_ID_REPAIR_HINT})")
+        self.path = path
+
+
+def _read_machine_id(path: Path) -> str | None:
+    """Return the validated id in ``path``, or None when the file is missing."""
+    try:
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise MachineIdError(f"cannot read machine id {path}: {exc}", path) from exc
+    try:
+        text = raw.decode("utf-8").strip()
+    except UnicodeDecodeError as exc:
+        raise MachineIdError(
+            f"invalid machine id in {path}: not UTF-8 ({raw[:32]!r})", path
+        ) from exc
+    if not EXISTING_MACHINE_ID_RE.match(text):
+        raise MachineIdError(
+            f"invalid machine id in {path}: {raw[:32]!r} is not a single token of "
+            "1-64 letters, digits, '.', '_' or '-'",
+            path,
+        )
+    return text
+
+
+def _fsync_dir(directory: Path) -> None:
+    dir_fd = os.open(str(directory), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+
+
+@contextmanager
+def _machine_id_init_lock(mid_file: Path) -> Iterator[None]:
+    """Serialise first-time creation and repair of ``mid_file``."""
+    lock_path = mid_file.with_name(mid_file.name + ".lock")
+    fd = os.open(str(lock_path), os.O_WRONLY | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
+def _publish_new_machine_id(mid_file: Path) -> str | None:
+    """Atomically publish a fresh id at ``mid_file``; None if one appeared first.
+
+    The id is written and fsynced to a temp file, then published with
+    ``os.link`` (which never overwrites), so no reader ever sees an empty or
+    partial id file. The directory is fsynced after publishing. A crash leaves
+    at most a stray temp file. The caller holds the init lock.
+    """
+    new_id = secrets.token_hex(4)
+    fd, tmp = tempfile.mkstemp(dir=mid_file.parent, prefix=".machine_id_tmp_")
+    try:
+        try:
+            os.fchmod(fd, 0o644)
+            os.write(fd, new_id.encode())
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        fault_checkpoint.checkpoint("machine-id.publish")
+        try:
+            os.link(tmp, mid_file)
+        except FileExistsError:
+            return None
+    finally:
+        with suppress(OSError):
+            os.unlink(tmp)
+    _fsync_dir(mid_file.parent)
+    return new_id
+
+
+# The identity resolved by the outermost ``backlog_lock`` for the operation in
+# progress: (id file, id). Journal entries and claims read it so one operation
+# always uses one identity, even when a caller passed explicit store paths.
+_OPERATION_IDENTITY: ContextVar[tuple[Path, str] | None] = ContextVar(
+    "dev_status_operation_identity", default=None
+)
+
+
+def operation_machine_id() -> str | None:
+    """The id resolved for the backlog operation in progress, if any."""
+    ctx = _OPERATION_IDENTITY.get()
+    return ctx[1] if ctx is not None else None
+
+
 def machine_id(
     machine_id_file: Path | None = None, data_dir: Path | None = None
 ) -> str:
-    """Return this machine's stable short id, creating it on first use."""
+    """Return this machine's stable short id, creating it once if missing.
+
+    A valid existing id is returned without writing anything. An unreadable or
+    invalid id file raises MachineIdError and is never overwritten here (use
+    the repair command). A missing file is created under an exclusive init
+    lock and published atomically; if it cannot be created, MachineIdError is
+    raised rather than returning a throwaway id.
+    """
+    mid_file = machine_id_file or _resolve_path("MACHINE_ID_FILE", MACHINE_ID_FILE)
+    d_dir = data_dir or _resolve_path("DATA_DIR", DATA_DIR)
+    ctx = _OPERATION_IDENTITY.get()
+    if ctx is not None and ctx[0] == mid_file:
+        return ctx[1]
+    existing = _read_machine_id(mid_file)
+    if existing is not None:
+        return existing
+    try:
+        d_dir.mkdir(parents=True, exist_ok=True)
+        mid_file.parent.mkdir(parents=True, exist_ok=True)
+        with _machine_id_init_lock(mid_file):
+            existing = _read_machine_id(mid_file)
+            if existing is not None:
+                return existing
+            published = _publish_new_machine_id(mid_file)
+            if published is not None:
+                return published
+    except MachineIdError:
+        raise
+    except OSError as exc:
+        raise MachineIdError(
+            f"cannot create machine id at {mid_file}: {exc}", mid_file
+        ) from exc
+    existing = _read_machine_id(mid_file)
+    if existing is None:
+        raise MachineIdError(
+            f"cannot create machine id at {mid_file}: it vanished after a "
+            "concurrent create",
+            mid_file,
+        )
+    return existing
+
+
+@dataclass(frozen=True)
+class MachineIdRepair:
+    """What ``repair_machine_id`` did."""
+
+    action: str  # "unchanged" | "created" | "replaced"
+    machine_id: str
+    old_content: bytes | None = None
+    backup: Path | None = None
+
+
+def _backup_invalid_machine_id(mid_file: Path) -> Path:
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    base = f"{mid_file.name}.bad-{stamp}-{os.getpid()}"
+    for n in range(100):
+        backup = mid_file.with_name(base if n == 0 else f"{base}-{n}")
+        try:
+            os.link(mid_file, backup)
+        except FileExistsError:
+            continue
+        return backup
+    raise FileExistsError(f"no free backup name next to {mid_file}")
+
+
+def repair_machine_id(
+    machine_id_file: Path | None = None, data_dir: Path | None = None
+) -> MachineIdRepair:
+    """Create a missing id or replace a readable-but-invalid one; never touch a valid one.
+
+    Runs under the same init lock as first-time creation. An invalid file is
+    first kept as a hard-linked backup (``<file>.bad-<UTC>-<pid>``), then a
+    fresh id replaces it atomically. An UNREADABLE file is refused: it may
+    hold a valid id, so it is never rotated.
+    """
     mid_file = machine_id_file or _resolve_path("MACHINE_ID_FILE", MACHINE_ID_FILE)
     d_dir = data_dir or _resolve_path("DATA_DIR", DATA_DIR)
     try:
-        existing = mid_file.read_text().strip()
-        if existing:
-            return existing
-    except OSError:
-        pass
-    new_id = secrets.token_hex(4)
-    try:
         d_dir.mkdir(parents=True, exist_ok=True)
-        mid_file.write_text(new_id)
-    except OSError:
-        pass
-    return new_id
+        mid_file.parent.mkdir(parents=True, exist_ok=True)
+        with _machine_id_init_lock(mid_file):
+            try:
+                raw = mid_file.read_bytes()
+            except FileNotFoundError:
+                raw = None
+            except OSError as exc:
+                raise MachineIdError(
+                    f"cannot read machine id {mid_file}: {exc}; fix the file's "
+                    "permissions or ownership and retry (an unreadable id is never "
+                    "replaced, because it may be valid)",
+                    mid_file,
+                ) from exc
+            if raw is None:
+                published = _publish_new_machine_id(mid_file)
+                return MachineIdRepair(
+                    "created", published or machine_id(mid_file, d_dir)
+                )
+            try:
+                text = raw.decode("utf-8").strip()
+            except UnicodeDecodeError:
+                text = ""
+            if EXISTING_MACHINE_ID_RE.match(text):
+                return MachineIdRepair("unchanged", text)
+            backup = _backup_invalid_machine_id(mid_file)
+            new_id = secrets.token_hex(4)
+            fd, tmp = tempfile.mkstemp(dir=mid_file.parent, prefix=".machine_id_tmp_")
+            try:
+                try:
+                    os.fchmod(fd, 0o644)
+                    os.write(fd, new_id.encode())
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+                os.replace(tmp, mid_file)
+            except BaseException:
+                with suppress(OSError):
+                    os.unlink(tmp)
+                raise
+            _fsync_dir(mid_file.parent)
+            return MachineIdRepair("replaced", new_id, raw, backup)
+    except MachineIdError:
+        raise
+    except OSError as exc:
+        raise MachineIdError(
+            f"cannot write machine id {mid_file}: {exc}; check that its directory "
+            "is writable by this user",
+            mid_file,
+        ) from exc
 
 
 _machine_id = machine_id
@@ -241,28 +470,71 @@ _backlog_lock_count: int = 0
 _BACKLOG_LOCK_WAIT_JOURNAL_THRESHOLD_SECONDS = 0.5
 
 
+class BacklogLockStoreMismatch(RuntimeError):
+    """A nested backlog operation targeted a different store than the outer one."""
+
+
+_backlog_lock_dir: str | None = None
+
+
 @contextmanager
 def backlog_lock(
     data_dir: Path | None = None,
     lock_file: Path | None = None,
+    *,
+    require_identity: bool = True,
+    machine_id_file: Path | None = None,
 ) -> Iterator[None]:
     """Hold an exclusive lock over a mutating command's full read-modify-write cycle.
 
     Safe to re-enter from the same thread: the flock is taken once on the
-    outermost entry and released on innermost exit.
+    outermost entry and released on innermost exit. A nested entry must target
+    the same data directory as the outer one (BacklogLockStoreMismatch
+    otherwise, raised before anything is written).
+
+    With ``require_identity`` (the default), this machine's id is resolved
+    right after the flock is taken and before the caller's body runs, and it
+    is the identity every journal entry and claim in the operation uses. If
+    it cannot be resolved, the lock is released and MachineIdError is raised
+    with nothing written. Snapshot reads pass ``require_identity=False``:
+    no identity is resolved, and the lock-wait diagnostic is not journalled.
     """
-    global _backlog_lock_fd, _backlog_lock_count
+    global _backlog_lock_fd, _backlog_lock_count, _backlog_lock_dir
     d_dir = data_dir or _resolve_path("DATA_DIR", DATA_DIR)
     l_file = lock_file or _resolve_path("LOCK_FILE", LOCK_FILE)
-    d_dir.mkdir(parents=True, exist_ok=True)
+    if machine_id_file is not None:
+        mid_file = machine_id_file
+    elif data_dir is not None:
+        mid_file = data_dir / "_machine_id"
+    else:
+        mid_file = _resolve_path("MACHINE_ID_FILE", MACHINE_ID_FILE)
+    dir_key = os.path.abspath(d_dir)
     with _backlog_lock_rlock:
+        outermost = _backlog_lock_count == 0
+        if not outermost and dir_key != _backlog_lock_dir:
+            raise BacklogLockStoreMismatch(
+                f"nested backlog operation for {d_dir} inside an operation for "
+                f"{_backlog_lock_dir}"
+            )
+        token = None
+        acquired_fd = -1
         _backlog_lock_count += 1
-        if _backlog_lock_count == 1:
-            _backlog_lock_fd = os.open(str(l_file), os.O_WRONLY | os.O_CREAT, 0o644)
-            wait_start = time.monotonic()
-            fcntl.flock(_backlog_lock_fd, fcntl.LOCK_EX)
-            wait_seconds = time.monotonic() - wait_start
-            if wait_seconds > _BACKLOG_LOCK_WAIT_JOURNAL_THRESHOLD_SECONDS:
+        try:
+            if outermost:
+                d_dir.mkdir(parents=True, exist_ok=True)
+                acquired_fd = os.open(str(l_file), os.O_WRONLY | os.O_CREAT, 0o644)
+                wait_start = time.monotonic()
+                fcntl.flock(acquired_fd, fcntl.LOCK_EX)
+                wait_seconds = time.monotonic() - wait_start
+                _backlog_lock_fd = acquired_fd
+                _backlog_lock_dir = dir_key
+            if require_identity and _OPERATION_IDENTITY.get() is None:
+                token = _OPERATION_IDENTITY.set((mid_file, machine_id(mid_file, d_dir)))
+            if (
+                outermost
+                and wait_seconds > _BACKLOG_LOCK_WAIT_JOURNAL_THRESHOLD_SECONDS
+                and _OPERATION_IDENTITY.get() is not None
+            ):
                 append_journal_event(
                     journal_entry(
                         "lock-wait",
@@ -272,14 +544,23 @@ def backlog_lock(
                         diagnostic=True,
                     )
                 )
-        try:
             yield
         finally:
+            if token is not None:
+                _OPERATION_IDENTITY.reset(token)
             _backlog_lock_count -= 1
-            if _backlog_lock_count == 0:
-                fcntl.flock(_backlog_lock_fd, fcntl.LOCK_UN)
-                os.close(_backlog_lock_fd)
+            if _backlog_lock_count == 0 and _backlog_lock_fd != -1:
+                with suppress(OSError):
+                    fcntl.flock(_backlog_lock_fd, fcntl.LOCK_UN)
+                with suppress(OSError):
+                    os.close(_backlog_lock_fd)
                 _backlog_lock_fd = -1
+                _backlog_lock_dir = None
+            elif _backlog_lock_count == 0 and acquired_fd != -1:
+                with suppress(OSError):
+                    os.close(acquired_fd)
+            if _backlog_lock_count == 0:
+                _backlog_lock_dir = None
 
 
 _out_of_scope_lock_rlock = threading.RLock()
@@ -374,7 +655,7 @@ def journal_entry(
     entry: dict[str, object] = {
         "ts": datetime.now(UTC).isoformat(),
         "rev": rev,
-        "machine": machine_id(),
+        "machine": operation_machine_id() or machine_id(),
         "cmd": cmd,
         "kind": kind,
     }

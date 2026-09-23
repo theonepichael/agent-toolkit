@@ -115,6 +115,7 @@ SUBCOMMANDS: tuple[str, ...] = (
     "unblock",
     "prune",
     "recap",
+    "machine-id",
 )
 RESERVED_SLUGS: frozenset[str] = frozenset(
     set(SUBCOMMANDS) | {"pending", "out-of-scope", "all", "help", "new"}

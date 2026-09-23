@@ -607,7 +607,9 @@ user instruction.
 
 Otherwise (item is open): run `dev_status.py start <slug|N>` (`--if-rev <N>`
 for numeric ids). On a main/master checkout, `start` now refuses (worktree
-guard) — do step 3 first, then run `start` from inside the fresh worktree.""",
+guard) — do step 3 first, then run `start` from inside the fresh worktree.
+If `start` instead exits 3 naming this machine's id file, run
+`dev_status.py machine-id --repair` and retry; never edit the id file by hand.""",
         "STEP5_BODY": """\
 Delegate to the `spec` skill (Skill tool) with the item's context/next_steps
 as the task. Let it draft and save the spec end-to-end (its steps 1–4) —
@@ -750,7 +752,9 @@ user instruction.
 
 Otherwise (item is open): run `dev_status.py start <slug|N>` (`--if-rev <N>`
 for numeric ids). On a main/master checkout, `start` now refuses (worktree
-guard) — do step 3 first, then run `start` from inside the fresh worktree.""",
+guard) — do step 3 first, then run `start` from inside the fresh worktree.
+If `start` instead exits 3 naming this machine's id file, run
+`dev_status.py machine-id --repair` and retry; never edit the id file by hand.""",
         "STEP5_BODY": """\
 Copilot has no `spec` skill — it's deliberately excluded from Copilot's
 active tier (the shared instructions file's "Harness maintenance tiers";
@@ -1076,7 +1080,9 @@ user instruction.
 
 Otherwise (item is open): run `dev_status.py start $ARGUMENTS` (`--if-rev <N>`
 for numeric ids). On a main/master checkout, `start` now refuses (worktree
-guard) — do step 3 first, then run `start` from inside the fresh worktree.""",
+guard) — do step 3 first, then run `start` from inside the fresh worktree.
+If `start` instead exits 3 naming this machine's id file, run
+`dev_status.py machine-id --repair` and retry; never edit the id file by hand.""",
         "STEP5_BODY": """\
 Load the `spec` skill via opencode's native skill tool
 (`skill({ name: "spec" })`) with the item's context/next_steps as the task.
@@ -1208,7 +1214,9 @@ user instruction.
 
 Otherwise (item is open): run `dev_status.py start <slug|N>` (`--if-rev <N>`
 for numeric ids). On a main/master checkout, `start` now refuses (worktree
-guard) — do step 3 first, then run `start` from inside the fresh worktree.""",
+guard) — do step 3 first, then run `start` from inside the fresh worktree.
+If `start` instead exits 3 naming this machine's id file, run
+`dev_status.py machine-id --repair` and retry; never edit the id file by hand.""",
         "STEP5_BODY": """\
 agy has no `spec` skill — it's deliberately excluded from agy's active tier
 (the shared instructions file's "Harness maintenance tiers"; see AGENTS.md).
@@ -1403,7 +1411,9 @@ user instruction.
 
 Otherwise (item is open): run `dev_status.py start <slug|N>` (`--if-rev <N>`
 for numeric ids). On a main/master checkout, `start` now refuses (worktree
-guard) — do step 3 first, then run `start` from inside the fresh worktree.""",
+guard) — do step 3 first, then run `start` from inside the fresh worktree.
+If `start` instead exits 3 naming this machine's id file, run
+`dev_status.py machine-id --repair` and retry; never edit the id file by hand.""",
         "STEP5_BODY": """\
 Codex has no `spec` skill — it's deliberately excluded from codex's active
 tier (the shared instructions file's "Harness maintenance tiers"; see
@@ -1607,7 +1617,9 @@ Otherwise (item is open): call the `dev_status` tool with `action: "start",
 slug: "<resolved slug>"` (or the bash fallback named in step 1). On a
 main/master checkout, `start` now refuses (worktree guard), and the typed tool
 has no `--allow-main` escape hatch — do step 3 first, then run `start` from
-inside the fresh worktree.""",
+inside the fresh worktree. If `start` fails naming this machine's id file, call
+`dev_status` with `action: "machine_id", repair: true` and retry; never edit
+the id file by hand.""",
         "STEP5_BODY": """\
 Load the `spec` skill via `/skill:spec` with the item's context/next_steps
 as the task. Let it draft and save the spec end-to-end (its steps 1–4) —

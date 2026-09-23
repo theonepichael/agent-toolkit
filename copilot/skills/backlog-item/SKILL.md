@@ -50,6 +50,8 @@ user instruction.
 Otherwise (item is open): run `dev_status.py start <slug|N>` (`--if-rev <N>`
 for numeric ids). On a main/master checkout, `start` now refuses (worktree
 guard) — do step 3 first, then run `start` from inside the fresh worktree.
+If `start` instead exits 3 naming this machine's id file, run
+`dev_status.py machine-id --repair` and retry; never edit the id file by hand.
 
 ## 3. Branch
 Create or reuse a dedicated worktree and bootstrap dependencies via `python3 ~/.claude/scripts/dev_status.py worktree <slug|N>`. (If multiple project repos are involved or resolution fails, specify `--repo <path>`). Reuse a worktree this session already made for this item instead of a second one.
