@@ -26,6 +26,8 @@ sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(REPO / "agent-scripts"))
 
 import agent_toolkit_paths  # noqa: E402
+import depart  # noqa: E402
+import depart_exec  # noqa: E402
 import dev_status_mutation  # noqa: E402
 import install  # noqa: E402
 import link_inspect  # noqa: E402
@@ -147,10 +149,38 @@ def _full_stores(home: Path, *, skip: tuple[str, ...] = ()) -> None:
     (notes / "keep.txt").write_text("not toolkit data\n")
 
 
+# A hand-formatted uninstall baseline (indent 4, one earlier layer), so byte-exact
+# restores are distinguishable from a re-serialization.
+PRIOR_BASELINE = (
+    json.dumps(
+        {
+            "version": 1,
+            "layers": [
+                {
+                    "captured_at": "2026-01-01T00:00:00+00:00",
+                    "records": {"file:/nowhere/.bashrc": {"state": "absent"}},
+                }
+            ],
+            "transactions": [],
+            "installed_trees": {},
+        },
+        indent=4,
+    )
+    + "\n"
+).encode()
+
+
+def _baseline_file(home: Path) -> Path:
+    return home / ".local" / "state" / "agent-toolkit" / "baseline.json"
+
+
 @pytest.fixture
 def machine(sandbox):
     _installed_runtime(sandbox)
     _full_stores(sandbox)
+    baseline = _baseline_file(sandbox)
+    baseline.parent.mkdir(parents=True, exist_ok=True)
+    baseline.write_bytes(PRIOR_BASELINE)
     return sandbox
 
 
@@ -274,6 +304,7 @@ def _expected_phase_order() -> list[str]:
         "preflight",
         "inventory",
         *(f"stage:{d}" for d in domains),
+        "baseline",
         "links",
         "reverify",
         *(f"promote:{d}" for d in domains),
@@ -824,6 +855,12 @@ def _pointer(root: Path) -> str:
 
 def _check_recovered(root: Path, expected: mth.Expected) -> None:
     assert _pointer(root) == expected.layout
+    baseline = _baseline_file(root)
+    if expected.layout == "legacy":
+        assert baseline.read_bytes() == PRIOR_BASELINE
+    else:
+        loaded = depart.load_baseline(baseline.parent)
+        assert loaded is not None and len(loaded.layers) == 2
     legacy_items = root / ".claude" / "data" / "backlog" / "items.json"
     dest_items = root / ".agent-toolkit" / "data" / "backlog" / "items.json"
     if expected.layout == "legacy":
@@ -905,3 +942,169 @@ def test_crash_at_checkpoint_recovers_by_the_oracle(machine, checkpoint):
         for name in (mth.JOURNAL_NAME, mth.ROLLBACK_NAME, mth.FINALIZE_NAME):
             if (jdir / name).exists():
                 assert mth.is_terminal(jdir, name), (jdir, name)
+
+
+# ── uninstall baseline ──────────────────────────────────────────────────────
+
+
+def _layer_tag(mid: str) -> str:
+    return f"toolkit-home-migration {mid}"
+
+
+def _planned_dests(records: list[dict]) -> list[str]:
+    [links] = [r for r in records if r["phase"] == "links" and r["event"] == "begin"]
+    return [str(link["dest"]) for link in links["detail"]["planned"]]
+
+
+def test_baseline_layer_records_planned_destinations_before_links(
+    machine, capsys, validation
+):
+    first = next(iter(link_inspect.load_links(REPO / "links.toml")))
+    already = f"symlink:{link_inspect.expand_dest(first.dest, machine)}"
+    prior = depart.load_baseline(_baseline_file(machine).parent)
+    prior.layers[0].records[already] = {"state": "absent"}
+    _baseline_file(machine).write_text(
+        json.dumps(depart.baseline_to_dict(prior), indent=2, sort_keys=True) + "\n"
+    )
+    code, report = _migrate(capsys)
+    assert code == 0, report
+    mid = report["migration_id"]
+    records = mth.read_records(_jdir(machine, mid))
+    begun = [r["phase"] for r in records if r["event"] == "begin"]
+    assert begun.index("baseline") < begun.index("links")
+    assert begun.index("stage:backend-log") < begun.index("baseline")
+
+    loaded = depart.load_baseline(_baseline_file(machine).parent)
+    assert [layer.captured_at for layer in loaded.layers][-1] == _layer_tag(mid)
+    ours = loaded.layers[-1].records
+    assert ours, "the migration recorded nothing"
+    assert already not in ours
+    link_keys = [k for k in ours if k.startswith(("file:", "symlink:"))]
+    assert link_keys and all(ours[k] == {"state": "absent"} for k in link_keys)
+    dests = _planned_dests(records)
+    sample = next(d for d in dests if f"symlink:{d}" != already)
+    for key in (f"file:{sample}", f"symlink:{sample}", f"file:{sample}.bak"):
+        assert key in ours, key
+    assert f"directory:{machine / '.agent-toolkit'}" in ours
+    assert not any(k.startswith("directory:") and "/.local/state" in k for k in ours)
+    assert loaded.layers[0].records == prior.layers[0].records
+
+
+def test_next_install_records_nothing_new_and_departure_owns_the_links(
+    machine, capsys, validation
+):
+    code, report = _migrate(capsys)
+    assert code == 0, report
+    records = mth.read_records(_jdir(machine, report["migration_id"]))
+    dests = [Path(d) for d in _planned_dests(records)]
+    state_dir = _baseline_file(machine).parent
+    loaded = depart.load_baseline(state_dir)
+    before = len(loaded.layers)
+    live = depart_exec.capture_destination_records(
+        dests, home=machine, state_dir=state_dir, blob_dir=state_dir
+    )
+    loaded.add_layer("next-install", live)
+    assert len(loaded.layers) == before
+    key = f"symlink:{dests[0]}"
+    verdict = depart.classify_ownership_key(key, loaded.value_for(key), live[key])
+    assert (verdict.bucket, verdict.action) == (depart.BUCKET_OWNED, depart.ACTION_REMOVE)
+
+
+def test_failed_validation_restores_the_baseline_bytes(machine, capsys, validation):
+    validation.passes = False
+    code, report = _migrate(capsys)
+    assert code == 1, report
+    assert _baseline_file(machine).read_bytes() == PRIOR_BASELINE
+
+
+def test_a_baseline_the_migration_created_is_deleted_on_restore(
+    machine, capsys, validation
+):
+    _baseline_file(machine).unlink()
+    validation.passes = False
+    code, report = _migrate(capsys)
+    assert code == 1, report
+    assert not _baseline_file(machine).exists()
+
+
+def test_narrow_rollback_restores_the_baseline_bytes(machine, capsys, validation):
+    mid = _commit(capsys)
+    code, report = _rollback(capsys, mid)
+    assert code == 0, report
+    assert _baseline_file(machine).read_bytes() == PRIOR_BASELINE
+
+
+def test_narrow_rollback_keeps_a_later_install_layer(machine, capsys, validation):
+    mid = _commit(capsys)
+    state_dir = _baseline_file(machine).parent
+    loaded = depart.load_baseline(state_dir)
+    loaded.add_layer("later-install", {"file:/nowhere/.zshrc": {"state": "absent"}})
+    depart.save_baseline(state_dir, loaded)
+    code, report = _rollback(capsys, mid)
+    assert code == 0, report
+    after = depart.load_baseline(state_dir)
+    assert [layer.captured_at for layer in after.layers] == [
+        "2026-01-01T00:00:00+00:00",
+        "later-install",
+    ]
+
+
+@pytest.mark.parametrize("damage", ["edit-layer", "drop-layer", "delete", "garble"])
+def test_narrow_rollback_refuses_a_changed_baseline(
+    machine, capsys, validation, damage
+):
+    mid = _commit(capsys)
+    path = _baseline_file(machine)
+    if damage in ("edit-layer", "drop-layer"):
+        data = json.loads(path.read_text())
+        ours = next(l for l in data["layers"] if l["captured_at"] == _layer_tag(mid))
+        if damage == "edit-layer":
+            key = next(iter(ours["records"]))
+            ours["records"][key] = {"state": "tampered"}
+        else:
+            data["layers"].remove(ours)
+        path.write_text(json.dumps(data))
+    elif damage == "delete":
+        path.unlink()
+    else:
+        path.write_text("{not json")
+    snapshot = (_tree(machine), _tree(_state_dir(machine)))
+    code, report = _rollback(capsys, mid)
+    assert code == 1, report
+    assert "baseline.json" in report["outcome"]
+    assert (_tree(machine), _tree(_state_dir(machine))) == snapshot
+
+
+def test_macos_skips_the_baseline(machine, capsys, validation, monkeypatch):
+    monkeypatch.setattr(mth, "_is_linux", lambda: False)
+    code, report = _migrate(capsys)
+    assert code == 0, report
+    assert _baseline_file(machine).read_bytes() == PRIOR_BASELINE
+    records = mth.read_records(_jdir(machine, report["migration_id"]))
+    [begin] = [r for r in records if r["phase"] == "baseline" and r["event"] == "begin"]
+    assert begin["detail"]["skipped"] == "not linux"
+
+
+def test_an_unparseable_baseline_refuses_before_any_write(machine, capsys, validation):
+    _baseline_file(machine).write_text("{not json")
+    before = _legacy_trees()
+    code, report = _migrate(capsys)
+    assert code == 1, report
+    assert "baseline.json" in report["outcome"]
+    assert _baseline_file(machine).read_text() == "{not json"
+    assert _legacy_trees() == before
+    assert _layout() == "legacy"
+
+
+def test_a_regular_file_at_a_planned_destination_refuses_before_the_baseline(
+    machine, capsys, validation
+):
+    first = next(iter(link_inspect.load_links(REPO / "links.toml")))
+    blocker = link_inspect.expand_dest(first.dest, machine)
+    blocker.parent.mkdir(parents=True, exist_ok=True)
+    blocker.write_text("user file\n")
+    code, report = _migrate(capsys)
+    assert code == 1, report
+    assert str(blocker) in report["outcome"]
+    assert _baseline_file(machine).read_bytes() == PRIOR_BASELINE
+    assert blocker.read_text() == "user file\n"

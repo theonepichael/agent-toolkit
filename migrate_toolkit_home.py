@@ -25,7 +25,10 @@ Phases
 ``preflight``, ``inventory`` (an immutable ``inventory.json``), then
 ``stage:<domain>`` for each domain in the resolver's order (copy into
 ``<toolkit-root>/.migration-<id>/staging/<domain>`` without following links,
-check schemas, rewrite stored paths on the copy), ``links`` (create the
+check schemas, rewrite stored paths on the copy), ``baseline`` (on Linux,
+append one layer to the uninstall baseline recording the link destinations
+about to be created as absent, so uninstall later removes them), ``links``
+(create the
 runtime links; record the legacy links the new ``links.toml`` no longer
 produces, which stay until finalize), any phases later releases register to
 run here, ``reverify`` (every staged file and every legacy source re-hashed),
@@ -115,6 +118,9 @@ import agent_toolkit_paths  # noqa: E402 — sibling dir inserted above
 import fault_checkpoint  # noqa: E402 — sibling dir inserted above
 import link_inspect  # noqa: E402 — sibling dir inserted above
 import migration_lock  # noqa: E402 — sibling dir inserted above
+
+import depart  # noqa: E402 — sibling module next to this file
+import depart_exec  # noqa: E402 — sibling module next to this file
 
 MIGRATION_ID_RE = re.compile(r"^mig-\d{8}T\d{6}Z-[0-9a-f]{6}$")
 OUTCOME_COMMITTED = "committed"
@@ -268,6 +274,9 @@ CHECKPOINTS: tuple[str, ...] = (
             f"migrate.stage.{d}.done",
         )
     ),
+    "migrate.baseline.begun",
+    "migrate.baseline.written",
+    "migrate.baseline.done",
     "migrate.links.begun",
     "migrate.links.done",
     "migrate.reverify.begun",
@@ -326,6 +335,9 @@ def _oracle() -> dict[str, Expected]:
     }
     before_flip = [
         *(n for n in CHECKPOINTS if n.startswith("migrate.stage.")),
+        "migrate.baseline.begun",
+        "migrate.baseline.written",
+        "migrate.baseline.done",
         "migrate.links.begun",
         "migrate.links.done",
         "migrate.reverify.begun",
@@ -1312,12 +1324,17 @@ class Step:
     and never finished. ``verify`` reports whether ``apply``'s effect is
     present. ``begin``, when given, computes the ``begin`` record's detail
     before anything changes, so ``undo`` can work from it after a crash.
+    ``guard``, when given, lists what changed since the step ran that would
+    make undoing it unsafe; a restore after the lock may have been released,
+    and the narrow rollback, refuse before any change when it reports
+    anything.
     """
 
     apply: Callable[[RunState, StepRecord], dict[str, object]]
     undo: Callable[[RunState, StepRecord], None]
     verify: Callable[[RunState, StepRecord], bool]
     begin: Callable[[RunState, str], dict[str, object]] | None = None
+    guard: Callable[[RunState, StepRecord], list[str]] | None = None
 
 
 STEPS: dict[str, Step] = {}
@@ -1666,6 +1683,11 @@ def _gathered_links(state: RunState) -> list[tuple[Path, Path, str, bool]]:
 
 def _links_begin(state: RunState, _phase: str) -> dict[str, object]:
     """Every link to create: ``(dest, prior target or None, new target)``."""
+    return {"planned": _planned_links_for(state)}
+
+
+def _planned_links_for(state: RunState) -> list[dict[str, object]]:
+    """The links the ``links`` phase will create or repoint; refuses a real file."""
     planned: dict[str, dict[str, object]] = {}
     for src, dest, _rel, applicable in _gathered_links(state):
         if not applicable:
@@ -1683,7 +1705,7 @@ def _links_begin(state: RunState, _phase: str) -> dict[str, object]:
         if known is not None and known["target"] != str(src):
             raise MigrationError(f"{dest} is claimed by two links.toml sources")
         planned[str(dest)] = {"dest": str(dest), "prior": prior, "target": str(src)}
-    return {"planned": list(planned.values())}
+    return list(planned.values())
 
 
 def _planned_links(record: StepRecord) -> list[dict[str, object]]:
@@ -1745,6 +1767,179 @@ def _links_verify(_state: RunState, record: StepRecord) -> bool:
         and os.readlink(str(link["dest"])) == link["target"]
         for link in _planned_links(record)
     )
+
+
+# The uninstall baseline (depart.py) is append-only and first-layer-wins, so the
+# migration never rewrites a recorded key. It appends one layer, before the
+# links phase creates anything, recording each destination it is about to
+# link as it is now (absent). Without it the next install would record those
+# links as already present, and uninstall would leave them behind.
+
+BASELINE_SNAPSHOT = "baseline.before.json"
+
+
+def _is_linux() -> bool:
+    return os.uname().sysname == "Linux"
+
+
+def _baseline_tag(state: RunState) -> str:
+    return f"toolkit-home-migration {state.ctx.migration_id}"
+
+
+def _journal_dir(state: RunState) -> Path:
+    return state.ctx.installer_state / "migrations" / state.ctx.migration_id
+
+
+def _write_durable(path: Path, data: bytes, mode: int = 0o644) -> None:
+    tmp = path.with_name(f".{path.name}.migration-{os.getpid()}")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+    try:
+        _write_all(fd, data)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.replace(tmp, path)
+    _fsync_dir(path.parent)
+
+
+def _baseline_bytes(baseline: depart.Baseline) -> bytes:
+    """The bytes ``depart.save_baseline`` would write for ``baseline``."""
+    payload = json.dumps(depart.baseline_to_dict(baseline), indent=2, sort_keys=True)
+    return (payload + "\n").encode()
+
+
+def _parse_baseline(path: Path) -> depart.Baseline | None:
+    """The baseline at ``path``; None when missing; MigrationError when unreadable."""
+    try:
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        return None
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise MigrationError(f"{path} is not valid JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise MigrationError(f"{path} is not a baseline object")
+    return depart.baseline_from_dict(data)
+
+
+def _baseline_begin(state: RunState, _phase: str) -> dict[str, object]:
+    path = depart.baseline_path(state.ctx.installer_state)
+    detail: dict[str, object] = {
+        "path": str(path),
+        "existed": False,
+        "sha256": None,
+        "snapshot": None,
+        "dests": [],
+        "skipped": None,
+    }
+    if not _is_linux():
+        detail["skipped"] = "not linux"
+        return detail
+    detail["dests"] = [str(link["dest"]) for link in _planned_links_for(state)]
+    if _parse_baseline(path) is not None:
+        raw = path.read_bytes()
+        snapshot = _journal_dir(state) / BASELINE_SNAPSHOT
+        _write_durable(snapshot, raw, 0o444)
+        detail.update(
+            existed=True,
+            sha256=hashlib.sha256(raw).hexdigest(),
+            snapshot=str(snapshot),
+        )
+    return detail
+
+
+def _baseline_apply(state: RunState, record: StepRecord) -> dict[str, object]:
+    begin = _begin(record)
+    if begin["skipped"]:
+        return {"layer": None, "sha256": None}
+    path = Path(str(begin["path"]))
+    baseline = _parse_baseline(path) or depart.Baseline()
+    before = len(baseline.layers)
+    records = depart_exec.capture_destination_records(
+        [Path(str(d)) for d in begin["dests"]],  # type: ignore[attr-defined]
+        home=state.ctx.home,
+        state_dir=state.ctx.installer_state,
+        blob_dir=None,
+    )
+    baseline.add_layer(_baseline_tag(state), records)
+    if len(baseline.layers) == before:
+        return {"layer": None, "sha256": begin["sha256"]}
+    _mkdir_durable(path.parent)
+    data = _baseline_bytes(baseline)
+    _write_durable(path, data)
+    _checkpoint("migrate.baseline.written")
+    layer = baseline.layers[-1]
+    return {
+        "layer": {"captured_at": layer.captured_at, "records": layer.records},
+        "sha256": hashlib.sha256(data).hexdigest(),
+    }
+
+
+def _baseline_undo(state: RunState, record: StepRecord) -> None:
+    begin = _begin(record)
+    if begin.get("skipped"):
+        return
+    path = Path(str(begin["path"]))
+    baseline = _parse_baseline(path)
+    tag = _baseline_tag(state)
+    if baseline is None or not any(lyr.captured_at == tag for lyr in baseline.layers):
+        return
+    baseline.layers = [lyr for lyr in baseline.layers if lyr.captured_at != tag]
+    empty = not (baseline.layers or baseline.transactions or baseline.installed_trees)
+    if not begin["existed"]:
+        if empty:
+            path.unlink()
+            _fsync_dir(path.parent)
+            return
+        _write_durable(path, _baseline_bytes(baseline))
+        return
+    snapshot = Path(str(begin["snapshot"]))
+    try:
+        raw = snapshot.read_bytes()
+    except OSError as exc:
+        raise MigrationError(
+            f"cannot read the baseline snapshot {snapshot}: {exc}"
+        ) from exc
+    if hashlib.sha256(raw).hexdigest() != begin["sha256"]:
+        raise MigrationError(
+            f"{snapshot} does not match the digest journalled for {path}; "
+            "restore it by hand"
+        )
+    original = _parse_baseline(snapshot)
+    if original is not None and depart.baseline_to_dict(
+        original
+    ) == depart.baseline_to_dict(baseline):
+        _write_durable(path, raw)
+    else:
+        _write_durable(path, _baseline_bytes(baseline))
+
+
+def _baseline_guard(state: RunState, record: StepRecord) -> list[str]:
+    done = _done(record)
+    layer = done.get("layer") if done else None
+    if not isinstance(layer, dict):
+        return []
+    path = Path(str(_begin(record)["path"]))
+    try:
+        baseline = _parse_baseline(path)
+    except MigrationError as exc:
+        return [str(exc)]
+    if baseline is None:
+        return [f"{path} (deleted since the migration recorded its layer)"]
+    ours = [lyr for lyr in baseline.layers if lyr.captured_at == layer["captured_at"]]
+    if not ours:
+        return [f"{path} (the migration's layer was removed)"]
+    if ours[0].records != layer["records"]:
+        return [f"{path} (the migration's layer was edited)"]
+    return []
+
+
+def _baseline_verify(state: RunState, record: StepRecord) -> bool:
+    done = _done(record)
+    if _begin(record).get("skipped") or (done is not None and done["layer"] is None):
+        return True
+    return not _baseline_guard(state, record) and done is not None
 
 
 def _reverify_apply(state: RunState, _record: StepRecord) -> dict[str, object]:
@@ -1941,6 +2136,16 @@ def _validate_verify(_state: RunState, record: StepRecord) -> bool:
 register_step("preflight", Step(_preflight_apply, _no_undo, _always))
 register_step("inventory", Step(_inventory_apply, _no_undo, _always))
 register_step("stage:", Step(_stage_apply, _stage_undo, _stage_verify, _stage_begin))
+register_step(
+    "baseline",
+    Step(
+        _baseline_apply,
+        _baseline_undo,
+        _baseline_verify,
+        _baseline_begin,
+        _baseline_guard,
+    ),
+)
 register_step("links", Step(_links_apply, _links_undo, _links_verify, _links_begin))
 register_step("reverify", Step(_reverify_apply, _no_undo, _always))
 register_step(
@@ -1978,6 +2183,9 @@ def _before_flip(state: RunState) -> None:
             begun=f"migrate.stage.{d}.begun",
             done=f"migrate.stage.{d}.done",
         )
+    _run_phase(
+        state, "baseline", begun="migrate.baseline.begun", done="migrate.baseline.done"
+    )
     _run_phase(state, "links", begun="migrate.links.begun", done="migrate.links.done")
     for phase in RUNTIME_PHASES:
         _run_phase(state, phase)
@@ -2062,6 +2270,10 @@ def _write_guard(state: RunState) -> list[str]:
             dest = Path(str(state.domain_entry(domain)["destination"]))
             if _lexists(dest):
                 problems.append(f"{dest} (created after the migration)")
+    for record in _steps_in(state.records):
+        guard = step_for(str(record["phase"])).guard
+        if guard is not None:
+            problems += guard(state, record)
     return problems
 
 

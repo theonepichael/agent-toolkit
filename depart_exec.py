@@ -152,6 +152,34 @@ def _departure_owned_destinations(
     return destinations
 
 
+def capture_destination_records(
+    dests: Sequence[Path], *, home: Path, state_dir: Path, blob_dir: Path | None
+) -> dict[str, dict[str, object]]:
+    """Baseline records for link destinations: each file, link, backup and parent.
+
+    For every destination: ``file:<dest>`` (content saved under ``blob_dir``
+    when present and ``blob_dir`` is given), ``symlink:<dest>``,
+    ``file:<dest>.bak``, and a ``directory:`` record for every ancestor up to
+    ``home`` except ``state_dir`` and its own ancestors (see
+    :func:`_is_state_dir_or_its_ancestor`). Shared by
+    :func:`capture_departure_baseline` and the toolkit-home migration, which
+    records the destinations it is about to create before creating them.
+    """
+    records: dict[str, dict[str, object]] = {}
+    for dest in dests:
+        records[depart.file_key(dest)] = depart.capture_file(dest, blob_dir=blob_dir)
+        records[depart.symlink_key(dest)] = depart.capture_symlink(dest)
+        bak = dest.with_name(dest.name + ".bak")
+        records[depart.file_key(bak)] = depart.capture_file(bak)
+        for ancestor in depart.ancestor_directories(dest, home):
+            if ancestor == state_dir or ancestor in state_dir.parents:
+                continue
+            key = depart.directory_key(ancestor)
+            if key not in records:
+                records[key] = depart.capture_directory(ancestor)
+    return records
+
+
 def capture_departure_baseline(
     deps: Deps, ctx: DepartureContext, specs: Sequence[LinkSpecLike]
 ) -> None:
@@ -187,12 +215,13 @@ def capture_departure_baseline(
             rc_path, blob_dir=state_dir
         )
 
-    for dest in _departure_owned_destinations(deps, ctx, specs):
-        records[depart.file_key(dest)] = depart.capture_file(dest, blob_dir=state_dir)
-        records[depart.symlink_key(dest)] = depart.capture_symlink(dest)
-        bak = dest.with_name(dest.name + ".bak")
-        records[depart.file_key(bak)] = depart.capture_file(bak)
-        _track_ancestors(dest)
+    dests = _departure_owned_destinations(deps, ctx, specs)
+    for record_key, record in capture_destination_records(
+        dests, home=ctx.home, state_dir=state_dir, blob_dir=state_dir
+    ).items():
+        records[record_key] = record
+    for dest in dests:
+        seen_dirs.update(depart.ancestor_directories(dest, ctx.home))
 
     for path in (
         ctx.home / ".local" / "bin" / "uv",

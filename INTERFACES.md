@@ -1971,7 +1971,7 @@ Pristine-state departure mode: baseline capture and ownership tracking.
   - `classify_service(recorded: dict[str, object] | None, live: dict[str, object]) -> Classification` — Classify the watchcommit service/linger key.
   - `build_gitconfig_record(value: str | None) -> dict[str, object]` — Build a ``gitconfig:`` record from an already-read global config value.
   - `classify_gitconfig(recorded: dict[str, object] | None, live: dict[str, object], managed_value: str) -> Classification` — Classify a single global git config key this installer manages.
-- Tested by: `test/test_depart.py`, `test/test_depart_transactions.py`, `test/test_install.py`
+- Tested by: `test/test_depart.py`, `test/test_depart_transactions.py`, `test/test_install.py`, `test/test_migrate_toolkit_home_moves.py`
 
 ### `depart_exec.py`
 
@@ -1989,6 +1989,7 @@ depart_exec.py — --depart execution: preflight, phases, confirmation, cleanup.
   - `class DepartureContext(Protocol)` — Structural subset of install.Context used by departure execution.
   - `class Deps` — Execution dependencies injected from install.py (resolved at call time).
 - Public functions:
+  - `capture_destination_records(dests: Sequence[Path], *, home: Path, state_dir: Path, blob_dir: Path | None) -> dict[str, dict[str, object]]` — Baseline records for link destinations: each file, link, backup and parent.
   - `capture_departure_baseline(deps: Deps, ctx: DepartureContext, specs: Sequence[LinkSpecLike]) -> None` — Capture this run's departure baseline layer before any install step runs.
   - `build_preflight_report(deps: Deps, ctx: DepartureContext) -> dict[str, depart.Classification] | None` — Classify every tracked ownership key, or None if there's no baseline.
   - `build_package_preflight(deps: Deps, ctx: DepartureContext) -> list[depart.PackageClassification] | None` — Classify every requested/introduced package, or None if there's no baseline.
@@ -2001,7 +2002,7 @@ depart_exec.py — --depart execution: preflight, phases, confirmation, cleanup.
   - `execute_package_phase(deps: Deps, ctx: DepartureContext, baseline: depart.Baseline, ledger: depart.DepartureLedger) -> bool` — Remove/downgrade owned packages, reverse transactions order.
   - `execute_departure(deps: Deps, ctx: DepartureContext, baseline: depart.Baseline, report: dict[str, depart.Classification]) -> depart.DepartureLedger` — Perform every safe ``owned`` action, retry-safe via the departure ledger.
   - `do_depart(deps: Deps, ctx: DepartureContext) -> int` — Preview and execute a pristine-state departure.
-- Tested by: `test/test_depart_exec_layering.py`, `test/test_install.py`
+- Tested by: `test/test_depart_exec_layering.py`, `test/test_install.py`, `test/test_migrate_toolkit_home_moves.py`
 
 ---
 
