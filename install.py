@@ -119,6 +119,8 @@ usage: ./install.sh --harness=<claude,copilot,opencode,agy,pi,codex>[,...] [--pr
        ./install.sh --depart [--yes] [--dry-run] [--quiet | --verbose]
        ./install.sh --check-links [--harness=...] [--profile=personal|work] [--quiet | --verbose]
        ./install.sh --migrate-toolkit-home --harness=... [--profile=personal|work] [--dry-run] [--json] [--skip-reconciliation] [--cross-filesystem] [--migration-id=<id>] [--quiet | --verbose]
+       ./install.sh --rollback-toolkit-home-migration=<id> [--json] [--quiet | --verbose]
+       ./install.sh --finalize-toolkit-home-migration=<id> [--json] [--quiet | --verbose]
 
   --quiet, -q   suppress non-essential output
   --verbose, -v emit extra diagnostic messages to stderr
@@ -237,19 +239,40 @@ usage: ./install.sh --harness=<claude,copilot,opencode,agy,pi,codex>[,...] [--pr
               Exits 0 when nothing is wrong, 1 when any bucket is
               non-empty, 2 if links.toml itself cannot be read.
   --migrate-toolkit-home
-              move toolkit data to the toolkit home. This release runs the
-              safety frame only and moves nothing: every preflight check
-              (installed runtime enforces the migration lock, legacy stores
-              parse, no destination collisions, same device, ...), then —
-              unless --dry-run — takes the migration lock, writes a
-              write-ahead journal and a read-only inventory under
-              ~/.local/state/agent-toolkit/migrations/<id>/, records one
-              history line, and stops. A dry run writes nothing at all.
-              A later run first closes out any journal a crashed run left.
-              Needs --harness; accepts --profile, --dry-run, --quiet and
-              --verbose; refuses every other install flag. Exits 0 on a
-              clean stop, 1 when a check refuses, 75 when the lock is busy.
-  --json      with --migrate-toolkit-home: print the report as JSON.
+              move toolkit data to the toolkit home. Runs every preflight
+              check (installed runtime enforces the migration lock, legacy
+              stores parse, no destination collisions, same device, ...);
+              a --dry-run stops there and writes nothing at all. A real run
+              takes the migration lock, first finishes or undoes whatever
+              a crashed run left, writes a write-ahead journal and a
+              read-only inventory under
+              ~/.local/state/agent-toolkit/migrations/<id>/, then stages
+              each data domain, creates the runtime links, promotes the
+              domains into the toolkit home, flips the layout pointer, keeps
+              the originals in ~/.claude/data/.toolkit-home-snapshot-<id>/,
+              and validates the result in fresh processes. A failed
+              validation restores the legacy layout. Needs --harness;
+              accepts --profile, --dry-run, --quiet and --verbose; refuses
+              every other install flag. Exits 0 when committed, 1 when a
+              check refuses or the run fails or restores, 75 when the lock
+              is busy.
+  --rollback-toolkit-home-migration=<id>
+              reverse one committed migration that is not finalized: the
+              layout goes back to legacy, the originals return from the
+              snapshot, the migrated data is kept aside under
+              <toolkit home>/.migration-<id>/restored/, and the new links
+              are undone. Refuses, changing nothing, if anything was written
+              to the toolkit home since (appended log lines excepted).
+              Accepts only --json, --quiet and --verbose.
+  --finalize-toolkit-home-migration=<id>
+              delete what one committed migration kept for a rollback: its
+              snapshot of the originals, its leftover staging, and the
+              legacy links the current links.toml no longer produces. Only
+              paths the journal proves are its own, and only while they
+              still match it. After this, --rollback-toolkit-home-migration
+              no longer applies. Accepts only --json, --quiet and --verbose.
+  --json      with --migrate-toolkit-home or either command above: print
+              the report as JSON.
   --skip-reconciliation
               with --migrate-toolkit-home on a personal machine: confirm
               you already ran dev_status_sync.py status and resolved any
@@ -507,6 +530,8 @@ class Options:
     cross_filesystem: bool = False
     skip_reconciliation: bool = False
     migration_id: str | None = None
+    rollback_migration: str | None = None
+    finalize_migration: str | None = None
 
 
 @dataclass
@@ -687,6 +712,12 @@ def parse_args(argv: Sequence[str]) -> Options:
         "--skip-reconciliation", dest="skip_reconciliation", action="store_true"
     )
     parser.add_argument("--migration-id", dest="migration_id", default=None)
+    parser.add_argument(
+        "--rollback-toolkit-home-migration", dest="rollback_migration", default=None
+    )
+    parser.add_argument(
+        "--finalize-toolkit-home-migration", dest="finalize_migration", default=None
+    )
     parser.add_argument("-h", "--help", dest="help", action="store_true")
 
     args, extras = parser.parse_known_args(list(argv))
@@ -731,6 +762,15 @@ def parse_args(argv: Sequence[str]) -> Options:
     if args.adopt and args.reseed:
         _fail("--adopt and --reseed cannot be used together")
 
+    post_commit = [
+        flag
+        for flag, value in (
+            ("--rollback-toolkit-home-migration", args.rollback_migration),
+            ("--finalize-toolkit-home-migration", args.finalize_migration),
+        )
+        if value is not None
+    ]
+
     # --depart is a standalone, undo-everything action, checked first (ahead
     # of --rollback's own alone-check below) so `--rollback --depart` names
     # the --depart conflict, not the rollback one. Written out literally
@@ -747,6 +787,7 @@ def parse_args(argv: Sequence[str]) -> Options:
         or args.adopt
         or args.check_links
         or args.migrate_toolkit_home
+        or post_commit
     ):
         _fail("--depart must be used alone, with no other flags")
 
@@ -765,8 +806,40 @@ def parse_args(argv: Sequence[str]) -> Options:
         or args.adopt
         or args.dry_run
         or args.migrate_toolkit_home
+        or post_commit
     ):
         _fail("--check-links must be used alone, apart from --harness and --profile")
+
+    # The post-commit migration commands act on one journalled migration id;
+    # every install, migration or undo flag would be silently ignored.
+    if post_commit and (
+        len(post_commit) > 1
+        or harness_set
+        or args.profile != DEFAULT_PROFILE
+        or args.rollback
+        or args.wipe
+        or args.force
+        or args.dry_run
+        or args.reseed
+        or args.adopt
+        or args.yes
+        or args.force_harness
+        or args.report_uninstalled
+        or args.no_report_uninstalled
+        or args.migrate_toolkit_home
+        or args.cross_filesystem
+        or args.skip_reconciliation
+        or args.migration_id is not None
+    ):
+        _fail(
+            f"{post_commit[0]} must be used alone, apart from --json, --quiet and --verbose"
+        )
+    for flag, value in (
+        ("--rollback-toolkit-home-migration", args.rollback_migration),
+        ("--finalize-toolkit-home-migration", args.finalize_migration),
+    ):
+        if value is not None and not migrate_toolkit_home.MIGRATION_ID_RE.match(value):
+            _fail(f"invalid {flag}: {value} (expected mig-YYYYMMDDTHHMMSSZ-xxxxxx)")
 
     # --migrate-toolkit-home runs its own executor, never the install path,
     # so every install-only modifier would be silently ignored. Checked on
@@ -798,7 +871,8 @@ def parse_args(argv: Sequence[str]) -> Options:
         )
         if given
     ]
-    if migration_only and not args.migrate_toolkit_home:
+    json_with_post_commit = migration_only == ["--json"] and bool(post_commit)
+    if migration_only and not args.migrate_toolkit_home and not json_with_post_commit:
         _fail(f"{migration_only[0]} can only be used with --migrate-toolkit-home")
 
     if args.migration_id is not None and not migrate_toolkit_home.MIGRATION_ID_RE.match(
@@ -843,6 +917,7 @@ def parse_args(argv: Sequence[str]) -> Options:
         not args.rollback
         and not args.depart
         and not args.check_links
+        and not post_commit
         and not harness_set
     ):
         _fail(
@@ -880,6 +955,8 @@ def parse_args(argv: Sequence[str]) -> Options:
         cross_filesystem=args.cross_filesystem,
         skip_reconciliation=args.skip_reconciliation,
         migration_id=args.migration_id,
+        rollback_migration=args.rollback_migration,
+        finalize_migration=args.finalize_migration,
     )
 
 
@@ -1870,9 +1947,34 @@ def do_rollback(ctx: Context) -> int:
     swept too — even when no manifest exists at all, e.g. a second
     ``--wipe`` run after the first already consumed it.
 
+    Refuses outright while a toolkit-home migration is committed but neither
+    finalized nor rolled back: this walk would delete the links and modules
+    that migration still depends on, so the narrow rollback is named instead.
+
     Returns:
-        Exit status — 1 if any step was skipped, else 0.
+        Exit status — 1 if any step was skipped, 2 if refused, else 0.
     """
+    try:
+        pending = migrate_toolkit_home.committed_unfinalized(ctx.manifest.path.parent)
+    except OSError as exc:
+        print(
+            PALETTE.error(f"cannot read the toolkit-home migration journals: {exc}"),
+            file=sys.stderr,
+        )
+        return 2
+    if pending:
+        for migration_id in pending:
+            print(
+                PALETTE.error(
+                    f"toolkit-home migration {migration_id} is not finalized; run "
+                    f"./install.sh --rollback-toolkit-home-migration={migration_id} "
+                    "to undo it, or "
+                    f"--finalize-toolkit-home-migration={migration_id} first"
+                ),
+                file=sys.stderr,
+            )
+        return 2
+
     skips = Reporter()
     swept = False
 
@@ -2305,10 +2407,27 @@ def _check_applicable_links(
 def _find_orphaned_links(
     ctx: Context, links: Sequence[tuple[Path, Path, str, bool]]
 ) -> list[Path]:
-    """Adapter for link_inspect.find_orphaned_links; see it for detail."""
-    return link_inspect.find_orphaned_links(
-        links, manifest_entries=ctx.manifest.entries()
-    )
+    """Adapter for link_inspect.find_orphaned_links; see it for detail.
+
+    Legacy links an unfinalized toolkit-home migration kept are not orphans:
+    the migration's rollback still needs them, and its finalize removes them.
+    """
+    try:
+        retained = migrate_toolkit_home.retained_legacy_links(ctx.manifest.path.parent)
+    except migrate_toolkit_home.MigrationError as exc:
+        ctx.reporter.skip(
+            "orphan cleanup",
+            f"a toolkit-home migration journal is unreadable, so no link is "
+            f"treated as orphaned: {exc}",
+        )
+        return []
+    return [
+        dest
+        for dest in link_inspect.find_orphaned_links(
+            links, manifest_entries=ctx.manifest.entries()
+        )
+        if dest not in retained
+    ]
 
 
 def _check_orphaned_links(
@@ -2612,6 +2731,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
             repo_root=Path(__file__).resolve().parent,
         )
+    for migration_id, command in (
+        (opts.rollback_migration, migrate_toolkit_home.rollback_command),
+        (opts.finalize_migration, migrate_toolkit_home.finalize_command),
+    ):
+        if migration_id is not None:
+            return command(
+                migration_id,
+                migrate_toolkit_home.MigrationOptions(
+                    harnesses=(),
+                    json_report=opts.json_report,
+                    quiet=opts.quiet,
+                    verbose=opts.verbose,
+                ),
+                repo_root=Path(__file__).resolve().parent,
+            )
 
     ctx = build_context(opts)
 

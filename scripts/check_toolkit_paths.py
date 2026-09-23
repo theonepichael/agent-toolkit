@@ -64,6 +64,9 @@ TOOLKIT_DATA_ENTRIES = frozenset(
         "toolkit_sync.json",
     }
 )
+# The toolkit-home migration's per-run snapshot of the legacy stores
+# (``.toolkit-home-snapshot-<id>``); finalize deletes it.
+TOOLKIT_DATA_PREFIXES = (".toolkit-home-snapshot-",)
 TOOLKIT_TOP = frozenset({"scripts", "hooks", "icons"})
 HARNESS_TOP = frozenset(
     {
@@ -360,6 +363,8 @@ def classify(segs: tuple[str, ...]) -> str | None:
         return "toolkit"
     if top == "data":
         if len(segs) == 1 or segs[1] in TOOLKIT_DATA_ENTRIES:
+            return "toolkit"
+        if segs[1].startswith(TOOLKIT_DATA_PREFIXES):
             return "toolkit"
         return None
     if top in TOOLKIT_TOP:
