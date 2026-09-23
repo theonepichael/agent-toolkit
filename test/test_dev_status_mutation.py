@@ -955,6 +955,36 @@ class MutationServiceTestCase(MutationFixture):
         self.assertEqual(res.item["summary"], "Updated summary")
         self.assertEqual(res.item["priority"], "low")
 
+    def test_update_item_sets_and_clears_integration_branch(self):
+        self.write_items([make_item("item-1")])
+        with patch.object(worktree_provenance, "branch_name_problem", return_value=None):
+            res = dev_status_mutation.update_item(
+                "item-1",
+                dev_status_mutation.ItemUpdateRequest(integration_branch="release-1"),
+            )
+        self.assertEqual(res.item["integration_branch"], "release-1")
+        self.assertEqual(self._item_by_id("item-1")["integration_branch"], "release-1")
+        res = dev_status_mutation.update_item(
+            "item-1", dev_status_mutation.ItemUpdateRequest(integration_branch=None)
+        )
+        self.assertNotIn("integration_branch", self._item_by_id("item-1"))
+        self.assertIn("integration_branch", res.detail)
+
+    def test_update_item_rejects_invalid_integration_branch_without_write(self):
+        self.write_items([make_item("item-1")])
+        rev_before = self.read_rev()
+        with patch.object(
+            worktree_provenance, "branch_name_problem", return_value="bad name"
+        ):
+            with self.assertRaises(dev_status_mutation.ValidationError) as cm:
+                dev_status_mutation.update_item(
+                    "item-1",
+                    dev_status_mutation.ItemUpdateRequest(integration_branch="a..b"),
+                )
+        self.assertIn("integration_branch", str(cm.exception.message))
+        self.assertEqual(self.read_rev(), rev_before)
+        self.assertNotIn("integration_branch", self._item_by_id("item-1"))
+
     def test_start_and_done_item_success(self):
         self.write_items([make_item("item-1", status="open")])
         res_start = dev_status_mutation.start_item("item-1")
@@ -1685,6 +1715,93 @@ class CommittedWorkGuardTestCase(MutationFixture):
             with self.assertRaises(dev_status_mutation.InvalidItemStateError):
                 dev_status_mutation.review_item("item-guard")
         self.assertEqual(self._item_by_id("item-guard")["status"], "in-review")
+
+    # ── declared integration branch ────────────────────────────────────
+
+    def _integration_item(self, slug="item-guard", branch="release-1"):
+        item = make_item(
+            slug,
+            status="in-progress",
+            related_files=[{"path": "/repo/f.py", "note": ""}],
+        )
+        item["integration_branch"] = branch
+        self.write_items([item])
+
+    def test_inspector_receives_declared_integration_branch(self):
+        self._integration_item()
+        inspector = MagicMock(return_value=[])
+        with patch.object(worktree_provenance, "inspect_item_worktrees", inspector):
+            dev_status_mutation.review_item("item-guard")
+        self.assertEqual(inspector.call_args.kwargs["target_branch"], "release-1")
+
+    def test_inspector_receives_no_target_when_undeclared(self):
+        self._committed_item()
+        inspector = MagicMock(return_value=[])
+        with patch.object(worktree_provenance, "inspect_item_worktrees", inspector):
+            dev_status_mutation.review_item("item-guard")
+        self.assertIsNone(inspector.call_args.kwargs["target_branch"])
+
+    def test_refusal_names_declared_branch_not_default(self):
+        self._integration_item()
+        unmerged = [
+            worktree_provenance.WorktreeInspection(
+                target="/repo-wt",
+                source="worktree",
+                head_ancestor_of_default=False,
+                default_ref="refs/heads/release-1",
+            )
+        ]
+        with self._guard(unmerged):
+            with self.assertRaises(dev_status_mutation.InvalidItemStateError) as cm:
+                dev_status_mutation.review_item("item-guard")
+        msg = str(cm.exception.message)
+        self.assertIn("merge the branch into release-1", msg)
+        self.assertNotIn("local default branch", msg)
+
+    def _racing_inspector(self, new_branch):
+        """An inspector that rewrites the item's integration_branch while
+        the unlocked prepass runs — a concurrent update landing between
+        the prepass and the lock."""
+
+        def inspect(**kwargs):
+            items = self.read_items()
+            for it in items:
+                if new_branch is None:
+                    it.pop("integration_branch", None)
+                else:
+                    it["integration_branch"] = new_branch
+            self.write_items(items)
+            return []
+
+        return patch.object(
+            worktree_provenance, "inspect_item_worktrees", side_effect=inspect
+        )
+
+    def test_integration_branch_changed_during_review_prepass_refuses(self):
+        self._integration_item()
+        with self._racing_inspector(None):
+            with self.assertRaises(dev_status_mutation.InvalidItemStateError) as cm:
+                dev_status_mutation.review_item("item-guard")
+        self.assertIn("integration_branch changed", str(cm.exception.message))
+        self.assertEqual(self._item_by_id("item-guard")["status"], "in-progress")
+
+    def test_integration_branch_changed_during_approve_prepass_refuses(self):
+        self._integration_item()
+        with self._guard([]):
+            dev_status_mutation.review_item("item-guard")
+        with self._racing_inspector("release-2"):
+            with self.assertRaises(dev_status_mutation.InvalidItemStateError) as cm:
+                dev_status_mutation.approve_item("item-guard")
+        self.assertIn("integration_branch changed", str(cm.exception.message))
+        self.assertEqual(self._item_by_id("item-guard")["status"], "in-review")
+
+    def test_integration_branch_changed_during_done_prepass_refuses(self):
+        self._committed_item()
+        with self._racing_inspector("release-1"):
+            with self.assertRaises(dev_status_mutation.InvalidItemStateError) as cm:
+                dev_status_mutation.done_item("item-guard")
+        self.assertIn("integration_branch changed", str(cm.exception.message))
+        self.assertEqual(self._item_by_id("item-guard")["status"], "in-progress")
 
     # ── validation precedence: cheap checks before git I/O ─────────────
 

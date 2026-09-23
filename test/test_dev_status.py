@@ -41,6 +41,7 @@ import agent_toolkit_paths  # noqa: E402
 import dev_status
 import dev_status_mutation
 import llm_backends
+import worktree_provenance
 
 
 class _TtyStringIO(io.StringIO):
@@ -1398,6 +1399,24 @@ class BacklogTestCase(BacklogFixture):
         dev_status.cmd_update(_args(id="b", patch='{"priority": "high"}'))
         _, ready, _, _, _ = dev_status._render_order(self.read_items())
         self.assertEqual([i["id"] for i in ready], ["b", "a", "c"])
+
+    def test_30b_update_integration_branch_set_and_null_clears(self):
+        self.write_items([make_item("a")])
+        with patch.object(
+            worktree_provenance, "branch_name_problem", return_value=None
+        ):
+            dev_status.cmd_update(
+                _args(id="a", patch='{"integration_branch": "release-1"}')
+            )
+        self.assertEqual(self.read_items()[0]["integration_branch"], "release-1")
+        dev_status.cmd_update(_args(id="a", patch='{"integration_branch": null}'))
+        self.assertNotIn("integration_branch", self.read_items()[0])
+
+    def test_30c_update_non_string_integration_branch_refused(self):
+        self.write_items([make_item("a")])
+        with self.assertRaises(SystemExit):
+            dev_status.cmd_update(_args(id="a", patch='{"integration_branch": 5}'))
+        self.assertNotIn("integration_branch", self.read_items()[0])
 
     def test_31_update_priority_low_sinks_to_bottom_of_ready(self):
         self.write_items(

@@ -217,12 +217,14 @@ orphaned directory directly (`rm -rf <worktree-path>`) and retry
 `dev_status.py review <slug|N>` then `approve <slug|N>` — never a bare
 `done` on an in-review item. The lifecycle order is commit → local merge →
 review → approve → done: all three refuse with a typed error while the
-item's attributable local work is uncommitted or not merged into the
-repo's local default branch (merge ancestry is the contract — a
+item's attributable local work is uncommitted or not merged into its
+merge target: the repo's local default branch, or instead the item's
+declared `integration_branch` when one is set via `update` (e.g.
+`release-1` work that lands before main). Merge ancestry is the contract — a
 squash/rebase merge clears the check only by deleting the stale local
 branch or worktree, after a human confirms the content reached the
-default branch; planning-only items with no attributable local work
-pass). If `approve` refuses citing an unmet gate,
+merge target; planning-only items with no attributable local work
+pass. If `approve` refuses citing an unmet gate,
 actually check each criterion from `show <slug|N>` against the diff — don't
 pass it reflexively — then cover every criterion with evidence:
 `dev_status.py run <slug|N> -- <command>` executes and records a command,
