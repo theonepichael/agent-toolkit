@@ -106,6 +106,7 @@ def test_the_guard_script_is_stdlib_only() -> None:
         "pathlib",
         "agent_toolkit_paths",
         "cli_common",
+        "migration_lock",
         "backlog_claim_lookup",
         "worktree_provenance",
     }

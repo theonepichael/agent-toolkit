@@ -58,6 +58,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`link_drift_check.py`](#agentscriptslinkdriftcheckpy) | SessionStart hook + CLI: flag when a managed symlink on this machine no longer points where links.toml says it should. |
 | [`link_inspect.py`](#agentscriptslinkinspectpy) | link_inspect.py — link inspection, path classification, drift finding, and the self-contained audit assembly for install.py's ``--check-links`` audit and link_drift_check.py's SessionStart hook. |
 | [`llm_backends.py`](#agentscriptsllmbackendspy) | llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, opencode, pi, copilot). Extracted from second_opinion.py so dev_status.py's recap generation can reuse the same process-lifecycle handling (timeouts, process-group kills, opencode JSON-event parsing) with its own timeout and model choices, without duplicating it. |
+| [`migration_lock.py`](#agentscriptsmigrationlockpy) | Machine-wide migration lock: writers share it, the toolkit-home migrator owns it. |
 | [`notify.py`](#agentscriptsnotifypy) | Cross-platform agent notification dispatcher. |
 | [`outlook_calendar.py`](#agentscriptsoutlookcalendarpy) | outlook_calendar.py — CLI tool and agent interface for Windows Outlook Calendar via PowerShell COM. |
 | [`outlook_email.py`](#agentscriptsoutlookemailpy) | outlook_email.py — CLI tool and agent interface for Windows Outlook via PowerShell COM. |
@@ -220,6 +221,7 @@ Shared CLI helpers used across agent-toolkit scripts.
 - Entrypoint: not executable, no shebang
 - CLI: none (library module).
 - Environment: `AGENT_TOOLKIT_TIMING`, `NO_COLOR`, `TERM`, `XDG_STATE_HOME`
+- Depends on: `migration_lock.py`
 - Exceptions:
   - `class JsonlWriteError(Exception)` — Raised by append_jsonl(..., on_error="raise") when the write fails.
 - Public classes:
@@ -233,9 +235,10 @@ Shared CLI helpers used across agent-toolkit scripts.
   - `get_logger(name: str, *, verbose: bool = False, quiet: bool = False) -> logging.Logger` — Return a stderr-only diagnostic logger, a structured complement to vprint.
   - `append_jsonl(path: Path, record: dict[str, object], *, on_error: OnError = 'log', mode: int = 438) -> None` — Append one JSON record to ``path`` as a single JSONL line, opt-in failure reporting.
   - `redact_secrets(text: str, *, max_length: int = 200) -> str` — Mask secret-shaped substrings, then truncate to max_length.
+  - `state_dir() -> Path` — The XDG state base directory: $XDG_STATE_HOME, default ~/.local/state.
   - `timing_log_path() -> Path` — The timing log path: $XDG_STATE_HOME/agent-toolkit/timing.jsonl.
   - `timing_span(name: str, **fields: str | int) -> Iterator[dict[str, object]]` — Opt-in nested timings; callers must supply only fixed operational labels.
-- Tested by: `test/test_cli_common.py`, `test/test_settings_seed.py`, `test/test_timing.py`
+- Tested by: `test/test_cli_common.py`, `test/test_migration_lock_adoption.py`, `test/test_settings_seed.py`, `test/test_timing.py`
 
 ### `agent-scripts/dev_status.py`
 
@@ -324,7 +327,7 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `out-of-scope show <concept-slug>` — print a rejected concept's full record
 - Environment: `DEVSTATUS_AGENT`, `DEVSTATUS_RECAP_AGY_MODEL`, `DEVSTATUS_RECAP_DISABLE`, `DEVSTATUS_RECAP_TIMEOUT_SECONDS`
 - Explicit exit codes: `1`, `2`
-- Depends on: `agent_toolkit_paths.py`, `cli_common.py`, `dev_status_formatting.py`, `dev_status_mutation.py`, `dev_status_storage.py`, `dev_status_types.py`, `llm_backends.py`, `worktree.py`
+- Depends on: `agent_toolkit_paths.py`, `cli_common.py`, `dev_status_formatting.py`, `dev_status_mutation.py`, `dev_status_storage.py`, `dev_status_types.py`, `llm_backends.py`, `migration_lock.py`, `worktree.py`
 - Public functions:
   - `format_compact_confirmation(cmd: str, slug: str, status: str, rev: int, ref: str | int | None = None, detail: str = '') -> str` — Format a single-line structured confirmation for mutating commands under compact mode.
   - `machine_id() -> str` — Return this machine's stable short id, creating it on first use.
@@ -346,7 +349,7 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `confirm_resolution(cmd: str, arg: str | int, item: BacklogItem | PendingItem, summary_key: str = 'summary', *, quiet: bool = False) -> None` — Echo what a mutating command resolved to, so misresolution is visible.
   - `build_parser() -> argparse.ArgumentParser` — Build the full argument parser for every subcommand.
 - Subcommand handlers: `cmd_internal_regen`, `cmd_recap`, `cmd_worktree`, `cmd_render`, `cmd_ready`, `cmd_list`, `cmd_show`, `cmd_add`, `cmd_update`, `cmd_start`, `cmd_done`, `cmd_reopen`, `cmd_review`, `cmd_approve`, `cmd_reject`, `cmd_gate_set`, `cmd_gate_pass`, `cmd_run`, `cmd_machine_id`, `cmd_runs`, `cmd_backfill_gate`, `cmd_rename`, `cmd_block`, `cmd_unblock`, `cmd_out_of_scope_add`, `cmd_out_of_scope_link`, `cmd_out_of_scope_unlink`, `cmd_out_of_scope_remove`, `cmd_out_of_scope_list`, `cmd_out_of_scope_show`, `cmd_pending_add`, `cmd_pending_update`, `cmd_pending_list`, `cmd_remove`, `cmd_prune`
-- Tested by: `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_dev_status_storage.py`, `test/test_sweep_dead_claims.py`, `test/test_to_tickets_runner.py`
+- Tested by: `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_dev_status_storage.py`, `test/test_migration_lock_adoption.py`, `test/test_sweep_dead_claims.py`, `test/test_to_tickets_runner.py`
 
 ### `agent-scripts/dev_status_formatting.py`
 
@@ -473,7 +476,7 @@ Backlog persistence, lock coordination, and journal primitives.
   - `OUT_OF_SCOPE_INDEX_FILE = OUT_OF_SCOPE_DIR / 'index.json'`
   - `OUT_OF_SCOPE_LOCK_FILE = OUT_OF_SCOPE_DIR / '.out-of-scope.lock'`
 - Explicit exit codes: `1`
-- Depends on: `agent_toolkit_paths.py`, `cli_common.py`, `dev_status_types.py`, `fault_checkpoint.py`
+- Depends on: `agent_toolkit_paths.py`, `cli_common.py`, `dev_status_types.py`, `fault_checkpoint.py`, `migration_lock.py`
 - Exceptions:
   - `class MachineIdError(RuntimeError)` — This machine's id file cannot be read, is invalid, or cannot be created.
   - `class BacklogLockStoreMismatch(RuntimeError)` — A nested backlog operation targeted a different store than the outer one.
@@ -506,7 +509,7 @@ Backlog persistence, lock coordination, and journal primitives.
   - `append_run_record(record: RunRecord, *, runs_file: Path | None = None, data_dir: Path | None = None) -> bool` — Append one run-evidence row to :data:`RUNS_FILE` (best-effort).
   - `load_recap_cache(path: Path | None = None) -> dict[str, object] | None` — Load ``recap-cache.json``, or ``None`` if missing/corrupt/malformed.
   - `save_recap_cache(backend: str, text: str, board_fingerprint: str, path: Path | None = None) -> None` — Atomically persist a recap result.
-- Tested by: `test/test_dev_status_mutation.py`, `test/test_dev_status_read.py`, `test/test_dev_status_storage.py`, `test/test_guard_rails_claim.py`, `test/test_machine_id.py`
+- Tested by: `test/test_dev_status_mutation.py`, `test/test_dev_status_read.py`, `test/test_dev_status_storage.py`, `test/test_guard_rails_claim.py`, `test/test_machine_id.py`, `test/test_migration_lock_adoption.py`
 
 ### `agent-scripts/dev_status_types.py`
 
@@ -773,7 +776,7 @@ grill.py — grill-me session state CLI. All session mutations go through here.
 - Filesystem constants:
   - `DATA_DIR = agent_toolkit_paths.path_for('decisions')`
 - Explicit exit codes: `1`
-- Depends on: `agent_toolkit_paths.py`, `cli_common.py`
+- Depends on: `agent_toolkit_paths.py`, `cli_common.py`, `migration_lock.py`
 - Exceptions:
   - `class GrillSessionError(Exception)` — Base class for every typed session-service failure.
   - `class SessionNotFoundError(GrillSessionError)` — No readable session exists for the requested slug.
@@ -814,7 +817,7 @@ grill.py — grill-me session state CLI. All session mutations go through here.
   - `frontier_of(session: Session) -> DecisionList` — Service-API name for :func:`frontier` — every open decision whose dependencies are all resolved.
   - `render_markdown(session: Session) -> str` — Render a session's status as a Markdown document.
 - Subcommand handlers: `cmd_new`, `cmd_ask`, `cmd_decide`, `cmd_revise`, `cmd_rm`, `cmd_verdict`, `cmd_plan`, `cmd_mark_pending_execution`, `cmd_pending_plan`, `cmd_next`, `cmd_frontier`, `cmd_render`, `cmd_list`, `cmd_show`
-- Tested by: `test/test_grill.py`, `test/test_second_opinion.py`, `test/test_to_tickets_runner.py`
+- Tested by: `test/test_grill.py`, `test/test_migration_lock_adoption.py`, `test/test_second_opinion.py`, `test/test_to_tickets_runner.py`
 
 ### `agent-scripts/guard_rails.py`
 
@@ -833,7 +836,7 @@ Pre-tool guard shared by every harness: refuse a write into a repository's main 
 - Environment: `GUARD_RAILS_OFF`
 - Filesystem constants:
   - `GUARD_RAILS_LOG_PATH = agent_toolkit_paths.path_for('guard-rail-log')`
-- Depends on: `agent_toolkit_paths.py`, `backlog_claim_lookup.py`, `cli_common.py`, `dev_status_impl.py`, `dev_status_storage.py`, `worktree_provenance.py`
+- Depends on: `agent_toolkit_paths.py`, `backlog_claim_lookup.py`, `cli_common.py`, `dev_status_impl.py`, `dev_status_storage.py`, `migration_lock.py`, `worktree_provenance.py`
 - Public classes:
   - `class Request` — A normalized tool call: what family, from where, against which path (write-family) or command (bash-family).
   - `class Verdict`
@@ -848,7 +851,7 @@ Pre-tool guard shared by every harness: refuse a write into a repository's main 
   - `parse_payload(harness: str, payload: object) -> Request | None` — Normalize a harness's native hook payload.
   - `render(harness: str | None, verdict: Verdict) -> tuple[str, int]` — Shape a verdict into the harness's own reply.
   - `build_parser() -> argparse.ArgumentParser`
-- Tested by: `test/test_guard_rails.py`, `test/test_guard_rails_claim.py`, `test/test_guard_rails_topology.py`
+- Tested by: `test/test_guard_rails.py`, `test/test_guard_rails_claim.py`, `test/test_guard_rails_topology.py`, `test/test_migration_lock_adoption.py`
 
 ### `agent-scripts/harness_discovery_check.py`
 
@@ -1036,7 +1039,7 @@ llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, open
 - Installed at: `~/.claude/scripts/llm_backends.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI: none (library module).
-- Depends on: `agent_toolkit_paths.py`, `cli_common.py`
+- Depends on: `agent_toolkit_paths.py`, `cli_common.py`, `migration_lock.py`
 - Exceptions:
   - `class IsolationError(RuntimeError)` — A backend cannot be invoked because it does not meet the contract.
   - `class BackendError(Exception)` — A backend was invoked but failed (timeout or nonzero exit).
@@ -1059,7 +1062,40 @@ llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, open
   - `run_copilot(prompt: str, *, model: str | None, timeout: float, mode: str = 'text-only', target_dir: Path | None = None) -> str` — Run the ``copilot`` backend and return its text output.
   - `run_pi(prompt: str, *, model: str | None, timeout: float, mode: str = 'text-only', target_dir: Path | None = None) -> str` — Run Pi's headless mode and return its text output.
   - `run_opencode(prompt: str, *, model: str | None, timeout: float, mode: str = 'text-only', target_dir: Path | None = None) -> str` — Run opencode's default agent (no ``--agent`` override) and return its text output.
-- Tested by: `test/test_backend_isolation.py`, `test/test_backend_isolation_live.py`, `test/test_dev_status.py`, `test/test_gen_interfaces.py`, `test/test_llm_backends.py`, `test/test_second_opinion.py`, `test/test_timing.py`
+- Tested by: `test/test_backend_isolation.py`, `test/test_backend_isolation_live.py`, `test/test_dev_status.py`, `test/test_gen_interfaces.py`, `test/test_llm_backends.py`, `test/test_migration_lock_adoption.py`, `test/test_second_opinion.py`, `test/test_timing.py`
+
+### `agent-scripts/migration_lock.py`
+
+Machine-wide migration lock: writers share it, the toolkit-home migrator owns it.
+
+- Installed at: `~/.claude/scripts/migration_lock.py` (all harnesses)
+- Entrypoint: executable, `#!/usr/bin/env python3`
+- CLI (`argparse`): Inspect or hold the machine-wide migration lock.
+- Subcommands:
+  - `status` — show lock path, mode, holder, observation count
+  - `hold [--seconds <SECONDS>]` — hold the lock exclusively for N seconds (soak testing)
+    - `--seconds` — seconds to hold (max 600) (default: 60.0)
+  - `observations [--since <SINCE>]` — print recorded observations
+    - `--since` — only observations at or after this ISO timestamp
+- Filesystem constants:
+  - `LOCK_RELPATH = Path('agent-toolkit') / 'migration.lock'`
+  - `OBSERVATIONS_RELPATH = Path('agent-toolkit') / 'migration-observations.jsonl'`
+- Depends on: `cli_common.py`
+- Exceptions:
+  - `class MigrationLockBusy(RuntimeError)` — A write was refused: the migration lock is held or unusable (ENFORCE only).
+  - `class LockOrderError(RuntimeError)` — The migration lock was requested inside a store lock (a code bug).
+  - `class LockModeError(RuntimeError)` — An exclusive/shared mix this lock does not support.
+- Public functions:
+  - `lock_path() -> Path`
+  - `observations_path() -> Path`
+  - `observe(site: str, outcome: str, detail: str, *, quiet: bool = False) -> None` — Record one observation; never raises and never takes the lock.
+  - `note_store_lock_acquired() -> None`
+  - `note_store_lock_released() -> None`
+  - `shared(site: str, *, quiet: bool = False) -> Iterator[None]` — Admit one writer scope for ``site``; see the module docstring.
+  - `exclusive(site: str) -> Iterator[None]` — Hold the lock exclusively (the migrator).
+  - `build_parser() -> argparse.ArgumentParser`
+- Subcommand handlers: `cmd_status`, `cmd_hold`, `cmd_observations`
+- Tested by: `test/test_guard_rails_claim.py`, `test/test_migration_lock.py`, `test/test_migration_lock_adoption.py`
 
 ### `agent-scripts/notify.py`
 
@@ -1248,7 +1284,7 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
 - Filesystem constants:
   - `DATA_DIR = agent_toolkit_paths.path_for('decisions')`
 - Explicit exit codes: `1`
-- Depends on: `agent_toolkit_paths.py`, `cli_common.py`, `llm_backends.py`
+- Depends on: `agent_toolkit_paths.py`, `cli_common.py`, `llm_backends.py`, `migration_lock.py`
 - Exceptions:
   - `class ReviewError(Exception)` — Facade-level failure: configuration or request shape, not a backend.
   - `class NoBackendAvailableError(ReviewError)` — No backend is installed/on PATH and no ``--backend`` was forced.
@@ -1273,7 +1309,7 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
   - `build_parser() -> argparse.ArgumentParser` — Build the full argument parser for every subcommand.
   - `ensure_data_dir() -> None` — Create ``DATA_DIR`` if it is missing.
 - Subcommand handlers: `cmd_detect`, `cmd_review`
-- Tested by: `test/test_second_opinion.py`, `test/test_timing.py`
+- Tested by: `test/test_migration_lock_adoption.py`, `test/test_second_opinion.py`, `test/test_timing.py`
 
 ### `agent-scripts/seed_hook_subset_guard.py`
 
@@ -1439,7 +1475,7 @@ to_tickets_runner.py — create a linked batch of dev_status.py backlog items fr
 - Filesystem constants:
   - `DATA_DIR = agent_toolkit_paths.path_for('ticket-batches')`
 - Explicit exit codes: `1`, `3`
-- Depends on: `agent_toolkit_paths.py`, `dev_status.py`, `dev_status_mutation.py`, `dev_status_storage.py`
+- Depends on: `agent_toolkit_paths.py`, `dev_status.py`, `dev_status_mutation.py`, `dev_status_storage.py`, `migration_lock.py`
 - Exceptions:
   - `class BatchError(Exception)` — A problem with the batch itself: bad schema, a cycle, an unknown slug.
   - `class SlugCollisionError(Exception)` — A drafted slug collides with an unrelated, pre-existing item.
@@ -1454,11 +1490,11 @@ to_tickets_runner.py — create a linked batch of dev_status.py backlog items fr
   - `load_state(batch_path: Path) -> dict[str, object] | None` — Load the state file for ``batch_path``, or ``None`` if absent/unreadable.
   - `write_state(batch_path: Path, state: dict[str, object]) -> None` — Atomically write ``state`` to ``batch_path``'s state file.
   - `delete_state(batch_path: Path) -> None` — Remove ``batch_path``'s state file, if any.
-  - `run_batch(batch_path: Path, open_transaction: Callable[[], AbstractContextManager[dev_status_mutation.BacklogTransaction]] = dev_status_mutation.mutation_transaction) -> list[str]` — Create every ticket in ``batch_path``'s batch, resuming if interrupted before.
+  - `run_batch(batch_path: Path, open_transaction: Callable[[], AbstractContextManager[dev_status_mutation.BacklogTransaction]] = dev_status_mutation.mutation_transaction) -> list[str]` — Run :func:`_run_batch_unlocked` inside ONE migration scope.
   - `run(batch_path: Path) -> list[str]` — Create every ticket in ``batch_path``'s batch, resuming if interrupted before.
   - `build_parser() -> argparse.ArgumentParser`
 - Subcommand handlers: `cmd_run`
-- Tested by: `test/test_to_tickets_runner.py`
+- Tested by: `test/test_migration_lock_adoption.py`, `test/test_to_tickets_runner.py`
 
 ### `agent-scripts/vitals_promotion.py`
 
@@ -1479,7 +1515,7 @@ vitals-promotion.py — mechanical vitals-promotion pass over grill session data
   - `DATA_DIR = agent_toolkit_paths.path_for('decisions')`
   - `VITALS_DIR = DATA_DIR / 'vitals'`
 - Explicit exit codes: `1`
-- Depends on: `agent_toolkit_paths.py`, `cli_common.py`, `grill.py`
+- Depends on: `agent_toolkit_paths.py`, `cli_common.py`, `grill.py`, `migration_lock.py`
 - Exceptions:
   - `class VitalsSchemaError(ValueError)` — A vitals store file is unreadable, not the version-1 list shape, or a schema this pass doesn't understand.
 - Public classes:
@@ -1501,7 +1537,7 @@ vitals-promotion.py — mechanical vitals-promotion pass over grill session data
   - `classify(sessions: list[Session], *, vitals_dir: Path) -> Report` — Run the whole pass read-only: report what it *would* promote and supersede.
   - `promote(sessions: list[Session], *, vitals_dir: Path) -> Report` — Run the pass and write every file it dirtied.
   - `print_report(report: Report, apply: bool, quiet: bool = False) -> None`
-- Tested by: `test/test_vitals_promotion.py`
+- Tested by: `test/test_migration_lock_adoption.py`, `test/test_vitals_promotion.py`
 
 ### `agent-scripts/worktree.py`
 

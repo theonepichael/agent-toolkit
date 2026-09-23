@@ -303,6 +303,21 @@ def redact_secrets(text: str, *, max_length: int = 200) -> str:
     return clamped[:max_length]
 
 
+def state_dir() -> Path:
+    """The XDG state base directory: $XDG_STATE_HOME, default ~/.local/state.
+
+    A relative $XDG_STATE_HOME is ignored (the XDG spec requires absolute
+    paths). Shared by every writer under the installer state directory, which
+    the toolkit-home migration never moves.
+    """
+    state = os.environ.get("XDG_STATE_HOME")
+    return (
+        Path(state)
+        if state and Path(state).is_absolute()
+        else Path.home() / ".local/state"
+    )
+
+
 def timing_log_path() -> Path:
     """The timing log path: $XDG_STATE_HOME/agent-toolkit/timing.jsonl.
 
@@ -311,13 +326,23 @@ def timing_log_path() -> Path:
     can fail before append_jsonl is entered, and that failure must stay silent
     (never raise, never change exit behaviour), exactly like a write failure.
     """
-    state = os.environ.get("XDG_STATE_HOME")
-    base = (
-        Path(state)
-        if state and Path(state).is_absolute()
-        else Path.home() / ".local/state"
-    )
-    return base / "agent-toolkit/timing.jsonl"
+    return state_dir() / "agent-toolkit/timing.jsonl"
+
+
+def _append_timing_record(record: dict[str, object]) -> None:
+    """Append one timing record under the migration scope; never raises.
+
+    The migration appends installer history in this directory, so timing
+    writes take the shared migration scope too. A refusal skips the line and
+    is recorded as an observation; timing never changes a command's result.
+    """
+    import migration_lock  # lazy: migration_lock itself imports this module
+
+    try:
+        with migration_lock.shared("timing-log", quiet=True):
+            append_jsonl(timing_log_path(), record, on_error="silent", mode=0o600)
+    except migration_lock.MigrationLockBusy as exc:
+        migration_lock.observe("timing-log", "refused-telemetry", str(exc), quiet=True)
 
 
 _TIMING_PARENT: ContextVar[tuple[str, str] | None] = ContextVar(
@@ -368,4 +393,4 @@ def timing_span(name: str, **fields: str | int) -> Iterator[dict[str, object]]:
         record["duration_seconds"] = round(time.monotonic() - start, 6)
         _TIMING_PARENT.reset(token)
         with suppress(Exception):
-            append_jsonl(timing_log_path(), record, on_error="silent", mode=0o600)
+            _append_timing_record(record)

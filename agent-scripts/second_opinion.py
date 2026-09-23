@@ -124,6 +124,7 @@ from typing import NoReturn
 import agent_toolkit_paths
 import cli_common
 import llm_backends
+import migration_lock
 from llm_backends import (
     BackendError,
     _finalize_text_response,
@@ -1306,7 +1307,8 @@ def ensure_data_dir() -> None:
     that own the directory, so agents can rely on it existing after either
     one runs instead of running ``mkdir -p`` first.
     """
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    with migration_lock.shared("decisions"):
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
 @cli_common.timing_span("script", script="second_opinion")

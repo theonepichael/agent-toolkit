@@ -177,6 +177,10 @@ src = "agent-scripts/fault_checkpoint.py"
 dest = "~/.claude/scripts/fault_checkpoint.py"
 
 [[link]]
+src = "agent-scripts/migration_lock.py"
+dest = "~/.claude/scripts/migration_lock.py"
+
+[[link]]
 src = "agent-scripts/llm_backends.py"
 dest = "~/.claude/scripts/llm_backends.py"
 

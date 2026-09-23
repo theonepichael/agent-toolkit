@@ -75,7 +75,7 @@ import os
 import sys
 import tempfile
 from collections import Counter
-from contextlib import suppress
+from contextlib import ExitStack, suppress
 from datetime import datetime
 from pathlib import Path
 from typing import TextIO, TypedDict, cast
@@ -83,6 +83,7 @@ from typing import TextIO, TypedDict, cast
 import agent_toolkit_paths
 import cli_common
 import grill
+import migration_lock
 from grill import Decision, Session, is_open
 
 DATA_DIR = agent_toolkit_paths.path_for("decisions")
@@ -548,7 +549,7 @@ def print_report(report: Report, apply: bool, quiet: bool = False) -> None:
             cli_common.qprint(f"vitals written: {path}", quiet=quiet)
 
 
-def main() -> None:
+def _main() -> None:
     # Literal, not ``__doc__``: argparse's description is also the text
     # ``gen_interfaces.py`` extracts for INTERFACES.md's ``CLI (argparse)`` line,
     # and its resolver reads only a string literal or a bare ``__doc__`` name --
@@ -629,26 +630,41 @@ def main() -> None:
     # which that glob does not recurse into), so a count difference can only
     # mean a file failed to open. Refuse both modes rather than preview a
     # misleading report.
-    slugs = grill.all_session_slugs(args.data_dir)
-    sessions = grill.all_sessions(data_dir=args.data_dir)
-    if len(sessions) != len(slugs):
-        print(
-            f"Error: {len(slugs) - len(sessions)} of {len(slugs)} grill session "
-            f"file(s) in {args.data_dir} could not be read; refusing to run.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    vitals_dir = args.data_dir / "vitals"
-    try:
+    # --apply reads the sessions and the store and then writes the store, so
+    # the whole operation runs inside one migration scope: nothing may move
+    # between the read and the write. A dry run only reads and takes none.
+    with ExitStack() as scope:
         if args.apply:
-            report = promote(sessions, vitals_dir=vitals_dir)
-        else:
-            report = classify(sessions, vitals_dir=vitals_dir)
-    except VitalsSchemaError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        sys.exit(1)
+            scope.enter_context(migration_lock.shared("vitals"))
+        slugs = grill.all_session_slugs(args.data_dir)
+        sessions = grill.all_sessions(data_dir=args.data_dir)
+        if len(sessions) != len(slugs):
+            print(
+                f"Error: {len(slugs) - len(sessions)} of {len(slugs)} grill session "
+                f"file(s) in {args.data_dir} could not be read; refusing to run.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        vitals_dir = args.data_dir / "vitals"
+        try:
+            if args.apply:
+                report = promote(sessions, vitals_dir=vitals_dir)
+            else:
+                report = classify(sessions, vitals_dir=vitals_dir)
+        except VitalsSchemaError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
     print_report(report, args.apply, quiet=getattr(args, "quiet", False))
+
+
+def main() -> None:
+    """Run the CLI; a write refused by the migration lock exits 75 with one line."""
+    try:
+        _main()
+    except migration_lock.MigrationLockBusy as exc:
+        print(f"[vitals] {exc}", file=sys.stderr)
+        sys.exit(migration_lock.REFUSAL_EXIT_CODE)
 
 
 if __name__ == "__main__":

@@ -45,6 +45,7 @@ from typing import NoReturn, NotRequired, TypedDict, cast
 
 import agent_toolkit_paths
 import cli_common
+import migration_lock
 
 DATA_DIR = agent_toolkit_paths.path_for("decisions")
 SCHEMA_VERSION = 1
@@ -344,7 +345,10 @@ def ensure_data_dir(data_dir: Path | None = None) -> None:
     not through this script, and used to run ``mkdir -p`` defensively first.
     Guaranteeing it here is what lets the skill docs drop that step.
     """
-    (data_dir if data_dir is not None else DATA_DIR).mkdir(parents=True, exist_ok=True)
+    with migration_lock.shared("grill"):
+        (data_dir if data_dir is not None else DATA_DIR).mkdir(
+            parents=True, exist_ok=True
+        )
 
 
 def save_session(session: Session, data_dir: Path | None = None) -> None:
@@ -404,14 +408,21 @@ def all_sessions(*, data_dir: Path | None = None) -> list[Session]:
 
 @contextmanager
 def _flock(path: Path, data_dir: Path | None = None) -> Iterator[None]:
-    """Hold an exclusive advisory lock on ``path`` for the block's duration."""
-    ensure_data_dir(data_dir)
-    with open(path, "w") as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(f, fcntl.LOCK_UN)
+    """Hold an exclusive advisory lock on ``path`` for the block's duration.
+
+    The machine-wide migration scope is entered first and released last, so
+    the migration lock stays outermost around every grill store lock.
+    """
+    with migration_lock.shared("grill"):
+        ensure_data_dir(data_dir)
+        with open(path, "w") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            migration_lock.note_store_lock_acquired()
+            try:
+                yield
+            finally:
+                migration_lock.note_store_lock_released()
+                fcntl.flock(f, fcntl.LOCK_UN)
 
 
 @contextmanager
@@ -1460,7 +1471,7 @@ def cmd_show(args: argparse.Namespace) -> None:
 # ── main ──────────────────────────────────────────────────────────────────────
 
 
-def main() -> None:
+def _main() -> None:
     """Parse argv and dispatch to the matching subcommand handler."""
     ensure_data_dir()
     parser = argparse.ArgumentParser(
@@ -1630,6 +1641,15 @@ def main() -> None:
     else:
         parser.print_help()
         sys.exit(1)
+
+
+def main() -> None:
+    """Run the CLI; a write refused by the migration lock exits 75 with one line."""
+    try:
+        _main()
+    except migration_lock.MigrationLockBusy as exc:
+        print(f"[grill] {exc}", file=sys.stderr)
+        sys.exit(migration_lock.REFUSAL_EXIT_CODE)
 
 
 if __name__ == "__main__":
