@@ -455,7 +455,9 @@ used for backlog capture.
 
   This delegates to `worktree.py` internally, which automatically resolves
   the repository from the backlog item, handles branch creation or
-  attachment, reuses existing worktrees idempotently,
+  attachment (a new branch starts from the item's `integration_branch`
+  when one is set, else `HEAD`; `--base <ref>` overrides), reuses existing
+  worktrees idempotently,
   and bootstraps project dependencies in a single step. Do not manually run
   `git worktree add` or execute bare bootstrap scripts (`scripts/bootstrap-worktree.sh`,
   etc.) for backlog items.

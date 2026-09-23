@@ -120,6 +120,7 @@
     "arg update --if-rev: \u2014 required when <id> is numeric; get the current value from render/list/show immediately before this call",
     "arg update id: ",
     "arg update patch: ",
+    "arg worktree --base: \u2014 Start point for a newly created branch (default: the item's integration_branch, else HEAD)",
     "arg worktree --branch: \u2014 Branch name for worktree",
     "arg worktree --dest: \u2014 Explicit destination path for the worktree",
     "arg worktree --force/-f: \u2014 Pass --force to git worktree add (default: False)",
@@ -360,6 +361,7 @@
     "module docstring: vitals-promotion.py \u2014 mechanical vitals-promotion pass over grill session data."
   ],
   "worktree.py": [
+    "arg (top-level) --base: \u2014 Start point for a newly created branch (default: the item's integration_branch, else HEAD)",
     "arg (top-level) --branch: \u2014 Branch name for worktree",
     "arg (top-level) --dest: \u2014 Explicit destination path for the worktree",
     "arg (top-level) --force/-f: \u2014 Pass --force to git worktree add (default: False)",
