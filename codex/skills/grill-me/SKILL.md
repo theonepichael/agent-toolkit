@@ -15,6 +15,7 @@ grill.py ask '{"id", "question", ["reasoning"], ["depends_on"]}'  # register an 
 grill.py decide '{"id", "decision", ["question"], ["source"], ["depends_on"]}'  # resolve one
 grill.py revise <id> '{"decision": "..."}'               # amend (resets its verdict)
 grill.py verdict <id> '{"result", "evidence"}'           # record verification result
+grill.py rm <id> [--force]                               # remove a decision point (--force allows dangling depends_on)
 grill.py plan <path>                                     # record plan artifact location
 grill.py next / frontier / render / show / list          # resume point / askable batch / status / raw JSON
 ```

@@ -15,19 +15,19 @@ python3 ~/.claude/scripts/analyze_sessions.py <subcommand> [flags]
 
 - **Cost and token analysis**:
   ```bash
-  python3 ~/.claude/scripts/analyze_sessions.py cost [--by total|day|project|harness|model|session] [--since <date>] [--until <date>] [--cwd <path>] [--model <name>] [--session <id>] [--harness all|pi|claude|opencode|copilot|agy] [--no-subagents] [--json]
+  python3 ~/.claude/scripts/analyze_sessions.py cost [--by total|day|project|harness|model|session] [--since <date>] [--until <date>] [--cwd <path>] [--model <name>] [--session <id>] [--grep <pattern>] [--limit N] [--harness all|pi|claude|opencode|copilot|agy] [--no-subagents] [--json]
   ```
   Calculates token breakdowns (input, output, cache read, cache write, total) and USD costs (native for pi/opencode, derived for Claude Code). Every rollup displays its cost origin. Subagents are included by default; pass `--no-subagents` to exclude them.
 
 - **List prompts**:
   ```bash
-  python3 ~/.claude/scripts/analyze_sessions.py prompts [--format markdown|jsonl] [--since <date>] [--until <date>] [--cwd <path>] [--grep <pattern>] [--limit N] [--harness all|pi|claude|opencode|copilot|agy] [--include-subagents] [--json]
+  python3 ~/.claude/scripts/analyze_sessions.py prompts [--format markdown|jsonl] [--since <date>] [--until <date>] [--cwd <path>] [--model <name>] [--session <id>] [--grep <pattern>] [--limit N] [--harness all|pi|claude|opencode|copilot|agy] [--include-subagents] [--json]
   ```
   Lists user prompts across sessions. Subagents are excluded by default; pass `--include-subagents` to include them.
 
 - **Search message transcripts**:
   ```bash
-  python3 ~/.claude/scripts/analyze_sessions.py search "<query>" [--regex] [--context N] [--since <date>] [--until <date>] [--cwd <path>] [--harness all|pi|claude|opencode|copilot|agy] [--include-subagents] [--json]
+  python3 ~/.claude/scripts/analyze_sessions.py search "<query>" [--regex] [--context N] [--since <date>] [--until <date>] [--cwd <path>] [--model <name>] [--session <id>] [--grep <pattern>] [--limit N] [--harness all|pi|claude|opencode|copilot|agy] [--include-subagents] [--json]
   ```
   Searches user and assistant messages across session transcripts. Subagents are excluded by default; pass `--include-subagents` to include them.
 

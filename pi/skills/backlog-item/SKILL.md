@@ -68,6 +68,14 @@ multiple project repos are involved or resolution fails) — never shell out to
 `worktree` action wraps the same logic. Reuse a worktree this session
 already made for this item instead of a second one.
 
+Work that lands on an integration branch rather than the default branch
+(e.g. `release-1`)? Make sure the item's `integration_branch` is set (the
+`dev_status` tool's `update` action) *before* creating the worktree: a new
+item branch starts from it (else from `HEAD`), and step 12's merge check
+targets it. Confirm the base the action reports (`Created branch '<slug>'
+from '<base>'`); its `base` parameter overrides it for one call. A branch
+that already exists is attached as-is, never re-based.
+
 ## 4. Baseline
 Run that repo's test suite (or the most relevant targeted subset) in the
 fresh worktree before touching anything (CLAUDE.md's "Baseline tests before
