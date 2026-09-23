@@ -6,12 +6,12 @@ enters ``shared(site)`` for the length of its operation. The release-1
 migration takes ``exclusive(site)``. It is one ``flock`` file, so the kernel
 releases it when a holder dies; there is no lease or expiry.
 
-Stage 0a (this release): ``ENFORCE`` is False. A writer that would have been
-blocked, or that cannot open or lock the file, records an observation and
-proceeds without the lock; nothing is ever refused. Stage 0b flips
-``ENFORCE``, after which the same cases raise ``MigrationLockBusy`` (CLIs
-exit 75) and telemetry writers skip their append and record a
-``refused-telemetry`` observation instead.
+Stage 0b (this release): ``ENFORCE`` is True. A writer that is blocked, or
+that cannot open or lock the file, raises ``MigrationLockBusy`` (CLIs exit
+75), and telemetry writers skip their append and record a
+``refused-telemetry`` observation instead. Stage 0a shipped it False: the
+same cases recorded a ``would-block`` observation and proceeded without the
+lock. Rolling back 0b is flipping this one constant back.
 
 Ordering: the migration lock is always outermost. Store locks call
 ``note_store_lock_acquired()`` / ``note_store_lock_released()``; entering
@@ -63,8 +63,8 @@ TOOLKIT_DATA = "infrastructure"
 
 LOCK_RELPATH = Path("agent-toolkit") / "migration.lock"
 OBSERVATIONS_RELPATH = Path("agent-toolkit") / "migration-observations.jsonl"
-ENFORCE: bool = False
-"""Stage 0a: observe only. Stage 0b flips this one constant."""
+ENFORCE: bool = True
+"""Stage 0b: refuse. False is stage 0a's observe-only mode."""
 REFUSAL_EXIT_CODE = 75
 """EX_TEMPFAIL: what a CLI exits with when a write is refused (ENFORCE only)."""
 MAX_HOLD_SECONDS = 600

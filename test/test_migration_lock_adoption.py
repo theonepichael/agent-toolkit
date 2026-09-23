@@ -22,7 +22,6 @@ import migration_lock  # noqa: E402
 @pytest.fixture(autouse=True)
 def isolated(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    monkeypatch.setattr(migration_lock, "ENFORCE", False)
     migration_lock._reset_for_tests()
     yield tmp_path
     migration_lock._reset_for_tests()
@@ -221,7 +220,8 @@ HOLD = textwrap.dedent(
 
 
 @pytest.mark.allow_real_subprocess  # an exclusive holder in a child process
-def test_nested_store_writes_under_a_would_block_scope_proceed(tmp_path):
+def test_nested_store_writes_under_a_would_block_scope_proceed(tmp_path, monkeypatch):
+    monkeypatch.setattr(migration_lock, "ENFORCE", False)
     script = tmp_path / "hold.py"
     script.write_text(HOLD.format(scripts=AGENT_SCRIPTS))
     ready = tmp_path / "ready"
@@ -246,7 +246,7 @@ def test_nested_store_writes_under_a_would_block_scope_proceed(tmp_path):
     assert_all_released()
 
 
-# ── enforce paths (dormant in stage 0a; ENFORCE patched True here) ───────────
+# ── enforce paths (the shipped mode since stage 0b) ──────────────────────────
 
 
 @pytest.fixture()
@@ -284,7 +284,6 @@ def outcomes() -> list[tuple[str, str]]:
 def test_enforce_dev_status_mutation_exits_75(exclusive_holder, monkeypatch, capsys):
     import dev_status_impl
 
-    monkeypatch.setattr(migration_lock, "ENFORCE", True)
     monkeypatch.setattr(sys, "argv", ["dev_status.py", "add", '{"id": "blocked-item", "summary": "x"}'])
     with pytest.raises(SystemExit) as ctx:
         dev_status_impl.main()
@@ -298,7 +297,6 @@ def test_enforce_dev_status_mutation_exits_75(exclusive_holder, monkeypatch, cap
 def test_enforce_grill_write_exits_75(exclusive_holder, monkeypatch, capsys):
     import grill
 
-    monkeypatch.setattr(migration_lock, "ENFORCE", True)
     monkeypatch.setattr(sys, "argv", ["grill.py", "new", '{"topic": "blocked"}'])
     with pytest.raises(SystemExit) as ctx:
         grill.main()
@@ -317,7 +315,6 @@ def test_enforce_grill_read_proceeds_when_the_data_dir_exists(
     data = tmp_path / "grill"
     data.mkdir()
     monkeypatch.setattr(grill, "DATA_DIR", data)
-    monkeypatch.setattr(migration_lock, "ENFORCE", True)
     monkeypatch.setattr(sys, "argv", ["grill.py", "list"])
     grill.main()
     assert capsys.readouterr().err == ""
@@ -333,7 +330,6 @@ def test_enforce_second_opinion_existing_data_dir_takes_no_scope(
     data = tmp_path / "so"
     data.mkdir()
     monkeypatch.setattr(second_opinion, "DATA_DIR", data)
-    monkeypatch.setattr(migration_lock, "ENFORCE", True)
     second_opinion.ensure_data_dir()
     assert outcomes() == []
 
@@ -344,7 +340,6 @@ def test_enforce_vitals_apply_exits_75_but_dry_run_works(exclusive_holder, monke
 
     data = tmp_path / "grill"
     data.mkdir()
-    monkeypatch.setattr(migration_lock, "ENFORCE", True)
     monkeypatch.setattr(sys, "argv", ["vitals_promotion.py", "--data-dir", str(data), "--apply"])
     with pytest.raises(SystemExit) as ctx:
         vitals_promotion.main()
@@ -361,7 +356,6 @@ def test_enforce_ticket_runner_exits_75(exclusive_holder, monkeypatch, tmp_path)
 
     batch = tmp_path / "b.json"
     batch.write_text(json.dumps([{"id": "never-made", "summary": "x"}]))
-    monkeypatch.setattr(migration_lock, "ENFORCE", True)
     monkeypatch.setattr(sys, "argv", ["to_tickets_runner.py", "run", str(batch)])
     with pytest.raises(SystemExit) as ctx:
         to_tickets_runner.main()
@@ -376,7 +370,6 @@ def test_enforce_telemetry_skips_and_observes_without_breaking_callers(
     import guard_rails
     import llm_backends
 
-    monkeypatch.setattr(migration_lock, "ENFORCE", True)
     audit = tmp_path / "audit.jsonl"
     monkeypatch.setattr(guard_rails, "GUARD_RAILS_LOG_PATH", audit)
     guard_rails._audit_verdict("claude", None, guard_rails.Verdict("allow"))
@@ -396,8 +389,9 @@ def test_enforce_telemetry_skips_and_observes_without_breaking_callers(
 
 @pytest.mark.allow_real_subprocess  # exclusive holder child
 def test_observe_mode_machine_id_creation_under_a_migration_records_and_proceeds(
-    exclusive_holder, tmp_path
+    exclusive_holder, tmp_path, monkeypatch
 ):
+    monkeypatch.setattr(migration_lock, "ENFORCE", False)
     d = tmp_path / "backlog"
     created = dev_status_storage.machine_id(d / "_machine_id", d)
     assert (d / "_machine_id").read_text() == created

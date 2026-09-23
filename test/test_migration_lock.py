@@ -23,7 +23,6 @@ import migration_lock  # noqa: E402
 def isolated_state(tmp_path, monkeypatch):
     state = tmp_path / "state"
     monkeypatch.setenv("XDG_STATE_HOME", str(state))
-    monkeypatch.setattr(migration_lock, "ENFORCE", False)
     migration_lock._reset_for_tests()
     yield state
     migration_lock._reset_for_tests()
@@ -103,7 +102,8 @@ def test_store_lock_inside_the_migration_scope_nests_freely():
 
 
 @pytest.mark.allow_real_subprocess  # an exclusive holder in a child process
-def test_nested_writer_under_a_failed_outer_scope_is_not_an_ordering_error(tmp_path):
+def test_nested_writer_under_a_failed_outer_scope_is_not_an_ordering_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(migration_lock, "ENFORCE", False)
     holder = spawn_holder(tmp_path, "exclusive")
     try:
         with migration_lock.shared("outer"):  # would-block, admitted anyway
@@ -136,7 +136,8 @@ def test_two_shared_holders_coexist(tmp_path, isolated_state):
     "ModuleNotFoundError: No module named 'migration_lock'",
 )
 @pytest.mark.allow_real_subprocess  # an exclusive holder in a child process
-def test_observe_mode_records_would_block_and_proceeds(tmp_path, isolated_state):
+def test_observe_mode_records_would_block_and_proceeds(tmp_path, isolated_state, monkeypatch):
+    monkeypatch.setattr(migration_lock, "ENFORCE", False)
     holder = spawn_holder(tmp_path, "exclusive")
     ran = False
     try:
@@ -151,9 +152,13 @@ def test_observe_mode_records_would_block_and_proceeds(tmp_path, isolated_state)
     assert obs["pid"] == os.getpid()
 
 
+def test_shipped_mode_is_enforce():
+    # Stage 0b: a blocked or unlockable writer is refused, not just observed.
+    assert migration_lock.ENFORCE is True
+
+
 @pytest.mark.allow_real_subprocess  # an exclusive holder in a child process
 def test_enforce_mode_refuses_and_names_the_lock(tmp_path, monkeypatch):
-    monkeypatch.setattr(migration_lock, "ENFORCE", True)
     holder = spawn_holder(tmp_path, "exclusive")
     try:
         with pytest.raises(migration_lock.MigrationLockBusy) as ctx:
@@ -203,7 +208,8 @@ def test_no_descriptor_is_held_between_operations_or_at_import():
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
-def test_unwritable_lock_directory_records_lock_error_and_proceeds(isolated_state):
+def test_unwritable_lock_directory_records_lock_error_and_proceeds(isolated_state, monkeypatch):
+    monkeypatch.setattr(migration_lock, "ENFORCE", False)
     isolated_state.mkdir(parents=True)
     lock_dir = isolated_state / "agent-toolkit"
     lock_dir.mkdir()
@@ -217,6 +223,21 @@ def test_unwritable_lock_directory_records_lock_error_and_proceeds(isolated_stat
     assert ran
     # the observation file lives in the same (unwritable) directory, so the
     # last-resort stderr path is what records it; nothing raised.
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_enforce_mode_refuses_when_the_lock_cannot_be_opened(isolated_state):
+    isolated_state.mkdir(parents=True)
+    lock_dir = isolated_state / "agent-toolkit"
+    lock_dir.mkdir()
+    lock_dir.chmod(0o555)
+    try:
+        with pytest.raises(migration_lock.MigrationLockBusy) as ctx:
+            with migration_lock.shared("backlog"):
+                pytest.fail("must not run")
+    finally:
+        lock_dir.chmod(0o755)
+    assert str(migration_lock.lock_path()) in str(ctx.value)
 
 
 # ── mixed modes and threads ──────────────────────────────────────────────────
@@ -346,7 +367,7 @@ def cli(*args: str, state: Path, timeout: float = 30) -> subprocess.CompletedPro
 def test_cli_status_reports_mode_and_holder(tmp_path, isolated_state):
     r = cli("status", state=isolated_state)
     assert r.returncode == 0, r.stderr
-    assert "mode: observe" in r.stdout
+    assert "mode: enforce" in r.stdout
     assert "exclusive holder: none" in r.stdout
     holder = spawn_holder(tmp_path, "exclusive")
     try:
@@ -357,7 +378,8 @@ def test_cli_status_reports_mode_and_holder(tmp_path, isolated_state):
 
 
 @pytest.mark.allow_real_subprocess  # runs the CLI
-def test_cli_hold_then_observations(tmp_path, isolated_state):
+def test_cli_hold_then_observations(tmp_path, isolated_state, monkeypatch):
+    monkeypatch.setattr(migration_lock, "ENFORCE", False)  # the soak writer
     proc = subprocess.Popen(
         [sys.executable, str(REPO / "agent-scripts" / "migration_lock.py"), "hold", "--seconds", "3"],
         env=dict(os.environ, XDG_STATE_HOME=str(isolated_state), PYTHONDONTWRITEBYTECODE="1"),
