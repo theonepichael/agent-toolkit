@@ -363,6 +363,10 @@ def cmd_run(args: argparse.Namespace) -> None:
     except (BatchError, SlugCollisionError) as e:
         print(f"[to-tickets] {e}", file=sys.stderr)
         sys.exit(1)
+    except dev_status_storage.MachineIdError as e:
+        # Raised by the backlog lock before any ticket is created.
+        print(f"[to-tickets] {e}", file=sys.stderr)
+        sys.exit(3)
 
     print(f"Created {len(created)} ticket(s):")
     for slug in created:

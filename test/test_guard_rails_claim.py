@@ -619,3 +619,23 @@ class TestRealSessionIdentity:
             assert json.loads(out)["decision"] == "deny"
         finally:
             _kill(foreign)
+
+
+class TestBrokenMachineId:
+    def test_broken_machine_id_denies_instead_of_crashing(
+        self, repo_pair, store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import dev_status_storage
+
+        def broken() -> tuple[str, int, list[int]]:
+            raise dev_status_storage.MachineIdError(
+                "invalid machine id in /x/_machine_id", Path("/x/_machine_id")
+            )
+
+        monkeypatch.setattr(guard_rails, "_session_identity", broken)
+        repo = repo_pair["repo"]
+        _set_store(store, [_item("demo-slug", [str(repo / "tracked.txt")], None)])
+        verdict = _write(repo / "tracked.txt", store)
+        assert verdict.decision == "deny"
+        assert verdict.rule == "machine-id"
+        assert "machine-id --repair" in verdict.reason

@@ -411,7 +411,16 @@ def _evaluate_claim(
     if not pointed:
         return Verdict("allow")
 
-    current_machine, owner_pid, chain = _session_identity()
+    import dev_status_storage  # lazy, like dev_status_impl in _session_identity
+
+    try:
+        current_machine, owner_pid, chain = _session_identity()
+    except dev_status_storage.MachineIdError as exc:
+        # A missing or broken machine id means claims cannot be attributed
+        # to this session; fail closed with the repair hint rather than
+        # crashing the hook (a crash gives no verdict and some adapters then
+        # fail open).
+        return Verdict("deny", str(exc), rule="machine-id")
     unclaimed = [
         item
         for item in pointed

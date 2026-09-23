@@ -16,6 +16,22 @@ Environment: AGENT_TOOLKIT_TIMING=1 enables operational timing JSONL under
 $XDG_STATE_HOME/agent-toolkit/timing.jsonl (default ~/.local/state).
 Normal output and exit codes are unchanged; no prompts or argv are recorded.
 
+Machine identity: every journalled mutation and claim is attributed to this
+machine's id in ``<work-items>/_machine_id`` (8 lowercase hex characters).
+The id is never replaced by a throwaway value. If it cannot be read, is
+invalid, or cannot be created, a mutating command exits 3 with a one-line
+message naming the file and the repair command, and nothing is written.
+Read commands (``render``, ``list``, ``show``, ``ready``, ``runs``) keep
+working: they skip the dead-claim sweep and print a warning (on stdout for
+``render``, on stderr for the others). ``machine-id`` prints the id;
+``machine-id --repair`` replaces an invalid id file (after backing it up),
+creates a missing one, and refuses to touch an unreadable one.
+
+Exit codes
+  0  success
+  1  usage, validation, or state errors (the command's message says which)
+  3  this machine's id is unavailable (see "Machine identity" above)
+
 Requires Python 3.12+.
 """
 
@@ -318,6 +334,7 @@ SUBCOMMANDS = (
     "prune",
     "recap",
     "worktree",
+    "machine-id",
 )
 RESERVED_SLUGS = set(SUBCOMMANDS) | {"pending", "out-of-scope", "all", "help", "new"}
 SLUG_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)+$")
@@ -643,10 +660,31 @@ def save_pending(pending_items: list[PendingItem]) -> None:
 
 
 @contextmanager
-def backlog_lock() -> Iterator[None]:
-    """Hold an exclusive lock over a mutating command's full read-modify-write cycle."""
-    with dev_status_storage.backlog_lock(DATA_DIR, LOCK_FILE):
+def backlog_lock(*, require_identity: bool = True) -> Iterator[None]:
+    """Hold an exclusive lock over a mutating command's full read-modify-write cycle.
+
+    ``require_identity=False`` is for snapshot reads: no machine id is
+    resolved, so a broken id file cannot stop them.
+    """
+    with dev_status_storage.backlog_lock(
+        DATA_DIR,
+        LOCK_FILE,
+        require_identity=require_identity,
+        machine_id_file=MACHINE_ID_FILE,
+    ):
         yield
+
+
+MACHINE_ID_EXIT_CODE = 3
+
+
+def _sweep_identity_problem() -> str | None:
+    """Why the dead-claim sweep must be skipped, or None if it can run."""
+    try:
+        machine_id()
+    except dev_status_storage.MachineIdError as exc:
+        return f"warning: dead-claim sweep skipped -- {exc}"
+    return None
 
 
 @contextmanager
@@ -2116,16 +2154,21 @@ def cmd_render(args: argparse.Namespace) -> None:
     read — so the printed rev stays self-consistent with the mutated store.
     Nothing is written when every claim is alive.
     """
-    with backlog_lock():
+    problem = _sweep_identity_problem()
+    with backlog_lock(require_identity=problem is None):
         items = load_items()
         pending_items = load_pending()
-        notices = _sweep_dead_claims(items)
+        notices = _sweep_dead_claims(items) if problem is None else []
         if notices:
             bump_rev()
             save_items(items)
         rev = load_rev()
     for notice in notices:
         print(notice, file=sys.stderr)
+    if problem is not None:
+        # stdout on purpose: Pi and Copilot show render's stdout and ignore
+        # its stderr on success, so a stderr-only warning would be invisible.
+        print(problem)
     render(items, pending_items, rev=rev, dispatch=True)
 
 
@@ -2146,9 +2189,9 @@ def cmd_ready(args: argparse.Namespace) -> None:
     per item to fetch that would be both slower and racier.
 
     Pure — same contract as :func:`cmd_render`, no writes, safe to call on a
-    loop while workers are running.
+    loop while workers are running. A snapshot read: it needs no machine id.
     """
-    with backlog_lock():
+    with backlog_lock(require_identity=False):
         items = load_items()
         rev = load_rev()
     print(f"# rev={rev}", file=sys.stderr)
@@ -2193,16 +2236,20 @@ def cmd_list(args: argparse.Namespace) -> None:
     The claim-liveness sweep runs under the same lock, before the rev is
     read — see :func:`_sweep_dead_claims`.
     """
-    with backlog_lock():
+    problem = _sweep_identity_problem()
+    with backlog_lock(require_identity=problem is None):
         items = load_items()
         pending_items = load_pending()
-        notices = _sweep_dead_claims(items)
+        notices = _sweep_dead_claims(items) if problem is None else []
         if notices:
             bump_rev()
             save_items(items)
         rev = load_rev()
     for notice in notices:
         print(notice, file=sys.stderr)
+    if problem is not None:
+        # stderr: `list --raw` stdout is parsed by the Pi compaction extension.
+        print(problem, file=sys.stderr)
     print(f"# rev={rev}", file=sys.stderr)
 
     if args.raw:
@@ -2283,9 +2330,13 @@ def cmd_show(args: argparse.Namespace) -> None:
     as :func:`cmd_render`). The claim-liveness sweep runs under the same
     lock, before the rev is read — see :func:`_sweep_dead_claims`.
     """
-    with backlog_lock():
+    problem = _sweep_identity_problem()
+    if problem is not None:
+        # stderr: `show` stdout is parsed as JSON by Pi and Copilot tooling.
+        print(problem, file=sys.stderr)
+    with backlog_lock(require_identity=problem is None):
         items = load_items()
-        notices = _sweep_dead_claims(items)
+        notices = _sweep_dead_claims(items) if problem is None else []
         if notices:
             bump_rev()
             save_items(items)
@@ -2787,9 +2838,49 @@ def cmd_run(args: argparse.Namespace) -> None:
         )
 
 
+def cmd_machine_id(args: argparse.Namespace) -> None:
+    """Handle ``machine-id``: print the id, or repair a missing/invalid id file.
+
+    Errors (unreadable, invalid without --repair, unwritable) propagate as
+    MachineIdError and exit 3 through :func:`main`.
+    """
+    mid_file = Path(MACHINE_ID_FILE)
+    if not args.repair:
+        print(f"{machine_id()}  {mid_file}")
+        return
+    result = dev_status_storage.repair_machine_id(MACHINE_ID_FILE, DATA_DIR)
+    if result.action == "unchanged":
+        print(
+            f"[machine-id] {result.machine_id} is valid; nothing changed ({mid_file})"
+        )
+        return
+    if result.action == "created":
+        print(f"[machine-id] created {result.machine_id} ({mid_file})")
+        return
+    old = result.old_content if result.old_content is not None else b""
+    print(
+        f"[machine-id] replaced invalid id {old[:32]!r} with {result.machine_id}; "
+        f"backup: {result.backup}"
+    )
+    items = load_items()
+    foreign = [
+        str(item["id"])
+        for item in items
+        if item.get("status") == "in-progress"
+        and isinstance(item.get("claimed_by"), dict)
+        and item["claimed_by"].get("machine_id") != result.machine_id
+    ]
+    if foreign:
+        print(
+            "[machine-id] warning: these in-progress claims were made under the old "
+            "id and now look foreign: " + ", ".join(foreign),
+            file=sys.stderr,
+        )
+
+
 def cmd_runs(args: argparse.Namespace) -> None:
-    """Handle ``runs``: list an item's recorded run evidence."""
-    with backlog_lock():
+    """Handle ``runs``: list an item's recorded run evidence (a snapshot read)."""
+    with backlog_lock(require_identity=False):
         items = load_items()
         pending_items = load_pending()
         try:
@@ -2824,9 +2915,9 @@ def cmd_backfill_gate(args: argparse.Namespace) -> None:
     signal in the existing schema (no per-item verdict data) to infer a
     *required* gate from, so this never sets ``required: true`` -- that
     only ever happens via a deliberate ``gate-set`` call. Dry run by
-    default; ``--apply`` writes.
+    default; ``--apply`` writes (only then is a machine id required).
     """
-    with backlog_lock():
+    with backlog_lock(require_identity=bool(args.apply)):
         items = load_items()
         missing = [i for i in items if "gate" not in i]
         if not missing:
@@ -3473,6 +3564,7 @@ dispatch: dict[str, Callable[[argparse.Namespace], None]] = {
     "prune": cmd_prune,
     "recap": cmd_recap,
     "worktree": cmd_worktree,
+    "machine-id": cmd_machine_id,
 }
 
 if __name__ == "__main__" and set(dispatch) != set(SUBCOMMANDS):
@@ -3764,6 +3856,20 @@ def build_parser() -> argparse.ArgumentParser:
     _add_id_arg(p)
 
     p = sub.add_parser(
+        "machine-id",
+        help="print this machine's id; --repair fixes a missing or invalid id file",
+        parents=[verbosity_parent],
+    )
+    p.add_argument(
+        "--repair",
+        action="store_true",
+        help=(
+            "create a missing id, or back up and replace an invalid one; "
+            "never changes a valid id or an unreadable file"
+        ),
+    )
+
+    p = sub.add_parser(
         "backfill-gate",
         help="stamp an explicit inert gate on legacy items",
         parents=[verbosity_parent],
@@ -3997,7 +4103,17 @@ def main() -> None:
 
     parser = build_parser()
     args = parser.parse_args()
+    try:
+        _dispatch_command(parser, args)
+    except dev_status_storage.MachineIdError as exc:
+        print(f"[{args.cmd}] {exc}", file=sys.stderr)
+        sys.exit(MACHINE_ID_EXIT_CODE)
 
+
+def _dispatch_command(
+    parser: argparse.ArgumentParser, args: argparse.Namespace
+) -> None:
+    """Run the parsed subcommand (every branch, including pending/out-of-scope)."""
     if args.cmd == "pending":
         pending_dispatch: dict[str, Callable[[argparse.Namespace], None]] = {
             "add": cmd_pending_add,

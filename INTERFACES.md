@@ -284,6 +284,8 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
     - `--cwd` — working directory for command execution (defaults to repo root of item's related_files, or session cwd)
     - `command` — command to execute and record (everything after --; no shell) (nargs: *)
   - `runs <slug|N>` — list recorded run evidence for an item
+  - `machine-id [--repair]` — print this machine's id; --repair fixes a missing or invalid id file
+    - `--repair` — create a missing id, or back up and replace an invalid one; never changes a valid id or an unreadable file
   - `backfill-gate [--apply]` — stamp an explicit inert gate on legacy items
     - `--apply` — write changes (default: dry run)
   - `rename <slug|N> <new_slug> [--if-rev <N>]` — rename slug (rewrites all references)
@@ -330,7 +332,7 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `save_items(items: list[BacklogItem]) -> None` — Atomically persist ``items`` to :data:`ITEMS_FILE`.
   - `load_pending() -> list[PendingItem]` — Load all pending items from :data:`PENDING_FILE`.
   - `save_pending(pending_items: list[PendingItem]) -> None` — Atomically persist ``pending_items`` to :data:`PENDING_FILE`.
-  - `backlog_lock() -> Iterator[None]` — Hold an exclusive lock over a mutating command's full read-modify-write cycle.
+  - `backlog_lock(*, require_identity: bool = True) -> Iterator[None]` — Hold an exclusive lock over a mutating command's full read-modify-write cycle.
   - `out_of_scope_lock() -> Iterator[None]` — Hold an exclusive lock over an out-of-scope command's read-modify-write cycle.
   - `load_rev() -> int` — Read the current revision counter.
   - `bump_rev() -> int` — Increment and persist the revision counter.
@@ -343,7 +345,7 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `read_journal_entries(within_hours: float | None = None, *, verbose: bool = False) -> list[dict[str, object]]` — Read journal entries, optionally filtered to the last ``within_hours``.
   - `confirm_resolution(cmd: str, arg: str | int, item: BacklogItem | PendingItem, summary_key: str = 'summary', *, quiet: bool = False) -> None` — Echo what a mutating command resolved to, so misresolution is visible.
   - `build_parser() -> argparse.ArgumentParser` — Build the full argument parser for every subcommand.
-- Subcommand handlers: `cmd_internal_regen`, `cmd_recap`, `cmd_worktree`, `cmd_render`, `cmd_ready`, `cmd_list`, `cmd_show`, `cmd_add`, `cmd_update`, `cmd_start`, `cmd_done`, `cmd_reopen`, `cmd_review`, `cmd_approve`, `cmd_reject`, `cmd_gate_set`, `cmd_gate_pass`, `cmd_run`, `cmd_runs`, `cmd_backfill_gate`, `cmd_rename`, `cmd_block`, `cmd_unblock`, `cmd_out_of_scope_add`, `cmd_out_of_scope_link`, `cmd_out_of_scope_unlink`, `cmd_out_of_scope_remove`, `cmd_out_of_scope_list`, `cmd_out_of_scope_show`, `cmd_pending_add`, `cmd_pending_update`, `cmd_pending_list`, `cmd_remove`, `cmd_prune`
+- Subcommand handlers: `cmd_internal_regen`, `cmd_recap`, `cmd_worktree`, `cmd_render`, `cmd_ready`, `cmd_list`, `cmd_show`, `cmd_add`, `cmd_update`, `cmd_start`, `cmd_done`, `cmd_reopen`, `cmd_review`, `cmd_approve`, `cmd_reject`, `cmd_gate_set`, `cmd_gate_pass`, `cmd_run`, `cmd_machine_id`, `cmd_runs`, `cmd_backfill_gate`, `cmd_rename`, `cmd_block`, `cmd_unblock`, `cmd_out_of_scope_add`, `cmd_out_of_scope_link`, `cmd_out_of_scope_unlink`, `cmd_out_of_scope_remove`, `cmd_out_of_scope_list`, `cmd_out_of_scope_show`, `cmd_pending_add`, `cmd_pending_update`, `cmd_pending_list`, `cmd_remove`, `cmd_prune`
 - Tested by: `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_dev_status_storage.py`, `test/test_sweep_dead_claims.py`, `test/test_to_tickets_runner.py`
 
 ### `agent-scripts/dev_status_formatting.py`
@@ -427,7 +429,7 @@ Typed mutation service and transaction manager for dev_status (Candidate 12).
   - `add_pending_item(request: PendingAddRequest, *, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Track a new waiting-on-someone-else item.
   - `update_pending_item(slug_or_id: str, request: PendingUpdateRequest, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Merge an update request into a pending item.
   - `mutation_transaction(*, items_path: Path | None = None, verbose: bool = False) -> Iterator[BacklogTransaction]` — Hold backlog_lock once for batch operations; yields BacklogTransaction.
-- Tested by: `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_harness_spec.py`, `test/test_worktree_provenance.py`
+- Tested by: `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_harness_spec.py`, `test/test_machine_id.py`, `test/test_worktree_provenance.py`
 
 ### `agent-scripts/dev_status_read.py`
 
@@ -471,9 +473,16 @@ Backlog persistence, lock coordination, and journal primitives.
   - `OUT_OF_SCOPE_INDEX_FILE = OUT_OF_SCOPE_DIR / 'index.json'`
   - `OUT_OF_SCOPE_LOCK_FILE = OUT_OF_SCOPE_DIR / '.out-of-scope.lock'`
 - Explicit exit codes: `1`
-- Depends on: `agent_toolkit_paths.py`, `cli_common.py`, `dev_status_types.py`
+- Depends on: `agent_toolkit_paths.py`, `cli_common.py`, `dev_status_types.py`, `fault_checkpoint.py`
+- Exceptions:
+  - `class MachineIdError(RuntimeError)` — This machine's id file cannot be read, is invalid, or cannot be created.
+  - `class BacklogLockStoreMismatch(RuntimeError)` — A nested backlog operation targeted a different store than the outer one.
+- Public classes:
+  - `class MachineIdRepair` — What ``repair_machine_id`` did.
 - Public functions:
-  - `machine_id(machine_id_file: Path | None = None, data_dir: Path | None = None) -> str` — Return this machine's stable short id, creating it on first use.
+  - `operation_machine_id() -> str | None` — The id resolved for the backlog operation in progress, if any.
+  - `machine_id(machine_id_file: Path | None = None, data_dir: Path | None = None) -> str` — Return this machine's stable short id, creating it once if missing.
+  - `repair_machine_id(machine_id_file: Path | None = None, data_dir: Path | None = None) -> MachineIdRepair` — Create a missing id or replace a readable-but-invalid one; never touch a valid one.
   - `atomic_write_json(path: Path, payload: str, prefix: str) -> None` — Write text to ``path`` via a temp file in its directory + ``os.replace``.
   - `backup_before_bulk_delete(path: Path) -> None` — Snapshot a data file before a filter-based bulk deletion.
   - `load_items(path: Path | None = None) -> list[BacklogItem]` — Load all backlog items from ``path`` (defaults to :data:`ITEMS_FILE`).
@@ -482,7 +491,7 @@ Backlog persistence, lock coordination, and journal primitives.
   - `save_pending(pending_items: list[PendingItem], path: Path | None = None) -> None` — Atomically persist ``pending_items`` to ``path`` (defaults to :data:`PENDING_FILE`).
   - `load_rev(meta_file: Path | None = None) -> int` — Read the current revision counter.
   - `bump_rev(meta_file: Path | None = None) -> int` — Increment and persist the revision counter.
-  - `backlog_lock(data_dir: Path | None = None, lock_file: Path | None = None) -> Iterator[None]` — Hold an exclusive lock over a mutating command's full read-modify-write cycle.
+  - `backlog_lock(data_dir: Path | None = None, lock_file: Path | None = None, *, require_identity: bool = True, machine_id_file: Path | None = None) -> Iterator[None]` — Hold an exclusive lock over a mutating command's full read-modify-write cycle.
   - `out_of_scope_lock(out_of_scope_dir: Path | None = None, lock_file: Path | None = None) -> Iterator[None]` — Hold an exclusive lock over an out-of-scope command's cycle.
   - `load_out_of_scope_index(path: Path | None = None) -> dict[str, dict[str, object]]` — Load the out-of-scope concept index, or ``{}`` if it doesn't exist yet.
   - `save_out_of_scope_index(index: dict[str, dict[str, object]], path: Path | None = None) -> None` — Atomically persist the out-of-scope concept index.
@@ -497,7 +506,7 @@ Backlog persistence, lock coordination, and journal primitives.
   - `append_run_record(record: RunRecord, *, runs_file: Path | None = None, data_dir: Path | None = None) -> bool` — Append one run-evidence row to :data:`RUNS_FILE` (best-effort).
   - `load_recap_cache(path: Path | None = None) -> dict[str, object] | None` — Load ``recap-cache.json``, or ``None`` if missing/corrupt/malformed.
   - `save_recap_cache(backend: str, text: str, board_fingerprint: str, path: Path | None = None) -> None` — Atomically persist a recap result.
-- Tested by: `test/test_dev_status_mutation.py`, `test/test_dev_status_read.py`, `test/test_dev_status_storage.py`
+- Tested by: `test/test_dev_status_mutation.py`, `test/test_dev_status_read.py`, `test/test_dev_status_storage.py`, `test/test_guard_rails_claim.py`, `test/test_machine_id.py`
 
 ### `agent-scripts/dev_status_types.py`
 
@@ -824,7 +833,7 @@ Pre-tool guard shared by every harness: refuse a write into a repository's main 
 - Environment: `GUARD_RAILS_OFF`
 - Filesystem constants:
   - `GUARD_RAILS_LOG_PATH = agent_toolkit_paths.path_for('guard-rail-log')`
-- Depends on: `agent_toolkit_paths.py`, `backlog_claim_lookup.py`, `cli_common.py`, `dev_status_impl.py`, `worktree_provenance.py`
+- Depends on: `agent_toolkit_paths.py`, `backlog_claim_lookup.py`, `cli_common.py`, `dev_status_impl.py`, `dev_status_storage.py`, `worktree_provenance.py`
 - Public classes:
   - `class Request` — A normalized tool call: what family, from where, against which path (write-family) or command (bash-family).
   - `class Verdict`
@@ -1429,7 +1438,7 @@ to_tickets_runner.py — create a linked batch of dev_status.py backlog items fr
     - `batch_file` — path to the batch JSON file
 - Filesystem constants:
   - `DATA_DIR = agent_toolkit_paths.path_for('ticket-batches')`
-- Explicit exit codes: `1`
+- Explicit exit codes: `1`, `3`
 - Depends on: `agent_toolkit_paths.py`, `dev_status.py`, `dev_status_mutation.py`, `dev_status_storage.py`
 - Exceptions:
   - `class BatchError(Exception)` — A problem with the batch itself: bad schema, a cycle, an unknown slug.
@@ -1964,28 +1973,33 @@ named doc, not regenerating this file.
 | `agy/skills/recap/SKILL.md` | OK |
 | `agy/skills/second-opinion/SKILL.md` | OK |
 | `agy/skills/standup/SKILL.md` | OK |
+| `agy/skills/to-tickets/SKILL.md` | OK |
 | `claude/commands/backlog-item.md` | OK |
 | `claude/commands/dashboard.md` | OK |
 | `claude/commands/recap.md` | OK |
 | `claude/commands/second-opinion.md` | OK |
 | `claude/commands/standup.md` | OK |
 | `claude/commands/swarm.md` | OK |
+| `claude/commands/to-tickets.md` | OK |
 | `codex/skills/backlog-item/SKILL.md` | OK |
 | `codex/skills/dashboard/SKILL.md` | OK |
 | `codex/skills/recap/SKILL.md` | OK |
 | `codex/skills/second-opinion/SKILL.md` | OK |
 | `codex/skills/standup/SKILL.md` | OK |
+| `codex/skills/to-tickets/SKILL.md` | OK |
 | `copilot/skills/backlog-item/SKILL.md` | OK |
 | `copilot/skills/dashboard/SKILL.md` | OK |
 | `copilot/skills/recap/SKILL.md` | OK |
 | `copilot/skills/second-opinion/SKILL.md` | OK |
 | `copilot/skills/standup/SKILL.md` | OK |
 | `copilot/skills/swarm/SKILL.md` | OK |
+| `copilot/skills/to-tickets/SKILL.md` | OK |
 | `opencode/command/backlog-item.md` | OK |
 | `opencode/command/dashboard.md` | OK |
 | `opencode/command/recap.md` | OK |
 | `opencode/command/second-opinion.md` | OK |
 | `opencode/command/standup.md` | OK |
+| `opencode/command/to-tickets.md` | OK |
 | `opencode/skills/second-opinion/SKILL.md` | OK |
 | `pi/skills/backlog-item/SKILL.md` | OK |
 | `pi/skills/dashboard/SKILL.md` | OK |
