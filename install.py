@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""install.py — agent-toolkit + AI-harness provisioner for macOS and Linux/WSL.
+"""install.py — agent-toolkit provisioner and migration controls for macOS/Linux.
 
 Ported from the zsh ``install.sh`` this repo used through mid-2026; the
 shell script is now a thin bootstrap that locates a Python 3.12+ and execs
@@ -265,12 +265,12 @@ usage: ./install.sh --harness=<claude,copilot,opencode,agy,pi,codex>[,...] [--pr
               to the toolkit home since (appended log lines excepted).
               Accepts only --json, --quiet and --verbose.
   --finalize-toolkit-home-migration=<id>
-              delete what one committed migration kept for a rollback: its
-              snapshot of the originals, its leftover staging, and the
-              legacy links the current links.toml no longer produces. Only
-              paths the journal proves are its own, and only while they
-              still match it. After this, --rollback-toolkit-home-migration
-              no longer applies. Accepts only --json, --quiet and --verbose.
+              for a committed migration, delete its snapshot, leftover
+              staging, and retired legacy links. After a narrow rollback or
+              failed-validation restore, delete the retained transformed
+              copy only if non-telemetry files still match the journal;
+              report discarded telemetry lines. A second finalize is a
+              no-op. Accepts only --json, --quiet and --verbose.
   --json      with --migrate-toolkit-home or either command above: print
               the report as JSON.
   --skip-reconciliation
