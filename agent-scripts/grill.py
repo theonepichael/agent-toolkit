@@ -347,11 +347,15 @@ def ensure_data_dir(data_dir: Path | None = None) -> None:
     agents write plan and spec ``.md`` files there with their own file tools,
     not through this script, and used to run ``mkdir -p`` defensively first.
     Guaranteeing it here is what lets the skill docs drop that step.
+
+    An existing directory needs no write, so it takes no migration scope:
+    read-only commands must still run while a migration holds the lock.
     """
+    target = data_dir if data_dir is not None else DATA_DIR
+    if target.is_dir():
+        return
     with migration_lock.shared("grill"):
-        (data_dir if data_dir is not None else DATA_DIR).mkdir(
-            parents=True, exist_ok=True
-        )
+        target.mkdir(parents=True, exist_ok=True)
 
 
 def save_session(session: Session, data_dir: Path | None = None) -> None:

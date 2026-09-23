@@ -307,6 +307,38 @@ def test_enforce_grill_write_exits_75(exclusive_holder, monkeypatch, capsys):
 
 
 @pytest.mark.allow_real_subprocess  # exclusive holder child
+def test_enforce_grill_read_proceeds_when_the_data_dir_exists(
+    exclusive_holder, monkeypatch, tmp_path, capsys
+):
+    # Every grill invocation ensures its data dir first; once the dir exists
+    # that is not a write, so a read must not be refused during a migration.
+    import grill
+
+    data = tmp_path / "grill"
+    data.mkdir()
+    monkeypatch.setattr(grill, "DATA_DIR", data)
+    monkeypatch.setattr(migration_lock, "ENFORCE", True)
+    monkeypatch.setattr(sys, "argv", ["grill.py", "list"])
+    grill.main()
+    assert capsys.readouterr().err == ""
+    assert outcomes() == []
+
+
+@pytest.mark.allow_real_subprocess  # exclusive holder child
+def test_enforce_second_opinion_existing_data_dir_takes_no_scope(
+    exclusive_holder, monkeypatch, tmp_path
+):
+    import second_opinion
+
+    data = tmp_path / "so"
+    data.mkdir()
+    monkeypatch.setattr(second_opinion, "DATA_DIR", data)
+    monkeypatch.setattr(migration_lock, "ENFORCE", True)
+    second_opinion.ensure_data_dir()
+    assert outcomes() == []
+
+
+@pytest.mark.allow_real_subprocess  # exclusive holder child
 def test_enforce_vitals_apply_exits_75_but_dry_run_works(exclusive_holder, monkeypatch, tmp_path):
     import vitals_promotion
 

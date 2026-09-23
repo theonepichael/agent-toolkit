@@ -1452,7 +1452,12 @@ def ensure_data_dir() -> None:
     wrote. It creates it anyway because it is one of the two entry points
     that own the directory, so agents can rely on it existing after either
     one runs instead of running ``mkdir -p`` first.
+
+    An existing directory needs no write, so it takes no migration scope:
+    a critique run must not be refused while a migration holds the lock.
     """
+    if DATA_DIR.is_dir():
+        return
     with migration_lock.shared("decisions"):
         DATA_DIR.mkdir(parents=True, exist_ok=True)
 
