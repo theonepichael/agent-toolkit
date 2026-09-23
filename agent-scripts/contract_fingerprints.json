@@ -213,6 +213,24 @@
     "exit codes: 1, 2, 3",
     "module docstring: gen_interfaces.py \u2014 regenerate INTERFACES.md mechanically from the sources."
   ],
+  "gen_second_opinion.py": [
+    "arg (top-level) --check: \u2014 exit 1 (with diffs on stderr) if any copy, the contract shape, or a guard phrase is stale",
+    "arg (top-level) --quiet/-q: ",
+    "arg (top-level) --repo-root: \u2014 repository root (default: inferred from this script's path)",
+    "arg (top-level) --stdout: \u2014 print the rendered copies, write nothing",
+    "arg (top-level) --verbose/-v: ",
+    "exit codes: 1, 2",
+    "module docstring: gen_second_opinion.py \u2014 regenerate the second-opinion skill copies (one per harness, named in HARNESS_TABLE) from one canonical template."
+  ],
+  "gen_skills.py": [
+    "arg (top-level) --check: \u2014 exit 1 (with diffs on stderr) if any copy is stale",
+    "arg (top-level) --quiet/-q: ",
+    "arg (top-level) --repo-root: \u2014 repository root (default: inferred from this script's path)",
+    "arg (top-level) --stdout: \u2014 print the rendered copies, write nothing",
+    "arg (top-level) --verbose/-v: ",
+    "exit codes: 1, 2",
+    "module docstring: gen_skills.py \u2014 regenerate the dashboard/recap/grill-me/backlog-item/ make-skill/spec/standup/to-tickets/swarm skill copies from one template per skill, plus a shared per-harness capability table. dashboard/recap/ grill-me/backlog-item/make-skill/spec/standup/to-tickets cover all 6 harnesses (claude, copilot, opencode, agy, pi, codex); swarm covers only claude/copilot (user-directed; pi already owns the orchestration surface) \u2014 see `SKILL_HARNESSES` below and AGENTS.md's \"Harness maintenance tiers\" section."
+  ],
   "grill.py": [
     "arg (top-level) --quiet/-q: ",
     "arg (top-level) --verbose/-v: ",
