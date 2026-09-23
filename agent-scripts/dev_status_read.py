@@ -152,6 +152,10 @@ class DevStatusClaimLookup:
         """Return one item's claim info from this instance's snapshot."""
         return self._snapshot.claim_info(slug)
 
+    def get_item(self, slug: str) -> BacklogItem | None:
+        """Return one item of any status from this instance's snapshot."""
+        return self._snapshot.get_item(slug)
+
 
 # Static protocol check without instantiating against the real default store.
 _claim_lookup_protocol_check: type[BacklogClaimLookup] = DevStatusClaimLookup

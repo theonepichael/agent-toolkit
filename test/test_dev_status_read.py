@@ -158,6 +158,8 @@ class TestDevStatusRead(unittest.TestCase):
             claimed_at=None,
         ))
         self.assertEqual(lookup.ready_items(), [])
+        self.assertEqual(lookup.get_item("claimed-item")["id"], "claimed-item")
+        self.assertIsNone(lookup.get_item("replacement-item"))
 
     def test_standalone_functions_take_fresh_snapshots(self):
         self.write_items([make_item("first-item")])

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Pre-tool guard shared by every harness: refuse a write into a repository's
 main checkout while a backlog item for that repository is in progress, warn
-when the current worktree's base has fallen behind ``origin/main``, (Bash,
+when the current worktree's base has fallen behind ``origin/main`` (or
+``origin/<integration_branch>`` for an item that declares one), (Bash,
 Claude Code only) deny the git-native ways to defeat the no-commit-on-main
 git hook (``githooks/pre-commit`` / ``githooks-global/pre-commit``), and
 require an active backlog-item claim before a write that points at an
@@ -459,13 +460,50 @@ def _evaluate_claim(
     )
 
 
-def _behind_origin_main(directory: str) -> bool:
-    """Whether this worktree's base is behind the already-fetched
-    origin/main. Never fetches -- a guard must not need the network."""
-    if git("-C", directory, "rev-parse", "--verify", "--quiet", "origin/main") is None:
+def _stale_base_ref(
+    info: RepoInfo,
+    items: list[dict],
+    in_progress_ids: set[str],
+    claims: BacklogClaimLookup,
+) -> str:
+    """The remote-tracking ref R3 compares this worktree against.
+
+    ``origin/<integration_branch>`` when the worktree's item declares one,
+    else ``origin/main`` -- work that lands on release-1 must not be told to
+    pull main. The item is the in-progress one R4 would attribute (same
+    precedence); failing that, the provenance marker's item of any status
+    (a done item's worktree, possibly on a custom branch name), unless a
+    protected branch is checked out. A bare branch name never resolves a
+    non-in-progress item: it could coincide with an unrelated old slug.
+    No git access -- only the snapshot the claim check already read."""
+    item: dict | None = next(
+        (
+            i
+            for i in items
+            if worktree_points_at_item(
+                marker_slug=info.marker_slug,
+                is_linked_worktree=info.is_worktree,
+                branch=info.branch,
+                item_id=str(i.get("id") or ""),
+                in_progress_ids=in_progress_ids,
+            )
+        ),
+        None,
+    )
+    if item is None and info.marker_slug and info.branch not in PROTECTED_BRANCHES:
+        item = claims.get_item(info.marker_slug)
+    branch = item.get("integration_branch") if item is not None else None
+    return f"origin/{branch}" if isinstance(branch, str) and branch else "origin/main"
+
+
+def _behind_ref(directory: str, ref: str) -> bool:
+    """Whether this worktree's HEAD is behind the already-fetched ``ref``.
+    A missing ref is never stale. Never fetches -- a guard must not need
+    the network."""
+    if git("-C", directory, "rev-parse", "--verify", "--quiet", ref) is None:
         return False
     counts = git(
-        "-C", directory, "rev-list", "--left-right", "--count", "origin/main...HEAD"
+        "-C", directory, "rev-list", "--left-right", "--count", f"{ref}...HEAD"
     )
     if not counts:
         return False
@@ -735,14 +773,17 @@ def evaluate(req: Request, claims: BacklogClaimLookup) -> Verdict:
     verdict = _evaluate_claim(req, info, items, claims)
     if verdict.decision == "deny":
         return verdict
-    if info.is_worktree and _behind_origin_main(directory):
+    if info.is_worktree:
         # R3: only a worktree can be behind its own base.
-        return Verdict(
-            "warn",
-            "This worktree's base is behind origin/main. Pull before "
-            "continuing, or the work will be built on a stale tree.",
-            rule="stale-worktree-base",
-        )
+        in_progress_ids = {str(item.get("id") or "") for item in items}
+        base_ref = _stale_base_ref(info, items, in_progress_ids, claims)
+        if _behind_ref(directory, base_ref):
+            return Verdict(
+                "warn",
+                f"This worktree's base is behind {base_ref}. Pull before "
+                "continuing, or the work will be built on a stale tree.",
+                rule="stale-worktree-base",
+            )
     return Verdict("allow")
 
 

@@ -1087,6 +1087,9 @@ class FakeClaimsLookup:
     def claim_info(self, slug: str) -> None:
         return None
 
+    def get_item(self, slug: str) -> None:
+        return None
+
 
 class QueueFacadeTests(unittest.TestCase):
     """Unit tests for select_ready, build_launch_plan, and ready_slugs."""
