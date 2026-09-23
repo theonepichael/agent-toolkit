@@ -1726,15 +1726,66 @@ def _links_apply(state: RunState, record: StepRecord) -> dict[str, object]:
                 "migration": ctx.migration_id,
             },
         )
-    retained = [
-        {"dest": str(dest), "target": os.readlink(dest)}
+    return {"created": len(_planned_links(record)), "retained": _retained(state)}
+
+
+# The toolkit-home directories whose links.toml rows replace a legacy
+# ~/.claude path of the same relative name.
+_MAPPED_DIRS = ("scripts", "hooks", "icons")
+
+
+def _retained(state: RunState) -> list[dict[str, str]]:
+    """The legacy links this migration keeps until finalize removes them.
+
+    Two sources, deduped by destination. The mapping: for each applicable
+    row under ``~/.agent-toolkit/{scripts,hooks,icons}``, the ``~/.claude``
+    link at the same relative path, when it points into an agent-toolkit
+    checkout. And the manifest: links an earlier install recorded that no
+    row produces any more. The history alone misses links it never recorded
+    or recorded with a since-moved source, so it cannot be the only source.
+    """
+    ctx = state.ctx
+    gathered = _gathered_links(state)
+    known = {dest for _src, dest, _rel, _applicable in gathered}
+    toolkit, legacy = ctx.home / ".agent-toolkit", ctx.home / ".claude"
+    candidates: list[Path] = []
+    for _src, dest, _rel, applicable in gathered:
+        if not applicable or not dest.is_relative_to(toolkit):
+            continue
+        relative = dest.relative_to(toolkit)
+        if relative.parts[0] not in _MAPPED_DIRS:
+            continue
+        old = legacy / relative
+        if old.is_symlink() and old not in known and _points_into_toolkit(old):
+            candidates.append(old)
+    candidates += [
+        dest
         for dest in link_inspect.find_orphaned_links(
-            _gathered_links(state),
-            manifest_entries=link_inspect.read_manifest_entries(ctx.history),
+            gathered, manifest_entries=link_inspect.read_manifest_entries(ctx.history)
         )
         if dest.is_symlink()
     ]
-    return {"created": len(_planned_links(record)), "retained": retained}
+    retained: dict[Path, dict[str, str]] = {}
+    for dest in candidates:
+        retained.setdefault(dest, {"dest": str(dest), "target": os.readlink(dest)})
+    return list(retained.values())
+
+
+def _points_into_toolkit(link: Path) -> bool:
+    """Whether ``link``'s target lies inside an agent-toolkit checkout.
+
+    The target is joined to the link's directory and normalized without
+    resolving, so a dangling link into a checkout still counts. A checkout
+    has links.toml, install.py and agent-scripts/; the origin repo has
+    the first two only, so its links stay foreign.
+    """
+    target = Path(os.path.normpath(link.parent / os.readlink(link)))
+    return any(
+        (root / "links.toml").is_file()
+        and (root / "install.py").is_file()
+        and (root / "agent-scripts").is_dir()
+        for root in target.parents
+    )
 
 
 def _links_undo(state: RunState, record: StepRecord) -> None:
@@ -2513,18 +2564,25 @@ def _finalize_apply(state: RunState, plan: dict[str, object]) -> None:
         work_dir.rmdir()
         _fsync_dir(work_dir.parent)
     _checkpoint("migrate.finalize.staging-removed")
-    gone: set[tuple[str, str]] = set()
+    # A link finalize removed, or found already gone, leaves every history
+    # entry for its destination dead, whatever source it recorded. A link
+    # someone changed stays; only the entry naming the journaled target goes.
+    gone: set[str] = set()
+    changed: set[tuple[str, str]] = set()
     for link in plan["retained"]:  # type: ignore[attr-defined]
         dest, target = Path(str(link["dest"])), str(link["target"])
         if dest.is_symlink() and os.readlink(dest) == target:
             dest.unlink()
             _fsync_dir(dest.parent)
-        if not (dest.is_symlink() and os.readlink(dest) == target):
-            gone.add((str(dest), target))
+        if not _lexists(dest):
+            gone.add(str(dest))
+        elif not (dest.is_symlink() and os.readlink(dest) == target):
+            changed.add((str(dest), target))
     _drop_history_entries(
         state.ctx.history,
         lambda e: (
-            e.get("kind") == "symlink-created" and (e.get("dest"), e.get("src")) in gone
+            e.get("kind") == "symlink-created"
+            and (e.get("dest") in gone or (e.get("dest"), e.get("src")) in changed)
         ),
     )
     _checkpoint("migrate.finalize.links-removed")
@@ -2683,12 +2741,23 @@ def committed_unfinalized(installer_state: Path) -> list[str]:
 
 
 def retained_legacy_links(installer_state: Path) -> set[Path]:
-    """Legacy links kept for unfinalized migrations; orphan cleanup must skip them."""
+    """Legacy links kept by migrations that can still finalize.
+
+    Orphan cleanup and ``--check-links`` skip them. A migration counts while
+    its run is in flight or committed, and neither its finalize nor its
+    rollback has finished; a restored, aborted, rolled-back or finalized one
+    will never remove them, so it exempts nothing.
+    """
     kept: set[Path] = set()
     for directory in _journal_dirs(installer_state):
+        records = read_records(directory)
+        if _outcome(records) not in (None, OUTCOME_COMMITTED):
+            continue
         if _outcome(read_records(directory, FINALIZE_NAME)) == OUTCOME_FINALIZED:
             continue
-        for record in _steps_in(read_records(directory)):
+        if _outcome(read_records(directory, ROLLBACK_NAME)) == OUTCOME_ROLLED_BACK:
+            continue
+        for record in _steps_in(records):
             done = _done(record)
             if record["phase"] != "links" or done is None:
                 continue

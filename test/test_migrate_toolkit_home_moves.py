@@ -733,6 +733,221 @@ def test_retained_legacy_links_survive_orphan_cleanup_until_finalize(
     assert old not in mth.retained_legacy_links(_state_dir(machine))
 
 
+def _toolkit_repo(tmp_path: Path) -> Path:
+    """An agent-toolkit-shaped checkout whose shared runtime moved to the toolkit home.
+
+    It carries the three ownership markers (links.toml, install.py,
+    agent-scripts/). ``gated.py`` only applies to pi, and ``keep.py`` is
+    still linked at its legacy path as well.
+    """
+    repo = tmp_path / "repo"
+    scripts = repo / "agent-scripts"
+    scripts.mkdir(parents=True)
+    (repo / "install.py").write_text("# installer\n")
+    (repo / "claude" / "icons").mkdir(parents=True)
+    rows = []
+    for name in ("tool", "stale", "dang", "rel", "gated", "foreign", "other", "keep"):
+        (scripts / f"{name}.py").write_text(f"# {name}\n")
+        harness = '\nharness = "pi"' if name == "gated" else ""
+        rows.append(
+            f'[[link]]\nsrc = "agent-scripts/{name}.py"\n'
+            f'dest = "~/.agent-toolkit/scripts/{name}.py"{harness}\n'
+        )
+    rows.append('[[link]]\nsrc = "agent-scripts/keep.py"\ndest = "~/.claude/scripts/keep.py"\n')
+    rows.append('[[link]]\nsrc = "claude/icons"\ndest = "~/.agent-toolkit/icons"\n')
+    (repo / "links.toml").write_text("\n".join(rows))
+    return repo
+
+
+def _legacy_links(home: Path, repo: Path, tmp_path: Path) -> dict[str, Path]:
+    """Legacy ~/.claude links in every shape the desktop showed."""
+    legacy = home / ".claude"
+    scripts = legacy / "scripts"
+    origin = tmp_path / "origin"
+    (origin / "claude" / "scripts").mkdir(parents=True)
+    (origin / "links.toml").write_text("")
+    (origin / "install.py").write_text("")
+    (origin / "claude" / "scripts" / "foreign.py").write_text("# origin\n")
+    links = {
+        "tool": (scripts / "tool.py", repo / "agent-scripts" / "tool.py"),
+        "stale": (scripts / "stale.py", repo / "agent-scripts" / "stale.py"),
+        "dang": (scripts / "dang.py", repo / "claude" / "scripts" / "dang.py"),
+        "rel": (
+            scripts / "rel.py",
+            Path(os.path.relpath(repo / "agent-scripts" / "rel.py", scripts)),
+        ),
+        "icons": (legacy / "icons", repo / "claude" / "icons"),
+        "gated": (scripts / "gated.py", repo / "agent-scripts" / "gated.py"),
+        "foreign": (scripts / "foreign.py", origin / "claude" / "scripts" / "foreign.py"),
+    }
+    for dest, target in links.values():
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.symlink_to(target)
+    (scripts / "other.py").write_text("a real file\n")
+    history = _state_dir(home) / "history.jsonl"
+    history.parent.mkdir(parents=True, exist_ok=True)
+    with history.open("a") as fh:
+        fh.write(
+            json.dumps(
+                {
+                    "kind": "symlink-created",
+                    "dest": str(scripts / "stale.py"),
+                    "src": str(repo / "claude" / "scripts" / "stale.py"),
+                }
+            )
+            + "\n"
+        )
+    return {name: dest for name, (dest, _target) in links.items()}
+
+
+def test_links_retain_toolkit_legacy_links_by_the_mapping(
+    machine, capsys, validation, tmp_path
+):
+    repo = _toolkit_repo(tmp_path)
+    legacy = _legacy_links(machine, repo, tmp_path)
+    code, report = _migrate(capsys, repo=repo)
+    assert code == 0, report
+    retained = mth.retained_legacy_links(_state_dir(machine))
+    toolkit = {legacy[n] for n in ("tool", "stale", "dang", "rel", "icons")}
+    assert retained == toolkit
+    keep = machine / ".claude" / "scripts" / "keep.py"
+    assert keep not in retained
+
+    code, report = _finalize(capsys, report["migration_id"], repo=repo)
+    assert code == 0, report
+    for dest in toolkit:
+        assert not os.path.lexists(dest), dest
+    assert legacy["gated"].is_symlink()
+    assert legacy["foreign"].is_symlink()
+    assert keep.is_symlink()
+    assert (machine / ".claude" / "scripts" / "other.py").read_text() == "a real file\n"
+    dests = {e.get("dest") for e in _history(machine)}
+    assert not dests & {str(d) for d in toolkit}
+
+
+def test_finalize_leaves_a_repointed_retained_link_and_its_other_history(
+    machine, capsys, validation, tmp_path
+):
+    repo = _toolkit_repo(tmp_path)
+    legacy = _legacy_links(machine, repo, tmp_path)
+    code, report = _migrate(capsys, repo=repo)
+    assert code == 0, report
+    tool = legacy["tool"]
+    journaled = str(repo / "agent-scripts" / "tool.py")
+    elsewhere = tmp_path / "elsewhere.py"
+    tool.unlink()
+    tool.symlink_to(elsewhere)
+    real = legacy["rel"]
+    real.unlink()
+    real.write_text("replaced by hand\n")
+    history = _state_dir(machine) / "history.jsonl"
+    with history.open("a") as fh:
+        for src in (journaled, str(elsewhere)):
+            fh.write(json.dumps({"kind": "symlink-created", "dest": str(tool), "src": src}) + "\n")
+
+    code, report = _finalize(capsys, report["migration_id"], repo=repo)
+    assert code == 0, report
+    assert os.readlink(tool) == str(elsewhere)
+    assert real.read_text() == "replaced by hand\n"
+    kept = [(e["dest"], e["src"]) for e in _history(machine) if e.get("dest") == str(tool)]
+    assert kept == [(str(tool), str(elsewhere))]
+
+
+def _check_ctx(repo: Path) -> install.Context:
+    return install.build_context(
+        install.parse_args(["--check-links", "--harness=claude"]), repo_root=repo
+    )
+
+
+def _recorded_legacy_link(home: Path, repo: Path) -> Path:
+    """A manifest-recorded legacy link the fixture repo no longer produces."""
+    old = home / ".claude" / "scripts" / "tool.py"
+    old.symlink_to(repo / "scripts" / "tool.py")
+    history = _state_dir(home) / "history.jsonl"
+    history.parent.mkdir(parents=True, exist_ok=True)
+    history.write_text(
+        json.dumps(
+            {"kind": "symlink-created", "dest": str(old), "src": str(repo / "scripts" / "tool.py")}
+        )
+        + "\n"
+    )
+    return old
+
+
+def test_migration_validation_passes_check_links_with_retained_links(
+    machine, capsys, monkeypatch, tmp_path
+):
+    """The real check-links, run where validation runs, sees the links journal."""
+    repo = _fixture_repo(tmp_path)
+    _recorded_legacy_link(machine, repo)
+    outputs: list[str] = []
+
+    def in_process_check(_ctx: object) -> tuple[bool, list[dict[str, object]]]:
+        code = install.do_check_links(_check_ctx(repo))
+        outputs.append(capsys.readouterr().out)
+        return code == 0, [{"command": ["check-links"], "exit": code}]
+
+    monkeypatch.setattr(mth, "_run_validation", in_process_check)
+    code, report = _migrate(capsys, repo=repo)
+    assert code == 0, (report, outputs)
+    assert "1 legacy link(s) kept by an unfinalized toolkit-home migration" in outputs[0]
+
+
+def test_check_links_notes_nothing_for_a_retained_link_that_is_no_orphan(
+    machine, capsys, validation, tmp_path
+):
+    """Mapping-retained links the manifest never recorded are no finding at all."""
+    repo = _toolkit_repo(tmp_path)
+    _legacy_links(machine, repo, tmp_path)
+    code, report = _migrate(capsys, repo=repo)
+    assert code == 0, report
+    assert mth.retained_legacy_links(_state_dir(machine))
+    install.do_check_links(_check_ctx(repo))
+    out = capsys.readouterr().out
+    assert "orphaned" not in out, out
+    assert "legacy link(s) kept" not in out, out
+
+
+def test_check_links_fails_loud_when_a_migration_journal_is_unreadable(
+    machine, capsys, validation, tmp_path
+):
+    repo = _fixture_repo(tmp_path)
+    old = _recorded_legacy_link(machine, repo)
+    code, report = _migrate(capsys, repo=repo)
+    assert code == 0, report
+    journal = _jdir(machine, report["migration_id"]) / mth.JOURNAL_NAME
+    journal.chmod(0)
+    try:
+        ctx = _check_ctx(repo)
+        assert install.do_check_links(ctx) == 1
+        out = capsys.readouterr()
+        assert "journal" in (out.out + out.err) and "unreadable" in (out.out + out.err)
+        links = install.gather_links(ctx, link_inspect.load_links(repo / "links.toml"))
+        assert install._find_orphaned_links(ctx, links) == []
+        assert old.is_symlink()
+    finally:
+        journal.chmod(0o600)
+
+
+def test_restored_and_rolled_back_migrations_retain_nothing(
+    machine, capsys, validation, tmp_path
+):
+    repo = _fixture_repo(tmp_path)
+    old = _recorded_legacy_link(machine, repo)
+    validation.passes = False
+    code, report = _migrate(capsys, repo=repo)
+    assert code != 0, report
+    assert mth.retained_legacy_links(_state_dir(machine)) == set()
+
+    validation.passes = True
+    code, report = _migrate(capsys, repo=repo)
+    assert code == 0, report
+    assert mth.retained_legacy_links(_state_dir(machine)) == {old}
+    code, _ = _rollback(capsys, report["migration_id"], repo=repo)
+    assert code == 0
+    assert mth.retained_legacy_links(_state_dir(machine)) == set()
+
+
 # ── step registry ───────────────────────────────────────────────────────────
 
 
