@@ -482,7 +482,8 @@ used for backlog capture.
   checkout. On a machine where `install.py` has run, a pre-tool guard
   enforces it: every harness refuses a write into a repo's main checkout
   while a backlog item for that repo is in progress, and warns when a
-  worktree's base is behind `origin/main`. Only the user can switch it off,
+  worktree's base is behind `origin/main` (or `origin/<integration_branch>`
+  for an item that declares one). Only the user can switch it off,
   by setting `GUARD_RAILS_OFF=1` in the environment the harness is launched
   from — an agent's own `export` never reaches the hook. Elsewhere, this
   rule is on you.

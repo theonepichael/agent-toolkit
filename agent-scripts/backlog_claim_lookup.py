@@ -143,6 +143,8 @@ class BacklogClaimLookup(Protocol):
 
     def claim_info(self, slug: str) -> ClaimInfo | None: ...
 
+    def get_item(self, slug: str) -> BacklogItem | None: ...
+
 
 class LocalClaimLookup:
     """Read-only snapshot view over the backlog store: the one item-reading
@@ -207,6 +209,14 @@ class LocalClaimLookup:
         if prefix is not None:
             items = [i for i in items if str(i.get("id", "")).startswith(prefix)]
         return items
+
+    def get_item(self, slug: str) -> dict | None:
+        """One item of any status by slug, from the snapshot; None on a miss
+        or an unreadable store."""
+        for item in self._items():
+            if item.get("id") == slug:
+                return item
+        return None
 
     def claim_info(self, slug: str) -> ClaimInfo | None:
         """The pointed item's claim, from the snapshot."""
