@@ -29,6 +29,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -39,6 +40,7 @@ import test_bootstrap  # noqa: E402
 import dev_status  # noqa: E402  (path insert above)
 import dev_status_mutation
 import dev_status_storage
+import worktree_provenance
 
 
 def make_item(
@@ -993,36 +995,58 @@ class MutationServiceTestCase(MutationFixture):
         res_app = dev_status_mutation.approve_item("item-rev")
         self.assertEqual(res_app.status, "done")
 
-    @patch.object(
-        dev_status_mutation,
-        "_completion_merge_notice",
-        return_value="[item-guard] completion recorded but its worktree HEAD is not confirmed merged",
-    )
-    def test_done_records_unmerged_worktree_notice(self, _notice: MagicMock):
-        self.write_items([make_item("item-guard", status="in-progress")])
+    def test_done_refuses_unmerged_worktree_and_journals_no_notice(self):
+        """The retired post-success notice must not fire for a refused done."""
+        self.write_items(
+            [
+                make_item(
+                    "item-guard",
+                    status="in-progress",
+                    related_files=[{"path": "/repo/f.py", "note": ""}],
+                )
+            ]
+        )
 
-        result = dev_status_mutation.done_item("item-guard")
+        with patch.object(
+            worktree_provenance,
+            "inspect_item_worktrees",
+            return_value=[
+                worktree_provenance.WorktreeInspection(
+                    target="/repo-wt",
+                    source="worktree",
+                    dirty=True,
+                    dirty_sample=" M f.py",
+                )
+            ],
+        ):
+            with self.assertRaises(dev_status_mutation.InvalidItemStateError):
+                dev_status_mutation.done_item("item-guard")
 
-        self.assertEqual(result.status, "done")
-        self.assertEqual(len(result.notices), 1)
-        journal = self.journal_lines()
-        self.assertEqual(journal[-1]["cmd"], "unmerged-completion")
-        self.assertTrue(journal[-1]["diagnostic"])
+        self.assertEqual(self.journal_lines(), [])
 
-    @patch.object(
-        dev_status_mutation,
-        "_completion_merge_notice",
-        return_value="[item-guard] completion recorded but its worktree HEAD is not confirmed merged",
-    )
-    def test_approve_records_unmerged_worktree_notice(self, _notice: MagicMock):
+    def test_approve_refuses_unmerged_worktree_and_journals_no_notice(self):
         self.write_items([make_item("item-guard", status="in-progress")])
         dev_status_mutation.review_item("item-guard")
 
-        result = dev_status_mutation.approve_item("item-guard")
+        with patch.object(
+            worktree_provenance,
+            "inspect_item_worktrees",
+            return_value=[
+                worktree_provenance.WorktreeInspection(
+                    target="/repo-wt",
+                    source="worktree",
+                    dirty=False,
+                    head_ancestor_of_default=False,
+                    default_ref="refs/heads/main",
+                )
+            ],
+        ):
+            with self.assertRaises(dev_status_mutation.InvalidItemStateError):
+                dev_status_mutation.approve_item("item-guard")
 
-        self.assertEqual(result.status, "done")
-        self.assertEqual(len(result.notices), 1)
-        self.assertEqual(self.journal_lines()[-1]["cmd"], "unmerged-completion")
+        self.assertEqual(
+            [e["cmd"] for e in self.journal_lines()], ["review"]
+        )
 
     def test_reject_item_success(self):
         self.write_items([make_item("item-rej", status="in-progress")])
@@ -1542,47 +1566,212 @@ class CrashSafetyTestCase(MutationFixture):
 
         self.assertEqual(calls, ["bump", "save", "journal"])
 
-    def test_completion_merge_notice_emits_for_unmerged_worktree(self):
-        import worktree_provenance
+class CommittedWorkGuardTestCase(MutationFixture):
+    """review/approve/done refuse when the item's identifiable local work is
+    uncommitted or unmerged. The inspector is mocked at the subprocess
+    boundary here — this class owns the policy, validation precedence,
+    atomicity, and lock-order contracts; real-git inspection behavior lives
+    in test_worktree_provenance.py."""
 
-        prov = worktree_provenance.WorktreeProvenance(
-            git_dir=Path("/repo/.git/worktrees/proj-slug"),
-            toplevel=Path("/repo-slug"),
-            branch="slug",
-            marker_slug="slug",
-            is_linked_worktree=True,
+    DIRTY = [
+        worktree_provenance.WorktreeInspection(
+            target="/repo-wt",
+            source="worktree",
+            dirty=True,
+            dirty_sample=" M f.py",
+        )
+    ]
+    UNMERGED = [
+        worktree_provenance.WorktreeInspection(
+            target="/repo-wt",
+            source="worktree",
+            dirty=False,
+            head_ancestor_of_default=False,
+            default_ref="refs/heads/main",
+        )
+    ]
+    CLEAN = [
+        worktree_provenance.WorktreeInspection(
+            target="/repo-wt",
+            source="worktree",
+            dirty=False,
+            head_ancestor_of_default=True,
+            default_ref="refs/heads/main",
+        )
+    ]
+    PROBLEM = [
+        worktree_provenance.WorktreeInspection(
+            target="/repo-wt",
+            source="worktree",
+            problem="git status failed: index.lock exists",
+        )
+    ]
+
+    def _guard(self, inspections):
+        return patch.object(
+            worktree_provenance,
+            "inspect_item_worktrees",
+            return_value=inspections,
         )
 
-        def mock_subp(cmd, *args, **kwargs):
-            if "symbolic-ref" in cmd:
-                return unittest.mock.Mock(
-                    returncode=0, stdout="refs/remotes/origin/main\n"
+    def _committed_item(self, slug="item-guard"):
+        self.write_items(
+            [
+                make_item(
+                    slug,
+                    status="in-progress",
+                    related_files=[{"path": "/repo/f.py", "note": ""}],
                 )
-            if "merge-base" in cmd:
-                return unittest.mock.Mock(returncode=1, stdout="")
-            return unittest.mock.Mock(returncode=0, stdout="")
+            ]
+        )
+
+    # ── refusal behavior and atomicity ─────────────────────────────────
+
+    def test_done_refusal_names_target_and_escape_hatches(self):
+        self._committed_item()
+        with self._guard(self.DIRTY):
+            with self.assertRaises(dev_status_mutation.InvalidItemStateError) as cm:
+                dev_status_mutation.done_item("item-guard")
+        msg = str(cm.exception.message)
+        self.assertIn("/repo-wt", msg)
+        self.assertIn("uncommitted", msg)
+        self.assertIn(" M f.py", msg)
+        self.assertIn("delete", msg.lower())
+
+    def test_review_refusal_names_unmerged_branch_and_target(self):
+        self._committed_item()
+        with self._guard(self.UNMERGED):
+            with self.assertRaises(dev_status_mutation.InvalidItemStateError) as cm:
+                dev_status_mutation.review_item("item-guard")
+        msg = str(cm.exception.message)
+        self.assertIn("refs/heads/main", msg)
+        self.assertIn("merge", msg.lower())
+
+    def test_approve_refusal_catches_re_dirtied_worktree(self):
+        """Re-dirtying between review and approve is caught on approve."""
+        self._committed_item()
+        with self._guard(self.CLEAN):
+            dev_status_mutation.review_item("item-guard")
+        with self._guard(self.DIRTY):
+            with self.assertRaises(dev_status_mutation.InvalidItemStateError):
+                dev_status_mutation.approve_item("item-guard")
+        stored = self._item_by_id("item-guard")
+        self.assertEqual(stored["status"], "in-review")
+        self.assertIn("review_content_hash", stored)
+
+    def test_inspection_problem_refuses_fail_closed(self):
+        self._committed_item()
+        with self._guard(self.PROBLEM):
+            with self.assertRaises(dev_status_mutation.InvalidItemStateError) as cm:
+                dev_status_mutation.done_item("item-guard")
+        self.assertIn("git status failed", str(cm.exception.message))
+
+    def test_refusal_leaves_store_untouched(self):
+        self._committed_item()
+        rev_before = self.read_rev()
+        with self._guard(self.DIRTY):
+            with self.assertRaises(dev_status_mutation.InvalidItemStateError):
+                dev_status_mutation.done_item("item-guard")
+        self.assertEqual(self.read_rev(), rev_before)
+        self.assertEqual(self._item_by_id("item-guard")["status"], "in-progress")
+        self.assertEqual(self.journal_lines(), [])
+
+    # ── allow paths ────────────────────────────────────────────────────
+
+    def test_clean_merged_work_completes(self):
+        self._committed_item()
+        with self._guard(self.CLEAN):
+            result = dev_status_mutation.done_item("item-guard")
+        self.assertEqual(result.status, "done")
+
+    def test_no_attributable_work_completes(self):
+        self._committed_item()
+        with self._guard([]):
+            result = dev_status_mutation.done_item("item-guard")
+        self.assertEqual(result.status, "done")
+
+    def test_successful_done_journals_no_unmerged_event(self):
+        self._committed_item()
+        with self._guard(self.CLEAN):
+            dev_status_mutation.done_item("item-guard")
+        self.assertNotIn(
+            "unmerged-completion", [e["cmd"] for e in self.journal_lines()]
+        )
+
+    def test_repeat_review_rechecks_work_each_time(self):
+        self._committed_item()
+        with self._guard(self.CLEAN):
+            dev_status_mutation.review_item("item-guard")
+        with self._guard(self.DIRTY):
+            with self.assertRaises(dev_status_mutation.InvalidItemStateError):
+                dev_status_mutation.review_item("item-guard")
+        self.assertEqual(self._item_by_id("item-guard")["status"], "in-review")
+
+    # ── validation precedence: cheap checks before git I/O ─────────────
+
+    def test_status_validation_precedes_inspection(self):
+        self.write_items([make_item("item-order", status="in-progress")])
+        dev_status_mutation.review_item("item-order")
+        inspector = MagicMock(return_value=[])
+        with patch.object(
+            worktree_provenance, "inspect_item_worktrees", inspector
+        ):
+            with self.assertRaises(dev_status_mutation.InvalidItemStateError) as cm:
+                dev_status_mutation.done_item("item-order")
+        self.assertIn("in-review", str(cm.exception.message))
+        inspector.assert_not_called()
+
+    def test_gate_validation_precedes_inspection(self):
+        self._committed_item("item-gate")
+        set_req = dev_status_mutation.GateSetRequest(
+            required=True, criteria=("evidence",)
+        )
+        dev_status_mutation.set_gate("item-gate", set_req)
+        inspector = MagicMock(return_value=[])
+        with patch.object(
+            worktree_provenance, "inspect_item_worktrees", inspector
+        ):
+            with self.assertRaises(dev_status_mutation.GateUnmetError):
+                dev_status_mutation.done_item("item-gate")
+        inspector.assert_not_called()
+
+    def test_missing_item_refuses_without_inspection(self):
+        inspector = MagicMock(return_value=[])
+        with patch.object(
+            worktree_provenance, "inspect_item_worktrees", inspector
+        ):
+            with self.assertRaises(dev_status_mutation.NotFoundError):
+                dev_status_mutation.done_item("missing-slug")
+        inspector.assert_not_called()
+
+    def test_inspection_runs_before_the_storage_lock(self):
+        """Git I/O must never run under the storage lock: the pre-pass
+        inspects before lock acquisition, the locked section only consumes
+        the verdict."""
+        self._committed_item()
+        events = []
+
+        @contextmanager
+        def spy_lock(*args, **kwargs):
+            events.append("lock-enter")
+            yield
+            events.append("lock-exit")
+
+        def spy_inspect(**kwargs):
+            events.append("inspect")
+            return []
 
         with (
-            patch.object(worktree_provenance, "classify", return_value=prov),
-            patch("subprocess.run", side_effect=mock_subp),
+            patch.object(dev_status_storage, "backlog_lock", spy_lock),
+            patch.object(
+                worktree_provenance,
+                "inspect_item_worktrees",
+                side_effect=spy_inspect,
+            ),
         ):
-            notice = dev_status_mutation._completion_merge_notice("slug")
-            self.assertIsNotNone(notice)
-            self.assertIn("not confirmed merged", notice)
+            dev_status_mutation.done_item("item-guard")
 
-    def test_completion_merge_notice_silent_from_foreign_cwd(self):
-        import worktree_provenance
-
-        prov = worktree_provenance.WorktreeProvenance(
-            git_dir=Path("/repo/.git/worktrees/proj-other"),
-            toplevel=Path("/repo-other"),
-            branch="other",
-            marker_slug="other",
-            is_linked_worktree=True,
-        )
-        with patch.object(worktree_provenance, "classify", return_value=prov):
-            notice = dev_status_mutation._completion_merge_notice("slug")
-            self.assertIsNone(notice)
+        self.assertLess(events.index("inspect"), events.index("lock-enter"))
 
 
 if __name__ == "__main__":

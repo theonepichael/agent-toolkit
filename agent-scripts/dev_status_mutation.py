@@ -10,6 +10,17 @@ return structured ``MutationResult`` or ``RunResult`` snapshots.
 Errors are communicated exclusively via typed subclasses of
 ``BacklogMutationError``; the module contains zero ``print`` or ``sys.exit``
 calls.
+
+Lifecycle completion policy (review, approve, direct done): all three
+refuse with ``InvalidItemStateError`` when the item's attributable local
+work is uncommitted or has not reached the repository's local default
+branch — merge ancestry is the contract, not patch equivalence. The
+read-only git inspection runs BEFORE the storage lock (worktree_provenance
+owns it); the locked section only consumes the verdict, after every other
+validation, before the first lifecycle mutation. Planning-only items (no
+related_files) and merged-and-cleaned-up work pass; unattributed local
+work — a main checkout's dirt — is deliberately invisible here
+(guard-rails R2 owns that path), and there is no bypass flag.
 """
 
 from __future__ import annotations
@@ -1173,87 +1184,89 @@ def _repo_root_for_path(path: str) -> Path | None:
         return None
 
 
-def _completion_merge_notice(slug: str) -> str | None:
-    """Return a warning if this item completes from an unmerged worktree.
-
-    The check is deliberately advisory: approve-before-merge remains valid.
-    It only applies when the current Git worktree is attributed to the item
-    via worktree provenance (or the legacy slug-named branch heuristic), so
-    invoking dev_status from another repository cannot create a false
-    warning. Failures and missing default-branch metadata stay silent.
-    """
-    try:
-        prov = worktree_provenance.classify(Path.cwd())
-        if prov is None or prov.toplevel is None:
-            return None
-        if not worktree_provenance.worktree_belongs_to_slug(
-            marker_slug=prov.marker_slug,
-            is_linked_worktree=prov.is_linked_worktree,
-            branch=prov.branch,
-            slug=slug,
-        ):
-            return None
-        root = prov.toplevel
-        default_result = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(root),
-                "symbolic-ref",
-                "--quiet",
-                "refs/remotes/origin/HEAD",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=2,
-            check=False,
-        )
-        default_ref = default_result.stdout.strip()
-        if default_result.returncode != 0 or not default_ref:
-            for candidate in ("main", "master"):
-                exists = subprocess.run(
-                    [
-                        "git",
-                        "-C",
-                        str(root),
-                        "show-ref",
-                        "--verify",
-                        "--quiet",
-                        f"refs/heads/{candidate}",
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=2,
-                    check=False,
-                )
-                if exists.returncode == 0:
-                    default_ref = f"refs/heads/{candidate}"
-                    break
-        if not default_ref:
-            return None
-        merged = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(root),
-                "merge-base",
-                "--is-ancestor",
-                "HEAD",
-                default_ref,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=2,
-            check=False,
-        )
-        if merged.returncode == 1:
-            return (
-                f"[{slug}] completion recorded but its worktree HEAD is not confirmed "
-                f"merged into {default_ref}"
+def _committed_work_refusals(cmd: str, slug: str, item: BacklogItem) -> list[str]:
+    """Refusal lines for the item's attributable local work, from the
+    read-only worktree inspection (worktree_provenance owns the git
+    mechanics and every fail-closed boundary; this is the lifecycle
+    policy). Empty = allow."""
+    inspections = worktree_provenance.inspect_item_worktrees(
+        related_files=item.get("related_files") or [],
+        slug=slug,
+        cwd=Path.cwd(),
+    )
+    refusals: list[str] = []
+    for insp in inspections:
+        if insp.problem is not None:
+            refusals.append(f"{insp.target}: {insp.problem}")
+        elif insp.dirty:
+            refusals.append(f"{insp.target}: uncommitted changes ({insp.dirty_sample})")
+        elif insp.head_ancestor_of_default is False:
+            refusals.append(
+                f"{insp.target}: commits not on {insp.default_ref} — merge the "
+                "branch into the local default branch first"
             )
-    except (OSError, subprocess.SubprocessError, ValueError):
-        return None
-    return None
+    return refusals
+
+
+def _committed_work_message(cmd: str, slug: str, refusals: list[str]) -> str:
+    """One actionable diagnostic: what is unsaved where, plus the two
+    escape hatches (squash-merge cleanup and detached HEAD) so the fix is
+    obvious rather than a dead end."""
+    return (
+        f"[{cmd}] {slug}: refusing — the item's local work is not saved "
+        "(uncommitted or unmerged): "
+        + "; ".join(refusals)
+        + ". Squash- or rebase-merged instead? Delete the stale local branch "
+        "or worktree AFTER a human confirms the content reached the default "
+        "branch. Detached HEAD? Check the item branch back out."
+    )
+
+
+def _prepass_committed_work(
+    cmd: str,
+    slug_or_id: str,
+    paths: Mapping[str, Path | None],
+) -> list[str] | None:
+    """Unlocked advisory pre-pass for review/approve/done: resolve the item
+    and run the read-only git inspection OUTSIDE the storage lock, so
+    bounded subprocess calls never stall a concurrent session's mutation.
+
+    Returns refusal lines (empty list = allow), or None whenever any
+    pre-check cannot pass — the locked section re-runs every validation
+    authoritatively and raises its own typed error with the right
+    precedence, so None only means "don't consult the verdict here".
+    The inspection call itself sits outside every broad except: its
+    failures arrive as ``problem`` entries (deny), and a genuine bug
+    propagates loudly rather than collapsing into an allow."""
+    try:
+        items = dev_status_storage.load_items(paths["items_path"])
+        pending_items = dev_status_storage.load_pending(paths["pending_path"])
+        kind, slug = resolve_id(slug_or_id, items, pending_items)
+        if kind != "backlog":
+            return None
+        item = build_index(items).get(slug)
+        if item is None:
+            return None
+        if cmd == "done":
+            if item.get("status") == "in-review":
+                return None
+        elif cmd == "review":
+            if item.get("status") not in ("in-progress", "in-review"):
+                return None
+        elif cmd == "approve":
+            if item.get("status") != "in-review":
+                return None
+            if item.get("review_content_hash") != _content_hash(item):
+                return None
+        else:  # pragma: no cover — callers pass only the three commands
+            return None
+        if cmd in ("done", "approve") and _gate_block_message(cmd, item):
+            return None
+    except BacklogMutationError:
+        return None  # resolve_id's typed refusal — the locked section raises its own
+    except Exception:
+        return None  # store-read hiccup — the locked section's read decides
+    return _committed_work_refusals(cmd, slug, item)
 
 
 def _derive_run_cwd(item: BacklogItem | None, explicit_cwd: str | None) -> Path:
@@ -1648,6 +1661,7 @@ def done_item(
 ) -> MutationResult:
     """Mark a backlog item done."""
     paths = _storage_bundle(items_path)
+    pre_refusals = _prepass_committed_work("done", slug_or_id, paths)
     with dev_status_storage.backlog_lock(paths["data_dir"], paths["lock_file"]):
         items = dev_status_storage.load_items(paths["items_path"])
         pending_items = dev_status_storage.load_pending(paths["pending_path"])
@@ -1673,6 +1687,11 @@ def done_item(
         if gate_msg:
             raise GateUnmetError(gate_msg)
 
+        if pre_refusals:
+            raise InvalidItemStateError(
+                _committed_work_message("done", slug, pre_refusals)
+            )
+
         old_status = item.get("status")
         _apply_status_transition(item, "done", "completed_at", "done")
         item["status"] = "done"
@@ -1695,21 +1714,6 @@ def done_item(
             verbose=verbose,
         )
 
-        notice = _completion_merge_notice(slug)
-        if notice:
-            _append_journal_event(
-                dev_status_storage.journal_entry(
-                    "unmerged-completion",
-                    "backlog",
-                    new_rev,
-                    slug=slug,
-                    detail=notice,
-                    diagnostic=True,
-                ),
-                journal_file=paths["journal_path"],
-                verbose=verbose,
-            )
-
         return MutationResult(
             cmd="done",
             slug=slug,
@@ -1720,7 +1724,6 @@ def done_item(
             item=item,
             items=items,
             pending_items=pending_items,
-            notices=(notice,) if notice else (),
         )
 
 
@@ -1733,6 +1736,7 @@ def review_item(
 ) -> MutationResult:
     """Submit (or re-submit) an item for review."""
     paths = _storage_bundle(items_path)
+    pre_refusals = _prepass_committed_work("review", slug_or_id, paths)
     with dev_status_storage.backlog_lock(paths["data_dir"], paths["lock_file"]):
         items = dev_status_storage.load_items(paths["items_path"])
         pending_items = dev_status_storage.load_pending(paths["pending_path"])
@@ -1754,6 +1758,11 @@ def review_item(
                 f"[review] {slug} is '{item.get('status')}' -- only an "
                 "in-progress (or already in-review) item can be submitted "
                 "for review."
+            )
+
+        if pre_refusals:
+            raise InvalidItemStateError(
+                _committed_work_message("review", slug, pre_refusals)
             )
 
         old_status = item.get("status")
@@ -1802,6 +1811,7 @@ def approve_item(
 ) -> MutationResult:
     """Accept an in-review item, marking it done."""
     paths = _storage_bundle(items_path)
+    pre_refusals = _prepass_committed_work("approve", slug_or_id, paths)
     with dev_status_storage.backlog_lock(paths["data_dir"], paths["lock_file"]):
         items = dev_status_storage.load_items(paths["items_path"])
         pending_items = dev_status_storage.load_pending(paths["pending_path"])
@@ -1835,6 +1845,11 @@ def approve_item(
         if gate_msg:
             raise GateUnmetError(gate_msg)
 
+        if pre_refusals:
+            raise InvalidItemStateError(
+                _committed_work_message("approve", slug, pre_refusals)
+            )
+
         old_status = item.get("status")
         _apply_status_transition(item, "done", "completed_at", "done")
         item["status"] = "done"
@@ -1857,21 +1872,6 @@ def approve_item(
             verbose=verbose,
         )
 
-        notice = _completion_merge_notice(slug)
-        if notice:
-            _append_journal_event(
-                dev_status_storage.journal_entry(
-                    "unmerged-completion",
-                    "backlog",
-                    new_rev,
-                    slug=slug,
-                    detail=notice,
-                    diagnostic=True,
-                ),
-                journal_file=paths["journal_path"],
-                verbose=verbose,
-            )
-
         return MutationResult(
             cmd="approve",
             slug=slug,
@@ -1882,7 +1882,6 @@ def approve_item(
             item=item,
             items=items,
             pending_items=pending_items,
-            notices=(notice,) if notice else (),
         )
 
 

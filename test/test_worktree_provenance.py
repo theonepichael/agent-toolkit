@@ -123,28 +123,6 @@ class TestWorktreePointsAtItemPredicate:
             in_progress_ids={"item-a"},
         )
 
-    def test_completion_predicate_marker_or_branch(self) -> None:
-        # The notice predicate: per-item advisory, marker OR branch matches,
-        # and it works even though the completing slug is already `done`
-        # (i.e. absent from any in-progress set).
-        assert wp.worktree_belongs_to_slug(
-            marker_slug="item-a", is_linked_worktree=True, branch="renamed",
-            slug="item-a",
-        )
-        assert wp.worktree_belongs_to_slug(
-            marker_slug=None, is_linked_worktree=True, branch="item-a",
-            slug="item-a",
-        )
-        assert not wp.worktree_belongs_to_slug(
-            marker_slug="item-a", is_linked_worktree=True, branch="item-a",
-            slug="item-b",
-        )
-        assert not wp.worktree_belongs_to_slug(
-            marker_slug=None, is_linked_worktree=False, branch="item-a",
-            slug="item-a",
-        )
-
-
 # ── marker read/write on a real linked worktree ────────────────────────────
 
 
@@ -226,59 +204,286 @@ class TestClassify:
         assert wp.classify(str(plain)) is None
 
 
-# ── _completion_merge_notice attribution (was dead code for worktree.py
-#    worktrees: its old pre-filter compared the toplevel DIRNAME to the
-#    slug, but worktree.py names dirs <repo>-<slug>) ────────────────────
+# ── inspect_item_worktrees: the committed-work inspection behind review /
+#    approve / done. Replaces the retired _completion_merge_notice tests
+#    (the notice's marker-OR-branch attribution lives on inside the
+#    inspector); real git in tmp_path, one inspection per scenario. ──────
 
 
-class TestCompletionMergeNoticeAttribution:
-    """The unmerged-completion notice must fire from the item's worktree.
-    It runs AFTER the item is saved done, so the slug is no longer in any
-    in-progress set — the notice predicate is marker-OR-branch by design."""
+class TestInspectItemWorktrees:
+    """Real-git coverage for the committed-work inspector."""
 
-    def _unmerged_worktree(self, tmp_path: Path, slug: str) -> Path:
+    def _unmerged_wt(self, tmp_path: Path, slug: str) -> tuple[Path, Path]:
         repo = _init_repo(tmp_path / f"proj-{slug}")
-        wt = tmp_path / f"proj-{slug}-{slug}"
+        wt = tmp_path / f"proj-{slug}-wt"
         _git("worktree", "add", "-q", str(wt), "-b", slug, cwd=repo)
         (wt / "feature.txt").write_text("work\n")
         _git("add", "feature.txt", cwd=wt)
         _git("commit", "-qm", "unmerged work", cwd=wt)
-        return wt
+        return repo, wt
 
-    def test_notice_fires_for_slug_branch_worktree(self, tmp_path, monkeypatch) -> None:
-        import dev_status_mutation
+    def _merged_wt(self, tmp_path: Path, slug: str) -> tuple[Path, Path]:
+        repo, wt = self._unmerged_wt(tmp_path, slug)
+        _git("merge", "-q", "--no-ff", slug, cwd=repo)
+        return repo, wt
 
-        wt = self._unmerged_worktree(tmp_path, "slug-a")
-        monkeypatch.chdir(wt)
-        msg = dev_status_mutation._completion_merge_notice("slug-a")
-        assert msg is not None and "not confirmed merged" in msg
+    def test_dirty_worktree_refuses_with_sample(self, tmp_path) -> None:
+        repo, wt = self._unmerged_wt(tmp_path, "slug-a")
+        (wt / "extra.txt").write_text("uncommitted\n")
+        out = wp.inspect_item_worktrees(
+            related_files=[str(wt / "extra.txt")], slug="slug-a", cwd=tmp_path
+        )
+        assert len(out) == 1
+        assert out[0].dirty
+        assert "extra.txt" in out[0].dirty_sample
 
-    def test_notice_fires_for_renamed_branch_via_marker(
-        self, tmp_path, monkeypatch
-    ) -> None:
-        import dev_status_mutation
+    def test_untracked_file_counts_as_dirty(self, tmp_path) -> None:
+        repo, wt = self._unmerged_wt(tmp_path, "slug-b")
+        (wt / "new.txt").write_text("untracked\n")
+        out = wp.inspect_item_worktrees(
+            related_files=[str(repo / "tracked.txt")], slug="slug-b", cwd=tmp_path
+        )
+        assert len(out) == 1 and out[0].dirty
 
-        wt = self._unmerged_worktree(tmp_path, "slug-b")
+    def test_ignored_build_output_stays_clean(self, tmp_path) -> None:
+        repo, wt = self._merged_wt(tmp_path, "slug-c")
+        (wt / ".gitignore").write_text("build/\n")
+        _git("add", ".gitignore", cwd=wt)
+        _git("commit", "-qm", "ignore build", cwd=wt)
+        _git("merge", "-q", "--no-ff", "slug-c", cwd=repo)
+        (wt / "build").mkdir()
+        (wt / "build" / "out.bin").write_bytes(b"\x00\x01")
+        out = wp.inspect_item_worktrees(
+            related_files=[str(repo / "tracked.txt")], slug="slug-c", cwd=tmp_path
+        )
+        assert len(out) == 1 and not out[0].dirty
+
+    def test_clean_unmerged_branch_refuses_with_target(self, tmp_path) -> None:
+        repo, wt = self._unmerged_wt(tmp_path, "slug-d")
+        out = wp.inspect_item_worktrees(
+            related_files=[str(repo / "tracked.txt")], slug="slug-d", cwd=tmp_path
+        )
+        assert len(out) == 1
+        assert not out[0].dirty
+        assert out[0].head_ancestor_of_default is False
+        assert out[0].default_ref == "refs/heads/main"
+
+    def test_merged_worktree_passes_without_push(self, tmp_path) -> None:
+        repo, wt = self._merged_wt(tmp_path, "slug-e")
+        out = wp.inspect_item_worktrees(
+            related_files=[str(repo / "tracked.txt")], slug="slug-e", cwd=tmp_path
+        )
+        assert len(out) == 1
+        assert not out[0].dirty
+        assert out[0].head_ancestor_of_default is True
+
+    def test_marker_attribution_survives_branch_rename(self, tmp_path) -> None:
+        repo, wt = self._unmerged_wt(tmp_path, "slug-f")
         _git("branch", "-m", "renamed-away", cwd=wt)
-        assert wp.write_marker(wt, "slug-b") is True
-        monkeypatch.chdir(wt)
-        msg = dev_status_mutation._completion_merge_notice("slug-b")
-        assert msg is not None and "not confirmed merged" in msg
+        assert wp.write_marker(wt, "slug-f") is True
+        out = wp.inspect_item_worktrees(
+            related_files=[str(repo / "tracked.txt")], slug="slug-f", cwd=tmp_path
+        )
+        assert len(out) == 1
+        assert out[0].head_ancestor_of_default is False
 
-    def test_notice_silent_for_foreign_worktree(self, tmp_path, monkeypatch) -> None:
-        """A different repo's checkout must not trigger the notice for an
-        unrelated slug (the old root.name check's one true property)."""
-        import dev_status_mutation
+    def test_foreign_marker_wins_over_slug_branch(self, tmp_path) -> None:
+        repo, wt = self._unmerged_wt(tmp_path, "slug-g")
+        assert wp.write_marker(wt, "another-item") is True
+        out = wp.inspect_item_worktrees(
+            related_files=[str(repo / "tracked.txt")], slug="slug-g", cwd=tmp_path
+        )
+        assert out == []
 
-        wt = self._unmerged_worktree(tmp_path, "slug-c")
-        monkeypatch.chdir(wt)
-        assert dev_status_mutation._completion_merge_notice("other-item") is None
+    def test_invalid_marker_refuses_fail_closed(self, tmp_path) -> None:
+        repo, wt = self._unmerged_wt(tmp_path, "slug-h")
+        prov = wp.classify(wt)
+        assert prov is not None and prov.git_dir is not None
+        (prov.git_dir / "devstatus_item").write_text("slug-h\nother\n")
+        out = wp.inspect_item_worktrees(
+            related_files=[str(repo / "tracked.txt")], slug="slug-h", cwd=tmp_path
+        )
+        assert out
+        assert any(i.problem is not None and "marker" in i.problem.lower() for i in out)
 
-    def test_notice_none_outside_any_repo(self, tmp_path, monkeypatch) -> None:
-        import dev_status_mutation
+    def test_detached_head_refuses_when_marker_attributed(self, tmp_path) -> None:
+        repo, wt = self._merged_wt(tmp_path, "slug-h2")
+        assert wp.write_marker(wt, "slug-h2") is True
+        _git("checkout", "--detach", "HEAD", cwd=wt)
+        out = wp.inspect_item_worktrees(
+            related_files=[str(repo / "tracked.txt")], slug="slug-h2", cwd=tmp_path
+        )
+        assert len(out) == 1 and out[0].problem is not None
+        assert "detached" in out[0].problem.lower()
 
-        plain = tmp_path / "bare-dir"
+    def test_removed_worktree_unmerged_slug_branch_refuses(self, tmp_path) -> None:
+        repo, wt = self._unmerged_wt(tmp_path, "slug-i")
+        _git("worktree", "remove", str(wt), cwd=repo)
+        out = wp.inspect_item_worktrees(
+            related_files=[str(repo / "tracked.txt")], slug="slug-i", cwd=tmp_path
+        )
+        assert len(out) == 1
+        assert out[0].source == "branch"
+        assert out[0].head_ancestor_of_default is False
+
+    def test_removed_worktree_merged_slug_branch_allows(self, tmp_path) -> None:
+        repo, wt = self._merged_wt(tmp_path, "slug-j")
+        _git("worktree", "remove", str(wt), cwd=repo)
+        out = wp.inspect_item_worktrees(
+            related_files=[str(repo / "tracked.txt")], slug="slug-j", cwd=tmp_path
+        )
+        assert out == []
+
+    def test_no_worktree_no_branch_allows(self, tmp_path) -> None:
+        repo = _init_repo(tmp_path / "proj-k")
+        out = wp.inspect_item_worktrees(
+            related_files=[str(repo / "tracked.txt")], slug="slug-k", cwd=tmp_path
+        )
+        assert out == []
+
+    def test_main_checkout_dirtiness_is_not_this_check(self, tmp_path) -> None:
+        """Uncommitted work sitting directly in a main checkout is the
+        documented accepted gap (guard-rails R2 owns the in-session path);
+        this inspector only sees attributed worktrees and slug branches."""
+        repo = _init_repo(tmp_path / "proj-l")
+        (repo / "tracked.txt").write_text("dirty\n")
+        out = wp.inspect_item_worktrees(
+            related_files=[str(repo / "tracked.txt")], slug="slug-l", cwd=tmp_path
+        )
+        assert out == []
+
+    def test_deleted_file_resolves_through_ancestor(self, tmp_path) -> None:
+        repo, wt = self._unmerged_wt(tmp_path, "slug-m")
+        out = wp.inspect_item_worktrees(
+            related_files=[str(wt / "gone" / "deleted.py")],
+            slug="slug-m",
+            cwd=tmp_path,
+        )
+        assert len(out) == 1 and out[0].head_ancestor_of_default is False
+
+    def test_path_outside_any_repo_is_not_an_error(self, tmp_path) -> None:
+        plain = tmp_path / "plain"
         plain.mkdir()
-        monkeypatch.chdir(plain)
-        assert dev_status_mutation._completion_merge_notice("anything") is None
+        (plain / "notes.txt").write_text("x\n")
+        out = wp.inspect_item_worktrees(
+            related_files=[str(plain / "notes.txt")], slug="slug-n", cwd=tmp_path
+        )
+        assert out == []
+
+    def test_relative_related_file_refuses_fail_closed(self, tmp_path) -> None:
+        repo, wt = self._unmerged_wt(tmp_path, "slug-o")
+        out = wp.inspect_item_worktrees(
+            related_files=["feature.txt"], slug="slug-o", cwd=tmp_path
+        )
+        assert len(out) == 1 and out[0].problem is not None
+
+    def test_spaces_in_paths_survive(self, tmp_path) -> None:
+        repo = _init_repo(tmp_path / "proj-p")
+        wt = tmp_path / "proj-p wt dir"
+        _git("worktree", "add", "-q", str(wt), "-b", "slug-p", cwd=repo)
+        (wt / "feature.txt").write_text("work\n")
+        _git("add", "feature.txt", cwd=wt)
+        _git("commit", "-qm", "unmerged work", cwd=wt)
+        out = wp.inspect_item_worktrees(
+            related_files=[str(repo / "tracked.txt")], slug="slug-p", cwd=tmp_path
+        )
+        assert len(out) == 1 and out[0].head_ancestor_of_default is False
+        assert "wt dir" in out[0].target
+
+    def test_submodule_path_is_skipped(self, tmp_path) -> None:
+        """A submodule's pinned detached HEAD is normal state, never
+        evidence of unmerged item work."""
+        repo, wt = self._merged_wt(tmp_path, "slug-q")
+        sub = _init_repo(tmp_path / "proj-q-sub")
+        _git("-c", "protocol.file.allow=always", "submodule", "add", "-q", str(sub), "sub", cwd=wt)
+        _git("commit", "-qm", "add submodule", cwd=wt)
+        _git("merge", "-q", "--no-ff", "slug-q", cwd=repo)
+        out = wp.inspect_item_worktrees(
+            related_files=[str(repo / "tracked.txt"), str(wt / "sub" / "tracked.txt")],
+            slug="slug-q",
+            cwd=tmp_path,
+        )
+        # The super worktree passes; the submodule path contributes nothing
+        # (its pinned detached HEAD is normal state, its checkout is the
+        # sub-repo's main worktree).
+        assert len(out) == 1
+        assert out[0].problem is None
+        assert out[0].head_ancestor_of_default is True
+
+    def test_multiple_repos_all_inspected(self, tmp_path) -> None:
+        repo1, wt1 = self._unmerged_wt(tmp_path, "slug-r")
+        repo2 = _init_repo(tmp_path / "proj-r2")
+        wt2 = tmp_path / "proj-r2-wt"
+        _git("worktree", "add", "-q", str(wt2), "-b", "slug-r", cwd=repo2)
+        out = wp.inspect_item_worktrees(
+            related_files=[str(repo1 / "tracked.txt"), str(repo2 / "tracked.txt")],
+            slug="slug-r",
+            cwd=tmp_path,
+        )
+        assert len(out) == 2
+        bad = [i for i in out if i.dirty or i.head_ancestor_of_default is False]
+        assert len(bad) == 1 and "proj-slug-r-wt" in bad[0].target
+
+    def test_caller_cwd_on_slug_branch_is_inspected(self, tmp_path, monkeypatch) -> None:
+        repo, wt = self._unmerged_wt(tmp_path, "slug-s")
+        monkeypatch.chdir(wt)
+        out = wp.inspect_item_worktrees(
+            related_files=[], slug="slug-s", cwd=Path.cwd()
+        )
+        assert len(out) == 1
+        assert out[0].head_ancestor_of_default is False
+
+
+class TestInspectFailurePaths:
+    """Inspection failures deny; they never collapse into absence."""
+
+    def _repo_with_wt(self, tmp_path: Path, slug: str) -> tuple[Path, Path]:
+        repo = _init_repo(tmp_path / f"proj-{slug}")
+        wt = tmp_path / f"proj-{slug}-wt"
+        _git("worktree", "add", "-q", str(wt), "-b", slug, cwd=repo)
+        return repo, wt
+
+    def test_git_status_failure_is_a_problem(self, tmp_path, monkeypatch) -> None:
+        repo, wt = self._repo_with_wt(tmp_path, "slug-t")
+
+        def boom(*args, **kwargs):
+            raise subprocess.TimeoutExpired(cmd="git", timeout=2)
+
+        monkeypatch.setattr(wp.subprocess, "run", boom)
+        out = wp.inspect_item_worktrees(
+            related_files=[str(repo / "tracked.txt")], slug="slug-t", cwd=tmp_path
+        )
+        assert len(out) == 1 and out[0].problem is not None
+
+    def test_malformed_worktree_record_is_a_problem(self, tmp_path, monkeypatch) -> None:
+        repo, wt = self._repo_with_wt(tmp_path, "slug-u")
+        real_run = wp.subprocess.run
+
+        def fake_run(cmd, *args, **kwargs):
+            if "worktree" in cmd and "list" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, "bogus\0", "")
+            return real_run(cmd, *args, **kwargs)
+
+        monkeypatch.setattr(wp.subprocess, "run", fake_run)
+        out = wp.inspect_item_worktrees(
+            related_files=[str(repo / "tracked.txt")], slug="slug-u", cwd=tmp_path
+        )
+        assert out and all(i.problem is not None for i in out)
+
+    def test_show_ref_failure_is_not_branch_absence(self, tmp_path, monkeypatch) -> None:
+        repo, wt = self._repo_with_wt(tmp_path, "slug-v")
+        _git("worktree", "remove", str(wt), cwd=repo)
+
+        real_run = wp.subprocess.run
+
+        def fake_run(cmd, *args, **kwargs):
+            if "show-ref" in cmd:
+                return subprocess.CompletedProcess(cmd, 2, "", "fatal: corrupt")
+            return real_run(cmd, *args, **kwargs)
+
+        monkeypatch.setattr(wp.subprocess, "run", fake_run)
+        out = wp.inspect_item_worktrees(
+            related_files=[str(repo / "tracked.txt")], slug="slug-v", cwd=tmp_path
+        )
+        assert len(out) == 1 and out[0].problem is not None
 

@@ -213,7 +213,15 @@ orphaned directory directly (`rm -rf <worktree-path>`) and retry
 ## 12. Close
 Call the tool with `action: "review", slug: "<resolved slug>"`, then
 `action: "approve", slug: "<resolved slug>"` — never a bare `done` on an
-in-review item. If `approve` refuses citing an unmet gate, actually check
+in-review item. The lifecycle order is commit → local merge → review →
+approve → done: `review`, `approve` and `done` all refuse with a typed
+error while the item's attributable local work is uncommitted or not yet
+merged into the repo's local default branch (merge ancestry is the
+contract — a squash/rebase merge clears the check only by deleting the
+stale local branch or worktree, after a human confirms the content
+actually reached the default branch; planning-only items with no
+attributable local work pass). If `approve` refuses citing an unmet gate,
+actually check
 each criterion from `show`'s record against the diff — don't pass it
 reflexively — then cover every criterion with evidence (`action: "run"`
 executes and records a command; `action: "gate_pass"` takes a `patch`
