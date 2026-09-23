@@ -97,7 +97,7 @@ Single source of truth for toolkit data paths.
   - `check_not_stale(path: Path) -> None` — Refuse a path from the non-current layout using :data:`DEFAULT_RESOLVER`.
   - `current_layout() -> Layout` — Return the current layout using :data:`DEFAULT_RESOLVER`.
   - `write_pointer(home: Path, layout: Layout) -> None` — Atomically write the layout pointer under ``home``.
-- Tested by: `agent-scripts/test_layouts.py`, `test/test_agent_toolkit_paths.py`, `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_dev_status_storage.py`, `test/test_gen_interfaces.py`, `test/test_grill.py`, `test/test_guard_rails.py`, `test/test_llm_backends.py`, `test/test_machine_id.py`, `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`, `test/test_second_opinion.py`, `test/test_to_tickets_runner.py`
+- Tested by: `agent-scripts/test_layouts.py`, `test/test_agent_toolkit_paths.py`, `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_dev_status_storage.py`, `test/test_gen_interfaces.py`, `test/test_grill.py`, `test/test_guard_rails.py`, `test/test_llm_backends.py`, `test/test_machine_id.py`, `test/test_migrate_toolkit_home.py`, `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`, `test/test_second_opinion.py`, `test/test_to_tickets_runner.py`
 
 ### `agent-scripts/analyze_sessions.py`
 
@@ -604,7 +604,7 @@ gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources.
   - `render_cli(module: ModuleInterface, lines: list[str]) -> None` — Append the CLI section for one module.
   - `render_notes(argument: CliArgument) -> str` — Render an argument's help text and parenthesised extras, if any.
   - `render_module(module: ModuleInterface) -> list[str]` — Render one module's full section.
-  - `render_command_matrix(repo_root: Path, links: LinkTable) -> list[str]` — Render the per-harness skill/command parity matrix from frontmatter.
+  - `render_command_matrix(repo_root: Path, links: LinkTable) -> list[str]` — Render the per-harness workflow-availability matrix.
   - `is_generated_artifact(relpath: str) -> bool` — Report whether a path is build output or a dotfile rather than a source.
   - `tracked_files(repo_root: Path) -> set[str] | None` — Return every git-tracked path under ``repo_root``, or None if unavailable.
   - `render_assets(repo_root: Path, links: LinkTable, tracked: set[str] | None = None) -> list[str]` — Render the non-Python, non-skill harness assets and where they install.
@@ -1092,10 +1092,10 @@ Machine-wide migration lock: writers share it, the toolkit-home migrator owns it
   - `note_store_lock_acquired() -> None`
   - `note_store_lock_released() -> None`
   - `shared(site: str, *, quiet: bool = False) -> Iterator[None]` — Admit one writer scope for ``site``; see the module docstring.
-  - `exclusive(site: str) -> Iterator[None]` — Hold the lock exclusively (the migrator).
+  - `exclusive(site: str, *, blocking: bool = True) -> Iterator[None]` — Hold the lock exclusively (the migrator).
   - `build_parser() -> argparse.ArgumentParser`
 - Subcommand handlers: `cmd_status`, `cmd_hold`, `cmd_observations`
-- Tested by: `test/test_dev_status_validate.py`, `test/test_guard_rails_claim.py`, `test/test_migration_lock.py`, `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`
+- Tested by: `test/test_dev_status_validate.py`, `test/test_guard_rails_claim.py`, `test/test_migrate_toolkit_home.py`, `test/test_migration_lock.py`, `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`
 
 ### `agent-scripts/notify.py`
 
@@ -1586,68 +1586,81 @@ Per-worktree backlog provenance: one explicit marker, shared predicates.
 
 ## 2. Skill and command surface
 
-Each harness gets a port of the same skill surface. Presence below is
-the file existing in the repo; the description is the canonical
-`claude/commands/` frontmatter.
+Workflow availability by harness. Each row is a workflow this repository
+ships; the shared workflows are generated from `templates/*.tmpl` by
+`gen_skills.py` (and `gen_second_opinion.py` for `/second-opinion`), so their
+`claude/commands/` copies are rendered ports rather than the canonical
+source. Presence below is the file existing in the repo; the description is
+the workflow's template plus its generator's capability/parameter tables.
 
-| Skill | claude | copilot | opencode | agy | pi | codex |
-| --- | --- | --- | --- | --- | --- | --- |
-| `/analyze-sessions` | yes | yes | yes | yes | yes | — |
-| `/backlog-item` | yes | yes | yes | yes | yes | yes |
-| `/dashboard` | yes | yes | yes | yes | yes | yes |
-| `/draft-voice` | yes | — | — | — | — | — |
-| `/grill-me` | yes | yes | yes | yes | yes | yes |
-| `/make-skill` | yes | yes | yes | yes | yes | yes |
-| `/recap` | yes | yes | yes | yes | yes | yes |
-| `/refresh-guidance` | yes | yes | yes | yes | yes | yes |
-| `/second-opinion` | yes | yes | yes | yes | yes | yes |
-| `/skill-map` | yes | — | — | — | — | — |
-| `/spec` | yes | yes | yes | yes | yes | yes |
-| `/standup` | yes | yes | yes | yes | yes | yes |
-| `/swarm` | yes | yes | — | — | — | — |
-| `/to-tickets` | yes | yes | yes | yes | yes | yes |
+| Workflow | Origin | claude | copilot | opencode | agy | pi | codex |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `/analyze-sessions` | hand-authored | yes | yes | yes | yes | yes | — |
+| `/backlog-item` | template | yes | yes | yes | yes | yes | yes |
+| `/dashboard` | template | yes | yes | yes | yes | yes | yes |
+| `/draft-voice` | hand-authored | yes | — | — | — | — | — |
+| `/grill-me` | template | yes | yes | yes | yes | yes | yes |
+| `/make-skill` | template | yes | yes | yes | yes | yes | yes |
+| `/recap` | template | yes | yes | yes | yes | yes | yes |
+| `/refresh-guidance` | hand-authored | yes | yes | yes | yes | yes | yes |
+| `/second-opinion` | template | yes | yes | yes | yes | yes | yes |
+| `/skill-map` | hand-authored | yes | — | — | — | — | — |
+| `/spec` | template | yes | yes | yes | yes | yes | yes |
+| `/standup` | template | yes | yes | yes | yes | yes | yes |
+| `/swarm` | template | yes | yes | — | — | — | — |
+| `/to-tickets` | template | yes | yes | yes | yes | yes | yes |
 
 - **`/analyze-sessions`** — Analyze coding-agent sessions across pi, Claude Code, opencode, Copilot CLI, and agy: calculate token/USD cost rollups, list user prompts, or search message transcripts. Use when the user asks about session costs, token usage, previous prompts, or wants to search past coding session transcripts across harnesses.
-  - Source: `claude/commands/analyze-sessions.md`
+  - Source: `claude/commands/analyze-sessions.md` (hand-authored)
   - Installed at: `~/.claude/commands/analyze-sessions.md` (claude)
 - **`/backlog-item`** — Runs a dev_status.py backlog item end-to-end: resolve, worktree, spec (escalating to grill-me only for a genuinely open design branch), second-opinion critique, execution handoff, TDD implement, verify, commit/merge/push gates, review+approve. Use when the user says 'work on backlog item 4', 'pick up <slug>', 'let's do the next backlog item', or otherwise names a specific item to work end-to-end. Add --auto (optionally with a slug) for an unattended single-item or full-READY-batch run — commit and merge/push gates still stop live, per item.
-  - Source: `claude/commands/backlog-item.md`
+  - Generated from: `templates/backlog_item.md.tmpl` by `gen_skills.py`
+  - `claude/commands/{name}.md` is the rendered Claude Code port — edit the template or generator, then regenerate.
   - Installed at: `~/.claude/commands/backlog-item.md` (claude)
 - **`/dashboard`** — surfaces backlog and pending items as a dashboard. use when the user says 'dashboard', 'what's pending', 'show backlog', 'where we at', 'what am i working on', 'open items', or any variant of checking current work status. Renamed from /status to avoid colliding with Claude Code's built-in /status (plan usage/rate-limit view) — a naming collision with a built-in command can silently break custom command loading. (session start is covered by a SessionStart hook — do not run this again unprompted.)
-  - Source: `claude/commands/dashboard.md`
+  - Generated from: `templates/dashboard.md.tmpl` by `gen_skills.py`
+  - `claude/commands/{name}.md` is the rendered Claude Code port — edit the template or generator, then regenerate.
   - Installed at: `~/.claude/commands/dashboard.md` (claude)
 - **`/draft-voice`** — Apply the user's own voice and formatting rules when drafting an outgoing informal peer message on their behalf — a Teams reply, a Slack-style ping, a PR comment to a teammate. Use when asked to 'draft a reply', 'write a Teams message', 'draft a Slack message to my teammate', 'write a PR comment', 'respond to this PR comment', 'draft a message to my coworker', or similar. Do not use for formal drafts (email to a director, a written PR description, a public README) — ask before applying these rules there.
-  - Source: `claude/commands/draft-voice.md`
+  - Source: `claude/commands/draft-voice.md` (hand-authored)
   - Installed at: `~/.claude/commands/draft-voice.md` (claude)
 - **`/grill-me`** — Interview the user relentlessly about a plan or design until reaching shared understanding, resolving each branch of the decision tree. Use when user wants to stress-test a plan, get grilled on their design, or mentions "grill me".
-  - Source: `claude/commands/grill-me.md`
+  - Generated from: `templates/grill_me.md.tmpl` by `gen_skills.py`
+  - `claude/commands/{name}.md` is the rendered Claude Code port — edit the template or generator, then regenerate.
   - Installed at: `~/.claude/commands/grill-me.md` (claude)
 - **`/make-skill`** — Author or revise a Claude Code skill (slash command) using a trigger/structure/steering/pruning rubric. Use when the user wants to create a new skill, improve or simplify an existing one, or complains a skill isn't triggering or isn't being followed.
-  - Source: `claude/commands/make-skill.md`
+  - Generated from: `templates/make_skill.md.tmpl` by `gen_skills.py`
+  - `claude/commands/{name}.md` is the rendered Claude Code port — edit the template or generator, then regenerate.
   - Installed at: `~/.claude/commands/make-skill.md` (claude)
 - **`/recap`** — prints a friendly prose recap of recent activity. use when the user says 'recap', 'what did we do', 'catch me up', 'summary of recent work', or any variant of requesting a recap.
-  - Source: `claude/commands/recap.md`
+  - Generated from: `templates/recap.md.tmpl` by `gen_skills.py`
+  - `claude/commands/{name}.md` is the rendered Claude Code port — edit the template or generator, then regenerate.
   - Installed at: `~/.claude/commands/recap.md` (claude)
 - **`/refresh-guidance`** — Audit this repo's hand-authored, agent-facing docs (AGENTS.md, README.md, STYLE.md, CHANGELOG.md, etc.) for mechanically-broken citations — dead file paths, dead command/flag references — and surface which `##` sections haven't had a human-confirmed review in a while. Use when the user says 'refresh guidance', 'audit the docs', 'check the docs for staleness', 'run refresh-guidance', or asks which doc sections need review.
-  - Source: `claude/commands/refresh-guidance.md`
+  - Source: `claude/commands/refresh-guidance.md` (hand-authored)
   - Installed at: `~/.claude/commands/refresh-guidance.md` (claude)
 - **`/second-opinion`** — Send a plan to a non-Claude model for adversarial critique, then iterate — revise, re-send, repeat — until the critique stops surfacing anything new or a round cap is hit. Use when the user wants a second opinion, an outside critique, or to stress-test a plan against a different model.
-  - Source: `claude/commands/second-opinion.md`
+  - Generated from: `templates/second_opinion.md.tmpl` by `gen_second_opinion.py`
+  - `claude/commands/{name}.md` is the rendered Claude Code port — edit the template or generator, then regenerate.
   - Installed at: `~/.claude/commands/second-opinion.md` (claude)
 - **`/skill-map`** — Shows how this repo's skills connect and flags any skill mentioned by another that no longer exists. Use when the user says "skill map", "show the skill map", "which skill for X", or asks how the skills chain together.
-  - Source: `claude/commands/skill-map.md`
+  - Source: `claude/commands/skill-map.md` (hand-authored)
   - Installed at: `~/.claude/commands/skill-map.md` (claude)
 - **`/spec`** — Turn a vague coding task into a structured specification (objective, context, inputs, output format, constraints, evaluation criteria, edge cases, verification steps) before generation begins. Use when the user wants to formalize a task, write a spec, or invokes /spec.
-  - Source: `claude/commands/spec.md`
+  - Generated from: `templates/spec.md.tmpl` by `gen_skills.py`
+  - `claude/commands/{name}.md` is the rendered Claude Code port — edit the template or generator, then regenerate.
   - Installed at: `~/.claude/commands/spec.md` (claude)
 - **`/standup`** — Gather assigned work, chat signal, calendar events, pending replies, git commits, and backlog activity into a daily standup draft, saved to a dated file. Use when the user says 'standup', 'prep for standup', or wants their daily status pulled together.
-  - Source: `claude/commands/standup.md`
+  - Generated from: `templates/standup.md.tmpl` by `gen_skills.py`
+  - `claude/commands/{name}.md` is the rendered Claude Code port — edit the template or generator, then regenerate.
   - Installed at: `~/.claude/commands/standup.md` (claude)
 - **`/swarm`** — Hand READY backlog items to pi or copilot agents running in herdr tabs — concurrently by default, serially when requested, or as one named item. Use when the user says 'swarm', 'run the queue serially', 'hand this to pi', 'give <item> to a pi agent', 'hand this to copilot', or 'delegate to a worker'. Requires HERDR_ENV=1; says so and stops otherwise.
-  - Source: `claude/commands/swarm.md`
+  - Generated from: `templates/swarm.md.tmpl` by `gen_skills.py`
+  - `claude/commands/{name}.md` is the rendered Claude Code port — edit the template or generator, then regenerate.
   - Installed at: `~/.claude/commands/swarm.md` (claude)
 - **`/to-tickets`** — Decompose a plan or spec into multiple linked dev_status.py backlog items — vertical-slice/tracer-bullet tickets joined by blocked_by edges — after confirming the breakdown with the user. Use when the user wants a plan broken into tickets, wants a spec turned into backlog items, or invokes /to-tickets.
-  - Source: `claude/commands/to-tickets.md`
+  - Generated from: `templates/to_tickets.md.tmpl` by `gen_skills.py`
+  - `claude/commands/{name}.md` is the rendered Claude Code port — edit the template or generator, then regenerate.
   - Installed at: `~/.claude/commands/to-tickets.md` (claude)
 
 ---
@@ -1807,6 +1820,11 @@ install.py — agent-toolkit + AI-harness provisioner for macOS and Linux/WSL.
   - `--check-links`
   - `--report-uninstalled`
   - `--no-report-uninstalled`
+  - `--migrate-toolkit-home`
+  - `--json`
+  - `--cross-filesystem`
+  - `--skip-reconciliation`
+  - `--migration-id`
   - `-h/--help`
 - Environment: `AGENT_TOOLKIT_INSTALL_WRAPPER`, `LOGNAME`, `PATH`, `USER`
 - Filesystem constants:
@@ -1857,7 +1875,7 @@ install.py — agent-toolkit + AI-harness provisioner for macOS and Linux/WSL.
   - `print_summary(ctx: Context, settings: tuple[str, str], opencode: tuple[str, str], vscode: Sequence[tuple[str, tuple[str, str]]] = (), pi_settings: tuple[str, str] = ('', '')) -> None` — Print the loud end-of-run summary: skips, drift, and next steps.
   - `do_check_links(ctx: Context) -> int` — Audit the live symlinks against ``links.toml`` and report, changing nothing.
   - `run_install(ctx: Context, specs: Sequence[LinkSpec]) -> int` — Run every install step in order and return the process exit status.
-- Tested by: `test/test_dead_installers_stripped.py`, `test/test_harness_spec.py`, `test/test_install.py`, `test/test_link_inspect.py`, `test/test_settings_seed.py`
+- Tested by: `test/test_dead_installers_stripped.py`, `test/test_harness_spec.py`, `test/test_install.py`, `test/test_link_inspect.py`, `test/test_migrate_toolkit_home.py`, `test/test_settings_seed.py`
 
 ### `depart.py`
 

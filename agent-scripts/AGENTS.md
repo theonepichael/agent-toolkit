@@ -1,7 +1,7 @@
 # agent-scripts/ — agent notes
 
 The shared workflow tools. Every harness in this repo — Claude Code,
-Copilot, opencode, agy, Pi — calls these same paths through
+Copilot, opencode, agy, Pi, and Codex — calls these same paths through
 `~/.claude/scripts/`. Only what is easy to get wrong here; general
 conventions are in the repo root's `AGENTS.md` and `STYLE.md`.
 

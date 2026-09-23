@@ -247,8 +247,12 @@ def shared(site: str, *, quiet: bool = False) -> Iterator[None]:
 
 
 @contextmanager
-def exclusive(site: str) -> Iterator[None]:
-    """Hold the lock exclusively (the migrator). Blocks until all writers leave."""
+def exclusive(site: str, *, blocking: bool = True) -> Iterator[None]:
+    """Hold the lock exclusively (the migrator). Blocks until all writers leave.
+
+    With ``blocking=False`` a lock held by any writer or another migration
+    raises :class:`MigrationLockBusy` at once instead of waiting.
+    """
     _check_order(site)
     me = threading.get_ident()
     reentrant = False
@@ -269,7 +273,16 @@ def exclusive(site: str) -> Iterator[None]:
         fd = -1
         try:
             fd = _open_lock_file()
-            fcntl.flock(fd, fcntl.LOCK_EX)
+            if blocking:
+                fcntl.flock(fd, fcntl.LOCK_EX)
+            else:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    raise MigrationLockBusy(
+                        f"{site}: the migration lock {lock_path()} is held by a "
+                        "writer or another migration; retry when it is free"
+                    ) from None
         except BaseException:
             if fd != -1:
                 with suppress(OSError):

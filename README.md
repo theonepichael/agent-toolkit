@@ -102,6 +102,14 @@ rerun.
 
 # Roll back all symlinks and mutations:
 ./install.sh --rollback
+
+# Toolkit-home migration, safety frame only (moves no data yet).
+# Dry run: every preflight check, writes nothing:
+./install.sh --migrate-toolkit-home --harness=claude --dry-run
+# Real run: takes the migration lock, writes a journal and an inventory
+# under ~/.local/state/agent-toolkit/migrations/<id>/, then stops.
+# On a personal machine, run dev_status_sync.py status first, then:
+./install.sh --migrate-toolkit-home --harness=claude --skip-reconciliation
 ```
 
 ### Shell Integration
