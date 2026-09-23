@@ -38,8 +38,8 @@ outright).
 Read the full record — never start from the dashboard's one-line summary
 (CLAUDE.md). Empty context/next_steps/related_files: stop and ask the user
 to fill them in; don't fabricate a plan from the title. related_files
-already names a grill plan (`~/.claude/data/grill/<slug>-plan.md`) or a
-spec (`~/.claude/data/grill/<slug>-spec.md`)? Planning and critique (steps
+already names a grill plan (`~/.agent-toolkit/data/grill/<slug>-plan.md`) or a
+spec (`~/.agent-toolkit/data/grill/<slug>-spec.md`)? Planning and critique (steps
 5–6) are already done — skip to step 8. Worktree already has implemented,
 uncommitted changes (e.g. handed back from an external executor)? Skip
 straight to step 9.
@@ -99,7 +99,7 @@ unclear — run one more pass before continuing: draft a 300–600 word doc
 covering the module's boundary/responsibility (one paragraph), key
 interfaces it exposes or consumes, explicit non-goals, and known
 unknowns/deferred decisions. Save it to `docs/architecture/{module-slug}.md`
-in the target repo (project documentation, not `~/.claude/data/grill/`) and
+in the target repo (project documentation, not `~/.agent-toolkit/data/grill/`) and
 reference it from the spec/plan. A later item touching the same module cites
 the existing doc instead of repeating this pass — check for it first.
 
@@ -342,7 +342,7 @@ concurrency one, and does not launch the next item until the prior worker's
 terminal teardown is confirmed. Both require
 `HERDR_ENV=1` (this session must itself be running inside a herdr-managed
 pane); if it isn't, say so and stop rather than falling back to `--auto`
-silently. Full design: `~/.claude/data/grill/2026-09-01-pi-side-agent-swarm-orchestratio-plan.md`.
+silently. Full design: `~/.agent-toolkit/data/grill/2026-09-01-pi-side-agent-swarm-orchestratio-plan.md`.
 
 Queue selection is delegated to `swarm_spawn`. Pass it a `prefix` scoping
 the run (`meta-` for tooling work, `iron-lb-` for that project, and so on)

@@ -13,9 +13,9 @@ codex (clap) also ships a native generator, invoked as
 `codex completion zsh`).
 
 Usage:
-    python3 ~/.claude/scripts/gen_shell_completion.py --harness agy
-    python3 ~/.claude/scripts/gen_shell_completion.py --harness all
-    python3 ~/.claude/scripts/gen_shell_completion.py --harness claude --stdout
+    python3 ~/.agent-toolkit/scripts/gen_shell_completion.py --harness agy
+    python3 ~/.agent-toolkit/scripts/gen_shell_completion.py --harness all
+    python3 ~/.agent-toolkit/scripts/gen_shell_completion.py --harness claude --stdout
 
 Writes to ~/.zsh/completions/_<cli> by default.
 
@@ -528,7 +528,9 @@ def emit_zsh(root: Node, cli: str) -> str:
     lines.append("")
     lines.append(f"# zsh completion for the `{cli}` CLI — AUTO-GENERATED.")
     lines.append(
-        f"# Regenerate with: python3 ~/.claude/scripts/gen_shell_completion.py --harness {cli}"
+        "# Regenerate with: python3 "
+        f"{harness_spec.TOOLKIT_PATH_TOKENS['TOOLKIT_SCRIPTS']}/gen_shell_completion.py"
+        f" --harness {cli}"
     )
     lines.append("# Do not edit by hand.")
     lines.append("")

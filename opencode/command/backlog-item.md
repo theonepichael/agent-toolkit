@@ -16,13 +16,13 @@ verification checkpoint, not a user-approval stop — same word, different
 mechanism, don't conflate them.
 
 ## 1. Resolve
-`python3 ~/.claude/scripts/dev_status.py show $ARGUMENTS`. Read the full
+`python3 ~/.agent-toolkit/scripts/dev_status.py show $ARGUMENTS`. Read the full
 record — never start from the dashboard's one-line summary (the shared
 instructions file). Empty context/next_steps/related_files: stop and ask
 the user to fill them in; don't fabricate a plan from the title. Numeric
 id: note the rendered rev for `--if-rev` on the next mutating call.
-related_files already names a grill plan (`~/.claude/data/grill/<slug>-plan.md`)
-or a spec (`~/.claude/data/grill/<slug>-spec.md`)? Planning and critique
+related_files already names a grill plan (`~/.agent-toolkit/data/grill/<slug>-plan.md`)
+or a spec (`~/.agent-toolkit/data/grill/<slug>-spec.md`)? Planning and critique
 (steps 5–6) are already done — skip to step 8. Worktree already has
 implemented, uncommitted changes (e.g. handed back from an external
 executor)? Skip straight to step 9.
@@ -43,7 +43,7 @@ If `start` instead exits 3 naming this machine's id file, run
 `dev_status.py machine-id --repair` and retry; never edit the id file by hand.
 
 ## 3. Branch
-Create or reuse a dedicated worktree and bootstrap dependencies via `python3 ~/.claude/scripts/dev_status.py worktree <slug|N>`. (If multiple project repos are involved or resolution fails, specify `--repo <path>`). Reuse a worktree this session already made for this item instead of a second one.
+Create or reuse a dedicated worktree and bootstrap dependencies via `python3 ~/.agent-toolkit/scripts/dev_status.py worktree <slug|N>`. (If multiple project repos are involved or resolution fails, specify `--repo <path>`). Reuse a worktree this session already made for this item instead of a second one.
 
 ## 4. Baseline
 Run that repo's test suite (or the most relevant targeted subset) in the fresh worktree before touching anything (the shared instructions file's "Baseline tests before starting code work").
@@ -72,7 +72,7 @@ unclear — run one more pass before continuing: draft a 300–600 word doc
 covering the module's boundary/responsibility (one paragraph), key
 interfaces it exposes or consumes, explicit non-goals, and known
 unknowns/deferred decisions. Save it to `docs/architecture/{module-slug}.md`
-in the target repo (project documentation, not `~/.claude/data/grill/`) and
+in the target repo (project documentation, not `~/.agent-toolkit/data/grill/`) and
 reference it from the spec/plan. A later item touching the same module cites
 the existing doc instead of repeating this pass — check for it first.
 
@@ -86,7 +86,7 @@ acceptance criteria). If any step is judgment, set the item's gate before
 continuing:
 
 ```bash
-python3 ~/.claude/scripts/dev_status.py gate-set <slug|N> '{"required": true, "criteria": ["<short imperative criterion per judgment step>", "..."]}'
+python3 ~/.agent-toolkit/scripts/dev_status.py gate-set <slug|N> '{"required": true, "criteria": ["<short imperative criterion per judgment step>", "..."]}'
 ```
 
 If every step is mechanical, leave the gate unset (inert by default) —

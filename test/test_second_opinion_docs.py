@@ -31,7 +31,7 @@ REQUIRED_MARKERS = (
     "Recording it in the backlog",
     # the plan-file path convention callers (backlog-item.md, grill-me.md,
     # spec.md) depend on
-    "~/.claude/data/grill/<topic-slug>-plan.md",
+    "~/.agent-toolkit/data/grill/<topic-slug>-plan.md",
     # the critique-notes companion-file path convention those same callers
     # depend on
     "-critique-notes.md",

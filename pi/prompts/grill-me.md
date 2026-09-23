@@ -6,7 +6,7 @@ argument-hint: [--verify | --auto] [topic or plan to grill on]
 
 Conduct an interactive grill session to stress-test and resolve decisions on the specified plan or topic.
 
-All session state lives in JSON under `~/.claude/data/grill/`, mutated only through
+All session state lives in JSON under `~/.agent-toolkit/data/grill/`, mutated only through
 the `grill` tool — never via `grill.py` in bash, and never by writing or editing
 session files by hand. The plan document is a separate markdown artifact
 **you author yourself**, informed by the recorded decision points.
@@ -65,7 +65,7 @@ Then use the `grill` tool's `list` action to find an existing session matching t
 
 **End of session** (fully decided or wrapped up — not on pause):
 
-1. Author the plan as a markdown document — a real plan someone could execute, not a decision log. The recorded decision points (the `grill` tool's `show` action) inform it. Plans always live centrally at `~/.claude/data/grill/<slug>-plan.md` — never in project repos; this is personal tooling, not team-facing docs. Never `mkdir -p` that directory first — `grill.py` and `second_opinion.py` each create it on every invocation, so just write the file.
+1. Author the plan as a markdown document — a real plan someone could execute, not a decision log. The recorded decision points (the `grill` tool's `show` action) inform it. Plans always live centrally at `~/.agent-toolkit/data/grill/<slug>-plan.md` — never in project repos; this is personal tooling, not team-facing docs. Never `mkdir -p` that directory first — `grill.py` and `second_opinion.py` each create it on every invocation, so just write the file.
 2. Call the `vitals_promotion` tool with action `run` and `apply: true` — never `vitals_promotion.py` via bash (mechanical, no other fields needed — this re-runs the full classify/promote/supersede pass over every session, not just this one, so it also catches drift from sessions closed since the last run). Show the printed report (promoted/superseded/needs-review counts) to the user in plain text; if `promoted_count` or `superseded_count` is nonzero, this session's activity changed the vitals store the next session's pre-step will read. An `--apply` that fails on a malformed vitals file promoted nothing (a write-time failure is the only kind that can leave earlier files written) — surface the error rather than a success report.
 3. Record it: the `grill` tool, action `plan`, with the artifact's `path`.
 4. Show the user the plan and the `grill` tool's `render` output (decision table, any open questions, verification state).

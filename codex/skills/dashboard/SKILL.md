@@ -7,7 +7,7 @@ description: "surfaces backlog and pending items as a dashboard. use when the us
 If invoked with `recap` (e.g. `/dashboard recap`), run the recap command instead, display stdout verbatim, and stop:
 
 ```bash
-DEVSTATUS_AGENT=1 python3 ~/.claude/scripts/dev_status.py recap
+DEVSTATUS_AGENT=1 python3 ~/.agent-toolkit/scripts/dev_status.py recap
 ```
 
 (pass `--refresh` if requested).
@@ -15,7 +15,7 @@ DEVSTATUS_AGENT=1 python3 ~/.claude/scripts/dev_status.py recap
 Otherwise, run:
 
 ```bash
-DEVSTATUS_AGENT=1 python3 ~/.claude/scripts/dev_status.py render
+DEVSTATUS_AGENT=1 python3 ~/.agent-toolkit/scripts/dev_status.py render
 ```
 
 Display stdout is already presented to the user by the tool runner — do not copy the ASCII dashboard into the assistant response, do not narrate, do not reformat. `DEVSTATUS_AGENT=1` suppresses the agent-only `item-map:` line at the source, so stdout is just the dashboard; there's nothing to filter.

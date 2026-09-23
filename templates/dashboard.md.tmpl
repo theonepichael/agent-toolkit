@@ -1,7 +1,7 @@
 If invoked with `recap` (e.g. `/dashboard recap`), run the recap command instead, display stdout verbatim, and stop:
 
 ```bash
-DEVSTATUS_AGENT=1 python3 ~/.claude/scripts/dev_status.py recap
+DEVSTATUS_AGENT=1 python3 {{TOOLKIT_SCRIPTS}}/dev_status.py recap
 ```
 
 (pass `--refresh` if requested).
@@ -9,7 +9,7 @@ DEVSTATUS_AGENT=1 python3 ~/.claude/scripts/dev_status.py recap
 Otherwise, run:
 
 ```bash
-DEVSTATUS_AGENT=1 python3 ~/.claude/scripts/dev_status.py render
+DEVSTATUS_AGENT=1 python3 {{TOOLKIT_SCRIPTS}}/dev_status.py render
 ```
 
 {{DASHBOARD_RENDER_DISPLAY}}

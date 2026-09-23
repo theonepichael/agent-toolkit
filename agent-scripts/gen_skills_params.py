@@ -185,7 +185,7 @@ GRILL_ME_PARAMS: dict[str, dict[str, str]] = {
 name: grill-me
 description: Interview the user relentlessly about a plan or design until reaching shared understanding, resolving each branch of the decision tree. Use when user wants to stress-test a plan, get grilled on their design, or mentions "grill me".
 argument-hint: [--verify | --auto] [topic or plan to grill on]
-allowed-tools: [Read, Glob, Grep, Write, AskUserQuestion, "Bash(python3 ~/.claude/scripts/grill.py:*)", "Bash(python3 ~/.claude/scripts/second_opinion.py:*)"]
+allowed-tools: [Read, Glob, Grep, Write, AskUserQuestion, "Bash(python3 {{TOOLKIT_SCRIPTS}}/grill.py:*)", "Bash(python3 {{TOOLKIT_SCRIPTS}}/second_opinion.py:*)"]
 ---""",
         "DEFAULT_MODE_OPENING": (
             "If $ARGUMENTS is empty (and contains neither `--verify` nor `--auto`), "
@@ -589,13 +589,13 @@ Invoked with `--auto` (`/backlog-item --auto [slug|N]`)? Skip straight to
 the `--auto mode` section at the end of this file instead of running the
 numbered steps live.""",
         "STEP1_BODY": """\
-`python3 ~/.claude/scripts/dev_status.py show <slug|N>`. Read the full
+`python3 {{TOOLKIT_SCRIPTS}}/dev_status.py show <slug|N>`. Read the full
 record — never start from the dashboard's one-line summary (CLAUDE.md).
 Empty context/next_steps/related_files: stop and ask the user to fill them
 in; don't fabricate a plan from the title. Numeric id: note the rendered rev
 for `--if-rev` on the next mutating call. related_files already names a
-grill plan (`~/.claude/data/grill/<slug>-plan.md`) or a spec
-(`~/.claude/data/grill/<slug>-spec.md`)? Planning and critique (steps 5–6)
+grill plan (`{{TOOLKIT_DATA}}/grill/<slug>-plan.md`) or a spec
+(`{{TOOLKIT_DATA}}/grill/<slug>-spec.md`)? Planning and critique (steps 5–6)
 are already done — skip to step 8. Worktree already has
 implemented, uncommitted changes (e.g. handed back from an external
 executor)? Skip straight to step 9.""",
@@ -736,13 +736,13 @@ gates into one approval. Distinct from those: the item's own `gate` field in
 not a user-approval stop — same word, different mechanism, don't conflate
 them.""",
         "STEP1_BODY": """\
-`python3 ~/.claude/scripts/dev_status.py show <slug|N>`. Read the full
+`python3 {{TOOLKIT_SCRIPTS}}/dev_status.py show <slug|N>`. Read the full
 record — never start from the dashboard's one-line summary (the shared
 instructions file). Empty context/next_steps/related_files: stop and ask
 the user to fill them in; don't fabricate a plan from the title. Numeric
 id: note the rendered rev for `--if-rev` on the next mutating call.
-related_files already names a grill plan (`~/.claude/data/grill/<slug>-plan.md`)
-or a spec (`~/.claude/data/grill/<slug>-spec.md`)?
+related_files already names a grill plan (`{{TOOLKIT_DATA}}/grill/<slug>-plan.md`)
+or a spec (`{{TOOLKIT_DATA}}/grill/<slug>-spec.md`)?
 Planning and critique (steps 5–6) are already done — skip to step 8.
 Worktree already has implemented, uncommitted changes (e.g. handed back
 from an external executor)? Skip straight to step 9. Either skip: the
@@ -792,7 +792,7 @@ now answered; cite grill-me's `plan_path` from the spec's own Context field
 as the decision record behind that field. Never interrogate architecture
 inline in the spec itself.
 
-Write the finished spec to `~/.claude/data/grill/<slug>-spec.md` (the same
+Write the finished spec to `{{TOOLKIT_DATA}}/grill/<slug>-spec.md` (the same
 central location grill-me/second-opinion use for plan artifacts — never a
 per-session scratchpad; never `mkdir -p` first, `grill.py`/`second_opinion.py`
 each create it on every invocation, so just write the file). Update the
@@ -1076,13 +1076,13 @@ own `gate` field in `dev_status.py` (step 5, step 12) is a judgment-step
 verification checkpoint, not a user-approval stop — same word, different
 mechanism, don't conflate them.""",
         "STEP1_BODY": """\
-`python3 ~/.claude/scripts/dev_status.py show $ARGUMENTS`. Read the full
+`python3 {{TOOLKIT_SCRIPTS}}/dev_status.py show $ARGUMENTS`. Read the full
 record — never start from the dashboard's one-line summary (the shared
 instructions file). Empty context/next_steps/related_files: stop and ask
 the user to fill them in; don't fabricate a plan from the title. Numeric
 id: note the rendered rev for `--if-rev` on the next mutating call.
-related_files already names a grill plan (`~/.claude/data/grill/<slug>-plan.md`)
-or a spec (`~/.claude/data/grill/<slug>-spec.md`)? Planning and critique
+related_files already names a grill plan (`{{TOOLKIT_DATA}}/grill/<slug>-plan.md`)
+or a spec (`{{TOOLKIT_DATA}}/grill/<slug>-spec.md`)? Planning and critique
 (steps 5–6) are already done — skip to step 8. Worktree already has
 implemented, uncommitted changes (e.g. handed back from an external
 executor)? Skip straight to step 9.""",
@@ -1215,13 +1215,13 @@ approval. Distinct from those: the item's own `gate` field in
 checkpoint, not a user-approval stop — same word, different mechanism,
 don't conflate them.""",
         "STEP1_BODY": """\
-`python3 ~/.claude/scripts/dev_status.py show <slug|N>`. Read the full
+`python3 {{TOOLKIT_SCRIPTS}}/dev_status.py show <slug|N>`. Read the full
 record — never start from the dashboard's one-line summary (the shared
 instructions file). Empty context/next_steps/related_files: stop and ask
 the user to fill them in; don't fabricate a plan from the title. Numeric
 id: note the rendered rev for `--if-rev` on the next mutating call.
-related_files already names a grill plan (`~/.claude/data/grill/<slug>-plan.md`)
-or a spec (`~/.claude/data/grill/<slug>-spec.md`)? Planning and critique
+related_files already names a grill plan (`{{TOOLKIT_DATA}}/grill/<slug>-plan.md`)
+or a spec (`{{TOOLKIT_DATA}}/grill/<slug>-spec.md`)? Planning and critique
 (steps 5–6) are already done — skip to step 8. Worktree already has
 implemented, uncommitted changes (e.g. handed back from an external
 executor)? Skip straight to step 9. `next_steps` starts with "Resume
@@ -1284,7 +1284,7 @@ attention):
    Context field as the decision record behind that field. Never
    interrogate architecture inline in the spec itself.
 
-Write the finished spec to `~/.claude/data/grill/<slug>-spec.md` (the same
+Write the finished spec to `{{TOOLKIT_DATA}}/grill/<slug>-spec.md` (the same
 central location grill-me/second-opinion use for plan artifacts — never a
 per-session scratchpad; never `mkdir -p` first, `grill.py`/`second_opinion.py`
 each create it on every invocation, so just write the file). Add that path
@@ -1419,13 +1419,13 @@ approval. Distinct from those: the item's own `gate` field in
 checkpoint, not a user-approval stop — same word, different mechanism,
 don't conflate them.""",
         "STEP1_BODY": """\
-`python3 ~/.claude/scripts/dev_status.py show <slug|N>`. Read the full
+`python3 {{TOOLKIT_SCRIPTS}}/dev_status.py show <slug|N>`. Read the full
 record — never start from the dashboard's one-line summary (the shared
 instructions file). Empty context/next_steps/related_files: stop and ask
 the user to fill them in; don't fabricate a plan from the title. Numeric
 id: note the rendered rev for `--if-rev` on the next mutating call.
-related_files already names a grill plan (`~/.claude/data/grill/<slug>-plan.md`)
-or a spec (`~/.claude/data/grill/<slug>-spec.md`)? Planning and critique
+related_files already names a grill plan (`{{TOOLKIT_DATA}}/grill/<slug>-plan.md`)
+or a spec (`{{TOOLKIT_DATA}}/grill/<slug>-spec.md`)? Planning and critique
 (steps 5–6) are already done — skip to step 8. Worktree already has
 implemented, uncommitted changes (e.g. handed back from an external
 executor)? Skip straight to step 9. `next_steps` starts with "Resume
@@ -1487,7 +1487,7 @@ procedure's own state out of effective attention):
    Context field as the decision record behind that field. Never
    interrogate architecture inline in the spec itself.
 
-Write the finished spec to `~/.claude/data/grill/<slug>-spec.md` (the same
+Write the finished spec to `{{TOOLKIT_DATA}}/grill/<slug>-spec.md` (the same
 central location grill-me/second-opinion use for plan artifacts — never a
 per-session scratchpad; never `mkdir -p` first, `grill.py`/`second_opinion.py`
 each create it on every invocation, so just write the file). Add that path
@@ -1632,13 +1632,13 @@ action refuses a numeric slug outright). Read the full record — never start
 from the dashboard's one-line summary (CLAUDE.md). Empty
 context/next_steps/related_files: stop and ask the user to fill them in;
 don't fabricate a plan from the title. related_files already names a grill
-plan (`~/.claude/data/grill/<slug>-plan.md`) or a spec
-(`~/.claude/data/grill/<slug>-spec.md`)? Planning and critique (steps 5–6)
+plan (`{{TOOLKIT_DATA}}/grill/<slug>-plan.md`) or a spec
+(`{{TOOLKIT_DATA}}/grill/<slug>-spec.md`)? Planning and critique (steps 5–6)
 are already done — skip to step 8. Worktree already has implemented,
 uncommitted changes (e.g. handed back from an external executor)? Skip
 straight to step 9. If the `dev_status` tool is genuinely unavailable (e.g.
 the session was started with `--no-extensions`), fall back to
-`python3 ~/.claude/scripts/dev_status.py show <slug|N>` for this and every
+`python3 {{TOOLKIT_SCRIPTS}}/dev_status.py show <slug|N>` for this and every
 other step below — in that fallback path only, a numeric id needs a fresh,
 non-quiet `render` immediately before each mutating call to read the
 current rev for `--if-rev` (CLAUDE.md's Backlog section).""",
@@ -2096,7 +2096,7 @@ SPEC_PARAMS: dict[str, dict[str, str]] = {
 name: spec
 description: "Turn a vague coding task into a structured specification (objective, context, inputs, output format, constraints, evaluation criteria, edge cases, verification steps) before generation begins. Use when the user wants to formalize a task, write a spec, or invokes /spec."
 argument-hint: [task description]
-allowed-tools: [Read, Glob, Grep, Write, AskUserQuestion, "Bash(python3 ~/.claude/scripts/second_opinion.py:*)"]
+allowed-tools: [Read, Glob, Grep, Write, AskUserQuestion, "Bash(python3 {{TOOLKIT_SCRIPTS}}/second_opinion.py:*)"]
 ---""",
         "OPENING_LINE": (
             "If $ARGUMENTS is empty, use the task under discussion in the "
@@ -2415,11 +2415,11 @@ STANDUP_PARAMS: dict[str, dict[str, str]] = {
 ---
 name: standup
 description: "Gather assigned work, chat signal, calendar events, pending replies, git commits, and backlog activity into a daily standup draft, saved to a dated file. Use when the user says 'standup', 'prep for standup', or wants their daily status pulled together."
-allowed-tools: [Read, Write, Glob, Grep, "Bash(python3 ~/.claude/scripts/standup.py:*)", "Bash(python3 ~/.claude/scripts/dev_status.py:*)", "Bash(git log:*)"]
+allowed-tools: [Read, Write, Glob, Grep, "Bash(python3 {{TOOLKIT_SCRIPTS}}/standup.py:*)", "Bash(python3 {{TOOLKIT_SCRIPTS}}/dev_status.py:*)", "Bash(git log:*)"]
 ---""",
         "FETCH_MECHANISM": """\
 ```
-python3 ~/.claude/scripts/standup.py fetch [--date YYYY-MM-DD]
+python3 {{TOOLKIT_SCRIPTS}}/standup.py fetch [--date YYYY-MM-DD]
 ```
 
 `--date` overrides the reference date (defaults to today) — use it after a
@@ -2453,7 +2453,7 @@ description: "Gather assigned work, chat signal, calendar events, pending replie
 ---""",
         "FETCH_MECHANISM": """\
 ```
-python3 ~/.claude/scripts/standup.py fetch [--date YYYY-MM-DD]
+python3 {{TOOLKIT_SCRIPTS}}/standup.py fetch [--date YYYY-MM-DD]
 ```
 
 `--date` overrides the reference date (defaults to today) — use it after a
@@ -2471,14 +2471,14 @@ user in chat first — nothing gets written until they confirm, since "was
 this actually answered" is a judgment call, not a pattern match:
 
 ```
-python3 ~/.claude/scripts/dev_status.py pending update <id> '{"status": "reply_received"}'
+python3 {{TOOLKIT_SCRIPTS}}/dev_status.py pending update <id> '{"status": "reply_received"}'
 ```
 
 Only move an item to `resolved` when the user confirms it's actually done,
 and record what happened:
 
 ```
-python3 ~/.claude/scripts/dev_status.py pending update <id> '{"status": "resolved", "outcome": "what actually happened"}'
+python3 {{TOOLKIT_SCRIPTS}}/dev_status.py pending update <id> '{"status": "resolved", "outcome": "what actually happened"}'
 ```
 
 For anything in the fetched data that looks like a new item worth tracking
@@ -2487,7 +2487,7 @@ request not yet approved) but isn't already in `pending_items_open`,
 propose adding it:
 
 ```
-python3 ~/.claude/scripts/dev_status.py pending add '{"id", "description", "kind", "source_ref": {...}, "context", "next_steps": [...]}'
+python3 {{TOOLKIT_SCRIPTS}}/dev_status.py pending add '{"id", "description", "kind", "source_ref": {...}, "context", "next_steps": [...]}'
 ```
 
 `<id>` can be the pending item's slug — `dev_status.py`'s cross-section
@@ -2543,7 +2543,7 @@ already gives you it directly. The `dev_status` tool refuses a numeric
 dashboard).
 
 If the `dev_status` tool is genuinely unavailable, fall back to bash —
-`python3 ~/.claude/scripts/dev_status.py pending update <id> '{...}'` /
+`python3 {{TOOLKIT_SCRIPTS}}/dev_status.py pending update <id> '{...}'` /
 `pending add '{...}'`, same JSON shapes as above.
 
 `kind` is one of `email`, `chat`, `approval`. `source_ref` is a structured
@@ -2566,7 +2566,7 @@ allowed-tools: shell
 ---""",
         "FETCH_MECHANISM": """\
 ```
-python3 ~/.claude/scripts/standup.py fetch [--date YYYY-MM-DD]
+python3 {{TOOLKIT_SCRIPTS}}/standup.py fetch [--date YYYY-MM-DD]
 ```
 
 `--date` overrides the reference date (defaults to today) — use it after a
@@ -2584,14 +2584,14 @@ user in chat first — nothing gets written until they confirm, since "was
 this actually answered" is a judgment call, not a pattern match:
 
 ```
-python3 ~/.claude/scripts/dev_status.py pending update <id> '{"status": "reply_received"}'
+python3 {{TOOLKIT_SCRIPTS}}/dev_status.py pending update <id> '{"status": "reply_received"}'
 ```
 
 Only move an item to `resolved` when the user confirms it's actually done,
 and record what happened:
 
 ```
-python3 ~/.claude/scripts/dev_status.py pending update <id> '{"status": "resolved", "outcome": "what actually happened"}'
+python3 {{TOOLKIT_SCRIPTS}}/dev_status.py pending update <id> '{"status": "resolved", "outcome": "what actually happened"}'
 ```
 
 For anything in the fetched data that looks like a new item worth tracking
@@ -2600,7 +2600,7 @@ request not yet approved) but isn't already in `pending_items_open`,
 propose adding it:
 
 ```
-python3 ~/.claude/scripts/dev_status.py pending add '{"id", "description", "kind", "source_ref": {...}, "context", "next_steps": [...]}'
+python3 {{TOOLKIT_SCRIPTS}}/dev_status.py pending add '{"id", "description", "kind", "source_ref": {...}, "context", "next_steps": [...]}'
 ```
 
 `<id>` can be the pending item's slug — `dev_status.py`'s cross-section
@@ -2621,7 +2621,7 @@ description: "Gather assigned work, chat signal, calendar events, pending replie
 ---""",
         "FETCH_MECHANISM": """\
 ```
-python3 ~/.claude/scripts/standup.py fetch [--date YYYY-MM-DD]
+python3 {{TOOLKIT_SCRIPTS}}/standup.py fetch [--date YYYY-MM-DD]
 ```
 
 `--date` overrides the reference date (defaults to today) — use it after a
@@ -2639,14 +2639,14 @@ user in chat first — nothing gets written until they confirm, since "was
 this actually answered" is a judgment call, not a pattern match:
 
 ```
-python3 ~/.claude/scripts/dev_status.py pending update <id> '{"status": "reply_received"}'
+python3 {{TOOLKIT_SCRIPTS}}/dev_status.py pending update <id> '{"status": "reply_received"}'
 ```
 
 Only move an item to `resolved` when the user confirms it's actually done,
 and record what happened:
 
 ```
-python3 ~/.claude/scripts/dev_status.py pending update <id> '{"status": "resolved", "outcome": "what actually happened"}'
+python3 {{TOOLKIT_SCRIPTS}}/dev_status.py pending update <id> '{"status": "resolved", "outcome": "what actually happened"}'
 ```
 
 For anything in the fetched data that looks like a new item worth tracking
@@ -2655,7 +2655,7 @@ request not yet approved) but isn't already in `pending_items_open`,
 propose adding it:
 
 ```
-python3 ~/.claude/scripts/dev_status.py pending add '{"id", "description", "kind", "source_ref": {...}, "context", "next_steps": [...]}'
+python3 {{TOOLKIT_SCRIPTS}}/dev_status.py pending add '{"id", "description", "kind", "source_ref": {...}, "context", "next_steps": [...]}'
 ```
 
 `<id>` can be the pending item's slug — `dev_status.py`'s cross-section
@@ -2676,7 +2676,7 @@ description: "Gather assigned work, chat signal, calendar events, pending replie
 ---""",
         "FETCH_MECHANISM": """\
 ```
-python3 ~/.claude/scripts/standup.py fetch [--date YYYY-MM-DD]
+python3 {{TOOLKIT_SCRIPTS}}/standup.py fetch [--date YYYY-MM-DD]
 ```
 
 `--date` overrides the reference date (defaults to today) — use it after a
@@ -2694,14 +2694,14 @@ user in chat first — nothing gets written until they confirm, since "was
 this actually answered" is a judgment call, not a pattern match:
 
 ```
-python3 ~/.claude/scripts/dev_status.py pending update <id> '{"status": "reply_received"}'
+python3 {{TOOLKIT_SCRIPTS}}/dev_status.py pending update <id> '{"status": "reply_received"}'
 ```
 
 Only move an item to `resolved` when the user confirms it's actually done,
 and record what happened:
 
 ```
-python3 ~/.claude/scripts/dev_status.py pending update <id> '{"status": "resolved", "outcome": "what actually happened"}'
+python3 {{TOOLKIT_SCRIPTS}}/dev_status.py pending update <id> '{"status": "resolved", "outcome": "what actually happened"}'
 ```
 
 For anything in the fetched data that looks like a new item worth tracking
@@ -2710,7 +2710,7 @@ request not yet approved) but isn't already in `pending_items_open`,
 propose adding it:
 
 ```
-python3 ~/.claude/scripts/dev_status.py pending add '{"id", "description", "kind", "source_ref": {...}, "context", "next_steps": [...]}'
+python3 {{TOOLKIT_SCRIPTS}}/dev_status.py pending add '{"id", "description", "kind", "source_ref": {...}, "context", "next_steps": [...]}'
 ```
 
 `<id>` can be the pending item's slug — `dev_status.py`'s cross-section
@@ -2732,7 +2732,7 @@ TO_TICKETS_PARAMS: dict[str, dict[str, str]] = {
 name: to-tickets
 description: "Decompose a plan or spec into multiple linked dev_status.py backlog items — vertical-slice/tracer-bullet tickets joined by blocked_by edges — after confirming the breakdown with the user. Use when the user wants a plan broken into tickets, wants a spec turned into backlog items, or invokes /to-tickets."
 argument-hint: [plan or spec file path]
-allowed-tools: [Read, Glob, Grep, Write, AskUserQuestion, "Bash(python3 ~/.claude/scripts/to_tickets_runner.py:*)"]
+allowed-tools: [Read, Glob, Grep, Write, AskUserQuestion, "Bash(python3 {{TOOLKIT_SCRIPTS}}/to_tickets_runner.py:*)"]
 ---""",
         "OPENING_LINE": (
             "If $ARGUMENTS is empty, use the plan or spec under discussion in "
@@ -2740,7 +2740,7 @@ allowed-tools: [Read, Glob, Grep, Write, AskUserQuestion, "Bash(python3 ~/.claud
         ),
         "STEP4_CONFIRM_MECHANISM": "Use `AskUserQuestion` for this.",
         "RUNNER_INVOKE": (
-            "run `python3 ~/.claude/scripts/to_tickets_runner.py run <that path>`."
+            "run `python3 {{TOOLKIT_SCRIPTS}}/to_tickets_runner.py run <that path>`."
         ),
         "RUNNER_MKDIR_OWNER": "`to_tickets_runner.py`",
         "RESUME_MECHANISM": (
@@ -2767,7 +2767,7 @@ description: "Decompose a plan or spec into multiple linked dev_status.py backlo
         ),
         "STEP4_CONFIRM_MECHANISM": "Use the `question` tool for this.",
         "RUNNER_INVOKE": (
-            "run `python3 ~/.claude/scripts/to_tickets_runner.py run <that path>`."
+            "run `python3 {{TOOLKIT_SCRIPTS}}/to_tickets_runner.py run <that path>`."
         ),
         "RUNNER_MKDIR_OWNER": "`to_tickets_runner.py`",
         "RESUME_MECHANISM": (
@@ -2846,7 +2846,7 @@ allowed-tools: shell
             "Ask in plain text with your recommendation first."
         ),
         "RUNNER_INVOKE": (
-            "run `python3 ~/.claude/scripts/to_tickets_runner.py run <that path>`."
+            "run `python3 {{TOOLKIT_SCRIPTS}}/to_tickets_runner.py run <that path>`."
         ),
         "RUNNER_MKDIR_OWNER": "`to_tickets_runner.py`",
         "RESUME_MECHANISM": (
@@ -2878,7 +2878,7 @@ description: "Decompose a plan or spec into multiple linked dev_status.py backlo
             "Ask in plain text with your recommendation first."
         ),
         "RUNNER_INVOKE": (
-            "run `python3 ~/.claude/scripts/to_tickets_runner.py run <that path>`."
+            "run `python3 {{TOOLKIT_SCRIPTS}}/to_tickets_runner.py run <that path>`."
         ),
         "RUNNER_MKDIR_OWNER": "`to_tickets_runner.py`",
         "RESUME_MECHANISM": (
@@ -2910,7 +2910,7 @@ description: "Decompose a plan or spec into multiple linked dev_status.py backlo
             "Ask in plain text with your recommendation first."
         ),
         "RUNNER_INVOKE": (
-            "run `python3 ~/.claude/scripts/to_tickets_runner.py run <that path>`."
+            "run `python3 {{TOOLKIT_SCRIPTS}}/to_tickets_runner.py run <that path>`."
         ),
         "RUNNER_MKDIR_OWNER": "`to_tickets_runner.py`",
         "RESUME_MECHANISM": (

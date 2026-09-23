@@ -92,7 +92,9 @@ function buildAgentStartArgv(agentId, paneId, model, opts) {
   return argv;
 }
 var WORKER_UNATTENDED_ENV = "PI_AGENT_UNATTENDED=1";
-var AMEND_INSTRUCTION = "STOP and re-read your backlog item before doing anything else: run `python3 ~/.claude/scripts/dev_status.py show <your slug>` and read the whole record fresh. Its context or next_steps have been corrected since you started, so any plan you formed from the earlier version may now be wrong. Reconcile what you have already done against the updated record, and say plainly what changes as a result before continuing.";
+var DEV_STATUS_HOME_SEGMENTS = [".agent-toolkit", "scripts", "dev_status.py"];
+var DEV_STATUS_DISPLAY = `~/${DEV_STATUS_HOME_SEGMENTS.join("/")}`;
+var AMEND_INSTRUCTION = `STOP and re-read your backlog item before doing anything else: run \`python3 ${DEV_STATUS_DISPLAY} show <your slug>\` and read the whole record fresh. Its context or next_steps have been corrected since you started, so any plan you formed from the earlier version may now be wrong. Reconcile what you have already done against the updated record, and say plainly what changes as a result before continuing.`;
 function buildAgentPromptArgv(agentId, prompt, opts = {}) {
   const argv = ["agent", "prompt", agentId, prompt];
   if (!opts.wait) return argv;
@@ -214,7 +216,7 @@ function deadlineStopDetail(worker, deadlineMs, opts) {
   ];
   lines.push(
     "",
-    `The item is very likely still in-progress with a live claim: python3 ~/.claude/scripts/dev_status.py show ${worker.slug}`
+    `The item is very likely still in-progress with a live claim: python3 ${DEV_STATUS_DISPLAY} show ${worker.slug}`
   );
   const worktree = workerWorktreePath(worker.cwd, worker.slug);
   if (worktree) {
@@ -330,6 +332,8 @@ export {
   AMEND_HOLD_MAX_MS,
   AMEND_INSTRUCTION,
   AMEND_STEERING_WINDOW_MS,
+  DEV_STATUS_DISPLAY,
+  DEV_STATUS_HOME_SEGMENTS,
   WORKER_UNATTENDED_ENV,
   amendAckConfirms,
   amendAckPath,

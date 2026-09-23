@@ -264,6 +264,14 @@ export function buildAgentStartArgv(
 export const WORKER_UNATTENDED_ENV = "PI_AGENT_UNATTENDED=1";
 
 /**
+ * dev_status.py under the toolkit home, relative to the user's home directory.
+ * The one source for both the path the swarm runs (devStatusPath() in
+ * swarm-tool-context.ts) and the path its worker instructions show.
+ */
+export const DEV_STATUS_HOME_SEGMENTS = [".agent-toolkit", "scripts", "dev_status.py"] as const;
+export const DEV_STATUS_DISPLAY = `~/${DEV_STATUS_HOME_SEGMENTS.join("/")}`;
+
+/**
  * The entire payload of an amend. Fixed, and deliberately carries no
  * correction text.
  *
@@ -282,7 +290,7 @@ export const WORKER_UNATTENDED_ENV = "PI_AGENT_UNATTENDED=1";
  */
 export const AMEND_INSTRUCTION =
   "STOP and re-read your backlog item before doing anything else: run " +
-  "`python3 ~/.claude/scripts/dev_status.py show <your slug>` and read the " +
+  `\`python3 ${DEV_STATUS_DISPLAY} show <your slug>\` and read the ` +
   "whole record fresh. Its context or next_steps have been corrected since " +
   "you started, so any plan you formed from the earlier version may now be " +
   "wrong. Reconcile what you have already done against the updated record, " +
@@ -662,7 +670,7 @@ export function deadlineStopDetail(
       ];
   lines.push(
     "",
-    `The item is very likely still in-progress with a live claim: python3 ~/.claude/scripts/dev_status.py show ${worker.slug}`,
+    `The item is very likely still in-progress with a live claim: python3 ${DEV_STATUS_DISPLAY} show ${worker.slug}`,
   );
   const worktree = workerWorktreePath(worker.cwd, worker.slug);
   if (worktree) {

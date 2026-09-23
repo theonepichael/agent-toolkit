@@ -14,6 +14,24 @@ from pathlib import Path
 # What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
 TOOLKIT_DATA = "none"
 
+# The toolkit home as generated skills, prompts and docs spell it. Text only:
+# runtime code resolves real paths through agent_toolkit_paths, which also
+# honors AGENT_TOOLKIT_HOME; generated text always shows the default root.
+# Generators substitute these for the matching `{{TOKEN}}`s last, over the
+# whole rendered file, so a token nested inside any other value resolves too.
+TOOLKIT_DISPLAY_ROOT = "~/.agent-toolkit"
+TOOLKIT_PATH_TOKENS: dict[str, str] = {
+    "TOOLKIT_SCRIPTS": f"{TOOLKIT_DISPLAY_ROOT}/scripts",
+    "TOOLKIT_DATA": f"{TOOLKIT_DISPLAY_ROOT}/data",
+}
+
+
+def apply_toolkit_path_tokens(text: str) -> str:
+    """Replace every `{{TOOLKIT_SCRIPTS}}` / `{{TOOLKIT_DATA}}` in ``text``."""
+    for token, value in TOOLKIT_PATH_TOKENS.items():
+        text = text.replace("{{" + token + "}}", value)
+    return text
+
 
 class FeatureSupportState(StrEnum):
     """Lifecycle support states for a required feature declaration."""

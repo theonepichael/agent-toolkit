@@ -68,6 +68,7 @@ import {
   classifyTimeoutProbe,
   classifyWaitResult,
   deadlineStopDetail,
+  DEV_STATUS_HOME_SEGMENTS,
   findTabByLabel,
   outcomePath,
   paneIdentityMismatch,
@@ -93,10 +94,7 @@ export function herdrStateDir(): string {
 }
 
 export function devStatusPath(): string {
-  return (
-    process.env.COPILOT_SWARM_DEV_STATUS_PATH ??
-    join(homedir(), ".claude", "scripts", "dev_status.py")
-  );
+  return process.env.COPILOT_SWARM_DEV_STATUS_PATH ?? join(homedir(), ...DEV_STATUS_HOME_SEGMENTS);
 }
 
 export function copilotPluginDir(): string {

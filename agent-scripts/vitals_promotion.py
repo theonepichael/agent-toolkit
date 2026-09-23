@@ -573,7 +573,7 @@ def _main() -> None:
         "--data-dir",
         type=Path,
         default=None,
-        help="grill session data directory (default: ~/.claude/data/grill)",
+        help="grill session data directory (default: the toolkit data root's grill/)",
     )
     parser.add_argument(
         "--apply",

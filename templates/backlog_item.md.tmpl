@@ -7,7 +7,7 @@
 {{STEP2_BODY}}
 
 ## 3. Branch
-Create or reuse a dedicated worktree and bootstrap dependencies via `python3 ~/.claude/scripts/dev_status.py worktree <slug|N>`. (If multiple project repos are involved or resolution fails, specify `--repo <path>`). Reuse a worktree this session already made for this item instead of a second one.
+Create or reuse a dedicated worktree and bootstrap dependencies via `python3 {{TOOLKIT_SCRIPTS}}/dev_status.py worktree <slug|N>`. (If multiple project repos are involved or resolution fails, specify `--repo <path>`). Reuse a worktree this session already made for this item instead of a second one.
 
 ## 4. Baseline
 Run that repo's test suite (or the most relevant targeted subset) in the fresh worktree before touching anything ({{INSTRUCTIONS_REF}} "Baseline tests before starting code work").
@@ -24,7 +24,7 @@ unclear — run one more pass before continuing: draft a 300–600 word doc
 covering the module's boundary/responsibility (one paragraph), key
 interfaces it exposes or consumes, explicit non-goals, and known
 unknowns/deferred decisions. Save it to `docs/architecture/{module-slug}.md`
-in the target repo (project documentation, not `~/.claude/data/grill/`) and
+in the target repo (project documentation, not `{{TOOLKIT_DATA}}/grill/`) and
 reference it from the spec/plan. A later item touching the same module cites
 the existing doc instead of repeating this pass — check for it first.
 
@@ -38,7 +38,7 @@ acceptance criteria). If any step is judgment, set the item's gate before
 continuing:
 
 ```bash
-python3 ~/.claude/scripts/dev_status.py gate-set <slug|N> '{"required": true, "criteria": ["<short imperative criterion per judgment step>", "..."]}'
+python3 {{TOOLKIT_SCRIPTS}}/dev_status.py gate-set <slug|N> '{"required": true, "criteria": ["<short imperative criterion per judgment step>", "..."]}'
 ```
 
 If every step is mechanical, leave the gate unset (inert by default) —

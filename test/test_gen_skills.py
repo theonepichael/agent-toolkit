@@ -175,7 +175,7 @@ class CapabilityFixtureTests(unittest.TestCase):
         self.assertNotIn("AskUserQuestion", text)
         self.assertIn("the `question` tool", text)
         self.assertIn("grill` tool", text)
-        self.assertNotIn("python3 ~/.claude/scripts/grill.py", text)
+        self.assertNotIn("python3 ~/.agent-toolkit/scripts/grill.py", text)
         self.assertNotIn("no structured multi-choice widget", text)
         self.assertIn("session_start` extension event", text)
 
@@ -307,26 +307,26 @@ class CapabilityFixtureTests(unittest.TestCase):
 
     def test_standup_claude(self) -> None:
         text = self._render("standup", "claude")
-        self.assertIn("Bash(python3 ~/.claude/scripts/standup.py:*)", text)
+        self.assertIn("Bash(python3 ~/.agent-toolkit/scripts/standup.py:*)", text)
         self.assertIn("CLAUDE.md's pending-item status-transition rule", text)
 
     def test_standup_copilot(self) -> None:
         text = self._render("standup", "copilot")
         self.assertIn("name: standup", text)
         self.assertIn("allowed-tools: shell", text)
-        self.assertIn("python3 ~/.claude/scripts/standup.py fetch", text)
-        self.assertIn("python3 ~/.claude/scripts/dev_status.py pending update", text)
+        self.assertIn("python3 ~/.agent-toolkit/scripts/standup.py fetch", text)
+        self.assertIn("python3 ~/.agent-toolkit/scripts/dev_status.py pending update", text)
 
     def test_standup_opencode(self) -> None:
         text = self._render("standup", "opencode")
-        self.assertIn("python3 ~/.claude/scripts/dev_status.py pending update", text)
+        self.assertIn("python3 ~/.agent-toolkit/scripts/dev_status.py pending update", text)
         self.assertIn("visible via `/dashboard`", text)
 
     def test_standup_agy(self) -> None:
         text = self._render("standup", "agy")
         self.assertIn("name: standup", text)
-        self.assertIn("python3 ~/.claude/scripts/standup.py fetch", text)
-        self.assertIn("python3 ~/.claude/scripts/dev_status.py pending update", text)
+        self.assertIn("python3 ~/.agent-toolkit/scripts/standup.py fetch", text)
+        self.assertIn("python3 ~/.agent-toolkit/scripts/dev_status.py pending update", text)
 
     def test_standup_pi(self) -> None:
         text = self._render("standup", "pi")
@@ -336,8 +336,8 @@ class CapabilityFixtureTests(unittest.TestCase):
     def test_standup_codex(self) -> None:
         text = self._render("standup", "codex")
         self.assertIn("name: standup", text)
-        self.assertIn("python3 ~/.claude/scripts/standup.py fetch", text)
-        self.assertIn("python3 ~/.claude/scripts/dev_status.py pending update", text)
+        self.assertIn("python3 ~/.agent-toolkit/scripts/standup.py fetch", text)
+        self.assertIn("python3 ~/.agent-toolkit/scripts/dev_status.py pending update", text)
 
     # -- to-tickets -----------------------------------------------------
 
@@ -367,7 +367,7 @@ class CapabilityFixtureTests(unittest.TestCase):
     def test_to_tickets_pi(self) -> None:
         text = self._render("to-tickets", "pi")
         self.assertIn("`to_tickets` tool", text)
-        self.assertNotIn("python3 ~/.claude/scripts/to_tickets_runner.py run", text)
+        self.assertNotIn("python3 ~/.agent-toolkit/scripts/to_tickets_runner.py run", text)
 
     def test_to_tickets_codex(self) -> None:
         text = self._render("to-tickets", "codex")

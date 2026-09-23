@@ -25,7 +25,7 @@ Grill-me resolving the branch is a precursor, not a replacement: once its sessio
 
 ## 4. Save and confirm
 
-Write the spec to `~/.claude/data/grill/<topic-slug>-spec.md` (the same central location grill-me/second-opinion use for plan artifacts — never a per-session scratchpad). Never `mkdir -p` that directory first — `grill.py` and `second_opinion.py` each create it on every invocation, so just write the file. Show it to the user. Apply {{INSTRUCTIONS_REF}} "plans and deliverables get a path on record" backlog convention if this is tracked work.
+Write the spec to `{{TOOLKIT_DATA}}/grill/<topic-slug>-spec.md` (the same central location grill-me/second-opinion use for plan artifacts — never a per-session scratchpad). Never `mkdir -p` that directory first — `grill.py` and `second_opinion.py` each create it on every invocation, so just write the file. Show it to the user. Apply {{INSTRUCTIONS_REF}} "plans and deliverables get a path on record" backlog convention if this is tracked work.
 
 Then {{STEP4_ASK}} If a delegating caller declined this offer up front (e.g. it owns the handoff decision itself), skip the ask and stop after saving — report the spec path back to the caller.
 

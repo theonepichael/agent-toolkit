@@ -297,3 +297,19 @@ def test_ast_guard_catches_real_constructions(source):
 )
 def test_ast_guard_ignores_non_constructions(source):
     assert not _constructs_toolkit_data_path(ast.parse(source))
+
+
+def test_generated_text_root_matches_the_default_toolkit_root(tmp_path, monkeypatch):
+    """harness_spec's display root is the resolver's default root, spelled with ~."""
+    import harness_spec
+
+    monkeypatch.delenv(agent_toolkit_paths.ENV_HOME, raising=False)
+    root = harness_spec.TOOLKIT_DISPLAY_ROOT
+    assert root.startswith("~/")
+    home_root = tmp_path / root.removeprefix("~/")
+    assert Resolver()._toolkit_root(tmp_path) == home_root
+    assert agent_toolkit_paths.layout_path(tmp_path, "decisions", "toolkit-home") == (
+        tmp_path
+        / harness_spec.TOOLKIT_PATH_TOKENS["TOOLKIT_DATA"].removeprefix("~/")
+        / "grill"
+    )

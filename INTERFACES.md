@@ -1,7 +1,7 @@
 # INTERFACES.md
 
 Scope: `claude/`, `copilot/`, `opencode/`, `agy/`, `pi/`, the shared scripts under
-`agent-scripts/` that `links.toml` installs into `~/.claude/scripts/`, and the
+`agent-scripts/` that `links.toml` installs into `~/.agent-toolkit/scripts/`, and the
 repo-root installer entrypoints those harnesses are provisioned by.
 
 **This file is generated. Do not edit it by hand — your edits will be
@@ -644,7 +644,7 @@ gen_second_opinion.py — regenerate the second-opinion skill copies (one per ha
   - `--stdout` — print the rendered copies, write nothing
   - `--repo-root` — repository root (default: inferred from this script's path)
 - Explicit exit codes: `1`, `2`
-- Depends on: `cli_common.py`
+- Depends on: `cli_common.py`, `harness_spec.py`
 - Public classes:
   - `class HarnessParams` — One harness's frontmatter block plus its body placeholder values.
 - Public functions:
@@ -890,6 +890,7 @@ Declarative harness specification registry.
   - `class FeatureImplementation` — Declaration of a harness's implementation of a required feature.
   - `class HarnessSpec` — Specification and discovery facts for a single AI agent harness.
 - Public functions:
+  - `apply_toolkit_path_tokens(text: str) -> str` — Replace every `{{TOOLKIT_SCRIPTS}}` / `{{TOOLKIT_DATA}}` in ``text``.
   - `spec(name: str) -> HarnessSpec` — Return the HarnessSpec for the given harness name.
   - `binary(name: str) -> str` — Return the CLI binary name for the given harness.
   - `install_hint(name: str) -> str` — Return the installation hint for the given harness.
@@ -898,7 +899,7 @@ Declarative harness specification registry.
   - `probe_expected_root(name: str) -> frozenset[str]` — Return the fixture root tokens expected for the given harness.
   - `feature_spec(harness: str, feature: str) -> FeatureImplementation` — Return the FeatureImplementation declaration for a harness and feature.
   - `assert_feature_coverage(repo_root: Path | None = None) -> None` — Validate that all active harnesses have declared valid implementations for all required features.
-- Tested by: `test/test_harness_feature_coverage.py`, `test/test_harness_spec.py`
+- Tested by: `test/test_agent_toolkit_paths.py`, `test/test_harness_feature_coverage.py`, `test/test_harness_spec.py`
 
 ### `agent-scripts/herdr_delegate.py`
 
@@ -1500,7 +1501,7 @@ vitals-promotion.py — mechanical vitals-promotion pass over grill session data
 - CLI (`argparse`): vitals-promotion.py — mechanical vitals-promotion pass over grill session data.
   - `--quiet/-q`
   - `--verbose/-v`
-  - `--data-dir` — grill session data directory (default: ~/.claude/data/grill)
+  - `--data-dir` — grill session data directory (default: the toolkit data root's grill/)
   - `--apply` — write vitals files (default: dry-run, prints only)
   - `--search` — search vitals records for QUERY (space-separated keywords, AND-combined) and exit
   - `--backlog-slug` — with --search, also search <SLUG>.json (default: _global.json only)

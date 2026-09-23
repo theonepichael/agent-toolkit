@@ -72,7 +72,7 @@ already gives you it directly. The `dev_status` tool refuses a numeric
 dashboard).
 
 If the `dev_status` tool is genuinely unavailable, fall back to bash —
-`python3 ~/.claude/scripts/dev_status.py pending update <id> '{...}'` /
+`python3 ~/.agent-toolkit/scripts/dev_status.py pending update <id> '{...}'` /
 `pending add '{...}'`, same JSON shapes as above.
 
 `kind` is one of `email`, `chat`, `approval`. `source_ref` is a structured
@@ -94,5 +94,5 @@ was skipped — don't pad the draft to look complete.
 
 ## 4. Save and show
 
-Write the draft to `~/.claude/data/standup/YYYY-MM-DD.md` (today's date).
+Write the draft to `~/.agent-toolkit/data/standup/YYYY-MM-DD.md` (today's date).
 Show the user the draft and the `skipped` list from step 1.
