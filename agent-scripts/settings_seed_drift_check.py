@@ -471,7 +471,7 @@ def opencode_drift(seed: Path, live: Path) -> str:
         return (
             f"SECURITY: {', '.join(bypasses)} still allowed in your live "
             "opencode.jsonc (allowlist bypass) — run "
-            "`python3 ~/.claude/scripts/settings_seed_drift_check.py fix` to repair"
+            "`python3 ~/.agent-toolkit/scripts/settings_seed_drift_check.py fix` to repair"
         )
     drifted = _non_cosmetic_drift(*pair, OPENCODE_COSMETIC_KEYS)
     return ", ".join(drifted)
@@ -519,7 +519,7 @@ def cmd_check(quiet: bool = False) -> int:
             messages.append(
                 f"settings.json drifted from seed ({settings_seed.name}) on: "
                 f"{', '.join(drifted)} — "
-                "run `python3 ~/.claude/scripts/settings_seed_drift_check.py fix`"
+                "run `python3 ~/.agent-toolkit/scripts/settings_seed_drift_check.py fix`"
             )
 
     oc_seed = opencode_seed_path()
@@ -545,7 +545,7 @@ def cmd_check(quiet: bool = False) -> int:
             if drift:
                 messages.append(
                     f"{name} (VS Code) drifted from seed ({seed.name}): {drift} — "
-                    "run `python3 ~/.claude/scripts/settings_seed_drift_check.py "
+                    "run `python3 ~/.agent-toolkit/scripts/settings_seed_drift_check.py "
                     "push-vscode` to push the repo's version to Windows, or "
                     "`sync-to-seed` to pull the Windows version into the repo, "
                     "depending on which side has the change you want to keep"

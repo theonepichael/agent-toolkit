@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """dev_status.py — thin launcher; the implementation lives in dev_status_impl.
 
-Run as a script (`python3 ~/.claude/scripts/dev_status.py <cmd>`), this
+Run as a script (`python3 ~/.agent-toolkit/scripts/dev_status.py <cmd>`), this
 imports ``dev_status_impl`` and calls its ``main()`` with argv untouched, so
 the CLI surface, output, and exit codes come entirely from the implementation
 module — whose ``.pyc`` the interpreter reuses across invocations instead of

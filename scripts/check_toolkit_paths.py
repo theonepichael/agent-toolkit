@@ -823,27 +823,6 @@ LEGACY_PATH_EXEMPT: dict[str, str] = {
     "migrate_toolkit_home.py": "migrates from the legacy layout",
     "scripts/check_toolkit_paths.py": "classifies legacy paths",
     # Owned by other release-1 changes; delete the row when that change lands.
-    **dict.fromkeys(
-        (
-            "agent-scripts/analyze_sessions.py",
-            "agent-scripts/dev_status.py",
-            "agent-scripts/dev_status_impl.py",
-            "agent-scripts/dev_status_storage.py",
-            "agent-scripts/gen_interfaces.py",
-            "agent-scripts/guard_rails.py",
-            "agent-scripts/harness_discovery_check.py",
-            "agent-scripts/herdr_delegate.py",
-            "agent-scripts/link_inspect.py",
-            "agent-scripts/llm_backends.py",
-            "agent-scripts/sessionstart_checks.py",
-            "agent-scripts/settings_seed_drift_check.py",
-            "agent-scripts/to_tickets_runner.py",
-            "agent-scripts/vitals_promotion.py",
-            "agent-scripts/worktree.py",
-        ),
-        "docstrings, comments, hint strings and session-start commands move "
-        "in the agent-scripts paths change",
-    ),
     "agent-scripts/harness_spec.py": "the notify.py install mapping moves with links.toml",
     "agent-scripts/notify.py": "the icons directory moves with links.toml",
     "links.toml": "install destinations move with the links and settings change",

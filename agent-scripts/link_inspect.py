@@ -1124,7 +1124,7 @@ def find_orphaned_links(
     tool (most commonly another repo's own installer, sharing this same
     destination) has already repointed it, and unlinking it here would
     delete that tool's live symlink, not ours. 2026-09-07: another repo's
-    orphan-cleanup deleted three ~/.claude/scripts/*.py symlinks
+    orphan-cleanup deleted three ~/.agent-toolkit/scripts/*.py symlinks
     agent-toolkit's installer had just created moments earlier in the same
     install-with-agent-toolkit.sh run, because this check didn't exist —
     _rollback_symlink already guards the equivalent case before removing

@@ -35,11 +35,11 @@ State file
 
 Files read/written
   Reads the batch file and its state file. Writes/reads the same
-  ``dev_status.py`` backlog store (``~/.claude/data/backlog/``) that
+  ``dev_status.py`` backlog store (``~/.agent-toolkit/data/backlog/``) that
   ``dev_status.py`` itself uses, via
   ``dev_status``'s own primitives (``backlog_lock``, ``load_items``,
   ``save_items``, ``append_journal_event``). Also creates
-  ``~/.claude/data/to-tickets/`` on every invocation (see
+  ``~/.agent-toolkit/data/to-tickets/`` on every invocation (see
   ``ensure_data_dir``) — the directory the skill has agents write their batch
   files into.
 

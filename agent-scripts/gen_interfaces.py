@@ -1530,7 +1530,7 @@ def invocation_tokens(tokens: list[str], script_basename: str) -> list[str] | No
     the script's basename as the next token — rejecting lines where the
     script name is not effectively first (``cp dev_status.py backup_dir``)
     while still matching ``$ dev_status.py show 5`` or
-    ``python3 ~/.claude/scripts/dev_status.py show 5``.
+    ``python3 ~/.agent-toolkit/scripts/dev_status.py show 5``.
     """
     for index, token in enumerate(tokens):
         if Path(token).name == script_basename:

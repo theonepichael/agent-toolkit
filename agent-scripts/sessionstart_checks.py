@@ -38,23 +38,26 @@ TOOLKIT_DATA = "none"
 CHECKS: list[tuple[str, int]] = [
     (
         (
-            "python3 ~/.claude/scripts/dev_status.py render 2>&1"
+            "python3 ~/.agent-toolkit/scripts/dev_status.py render 2>&1"
             " || echo '[dev_status] render failed — run /dashboard to debug'"
         ),
         15,
     ),
-    ("python3 ~/.claude/scripts/grill.py pending-plan --consume", 15),
-    ("python3 ~/.claude/scripts/bundle_drift_check.py 2>/dev/null", 15),
-    ("python3 ~/.claude/scripts/settings_seed_drift_check.py", 15),
+    ("python3 ~/.agent-toolkit/scripts/grill.py pending-plan --consume", 15),
+    ("python3 ~/.agent-toolkit/scripts/bundle_drift_check.py 2>/dev/null", 15),
+    ("python3 ~/.agent-toolkit/scripts/settings_seed_drift_check.py", 15),
     (
         (
-            "timeout 5s python3 ~/.claude/scripts/harness_discovery_check.py"
+            "timeout 5s python3 ~/.agent-toolkit/scripts/harness_discovery_check.py"
             " check --hook"
             " || echo '[harness-discovery] checker failed — run it manually'"
         ),
         15,
     ),
-    ("timeout 20s python3 ~/.claude/scripts/link_drift_check.py check 2>/dev/null", 30),
+    (
+        "timeout 20s python3 ~/.agent-toolkit/scripts/link_drift_check.py check 2>/dev/null",
+        30,
+    ),
     (
         (
             "if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then"

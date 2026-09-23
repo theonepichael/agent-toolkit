@@ -69,7 +69,7 @@ from pathlib import Path
 # Deliberately NOT .resolve()'d: dev_status.py and this script may live in
 # different repos' checkouts, so resolving the symlink back to its own
 # (dev_status.py-less) agent-scripts/ would break the import. Path(__file__).parent stays
-# at the LIVE installed directory (~/.claude/scripts/) instead, where both
+# at the LIVE installed directory (~/.agent-toolkit/scripts/) instead, where both
 # files are siblings regardless of which repo's checkout each one symlinks
 # back to -- Python's import machinery follows a module's symlink itself,
 # same as any other file open.

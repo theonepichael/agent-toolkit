@@ -70,7 +70,7 @@ Environment
                        to duplicate.
 
 Every delivered verdict is also appended, best-effort, to a durable JSONL
-audit trail at ``~/.claude/data/guard_rails_audit.jsonl`` (fields: ``ts``,
+audit trail at ``~/.agent-toolkit/data/guard_rails_audit.jsonl`` (fields: ``ts``,
 ``harness``, ``tool``, redacted ``target``, ``rule``, ``decision``). That
 write happens strictly after the verdict is on stdout and can never alter
 or suppress it.
@@ -728,7 +728,7 @@ def evaluate(req: Request, claims: BacklogClaimLookup) -> Verdict:
                 f"Refusing to write into the main checkout of "
                 f"{info.toplevel} on '{info.branch}' while backlog item "
                 f"'{slug}' is in progress there. Do this work in a "
-                f"worktree: python3 ~/.claude/scripts/worktree.py {slug}",
+                f"worktree: python3 ~/.agent-toolkit/scripts/worktree.py {slug}",
                 rule="main-checkout-write",
             )
 
