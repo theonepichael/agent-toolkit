@@ -6,13 +6,13 @@ import { Type } from "typebox";
 import { getEffectiveCwd } from "./cwd";
 
 // Wraps agent-scripts/second_opinion.py, following the pattern set by
-// dev-status-tool.ts (see ~/.claude/data/grill/pi-tool-dev-status-spec.md).
+// dev-status-tool.ts (see ~/.agent-toolkit/data/grill/pi-tool-dev-status-spec.md).
 //
 // The script is single-round by design: one call, one critique. The
 // multi-round loop, plan revision, and convergence judgment stay in the
 // prompt template -- this tool deliberately does not model them.
 
-const SECOND_OPINION_PATH = join(homedir(), ".claude", "scripts", "second_opinion.py");
+const SECOND_OPINION_PATH = join(homedir(), ".agent-toolkit", "scripts", "second_opinion.py");
 
 const ACTIONS = ["detect", "review"] as const;
 
@@ -102,7 +102,7 @@ export default function (pi: ExtensionAPI) {
     promptSnippet: "Get an outside adversarial critique of a plan file",
     promptGuidelines: [
       "Never invoke second_opinion.py via bash -- always use second_opinion instead.",
-      'second_opinion covers everything second_opinion.py does: action "detect" lists available backends as JSON, and action "review" returns one critique of the plan at planFile. If you are about to compose a `python3 ~/.claude/scripts/second_opinion.py ...` bash command, use second_opinion instead.',
+      'second_opinion covers everything second_opinion.py does: action "detect" lists available backends as JSON, and action "review" returns one critique of the plan at planFile. If you are about to compose a `python3 ~/.agent-toolkit/scripts/second_opinion.py ...` bash command, use second_opinion instead.',
       "Never shell out to codex, agy, pi, opencode, or copilot directly for a critique -- all backend I/O goes through this tool.",
       "It is single-round: one call, one critique. The multi-round loop, the plan revision between rounds, and the convergence judgment are yours, not the tool's.",
       "Always pass planFile as a path. Never inline plan text -- write the plan to a file first.",
@@ -113,7 +113,7 @@ export default function (pi: ExtensionAPI) {
       planFile: Type.Optional(
         Type.String({
           description:
-            "review: path to the plan file to critique, conventionally ~/.claude/data/grill/<topic-slug>-plan.md. A path, never inline plan text.",
+            "review: path to the plan file to critique, conventionally ~/.agent-toolkit/data/grill/<topic-slug>-plan.md. A path, never inline plan text.",
         }),
       ),
       backend: Type.Optional(

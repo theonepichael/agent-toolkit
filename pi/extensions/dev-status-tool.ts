@@ -6,13 +6,13 @@ import { Type } from "typebox";
 import { getEffectiveCwd } from "./cwd";
 
 // Wraps agent-scripts/dev_status.py -- see
-// ~/.claude/data/grill/pi-tool-dev-status-spec.md for the full design and
-// ~/.claude/data/grill/pi-tool-dev-status-spec-critique-notes.md for why
+// ~/.agent-toolkit/data/grill/pi-tool-dev-status-spec.md for the full design and
+// ~/.agent-toolkit/data/grill/pi-tool-dev-status-spec-critique-notes.md for why
 // the numeric-identity handling below looks the way it does (two earlier
 // designs both silently risked mutating the wrong item; this one refuses
 // instead).
 
-const DEV_STATUS_PATH = join(homedir(), ".claude", "scripts", "dev_status.py");
+const DEV_STATUS_PATH = join(homedir(), ".agent-toolkit", "scripts", "dev_status.py");
 
 const ACTIONS = [
   "render",
@@ -354,7 +354,7 @@ export default function (pi: ExtensionAPI) {
     promptSnippet: "Read or mutate the personal backlog/pending store",
     promptGuidelines: [
       "Never invoke dev_status.py via bash, for any reason, including a plain read like listing pending items or checking status -- always use dev_status instead. This applies to every action, not just ones a slash command already told you to use dev_status for.",
-      "dev_status covers everything dev_status.py's CLI does: render, list, ready, show, add, update, validate, start, done, reopen, review, approve, reject, gate_set, gate_pass, run, runs, backfill_gate, rename, remove, block, unblock, prune, recap, worktree, machine_id, pending_add, pending_update, pending_list, and the out_of_scope_* actions. If you're about to compose a `python3 ~/.claude/scripts/dev_status.py ...` bash command for any of these, use dev_status with the matching action instead.",
+      "dev_status covers everything dev_status.py's CLI does: render, list, ready, show, add, update, validate, start, done, reopen, review, approve, reject, gate_set, gate_pass, run, runs, backfill_gate, rename, remove, block, unblock, prune, recap, worktree, machine_id, pending_add, pending_update, pending_list, and the out_of_scope_* actions. If you're about to compose a `python3 ~/.agent-toolkit/scripts/dev_status.py ...` bash command for any of these, use dev_status with the matching action instead.",
       "dev_status's patch field is a plain object, not a JSON string -- never hand-encode it.",
       'dev_status refuses a numeric slug on any mutating action -- call action: "show" first to resolve a numeric position to its real slug.',
       "start refuses to run from a main/master checkout (worktree guard) or when the item is actively claimed by another live session (claim collision) -- pass cwd to evaluate the guard and stamp the claim from a dedicated worktree, allowMain to bypass the guard, force to take over a live claim, or claimedBy to correct a wrong auto-detected harness name.",

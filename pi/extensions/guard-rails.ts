@@ -172,7 +172,7 @@ async function sharedGuard(
     const result = await pi.exec(
       "python3",
       [
-        `${process.env.HOME}/.claude/scripts/guard_rails.py`,
+        `${process.env.HOME}/.agent-toolkit/scripts/guard_rails.py`,
         "--tool",
         tool,
         "--cwd",
@@ -204,7 +204,7 @@ async function sharedBashGuard(
     const result = await pi.exec(
       "python3",
       [
-        `${process.env.HOME}/.claude/scripts/guard_rails.py`,
+        `${process.env.HOME}/.agent-toolkit/scripts/guard_rails.py`,
         "--tool",
         "bash",
         "--cwd",

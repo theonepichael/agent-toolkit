@@ -133,9 +133,9 @@ the difference between a working install and silent fallbacks.
 
 | Path | Status | What it holds |
 | :--- | :--- | :--- |
-| `~/.claude/data/backlog/` | **Created on first use** by `dev_status.py` | The backlog/pending store (items.json, pending_items.json, _meta.json, journal.jsonl). Per-user by construction — it lives in your home, not in the repo. Hardcoded location: `Path.home() / ".claude" / "data" / "backlog"`; there is no `XDG_DATA_HOME` support. Out-of-scope concepts live in the sibling `~/.claude/data/backlog-out-of-scope/`, not nested under this path. |
-| `~/.claude/data/grill/` | **Created on first use** by `grill.py` and `second_opinion.py` | Spec, plan, and critique artifacts written by the `/spec`, `/grill-me`, and `/second-opinion` skills. Same hardcoded base path as above. |
-| `~/.claude/data/to-tickets/` | **Created on first use** by `to_tickets_runner.py` | Batch files drafted by the `/to-tickets` skill. |
+| `~/.agent-toolkit/data/backlog/` | **Created on first use** by `dev_status.py` | The backlog/pending store (items.json, pending_items.json, _meta.json, journal.jsonl). Per-user by construction — it lives in your home, not in the repo. Hardcoded location: `Path.home() / ".claude" / "data" / "backlog"`; there is no `XDG_DATA_HOME` support. Out-of-scope concepts live in the sibling `~/.agent-toolkit/data/backlog-out-of-scope/`, not nested under this path. |
+| `~/.agent-toolkit/data/grill/` | **Created on first use** by `grill.py` and `second_opinion.py` | Spec, plan, and critique artifacts written by the `/spec`, `/grill-me`, and `/second-opinion` skills. Same hardcoded base path as above. |
+| `~/.agent-toolkit/data/to-tickets/` | **Created on first use** by `to_tickets_runner.py` | Batch files drafted by the `/to-tickets` skill. |
 | `~/.secrets` (or wherever you keep shell env) | **Expected, user-supplied — never created by the installer** | This machine's `SECOND_OPINION_*` model pools live here. The toolkit itself never opens this file — it reads environment variables, however you set them. |
 
 ### Environment variables (all optional)
@@ -183,7 +183,7 @@ export SECOND_OPINION_PI_MODEL_POOL="opencode-go/glm-5.2,opencode-go/glm-5.3-fla
 
 | Harness | Primary Config | Skills / Prompts Path | Extensions / Hooks |
 | :--- | :--- | :--- | :--- |
-| **Claude Code** | `~/.claude/CLAUDE.md` | `~/.claude/commands/` | `~/.claude/scripts/guard_rails.py` |
+| **Claude Code** | `~/.claude/CLAUDE.md` | `~/.claude/commands/` | `~/.agent-toolkit/scripts/guard_rails.py` |
 | **GitHub Copilot** | `~/.copilot/copilot-instructions.md` | `~/.copilot/skills/` | `~/.copilot/hooks/` |
 | **OpenCode** | `~/.config/opencode/opencode.jsonc` | `~/.config/opencode/commands/` | `~/.config/opencode/plugin/` |
 | **Antigravity (AGY)** | `~/.gemini/GEMINI.md` | `~/.gemini/antigravity-cli/skills/` | `~/.gemini/config/hooks.json` |
@@ -238,7 +238,7 @@ JSONL to `$XDG_STATE_HOME/agent-toolkit/timing.jsonl`, defaulting to
 For example, to measure a dashboard call:
 
 ```sh
-AGENT_TOOLKIT_TIMING=1 python3 ~/.claude/scripts/dev_status.py render
+AGENT_TOOLKIT_TIMING=1 python3 ~/.agent-toolkit/scripts/dev_status.py render
 ```
 
 Each record has `name`, `started_at`, `duration_seconds`, `outcome`, `pid`,

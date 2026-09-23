@@ -10,7 +10,7 @@ never as a side effect of an unrelated task.
 
 2. Run, with no `--doc-set` flag:
    ```
-   python3 ~/.claude/scripts/refresh_guidance.py check --repo-root <repo-root>
+   python3 ~/.agent-toolkit/scripts/refresh_guidance.py check --repo-root <repo-root>
    ```
    The tool auto-discovers `<repo-root>/refresh-guidance.toml` when the
    target repo carries one (its own doc-set config, owned by that repo —
@@ -46,7 +46,7 @@ never as a side effect of an unrelated task.
      before editing.
    - **Progressive disclosure findings (`symlink`, `signpost`, `budget`)**:
      - `symlink`: If a paired `CLAUDE.md` symlink is missing or broken, offer
-       to run `python3 ~/.claude/scripts/refresh_guidance.py scaffold <dir>`
+       to run `python3 ~/.agent-toolkit/scripts/refresh_guidance.py scaffold <dir>`
        (which non-destructively creates the missing symlink without modifying
        existing `AGENTS.md` content).
      - `signpost`: If a directory carries `AGENTS.md` but lacks a root
@@ -59,7 +59,7 @@ never as a side effect of an unrelated task.
      `docs/architecture/progressive-disclosure-rubric.md`. If the user wants
      to document the directory, run:
      ```
-     python3 ~/.claude/scripts/refresh_guidance.py scaffold <dir> --repo-root <repo-root>
+     python3 ~/.agent-toolkit/scripts/refresh_guidance.py scaffold <dir> --repo-root <repo-root>
      ```
      Interview the user to author its three rubric sections (`## Responsibilities & Boundary`,
      `## Hazards & Signposts`, `## Local Conventions`), and append a signpost
@@ -72,7 +72,7 @@ never as a side effect of an unrelated task.
    user explicitly confirms they just read a specific section and it's
    still accurate:
    ```
-   python3 ~/.claude/scripts/refresh_guidance.py mark-reviewed "<doc>" "<heading>" --repo-root <repo-root> [--doc-set agent-toolkit]
+   python3 ~/.agent-toolkit/scripts/refresh_guidance.py mark-reviewed "<doc>" "<heading>" --repo-root <repo-root> [--doc-set agent-toolkit]
    ```
    Same resolution as step 2: omit `--doc-set` when the repo has its own
    `refresh-guidance.toml`, pass `--doc-set agent-toolkit` only when

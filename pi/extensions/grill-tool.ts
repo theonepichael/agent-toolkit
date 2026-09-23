@@ -6,7 +6,7 @@ import { Type } from "typebox";
 import { getEffectiveCwd } from "./cwd";
 
 // Wraps agent-scripts/grill.py, following the pattern set by
-// dev-status-tool.ts (see ~/.claude/data/grill/pi-tool-dev-status-spec.md).
+// dev-status-tool.ts (see ~/.agent-toolkit/data/grill/pi-tool-dev-status-spec.md).
 //
 // Unlike dev_status.py, grill.py addresses sessions by slug or unique
 // substring only -- never by a numeric position that can drift between the
@@ -14,7 +14,7 @@ import { getEffectiveCwd } from "./cwd";
 // rejection that dominates dev-status-tool.ts has no analogue here, and
 // `session` is passed through as-is.
 
-const GRILL_PATH = join(homedir(), ".claude", "scripts", "grill.py");
+const GRILL_PATH = join(homedir(), ".agent-toolkit", "scripts", "grill.py");
 
 const ACTIONS = [
   "new",
@@ -178,7 +178,7 @@ export default function (pi: ExtensionAPI) {
     promptSnippet: "Read or mutate grill-me session state",
     promptGuidelines: [
       "Never invoke grill.py via bash, for any reason, including a plain read like listing sessions or rendering one -- always use grill instead. This applies to every action, not just ones a slash command already told you to use grill for.",
-      "grill covers everything grill.py's CLI does: new, ask, decide, revise, rm, verdict, plan, mark_pending_execution, pending_plan, next, frontier, render, list, show. If you're about to compose a `python3 ~/.claude/scripts/grill.py ...` bash command for any of these, use grill with the matching action instead.",
+      "grill covers everything grill.py's CLI does: new, ask, decide, revise, rm, verdict, plan, mark_pending_execution, pending_plan, next, frontier, render, list, show. If you're about to compose a `python3 ~/.agent-toolkit/scripts/grill.py ...` bash command for any of these, use grill with the matching action instead.",
       "grill's payload field is a plain object, not a JSON string -- never hand-encode it.",
       "Sessions are addressed by slug or unique substring via session, never by a number. Omitting session targets the most recent one.",
       'A verdict of "VERIFIED" or "DISPUTED" must carry evidence naming what was actually run and what it showed. "UNVERIFIABLE" is the honest answer when nothing was run -- never a VERIFIED verdict with hand-waved evidence.',
@@ -210,7 +210,7 @@ export default function (pi: ExtensionAPI) {
       path: Type.Optional(
         Type.String({
           description:
-            "plan: path to the already-written plan artifact, conventionally ~/.claude/data/grill/<slug>-plan.md. The file must exist.",
+            "plan: path to the already-written plan artifact, conventionally ~/.agent-toolkit/data/grill/<slug>-plan.md. The file must exist.",
         }),
       ),
       backlogSlug: Type.Optional(

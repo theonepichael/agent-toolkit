@@ -447,7 +447,7 @@ conflicting keys), same pattern as Claude Code's `~/.claude/settings.json` +
 ## 8. Plugins (`opencode/plugin/`)
 
 - **`ruff-format-on-edit.ts`** — auto-formats Python files on `tool.execute.after` for `edit` and `write`.
-- **`notify.ts`** — listens to `session.idle` event and dispatches cross-platform desktop toasts with the official OpenCode logo via `~/.claude/scripts/notify.py`.
+- **`notify.ts`** — listens to `session.idle` event and dispatches cross-platform desktop toasts with the official OpenCode logo via `~/.agent-toolkit/scripts/notify.py`.
 - **`guard-rails.ts`** — delegates to `agent-scripts/guard_rails.py` on `tool.execute.before`; this list previously omitted it despite it being covered in detail in the "Pre-tool guard" section below — see that section for the verified payload shape and the no-warn-channel limitation.
 
 ## Sources

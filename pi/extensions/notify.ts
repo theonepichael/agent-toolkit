@@ -2,7 +2,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-const NOTIFY_SCRIPT = join(homedir(), ".claude", "scripts", "notify.py");
+const NOTIFY_SCRIPT = join(homedir(), ".agent-toolkit", "scripts", "notify.py");
 
 export function buildNotifyArgs(options: {
   title?: string;

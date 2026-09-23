@@ -38,6 +38,8 @@ def test_real_repository_passes_both_checks():
         (("data", "grill"), "toolkit"),
         (("data",), "toolkit"),
         (("hooks",), "toolkit"),
+        (("hooks", "agy-elapsed.js"), "toolkit"),
+        (("hooks", "herdr-agent-state.sh"), "foreign"),
         (("projects",), "harness"),
         (("settings.json",), "harness"),
         ((), "harness"),
@@ -304,3 +306,81 @@ def test_inventory_flags_missing_duplicate_and_unclaimed_outputs(tmp_path):
     assert any(p.startswith("a.md: claimed by one, two") for p in problems)
     assert any(p.startswith("orphan.md: header names gen_x.py") for p in problems)
     assert len(problems) == 3
+
+
+# ── hand-authored check ──────────────────────────────────────────────────────
+
+
+@pytest.mark.allow_real_subprocess  # git ls-files on this checkout
+def test_real_hand_authored_files_name_no_legacy_toolkit_path():
+    assert c.hand_authored_legacy_references(c.REPO) == []
+
+
+def hand(root, files, exempt=None, table=None):
+    return c.hand_authored_legacy_references(
+        root,
+        files=files,
+        exempt={} if exempt is None else exempt,
+        table={} if table is None else table,
+    )
+
+
+def test_legacy_toolkit_path_in_a_hand_authored_file_is_reported(tmp_path):
+    rel = write(tmp_path, "skills/x/SKILL.md", "run ~/.claude/scripts/grill.py\n")
+    problems = hand(tmp_path, [rel])
+    assert len(problems) == 1
+    assert problems[0].startswith("skills/x/SKILL.md:1: .claude/scripts/grill.py")
+
+
+def test_ts_join_to_a_legacy_toolkit_path_is_reported(tmp_path):
+    rel = write(
+        tmp_path,
+        "pi/extensions/x.ts",
+        'const P = join(homedir(), ".claude", "scripts", "dev_status.py");\n',
+    )
+    assert len(hand(tmp_path, [rel])) == 1
+
+
+def test_harness_and_foreign_paths_in_a_hand_authored_file_pass(tmp_path):
+    rel = write(
+        tmp_path,
+        "a.md",
+        "~/.claude/commands/x.md ~/.claude/scripts/dev_status_sync.py\n"
+        "~/.agent-toolkit/scripts/grill.py\n",
+    )
+    assert hand(tmp_path, [rel]) == []
+
+
+def test_generated_output_test_tree_and_exempt_file_are_not_scanned(tmp_path):
+    legacy = "~/.claude/scripts/grill.py\n"
+    files = [
+        write(tmp_path, "out.md", legacy),
+        write(tmp_path, "test/test_x.py", legacy),
+        write(tmp_path, "pi/test/x.test.ts", legacy),
+        write(tmp_path, "agent-scripts/y.py", legacy),
+    ]
+    problems = hand(
+        tmp_path,
+        files,
+        exempt={"agent-scripts/*.py": "owned elsewhere"},
+        table={"g": gen(["out.md"])},
+    )
+    assert problems == []
+
+
+def test_stale_exemption_is_reported(tmp_path):
+    rel = write(tmp_path, "agent-scripts/y.py", "no legacy paths here\n")
+    problems = hand(tmp_path, [rel], exempt={"agent-scripts/*.py": "owned elsewhere"})
+    assert len(problems) == 1
+    assert "agent-scripts/*.py" in problems[0]
+    assert "stale" in problems[0]
+
+
+def test_hand_authored_cli_exit_codes(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(
+        c, "hand_authored_legacy_references", lambda repo: ["a.md:1: x: legacy"]
+    )
+    assert c.main(["hand-authored"]) == 1
+    assert "a.md:1" in capsys.readouterr().out
+    monkeypatch.setattr(c, "hand_authored_legacy_references", lambda repo: [])
+    assert c.main(["hand-authored"]) == 0

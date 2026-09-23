@@ -105,7 +105,7 @@ shape depends on decisions made in items 1 through 3.
 
 Order and rollback settled in the `meta-agent-toolkit-handover-safety` grill
 session (2026-09-03, plan at
-`~/.claude/data/grill/2026-09-03-meta-agent-toolkit-handover-safe-plan.md`)
+`~/.agent-toolkit/data/grill/2026-09-03-meta-agent-toolkit-handover-safe-plan.md`)
 and round-trip tested on a scratch HOME that same day. What that plan's
 verification did **not** cover, because it hadn't happened yet: a real
 `install-with-agent-toolkit.sh` run always runs dotfiles' installer second to

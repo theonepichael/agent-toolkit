@@ -4,14 +4,14 @@ import type { ExtensionAPI, SessionCompactEvent } from "@earendil-works/pi-codin
 
 // Wraps agent-scripts/dev_status.py's `update`, following the
 // pi.exec/DEVSTATUS_AGENT pattern set by dev-status-tool.ts. See
-// ~/.claude/data/grill/pi-compaction-backlog-sync-spec.md for the full
-// design and ~/.claude/data/grill/pi-native-context-management-findings-critique-notes.md
+// ~/.agent-toolkit/data/grill/pi-compaction-backlog-sync-spec.md for the full
+// design and ~/.agent-toolkit/data/grill/pi-native-context-management-findings-critique-notes.md
 // for why this never auto-writes: session_compact fires with no user
 // present to resolve a target-item choice, confirm the merged text, or
 // retry a failed write, so every dev_status.py mutation here is triggered
 // by the user explicitly running /backlog-sync, never by the hook itself.
 
-const DEV_STATUS_PATH = join(homedir(), ".claude", "scripts", "dev_status.py");
+const DEV_STATUS_PATH = join(homedir(), ".agent-toolkit", "scripts", "dev_status.py");
 
 export const COMPACTION_SUMMARY_ENTRY_TYPE = "compaction-backlog-summary";
 

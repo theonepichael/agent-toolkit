@@ -19,7 +19,7 @@ wrap lives elsewhere (`agent-scripts/`, `pi/extensions/swarm-lib/`).
 - `copilot/aliases.zsh`'s `--allow-tool` pre-approval is broader than it
   looks: Copilot's wildcard matching only works on single-word command
   stems (`git`, `gh`) per `copilot help permissions`, so a per-script
-  pattern like `shell(python3 ~/.claude/scripts/dev_status.py:*)` never
+  pattern like `shell(python3 ~/.agent-toolkit/scripts/dev_status.py:*)` never
   matches. The alias pre-approves `python3` broadly instead — see the
   comment at the top of the file before tightening or copying this
   pattern.

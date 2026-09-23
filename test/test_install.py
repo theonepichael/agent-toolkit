@@ -956,12 +956,12 @@ def test_opencode_bypass_drift_does_not_catch_unnamed_patterns():
 _APPROVED_BASH_PATTERNS = frozenset(
     {
         # 5 named shared workflow scripts + vitals promotion
-        "python3 ~/.claude/scripts/dev_status.py *",
-        "python3 ~/.claude/scripts/grill.py *",
-        "python3 ~/.claude/scripts/second_opinion.py *",
-        "python3 ~/.claude/scripts/settings_seed_drift_check.py *",
-        "python3 ~/.claude/scripts/bundle_drift_check.py *",
-        "python3 ~/.claude/scripts/vitals_promotion.py *",
+        "python3 ~/.agent-toolkit/scripts/dev_status.py *",
+        "python3 ~/.agent-toolkit/scripts/grill.py *",
+        "python3 ~/.agent-toolkit/scripts/second_opinion.py *",
+        "python3 ~/.agent-toolkit/scripts/settings_seed_drift_check.py *",
+        "python3 ~/.agent-toolkit/scripts/bundle_drift_check.py *",
+        "python3 ~/.agent-toolkit/scripts/vitals_promotion.py *",
         "python3 agent-scripts/vitals_promotion.py *",
         # dev_status with environment variable
         "DEVSTATUS_AGENT=1 python3 *",

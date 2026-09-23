@@ -1,7 +1,7 @@
 # GitHub Copilot CLI — pre-approves the shared backlog/pending/standup tooling.
 # Copilot's --allow-tool wildcard matching only works on single-word command
 # stems (git, gh) per `copilot help permissions` — a per-script pattern like
-# shell(python3 ~/.claude/scripts/dev_status.py:*) never matches, so this
+# shell(python3 ~/.agent-toolkit/scripts/dev_status.py:*) never matches, so this
 # pre-approves python3 broadly rather than just our scripts. Tighten this if
 # Copilot ships richer prefix matching (their docs say it's coming).
 alias copilot-work='copilot \

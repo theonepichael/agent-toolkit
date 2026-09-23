@@ -5,7 +5,7 @@
       {
         "type": "command",
         "matcher": "create|edit",
-        "bash": "python3 ~/.claude/scripts/guard_rails.py --harness copilot",
+        "bash": "python3 ~/.agent-toolkit/scripts/guard_rails.py --harness copilot",
         "timeoutSec": 10
       }
     ]

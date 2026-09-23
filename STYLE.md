@@ -25,7 +25,7 @@ CLI ergonomics
 - Provide --help and clear exit codes. 0 = success; nonzero for failures.
 
 Config & secrets
-- Config: JSON, under the owning tool's data directory — e.g. ~/.claude/data/standup/config.json, with backlog state in ~/.claude/data/backlog/. Harness settings stay in their tool-owned files (~/.claude/settings.json, ~/.config/opencode/opencode.jsonc).
+- Config: JSON, under the owning tool's data directory — e.g. ~/.agent-toolkit/data/standup/config.json, with backlog state in ~/.agent-toolkit/data/backlog/. Harness settings stay in their tool-owned files (~/.claude/settings.json, ~/.config/opencode/opencode.jsonc).
 - Prefer JSON over YAML for new config: the standard library parses JSON, and YAML would pull in a third-party dependency the harness rule above forbids.
 - XDG paths where a tool writes transient state: honor $XDG_STATE_HOME, falling back to ~/.local/state.
 - Precedence: CLI flags > ENV vars > per-user config > system defaults.

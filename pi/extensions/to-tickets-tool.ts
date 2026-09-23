@@ -6,7 +6,7 @@ import { Type } from "typebox";
 import { getEffectiveCwd } from "./cwd";
 
 // Wraps agent-scripts/to_tickets_runner.py, following the pattern set by
-// dev-status-tool.ts (see ~/.claude/data/grill/pi-tool-dev-status-spec.md).
+// dev-status-tool.ts (see ~/.agent-toolkit/data/grill/pi-tool-dev-status-spec.md).
 //
 // One subcommand, one argument: path in, created slugs out. The value over
 // a bash call is not the argv shape but the shell: the batch file's
@@ -15,7 +15,7 @@ import { getEffectiveCwd } from "./cwd";
 // inline single-quoted command. pi.exec takes argv directly, so no shell
 // ever parses the path.
 
-const TO_TICKETS_RUNNER_PATH = join(homedir(), ".claude", "scripts", "to_tickets_runner.py");
+const TO_TICKETS_RUNNER_PATH = join(homedir(), ".agent-toolkit", "scripts", "to_tickets_runner.py");
 
 const ACTIONS = ["run"] as const;
 
@@ -53,7 +53,7 @@ export default function (pi: ExtensionAPI) {
     promptSnippet: "Create a linked batch of backlog items from a ticket breakdown file",
     promptGuidelines: [
       "Never invoke to_tickets_runner.py via bash -- always use to_tickets instead.",
-      'to_tickets covers everything to_tickets_runner.py does: action "run" with the path to the batch JSON file. If you are about to compose a `python3 ~/.claude/scripts/to_tickets_runner.py run ...` bash command, use to_tickets instead.',
+      'to_tickets covers everything to_tickets_runner.py does: action "run" with the path to the batch JSON file. If you are about to compose a `python3 ~/.agent-toolkit/scripts/to_tickets_runner.py run ...` bash command, use to_tickets instead.',
       "Write the batch JSON to a file first, then pass its path. Never build the JSON inline in a command: summary and context fields routinely contain apostrophes.",
       "If a run is interrupted, call to_tickets again with the same batchFile. The runner keeps its own state file, so repeating the call resumes rather than duplicating tickets -- do not try to work out which tickets already exist.",
     ],
@@ -62,7 +62,7 @@ export default function (pi: ExtensionAPI) {
       batchFile: Type.Optional(
         Type.String({
           description:
-            "Path to the batch JSON file, conventionally ~/.claude/data/to-tickets/<topic-slug>-tickets-batch.json. Never ~/.claude/data/grill/, which grill.py globs as its private session store.",
+            "Path to the batch JSON file, conventionally ~/.agent-toolkit/data/to-tickets/<topic-slug>-tickets-batch.json. Never ~/.agent-toolkit/data/grill/, which grill.py globs as its private session store.",
         }),
       ),
     }),

@@ -6,7 +6,7 @@ import { Type } from "typebox";
 import { getEffectiveCwd } from "./cwd";
 
 // Wraps agent-scripts/vitals_promotion.py, following the pattern set by
-// dev-status-tool.ts (see ~/.claude/data/grill/pi-tool-dev-status-spec.md).
+// dev-status-tool.ts (see ~/.agent-toolkit/data/grill/pi-tool-dev-status-spec.md).
 //
 // The script has no subcommands, only flags, so the two things a caller
 // actually wants -- run the promotion pass, or search the vitals store for
@@ -15,7 +15,7 @@ import { getEffectiveCwd } from "./cwd";
 // from being offered on the wrong action, where the script would silently
 // ignore them.
 
-const VITALS_PROMOTION_PATH = join(homedir(), ".claude", "scripts", "vitals_promotion.py");
+const VITALS_PROMOTION_PATH = join(homedir(), ".agent-toolkit", "scripts", "vitals_promotion.py");
 
 const ACTIONS = ["run", "search"] as const;
 
@@ -89,7 +89,7 @@ export default function (pi: ExtensionAPI) {
     promptSnippet: "Promote settled grill decisions into the vitals store, or search it",
     promptGuidelines: [
       "Never invoke vitals_promotion.py via bash, for any reason, including a dry run or a search -- always use vitals_promotion instead.",
-      'vitals_promotion covers everything vitals_promotion.py does: action "run" is the promote/supersede pass (apply: true writes, omitted is a dry run that only prints), and action "search" looks up vitals records matching query (space-separated keywords, AND-combined -- every keyword must appear, no length filtering) without loading the whole store. If you are about to compose a `python3 ~/.claude/scripts/vitals_promotion.py ...` bash command, use vitals_promotion with the matching action instead.',
+      'vitals_promotion covers everything vitals_promotion.py does: action "run" is the promote/supersede pass (apply: true writes, omitted is a dry run that only prints), and action "search" looks up vitals records matching query (space-separated keywords, AND-combined -- every keyword must appear, no length filtering) without loading the whole store. If you are about to compose a `python3 ~/.agent-toolkit/scripts/vitals_promotion.py ...` bash command, use vitals_promotion with the matching action instead.',
       "The pass is global, not per-session: it re-classifies every session on disk, so it also catches drift from sessions closed since the last run. Show its printed report to the user rather than summarizing the counts away.",
       "search defaults to the global vitals store only; pass backlogSlug to also search that backlog item's own vitals file. Superseded records are excluded unless includeSuperseded is set -- a superseded record is not a settled fact.",
     ],
@@ -121,7 +121,7 @@ export default function (pi: ExtensionAPI) {
       ),
       dataDir: Type.Optional(
         Type.String({
-          description: "Grill session data directory. Defaults to ~/.claude/data/grill.",
+          description: "Grill session data directory. Defaults to ~/.agent-toolkit/data/grill.",
         }),
       ),
     }),

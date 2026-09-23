@@ -4,7 +4,8 @@
 ownership   Classify every ``.claude`` path reference in the tracked files as
             toolkit (moves in the cutover), harness (the Claude harness's own
             installation, never moves), or foreign (origin-repo scripts
-            symlinked into ~/.claude/scripts, never moved or flagged). A
+            symlinked into ~/.claude/scripts, and hooks a third party installs
+            into ~/.claude/hooks, never moved or flagged). A
             reference no rule covers fails. References are found three ways:
             plain text, Python ``Path`` constructions (AST), and TypeScript /
             JavaScript ``join(...)`` calls.
@@ -17,6 +18,12 @@ generators  Check the generator inventory (``GENERATORS``): every file a
             generator emits is claimed by exactly one row, every declared
             output is tracked, and no generated output still names a
             toolkit-owned path under ``.claude``.
+hand-authored
+            Check every tracked file no generator emits and no test tree
+            holds: none may name a toolkit-owned path under ``.claude``,
+            unless a ``LEGACY_PATH_EXEMPT`` row covers it. Each row names its
+            owner or reason; a row that no longer matches a legacy reference
+            is stale and fails, so it is deleted when its owner lands.
 
 The ``TOOLKIT_DATA`` markers are declarations and these rules are a tripwire,
 not proof of lock coverage: the execution tests in
@@ -27,6 +34,7 @@ Usage
   check_toolkit_paths.py ownership [--report]
   check_toolkit_paths.py inventory [--report]
   check_toolkit_paths.py generators [--report]
+  check_toolkit_paths.py hand-authored [--report]
 
 Exit codes
   0 everything classified and every obligation holds; 1 problems (listed on
@@ -37,6 +45,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import fnmatch
 import importlib
 import re
 import subprocess
@@ -58,6 +67,9 @@ FOREIGN_SCRIPTS = frozenset(
         "gen_core_instructions.py",
     }
 )
+# Hook scripts a third party installs into ~/.claude/hooks (herdr's own
+# Claude integration); the toolkit never installs or moves them.
+FOREIGN_HOOKS = frozenset({"herdr-agent-state.sh"})
 TOOLKIT_DATA_ENTRIES = frozenset(
     {
         "backlog",
@@ -370,6 +382,8 @@ def classify(segs: tuple[str, ...]) -> str | None:
         if len(segs) == 1 or segs[1] in TOOLKIT_DATA_ENTRIES:
             return "toolkit"
         return None
+    if top == "hooks" and len(segs) > 1 and segs[1] in FOREIGN_HOOKS:
+        return "foreign"
     if top in TOOLKIT_TOP:
         return "toolkit"
     if top in HARNESS_TOP:
@@ -800,6 +814,82 @@ def generated_legacy_references(
     return problems
 
 
+# ── hand-authored check ──────────────────────────────────────────────────────
+
+
+LEGACY_PATH_EXEMPT: dict[str, str] = {
+    # Permanent: these name the legacy layout on purpose.
+    "agent-scripts/agent_toolkit_paths.py": "resolves the legacy layout",
+    "migrate_toolkit_home.py": "migrates from the legacy layout",
+    "scripts/check_toolkit_paths.py": "classifies legacy paths",
+    # Owned by other release-1 changes; delete the row when that change lands.
+    "agent-scripts/*.py": (
+        "module docstrings move in the docstring-paths change; the notify.py "
+        "install mapping in harness_spec.py moves with links.toml"
+    ),
+    "links.toml": "install destinations move with the links and settings change",
+    "install.py": "install destinations move with the links and settings change",
+    "claude/CORE_INSTRUCTIONS.md": "synced from its origin repository, moved there",
+}
+
+
+def _exempt_row(rel: str, exempt: dict[str, str]) -> str | None:
+    """The first exemption pattern covering ``rel``, exact names first."""
+    if rel in exempt:
+        return rel
+    for pattern in exempt:
+        if fnmatch.fnmatchcase(rel, pattern):
+            return pattern
+    return None
+
+
+def hand_authored_legacy_references(
+    repo: Path,
+    files: Sequence[str] | None = None,
+    exempt: dict[str, str] | None = None,
+    table: dict[str, Generator] | None = None,
+) -> list[str]:
+    """Toolkit-owned ``.claude`` paths in files no generator emits.
+
+    Scans every tracked file except generator outputs (the ``generators``
+    check's) and test trees. A file an exemption row covers is skipped; a
+    row that covers no file with a legacy reference is reported as stale.
+    """
+    exempt = LEGACY_PATH_EXEMPT if exempt is None else exempt
+    table = GENERATORS if table is None else table
+    generated = {out for gen in table.values() for out in gen.outputs()}
+    used: set[str] = set()
+    problems: list[str] = []
+    for rel in tracked_files(repo) if files is None else files:
+        if rel in generated or rel.startswith(TEST_TREES):
+            continue
+        try:
+            text = (repo / rel).read_text()
+        except (UnicodeDecodeError, IsADirectoryError, FileNotFoundError):
+            continue
+        if ".claude" not in text:
+            continue
+        legacy = [r for r in references_in(rel, text) if r.cls == "toolkit"]
+        if not legacy:
+            continue
+        row = _exempt_row(rel, exempt)
+        if row is not None:
+            used.add(row)
+            continue
+        for ref in legacy:
+            shown = "/".join((".claude",) + ref.segments)
+            problems.append(
+                f"{rel}:{ref.line}: {shown}: legacy toolkit path in a "
+                "hand-authored file -- use ~/.agent-toolkit/" + "/".join(ref.segments)
+            )
+    for pattern in sorted(set(exempt) - used):
+        problems.append(
+            f"LEGACY_PATH_EXEMPT[{pattern!r}]: stale -- it covers no legacy "
+            "reference any more; delete the row"
+        )
+    return problems
+
+
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
 
@@ -850,6 +940,17 @@ def cmd_generators(args: argparse.Namespace) -> int:
     return 1 if problems else 0
 
 
+def cmd_hand_authored(args: argparse.Namespace) -> int:
+    problems = hand_authored_legacy_references(REPO)
+    for p in problems:
+        print(p)
+    if args.report:
+        print("\n# legacy-path exemptions")
+        for pattern, reason in LEGACY_PATH_EXEMPT.items():
+            print(f"{pattern}: {reason}")
+    return 1 if problems else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Toolkit-home migration repository checks."
@@ -859,6 +960,7 @@ def main(argv: list[str] | None = None) -> int:
         ("ownership", "classify every .claude path reference"),
         ("inventory", "check every links.toml entry's declared kind"),
         ("generators", "check the generator inventory and its emitted paths"),
+        ("hand-authored", "check files no generator emits for legacy paths"),
     ):
         p = sub.add_parser(name, help=help_text)
         p.add_argument(
@@ -869,6 +971,7 @@ def main(argv: list[str] | None = None) -> int:
         "ownership": cmd_ownership,
         "inventory": cmd_inventory,
         "generators": cmd_generators,
+        "hand-authored": cmd_hand_authored,
     }[args.cmd](args)
 
 

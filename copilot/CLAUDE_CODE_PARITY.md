@@ -87,7 +87,7 @@ the locally-installed CLI surface, except where noted.
    - `session-start.json` running `dev_status.py render` + `bundle_drift_check.py`
      on session start.
    - `post-tool-use.json` for tool tracking.
-   - `agent-stop.json` on `agentStop` running `~/.claude/scripts/notify.py --harness Copilot`
+   - `agent-stop.json` on `agentStop` running `~/.agent-toolkit/scripts/notify.py --harness Copilot`
      for desktop toast notifications with GitHub Copilot branding.
    Note that `dashboard`'s Copilot version correctly flags this in its
    description, so the SKILL is not re-run unprompted by the user's "status"

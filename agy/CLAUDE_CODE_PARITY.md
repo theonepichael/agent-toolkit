@@ -102,7 +102,7 @@ mitigated with explicit suspend-and-return framing (a printed checkpoint
 marker, a `next_steps` return pointer persisted via `dev_status.py` so it
 survives context compaction, and an absolute-path re-read of the return
 step) rather than assumed to generalize untested. Full design record:
-`~/.claude/data/grill/meta-backlog-item-port-agy-spec.md` and its
+`~/.agent-toolkit/data/grill/meta-backlog-item-port-agy-spec.md` and its
 `-critique-notes.md` companion (3 rounds of second-opinion critique).
 
 ## 3. Verification results (probed 2026-07-28, agy 1.1.8; revalidated 2026-08-13, agy 1.1.12)
@@ -188,7 +188,7 @@ skills (including `spec`) are present at
       PostToolUse mechanism. Verified end-to-end: introduced a real
       formatting violation, ran a live `agy -p` edit, confirmed the hook
       auto-fixed it before the next tool call saw the file.
-    - `Stop`: runs `notify-on-stop` invoking `~/.claude/scripts/notify.py --harness AGY`
+    - `Stop`: runs `notify-on-stop` invoking `~/.agent-toolkit/scripts/notify.py --harness AGY`
       to dispatch desktop toast notifications when agy stops.
 - **MCP config format differs**: `~/.gemini/config/mcp_config.json` with a
   `serverUrl` key, replacing inline `~/.gemini/settings.json` declarations

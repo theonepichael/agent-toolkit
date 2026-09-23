@@ -228,7 +228,7 @@ permission-gate (no UI to confirm through in this mode): touch
 not-allowed-marker.txt**" and no file was created.
 
 **Deliberate divergence from `opencode.jsonc` (added once `dev-status-tool.ts`
-shipped, below):** `python3 ~/.claude/scripts/dev_status.py *` is *not*
+shipped, below):** `python3 ~/.agent-toolkit/scripts/dev_status.py *` is *not*
 allowlisted here, unlike every other harness's permission config. Leaving
 it allowlisted would let the model silently bypass the native `dev_status`
 tool and shell out instead; dropping it to the `"*": "ask"` default makes
@@ -272,7 +272,7 @@ every `agent-scripts/dev_status.py` subcommand with a typed schema
 prompt templates can call it directly instead of composing a raw bash
 string. Full design history (3 rounds of `/second-opinion` critique, two
 real bugs caught and fixed) is in
-`~/.claude/data/grill/pi-tool-dev-status-spec.md` and its companion
+`~/.agent-toolkit/data/grill/pi-tool-dev-status-spec.md` and its companion
 critique-notes file — not restated here, only the load-bearing corrections
 that shape the code:
 
@@ -402,7 +402,7 @@ than only to its author: asked for a dry run, the model sent
 
 Also verified: with `grill.py` and `second_opinion.py` off
 `permission-gate.ts`'s bash allowlist, a direct instruction to run
-`python3 ~/.claude/scripts/grill.py list` as bash was refused by the model,
+`python3 ~/.agent-toolkit/scripts/grill.py list` as bash was refused by the model,
 which rerouted through the `grill` tool on its own.
 
 ### `question-tool.ts`
@@ -465,7 +465,7 @@ section less useful, not more.
 - **`notify.ts`** — listens to `agent_settled` (when Pi returns to idle)
   and `ui_prompt_start` (when Pi prompts the user for interactive choices),
   dispatching cross-platform desktop toasts with the official `pi.dev`
-  geometric logo via `~/.claude/scripts/notify.py`.
+  geometric logo via `~/.agent-toolkit/scripts/notify.py`.
 
 `philosophy-header.ts` is also the cautionary tale for this whole
 directory. It was authored straight into `~/.pi/agent/extensions/` and

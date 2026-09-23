@@ -2,7 +2,7 @@
 
 The shared workflow tools. Every harness in this repo — Claude Code,
 Copilot, opencode, agy, Pi, and Codex — calls these same paths through
-`~/.claude/scripts/`. Only what is easy to get wrong here; general
+`~/.agent-toolkit/scripts/`. Only what is easy to get wrong here; general
 conventions are in the repo root's `AGENTS.md` and `STYLE.md`.
 
 ## Standard library only
@@ -38,7 +38,7 @@ name it — `claude/commands/`, `opencode/skills/`, `copilot/skills/`,
 ## Every production script needs a `links.toml` entry
 
 `test/test_install.py` asserts it. A production script with no entry means
-`~/.claude/scripts/<name>` silently never exists, and the skills that call
+`~/.agent-toolkit/scripts/<name>` silently never exists, and the skills that call
 it fail on a machine where it was never hand-linked. This has been caught
 live twice.
 

@@ -11,7 +11,7 @@
   "notify-on-stop": {
     "Stop": [
       {
-        "command": "python3 ~/.claude/scripts/notify.py --harness 'AGY' --title 'Antigravity' --message 'Run completed' --type completed >/dev/null 2>&1; echo '{}'",
+        "command": "python3 ~/.agent-toolkit/scripts/notify.py --harness 'AGY' --title 'Antigravity' --message 'Run completed' --type completed >/dev/null 2>&1; echo '{}'",
         "timeout": 10,
         "type": "command"
       }
@@ -36,7 +36,7 @@
       {
         "hooks": [
           {
-            "command": "python3 ~/.claude/scripts/guard_rails.py --harness agy",
+            "command": "python3 ~/.agent-toolkit/scripts/guard_rails.py --harness agy",
             "timeout": 10,
             "type": "command"
           }

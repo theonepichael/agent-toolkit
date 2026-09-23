@@ -5,9 +5,9 @@
  * Shows: ⏱ Xm Ys · ↓ Nk tokens · Model  (while running)
  *        ✓ Xm Ys · done HH:MM            (8s after finishing)
  *
- * Wire up inside agy: /statusline node ~/.claude/hooks/agy-elapsed.js
+ * Wire up inside agy: /statusline node ~/.agent-toolkit/hooks/agy-elapsed.js
  * Or set in ~/.gemini/antigravity-cli/settings.json:
- *   "statusLine": { "command": "node ~/.claude/hooks/agy-elapsed.js", "stackWithDefault": true }
+ *   "statusLine": { "command": "node ~/.agent-toolkit/hooks/agy-elapsed.js", "stackWithDefault": true }
  *
  * Set AGY_STATUSLINE_DEBUG=1 to log the raw payload to /tmp/agy-statusline-debug.log
  */
