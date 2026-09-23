@@ -1609,6 +1609,7 @@ the workflow's template plus its generator's capability/parameter tables.
 | `/recap` | template | yes | yes | yes | yes | yes | yes |
 | `/refresh-guidance` | hand-authored | yes | yes | yes | yes | yes | yes |
 | `/second-opinion` | template | yes | yes | yes | yes | yes | yes |
+| `/skill-drift-audit` | hand-authored | yes | — | — | — | — | — |
 | `/skill-map` | hand-authored | yes | — | — | — | — | — |
 | `/spec` | template | yes | yes | yes | yes | yes | yes |
 | `/standup` | template | yes | yes | yes | yes | yes | yes |
@@ -1648,6 +1649,9 @@ the workflow's template plus its generator's capability/parameter tables.
   - Generated from: `templates/second_opinion.md.tmpl` by `gen_second_opinion.py`
   - `claude/commands/{name}.md` is the rendered Claude Code port — edit the template or generator, then regenerate.
   - Installed at: `~/.claude/commands/second-opinion.md` (claude)
+- **`/skill-drift-audit`** — Audit agent-toolkit's skill docs against the current behavior of the scripts they invoke — stale wording the scripts now contradict, and new script functionality the skills don't use yet — for everything changed since the last audit. Use when the user says 'audit the skills', 'skill drift', 'are the skills stale', 'check the skills against the scripts', or asks after a batch of script changes whether any skills need updating.
+  - Source: `claude/commands/skill-drift-audit.md` (hand-authored)
+  - Installed at: `~/.claude/commands/skill-drift-audit.md` (claude)
 - **`/skill-map`** — Shows how this repo's skills connect and flags any skill mentioned by another that no longer exists. Use when the user says "skill map", "show the skill map", "which skill for X", or asks how the skills chain together.
   - Source: `claude/commands/skill-map.md` (hand-authored)
   - Installed at: `~/.claude/commands/skill-map.md` (claude)
@@ -2062,7 +2066,20 @@ named doc, not regenerating this file.
 
 | Doc | Status |
 | --- | --- |
+| `claude/commands/skill-drift-audit.md` | OK |
 | `claude/commands/skill-map.md` | OK |
+
+### `gen_second_opinion.py`
+
+| Doc | Status |
+| --- | --- |
+| `claude/commands/skill-drift-audit.md` | OK |
+
+### `gen_skills.py`
+
+| Doc | Status |
+| --- | --- |
+| `claude/commands/skill-drift-audit.md` | OK |
 
 ### `grill.py`
 
@@ -2209,6 +2226,7 @@ new one, `--check` catches it the same as any other stale content.
 | `/recap` | — |
 | `/refresh-guidance` | — |
 | `/second-opinion` | — |
+| `/skill-drift-audit` | — |
 | `/skill-map` | — |
 | `/spec` | `backlog-item`, `grill-me`, `second-opinion` |
 | `/standup` | `dashboard` |

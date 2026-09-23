@@ -56,6 +56,8 @@ If `start` instead exits 3 naming this machine's id file, run
 ## 3. Branch
 Create or reuse a dedicated worktree and bootstrap dependencies via `python3 ~/.claude/scripts/dev_status.py worktree <slug|N>`. (If multiple project repos are involved or resolution fails, specify `--repo <path>`). Reuse a worktree this session already made for this item instead of a second one.
 
+Work that lands on an integration branch rather than the default branch (e.g. `release-1`)? Make sure the item's `integration_branch` is set (`update <slug> '{"integration_branch": "<branch>"}'`) *before* creating the worktree: a new item branch starts from it (else from `HEAD`), and step 12's merge check targets it. Confirm the base the command reports (`Created branch '<slug>' from '<base>'`); `--base <ref>` overrides it for one call. A branch that already exists is attached as-is, never re-based.
+
 ## 4. Baseline
 Run that repo's test suite (or the most relevant targeted subset) in the fresh worktree before touching anything (the shared instructions file's "Baseline tests before starting code work").
 

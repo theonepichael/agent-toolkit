@@ -334,6 +334,14 @@ Verify against misresolution by checking that `slug`, `ref` (if numeric), and
 `detail` match the item intended; if they don't, revert (`reopen <slug>` or
 similar) and ask.
 
+Exit code 75 from any toolkit script (`dev_status.py`, `grill.py`,
+`second_opinion.py`, `to_tickets_runner.py`, `vitals_promotion.py`, ...)
+means the machine-wide migration lock refused the write — nothing was
+written. Run `python3 ~/.claude/scripts/migration_lock.py status`: if a
+toolkit-home migration holds it exclusively, tell the user and retry once it
+finishes; if the lock file itself is unusable, report that and stop. Never
+work around the refusal — no hand-edits to the stores, no retry loop.
+
 If the item's work touched a real project repo and left actual file
 changes, offer to commit — and if the repo has a remote, offer to push too
 — once the work is verified and ready. Offer, never commit or push

@@ -66,6 +66,11 @@ dest = "~/.claude/commands/skill-map.md"
 harness = "claude"
 
 [[link]]
+src = "claude/commands/skill-drift-audit.md"
+dest = "~/.claude/commands/skill-drift-audit.md"
+harness = "claude"
+
+[[link]]
 src = "claude/commands/draft-voice.md"
 dest = "~/.claude/commands/draft-voice.md"
 harness = "claude"
