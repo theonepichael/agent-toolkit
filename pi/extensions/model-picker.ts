@@ -847,7 +847,11 @@ export default function modelPicker(pi: ExtensionAPI) {
               const color: "success" | "error" = saveStatus.error ? "error" : "success";
               return ["  " + theme.fg(color, `${marker} ${saveStatus.text}`), pills];
             }
-            return [pills];
+            // Reserved empty status row: the overlay re-centers whenever its
+            // rendered height changes, so the footer must always emit the
+            // same number of rows — the status row stays occupied-but-empty
+            // until a save sets it, and the picker never shifts on save.
+            return ["", pills];
           },
           invalidate(): void {},
         };

@@ -918,3 +918,46 @@ describe("in-overlay save feedback", () => {
     }
   });
 });
+
+describe("in-overlay save feedback: stable overlay height", () => {
+  // The overlay re-centers whenever its rendered height changes, so a
+  // one-row footer growth on save would visibly shift the whole picker.
+  // The status row is reserved up front: the footer renders the same number
+  // of rows whether or not a save status is showing.
+  test("the save-status row is reserved, so the overlay height never changes", async () => {
+    const { commands, notifications, pi, makeCtx } = makeHarness();
+    registerModelPicker(pi);
+    const agentDir = makeAgentDir();
+    const savedEnv = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    try {
+      const { ctx, getComponent } = makeCtx("tui");
+      const pending = commands.models.handler("", ctx);
+      await Promise.resolve();
+
+      const baseline = getComponent()!.render(80);
+      getComponent()!.handleInput("\x13");
+      const before = notifications.length;
+      for (let i = 0; i < 100 && notifications.length === before; i++) {
+        await new Promise((r) => setTimeout(r, 10));
+      }
+
+      const withStatus = getComponent()!.render(80);
+      expect(withStatus.some((l) => l.includes("✓"))).toBe(true);
+      expect(withStatus.length).toBe(baseline.length);
+
+      // A later keypress clears the text but keeps the reserved row. An
+      // arrow key, not a printable character: printable input goes to the
+      // search filter and would shrink the list for a different reason.
+      getComponent()!.handleInput("\x1b[A");
+      const cleared = getComponent()!.render(80);
+      expect(cleared.some((l) => l.includes("✓"))).toBe(false);
+      expect(cleared.length).toBe(baseline.length);
+      void pending;
+    } finally {
+      if (savedEnv === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = savedEnv;
+      rmSync(agentDir, { recursive: true, force: true });
+    }
+  });
+});
