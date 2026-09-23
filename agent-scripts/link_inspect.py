@@ -40,6 +40,9 @@ from pathlib import Path
 
 import harness_spec
 
+# What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
+TOOLKIT_DATA = "none"
+
 # ── links.toml row schema ─────────────────────────────────────────────────────
 
 

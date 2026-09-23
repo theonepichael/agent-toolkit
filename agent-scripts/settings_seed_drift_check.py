@@ -226,6 +226,9 @@ from pathlib import Path
 import cli_common
 from settings_seed import describe_vscode_drift, json_key_drift, opencode_bypass_drift
 
+# What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
+TOOLKIT_DATA = "harness-owned"
+
 HOME = Path.home()
 REPO_ROOT = Path(__file__).resolve().parents[1]
 

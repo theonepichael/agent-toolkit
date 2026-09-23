@@ -10,6 +10,9 @@ from __future__ import annotations
 
 from typing import NotRequired, TypedDict
 
+# What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
+TOOLKIT_DATA = "none"
+
 
 class Gate(TypedDict):
     """A judgment-step verification checkpoint on a backlog item.

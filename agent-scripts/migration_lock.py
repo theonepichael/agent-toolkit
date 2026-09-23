@@ -58,6 +58,9 @@ from pathlib import Path
 
 import cli_common
 
+# What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
+TOOLKIT_DATA = "infrastructure"
+
 LOCK_RELPATH = Path("agent-toolkit") / "migration.lock"
 OBSERVATIONS_RELPATH = Path("agent-toolkit") / "migration-observations.jsonl"
 ENFORCE: bool = False

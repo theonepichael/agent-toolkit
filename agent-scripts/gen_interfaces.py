@@ -78,6 +78,9 @@ from pathlib import Path
 import cli_common
 import harness_spec
 
+# What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
+TOOLKIT_DATA = "none"
+
 HARNESS_DIRS = harness_spec.ALL_NAMES
 SCRIPTS_DIR = "agent-scripts"
 ROOT_ENTRYPOINTS = (

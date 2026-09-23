@@ -54,6 +54,9 @@ from pathlib import Path
 import cli_common
 import link_inspect
 
+# What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
+TOOLKIT_DATA = "none"
+
 REPO = Path(__file__).resolve().parents[1]
 
 # Audit cache configuration. Memoizing the audit result keyed on the exact

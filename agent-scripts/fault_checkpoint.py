@@ -38,6 +38,9 @@ import os
 import re
 import signal
 
+# What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
+TOOLKIT_DATA = "infrastructure"
+
 ENV_ARM = "AGENT_TOOLKIT_FAULT_CHECKPOINT"
 ENV_MARKER = "AGENT_TOOLKIT_FAULT_MARKER"
 

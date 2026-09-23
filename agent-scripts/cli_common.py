@@ -25,6 +25,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, TextIO
 
+# What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
+TOOLKIT_DATA = "infrastructure"
+
 _SUPPRESSED_LEVEL = logging.CRITICAL + 1
 _MODULE_LOGGER_NAME = "cli_common"
 

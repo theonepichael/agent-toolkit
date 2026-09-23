@@ -40,6 +40,10 @@ from pathlib import Path
 import cli_common
 import worktree_provenance
 
+# What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
+TOOLKIT_DATA = "reader"
+TOOLKIT_DATA_VIA = ("dev_status_storage",)
+
 
 class WorktreeError(Exception):
     """Raised when worktree resolution, creation, or bootstrapping fails."""

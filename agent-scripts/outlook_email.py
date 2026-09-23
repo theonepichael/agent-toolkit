@@ -18,6 +18,9 @@ import sys
 from collections.abc import Callable
 from datetime import date, datetime
 
+# What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
+TOOLKIT_DATA = "none"
+
 
 class OutlookError(Exception):
     """Raised when Outlook COM automation or PowerShell execution fails."""

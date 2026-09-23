@@ -35,6 +35,10 @@ import dev_status_storage
 import harness_spec
 import worktree_provenance
 
+# What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
+TOOLKIT_DATA = "writer"
+TOOLKIT_DATA_VIA = ("dev_status_storage",)
+
 # Re-exported storage types
 BacklogItem = dev_status_storage.BacklogItem
 PendingItem = dev_status_storage.PendingItem

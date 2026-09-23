@@ -80,6 +80,9 @@ from pathlib import Path
 import cli_common
 import gen_interfaces
 
+# What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
+TOOLKIT_DATA = "none"
+
 DEFAULT_REPO_ROOT = Path(__file__).resolve().parents[1]
 
 _INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")

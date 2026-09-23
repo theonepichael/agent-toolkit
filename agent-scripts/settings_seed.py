@@ -48,6 +48,9 @@ from typing import TYPE_CHECKING, Protocol
 
 import cli_common
 
+# What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
+TOOLKIT_DATA = "harness-owned"
+
 if TYPE_CHECKING:
     import install
 

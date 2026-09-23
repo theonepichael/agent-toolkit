@@ -68,6 +68,9 @@ import dev_status_mutation  # noqa: E402
 import dev_status_storage  # noqa: E402
 import migration_lock  # noqa: E402
 
+# What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
+TOOLKIT_DATA = "writer"
+
 DATA_DIR = agent_toolkit_paths.path_for("ticket-batches")
 
 

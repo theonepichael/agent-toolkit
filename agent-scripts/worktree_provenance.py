@@ -54,6 +54,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
+# What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
+TOOLKIT_DATA = "none"
+
 MARKER_FILENAME: Final = "devstatus_item"
 GIT_TIMEOUT: Final = 2.0
 

@@ -34,6 +34,9 @@ from dev_status_types import BacklogIndex as BacklogIndex
 from dev_status_types import BacklogItem, PendingItem, RunRecord
 from dev_status_types import Gate as Gate
 
+# What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
+TOOLKIT_DATA = "writer"
+
 DATA_DIR = agent_toolkit_paths.path_for("work-items")
 ITEMS_FILE = DATA_DIR / "items.json"
 PENDING_FILE = DATA_DIR / "pending_items.json"

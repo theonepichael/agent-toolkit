@@ -15,6 +15,9 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Protocol, runtime_checkable
 
+# What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
+TOOLKIT_DATA = "none"
+
 
 class NotConfiguredError(Exception):
     """Raised by a stub adapter — no concrete implementation exists yet."""

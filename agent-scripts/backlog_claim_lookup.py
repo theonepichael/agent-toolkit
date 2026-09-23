@@ -52,6 +52,9 @@ import agent_toolkit_paths
 if TYPE_CHECKING:
     from dev_status_storage import BacklogItem
 
+# What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
+TOOLKIT_DATA = "reader"
+
 LAYOUT_ERROR: agent_toolkit_paths.LayoutError | None = None
 try:
     DEFAULT_BACKLOG_ITEMS = agent_toolkit_paths.path_for("work-items") / "items.json"

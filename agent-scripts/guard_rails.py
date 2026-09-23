@@ -99,6 +99,9 @@ import migration_lock
 from backlog_claim_lookup import BacklogClaimLookup, ClaimInfo, LocalClaimLookup
 from worktree_provenance import read_marker, worktree_points_at_item
 
+# What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
+TOOLKIT_DATA = "writer"
+
 LAYOUT_ERROR: agent_toolkit_paths.LayoutError | None = None
 try:
     GUARD_RAILS_LOG_PATH = agent_toolkit_paths.path_for("guard-rail-log")

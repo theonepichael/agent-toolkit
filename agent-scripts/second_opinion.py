@@ -135,6 +135,9 @@ from llm_backends import (
     available_backends,
 )
 
+# What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
+TOOLKIT_DATA = "writer"
+
 BACKEND_PRIORITY = llm_backends.BACKEND_PRIORITY
 
 # Shared artifact storage, same directory grill.py owns. Kept in sync with

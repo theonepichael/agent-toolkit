@@ -24,6 +24,10 @@ import importlib
 import os
 import sys
 
+# What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
+TOOLKIT_DATA = "writer"
+TOOLKIT_DATA_VIA = ("dev_status_impl",)
+
 _IMPL_MODULE = "dev_status_impl"
 
 _HERE = os.path.realpath(os.path.dirname(__file__))

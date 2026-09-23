@@ -47,6 +47,9 @@ import agent_toolkit_paths
 import cli_common
 import migration_lock
 
+# What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
+TOOLKIT_DATA = "writer"
+
 DATA_DIR = agent_toolkit_paths.path_for("decisions")
 SCHEMA_VERSION = 1
 

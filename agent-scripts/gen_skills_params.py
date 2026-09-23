@@ -21,6 +21,9 @@ harness-specific fact directly instead.
 Requires Python 3.12+.
 """
 
+# What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
+TOOLKIT_DATA = "none"
+
 # ── phrasing helpers ───────────────────────────────────────────────────────
 #
 # Where a human editing a generated skill doc should go make that edit.
