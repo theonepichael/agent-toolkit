@@ -492,15 +492,14 @@ every configured model-pool entry resolves through. `SECOND_OPINION_PI_MODEL`
 / `SECOND_OPINION_PI_MODEL_POOL` / `SECOND_OPINION_PI_TIMEOUT_SECONDS`
 follow the same contract as the other three backends.
 
-Unlike opencode's `adversary` agent (`"permission": "deny"`, forcing a
-swapped-in model to return only prose), `run_pi()` passes no
-tool-restriction flag — no equivalent restricted-permission invocation for
-Pi has been built or verified. `_raise_on_emitted_tool_call()` is the only
-backstop against a model leaking an attempted tool call as text; it cannot
-catch Pi actually taking a real tool action instead of returning a
-critique. Revisit if this ever becomes a real problem in practice —
-`--tools`/`--no-tools`/`--exclude-tools` (§1) are the documented levers,
-just not wired into `run_pi()` yet.
+`run_pi()` uses `--no-tools` in its default text-only mode. Grounded reviews
+instead pass `--tools read,grep,find,ls`, with `--no-session`,
+`--no-context-files`, `--no-prompt-templates`, `--no-extensions`, and
+`--no-skills`. Bash, edit, and write are absent from that tool allowlist.
+The grounded command is covered by `test/test_llm_backends.py`, and a live
+grounded critique used the read-only tools to cite repository code. The
+`_raise_on_emitted_tool_call()` check rejects leaked tool-call markup in
+returned text; tool access is restricted by the invocation flags.
 
 ## 7. Config file location reference
 
@@ -530,7 +529,6 @@ keys), same pattern as Claude Code's `~/.claude/settings.json` +
   hooks→plugin dashboard port, `opencode/CLAUDE_CODE_PARITY.md` §5). Revisit
   as its own backlog item if resuming a `grill-me`/`backlog-item`
   mark-pending-execution flow manually (§2) becomes a real friction point.
-- **A restricted-permission invocation for `run_pi()`** — see §6.
 
 ## Sources
 

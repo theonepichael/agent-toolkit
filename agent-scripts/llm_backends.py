@@ -1240,13 +1240,12 @@ def run_pi(
     one every configured model pool entry resolves through; no alternative
     provider is configured in ``~/.pi/agent/models.json`` on this machine.
 
-    Unlike opencode's ``adversary`` agent (which sets ``permission: deny``
-    so a swapped-in model can only return prose), no equivalent
-    restricted-permission invocation for Pi is verified yet — this call
-    passes no tool-restriction flag. :func:`_raise_on_emitted_tool_call`
-    below is the only backstop against a model leaking an attempted tool
-    call as text; it cannot catch Pi actually taking a real tool action
-    instead of returning a critique.
+    The default text-only mode passes ``--no-tools``. Grounded mode exposes
+    only Pi's ``read,grep,find,ls`` tools and disables context files, prompt
+    templates, extensions, skills, and session persistence. A grounded
+    critique has exercised this read-only tool allowlist. The
+    :func:`_raise_on_emitted_tool_call` check also rejects leaked tool-call
+    markup in returned text; it is not the tool permission mechanism.
 
     No retry on timeout (unlike :func:`run_opencode`): telemetry
     (2026-08-31/09-01, ``~/.claude/data/backend_calls.jsonl``) showed a 3/3
