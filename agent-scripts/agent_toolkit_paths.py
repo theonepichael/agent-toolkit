@@ -275,6 +275,16 @@ def path_for_layout(domain: str, layout: Layout) -> Path:
     return DEFAULT_RESOLVER.path_for_layout(domain, layout)
 
 
+def layout_path(home: Path, domain: str, layout: Layout) -> Path:
+    """Resolve ``domain`` for ``layout`` under an explicit ``home``.
+
+    Pure: reads no pointer and ignores the process ``HOME``. The toolkit-home
+    side still honors ``AGENT_TOOLKIT_HOME``. For code that plans paths for a
+    home other than the running one (the migration's path transform).
+    """
+    return Resolver()._path_in(home, domain, layout)
+
+
 def check_not_stale(path: Path) -> None:
     """Refuse a path from the non-current layout using :data:`DEFAULT_RESOLVER`."""
     DEFAULT_RESOLVER.check_not_stale(path)

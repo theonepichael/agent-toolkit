@@ -94,10 +94,11 @@ Single source of truth for toolkit data paths.
 - Public functions:
   - `path_for(domain: str) -> Path` — Resolve ``domain`` using :data:`DEFAULT_RESOLVER`.
   - `path_for_layout(domain: str, layout: Layout) -> Path` — Resolve ``domain`` for ``layout`` using :data:`DEFAULT_RESOLVER`.
+  - `layout_path(home: Path, domain: str, layout: Layout) -> Path` — Resolve ``domain`` for ``layout`` under an explicit ``home``.
   - `check_not_stale(path: Path) -> None` — Refuse a path from the non-current layout using :data:`DEFAULT_RESOLVER`.
   - `current_layout() -> Layout` — Return the current layout using :data:`DEFAULT_RESOLVER`.
   - `write_pointer(home: Path, layout: Layout) -> None` — Atomically write the layout pointer under ``home``.
-- Tested by: `agent-scripts/test_layouts.py`, `test/test_agent_toolkit_paths.py`, `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_dev_status_storage.py`, `test/test_gen_interfaces.py`, `test/test_grill.py`, `test/test_guard_rails.py`, `test/test_llm_backends.py`, `test/test_machine_id.py`, `test/test_migrate_toolkit_home.py`, `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`, `test/test_second_opinion.py`, `test/test_to_tickets_runner.py`
+- Tested by: `agent-scripts/test_layouts.py`, `test/test_agent_toolkit_paths.py`, `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_dev_status_storage.py`, `test/test_gen_interfaces.py`, `test/test_grill.py`, `test/test_guard_rails.py`, `test/test_llm_backends.py`, `test/test_machine_id.py`, `test/test_migrate_path_transform.py`, `test/test_migrate_toolkit_home.py`, `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`, `test/test_second_opinion.py`, `test/test_to_tickets_runner.py`
 
 ### `agent-scripts/analyze_sessions.py`
 
@@ -435,7 +436,7 @@ Typed mutation service and transaction manager for dev_status (Candidate 12).
   - `add_pending_item(request: PendingAddRequest, *, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Track a new waiting-on-someone-else item.
   - `update_pending_item(slug_or_id: str, request: PendingUpdateRequest, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Merge an update request into a pending item.
   - `mutation_transaction(*, items_path: Path | None = None, verbose: bool = False) -> Iterator[BacklogTransaction]` — Hold backlog_lock once for batch operations; yields BacklogTransaction.
-- Tested by: `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_harness_spec.py`, `test/test_machine_id.py`, `test/test_migration_lock_adoption.py`
+- Tested by: `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_harness_spec.py`, `test/test_machine_id.py`, `test/test_migrate_path_transform.py`, `test/test_migration_lock_adoption.py`
 
 ### `agent-scripts/dev_status_read.py`
 
@@ -1095,7 +1096,7 @@ Machine-wide migration lock: writers share it, the toolkit-home migrator owns it
   - `exclusive(site: str, *, blocking: bool = True) -> Iterator[None]` — Hold the lock exclusively (the migrator).
   - `build_parser() -> argparse.ArgumentParser`
 - Subcommand handlers: `cmd_status`, `cmd_hold`, `cmd_observations`
-- Tested by: `test/test_dev_status_validate.py`, `test/test_guard_rails_claim.py`, `test/test_migrate_toolkit_home.py`, `test/test_migration_lock.py`, `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`
+- Tested by: `test/test_dev_status_validate.py`, `test/test_guard_rails_claim.py`, `test/test_migrate_path_transform.py`, `test/test_migrate_toolkit_home.py`, `test/test_migration_lock.py`, `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`
 
 ### `agent-scripts/notify.py`
 
@@ -1488,7 +1489,7 @@ to_tickets_runner.py — create a linked batch of dev_status.py backlog items fr
   - `run(batch_path: Path) -> list[str]` — Create every ticket in ``batch_path``'s batch, resuming if interrupted before.
   - `build_parser() -> argparse.ArgumentParser`
 - Subcommand handlers: `cmd_run`
-- Tested by: `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`, `test/test_to_tickets_runner.py`
+- Tested by: `test/test_migrate_path_transform.py`, `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`, `test/test_to_tickets_runner.py`
 
 ### `agent-scripts/vitals_promotion.py`
 
