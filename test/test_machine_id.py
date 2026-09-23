@@ -61,6 +61,22 @@ class TestValidExisting(MachineIdFixture):
         self.mid_file.write_text("0ee2ec8d")
         self.assertEqual(self.call(), "0ee2ec8d")
 
+    @pytest.mark.regression(
+        "machine-id-strict-format-rejects-older-ids",
+        "dev_status_storage.MachineIdError: invalid machine id",
+    )
+    def test_older_id_formats_are_accepted_unchanged(self) -> None:
+        # Ids created by older code on other machines must keep working.
+        self.data_dir.mkdir(parents=True)
+        for legacy in ["0EE2EC8D", "0ee2ec8d00ff", "host-1.local_2", "a" * 64]:
+            self.mid_file.write_text(legacy)
+            self.assertEqual(self.call(), legacy)
+            result = dev_status_storage.repair_machine_id(self.mid_file, self.data_dir)
+            self.assertEqual((result.action, result.machine_id), ("unchanged", legacy))
+
+    def test_new_ids_are_eight_lowercase_hex(self) -> None:
+        self.assertRegex(self.call(), r"^[0-9a-f]{8}$")
+
     def test_trailing_newline_is_accepted(self) -> None:
         self.data_dir.mkdir(parents=True)
         self.mid_file.write_text("0ee2ec8d\n")
@@ -93,11 +109,17 @@ class TestInvalidExisting(MachineIdFixture):
     def test_garbage(self) -> None:
         self.assert_rejected(b"not an id")
 
-    def test_uppercase(self) -> None:
-        self.assert_rejected(b"0EE2EC8D")
+    def test_spaces(self) -> None:
+        self.assert_rejected(b"0ee2 ec8d")
 
-    def test_wrong_length(self) -> None:
-        self.assert_rejected(b"0ee2ec8d00")
+    def test_several_lines(self) -> None:
+        self.assert_rejected(b"0ee2ec8d\nabcdef01")
+
+    def test_too_long(self) -> None:
+        self.assert_rejected(b"a" * 65)
+
+    def test_path_characters(self) -> None:
+        self.assert_rejected(b"../0ee2ec8d")
 
     def test_not_utf8(self) -> None:
         self.assert_rejected(b"\xff\xfe\x00\x01")
@@ -262,14 +284,14 @@ class TestOperationIdentity(MachineIdFixture):
     def test_add_with_broken_id_writes_nothing(self) -> None:
         self.mid_file.write_text("0ee2ec8d")
         self.add("first-item")
-        self.mid_file.write_text("garbage")
+        self.mid_file.write_text("bad id!")
         before = self.store_bytes()
         with self.assertRaises(dev_status_storage.MachineIdError):
             self.add("second-item")
         self.assertEqual(self.store_bytes(), before)
 
     def test_lock_is_usable_after_an_identity_failure(self) -> None:
-        self.mid_file.write_text("garbage")
+        self.mid_file.write_text("bad id!")
         with self.assertRaises(dev_status_storage.MachineIdError):
             self.add("never-created")
         self.assertEqual(dev_status_storage._backlog_lock_count, 0)
@@ -281,7 +303,7 @@ class TestOperationIdentity(MachineIdFixture):
     def test_explicit_store_identity_wins_over_a_broken_default(self) -> None:
         default_file = self.tmp / "default" / "_machine_id"
         default_file.parent.mkdir()
-        default_file.write_text("garbage")
+        default_file.write_text("bad id!")
         self.mid_file.write_text("0ee2ec8d")
         with patch.object(dev_status_storage, "MACHINE_ID_FILE", default_file):
             self.add("explicit-store")
@@ -294,7 +316,7 @@ class TestOperationIdentity(MachineIdFixture):
         self.assertEqual(claim["machine_id"], "0ee2ec8d")
 
     def test_snapshot_read_works_with_a_broken_id(self) -> None:
-        self.mid_file.write_text("garbage")
+        self.mid_file.write_text("bad id!")
         with dev_status_storage.backlog_lock(self.data_dir, self.data_dir / ".backlog.lock", require_identity=False):
             self.assertIsNone(dev_status_storage.operation_machine_id())
 
@@ -321,7 +343,7 @@ class TestOperationIdentity(MachineIdFixture):
         ), patch.object(dev_status_impl, "JOURNAL_FILE", journal), patch.object(
             dev_status_impl, "META_FILE", meta
         ):
-            self.mid_file.write_text("garbage")
+            self.mid_file.write_text("bad id!")
             with dev_status_storage.backlog_lock(self.data_dir, self.data_dir / ".backlog.lock", require_identity=False):
                 pass
             self.assertFalse(journal.exists())
@@ -391,7 +413,7 @@ class TestRepair(MachineIdFixture):
     @unittest.skipIf(os.geteuid() == 0, "root ignores directory permissions")
     def test_unwritable_directory_is_a_clear_error(self) -> None:
         self.data_dir.mkdir(parents=True)
-        self.mid_file.write_text("garbage")
+        self.mid_file.write_text("bad id!")
         self.data_dir.chmod(0o555)
         with self.assertRaises(dev_status_storage.MachineIdError) as ctx:
             self.repair()
@@ -400,7 +422,7 @@ class TestRepair(MachineIdFixture):
     @pytest.mark.allow_real_subprocess  # two python children repairing at once
     def test_concurrent_repairs_make_one_id_and_one_backup(self) -> None:
         self.data_dir.mkdir(parents=True)
-        self.mid_file.write_text("garbage")
+        self.mid_file.write_text("bad id!")
         script = self.tmp / "repair.py"
         script.write_text(
             textwrap.dedent(
@@ -454,7 +476,7 @@ class TestCliWithBrokenId(unittest.TestCase):
         self.env.pop("AGENT_TOOLKIT_TIMING", None)
         ok = self.cli("add", '{"id": "demo-item", "summary": "demo"}')
         self.assertEqual(ok.returncode, 0, ok.stderr)
-        (self.data / "_machine_id").write_text("garbage")
+        (self.data / "_machine_id").write_text("bad id!")
 
     def tearDown(self) -> None:
         shutil.rmtree(self.home, ignore_errors=True)
@@ -522,7 +544,7 @@ class TestCliWithBrokenId(unittest.TestCase):
         (self.data / "_machine_id").write_text("0ee2ec8d")
         started = self.cli("start", "demo-item", "--allow-main")
         self.assertEqual(started.returncode, 0, started.stderr)
-        (self.data / "_machine_id").write_text("garbage")
+        (self.data / "_machine_id").write_text("bad id!")
         r = self.cli("machine-id", "--repair")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("replaced invalid id", r.stdout)

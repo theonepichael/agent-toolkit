@@ -66,6 +66,13 @@ def _resolve_path(var_name: str, fallback: Path) -> Path:
 
 
 MACHINE_ID_RE = re.compile(r"^[0-9a-f]{8}$")
+"""The format of every id this module creates."""
+EXISTING_MACHINE_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+"""What an existing id file may hold. Wider than MACHINE_ID_RE on purpose:
+ids created by older code on other machines must keep validating, because
+the point is a stable identity, not a particular format. Still refuses what
+is clearly broken (empty, binary, whitespace, several lines, path
+characters)."""
 MACHINE_ID_REPAIR_HINT = "python3 ~/.claude/scripts/dev_status.py machine-id --repair"
 
 
@@ -96,10 +103,10 @@ def _read_machine_id(path: Path) -> str | None:
         raise MachineIdError(
             f"invalid machine id in {path}: not UTF-8 ({raw[:32]!r})", path
         ) from exc
-    if not MACHINE_ID_RE.match(text):
+    if not EXISTING_MACHINE_ID_RE.match(text):
         raise MachineIdError(
-            f"invalid machine id in {path}: {raw[:32]!r} is not 8 lowercase hex "
-            "characters",
+            f"invalid machine id in {path}: {raw[:32]!r} is not a single token of "
+            "1-64 letters, digits, '.', '_' or '-'",
             path,
         )
     return text
@@ -275,7 +282,7 @@ def repair_machine_id(
                 text = raw.decode("utf-8").strip()
             except UnicodeDecodeError:
                 text = ""
-            if MACHINE_ID_RE.match(text):
+            if EXISTING_MACHINE_ID_RE.match(text):
                 return MachineIdRepair("unchanged", text)
             backup = _backup_invalid_machine_id(mid_file)
             new_id = secrets.token_hex(4)

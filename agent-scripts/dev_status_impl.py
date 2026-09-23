@@ -17,8 +17,10 @@ $XDG_STATE_HOME/agent-toolkit/timing.jsonl (default ~/.local/state).
 Normal output and exit codes are unchanged; no prompts or argv are recorded.
 
 Machine identity: every journalled mutation and claim is attributed to this
-machine's id in ``<work-items>/_machine_id`` (8 lowercase hex characters).
-The id is never replaced by a throwaway value. If it cannot be read, is
+machine's id in ``<work-items>/_machine_id``. New ids are 8 lowercase hex
+characters; an existing id may be any single token of 1-64 letters, digits,
+``.``, ``_`` or ``-`` (older formats keep working). The id is never replaced
+by a throwaway value. If it cannot be read, is
 invalid, or cannot be created, a mutating command exits 3 with a one-line
 message naming the file and the repair command, and nothing is written.
 Read commands (``render``, ``list``, ``show``, ``ready``, ``runs``) keep
