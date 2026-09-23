@@ -81,6 +81,9 @@ class BacklogItem(TypedDict):
     item created before its introduction or never classified — absence is
     equivalent to an inert gate (see :func:`_gate_blocks`), the same
     absence-means-default convention ``priority`` already uses.
+    ``integration_branch`` is absent unless declared via ``update``: a bare
+    local branch name that replaces the default branch as the merge target
+    of the review/approve/done committed-work guard.
     """
 
     id: str
@@ -98,6 +101,7 @@ class BacklogItem(TypedDict):
     review_feedback: NotRequired[str]
     review_content_hash: NotRequired[str]
     gate: NotRequired[Gate]
+    integration_branch: NotRequired[str]
 
 
 class PendingItem(TypedDict):

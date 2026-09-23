@@ -1580,8 +1580,9 @@ Per-worktree backlog provenance: one explicit marker, shared predicates.
   - `write_marker(worktree_dir: Path | str, slug: str) -> bool` — Stamp the provenance marker in a *linked* worktree.
   - `classify(directory: str | Path) -> WorktreeProvenance | None` — Full provenance snapshot for one directory, or None outside any repo.
   - `worktree_points_at_item(*, marker_slug: str | None, is_linked_worktree: bool, branch: str, item_id: str, in_progress_ids: set[str]) -> bool` — Whether a write in this worktree points at backlog ``item_id``.
-  - `inspect_item_worktrees(*, related_files: object, slug: str, cwd: str | Path | None = None) -> list[WorktreeInspection]` — Read-only committed-work facts for every target attributable to ``slug``: linked worktrees marked for the item (marker wins over the branch heuristic), the caller's current checkout when its branch equals the slug, and — only when no attributed worktree exists — each discovered repository's surviving slug branch.
-- Tested by: `test/test_dev_status_mutation.py`, `test/test_guard_rails_claim.py`, `test/test_worktree.py`, `test/test_worktree_provenance.py`
+  - `branch_name_problem(name: object) -> str | None` — Why ``name`` is not a usable bare local branch name, or None when it is.
+  - `inspect_item_worktrees(*, related_files: object, slug: str, cwd: str | Path | None = None, target_branch: str | None = None) -> list[WorktreeInspection]` — Read-only committed-work facts for every target attributable to ``slug``: linked worktrees marked for the item (marker wins over the branch heuristic), the caller's current checkout when its branch equals the slug, and — only when no attributed worktree exists — each discovered repository's surviving slug branch.
+- Tested by: `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_guard_rails_claim.py`, `test/test_worktree.py`, `test/test_worktree_provenance.py`
 
 ---
 

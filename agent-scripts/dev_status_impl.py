@@ -2672,6 +2672,13 @@ def cmd_update(args: argparse.Namespace) -> None:
             if unset_priority
             else (cast(str, patch["priority"]) if "priority" in patch else UNSET)
         ),
+        # Passed through raw (null clears): update_item validates the value,
+        # including its type, so non-CLI callers get the same check.
+        integration_branch=(
+            cast(str | None, patch["integration_branch"])
+            if "integration_branch" in patch
+            else UNSET
+        ),
     )
     try:
         res = update_item(

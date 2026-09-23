@@ -434,6 +434,126 @@ class TestInspectItemWorktrees:
         assert out[0].head_ancestor_of_default is False
 
 
+class TestDeclaredIntegrationBranch:
+    """``target_branch`` replaces the local default branch as the merge
+    target — work landed on an integration branch (never main) passes, and
+    a declared branch that does not exist fails closed."""
+
+    def _wt_on_integration(self, tmp_path: Path, slug: str) -> tuple[Path, Path]:
+        repo = _init_repo(tmp_path / f"proj-{slug}")
+        _git("branch", "release-1", cwd=repo)
+        wt = tmp_path / f"proj-{slug}-wt"
+        _git("worktree", "add", "-q", str(wt), "-b", slug, "release-1", cwd=repo)
+        (wt / "feature.txt").write_text("work\n")
+        _git("add", "feature.txt", cwd=wt)
+        _git("commit", "-qm", "work", cwd=wt)
+        _git("checkout", "-q", "release-1", cwd=repo)
+        _git("merge", "-q", "--no-ff", slug, cwd=repo)
+        _git("checkout", "-q", "main", cwd=repo)
+        return repo, wt
+
+    def test_work_merged_only_into_declared_branch_passes(self, tmp_path) -> None:
+        repo, _wt = self._wt_on_integration(tmp_path, "slug-r1")
+        out = wp.inspect_item_worktrees(
+            related_files=[str(repo / "tracked.txt")],
+            slug="slug-r1",
+            cwd=tmp_path,
+            target_branch="release-1",
+        )
+        assert len(out) == 1
+        assert out[0].problem is None
+        assert out[0].head_ancestor_of_default is True
+        assert out[0].default_ref == "refs/heads/release-1"
+
+    def test_undeclared_target_still_requires_default_branch(self, tmp_path) -> None:
+        repo, _wt = self._wt_on_integration(tmp_path, "slug-r2")
+        out = wp.inspect_item_worktrees(
+            related_files=[str(repo / "tracked.txt")], slug="slug-r2", cwd=tmp_path
+        )
+        assert len(out) == 1
+        assert out[0].head_ancestor_of_default is False
+        assert out[0].default_ref == "refs/heads/main"
+
+    def test_work_on_main_but_not_declared_branch_refuses(self, tmp_path) -> None:
+        repo = _init_repo(tmp_path / "proj-r3")
+        _git("branch", "release-1", cwd=repo)
+        wt = tmp_path / "proj-r3-wt"
+        _git("worktree", "add", "-q", str(wt), "-b", "slug-r3", cwd=repo)
+        (wt / "feature.txt").write_text("work\n")
+        _git("add", "feature.txt", cwd=wt)
+        _git("commit", "-qm", "work", cwd=wt)
+        _git("merge", "-q", "--no-ff", "slug-r3", cwd=repo)
+        out = wp.inspect_item_worktrees(
+            related_files=[str(repo / "tracked.txt")],
+            slug="slug-r3",
+            cwd=tmp_path,
+            target_branch="release-1",
+        )
+        assert len(out) == 1
+        assert out[0].head_ancestor_of_default is False
+        assert out[0].default_ref == "refs/heads/release-1"
+
+    def test_missing_declared_branch_is_a_problem(self, tmp_path) -> None:
+        repo, _wt = self._wt_on_integration(tmp_path, "slug-r4")
+        out = wp.inspect_item_worktrees(
+            related_files=[str(repo / "tracked.txt")],
+            slug="slug-r4",
+            cwd=tmp_path,
+            target_branch="release-9",
+        )
+        # Every target inspected against the missing ref refuses (the
+        # worktree, and the slug-branch fallback a problem does not suppress).
+        assert out
+        for insp in out:
+            assert insp.problem is not None
+            assert "refs/heads/release-9" in insp.problem
+            assert "integration_branch" in insp.problem
+
+    def test_surviving_slug_branch_merged_into_declared_branch_allows(
+        self, tmp_path
+    ) -> None:
+        repo, wt = self._wt_on_integration(tmp_path, "slug-r5")
+        _git("worktree", "remove", str(wt), cwd=repo)
+        out = wp.inspect_item_worktrees(
+            related_files=[str(repo / "tracked.txt")],
+            slug="slug-r5",
+            cwd=tmp_path,
+            target_branch="release-1",
+        )
+        assert out == []
+
+    def test_caller_cwd_checkout_uses_declared_branch(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        repo, wt = self._wt_on_integration(tmp_path, "slug-r6")
+        out = wp.inspect_item_worktrees(
+            related_files=[], slug="slug-r6", cwd=wt, target_branch="release-1"
+        )
+        assert len(out) == 1
+        assert out[0].head_ancestor_of_default is True
+        assert out[0].default_ref == "refs/heads/release-1"
+
+
+class TestBranchNameProblem:
+    """``branch_name_problem`` validates a declared integration branch with
+    git's own ``check-ref-format --branch`` rules; None means valid."""
+
+    @pytest.mark.parametrize("name", ["release-1", "feat/x", "r1.2"])
+    def test_valid_names(self, name: str) -> None:
+        assert wp.branch_name_problem(name) is None
+
+    @pytest.mark.parametrize(
+        "name",
+        ["", "foo..bar", "-x", "refs/heads/x", "a@{-1}", "@{-1}", "x.lock", "a b"],
+    )
+    def test_invalid_names(self, name: str) -> None:
+        assert wp.branch_name_problem(name) is not None
+
+    @pytest.mark.parametrize("value", [5, None, ["release-1"], {"a": 1}])
+    def test_non_string_is_a_problem(self, value: object) -> None:
+        assert wp.branch_name_problem(value) is not None
+
+
 class TestInspectFailurePaths:
     """Inspection failures deny; they never collapse into absence."""
 
