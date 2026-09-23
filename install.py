@@ -49,6 +49,11 @@ from uuid import uuid4
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "agent-scripts"))
 
+# The migration's dry run must write nothing, including __pycache__ in a
+# checkout that sits under $HOME. Decided before any local import.
+if "--migrate-toolkit-home" in sys.argv:
+    sys.dont_write_bytecode = True
+
 import cli_common  # noqa: E402 — sibling dir inserted above
 import harness_spec  # noqa: E402 — sibling dir inserted above
 import link_inspect  # noqa: E402 — sibling dir inserted above
@@ -56,6 +61,7 @@ import settings_seed  # noqa: E402 — sibling dir inserted above
 
 import depart  # noqa: E402 — sibling dir on path above
 import depart_exec  # noqa: E402 — sibling dir on path above
+import migrate_toolkit_home  # noqa: E402 — sibling module next to this file
 
 # Re-exports from link_inspect (the extracted links.toml-audit module in
 # agent-scripts/): public names keep resolving through install for
@@ -112,6 +118,7 @@ USAGE = """\
 usage: ./install.sh --harness=<claude,copilot,opencode,agy,pi,codex>[,...] [--profile=personal|work] [--rollback] [--wipe] [--force] [--dry-run] [--reseed | --adopt] [--quiet | --verbose]
        ./install.sh --depart [--yes] [--dry-run] [--quiet | --verbose]
        ./install.sh --check-links [--harness=...] [--profile=personal|work] [--quiet | --verbose]
+       ./install.sh --migrate-toolkit-home --harness=... [--profile=personal|work] [--dry-run] [--json] [--skip-reconciliation] [--cross-filesystem] [--migration-id=<id>] [--quiet | --verbose]
 
   --quiet, -q   suppress non-essential output
   --verbose, -v emit extra diagnostic messages to stderr
@@ -229,6 +236,31 @@ usage: ./install.sh --harness=<claude,copilot,opencode,agy,pi,codex>[,...] [--pr
               No other flag may be combined with --check-links.
               Exits 0 when nothing is wrong, 1 when any bucket is
               non-empty, 2 if links.toml itself cannot be read.
+  --migrate-toolkit-home
+              move toolkit data to the toolkit home. This release runs the
+              safety frame only and moves nothing: every preflight check
+              (installed runtime enforces the migration lock, legacy stores
+              parse, no destination collisions, same device, ...), then —
+              unless --dry-run — takes the migration lock, writes a
+              write-ahead journal and a read-only inventory under
+              ~/.local/state/agent-toolkit/migrations/<id>/, records one
+              history line, and stops. A dry run writes nothing at all.
+              A later run first closes out any journal a crashed run left.
+              Needs --harness; accepts --profile, --dry-run, --quiet and
+              --verbose; refuses every other install flag. Exits 0 on a
+              clean stop, 1 when a check refuses, 75 when the lock is busy.
+  --json      with --migrate-toolkit-home: print the report as JSON.
+  --skip-reconciliation
+              with --migrate-toolkit-home on a personal machine: confirm
+              you already ran dev_status_sync.py status and resolved any
+              divergence. A real personal run refuses without it.
+  --cross-filesystem
+              with --migrate-toolkit-home: allow the toolkit home on another
+              device or under AGENT_TOOLKIT_HOME (later stages then copy and
+              verify instead of renaming).
+  --migration-id=<id>
+              with --migrate-toolkit-home: name the run
+              (mig-YYYYMMDDTHHMMSSZ-xxxxxx). Default: generated.
 
 Examples:
   ./install.sh --harness=claude
@@ -470,6 +502,11 @@ class Options:
     quiet: bool = False
     verbose: bool = False
     force_harness: bool = False
+    migrate_toolkit_home: bool = False
+    json_report: bool = False
+    cross_filesystem: bool = False
+    skip_reconciliation: bool = False
+    migration_id: str | None = None
 
 
 @dataclass
@@ -639,6 +676,17 @@ def parse_args(argv: Sequence[str]) -> Options:
     parser.add_argument(
         "--no-report-uninstalled", dest="no_report_uninstalled", action="store_true"
     )
+    parser.add_argument(
+        "--migrate-toolkit-home", dest="migrate_toolkit_home", action="store_true"
+    )
+    parser.add_argument("--json", dest="json_report", action="store_true")
+    parser.add_argument(
+        "--cross-filesystem", dest="cross_filesystem", action="store_true"
+    )
+    parser.add_argument(
+        "--skip-reconciliation", dest="skip_reconciliation", action="store_true"
+    )
+    parser.add_argument("--migration-id", dest="migration_id", default=None)
     parser.add_argument("-h", "--help", dest="help", action="store_true")
 
     args, extras = parser.parse_known_args(list(argv))
@@ -698,6 +746,7 @@ def parse_args(argv: Sequence[str]) -> Options:
         or args.reseed
         or args.adopt
         or args.check_links
+        or args.migrate_toolkit_home
     ):
         _fail("--depart must be used alone, with no other flags")
 
@@ -715,8 +764,50 @@ def parse_args(argv: Sequence[str]) -> Options:
         or args.reseed
         or args.adopt
         or args.dry_run
+        or args.migrate_toolkit_home
     ):
         _fail("--check-links must be used alone, apart from --harness and --profile")
+
+    # --migrate-toolkit-home runs its own executor, never the install path,
+    # so every install-only modifier would be silently ignored. Checked on
+    # the raw argparse values: Options.report_uninstalled defaults to True.
+    if args.migrate_toolkit_home and (
+        args.rollback
+        or args.wipe
+        or args.force
+        or args.reseed
+        or args.adopt
+        or args.yes
+        or args.force_harness
+        or args.report_uninstalled
+        or args.no_report_uninstalled
+    ):
+        _fail(
+            "--migrate-toolkit-home cannot be combined with --rollback, --wipe, "
+            "--force, --reseed, --adopt, --yes, --force-harness, or "
+            "--report-uninstalled/--no-report-uninstalled"
+        )
+
+    migration_only = [
+        flag
+        for flag, given in (
+            ("--json", args.json_report),
+            ("--cross-filesystem", args.cross_filesystem),
+            ("--skip-reconciliation", args.skip_reconciliation),
+            ("--migration-id", args.migration_id is not None),
+        )
+        if given
+    ]
+    if migration_only and not args.migrate_toolkit_home:
+        _fail(f"{migration_only[0]} can only be used with --migrate-toolkit-home")
+
+    if args.migration_id is not None and not migrate_toolkit_home.MIGRATION_ID_RE.match(
+        args.migration_id
+    ):
+        _fail(
+            f"invalid --migration-id: {args.migration_id} "
+            "(expected mig-YYYYMMDDTHHMMSSZ-xxxxxx)"
+        )
 
     if args.yes and not args.depart:
         _fail("--yes can only be used with --depart")
@@ -784,6 +875,11 @@ def parse_args(argv: Sequence[str]) -> Options:
         quiet=args.quiet,
         verbose=args.verbose,
         force_harness=args.force_harness,
+        migrate_toolkit_home=args.migrate_toolkit_home,
+        json_report=args.json_report,
+        cross_filesystem=args.cross_filesystem,
+        skip_reconciliation=args.skip_reconciliation,
+        migration_id=args.migration_id,
     )
 
 
@@ -2498,6 +2594,25 @@ def main(argv: Sequence[str] | None = None) -> int:
     cli_common.PALETTE.enabled = color_enabled(sys.stdout)
 
     opts = parse_args(sys.argv[1:] if argv is None else argv)
+
+    # Its own executor: nothing below (context, work guard, harness binary
+    # checks, run_install) runs for a migration.
+    if opts.migrate_toolkit_home:
+        return migrate_toolkit_home.run(
+            migrate_toolkit_home.MigrationOptions(
+                harnesses=opts.harnesses,
+                profile=opts.profile,
+                dry_run=opts.dry_run,
+                json_report=opts.json_report,
+                cross_filesystem=opts.cross_filesystem,
+                skip_reconciliation=opts.skip_reconciliation,
+                migration_id=opts.migration_id,
+                quiet=opts.quiet,
+                verbose=opts.verbose,
+            ),
+            repo_root=Path(__file__).resolve().parent,
+        )
+
     ctx = build_context(opts)
 
     if opts.rollback:
