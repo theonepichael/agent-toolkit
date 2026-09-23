@@ -15,11 +15,16 @@ runs. It:
   `~/.claude`, `~/.config`, `~/.local/state/agent-toolkit`, and
   `~/.agent-toolkit`.
 
-The path guard only checks path arguments whose raw string names a guarded
-root (absolute or `~`-prefixed paths). A relative path, a `..` path from
-inside a guarded root, a symlink alias, a `dir_fd=` call, or a keyword path
-argument gets past it. The sandboxed `HOME` is what keeps those off real
-state, so do not build test paths from the real home.
+The path guard resolves every path argument the way the kernel would —
+relative and `..`-laden paths against the call's `dir_fd=` anchor (via the
+platform fd link) or the process cwd, following symlink aliases — and
+denies a resolved landing inside a guarded root. The sandboxed `HOME` is
+still what keeps the *sandbox* itself off real state, so do not build test
+paths from the real home.
+
+One documented limit remains: on a platform with neither
+`/proc/self/fd` nor `/dev/fd`, a `dir_fd=` call's relative path cannot be
+resolved and is not checked.
 
 A test that trips one of these dies with a `RuntimeError`, not a normal
 assertion failure, and the message does not look like a missing-marker

@@ -67,11 +67,12 @@ GUARDED_HOME_SUBDIRS: list[Path] = [
 ]
 """Real-home subtrees a guarded write may never touch.
 
-The guard only sees path arguments whose raw string contains one of
-:data:`_PATH_PREFILTER_MARKERS` (absolute or ``~``-prefixed paths). A
-marker-free relative path, a ``..`` path from inside a guarded root, a
-marker-free symlink alias, a ``dir_fd=`` call, or a keyword path argument
-is not checked. Every root in this list has that same reach.
+Every path-like argument of every guarded API is resolved — relative and
+``..``-laden paths against the call's ``dir_fd`` anchor when one is given
+(via the platform's fd link), otherwise against the process cwd — and a
+resolved landing inside any of these subtrees is denied. A symlink alias
+is followed by resolution, so an alias with no ``~``/marker-shaped name
+is caught the same way.
 
 A mutable module attribute on purpose: the suite's probe test swaps in a
 ``tmp_path``-rooted copy to exercise every guarded API without aiming at the
@@ -80,7 +81,14 @@ developer's real state.
 
 _WRITE_MODE_CHARS = frozenset("wax+")
 _WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT
-_PATH_PREFILTER_MARKERS = (".claude", ".config", ".local/state", ".agent-toolkit", "~")
+_FD_LINK_BASES = ("/proc/self/fd", "/dev/fd")
+"""Platform dirs whose ``N`` entries link an open fd's real path.
+
+Used to resolve a ``dir_fd=``-anchored relative path against the fd's
+directory. Neither existing (an exotic platform) leaves such calls
+unchecked — documented in the module docstring, not a silent narrowing of
+this tuple.
+"""
 
 _ACTIVE = {"subprocess": False, "paths": False}
 _INSTALLED = False
@@ -92,13 +100,33 @@ def _is_write_mode(mode: str) -> bool:
     return any(c in _WRITE_MODE_CHARS for c in mode)
 
 
-def _resolve_if_path(target: object) -> Path | None:
+def _fd_link_base() -> str | None:
+    for base in _FD_LINK_BASES:
+        if os.path.isdir(base):
+            return base
+    return None
+
+
+def _resolve_path_arg(target: object, *, dir_fd: int | None = None) -> Path | None:
+    """Resolve a path argument the way the kernel would, best-effort.
+
+    Returns ``None`` for a non-path argument and for anything unresolvable
+    (no fd-link platform, a symlink chain with an unreachable or looping
+    component): resolution failure counts as "not denied" so the guard
+    never turns an allowed call into a crash of its own.
+    """
     if not isinstance(target, (str, bytes, os.PathLike)):
         return None
     s = os.fsdecode(target)
-    if not any(marker in s for marker in _PATH_PREFILTER_MARKERS):
+    try:
+        if dir_fd is not None and not os.path.isabs(s):
+            base = _fd_link_base()
+            if base is None:
+                return None
+            return Path(os.path.join(f"{base}/{dir_fd}", s)).resolve()
+        return Path(s).expanduser().resolve()
+    except (OSError, RuntimeError):
         return None
-    return Path(s).expanduser().resolve()
 
 
 def _is_guarded_target(resolved: Path | None) -> bool:
@@ -122,6 +150,13 @@ class ApiSpec:
 
     ``args`` lists positional indices that carry paths (index 0 is ``self``
     for unbound ``Path`` methods — same semantics as the wrappers).
+    ``names`` is index-aligned with ``args``: the keyword name each path
+    argument accepts, or ``None`` where the argument cannot be passed by
+    keyword (the ``Path`` instance itself). ``fd_kwargs`` maps a path-arg
+    index to the dir-fd keyword anchoring it — one entry per fd keyword,
+    since the pairing is per-API and asymmetric (``os.symlink``'s single
+    ``dir_fd`` anchors *dst* only; its ``src`` is a stored link target and
+    is resolved without the fd).
     ``mode_arg``/``flags_arg`` mark the extra write-intent pre-filters for
     ``open``/``os.open``, which only guard calls that actually open for
     writing. ``probe`` invokes the API with the guarded path(es) under
@@ -131,6 +166,8 @@ class ApiSpec:
 
     qualname: str
     args: tuple[int, ...] = (0,)
+    names: tuple[str | None, ...] = ()
+    fd_kwargs: tuple[tuple[int, str], ...] = ()
     mode_arg: int | None = None
     flags_arg: int | None = None
     probe: Callable[[Path], object] = field(default=lambda root: None)
@@ -267,31 +304,52 @@ GUARDED_MUTATION_APIS: dict[str, ApiSpec] = {
         ApiSpec("pathlib.Path.unlink", probe=_probe_path_unlink),
         ApiSpec("pathlib.Path.rmdir", probe=_probe_path_rmdir),
         ApiSpec("pathlib.Path.mkdir", probe=_probe_path_mkdir),
-        ApiSpec("pathlib.Path.rename", args=(0, 1), probe=_probe_path_rename),
-        ApiSpec("pathlib.Path.replace", args=(0, 1), probe=_probe_path_replace),
         ApiSpec("pathlib.Path.touch", probe=_probe_path_touch),
         ApiSpec("pathlib.Path.chmod", probe=_probe_path_chmod),
-        ApiSpec("pathlib.Path.symlink_to", args=(0, 1), probe=_probe_path_symlink_to),
+        ApiSpec("pathlib.Path.rename", args=(0, 1), names=(None, "target"),
+                probe=_probe_path_rename),
+        ApiSpec("pathlib.Path.replace", args=(0, 1), names=(None, "target"),
+                probe=_probe_path_replace),
+        ApiSpec("pathlib.Path.symlink_to", args=(0, 1), names=(None, "target"),
+                probe=_probe_path_symlink_to),
         ApiSpec(
-            "pathlib.Path.hardlink_to", args=(0, 1), probe=_probe_path_hardlink_to
+            "pathlib.Path.hardlink_to", args=(0, 1), names=(None, "target"),
+            probe=_probe_path_hardlink_to,
         ),
-        ApiSpec("os.remove", probe=_probe_os_remove),
-        ApiSpec("os.unlink", probe=_probe_os_remove),
-        ApiSpec("os.rmdir", probe=_probe_os_rmdir),
-        ApiSpec("os.mkdir", probe=_probe_os_mkdir),
-        ApiSpec("os.makedirs", probe=_probe_os_makedirs),
-        ApiSpec("os.rename", args=(0, 1), probe=_probe_os_rename),
-        ApiSpec("os.replace", args=(0, 1), probe=_probe_os_replace),
-        ApiSpec("os.link", args=(0, 1), probe=_probe_os_link),
-        ApiSpec("os.symlink", args=(0, 1), probe=_probe_os_symlink),
-        ApiSpec("os.chmod", probe=_probe_os_chmod),
-        ApiSpec("os.utime", probe=_probe_os_utime),
-        ApiSpec("os.truncate", probe=_probe_os_truncate),
-        ApiSpec("shutil.rmtree", probe=_probe_shutil_rmtree),
-        ApiSpec("shutil.move", args=(0, 1), probe=_probe_shutil_move),
-        ApiSpec("shutil.copy", args=(0, 1), probe=_probe_shutil_copy),
-        ApiSpec("shutil.copyfile", args=(0, 1), probe=_probe_shutil_copyfile),
-        ApiSpec("shutil.copytree", args=(0, 1), probe=_probe_shutil_copytree),
+        ApiSpec("os.remove", names=("path",), fd_kwargs=((0, "dir_fd"),),
+                probe=_probe_os_remove),
+        ApiSpec("os.unlink", names=("path",), fd_kwargs=((0, "dir_fd"),),
+                probe=_probe_os_remove),
+        ApiSpec("os.rmdir", names=("path",), fd_kwargs=((0, "dir_fd"),),
+                probe=_probe_os_rmdir),
+        ApiSpec("os.mkdir", names=("path",), fd_kwargs=((0, "dir_fd"),),
+                probe=_probe_os_mkdir),
+        ApiSpec("os.makedirs", names=("name",), probe=_probe_os_makedirs),
+        ApiSpec("os.rename", args=(0, 1), names=("src", "dst"),
+                fd_kwargs=((0, "src_dir_fd"), (1, "dst_dir_fd")),
+                probe=_probe_os_rename),
+        ApiSpec("os.replace", args=(0, 1), names=("src", "dst"),
+                fd_kwargs=((0, "src_dir_fd"), (1, "dst_dir_fd")),
+                probe=_probe_os_replace),
+        ApiSpec("os.link", args=(0, 1), names=("src", "dst"),
+                fd_kwargs=((0, "src_dir_fd"), (1, "dst_dir_fd")),
+                probe=_probe_os_link),
+        ApiSpec("os.symlink", args=(0, 1), names=("src", "dst"),
+                fd_kwargs=((1, "dir_fd"),), probe=_probe_os_symlink),
+        ApiSpec("os.chmod", names=("path",), fd_kwargs=((0, "dir_fd"),),
+                probe=_probe_os_chmod),
+        ApiSpec("os.utime", names=("path",), fd_kwargs=((0, "dir_fd"),),
+                probe=_probe_os_utime),
+        ApiSpec("os.truncate", names=("path",), probe=_probe_os_truncate),
+        ApiSpec("shutil.rmtree", names=("path",), probe=_probe_shutil_rmtree),
+        ApiSpec("shutil.move", args=(0, 1), names=("src", "dst"),
+                probe=_probe_shutil_move),
+        ApiSpec("shutil.copy", args=(0, 1), names=("src", "dst"),
+                probe=_probe_shutil_copy),
+        ApiSpec("shutil.copyfile", args=(0, 1), names=("src", "dst"),
+                probe=_probe_shutil_copyfile),
+        ApiSpec("shutil.copytree", args=(0, 1), names=("src", "dst"),
+                probe=_probe_shutil_copytree),
     )
 }
 """Every mutating API the sandbox denies against guarded real-home subtrees.
@@ -301,22 +359,30 @@ the repo's registry for "what a test may not do to the real filesystem".
 """
 
 
-def _check_path_args(args: tuple[object, ...], path_args: tuple[int, ...]) -> None:
-    for i in path_args:
-        if i >= len(args):
-            continue
-        resolved = _resolve_if_path(args[i])
-        if _is_guarded_target(resolved):
-            assert resolved is not None
-            _deny_production_path(resolved)
+def _check_path_args(
+    args: tuple[object, ...], kwargs: dict[str, object], path_args: ApiSpec
+) -> None:
+    fd_names = dict(path_args.fd_kwargs)
+    for i in path_args.args:
+        candidates = [args[i]] if i < len(args) else []
+        name = path_args.names[i] if i < len(path_args.names) else None
+        if name is not None and name in kwargs:
+            candidates.append(kwargs[name])
+        fd_name = fd_names.get(i)
+        dir_fd = kwargs.get(fd_name) if fd_name is not None else None
+        for candidate in candidates:
+            resolved = _resolve_path_arg(candidate, dir_fd=dir_fd)
+            if _is_guarded_target(resolved):
+                assert resolved is not None
+                _deny_production_path(resolved)
 
 
 def _guarded(
-    original: Callable[..., object], *, path_args: tuple[int, ...] = (0,)
+    original: Callable[..., object], *, path_args: ApiSpec
 ) -> Callable[..., object]:
     def guarded(*args: object, **kwargs: object) -> object:
         if _ACTIVE["paths"]:
-            _check_path_args(args, path_args)
+            _check_path_args(args, kwargs, path_args)
         return original(*args, **kwargs)
 
     return guarded
@@ -333,7 +399,7 @@ def _guarded_open(
             and isinstance(mode, str)
             and _is_write_mode(mode)
         ):
-            resolved = _resolve_if_path(file)
+            resolved = _resolve_path_arg(file)
             if _is_guarded_target(resolved):
                 assert resolved is not None
                 _deny_production_path(resolved)
@@ -347,10 +413,12 @@ def _guarded_os_open(
 ) -> Callable[..., object]:
     def guarded(path: object, flags: int, *args: object, **kwargs: object) -> object:
         if _ACTIVE["paths"] and isinstance(flags, int) and (flags & _WRITE_FLAGS):
-            resolved = _resolve_if_path(path)
-            if _is_guarded_target(resolved):
-                assert resolved is not None
-                _deny_production_path(resolved)
+            dir_fd = kwargs.get("dir_fd")
+            for candidate in (path, kwargs.get("path")):
+                resolved = _resolve_path_arg(candidate, dir_fd=dir_fd)
+                if _is_guarded_target(resolved):
+                    assert resolved is not None
+                    _deny_production_path(resolved)
         return original(path, flags, *args, **kwargs)
 
     return guarded
@@ -488,7 +556,7 @@ def install_patches() -> None:
         if special is not None:
             wrapped = special(original)
         else:
-            wrapped = _guarded(original, path_args=spec.args)
+            wrapped = _guarded(original, path_args=spec)
         setattr(container, attr, wrapped)
     _INSTALLED = True
 
