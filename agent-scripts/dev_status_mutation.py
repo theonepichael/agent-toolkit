@@ -13,11 +13,15 @@ calls.
 
 Lifecycle completion policy (review, approve, direct done): all three
 refuse with ``InvalidItemStateError`` when the item's attributable local
-work is uncommitted or has not reached the repository's local default
-branch — merge ancestry is the contract, not patch equivalence. The
+work is uncommitted or has not reached its merge target — the
+repository's local default branch, or the item's declared
+``integration_branch`` instead when one is set (work that lands on an
+integration branch such as ``release-1`` before main). Merge ancestry is
+the contract, not patch equivalence. The
 read-only git inspection runs BEFORE the storage lock (worktree_provenance
 owns it); the locked section only consumes the verdict, after every other
-validation, before the first lifecycle mutation. Planning-only items (no
+validation, before the first lifecycle mutation; it refuses if the item's
+``integration_branch`` changed between the pre-pass and the lock. Planning-only items (no
 related_files) and merged-and-cleaned-up work pass; unattributed local
 work — a main checkout's dirt — is deliberately invisible here
 (guard-rails R2 owns that path), and there is no bypass flag.
@@ -84,6 +88,7 @@ BACKLOG_MUTABLE_FIELDS: frozenset[str] = frozenset(
         "context",
         "next_steps",
         "priority",
+        "integration_branch",
     }
 )
 """Fields a generic ``update`` patch may merge, and nothing else.
@@ -275,6 +280,7 @@ class ItemUpdateRequest:
     next_steps: str | list[str] | _Unset | None = UNSET
     related_files: tuple[Mapping[str, object], ...] | _Unset = UNSET
     priority: str | _Unset | None = UNSET
+    integration_branch: str | _Unset | None = UNSET
 
 
 @dataclass(frozen=True)
@@ -1188,12 +1194,16 @@ def _committed_work_refusals(cmd: str, slug: str, item: BacklogItem) -> list[str
     """Refusal lines for the item's attributable local work, from the
     read-only worktree inspection (worktree_provenance owns the git
     mechanics and every fail-closed boundary; this is the lifecycle
-    policy). Empty = allow."""
+    policy). The merge target is the item's declared ``integration_branch``
+    when set, else the local default branch. Empty = allow."""
+    target_branch = item.get("integration_branch")
     inspections = worktree_provenance.inspect_item_worktrees(
         related_files=item.get("related_files") or [],
         slug=slug,
         cwd=Path.cwd(),
+        target_branch=target_branch,
     )
+    into = target_branch or "the local default branch"
     refusals: list[str] = []
     for insp in inspections:
         if insp.problem is not None:
@@ -1203,7 +1213,7 @@ def _committed_work_refusals(cmd: str, slug: str, item: BacklogItem) -> list[str
         elif insp.head_ancestor_of_default is False:
             refusals.append(
                 f"{insp.target}: commits not on {insp.default_ref} — merge the "
-                "branch into the local default branch first"
+                f"branch into {into} first"
             )
     return refusals
 
@@ -1217,30 +1227,47 @@ def _committed_work_message(cmd: str, slug: str, refusals: list[str]) -> str:
         "(uncommitted or unmerged): "
         + "; ".join(refusals)
         + ". Squash- or rebase-merged instead? Delete the stale local branch "
-        "or worktree AFTER a human confirms the content reached the default "
-        "branch. Detached HEAD? Check the item branch back out."
+        "or worktree AFTER a human confirms the content reached the merge "
+        "target. Detached HEAD? Check the item branch back out."
     )
+
+
+@dataclass(frozen=True)
+class _PrepassVerdict:
+    """The unlocked pre-pass's refusal lines (empty = allow) and the
+    ``integration_branch`` they were computed against, so the locked
+    section can refuse when a concurrent ``update`` changed it."""
+
+    refusals: list[str]
+    integration_branch: str | None
+
+
+@dataclass(frozen=True)
+class _PrepassReadFailure:
+    """The unlocked store read failed before committed-work inspection."""
 
 
 def _prepass_committed_work(
     cmd: str,
     slug_or_id: str,
     paths: Mapping[str, Path | None],
-) -> list[str] | None:
+) -> _PrepassVerdict | _PrepassReadFailure | None:
     """Unlocked advisory pre-pass for review/approve/done: resolve the item
     and run the read-only git inspection OUTSIDE the storage lock, so
     bounded subprocess calls never stall a concurrent session's mutation.
 
-    Returns refusal lines (empty list = allow), or None whenever any
-    pre-check cannot pass — the locked section re-runs every validation
-    authoritatively and raises its own typed error with the right
-    precedence, so None only means "don't consult the verdict here".
+    Returns the verdict (empty refusals = allow), ``_PrepassReadFailure``
+    when an unlocked store load fails, or None for an expected validation
+    refusal that the locked section will raise with authoritative precedence.
     The inspection call itself sits outside every broad except: its
     failures arrive as ``problem`` entries (deny), and a genuine bug
     propagates loudly rather than collapsing into an allow."""
     try:
         items = dev_status_storage.load_items(paths["items_path"])
         pending_items = dev_status_storage.load_pending(paths["pending_path"])
+    except Exception:
+        return _PrepassReadFailure()
+    try:
         kind, slug = resolve_id(slug_or_id, items, pending_items)
         if kind != "backlog":
             return None
@@ -1264,9 +1291,37 @@ def _prepass_committed_work(
             return None
     except BacklogMutationError:
         return None  # resolve_id's typed refusal — the locked section raises its own
-    except Exception:
-        return None  # store-read hiccup — the locked section's read decides
-    return _committed_work_refusals(cmd, slug, item)
+    return _PrepassVerdict(
+        refusals=_committed_work_refusals(cmd, slug, item),
+        integration_branch=item.get("integration_branch"),
+    )
+
+
+def _raise_on_prepass(
+    cmd: str,
+    slug: str,
+    item: BacklogItem,
+    verdict: _PrepassVerdict | _PrepassReadFailure | None,
+) -> None:
+    """Locked-section consumer of the pre-pass: refuse when the item's
+    ``integration_branch`` changed since the verdict was computed (a racing
+    ``update``), then on any refusal line."""
+    if verdict is None:
+        return
+    if isinstance(verdict, _PrepassReadFailure):
+        raise InvalidItemStateError(
+            f"[{cmd}] {slug}: refusing — committed-work precheck could not read "
+            "the backlog store — retry"
+        )
+    if verdict.integration_branch != item.get("integration_branch"):
+        raise InvalidItemStateError(
+            f"[{cmd}] {slug}: refusing — integration_branch changed while the "
+            "committed-work check ran — retry"
+        )
+    if verdict.refusals:
+        raise InvalidItemStateError(
+            _committed_work_message(cmd, slug, verdict.refusals)
+        )
 
 
 def _derive_run_cwd(item: BacklogItem | None, explicit_cwd: str | None) -> Path:
@@ -1470,6 +1525,16 @@ def update_item(
             f"{', '.join(sorted(VALID_PRIORITIES))}"
         )
 
+    if request.integration_branch is not UNSET and (
+        request.integration_branch is not None
+    ):
+        why = worktree_provenance.branch_name_problem(request.integration_branch)
+        if why is not None:
+            raise ValidationError(
+                f"[update] invalid integration_branch "
+                f"{request.integration_branch!r}: {why}"
+            )
+
     nulled = [
         f
         for f, val in (
@@ -1531,6 +1596,12 @@ def update_item(
                 item.pop("priority", None)
             else:
                 item["priority"] = request.priority
+        if request.integration_branch is not UNSET:
+            fields.append("integration_branch")
+            if request.integration_branch is None:
+                item.pop("integration_branch", None)
+            else:
+                item["integration_branch"] = cast(str, request.integration_branch)
 
         item["updated"] = today()
         new_rev = _bump_rev(paths["meta_path"])
@@ -1661,7 +1732,7 @@ def done_item(
 ) -> MutationResult:
     """Mark a backlog item done."""
     paths = _storage_bundle(items_path)
-    pre_refusals = _prepass_committed_work("done", slug_or_id, paths)
+    pre_verdict = _prepass_committed_work("done", slug_or_id, paths)
     with dev_status_storage.backlog_lock(paths["data_dir"], paths["lock_file"]):
         items = dev_status_storage.load_items(paths["items_path"])
         pending_items = dev_status_storage.load_pending(paths["pending_path"])
@@ -1687,10 +1758,7 @@ def done_item(
         if gate_msg:
             raise GateUnmetError(gate_msg)
 
-        if pre_refusals:
-            raise InvalidItemStateError(
-                _committed_work_message("done", slug, pre_refusals)
-            )
+        _raise_on_prepass("done", slug, item, pre_verdict)
 
         old_status = item.get("status")
         _apply_status_transition(item, "done", "completed_at", "done")
@@ -1736,7 +1804,7 @@ def review_item(
 ) -> MutationResult:
     """Submit (or re-submit) an item for review."""
     paths = _storage_bundle(items_path)
-    pre_refusals = _prepass_committed_work("review", slug_or_id, paths)
+    pre_verdict = _prepass_committed_work("review", slug_or_id, paths)
     with dev_status_storage.backlog_lock(paths["data_dir"], paths["lock_file"]):
         items = dev_status_storage.load_items(paths["items_path"])
         pending_items = dev_status_storage.load_pending(paths["pending_path"])
@@ -1760,10 +1828,7 @@ def review_item(
                 "for review."
             )
 
-        if pre_refusals:
-            raise InvalidItemStateError(
-                _committed_work_message("review", slug, pre_refusals)
-            )
+        _raise_on_prepass("review", slug, item, pre_verdict)
 
         old_status = item.get("status")
         _apply_status_transition(item, "in-review", "completed_at", "done")
@@ -1811,7 +1876,7 @@ def approve_item(
 ) -> MutationResult:
     """Accept an in-review item, marking it done."""
     paths = _storage_bundle(items_path)
-    pre_refusals = _prepass_committed_work("approve", slug_or_id, paths)
+    pre_verdict = _prepass_committed_work("approve", slug_or_id, paths)
     with dev_status_storage.backlog_lock(paths["data_dir"], paths["lock_file"]):
         items = dev_status_storage.load_items(paths["items_path"])
         pending_items = dev_status_storage.load_pending(paths["pending_path"])
@@ -1845,10 +1910,7 @@ def approve_item(
         if gate_msg:
             raise GateUnmetError(gate_msg)
 
-        if pre_refusals:
-            raise InvalidItemStateError(
-                _committed_work_message("approve", slug, pre_refusals)
-            )
+        _raise_on_prepass("approve", slug, item, pre_verdict)
 
         old_status = item.get("status")
         _apply_status_transition(item, "done", "completed_at", "done")

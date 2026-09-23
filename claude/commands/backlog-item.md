@@ -46,6 +46,8 @@ If `start` instead exits 3 naming this machine's id file, run
 ## 3. Branch
 Create or reuse a dedicated worktree and bootstrap dependencies via `python3 ~/.agent-toolkit/scripts/dev_status.py worktree <slug|N>`. (If multiple project repos are involved or resolution fails, specify `--repo <path>`). Reuse a worktree this session already made for this item instead of a second one.
 
+Work that lands on an integration branch rather than the default branch (e.g. `release-1`)? Make sure the item's `integration_branch` is set (`update <slug> '{"integration_branch": "<branch>"}'`) *before* creating the worktree: a new item branch starts from it (else from `HEAD`), and step 12's merge check targets it. Confirm the base the command reports (`Created branch '<slug>' from '<base>'`); `--base <ref>` overrides it for one call. A branch that already exists is attached as-is, never re-based.
+
 ## 4. Baseline
 Run that repo's test suite (or the most relevant targeted subset) in the fresh worktree before touching anything (CLAUDE.md's "Baseline tests before starting code work").
 
@@ -162,12 +164,14 @@ orphaned directory directly (`rm -rf <worktree-path>`) and retry
 `dev_status.py review <slug|N>` then `approve <slug|N>` — never a bare
 `done` on an in-review item. The lifecycle order is commit → local merge →
 review → approve → done: all three refuse with a typed error while the
-item's attributable local work is uncommitted or not merged into the
-repo's local default branch (merge ancestry is the contract — a
+item's attributable local work is uncommitted or not merged into its
+merge target: the repo's local default branch, or instead the item's
+declared `integration_branch` when one is set via `update` (e.g.
+`release-1` work that lands before main). Merge ancestry is the contract — a
 squash/rebase merge clears the check only by deleting the stale local
 branch or worktree, after a human confirms the content reached the
-default branch; planning-only items with no attributable local work
-pass). If `approve` refuses citing an unmet gate,
+merge target; planning-only items with no attributable local work
+pass. If `approve` refuses citing an unmet gate,
 actually check each criterion from `show <slug|N>` against the diff — don't
 pass it reflexively — then cover every criterion with evidence:
 `dev_status.py run <slug|N> -- <command>` executes and records a command,

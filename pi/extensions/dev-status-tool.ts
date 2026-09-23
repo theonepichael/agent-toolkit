@@ -75,6 +75,7 @@ export type Field =
   | "skipBootstrap"
   | "repo"
   | "branch"
+  | "base"
   | "repair";
 
 interface ActionFields {
@@ -112,7 +113,7 @@ const ACTION_FIELDS: Record<Action, ActionFields> = {
   prune: { allowed: ["force"], required: ["force"] },
   recap: { allowed: ["refresh", "backend"], required: [] },
   worktree: {
-    allowed: ["slug", "force", "skipBootstrap", "repo", "branch"],
+    allowed: ["slug", "force", "skipBootstrap", "repo", "branch", "base"],
     required: [],
   },
   machine_id: { allowed: ["repair"], required: [] },
@@ -187,6 +188,7 @@ export interface DevStatusParams {
   skipBootstrap?: boolean;
   repo?: string;
   branch?: string;
+  base?: string;
   repair?: boolean;
 }
 
@@ -313,6 +315,7 @@ export function buildArgv(action: Action, params: DevStatusParams): string[] {
         ...(params.slug ? [params.slug] : []),
         ...(params.repo ? ["--repo", params.repo] : []),
         ...(params.branch ? ["--branch", params.branch] : []),
+        ...(params.base ? ["--base", params.base] : []),
         ...(params.skipBootstrap ? ["--skip-bootstrap"] : []),
         ...(params.force ? ["--force"] : []),
       ];
@@ -436,6 +439,12 @@ export default function (pi: ExtensionAPI) {
       branch: Type.Optional(
         Type.String({
           description: "worktree: explicit branch name for worktree.",
+        }),
+      ),
+      base: Type.Optional(
+        Type.String({
+          description:
+            "worktree: start point for a newly created branch (default: the item's integration_branch, else HEAD).",
         }),
       ),
       refresh: Type.Optional(Type.Boolean({ description: "recap: bypass the freshness cache." })),

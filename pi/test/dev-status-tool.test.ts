@@ -237,6 +237,18 @@ describe("buildArgv", () => {
     ).toEqual(["worktree", "abc", "--branch", "feat", "--skip-bootstrap", "--force"]);
   });
 
+  test("worktree action forwards base", () => {
+    expect(() =>
+      assertFields("worktree", { action: "worktree", slug: "abc", base: "release-1" }),
+    ).not.toThrow();
+    expect(buildArgv("worktree", { action: "worktree", slug: "abc", base: "release-1" })).toEqual([
+      "worktree",
+      "abc",
+      "--base",
+      "release-1",
+    ]);
+  });
+
   test("patch actions serialize the patch", () => {
     const patch = { id: "abc", summary: "x" };
     expect(buildArgv("update", { action: "update", slug: "abc", patch })).toEqual([

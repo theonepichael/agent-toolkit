@@ -100,16 +100,23 @@ rerun.
 # Audit symlinks against manifest:
 ./install.sh --check-links
 
-# Roll back all symlinks and mutations:
+# Roll back all symlinks and mutations (refused while a toolkit-home
+# migration is committed but not finalized; use the narrow rollback below):
 ./install.sh --rollback
 
-# Toolkit-home migration, safety frame only (moves no data yet).
+# Toolkit-home migration: moves the toolkit data out of its legacy home under ~/.claude.
 # Dry run: every preflight check, writes nothing:
 ./install.sh --migrate-toolkit-home --harness=claude --dry-run
-# Real run: takes the migration lock, writes a journal and an inventory
-# under ~/.local/state/agent-toolkit/migrations/<id>/, then stops.
+# Real run: journal under ~/.local/state/agent-toolkit/migrations/<id>/,
+# data staged, promoted, layout flipped, originals kept beside the legacy
+# data in .toolkit-home-snapshot-<id>/, then validated in fresh processes;
+# a failed validation restores the legacy layout.
 # On a personal machine, run dev_status_sync.py status first, then:
 ./install.sh --migrate-toolkit-home --harness=claude --skip-reconciliation
+# Undo one committed migration (refuses if anything was written since):
+./install.sh --rollback-toolkit-home-migration=<id>
+# Once satisfied, delete its snapshot, staging and retired legacy links:
+./install.sh --finalize-toolkit-home-migration=<id>
 ```
 
 ### Shell Integration

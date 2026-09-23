@@ -37,6 +37,7 @@ def test_real_repository_passes_both_checks():
         (("scripts", "dev_status_sync.py"), "foreign"),
         (("data", "grill"), "toolkit"),
         (("data",), "toolkit"),
+        (("data", ".toolkit-home-snapshot-mig-20260923T120000Z-abcdef"), "toolkit"),
         (("hooks",), "toolkit"),
         (("hooks", "agy-elapsed.js"), "toolkit"),
         (("hooks", "herdr-agent-state.sh"), "foreign"),

@@ -48,6 +48,9 @@ class FakeLookup:
     def claim_info(self, slug: str) -> object:
         return self._claims.get(slug)
 
+    def get_item(self, slug: str) -> dict | None:
+        return next((i for i in self._items if i.get("id") == slug), None)
+
 
 class NormalizeToolTests(unittest.TestCase):
     def test_write_family_covers_every_harness_spelling(self) -> None:
@@ -227,7 +230,7 @@ class FailurePostureTests(unittest.TestCase):
         )
         with mock.patch.object(guard_rails, "repo_info", return_value=info):
             with mock.patch.object(
-                guard_rails, "_behind_origin_main", return_value=False
+                guard_rails, "_behind_ref", return_value=False
             ):
                 with mock.patch.object(guard_rails, "_session_identity") as session:
                     verdict = guard_rails.evaluate(
@@ -250,7 +253,7 @@ class FailurePostureTests(unittest.TestCase):
         )
         with mock.patch.object(guard_rails, "repo_info", return_value=info):
             with mock.patch.object(
-                guard_rails, "_behind_origin_main", return_value=True
+                guard_rails, "_behind_ref", return_value=True
             ):
                 with mock.patch.object(
                     guard_rails,

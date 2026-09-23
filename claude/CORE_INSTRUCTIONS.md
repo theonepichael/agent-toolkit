@@ -334,6 +334,14 @@ Verify against misresolution by checking that `slug`, `ref` (if numeric), and
 `detail` match the item intended; if they don't, revert (`reopen <slug>` or
 similar) and ask.
 
+Exit code 75 from any toolkit script (`dev_status.py`, `grill.py`,
+`second_opinion.py`, `to_tickets_runner.py`, `vitals_promotion.py`, ...)
+means the machine-wide migration lock refused the write — nothing was
+written. Run `python3 ~/.claude/scripts/migration_lock.py status`: if a
+toolkit-home migration holds it exclusively, tell the user and retry once it
+finishes; if the lock file itself is unusable, report that and stop. Never
+work around the refusal — no hand-edits to the stores, no retry loop.
+
 If the item's work touched a real project repo and left actual file
 changes, offer to commit — and if the repo has a remote, offer to push too
 — once the work is verified and ready. Offer, never commit or push
@@ -455,7 +463,9 @@ used for backlog capture.
 
   This delegates to `worktree.py` internally, which automatically resolves
   the repository from the backlog item, handles branch creation or
-  attachment, reuses existing worktrees idempotently,
+  attachment (a new branch starts from the item's `integration_branch`
+  when one is set, else `HEAD`; `--base <ref>` overrides), reuses existing
+  worktrees idempotently,
   and bootstraps project dependencies in a single step. Do not manually run
   `git worktree add` or execute bare bootstrap scripts (`scripts/bootstrap-worktree.sh`,
   etc.) for backlog items.
@@ -472,7 +482,8 @@ used for backlog capture.
   checkout. On a machine where `install.py` has run, a pre-tool guard
   enforces it: every harness refuses a write into a repo's main checkout
   while a backlog item for that repo is in progress, and warns when a
-  worktree's base is behind `origin/main`. Only the user can switch it off,
+  worktree's base is behind `origin/main` (or `origin/<integration_branch>`
+  for an item that declares one). Only the user can switch it off,
   by setting `GUARD_RAILS_OFF=1` in the environment the harness is launched
   from — an agent's own `export` never reaches the hook. Elsewhere, this
   rule is on you.

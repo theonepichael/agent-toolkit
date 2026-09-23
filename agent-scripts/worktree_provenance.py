@@ -32,7 +32,12 @@ The completion-notice predicate was retired when review/approve/done grew
 the pre-mutation committed-work guard (:func:`inspect_item_worktrees`):
 the inspector inherits the marker-OR-branch attribution for attributed
 targets and answers dirty/merged/problem facts, read-only, before any
-lifecycle mutation runs.
+lifecycle mutation runs. "Merged" means an ancestor of the local default
+branch, or of ``refs/heads/<target_branch>`` when the item declares an
+integration branch (work landed on e.g. ``release-1``, never main); a
+declared branch that does not exist is a problem, never a pass.
+:func:`branch_name_problem` validates such a declaration with git's own
+``check-ref-format --branch`` rules.
 
 Nothing here mutates the backlog store. Git calls are bounded — a guard that
 hangs is a guard that silently permits.
@@ -232,8 +237,9 @@ class WorktreeInspection:
     --ignore-submodules=none`` — any non-empty output is dirty, and the
     sample is bounded raw NUL-terminated tokens for diagnostics.
     ``head_ancestor_of_default`` is the merge-base verdict against the
-    resolved local default branch (``default_ref``); ``None`` when not
-    determined. ``problem`` is non-None exactly when inspection failed —
+    merge target (``default_ref``): the resolved local default branch, or
+    the item's declared integration branch when one was passed; ``None``
+    when not determined. ``problem`` is non-None exactly when inspection failed —
     callers must refuse on it, never on absence."""
 
     target: str
@@ -422,6 +428,59 @@ def _local_default_ref(anchor: Path) -> tuple[str | None, str | None]:
     return None, None
 
 
+def branch_name_problem(name: object) -> str | None:
+    """Why ``name`` is not a usable bare local branch name, or None when it
+    is. Pre-filters what ``git check-ref-format --branch`` would read as an
+    option (leading ``-``) or expand rather than validate (``@{`` history
+    syntax), and rejects a full ``refs/`` path; the rest is git's own rules.
+    Runs outside any repository. A git spawn failure or timeout is a
+    problem (fail closed)."""
+    if not isinstance(name, str):
+        return f"must be a string, not {type(name).__name__}"
+    if not name:
+        return "must not be empty"
+    if name.startswith("-"):
+        return "must not start with '-'"
+    if name.startswith("refs/"):
+        return "must be a bare branch name, not a refs/ path"
+    if "@{" in name:
+        return "must not contain '@{'"
+    raw = _git_raw("check-ref-format", "--branch", name)
+    if raw is None:
+        return "git check-ref-format timed out or could not run"
+    rc, _stdout, stderr = raw
+    if rc != 0:
+        return _one_line(stderr) or f"git check-ref-format rejected it (exit {rc})"
+    return None
+
+
+def _merge_target(
+    anchor: Path, target_branch: str | None
+) -> tuple[str | None, str | None]:
+    """(merge-target ref, problem): the declared integration branch when
+    one is given — it must exist locally — otherwise the local default
+    branch. A missing declared ref is a problem, never a fallback to the
+    default branch."""
+    if target_branch is None:
+        default, problem = _local_default_ref(anchor)
+        if problem is None and default is None:
+            problem = "no local default branch (main/master) to merge into"
+        return default, problem
+    ref = f"refs/heads/{target_branch}"
+    ex = _git_raw("-C", str(anchor), "show-ref", "--verify", "--quiet", ref)
+    if ex is None:
+        return None, "git show-ref timed out or could not run"
+    if ex[0] == 1:
+        return None, (
+            f"declared integration branch {ref} (a local branch) does not exist "
+            "in this repository — create it, or clear the declaration with "
+            "update <slug> '{\"integration_branch\": null}'"
+        )
+    if ex[0] != 0:
+        return None, f"git show-ref failed (exit {ex[0]})"
+    return ref, None
+
+
 def _status_and_ancestry(
     *,
     target: str,
@@ -430,6 +489,7 @@ def _status_and_ancestry(
     head_arg: str,
     anchor: Path,
     check_dirty: bool = True,
+    target_branch: str | None = None,
 ) -> WorktreeInspection:
     """Dirtiness (optional — a surviving branch's own checkout is not the
     branch's state) and merge ancestry of one attributed target, with every
@@ -459,14 +519,12 @@ def _status_and_ancestry(
                 problem=f"git status failed (exit {rc}: {_one_line(stderr)})",
             )
         tokens = [t for t in stdout.split("\0") if t]
-    default, problem = _local_default_ref(anchor)
-    if problem is not None:
-        return WorktreeInspection(target=target, source=source, problem=problem)
-    if default is None:
+    default, problem = _merge_target(anchor, target_branch)
+    if problem is not None or default is None:
         return WorktreeInspection(
             target=target,
             source=source,
-            problem="no local default branch (main/master) to merge into",
+            problem=problem or "no merge target could be resolved",
         )
     mb = _git_raw("-C", git_dir_arg, "merge-base", "--is-ancestor", head_arg, default)
     if mb is None:
@@ -519,7 +577,12 @@ class _OneWorktree:
 
 
 def _inspect_one_worktree(
-    wt: Path, porcelain_branch: str, slug: str, *, allow_main: bool = False
+    wt: Path,
+    porcelain_branch: str,
+    slug: str,
+    *,
+    allow_main: bool = False,
+    target_branch: str | None = None,
 ) -> _OneWorktree:
     """One listed worktree's inspection, or (None) when not attributable to
     slug. Marker-wins precedence: a readable marker naming another item
@@ -590,11 +653,14 @@ def _inspect_one_worktree(
             git_dir_arg=str(wt),
             head_arg="HEAD",
             anchor=wt,
+            target_branch=target_branch,
         )
     )
 
 
-def _inspect_branch_fallback(anchor: Path, slug: str) -> WorktreeInspection | None:
+def _inspect_branch_fallback(
+    anchor: Path, slug: str, target_branch: str | None = None
+) -> WorktreeInspection | None:
     """A surviving slug-named branch (worktree removed) inspected for merge
     ancestry. Absence (exit 1) is no attributable work; any other failure
     is an error, never "branch absent"."""
@@ -621,6 +687,7 @@ def _inspect_branch_fallback(anchor: Path, slug: str) -> WorktreeInspection | No
         head_arg=ref,
         anchor=anchor,
         check_dirty=False,
+        target_branch=target_branch,
     )
     # A merged survivor is the normal cleaned-up state — the fallback's
     # only job is to refuse an unmerged one, so a pass emits no entry.
@@ -634,6 +701,7 @@ def inspect_item_worktrees(
     related_files: object,
     slug: str,
     cwd: str | Path | None = None,
+    target_branch: str | None = None,
 ) -> list[WorktreeInspection]:
     """Read-only committed-work facts for every target attributable to
     ``slug``: linked worktrees marked for the item (marker wins over the
@@ -644,7 +712,11 @@ def inspect_item_worktrees(
     through related_files are skipped entirely: a submodule's pinned
     detached HEAD is its normal state, and its main checkout is never a
     linked worktree. Uncommitted work sitting directly in a main checkout
-    is deliberately invisible here (guard-rails R2 owns that path)."""
+    is deliberately invisible here (guard-rails R2 owns that path).
+
+    ``target_branch`` (a bare branch name) replaces the local default
+    branch as the merge target for every inspected target; None keeps the
+    default branch."""
     cwd_path = Path(cwd) if cwd is not None else Path.cwd()
     out: list[WorktreeInspection] = []
     repos, problems = _discover_repos(related_files)
@@ -660,7 +732,7 @@ def inspect_item_worktrees(
         repo_attributed = False
         foreign_marker = False
         for wt, branch in records:
-            res = _inspect_one_worktree(wt, branch, slug)
+            res = _inspect_one_worktree(wt, branch, slug, target_branch=target_branch)
             foreign_marker = foreign_marker or res.foreign_marker
             if res.inspection is None:
                 continue
@@ -674,7 +746,7 @@ def inspect_item_worktrees(
         # attributed worktree — and never when a foreign marker decided a
         # worktree here, or the marker-wins rule would be meaningless.
         if not repo_attributed and not foreign_marker:
-            fallback = _inspect_branch_fallback(anchor, slug)
+            fallback = _inspect_branch_fallback(anchor, slug, target_branch)
             if fallback is not None:
                 out.append(fallback)
     # The caller's own checkout: the one directory a session stands in, on
@@ -686,7 +758,11 @@ def inspect_item_worktrees(
             toplevel = prov.toplevel.resolve()
             if toplevel not in inspected:
                 res = _inspect_one_worktree(
-                    prov.toplevel, prov.branch, slug, allow_main=True
+                    prov.toplevel,
+                    prov.branch,
+                    slug,
+                    allow_main=True,
+                    target_branch=target_branch,
                 )
                 insp = res.inspection
                 if insp is not None:

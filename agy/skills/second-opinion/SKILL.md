@@ -68,6 +68,16 @@ so nothing to act on unless you want pool rotation. See the toolkit README's
 "What you supply vs. what the toolkit creates" section for the full config
 contract.
 
+Pinning a model the user names: when the user asks for a specific backend and
+model for the critique, target the backend with `--backend <name>` and set its
+single-model override (`SECOND_OPINION_<BACKEND>_MODEL`, the model's id or
+display name as that backend lists it — confirm it exists first, e.g. `agy
+models`) for every round, and omit `--model-index` — an explicit index selects
+the pool over the override, so passing it would silently replace the model the
+user asked for. Where the call goes through a shell, prefix it with the
+variable; where it goes through a native tool with no model parameter, ask the
+user to set the variable in the environment the harness was launched from.
+
 ## Resolving the target plan
 
 If the user named a specific file path or pasted plan text, treat that as the
@@ -243,5 +253,18 @@ first) or updating an existing one.
 `codex`, `agy`, `opencode`, or `pi` is on `PATH`, or when the available
 backend(s) fail (e.g. the `adversary` agent errors out — check with `opencode
 run --agent adversary --auto --format json <text> 2>&1` if that happens). Relay
-that message and stop — don't retry or fall back to critiquing the plan
-yourself.
+that message and stop — don't fall back to critiquing the plan yourself. Two
+failures get exactly one retry of the same round first, and you say which one
+you made:
+
+- **Timed out** (the message names `SECOND_OPINION_<BACKEND>_TIMEOUT_SECONDS`):
+retry with that variable raised — up to its 600-second ceiling — the same way
+as a model pin above. Slower models (a "Pro"/"High" tier) routinely need 300s
+or more. - **Grounded run produced no output because the backend was denied a
+tool** (headless mode auto-denied a permission it could not prompt for): retry
+with `--text-only`, and tell the user the critique could not read the codebase.
+Never add allow-rules or a skip-permissions flag to get the grounded run
+through — never loosen the backend's permissions; the critic's read-only
+isolation is the contract.
+
+A second failure of the same kind ends the loop as above.
