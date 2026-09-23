@@ -36,6 +36,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))
 import test_bootstrap  # noqa: E402
+import test_layouts  # noqa: E402
+import agent_toolkit_paths  # noqa: E402
 import dev_status
 import dev_status_mutation
 import llm_backends
@@ -111,7 +113,9 @@ _PREFIX_MARKER = "carries the prefix"
 class BacklogFixture(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
-        self.data_dir = Path(self.tmpdir) / "backlog"
+        # A sandbox HOME: every store path resolves under it at each use.
+        test_layouts.activate_sandbox_home(Path(self.tmpdir), self.addCleanup)
+        self.data_dir = agent_toolkit_paths.path_for("work-items")
         self.items_file = self.data_dir / "items.json"
         self.pending_file = self.data_dir / "pending_items.json"
         self.meta_file = self.data_dir / "_meta.json"
@@ -121,32 +125,9 @@ class BacklogFixture(unittest.TestCase):
         self.machine_id_file = self.data_dir / "_machine_id"
         self.recap_cache_file = self.data_dir / "recap-cache.json"
         self.recap_regen_lock_file = self.data_dir / "recap-regen.lock"
-        self.out_of_scope_dir = Path(self.tmpdir) / "backlog-out-of-scope"
+        self.out_of_scope_dir = agent_toolkit_paths.path_for("out-of-scope")
         self.out_of_scope_index_file = self.out_of_scope_dir / "index.json"
         self.out_of_scope_lock_file = self.out_of_scope_dir / ".out-of-scope.lock"
-        self._patches = [
-            patch.object(dev_status, "DATA_DIR", self.data_dir),
-            patch.object(dev_status, "ITEMS_FILE", self.items_file),
-            patch.object(dev_status, "PENDING_FILE", self.pending_file),
-            patch.object(dev_status, "META_FILE", self.meta_file),
-            patch.object(dev_status, "LOCK_FILE", self.lock_file),
-            patch.object(dev_status, "JOURNAL_FILE", self.journal_file),
-            patch.object(dev_status, "RUNS_FILE", self.runs_file),
-            patch.object(dev_status, "MACHINE_ID_FILE", self.machine_id_file),
-            patch.object(dev_status, "RECAP_CACHE_FILE", self.recap_cache_file),
-            patch.object(
-                dev_status, "RECAP_REGEN_LOCK_FILE", self.recap_regen_lock_file
-            ),
-            patch.object(dev_status, "OUT_OF_SCOPE_DIR", self.out_of_scope_dir),
-            patch.object(
-                dev_status, "OUT_OF_SCOPE_INDEX_FILE", self.out_of_scope_index_file
-            ),
-            patch.object(
-                dev_status, "OUT_OF_SCOPE_LOCK_FILE", self.out_of_scope_lock_file
-            ),
-        ]
-        for p in self._patches:
-            p.start()
         # `_maybe_dispatch_recap_regen` spawns `dev_status.py _internal-regen` as a
         # real, separate OS process — one that re-imports dev_status fresh and so
         # does NOT see any of the patches above, meaning an unmocked Popen call
@@ -165,8 +146,6 @@ class BacklogFixture(unittest.TestCase):
 
     def tearDown(self):
         self._popen_patch.stop()
-        for p in self._patches:
-            p.stop()
         shutil.rmtree(self.tmpdir)
 
     def write_items(self, items):
@@ -3451,22 +3430,22 @@ class BacklogTestCase(BacklogFixture):
 
     def test_r09_journal_append_failure_swallowed_mutation_still_succeeds(self):
         self.write_items([make_item("jf-item", status="in-progress")])
-        # Point JOURNAL_FILE at a directory: `open(..., "a")` raises
+        # Make the journal path a directory: `open(..., "a")` raises
         # IsADirectoryError (an OSError subclass) instead of ever writing.
-        with patch.object(dev_status, "JOURNAL_FILE", self.data_dir):
-            err = io.StringIO()
-            with patch("sys.stderr", err):
-                dev_status.cmd_done(_args(id="jf-item", verbose=True))
-            self.assertIn("append failed", err.getvalue())
+        self.journal_file.mkdir(parents=True)
+        err = io.StringIO()
+        with patch("sys.stderr", err):
+            dev_status.cmd_done(_args(id="jf-item", verbose=True))
+        self.assertIn("append failed", err.getvalue())
         self.assertEqual(self._item_by_id("jf-item")["status"], "done")
 
     def test_r09b_journal_append_failure_hidden_without_verbose(self):
         self.write_items([make_item("jf-item2", status="in-progress")])
-        with patch.object(dev_status, "JOURNAL_FILE", self.data_dir):
-            err = io.StringIO()
-            with patch("sys.stderr", err):
-                dev_status.cmd_done(_args(id="jf-item2"))
-            self.assertNotIn("append failed", err.getvalue())
+        self.journal_file.mkdir(parents=True)
+        err = io.StringIO()
+        with patch("sys.stderr", err):
+            dev_status.cmd_done(_args(id="jf-item2"))
+        self.assertNotIn("append failed", err.getvalue())
         self.assertEqual(self._item_by_id("jf-item2")["status"], "done")
 
     # ── journal reader ──────────────────────────────────────────────────────
@@ -6032,11 +6011,10 @@ class RunEvidenceTestCase(BacklogFixture):
 
     def test_run_append_failure_warns_but_does_not_crash(self):
         self.write_items([make_item("gt-item")])
-        blocker = Path(self.tmpdir) / "blocker"
-        blocker.write_text("not a directory")
+        # A directory where the runs file should be: the append fails.
+        self.runs_file.mkdir(parents=True)
         err = io.StringIO()
         with (
-            patch.object(dev_status, "RUNS_FILE", blocker / "runs.jsonl"),
             patch("subprocess.run", MagicMock(return_value=MagicMock(returncode=0))),
             patch("sys.stderr", err),
         ):
@@ -6161,11 +6139,10 @@ class RunEvidenceTestCase(BacklogFixture):
         even when append_run_record's own OSError path had already failed
         -- misreporting a lost evidence row as saved."""
         self.write_items([make_item("gt-item")])
-        blocker = Path(self.tmpdir) / "blocker2"
-        blocker.write_text("not a directory")
+        # A directory where the runs file should be: the append fails.
+        self.runs_file.mkdir(parents=True)
         out, err = io.StringIO(), io.StringIO()
         with (
-            patch.object(dev_status, "RUNS_FILE", blocker / "runs.jsonl"),
             patch("subprocess.run", MagicMock(return_value=MagicMock(returncode=0))),
             patch("sys.stdout", out),
             patch("sys.stderr", err),
@@ -6360,7 +6337,7 @@ class ThinLauncherTests(unittest.TestCase):
     script it calls dev_status_impl.main(); imported as a module it rebinds
     ``sys.modules["dev_status"]`` to the impl module object. The binding is
     load-bearing for every consumer that does ``import dev_status`` and then
-    patches module globals (DATA_DIR & friends) — the patch must reach the
+    patches module globals (RECAP_TTL_SECONDS & friends) — the patch must reach the
     exact module whose ``__dict__`` the implementation reads as its globals.
     """
 
@@ -6374,29 +6351,28 @@ class ThinLauncherTests(unittest.TestCase):
         )
 
     def test_patched_module_global_reaches_impl_functions(self):
-        # Constraint-1 proof: patch.object(dev_status, "ITEMS_FILE", x) must
-        # land in the module whose globals load_items() reads, not in a dead
-        # launcher module object.
+        # Constraint-1 proof: patch.object(dev_status, NAME, x) must land in
+        # the module whose globals the implementation's functions read, not
+        # in a dead launcher module object.
         import dev_status_impl
 
+        self.assertIs(dev_status, dev_status_impl)
+        with patch.object(dev_status, "RECAP_TTL_SECONDS", 7):
+            self.assertEqual(dev_status_impl.RECAP_TTL_SECONDS, 7)
+
+    def test_old_store_path_names_resolve_per_read(self):
+        # Scripts outside this repo read dev_status.DATA_DIR and friends.
+        # They stay readable, and each read reflects the current HOME.
         with tempfile.TemporaryDirectory() as tmp:
-            items_file = Path(tmp) / "items.json"
-            items_file.write_text(
-                json.dumps(
-                    {
-                        "schema_version": 2,
-                        "items": [
-                            make_item(
-                                "patch-visibility-check", summary="seen via patch"
-                            )
-                        ],
-                    }
+            with test_layouts.SandboxHome(
+                Path(tmp), agent_toolkit_paths.write_pointer
+            ).activated():
+                self.assertEqual(
+                    dev_status.ITEMS_FILE,
+                    Path(tmp) / ".claude" / "data" / "backlog" / "items.json",
                 )
-            )
-            with patch.object(dev_status, "ITEMS_FILE", items_file):
-                loaded = dev_status.load_items()
-                self.assertEqual(loaded, dev_status_impl.load_items())
-        self.assertEqual([item["id"] for item in loaded], ["patch-visibility-check"])
+        with self.assertRaises(AttributeError):
+            dev_status.NOT_A_STORE_PATH  # noqa: B018
 
     @pytest.mark.allow_real_subprocess
     def test_launcher_cli_matches_impl_cli(self):

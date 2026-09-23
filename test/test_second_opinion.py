@@ -28,6 +28,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))
 import test_bootstrap  # noqa: E402
+import test_layouts  # noqa: E402
+import agent_toolkit_paths  # noqa: E402
 import llm_backends  # noqa: E402
 import second_opinion
 
@@ -2100,12 +2102,10 @@ class DataDirSelfEnsureTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.tmpdir = tempfile.mkdtemp()
-        self.data_dir = Path(self.tmpdir) / "grill"
-        self._patch = patch.object(second_opinion, "DATA_DIR", self.data_dir)
-        self._patch.start()
+        test_layouts.activate_sandbox_home(Path(self.tmpdir), self.addCleanup)
+        self.data_dir = agent_toolkit_paths.path_for("decisions")
 
     def tearDown(self) -> None:
-        self._patch.stop()
         shutil.rmtree(self.tmpdir)
 
     def test_ensure_data_dir_creates_missing_directory(self) -> None:
@@ -2125,11 +2125,7 @@ class DataDirSelfEnsureTests(unittest.TestCase):
         sys.path.insert(0, str(Path(second_opinion.__file__).parent))
         import grill
 
-        self._patch.stop()
-        try:
-            self.assertEqual(second_opinion.DATA_DIR, grill.DATA_DIR)
-        finally:
-            self._patch.start()
+        self.assertEqual(second_opinion._data_dir(), grill._data_dir())
 
     def test_detect_subcommand_creates_the_directory(self) -> None:
         self.assertFalse(self.data_dir.exists())

@@ -11,6 +11,8 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))
 import test_bootstrap  # noqa: E402
+import test_layouts  # noqa: E402
+import agent_toolkit_paths  # noqa: E402
 import dev_status
 import to_tickets_runner as runner
 
@@ -47,30 +49,19 @@ class RunnerTestCase(unittest.TestCase):
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
-        data_dir = Path(self.tmpdir) / "backlog"
+        test_layouts.activate_sandbox_home(Path(self.tmpdir), self.addCleanup)
+        data_dir = agent_toolkit_paths.path_for("work-items")
         self.items_file = data_dir / "items.json"
         self.pending_file = data_dir / "pending_items.json"
         self.meta_file = data_dir / "_meta.json"
         self.lock_file = data_dir / ".backlog.lock"
         self.journal_file = data_dir / "journal.jsonl"
-        self._patches = [
-            patch.object(dev_status, "DATA_DIR", data_dir),
-            patch.object(dev_status, "ITEMS_FILE", self.items_file),
-            patch.object(dev_status, "PENDING_FILE", self.pending_file),
-            patch.object(dev_status, "META_FILE", self.meta_file),
-            patch.object(dev_status, "LOCK_FILE", self.lock_file),
-            patch.object(dev_status, "JOURNAL_FILE", self.journal_file),
-        ]
-        for p in self._patches:
-            p.start()
 
         self.batch_dir = Path(self.tmpdir) / "batches"
         self.batch_dir.mkdir(parents=True)
         self.batch_path = self.batch_dir / "sample-tickets-batch.json"
 
     def tearDown(self):
-        for p in self._patches:
-            p.stop()
         shutil.rmtree(self.tmpdir)
 
     def write_batch(self, tickets):
@@ -361,7 +352,7 @@ class RunTests(RunnerTestCase):
 
 
 class DataDirSelfEnsureTests(unittest.TestCase):
-    """DATA_DIR holds batch files agents write, so to_tickets_runner.py owns it.
+    """The batch directory holds files agents write, so to_tickets_runner.py owns it.
 
     The to-tickets skill has the agent write its batch JSON there with its own
     file tools before invoking this script — the same shape that had agents
@@ -371,12 +362,10 @@ class DataDirSelfEnsureTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.tmpdir = tempfile.mkdtemp()
-        self.data_dir = Path(self.tmpdir) / "to-tickets"
-        self._patch = patch.object(runner, "DATA_DIR", self.data_dir)
-        self._patch.start()
+        test_layouts.activate_sandbox_home(Path(self.tmpdir), self.addCleanup)
+        self.data_dir = agent_toolkit_paths.path_for("ticket-batches")
 
     def tearDown(self) -> None:
-        self._patch.stop()
         shutil.rmtree(self.tmpdir)
 
     def test_ensure_data_dir_creates_missing_directory(self) -> None:
@@ -404,11 +393,7 @@ class DataDirSelfEnsureTests(unittest.TestCase):
         """Sharing grill's dir would break its private session glob — assert we don't."""
         import grill
 
-        self._patch.stop()
-        try:
-            self.assertNotEqual(runner.DATA_DIR, grill.DATA_DIR)
-        finally:
-            self._patch.start()
+        self.assertNotEqual(runner._data_dir(), grill._data_dir())
 
 
 class Candidate13ServiceTests(RunnerTestCase):

@@ -25,7 +25,7 @@ Flags
   --json                  with --search, emit JSON instead of plain text
 
 Files read/written
-  The store lives under ``VITALS_DIR`` (``~/.claude/data/grill/vitals``): a
+  The store lives under ``vitals/`` in the grill store (``~/.claude/data/grill/vitals``): a
   ``_global.json`` plus one ``<backlog_slug>.json`` per scope — today 7 real
   files. Each file is a top-level JSON list of vitals records (VITALS_SCHEMA_VERSION
   == 1). A list item is a JSON object (a VitalsRecord); that is the whole of
@@ -89,8 +89,11 @@ from grill import Decision, Session, is_open
 # What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
 TOOLKIT_DATA = "writer"
 
-DATA_DIR = agent_toolkit_paths.path_for("decisions")
-VITALS_DIR = DATA_DIR / "vitals"
+
+def _data_dir() -> Path:
+    """The grill session store, resolved at each call (never cached)."""
+    return agent_toolkit_paths.path_for("decisions")
+
 
 VALID_SOURCES = {"user", "defaulted", "assumed", "tested"}
 VALID_RESULTS = {"VERIFIED", "DISPUTED", "UNVERIFIABLE"}
@@ -569,7 +572,7 @@ def _main() -> None:
     parser.add_argument(
         "--data-dir",
         type=Path,
-        default=DATA_DIR,
+        default=None,
         help="grill session data directory (default: ~/.claude/data/grill)",
     )
     parser.add_argument(
@@ -612,8 +615,10 @@ def _main() -> None:
             )
             sys.exit(1)
         try:
+            data_dir = args.data_dir if args.data_dir is not None else _data_dir()
+            agent_toolkit_paths.check_not_stale(data_dir)
             results = search_vitals(
-                args.data_dir / "vitals",
+                data_dir / "vitals",
                 keywords,
                 args.include_superseded,
                 args.backlog_slug,
@@ -639,17 +644,21 @@ def _main() -> None:
     with ExitStack() as scope:
         if args.apply:
             scope.enter_context(migration_lock.shared("vitals"))
-        slugs = grill.all_session_slugs(args.data_dir)
-        sessions = grill.all_sessions(data_dir=args.data_dir)
+        # Resolved inside the scope, so a layout flip cannot fall between
+        # resolving the store and writing to it.
+        data_dir = args.data_dir if args.data_dir is not None else _data_dir()
+        agent_toolkit_paths.check_not_stale(data_dir)
+        slugs = grill.all_session_slugs(data_dir)
+        sessions = grill.all_sessions(data_dir=data_dir)
         if len(sessions) != len(slugs):
             print(
                 f"Error: {len(slugs) - len(sessions)} of {len(slugs)} grill session "
-                f"file(s) in {args.data_dir} could not be read; refusing to run.",
+                f"file(s) in {data_dir} could not be read; refusing to run.",
                 file=sys.stderr,
             )
             sys.exit(1)
 
-        vitals_dir = args.data_dir / "vitals"
+        vitals_dir = data_dir / "vitals"
         try:
             if args.apply:
                 report = promote(sessions, vitals_dir=vitals_dir)

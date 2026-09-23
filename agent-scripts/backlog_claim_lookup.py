@@ -55,12 +55,18 @@ if TYPE_CHECKING:
 # What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
 TOOLKIT_DATA = "reader"
 
-LAYOUT_ERROR: agent_toolkit_paths.LayoutError | None = None
-try:
-    DEFAULT_BACKLOG_ITEMS = agent_toolkit_paths.path_for("work-items") / "items.json"
-except agent_toolkit_paths.LayoutError as _exc:
-    DEFAULT_BACKLOG_ITEMS = None  # type: ignore[assignment]
-    LAYOUT_ERROR = _exc
+
+def layout_error() -> agent_toolkit_paths.LayoutError | None:
+    """The layout error that stops the backlog store resolving now, if any.
+
+    Checked at each call, not at import, so a pointer that breaks (or is
+    fixed) while a process runs is seen on the next call.
+    """
+    try:
+        agent_toolkit_paths.path_for("work-items")
+    except agent_toolkit_paths.LayoutError as exc:
+        return exc
+    return None
 
 
 def backlog_items_path() -> Path:
@@ -72,10 +78,7 @@ def backlog_items_path() -> Path:
     override = os.environ.get("GUARD_RAILS_STORE")
     if override:
         return Path(override)
-    if DEFAULT_BACKLOG_ITEMS is None:
-        assert LAYOUT_ERROR is not None
-        raise LAYOUT_ERROR
-    return DEFAULT_BACKLOG_ITEMS
+    return agent_toolkit_paths.path_for("work-items") / "items.json"
 
 
 @dataclass(frozen=True)

@@ -16,13 +16,14 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))
 import test_bootstrap  # noqa: E402
 
+import agent_toolkit_paths  # noqa: E402
 import dev_status  # noqa: E402
 import dev_status_storage  # noqa: E402
+import test_layouts  # noqa: E402
 
 
 def make_item(slug, summary=None):
@@ -95,21 +96,22 @@ class BacklogStorageExtractionTestCase(unittest.TestCase):
                 f"dev_status (impl) missing backward-compatible export: {name}",
             )
 
-    def test_patched_globals_affect_storage_load_save(self):
+    def test_both_modules_resolve_the_same_store_per_call(self):
         with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            custom_items = tmp_path / "custom_items.json"
-            custom_items.write_text(
-                json.dumps(
-                    {
-                        "schema_version": 2,
-                        "items": [
-                            make_item("storage-item-1", summary="from custom items")
-                        ],
-                    }
+            home = test_layouts.SandboxHome(Path(tmp), agent_toolkit_paths.write_pointer)
+            with home.activated():
+                items_file = home.legacy_data / "backlog" / "items.json"
+                items_file.parent.mkdir(parents=True)
+                items_file.write_text(
+                    json.dumps(
+                        {
+                            "schema_version": 2,
+                            "items": [
+                                make_item("storage-item-1", summary="from items")
+                            ],
+                        }
+                    )
                 )
-            )
-            with patch.object(dev_status, "ITEMS_FILE", custom_items):
                 # Via dev_status
                 items1 = dev_status.load_items()
                 self.assertEqual([i["id"] for i in items1], ["storage-item-1"])
@@ -117,7 +119,7 @@ class BacklogStorageExtractionTestCase(unittest.TestCase):
                 items2 = dev_status_storage.load_items()
                 self.assertEqual([i["id"] for i in items2], ["storage-item-1"])
 
-                # Saving via storage updates the patched file
+                # Saving via storage updates the same file
                 items2.append(make_item("storage-item-2", summary="added"))
                 dev_status_storage.save_items(items2)
                 reloaded = dev_status.load_items()

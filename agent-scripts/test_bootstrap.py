@@ -24,8 +24,9 @@ sandboxed at all.
 
 Import-order contract
 ---------------------
-Production scripts bake ``Path.home()``-rooted constants at module import
-time (e.g. ``dev_status_storage.DATA_DIR``). ``bootstrap()`` must therefore
+Toolkit data paths resolve at each use, but a production script may still
+compute a ``Path.home()``-rooted value at import (e.g.
+``bundle_drift_check.STATE_DIR``). ``bootstrap()`` must therefore
 run **before** any script under test is imported — a direct-run test file
 calls it at the top of the file, not from its ``__main__`` block.
 

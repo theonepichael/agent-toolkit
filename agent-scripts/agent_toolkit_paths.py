@@ -29,6 +29,15 @@ In ``"toolkit-home"`` layout, data lives under ``<toolkit-root>/data/``,
 where ``<toolkit-root>`` is ``$AGENT_TOOLKIT_HOME`` if set, otherwise
 ``<home>/.agent-toolkit``. ``AGENT_TOOLKIT_HOME`` must be absolute.
 
+Stale paths
+-----------
+Callers resolve paths at each use, never at import, so a long-lived process
+follows a layout flip. A path captured before a flip can still reach a
+writer through an explicit argument. :func:`check_not_stale` refuses such a
+path (:class:`StaleLayoutError`) when it sits under a domain's path for the
+layout that is not current. The current layout wins when both layouts map a
+domain to the same place, and a path under neither layout passes.
+
 Caching
 -------
 A :class:`Resolver` caches the parsed layout keyed by the pointer's
@@ -80,6 +89,10 @@ _MISSING = object()
 
 class LayoutError(Exception):
     """Raised when the layout pointer is malformed or the override is invalid."""
+
+
+class StaleLayoutError(LayoutError):
+    """Raised when a path belongs to the layout that is no longer current."""
 
 
 class UnknownDomainError(ValueError):
@@ -199,18 +212,54 @@ class Resolver:
         """Return the current layout, reading the pointer if necessary."""
         return self._load()[1]
 
-    def path_for(self, domain: str) -> Path:
-        """Resolve ``domain`` to a filesystem path for the current layout."""
+    def _path_in(self, home: Path, domain: str, layout: Layout) -> Path:
         if domain not in _LEGACY_SEGMENTS:
             raise UnknownDomainError(domain)
-
-        home, layout = self._load()
         segment = _LEGACY_SEGMENTS[domain]
-
         if layout == "legacy":
             return home / ".claude" / "data" / segment
-
         return self._toolkit_root(home) / "data" / segment
+
+    def path_for(self, domain: str) -> Path:
+        """Resolve ``domain`` to a filesystem path for the current layout."""
+        home, layout = self._load()
+        return self._path_in(home, domain, layout)
+
+    def path_for_layout(self, domain: str, layout: Layout) -> Path:
+        """Resolve ``domain`` for ``layout``, whatever the current layout is."""
+        return self._path_in(self._home(), domain, layout)
+
+    def check_not_stale(self, path: Path) -> None:
+        """Raise :class:`StaleLayoutError` if ``path`` belongs to the other layout.
+
+        ``path`` is stale when it equals or sits under some domain's path for
+        the non-current layout and under no domain's path for the current
+        one. Paths are compared after ``os.path.abspath``; symlinks are not
+        followed. While ``legacy`` is current, an invalid
+        ``AGENT_TOOLKIT_HOME`` is ignored here, because legacy resolution
+        never reads it.
+        """
+        home, layout = self._load()
+        other: Layout = "toolkit-home" if layout == "legacy" else "legacy"
+        target = Path(os.path.abspath(path))
+        current = [
+            Path(os.path.abspath(self._path_in(home, d, layout))) for d in DOMAINS
+        ]
+        if any(target.is_relative_to(root) for root in current):
+            return
+        try:
+            stale = [self._path_in(home, d, other) for d in DOMAINS]
+        except LayoutError:
+            if layout == "legacy":
+                return
+            raise
+        for root in stale:
+            if target.is_relative_to(os.path.abspath(root)):
+                raise StaleLayoutError(
+                    f"{path} belongs to the {other!r} layout, but the current "
+                    f"layout is {layout!r}; it was resolved before a layout flip. "
+                    "Re-run the command so it resolves the current path."
+                )
 
 
 DEFAULT_RESOLVER: Resolver = Resolver()
@@ -219,6 +268,16 @@ DEFAULT_RESOLVER: Resolver = Resolver()
 def path_for(domain: str) -> Path:
     """Resolve ``domain`` using :data:`DEFAULT_RESOLVER`."""
     return DEFAULT_RESOLVER.path_for(domain)
+
+
+def path_for_layout(domain: str, layout: Layout) -> Path:
+    """Resolve ``domain`` for ``layout`` using :data:`DEFAULT_RESOLVER`."""
+    return DEFAULT_RESOLVER.path_for_layout(domain, layout)
+
+
+def check_not_stale(path: Path) -> None:
+    """Refuse a path from the non-current layout using :data:`DEFAULT_RESOLVER`."""
+    DEFAULT_RESOLVER.check_not_stale(path)
 
 
 def current_layout() -> Layout:

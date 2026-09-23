@@ -71,11 +71,14 @@ import migration_lock  # noqa: E402
 # What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
 TOOLKIT_DATA = "writer"
 
-DATA_DIR = agent_toolkit_paths.path_for("ticket-batches")
+
+def _data_dir() -> Path:
+    """The batch artifact directory, resolved at each call (never cached)."""
+    return agent_toolkit_paths.path_for("ticket-batches")
 
 
 def ensure_data_dir() -> None:
-    """Create ``DATA_DIR`` if it is missing.
+    """Create the batch artifact directory if it is missing.
 
     Called once per invocation, before any subcommand runs. It is shared
     artifact storage: the ``to-tickets`` skill has the agent write its batch
@@ -86,7 +89,7 @@ def ensure_data_dir() -> None:
     cannot tolerate a non-session file landing in it.
     """
     with migration_lock.shared("ticket-batches"):
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        _data_dir().mkdir(parents=True, exist_ok=True)
 
 
 class Ticket(TypedDict):
@@ -290,6 +293,9 @@ def run_batch(
     the tickets and cleaning up after them.
     """
     with migration_lock.shared("ticket-batches"):
+        # A batch path captured before a layout flip must not write its
+        # state file into the retired store.
+        agent_toolkit_paths.check_not_stale(batch_path)
         return _run_batch_unlocked(batch_path, open_transaction)
 
 

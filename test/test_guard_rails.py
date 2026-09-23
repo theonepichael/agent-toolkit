@@ -19,6 +19,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))
 import test_bootstrap  # noqa: E402
+import test_layouts  # noqa: E402
 
 import agent_toolkit_paths  # noqa: E402
 import guard_rails  # noqa: E402
@@ -571,17 +572,15 @@ class MainTests(unittest.TestCase):
 
 
 class AuditLogTests(unittest.TestCase):
-    """Ticket B: the durable JSONL audit trail at GUARD_RAILS_LOG_PATH.
+    """Ticket B: the durable JSONL audit trail in the guard-rail-log domain.
     Strictly additive -- stdout in IPC modes stays byte-for-byte unchanged,
     and an audit write failure can never break the guard."""
 
     def setUp(self) -> None:
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        self.log_path = Path(tmp.name) / "guard_rails_audit.jsonl"
-        patcher = mock.patch.object(guard_rails, "GUARD_RAILS_LOG_PATH", self.log_path)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        test_layouts.activate_sandbox_home(Path(tmp.name), self.addCleanup)
+        self.log_path = agent_toolkit_paths.path_for("guard-rail-log")
 
     def _run(self, argv, stdin_text=""):
         out = io.StringIO()
@@ -694,14 +693,10 @@ class AuditLogTests(unittest.TestCase):
         self.assertEqual(len(self._records()), 2)
 
     def test_audit_write_failure_never_breaks_the_guard(self) -> None:
-        # A path whose parent is a regular file makes append_jsonl's lazy
-        # mkdir fail; the guard must still deliver its verdict unchanged.
-        blocker = self.log_path.parent / "blocker"
-        blocker.write_text("not a directory")
+        # A directory where the log file should be makes append_jsonl's
+        # open fail; the guard must still deliver its verdict unchanged.
+        self.log_path.mkdir(parents=True)
         with (
-            mock.patch.object(
-                guard_rails, "GUARD_RAILS_LOG_PATH", blocker / "audit.jsonl"
-            ),
             mock.patch.object(
                 guard_rails, "evaluate", return_value=guard_rails.Verdict("allow")
             ),
@@ -723,12 +718,7 @@ class LayoutErrorTests(unittest.TestCase):
 
     def test_guard_module_layout_error_blocks_via_main(self) -> None:
         err = agent_toolkit_paths.LayoutError("bad pointer")
-        with (
-            mock.patch.object(guard_rails, "LAYOUT_ERROR", err),
-            mock.patch.object(guard_rails, "GUARD_RAILS_LOG_PATH", None),
-            mock.patch.object(backlog_claim_lookup, "LAYOUT_ERROR", None),
-            mock.patch.object(backlog_claim_lookup, "DEFAULT_BACKLOG_ITEMS", None),
-        ):
+        with mock.patch.object(agent_toolkit_paths, "path_for", side_effect=err):
             out, code = MainTests()._run(
                 ["--harness", "claude"],
                 json.dumps(
@@ -746,12 +736,7 @@ class LayoutErrorTests(unittest.TestCase):
 
     def test_claim_lookup_layout_error_blocks_via_main(self) -> None:
         err = agent_toolkit_paths.LayoutError("bad pointer")
-        with (
-            mock.patch.object(guard_rails, "LAYOUT_ERROR", None),
-            mock.patch.object(guard_rails, "GUARD_RAILS_LOG_PATH", None),
-            mock.patch.object(backlog_claim_lookup, "LAYOUT_ERROR", err),
-            mock.patch.object(backlog_claim_lookup, "DEFAULT_BACKLOG_ITEMS", None),
-        ):
+        with mock.patch.object(backlog_claim_lookup, "layout_error", return_value=err):
             out, code = MainTests()._run(
                 ["--harness", "claude"],
                 json.dumps(
@@ -785,10 +770,7 @@ class LayoutErrorTests(unittest.TestCase):
             is_bare=False,
             branch="feature",
         )
-        with (
-            mock.patch.object(guard_rails, "LAYOUT_ERROR", None),
-            mock.patch.object(guard_rails, "repo_info", return_value=info),
-        ):
+        with mock.patch.object(guard_rails, "repo_info", return_value=info):
             req = guard_rails.Request(tool="write", cwd="/repo", path="/repo/a.py")
             verdict = guard_rails.evaluate(req, BrokenLookup())
         self.assertEqual(verdict.decision, "deny")
@@ -796,12 +778,7 @@ class LayoutErrorTests(unittest.TestCase):
 
     def test_layout_error_main_harness_blocks_and_skips_audit(self) -> None:
         err = agent_toolkit_paths.LayoutError("bad pointer")
-        with (
-            mock.patch.object(guard_rails, "LAYOUT_ERROR", err),
-            mock.patch.object(guard_rails, "GUARD_RAILS_LOG_PATH", None),
-            mock.patch.object(backlog_claim_lookup, "LAYOUT_ERROR", None),
-            mock.patch.object(backlog_claim_lookup, "DEFAULT_BACKLOG_ITEMS", None),
-        ):
+        with mock.patch.object(agent_toolkit_paths, "path_for", side_effect=err):
             out, code = MainTests()._run(
                 ["--harness", "claude"],
                 json.dumps(
@@ -821,9 +798,7 @@ class LayoutErrorTests(unittest.TestCase):
         err = agent_toolkit_paths.LayoutError("bad pointer")
         with (
             mock.patch.dict(os.environ, {"GUARD_RAILS_OFF": "1"}),
-            mock.patch.object(guard_rails, "LAYOUT_ERROR", err),
-            mock.patch.object(backlog_claim_lookup, "LAYOUT_ERROR", None),
-            mock.patch.object(backlog_claim_lookup, "DEFAULT_BACKLOG_ITEMS", None),
+            mock.patch.object(agent_toolkit_paths, "path_for", side_effect=err),
         ):
             req = guard_rails.Request(tool="write", cwd="/repo", path="/repo/a.py")
             verdict = guard_rails.evaluate(req, FakeLookup())

@@ -34,7 +34,9 @@ except ImportError:  # direct `python3 test/test_machine_id.py` without pytest i
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))
 import test_bootstrap  # noqa: E402
 
+import agent_toolkit_paths  # noqa: E402
 import dev_status_storage  # noqa: E402
+import test_layouts  # noqa: E402
 
 AGENT_SCRIPTS = str(Path(__file__).resolve().parent.parent / "agent-scripts")
 
@@ -301,13 +303,15 @@ class TestOperationIdentity(MachineIdFixture):
         self.assertIn("after-repair", self.items.read_text())
 
     def test_explicit_store_identity_wins_over_a_broken_default(self) -> None:
-        default_file = self.tmp / "default" / "_machine_id"
-        default_file.parent.mkdir()
+        # A broken id in the default store (the sandbox HOME's), and a good
+        # one in the explicit store this test operates on.
+        test_layouts.activate_sandbox_home(self.tmp / "home", self.addCleanup)
+        default_file = agent_toolkit_paths.path_for("work-items") / "_machine_id"
+        default_file.parent.mkdir(parents=True)
         default_file.write_text("bad id!")
         self.mid_file.write_text("0ee2ec8d")
-        with patch.object(dev_status_storage, "MACHINE_ID_FILE", default_file):
-            self.add("explicit-store")
-            self.mut.start_item("explicit-store", items_path=self.items)
+        self.add("explicit-store")
+        self.mut.start_item("explicit-store", items_path=self.items)
         journal = (self.data_dir / "journal.jsonl").read_text().splitlines()
         machines = {json.loads(line).get("machine") for line in journal}
         self.assertEqual(machines, {"0ee2ec8d"})
@@ -332,16 +336,10 @@ class TestOperationIdentity(MachineIdFixture):
         self.assertEqual(dev_status_storage._backlog_lock_count, 0)
 
     def test_lock_wait_diagnostic_needs_identity_and_never_raises(self) -> None:
-        import dev_status_impl  # journal paths resolve through impl when loaded
-
+        # The diagnostic goes to the journal of the store that was locked.
         journal = self.data_dir / "journal.jsonl"
-        meta = self.data_dir / "_meta.json"
         with patch.object(
             dev_status_storage, "_BACKLOG_LOCK_WAIT_JOURNAL_THRESHOLD_SECONDS", -1
-        ), patch.object(dev_status_storage, "JOURNAL_FILE", journal), patch.object(
-            dev_status_storage, "META_FILE", meta
-        ), patch.object(dev_status_impl, "JOURNAL_FILE", journal), patch.object(
-            dev_status_impl, "META_FILE", meta
         ):
             self.mid_file.write_text("bad id!")
             with dev_status_storage.backlog_lock(self.data_dir, self.data_dir / ".backlog.lock", require_identity=False):

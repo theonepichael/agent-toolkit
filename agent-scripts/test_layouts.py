@@ -4,8 +4,8 @@
 The toolkit-home cutover needs tests where one path resolver sees two
 layouts side by side, where the layout pointer flips inside one process
 lifetime, and where a second, independent home plays the reconciliation
-peer. Existing store fixtures patch one module-global ``DATA_DIR`` instead,
-which cannot represent any of that.
+peer. Production modules resolve every data path at each use, so pointing
+``HOME`` at a sandbox home is all a store fixture needs.
 
 :func:`build_two_layout_homes` builds:
 
@@ -21,13 +21,10 @@ written only through a pluggable ``PointerWriter``. The path resolver owns
 the pointer's real format; :func:`provisional_pointer_writer` is a
 placeholder until the resolver supplies its own writer.
 
-What this does NOT prove: that any consumer switches layouts. Production
-modules bake ``Path.home()``-rooted constants at import, so
-:meth:`SandboxHome.activated` cannot redirect constants already computed.
-Switching is proved by the resolver's own tests: the same resolver instance,
-before and after :meth:`SandboxHome.flip`, with no module reload and no
-constant patch. Nothing in this module reads or patches a production path
-constant.
+:func:`activate_sandbox_home` gives a unittest-style fixture one sandbox
+home for the length of a test. That consumers follow a flip in the same
+process is proved by test/test_path_for_per_use.py. Nothing in this module
+reads or patches a production path.
 
 ``activated()`` mutates ``os.environ``. That is safe across pytest-xdist
 workers (separate processes), not across threads in one process.
@@ -105,6 +102,25 @@ class SandboxHome:
 class TwoLayoutHomes:
     local: SandboxHome
     peer: SandboxHome
+
+
+def activate_sandbox_home(
+    root: Path,
+    add_cleanup: Callable[[Callable[[], object]], None],
+    *,
+    pointer_writer: PointerWriter = agent_toolkit_paths.write_pointer,
+) -> SandboxHome:
+    """Make ``root`` the ``HOME`` until cleanup; return it as a SandboxHome.
+
+    ``add_cleanup`` is ``unittest.TestCase.addCleanup`` or pytest's
+    ``request.addfinalizer``. Nothing is created under ``root``: the store
+    code creates what it needs, exactly as on a fresh machine.
+    """
+    home = SandboxHome(root, pointer_writer)
+    context = home.activated()
+    context.__enter__()
+    add_cleanup(lambda: context.__exit__(None, None, None))
+    return home
 
 
 def _build_legacy(data: Path) -> None:

@@ -50,7 +50,6 @@ import migration_lock
 # What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
 TOOLKIT_DATA = "writer"
 
-DATA_DIR = agent_toolkit_paths.path_for("decisions")
 SCHEMA_VERSION = 1
 
 VALID_SOURCES = {"user", "defaulted", "assumed", "tested"}
@@ -91,7 +90,7 @@ class Decision(TypedDict):
 
 
 class Session(TypedDict):
-    """A grill session as stored at ``DATA_DIR/<slug>.json``."""
+    """A grill session as stored at ``<session store>/<slug>.json``."""
 
     schema_version: int
     slug: str
@@ -256,9 +255,17 @@ def _text(patch: dict[str, object], key: str, default: str = "") -> str:
 # ── I/O ───────────────────────────────────────────────────────────────────────
 
 
+def _data_dir() -> Path:
+    """The session store for the current layout, resolved at each call.
+
+    Never cached: a long-lived process must follow a layout flip.
+    """
+    return agent_toolkit_paths.path_for("decisions")
+
+
 def session_path(slug: str, data_dir: Path | None = None) -> Path:
     """Return the on-disk path for the session identified by ``slug``."""
-    return (data_dir if data_dir is not None else DATA_DIR) / f"{slug}.json"
+    return (data_dir if data_dir is not None else _data_dir()) / f"{slug}.json"
 
 
 def open_session(slug: str, *, data_dir: Path | None = None) -> Session:
@@ -271,7 +278,7 @@ def open_session(slug: str, *, data_dir: Path | None = None) -> Session:
     Args:
         slug: The session's exact slug (lowercase kebab-case).
         data_dir: Directory holding the session files; ``None`` uses the
-            module-global ``DATA_DIR``.
+            current layout's session store.
 
     Returns:
         The decoded session.
@@ -351,16 +358,20 @@ def ensure_data_dir(data_dir: Path | None = None) -> None:
     An existing directory needs no write, so it takes no migration scope:
     read-only commands must still run while a migration holds the lock.
     """
-    target = data_dir if data_dir is not None else DATA_DIR
+    target = data_dir if data_dir is not None else _data_dir()
+    agent_toolkit_paths.check_not_stale(target)
     if target.is_dir():
         return
     with migration_lock.shared("grill"):
+        # Resolved again inside the scope: a flip may have happened since.
+        target = data_dir if data_dir is not None else _data_dir()
+        agent_toolkit_paths.check_not_stale(target)
         target.mkdir(parents=True, exist_ok=True)
 
 
 def save_session(session: Session, data_dir: Path | None = None) -> None:
     """Atomically persist ``session`` to its slug-derived path."""
-    base = data_dir if data_dir is not None else DATA_DIR
+    base = data_dir if data_dir is not None else _data_dir()
     ensure_data_dir(base)
     payload = json.dumps(session, indent=2)
     fd, tmp_path = tempfile.mkstemp(dir=base, prefix=".session_tmp_")
@@ -376,7 +387,7 @@ def save_session(session: Session, data_dir: Path | None = None) -> None:
 
 def all_session_slugs(data_dir: Path | None = None) -> list[str]:
     """Return every session slug on disk, sorted, or ``[]`` if none exist."""
-    base = data_dir if data_dir is not None else DATA_DIR
+    base = data_dir if data_dir is not None else _data_dir()
     if not base.exists():
         return []
     return sorted(p.stem for p in base.glob("*.json"))
@@ -395,13 +406,13 @@ def all_sessions(*, data_dir: Path | None = None) -> list[Session]:
 
     Args:
         data_dir: Directory holding the session files; ``None`` uses the
-            module-global ``DATA_DIR``.
+            current layout's session store.
 
     Returns:
         Every readable session, sorted by slug; ``[]`` when the directory
         does not exist.
     """
-    base = data_dir if data_dir is not None else DATA_DIR
+    base = data_dir if data_dir is not None else _data_dir()
     if not base.exists():
         return []
     sessions: list[Session] = []
@@ -414,15 +425,18 @@ def all_sessions(*, data_dir: Path | None = None) -> list[Session]:
 
 
 @contextmanager
-def _flock(path: Path, data_dir: Path | None = None) -> Iterator[None]:
-    """Hold an exclusive advisory lock on ``path`` for the block's duration.
+def _flock(name: str, data_dir: Path | None = None) -> Iterator[None]:
+    """Hold an exclusive advisory lock on ``<store>/<name>`` for the block.
 
     The machine-wide migration scope is entered first and released last, so
-    the migration lock stays outermost around every grill store lock.
+    the migration lock stays outermost around every grill store lock. The
+    store is resolved inside that scope, so a layout flip cannot fall
+    between resolving it and locking it.
     """
     with migration_lock.shared("grill"):
-        ensure_data_dir(data_dir)
-        with open(path, "w") as f:
+        base = data_dir if data_dir is not None else _data_dir()
+        ensure_data_dir(base)
+        with open(base / name, "w") as f:
             fcntl.flock(f, fcntl.LOCK_EX)
             migration_lock.note_store_lock_acquired()
             try:
@@ -452,8 +466,7 @@ def session_lock(slug: str, *, data_dir: Path | None = None) -> Iterator[None]:
     ``fcntl.flock`` self-deadlocks across open file descriptions — and no
     service function ever nests locks internally.
     """
-    base = data_dir if data_dir is not None else DATA_DIR
-    with _flock(base / f".{slug}.lock", base):
+    with _flock(f".{slug}.lock", data_dir):
         yield
 
 
@@ -465,7 +478,7 @@ def _new_session_lock(data_dir: Path | None = None) -> Iterator[None]:
     free slug would race: the second `save_session` would silently
     overwrite the first session file instead of picking a different slug.
     """
-    with _flock(DATA_DIR / "._new_session.lock"):
+    with _flock("._new_session.lock", data_dir):
         yield
 
 
@@ -760,7 +773,7 @@ def ask_decision(
         patch: ``question`` (required), ``reasoning`` (optional),
             ``depends_on`` (optional).
         data_dir: Directory holding the session files; ``None`` uses the
-            module-global ``DATA_DIR``.
+            current layout's session store.
 
     Returns:
         The newly appended open decision.
@@ -817,7 +830,7 @@ def record_decision(
             create path), ``source`` (defaults to ``user``), ``reasoning``
             and ``depends_on`` (optional; presence-gated updates).
         data_dir: Directory holding the session files; ``None`` uses the
-            module-global ``DATA_DIR``.
+            current layout's session store.
 
     Returns:
         The mutated decision.
@@ -910,7 +923,7 @@ def revise_decision(
         patch: Any of ``question``, ``decision``, ``reasoning``, ``source``,
             ``depends_on``.
         data_dir: Directory holding the session files; ``None`` uses the
-            module-global ``DATA_DIR``.
+            current layout's session store.
 
     Returns:
         The mutated decision.
@@ -985,7 +998,7 @@ def record_verdict(
         verdict: ``result`` (one of ``VALID_RESULTS``) and ``evidence``
             (required for ``VERIFIED``/``DISPUTED``).
         data_dir: Directory holding the session files; ``None`` uses the
-            module-global ``DATA_DIR``.
+            current layout's session store.
 
     Returns:
         The mutated decision with its new verdict.
@@ -1353,7 +1366,7 @@ def cmd_pending_plan(args: argparse.Namespace) -> None:
     ``mark-pending-execution`` in a prior conversation surfaces automatically at
     the next session's start. Silent (no output) when nothing is pending, which
     is the common case — this must stay side-effect-free noise on every other
-    session start. A single unreadable or non-session file in ``DATA_DIR``
+    session start. A single unreadable or non-session file in the session store
     must not block the scan: ``load_session`` prints its own diagnostic and
     exits, so that's caught per-slug and skipped here rather than propagated.
     """

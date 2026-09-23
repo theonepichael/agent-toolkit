@@ -140,9 +140,16 @@ TOOLKIT_DATA = "writer"
 
 BACKEND_PRIORITY = llm_backends.BACKEND_PRIORITY
 
-# Shared artifact storage, same directory grill.py owns. Kept in sync with
-# grill.py's DATA_DIR by test_second_opinion.py's DataDirSelfEnsureTests.
-DATA_DIR = agent_toolkit_paths.path_for("decisions")
+
+def _data_dir() -> Path:
+    """Shared artifact storage, the same directory grill.py owns.
+
+    Resolved at each call so a long-lived process follows a layout flip.
+    Kept in sync with grill.py's store by test_second_opinion.py's
+    DataDirSelfEnsureTests.
+    """
+    return agent_toolkit_paths.path_for("decisions")
+
 
 MAX_FOCUS_FILE_BYTES = 8192
 
@@ -1446,7 +1453,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def ensure_data_dir() -> None:
-    """Create ``DATA_DIR`` if it is missing.
+    """Create the shared artifact directory if it is missing.
 
     This script only reads from the directory — a ``--focus-file`` an agent
     wrote. It creates it anyway because it is one of the two entry points
@@ -1456,10 +1463,10 @@ def ensure_data_dir() -> None:
     An existing directory needs no write, so it takes no migration scope:
     a critique run must not be refused while a migration holds the lock.
     """
-    if DATA_DIR.is_dir():
+    if _data_dir().is_dir():
         return
     with migration_lock.shared("decisions"):
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        _data_dir().mkdir(parents=True, exist_ok=True)
 
 
 @cli_common.timing_span("script", script="second_opinion")

@@ -15,6 +15,7 @@ REPO = Path(__file__).resolve().parent.parent
 AGENT_SCRIPTS = str(REPO / "agent-scripts")
 sys.path.insert(0, AGENT_SCRIPTS)
 
+import agent_toolkit_paths  # noqa: E402
 import dev_status_storage  # noqa: E402
 import migration_lock  # noqa: E402
 
@@ -25,6 +26,16 @@ def isolated(tmp_path, monkeypatch):
     migration_lock._reset_for_tests()
     yield tmp_path
     migration_lock._reset_for_tests()
+
+
+@pytest.fixture
+def home(tmp_path, monkeypatch) -> Path:
+    """A sandbox HOME; every toolkit data path resolves under it per use."""
+    root = tmp_path / "home"
+    root.mkdir()
+    monkeypatch.setenv("HOME", str(root))
+    monkeypatch.delenv("AGENT_TOOLKIT_HOME", raising=False)
+    return root
 
 
 def assert_migration_outermost_and_held() -> None:
@@ -80,11 +91,9 @@ def test_grill_session_locks_take_the_migration_scope_first(tmp_path):
     assert_all_released()
 
 
-def test_recap_regen_lock_takes_the_migration_scope_first(tmp_path, monkeypatch):
+def test_recap_regen_lock_takes_the_migration_scope_first(home):
     import dev_status_impl
 
-    monkeypatch.setattr(dev_status_impl, "DATA_DIR", tmp_path / "backlog")
-    monkeypatch.setattr(dev_status_impl, "RECAP_REGEN_LOCK_FILE", tmp_path / "backlog" / "r.lock")
     with dev_status_impl._regen_lock(blocking=True) as acquired:
         assert acquired
         assert_migration_outermost_and_held()
@@ -306,15 +315,13 @@ def test_enforce_grill_write_exits_75(exclusive_holder, monkeypatch, capsys):
 
 @pytest.mark.allow_real_subprocess  # exclusive holder child
 def test_enforce_grill_read_proceeds_when_the_data_dir_exists(
-    exclusive_holder, monkeypatch, tmp_path, capsys
+    exclusive_holder, monkeypatch, home, capsys
 ):
     # Every grill invocation ensures its data dir first; once the dir exists
     # that is not a write, so a read must not be refused during a migration.
     import grill
 
-    data = tmp_path / "grill"
-    data.mkdir()
-    monkeypatch.setattr(grill, "DATA_DIR", data)
+    agent_toolkit_paths.path_for("decisions").mkdir(parents=True)
     monkeypatch.setattr(sys, "argv", ["grill.py", "list"])
     grill.main()
     assert capsys.readouterr().err == ""
@@ -323,13 +330,11 @@ def test_enforce_grill_read_proceeds_when_the_data_dir_exists(
 
 @pytest.mark.allow_real_subprocess  # exclusive holder child
 def test_enforce_second_opinion_existing_data_dir_takes_no_scope(
-    exclusive_holder, monkeypatch, tmp_path
+    exclusive_holder, home
 ):
     import second_opinion
 
-    data = tmp_path / "so"
-    data.mkdir()
-    monkeypatch.setattr(second_opinion, "DATA_DIR", data)
+    agent_toolkit_paths.path_for("decisions").mkdir(parents=True)
     second_opinion.ensure_data_dir()
     assert outcomes() == []
 
@@ -364,14 +369,13 @@ def test_enforce_ticket_runner_exits_75(exclusive_holder, monkeypatch, tmp_path)
 
 @pytest.mark.allow_real_subprocess  # exclusive holder child
 def test_enforce_telemetry_skips_and_observes_without_breaking_callers(
-    exclusive_holder, monkeypatch, tmp_path, capsys
+    exclusive_holder, monkeypatch, tmp_path, home, capsys
 ):
     import cli_common
     import guard_rails
     import llm_backends
 
-    audit = tmp_path / "audit.jsonl"
-    monkeypatch.setattr(guard_rails, "GUARD_RAILS_LOG_PATH", audit)
+    audit = agent_toolkit_paths.path_for("guard-rail-log")
     guard_rails._audit_verdict("claude", None, guard_rails.Verdict("allow"))
     assert not audit.exists()
 
@@ -422,7 +426,7 @@ def test_vitals_apply_reads_inside_the_scope_and_dry_run_outside(monkeypatch, tm
     assert depths == [1, 0]
 
 
-def test_ticket_batch_holds_one_scope_through_state_deletion(monkeypatch, tmp_path):
+def test_ticket_batch_holds_one_scope_through_state_deletion(monkeypatch, tmp_path, home):
     import json
 
     import to_tickets_runner
@@ -437,25 +441,14 @@ def test_ticket_batch_holds_one_scope_through_state_deletion(monkeypatch, tmp_pa
     monkeypatch.setattr(to_tickets_runner, "delete_state", spy)
     batch = tmp_path / "b.json"
     batch.write_text(json.dumps([{"id": "one-ticket", "summary": "x"}]))
-    import dev_status
-
-    d = tmp_path / "backlog"
-    for name, value in {
-        "DATA_DIR": d,
-        "ITEMS_FILE": d / "items.json",
-        "PENDING_FILE": d / "pending_items.json",
-        "META_FILE": d / "_meta.json",
-        "LOCK_FILE": d / ".backlog.lock",
-        "JOURNAL_FILE": d / "journal.jsonl",
-        "MACHINE_ID_FILE": d / "_machine_id",
-    }.items():
-        monkeypatch.setattr(dev_status, name, value)
     to_tickets_runner.run_batch(batch)
     assert seen and all(depth >= 1 for depth in seen)
     assert_all_released()
 
 
-def test_grill_and_second_opinion_directory_creation_take_a_scope(monkeypatch, tmp_path):
+def test_grill_and_second_opinion_directory_creation_take_a_scope(
+    monkeypatch, tmp_path, home
+):
     import grill
     import second_opinion
 
@@ -468,7 +461,6 @@ def test_grill_and_second_opinion_directory_creation_take_a_scope(monkeypatch, t
 
     monkeypatch.setattr(migration_lock, "shared", spy)
     grill.ensure_data_dir(tmp_path / "g")
-    monkeypatch.setattr(second_opinion, "DATA_DIR", tmp_path / "so")
     second_opinion.ensure_data_dir()
     assert sites == ["grill", "decisions"]
 

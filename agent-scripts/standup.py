@@ -41,11 +41,29 @@ from standup_adapters import (
 # What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
 TOOLKIT_DATA = "reader"
 
-DATA_DIR = agent_toolkit_paths.path_for("standups")
-CONFIG_FILE = DATA_DIR / "config.json"
-_BACKLOG_DIR = agent_toolkit_paths.path_for("work-items")
-BACKLOG_FILE = _BACKLOG_DIR / "items.json"
-CANONICAL_PENDING_FILE = _BACKLOG_DIR / "pending_items.json"
+
+# Paths are resolved at each call, never at import, so a long-lived process
+# follows a layout flip.
+def standup_data_dir() -> Path:
+    return agent_toolkit_paths.path_for("standups")
+
+
+def config_file() -> Path:
+    return standup_data_dir() / "config.json"
+
+
+def backlog_file() -> Path:
+    return agent_toolkit_paths.path_for("work-items") / "items.json"
+
+
+def canonical_pending_file() -> Path:
+    return agent_toolkit_paths.path_for("work-items") / "pending_items.json"
+
+
+# Private aliases: parameters below share these names and would shadow them.
+_standup_data_dir = standup_data_dir
+_config_file = config_file
+_backlog_file = backlog_file
 
 
 class StandupConfigError(Exception):
@@ -129,11 +147,12 @@ def last_working_day(ref: date) -> date:
 
 
 def find_previous_standup(
-    before: date, standup_data_dir: Path = DATA_DIR
+    before: date, standup_data_dir: Path | None = None
 ) -> dict[str, str] | None:
+    base = standup_data_dir if standup_data_dir is not None else _standup_data_dir()
     for offset in range(1, 15):
         candidate = before - timedelta(days=offset)
-        path = standup_data_dir / f"{candidate.isoformat()}.md"
+        path = base / f"{candidate.isoformat()}.md"
         if path.exists():
             return {"date": candidate.isoformat(), "content": path.read_text()}
     return None
@@ -142,10 +161,11 @@ def find_previous_standup(
 # ── config ────────────────────────────────────────────────────────────────
 
 
-def load_config(config_file: Path = CONFIG_FILE) -> dict[str, object]:
-    if not config_file.exists():
+def load_config(config_file: Path | None = None) -> dict[str, object]:
+    target = config_file if config_file is not None else _config_file()
+    if not target.exists():
         return {}
-    return json.loads(config_file.read_text())
+    return json.loads(target.read_text())
 
 
 def _config_from_mapping(config: dict[str, object]) -> StandupConfig:
@@ -160,13 +180,14 @@ def _config_from_mapping(config: dict[str, object]) -> StandupConfig:
 
 
 def load_canonical_pending(
-    pending_file: Path = CANONICAL_PENDING_FILE,
+    pending_file: Path | None = None,
 ) -> list[dict[str, object]]:
     """Read-only view of dev_status.py's pending-items store. Mutate via
     `dev_status.py pending add/update`, never here."""
-    if not pending_file.exists():
+    target = pending_file if pending_file is not None else canonical_pending_file()
+    if not target.exists():
         return []
-    data = json.loads(pending_file.read_text())
+    data = json.loads(target.read_text())
     items = data.get("items", [])
     if not isinstance(items, list):
         raise StandupConfigError(f"{pending_file} has non-list items")
@@ -232,7 +253,7 @@ def git_commits(
 
 
 def backlog_items(
-    prefixes: list[str], recent_done_days: int, backlog_file: Path = BACKLOG_FILE
+    prefixes: list[str], recent_done_days: int, backlog_file: Path | None = None
 ) -> tuple[
     list[dict[str, object]],
     list[dict[str, object]],
@@ -251,6 +272,8 @@ def backlog_items(
                 )
             ],
         )
+    if backlog_file is None:
+        backlog_file = _backlog_file()
     if not backlog_file.exists():
         return (
             [],
@@ -392,9 +415,9 @@ def cmd_fetch(args: argparse.Namespace) -> None:
         _default_sources(),
         reference_date=ref_date,
         paths=StandupPaths(
-            standup_data_dir=DATA_DIR,
-            backlog_file=BACKLOG_FILE,
-            pending_file=CANONICAL_PENDING_FILE,
+            standup_data_dir=_standup_data_dir(),
+            backlog_file=_backlog_file(),
+            pending_file=canonical_pending_file(),
         ),
     )
     print(json.dumps(report.to_json_dict(), indent=2))

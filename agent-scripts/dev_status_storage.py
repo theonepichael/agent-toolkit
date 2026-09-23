@@ -18,7 +18,7 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import ExitStack, contextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -37,33 +37,113 @@ from dev_status_types import Gate as Gate
 # What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
 TOOLKIT_DATA = "writer"
 
-DATA_DIR = agent_toolkit_paths.path_for("work-items")
-ITEMS_FILE = DATA_DIR / "items.json"
-PENDING_FILE = DATA_DIR / "pending_items.json"
-META_FILE = DATA_DIR / "_meta.json"
-LOCK_FILE = DATA_DIR / ".backlog.lock"
-JOURNAL_FILE = DATA_DIR / "journal.jsonl"
-RUNS_FILE = DATA_DIR / "runs.jsonl"
-MACHINE_ID_FILE = DATA_DIR / "_machine_id"
-RECAP_CACHE_FILE = DATA_DIR / "recap-cache.json"
-RECAP_REGEN_LOCK_FILE = DATA_DIR / "recap-regen.lock"
-
-OUT_OF_SCOPE_DIR = agent_toolkit_paths.path_for("out-of-scope")
-OUT_OF_SCOPE_INDEX_FILE = OUT_OF_SCOPE_DIR / "index.json"
-OUT_OF_SCOPE_LOCK_FILE = OUT_OF_SCOPE_DIR / ".out-of-scope.lock"
+# ── store paths ──────────────────────────────────────────────────────────────
+#
+# Every path is resolved through agent_toolkit_paths at each call, never at
+# import: a long-lived process must follow a layout flip. A store operation
+# resolves its default paths only after it has entered its migration scope,
+# so a flip cannot land between resolving a path and writing to it.
 
 
-def _resolve_path(var_name: str, fallback: Path) -> Path:
-    """Resolve a path dynamically from dev_status_impl if present, else fallback."""
-    impl = sys.modules.get("dev_status_impl")
-    if impl is not None and hasattr(impl, var_name):
-        val = getattr(impl, var_name)
-        if isinstance(val, (Path, str)):
-            return Path(val)
-    curr = globals().get(var_name)
-    if isinstance(curr, (Path, str)):
-        return Path(curr)
-    return fallback
+def data_dir() -> Path:
+    """The backlog store directory for the current layout."""
+    return agent_toolkit_paths.path_for("work-items")
+
+
+def items_file() -> Path:
+    return data_dir() / "items.json"
+
+
+def pending_file() -> Path:
+    return data_dir() / "pending_items.json"
+
+
+def meta_file() -> Path:
+    return data_dir() / "_meta.json"
+
+
+def lock_file() -> Path:
+    return data_dir() / ".backlog.lock"
+
+
+def journal_file() -> Path:
+    return data_dir() / "journal.jsonl"
+
+
+def runs_file() -> Path:
+    return data_dir() / "runs.jsonl"
+
+
+def machine_id_file() -> Path:
+    return data_dir() / "_machine_id"
+
+
+def recap_cache_file() -> Path:
+    return data_dir() / "recap-cache.json"
+
+
+def recap_regen_lock_file() -> Path:
+    return data_dir() / "recap-regen.lock"
+
+
+def out_of_scope_dir() -> Path:
+    """The out-of-scope concept store directory for the current layout."""
+    return agent_toolkit_paths.path_for("out-of-scope")
+
+
+def out_of_scope_index_file() -> Path:
+    return out_of_scope_dir() / "index.json"
+
+
+def out_of_scope_lock_file() -> Path:
+    return out_of_scope_dir() / ".out-of-scope.lock"
+
+
+# Private aliases: several functions below take a parameter named like an
+# accessor, which would shadow it.
+_data_dir = data_dir
+_items_file = items_file
+_pending_file = pending_file
+_meta_file = meta_file
+_lock_file = lock_file
+_journal_file = journal_file
+_runs_file = runs_file
+_machine_id_file = machine_id_file
+_recap_cache_file = recap_cache_file
+_recap_regen_lock_file = recap_regen_lock_file
+_out_of_scope_dir = out_of_scope_dir
+_out_of_scope_index_file = out_of_scope_index_file
+_out_of_scope_lock_file = out_of_scope_lock_file
+
+
+# The upper-case names these accessors replaced stay readable as module
+# attributes for scripts outside this repo that still read them. Each read
+# resolves afresh; nothing in this repo uses them.
+COMPAT_PATH_ATTRS: dict[str, Callable[[], Path]] = {
+    "DATA_DIR": data_dir,
+    "ITEMS_FILE": items_file,
+    "PENDING_FILE": pending_file,
+    "META_FILE": meta_file,
+    "LOCK_FILE": lock_file,
+    "JOURNAL_FILE": journal_file,
+    "RUNS_FILE": runs_file,
+    "MACHINE_ID_FILE": machine_id_file,
+    "RECAP_CACHE_FILE": recap_cache_file,
+    "RECAP_REGEN_LOCK_FILE": recap_regen_lock_file,
+    "OUT_OF_SCOPE_DIR": out_of_scope_dir,
+    "OUT_OF_SCOPE_INDEX_FILE": out_of_scope_index_file,
+    "OUT_OF_SCOPE_LOCK_FILE": out_of_scope_lock_file,
+}
+
+
+def __getattr__(name: str) -> Path:
+    accessor = COMPAT_PATH_ATTRS.get(name)
+    if accessor is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    return accessor()
+
+
+check_not_stale = agent_toolkit_paths.check_not_stale
 
 
 # ── machine id ───────────────────────────────────────────────────────────────
@@ -182,6 +262,16 @@ def operation_machine_id() -> str | None:
     return ctx[1] if ctx is not None else None
 
 
+def _machine_id_paths(
+    machine_id_file: Path | None, data_dir: Path | None
+) -> tuple[Path, Path]:
+    """The id file and its store directory; defaults resolve now."""
+    d_dir = data_dir if data_dir is not None else _data_dir()
+    if machine_id_file is not None:
+        return machine_id_file, d_dir
+    return d_dir / "_machine_id", d_dir
+
+
 def machine_id(
     machine_id_file: Path | None = None, data_dir: Path | None = None
 ) -> str:
@@ -193,18 +283,23 @@ def machine_id(
     lock and published atomically; if it cannot be created, MachineIdError is
     raised rather than returning a throwaway id.
     """
-    mid_file = machine_id_file or _resolve_path("MACHINE_ID_FILE", MACHINE_ID_FILE)
-    d_dir = data_dir or _resolve_path("DATA_DIR", DATA_DIR)
+    explicit_file, explicit_dir = machine_id_file, data_dir
+    mid_file, d_dir = _machine_id_paths(explicit_file, explicit_dir)
     ctx = _OPERATION_IDENTITY.get()
     if ctx is not None and ctx[0] == mid_file:
         return ctx[1]
+    check_not_stale(mid_file)
     existing = _read_machine_id(mid_file)
     if existing is not None:
         return existing
     try:
         # Creating the id writes into the work-items domain, so it takes the
-        # migration scope (only here, never for a plain read).
+        # migration scope (only here, never for a plain read). Paths are
+        # resolved again inside it: a flip may have happened since the read.
         with migration_lock.shared("machine-id"):
+            mid_file, d_dir = _machine_id_paths(explicit_file, explicit_dir)
+            check_not_stale(mid_file)
+            check_not_stale(d_dir)
             d_dir.mkdir(parents=True, exist_ok=True)
             mid_file.parent.mkdir(parents=True, exist_ok=True)
             with _machine_id_init_lock(mid_file):
@@ -263,11 +358,13 @@ def repair_machine_id(
     fresh id replaces it atomically. An UNREADABLE file is refused: it may
     hold a valid id, so it is never rotated.
     """
-    mid_file = machine_id_file or _resolve_path("MACHINE_ID_FILE", MACHINE_ID_FILE)
-    d_dir = data_dir or _resolve_path("DATA_DIR", DATA_DIR)
+    mid_file = machine_id_file or Path("<unresolved machine id>")
     try:
         with ExitStack() as scope:
             scope.enter_context(migration_lock.shared("machine-id"))
+            mid_file, d_dir = _machine_id_paths(machine_id_file, data_dir)
+            check_not_stale(mid_file)
+            check_not_stale(d_dir)
             d_dir.mkdir(parents=True, exist_ok=True)
             mid_file.parent.mkdir(parents=True, exist_ok=True)
             scope.enter_context(_machine_id_init_lock(mid_file))
@@ -333,6 +430,7 @@ def atomic_write_json(path: Path, payload: str, prefix: str) -> None:
     debris behind or corrupts the destination. Ensures the temp file is
     fsynced before rename and the containing directory is fsynced after.
     """
+    check_not_stale(path)
     directory = path.parent
     directory.mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(dir=directory, prefix=prefix)
@@ -364,6 +462,7 @@ _atomic_write_json = atomic_write_json
 
 def backup_before_bulk_delete(path: Path) -> None:
     """Snapshot a data file before a filter-based bulk deletion."""
+    check_not_stale(path)
     if not path.exists():
         return
     stamp = datetime.now().strftime("%Y%m%dT%H%M%S%f")
@@ -378,8 +477,8 @@ _backup_before_bulk_delete = backup_before_bulk_delete
 
 
 def load_items(path: Path | None = None) -> list[BacklogItem]:
-    """Load all backlog items from ``path`` (defaults to :data:`ITEMS_FILE`)."""
-    target = path or _resolve_path("ITEMS_FILE", ITEMS_FILE)
+    """Load all backlog items from ``path`` (defaults to :func:`items_file`)."""
+    target = path or _items_file()
     if not target.exists():
         return []
     try:
@@ -401,15 +500,15 @@ def load_items(path: Path | None = None) -> list[BacklogItem]:
 
 
 def save_items(items: list[BacklogItem], path: Path | None = None) -> None:
-    """Atomically persist ``items`` to ``path`` (defaults to :data:`ITEMS_FILE`)."""
-    target = path or _resolve_path("ITEMS_FILE", ITEMS_FILE)
+    """Atomically persist ``items`` to ``path`` (defaults to :func:`items_file`)."""
+    target = path or _items_file()
     payload = json.dumps({"schema_version": 2, "items": items}, indent=2)
     atomic_write_json(target, payload, ".items_tmp_")
 
 
 def load_pending(path: Path | None = None) -> list[PendingItem]:
-    """Load all pending items from ``path`` (defaults to :data:`PENDING_FILE`)."""
-    target = path or _resolve_path("PENDING_FILE", PENDING_FILE)
+    """Load all pending items from ``path`` (defaults to :func:`pending_file`)."""
+    target = path or _pending_file()
     if not target.exists():
         return []
     try:
@@ -431,8 +530,8 @@ def load_pending(path: Path | None = None) -> list[PendingItem]:
 
 
 def save_pending(pending_items: list[PendingItem], path: Path | None = None) -> None:
-    """Atomically persist ``pending_items`` to ``path`` (defaults to :data:`PENDING_FILE`)."""
-    target = path or _resolve_path("PENDING_FILE", PENDING_FILE)
+    """Atomically persist ``pending_items`` to ``path`` (defaults to :func:`pending_file`)."""
+    target = path or _pending_file()
     payload = json.dumps({"schema_version": 1, "items": pending_items}, indent=2)
     atomic_write_json(target, payload, ".pending_tmp_")
 
@@ -442,7 +541,7 @@ def save_pending(pending_items: list[PendingItem], path: Path | None = None) -> 
 
 def load_rev(meta_file: Path | None = None) -> int:
     """Read the current revision counter."""
-    m_file = meta_file or _resolve_path("META_FILE", META_FILE)
+    m_file = meta_file or _meta_file()
     if not m_file.exists():
         return 0
     try:
@@ -462,7 +561,7 @@ def bump_rev(meta_file: Path | None = None) -> int:
 
     Must be called while holding :func:`backlog_lock`.
     """
-    m_file = meta_file or _resolve_path("META_FILE", META_FILE)
+    m_file = meta_file or _meta_file()
     rev = load_rev(m_file) + 1
     payload = json.dumps({"rev": rev})
     atomic_write_json(m_file, payload, ".meta_tmp_")
@@ -509,32 +608,36 @@ def backlog_lock(
     no identity is resolved, and the lock-wait diagnostic is not journalled.
     """
     global _backlog_lock_fd, _backlog_lock_count, _backlog_lock_dir
-    d_dir = data_dir or _resolve_path("DATA_DIR", DATA_DIR)
-    l_file = lock_file or _resolve_path("LOCK_FILE", LOCK_FILE)
-    if machine_id_file is not None:
-        mid_file = machine_id_file
-    elif data_dir is not None:
-        mid_file = data_dir / "_machine_id"
-    else:
-        mid_file = _resolve_path("MACHINE_ID_FILE", MACHINE_ID_FILE)
-    dir_key = os.path.abspath(d_dir)
     with _backlog_lock_rlock:
         outermost = _backlog_lock_count == 0
-        if not outermost and dir_key != _backlog_lock_dir:
-            raise BacklogLockStoreMismatch(
-                f"nested backlog operation for {d_dir} inside an operation for "
-                f"{_backlog_lock_dir}"
-            )
         token = None
         acquired_fd = -1
         noted = False
         # The migration scope is entered first and closed last (after the
-        # store unlock), so the migration lock is always outermost.
+        # store unlock), so the migration lock is always outermost. Default
+        # paths are resolved inside it, so a layout flip can never fall
+        # between resolving the store and creating it.
         migration = ExitStack()
         _backlog_lock_count += 1
         try:
             if outermost:
                 migration.enter_context(migration_lock.shared("backlog"))
+            d_dir = data_dir if data_dir is not None else _data_dir()
+            l_file = lock_file if lock_file is not None else d_dir / ".backlog.lock"
+            mid_file = (
+                machine_id_file
+                if machine_id_file is not None
+                else d_dir / "_machine_id"
+            )
+            dir_key = os.path.abspath(d_dir)
+            if not outermost and dir_key != _backlog_lock_dir:
+                raise BacklogLockStoreMismatch(
+                    f"nested backlog operation for {d_dir} inside an operation "
+                    f"for {_backlog_lock_dir}"
+                )
+            if outermost:
+                check_not_stale(d_dir)
+                check_not_stale(l_file)
                 d_dir.mkdir(parents=True, exist_ok=True)
                 acquired_fd = os.open(str(l_file), os.O_WRONLY | os.O_CREAT, 0o644)
                 wait_start = time.monotonic()
@@ -555,10 +658,12 @@ def backlog_lock(
                     journal_entry(
                         "lock-wait",
                         "backlog",
-                        load_rev(),
+                        load_rev(d_dir / "_meta.json"),
                         wait_seconds=round(wait_seconds, 3),
                         diagnostic=True,
-                    )
+                    ),
+                    journal_file=d_dir / "journal.jsonl",
+                    data_dir=d_dir,
                 )
             yield
         finally:
@@ -594,10 +699,6 @@ def out_of_scope_lock(
 ) -> Iterator[None]:
     """Hold an exclusive lock over an out-of-scope command's cycle."""
     global _out_of_scope_lock_fd, _out_of_scope_lock_count
-    oos_dir = out_of_scope_dir or _resolve_path("OUT_OF_SCOPE_DIR", OUT_OF_SCOPE_DIR)
-    l_file = lock_file or _resolve_path(
-        "OUT_OF_SCOPE_LOCK_FILE", OUT_OF_SCOPE_LOCK_FILE
-    )
     with _out_of_scope_lock_rlock:
         outermost = _out_of_scope_lock_count == 0
         noted = False
@@ -606,6 +707,16 @@ def out_of_scope_lock(
         try:
             if outermost:
                 migration.enter_context(migration_lock.shared("out-of-scope"))
+                oos_dir = (
+                    out_of_scope_dir
+                    if out_of_scope_dir is not None
+                    else _out_of_scope_dir()
+                )
+                l_file = (
+                    lock_file if lock_file is not None else _out_of_scope_lock_file()
+                )
+                check_not_stale(oos_dir)
+                check_not_stale(l_file)
                 oos_dir.mkdir(parents=True, exist_ok=True)
                 fd = os.open(str(l_file), os.O_WRONLY | os.O_CREAT, 0o644)
                 try:
@@ -635,7 +746,7 @@ def out_of_scope_lock(
 
 def load_out_of_scope_index(path: Path | None = None) -> dict[str, dict[str, object]]:
     """Load the out-of-scope concept index, or ``{}`` if it doesn't exist yet."""
-    target = path or _resolve_path("OUT_OF_SCOPE_INDEX_FILE", OUT_OF_SCOPE_INDEX_FILE)
+    target = path or _out_of_scope_index_file()
     if not target.exists():
         return {}
     return cast(dict[str, dict[str, object]], json.loads(target.read_text()))
@@ -648,7 +759,7 @@ def save_out_of_scope_index(
     index: dict[str, dict[str, object]], path: Path | None = None
 ) -> None:
     """Atomically persist the out-of-scope concept index."""
-    target = path or _resolve_path("OUT_OF_SCOPE_INDEX_FILE", OUT_OF_SCOPE_INDEX_FILE)
+    target = path or _out_of_scope_index_file()
     payload = json.dumps(index, indent=2)
     atomic_write_json(target, payload, ".oos_index_tmp_")
 
@@ -658,7 +769,7 @@ _save_out_of_scope_index = save_out_of_scope_index
 
 def out_of_scope_md_path(slug: str, out_of_scope_dir: Path | None = None) -> Path:
     """Path to a concept's freeform-reason markdown file."""
-    target_dir = out_of_scope_dir or _resolve_path("OUT_OF_SCOPE_DIR", OUT_OF_SCOPE_DIR)
+    target_dir = out_of_scope_dir or _out_of_scope_dir()
     return target_dir / f"{slug}.md"
 
 
@@ -726,8 +837,10 @@ def append_journal_event(
     verbose: bool = False,
 ) -> None:
     """Append one event to the journal, best-effort."""
-    j_file = journal_file or _resolve_path("JOURNAL_FILE", JOURNAL_FILE)
-    d_dir = data_dir or _resolve_path("DATA_DIR", DATA_DIR)
+    j_file = journal_file or _journal_file()
+    d_dir = data_dir or _data_dir()
+    check_not_stale(j_file)
+    check_not_stale(d_dir)
     line = json.dumps(entry, sort_keys=True)
     try:
         d_dir.mkdir(parents=True, exist_ok=True)
@@ -764,7 +877,7 @@ def read_journal_entries(
     verbose: bool = False,
 ) -> list[dict[str, object]]:
     """Read journal entries, optionally filtered to the last ``within_hours``."""
-    j_file = journal_file or _resolve_path("JOURNAL_FILE", JOURNAL_FILE)
+    j_file = journal_file or _journal_file()
     if not j_file.exists():
         return []
     try:
@@ -806,7 +919,7 @@ def journal_last_entry_within(
     hours: float, *, journal_file: Path | None = None
 ) -> bool:
     """Cheap pre-spawn check: does the journal's last entry fall within ``hours``?"""
-    j_file = journal_file or _resolve_path("JOURNAL_FILE", JOURNAL_FILE)
+    j_file = journal_file or _journal_file()
     if not j_file.exists():
         return False
     try:
@@ -834,8 +947,8 @@ _journal_last_entry_within = journal_last_entry_within
 def load_runs(
     item: str | None = None, *, runs_file: Path | None = None
 ) -> list[RunRecord]:
-    """Load run-evidence rows from :data:`RUNS_FILE`, optionally for one item."""
-    r_file = runs_file or _resolve_path("RUNS_FILE", RUNS_FILE)
+    """Load run-evidence rows from :func:`runs_file`, optionally for one item."""
+    r_file = runs_file or _runs_file()
     if not r_file.exists():
         return []
     try:
@@ -865,8 +978,8 @@ def load_runs(
 def write_runs_file(
     runs: Sequence[RunRecord], *, runs_file: Path | None = None
 ) -> None:
-    """Atomically rewrite :data:`RUNS_FILE` with ``runs``."""
-    r_file = runs_file or _resolve_path("RUNS_FILE", RUNS_FILE)
+    """Atomically rewrite :func:`runs_file` with ``runs``."""
+    r_file = runs_file or _runs_file()
     payload = "".join(json.dumps(run, sort_keys=True) + "\n" for run in runs)
     atomic_write_json(r_file, payload, ".runs_tmp_")
 
@@ -877,9 +990,11 @@ def append_run_record(
     runs_file: Path | None = None,
     data_dir: Path | None = None,
 ) -> bool:
-    """Append one run-evidence row to :data:`RUNS_FILE` (best-effort)."""
-    r_file = runs_file or _resolve_path("RUNS_FILE", RUNS_FILE)
-    d_dir = data_dir or _resolve_path("DATA_DIR", DATA_DIR)
+    """Append one run-evidence row to :func:`runs_file` (best-effort)."""
+    r_file = runs_file or _runs_file()
+    d_dir = data_dir or _data_dir()
+    check_not_stale(r_file)
+    check_not_stale(d_dir)
     line = json.dumps(record, sort_keys=True)
     try:
         d_dir.mkdir(parents=True, exist_ok=True)
@@ -896,7 +1011,7 @@ def append_run_record(
 
 def load_recap_cache(path: Path | None = None) -> dict[str, object] | None:
     """Load ``recap-cache.json``, or ``None`` if missing/corrupt/malformed."""
-    target = path or _resolve_path("RECAP_CACHE_FILE", RECAP_CACHE_FILE)
+    target = path or _recap_cache_file()
     if not target.exists():
         return None
     try:
@@ -918,7 +1033,7 @@ def save_recap_cache(
     path: Path | None = None,
 ) -> None:
     """Atomically persist a recap result."""
-    target = path or _resolve_path("RECAP_CACHE_FILE", RECAP_CACHE_FILE)
+    target = path or _recap_cache_file()
     payload = json.dumps(
         {
             "generated_at": datetime.now(UTC).isoformat(),

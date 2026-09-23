@@ -203,20 +203,19 @@ from dev_status_types import Gate as Gate
 # What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
 TOOLKIT_DATA = "writer"
 
-DATA_DIR = dev_status_storage.DATA_DIR
-ITEMS_FILE = dev_status_storage.ITEMS_FILE
-PENDING_FILE = dev_status_storage.PENDING_FILE
-META_FILE = dev_status_storage.META_FILE
-LOCK_FILE = dev_status_storage.LOCK_FILE
-JOURNAL_FILE = dev_status_storage.JOURNAL_FILE
-RUNS_FILE = dev_status_storage.RUNS_FILE
-MACHINE_ID_FILE = dev_status_storage.MACHINE_ID_FILE
-RECAP_CACHE_FILE = dev_status_storage.RECAP_CACHE_FILE
-RECAP_REGEN_LOCK_FILE = dev_status_storage.RECAP_REGEN_LOCK_FILE
 
-OUT_OF_SCOPE_DIR = dev_status_storage.OUT_OF_SCOPE_DIR
-OUT_OF_SCOPE_INDEX_FILE = dev_status_storage.OUT_OF_SCOPE_INDEX_FILE
-OUT_OF_SCOPE_LOCK_FILE = dev_status_storage.OUT_OF_SCOPE_LOCK_FILE
+def __getattr__(name: str) -> Path:
+    """Serve the old upper-case store path names, resolved on every read.
+
+    Store paths are resolved at each use (see ``dev_status_storage``). Scripts
+    outside this repo still read names like ``dev_status.DATA_DIR``; each read
+    returns the path for the current layout. Nothing in this repo uses them.
+    """
+    accessor = dev_status_storage.COMPAT_PATH_ATTRS.get(name)
+    if accessor is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    return accessor()
+
 
 # ── recap tuning knobs ──────────────────────────────────────────────────────
 RECAP_TTL_SECONDS = 30 * 60
@@ -387,7 +386,7 @@ type RenderOrder = tuple[
 
 def machine_id() -> str:
     """Return this machine's stable short id, creating it on first use."""
-    return dev_status_storage.machine_id(MACHINE_ID_FILE, DATA_DIR)
+    return dev_status_storage.machine_id()
 
 
 _machine_id = machine_id
@@ -640,8 +639,8 @@ def _reject_null_fields(
 
 
 def load_items() -> list[BacklogItem]:
-    """Load all backlog items from :data:`ITEMS_FILE`."""
-    return dev_status_storage.load_items(ITEMS_FILE)
+    """Load all backlog items from :func:`dev_status_storage.items_file`."""
+    return dev_status_storage.load_items()
 
 
 def _atomic_write_json(path: Path, payload: str, prefix: str) -> None:
@@ -653,18 +652,18 @@ atomic_write_json = _atomic_write_json
 
 
 def save_items(items: list[BacklogItem]) -> None:
-    """Atomically persist ``items`` to :data:`ITEMS_FILE`."""
-    dev_status_storage.save_items(items, ITEMS_FILE)
+    """Atomically persist ``items`` to :func:`dev_status_storage.items_file`."""
+    dev_status_storage.save_items(items)
 
 
 def load_pending() -> list[PendingItem]:
-    """Load all pending items from :data:`PENDING_FILE`."""
-    return dev_status_storage.load_pending(PENDING_FILE)
+    """Load all pending items from :func:`dev_status_storage.pending_file`."""
+    return dev_status_storage.load_pending()
 
 
 def save_pending(pending_items: list[PendingItem]) -> None:
-    """Atomically persist ``pending_items`` to :data:`PENDING_FILE`."""
-    dev_status_storage.save_pending(pending_items, PENDING_FILE)
+    """Atomically persist ``pending_items`` to :func:`dev_status_storage.pending_file`."""
+    dev_status_storage.save_pending(pending_items)
 
 
 @contextmanager
@@ -674,12 +673,7 @@ def backlog_lock(*, require_identity: bool = True) -> Iterator[None]:
     ``require_identity=False`` is for snapshot reads: no machine id is
     resolved, so a broken id file cannot stop them.
     """
-    with dev_status_storage.backlog_lock(
-        DATA_DIR,
-        LOCK_FILE,
-        require_identity=require_identity,
-        machine_id_file=MACHINE_ID_FILE,
-    ):
+    with dev_status_storage.backlog_lock(require_identity=require_identity):
         yield
 
 
@@ -698,18 +692,18 @@ def _sweep_identity_problem() -> str | None:
 @contextmanager
 def out_of_scope_lock() -> Iterator[None]:
     """Hold an exclusive lock over an out-of-scope command's read-modify-write cycle."""
-    with dev_status_storage.out_of_scope_lock(OUT_OF_SCOPE_DIR, OUT_OF_SCOPE_LOCK_FILE):
+    with dev_status_storage.out_of_scope_lock():
         yield
 
 
 def load_rev() -> int:
     """Read the current revision counter."""
-    return dev_status_storage.load_rev(META_FILE)
+    return dev_status_storage.load_rev()
 
 
 def bump_rev() -> int:
     """Increment and persist the revision counter."""
-    return dev_status_storage.bump_rev(META_FILE)
+    return dev_status_storage.bump_rev()
 
 
 def _backup_before_bulk_delete(path: Path) -> None:
@@ -1031,7 +1025,7 @@ def _blocker_check_reminder(
 
 def _load_out_of_scope_index() -> dict[str, dict[str, object]]:
     """Load the out-of-scope concept index, or ``{}`` if it doesn't exist yet."""
-    return dev_status_storage.load_out_of_scope_index(OUT_OF_SCOPE_INDEX_FILE)
+    return dev_status_storage.load_out_of_scope_index()
 
 
 load_out_of_scope_index = _load_out_of_scope_index
@@ -1039,7 +1033,7 @@ load_out_of_scope_index = _load_out_of_scope_index
 
 def _save_out_of_scope_index(index: dict[str, dict[str, object]]) -> None:
     """Atomically persist the out-of-scope concept index."""
-    dev_status_storage.save_out_of_scope_index(index, OUT_OF_SCOPE_INDEX_FILE)
+    dev_status_storage.save_out_of_scope_index(index)
 
 
 save_out_of_scope_index = _save_out_of_scope_index
@@ -1047,7 +1041,7 @@ save_out_of_scope_index = _save_out_of_scope_index
 
 def _out_of_scope_md_path(slug: str) -> Path:
     """Path to a concept's freeform-reason markdown file."""
-    return dev_status_storage.out_of_scope_md_path(slug, OUT_OF_SCOPE_DIR)
+    return dev_status_storage.out_of_scope_md_path(slug)
 
 
 out_of_scope_md_path = _out_of_scope_md_path
@@ -1387,9 +1381,7 @@ journal_entry = _journal_entry
 
 def append_journal_event(entry: dict[str, object], *, verbose: bool = False) -> None:
     """Append one event to the journal, best-effort."""
-    dev_status_storage.append_journal_event(
-        entry, journal_file=JOURNAL_FILE, data_dir=DATA_DIR, verbose=verbose
-    )
+    dev_status_storage.append_journal_event(entry, verbose=verbose)
 
 
 def _parse_journal_ts(raw: object) -> datetime | None:
@@ -1404,36 +1396,30 @@ parse_journal_ts = _parse_journal_ts
 
 
 def load_runs(item: str | None = None) -> list[RunRecord]:
-    """Load run-evidence rows from :data:`RUNS_FILE`, optionally for one item."""
-    return dev_status_storage.load_runs(item, runs_file=RUNS_FILE)
+    """Load run-evidence rows from :func:`dev_status_storage.runs_file`, optionally for one item."""
+    return dev_status_storage.load_runs(item)
 
 
 def write_runs_file(runs: Sequence[RunRecord]) -> None:
-    """Atomically rewrite :data:`RUNS_FILE` with ``runs`` (one JSON line each)."""
-    dev_status_storage.write_runs_file(runs, runs_file=RUNS_FILE)
+    """Atomically rewrite :func:`dev_status_storage.runs_file` with ``runs`` (one JSON line each)."""
+    dev_status_storage.write_runs_file(runs)
 
 
 def append_run_record(record: RunRecord) -> bool:
-    """Append one run-evidence row to :data:`RUNS_FILE` (best-effort)."""
-    return dev_status_storage.append_run_record(
-        record, runs_file=RUNS_FILE, data_dir=DATA_DIR
-    )
+    """Append one run-evidence row to :func:`dev_status_storage.runs_file` (best-effort)."""
+    return dev_status_storage.append_run_record(record)
 
 
 def read_journal_entries(
     within_hours: float | None = None, *, verbose: bool = False
 ) -> list[dict[str, object]]:
     """Read journal entries, optionally filtered to the last ``within_hours``."""
-    return dev_status_storage.read_journal_entries(
-        within_hours, journal_file=JOURNAL_FILE, verbose=verbose
-    )
+    return dev_status_storage.read_journal_entries(within_hours, verbose=verbose)
 
 
 def _journal_last_entry_within(hours: float) -> bool:
     """Cheap pre-spawn check: does the journal's last entry fall within ``hours``?"""
-    return dev_status_storage.journal_last_entry_within(
-        hours, journal_file=JOURNAL_FILE
-    )
+    return dev_status_storage.journal_last_entry_within(hours)
 
 
 journal_last_entry_within = _journal_last_entry_within
@@ -1449,7 +1435,7 @@ def _recap_disabled() -> bool:
 
 def _load_recap_cache() -> dict[str, object] | None:
     """Load ``recap-cache.json``, or ``None`` if missing/corrupt/malformed."""
-    return dev_status_storage.load_recap_cache(RECAP_CACHE_FILE)
+    return dev_status_storage.load_recap_cache()
 
 
 load_recap_cache = _load_recap_cache
@@ -1457,9 +1443,7 @@ load_recap_cache = _load_recap_cache
 
 def _save_recap_cache(backend: str, text: str, board_fingerprint: str) -> None:
     """Atomically persist a recap result."""
-    dev_status_storage.save_recap_cache(
-        backend, text, board_fingerprint, RECAP_CACHE_FILE
-    )
+    dev_status_storage.save_recap_cache(backend, text, board_fingerprint)
 
 
 save_recap_cache = _save_recap_cache
@@ -1483,7 +1467,7 @@ def _format_age(seconds: float) -> str:
 
 @contextmanager
 def _regen_lock(*, blocking: bool) -> Iterator[bool]:
-    """Hold :data:`RECAP_REGEN_LOCK_FILE`, yielding whether it was acquired.
+    """Hold :func:`dev_status_storage.recap_regen_lock_file`, yielding whether it was acquired.
 
     Non-blocking mode (used by the detached regen child) yields ``False``
     immediately if another regen is already in flight instead of waiting —
@@ -1492,8 +1476,9 @@ def _regen_lock(*, blocking: bool) -> Iterator[bool]:
     for that in-flight regen to finish and always yields ``True``.
     """
     with migration_lock.shared("recap"):
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        with open(RECAP_REGEN_LOCK_FILE, "w") as f:
+        regen_lock = dev_status_storage.recap_regen_lock_file()
+        regen_lock.parent.mkdir(parents=True, exist_ok=True)
+        with open(regen_lock, "w") as f:
             try:
                 fcntl.flock(
                     f, fcntl.LOCK_EX if blocking else fcntl.LOCK_EX | fcntl.LOCK_NB
@@ -2857,11 +2842,12 @@ def cmd_machine_id(args: argparse.Namespace) -> None:
     Errors (unreadable, invalid without --repair, unwritable) propagate as
     MachineIdError and exit 3 through :func:`main`.
     """
-    mid_file = Path(MACHINE_ID_FILE)
     if not args.repair:
-        print(f"{machine_id()}  {mid_file}")
+        current = machine_id()
+        print(f"{current}  {dev_status_storage.machine_id_file()}")
         return
-    result = dev_status_storage.repair_machine_id(MACHINE_ID_FILE, DATA_DIR)
+    result = dev_status_storage.repair_machine_id()
+    mid_file = dev_status_storage.machine_id_file()
     if result.action == "unchanged":
         print(
             f"[machine-id] {result.machine_id} is valid; nothing changed ({mid_file})"
@@ -3490,9 +3476,9 @@ def cmd_prune(args: argparse.Namespace) -> None:
         total_removed = len(pruned_slugs) + len(pending_pruned_slugs)
         if total_removed:
             if pruned_slugs:
-                _backup_before_bulk_delete(ITEMS_FILE)
+                _backup_before_bulk_delete(dev_status_storage.items_file())
             if pending_pruned_slugs:
-                _backup_before_bulk_delete(PENDING_FILE)
+                _backup_before_bulk_delete(dev_status_storage.pending_file())
 
             # Purge inbound refs from the surviving records before either
             # write. `blocked_by` values can be backlog slugs *or* pending
@@ -3521,7 +3507,7 @@ def cmd_prune(args: argparse.Namespace) -> None:
             cli_common.qprint(
                 f"[prune] removed {len(pruned_slugs)} backlog item(s), "
                 f"{len(pending_pruned_slugs)} pending item(s) — "
-                f"backup written to {DATA_DIR}",
+                f"backup written to {dev_status_storage.data_dir()}",
                 quiet=args.quiet,
             )
             # Match every other mutator: render prints the dashboard and the

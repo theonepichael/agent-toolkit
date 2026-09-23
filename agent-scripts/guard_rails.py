@@ -102,12 +102,6 @@ from worktree_provenance import read_marker, worktree_points_at_item
 # What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
 TOOLKIT_DATA = "writer"
 
-LAYOUT_ERROR: agent_toolkit_paths.LayoutError | None = None
-try:
-    GUARD_RAILS_LOG_PATH = agent_toolkit_paths.path_for("guard-rail-log")
-except agent_toolkit_paths.LayoutError as _exc:
-    GUARD_RAILS_LOG_PATH = None
-    LAYOUT_ERROR = _exc
 PROTECTED_BRANCHES = {"main", "master"}
 GIT_TIMEOUT = 2.0
 
@@ -840,8 +834,6 @@ def _audit_verdict(harness: str, req: Request | None, verdict: Verdict) -> None:
     a disabled guard). The bash-family target is the command; the
     write-family target is the file path; both pass through
     redact_secrets before storage."""
-    if GUARD_RAILS_LOG_PATH is None:
-        return
     target = "" if req is None else (req.command if req.tool == "bash" else req.path)
     record = {
         "ts": datetime.now(UTC).isoformat(),
@@ -853,9 +845,14 @@ def _audit_verdict(harness: str, req: Request | None, verdict: Verdict) -> None:
     }
     # Telemetry never blocks the verdict: if the migration lock refuses the
     # append, the line is skipped and the refusal is recorded instead.
+    # The log path is resolved inside the scope, so a layout flip cannot fall
+    # between resolving it and appending. A broken layout skips the line.
     try:
         with migration_lock.shared("guard-rail-log", quiet=True):
-            cli_common.append_jsonl(GUARD_RAILS_LOG_PATH, record)
+            log_path = agent_toolkit_paths.path_for("guard-rail-log")
+            cli_common.append_jsonl(log_path, record)
+    except agent_toolkit_paths.LayoutError:
+        return
     except migration_lock.MigrationLockBusy as exc:
         migration_lock.observe(
             "guard-rail-log", "refused-telemetry", str(exc), quiet=True
@@ -884,11 +881,18 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _layout_error_reason() -> str | None:
-    """Return a blocking reason if either hook module hit a layout error."""
-    if LAYOUT_ERROR is not None:
-        return str(LAYOUT_ERROR)
-    if backlog_claim_lookup.LAYOUT_ERROR is not None:
-        return str(backlog_claim_lookup.LAYOUT_ERROR)
+    """Return a blocking reason if the layout cannot be resolved right now.
+
+    Checked per call, so a pointer that breaks after this process started
+    still blocks.
+    """
+    try:
+        agent_toolkit_paths.path_for("guard-rail-log")
+    except agent_toolkit_paths.LayoutError as exc:
+        return str(exc)
+    claim_error = backlog_claim_lookup.layout_error()
+    if claim_error is not None:
+        return str(claim_error)
     return None
 
 

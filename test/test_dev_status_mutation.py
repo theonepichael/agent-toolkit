@@ -37,6 +37,8 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))
 import test_bootstrap  # noqa: E402
+import test_layouts  # noqa: E402
+import agent_toolkit_paths  # noqa: E402
 import dev_status  # noqa: E402  (path insert above)
 import dev_status_mutation
 import dev_status_storage
@@ -109,7 +111,9 @@ class MutationFixture(unittest.TestCase):
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
-        self.data_dir = Path(self.tmpdir) / "backlog"
+        # A sandbox HOME: every store path resolves under it at each use.
+        test_layouts.activate_sandbox_home(Path(self.tmpdir), self.addCleanup)
+        self.data_dir = agent_toolkit_paths.path_for("work-items")
         self.items_file = self.data_dir / "items.json"
         self.pending_file = self.data_dir / "pending_items.json"
         self.meta_file = self.data_dir / "_meta.json"
@@ -119,32 +123,9 @@ class MutationFixture(unittest.TestCase):
         self.machine_id_file = self.data_dir / "_machine_id"
         self.recap_cache_file = self.data_dir / "recap-cache.json"
         self.recap_regen_lock_file = self.data_dir / "recap-regen.lock"
-        self.out_of_scope_dir = Path(self.tmpdir) / "backlog-out-of-scope"
+        self.out_of_scope_dir = agent_toolkit_paths.path_for("out-of-scope")
         self.out_of_scope_index_file = self.out_of_scope_dir / "index.json"
         self.out_of_scope_lock_file = self.out_of_scope_dir / ".out-of-scope.lock"
-        self._patches = [
-            patch.object(dev_status, "DATA_DIR", self.data_dir),
-            patch.object(dev_status, "ITEMS_FILE", self.items_file),
-            patch.object(dev_status, "PENDING_FILE", self.pending_file),
-            patch.object(dev_status, "META_FILE", self.meta_file),
-            patch.object(dev_status, "LOCK_FILE", self.lock_file),
-            patch.object(dev_status, "JOURNAL_FILE", self.journal_file),
-            patch.object(dev_status, "RUNS_FILE", self.runs_file),
-            patch.object(dev_status, "MACHINE_ID_FILE", self.machine_id_file),
-            patch.object(dev_status, "RECAP_CACHE_FILE", self.recap_cache_file),
-            patch.object(
-                dev_status, "RECAP_REGEN_LOCK_FILE", self.recap_regen_lock_file
-            ),
-            patch.object(dev_status, "OUT_OF_SCOPE_DIR", self.out_of_scope_dir),
-            patch.object(
-                dev_status, "OUT_OF_SCOPE_INDEX_FILE", self.out_of_scope_index_file
-            ),
-            patch.object(
-                dev_status, "OUT_OF_SCOPE_LOCK_FILE", self.out_of_scope_lock_file
-            ),
-        ]
-        for p in self._patches:
-            p.start()
         # Never let a test spawn a real process against fabricated data
         # (mirrors BacklogFixture's rationale in test_dev_status.py).
         self._popen_patch = patch("subprocess.Popen")
@@ -155,8 +136,6 @@ class MutationFixture(unittest.TestCase):
 
     def tearDown(self):
         self._popen_patch.stop()
-        for p in self._patches:
-            p.stop()
         shutil.rmtree(self.tmpdir)
 
     # ── store helpers ──────────────────────────────────────────────────────

@@ -9,8 +9,8 @@ recompiling ~5k lines as ``__main__`` on every run.
 
 Imported as a module (``import dev_status``), it rebinds
 ``sys.modules["dev_status"]`` to the impl module object, so consumers that
-patch module globals (``patch.object(dev_status, "DATA_DIR", ...)`` and
-friends) mutate the exact globals the implementation's functions read as
+patch module globals (``patch.object(dev_status, "RECAP_TTL_SECONDS", ...)``
+and friends) mutate the exact globals the implementation's functions read as
 their own.
 
 The ``_IMPL_MODULE`` assignment is load-bearing for ``gen_interfaces.py``,

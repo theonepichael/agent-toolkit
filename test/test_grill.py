@@ -14,7 +14,9 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))
 import test_bootstrap  # noqa: E402
-import grill
+import agent_toolkit_paths  # noqa: E402
+import grill  # noqa: E402
+import test_layouts  # noqa: E402
 
 
 def ns(**kwargs: object) -> argparse.Namespace:
@@ -24,16 +26,14 @@ def ns(**kwargs: object) -> argparse.Namespace:
 
 
 class _GrillDataDirFixture:
-    """Shared fixture: sandboxed ``grill.DATA_DIR`` plus CLI helpers."""
+    """Shared fixture: a sandbox HOME, so grill's store resolves under it."""
 
     def setUp(self) -> None:
         self.tmpdir = tempfile.mkdtemp()
-        self.data_dir = Path(self.tmpdir) / "grill"
-        self._patch = patch.object(grill, "DATA_DIR", self.data_dir)
-        self._patch.start()
+        test_layouts.activate_sandbox_home(Path(self.tmpdir), self.addCleanup)
+        self.data_dir = agent_toolkit_paths.path_for("decisions")
 
     def tearDown(self) -> None:
-        self._patch.stop()
         shutil.rmtree(self.tmpdir)
 
     def new_session(self, topic: str = "Auth token design") -> str:
@@ -1395,13 +1395,12 @@ class ServiceApiTests(_GrillDataDirFixture, unittest.TestCase):
 
 
 class ServiceDataDirInjectionTests(unittest.TestCase):
-    """Injected data_dir wins over the module global — never the reverse.
+    """Injected data_dir wins over the layout's store — never the reverse.
 
-    Deliberately NOT under GrillTestCase's DATA_DIR patch: with the global
-    patched, a fallback to grill.DATA_DIR would be indistinguishable from
-    correct injection. Here grill.DATA_DIR is whatever the environment says
-    (the sandboxed HOME under pytest), and the session must land only in
-    the injected tempdir.
+    Deliberately NOT under GrillTestCase's sandbox home: there the default
+    store and an injected one could coincide. Here the default store is
+    whatever the environment says (the sandboxed HOME under pytest), and the
+    session must land only in the injected tempdir.
     """
 
     def setUp(self) -> None:
@@ -1430,7 +1429,8 @@ class ServiceDataDirInjectionTests(unittest.TestCase):
             "injection-check", "q1", {"question": "Q?"}, data_dir=self.data_dir
         )
         self.assertTrue((self.data_dir / "injection-check.json").exists())
-        self.assertFalse((grill.DATA_DIR / "injection-check.json").exists())
+        default_store = agent_toolkit_paths.path_for("decisions")
+        self.assertFalse((default_store / "injection-check.json").exists())
 
 
 class ParserVerbosityTests(unittest.TestCase):
@@ -1463,7 +1463,7 @@ class ParserVerbosityTests(unittest.TestCase):
 
 
 class DataDirSelfEnsureTests(GrillTestCase):
-    """DATA_DIR is shared artifact storage, so grill.py owns creating it.
+    """The session store is shared artifact storage, so grill.py creates it.
 
     Agents write plan/spec .md files into the same directory with their own
     file tools, and were running `mkdir -p` defensively first. Every grill.py
@@ -1484,7 +1484,7 @@ class DataDirSelfEnsureTests(GrillTestCase):
         self.assertEqual(marker.read_text(), "artifact")
 
     def test_read_only_subcommand_still_creates_the_directory(self) -> None:
-        """`list` never writes a session, but must still leave DATA_DIR there."""
+        """`list` never writes a session, but must still leave the store there."""
         self.assertFalse(self.data_dir.exists())
         with (
             patch.object(sys, "argv", ["grill.py", "list"]),

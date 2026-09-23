@@ -87,14 +87,17 @@ Single source of truth for toolkit data paths.
   - `POINTER_RELPATH = Path('.claude') / 'data' / 'toolkit_state.json'`
 - Exceptions:
   - `class LayoutError(Exception)` — Raised when the layout pointer is malformed or the override is invalid.
+  - `class StaleLayoutError(LayoutError)` — Raised when a path belongs to the layout that is no longer current.
   - `class UnknownDomainError(ValueError)` — Raised when :func:`path_for` is asked for an unregistered domain.
 - Public classes:
   - `class Resolver` — Resolve toolkit data paths with per-process caching.
 - Public functions:
   - `path_for(domain: str) -> Path` — Resolve ``domain`` using :data:`DEFAULT_RESOLVER`.
+  - `path_for_layout(domain: str, layout: Layout) -> Path` — Resolve ``domain`` for ``layout`` using :data:`DEFAULT_RESOLVER`.
+  - `check_not_stale(path: Path) -> None` — Refuse a path from the non-current layout using :data:`DEFAULT_RESOLVER`.
   - `current_layout() -> Layout` — Return the current layout using :data:`DEFAULT_RESOLVER`.
   - `write_pointer(home: Path, layout: Layout) -> None` — Atomically write the layout pointer under ``home``.
-- Tested by: `agent-scripts/test_layouts.py`, `test/test_agent_toolkit_paths.py`, `test/test_gen_interfaces.py`, `test/test_guard_rails.py`, `test/test_llm_backends.py`
+- Tested by: `agent-scripts/test_layouts.py`, `test/test_agent_toolkit_paths.py`, `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_dev_status_storage.py`, `test/test_gen_interfaces.py`, `test/test_grill.py`, `test/test_guard_rails.py`, `test/test_llm_backends.py`, `test/test_machine_id.py`, `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`, `test/test_second_opinion.py`, `test/test_to_tickets_runner.py`
 
 ### `agent-scripts/analyze_sessions.py`
 
@@ -177,16 +180,15 @@ Read-only snapshot lookup over the backlog store for guard consumers.
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI: none (library module).
 - Environment: `GUARD_RAILS_STORE`
-- Filesystem constants:
-  - `DEFAULT_BACKLOG_ITEMS = agent_toolkit_paths.path_for('work-items') / 'items.json'`
 - Depends on: `agent_toolkit_paths.py`, `dev_status_storage.py`
 - Public classes:
   - `class ClaimInfo` — The fields of a claim record the guard's verdict logic reads.
   - `class BacklogClaimLookup(Protocol)` — Read-only view of the backlog store, as guard consumers need it.
   - `class LocalClaimLookup` — Read-only snapshot view over the backlog store: the one item-reading implementation (moved here from guard_rails.py) until candidate 6 lands as the shared read facade.
 - Public functions:
+  - `layout_error() -> agent_toolkit_paths.LayoutError | None` — The layout error that stops the backlog store resolving now, if any.
   - `backlog_items_path() -> Path` — Where the backlog store lives.
-- Tested by: `test/test_backlog_claim_lookup.py`, `test/test_dev_status_read.py`, `test/test_guard_rails.py`, `test/test_guard_rails_claim.py`
+- Tested by: `test/test_backlog_claim_lookup.py`, `test/test_dev_status_read.py`, `test/test_guard_rails.py`, `test/test_guard_rails_claim.py`, `test/test_path_for_per_use.py`
 
 ### `agent-scripts/bundle_drift_check.py`
 
@@ -331,10 +333,10 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
 - Public functions:
   - `format_compact_confirmation(cmd: str, slug: str, status: str, rev: int, ref: str | int | None = None, detail: str = '') -> str` — Format a single-line structured confirmation for mutating commands under compact mode.
   - `machine_id() -> str` — Return this machine's stable short id, creating it on first use.
-  - `load_items() -> list[BacklogItem]` — Load all backlog items from :data:`ITEMS_FILE`.
-  - `save_items(items: list[BacklogItem]) -> None` — Atomically persist ``items`` to :data:`ITEMS_FILE`.
-  - `load_pending() -> list[PendingItem]` — Load all pending items from :data:`PENDING_FILE`.
-  - `save_pending(pending_items: list[PendingItem]) -> None` — Atomically persist ``pending_items`` to :data:`PENDING_FILE`.
+  - `load_items() -> list[BacklogItem]` — Load all backlog items from :func:`dev_status_storage.items_file`.
+  - `save_items(items: list[BacklogItem]) -> None` — Atomically persist ``items`` to :func:`dev_status_storage.items_file`.
+  - `load_pending() -> list[PendingItem]` — Load all pending items from :func:`dev_status_storage.pending_file`.
+  - `save_pending(pending_items: list[PendingItem]) -> None` — Atomically persist ``pending_items`` to :func:`dev_status_storage.pending_file`.
   - `backlog_lock(*, require_identity: bool = True) -> Iterator[None]` — Hold an exclusive lock over a mutating command's full read-modify-write cycle.
   - `out_of_scope_lock() -> Iterator[None]` — Hold an exclusive lock over an out-of-scope command's read-modify-write cycle.
   - `load_rev() -> int` — Read the current revision counter.
@@ -342,14 +344,14 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `serial_safety(item: BacklogItem) -> tuple[bool, str | None]` — Whether one READY item is safe for isolated serial delegation.
   - `render(items: list[BacklogItem] | None = None, pending_items: list[PendingItem] | None = None, *, out: TextIO | None = None, err: TextIO | None = None, rev: int | None = None, dispatch: bool = False) -> None` — Render the full dashboard: pending items, then the five backlog sections.
   - `append_journal_event(entry: dict[str, object], *, verbose: bool = False) -> None` — Append one event to the journal, best-effort.
-  - `load_runs(item: str | None = None) -> list[RunRecord]` — Load run-evidence rows from :data:`RUNS_FILE`, optionally for one item.
-  - `write_runs_file(runs: Sequence[RunRecord]) -> None` — Atomically rewrite :data:`RUNS_FILE` with ``runs`` (one JSON line each).
-  - `append_run_record(record: RunRecord) -> bool` — Append one run-evidence row to :data:`RUNS_FILE` (best-effort).
+  - `load_runs(item: str | None = None) -> list[RunRecord]` — Load run-evidence rows from :func:`dev_status_storage.runs_file`, optionally for one item.
+  - `write_runs_file(runs: Sequence[RunRecord]) -> None` — Atomically rewrite :func:`dev_status_storage.runs_file` with ``runs`` (one JSON line each).
+  - `append_run_record(record: RunRecord) -> bool` — Append one run-evidence row to :func:`dev_status_storage.runs_file` (best-effort).
   - `read_journal_entries(within_hours: float | None = None, *, verbose: bool = False) -> list[dict[str, object]]` — Read journal entries, optionally filtered to the last ``within_hours``.
   - `confirm_resolution(cmd: str, arg: str | int, item: BacklogItem | PendingItem, summary_key: str = 'summary', *, quiet: bool = False) -> None` — Echo what a mutating command resolved to, so misresolution is visible.
   - `build_parser() -> argparse.ArgumentParser` — Build the full argument parser for every subcommand.
 - Subcommand handlers: `cmd_internal_regen`, `cmd_recap`, `cmd_worktree`, `cmd_render`, `cmd_ready`, `cmd_list`, `cmd_show`, `cmd_add`, `cmd_update`, `cmd_start`, `cmd_done`, `cmd_reopen`, `cmd_review`, `cmd_approve`, `cmd_reject`, `cmd_gate_set`, `cmd_gate_pass`, `cmd_run`, `cmd_machine_id`, `cmd_runs`, `cmd_backfill_gate`, `cmd_rename`, `cmd_block`, `cmd_unblock`, `cmd_out_of_scope_add`, `cmd_out_of_scope_link`, `cmd_out_of_scope_unlink`, `cmd_out_of_scope_remove`, `cmd_out_of_scope_list`, `cmd_out_of_scope_show`, `cmd_pending_add`, `cmd_pending_update`, `cmd_pending_list`, `cmd_remove`, `cmd_prune`
-- Tested by: `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_dev_status_storage.py`, `test/test_migration_lock_adoption.py`, `test/test_sweep_dead_claims.py`, `test/test_to_tickets_runner.py`
+- Tested by: `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_dev_status_storage.py`, `test/test_path_for_per_use.py`, `test/test_sweep_dead_claims.py`, `test/test_to_tickets_runner.py`
 
 ### `agent-scripts/dev_status_formatting.py`
 
@@ -461,20 +463,6 @@ Backlog persistence, lock coordination, and journal primitives.
 - Installed at: `~/.claude/scripts/dev_status_storage.py` (all harnesses)
 - Entrypoint: not executable, no shebang
 - CLI: none (library module).
-- Filesystem constants:
-  - `DATA_DIR = agent_toolkit_paths.path_for('work-items')`
-  - `ITEMS_FILE = DATA_DIR / 'items.json'`
-  - `PENDING_FILE = DATA_DIR / 'pending_items.json'`
-  - `META_FILE = DATA_DIR / '_meta.json'`
-  - `LOCK_FILE = DATA_DIR / '.backlog.lock'`
-  - `JOURNAL_FILE = DATA_DIR / 'journal.jsonl'`
-  - `RUNS_FILE = DATA_DIR / 'runs.jsonl'`
-  - `MACHINE_ID_FILE = DATA_DIR / '_machine_id'`
-  - `RECAP_CACHE_FILE = DATA_DIR / 'recap-cache.json'`
-  - `RECAP_REGEN_LOCK_FILE = DATA_DIR / 'recap-regen.lock'`
-  - `OUT_OF_SCOPE_DIR = agent_toolkit_paths.path_for('out-of-scope')`
-  - `OUT_OF_SCOPE_INDEX_FILE = OUT_OF_SCOPE_DIR / 'index.json'`
-  - `OUT_OF_SCOPE_LOCK_FILE = OUT_OF_SCOPE_DIR / '.out-of-scope.lock'`
 - Explicit exit codes: `1`
 - Depends on: `agent_toolkit_paths.py`, `cli_common.py`, `dev_status_types.py`, `fault_checkpoint.py`, `migration_lock.py`
 - Exceptions:
@@ -483,15 +471,28 @@ Backlog persistence, lock coordination, and journal primitives.
 - Public classes:
   - `class MachineIdRepair` — What ``repair_machine_id`` did.
 - Public functions:
+  - `data_dir() -> Path` — The backlog store directory for the current layout.
+  - `items_file() -> Path`
+  - `pending_file() -> Path`
+  - `meta_file() -> Path`
+  - `lock_file() -> Path`
+  - `journal_file() -> Path`
+  - `runs_file() -> Path`
+  - `machine_id_file() -> Path`
+  - `recap_cache_file() -> Path`
+  - `recap_regen_lock_file() -> Path`
+  - `out_of_scope_dir() -> Path` — The out-of-scope concept store directory for the current layout.
+  - `out_of_scope_index_file() -> Path`
+  - `out_of_scope_lock_file() -> Path`
   - `operation_machine_id() -> str | None` — The id resolved for the backlog operation in progress, if any.
   - `machine_id(machine_id_file: Path | None = None, data_dir: Path | None = None) -> str` — Return this machine's stable short id, creating it once if missing.
   - `repair_machine_id(machine_id_file: Path | None = None, data_dir: Path | None = None) -> MachineIdRepair` — Create a missing id or replace a readable-but-invalid one; never touch a valid one.
   - `atomic_write_json(path: Path, payload: str, prefix: str) -> None` — Write text to ``path`` via a temp file in its directory + ``os.replace``.
   - `backup_before_bulk_delete(path: Path) -> None` — Snapshot a data file before a filter-based bulk deletion.
-  - `load_items(path: Path | None = None) -> list[BacklogItem]` — Load all backlog items from ``path`` (defaults to :data:`ITEMS_FILE`).
-  - `save_items(items: list[BacklogItem], path: Path | None = None) -> None` — Atomically persist ``items`` to ``path`` (defaults to :data:`ITEMS_FILE`).
-  - `load_pending(path: Path | None = None) -> list[PendingItem]` — Load all pending items from ``path`` (defaults to :data:`PENDING_FILE`).
-  - `save_pending(pending_items: list[PendingItem], path: Path | None = None) -> None` — Atomically persist ``pending_items`` to ``path`` (defaults to :data:`PENDING_FILE`).
+  - `load_items(path: Path | None = None) -> list[BacklogItem]` — Load all backlog items from ``path`` (defaults to :func:`items_file`).
+  - `save_items(items: list[BacklogItem], path: Path | None = None) -> None` — Atomically persist ``items`` to ``path`` (defaults to :func:`items_file`).
+  - `load_pending(path: Path | None = None) -> list[PendingItem]` — Load all pending items from ``path`` (defaults to :func:`pending_file`).
+  - `save_pending(pending_items: list[PendingItem], path: Path | None = None) -> None` — Atomically persist ``pending_items`` to ``path`` (defaults to :func:`pending_file`).
   - `load_rev(meta_file: Path | None = None) -> int` — Read the current revision counter.
   - `bump_rev(meta_file: Path | None = None) -> int` — Increment and persist the revision counter.
   - `backlog_lock(data_dir: Path | None = None, lock_file: Path | None = None, *, require_identity: bool = True, machine_id_file: Path | None = None) -> Iterator[None]` — Hold an exclusive lock over a mutating command's full read-modify-write cycle.
@@ -504,12 +505,12 @@ Backlog persistence, lock coordination, and journal primitives.
   - `parse_journal_ts(raw: object) -> datetime | None` — Parse a journal entry's ``ts`` field into an aware UTC ``datetime``.
   - `read_journal_entries(within_hours: float | None = None, *, journal_file: Path | None = None, verbose: bool = False) -> list[dict[str, object]]` — Read journal entries, optionally filtered to the last ``within_hours``.
   - `journal_last_entry_within(hours: float, *, journal_file: Path | None = None) -> bool` — Cheap pre-spawn check: does the journal's last entry fall within ``hours``?
-  - `load_runs(item: str | None = None, *, runs_file: Path | None = None) -> list[RunRecord]` — Load run-evidence rows from :data:`RUNS_FILE`, optionally for one item.
-  - `write_runs_file(runs: Sequence[RunRecord], *, runs_file: Path | None = None) -> None` — Atomically rewrite :data:`RUNS_FILE` with ``runs``.
-  - `append_run_record(record: RunRecord, *, runs_file: Path | None = None, data_dir: Path | None = None) -> bool` — Append one run-evidence row to :data:`RUNS_FILE` (best-effort).
+  - `load_runs(item: str | None = None, *, runs_file: Path | None = None) -> list[RunRecord]` — Load run-evidence rows from :func:`runs_file`, optionally for one item.
+  - `write_runs_file(runs: Sequence[RunRecord], *, runs_file: Path | None = None) -> None` — Atomically rewrite :func:`runs_file` with ``runs``.
+  - `append_run_record(record: RunRecord, *, runs_file: Path | None = None, data_dir: Path | None = None) -> bool` — Append one run-evidence row to :func:`runs_file` (best-effort).
   - `load_recap_cache(path: Path | None = None) -> dict[str, object] | None` — Load ``recap-cache.json``, or ``None`` if missing/corrupt/malformed.
   - `save_recap_cache(backend: str, text: str, board_fingerprint: str, path: Path | None = None) -> None` — Atomically persist a recap result.
-- Tested by: `test/test_dev_status_mutation.py`, `test/test_dev_status_read.py`, `test/test_dev_status_storage.py`, `test/test_guard_rails_claim.py`, `test/test_machine_id.py`, `test/test_migration_lock_adoption.py`
+- Tested by: `test/test_dev_status_mutation.py`, `test/test_dev_status_read.py`, `test/test_dev_status_storage.py`, `test/test_guard_rails_claim.py`, `test/test_machine_id.py`, `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`
 
 ### `agent-scripts/dev_status_types.py`
 
@@ -773,8 +774,6 @@ grill.py — grill-me session state CLI. All session mutations go through here.
   - `show [<decision_id>] [--session <SESSION>]` — print session (or one decision) as JSON
     - `decision_id` (nargs: ?)
     - `--session/-s` — session slug or unique substring (default: most recent)
-- Filesystem constants:
-  - `DATA_DIR = agent_toolkit_paths.path_for('decisions')`
 - Explicit exit codes: `1`
 - Depends on: `agent_toolkit_paths.py`, `cli_common.py`, `migration_lock.py`
 - Exceptions:
@@ -787,7 +786,7 @@ grill.py — grill-me session state CLI. All session mutations go through here.
 - Public classes:
   - `class Verdict(TypedDict)` — A recorded verification result for one decision.
   - `class Decision(TypedDict)` — One decision point within a grill session.
-  - `class Session(TypedDict)` — A grill session as stored at ``DATA_DIR/<slug>.json``.
+  - `class Session(TypedDict)` — A grill session as stored at ``<session store>/<slug>.json``.
   - `class DecisionPatch(TypedDict, total=False)` — Partial-update payload for the decision-mutation service functions.
 - Public functions:
   - `today() -> str` — Return today's date as an ISO-8601 string (``YYYY-MM-DD``).
@@ -817,7 +816,7 @@ grill.py — grill-me session state CLI. All session mutations go through here.
   - `frontier_of(session: Session) -> DecisionList` — Service-API name for :func:`frontier` — every open decision whose dependencies are all resolved.
   - `render_markdown(session: Session) -> str` — Render a session's status as a Markdown document.
 - Subcommand handlers: `cmd_new`, `cmd_ask`, `cmd_decide`, `cmd_revise`, `cmd_rm`, `cmd_verdict`, `cmd_plan`, `cmd_mark_pending_execution`, `cmd_pending_plan`, `cmd_next`, `cmd_frontier`, `cmd_render`, `cmd_list`, `cmd_show`
-- Tested by: `test/test_grill.py`, `test/test_migration_lock_adoption.py`, `test/test_second_opinion.py`, `test/test_to_tickets_runner.py`
+- Tested by: `test/test_grill.py`, `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`, `test/test_second_opinion.py`, `test/test_to_tickets_runner.py`
 
 ### `agent-scripts/guard_rails.py`
 
@@ -834,8 +833,6 @@ Pre-tool guard shared by every harness: refuse a write into a repository's main 
   - `--quiet/-q`
   - `--verbose/-v`
 - Environment: `GUARD_RAILS_OFF`
-- Filesystem constants:
-  - `GUARD_RAILS_LOG_PATH = agent_toolkit_paths.path_for('guard-rail-log')`
 - Depends on: `agent_toolkit_paths.py`, `backlog_claim_lookup.py`, `cli_common.py`, `dev_status_impl.py`, `dev_status_storage.py`, `migration_lock.py`, `worktree_provenance.py`
 - Public classes:
   - `class Request` — A normalized tool call: what family, from where, against which path (write-family) or command (bash-family).
@@ -851,7 +848,7 @@ Pre-tool guard shared by every harness: refuse a write into a repository's main 
   - `parse_payload(harness: str, payload: object) -> Request | None` — Normalize a harness's native hook payload.
   - `render(harness: str | None, verdict: Verdict) -> tuple[str, int]` — Shape a verdict into the harness's own reply.
   - `build_parser() -> argparse.ArgumentParser`
-- Tested by: `test/test_guard_rails.py`, `test/test_guard_rails_claim.py`, `test/test_guard_rails_topology.py`, `test/test_migration_lock_adoption.py`
+- Tested by: `test/test_guard_rails.py`, `test/test_guard_rails_claim.py`, `test/test_guard_rails_topology.py`, `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`
 
 ### `agent-scripts/harness_discovery_check.py`
 
@@ -1064,7 +1061,7 @@ llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, open
   - `run_copilot(prompt: str, *, model: str | None, timeout: float, mode: str = 'text-only', target_dir: Path | None = None) -> str` — Run the ``copilot`` backend and return its text output.
   - `run_pi(prompt: str, *, model: str | None, timeout: float, mode: str = 'text-only', target_dir: Path | None = None) -> str` — Run Pi's headless mode and return its text output.
   - `run_opencode(prompt: str, *, model: str | None, timeout: float, mode: str = 'text-only', target_dir: Path | None = None) -> str` — Run opencode's default agent (no ``--agent`` override) and return its text output.
-- Tested by: `test/test_backend_isolation.py`, `test/test_backend_isolation_live.py`, `test/test_dev_status.py`, `test/test_gen_interfaces.py`, `test/test_llm_backends.py`, `test/test_migration_lock_adoption.py`, `test/test_second_opinion.py`, `test/test_timing.py`
+- Tested by: `test/test_backend_isolation.py`, `test/test_backend_isolation_live.py`, `test/test_dev_status.py`, `test/test_gen_interfaces.py`, `test/test_llm_backends.py`, `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`, `test/test_second_opinion.py`, `test/test_timing.py`
 
 ### `agent-scripts/migration_lock.py`
 
@@ -1097,7 +1094,7 @@ Machine-wide migration lock: writers share it, the toolkit-home migrator owns it
   - `exclusive(site: str) -> Iterator[None]` — Hold the lock exclusively (the migrator).
   - `build_parser() -> argparse.ArgumentParser`
 - Subcommand handlers: `cmd_status`, `cmd_hold`, `cmd_observations`
-- Tested by: `test/test_guard_rails_claim.py`, `test/test_migration_lock.py`, `test/test_migration_lock_adoption.py`
+- Tested by: `test/test_guard_rails_claim.py`, `test/test_migration_lock.py`, `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`
 
 ### `agent-scripts/notify.py`
 
@@ -1283,8 +1280,6 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
     - `--focus-file` — path to a file of plan-specific risk hints, appended to the critique prompt as areas to scrutinize (supplements, not replaces, the generic adversarial mandate)
     - `--model-index` — 0-based index into the backend model pool (SECOND_OPINION_{CODEX,AGY,PI,OPENCODE,COPILOT}_MODEL_POOL) for this call -- round 1 of a rotation is index 0, round 2 is index 1, etc. Supported for codex/agy/pi/opencode/copilot; an explicit index selects the pool even when a single-model override is set, and is a hard error if the pool is unset/empty or the index is out of range (was previously a silent no-op/fallback).
 - Environment: `SECOND_OPINION_AGY_MODEL`, `SECOND_OPINION_AGY_MODEL_POOL`, `SECOND_OPINION_AGY_TIMEOUT_SECONDS`, `SECOND_OPINION_CODEX_MODEL`, `SECOND_OPINION_CODEX_MODEL_POOL`, `SECOND_OPINION_CODEX_TIMEOUT_SECONDS`, `SECOND_OPINION_COPILOT_MODEL`, `SECOND_OPINION_COPILOT_MODEL_POOL`, `SECOND_OPINION_COPILOT_TIMEOUT_SECONDS`, `SECOND_OPINION_OPENCODE_MODEL`, `SECOND_OPINION_OPENCODE_MODEL_POOL`, `SECOND_OPINION_OPENCODE_TIMEOUT_SECONDS`, `SECOND_OPINION_PI_MODEL`, `SECOND_OPINION_PI_MODEL_POOL`, `SECOND_OPINION_PI_TIMEOUT_SECONDS`, `SECOND_OPINION_TIMEOUT_SECONDS`
-- Filesystem constants:
-  - `DATA_DIR = agent_toolkit_paths.path_for('decisions')`
 - Explicit exit codes: `1`
 - Depends on: `agent_toolkit_paths.py`, `cli_common.py`, `llm_backends.py`, `migration_lock.py`
 - Exceptions:
@@ -1309,9 +1304,9 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
   - `backend_label(backend: str, *, model_index: int | None = None, model: object = _UNSET) -> str` — Return ``backend``'s display label, appending the resolved model if any.
   - `review_plan(request: ReviewRequest, *, verbose: bool = False, quiet: bool = False) -> ReviewResult` — Run one adversarial review of ``request.plan_text`` and return the result.
   - `build_parser() -> argparse.ArgumentParser` — Build the full argument parser for every subcommand.
-  - `ensure_data_dir() -> None` — Create ``DATA_DIR`` if it is missing.
+  - `ensure_data_dir() -> None` — Create the shared artifact directory if it is missing.
 - Subcommand handlers: `cmd_detect`, `cmd_review`
-- Tested by: `test/test_migration_lock_adoption.py`, `test/test_second_opinion.py`, `test/test_timing.py`
+- Tested by: `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`, `test/test_second_opinion.py`, `test/test_timing.py`
 
 ### `agent-scripts/seed_hook_subset_guard.py`
 
@@ -1400,12 +1395,6 @@ standup.py — /standup skill CLI and read-only fetch service.
 - Subcommands:
   - `fetch [--date <DATE>]` — gather all sources as JSON
     - `--date` — override reference date (YYYY-MM-DD) — for re-running after a gap (holiday, PTO) where the default last-working-day boundary would miss it
-- Filesystem constants:
-  - `DATA_DIR = agent_toolkit_paths.path_for('standups')`
-  - `CONFIG_FILE = DATA_DIR / 'config.json'`
-  - `_BACKLOG_DIR = agent_toolkit_paths.path_for('work-items')`
-  - `BACKLOG_FILE = _BACKLOG_DIR / 'items.json'`
-  - `CANONICAL_PENDING_FILE = _BACKLOG_DIR / 'pending_items.json'`
 - Explicit exit codes: `1`
 - Depends on: `agent_toolkit_paths.py`, `cli_common.py`, `standup_adapters.py`
 - Exceptions:
@@ -1417,16 +1406,20 @@ standup.py — /standup skill CLI and read-only fetch service.
   - `class StandupSources`
   - `class StandupReport`
 - Public functions:
+  - `standup_data_dir() -> Path`
+  - `config_file() -> Path`
+  - `backlog_file() -> Path`
+  - `canonical_pending_file() -> Path`
   - `today() -> str`
   - `last_working_day(ref: date) -> date`
-  - `find_previous_standup(before: date, standup_data_dir: Path = DATA_DIR) -> dict[str, str] | None`
-  - `load_config(config_file: Path = CONFIG_FILE) -> dict[str, object]`
-  - `load_canonical_pending(pending_file: Path = CANONICAL_PENDING_FILE) -> list[dict[str, object]]` — Read-only view of dev_status.py's pending-items store.
+  - `find_previous_standup(before: date, standup_data_dir: Path | None = None) -> dict[str, str] | None`
+  - `load_config(config_file: Path | None = None) -> dict[str, object]`
+  - `load_canonical_pending(pending_file: Path | None = None) -> list[dict[str, object]]` — Read-only view of dev_status.py's pending-items store.
   - `git_commits(repos: list[str], since_days: int) -> tuple[list[dict[str, str]], list[SkippedSource]]`
-  - `backlog_items(prefixes: list[str], recent_done_days: int, backlog_file: Path = BACKLOG_FILE) -> tuple[list[dict[str, object]], list[dict[str, object]], list[dict[str, object]], list[SkippedSource]]`
+  - `backlog_items(prefixes: list[str], recent_done_days: int, backlog_file: Path | None = None) -> tuple[list[dict[str, object]], list[dict[str, object]], list[dict[str, object]], list[SkippedSource]]`
   - `fetch_standup(config: StandupConfig, sources: StandupSources, *, paths: StandupPaths, reference_date: date | None = None) -> StandupReport`
 - Subcommand handlers: `cmd_fetch`
-- Tested by: `test/test_standup.py`
+- Tested by: `test/test_path_for_per_use.py`, `test/test_standup.py`
 
 ### `agent-scripts/standup_adapters.py`
 
@@ -1474,8 +1467,6 @@ to_tickets_runner.py — create a linked batch of dev_status.py backlog items fr
 - Subcommands:
   - `run <batch_file>` — create every ticket in a batch file
     - `batch_file` — path to the batch JSON file
-- Filesystem constants:
-  - `DATA_DIR = agent_toolkit_paths.path_for('ticket-batches')`
 - Explicit exit codes: `1`, `3`
 - Depends on: `agent_toolkit_paths.py`, `dev_status.py`, `dev_status_mutation.py`, `dev_status_storage.py`, `migration_lock.py`
 - Exceptions:
@@ -1484,7 +1475,7 @@ to_tickets_runner.py — create a linked batch of dev_status.py backlog items fr
 - Public classes:
   - `class Ticket(TypedDict)`
 - Public functions:
-  - `ensure_data_dir() -> None` — Create ``DATA_DIR`` if it is missing.
+  - `ensure_data_dir() -> None` — Create the batch artifact directory if it is missing.
   - `load_batch(path: Path) -> list[Ticket]` — Load and validate the batch file at ``path``.
   - `validate_batch(path: Path) -> list[Ticket]` — Validate and load the batch file at ``path``.
   - `compute_order(tickets: list[Ticket], index: dev_status.BacklogIndex) -> list[str]` — Compute a safe creation order for ``tickets`` from their ``blocked_by`` edges.
@@ -1496,7 +1487,7 @@ to_tickets_runner.py — create a linked batch of dev_status.py backlog items fr
   - `run(batch_path: Path) -> list[str]` — Create every ticket in ``batch_path``'s batch, resuming if interrupted before.
   - `build_parser() -> argparse.ArgumentParser`
 - Subcommand handlers: `cmd_run`
-- Tested by: `test/test_migration_lock_adoption.py`, `test/test_to_tickets_runner.py`
+- Tested by: `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`, `test/test_to_tickets_runner.py`
 
 ### `agent-scripts/vitals_promotion.py`
 
@@ -1513,9 +1504,6 @@ vitals-promotion.py — mechanical vitals-promotion pass over grill session data
   - `--backlog-slug` — with --search, also search <SLUG>.json (default: _global.json only)
   - `--include-superseded` — with --search, also match superseded records
   - `--json` — with --search, emit matching records as a JSON list instead of plain text
-- Filesystem constants:
-  - `DATA_DIR = agent_toolkit_paths.path_for('decisions')`
-  - `VITALS_DIR = DATA_DIR / 'vitals'`
 - Explicit exit codes: `1`
 - Depends on: `agent_toolkit_paths.py`, `cli_common.py`, `grill.py`, `migration_lock.py`
 - Exceptions:
@@ -1539,7 +1527,7 @@ vitals-promotion.py — mechanical vitals-promotion pass over grill session data
   - `classify(sessions: list[Session], *, vitals_dir: Path) -> Report` — Run the whole pass read-only: report what it *would* promote and supersede.
   - `promote(sessions: list[Session], *, vitals_dir: Path) -> Report` — Run the pass and write every file it dirtied.
   - `print_report(report: Report, apply: bool, quiet: bool = False) -> None`
-- Tested by: `test/test_migration_lock_adoption.py`, `test/test_vitals_promotion.py`
+- Tested by: `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`, `test/test_vitals_promotion.py`
 
 ### `agent-scripts/worktree.py`
 
