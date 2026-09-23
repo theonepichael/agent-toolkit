@@ -2404,6 +2404,18 @@ def _check_applicable_links(
     ), foreign
 
 
+def _retained_legacy_links(ctx: Context) -> tuple[set[Path] | None, str]:
+    """Legacy links unfinalized toolkit-home migrations keep, or None and why.
+
+    Each caller picks its own failure policy for an unreadable journal:
+    cleanup deletes nothing, the audit exempts nothing.
+    """
+    try:
+        return migrate_toolkit_home.retained_legacy_links(ctx.manifest.path.parent), ""
+    except (migrate_toolkit_home.MigrationError, OSError) as exc:
+        return None, f"a toolkit-home migration journal is unreadable: {exc}"
+
+
 def _find_orphaned_links(
     ctx: Context, links: Sequence[tuple[Path, Path, str, bool]]
 ) -> list[Path]:
@@ -2412,13 +2424,10 @@ def _find_orphaned_links(
     Legacy links an unfinalized toolkit-home migration kept are not orphans:
     the migration's rollback still needs them, and its finalize removes them.
     """
-    try:
-        retained = migrate_toolkit_home.retained_legacy_links(ctx.manifest.path.parent)
-    except migrate_toolkit_home.MigrationError as exc:
+    retained, problem = _retained_legacy_links(ctx)
+    if retained is None:
         ctx.reporter.skip(
-            "orphan cleanup",
-            f"a toolkit-home migration journal is unreadable, so no link is "
-            f"treated as orphaned: {exc}",
+            "orphan cleanup", f"{problem}, so no link is treated as orphaned"
         )
         return []
     return [
@@ -2435,9 +2444,14 @@ def _check_orphaned_links(
     links: Sequence[tuple[Path, Path, str, bool]],
     findings: dict[str, list[str]],
 ) -> None:
-    """Add manifest-recorded symlinks that links.toml no longer produces."""
+    """Add manifest-recorded symlinks that links.toml no longer produces.
+
+    Exempts the same retained legacy links as :func:`_find_orphaned_links`,
+    but an unreadable journal exempts nothing rather than everything.
+    """
+    retained, _problem = _retained_legacy_links(ctx)
     typed = link_inspect.check_orphaned_links(
-        links, manifest_entries=ctx.manifest.entries()
+        links, manifest_entries=ctx.manifest.entries(), retained=retained or set()
     )
     for kind, lines in link_inspect.render_findings(typed, ctx.display).items():
         findings[kind].extend(lines)
@@ -2579,9 +2593,11 @@ def do_check_links(ctx: Context) -> int:
 
     specs = load_links(ctx.repo_root / "links.toml")
     managed_dirs = load_managed_dirs(ctx.repo_root / "links.toml")
-    # The audit computation itself lives in link_inspect.audit_links now,
-    # shared with the drift hook; only the printing below stays here.
-    findings, foreign, dirs_audited = link_inspect.audit_links(
+    retained, problem = _retained_legacy_links(ctx)
+    # The audit computation itself lives in link_inspect, shared with the
+    # drift hook; only the printing below stays here. The typed result is
+    # read directly (rendered as audit_links would) for its exempted orphans.
+    result = link_inspect.collect_link_findings(
         repo_root=ctx.repo_root,
         home=ctx.home,
         harnesses=ctx.opts.harnesses,
@@ -2590,14 +2606,27 @@ def do_check_links(ctx: Context) -> int:
         is_wsl=ctx.is_wsl,
         profile=ctx.opts.profile,
         manifest_file=ctx.manifest.path,
-        format_path=ctx.display,
         report_uninstalled=ctx.opts.report_uninstalled,
         force_uninstalled=ctx.opts.force_uninstalled,
         specs=specs,
         managed_dirs=managed_dirs,
+        retained=retained or set(),
     )
+    findings = link_inspect.render_findings(
+        result.findings, ctx.display, repo_root=ctx.repo_root
+    )
+    foreign, dirs_audited = result.foreign, result.dirs_audited
 
     _header("==> links.toml audit (read-only)", quiet=ctx.opts.quiet)
+    if retained is None:
+        print(PALETTE.warn(f"  warning: {problem}, so no legacy link is exempted."))
+    if result.exempted:
+        print(
+            PALETTE.dim(
+                f"  note: {len(result.exempted)} legacy link(s) kept by an "
+                "unfinalized toolkit-home migration — its finalize removes them."
+            )
+        )
     for root, count in sorted(foreign.items()):
         print(
             PALETTE.dim(
