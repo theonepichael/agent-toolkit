@@ -580,8 +580,12 @@ def test_narrow_rollback_returns_to_legacy_and_is_idempotent(
     assert code == 0
     assert (_tree(machine), _tree(_state_dir(machine))) == snapshot
     code, report = _finalize(capsys, mid)
-    assert code == 1
-    assert "rolled back" in report["outcome"]
+    assert code == 0, report
+    assert not _work_dir(machine, mid).exists()
+    assert _legacy_trees() == before
+    assert _symlinks(machine) == links_before
+    code, _ = _finalize(capsys, mid)
+    assert code == 0
 
 
 def test_narrow_rollback_refuses_after_a_write_and_mutates_nothing(
@@ -631,6 +635,157 @@ def test_rollback_requires_a_committed_migration(machine, capsys, validation):
 
 
 # ── finalize ────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.regression("finalize-restored-copy", "is not a committed migration")
+def test_finalize_after_failed_validation_removes_restored_copy(
+    machine, capsys, validation
+):
+    before = _legacy_trees()
+    validation.passes = False
+    code, report = _migrate(capsys)
+    assert code == 1, report
+    mid = report["migration_id"]
+    code, report = _finalize(capsys, mid)
+    assert code == 0, report
+    assert not _work_dir(machine, mid).exists()
+    assert _legacy_trees() == before
+    assert _layout() == "legacy"
+
+
+@pytest.mark.regression("finalize-restored-mismatch", "rolled back")
+def test_finalize_refuses_changed_restored_data(machine, capsys, validation):
+    mid = _commit(capsys)
+    _rollback(capsys, mid)
+    changed = _work_dir(machine, mid) / "restored" / "work-items" / "items.json"
+    changed.write_text("changed\n")
+    code, report = _finalize(capsys, mid)
+    assert code == 1, report
+    assert str(changed) in report["outcome"]
+    assert not (_jdir(machine, mid) / mth.FINALIZE_NAME).exists()
+
+
+@pytest.mark.parametrize("change", ["added", "removed"])
+def test_finalize_refuses_restored_tree_drift(machine, capsys, validation, change):
+    mid = _commit(capsys)
+    _rollback(capsys, mid)
+    path = _work_dir(machine, mid) / "restored" / "work-items" / "extra.txt"
+    if change == "added":
+        path.write_text("new\n")
+    else:
+        path = path.with_name("items.json")
+        path.unlink()
+    code, report = _finalize(capsys, mid)
+    assert code == 1, report
+    assert str(path) in report["outcome"]
+    assert not (_jdir(machine, mid) / mth.FINALIZE_NAME).exists()
+
+
+def test_finalize_reports_appended_telemetry_lines(machine, capsys, validation):
+    mid = _commit(capsys)
+    with _dest("guard-rail-log").open("a") as handle:
+        handle.write('{"tool": "Edit"}\n')
+    _rollback(capsys, mid)
+    code, report = _finalize(capsys, mid)
+    assert code == 0, report
+    assert report["telemetry_lines_discarded"]["guard-rail-log"] == 1
+    assert report["telemetry_lines_discarded"]["backend-log"] == 0
+
+
+def test_finalize_counts_telemetry_created_after_promotion(
+    sandbox, capsys, validation
+):
+    _installed_runtime(sandbox)
+    _full_stores(sandbox, skip=("backend-log",))
+    mid = _commit(capsys)
+    _dest("backend-log").write_text('{"backend": "new"}\n')
+    _rollback(capsys, mid)
+    code, report = _finalize(capsys, mid)
+    assert code == 0, report
+    assert report["telemetry_lines_discarded"]["backend-log"] == 1
+
+
+def test_finalize_reports_unknown_for_old_telemetry_journal(
+    machine, capsys, validation
+):
+    mid = _commit(capsys)
+    _rollback(capsys, mid)
+    journal = _jdir(machine, mid) / mth.JOURNAL_NAME
+    rows = [json.loads(line) for line in journal.read_text().splitlines()]
+    for row in rows:
+        if row["phase"] == "promote:backend-log" and row["event"] == "done":
+            row["detail"].pop("telemetry_lines")
+    journal.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    code, report = _finalize(capsys, mid)
+    assert code == 0, report
+    assert report["telemetry_lines_discarded"]["backend-log"] is None
+
+
+def test_finalize_refuses_malformed_telemetry(machine, capsys, validation):
+    mid = _commit(capsys)
+    _rollback(capsys, mid)
+    path = _work_dir(machine, mid) / "restored" / "backend-log"
+    with path.open("a") as handle:
+        handle.write("torn")
+    code, report = _finalize(capsys, mid)
+    assert code == 1, report
+    assert str(path) in report["outcome"]
+    assert path.exists()
+
+
+def test_empty_finalize_journal_replans_after_rollback(machine, capsys, validation):
+    mid = _commit(capsys)
+    _rollback(capsys, mid)
+    (_jdir(machine, mid) / mth.FINALIZE_NAME).touch()
+    code, report = _finalize(capsys, mid)
+    assert code == 0, report
+    assert not _work_dir(machine, mid).exists()
+    assert mth.is_terminal(_jdir(machine, mid), mth.FINALIZE_NAME)
+
+
+def test_resume_refuses_write_after_finalize_begin(machine, capsys, validation):
+    mid = _commit(capsys)
+    _rollback(capsys, mid)
+    directory = _jdir(machine, mid)
+    history = _state_dir(machine) / "history.jsonl"
+    state = mth._load_state(directory, None, mth.read_records(directory), REPO, history)
+    plan = mth._restored_finalize_plan(state)
+    journal = mth.Journal.create(directory, mth.FINALIZE_NAME)
+    journal.begin("finalize", **plan)
+    journal.close()
+    changed = _work_dir(machine, mid) / "restored" / "work-items" / "items.json"
+    changed.write_text("post-crash write\n")
+    code, report = _finalize(capsys, mid)
+    assert code == 1, report
+    assert str(changed) in report["outcome"]
+    assert changed.read_text() == "post-crash write\n"
+
+
+def test_finalize_refuses_symlinked_work_directory(machine, capsys, validation):
+    mid = _commit(capsys)
+    _rollback(capsys, mid)
+    work = _work_dir(machine, mid)
+    parked = work.with_name(work.name + ".parked")
+    work.rename(parked)
+    work.symlink_to(parked, target_is_directory=True)
+    code, report = _finalize(capsys, mid)
+    assert code == 1, report
+    assert "unsafe migration work directory" in report["outcome"]
+    assert (parked / "restored").exists()
+
+
+def test_finalize_refuses_unjournalled_transform_leftover(
+    machine, capsys, validation
+):
+    mid = _commit(capsys)
+    _rollback(capsys, mid)
+    extra = _work_dir(machine, mid) / "transform" / "work-items" / "new.txt"
+    extra.parent.mkdir(parents=True, exist_ok=True)
+    extra.write_text("new\n")
+    code, report = _finalize(capsys, mid)
+    assert code == 1, report
+    assert str(extra.parent) in report["outcome"]
+    assert extra.exists()
 
 
 def test_finalize_deletes_only_journal_proven_paths(machine, capsys, validation):
@@ -890,7 +1045,7 @@ def test_migration_validation_passes_check_links_with_retained_links(
     monkeypatch.setattr(mth, "_run_validation", in_process_check)
     code, report = _migrate(capsys, repo=repo)
     assert code == 0, (report, outputs)
-    assert "1 legacy link(s) kept by an unfinalized toolkit-home migration" in outputs[0]
+    assert "1 legacy link(s) kept for a toolkit-home migration" in outputs[0]
 
 
 def test_check_links_notes_nothing_for_a_retained_link_that_is_no_orphan(
@@ -929,23 +1084,49 @@ def test_check_links_fails_loud_when_a_migration_journal_is_unreadable(
         journal.chmod(0o600)
 
 
-def test_restored_and_rolled_back_migrations_retain_nothing(
+def test_legacy_layout_migrations_keep_their_links_protected(
     machine, capsys, validation, tmp_path
 ):
+    """While the legacy layout is live again its links stay exempt.
+
+    A restored or rolled-back migration returns the machine to the legacy
+    layout, whose settings still invoke the legacy links, so neither cleanup
+    nor the audit may treat them as orphans. Only a normal finalize ends that.
+    """
     repo = _fixture_repo(tmp_path)
     old = _recorded_legacy_link(machine, repo)
     validation.passes = False
     code, report = _migrate(capsys, repo=repo)
     assert code != 0, report
-    assert mth.retained_legacy_links(_state_dir(machine)) == set()
+    assert old in mth.retained_legacy_links(_state_dir(machine))
 
     validation.passes = True
     code, report = _migrate(capsys, repo=repo)
     assert code == 0, report
-    assert mth.retained_legacy_links(_state_dir(machine)) == {old}
     code, _ = _rollback(capsys, report["migration_id"], repo=repo)
     assert code == 0
-    assert mth.retained_legacy_links(_state_dir(machine)) == set()
+    assert old in mth.retained_legacy_links(_state_dir(machine))
+    ctx = install.build_context(install.parse_args(["--harness=claude"]), repo_root=repo)
+    links = install.gather_links(ctx, link_inspect.load_links(repo / "links.toml"))
+    assert old not in install._find_orphaned_links(ctx, links)
+
+
+def test_restored_finalize_keeps_legacy_links_protected(
+    machine, capsys, validation, tmp_path
+):
+    repo = _fixture_repo(tmp_path)
+    old = _recorded_legacy_link(machine, repo)
+    code, report = _migrate(capsys, repo=repo)
+    assert code == 0, report
+    mid = report["migration_id"]
+    code, report = _rollback(capsys, mid, repo=repo)
+    assert code == 0, report
+    code, report = _finalize(capsys, mid, repo=repo)
+    assert code == 0, report
+    assert old.is_symlink()
+    ctx = install.build_context(install.parse_args(["--harness=claude"]), repo_root=repo)
+    links = install.gather_links(ctx, link_inspect.load_links(repo / "links.toml"))
+    assert old not in install._find_orphaned_links(ctx, links)
 
 
 # ── step registry ───────────────────────────────────────────────────────────
@@ -1130,6 +1311,15 @@ def test_crash_at_checkpoint_recovers_by_the_oracle(machine, checkpoint):
         setup = _driver(machine, "install", *MIGRATE_ARGS)
         assert setup.returncode == 0, setup.stdout + setup.stderr
         mid = json.loads(setup.stdout)["migration_id"]
+        if checkpoint.startswith("migrate.finalize.restored-"):
+            rolled = _driver(
+                machine,
+                "install",
+                f"--rollback-toolkit-home-migration={mid}",
+                "--json",
+                "--quiet",
+            )
+            assert rolled.returncode == 0, rolled.stdout + rolled.stderr
         args = ["install", f"--{scenario}-toolkit-home-migration={mid}", "--json", "--quiet"]
     if scenario == "restore":
         extra_env["MIGRATE_DRIVER_VALIDATION"] = "fail"

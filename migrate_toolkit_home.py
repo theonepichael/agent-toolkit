@@ -8,8 +8,8 @@ Run from the repository checkout through ``./install.sh``; never installed.
 * ``--rollback-toolkit-home-migration=<id>`` reverses one committed migration
   before it is finalized.
 * ``--finalize-toolkit-home-migration=<id>`` deletes the journal-proven
-  leftovers of one committed migration: its legacy snapshot, its leftover
-  staging, and the legacy links the new ``links.toml`` no longer produces.
+  leftovers of a committed migration, or the retained transformed copy of a
+  rolled-back or restored migration after checking it for changes.
 
 Every preflight check runs read-only. ``--dry-run`` stops there and writes
 nothing at all: no lock file, no directory, no journal, no history. A real
@@ -42,8 +42,8 @@ processes). The run ends ``committed``, and the lock is released only then.
 A failure before the flip undoes every step newest-first and ends
 ``aborted``. A failure after it, including a failed validation, *restores*:
 the pointer goes back to ``legacy`` first, the snapshots are renamed back,
-the promoted domains move to ``.migration-<id>/restored/<domain>`` (never
-deleted), every other step is undone newest-first, and the run ends
+the promoted domains move to ``.migration-<id>/restored/<domain>`` (kept
+until an explicit finalize), every other step is undone newest-first, and the run ends
 ``restored``.
 
 Each phase is a :class:`Step` in :data:`STEPS` with ``apply``, ``undo``
@@ -82,6 +82,10 @@ domain against the digests journalled at promotion, and checks that no domain
 absent at migration time has since appeared at its destination. Any
 difference refuses with no mutation and names the files. The append-only
 telemetry logs are exempt; restore keeps them aside like every other domain.
+Finalize after restore checks non-telemetry files against the promotion
+journal, reports discarded telemetry lines, and removes only this migration's
+work-tree leftovers. Old journals without telemetry line counts report an
+unknown count rather than guessing.
 
 :data:`RECOVERY_ORACLE` states, for every fault checkpoint, what a crash there
 leaves behind and which recovery action is correct.
@@ -196,6 +200,7 @@ class PreflightReport:
     recovered: list[dict[str, str]] = field(default_factory=list)
     journal: str | None = None
     outcome: str = ""
+    telemetry_lines_discarded: dict[str, int | None] = field(default_factory=dict)
 
     @property
     def refused(self) -> bool:
@@ -210,6 +215,7 @@ class PreflightReport:
             "inventory": self.inventory,
             "recovered": self.recovered,
             "journal": self.journal,
+            "telemetry_lines_discarded": self.telemetry_lines_discarded,
         }
 
 
@@ -254,6 +260,11 @@ def _per_domain(template: str) -> tuple[str, ...]:
 
 _RESTORE_STEPS = ("begun", "pointer", "promoted-aside", "undone")
 _FINALIZE_STEPS = ("begun", "snapshot-removed", "staging-removed", "links-removed")
+_RESTORED_FINALIZE_STEPS = (
+    "restored-begun",
+    "restored-removed",
+    "restored-leftovers-removed",
+)
 
 CHECKPOINTS: tuple[str, ...] = (
     "migrate.lock.taken",
@@ -302,6 +313,8 @@ CHECKPOINTS: tuple[str, ...] = (
     *(f"migrate.rollback.{s}" for s in _RESTORE_STEPS),
     "migrate.rollback.ended",
     *(f"migrate.finalize.{s}" for s in _FINALIZE_STEPS),
+    *(f"migrate.finalize.{s}" for s in _RESTORED_FINALIZE_STEPS),
+    "migrate.finalize.restored-ended",
     "migrate.finalize.ended",
 )
 
@@ -378,6 +391,13 @@ def _oracle() -> dict[str, Expected]:
         rows[f"migrate.finalize.{step}"] = Expected(
             "resume-finalize", True, "begin", True, True, "toolkit-home", FINALIZE_NAME
         )
+    for step in _RESTORED_FINALIZE_STEPS:
+        rows[f"migrate.finalize.{step}"] = Expected(
+            "resume-finalize", True, "begin", True, True, "legacy", FINALIZE_NAME
+        )
+    rows["migrate.finalize.restored-ended"] = Expected(
+        "none", True, "end", True, True, "legacy", FINALIZE_NAME
+    )
     rows["migrate.finalize.ended"] = Expected(
         "none", True, "end", True, True, "toolkit-home", FINALIZE_NAME
     )
@@ -1520,6 +1540,21 @@ def _digest_tree(root: Path) -> Digests:
     return digests
 
 
+def _jsonl_lines(path: Path, *, strict: bool) -> int:
+    """Count complete JSONL records; optionally reject a torn or invalid line."""
+    count = 0
+    with path.open("rb") as handle:
+        for line in handle:
+            if not line.endswith(b"\n"):
+                if strict:
+                    raise MigrationError(f"{path} has an incomplete JSONL line")
+                continue
+            if strict and _parse_line(line[:-1]) is None:
+                raise MigrationError(f"{path} has an invalid JSONL line")
+            count += 1
+    return count
+
+
 def _inventory_digests(state: RunState, domain: str) -> Digests:
     files = state.domain_entry(domain)["files"]
     return {
@@ -2034,7 +2069,10 @@ def _promote_begin(state: RunState, phase: str) -> dict[str, object]:
 def _promote_apply(state: RunState, record: StepRecord) -> dict[str, object]:
     begin = _begin(record)
     if begin["absent"]:
-        return {"absent": True}
+        result: dict[str, object] = {"absent": True}
+        if _domain(record) in TELEMETRY_DOMAINS:
+            result["telemetry_lines"] = 0
+        return result
     staging, dest = Path(str(begin["staging"])), Path(str(begin["destination"]))
     if _lexists(dest):
         empty_dir = (
@@ -2049,7 +2087,10 @@ def _promote_apply(state: RunState, record: StepRecord) -> dict[str, object]:
             )
     _rename_durable(staging, dest)
     stage = state.step(f"stage:{_domain(record)}")
-    return {"files": _done(stage)["files"]}  # type: ignore[index]
+    result = {"files": _done(stage)["files"]}  # type: ignore[index]
+    if _domain(record) in TELEMETRY_DOMAINS:
+        result["telemetry_lines"] = _jsonl_lines(dest, strict=False)
+    return result
 
 
 def _promote_undo(_state: RunState, record: StepRecord) -> None:
@@ -2467,6 +2508,14 @@ def recover(
     actions: list[dict[str, str]] = []
     known = history_ids(history)
     for directory in _journal_dirs(installer_state):
+        if (
+            (directory / ROLLBACK_NAME).exists()
+            and (directory / FINALIZE_NAME).exists()
+            and _outcome(read_records(directory, ROLLBACK_NAME)) != OUTCOME_ROLLED_BACK
+        ):
+            raise MigrationError(
+                f"{directory.name} has conflicting rollback and finalize journals"
+            )
         records = read_records(directory)
         outcome: str | None = None
         action: Action = "none"
@@ -2547,9 +2596,118 @@ def _finalize_plan(state: RunState) -> dict[str, object]:
     links = state.step("links")
     done = _done(links) if links is not None else None
     return {
+        "mode": "committed",
         "snapshot_dir": str(state.snapshot_dir),
         "work_dir": str(state.work_dir),
         "retained": (done or {}).get("retained", []),
+    }
+
+
+def _restored_manifest(work_dir: Path) -> dict[str, dict[str, str]]:
+    """Record every entry under the three disposable trees, including dirs."""
+    entries: dict[str, dict[str, str]] = {}
+    for name in ("restored", "staging", "transform"):
+        root = work_dir / name
+        if not _lexists(root):
+            continue
+        stack = [root]
+        while stack:
+            path = stack.pop()
+            rel = str(path.relative_to(work_dir))
+            info = path.lstat()
+            if stat.S_ISDIR(info.st_mode):
+                entries[rel] = {"type": "dir"}
+                stack.extend(sorted(path.iterdir(), reverse=True))
+            elif stat.S_ISREG(info.st_mode):
+                entries[rel] = {"type": "file", "sha256": _sha256(path)}
+            elif stat.S_ISLNK(info.st_mode) and path != root:
+                entries[rel] = {"type": "symlink", "target": os.readlink(path)}
+            else:
+                raise MigrationError(f"{path} is not a safe file or directory")
+    return entries
+
+
+def _check_restored_manifest(
+    work_dir: Path, expected: dict[str, dict[str, str]], *, resume: bool
+) -> None:
+    current = _restored_manifest(work_dir)
+    problems: list[str] = []
+    for rel in sorted(set(expected) | set(current)):
+        path = work_dir / rel
+        if rel not in expected:
+            problems.append(f"{path} (added)")
+        elif rel not in current:
+            if not resume:
+                problems.append(f"{path} (removed)")
+        elif expected[rel] != current[rel]:
+            problems.append(f"{path} (changed)")
+    if problems:
+        raise MigrationError("restored cleanup changed: " + "; ".join(problems))
+
+
+def _restored_finalize_plan(state: RunState) -> dict[str, object]:
+    work_dir = state.work_dir
+    expected_work = _toolkit_root() / f".migration-{state.ctx.migration_id}"
+    if work_dir != expected_work or work_dir.is_symlink():
+        raise MigrationError(f"unsafe migration work directory: {work_dir}")
+    if not work_dir.is_dir() or _toolkit_root().is_symlink():
+        raise MigrationError(f"missing or unsafe migration work directory: {work_dir}")
+    restored = work_dir / "restored"
+    problems: list[str] = []
+    expected_domains: set[str] = set()
+    counts: dict[str, int | None] = {}
+    for record in _steps_in(state.records):
+        if not str(record["phase"]).startswith("promote:"):
+            continue
+        domain = _domain(record)
+        done = _done(record)
+        if done is None:
+            continue
+        path = restored / domain
+        if not _absent(record):
+            expected_domains.add(domain)
+            if domain not in TELEMETRY_DOMAINS:
+                problems += _differences(path, done["files"], _digest_tree(path))  # type: ignore[arg-type]
+        if domain in TELEMETRY_DOMAINS and _lexists(path):
+            if not path.is_file() or path.is_symlink():
+                problems.append(f"{path} (not a regular telemetry file)")
+            else:
+                baseline = done.get("telemetry_lines")
+                if _absent(record):
+                    baseline = 0
+                counts[domain] = (
+                    _jsonl_lines(path, strict=True) - baseline
+                    if isinstance(baseline, int)
+                    else None
+                )
+    if restored.is_dir():
+        for path in restored.iterdir():
+            if path.name not in expected_domains and not (
+                path.name in TELEMETRY_DOMAINS
+                and state.step(f"promote:{path.name}") is not None
+            ):
+                problems.append(f"{path} (not a promoted domain)")
+    for domain in expected_domains:
+        if not _lexists(restored / domain):
+            problems.append(f"{restored / domain} (removed)")
+    for name in ("staging", "transform"):
+        root = work_dir / name
+        if root.is_dir():
+            for child in root.iterdir():
+                problems.append(f"{child} (leftover content is not journal-proven)")
+    if problems:
+        raise MigrationError(
+            "restored copy no longer matches the journal, so nothing was deleted: "
+            + "; ".join(problems)
+        )
+    return {
+        "mode": "restored-copy",
+        "work_dir": str(work_dir),
+        "restored": str(restored),
+        "staging": str(work_dir / "staging"),
+        "transform": str(work_dir / "transform"),
+        "manifest": _restored_manifest(work_dir),
+        "telemetry_lines_discarded": counts,
     }
 
 
@@ -2588,19 +2746,99 @@ def _finalize_apply(state: RunState, plan: dict[str, object]) -> None:
     _checkpoint("migrate.finalize.links-removed")
 
 
-def _finalize(state: RunState, journal: Journal | None = None) -> None:
-    plan = _finalize_plan(state)
+def _remove_fd_tree(parent_fd: int, name: str) -> None:
+    """Remove a child without following a swapped symlink during traversal."""
+    try:
+        info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    if stat.S_ISDIR(info.st_mode):
+        child_fd = os.open(
+            name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd
+        )
+        try:
+            for child in os.listdir(child_fd):
+                _remove_fd_tree(child_fd, child)
+            os.rmdir(name, dir_fd=parent_fd)
+            os.fsync(parent_fd)
+        finally:
+            os.close(child_fd)
+    elif stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
+        os.unlink(name, dir_fd=parent_fd)
+        os.fsync(parent_fd)
+    else:
+        raise MigrationError(f"refusing to delete non-regular entry: {name}")
+
+
+def _finalize_restored_apply(state: RunState, plan: dict[str, object]) -> None:
+    work_dir = state.work_dir
+    if plan.get("work_dir") != str(work_dir) or work_dir != (
+        _toolkit_root() / f".migration-{state.ctx.migration_id}"
+    ):
+        raise MigrationError("finalize plan names an unexpected work directory")
+    for name in ("restored", "staging", "transform"):
+        if plan.get(name) != str(work_dir / name):
+            raise MigrationError(f"finalize plan names an unexpected {name} path")
+    manifest = plan.get("manifest")
+    if not isinstance(manifest, dict):
+        raise MigrationError("finalize plan has no cleanup manifest")
+    root_fd = os.open(_toolkit_root(), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        try:
+            work_fd = os.open(
+                work_dir.name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=root_fd,
+            )
+        except FileNotFoundError:
+            work_fd = None
+        if work_fd is not None:
+            try:
+                _check_restored_manifest(work_dir, manifest, resume=True)
+                _remove_fd_tree(work_fd, "restored")
+                _checkpoint("migrate.finalize.restored-removed")
+                for name in ("staging", "transform"):
+                    _remove_fd_tree(work_fd, name)
+                _checkpoint("migrate.finalize.restored-leftovers-removed")
+                if not os.listdir(work_fd):
+                    os.rmdir(work_dir.name, dir_fd=root_fd)
+                    os.fsync(root_fd)
+            finally:
+                os.close(work_fd)
+        else:
+            _checkpoint("migrate.finalize.restored-removed")
+            _checkpoint("migrate.finalize.restored-leftovers-removed")
+    finally:
+        os.close(root_fd)
+
+
+def _finalize(
+    state: RunState, *, restored_copy: bool, journal: Journal | None = None
+) -> dict[str, object]:
+    plan = _restored_finalize_plan(state) if restored_copy else _finalize_plan(state)
     directory = state.ctx.installer_state / "migrations" / state.ctx.migration_id
     state.journal = journal or Journal.create(directory, FINALIZE_NAME)
     try:
         state.journal.begin("finalize", **plan)
-        _checkpoint("migrate.finalize.begun")
-        _finalize_apply(state, plan)
+        _checkpoint(
+            "migrate.finalize.restored-begun"
+            if restored_copy
+            else "migrate.finalize.begun"
+        )
+        if restored_copy:
+            _finalize_restored_apply(state, plan)
+        else:
+            _finalize_apply(state, plan)
         state.journal.done("finalize")
         state.journal.end(OUTCOME_FINALIZED)
-        _checkpoint("migrate.finalize.ended")
+        _checkpoint(
+            "migrate.finalize.restored-ended"
+            if restored_copy
+            else "migrate.finalize.ended"
+        )
     finally:
         state.journal.close()
+    return plan
 
 
 def _resume_post_commit(
@@ -2634,11 +2872,21 @@ def _resume_post_commit(
         None,
     )
     if not isinstance(begin, dict):
-        _finalize(state, journal)
+        restored_copy = _finalize_mode(directory, read_records(directory))
+        _finalize(state, restored_copy=restored_copy, journal=journal)
         return
     try:
         if ("finalize", "done") not in events:
-            _finalize_apply(state, begin)
+            mode = begin.get("mode")
+            if mode == "restored-copy":
+                _finalize_restored_apply(state, begin)
+            elif mode == "committed" or (
+                mode is None
+                and {"snapshot_dir", "retained", "work_dir"} <= begin.keys()
+            ):
+                _finalize_apply(state, begin)
+            else:
+                raise MigrationError(f"{directory.name} has an unknown finalize mode")
             journal.done("finalize")
         journal.end(OUTCOME_FINALIZED)
     finally:
@@ -2659,6 +2907,25 @@ def _open_committed(directory: Path, kind: str, other: str) -> list[dict[str, ob
     return records
 
 
+def _finalize_mode(directory: Path, records: list[dict[str, object]]) -> bool:
+    """Whether finalize removes a restored copy; reject unsupported states."""
+    outcome = _outcome(records)
+    rollback = directory / ROLLBACK_NAME
+    if outcome == OUTCOME_RESTORED:
+        if rollback.exists():
+            raise MigrationError(f"{directory.name} has an unexpected rollback journal")
+        return True
+    if outcome != OUTCOME_COMMITTED:
+        raise MigrationError(
+            f"{directory.name} is not a committed or restored migration"
+        )
+    if rollback.exists():
+        if _outcome(read_records(directory, ROLLBACK_NAME)) != OUTCOME_ROLLED_BACK:
+            raise MigrationError(f"{directory.name} has an unfinished rollback")
+        return True
+    return False
+
+
 def _post_commit(
     kind: Literal["rollback", "finalize"],
     migration_id: str,
@@ -2677,10 +2944,29 @@ def _post_commit(
     try:
         with migration_lock.exclusive(LOCK_SITE, blocking=False):
             report.recovered = recover(history.parent, history, repo_root=repo_root)
-            records = _open_committed(directory, kind, other)
+            if kind == "rollback":
+                records = _open_committed(directory, kind, other)
+                restored_copy = False
+            else:
+                records = read_records(directory)
+                restored_copy = _finalize_mode(directory, records)
             report.journal = str(directory / name)
             if (directory / name).exists():
                 report.outcome = f"{kind}: already done"
+                if kind == "finalize":
+                    begin = next(
+                        (
+                            r.get("detail")
+                            for r in read_records(directory, name)
+                            if r.get("phase") == "finalize"
+                            and r.get("event") == "begin"
+                        ),
+                        None,
+                    )
+                    if isinstance(begin, dict):
+                        report.telemetry_lines_discarded = begin.get(
+                            "telemetry_lines_discarded", {}
+                        )
             else:
                 state = _load_state(directory, None, records, repo_root, history)
                 if kind == "rollback":
@@ -2689,8 +2975,25 @@ def _post_commit(
                         f"{OUTCOME_ROLLED_BACK}: the layout is legacy again"
                     )
                 else:
-                    _finalize(state)
-                    report.outcome = f"{OUTCOME_FINALIZED}: the legacy snapshot is gone"
+                    plan = _finalize(state, restored_copy=restored_copy)
+                    if restored_copy:
+                        report.telemetry_lines_discarded = plan[
+                            "telemetry_lines_discarded"
+                        ]  # type: ignore[assignment]
+                        discarded = ", ".join(
+                            f"{domain}={count if count is not None else 'unknown'}"
+                            for domain, count in sorted(
+                                report.telemetry_lines_discarded.items()
+                            )
+                        )
+                        report.outcome = (
+                            f"{OUTCOME_FINALIZED}: restored copy removed; "
+                            f"telemetry lines discarded: {discarded or 'none'}"
+                        )
+                    else:
+                        report.outcome = (
+                            f"{OUTCOME_FINALIZED}: the legacy snapshot is gone"
+                        )
     except migration_lock.MigrationLockBusy as exc:
         report.outcome = f"lock-busy: {exc}"
         _emit(report, opts)
@@ -2741,23 +3044,29 @@ def committed_unfinalized(installer_state: Path) -> list[str]:
 
 
 def retained_legacy_links(installer_state: Path) -> set[Path]:
-    """Legacy links kept by migrations that can still finalize.
+    """Legacy links a toolkit-home migration still needs; cleanup and the audit skip them.
 
-    Orphan cleanup and ``--check-links`` skip them. A migration counts while
-    its run is in flight or committed, and neither its finalize nor its
-    rollback has finished; a restored, aborted, rolled-back or finalized one
-    will never remove them, so it exempts nothing.
+    A migration keeps them while it is in flight or committed (its rollback
+    needs them), and for as long as the legacy layout is live again after a
+    restore or rollback, whose settings still invoke them — including once a
+    ``restored-copy`` finalize has cleared the restored copies. Only a normal
+    finalize, which removes them itself, ends that.
     """
     kept: set[Path] = set()
     for directory in _journal_dirs(installer_state):
-        records = read_records(directory)
-        if _outcome(records) not in (None, OUTCOME_COMMITTED):
-            continue
-        if _outcome(read_records(directory, FINALIZE_NAME)) == OUTCOME_FINALIZED:
-            continue
-        if _outcome(read_records(directory, ROLLBACK_NAME)) == OUTCOME_ROLLED_BACK:
-            continue
-        for record in _steps_in(records):
+        finalized = read_records(directory, FINALIZE_NAME)
+        if _outcome(finalized) == OUTCOME_FINALIZED:
+            begin = next(
+                (
+                    r.get("detail")
+                    for r in finalized
+                    if r.get("phase") == "finalize" and r.get("event") == "begin"
+                ),
+                None,
+            )
+            if not isinstance(begin, dict) or begin.get("mode") != "restored-copy":
+                continue
+        for record in _steps_in(read_records(directory)):
             done = _done(record)
             if record["phase"] != "links" or done is None:
                 continue
