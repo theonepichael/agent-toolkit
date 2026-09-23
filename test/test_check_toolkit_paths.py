@@ -395,3 +395,68 @@ def test_exemption_rows_name_single_tracked_files():
     for pattern in c.LEGACY_PATH_EXEMPT:
         assert not any(ch in pattern for ch in "*?["), pattern
         assert pattern in tracked, pattern
+
+
+# ── links: rows that install into a harness home they do not serve ──────────
+
+
+def row(dest, harness=None, **kwargs):
+    from link_inspect import LinkSpec
+
+    return LinkSpec(src="x", dest=dest, harness=harness, **kwargs)
+
+
+def test_real_links_install_into_no_foreign_harness_home():
+    assert c.links_check(c.REPO) == []
+
+
+def test_harness_homes_cover_every_harness():
+    import harness_spec
+
+    assert set(c.HARNESS_HOMES) == set(harness_spec.ALL_NAMES)
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        row("~/.claude/icons"),
+        row("~/.claude/scripts/dev_status.py"),
+        row("~/.claude/hooks/agy-elapsed.js", harness="agy"),
+        row("~/.claude"),
+        row("~/.config/opencode/plugin/x.ts", harness="pi"),
+        row("~/.copilot/skills", harness="claude", dir=True),
+    ],
+    ids=lambda s: f"{s.harness}:{s.dest}",
+)
+def test_row_in_a_harness_home_it_does_not_serve_fails(spec):
+    problems = c.harness_home_violations([spec])
+    assert len(problems) == 1
+    assert spec.dest in problems[0]
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        row("~/.agent-toolkit/scripts/dev_status.py"),
+        row("~/.agent-toolkit/icons"),
+        row("~/.agent-toolkit/hooks/agy-elapsed.js", harness="agy"),
+        row("~/.agent-tools.zsh"),
+        row("~/.config/other/x"),
+        row("~/.claude-other/x"),
+        row("~/.pi-foo"),
+        row("~/.claude/CLAUDE.md", harness="claude"),
+        row("~/.copilot/hooks/session-start.json", harness="copilot", platform="mac"),
+        row("~/.pi/agent/skills", harness="pi", dir=True),
+    ],
+    ids=lambda s: f"{s.harness}:{s.dest}",
+)
+def test_row_outside_foreign_harness_homes_passes(spec):
+    assert c.harness_home_violations([spec]) == []
+
+
+def test_links_cli_exit_codes(monkeypatch, capsys):
+    monkeypatch.setattr(c, "links_check", lambda repo: ["links.toml: x -> y: bad"])
+    assert c.main(["links"]) == 1
+    assert "links.toml: x -> y" in capsys.readouterr().out
+    monkeypatch.setattr(c, "links_check", lambda repo: [])
+    assert c.main(["links"]) == 0

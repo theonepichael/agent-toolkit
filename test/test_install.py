@@ -323,13 +323,13 @@ def test_links_table_parses_and_sources_exist(links):
 
 def test_every_claude_script_has_a_links_entry(links):
     """Every production (non-test) script in agent-scripts/ must have a
-    links.toml entry, or ~/.claude/scripts/<name> silently never exists at
+    links.toml entry, or ~/.agent-toolkit/scripts/<name> silently never exists at
     install time -- caught live twice already (test_dev_status.py's
     pre-existing manual symlink papering over a missing entry, then
     vitals_promotion.py shipping with no entry at all, found via a live
     grill-me spot-check). Test files are excluded: they're always run
     in-repo (``python3 test_X.py`` from test/), never invoked via
-    the deployed ~/.claude/scripts/ path by any skill or production script.
+    the deployed ~/.agent-toolkit/scripts/ path by any skill or production script.
     """
     linked_srcs = {spec.src for spec in links}
     scripts = sorted((REPO_ROOT / "agent-scripts").glob("*.py"))
@@ -345,7 +345,7 @@ def test_every_claude_script_has_a_links_entry(links):
 def test_no_test_file_has_a_links_entry(links):
     """The inverse of the coverage rule above: some test files had
     accumulated links.toml entries with no functional reason -- nothing
-    in the repo ever invokes a test via the deployed ~/.claude/scripts/
+    in the repo ever invokes a test via the deployed ~/.agent-toolkit/scripts/
     path, only via ``python3 test_X.py`` inside the checkout. Removed as
     unnecessary state; this guards against the pattern creeping back."""
     linked_test_files = [
@@ -362,11 +362,11 @@ def test_no_test_file_has_a_links_entry(links):
 def test_claude_script_links_use_correct_dest(links):
     """A typo'd dest is as broken as a missing entry -- the src still
     exists so test_links_table_parses_and_sources_exist won't catch it, but
-    ~/.claude/scripts/<name> never gets the right symlink."""
+    ~/.agent-toolkit/scripts/<name> never gets the right symlink."""
     for spec in links:
         if spec.src.startswith("agent-scripts/") and spec.src.endswith(".py"):
             name = Path(spec.src).name
-            assert spec.dest == f"~/.claude/scripts/{name}", spec.src
+            assert spec.dest == f"~/.agent-toolkit/scripts/{name}", spec.src
 
 
 def test_every_claude_command_has_a_links_entry(links):
@@ -407,19 +407,19 @@ def test_harness_gate(home, links):
     assert "~/.copilot/copilot-instructions.md" not in dests
     assert "~/.gemini/GEMINI.md" not in dests
     # Shared scripts stay linked no matter which harness was picked.
-    assert "~/.claude/scripts/dev_status.py" in dests
+    assert "~/.agent-toolkit/scripts/dev_status.py" in dests
 
 
 def test_platform_and_profile_gates(home, links):
     linux_personal = make_ctx(home, system="Linux")
     dests = {s.dest for s in links if install.link_applies(s, linux_personal)}
-    assert "~/.claude/scripts/dev_status.py" in dests
+    assert "~/.agent-toolkit/scripts/dev_status.py" in dests
 
     linux_work = make_ctx(home, system="Linux", profile="work")
     work_dests = {s.dest for s in links if install.link_applies(s, linux_work)}
     # The work profile still gets every shared script; its only exclusions
     # were the (now-removed) personal sync endpoint.
-    assert "~/.claude/scripts/dev_status.py" in work_dests
+    assert "~/.agent-toolkit/scripts/dev_status.py" in work_dests
 
     mac = make_ctx(home, system="Darwin", harnesses=("copilot",))
     mac_dests = {s.dest for s in links if install.link_applies(s, mac)}
@@ -2175,12 +2175,48 @@ def test_marker_not_written_on_personal_run(home, links, offline_install):
 # ── whole-run behavior ────────────────────────────────────────────────────────
 
 
+def test_copilot_only_run_creates_nothing_under_claude(home, links, offline_install):
+    """Shared scripts, hooks and icons install to the toolkit home, so a
+    machine that never selected Claude Code never grows a ~/.claude."""
+    assert not (home / ".claude").exists()
+    ctx = make_ctx(home, harnesses=("copilot",))
+    assert install.run_install(ctx, links) == 0
+
+    assert not (home / ".claude").exists()
+    assert (home / ".agent-toolkit" / "scripts" / "dev_status.py").is_symlink()
+    assert (home / ".agent-toolkit" / "icons").is_symlink()
+
+
+def test_check_links_on_a_pre_cutover_install(home, capsys):
+    """An old ~/.claude/scripts link the manifest recorded is reported through
+    the ordinary orphan path; a foreign script beside it is reported by
+    nothing, since the toolkit no longer declares that directory exclusive.
+    This is deliberately not a complete audit of old links: one the manifest
+    never recorded is invisible too, and cleaning them up belongs to the
+    migration's stage/promote step, not the audit."""
+    ctx = make_ctx(home, harnesses=("claude",))
+    old = home / ".claude" / "scripts" / "dev_status.py"
+    old.parent.mkdir(parents=True)
+    src = REPO_ROOT / "agent-scripts" / "dev_status.py"
+    old.symlink_to(src)
+    ctx.manifest.record_symlink(old, src)
+    (old.parent / "dev_status_sync.py").write_text("# foreign\n")
+    capsys.readouterr()
+
+    install.do_check_links(ctx)
+
+    out = capsys.readouterr().out
+    assert "orphaned (1)" in out
+    assert "~/.agent-toolkit/scripts/dev_status.py" in out
+    assert "dev_status_sync.py" not in out
+
+
 def test_full_run_wires_only_the_selected_harness(home, links, offline_install):
     ctx = make_ctx(home, harnesses=("claude",))
     assert install.run_install(ctx, links) == 0
 
     assert (home / ".claude" / "CLAUDE.md").is_symlink()
-    assert (home / ".claude" / "scripts" / "dev_status.py").is_symlink()
+    assert (home / ".agent-toolkit" / "scripts" / "dev_status.py").is_symlink()
     assert not (home / ".copilot" / "copilot-instructions.md").exists()
     assert not (home / ".config" / "opencode" / "opencode.jsonc").exists()
     assert not (home / ".gemini" / "GEMINI.md").exists()

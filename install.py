@@ -1121,7 +1121,7 @@ def symlink(ctx: Context, src: Path, dest: Path) -> bool:
         # to a directory, which is replaced rather than descended into —
         # and never leaves dest missing between operations. The old
         # unlink-then-symlink_to dance had exactly the window this closes:
-        # during a repoint of ~28 live ~/.claude/scripts/* links, every
+        # during a repoint of ~28 live shared-script links, every
         # active harness session on the machine could observe (and fail
         # hard on) a missing guard_rails.py for the duration.
         # The old comment's `ln -sf`-into-a-directory concern doesn't

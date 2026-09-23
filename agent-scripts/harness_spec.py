@@ -331,7 +331,7 @@ FEATURE_MATRIX: dict[tuple[str, str], FeatureImplementation] = {
     ("codex", "notifications"): FeatureImplementation(
         state=FeatureSupportState.SUPPORTED,
         source="agent-scripts/notify.py",
-        install_mapping="~/.claude/scripts/notify.py",
+        install_mapping="~/.agent-toolkit/scripts/notify.py",
         event_mapping=("agent-turn-complete",),
         verification="test/test_harness_feature_coverage.py",
     ),

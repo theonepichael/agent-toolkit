@@ -28,6 +28,8 @@ Toolkit-home root
 In ``"toolkit-home"`` layout, data lives under ``<toolkit-root>/data/``,
 where ``<toolkit-root>`` is ``$AGENT_TOOLKIT_HOME`` if set, otherwise
 ``<home>/.agent-toolkit``. ``AGENT_TOOLKIT_HOME`` must be absolute.
+:func:`toolkit_root` returns that root on its own. Install locations under it
+(``scripts/``, ``hooks/``, ``icons/``) are never switched by layout.
 
 Stale paths
 -----------
@@ -283,6 +285,16 @@ def layout_path(home: Path, domain: str, layout: Layout) -> Path:
     home other than the running one (the migration's path transform).
     """
     return Resolver()._path_in(home, domain, layout)
+
+
+def toolkit_root() -> Path:
+    """Return ``$AGENT_TOOLKIT_HOME``, or ``<home>/.agent-toolkit``.
+
+    Independent of layout: reads no pointer, so a malformed one cannot break a
+    lookup of an install location. Raises :class:`LayoutError` for a relative
+    override.
+    """
+    return Resolver()._toolkit_root(Path.home())
 
 
 def check_not_stale(path: Path) -> None:

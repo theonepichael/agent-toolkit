@@ -24,6 +24,11 @@ hand-authored
             unless a ``LEGACY_PATH_EXEMPT`` row covers it. Each row names its
             owner or reason; a row that no longer matches a legacy reference
             is stale and fails, so it is deleted when its owner lands.
+links       Check that no links.toml row installs into a harness home it does
+            not serve: a row gated to one harness stays out of every other
+            harness's home, and a row with no harness selector stays out of
+            all of them, so a single-harness install creates no other
+            harness's home.
 
 The ``TOOLKIT_DATA`` markers are declarations and these rules are a tripwire,
 not proof of lock coverage: the execution tests in
@@ -35,6 +40,7 @@ Usage
   check_toolkit_paths.py inventory [--report]
   check_toolkit_paths.py generators [--report]
   check_toolkit_paths.py hand-authored [--report]
+  check_toolkit_paths.py links [--report]
 
 Exit codes
   0 everything classified and every obligation holds; 1 problems (listed on
@@ -53,8 +59,12 @@ import tomllib
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import ModuleType
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from link_inspect import LinkSpec
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -823,10 +833,6 @@ LEGACY_PATH_EXEMPT: dict[str, str] = {
     "migrate_toolkit_home.py": "migrates from the legacy layout",
     "scripts/check_toolkit_paths.py": "classifies legacy paths",
     # Owned by other release-1 changes; delete the row when that change lands.
-    "agent-scripts/harness_spec.py": "the notify.py install mapping moves with links.toml",
-    "agent-scripts/notify.py": "the icons directory moves with links.toml",
-    "links.toml": "install destinations move with the links and settings change",
-    "install.py": "install destinations move with the links and settings change",
     "claude/CORE_INSTRUCTIONS.md": "synced from its origin repository, moved there",
 }
 
@@ -938,6 +944,60 @@ def cmd_hand_authored(args: argparse.Namespace) -> int:
     return 1 if problems else 0
 
 
+# ── links: harness homes ─────────────────────────────────────────────────────
+
+# The authority for where each harness keeps its own configuration, as the
+# migration plan's target model lists them. Keys must match
+# harness_spec.ALL_NAMES (the test suite asserts it), so a new harness cannot
+# slip past this check with no home declared.
+HARNESS_HOMES: dict[str, str] = {
+    "claude": "~/.claude",
+    "copilot": "~/.copilot",
+    "opencode": "~/.config/opencode",
+    "pi": "~/.pi",
+    "agy": "~/.gemini",
+    "codex": "~/.codex",
+}
+
+
+def harness_home_violations(links: Sequence[LinkSpec]) -> list[str]:
+    """Rows whose destination lies in a harness home they do not serve.
+
+    Judges each configuration row by its own ``dest`` (a directory row's
+    children all lie under it), regardless of platform or profile gates.
+    Paths compare by component in their literal ``~/...`` form, so
+    ``~/.claude-other`` is not under ``~/.claude``.
+    """
+    homes = {h: PurePosixPath(p).parts for h, p in HARNESS_HOMES.items()}
+    problems = []
+    for spec in links:
+        parts = PurePosixPath(spec.dest).parts
+        for harness, home in homes.items():
+            if harness != spec.harness and parts[: len(home)] == home:
+                problems.append(
+                    f"links.toml: {spec.src} -> {spec.dest}: installs into "
+                    f'{harness}\'s home without harness = "{harness}"'
+                )
+    return problems
+
+
+def links_check(repo: Path) -> list[str]:
+    """Run :func:`harness_home_violations` over ``repo``'s links.toml."""
+    link_inspect = _agent_script("link_inspect")
+    return harness_home_violations(link_inspect.load_links(repo / "links.toml"))
+
+
+def cmd_links(args: argparse.Namespace) -> int:
+    problems = links_check(REPO)
+    for p in problems:
+        print(p)
+    if args.report:
+        print("\n# harness homes")
+        for harness, home in HARNESS_HOMES.items():
+            print(f"{harness}: {home}")
+    return 1 if problems else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Toolkit-home migration repository checks."
@@ -948,6 +1008,7 @@ def main(argv: list[str] | None = None) -> int:
         ("inventory", "check every links.toml entry's declared kind"),
         ("generators", "check the generator inventory and its emitted paths"),
         ("hand-authored", "check files no generator emits for legacy paths"),
+        ("links", "check no links.toml row installs into another harness's home"),
     ):
         p = sub.add_parser(name, help=help_text)
         p.add_argument(
@@ -959,6 +1020,7 @@ def main(argv: list[str] | None = None) -> int:
         "inventory": cmd_inventory,
         "generators": cmd_generators,
         "hand-authored": cmd_hand_authored,
+        "links": cmd_links,
     }[args.cmd](args)
 
 

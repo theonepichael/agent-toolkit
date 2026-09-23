@@ -80,7 +80,7 @@ House style for these interfaces is in `STYLE.md`.
 
 Single source of truth for toolkit data paths.
 
-- Installed at: `~/.claude/scripts/agent_toolkit_paths.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/agent_toolkit_paths.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI: none (library module).
 - Filesystem constants:
@@ -95,6 +95,7 @@ Single source of truth for toolkit data paths.
   - `path_for(domain: str) -> Path` — Resolve ``domain`` using :data:`DEFAULT_RESOLVER`.
   - `path_for_layout(domain: str, layout: Layout) -> Path` — Resolve ``domain`` for ``layout`` using :data:`DEFAULT_RESOLVER`.
   - `layout_path(home: Path, domain: str, layout: Layout) -> Path` — Resolve ``domain`` for ``layout`` under an explicit ``home``.
+  - `toolkit_root() -> Path` — Return ``$AGENT_TOOLKIT_HOME``, or ``<home>/.agent-toolkit``.
   - `check_not_stale(path: Path) -> None` — Refuse a path from the non-current layout using :data:`DEFAULT_RESOLVER`.
   - `current_layout() -> Layout` — Return the current layout using :data:`DEFAULT_RESOLVER`.
   - `write_pointer(home: Path, layout: Layout) -> None` — Atomically write the layout pointer under ``home``.
@@ -104,7 +105,7 @@ Single source of truth for toolkit data paths.
 
 analyze_sessions.py — multi-harness session analysis tool.
 
-- Installed at: `~/.claude/scripts/analyze_sessions.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/analyze_sessions.py` (all harnesses)
 - Entrypoint: executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): Multi-harness session analysis tool across pi, Claude Code, opencode, Copilot CLI, and agy.
   - `--quiet/-q`
@@ -177,7 +178,7 @@ analyze_sessions.py — multi-harness session analysis tool.
 
 Read-only snapshot lookup over the backlog store for guard consumers.
 
-- Installed at: `~/.claude/scripts/backlog_claim_lookup.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/backlog_claim_lookup.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI: none (library module).
 - Environment: `GUARD_RAILS_STORE`
@@ -195,7 +196,7 @@ Read-only snapshot lookup over the backlog store for guard consumers.
 
 SessionStart hook: flag when this repo has drifted from the last commit bundled over to a GitHub-blocked work machine.
 
-- Installed at: `~/.claude/scripts/bundle_drift_check.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/bundle_drift_check.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): Flag when this repo has drifted from the last commit bundled over to a GitHub-blocked work machine.
   - `--quiet/-q`
@@ -220,7 +221,7 @@ SessionStart hook: flag when this repo has drifted from the last commit bundled 
 
 Shared CLI helpers used across agent-toolkit scripts.
 
-- Installed at: `~/.claude/scripts/cli_common.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/cli_common.py` (all harnesses)
 - Entrypoint: not executable, no shebang
 - CLI: none (library module).
 - Environment: `AGENT_TOOLKIT_TIMING`, `NO_COLOR`, `TERM`, `XDG_STATE_HOME`
@@ -247,7 +248,7 @@ Shared CLI helpers used across agent-toolkit scripts.
 
 dev_status.py v2 — slug IDs, structured dependency graph, pure render.
 
-- Installed at: `~/.claude/scripts/dev_status.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/dev_status.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): deterministic backlog dashboard v2
   - `--quiet/-q`
@@ -359,7 +360,7 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
 
 Pure text-formatting helpers shared by the backlog dashboard and recap.
 
-- Installed at: `~/.claude/scripts/dev_status_formatting.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/dev_status_formatting.py` (all harnesses)
 - Entrypoint: not executable, no shebang
 - CLI: none (library module).
 - Public functions:
@@ -382,7 +383,7 @@ Pure text-formatting helpers shared by the backlog dashboard and recap.
 
 Typed mutation service and transaction manager for dev_status (Candidate 12).
 
-- Installed at: `~/.claude/scripts/dev_status_mutation.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/dev_status_mutation.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI: none (library module).
 - Environment: `AGY_SESSION`, `AI_AGENT`, `ANTHROPIC_CLI`, `ANTIGRAVITY`, `ANTIGRAVITY_AGENT`, `ANTIGRAVITY_CONVERSATION_ID`, `CLAUDE_CODE`, `COPILOT`, `DEVSTATUS_CLAIM_TTL_SECONDS`, `DEVSTATUS_HARNESS`, `GITHUB_COPILOT`, `OPENCODE`, `OPENCODE_GATEWAY`, `PI_CODING_AGENT`, `PI_SESSION`
@@ -442,7 +443,7 @@ Typed mutation service and transaction manager for dev_status (Candidate 12).
 
 Pure read-only facade over the dev_status backlog store.
 
-- Installed at: `~/.claude/scripts/dev_status_read.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/dev_status_read.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI: none (library module).
 - Depends on: `backlog_claim_lookup.py`, `dev_status_storage.py`
@@ -462,7 +463,7 @@ Pure read-only facade over the dev_status backlog store.
 
 Backlog persistence, lock coordination, and journal primitives.
 
-- Installed at: `~/.claude/scripts/dev_status_storage.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/dev_status_storage.py` (all harnesses)
 - Entrypoint: not executable, no shebang
 - CLI: none (library module).
 - Explicit exit codes: `1`
@@ -518,7 +519,7 @@ Backlog persistence, lock coordination, and journal primitives.
 
 Backlog data model — the on-disk shapes shared across the dev_status stack.
 
-- Installed at: `~/.claude/scripts/dev_status_types.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/dev_status_types.py` (all harnesses)
 - Entrypoint: not executable, no shebang
 - CLI: none (library module).
 - Public classes:
@@ -532,7 +533,7 @@ Backlog data model — the on-disk shapes shared across the dev_status stack.
 
 Named crash points for proving what a killed process leaves behind.
 
-- Installed at: `~/.claude/scripts/fault_checkpoint.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/fault_checkpoint.py` (all harnesses)
 - Entrypoint: not executable, no shebang
 - CLI: none (library module).
 - Public functions:
@@ -543,7 +544,7 @@ Named crash points for proving what a killed process leaves behind.
 
 gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources.
 
-- Installed at: `~/.claude/scripts/gen_interfaces.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/gen_interfaces.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): regenerate INTERFACES.md from the harness sources
   - `--quiet/-q`
@@ -635,7 +636,7 @@ gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources.
 
 gen_second_opinion.py — regenerate the second-opinion skill copies (one per harness, named in HARNESS_TABLE) from one canonical template.
 
-- Installed at: `~/.claude/scripts/gen_second_opinion.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/gen_second_opinion.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): regenerate the second-opinion skill copies from one template
   - `--quiet/-q`
@@ -662,7 +663,7 @@ gen_second_opinion.py — regenerate the second-opinion skill copies (one per ha
 
 Generate a zsh `#compdef` completion file for a harness CLI.
 
-- Installed at: `~/.claude/scripts/gen_shell_completion.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/gen_shell_completion.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): Generate a zsh `#compdef` completion file for a harness CLI.
   - `--quiet/-q`
@@ -703,7 +704,7 @@ Generate a zsh `#compdef` completion file for a harness CLI.
 
 gen_skills.py — regenerate the dashboard/recap/grill-me/backlog-item/ make-skill/spec/standup/to-tickets/swarm skill copies from one template per skill, plus a shared per-harness capability table. dashboard/recap/ grill-me/backlog-item/make-skill/spec/standup/to-tickets cover all 6 harnesses (claude, copilot, opencode, agy, pi, codex); swarm covers only claude/copilot (user-directed; pi already owns the orchestration surface) — see `SKILL_HARNESSES` below and AGENTS.md's "Harness maintenance tiers" section.
 
-- Installed at: `~/.claude/scripts/gen_skills.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/gen_skills.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): regenerate the dashboard/grill-me/backlog-item/make-skill copies from one template per skill
   - `--quiet/-q`
@@ -728,7 +729,7 @@ gen_skills.py — regenerate the dashboard/recap/grill-me/backlog-item/ make-ski
 
 gen_skills_params.py — per-(skill, harness) content tables for gen_skills.py.
 
-- Installed at: `~/.claude/scripts/gen_skills_params.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/gen_skills_params.py` (all harnesses)
 - Entrypoint: not executable, no shebang
 - CLI: none (library module).
 - Public functions:
@@ -741,7 +742,7 @@ gen_skills_params.py — per-(skill, harness) content tables for gen_skills.py.
 
 grill.py — grill-me session state CLI. All session mutations go through here.
 
-- Installed at: `~/.claude/scripts/grill.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/grill.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): grill-me session state CLI (all mutations go through here)
   - `--quiet/-q`
@@ -824,7 +825,7 @@ grill.py — grill-me session state CLI. All session mutations go through here.
 
 Pre-tool guard shared by every harness: refuse a write into a repository's main checkout while a backlog item for that repository is in progress, warn when the current worktree's base has fallen behind ``origin/main``, (Bash, Claude Code only) deny the git-native ways to defeat the no-commit-on-main git hook (``githooks/pre-commit`` / ``githooks-global/pre-commit``), and require an active backlog-item claim before a write that points at an in-progress item.
 
-- Installed at: `~/.claude/scripts/guard_rails.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/guard_rails.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): pre-tool guard shared by every harness
   - `--harness` — read this harness's payload on stdin and answer in its shape (choices: claude, agy, copilot)
@@ -856,7 +857,7 @@ Pre-tool guard shared by every harness: refuse a write into a repository's main 
 
 SessionStart hook + CLI: detect when a harness's instruction-file discovery behavior may have drifted from the version-pinned facts in README.md.
 
-- Installed at: `~/.claude/scripts/harness_discovery_check.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/harness_discovery_check.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): Detect harness instruction-file discovery drift against README.md's version-pinned facts.
   - `--quiet/-q`
@@ -882,7 +883,7 @@ SessionStart hook + CLI: detect when a harness's instruction-file discovery beha
 
 Declarative harness specification registry.
 
-- Installed at: `~/.claude/scripts/harness_spec.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/harness_spec.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI: none (library module).
 - Public classes:
@@ -899,13 +900,13 @@ Declarative harness specification registry.
   - `probe_expected_root(name: str) -> frozenset[str]` — Return the fixture root tokens expected for the given harness.
   - `feature_spec(harness: str, feature: str) -> FeatureImplementation` — Return the FeatureImplementation declaration for a harness and feature.
   - `assert_feature_coverage(repo_root: Path | None = None) -> None` — Validate that all active harnesses have declared valid implementations for all required features.
-- Tested by: `test/test_agent_toolkit_paths.py`, `test/test_harness_feature_coverage.py`, `test/test_harness_spec.py`
+- Tested by: `test/test_agent_toolkit_paths.py`, `test/test_check_toolkit_paths.py`, `test/test_harness_feature_coverage.py`, `test/test_harness_spec.py`
 
 ### `agent-scripts/herdr_delegate.py`
 
 Launch pi agents in herdr tabs to work backlog items.
 
-- Installed at: `~/.claude/scripts/herdr_delegate.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/herdr_delegate.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): Launch pi agents in herdr tabs to work backlog items.
 - Subcommands:
@@ -972,7 +973,7 @@ Launch pi agents in herdr tabs to work backlog items.
 
 SessionStart hook + CLI: flag when a managed symlink on this machine no longer points where links.toml says it should.
 
-- Installed at: `~/.claude/scripts/link_drift_check.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/link_drift_check.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): Flag managed symlinks that no longer point where links.toml says they should.
   - `--quiet/-q`
@@ -992,7 +993,7 @@ SessionStart hook + CLI: flag when a managed symlink on this machine no longer p
 
 link_inspect.py — link inspection, path classification, drift finding, and the self-contained audit assembly for install.py's ``--check-links`` audit and link_drift_check.py's SessionStart hook.
 
-- Installed at: `~/.claude/scripts/link_inspect.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/link_inspect.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI: none (library module).
 - Environment: `WSL_DISTRO_NAME`
@@ -1031,13 +1032,13 @@ link_inspect.py — link inspection, path classification, drift finding, and the
   - `check_orphaned_links(links: Sequence[tuple[Path, Path, str, bool]], *, manifest_entries: Iterable[dict[str, object]]) -> list[LinkFinding]` — Return typed findings for manifest-recorded symlinks that links.toml no longer produces.
   - `live_backup_paths(manifest_entries: Iterable[dict[str, object]]) -> set[Path]` — Return manifest-recorded backups that are still live ``--rollback`` payload.
   - `check_unmanaged_files(managed_dirs: Sequence[ManagedDirSpec], links: Sequence[tuple[Path, Path, str, bool]], *, home: Path, dir_applies: Callable[[ManagedDirSpec], bool], manifest_entries: Iterable[dict[str, object]] = ()) -> tuple[list[LinkFinding], int]` — Report foreign entries in directories ``links.toml`` owns exclusively.
-- Tested by: `test/test_harness_spec.py`, `test/test_install.py`, `test/test_link_drift_check.py`, `test/test_link_inspect.py`
+- Tested by: `test/test_check_toolkit_paths.py`, `test/test_harness_spec.py`, `test/test_install.py`, `test/test_link_drift_check.py`, `test/test_link_inspect.py`
 
 ### `agent-scripts/llm_backends.py`
 
 llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, opencode, pi, copilot). Extracted from second_opinion.py so dev_status.py's recap generation can reuse the same process-lifecycle handling (timeouts, process-group kills, opencode JSON-event parsing) with its own timeout and model choices, without duplicating it.
 
-- Installed at: `~/.claude/scripts/llm_backends.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/llm_backends.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI: none (library module).
 - Depends on: `agent_toolkit_paths.py`, `cli_common.py`, `migration_lock.py`
@@ -1070,7 +1071,7 @@ llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, open
 
 Machine-wide migration lock: writers share it, the toolkit-home migrator owns it.
 
-- Installed at: `~/.claude/scripts/migration_lock.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/migration_lock.py` (all harnesses)
 - Entrypoint: executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): Inspect or hold the machine-wide migration lock.
 - Subcommands:
@@ -1103,7 +1104,7 @@ Machine-wide migration lock: writers share it, the toolkit-home migrator owns it
 
 Cross-platform agent notification dispatcher.
 
-- Installed at: `~/.claude/scripts/notify.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/notify.py` (all harnesses)
 - Entrypoint: executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): Cross-platform agent notification dispatcher for WSL, macOS, and Linux.
   - `--quiet/-q`
@@ -1119,7 +1120,7 @@ Cross-platform agent notification dispatcher.
 - Environment: `TMUX`, `WSL_DISTRO_NAME`, `WSL_INTEROP`
 - Filesystem constants:
   - `ICONS_DIR = Path(__file__).resolve().parent.parent / 'claude' / 'icons'`
-- Depends on: `cli_common.py`, `harness_spec.py`
+- Depends on: `agent_toolkit_paths.py`, `cli_common.py`, `harness_spec.py`
 - Public functions:
   - `is_wsl() -> bool` — Detect whether running inside Windows Subsystem for Linux.
   - `get_harness_icon(harness: str | None, custom_icon: str | None = None) -> Path | None` — Resolve the icon file path for a given harness.
@@ -1137,7 +1138,7 @@ Cross-platform agent notification dispatcher.
 
 outlook_calendar.py — CLI tool and agent interface for Windows Outlook Calendar via PowerShell COM.
 
-- Installed at: `~/.claude/scripts/outlook_calendar.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/outlook_calendar.py` (all harnesses)
 - Entrypoint: executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): Outlook Calendar tool via PowerShell COM automation.
 - Subcommands:
@@ -1164,7 +1165,7 @@ outlook_calendar.py — CLI tool and agent interface for Windows Outlook Calenda
 
 outlook_email.py — CLI tool and agent interface for Windows Outlook via PowerShell COM.
 
-- Installed at: `~/.claude/scripts/outlook_email.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/outlook_email.py` (all harnesses)
 - Entrypoint: executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): Outlook email tool via PowerShell COM automation.
 - Subcommands:
@@ -1204,7 +1205,7 @@ outlook_email.py — CLI tool and agent interface for Windows Outlook via PowerS
 
 refresh_guidance.py — audit-by-inspection for hand-authored, agent-facing docs.
 
-- Installed at: `~/.claude/scripts/refresh_guidance.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/refresh_guidance.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): Audit hand-authored, agent-facing docs for mechanically-checkable stale references and per-section human-review staleness.
   - `--quiet/-q`
@@ -1269,7 +1270,7 @@ refresh_guidance.py — audit-by-inspection for hand-authored, agent-facing docs
 
 second_opinion.py — one-shot adversarial critique of a plan from a non-Claude backend. Single-round by design: the multi-round loop, plan revision, and convergence judgment all require LLM reasoning and live in prose instructions, not here.
 
-- Installed at: `~/.claude/scripts/second_opinion.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/second_opinion.py` (all harnesses)
 - Entrypoint: executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): one-shot adversarial critique of a plan from a non-Claude backend
   - `--quiet/-q`
@@ -1315,7 +1316,7 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
 
 seed_hook_subset_guard.py — refuse a commit that drops a seed's SessionStart hook groups.
 
-- Installed at: `~/.claude/scripts/seed_hook_subset_guard.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/seed_hook_subset_guard.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): refuse a commit that drops a seed's SessionStart hook groups
   - `--repo-root` — repository root (default: git's toplevel of the cwd)
@@ -1327,7 +1328,7 @@ seed_hook_subset_guard.py — refuse a commit that drops a seed's SessionStart h
 
 sessionstart_checks.py — run the SessionStart context checks concurrently.
 
-- Installed at: `~/.claude/scripts/sessionstart_checks.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/sessionstart_checks.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI: none (library module).
 - Public functions:
@@ -1338,7 +1339,7 @@ sessionstart_checks.py — run the SessionStart context checks concurrently.
 
 Copy-once settings seeding, adoption, reseed, and drift detection.
 
-- Installed at: `~/.claude/scripts/settings_seed.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/settings_seed.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI: none (library module).
 - Depends on: `cli_common.py`
@@ -1357,7 +1358,7 @@ Copy-once settings seeding, adoption, reseed, and drift detection.
 
 SessionStart hook + CLI: detect (and optionally fix) drift between the live ``~/.claude/settings.json`` / ``~/.config/opencode/opencode.jsonc`` / (under WSL) the Windows-side VS Code ``settings.json`` and ``keybindings.json`` and their seeds in this repo.
 
-- Installed at: `~/.claude/scripts/settings_seed_drift_check.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/settings_seed_drift_check.py` (all harnesses)
 - Entrypoint: executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): no `description=` set
   - `--quiet/-q`
@@ -1390,7 +1391,7 @@ SessionStart hook + CLI: detect (and optionally fix) drift between the live ``~/
 
 standup.py — /standup skill CLI and read-only fetch service.
 
-- Installed at: `~/.claude/scripts/standup.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/standup.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): /standup skill CLI
   - `--quiet/-q`
@@ -1428,7 +1429,7 @@ standup.py — /standup skill CLI and read-only fetch service.
 
 standup_adapters.py — provider-agnostic adapter interfaces for /standup.
 
-- Installed at: `~/.claude/scripts/standup_adapters.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/standup_adapters.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI: none (library module).
 - Depends on: `outlook_calendar.py`, `outlook_email.py`
@@ -1454,7 +1455,7 @@ standup_adapters.py — provider-agnostic adapter interfaces for /standup.
 
 Claude Code status line: render the model name and a color-coded context window usage bar with the used percentage, from the JSON session payload Claude Code pipes to this script on stdin.
 
-- Installed at: `~/.claude/scripts/statusline.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/statusline.py` (all harnesses)
 - Entrypoint: executable, `#!/usr/bin/env python3`
 - CLI: none (library module).
 - Explicit exit codes: `0`
@@ -1464,7 +1465,7 @@ Claude Code status line: render the model name and a color-coded context window 
 
 to_tickets_runner.py — create a linked batch of dev_status.py backlog items from a confirmed vertical-slice/tracer-bullet ticket breakdown.
 
-- Installed at: `~/.claude/scripts/to_tickets_runner.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/to_tickets_runner.py` (all harnesses)
 - Entrypoint: executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): Create a linked batch of dev_status.py backlog items from a confirmed ticket breakdown.
 - Subcommands:
@@ -1496,7 +1497,7 @@ to_tickets_runner.py — create a linked batch of dev_status.py backlog items fr
 
 vitals-promotion.py — mechanical vitals-promotion pass over grill session data.
 
-- Installed at: `~/.claude/scripts/vitals_promotion.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/vitals_promotion.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): vitals-promotion.py — mechanical vitals-promotion pass over grill session data.
   - `--quiet/-q`
@@ -1536,7 +1537,7 @@ vitals-promotion.py — mechanical vitals-promotion pass over grill session data
 
 worktree.py — automated worktree creation and dependency bootstrapping.
 
-- Installed at: `~/.claude/scripts/worktree.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/worktree.py` (all harnesses)
 - Entrypoint: executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): Automate worktree creation and dependency bootstrapping.
   - `--quiet/-q`
@@ -1568,7 +1569,7 @@ worktree.py — automated worktree creation and dependency bootstrapping.
 
 Per-worktree backlog provenance: one explicit marker, shared predicates.
 
-- Installed at: `~/.claude/scripts/worktree_provenance.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/worktree_provenance.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI: none (library module).
 - Public classes:
@@ -1711,7 +1712,7 @@ are copy-once seeds for exactly that reason.
 | `opencode/plugin/ruff-format-on-edit.ts` | `~/.config/opencode/plugin/ruff-format-on-edit.ts` (opencode) |
 | `opencode/tui.json` | `~/.config/opencode/tui.json` (opencode) |
 | `agy/CLAUDE_CODE_PARITY.md` | not symlinked by `links.toml` |
-| `agy/hooks/agy-elapsed.js` | `~/.claude/hooks/agy-elapsed.js` (agy) |
+| `agy/hooks/agy-elapsed.js` | `~/.agent-toolkit/hooks/agy-elapsed.js` (agy) |
 | `agy/hooks/agy-elapsed.test.js` | not symlinked by `links.toml` |
 | `agy/hooks.json` | `~/.gemini/config/hooks.json` (agy) |
 | `pi/AGENTS.md` | not symlinked by `links.toml` |
