@@ -1808,7 +1808,7 @@ forwarding argv unchanged.
 
 ### `install.py`
 
-install.py — agent-toolkit + AI-harness provisioner for macOS and Linux/WSL.
+install.py — agent-toolkit provisioner and migration controls for macOS/Linux.
 
 - Installed at: not symlinked by `links.toml`
 - Entrypoint: executable, `#!/usr/bin/env python3`
