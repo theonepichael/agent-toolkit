@@ -408,12 +408,20 @@ class AppendJsonlTests(unittest.TestCase):
         renamed the file away in between). append_jsonl must swallow it — the
         append then creates a fresh file — and never raise into the caller,
         even with on_error='raise'."""
-        class StatGonePath(type(self.tmp)):
-            def stat(self, *, follow_symlinks: bool = True) -> object:
-                raise FileNotFoundError
+        path = self.tmp / "out.jsonl"
+        original_stat = cli_common.Path.stat
 
-        path = StatGonePath(self.tmp / "out.jsonl")
-        cli_common.append_jsonl(path, {"i": 1}, max_bytes=1, on_error="raise")
+        def stat_target_only(
+            candidate: Path, *, follow_symlinks: bool = True
+        ) -> object:
+            if candidate == path:
+                raise FileNotFoundError
+            return original_stat(candidate, follow_symlinks=follow_symlinks)
+
+        with patch.object(
+            cli_common.Path, "stat", autospec=True, side_effect=stat_target_only
+        ):
+            cli_common.append_jsonl(path, {"i": 1}, max_bytes=1, on_error="raise")
         lines = path.read_text().splitlines()
         self.assertEqual(len(lines), 1)
         self.assertEqual(json.loads(lines[0])["i"], 1)
