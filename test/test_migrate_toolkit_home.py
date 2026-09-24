@@ -621,3 +621,77 @@ def test_real_installed_lock_module_counts_as_lock_aware(sandbox, capsys):
     code, report = _run(capsys, dry_run=True)
     assert "runtime-lock-aware" in _findings(report, "ok"), report["findings"]
     assert code == 0
+
+
+def test_unclassified_reports_carry_over_destination(machine, capsys):
+    code, report = _run(capsys, dry_run=True)
+    assert code == 0
+    assert "unclassified" in _findings(report, "warn")
+    unclass_finding = next(f for f in report["findings"] if f["check"] == "unclassified")
+    assert "will be carried to toolkit home" in unclass_finding["detail"]
+    assert "left in place, never moved" not in unclass_finding["detail"]
+    assert any("unrelated-notes" in p and " -> " in p for p in unclass_finding["paths"])
+
+
+def test_unclassified_refuses_on_destination_collision(machine, capsys):
+    dest = Path.home() / ".agent-toolkit" / "data" / "unrelated-notes"
+    dest.mkdir(parents=True)
+    (dest / "collision.txt").write_text("already here")
+    code, report = _run(capsys, dry_run=True)
+    assert code == 1
+    assert "unclassified" in _findings(report, "refuse")
+    unclass_finding = next(f for f in report["findings"] if f["check"] == "unclassified")
+    assert "destination collision" in unclass_finding["detail"].lower()
+
+
+def test_path_valued_env_vars_reported(machine, capsys, monkeypatch):
+    code, report = _run(capsys, dry_run=True)
+    assert "path-env-vars" in _findings(report, "ok")
+
+    monkeypatch.setenv("GUARD_RAILS_STORE", str(machine / ".claude" / "data" / "backlog" / "items.json"))
+    monkeypatch.setenv("COPILOT_SWARM_DEV_STATUS_PATH", str(machine / ".claude" / "scripts" / "dev_status.py"))
+    code, report = _run(capsys, dry_run=True)
+    assert "path-env-vars" in _findings(report, "warn")
+    finding = next(f for f in report["findings"] if f["check"] == "path-env-vars")
+    assert any("GUARD_RAILS_STORE=" in p for p in finding["paths"])
+    assert any("COPILOT_SWARM_DEV_STATUS_PATH=" in p for p in finding["paths"])
+
+
+def test_swarm_state_classified_and_retained(machine, capsys):
+    pi_state = machine / ".pi" / "agent" / "state"
+    pi_state.mkdir(parents=True)
+    (pi_state / "swarm-run1.json").write_text('{"runId": "run1"}')
+
+    copilot_state = machine / ".copilot" / "state"
+    copilot_state.mkdir(parents=True)
+    (copilot_state / "swarm-run2.json").write_text('{"runId": "run2"}')
+
+    code, report = _run(capsys, dry_run=True)
+    assert "swarm-state" in _findings(report, "warn")
+    finding = next(f for f in report["findings"] if f["check"] == "swarm-state")
+    assert any("swarm-run1.json" in p for p in finding["paths"])
+    assert any("swarm-run2.json" in p for p in finding["paths"])
+
+    # Real run: neither silently moved nor treated as harness-owned
+    code, report = _run(capsys, dry_run=False)
+    assert code == 0
+    assert (pi_state / "swarm-run1.json").exists()
+    assert (copilot_state / "swarm-run2.json").exists()
+    dest_data = machine / ".agent-toolkit" / "data"
+    assert not (dest_data / "swarm-run1.json").exists()
+    assert not (dest_data / "swarm-run2.json").exists()
+
+
+def test_manual_edit_checklist_output(machine, capsys):
+    claude_md = machine / ".claude" / "CLAUDE.md"
+    claude_md.write_text("Run `python3 ~/.claude/scripts/dev_status.py`\n")
+
+    settings_local = machine / ".claude" / "settings.local.json"
+    settings_local.write_text(json.dumps({"permissions": {"allow": ["Bash(python3 ~/.claude/scripts/dev_status.py add*)"]}}))
+
+    code, report = _run(capsys, dry_run=True)
+    assert "manual-edit-checklist" in _findings(report, "warn")
+    finding = next(f for f in report["findings"] if f["check"] == "manual-edit-checklist")
+    assert any("CLAUDE.md" in p for p in finding["paths"])
+    assert any("settings.local.json" in p for p in finding["paths"])
+    assert len(report.get("manual_edit_checklist", [])) >= 2

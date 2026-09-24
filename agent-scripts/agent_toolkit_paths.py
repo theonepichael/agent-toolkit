@@ -97,6 +97,10 @@ class StaleLayoutError(LayoutError):
     """Raised when a path belongs to the layout that is no longer current."""
 
 
+class UpgradeRequiredError(LayoutError):
+    """Raised when legacy toolkit data exists without a completed migration record."""
+
+
 class UnknownDomainError(ValueError):
     """Raised when :func:`path_for` is asked for an unregistered domain."""
 
@@ -334,3 +338,51 @@ def write_pointer(home: Path, layout: Layout) -> None:
         os.fsync(fd)
     finally:
         os.close(fd)
+
+
+def check_upgrade_required(home: Path | None = None) -> None:
+    """Raise :class:`UpgradeRequiredError` if legacy state exists without
+    a completed migration record.
+    """
+    root = home or Path.home()
+    legacy_data = root / ".claude" / "data"
+    if not legacy_data.is_dir():
+        return
+    has_legacy_state = False
+    for segment in _LEGACY_SEGMENTS.values():
+        if (legacy_data / segment).exists():
+            has_legacy_state = True
+            break
+    if not has_legacy_state:
+        try:
+            if any(p.name != POINTER_RELPATH.name for p in legacy_data.iterdir()):
+                has_legacy_state = True
+        except OSError:
+            pass
+
+    if not has_legacy_state:
+        return
+
+    history = root / ".local" / "state" / "agent-toolkit" / "history.jsonl"
+    if history.is_file():
+        try:
+            for line in history.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    entry = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if (
+                    isinstance(entry, dict)
+                    and entry.get("kind") == "migration"
+                    and entry.get("outcome") in ("committed", "finalized")
+                ):
+                    return
+        except OSError:
+            pass
+
+    raise UpgradeRequiredError(
+        f"legacy toolkit data found at {legacy_data} without a completed "
+        f"migration record in {history}; run 'install.sh --migrate-toolkit-home' to upgrade"
+    )

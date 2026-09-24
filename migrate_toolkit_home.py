@@ -200,6 +200,7 @@ class PreflightReport:
     recovered: list[dict[str, str]] = field(default_factory=list)
     journal: str | None = None
     outcome: str = ""
+    manual_edit_checklist: list[str] = field(default_factory=list)
     telemetry_lines_discarded: dict[str, int | None] = field(default_factory=dict)
 
     @property
@@ -215,6 +216,7 @@ class PreflightReport:
             "inventory": self.inventory,
             "recovered": self.recovered,
             "journal": self.journal,
+            "manual_edit_checklist": self.manual_edit_checklist,
             "telemetry_lines_discarded": self.telemetry_lines_discarded,
         }
 
@@ -1066,15 +1068,137 @@ def _check_unclassified(ctx: MigrationContext) -> Finding:
     known.add(agent_toolkit_paths.POINTER_RELPATH.name)
     if not data_root.is_dir():
         return Finding("unclassified", "ok", "no legacy data root")
-    extra = sorted(str(p) for p in data_root.iterdir() if p.name not in known)
-    if extra:
+    extra = sorted(p for p in data_root.iterdir() if p.name not in known)
+    if not extra:
+        return Finding("unclassified", "ok", "nothing unclassified")
+
+    dest_data = _toolkit_root() / "data"
+    collisions: list[str] = []
+    pairs: list[str] = []
+    for p in extra:
+        dest = dest_data / p.name
+        pairs.append(f"{p} -> {dest}")
+        if _lexists(dest) and (not dest.is_dir() or any(dest.iterdir())):
+            collisions.append(str(dest))
+
+    if collisions:
         return Finding(
             "unclassified",
-            "warn",
-            "not toolkit data; left in place, never moved",
-            extra,
+            "refuse",
+            "destination collision for unclassified data",
+            sorted(collisions),
         )
-    return Finding("unclassified", "ok", "nothing unclassified")
+
+    return Finding(
+        "unclassified",
+        "warn",
+        f"will be carried to toolkit home: {dest_data}",
+        pairs,
+    )
+
+
+def _check_path_env_vars(ctx: MigrationContext) -> Finding:
+    flagged: list[str] = []
+
+    guard_store = os.environ.get("GUARD_RAILS_STORE")
+    if guard_store:
+        try:
+            resolved = Path(os.path.expanduser(guard_store)).resolve()
+            legacy_data = (ctx.home / ".claude" / "data").resolve()
+            if resolved.is_relative_to(legacy_data):
+                flagged.append(f"GUARD_RAILS_STORE={guard_store}")
+        except Exception:
+            pass
+
+    swarm_path = os.environ.get("COPILOT_SWARM_DEV_STATUS_PATH")
+    if swarm_path:
+        try:
+            resolved = Path(os.path.expanduser(swarm_path)).resolve()
+            legacy_scripts = (ctx.home / ".claude" / "scripts").resolve()
+            if resolved.is_relative_to(legacy_scripts):
+                flagged.append(f"COPILOT_SWARM_DEV_STATUS_PATH={swarm_path}")
+        except Exception:
+            pass
+
+    if flagged:
+        return Finding(
+            "path-env-vars",
+            "warn",
+            "environment variable points to a path under a moved root; update by hand",
+            flagged,
+        )
+    return Finding(
+        "path-env-vars", "ok", "no path-valued environment variables under moved roots"
+    )
+
+
+def _check_swarm_state(ctx: MigrationContext) -> Finding:
+    paths: list[str] = []
+    pi_env = os.environ.get("PI_SWARM_STATE_DIR")
+    pi_dir = (
+        Path(os.path.expanduser(pi_env))
+        if pi_env
+        else ctx.home / ".pi" / "agent" / "state"
+    )
+    if pi_dir.is_dir():
+        for p in pi_dir.glob("swarm-*.json"):
+            paths.append(str(p))
+
+    copilot_env = os.environ.get("COPILOT_SWARM_STATE_DIR")
+    copilot_dir = (
+        Path(os.path.expanduser(copilot_env))
+        if copilot_env
+        else ctx.home / ".copilot" / "state"
+    )
+    if copilot_dir.is_dir():
+        for p in copilot_dir.glob("swarm-*.json"):
+            paths.append(str(p))
+
+    if paths:
+        return Finding(
+            "swarm-state",
+            "warn",
+            "toolkit workflow records retained under harness homes; not moved",
+            sorted(paths),
+        )
+    return Finding("swarm-state", "ok", "no swarm run-state files found")
+
+
+def _check_manual_edits(ctx: MigrationContext) -> Finding:
+    checklist: list[str] = []
+
+    claude_md = ctx.home / ".claude" / "CLAUDE.md"
+    if claude_md.is_file():
+        try:
+            content = claude_md.read_text(encoding="utf-8")
+            if ".claude/scripts" in content or "dev_status.py" in content:
+                checklist.append(
+                    f"{claude_md} (global instructions naming legacy script paths)"
+                )
+        except OSError:
+            pass
+
+    settings_local = ctx.home / ".claude" / "settings.local.json"
+    if settings_local.is_file():
+        try:
+            content = settings_local.read_text(encoding="utf-8")
+            if ".claude/scripts" in content or "dev_status.py" in content:
+                checklist.append(
+                    f"{settings_local} (permission patterns naming legacy script paths)"
+                )
+        except OSError:
+            pass
+
+    if checklist:
+        return Finding(
+            "manual-edit-checklist",
+            "warn",
+            "external files reference legacy script paths and require manual update",
+            checklist,
+        )
+    return Finding(
+        "manual-edit-checklist", "ok", "no external files requiring manual edits found"
+    )
 
 
 def _check_lock_probe() -> Finding:
@@ -1181,6 +1305,9 @@ def run_checks(ctx: MigrationContext) -> list[Finding]:
         _check_override(ctx),
         *_check_domains(ctx),
         _check_unclassified(ctx),
+        _check_path_env_vars(ctx),
+        _check_swarm_state(ctx),
+        _check_manual_edits(ctx),
         *_check_journals(ctx),
         _check_reconciliation(ctx),
         _check_legacy_links(ctx)[0],
@@ -3121,6 +3248,9 @@ def run(opts: MigrationOptions, *, repo_root: Path) -> int:
     )
     report = PreflightReport(migration_id=ctx.migration_id, dry_run=opts.dry_run)
     report.findings = run_checks(ctx)
+    report.manual_edit_checklist = next(
+        (f.paths for f in report.findings if f.check == "manual-edit-checklist"), []
+    )
 
     if opts.dry_run:
         if not any(
@@ -3147,6 +3277,14 @@ def run(opts: MigrationOptions, *, repo_root: Path) -> int:
                 ctx.installer_state, ctx.history, repo_root=ctx.repo_root
             )
             report.findings = run_checks(ctx)
+            report.manual_edit_checklist = next(
+                (
+                    f.paths
+                    for f in report.findings
+                    if f.check == "manual-edit-checklist"
+                ),
+                [],
+            )
             if report.refused:
                 report.outcome = "refused"
                 _emit(report, opts)

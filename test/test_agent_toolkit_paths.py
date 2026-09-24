@@ -313,3 +313,35 @@ def test_generated_text_root_matches_the_default_toolkit_root(tmp_path, monkeypa
         / harness_spec.TOOLKIT_PATH_TOKENS["TOOLKIT_DATA"].removeprefix("~/")
         / "grill"
     )
+
+
+def test_check_upgrade_required_clean_install(tmp_path):
+    assert agent_toolkit_paths.check_upgrade_required(tmp_path) is None
+
+
+def test_check_upgrade_required_migrated_install(tmp_path):
+    legacy_data = tmp_path / ".claude" / "data" / "backlog"
+    legacy_data.mkdir(parents=True)
+    (legacy_data / "items.json").write_text('{"schema_version": 2, "items": []}')
+
+    state_dir = tmp_path / ".local" / "state" / "agent-toolkit"
+    state_dir.mkdir(parents=True)
+    (state_dir / "history.jsonl").write_text(
+        '{"kind": "migration", "id": "mig-1", "outcome": "committed"}\n'
+    )
+    assert agent_toolkit_paths.check_upgrade_required(tmp_path) is None
+
+    (state_dir / "history.jsonl").write_text(
+        '{"kind": "migration", "id": "mig-2", "outcome": "finalized"}\n'
+    )
+    assert agent_toolkit_paths.check_upgrade_required(tmp_path) is None
+
+
+def test_check_upgrade_required_unmigrated_legacy_install(tmp_path):
+    legacy_data = tmp_path / ".claude" / "data" / "backlog"
+    legacy_data.mkdir(parents=True)
+    (legacy_data / "items.json").write_text('{"schema_version": 2, "items": []}')
+
+    with pytest.raises(agent_toolkit_paths.UpgradeRequiredError) as exc_info:
+        agent_toolkit_paths.check_upgrade_required(tmp_path)
+    assert "legacy toolkit data found" in str(exc_info.value).lower()

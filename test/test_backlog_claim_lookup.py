@@ -6,6 +6,7 @@ touched here; the guard's end-to-end behaviour lives in the guard_rails
 test files."""
 
 import json
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -185,6 +186,32 @@ class LocalClaimLookupTests(unittest.TestCase):
         lookup = LocalClaimLookup(store_path=self.path)
         # No GUARD_RAILS_STORE involvement: the injected path is used as-is.
         assert [i["id"] for i in lookup.in_progress_items()] == ["a"]
+
+    def test_guard_rails_reader_fails_open_with_missing_override(self) -> None:
+        """When GUARD_RAILS_STORE points to a nonexistent path, the reader
+        fails open: empty items snapshot, no claims, no crashes."""
+        import unittest.mock
+
+        missing = self.path.parent / "missing.json"
+        with unittest.mock.patch.dict(os.environ, {"GUARD_RAILS_STORE": str(missing)}):
+            lookup = LocalClaimLookup()
+            assert lookup.in_progress_items() == []
+            assert lookup.ready_items() == []
+            assert lookup.claim_info("some-item") is None
+            assert lookup.get_item("some-item") is None
+
+    def test_guard_rails_reader_fails_open_with_corrupt_override(self) -> None:
+        """When GUARD_RAILS_STORE points to corrupt JSON, the reader fails open."""
+        import unittest.mock
+
+        bad = self.path.parent / "bad.json"
+        bad.write_text("{corrupt json")
+        with unittest.mock.patch.dict(os.environ, {"GUARD_RAILS_STORE": str(bad)}):
+            lookup = LocalClaimLookup()
+            assert lookup.in_progress_items() == []
+            assert lookup.ready_items() == []
+            assert lookup.claim_info("some-item") is None
+            assert lookup.get_item("some-item") is None
 
 
 class ProtocolConformanceTests(unittest.TestCase):
