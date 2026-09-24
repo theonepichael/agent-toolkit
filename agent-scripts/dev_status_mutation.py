@@ -247,6 +247,7 @@ class RunResult:
     duration_s: float
     cwd: str
     appended: bool
+    head: str | None = None
 
 
 # ── Typed Requests ────────────────────────────────────────────────────────────
@@ -1324,8 +1325,20 @@ def _raise_on_prepass(
         )
 
 
-def _derive_run_cwd(item: BacklogItem | None, explicit_cwd: str | None) -> Path:
-    """Determine working directory for dev_status run."""
+def _derive_run_cwd(
+    item: BacklogItem | None,
+    explicit_cwd: str | None,
+    *,
+    in_progress_ids: set[str],
+) -> Path:
+    """Determine the working directory for ``dev_status run``.
+
+    An explicit ``--cwd`` is used as given. Otherwise the run goes to the
+    checkout :func:`worktree_provenance.resolve_run_checkout` attributes to
+    the item -- its linked worktree, or a main checkout that already holds
+    its work -- and is refused when no checkout can be trusted to. With no
+    related repository at all, the session cwd is used.
+    """
     if explicit_cwd is not None:
         p = Path(explicit_cwd).expanduser().resolve()
         if not p.is_dir():
@@ -1335,15 +1348,17 @@ def _derive_run_cwd(item: BacklogItem | None, explicit_cwd: str | None) -> Path:
         return p
 
     if item is not None:
-        for entry in item.get("related_files", []):
-            if not isinstance(entry, Mapping):
-                continue
-            raw = str(entry.get("path", "")).strip()
-            if not raw:
-                continue
-            repo_root = _repo_root_for_path(raw)
-            if repo_root is not None and repo_root.is_dir():
-                return repo_root
+        checkout = worktree_provenance.resolve_run_checkout(
+            related_files=item.get("related_files", []),
+            slug=str(item["id"]),
+            in_progress_ids=in_progress_ids | {str(item["id"])},
+            target_branch=item.get("integration_branch"),
+            cwd=Path.cwd(),
+        )
+        if checkout.problem is not None:
+            raise ValidationError(f"[run] {checkout.problem}")
+        if checkout.path is not None:
+            return checkout.path
 
     return Path.cwd()
 
@@ -2706,8 +2721,16 @@ def run_item(
         require_kind("run", slug_or_id, kind, "backlog")
 
         item = build_index(items).get(slug)
+        in_progress_ids = {
+            str(i["id"]) for i in items if i.get("status") == "in-progress"
+        }
 
-    run_cwd = _derive_run_cwd(item, cwd)
+    run_cwd = _derive_run_cwd(item, cwd, in_progress_ids=in_progress_ids)
+    head, head_problem = worktree_provenance.read_head(run_cwd)
+    if head_problem is not None:
+        raise ValidationError(
+            f"[run] {head_problem} — a run must name the commit it exercised"
+        )
     child_env = {k: v for k, v in os.environ.items() if k != "DEVSTATUS_AGENT"}
     started_at = datetime.now(UTC).isoformat()
     start_mono = time.monotonic()
@@ -2736,6 +2759,7 @@ def run_item(
         "started_at": started_at,
         "duration_s": duration_s,
         "cwd": str(run_cwd),
+        "head": head,
     }
 
     # Brief lock 2: append evidence row
@@ -2754,6 +2778,7 @@ def run_item(
         duration_s=duration_s,
         cwd=str(run_cwd),
         appended=appended,
+        head=head,
     )
 
 

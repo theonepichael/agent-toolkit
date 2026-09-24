@@ -210,6 +210,18 @@ class MutationFixture(unittest.TestCase):
 
 
 class MutationCliCharacterizationTestCase(MutationFixture):
+    def setUp(self):
+        super().setUp()
+        # run's checkout resolution and HEAD probe are git calls; these
+        # characterization tests mock subprocess.run wholesale instead.
+        for name, value in (
+            ("resolve_run_checkout", worktree_provenance.RunCheckout()),
+            ("read_head", ("f" * 40, None)),
+        ):
+            stubbed = patch.object(worktree_provenance, name, return_value=value)
+            stubbed.start()
+            self.addCleanup(stubbed.stop)
+
     """Tier 1: today's compact output line and exit code, per command."""
 
     def _compact(self, out):

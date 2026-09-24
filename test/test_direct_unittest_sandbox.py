@@ -78,16 +78,25 @@ def test_direct_run_sample_entrypoints():
     )
     assert result1.returncode == 0, f"target1 failed: {result1.stderr}"
 
-    # 2. Heavy real entrypoint: test_dev_status.py
+    # 2. Heavy real entrypoint: test_dev_status.py, one store-touching
+    #    test selected through unittest's argv passthrough -- proves the same
+    #    bootstrap/sandbox path without re-running the whole file serially.
     target2 = REPO_ROOT / "test" / "test_dev_status.py"
     result2 = subprocess.run(
-        [sys.executable, str(target2)],
+        [
+            sys.executable,
+            str(target2),
+            "BacklogTestCase.test_backlog_lock_reentrant_same_thread_does_not_deadlock",
+        ],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
         check=False,
     )
     assert result2.returncode == 0, f"target2 failed: {result2.stderr}"
+    assert "Ran 1 test" in result2.stderr, (
+        f"selection did not run exactly one test: {result2.stderr}"
+    )
 
 
 NEW_GUARDED_APIS = [

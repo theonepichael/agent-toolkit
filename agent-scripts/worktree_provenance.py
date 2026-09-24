@@ -55,6 +55,7 @@ Environment
 
 from __future__ import annotations
 
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -768,3 +769,158 @@ def inspect_item_worktrees(
                 if insp is not None:
                     out.append(insp)
     return out
+
+
+# ── where `dev_status run` executes ──────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class RunCheckout:
+    """Where a run for an item executes: ``path``, or why it must not run.
+
+    Both None means nothing is attributable (no related repository and no
+    attributed session worktree); the caller keeps its own default.
+    """
+
+    path: Path | None = None
+    problem: str | None = None
+
+
+def _refusal(problems: list[str]) -> RunCheckout:
+    return RunCheckout(problem="; ".join(dict.fromkeys(problems)))
+
+
+def _attributed(
+    directory: Path, slug: str, in_progress_ids: set[str], problems: list[str]
+) -> Path | None:
+    """``directory``'s worktree root when it is a linked worktree of ``slug``."""
+    prov = classify(directory)
+    if prov is None or not prov.is_linked_worktree or prov.toplevel is None:
+        return None
+    if _invalid_marker(directory, prov):
+        problems.append(
+            f"{prov.toplevel} has an unreadable provenance marker, so its item "
+            "is unknown"
+        )
+        return None
+    if worktree_points_at_item(
+        marker_slug=prov.marker_slug,
+        is_linked_worktree=True,
+        branch=prov.branch,
+        item_id=slug,
+        in_progress_ids=in_progress_ids,
+    ):
+        return prov.toplevel.resolve()
+    return None
+
+
+def _fallback_problem(
+    main: Path, branch: str, slug: str, target_branch: str | None
+) -> str | None:
+    """Why the main checkout cannot stand in for the item's tree, if it cannot."""
+    target, problem = _merge_target(main, target_branch)
+    if problem is not None or target is None:
+        return f"{main}: {problem}"
+    wanted = target.removeprefix("refs/heads/")
+    if not branch:
+        return f"{main} is on a detached HEAD, not {wanted}"
+    if branch != wanted:
+        return f"{main} is on {branch} but this item's work lands on {wanted}"
+    ref = f"refs/heads/{slug}"
+    exists = _git_raw("-C", str(main), "show-ref", "--verify", "--quiet", ref)
+    if exists is None or exists[0] not in (0, 1):
+        return f"{main}: could not check for branch {slug}"
+    if exists[0] == 1:
+        return None
+    merged = _git_raw("-C", str(main), "merge-base", "--is-ancestor", ref, "HEAD")
+    if merged is None or merged[0] not in (0, 1):
+        return f"{main}: could not check whether {slug} is merged"
+    if merged[0] == 1:
+        return f"branch {slug} is not merged into {main}'s HEAD"
+    return None
+
+
+def resolve_run_checkout(
+    *,
+    related_files: object,
+    slug: str,
+    in_progress_ids: set[str],
+    target_branch: str | None,
+    cwd: Path | None = None,
+) -> RunCheckout:
+    """The checkout a run for ``slug`` should execute in, or why none may.
+
+    A linked worktree attributed to the item wins: any worktree of a related
+    repository, or the session ``cwd`` when it is one. With none, a related
+    repository's main checkout stands in only while it is on the item's
+    merge target (``target_branch``, else the local default branch) and any
+    surviving ``slug`` branch is merged into its HEAD. Every repository is
+    examined before deciding, and any failure refuses. Read-only.
+    """
+    repos, discovery = _discover_repos(related_files)
+    problems = [f"{p.target}: {p.problem}" for p in discovery]
+    attributed: set[Path] = set()
+    mains: list[tuple[Path, str]] = []
+    for anchor in repos.values():
+        records, problem = _worktree_records(anchor)
+        if problem is not None:
+            problems.append(f"{anchor}: {problem}")
+            continue
+        if not records:
+            continue
+        mains.append(records[0])
+        for path, _branch in records[1:]:
+            if not path.is_dir():
+                continue
+            found = _attributed(path, slug, in_progress_ids, problems)
+            if found is not None:
+                attributed.add(found)
+    if cwd is not None:
+        found = _attributed(cwd, slug, in_progress_ids, problems)
+        if found is not None:
+            attributed.add(found)
+    if problems:
+        return _refusal(problems)
+    if len(attributed) > 1:
+        paths = ", ".join(str(p) for p in sorted(attributed))
+        return RunCheckout(
+            problem=f"ambiguous: {paths} all belong to {slug} — pass --cwd"
+        )
+    if attributed:
+        return RunCheckout(path=attributed.pop())
+    accepted: set[Path] = set()
+    for main, branch in mains:
+        problem = _fallback_problem(main, branch, slug, target_branch)
+        if problem is not None:
+            problems.append(problem)
+        else:
+            accepted.add(main.resolve())
+    if problems:
+        return RunCheckout(
+            problem="; ".join(problems)
+            + " — no worktree holds this item's work; pass --cwd <a checkout of it>"
+        )
+    if len(accepted) > 1:
+        paths = ", ".join(str(p) for p in sorted(accepted))
+        return RunCheckout(
+            problem=f"ambiguous: {paths} could each run {slug} — pass --cwd"
+        )
+    return RunCheckout(path=accepted.pop()) if accepted else RunCheckout()
+
+
+def read_head(directory: Path) -> tuple[str | None, str | None]:
+    """(HEAD sha, problem) for ``directory``; (None, None) outside any repo.
+
+    "Outside" is decided from the filesystem — no ``.git`` entry at the
+    directory or any ancestor — so it never depends on git's wording. Inside
+    a repository, a HEAD that cannot be read is a problem.
+    """
+    if not any(os.path.lexists(p / ".git") for p in (directory, *directory.parents)):
+        return None, None
+    raw = _git_raw("-C", str(directory), "rev-parse", "--verify", "HEAD")
+    if raw is None:
+        return None, f"git rev-parse HEAD timed out or could not run in {directory}"
+    rc, out, err = raw
+    if rc != 0 or not out.strip():
+        return None, f"cannot read HEAD in {directory} ({_one_line(err)})"
+    return out.strip(), None

@@ -8,7 +8,7 @@ formatting functions deterministic and independently reusable.
 
 import re
 from collections.abc import Callable, Sequence
-from datetime import datetime
+from datetime import UTC, datetime
 
 # What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
 TOOLKIT_DATA = "none"
@@ -101,12 +101,35 @@ def format_age(seconds: float) -> str:
     return f"{int(hours)}h"
 
 
+# Sentinel for ordering groups whose events carry no parseable timestamp.
+# Aware (UTC) so it sorts against real parsed timestamps without a TypeError.
+_EPOCH = datetime(1, 1, 1, tzinfo=UTC)
+
+
 def render_changelog(
     entries: list[dict[str, object]],
     parse_timestamp: Callable[[object], datetime | None],
+    max_lines: int = 60,
 ) -> str:
-    """Pre-render non-completion journal entries into dense prompt facts."""
-    lines = []
+    """Pre-render non-completion journal entries into dense, per-item prompt facts.
+
+    Journal entries that share an item (keyed by ``slug``, falling back to
+    ``summary``) are coalesced into a single line: the item's latest summary,
+    its first→last status arrow (omitted when the status never changed), an
+    edit count (the number of ``update`` events), the union of changed field
+    names, any ``reject`` feedback, and a compact list of other actions
+    (``block``, ``unblock``, ``gate-set``, ``gate-pass``, ``rename``, ``add``,
+    ``remove``) that touched the item. This collapses the ~400-line, ~50 KB
+    per-event changelog (E-02) into at most ``max_lines`` item lines so the
+    recap prompt spends tokens on facts rather than repetition.
+
+    Board-wide events that carry neither a slug nor a summary (e.g.
+    ``prune``, ``backfill-gate``) are kept as their own lines, keyed by
+    command, so their counts stay visible. Diagnostic entries and completion
+    (``done``) transitions are dropped before any grouping, as before.
+    """
+    groups: dict[object, list[dict[str, object]]] = {}
+    group_last_ts: dict[object, datetime] = {}
     for entry in entries:
         if entry.get("diagnostic"):
             # Low-level lock-contention/stale-sweep/claim-theft telemetry is
@@ -115,28 +138,118 @@ def render_changelog(
             continue
         if entry.get("to_status") == "done":
             continue
-        timestamp = parse_timestamp(entry.get("ts"))
-        time_str = timestamp.strftime("%H:%M") if timestamp else "??:??"
-        line = f"[{time_str}] {entry.get('cmd', '?')}"
         slug = entry.get("slug")
         summary = entry.get("summary")
-        if slug and not summary:
-            line += f" {slug}"
-        if summary:
-            line += f" — {summary}"
-        detail = []
-        if entry.get("from_status") and entry.get("to_status"):
-            detail.append(f"{entry['from_status']}→{entry['to_status']}")
-        if entry.get("fields"):
-            detail.append(f"changed: {', '.join(entry['fields'])}")
-        if entry.get("feedback"):
-            detail.append(f"feedback: {entry['feedback']}")
-        if entry.get("count") is not None:
-            detail.append(f"{entry['count']} item(s)")
-        if detail:
-            line += f" ({'; '.join(detail)})"
-        lines.append(line)
+        if slug:
+            key: object = slug
+        elif summary:
+            key = summary
+        else:
+            # Board-wide event (no item identity) — keep it distinct by command
+            # so unrelated events don't merge and lose their count.
+            key = f"__event__:{entry.get('cmd', '?')}"
+        groups.setdefault(key, []).append(entry)
+        ts = parse_timestamp(entry.get("ts"))
+        if ts is not None:
+            group_last_ts[key] = ts
+
+    lines = []
+    for key in sorted(groups, key=lambda k: group_last_ts.get(k, _EPOCH)):
+        line = _render_changelog_group(groups[key], parse_timestamp, key)
+        if line:
+            lines.append(line)
+
+    if len(lines) > max_lines:
+        dropped = len(lines) - max_lines
+        lines = lines[-max_lines:]
+        lines.insert(0, f"(+{dropped} earlier items)")
     return "\n".join(lines)
+
+
+def _render_changelog_group(
+    evs: list[dict[str, object]],
+    parse_timestamp: Callable[[object], datetime | None],
+    key: object,
+) -> str:
+    """Render one coalesced changelog line for a group of item/event entries."""
+    # Label: latest summary, else the slug, else (board-wide) the command.
+    label = ""
+    for entry in reversed(evs):
+        if entry.get("summary"):
+            label = str(entry["summary"])
+            break
+        if entry.get("slug"):
+            label = str(entry["slug"])
+            break
+    if not label:
+        label = str(evs[0].get("cmd", "?"))
+
+    ts = parse_timestamp(evs[-1].get("ts"))
+    time_str = ts.strftime("%H:%M") if ts else "??:??"
+
+    edits = 0
+    fields: list[str] = []
+    other_actions: set[str] = set()
+    feedbacks: list[str] = []
+    transitions: list[tuple[object, object]] = []
+    for entry in evs:
+        cmd = entry.get("cmd")
+        if cmd == "update":
+            edits += 1
+            for fld in entry.get("fields") or []:
+                if fld not in fields:
+                    fields.append(str(fld))
+        elif entry.get("from_status") or entry.get("to_status"):
+            transitions.append((entry.get("from_status"), entry.get("to_status")))
+        elif not str(key).startswith("__event__:"):
+            # A concrete action on the item that is neither an edit nor a
+            # status transition (block, unblock, gate-set, gate-pass, rename,
+            # add, remove) — keep it visible, collapsed to a set. Board-wide
+            # events are keyed by command and already labelled with it, so
+            # they are skipped here to avoid repeating the command.
+            if cmd is not None:
+                other_actions.add(str(cmd))
+        fb = entry.get("feedback")
+        if fb:
+            feedbacks.append(str(fb))
+
+    start_status = end_status = None
+    if transitions:
+        first = transitions[0]
+        last = transitions[-1]
+        start_status = first[0] or first[1]
+        end_status = last[1] or last[0]
+
+    clauses: list[str] = []
+    if (
+        start_status is not None
+        and end_status is not None
+        and start_status != end_status
+    ):
+        clauses.append(f"{start_status}→{end_status}")
+    if edits:
+        clauses.append(f"{edits} edit{'s' if edits != 1 else ''}")
+
+    body = ""
+    if clauses:
+        body = " — " + "; ".join(clauses)
+    if fields:
+        body += f" (fields: {', '.join(fields)})"
+    if other_actions:
+        body += "; " + ", ".join(sorted(other_actions))
+    # Feedback is prose that matters to a recap; bound it so a long rejection
+    # can't defeat the line cap meant to keep the prompt small.
+    if feedbacks:
+        joined = "; ".join(ellipsize(fb, 200) for fb in feedbacks)
+        body += f"; feedback: {joined}"
+
+    # Board-wide events (no item identity) keep their count, as before.
+    if str(key).startswith("__event__:"):
+        count = evs[0].get("count")
+        if count is not None:
+            body += f" ({count} item(s))"
+
+    return f"[{time_str}] {label}{body}"
 
 
 def render_done_facts(

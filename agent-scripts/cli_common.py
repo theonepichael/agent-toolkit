@@ -196,8 +196,21 @@ def append_jsonl(
     *,
     on_error: OnError = "log",
     mode: int = 0o666,
+    max_bytes: int | None = None,
 ) -> None:
     """Append one JSON record to ``path`` as a single JSONL line, opt-in failure reporting.
+
+    ``max_bytes`` opt-in size cap for telemetry logs that grow without bound.
+    When set and ``path`` already exists and exceeds it, ``path`` is renamed to
+    ``<stem><suffix>.1`` (e.g. ``timing.jsonl`` → ``timing.jsonl.1``) via
+    ``os.replace`` — keeping exactly one generation — before the new line is
+    written to a fresh ``path``. The check is ``>`` (strict), so a file that
+    sits exactly at the cap is not rotated. ``max_bytes`` is off by default
+    (``None``); data files that must stay single-generation (journal.jsonl,
+    runs.jsonl) never pass it. A race between two appenders can at most drop
+    the other's single line into the rotated file, which is acceptable for
+    telemetry; the rotation is best-effort and never raises — if the rename
+    fails, the append proceeds as today (no rotation).
 
     The default ``on_error="log"`` preserves today's best-effort contract: a
     write failure (serialisation, bad parent, permissions, disk full, a short
@@ -234,6 +247,25 @@ def append_jsonl(
     except Exception as exc:
         _report_jsonl_failure(exc, path, on_error)
         return
+    # Size-capped rotation (opt-in, telemetry only): if the existing file
+    # already exceeds max_bytes, rename it to its .1 sibling (one generation)
+    # before the new line is written. The whole check runs inside one try so a
+    # concurrent rotation can't break the never-raises contract: a second
+    # writer may have already renamed the file away, so stat() raises
+    # FileNotFoundError, which is harmless — the append below just creates a
+    # fresh file. Any other OSError is logged at debug and skipped; rotation is
+    # best-effort and never honours on_error (so on_error="raise" cannot be
+    # triggered by a rotation failure), and the append always proceeds.
+    if max_bytes is not None:
+        try:
+            if path.stat().st_size > max_bytes:
+                os.replace(path, path.with_suffix(path.suffix + ".1"))
+        except FileNotFoundError:
+            pass  # rotated away by a concurrent writer; fresh file created below
+        except OSError as exc:  # rotation hiccup: never block the append
+            get_logger(_MODULE_LOGGER_NAME, verbose=True).debug(
+                "append_jsonl rotation skipped for %s: %s", path, exc
+            )
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, mode)
@@ -328,6 +360,10 @@ def timing_log_path() -> Path:
     writer can resolve it inside its own exception boundary — path resolution
     can fail before append_jsonl is entered, and that failure must stay silent
     (never raise, never change exit behaviour), exactly like a write failure.
+
+    Size-capped rotation (phase A): when this file exceeds 20 MiB it is renamed
+    to timing.jsonl.1, keeping one generation. Anyone mining the log by hand
+    should read both files; the .1 holds the prior generation only.
     """
     return state_dir() / "agent-toolkit/timing.jsonl"
 
@@ -343,9 +379,21 @@ def _append_timing_record(record: dict[str, object]) -> None:
 
     try:
         with migration_lock.shared("timing-log", quiet=True):
-            append_jsonl(timing_log_path(), record, on_error="silent", mode=0o600)
+            append_jsonl(
+                timing_log_path(),
+                record,
+                on_error="silent",
+                mode=0o600,
+                max_bytes=_TIMING_LOG_MAX_BYTES,
+            )
     except migration_lock.MigrationLockBusy as exc:
         migration_lock.observe("timing-log", "refused-telemetry", str(exc), quiet=True)
+
+
+# Phase A cap (telemetry only): timing.jsonl is not a migrated data domain, so a
+# .1 sibling is safe here. The guard/backend logs stay uncapped until the
+# toolkit-home migration's inventory knows about <file>.1 (phase B).
+_TIMING_LOG_MAX_BYTES = 20 * 1024 * 1024
 
 
 _TIMING_PARENT: ContextVar[tuple[str, str] | None] = ContextVar(
