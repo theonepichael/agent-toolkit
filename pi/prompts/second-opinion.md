@@ -18,8 +18,8 @@ use `--text-only` to opt out.
 
 Call the `second_opinion` tool. Action `detect` lists the available backends as
 JSON. Action `review` returns one critique of the plan at `planFile`,
-optionally scoped with `focusFile`, `modelIndex`, `dir`, and `textOnly`. Never
-run `second_opinion.py` via bash.
+optionally scoped with `backend`, `model`, `timeoutSeconds`, `focusFile`,
+`modelIndex`, `dir`, and `textOnly`. Never run `second_opinion.py` via bash.
 
 `--model-index` is a 0-based index into a per-machine model pool
 (`SECOND_OPINION_CODEX_MODEL_POOL` / `_AGY_MODEL_POOL` / `_PI_MODEL_POOL` /
@@ -66,9 +66,10 @@ single-model override (`SECOND_OPINION_<BACKEND>_MODEL`, the model's id or
 display name as that backend lists it — confirm it exists first, e.g. `agy
 models`) for every round, and omit `--model-index` — an explicit index selects
 the pool over the override, so passing it would silently replace the model the
-user asked for. Where the call goes through a shell, prefix it with the
-variable; where it goes through a native tool with no model parameter, ask the
-user to set the variable in the environment the harness was launched from.
+user asked for. Where the call goes through the native `second_opinion` tool,
+pass the model as the `model` parameter (paired with `backend`) and raise the
+timeout with `timeoutSeconds` (clamped to 600) — never set the env var
+directly.
 
 ## Resolving the target plan
 

@@ -552,12 +552,15 @@ argument-hint: [plan file or text]
         # prose, deliberately with no code fence: pi-tool-dev-status showed
         # a fenced command block is read as an instruction to run bash no
         # matter what the surrounding prose says, 2026-08-30
+        # `model` pairs with `backend` (it sets SECOND_OPINION_<BACKEND>_MODEL);
+        # `timeoutSeconds` raises SECOND_OPINION_<BACKEND>_TIMEOUT_SECONDS
+        # (or the global var) for the call, 2026-09-23
         usage_block=(
             "Call the `second_opinion` tool. Action `detect` lists the "
             "available backends as JSON. Action `review` returns one "
             "critique of the plan at `planFile`, optionally scoped with "
-            "`focusFile`, `modelIndex`, `dir`, and `textOnly`. Never run "
-            "`second_opinion.py` via bash."
+            "`backend`, `model`, `timeoutSeconds`, `focusFile`, `modelIndex`, "
+            "`dir`, and `textOnly`. Never run `second_opinion.py` via bash."
         ),
         # the loop's per-round call, naming the tool and its parameter
         # names rather than the script and its CLI flags, 2026-08-30
@@ -632,12 +635,15 @@ description: "Send a plan to a non-Claude model for adversarial critique, then i
         # prose, deliberately with no code fence: pi-tool-dev-status showed
         # a fenced command block is read as an instruction to run bash no
         # matter what the surrounding prose says, 2026-09-01
+        # `model` pairs with `backend` (it sets SECOND_OPINION_<BACKEND>_MODEL);
+        # `timeoutSeconds` raises SECOND_OPINION_<BACKEND>_TIMEOUT_SECONDS
+        # (or the global var) for the call, 2026-09-23
         usage_block=(
             "Call the `second_opinion` tool. Action `detect` lists the "
             "available backends as JSON. Action `review` returns one "
             "critique of the plan at `planFile`, optionally scoped with "
-            "`focusFile`, `modelIndex`, `dir`, and `textOnly`. Never run "
-            "`second_opinion.py` via bash."
+            "`backend`, `model`, `timeoutSeconds`, `focusFile`, `modelIndex`, "
+            "`dir`, and `textOnly`. Never run `second_opinion.py` via bash."
         ),
         # the loop's per-round call, naming the tool and its parameter
         # names rather than the script and its CLI flags, 2026-09-01
@@ -757,6 +763,24 @@ def substitutions(params: HarnessParams) -> dict[str, str]:
         "REVIEW_CALL": params.review_call,
         "REVIEW_CALL_RETRY": params.review_call_retry,
         "GRILL_PLAN_LOOKUP": params.grill_plan_lookup,
+        # Only Pi routes backend I/O through its native `second_opinion` tool
+        # (io_entrypoint == "the `second_opinion` tool"); every other harness
+        # shells out to second_opinion.py. The native tool now exposes `model`
+        # and `timeoutSeconds` params, so Pi must be told to use them instead
+        # of asking the user to set env in Pi's launch environment. The shell
+        # harnesses keep the original shell/native sentence verbatim, so their
+        # generated copies stay byte-identical.
+        "PIN_MODEL_INSTRUCTION": (
+            "Where the call goes through the native `second_opinion` tool, pass "
+            "the model as the `model` parameter (paired with `backend`) and "
+            "raise the timeout with `timeoutSeconds` (clamped to 600) — never "
+            "set the env var directly."
+            if params.io_entrypoint == "the `second_opinion` tool"
+            else "Where the call goes through a shell, prefix it with the "
+            "variable; where it goes through a native tool with no model "
+            "parameter, ask the user to set the variable in the environment "
+            "the harness was launched from."
+        ),
     }
 
 
