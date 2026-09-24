@@ -769,35 +769,37 @@ class RealRepoSmokeTestCase(unittest.TestCase):
     accepted false positives -- a bare filename that names
     something outside the repo (a runtime data file, another tool's own
     doc) is mechanically indistinguishable from a genuinely-broken
-    repo-relative citation, and `pi/node_modules` is an uncommitted
-    dependency directory that exists only after `npm install` runs in
-    `pi/`, so a fresh worktree legitimately lacks it. The known set is
-    subtractive (`actual - known`), so an entry for a finding that never
-    occurs (deps installed) masks nothing: the checker only flags paths
-    that don't exist, so an existing `pi/node_modules` can never produce
-    this finding. This asserts no *new* finding appears (a
-    regression in the checking logic) without being brittle to line
-    numbers, and doesn't fail if one of the known findings gets fixed.
+    repo-relative citation, and the Pi and opencode `node_modules` trees are
+    uncommitted dependency directories that exist only after `npm install`
+    runs in their respective projects. The known set is subtractive
+    (`actual - known`), so an entry for a finding that never occurs (deps
+    installed) masks nothing: the checker only flags paths that don't exist.
+    This asserts no *new* finding appears (a regression in the checking logic)
+    without being brittle to line numbers, and doesn't fail if one of the known
+    findings gets fixed.
     """
 
+    _DEPENDENCY_NODE_ROOTS = ("pi/node_modules", "opencode/node_modules")
     _KNOWN_FINDINGS = {
+        ("AGENTS.md", "opencode/node_modules"),
+        ("AGENTS.md", "pi/node_modules"),
         ("README.md", "backlog.json"),
+        ("README.md", "opencode/node_modules"),
+        ("README.md", "pi/node_modules"),
         ("STYLE.md", ".github/SECRET_CHECK.md"),
+        ("STYLE.md", "opencode/node_modules"),
+        ("STYLE.md", "pi/node_modules"),
+        ("opencode/AGENTS.md", "opencode/node_modules"),
+        ("opencode/AGENTS.md", "opencode/node_modules/.bin"),
         ("pi/AGENTS.md", "docs/skills.md"),
         ("pi/AGENTS.md", "docs/prompt-templates.md"),
         ("pi/AGENTS.md", "pi/node_modules"),
         ("pi/AGENTS.md", "swarm-picker-copilot.ts"),
-        ("README.md", "pi/node_modules"),
+        ("scripts/AGENTS.md", "opencode/node_modules"),
+        ("scripts/AGENTS.md", "pi/node_modules"),
     }
 
-    def test_every_pi_node_modules_citation_is_a_known_finding(self) -> None:
-        """Regression guard for the fresh-worktree variant: any scanned,
-        claim-checked doc that cites `pi/node_modules` must have a matching
-        `_KNOWN_FINDINGS` entry, because a fresh worktree legitimately lacks
-        the untracked directory and the checker then flags the citation as
-        stale (the smoke test above only catches this when it happens to run
-        in a worktree before `bootstrap-worktree.sh` installed the deps).
-        """
+    def test_every_node_modules_citation_is_a_known_finding(self) -> None:
         repo_root = rg.DEFAULT_REPO_ROOT
         doc_set, _label = rg.resolve_doc_set(repo_root, "agent-toolkit")
         for doc in rg.discovered_docs(repo_root, doc_set):
@@ -808,13 +810,17 @@ class RealRepoSmokeTestCase(unittest.TestCase):
             cited = {
                 (claim.doc, claim.raw)
                 for claim in claims
-                if claim.kind == "path" and claim.raw == "pi/node_modules"
+                if claim.kind == "path"
+                and any(
+                    claim.raw == root or claim.raw.startswith(f"{root}/")
+                    for root in self._DEPENDENCY_NODE_ROOTS
+                )
             }
             self.assertEqual(
                 cited - self._KNOWN_FINDINGS,
                 set(),
-                f"{doc} cites `pi/node_modules` without a _KNOWN_FINDINGS "
-                "entry; a fresh worktree without it flags the citation stale",
+                f"{doc} cites an untracked node_modules path without a "
+                "_KNOWN_FINDINGS entry; a fresh worktree flags it stale",
             )
 
     def test_no_unexpected_findings_against_this_checkout(self) -> None:

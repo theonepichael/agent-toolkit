@@ -28,6 +28,10 @@ jobs:
         working-directory: pi
         run: npm install
 
+      - name: npm install (opencode/)
+        working-directory: opencode
+        run: npm install
+
       - name: ruff check
         run: uv run ruff check .
 

@@ -1744,9 +1744,13 @@ are copy-once seeds for exactly that reason.
 | `opencode/CLAUDE.md` | not symlinked by `links.toml` |
 | `opencode/CLAUDE_CODE_PARITY.md` | not symlinked by `links.toml` |
 | `opencode/opencode.jsonc` | not symlinked by `links.toml` |
+| `opencode/package-lock.json` | not symlinked by `links.toml` |
+| `opencode/package.json` | not symlinked by `links.toml` |
 | `opencode/plugin/guard-rails.ts` | `~/.config/opencode/plugin/guard-rails.ts` (opencode) |
 | `opencode/plugin/notify.ts` | `~/.config/opencode/plugin/notify.ts` (opencode) |
 | `opencode/plugin/ruff-format-on-edit.ts` | `~/.config/opencode/plugin/ruff-format-on-edit.ts` (opencode) |
+| `opencode/test/plugins.test.ts` | not symlinked by `links.toml` |
+| `opencode/tsconfig.json` | not symlinked by `links.toml` |
 | `opencode/tui.json` | `~/.config/opencode/tui.json` (opencode) |
 | `agy/CLAUDE_CODE_PARITY.md` | not symlinked by `links.toml` |
 | `agy/hooks/agy-elapsed.js` | `~/.claude/hooks/agy-elapsed.js` (agy) |

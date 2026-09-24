@@ -10,11 +10,11 @@ toolkit — not harness-runtime code. None of these scripts have a
 
 ## Hazards & Signposts
 
-- `bootstrap-worktree.sh` installs both of the repo's dependency roots (the
-  uv-managed root venv and the separate npm project in `pi/`) in one step.
-  Safe to rerun on an already-bootstrapped checkout. Run it right after
-  `git worktree add` — a fresh worktree never has `pi/`'s `node_modules`
-  until this runs.
+- `bootstrap-worktree.sh` installs all three dependency roots (the uv-managed
+  root venv and the separate npm projects in `pi/` and `opencode/`) in one
+  step. Safe to rerun on an already-bootstrapped checkout. Run it right after
+  `git worktree add` — a fresh worktree has neither `pi/node_modules` nor
+  `opencode/node_modules` until this runs.
 - `build-copilot-swarm.sh` bundles `pi/extensions/swarm-lib/` TypeScript
   into `copilot/extensions/swarm/` — copilot's swarm extension has a build
   step that pi's own native orchestration does not.

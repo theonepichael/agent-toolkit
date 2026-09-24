@@ -30,17 +30,36 @@ def _write_stub(bin_dir: Path, log: Path, name: str, exit_code: int) -> None:
     stub.chmod(0o755)
 
 
+def _write_npm_stub(bin_dir: Path, log: Path, fail_dir: Path) -> None:
+    stub = bin_dir / "npm"
+    stub.write_text(
+        textwrap.dedent(
+            f"""\
+            #!/usr/bin/env bash
+            printf '%s\\t%s\\t%s\\n' "npm" "$PWD" "$*" >> "{log}"
+            if [ "$PWD" = "{fail_dir}" ]; then
+              exit 1
+            fi
+            exit 0
+            """
+        )
+    )
+    stub.chmod(0o755)
+
+
 def _read_log(log: Path) -> list[tuple[str, str, str]]:
-    return [
-        line.split("\t", 2)  # type: ignore[misc]
-        for line in log.read_text().splitlines()
-    ]
+    entries: list[tuple[str, str, str]] = []
+    for line in log.read_text().splitlines():
+        name, cwd, args = line.split("\t", 2)
+        entries.append((name, cwd, args))
+    return entries
 
 
 def _fake_repo(tmp_path: Path) -> Path:
     repo = tmp_path / "fake-repo"
-    (repo / "pi").mkdir(parents=True)
-    (repo / "pi" / "package.json").write_text("{}\n")
+    for directory in ("pi", "opencode"):
+        (repo / directory).mkdir(parents=True)
+        (repo / directory / "package.json").write_text("{}\n")
     (repo / "pyproject.toml").write_text("[project]\nname = 'fake'\n")
     return repo
 
@@ -60,7 +79,7 @@ def script_in_fake_repo(tmp_path: Path) -> Path:
 
 @pytest.mark.allow_real_subprocess  # runs bash on the script + stubs; confined to tmp dirs
 class TestBootstrapWorktree:
-    def test_runs_both_installs_in_their_directories(
+    def test_runs_all_installs_in_their_directories(
         self, tmp_path: Path, script_in_fake_repo: Path
     ) -> None:
         repo = script_in_fake_repo.parent.parent
@@ -79,23 +98,29 @@ class TestBootstrapWorktree:
         )
 
         assert result.returncode == 0, result.stderr
-        calls = _read_log(log)
-        tools = [name for name, _cwd, _args in calls]
-        assert tools == ["uv", "npm"]
-        # uv runs at the repo root, npm inside pi/ — regardless of caller cwd
-        assert calls[0][1] == str(repo)
-        assert calls[0][2] == "sync"
-        assert calls[1][1] == str(repo / "pi")
-        assert calls[1][2] == "install"
+        assert _read_log(log) == [
+            ("uv", str(repo), "sync"),
+            ("npm", str(repo / "pi"), "install"),
+            ("npm", str(repo / "opencode"), "install"),
+        ]
 
+    @pytest.mark.parametrize("failure", ["uv", "pi", "opencode"])
     def test_failing_step_names_it_and_exits_nonzero(
-        self, tmp_path: Path, script_in_fake_repo: Path
+        self,
+        tmp_path: Path,
+        script_in_fake_repo: Path,
+        failure: str,
     ) -> None:
+        repo = script_in_fake_repo.parent.parent
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
         log = tmp_path / "calls.log"
-        _write_stub(bin_dir, log, "uv", exit_code=1)
-        _write_stub(bin_dir, log, "npm", exit_code=0)
+        if failure == "uv":
+            _write_stub(bin_dir, log, "uv", exit_code=1)
+            _write_stub(bin_dir, log, "npm", exit_code=0)
+        else:
+            _write_stub(bin_dir, log, "uv", exit_code=0)
+            _write_npm_stub(bin_dir, log, repo / failure)
 
         result = subprocess.run(
             ["bash", str(script_in_fake_repo)],
@@ -106,31 +131,56 @@ class TestBootstrapWorktree:
         )
 
         assert result.returncode != 0
-        assert "uv sync" in result.stderr
+        assert failure in result.stderr
+        assert _read_log(log) == [
+            ("uv", str(repo), "sync"),
+            ("npm", str(repo / "pi"), "install"),
+            ("npm", str(repo / "opencode"), "install"),
+        ]
 
-    def test_missing_tool_warns_skips_and_still_runs_the_other(
-        self, tmp_path: Path, script_in_fake_repo: Path
+    @pytest.mark.parametrize("missing", ["uv", "npm"])
+    def test_missing_tool_warns_skips_and_still_runs_the_others(
+        self,
+        tmp_path: Path,
+        script_in_fake_repo: Path,
+        missing: str,
     ) -> None:
         repo = script_in_fake_repo.parent.parent
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
         log = tmp_path / "calls.log"
-        _write_stub(bin_dir, log, "npm", exit_code=0)  # no uv stub: uv "missing"
+        path_value = f"{bin_dir}:/usr/bin:/bin"
+        if missing == "uv":
+            _write_stub(bin_dir, log, "npm", exit_code=0)
+            expected = [
+                ("npm", str(repo / "pi"), "install"),
+                ("npm", str(repo / "opencode"), "install"),
+            ]
+        else:
+            _write_stub(bin_dir, log, "uv", exit_code=0)
+            runtime_dir = tmp_path / "runtime"
+            runtime_dir.mkdir()
+            for command in ("bash", "dirname"):
+                resolved = shutil.which(command)
+                assert resolved is not None
+                (runtime_dir / command).symlink_to(resolved)
+            path_value = f"{bin_dir}:{runtime_dir}"
+            expected = [("uv", str(repo), "sync")]
 
         result = subprocess.run(
-            ["bash", str(script_in_fake_repo)],
+            ["/bin/bash", str(script_in_fake_repo)],
             cwd=tmp_path,
-            env={"PATH": f"{bin_dir}:/usr/bin:/bin"},
+            env={"PATH": path_value},
             capture_output=True,
             text=True,
         )
 
         assert result.returncode == 0, result.stderr
-        assert "uv" in result.stderr  # warning names the skipped tool
-        calls = _read_log(log)
-        assert [(name, cwd, args) for name, cwd, args in calls] == [
-            ("npm", str(repo / "pi"), "install")
-        ]
+        assert missing in result.stderr
+        if missing == "npm":
+            assert "pi TypeScript checks" in result.stderr
+            assert "opencode TypeScript checks" in result.stderr
+        assert _read_log(log) == expected
 
     def test_script_exists_and_has_bash_shebang(self) -> None:
         assert SCRIPT.exists(), f"{SCRIPT} missing"

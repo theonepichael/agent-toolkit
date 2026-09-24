@@ -26,7 +26,7 @@ export const NotifyPlugin: Plugin = async () => {
             {
               timeout: 5000,
               stdio: "ignore",
-            }
+            },
           )
         } catch {
           // Best-effort -- never block the session on notification failure.
