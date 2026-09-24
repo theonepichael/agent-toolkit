@@ -13,10 +13,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))  # noqa: E402
 import test_bootstrap  # noqa: E402
+from pytest_shim import pytest
 from unittest.mock import patch
 
 import cli_common
-import pytest
 
 
 class AddVerbosityArgsTests(unittest.TestCase):

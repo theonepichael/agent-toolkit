@@ -32,20 +32,11 @@ import unittest
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
-
-try:
-    import pytest
-except ModuleNotFoundError:
-    # Direct unittest runs have no pytest dependency; retain the marker's
-    # identity decorator behavior when pytest is unavailable.
-    pytest = SimpleNamespace(
-        mark=SimpleNamespace(regression=lambda *_args: lambda test: test)
-    )
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))
 import test_bootstrap  # noqa: E402
+from pytest_shim import pytest
 import test_layouts  # noqa: E402
 import agent_toolkit_paths  # noqa: E402
 import dev_status  # noqa: E402  (path insert above)

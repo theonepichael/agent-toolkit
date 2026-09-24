@@ -32,10 +32,9 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))
 import test_bootstrap  # noqa: E402
+from pytest_shim import pytest
 import test_layouts  # noqa: E402
 import agent_toolkit_paths  # noqa: E402
 import dev_status

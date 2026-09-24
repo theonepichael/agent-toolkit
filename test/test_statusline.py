@@ -20,10 +20,10 @@ import time
 import unittest
 from pathlib import Path
 
-import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))
 import test_bootstrap  # noqa: E402
+from pytest_shim import pytest
 import statusline  # noqa: E402
 
 GREEN = "\033[32m"

@@ -24,10 +24,10 @@ from contextlib import contextmanager, redirect_stderr
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))
 import test_bootstrap  # noqa: E402
+from pytest_shim import pytest
 import test_layouts  # noqa: E402
 import agent_toolkit_paths  # noqa: E402
 import llm_backends  # noqa: E402
