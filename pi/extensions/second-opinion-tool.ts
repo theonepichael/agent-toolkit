@@ -26,7 +26,8 @@ export type Field =
   | "dir"
   | "textOnly"
   | "model"
-  | "timeoutSeconds";
+  | "timeoutSeconds"
+  | "runId";
 
 interface ActionFields {
   readonly allowed: readonly Field[];
@@ -45,6 +46,7 @@ const ACTION_FIELDS: Record<Action, ActionFields> = {
       "textOnly",
       "model",
       "timeoutSeconds",
+      "runId",
     ],
     required: ["planFile"],
   },
@@ -60,6 +62,7 @@ export interface SecondOpinionParams {
   textOnly?: boolean;
   model?: string;
   timeoutSeconds?: number;
+  runId?: string;
 }
 
 const KNOWN_BACKENDS = ["codex", "agy", "opencode", "pi", "copilot"] as const;
@@ -140,6 +143,12 @@ export function assertFields(action: Action, params: SecondOpinionParams): void 
       );
     }
   }
+  // A run id scopes the per-round cap to one iterative critique session;
+  // the script keys its counter by runId (or, when omitted, by the resolved
+  // plan path), so a loop on the same plan is refused past the cap.
+  if (params.runId !== undefined && params.runId.trim() === "") {
+    throw new Error("runId must not be empty");
+  }
 }
 
 export function buildArgv(action: Action, params: SecondOpinionParams): string[] {
@@ -154,6 +163,7 @@ export function buildArgv(action: Action, params: SecondOpinionParams): string[]
         ...(params.dir ? ["--dir", params.dir] : []),
         ...(params.textOnly ? ["--text-only"] : []),
         ...(params.focusFile ? ["--focus-file", params.focusFile] : []),
+        ...(params.runId ? ["--run-id", params.runId] : []),
         // Compared against undefined, not truthiness: index 0 is round 1 of
         // the rotation, and dropping it would silently fall back to the
         // single-model override instead of the pool.
@@ -212,6 +222,7 @@ export default function (pi: ExtensionAPI) {
       'second_opinion covers everything second_opinion.py does: action "detect" lists available backends as JSON, and action "review" returns one critique of the plan at planFile. If you are about to compose a `python3 ~/.claude/scripts/second_opinion.py ...` bash command, use second_opinion instead.',
       "Never shell out to codex, agy, pi, opencode, or copilot directly for a critique -- all backend I/O goes through this tool.",
       "It is single-round: one call, one critique. The multi-round loop, the plan revision between rounds, and the convergence judgment are yours, not the tool's.",
+      "The script enforces a per-run cap (3 rounds by default): pass a stable `runId` for the whole loop (or rely on the plan-file path) and the 4th `review` call for that run is refused with a finalize-and-stop message.",
       "Always pass planFile as a path. Never inline plan text -- write the plan to a file first.",
       "modelIndex is 0-based: round 1 is 0, round 2 is 1. If a call fails with a pool configuration error naming --model-index, retry that same round once with modelIndex omitted. That is the valid fallback, not a skipped round.",
       "To pin a model for the critique, pass `model` together with `backend` (Pi sets SECOND_OPINION_<BACKEND>_MODEL for you) — never set that env var directly. To raise the timeout on a slow critique, pass `timeoutSeconds` (clamped to 600); do not hand-set SECOND_OPINION_TIMEOUT_SECONDS.",
@@ -270,6 +281,15 @@ export default function (pi: ExtensionAPI) {
             "review: per-call timeout in seconds, clamped to the [1, 600] range and written to " +
             "SECOND_OPINION_<BACKEND>_TIMEOUT_SECONDS (or the global SECOND_OPINION_TIMEOUT_SECONDS " +
             "when no backend is set).",
+        }),
+      ),
+      runId: Type.Optional(
+        Type.String({
+          description:
+            "review: stable id for one iterative critique session. Scopes the " +
+            "script's per-run round cap to this loop (the second-opinion skill " +
+            "passes one for the whole loop). When omitted, the script keys the " +
+            "cap by the resolved plan-file path instead.",
         }),
       ),
     }),

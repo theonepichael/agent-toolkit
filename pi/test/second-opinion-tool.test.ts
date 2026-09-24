@@ -31,8 +31,15 @@ describe("assertFields", () => {
         backend: "agy",
         focusFile: "/tmp/p-focus.md",
         modelIndex: 2,
+        runId: "loop-1",
       }),
     ).not.toThrow();
+  });
+
+  test("runId must not be empty", () => {
+    expect(() =>
+      assertFields("review", { action: "review", planFile: "/tmp/p.md", runId: "  " }),
+    ).toThrow(/runId must not be empty/);
   });
 
   test("an empty planFile is not a path", () => {
@@ -176,9 +183,17 @@ describe("buildArgv", () => {
     );
   });
 
-  test("the plan path is one argv element, never shell-split", () => {
-    const path = "/home/yanil/.claude/data/grill/it's-a-topic-plan.md";
-    expect(buildArgv("review", { action: "review", planFile: path })).toEqual(["review", path]);
+  test("review passes runId through as --run-id", () => {
+    expect(
+      buildArgv("review", { action: "review", planFile: "/tmp/p.md", runId: "loop-1" }),
+    ).toEqual(["review", "/tmp/p.md", "--run-id", "loop-1"]);
+  });
+
+  test("review omits --run-id when runId is absent", () => {
+    expect(buildArgv("review", { action: "review", planFile: "/tmp/p.md" })).toEqual([
+      "review",
+      "/tmp/p.md",
+    ]);
   });
 });
 

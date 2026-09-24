@@ -115,7 +115,21 @@ as an ``outcome="skipped"`` record, and the surviving attempt's record names
 ``fallback_reason="pool_skip"``. A single-model override stays strict: the
 caller named the model, so there is no silent replacement.
 
-Files read: <plan-file-or-text> (if a path), --focus-file. Nothing written.
+Files read: <plan-file-or-text> (if a path), --focus-file.
+Files written: <data-dir>/second-opinion-runs/<sha256>.json — a per-run
+  critique counter used to enforce the round cap (see Round-cap enforcement
+  below).
+
+Round-cap enforcement (added 2026-09-24, after a worker ignored the documented cap and ran 31 critique rounds on one spec): ``review`` refuses
+  once a run has already had ``MAX_ROUNDS`` critiques. The counter is keyed by
+  the caller-supplied ``--run-id`` (the second-opinion skill passes one per
+  loop) or, when that is omitted, by the resolved absolute plan-file path — so
+  a loop on the same plan file is caught even without ``--run-id``. Inline-text
+  reviews with no ``--run-id`` have nothing stable to key on and stay
+  unenforced. The ``--allow-extra-round`` flag lifts the cap; it is documented
+  for humans (this docstring, INTERFACES.md, the generated skill text) but
+  deliberately never named in the refusal message, so a runaway loop cannot
+  read the bypass out of it.
 
 Absent-config notice: a review whose dispatched backend has no model pool
 and no single-model override configured (both env vars unset) prints a
@@ -131,6 +145,7 @@ Requires Python 3.12+.
 """
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -935,6 +950,194 @@ def resolve_plan_text(arg: str) -> str:
     return arg
 
 
+# --- round-cap enforcement ------------------------------------------------
+#
+# The second-opinion skill documents a 3-round cap, but it lived only in the
+# skill's prose — a worker that ignored the text looped 31 times on one spec
+# (2026-09-24). The cap is now enforced here: every
+# `review` increments a per-run counter and the (MAX_ROUNDS+1)-th call is
+# refused. The counter key is the caller-supplied `--run-id` (the skill passes
+# one per loop) or, when that is absent, the resolved absolute plan-file path —
+# so a loop on the same plan file is caught even when `--run-id` is omitted.
+# Inline-text reviews with no run-id have nothing stable to key on and stay
+# unenforced.
+
+MAX_ROUNDS = 3
+_RUNS_DIR_NAME = "second-opinion-runs"
+_RUN_TTL_SECONDS = 7 * 24 * 3600  # drop run counters older than a week
+_PATH_KEY_TTL_SECONDS = (
+    6 * 3600
+)  # a plan-path key (--run-id omitted) is a fresh run after this long idle
+
+_ROUND_CAP_MESSAGE = (
+    f"second-opinion round cap ({MAX_ROUNDS}) reached for this review run. "
+    "The cap is enforced by second_opinion.py, not just the skill text — stop "
+    "and finalize: move the round-by-round notes out of the plan into a "
+    "'<plan>-critique-notes.md' companion, record any unresolved points, and "
+    "end the loop here. Do not call review again for this plan."
+)
+
+
+def _runs_dir() -> Path:
+    """The per-run critique-counter directory, under the shared data dir.
+
+    Created lock-free (like :func:`ensure_data_dir`): a critique run must not be
+    refused while a migration holds the lock, so this never takes
+    ``migration_lock`` — it only ever creates an already-owned directory.
+    """
+    return _data_dir() / _RUNS_DIR_NAME
+
+
+def _ensure_runs_dir() -> Path:
+    """Create the runs directory if missing; return it."""
+    runs_dir = _runs_dir()
+    if not runs_dir.is_dir():
+        runs_dir.mkdir(parents=True, exist_ok=True)
+    return runs_dir
+
+
+def _compute_round_key(args: argparse.Namespace) -> str | None:
+    """Return the counter key for one `review` call, or ``None`` if unkeyed.
+
+    ``--run-id`` wins (the skill passes a stable id per loop). Without it, the
+    resolved absolute plan-file path is used — a loop on the same plan file is
+    caught even when ``--run-id`` is omitted. Inline-text reviews (the arg is
+    not an existing file) with no ``--run-id`` have nothing stable to key on
+    and return ``None`` (no enforcement for that case).
+    """
+    run_id = getattr(args, "run_id", None)
+    if run_id:
+        return "run:" + run_id
+    plan = getattr(args, "plan", None)
+    if plan:
+        try:
+            path = Path(plan).expanduser()
+            is_file = path.is_file()
+        except OSError:
+            path = None
+            is_file = False
+        if path is not None and is_file:
+            return "plan:" + str(path.resolve())
+    return None
+
+
+def round_count_for(state: dict[str, object]) -> int:
+    """The number of reviews already recorded for a run's state dict."""
+    return int(state.get("count", 0))
+
+
+def would_exceed_cap(count: int) -> bool:
+    """True when ``count`` already reaches the cap (the call must be refused).
+
+    Compared ``>= MAX_ROUNDS`` *before* incrementing, so MAX_ROUNDS successful
+    reviews are allowed and the (MAX_ROUNDS+1)-th is refused.
+    """
+    return count >= MAX_ROUNDS
+
+
+def record_review(state: dict[str, object]) -> dict[str, object]:
+    """Return a copy of ``state`` with the review count incremented and the
+    ``updated`` timestamp refreshed. Does not touch disk."""
+    updated: dict[str, object] = dict(state)
+    updated["count"] = int(state.get("count", 0)) + 1
+    updated["updated"] = time.time()
+    return updated
+
+
+def _run_state_path(key: str) -> Path:
+    """The state file for one counter key — a hashed name so arbitrary
+    run-ids / plan paths never collide with the filesystem or leak into it."""
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
+    return _runs_dir() / f"{digest}.json"
+
+
+def _load_run_state(path: Path, key: str) -> dict[str, object]:
+    """Load one run's state from disk, or a fresh zeroed state when absent or corrupt."""
+    if path.is_file():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            data = None
+        if isinstance(data, dict):
+            data.setdefault("key", key)
+            data.setdefault("count", 0)
+            data.setdefault("updated", 0.0)
+            return data
+    return {"key": key, "count": 0, "updated": 0.0}
+
+
+def _save_run_state(path: Path, state: dict[str, object]) -> None:
+    """Atomically write one run's state (temp file + rename)."""
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(state), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _prune_stale_runs(runs_dir: Path) -> None:
+    """Best-effort: remove run-state files not updated within the TTL.
+
+    Keeps the directory bounded across many sessions. Failures are ignored —
+    pruning is optional hygiene, never a reason to fail a critique.
+    """
+    try:
+        cutoff = time.time() - _RUN_TTL_SECONDS
+        for entry in runs_dir.iterdir():
+            if entry.suffix != ".json":
+                continue
+            try:
+                data = json.loads(entry.read_text(encoding="utf-8"))
+                if float(data.get("updated", 0.0)) < cutoff:
+                    entry.unlink()
+            except (json.JSONDecodeError, OSError, ValueError):
+                continue
+    except OSError:
+        return
+
+
+def _load_state_for_key(path: Path, key: str) -> dict[str, object]:
+    """Load state for ``key``, resetting a stale plan-path counter to zero.
+
+    A plan-file-path key (used only when --run-id is omitted) must not leak the
+    cap across days: a separate critique of the same plan file much later is a
+    fresh run, so its counter starts at zero once the prior one is older than
+    _PATH_KEY_TTL_SECONDS. Run-id keys keep their full 7-day lifetime and are
+    never reset here.
+    """
+    state = _load_run_state(path, key)
+    if key.startswith("plan:"):
+        last = float(state.get("updated", 0.0))
+        if last > 0.0 and (time.time() - last) > _PATH_KEY_TTL_SECONDS:
+            state["count"] = 0
+    return state
+
+
+def _refuse_if_cap_reached(key: str) -> None:
+    """Die with the cap message when ``key``'s review count has reached the cap.
+
+    The cap is checked *before* dispatching the backend, so a run that has
+    already had MAX_ROUNDS successful reviews cannot start another. The refusal
+    message never names ``--allow-extra-round`` (see :data:`_ROUND_CAP_MESSAGE`).
+    """
+    _ensure_runs_dir()
+    path = _run_state_path(key)
+    state = _load_state_for_key(path, key)
+    if would_exceed_cap(round_count_for(state)):
+        die(_ROUND_CAP_MESSAGE)
+
+
+def _record_successful_review(key: str) -> None:
+    """Increment and persist ``key``'s counter after a critique was produced.
+
+    Only successful reviews consume a round — a failed review (backend outage)
+    does not, so a flaky backend can be retried without the override.
+    """
+    path = _run_state_path(key)
+    state = record_review(_load_state_for_key(path, key))
+    state["key"] = key
+    _save_run_state(path, state)
+    _prune_stale_runs(_runs_dir())
+
+
 def _kill_active_process() -> None:
     """Kill the currently-running backend subprocess's entire process group, if any."""
     llm_backends._kill_active_process()
@@ -1613,6 +1816,14 @@ def cmd_review(args: argparse.Namespace) -> None:
         text_only=getattr(args, "text_only", False),
         target_dir=getattr(args, "dir", None),
     )
+    # Round-cap enforcement: the (MAX_ROUNDS+1)-th *successful* review for this
+    # run is refused. Keyed by --run-id or the resolved plan-file path; the
+    # --allow-extra-round flag lifts it. Failed reviews (backend outage) do not
+    # consume a round, so a flaky backend can be retried without the override.
+    key = _compute_round_key(args)
+    allow_extra = getattr(args, "allow_extra_round", False)
+    if key is not None and not allow_extra:
+        _refuse_if_cap_reached(key)
     verbose = getattr(args, "verbose", False)
     quiet = getattr(args, "quiet", False)
     try:
@@ -1623,6 +1834,9 @@ def cmd_review(args: argparse.Namespace) -> None:
         die(str(exc))
     except ReviewError as exc:
         die(str(exc))
+    # Record a successful review against the cap now that one was produced.
+    if key is not None and not allow_extra:
+        _record_successful_review(key)
     for notice in result.notices:
         print(notice, file=sys.stderr)
     print(f"Second opinion via {result.backend_label}:")
@@ -1728,6 +1942,21 @@ def build_parser() -> argparse.ArgumentParser:
         "pool even when a single-model override is set, and is a hard error "
         "if the pool is unset/empty or the index is out of range (was "
         "previously a silent no-op/fallback).",
+    )
+    p.add_argument(
+        "--run-id",
+        default=None,
+        metavar="ID",
+        help="stable id for one iterative critique session; the per-round cap is "
+        "enforced by counting reviews per run-id (or per plan file when omitted). "
+        "The second-opinion skill passes one for the whole loop.",
+    )
+    p.add_argument(
+        "--allow-extra-round",
+        action="store_true",
+        default=False,
+        help="permit review calls beyond the per-run cap (for a user who "
+        "deliberately wants another round)",
     )
 
     return parser

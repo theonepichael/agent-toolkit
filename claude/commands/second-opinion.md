@@ -145,6 +145,7 @@ it stays free to surface things you didn't think to flag.
 ## Iteration loop
 
 ```
+run_id = <a stable id for this whole critique loop — the grill session slug if a grill session is active, else a short timestamped slug; passed to every review call so the script's per-run cap is scoped to this loop and not to the plan path alone>
 round = 1
 current_plan = <resolved input>
 prior_critique = None
@@ -154,11 +155,11 @@ loop:
                   (see above), or skip if nothing specific stands out
     critique = second_opinion.py review <current_plan> \
                    [--focus-file <focus-hints-path>] \
-                   --model-index <round - 1>   # one call
+                   --model-index <round - 1> --run-id <run_id>   # one call
     if that call exited nonzero with a "--model-index ... requires
        ... POOL ..." configuration error (not a backend-failure message):
         critique = second_opinion.py review <current_plan> \
-                       [--focus-file <focus-hints-path>]   # retry, no index —
+                       [--focus-file <focus-hints-path>] --run-id <run_id>   # retry, no index —
                                                             # no pool configured
                                                             # for this backend,
                                                             # not an error to
@@ -235,6 +236,15 @@ file. The critique-notes file is new each run, so it doesn't need the same
 overwrite confirmation.
 
 ## On cap-out without convergence
+
+The 3-round cap is enforced by `second_opinion.py` itself, not just this prose:
+a 4th `review` call for the same run is refused with a message telling you to
+stop and finalize (clean up the plan, write the critique-notes file, list the
+open points). Treat that refusal as the cap — do not loop again for this plan.
+A user who genuinely wants more rounds can pass `--allow-extra-round`
+(documented for humans; never surfaced in the refusal text), but reaching the
+cap mid-disagreement usually means you should stop and surface the open points
+rather than grind on.
 
 State plainly, distinct from a converged finish:
 

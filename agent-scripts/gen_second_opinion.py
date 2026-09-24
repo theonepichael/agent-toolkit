@@ -185,12 +185,12 @@ second_opinion.py review <plan-file-or-text> \\
         review_call="""\
     critique = second_opinion.py review <current_plan> \\
                    [--focus-file <focus-hints-path>] \\
-                   --model-index <round - 1>   # one call\
+                   --model-index <round - 1> --run-id <run_id>   # one call\
 """,
         # the same call without the index, for the no-pool retry, 2026-08-30
         review_call_retry="""\
         critique = second_opinion.py review <current_plan> \\
-                       [--focus-file <focus-hints-path>]   # retry, no index —\
+                       [--focus-file <focus-hints-path>] --run-id <run_id>   # retry, no index —\
 """,
         # every harness but Pi still reaches grill.py through bash, so the
         # plan-path lookup stays a CLI invocation, 2026-08-30
@@ -258,12 +258,12 @@ second_opinion.py review <plan-file-or-text> \\
         review_call="""\
     critique = second_opinion.py review <current_plan> \\
                    [--focus-file <focus-hints-path>] \\
-                   --model-index <round - 1>   # one call\
+                   --model-index <round - 1> --run-id <run_id>   # one call\
 """,
         # the same call without the index, for the no-pool retry, 2026-08-30
         review_call_retry="""\
         critique = second_opinion.py review <current_plan> \\
-                       [--focus-file <focus-hints-path>]   # retry, no index —\
+                       [--focus-file <focus-hints-path>] --run-id <run_id>   # retry, no index —\
 """,
         # every harness but Pi still reaches grill.py through bash, so the
         # plan-path lookup stays a CLI invocation, 2026-08-30
@@ -331,12 +331,12 @@ second_opinion.py review <plan-file-or-text> \\
         review_call="""\
     critique = second_opinion.py review <current_plan> \\
                    [--focus-file <focus-hints-path>] \\
-                   --model-index <round - 1>   # one call\
+                   --model-index <round - 1> --run-id <run_id>   # one call\
 """,
         # the same call without the index, for the no-pool retry, 2026-08-30
         review_call_retry="""\
         critique = second_opinion.py review <current_plan> \\
-                       [--focus-file <focus-hints-path>]   # retry, no index —\
+                       [--focus-file <focus-hints-path>] --run-id <run_id>   # retry, no index —\
 """,
         # every harness but Pi still reaches grill.py through bash, so the
         # plan-path lookup stays a CLI invocation, 2026-08-30
@@ -412,12 +412,12 @@ second_opinion.py review <plan-file-or-text> \\
         review_call="""\
     critique = second_opinion.py review <current_plan> \\
                    [--focus-file <focus-hints-path>] \\
-                   --model-index <round - 1>   # one call\
+                   --model-index <round - 1> --run-id <run_id>   # one call\
 """,
         # the same call without the index, for the no-pool retry, 2026-08-30
         review_call_retry="""\
         critique = second_opinion.py review <current_plan> \\
-                       [--focus-file <focus-hints-path>]   # retry, no index —\
+                       [--focus-file <focus-hints-path>] --run-id <run_id>   # retry, no index —\
 """,
         # every harness but Pi still reaches grill.py through bash, so the
         # plan-path lookup stays a CLI invocation, 2026-08-30
@@ -487,12 +487,12 @@ second_opinion.py review <plan-file-or-text> \\
         review_call="""\
     critique = second_opinion.py review <current_plan> \\
                    [--focus-file <focus-hints-path>] \\
-                   --model-index <round - 1>   # one call\
+                   --model-index <round - 1> --run-id <run_id>   # one call\
 """,
         # the same call without the index, for the no-pool retry, 2026-08-30
         review_call_retry="""\
         critique = second_opinion.py review <current_plan> \\
-                       [--focus-file <focus-hints-path>]   # retry, no index —\
+                       [--focus-file <focus-hints-path>] --run-id <run_id>   # retry, no index —\
 """,
         # every harness but Pi still reaches grill.py through bash, so the
         # plan-path lookup stays a CLI invocation, 2026-08-30
@@ -569,13 +569,13 @@ argument-hint: [plan file or text]
     critique = second_opinion review
                    planFile = <current_plan>
                    [focusFile = <focus-hints-path>]
-                   modelIndex = <round - 1>   # one call\
+                   modelIndex = <round - 1> runId = <run_id>   # one call\
 """,
         # the same call without the index, for the no-pool retry, 2026-08-30
         review_call_retry="""\
         critique = second_opinion review
                        planFile = <current_plan>
-                       [focusFile = <focus-hints-path>]   # retry, no index —\
+                       [focusFile = <focus-hints-path>] runId = <run_id>   # retry, no index —\
 """,
         # Pi reaches grill.py only through its native grill tool
         # (pi/extensions/grill-tool.ts); grill.py is off permission-gate.ts's
@@ -652,13 +652,13 @@ description: "Send a plan to a non-Claude model for adversarial critique, then i
     critique = second_opinion review
                    planFile = <current_plan>
                    [focusFile = <focus-hints-path>]
-                   modelIndex = <round - 1>   # one call\
+                   modelIndex = <round - 1> runId = <run_id>   # one call\
 """,
         # the same call without the index, for the no-pool retry, 2026-09-01
         review_call_retry="""\
         critique = second_opinion review
                        planFile = <current_plan>
-                       [focusFile = <focus-hints-path>]   # retry, no index —\
+                       [focusFile = <focus-hints-path>] runId = <run_id>   # retry, no index —\
 """,
         # Pi reaches grill.py only through its native grill tool
         # (pi/extensions/grill-tool.ts); grill.py is off permission-gate.ts's
@@ -731,12 +731,12 @@ second_opinion.py review <plan-file-or-text> \\
         review_call="""\
     critique = second_opinion.py review <current_plan> \\
                    [--focus-file <focus-hints-path>] \\
-                   --model-index <round - 1>   # one call\
+                   --model-index <round - 1> --run-id <run_id>   # one call\
 """,
         # the same call without the index, for the no-pool retry, 2026-09-11
         review_call_retry="""\
         critique = second_opinion.py review <current_plan> \\
-                       [--focus-file <focus-hints-path>]   # retry, no index —\
+                       [--focus-file <focus-hints-path>] --run-id <run_id>   # retry, no index —\
 """,
         # every harness but Pi still reaches grill.py through bash, so the
         # plan-path lookup stays a CLI invocation, 2026-09-11

@@ -18,9 +18,10 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager, redirect_stderr
+from contextlib import ExitStack, contextmanager, redirect_stderr
 from pathlib import Path
 from unittest.mock import patch
 
@@ -2450,6 +2451,262 @@ class GroundedReviewTests(unittest.TestCase):
         self.assertEqual(captured["model"], "o3")
         self.assertEqual(captured["mode"], "grounded")
         self.assertEqual(captured["target_dir"], Path("/repo"))
+
+
+class RoundCapEnforcementTests(unittest.TestCase):
+    """The round cap is enforced in code (cmd_review), keyed by --run-id or the
+    resolved plan-file path. A run-id-less loop on the same plan file is still
+    caught; inline-text reviews without a run-id stay unenforced.
+
+    This is the fix for a worker that ignored the documented cap and looped 31
+    critique rounds on one spec because nothing in the tooling enforced it.
+    """
+
+    def setUp(self) -> None:
+        self.tmpdir = tempfile.mkdtemp()
+        test_layouts.activate_sandbox_home(Path(self.tmpdir), self.addCleanup)
+        self.data_dir = agent_toolkit_paths.path_for("decisions")
+        self.runs_dir = self.data_dir / "second-opinion-runs"
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmpdir)
+
+    def _plan_file(self, text: str = "my plan", name: str = "plan.md") -> Path:
+        p = Path(self.tmpdir) / name
+        p.write_text(text)
+        return p
+
+    def _run(
+        self,
+        plan: object,
+        *,
+        run_id: str | None = None,
+        allow_extra: bool = False,
+        expect_die: bool = False,
+    ) -> tuple[int, str]:
+        args = ns(
+            plan=str(plan),
+            backend="agy",
+            run_id=run_id,
+            allow_extra_round=allow_extra,
+        )
+        out, err = io.StringIO(), io.StringIO()
+        with ExitStack() as stack:
+            stack.enter_context(patch.dict(os.environ, {}, clear=False))
+            stack.enter_context(
+                patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}")
+            )
+            stack.enter_context(
+                patch.object(
+                    second_opinion,
+                    "BACKEND_RUNNERS",
+                    {"agy": lambda p, model_index=None: "critique"},
+                )
+            )
+            stack.enter_context(patch("sys.stdout", out))
+            stack.enter_context(patch("sys.stderr", err))
+            if expect_die:
+                with self.assertRaises(SystemExit) as cm:
+                    second_opinion.cmd_review(args)
+                return cm.exception.code, err.getvalue()
+            second_opinion.cmd_review(args)
+        return 0, out.getvalue()
+
+    def test_run_id_caps_at_three_then_refuses(self) -> None:
+        plan = self._plan_file()
+        for _ in range(3):
+            code, out = self._run(plan, run_id="run-1")
+            self.assertEqual(code, 0)
+            self.assertIn("critique", out)
+        code, msg = self._run(plan, run_id="run-1", expect_die=True)
+        self.assertEqual(code, 1)
+        self.assertIn("round cap (3)", msg)
+
+    def test_refusal_message_omits_the_override(self) -> None:
+        # A runaway loop must not be able to read the bypass out of the error.
+        plan = self._plan_file()
+        for _ in range(3):
+            self._run(plan, run_id="run-2")
+        _code, msg = self._run(plan, run_id="run-2", expect_die=True)
+        self.assertNotIn("--allow-extra-round", msg)
+        self.assertIn("Do not call review again for this plan", msg)
+
+    def test_allow_extra_round_lifts_the_cap(self) -> None:
+        plan = self._plan_file()
+        for _ in range(5):
+            code, out = self._run(plan, run_id="run-x", allow_extra=True)
+            self.assertEqual(code, 0)
+            self.assertIn("critique", out)
+
+    def test_plan_path_key_enforces_without_run_id(self) -> None:
+        # No run-id, but the same plan *file* every round: the resolved path is
+        # the key, so a loop on the same plan file is still caught.
+        plan = self._plan_file()
+        for _ in range(3):
+            code, out = self._run(plan)
+            self.assertEqual(code, 0)
+            self.assertIn("critique", out)
+        code, msg = self._run(plan, expect_die=True)
+        self.assertEqual(code, 1)
+        self.assertIn("round cap (3)", msg)
+
+    def test_plan_path_key_is_per_file(self) -> None:
+        # A different plan file gets its own counter (no false refusal).
+        plan_a = self._plan_file("plan A", name="plan_a.md")
+        plan_b = self._plan_file("plan B", name="plan_b.md")
+        # 3 rounds on A, then a 4th on B must NOT be refused.
+        for _ in range(3):
+            self._run(plan_a)
+        code, out = self._run(plan_b)
+        self.assertEqual(code, 0)
+        self.assertIn("critique", out)
+
+    def test_inline_text_without_run_id_not_enforced(self) -> None:
+        # Inline text (not a file) and no run-id => no stable key => no cap.
+        for _ in range(5):
+            code, out = self._run("just some inline plan text")
+            self.assertEqual(code, 0)
+            self.assertIn("critique", out)
+        # No state file should have been written for an unkeyed run.
+        self.assertFalse(self.runs_dir.exists())
+
+    def test_failed_review_does_not_consume_a_round(self) -> None:
+        # A backend outage (AllBackendsFailedError) must not consume a round, so
+        # a flaky backend can be retried without --allow-extra-round.
+        plan = self._plan_file()
+        for _ in range(3):
+            args = ns(plan=str(plan), backend="agy", run_id="run-fail")
+            err = io.StringIO()
+            with (
+                patch.dict(os.environ, {}, clear=False),
+                patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+                patch.object(
+                    second_opinion,
+                    "BACKEND_RUNNERS",
+                    {
+                        "agy": lambda p, model_index=None: (_ for _ in ()).throw(
+                            second_opinion.BackendError("agy broke")
+                        )
+                    },
+                ),
+                patch("sys.stderr", err),
+                self.assertRaises(SystemExit),
+            ):
+                second_opinion.cmd_review(args)
+        # Three failed calls left the counter at zero, so a successful call still
+        # works (and is recorded as the first round).
+        code, out = self._run(plan, run_id="run-fail")
+        self.assertEqual(code, 0)
+        self.assertIn("critique", out)
+        files = list(self.runs_dir.glob("*.json"))
+        self.assertEqual(len(files), 1)
+        self.assertEqual(json.loads(files[0].read_text())["count"], 1)
+
+    def test_state_file_written_under_data_dir(self) -> None:
+        plan = self._plan_file()
+        self._run(plan, run_id="run-9")
+        self.assertTrue(self.runs_dir.is_dir())
+        files = list(self.runs_dir.glob("*.json"))
+        self.assertEqual(len(files), 1)
+        data = json.loads(files[0].read_text(encoding="utf-8"))
+        self.assertEqual(data["count"], 1)
+        self.assertEqual(data["key"], "run:run-9")
+
+    def test_ttl_prunes_old_run_files(self) -> None:
+        plan = self._plan_file()
+        self._run(plan, run_id="old")
+        # Force the one existing run file to be ancient.
+        list(self.runs_dir.glob("*.json"))[0].write_text(
+            json.dumps({"key": "run:old", "count": 1, "updated": 0.0})
+        )
+        # A fresh review triggers the prune; only the new run survives.
+        self._run(plan, run_id="new")
+        remaining = {
+            json.loads(p.read_text(encoding="utf-8"))["key"]
+            for p in self.runs_dir.glob("*.json")
+        }
+        self.assertNotIn("run:old", remaining)
+        self.assertIn("run:new", remaining)
+
+    def test_path_key_counter_resets_after_six_hours_idle(self) -> None:
+        # A plan-path key (no --run-id) must not leak the cap across sessions: a
+        # critique of the same file much later is a fresh run. Seed a counter at
+        # the cap whose last update was 7h ago; it must be allowed (reset to 0).
+        plan = self._plan_file()
+        key = "plan:" + str(plan.resolve())
+        second_opinion._ensure_runs_dir()
+        path = second_opinion._run_state_path(key)
+        path.write_text(
+            json.dumps({"key": key, "count": 3, "updated": time.time() - 7 * 3600})
+        )
+        code, out = self._run(plan)
+        self.assertEqual(code, 0)
+        self.assertIn("critique", out)
+        # The stale counter was reset to 0, then this review incremented it to 1.
+        data = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(data["count"], 1)
+
+    def test_path_key_counter_kept_within_six_hours(self) -> None:
+        # Within the 6h window the counter keeps accumulating, so a 4th call in a
+        # single sitting is still refused.
+        plan = self._plan_file()
+        key = "plan:" + str(plan.resolve())
+        second_opinion._ensure_runs_dir()
+        path = second_opinion._run_state_path(key)
+        path.write_text(
+            json.dumps({"key": key, "count": 3, "updated": time.time() - 60})
+        )
+        code, msg = self._run(plan, expect_die=True)
+        self.assertEqual(code, 1)
+        self.assertIn("round cap (3)", msg)
+
+
+class RoundCapHelperTests(unittest.TestCase):
+    """Pure helpers behind the round-cap enforcement."""
+
+    def test_round_count_for_defaults_to_zero(self) -> None:
+        self.assertEqual(second_opinion.round_count_for({}), 0)
+        self.assertEqual(second_opinion.round_count_for({"count": 2}), 2)
+
+    def test_would_exceed_cap_boundaries(self) -> None:
+        self.assertFalse(second_opinion.would_exceed_cap(0))
+        self.assertFalse(second_opinion.would_exceed_cap(second_opinion.MAX_ROUNDS - 1))
+        self.assertTrue(second_opinion.would_exceed_cap(second_opinion.MAX_ROUNDS))
+        self.assertTrue(
+            second_opinion.would_exceed_cap(second_opinion.MAX_ROUNDS + 1)
+        )
+
+    def test_record_review_increments_and_timestamps(self) -> None:
+        state = {"key": "run:x", "count": 2, "updated": 0.0}
+        new = second_opinion.record_review(state)
+        self.assertEqual(new["count"], 3)
+        self.assertGreater(new["updated"], 0.0)
+        # Original is untouched (pure).
+        self.assertEqual(state["count"], 2)
+
+    def test_compute_round_key_run_id(self) -> None:
+        self.assertEqual(
+            second_opinion._compute_round_key(
+                argparse.Namespace(run_id="abc", plan="p")
+            ),
+            "run:abc",
+        )
+
+    def test_compute_round_key_plan_path(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "plan.md"
+            p.write_text("x")
+            key = second_opinion._compute_round_key(
+                argparse.Namespace(run_id=None, plan=str(p))
+            )
+            self.assertEqual(key, f"plan:{p.resolve()}")
+
+    def test_compute_round_key_inline_text_is_none(self) -> None:
+        self.assertIsNone(
+            second_opinion._compute_round_key(
+                argparse.Namespace(run_id=None, plan="not a file path")
+            )
+        )
 
 
 if __name__ == "__main__":

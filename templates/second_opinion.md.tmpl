@@ -25,6 +25,7 @@ The point of these hints is to sharpen the critique on this plan's actual risk s
 ## Iteration loop
 
 ```
+run_id = <a stable id for this whole critique loop — the grill session slug if a grill session is active, else a short timestamped slug; passed to every review call so the script's per-run cap is scoped to this loop and not to the plan path alone>
 round = 1
 current_plan = <resolved input>
 prior_critique = None
@@ -84,6 +85,15 @@ Round-by-round narration inline in the plan while the loop is running — "Rejec
 Show the final revised plan and the summary, and save both files: the cleaned-up plan and the critique-notes file described above. If the plan came from an existing file (e.g. a `grill.py` `plan_path`), confirm before overwriting it — {{ASK_CHOOSE_OVERWRITE}}. Never silently rewrite a file. The critique-notes file is new each run, so it doesn't need the same overwrite confirmation.
 
 ## On cap-out without convergence
+
+The 3-round cap is enforced by `second_opinion.py` itself, not just this prose:
+a 4th `review` call for the same run is refused with a message telling you to
+stop and finalize (clean up the plan, write the critique-notes file, list the
+open points). Treat that refusal as the cap — do not loop again for this plan.
+A user who genuinely wants more rounds can pass `--allow-extra-round`
+(documented for humans; never surfaced in the refusal text), but reaching the
+cap mid-disagreement usually means you should stop and surface the open points
+rather than grind on.
 
 State plainly, distinct from a converged finish:
 
