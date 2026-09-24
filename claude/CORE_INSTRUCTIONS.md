@@ -130,7 +130,7 @@ turns that the outcome genuinely needs synthesis.
 When the user says "add this as a backlog item" or a variation of it, run:
 
 ```bash
-python3 ~/.claude/scripts/dev_status.py add '{"id": "<prefix-slug>", "summary": "<concise title>", "category": "<bug|feature|chore|research>", "context": "<what was happening>", "next_steps": "<what to pick up from>", "related_files": [{"path": "<abs path>", "note": "<note>"}]}'
+python3 ~/.agent-toolkit/scripts/dev_status.py add '{"id": "<prefix-slug>", "summary": "<concise title>", "category": "<bug|feature|chore|research>", "context": "<what was happening>", "next_steps": "<what to pick up from>", "related_files": [{"path": "<abs path>", "note": "<note>"}]}'
 ```
 
 The `id` field is **required**. Use a kebab-case slug whose prefix names the
@@ -177,9 +177,9 @@ cycle detection — it would silently clobber anything already set and skip
 and duplicate/cycle-safe:
 
 - An existing item should block the new one:
-  `python3 ~/.claude/scripts/dev_status.py block <new-slug> <existing-slug>`
+  `python3 ~/.agent-toolkit/scripts/dev_status.py block <new-slug> <existing-slug>`
 - The new item should block an existing one:
-  `python3 ~/.claude/scripts/dev_status.py block <existing-slug> <new-slug>`
+  `python3 ~/.agent-toolkit/scripts/dev_status.py block <existing-slug> <new-slug>`
 
 (`block`'s arguments are `<id> <blocker>` — the item being blocked comes
 first, the blocker second.)
@@ -192,8 +192,8 @@ risk as `update` above), so check the item's current `blocking` first and
 include it in the patch:
 
 ```bash
-python3 ~/.claude/scripts/dev_status.py show <new-slug>
-python3 ~/.claude/scripts/dev_status.py pending update <new-slug> '{"blocking": ["<existing-slug>", ...already-present entries...]}'
+python3 ~/.agent-toolkit/scripts/dev_status.py show <new-slug>
+python3 ~/.agent-toolkit/scripts/dev_status.py pending update <new-slug> '{"blocking": ["<existing-slug>", ...already-present entries...]}'
 ```
 
 If nothing looks related, do nothing — this is a judgment call per add, not
@@ -253,12 +253,12 @@ confirmation. At most one offer per distinct concept; if declined, don't
 re-offer it.
 
 ```bash
-python3 ~/.claude/scripts/dev_status.py out-of-scope add <concept-slug> --reason-file <path> [--related-item <backlog-slug>]
-python3 ~/.claude/scripts/dev_status.py out-of-scope list
-python3 ~/.claude/scripts/dev_status.py out-of-scope show <concept-slug>
-python3 ~/.claude/scripts/dev_status.py out-of-scope link <concept-slug> <backlog-slug>
-python3 ~/.claude/scripts/dev_status.py out-of-scope unlink <concept-slug> <backlog-slug>
-python3 ~/.claude/scripts/dev_status.py out-of-scope remove <concept-slug>
+python3 ~/.agent-toolkit/scripts/dev_status.py out-of-scope add <concept-slug> --reason-file <path> [--related-item <backlog-slug>]
+python3 ~/.agent-toolkit/scripts/dev_status.py out-of-scope list
+python3 ~/.agent-toolkit/scripts/dev_status.py out-of-scope show <concept-slug>
+python3 ~/.agent-toolkit/scripts/dev_status.py out-of-scope link <concept-slug> <backlog-slug>
+python3 ~/.agent-toolkit/scripts/dev_status.py out-of-scope unlink <concept-slug> <backlog-slug>
+python3 ~/.agent-toolkit/scripts/dev_status.py out-of-scope remove <concept-slug>
 ```
 
 `out-of-scope` is unrelated to `reject <id> <feedback>` below — `reject`
@@ -269,20 +269,20 @@ To update, start, or complete an item — pass the integer directly to the scrip
 **Do not look up the slug in your context; the script resolves numbers internally.**
 
 ```bash
-DEVSTATUS_AGENT=1 python3 ~/.claude/scripts/dev_status.py start <slug|N>
-DEVSTATUS_AGENT=1 python3 ~/.claude/scripts/dev_status.py done <slug|N>
-DEVSTATUS_AGENT=1 python3 ~/.claude/scripts/dev_status.py reopen <slug|N>
-DEVSTATUS_AGENT=1 python3 ~/.claude/scripts/dev_status.py update <slug|N> '{"field": "value"}'
-python3 ~/.claude/scripts/dev_status.py show <slug|N>
+DEVSTATUS_AGENT=1 python3 ~/.agent-toolkit/scripts/dev_status.py start <slug|N>
+DEVSTATUS_AGENT=1 python3 ~/.agent-toolkit/scripts/dev_status.py done <slug|N>
+DEVSTATUS_AGENT=1 python3 ~/.agent-toolkit/scripts/dev_status.py reopen <slug|N>
+DEVSTATUS_AGENT=1 python3 ~/.agent-toolkit/scripts/dev_status.py update <slug|N> '{"field": "value"}'
+python3 ~/.agent-toolkit/scripts/dev_status.py show <slug|N>
 ```
 
 Once work is ready for review, submit it and let the review/approve/reject
 cycle replace a direct `done`:
 
 ```bash
-DEVSTATUS_AGENT=1 python3 ~/.claude/scripts/dev_status.py review <slug|N>
-DEVSTATUS_AGENT=1 python3 ~/.claude/scripts/dev_status.py approve <slug|N>
-DEVSTATUS_AGENT=1 python3 ~/.claude/scripts/dev_status.py reject <slug|N> "<feedback>"
+DEVSTATUS_AGENT=1 python3 ~/.agent-toolkit/scripts/dev_status.py review <slug|N>
+DEVSTATUS_AGENT=1 python3 ~/.agent-toolkit/scripts/dev_status.py approve <slug|N>
+DEVSTATUS_AGENT=1 python3 ~/.agent-toolkit/scripts/dev_status.py reject <slug|N> "<feedback>"
 ```
 
 When passing a numeric position (not a slug) to `start`/`done`/`reopen`/
@@ -337,7 +337,7 @@ similar) and ask.
 Exit code 75 from any toolkit script (`dev_status.py`, `grill.py`,
 `second_opinion.py`, `to_tickets_runner.py`, `vitals_promotion.py`, ...)
 means the machine-wide migration lock refused the write — nothing was
-written. Run `python3 ~/.claude/scripts/migration_lock.py status`: if a
+written. Run `python3 ~/.agent-toolkit/scripts/migration_lock.py status`: if a
 toolkit-home migration holds it exclusively, tell the user and retry once it
 finishes; if the lock file itself is unusable, report that and stop. Never
 work around the refusal — no hand-edits to the stores, no retry loop.
@@ -376,7 +376,7 @@ names ("work on 4", "let's pick up the truncation item", etc.), run `show` on it
 first and read the full record:
 
 ```bash
-python3 ~/.claude/scripts/dev_status.py show <slug|N>
+python3 ~/.agent-toolkit/scripts/dev_status.py show <slug|N>
 ```
 
 Then, with that context in hand, actually act on it — e.g. open the listed
@@ -399,7 +399,7 @@ Follow the Git section's worktree-first policy below: before touching the repo
 under `related_files` or branching in main, run the worktree subcommand:
 
 ```bash
-python3 ~/.claude/scripts/dev_status.py worktree <slug|N>
+python3 ~/.agent-toolkit/scripts/dev_status.py worktree <slug|N>
 ```
 
 This resolves the target repository from the item's `related_files`, sets up
@@ -430,7 +430,7 @@ approval), offer explicitly — never add silently: "want me to track this as
 a pending item?"
 
 ```bash
-python3 ~/.claude/scripts/dev_status.py pending add '{"id": "<slug>", "description": "<what you are waiting on>", "kind": "<email|chat|approval>", "source_ref": {...}, "context": "<why>", "next_steps": ["..."]}'
+python3 ~/.agent-toolkit/scripts/dev_status.py pending add '{"id": "<slug>", "description": "<what you are waiting on>", "kind": "<email|chat|approval>", "source_ref": {...}, "context": "<why>", "next_steps": ["..."]}'
 ```
 
 Status moves one step at a time — `waiting_for_reply` → `reply_received` →
@@ -438,8 +438,8 @@ Status moves one step at a time — `waiting_for_reply` → `reply_received` →
 needs a look, not that it's closed:
 
 ```bash
-python3 ~/.claude/scripts/dev_status.py pending update <slug|N> '{"status": "reply_received"}'
-python3 ~/.claude/scripts/dev_status.py pending update <slug|N> '{"status": "resolved", "outcome": "<what happened>"}'
+python3 ~/.agent-toolkit/scripts/dev_status.py pending update <slug|N> '{"status": "reply_received"}'
+python3 ~/.agent-toolkit/scripts/dev_status.py pending update <slug|N> '{"status": "resolved", "outcome": "<what happened>"}'
 ```
 
 Same proactive-capture discipline as the backlog section above: if you catch
@@ -458,7 +458,7 @@ used for backlog capture.
   use the canonical automation entry point:
 
   ```bash
-  python3 ~/.claude/scripts/dev_status.py worktree <slug|N>
+  python3 ~/.agent-toolkit/scripts/dev_status.py worktree <slug|N>
   ```
 
   This delegates to `worktree.py` internally, which automatically resolves
@@ -501,8 +501,8 @@ used for backlog capture.
 ## Test Hygiene
 
 Never let tests touch real user state. Mock `subprocess.Popen`/
-`subprocess.run` calls and any writes to `~/.claude/`, `~/.config/`, or
-production data directories. When fixing a bug, add a regression test
+`subprocess.run` calls and any writes to `~/.claude/`, `~/.agent-toolkit/`,
+`~/.config/`, or production data directories. When fixing a bug, add a regression test
 proven to fail against the pre-fix code (run it red, then green) — a test
 that can't be made to fail first isn't verifying anything.
 

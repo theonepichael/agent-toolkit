@@ -837,8 +837,6 @@ LEGACY_PATH_EXEMPT: dict[str, str] = {
     "agent-scripts/agent_toolkit_paths.py": "resolves the legacy layout",
     "migrate_toolkit_home.py": "migrates from the legacy layout",
     "scripts/check_toolkit_paths.py": "classifies legacy paths",
-    # Owned by other release-1 changes; delete the row when that change lands.
-    "claude/CORE_INSTRUCTIONS.md": "synced from its origin repository, moved there",
 }
 
 
