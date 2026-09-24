@@ -152,12 +152,30 @@ def test_bare_repo_is_detected_and_allowed(tmp_path: Path) -> None:
     assert verdict.decision == "allow"
 
 
+def test_bare_repo_returns_none_under_explicit_bare_repo_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "safe.bareRepository")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "explicit")
+    bare = tmp_path / "bare_explicit.git"
+    bare.mkdir()
+    _git("-c", "safe.bareRepository=all", "init", "-q", "--bare", ".", cwd=bare)
+    info = guard_rails.repo_info(str(bare))
+    assert info is None
+    verdict = guard_rails.evaluate(
+        guard_rails.Request("write", str(bare), str(bare / "x.txt")), _fake_lookup()
+    )
+    assert verdict.decision == "allow"
+
+
 def test_submodule_resolves_to_its_own_repository(
     main_checkout: Path, tmp_path: Path
 ) -> None:
     """A submodule is a distinct repo and must be matched on its own
     identity, not folded into the superproject's."""
     inner = _init_repo(tmp_path / "inner")
+
     _git(
         "-c",
         "protocol.file.allow=always",

@@ -13,7 +13,12 @@ runs. It:
   `check_output` too),
 - blocks writes, deletes, renames and `mkdir` under the **real**
   `~/.claude`, `~/.config`, `~/.local/state/agent-toolkit`, and
-  `~/.agent-toolkit`.
+  `~/.agent-toolkit`,
+- scrubs harness-injected git config environment variables (`GIT_CONFIG_COUNT`,
+  `GIT_CONFIG_KEY_*`, `GIT_CONFIG_VALUE_*`, `GIT_CONFIG_PARAMETERS`) so
+  harnesses like Copilot CLI do not leak settings like `safe.bareRepository=explicit`
+  into test git queries.
+
 
 The path guard resolves every path argument the way the kernel would —
 relative and `..`-laden paths against the call's `dir_fd=` anchor (via the
