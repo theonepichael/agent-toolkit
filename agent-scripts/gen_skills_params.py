@@ -184,7 +184,7 @@ GRILL_ME_PARAMS: dict[str, dict[str, str]] = {
 ---
 name: grill-me
 description: Interview the user relentlessly about a plan or design until reaching shared understanding, resolving each branch of the decision tree. Use when user wants to stress-test a plan, get grilled on their design, or mentions "grill me".
-argument-hint: [--verify | --auto] [topic or plan to grill on]
+argument-hint: "[--verify | --auto] [topic or plan to grill on]"
 allowed-tools: [Read, Glob, Grep, Write, AskUserQuestion, "Bash(python3 ~/.claude/scripts/grill.py:*)", "Bash(python3 ~/.claude/scripts/second_opinion.py:*)"]
 ---""",
         "DEFAULT_MODE_OPENING": (
@@ -564,7 +564,7 @@ If this session was started with `--backlog-slug` (the batch-backlog-items
         "FRONTMATTER": """\
 ---
 description: "Interview the user relentlessly about a plan or design until reaching shared understanding, resolving each branch of the decision tree. Use when user wants to stress-test a plan, get grilled on their design, or mentions 'grill me'."
-argument-hint: [--verify | --auto] [topic or plan to grill on]
+argument-hint: "[--verify | --auto] [topic or plan to grill on]"
 ---""",
     },
 }
@@ -575,7 +575,7 @@ BACKLOG_ITEM_PARAMS: dict[str, dict[str, str]] = {
 ---
 name: backlog-item
 description: "Runs a dev_status.py backlog item end-to-end: resolve, worktree, spec (escalating to grill-me only for a genuinely open design branch), second-opinion critique, execution handoff, TDD implement, verify, commit/merge/push gates, review+approve. Use when the user says 'work on backlog item 4', 'pick up <slug>', 'let's do the next backlog item', or otherwise names a specific item to work end-to-end. Add --auto (optionally with a slug) for an unattended single-item or full-READY-batch run — commit and merge/push gates still stop live, per item."
-argument-hint: [--auto] [slug|N]
+argument-hint: "[--auto] [slug|N]"
 ---""",
         "OPENING_PARAGRAPH": """\
 Work the named item to done, one step at a time. Every user-approval gate
@@ -1847,7 +1847,7 @@ read that file for the full queue-runner procedure.""",
         "FRONTMATTER": """\
 ---
 description: "Runs a dev_status.py backlog item end-to-end: resolve, worktree, spec (escalating to grill-me only for a genuinely open design branch), second-opinion critique, execution handoff, TDD implement, verify, commit/merge/push gates, review+approve. Use when the user says 'work on backlog item 4', 'pick up <slug>', 'let's do the next backlog item', or otherwise names a specific item to work end-to-end. Add --auto for unattended single-item or READY-batch work, --swarm[=N] for a concurrent prefix queue, or --serial for a one-worker prefix queue. Queue modes require HERDR_ENV=1."
-argument-hint: [--auto] [--swarm[=N] | --serial] [--prefix <prefix>] [slug|N]
+argument-hint: "[--auto] [--swarm[=N] | --serial] [--prefix <prefix>] [slug|N]"
 ---""",
     },
 }
