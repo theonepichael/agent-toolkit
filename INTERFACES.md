@@ -88,6 +88,7 @@ Single source of truth for toolkit data paths.
 - Exceptions:
   - `class LayoutError(Exception)` — Raised when the layout pointer is malformed or the override is invalid.
   - `class StaleLayoutError(LayoutError)` — Raised when a path belongs to the layout that is no longer current.
+  - `class UpgradeRequiredError(LayoutError)` — Raised when legacy toolkit data exists without a completed migration record.
   - `class UnknownDomainError(ValueError)` — Raised when :func:`path_for` is asked for an unregistered domain.
 - Public classes:
   - `class Resolver` — Resolve toolkit data paths with per-process caching.
@@ -99,6 +100,7 @@ Single source of truth for toolkit data paths.
   - `check_not_stale(path: Path) -> None` — Refuse a path from the non-current layout using :data:`DEFAULT_RESOLVER`.
   - `current_layout() -> Layout` — Return the current layout using :data:`DEFAULT_RESOLVER`.
   - `write_pointer(home: Path, layout: Layout) -> None` — Atomically write the layout pointer under ``home``.
+  - `check_upgrade_required(home: Path | None = None) -> None` — Raise :class:`UpgradeRequiredError` if legacy state exists without a completed migration record.
 - Tested by: `agent-scripts/test_layouts.py`, `test/test_agent_toolkit_paths.py`, `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_dev_status_storage.py`, `test/test_gen_interfaces.py`, `test/test_grill.py`, `test/test_guard_rails.py`, `test/test_llm_backends.py`, `test/test_machine_id.py`, `test/test_migrate_path_transform.py`, `test/test_migrate_toolkit_home.py`, `test/test_migrate_toolkit_home_moves.py`, `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`, `test/test_second_opinion.py`, `test/test_to_tickets_runner.py`
 
 ### `agent-scripts/analyze_sessions.py`
