@@ -2698,3 +2698,449 @@ class BackendListFallbackTests(unittest.TestCase):
             second = second_opinion.review_plan(self._plan(backend="opencode"))
         self.assertEqual(second.response_text, "critique from pool index 1")
         self.assertEqual(calls, [0, 1, 1])
+
+
+class PoolSkipRotationTests(unittest.TestCase):
+    """Skip-to-next-model pool rotation.
+
+    Two skip conditions inside a backend's model pool — a tool-call-instead-
+    of-text reply (:class:`llm_backends.BackendToolUseError`) and opencode's
+    "Model access is disabled" error — move the round to the next pool model
+    instead of failing it, quarantine the (backend, model) pair for the
+    process, and record the skip in backend-call telemetry. A single-model
+    override stays strict: the caller named the model, so there is no silent
+    replacement.
+    """
+
+    ENV = {
+        "SECOND_OPINION_OPENCODE_MODEL_POOL": "dead-model,also-dead,healthy-model",
+    }
+    ACCESS_DISABLED = "Model access is disabled for this model id"
+
+    def setUp(self) -> None:
+        # Both are process-lifetime by design; tests must not leak state into
+        # other tests in the same pytest worker process.
+        self.addCleanup(second_opinion._UNFIT_MODELS.clear)
+        self.addCleanup(setattr, llm_backends, "_pending_fallback_reason", None)
+
+    def _plan(self, **kw: object) -> second_opinion.ReviewRequest:
+        defaults: dict[str, object] = {"plan_text": "my plan"}
+        defaults.update(kw)
+        return second_opinion.ReviewRequest(**defaults)  # type: ignore[arg-type]
+
+    @staticmethod
+    def _runner(calls: list[int | None], *, bad: set[object], message: str):
+        def run(prompt: str, *, model_index: int | None = None, **kw: object) -> str:
+            calls.append(model_index)
+            if model_index in bad:
+                raise llm_backends.BackendError(message)
+            return f"critique from pool index {model_index}"
+
+        return run
+
+    @pytest.mark.regression(
+        "pool-skip-on-access-disabled",
+        "a --model-index round died on the first dead pool entry instead of "
+        "skipping to the next model",
+    )
+    def test_pinned_index_access_disabled_skips_to_next_entry(self) -> None:
+        calls: list[int | None] = []
+        with (
+            patch.dict(os.environ, self.ENV),
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(
+                second_opinion,
+                "BACKEND_RUNNERS",
+                {"opencode": self._runner(calls, bad={0}, message=self.ACCESS_DISABLED)},
+            ),
+        ):
+            result = second_opinion.review_plan(
+                self._plan(backend="opencode", model_index=0)
+            )
+        self.assertEqual(result.response_text, "critique from pool index 1")
+        self.assertEqual(calls, [0, 1])
+        self.assertIn(("opencode", "dead-model"), second_opinion._UNFIT_MODELS)
+
+    @pytest.mark.regression(
+        "pool-skip-on-tool-use-reply",
+        "a pinned --model-index round failed outright when the model answered "
+        "with a tool-use transcript",
+    )
+    def test_pinned_index_tool_use_reply_skips_to_next_entry(self) -> None:
+        calls: list[int | None] = []
+        tool_use = llm_backends.BackendToolUseError(
+            "adversary agent used tools instead of returning text: invalid"
+        )
+
+        def run(prompt: str, *, model_index: int | None = None, **kw: object) -> str:
+            calls.append(model_index)
+            if model_index == 1:
+                raise tool_use
+            return f"critique from pool index {model_index}"
+
+        with (
+            patch.dict(os.environ, self.ENV),
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(second_opinion, "BACKEND_RUNNERS", {"opencode": run}),
+        ):
+            result = second_opinion.review_plan(
+                self._plan(backend="opencode", model_index=1)
+            )
+        self.assertEqual(result.response_text, "critique from pool index 2")
+        self.assertEqual(calls, [1, 2])
+        self.assertIn(("opencode", "also-dead"), second_opinion._UNFIT_MODELS)
+
+    def test_exhausted_pool_fails_with_skip_telemetry(self) -> None:
+        calls: list[int | None] = []
+        logged: list[tuple[tuple[object, ...], dict[str, object]]] = []
+        with (
+            patch.dict(os.environ, self.ENV),
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(
+                second_opinion,
+                "BACKEND_RUNNERS",
+                {
+                    "opencode": self._runner(
+                        calls, bad={0, 1, 2}, message=self.ACCESS_DISABLED
+                    )
+                },
+            ),
+            patch.object(
+                llm_backends,
+                "_log_backend_call",
+                side_effect=lambda *a, **kw: logged.append((a, kw)),
+            ),
+        ):
+            with self.assertRaises(second_opinion.AllBackendsFailedError) as cm:
+                second_opinion.review_plan(
+                    self._plan(backend="opencode", model_index=0)
+                )
+        self.assertEqual(calls, [0, 1, 2])
+        failures = "".join(cm.exception.failures)
+        self.assertEqual(failures.count("skipped to next pool model"), 3)
+        skipped = [a for a, _kw in logged if a[2] == "skipped"]
+        self.assertEqual(len(skipped), 3)
+        self.assertEqual(
+            [a[1] for a in skipped], ["dead-model", "also-dead", "healthy-model"]
+        )
+        # No parked fallback reason may outlive the dead chain.
+        self.assertIsNone(llm_backends._pending_fallback_reason)
+
+    def test_single_override_pinned_run_fails_strictly(self) -> None:
+        calls: list[int | None] = []
+        with (
+            patch.dict(
+                os.environ,
+                {**self.ENV, "SECOND_OPINION_OPENCODE_MODEL": "solo-model"},
+            ),
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(
+                second_opinion,
+                "BACKEND_RUNNERS",
+                {
+                    "opencode": self._runner(
+                        calls, bad={None}, message=self.ACCESS_DISABLED
+                    )
+                },
+            ),
+        ):
+            with self.assertRaises(second_opinion.AllBackendsFailedError) as cm:
+                second_opinion.review_plan(self._plan(backend="opencode"))
+        self.assertEqual(calls, [None])
+        self.assertNotIn("skipped to next pool model", str(cm.exception))
+        self.assertEqual(second_opinion._UNFIT_MODELS, set())
+
+    def test_default_model_attempt_fails_strictly(self) -> None:
+        calls: list[int | None] = []
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(
+                second_opinion,
+                "BACKEND_RUNNERS",
+                {
+                    "opencode": self._runner(
+                        calls, bad={None}, message=self.ACCESS_DISABLED
+                    )
+                },
+            ),
+        ):
+            with self.assertRaises(second_opinion.AllBackendsFailedError):
+                second_opinion.review_plan(
+                    self._plan(backend="opencode"), quiet=True
+                )
+        self.assertEqual(calls, [None])
+        self.assertEqual(second_opinion._UNFIT_MODELS, set())
+
+    def test_unpinned_rotation_skips_access_disabled_entry(self) -> None:
+        calls: list[int | None] = []
+        with (
+            patch.dict(os.environ, self.ENV),
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(
+                second_opinion,
+                "BACKEND_RUNNERS",
+                {"opencode": self._runner(calls, bad={0}, message=self.ACCESS_DISABLED)},
+            ),
+        ):
+            result = second_opinion.review_plan(self._plan(backend="opencode"))
+        self.assertEqual(result.response_text, "critique from pool index 1")
+        self.assertEqual(calls, [0, 1])
+
+    def test_skip_appends_verbose_notice_and_telemetry(self) -> None:
+        calls: list[int | None] = []
+        parked_at_next: dict[str, object] = {}
+        logged: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+        def runner(
+            prompt: str, *, model_index: int | None = None, **kw: object
+        ) -> str:
+            calls.append(model_index)
+            if model_index == 0:
+                raise llm_backends.BackendError(self.ACCESS_DISABLED)
+            # The surviving attempt must see the parked skip reason at call
+            # time — that is the value its own telemetry record will name as
+            # fallback_reason.
+            parked_at_next["value"] = llm_backends._pending_fallback_reason
+            return f"critique from pool index {model_index}"
+
+        with (
+            patch.dict(os.environ, self.ENV),
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(
+                second_opinion,
+                "BACKEND_RUNNERS",
+                {"opencode": runner},
+            ),
+            patch.object(
+                llm_backends,
+                "_log_backend_call",
+                side_effect=lambda *a, **kw: logged.append((a, kw)),
+            ),
+        ):
+            result = second_opinion.review_plan(
+                self._plan(backend="opencode", model_index=0), verbose=True
+            )
+        self.assertEqual(result.response_text, "critique from pool index 1")
+        skip_notices = [
+            n for n in result.notices if "skipping to next pool model" in n
+        ]
+        self.assertEqual(len(skip_notices), 1)
+        self.assertIn("dead-model", skip_notices[0])
+        self.assertIn(self.ACCESS_DISABLED, skip_notices[0])
+        skipped_records = [(a, kw) for a, kw in logged if a[2] == "skipped"]
+        self.assertEqual(len(skipped_records), 1)
+        args, kwargs = skipped_records[0]
+        self.assertEqual(args[0], "opencode")
+        self.assertEqual(args[1], "dead-model")
+        self.assertGreater(args[4], 0)
+        self.assertIn("Model access is disabled", kwargs["error_snippet"])
+        # The surviving attempt's record must name why it follows a skip:
+        # the parked reason is live at its call time, and nothing may leak
+        # past the run.
+        self.assertEqual(parked_at_next["value"], "pool_skip")
+        self.assertIsNone(llm_backends._pending_fallback_reason)
+
+
+class CmdProbeTests(unittest.TestCase):
+    """The ``probe`` subcommand: per-pool-model health report as JSON.
+
+    Every pool entry is probed independently with one trivial text-only
+    request — probe never rotates and never raises on a dead model, it
+    reports. Tests mock the backend runners; no test ever calls a real model.
+    """
+
+    ENV = {
+        "SECOND_OPINION_OPENCODE_MODEL_POOL": "m-ok,m-bad",
+    }
+
+    def setUp(self) -> None:
+        self.addCleanup(second_opinion._UNFIT_MODELS.clear)
+        self.addCleanup(setattr, llm_backends, "_pending_fallback_reason", None)
+
+    @staticmethod
+    def _args(backend: list[str] | None) -> argparse.Namespace:
+        return argparse.Namespace(
+            cmd="probe", backend=backend, quiet=False, verbose=False
+        )
+
+    def _runner(self, calls: list[tuple[int | None, str | None]]):
+        def run(
+            prompt: str,
+            *,
+            model_index: int | None = None,
+            mode: str | None = None,
+        ) -> str:
+            calls.append((model_index, mode))
+            if model_index == 1:
+                raise llm_backends.BackendToolUseError(
+                    "adversary agent used tools instead of returning text: invalid"
+                )
+            return "ok"
+
+        return run
+
+    def test_probe_pool_reports_each_entry_independently(self) -> None:
+        calls: list[tuple[int | None, str | None]] = []
+        out = io.StringIO()
+        with (
+            patch.dict(os.environ, self.ENV),
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(
+                second_opinion, "BACKEND_RUNNERS", {"opencode": self._runner(calls)}
+            ),
+            patch("sys.stdout", out),
+            self.assertRaises(SystemExit) as cm,
+        ):
+            second_opinion.cmd_probe(self._args(["opencode"]))
+        self.assertEqual(cm.exception.code, 1)
+        # Text-only: the probe request must never hand the model tools.
+        self.assertEqual({mode for _m, mode in calls}, {"text-only"})
+        report = json.loads(out.getvalue())
+        entries = report["probes"]
+        self.assertEqual(len(entries), 2)
+        first, second = entries
+        self.assertEqual(first["index"], 0)
+        self.assertEqual(first["model"], "m-ok")
+        self.assertEqual(first["status"], "ok")
+        self.assertIsNone(first["detail"])
+        self.assertGreaterEqual(first["latency_seconds"], 0)
+        self.assertEqual(first["config"], "pool")
+        self.assertEqual(
+            first["pool_var"], "SECOND_OPINION_OPENCODE_MODEL_POOL"
+        )
+        self.assertEqual(second["index"], 1)
+        self.assertEqual(second["model"], "m-bad")
+        self.assertEqual(second["status"], "unavailable")
+        self.assertIn("used tools instead of returning text", second["detail"])
+
+    def test_probe_all_healthy_exits_zero(self) -> None:
+        calls: list[tuple[int | None, str | None]] = []
+        out = io.StringIO()
+
+        def run(
+            prompt: str, *, model_index: int | None = None, mode: str | None = None
+        ) -> str:
+            calls.append((model_index, mode))
+            return "ok"
+
+        with (
+            patch.dict(os.environ, self.ENV),
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(second_opinion, "BACKEND_RUNNERS", {"opencode": run}),
+            patch("sys.stdout", out),
+        ):
+            second_opinion.cmd_probe(self._args(["opencode"]))
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(json.loads(out.getvalue())["probes"][0]["status"], "ok")
+
+    def test_probe_single_override_config(self) -> None:
+        out = io.StringIO()
+        with (
+            # Single override only — a configured pool would take precedence
+            # over it (see _probe_attempts), so the pool var stays unset here.
+            patch.dict(
+                os.environ,
+                {"SECOND_OPINION_OPENCODE_MODEL": "solo-model"},
+            ),
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(
+                second_opinion,
+                "BACKEND_RUNNERS",
+                {"opencode": lambda p, model_index=None, mode=None: "ok"},
+            ),
+            patch("sys.stdout", out),
+        ):
+            second_opinion.cmd_probe(self._args(["opencode"]))
+        entries = json.loads(out.getvalue())["probes"]
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["config"], "single")
+        self.assertEqual(entries[0]["model"], "solo-model")
+        self.assertIsNone(entries[0]["index"])
+        self.assertEqual(entries[0]["status"], "ok")
+
+    def test_probe_default_config_probes_backend_default(self) -> None:
+        out = io.StringIO()
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(
+                second_opinion,
+                "BACKEND_RUNNERS",
+                {"opencode": lambda p, model_index=None, mode=None: "ok"},
+            ),
+            patch("sys.stdout", out),
+        ):
+            second_opinion.cmd_probe(self._args(["opencode"]))
+        entries = json.loads(out.getvalue())["probes"]
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["config"], "default")
+        self.assertIsNone(entries[0]["model"])
+        self.assertIsNone(entries[0]["index"])
+
+    def test_probe_not_installed_entry_and_default_backend_set(self) -> None:
+        out = io.StringIO()
+        with (
+            patch.dict(os.environ, self.ENV),
+            patch("shutil.which", return_value=None),
+            patch.object(
+                second_opinion,
+                "BACKEND_RUNNERS",
+                {"opencode": lambda p, model_index=None, mode=None: "never"},
+            ),
+            patch("sys.stdout", out),
+        ):
+            second_opinion.cmd_probe(self._args(["opencode"]))
+        entries = json.loads(out.getvalue())["probes"]
+        self.assertEqual(entries, [{"backend": "opencode", "status": "not_installed"}])
+
+    def test_probe_default_backends_come_from_available_backends(self) -> None:
+        out = io.StringIO()
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "SECOND_OPINION_AGY_MODEL": "Gemini 3.7 Flash (High)",
+                    **self.ENV,
+                },
+            ),
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(second_opinion, "available_backends", return_value=["agy"]),
+            patch.object(
+                second_opinion,
+                "BACKEND_RUNNERS",
+                {"agy": lambda p, model_index=None, mode=None: "ok"},
+            ),
+            patch("sys.stdout", out),
+        ):
+            second_opinion.cmd_probe(self._args(None))
+        entries = json.loads(out.getvalue())["probes"]
+        self.assertEqual([e["backend"] for e in entries], ["agy"])
+
+    def test_probe_detail_is_redacted(self) -> None:
+        out = io.StringIO()
+        with (
+            patch.dict(os.environ, self.ENV),
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(
+                second_opinion,
+                "BACKEND_RUNNERS",
+                {
+                    "opencode": lambda p, model_index=None, mode=None: (
+                        (_ for _ in ()).throw(
+                            llm_backends.BackendError("sk-SECRET leaked")
+                        )
+                    )
+                },
+            ),
+            patch.object(
+                second_opinion.cli_common,
+                "redact_secrets",
+                side_effect=lambda text, max_length: "REDACTED",
+            ),
+            patch("sys.stdout", out),
+            self.assertRaises(SystemExit),
+        ):
+            second_opinion.cmd_probe(self._args(["opencode"]))
+        entries = json.loads(out.getvalue())["probes"]
+        self.assertEqual(entries[0]["detail"], "REDACTED")

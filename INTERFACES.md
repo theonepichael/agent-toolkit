@@ -1281,6 +1281,8 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
   - `--verbose/-v`
 - Subcommands:
   - `detect` — list available backends as JSON
+  - `probe [--backend NAME[,NAME...]]` — probe each backend's model pool and report per-model availability as JSON
+    - `--backend` — probe only these backend(s) (comma-separated list allowed) instead of every installed backend in priority order; an entry not installed is reported as not_installed, not an error
   - `review <plan-file-or-text> [--backend NAME[,NAME...]] [--dir <DIR>] [--text-only] [--focus-file <FOCUS_FILE>] [--model-index N]` — get one critique from the priority-selected backend
     - `--backend` — force backend(s) in order, first success wins (comma-separated list allowed) instead of priority-order fallback; a single name keeps the strict one-backend-only contract, while a list skips an entry that is not installed with a notice
     - `--dir` — root directory of the codebase to inspect in grounded review (defaults to current working directory)
@@ -1313,7 +1315,7 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
   - `review_plan(request: ReviewRequest, *, verbose: bool = False, quiet: bool = False) -> ReviewResult` — Run one adversarial review of ``request.plan_text`` and return the result.
   - `build_parser() -> argparse.ArgumentParser` — Build the full argument parser for every subcommand.
   - `ensure_data_dir() -> None` — Create the shared artifact directory if it is missing.
-- Subcommand handlers: `cmd_detect`, `cmd_review`
+- Subcommand handlers: `cmd_detect`, `cmd_probe`, `cmd_review`
 - Tested by: `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`, `test/test_second_opinion.py`, `test/test_timing.py`
 
 ### `agent-scripts/seed_hook_subset_guard.py`

@@ -340,6 +340,7 @@
   "second_opinion.py": [
     "arg (top-level) --quiet/-q: ",
     "arg (top-level) --verbose/-v: ",
+    "arg probe --backend: \u2014 probe only these backend(s) (comma-separated list allowed) instead of every installed backend in priority order; an entry not installed is reported as not_installed, not an error",
     "arg review --backend: \u2014 force backend(s) in order, first success wins (comma-separated list allowed) instead of priority-order fallback; a single name keeps the strict one-backend-only contract, while a list skips an entry that is not installed with a notice",
     "arg review --dir: \u2014 root directory of the codebase to inspect in grounded review (defaults to current working directory)",
     "arg review --focus-file: \u2014 path to a file of plan-specific risk hints, appended to the critique prompt as areas to scrutinize (supplements, not replaces, the generic adversarial mandate)",
@@ -348,8 +349,10 @@
     "arg review plan: ",
     "exit codes: 1",
     "handler detect: Handle ``detect``: print backend presence AND contract eligibility. Presence alone was misleading: an installed backend that cannot meet the isolation contract is never used, so reporting it as simply available invited the discovery to happen at the moment a critique was wanted rather than before. Each entry carries ``present``, ``eligible`` and, when ineligible, the ``reason``. The legacy boolean shape is preserved under each backend's ``present`` key so existing callers keep a one-line migration.",
+    "handler probe: Handle ``probe``: per-pool-model availability report as JSON. Probes every entry of each requested backend's model pool (or its single override / default model when no pool is configured) with one trivial, cheap, text-only request each, and prints ``{\"probes\": [...]}`` where each entry carries ``backend``, ``config`` (\"pool\"/\"single\"/\"default\"), ``pool_var``, ``index``, ``model``, ``status`` (\"ok\"/\"unavailable\"), redacted ``detail`` on failure, and ``latency_seconds``. A backend not on PATH yields a ``{\"backend\", \"status\": \"not_installed\"}`` entry and probes nothing. Exit 1 when any probed model is unavailable (a ``not_installed`` entry does not affect the exit code); exit 0 when every probed model answered. Probe never rotates, never quarantines, and never mutates configuration \u2014 it reports; the pool itself is the user's to edit. Probe calls are logged to backend_calls.jsonl like any other backend call.",
     "handler review: Handle ``review``: get one critique from the priority-selected backend. Thin argv adapter over :func:`review_plan`: resolves the plan and focus file, builds a :class:`ReviewRequest`, prints the facade's collected notices, the first successful critique, and returns. Exits nonzero only if the facade raises (configuration error, or every candidate failed).",
     "subcommand detect: list available backends as JSON",
+    "subcommand probe: probe each backend's model pool and report per-model availability as JSON",
     "subcommand review: get one critique from the priority-selected backend"
   ],
   "standup.py": [

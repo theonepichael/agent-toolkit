@@ -1250,18 +1250,23 @@ def _log_backend_call(
     ``error_snippet`` carries the failing attempt's exception text,
     redacted through :func:`cli_common.redact_secrets` (the record ships to
     disk, so sanitization is not optional and truncation alone would never
-    count) and ``None`` on success. ``fallback_reason`` names the *prior*
-    attempt's outcome when this call follows a fallback ("timeout" or
-    "error" — the same bounded enum ``outcome`` uses, never free text) and
-    is ``None`` for the first attempt in a chain. Both fields are additive:
-    nothing outside this module parses the file, and readers tolerate the
-    nulls.
+    count) and ``None`` on success. ``outcome`` is ``"success"``,
+    ``"timeout"``, ``"error"`` — or ``"skipped"``: second_opinion.py's
+    skip-to-next-model record, which marks the *decision* to move to the
+    next pool model (the failed attempt's own ``error`` record precedes it;
+    ``wall_seconds`` is 0.0 there, the wall time lives on the error record).
+    ``fallback_reason`` names the *prior* attempt's outcome when this call
+    follows a fallback ("timeout", "error", "stall" — the same bounded enum
+    ``outcome`` uses, plus "pool_skip" for "the prior pool entry was
+    skipped") and is ``None`` for the first attempt in a chain. Both fields
+    are additive: nothing outside this module parses the file, and readers
+    tolerate the nulls.
     """
     record = {
         "ts": datetime.now(UTC).isoformat(timespec="seconds"),
         "backend": backend,
         "model": model,
-        "outcome": outcome,  # "success" | "timeout" | "error"
+        "outcome": outcome,  # "success" | "timeout" | "error" | "skipped"
         "wall_seconds": round(wall_seconds, 2),
         "prompt_bytes": prompt_bytes,
         "error_snippet": (

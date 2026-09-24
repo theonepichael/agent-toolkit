@@ -87,6 +87,7 @@ for harness-specific wording, then regenerate -->"""
 CONTRACT_TOKENS = (
     "detect",
     "review",
+    "probe",
     "--backend",
     "--dir",
     "--focus-file",

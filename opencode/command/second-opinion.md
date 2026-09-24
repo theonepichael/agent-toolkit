@@ -7,13 +7,18 @@ edit the body template for shared wording or the per-harness parameter table
 for harness-specific wording, then regenerate -->
 
 All backend I/O goes through `python3 ~/.claude/scripts/second_opinion.py` —
-never shell out to `codex`/`agy`/`opencode`/`pi`/`copilot` directly. Two
+never shell out to `codex`/`agy`/`opencode`/`pi`/`copilot` directly. Three
 operations: `detect` reports each backend's presence AND whether it currently
 meets the isolation contract (with the reason when it does not), `review`
-returns one critique. It is single-round: one call, one critique. The
-multi-round loop and plan revision are your job, not the script's. By default,
-reviews are grounded in the target codebase (`--dir` or current working
-directory) with read-only tools enabled; use `--text-only` to opt out.
+returns one critique, and `probe` runs one trivial, cheap, text-only request
+per model in the selected backend's pool (or its single override / default
+model) and reports per-model availability as JSON — use it to check a pool's
+health before committing to a multi-round rotation, and remember it calls the
+real models once each, so pass `--backend` deliberately. It is single-round:
+one call, one critique. The multi-round loop and plan revision are your job,
+not the script's. By default, reviews are grounded in the target codebase
+(`--dir` or current working directory) with read-only tools enabled; use
+`--text-only` to opt out.
 
 ```
 second_opinion.py detect                        # which backends are present (JSON)
@@ -54,11 +59,14 @@ in order, first success wins) to make the script itself fall through at runtime
 — a list skips an entry that is not installed with a one-line notice and never
 touches the priority order; a single name keeps the strict one-backend-only
 contract (that call fails outright with no fallback). A model whose run
-answered with a tool-use transcript instead of a critique is quarantined for
-the process — pool rotation skips it for later requests in the same process,
-while a fresh CLI invocation starts clean — so do not pin `--model-index`
-across rounds on a machine whose pool is known to contain a tool-hungry model;
-let the list rotate instead. On a machine with no pool at all for the
+answered with a tool-use transcript instead of a critique — or whose access the
+gateway refuses outright ("Model access is disabled") — is skipped to the next
+pool model instead of failing the round (even a pinned `--model-index` rotates
+forward) and quarantined for the process — later requests in the same process
+skip it, while a fresh CLI invocation starts clean — so do not pin
+`--model-index` across rounds on a machine whose pool is known to contain a
+tool-hungry or access-disabled model; let the rotation skip instead, and repair
+the pool with `probe`'s report. On a machine with no pool at all for the
 dispatched backend, the script itself prints a one-line stderr notice
 (suppressed by `--quiet`) naming the absent pool variable, where to set it, and
 a realistic example — the run still proceeds with the backend's default model,

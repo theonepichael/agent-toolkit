@@ -23,6 +23,13 @@ on the result/exception instead of printing, and raises typed errors
 a BackendError subclass — when every candidate fails). cmd_review is a thin
 adapter over it.
 
+Subcommands
+  detect   print each backend's presence and isolation-contract eligibility as JSON
+  review   one adversarial critique of a plan file or inline text
+  probe    run one trivial text-only health request per pool model and print a
+           per-model availability report as JSON (exit 1 when any probed model
+           is unavailable; tests must mock the runners, never probe for real)
+
 Flags
   --quiet, -q      suppress non-essential output
   --verbose, -v    emit extra diagnostic messages to stderr
@@ -98,6 +105,16 @@ Env vars
                                      the hard ceiling on every timeout,
                                      default or overridden.
 
+Pool skip-to-next-model: a pool attempt that fails with a tool-call-instead-
+of-text reply (BackendToolUseError — a real tool_use event or leaked
+tool-call markup), or, for the opencode backend, an error naming the model
+access as disabled ("Model access is disabled"), skips to the next pool
+model instead of failing the round. A skipped pair is quarantined for the
+process (:data:`_UNFIT_MODELS`), the skip is recorded in backend_calls.jsonl
+as an ``outcome="skipped"`` record, and the surviving attempt's record names
+``fallback_reason="pool_skip"``. A single-model override stays strict: the
+caller named the model, so there is no silent replacement.
+
 Files read: <plan-file-or-text> (if a path), --focus-file. Nothing written.
 
 Absent-config notice: a review whose dispatched backend has no model pool
@@ -119,6 +136,7 @@ import os
 import shutil
 import signal
 import sys
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -235,6 +253,62 @@ _UNSET = object()
 """Sentinel for :func:`backend_label`'s ``model`` parameter: "re-resolve"
 versus an explicit captured model (``None`` means "resolved to nothing").
 """
+
+_OPENCODE_MODEL_ACCESS_DISABLED_MARKER = "Model access is disabled"
+"""Error-text fragment the opencode-go gateway emits for a pooled model id
+its access policy refuses outright (observed 2026-09-23 on
+``opencode-go/deepseek-v4-flash`` during the atk-r1-generated-paths spec
+critique). A pool entry that fails this way can never succeed within the
+process, so it is a skip-to-next-model condition, not a round-failing one —
+see :func:`_pool_skip_condition`. opencode only: other backends' error
+texts are not matched against this fragment (pi shares the gateway but its
+error surface is unverified — extend deliberately, with evidence).
+"""
+
+
+def _pool_skip_condition(backend: str, exc: BaseException) -> bool:
+    """True when ``exc`` should skip to the next pool model, not fail the round.
+
+    The two conditions, from the 2026-09-23 atk-r1-generated-paths spec
+    critique (2 of 3 pool entries dead): a tool-call-instead-of-text reply —
+    :class:`llm_backends.BackendToolUseError` covers both a real ``tool_use``
+    event (:func:`llm_backends._raise_on_tool_use`) and tool-call markup
+    leaking through as text (:func:`llm_backends._raise_on_emitted_tool_call`)
+    — and, opencode only, the gateway's access-disabled rejection
+    (:data:`_OPENCODE_MODEL_ACCESS_DISABLED_MARKER`). A generic
+    :class:`llm_backends.BackendError` that merely contains the fragment in
+    its text counts: the fragment's presence is the classification, whether
+    it arrived via stderr or an error event.
+
+    Only meaningful for pool-derived attempts (``model_index is not None`` in
+    ``review_plan``'s loop); a single-model override ignores it by contract.
+    """
+    if isinstance(exc, llm_backends.BackendToolUseError):
+        return True
+    return backend == "opencode" and _OPENCODE_MODEL_ACCESS_DISABLED_MARKER in str(exc)
+
+
+def _log_pool_skip(
+    backend: str, model: str | None, exc: BaseException, prompt_bytes: int
+) -> None:
+    """Record one skip-to-next-model decision in backend-call telemetry.
+
+    Best-effort, like :func:`llm_backends._log_backend_call` (which never
+    raises): the failed attempt's own ``error`` record already exists — logged
+    by the runner's ``_track_backend_call`` — so this writes the *decision*
+    record (``outcome="skipped"``) naming the pair, then parks
+    ``fallback_reason="pool_skip"`` so the surviving attempt's record shows
+    why it follows a skip. The parked value is reset when a candidate's
+    attempts end without another call, so it can never leak into an
+    unrelated later chain.
+    """
+    try:
+        llm_backends._log_backend_call(
+            backend, model, "skipped", 0.0, prompt_bytes, error_snippet=str(exc)
+        )
+        llm_backends._pending_fallback_reason = "pool_skip"
+    except Exception as exc_log:  # noqa: BLE001 — telemetry must never raise
+        print(f"[second_opinion] skip logging failed: {exc_log}", file=sys.stderr)
 
 
 class AllBackendsFailedError(BackendError):
@@ -556,15 +630,57 @@ def _backend_list_arg(value: str) -> list[str]:
 
 _UNFIT_MODELS: set[tuple[str, str]] = set()
 """(backend, model) pairs whose adversarial run answered with a tool-use
-transcript instead of a critique.
+transcript instead of a critique, or whose model access is disabled — the
+two skip-to-next-model conditions (:func:`_pool_skip_condition`).
 
 Process-lifetime: a fresh process starts clean, and nothing here is persisted
 to disk — a later CLI invocation (the second-opinion skill's separate calls)
 can select a model quarantined by an earlier one, deliberately. A quarantined
 pair is skipped by pool rotation within the process (see
 :func:`_attempts_for`), so a model that answers the critique prompt by driving
-an agent's tools is not re-selected request after request.
+an agent's tools — or one the gateway refuses outright — is not re-selected
+request after request.
 """
+
+
+PROBE_PROMPT = """\
+Health probe. Reply with exactly the single word: ok
+Plain prose only — never emit tool-call markup (XML or JSON tool blocks).
+"""
+"""The trivial probe request: one cheap text-only round trip per pool model.
+Cheap means a one-line prompt with no codebase exploration — the point is
+per-model availability (a dead gateway route answers with the access-disabled
+error; a tool-hungry model answers with markup), not critique quality. Probed
+through the same BACKEND_RUNNERS the review path uses, in text-only mode, so
+stall detection, timeout floors, and telemetry behave identically.
+"""
+
+
+def _probe_attempts(
+    backend: str, env: Mapping[str, str] | None = None
+) -> tuple[str, str, list[tuple[int | None, str | None]]]:
+    """The ``(config, pool_var, attempts)`` probe list for ``backend``.
+
+    Unlike the review path's rotation, probe never skips or quarantines: it
+    probes every entry independently, because its job is reporting per-model
+    availability, not getting one critique through. A configured pool probes
+    all of its entries (``config="pool"``, indexes attached); a single-model
+    override probes that one model (``config="single"``); neither probes the
+    backend's own default (``config="default"``, model ``None``). A pool
+    takes precedence over a single override — the pool is what needs health
+    checking, and its entries are what rotation would select.
+
+    Pure: reads ``env`` when given (a plain dict in tests) and ``os.environ``
+    otherwise.
+    """
+    pool_var, single_var = _POOL_ENV_VARS[backend]
+    pool = _parse_pool(pool_var, env)
+    if pool:
+        return "pool", pool_var, [(i, m) for i, m in enumerate(pool)]
+    single = _env_stripped(single_var, env)
+    if single:
+        return "single", pool_var, [(None, single)]
+    return "default", pool_var, [(None, None)]
 
 
 def _resolved_model(backend: str, model_index: int | None) -> str | None:
@@ -1138,6 +1254,78 @@ def cmd_detect(args: argparse.Namespace) -> None:
     print(json.dumps(llm_backends.eligibility_report(), indent=2))
 
 
+def _probe_one_model(
+    backend: str, model_index: int | None
+) -> tuple[str | None, str | None]:
+    """Run one probe request for ``(backend, model_index)``; return (detail, latency).
+
+    ``detail`` is ``None`` on success, else the redacted error text of the
+    failure (or "empty output" for a silent-but-successful call). Never
+    raises: every probe outcome is a report entry, not a failure.
+    """
+    start = time.monotonic()
+    detail: str | None = None
+    try:
+        runner = BACKEND_RUNNERS[backend]
+        runner_kwargs = _filter_runner_kwargs(
+            runner, model_index=model_index, mode="text-only"
+        )
+        text = runner(PROBE_PROMPT, **runner_kwargs)
+        if not text.strip():
+            detail = "empty output (probe prompt, no usable text)"
+    except llm_backends.BackendError as exc:
+        detail = cli_common.redact_secrets(str(exc), max_length=500)
+    return detail, round(time.monotonic() - start, 2)
+
+
+def cmd_probe(args: argparse.Namespace) -> None:
+    """Handle ``probe``: per-pool-model availability report as JSON.
+
+    Probes every entry of each requested backend's model pool (or its single
+    override / default model when no pool is configured) with one trivial,
+    cheap, text-only request each, and prints ``{"probes": [...]}`` where
+    each entry carries ``backend``, ``config`` ("pool"/"single"/"default"),
+    ``pool_var``, ``index``, ``model``, ``status`` ("ok"/"unavailable"),
+    redacted ``detail`` on failure, and ``latency_seconds``. A backend not on
+    PATH yields a ``{"backend", "status": "not_installed"}`` entry and
+    probes nothing. Exit 1 when any probed model is unavailable (a
+    ``not_installed`` entry does not affect the exit code); exit 0 when every
+    probed model answered. Probe never rotates, never quarantines, and never
+    mutates configuration — it reports; the pool itself is the user's to
+    edit. Probe calls are logged to backend_calls.jsonl like any other
+    backend call.
+    """
+    if args.backend:
+        backends = list(args.backend)
+    else:
+        backends = [b for b in available_backends() if b in BACKEND_RUNNERS]
+    probes: list[dict[str, object]] = []
+    healthy = True
+    for backend in backends:
+        if not shutil.which(backend):
+            probes.append({"backend": backend, "status": "not_installed"})
+            continue
+        config, pool_var, attempts = _probe_attempts(backend)
+        for index, model in attempts:
+            detail, latency = _probe_one_model(backend, index)
+            entry: dict[str, object] = {
+                "backend": backend,
+                "config": config,
+                "pool_var": pool_var,
+                "index": index,
+                "model": model,
+                "status": "ok" if detail is None else "unavailable",
+                "detail": detail,
+                "latency_seconds": latency,
+            }
+            if detail is not None:
+                healthy = False
+            probes.append(entry)
+    print(json.dumps({"probes": probes}, indent=2))
+    if not healthy:
+        sys.exit(1)
+
+
 def review_plan(
     request: ReviewRequest, *, verbose: bool = False, quiet: bool = False
 ) -> ReviewResult:
@@ -1240,7 +1428,11 @@ def review_plan(
             failures.append(f"{backend}: {skipped}")
             continue
 
-        for model_index, model in _attempts_for(backend, request.model_index):
+        attempts = list(_attempts_for(backend, request.model_index))
+        attempt_pos = 0
+        while attempt_pos < len(attempts):
+            model_index, model = attempts[attempt_pos]
+            attempt_pos += 1
             choice_notice = _pool_choice_notice(backend, model_index)
             if verbose and choice_notice is not None:
                 notices.append(choice_notice)
@@ -1298,25 +1490,42 @@ def review_plan(
                         " — retry with --text-only (the grounded critique's tool "
                         "use was auto-denied; do not loosen permissions)"
                     )
-                if (
-                    isinstance(exc, llm_backends.BackendToolUseError)
-                    and model is not None
-                ):
-                    # A tool-use transcript quarantines the (backend, model)
-                    # pair for this process: a model that answered the critique
-                    # prompt by taking actions would be re-selected for the
-                    # very next request otherwise. Rotation continues to the
-                    # next pool entry immediately when the caller did not pin
-                    # the model; a pinned run fails the candidate outright.
-                    _UNFIT_MODELS.add((backend, model))
+                if _pool_skip_condition(backend, exc) and model_index is not None:
+                    # A skip-to-next-model condition (tool-call-instead-of-text
+                    # reply, or opencode's "Model access is disabled"): the
+                    # round moves to the next pool model instead of failing,
+                    # and the pair is quarantined for the process — a dead
+                    # entry would be re-selected for the very next request
+                    # otherwise. When the caller pinned the attempt with an
+                    # explicit --model-index, the attempt list holds only that
+                    # entry, so extend it with the pool entries after the pin
+                    # (unseen, unquarantined) for the round to actually skip;
+                    # an unpinned pool attempt already has its remaining
+                    # entries listed. A single-model override never lands
+                    # here: its attempt has model_index None, so the strict
+                    # contract holds — the caller named the model.
+                    if model is not None:
+                        _UNFIT_MODELS.add((backend, model))
+                    if request.model_index is not None:
+                        pool_var, _ = _POOL_ENV_VARS[backend]
+                        pool = _parse_pool(pool_var, os.environ)
+                        seen = {m for _, m in attempts}
+                        attempts.extend(
+                            (i, m)
+                            for i, m in enumerate(pool)
+                            if i > model_index
+                            and (backend, m) not in _UNFIT_MODELS
+                            and m not in seen
+                        )
                     caught.append(exc)
                     if verbose:
                         notices.append(
                             f"[second_opinion] "
                             f"{backend_label(backend, model=model)} "
-                            f"failed: {exc}"
+                            f"failed: {exc} — skipping to next pool model"
                         )
-                    failures.append(f"{backend}: {exc}")
+                    failures.append(f"{backend}: {exc} (skipped to next pool model)")
+                    _log_pool_skip(backend, model, exc, prompt_bytes)
                     continue
                 if isinstance(exc, llm_backends.BackendPayloadSizeError):
                     size_rule_outs.append(exc)
@@ -1329,12 +1538,20 @@ def review_plan(
                     )
                 failures.append(f"{backend}: {exc}{hint}")
                 break
+            # A skip parked fallback_reason for the next attempt; on success
+            # that attempt consumed it (real runners) or never got it (mocks)
+            # — reset so a parked value can never leak past this candidate.
+            llm_backends._pending_fallback_reason = None
             return ReviewResult(
                 backend_label=backend_label(backend, model=model),
                 response_text=critique,
                 bytes_saved=bytes_saved,
                 notices=tuple(notices),
             )
+        # The candidate's attempts ended (break or exhausted) with no further
+        # call this chain: drop any parked skip reason before the next
+        # candidate's first attempt inherits it as its own fallback cause.
+        llm_backends._pending_fallback_reason = None
 
     if size_rule_outs and len(size_rule_outs) == len(candidates):
         raise AllBackendsFailedError(
@@ -1442,10 +1659,25 @@ def build_parser() -> argparse.ArgumentParser:
     # dev_status.py's build_parser() for the full rationale.
     verbosity_parent = argparse.ArgumentParser(add_help=False)
     cli_common.add_verbosity_args(verbosity_parent)
-    sub = parser.add_subparsers(dest="cmd", metavar="{detect,review}")
+    sub = parser.add_subparsers(dest="cmd", metavar="{detect,review,probe}")
 
     sub.add_parser(
         "detect", help="list available backends as JSON", parents=[verbosity_parent]
+    )
+
+    p = sub.add_parser(
+        "probe",
+        help="probe each backend's model pool and report per-model availability as JSON",
+        parents=[verbosity_parent],
+    )
+    p.add_argument(
+        "--backend",
+        type=_backend_list_arg,
+        default=None,
+        metavar="NAME[,NAME...]",
+        help="probe only these backend(s) (comma-separated list allowed) "
+        "instead of every installed backend in priority order; an entry not "
+        "installed is reported as not_installed, not an error",
     )
 
     p = sub.add_parser(
@@ -1528,7 +1760,7 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
 
-    dispatch = {"detect": cmd_detect, "review": cmd_review}
+    dispatch = {"detect": cmd_detect, "review": cmd_review, "probe": cmd_probe}
     if args.cmd in dispatch:
         with cli_common.timing_span(
             "command", script="second_opinion", command=args.cmd
