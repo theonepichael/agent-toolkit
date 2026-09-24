@@ -3,9 +3,9 @@
 
 The script's source of truth is this repo (the origin repo's copy was retired in the
 cutover; the live ~/.claude/scripts symlink points here). Everything is
-tested in process: herdr is faked at the module's herdr() boundary -- the
-only function that shells out -- so nothing here reaches the real herdr
-socket or spawns a subprocess, and the conftest sandbox needs no marking.
+tested in process: herdr is faked at the module's herdr() boundary, and
+worktree setup subprocesses are mocked. Nothing here reaches the real herdr
+socket or mutates a real worktree, so the conftest sandbox needs no marking.
 
 Covered: the CLI contract (help, usage errors), the launch-path failure
 cleanup, and the `restart` subcommand's whole decision tree --
@@ -1064,6 +1064,176 @@ class CopilotKindTests(DelegateTests):
             session_id = passthrough[passthrough.index("--session-id") + 1]
             self.assertEqual(uuid.UUID(session_id).version, 4)
             self.assertEqual(summary["session_id"], session_id)
+
+
+class NewWorkerKindTests(DelegateTests):
+    """Agy and Codex start as single-item workers with their own CLI setup."""
+
+    def test_new_kind_start_argv_and_prompt(self) -> None:
+        agy = herdr_delegate.build_agent_start_argv(
+            name="agy-worker", pane="w:p1", model="gemini-test", kind="agy"
+        )
+        self.assertEqual(
+            agy,
+            ["agent", "start", "agy-worker", "--kind", "agy", "--pane", "w:p1",
+             "--", "--mode", "accept-edits", "--model", "gemini-test"],
+        )
+        self.assertEqual(
+            herdr_delegate.worker_prompt("iron-lb-example", kind="agy"),
+            "/backlog-item --auto iron-lb-example",
+        )
+
+        codex = herdr_delegate.build_agent_start_argv(
+            name="codex-worker", pane="w:p1", model="gpt-test", kind="codex",
+            writable_roots=["/tmp/toolkit data", "/tmp/uv-cache"],
+        )
+        self.assertEqual(
+            codex,
+            ["agent", "start", "codex-worker", "--kind", "codex", "--pane", "w:p1",
+             "--", "-c", "check_for_update_on_startup=false", "--sandbox",
+             "workspace-write", "--approve-for-me", "--add-dir", "/tmp/toolkit data",
+             "--add-dir", "/tmp/uv-cache", "--model", "gpt-test"],
+        )
+        self.assertEqual(
+            herdr_delegate.worker_prompt("iron-lb-example", kind="codex"),
+            "$backlog-item --auto iron-lb-example",
+        )
+
+    def test_new_kinds_reject_queues_before_herdr(self) -> None:
+        fake = FakeHerdr()
+        with (
+            mock.patch.object(herdr_delegate, "herdr", fake),
+            mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
+        ):
+            for kind in ("agy", "codex"):
+                code, _, err = self.run_main(
+                    ["launch", "--swarm", "2", "--prefix", "iron-lb", "--kind", kind]
+                )
+                self.assertEqual(code, 2)
+                self.assertIn("single-item", err)
+            self.assertEqual(fake.calls, [])
+
+    def test_launch_new_kinds_uses_prepared_worktree(self) -> None:
+        for kind in ("agy", "codex"):
+            fake = FakeHerdr()
+            with (
+                mock.patch.object(herdr_delegate, "herdr", fake),
+                mock.patch.object(
+                    herdr_delegate, "prepare_worker_worktree", return_value="/tmp/item worktree"
+                ) as prepare,
+                mock.patch.object(
+                    herdr_delegate, "codex_writable_roots", return_value=["/tmp/data"]
+                ) as roots,
+                mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
+            ):
+                code, out, _ = self.run_main(
+                    ["launch", "--slug", "iron-lb-example", "--kind", kind]
+                )
+                self.assertEqual(code, 0)
+                prepare.assert_called_once_with("iron-lb-example")
+                self.assertEqual(roots.call_count, int(kind == "codex"))
+                self.assertEqual(
+                    fake.named("tab", "create")[0][2:4],
+                    ["--cwd", "/tmp/item worktree"],
+                )
+                start = fake.named("agent", "start")[0]
+                self.assertEqual(start[start.index("--kind") + 1], kind)
+                self.assertEqual(
+                    fake.named("agent", "prompt")[0][3],
+                    herdr_delegate.worker_prompt("iron-lb-example", kind),
+                )
+                self.assertEqual(json.loads(out)["tab"], "w9:tN")
+
+    def test_preparation_refuses_unknown_item_before_mutation(self) -> None:
+        with (
+            mock.patch.object(herdr_delegate, "resolve_backlog_item", return_value=None),
+            mock.patch.object(herdr_delegate.subprocess, "run") as run,
+        ):
+            with self.assertRaises(herdr_delegate.RefusedError):
+                herdr_delegate.prepare_worker_worktree("unknown-example")
+            run.assert_not_called()
+
+    def test_preparation_refuses_unsafe_item_before_mutation(self) -> None:
+        with (
+            mock.patch.object(
+                herdr_delegate, "resolve_backlog_item", return_value={"id": "iron-lb-example"}
+            ),
+            mock.patch.object(
+                herdr_delegate, "serial_safety", return_value=(False, "multiple repos")
+            ),
+            mock.patch.object(herdr_delegate.subprocess, "run") as run,
+        ):
+            with self.assertRaisesRegex(herdr_delegate.RefusedError, "multiple repos"):
+                herdr_delegate.prepare_worker_worktree("iron-lb-example")
+            run.assert_not_called()
+
+    def test_preparation_bootstraps_exact_validated_worktree(self) -> None:
+        worktree = Path("/tmp/repo-item-worktree")
+        config = mock.Mock(repo=Path("/tmp/repo"), worktree_path=worktree)
+        result = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=json.dumps({"worktree_path": str(worktree)}),
+            stderr="",
+        )
+        with (
+            mock.patch.object(
+                herdr_delegate, "resolve_backlog_item", return_value={"id": "iron-lb-example"}
+            ),
+            mock.patch.object(herdr_delegate, "serial_safety", return_value=(True, None)),
+            mock.patch.object(herdr_delegate, "resolve_worktree_config", return_value=config),
+            mock.patch.object(herdr_delegate.subprocess, "run", return_value=result) as run,
+        ):
+            self.assertEqual(
+                herdr_delegate.prepare_worker_worktree("iron-lb-example"),
+                str(worktree),
+            )
+            args, kwargs = run.call_args
+            self.assertEqual(args[0][-3:], ["worktree", "iron-lb-example", "--json"])
+            self.assertEqual(kwargs["cwd"], "/tmp/repo")
+
+        mismatched = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=json.dumps({"worktree_path": "/tmp/other"}),
+            stderr="",
+        )
+        with (
+            mock.patch.object(
+                herdr_delegate, "resolve_backlog_item", return_value={"id": "iron-lb-example"}
+            ),
+            mock.patch.object(herdr_delegate, "serial_safety", return_value=(True, None)),
+            mock.patch.object(herdr_delegate, "resolve_worktree_config", return_value=config),
+            mock.patch.object(herdr_delegate.subprocess, "run", return_value=mismatched),
+        ):
+            with self.assertRaisesRegex(herdr_delegate.RefusedError, "expected"):
+                herdr_delegate.prepare_worker_worktree("iron-lb-example")
+
+    def test_codex_roots_follow_runtime_paths(self) -> None:
+        cache = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="/tmp/custom uv cache\n", stderr=""
+        )
+        with (
+            mock.patch.object(herdr_delegate.subprocess, "run", return_value=cache),
+            mock.patch.object(
+                herdr_delegate.agent_toolkit_paths, "path_for",
+                return_value=Path("/tmp/toolkit/data/backlog"),
+            ),
+            mock.patch.object(
+                herdr_delegate.cli_common, "state_dir", return_value=Path("/tmp/xdg-state")
+            ),
+        ):
+            self.assertEqual(
+                herdr_delegate.codex_writable_roots(),
+                ["/tmp/toolkit/data", "/tmp/xdg-state/agent-toolkit", "/tmp/custom uv cache"],
+            )
+
+    def test_explicit_cwd_rejected_for_new_kinds(self) -> None:
+        fake = FakeHerdr()
+        with mock.patch.object(herdr_delegate, "herdr", fake):
+            code, _, err = self.run_main(
+                ["launch", "--slug", "iron-lb-example", "--kind", "codex",
+                 "--cwd", "/tmp/other-repo"]
+            )
+            self.assertEqual(code, 2)
+            self.assertIn("omit --cwd", err)
+            self.assertEqual(fake.calls, [])
 
 
 class FakeClaimsLookup:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Launch pi agents in herdr tabs to work backlog items.
+"""Launch supported agents in herdr tabs to work backlog items.
 
 Owns the launch recipe so no session has to re-derive it. It launches only:
 ``swarm_spawn``/``swarm_poll`` in ``pi/extensions/swarm-tool.ts`` keep owning
@@ -42,7 +42,8 @@ failure. Any other failure still fails on the first attempt, unchanged.
 
 Usage:
     herdr_delegate.py plan
-    herdr_delegate.py launch --slug <slug> [--model <model>] [--kind {pi,copilot}]
+    herdr_delegate.py launch --slug <slug> [--model <model>]
+                             [--kind {pi,copilot,agy,codex}]
     herdr_delegate.py launch --swarm <N> --prefix <prefix> [--model <model>]
                              [--kind {pi,copilot}]
     herdr_delegate.py launch --serial --prefix <prefix> [--model <model>]
@@ -75,6 +76,8 @@ from pathlib import Path
 # same as any other file open.
 sys.path.insert(0, str(Path(__file__).parent))
 
+import agent_toolkit_paths  # noqa: E402
+import cli_common  # noqa: E402
 from backlog_claim_lookup import (  # noqa: E402
     BacklogClaimLookup,
     LocalClaimLookup,
@@ -85,7 +88,13 @@ from dev_status import (  # noqa: E402
     is_worker_safe,
     prefix_of,
 )
+from dev_status_impl import serial_safety  # noqa: E402
 from dev_status_storage import BacklogItem  # noqa: E402
+from worktree import (  # noqa: E402
+    WorktreeError,
+    resolve_backlog_item,
+    resolve_worktree_config,
+)
 
 # What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
 TOOLKIT_DATA = "reader"
@@ -242,6 +251,7 @@ def build_agent_start_argv(
     session_id: str | None = None,
     allow_all_tools: bool = True,
     plugin_dir: str | None = None,
+    writable_roots: list[str] | None = None,
 ) -> list[str]:
     """`herdr agent start` argv, with flags passed through after a bare ``--``."""
     argv = ["agent", "start", name, "--kind", kind, "--pane", pane]
@@ -259,6 +269,26 @@ def build_agent_start_argv(
             argv += ["--", *session_args]
         return argv
 
+    if kind == "agy":
+        session_args = ["--mode", "accept-edits"]
+        if model:
+            session_args += ["--model", model]
+        return [*argv, "--", *session_args]
+
+    if kind == "codex":
+        session_args = [
+            "-c",
+            "check_for_update_on_startup=false",
+            "--sandbox",
+            "workspace-write",
+            "--approve-for-me",
+        ]
+        for root in writable_roots or []:
+            session_args += ["--add-dir", root]
+        if model:
+            session_args += ["--model", model]
+        return [*argv, "--", *session_args]
+
     if model:
         argv += ["--", "--model", model]
     return argv
@@ -266,7 +296,8 @@ def build_agent_start_argv(
 
 def worker_prompt(slug: str, kind: str = "pi") -> str:
     """One worker, one item, unattended."""
-    return f"/backlog-item --auto {slug}"
+    invoke = "$backlog-item" if kind == "codex" else "/backlog-item"
+    return f"{invoke} --auto {slug}"
 
 
 def orchestrator_prompt(concurrency: int, prefix: str, kind: str = "pi") -> str:
@@ -516,6 +547,55 @@ AGENT_START_TIMEOUT_RETRIES can never desync from a fixed-length backoff
 list and index out of range."""
 
 
+def prepare_worker_worktree(slug: str) -> str:
+    """Validate one item and bootstrap its exact worktree before agent startup."""
+    item = resolve_backlog_item(slug)
+    if item is None:
+        raise RefusedError(f"no backlog item matches {slug!r}")
+    safe, reason = serial_safety(item)
+    if not safe:
+        raise RefusedError(f"item {slug!r} is not safe for delegation: {reason}")
+    try:
+        config = resolve_worktree_config(slug)
+    except WorktreeError as exc:
+        raise RefusedError(str(exc)) from exc
+    result = subprocess.run(
+        [sys.executable, str(DEV_STATUS), "worktree", slug, "--json"],
+        cwd=str(config.repo),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RefusedError(
+            f"worktree setup failed for {slug!r}: {result.stderr.strip()}"
+        )
+    try:
+        payload = json.loads(result.stdout)
+        actual = Path(payload["worktree_path"]).resolve()
+    except (ValueError, KeyError, TypeError) as exc:
+        raise RefusedError("worktree setup returned no valid path") from exc
+    if actual != config.worktree_path:
+        raise RefusedError(
+            f"worktree setup returned {actual}, expected {config.worktree_path}"
+        )
+    return str(actual)
+
+
+def codex_writable_roots() -> list[str]:
+    """Runtime paths a backlog worker writes outside its worktree."""
+    cache = subprocess.run(
+        ["uv", "cache", "dir"], capture_output=True, text=True, check=False
+    )
+    if cache.returncode != 0 or not cache.stdout.strip():
+        raise RefusedError(f"cannot resolve uv cache: {cache.stderr.strip()}")
+    return [
+        str(agent_toolkit_paths.path_for("work-items").parent),
+        str(cli_common.state_dir() / "agent-toolkit"),
+        str(Path(cache.stdout.strip()).resolve()),
+    ]
+
+
 def spawn_in_new_tab(
     *,
     cwd: str,
@@ -526,8 +606,9 @@ def spawn_in_new_tab(
     session_id: str | None = None,
     allow_all_tools: bool = True,
     plugin_dir: str | None = None,
+    writable_roots: list[str] | None = None,
 ) -> dict[str, object]:
-    """Create a tab, start pi or copilot in it, and hand it its prompt.
+    """Create a tab, start an agent in it, and hand it its prompt.
 
     The one launch sequence, shared by `launch` and `restart` so the two
     cannot drift apart. A `timeout`-coded `agent start` failure is retried
@@ -556,6 +637,7 @@ def spawn_in_new_tab(
                     session_id=session_id,
                     allow_all_tools=allow_all_tools,
                     plugin_dir=plugin_dir,
+                    writable_roots=writable_roots,
                 )
             )
         except RefusedError as exc:
@@ -677,7 +759,7 @@ def cmd_plan(_args: argparse.Namespace) -> None:
 
 
 def cmd_launch(args: argparse.Namespace) -> None:
-    """Create a tab, start pi or copilot in it, and hand it its prompt."""
+    """Create a tab, start a worker or orchestrator, and hand it its prompt."""
     require_herdr_env(os.environ)
     kind = getattr(args, "kind", "pi")
     plugin_dir = COPILOT_PLUGIN_DIR if kind == "copilot" else None
@@ -707,16 +789,24 @@ def cmd_launch(args: argparse.Namespace) -> None:
                 "resume or restart that run instead"
             )
 
+    cwd = args.cwd or os.getcwd()
+    writable_roots: list[str] | None = None
+    if kind in ("agy", "codex"):
+        cwd = prepare_worker_worktree(args.slug)
+        if kind == "codex":
+            writable_roots = codex_writable_roots()
+
     print(
         json.dumps(
             spawn_in_new_tab(
-                cwd=args.cwd,
+                cwd=cwd,
                 label=label,
                 prompt=prompt,
                 model=args.model,
                 kind=kind,
                 session_id=session_id,
                 plugin_dir=plugin_dir,
+                writable_roots=writable_roots,
             )
         )
     )
@@ -796,7 +886,7 @@ def main() -> None:
     plan.set_defaults(func=cmd_plan)
 
     launch = sub.add_parser(
-        "launch", help="start a pi or copilot worker or orchestrator"
+        "launch", help="start a worker, or a pi/copilot queue orchestrator"
     )
     # Flat rather than a mutually exclusive group: gen_interfaces.py extracts a
     # subcommand's flags from add_argument calls on the subparser itself, so a
@@ -813,12 +903,12 @@ def main() -> None:
     launch.add_argument(
         "--model", help="model passed through to harness after a bare --"
     )
-    launch.add_argument("--cwd", default=os.getcwd(), help="working directory")
+    launch.add_argument("--cwd", help="working directory (pi/copilot only)")
     launch.add_argument(
         "--kind",
-        choices=["pi", "copilot"],
+        choices=["pi", "copilot", "agy", "codex"],
         default="pi",
-        help="agent harness (pi or copilot; default: pi)",
+        help="agent harness (agy/codex support --slug only; default: pi)",
     )
     launch.set_defaults(func=cmd_launch)
 
@@ -859,6 +949,11 @@ def main() -> None:
             parser.error(
                 "--swarm and --serial require --prefix; an unscoped queue mixes projects"
             )
+        if args.kind in ("agy", "codex"):
+            if not args.slug:
+                parser.error(f"--kind {args.kind} supports single-item --slug only")
+            if args.cwd is not None:
+                parser.error(f"--kind {args.kind} resolves the worktree; omit --cwd")
     if args.command == "restart":
         selectors = int(args.swarm is not None) + int(args.serial)
         if selectors != 1:

@@ -54,7 +54,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`guard_rails.py`](#agentscriptsguardrailspy) | Pre-tool guard shared by every harness: refuse a write into a repository's main checkout while a backlog item for that repository is in progress, warn when the current worktree's base has fallen behind ``origin/main`` (or ``origin/<integration_branch>`` for an item that declares one), (Bash, Claude Code only) deny the git-native ways to defeat the no-commit-on-main git hook (``githooks/pre-commit`` / ``githooks-global/pre-commit``), and require an active backlog-item claim before a write that points at an in-progress item. |
 | [`harness_discovery_check.py`](#agentscriptsharnessdiscoverycheckpy) | SessionStart hook + CLI: detect when a harness's instruction-file discovery behavior may have drifted from the version-pinned facts in README.md. |
 | [`harness_spec.py`](#agentscriptsharnessspecpy) | Declarative harness specification registry. |
-| [`herdr_delegate.py`](#agentscriptsherdrdelegatepy) | Launch pi agents in herdr tabs to work backlog items. |
+| [`herdr_delegate.py`](#agentscriptsherdrdelegatepy) | Launch supported agents in herdr tabs to work backlog items. |
 | [`link_drift_check.py`](#agentscriptslinkdriftcheckpy) | SessionStart hook + CLI: flag when a managed symlink on this machine no longer points where links.toml says it should. |
 | [`link_inspect.py`](#agentscriptslinkinspectpy) | link_inspect.py — link inspection, path classification, drift finding, and the self-contained audit assembly for install.py's ``--check-links`` audit and link_drift_check.py's SessionStart hook. |
 | [`llm_backends.py`](#agentscriptsllmbackendspy) | llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, opencode, pi, copilot). Extracted from second_opinion.py so dev_status.py's recap generation can reuse the same process-lifecycle handling (timeouts, process-group kills, opencode JSON-event parsing) with its own timeout and model choices, without duplicating it. |
@@ -913,21 +913,21 @@ Declarative harness specification registry.
 
 ### `agent-scripts/herdr_delegate.py`
 
-Launch pi agents in herdr tabs to work backlog items.
+Launch supported agents in herdr tabs to work backlog items.
 
 - Installed at: `~/.claude/scripts/herdr_delegate.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
-- CLI (`argparse`): Launch pi agents in herdr tabs to work backlog items.
+- CLI (`argparse`): Launch supported agents in herdr tabs to work backlog items.
 - Subcommands:
   - `plan` — READY queue grouped by prefix, as JSON
-  - `launch [--slug <SLUG>] [--swarm <SWARM>] [--serial] [--prefix <PREFIX>] [--model <MODEL>] [--cwd <CWD>] [--kind {pi,copilot}]` — start a pi or copilot worker or orchestrator
+  - `launch [--slug <SLUG>] [--swarm <SWARM>] [--serial] [--prefix <PREFIX>] [--model <MODEL>] [--cwd <CWD>] [--kind {pi,copilot,agy,codex}]` — start a worker, or a pi/copilot queue orchestrator
     - `--slug` — single item for one unattended worker
     - `--swarm` — fan out across N workers
     - `--serial` — run a prefix queue one worker at a time
     - `--prefix` — queue scope, required with --swarm or --serial
     - `--model` — model passed through to harness after a bare --
-    - `--cwd` — working directory
-    - `--kind` — agent harness (pi or copilot; default: pi) (choices: pi, copilot; default: pi)
+    - `--cwd` — working directory (pi/copilot only)
+    - `--kind` — agent harness (agy/codex support --slug only; default: pi) (choices: pi, copilot, agy, codex; default: pi)
   - `restart [--swarm <SWARM>] [--serial] [--prefix <PREFIX>] [--run-id <RUN_ID>] [--model <MODEL>] [--cwd <CWD>] [--kind {pi,copilot}]` — close a live swarm orchestrator's tab, relaunch it, resume the same run
     - `--swarm` — fan out across N workers
     - `--serial` — resume a one-worker serial queue
@@ -941,7 +941,7 @@ Launch pi agents in herdr tabs to work backlog items.
   - `DEV_STATUS = Path(__file__).parent / 'dev_status.py'`
   - `COPILOT_PLUGIN_DIR = str(Path(__file__).resolve().parent.parent / 'copilot' / 'extensions' / 'swarm')`
 - Explicit exit codes: `1`
-- Depends on: `backlog_claim_lookup.py`, `dev_status.py`, `dev_status_storage.py`
+- Depends on: `agent_toolkit_paths.py`, `backlog_claim_lookup.py`, `cli_common.py`, `dev_status.py`, `dev_status_impl.py`, `dev_status_storage.py`, `worktree.py`
 - Exceptions:
   - `class RefusedError(RuntimeError)` — A launch that must not proceed, with a reason fit to show the user.
 - Public functions:
@@ -954,7 +954,7 @@ Launch pi agents in herdr tabs to work backlog items.
   - `agent_name_for(label: str) -> str` — The herdr agent name derived from a tab label.
   - `build_tab_list_argv() -> list[str]` — `herdr tab list` argv.
   - `build_agent_list_argv() -> list[str]` — `herdr agent list` argv.
-  - `build_agent_start_argv(*, name: str, pane: str, model: str | None, kind: str = 'pi', session_id: str | None = None, allow_all_tools: bool = True, plugin_dir: str | None = None) -> list[str]` — `herdr agent start` argv, with flags passed through after a bare ``--``.
+  - `build_agent_start_argv(*, name: str, pane: str, model: str | None, kind: str = 'pi', session_id: str | None = None, allow_all_tools: bool = True, plugin_dir: str | None = None, writable_roots: list[str] | None = None) -> list[str]` — `herdr agent start` argv, with flags passed through after a bare ``--``.
   - `worker_prompt(slug: str, kind: str = 'pi') -> str` — One worker, one item, unattended.
   - `orchestrator_prompt(concurrency: int, prefix: str, kind: str = 'pi') -> str` — One orchestrator; `swarm_spawn` owns the fan-out from here.
   - `orchestrator_resume_prompt(concurrency: int, run_id: str, prefix: str, kind: str = 'pi') -> str` — One orchestrator, resuming an interrupted run.
@@ -970,7 +970,9 @@ Launch pi agents in herdr tabs to work backlog items.
   - `live_queue_orchestrators(prefix: str) -> list[tuple[str, str]]` — Live serial or concurrent orchestrator tabs for one canonical prefix.
   - `parse_agent_names(listing: dict[str, object]) -> list[str]` — Agent names out of a `herdr agent list` envelope; [] on anything unexpected.
   - `wait_agent_deregistered(name: str, *, retry_advice: str = 'Retry `restart` (it relaunches once the name frees)') -> None` — Poll until no live agent carries ``name``, bounded; refuse if it persists.
-  - `spawn_in_new_tab(*, cwd: str, label: str, prompt: str, model: str | None, kind: str = 'pi', session_id: str | None = None, allow_all_tools: bool = True, plugin_dir: str | None = None) -> dict[str, object]` — Create a tab, start pi or copilot in it, and hand it its prompt.
+  - `prepare_worker_worktree(slug: str) -> str` — Validate one item and bootstrap its exact worktree before agent startup.
+  - `codex_writable_roots() -> list[str]` — Runtime paths a backlog worker writes outside its worktree.
+  - `spawn_in_new_tab(*, cwd: str, label: str, prompt: str, model: str | None, kind: str = 'pi', session_id: str | None = None, allow_all_tools: bool = True, plugin_dir: str | None = None, writable_roots: list[str] | None = None) -> dict[str, object]` — Create a tab, start an agent in it, and hand it its prompt.
   - `select_ready(prefix: str | None = None, claims: BacklogClaimLookup | None = None) -> list[BacklogItem]` — Select open backlog items matching an optional prefix using claims lookup.
   - `build_launch_plan(items: list[BacklogItem], *, kind: str = 'pi', cwd: str = '.') -> list[list[str]]` — Construct herdr tab-creation argvs for a list of backlog items.
   - `ready_slugs(claims: BacklogClaimLookup | None = None) -> list[str]` — Slugs currently in READY, sourced via select_ready().
@@ -1684,7 +1686,7 @@ the workflow's template plus its generator's capability/parameter tables.
   - Generated from: `templates/standup.md.tmpl` by `gen_skills.py`
   - `claude/commands/{name}.md` is the rendered Claude Code port — edit the template or generator, then regenerate.
   - Installed at: `~/.claude/commands/standup.md` (claude)
-- **`/swarm`** — Hand READY backlog items to pi or copilot agents running in herdr tabs — concurrently by default, serially when requested, or as one named item. Use when the user says 'swarm', 'run the queue serially', 'hand this to pi', 'give <item> to a pi agent', 'hand this to copilot', or 'delegate to a worker'. Requires HERDR_ENV=1; says so and stops otherwise.
+- **`/swarm`** — Hand READY backlog items to pi or copilot queue agents, or one item to an agy or codex worker, in herdr tabs. Use when the user says 'swarm', 'run the queue serially', 'hand this to pi', 'hand this to copilot', 'hand this to agy', 'hand this to codex', or 'delegate to a worker'. Requires HERDR_ENV=1; says so and stops otherwise.
   - Generated from: `templates/swarm.md.tmpl` by `gen_skills.py`
   - `claude/commands/{name}.md` is the rendered Claude Code port — edit the template or generator, then regenerate.
   - Installed at: `~/.claude/commands/swarm.md` (claude)

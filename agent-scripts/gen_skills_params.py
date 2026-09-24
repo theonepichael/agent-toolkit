@@ -2984,7 +2984,7 @@ SWARM_PARAMS: dict[str, dict[str, str]] = {
         "FRONTMATTER": """\
 ---
 name: swarm
-description: "Hand READY backlog items to pi or copilot agents running in herdr tabs — concurrently by default, serially when requested, or as one named item. Use when the user says 'swarm', 'run the queue serially', 'hand this to pi', 'give <item> to a pi agent', 'hand this to copilot', or 'delegate to a worker'. Requires HERDR_ENV=1; says so and stops otherwise."
+description: "Hand READY backlog items to pi or copilot queue agents, or one item to an agy or codex worker, in herdr tabs. Use when the user says 'swarm', 'run the queue serially', 'hand this to pi', 'hand this to copilot', 'hand this to agy', 'hand this to codex', or 'delegate to a worker'. Requires HERDR_ENV=1; says so and stops otherwise."
 ---""",
         # Transcribed verbatim from the hand-authored original this
         # generated output replaces (ff05d19) -- byte-for-byte, so the
@@ -3002,7 +3002,7 @@ about which project.""",
         "FRONTMATTER": """\
 ---
 name: swarm
-description: "Hand READY backlog items to pi or copilot agents running in herdr tabs — concurrently by default, serially when requested, or as one named item. Use when the user says 'swarm', 'run the queue serially', 'hand this to pi', 'give <item> to a pi agent', 'hand this to copilot', or 'delegate to a worker'. Requires HERDR_ENV=1; says so and stops otherwise."
+description: "Hand READY backlog items to pi or copilot queue agents, or one item to an agy or codex worker, in herdr tabs. Use when the user says 'swarm', 'run the queue serially', 'hand this to pi', 'hand this to copilot', 'hand this to agy', 'hand this to codex', or 'delegate to a worker'. Requires HERDR_ENV=1; says so and stops otherwise."
 allowed-tools: shell
 ---""",
         # Same mechanics adaptation as every copilot params entry: no
