@@ -101,6 +101,7 @@ Requires Python 3.12+. Standard library only.
 from __future__ import annotations
 
 import ast
+import contextlib
 import hashlib
 import json
 import os
@@ -292,6 +293,8 @@ CHECKPOINTS: tuple[str, ...] = (
     "migrate.baseline.done",
     "migrate.links.begun",
     "migrate.links.done",
+    "migrate.settings-rewrite.begun",
+    "migrate.settings-rewrite.done",
     "migrate.reverify.begun",
     "migrate.reverify.done",
     *(
@@ -355,6 +358,8 @@ def _oracle() -> dict[str, Expected]:
         "migrate.baseline.done",
         "migrate.links.begun",
         "migrate.links.done",
+        "migrate.settings-rewrite.begun",
+        "migrate.settings-rewrite.done",
         "migrate.reverify.begun",
         "migrate.reverify.done",
         *(n for n in CHECKPOINTS if n.startswith("migrate.promote.")),
@@ -2155,6 +2160,507 @@ def _baseline_verify(state: RunState, record: StepRecord) -> bool:
     return not _baseline_guard(state, record) and done is not None
 
 
+# ── settings and global-hook rewrite (release 1) ─────────────────────────────────
+
+# Live settings files, by harness, that can hold a manifest-owned command path.
+_SETTINGS_FILES: dict[str, tuple[str, ...]] = {
+    "claude": (".claude/settings.json",),
+    "opencode": (".config/opencode/opencode.jsonc",),
+    "pi": (".pi/agent/settings.json",),
+    "agy": (".gemini/antigravity-cli/settings.json",),
+}
+
+
+def _manifest_path_map(repo_root: Path) -> dict[str, str]:
+    """Old manifest path -> new manifest path, read from links.toml.
+
+    Every links.toml destination under the toolkit home has a legacy
+    equivalent under the harness home (~/.claude); the rewrite replaces a live
+    value that is exactly the old path, or a command that invokes it, with the
+    new path. No heuristics or substring matching. Both the ``~/``-relative
+    and the expanded ``/home/<user>/`` form of each old path are mapped (live
+    agy settings use both), each rewritten to the same form it was found in.
+    """
+    mapping: dict[str, str] = {}
+    home = str(Path.home())
+    for spec in link_inspect.load_links(repo_root / "links.toml"):
+        dest = spec.dest
+        if not dest.startswith("~/.agent-toolkit"):
+            continue
+        old = "~/.claude" + dest[len("~/.agent-toolkit") :]
+        mapping[old] = dest
+        mapping[home + old[1:]] = home + dest[1:]
+    return mapping
+
+
+def _rewrite_value(value: str, mapping: dict[str, str]) -> tuple[str, bool, list[str]]:
+    """Rewrite one string against the manifest map.
+
+    Returns (new_value, matched, unmatched_list). An exact match replaces the
+    whole value; a whitespace token that is an old path is replaced in place —
+    only that token's span changes, so every other character, including
+    irregular whitespace, survives; a value that merely contains an old path
+    without a clean token is reported as unmatched and left alone. A
+    parenthesised value is always unmatched: permission patterns (Bash(...:*)
+    and agy's command(...)) are structural syntax around the path, not plain
+    invocations of it, and stay on the manual-review checklist.
+    """
+    if value in mapping:
+        return mapping[value], True, []
+    parts = _WS_SPLIT.split(value)
+    hit = False
+    for i, part in enumerate(parts):
+        if part and not part.isspace() and part in mapping:
+            parts[i] = mapping[part]
+            hit = True
+    if hit and "(" not in value and ")" not in value:
+        # a parenthesised wrapper (a permission pattern like Bash(...:*) or
+        # agy's command(...)) is structural syntax around the path, not a
+        # plain invocation of it: report it, leave the bytes alone
+        return "".join(parts), True, []
+    if any(k in value for k in mapping):
+        return value, False, [value]
+    return value, False, []
+
+
+def _skip_string(text: str, i: int) -> int:
+    """The index just past the JSON string literal opening at ``i``."""
+    i += 1
+    n = len(text)
+    while i < n:
+        if text[i] == "\\":
+            i += 2
+            continue
+        if text[i] == '"':
+            return i + 1
+        i += 1
+    return n
+
+
+def _strip_jsonc(text: str) -> str:
+    """Comment-stripped copy of a JSONC text, string-aware.
+
+    For structural validation and post-rewrite re-checks only; discovery and
+    rewriting always work on the original text.
+    """
+    out: list[str] = []
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if c == '"':
+            j = _skip_string(text, i)
+            out.append(text[i:j])
+            i = j
+        elif c == "/" and text[i + 1 : i + 2] == "/":
+            j = text.find("\n", i)
+            i = n if j == -1 else j  # keep the newline itself
+        elif c == "/" and text[i + 1 : i + 2] == "*":
+            j = text.find("*/", i + 2)
+            i = n if j == -1 else j + 2
+            out.append(" ")
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
+def _strip_trailing_commas(text: str) -> str:
+    """Drop commas before a closing brace or bracket, string-aware."""
+    out: list[str] = []
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if c == '"':
+            j = _skip_string(text, i)
+            out.append(text[i:j])
+            i = j
+            continue
+        if c == ",":
+            k = i + 1
+            while k < n and text[k] in " \t\r\n":
+                k += 1
+            if k < n and text[k] in "}]":
+                i += 1
+                continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def _json_string_spans(text: str) -> list[tuple[int, int]]:
+    """Spans of every JSON string literal in ``text``, comments skipped.
+
+    Walks the raw text so discovery can run on JSONC; each span includes its
+    quotes.
+    """
+    spans: list[tuple[int, int]] = []
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if c == '"':
+            j = _skip_string(text, i)
+            spans.append((i, j))
+            i = j
+        elif c == "/" and text[i + 1 : i + 2] == "/":
+            j = text.find("\n", i)
+            i = n if j == -1 else j
+        elif c == "/" and text[i + 1 : i + 2] == "*":
+            j = text.find("*/", i + 2)
+            i = n if j == -1 else j + 2
+        else:
+            i += 1
+    return spans
+
+
+def _json_valid(text: str) -> bool:
+    """Whether ``text`` parses as JSON or comment/trailing-comma JSONC."""
+    try:
+        json.loads(_strip_trailing_commas(_strip_jsonc(text)))
+    except ValueError:
+        return False
+    return True
+
+
+def _rewrite_json_text(
+    text: str, mapping: dict[str, str]
+) -> tuple[str, list[dict[str, str]], list[str]]:
+    """Rewrite matched string literals in place on the raw text.
+
+    Discovery parses (JSONC-tolerant), but substitution happens on the
+    original bytes: each matched value's exact literal is replaced by the
+    JSON encoding of its new value, and every other byte — comments,
+    indentation, whitespace inside values — is left identical. Keys are never
+    rewritten. Raises ValueError when ``text`` does not parse.
+    """
+    if not _json_valid(text):
+        raise ValueError("not valid JSON/JSONC")
+    edits: list[tuple[int, int, str]] = []
+    matches: list[dict[str, str]] = []
+    unmatched: list[str] = []
+    n = len(text)
+    for start, end in _json_string_spans(text):
+        try:
+            value = json.loads(text[start:end])
+        except json.JSONDecodeError:
+            continue  # a malformed literal in a file _json_valid accepted: skip
+        if not isinstance(value, str):
+            continue
+        k = end
+        while k < n and text[k] in " \t\r\n":
+            k += 1
+        if k < n and text[k] == ":":
+            # a key, not a value: keys name permission rules or config
+            # entries and are never rewritten — but a key that names an old
+            # manifest path is exactly the drift the manual-review report
+            # exists for, so list it
+            _new, matched, um = _rewrite_value(value, mapping)
+            unmatched.extend(um)
+            if matched:
+                unmatched.append(value)
+            continue
+        new, matched, um = _rewrite_value(value, mapping)
+        if matched:
+            matches.append({"old": value, "new": new})
+            edits.append((start, end, json.dumps(new)))
+        unmatched.extend(um)
+    out = text
+    for start, end, literal in reversed(edits):
+        out = out[:start] + literal + out[end:]
+    return out, matches, unmatched
+
+
+_WS_SPLIT = re.compile(r"(\s+)")
+
+
+def _rewrite_shell_text(
+    text: str, mapping: dict[str, str]
+) -> tuple[str, list[dict[str, str]], list[str]]:
+    """Rewrite the emitted command paths in a shell hook file (token-based)."""
+    matches: list[dict[str, str]] = []
+    unmatched: list[str] = []
+    out: list[str] = []
+    for line in text.splitlines(keepends=True):
+        parts = _WS_SPLIT.split(line)
+        for i, part in enumerate(parts):
+            if part and not part.isspace():
+                new, matched, um = _rewrite_value(part, mapping)
+                if matched:
+                    parts[i] = new
+                    matches.append({"old": part, "new": new})
+                unmatched.extend(um)
+        out.append("".join(parts))
+    return "".join(out), matches, unmatched
+
+
+def _githook_file(hooks_path: Path) -> Path | None:
+    """The no-commit-on-main hook file under a global core.hooksPath, if present."""
+    for candidate in (
+        hooks_path / "lib" / "no-commit-on-main.sh",
+        hooks_path / "no-commit-on-main.sh",
+    ):
+        if _lexists(candidate) and candidate.is_file():
+            return candidate
+    return None
+
+
+def _git_global_entries() -> list[tuple[str, str, str]]:
+    """(section, key, value) entries from the global git config files.
+
+    Parses the files directly (no subprocess) so migrations run hermetically
+    under the test harness, which blocks real subprocess calls. Same files,
+    in git's order: ``$XDG_CONFIG_HOME/git/config`` (or
+    ``~/.config/git/config``), then ``~/.gitconfig``. Include and includeIf
+    sections are surfaced as entries too, so callers can detect that the
+    parsed values may not be final.
+    """
+    entries: list[tuple[str, str, str]] = []
+    candidates: list[Path] = []
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    if xdg:
+        candidates.append(Path(xdg) / "git" / "config")
+    else:
+        candidates.append(Path.home() / ".config" / "git" / "config")
+    candidates.append(Path.home() / ".gitconfig")
+    for path in candidates:
+        if not _lexists(path) or not path.is_file():
+            continue
+        cur: str | None = None
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for raw in lines:
+            line = raw.strip()
+            if not line or line.startswith(("#", ";")):
+                continue
+            if line.startswith("[") and line.endswith("]"):
+                cur = line[1:-1].split(None, 1)[0]
+                continue
+            if cur is not None and "=" in line:
+                k, _, v = line.partition("=")
+                entries.append((cur, k.strip(), v.strip()))
+    return entries
+
+
+def _git_global_get(key: str) -> str | None:
+    """Read a global git config value by parsing its file (no subprocess)."""
+    section, _, var = key.partition(".")
+    for sec, k, v in _git_global_entries():
+        if sec == section and k == var:
+            return v
+    return None
+
+
+def _git_global_has_includes() -> bool:
+    """Whether any global git config file has include or includeIf sections."""
+    return any(
+        sec == "include" or sec.startswith("includeIf")
+        for sec, _k, _v in _git_global_entries()
+    )
+
+
+def _git_global_set(key: str, value: str) -> None:
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        subprocess.run(
+            ["git", "config", "--global", key, value],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+
+def _settings_targets(ctx: MigrationContext) -> list[dict[str, object]]:
+    """The live settings files and the global git hook to consider."""
+    targets: list[dict[str, object]] = []
+    for harness in ctx.opts.harnesses:
+        for rel in _SETTINGS_FILES.get(harness, ()):
+            targets.append(
+                {"kind": "file", "path": str(ctx.home / rel), "harness": harness}
+            )
+    targets.append({"kind": "githook", "path": "", "harness": None})
+    return targets
+
+
+def _settings_snapshot_dir(state: RunState) -> Path:
+    return state.work_dir / "settings-rewrite"
+
+
+def _settings_rewrite_begin(state: RunState, _phase: str) -> dict[str, object]:
+    ctx = state.ctx
+    targets = _settings_targets(ctx)
+    snapshot_dir = _settings_snapshot_dir(state)
+    plan: list[dict[str, object]] = []
+    index = 0
+    for t in targets:
+        entry: dict[str, object] = {
+            "kind": t["kind"],
+            "path": t["path"],
+            "harness": t.get("harness"),
+            "present": False,
+            "snapshot_rel": None,
+            "original_digest": None,
+            "config_key": None,
+            "needs_manual": None,
+            "unparseable": False,
+        }
+        if t["kind"] == "githook":
+            config = _git_global_get("core.hooksPath")
+            entry["config_key"] = config or None
+            if config and _git_global_has_includes():
+                entry["needs_manual"] = (
+                    "core.hooksPath is set but the global git config has "
+                    "include/includeIf sections, so it may be overridden "
+                    "there; review by hand"
+                )
+            elif config:
+                hook_file = _githook_file(Path(config))
+                if hook_file is not None:
+                    entry["path"] = str(hook_file)
+                    entry["present"] = True
+        else:
+            if Path(str(t["path"])).is_file():
+                entry["present"] = True
+        if entry["present"]:
+            path = Path(str(entry["path"]))
+            if not snapshot_dir.exists():
+                _mkdir_durable(snapshot_dir)
+            snap = snapshot_dir / str(index)
+            _write_durable(snap, path.read_bytes(), 0o444)
+            _fsync_file(snap)
+            entry["snapshot_rel"] = str(index)
+            entry["original_digest"] = _sha256(path)
+            index += 1
+        plan.append(entry)
+    return {"targets": plan}
+
+
+def _settings_rewrite_apply(state: RunState, record: StepRecord) -> dict[str, object]:
+    begin = _begin(record)
+    targets = list(begin["targets"])  # type: ignore[arg-type]
+    mapping = _manifest_path_map(state.ctx.repo_root)
+    done_targets: list[dict[str, object]] = []
+    for entry in targets:
+        new_entry: dict[str, object] = dict(entry)
+        new_entry["rewritten_digest"] = None
+        new_entry["matches"] = []
+        new_entry["unmatched"] = []
+        new_entry["rewritten"] = False
+        if not entry["present"]:
+            done_targets.append(new_entry)
+            continue
+        path = Path(str(entry["path"]))
+        try:
+            raw = path.read_bytes()
+            text = raw.decode("utf-8")
+        except (OSError, UnicodeDecodeError):
+            new_entry["unparseable"] = True
+            done_targets.append(new_entry)
+            continue
+        if entry["kind"] == "githook":
+            new_text, matches, unmatched = _rewrite_shell_text(text, mapping)
+        else:
+            try:
+                new_text, matches, unmatched = _rewrite_json_text(text, mapping)
+            except ValueError:
+                new_entry["unparseable"] = True
+                done_targets.append(new_entry)
+                continue
+        if matches:
+            mode = path.stat().st_mode & 0o777
+            _write_durable(path, new_text.encode("utf-8"), mode)
+            _fsync_file(path)
+            new_entry["rewritten"] = True
+        new_entry["matches"] = matches
+        new_entry["unmatched"] = unmatched
+        new_entry["rewritten_digest"] = _sha256(path)
+        done_targets.append(new_entry)
+    return {"targets": done_targets}
+
+
+def _settings_rewrite_undo(state: RunState, record: StepRecord) -> None:
+    begin = _begin(record)
+    done = _done(record)
+    entries = list((done if done is not None else begin).get("targets", []))  # type: ignore[arg-type]
+    snapshot_dir = _settings_snapshot_dir(state)
+    for entry in entries:
+        if (
+            entry["kind"] == "githook"
+            and entry.get("config_key") is not None
+            and not entry.get("needs_manual")
+        ):
+            current = _git_global_get("core.hooksPath")
+            if current != entry["config_key"]:
+                _git_global_set("core.hooksPath", str(entry["config_key"]))
+        snap_rel = entry.get("snapshot_rel")
+        if not entry.get("present") or not snap_rel:
+            continue
+        snap = snapshot_dir / str(snap_rel)
+        if not _lexists(snap):
+            continue
+        original = snap.read_bytes()
+        if hashlib.sha256(original).hexdigest() != entry.get("original_digest"):
+            raise MigrationError(
+                f"{snap} does not match the digest journalled for {entry['path']}; "
+                "restore it by hand"
+            )
+        path = Path(str(entry["path"]))
+        mode = path.stat().st_mode & 0o777 if path.exists() else 0o644
+        _write_durable(path, original, mode)
+        _fsync_file(path)
+
+
+def _settings_rewrite_verify(state: RunState, record: StepRecord) -> bool:
+    done = _done(record)
+    if done is None:
+        return True
+    for entry in list(done.get("targets", [])):  # type: ignore[arg-type]
+        if not entry.get("present"):
+            continue
+        path = Path(str(entry["path"]))
+        if not _lexists(path) or not path.is_file():
+            return False
+        if _sha256(path) != entry.get("rewritten_digest"):
+            return False
+        if (
+            entry["kind"] == "githook"
+            and entry.get("config_key") is not None
+            and _git_global_get("core.hooksPath") != entry["config_key"]
+        ):
+            return False
+    return True
+
+
+def _settings_rewrite_guard(state: RunState, record: StepRecord) -> list[str]:
+    """Refuse restore if a live setting or the hook path changed since the run.
+
+    Called from _write_guard, which runs before the pointer is flipped back to
+    legacy, so a refusal leaves the machine fully migrated rather than
+    half-restored.
+    """
+    done = _done(record)
+    problems: list[str] = []
+    if done is None:
+        return problems
+    for entry in list(done.get("targets", [])):  # type: ignore[arg-type]
+        if not entry.get("present"):
+            continue
+        path = Path(str(entry["path"]))
+        if not _lexists(path) or not path.is_file():
+            problems.append(f"{path} (changed since the migration; not restoring)")
+            continue
+        if _sha256(path) != entry.get("rewritten_digest"):
+            problems.append(f"{path} (changed since the migration; not restoring)")
+        if (
+            entry["kind"] == "githook"
+            and entry.get("config_key") is not None
+            and _git_global_get("core.hooksPath") != entry["config_key"]
+        ):
+            problems.append(
+                "core.hooksPath (changed since the migration; not restoring)"
+            )
+    return problems
+
+
 def _reverify_apply(state: RunState, _record: StepRecord) -> dict[str, object]:
     problems: list[str] = []
     checked = 0
@@ -2376,6 +2882,17 @@ register_step(
     Step(_snapshot_apply, _snapshot_undo, _snapshot_verify, _snapshot_begin),
 )
 register_step("validate", Step(_validate_apply, _no_undo, _validate_verify))
+register_step(
+    "settings-rewrite",
+    Step(
+        _settings_rewrite_apply,
+        _settings_rewrite_undo,
+        _settings_rewrite_verify,
+        _settings_rewrite_begin,
+        guard=_settings_rewrite_guard,
+    ),
+    in_run=True,
+)
 
 
 # ── run, restore, recover ────────────────────────────────────────────────────
@@ -2407,7 +2924,17 @@ def _before_flip(state: RunState) -> None:
     )
     _run_phase(state, "links", begun="migrate.links.begun", done="migrate.links.done")
     for phase in RUNTIME_PHASES:
-        _run_phase(state, phase)
+        begun = (
+            f"migrate.{phase}.begun"
+            if f"migrate.{phase}.begun" in RECOVERY_ORACLE
+            else None
+        )
+        done = (
+            f"migrate.{phase}.done"
+            if f"migrate.{phase}.done" in RECOVERY_ORACLE
+            else None
+        )
+        _run_phase(state, phase, begun=begun, done=done)
     _run_phase(
         state, "reverify", begun="migrate.reverify.begun", done="migrate.reverify.done"
     )
@@ -2943,6 +3470,7 @@ def _finalize(
     state: RunState, *, restored_copy: bool, journal: Journal | None = None
 ) -> dict[str, object]:
     plan = _restored_finalize_plan(state) if restored_copy else _finalize_plan(state)
+    shutil.rmtree(state.work_dir / "settings-rewrite", ignore_errors=True)
     directory = state.ctx.installer_state / "migrations" / state.ctx.migration_id
     state.journal = journal or Journal.create(directory, FINALIZE_NAME)
     try:

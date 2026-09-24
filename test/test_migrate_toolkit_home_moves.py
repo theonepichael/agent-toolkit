@@ -306,6 +306,7 @@ def _expected_phase_order() -> list[str]:
         *(f"stage:{d}" for d in domains),
         "baseline",
         "links",
+        "settings-rewrite",
         "reverify",
         *(f"promote:{d}" for d in domains),
         "flip",
