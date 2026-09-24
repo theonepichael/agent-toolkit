@@ -1286,14 +1286,17 @@ def _check_unclassified(ctx: MigrationContext) -> Finding:
     if not extra:
         return Finding("unclassified", "ok", "nothing unclassified")
 
+    candidates, empties, _stale = _unclassified_entries(data_root)
     dest_data = _toolkit_root() / "data"
     collisions: list[str] = []
     pairs: list[str] = []
-    for p in extra:
+    for p in candidates:
         dest = dest_data / p.name
         pairs.append(f"{p} -> {dest}")
         if _lexists(dest):
             collisions.append(str(dest))
+    for p in empties:
+        pairs.append(f"{p} (empty, removed at finalize)")
 
     if collisions:
         return Finding(
@@ -4094,13 +4097,19 @@ def _finalize_plan(state: RunState) -> dict[str, object]:
     done = _done(links) if links is not None else None
     begin = _begin(links) if links is not None else None
     legacy_dirs = _legacy_dir_candidates_from_links(state.ctx.home, begin)
+    preflight = state.step("preflight")
+    p_done = _done(preflight) if preflight is not None else None
+    carry_empties: list[Path] = []
+    if isinstance(p_done, dict):
+        carry_empties = [Path(str(p)) for p in p_done.get("carry_empties", []) or []]
+    all_legacy_dirs = sorted(set(legacy_dirs) | set(carry_empties))
     return {
         "mode": "committed",
         "snapshot_dir": str(state.snapshot_dir),
         "work_dir": str(state.work_dir),
         "retained": (done or {}).get("retained", []),
         "snapshots": snapshots,
-        "legacy_dirs": [str(p) for p in legacy_dirs],
+        "legacy_dirs": [str(p) for p in all_legacy_dirs],
     }
 
 
@@ -4770,6 +4779,7 @@ def _migration_states(installer_state: Path) -> list[dict[str, object]]:
                 "id": directory.name,
                 "state": state,
                 "carried": _carried_names(records),
+                "carry_empties": _carry_empty_names(records),
                 "legacy_dirs": _legacy_dirs_from_records(directory, records),
             }
         )
@@ -4792,6 +4802,18 @@ def _carried_names(records: list[dict[str, object]]) -> list[str]:
     return []
 
 
+def _carry_empty_names(records: list[dict[str, object]]) -> list[str]:
+    """The empty unclassified directory names journaled by this migration's preflight."""
+    for record in records:
+        if record.get("phase") == "preflight" and record.get("event") == "done":
+            detail = record.get("detail")
+            if isinstance(detail, dict):
+                empties = detail.get("carry_empties")
+                if isinstance(empties, list):
+                    return [Path(str(p)).name for p in empties if p]
+    return []
+
+
 def _legacy_dirs_from_records(
     directory: Path, records: list[dict[str, object]]
 ) -> set[Path]:
@@ -4805,6 +4827,11 @@ def _legacy_dirs_from_records(
     extra: set[Path] = set()
     destinations: set[str] = set()
     for record in records:
+        if record.get("phase") == "preflight" and record.get("event") == "done":
+            detail = record.get("detail")
+            if isinstance(detail, dict):
+                for p in detail.get("carry_empties", []) or []:
+                    extra.add(Path(str(p)))
         if record.get("phase") != "links":
             continue
         detail = record.get("detail")
@@ -4859,10 +4886,12 @@ def residue_findings(home: Path, installer_state: Path) -> dict[str, list[str]]:
             owned_snapshots.add(f".toolkit-home-snapshot-{row['id']}")
         if row["state"] in ("live", "committed-unfinalized"):
             owned_carried |= set(row["carried"])
+            owned_carried |= set(row.get("carry_empties", []))
         owned_dirs |= set(row["legacy_dirs"])
     carried_by_any: set[str] = set()
     for row in rows:
         carried_by_any |= set(row["carried"])
+        carried_by_any |= set(row.get("carry_empties", []))
 
     residue: list[str] = []
     manual: list[str] = []
@@ -5023,8 +5052,8 @@ def _emit(report: PreflightReport, opts: MigrationOptions) -> None:
         )
     for path in report.unclassified_left:
         print(
-            f"  empty unclassified legacy directory left in place, classify by "
-            f"hand: {path}",
+            f"  empty unclassified legacy directory left in place, removed at "
+            f"finalize: {path}",
             file=stream,
         )
     print(f"{report.outcome}  (migration {report.migration_id})", file=stream)

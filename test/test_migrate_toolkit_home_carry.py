@@ -227,14 +227,78 @@ def test_carry_refuses_a_pre_existing_snapshot_directory(machine, capsys, valida
     assert (_tree(machine / ".claude" / "data"), _tree(_state_dir(machine))) == snapshot
 
 
-def test_empty_unclassified_directory_is_reported_and_left(machine, capsys, validation):
-    (machine / ".claude" / "data" / "empty-dir").mkdir()
+def test_empty_unclassified_directory_is_left_until_finalize(machine, capsys, validation):
+    empty = machine / ".claude" / "data" / "empty-dir"
+    empty.mkdir()
     code, report = _migrate(capsys)
     assert code == 0, report
-    assert (machine / ".claude" / "data" / "empty-dir").is_dir()
+    assert empty.is_dir()
     assert not (_toolkit_data(machine) / "empty-dir").exists()
     listed = report.get("unclassified_left") or []
     assert any(p.endswith("empty-dir") for p in listed), listed
+
+    code, report = _finalize(capsys, report["migration_id"])
+    assert code == 0, report
+    assert not os.path.lexists(empty)
+    assert not any("empty-dir" in p for p in report.get("legacy_dirs_kept") or [])
+
+
+def test_empty_unclassified_directory_that_gained_content_is_kept(
+    machine, capsys, validation
+):
+    empty = machine / ".claude" / "data" / "empty-dir"
+    empty.mkdir()
+    code, report = _migrate(capsys)
+    assert code == 0, report
+    (empty / "written-later.md").write_text("keep\n")
+
+    code, report = _finalize(capsys, report["migration_id"])
+    assert code == 0, report
+    assert (empty / "written-later.md").read_text() == "keep\n"
+    assert any(p.endswith("empty-dir") for p in report.get("legacy_dirs_kept") or [])
+
+
+def test_empty_unclassified_directory_survives_rollback_and_its_finalize(
+    machine, capsys, validation
+):
+    empty = machine / ".claude" / "data" / "empty-dir"
+    empty.mkdir()
+    code, report = _migrate(capsys)
+    mid = report["migration_id"]
+    code, report = _rollback(capsys, mid)
+    assert code == 0, report
+    code, report = _finalize(capsys, mid)
+    assert code == 0, report
+    assert empty.is_dir()
+
+
+def test_dry_run_does_not_claim_to_carry_an_empty_directory(machine, capsys):
+    (machine / ".claude" / "data" / "empty-dir").mkdir()
+    code, report = _migrate(capsys, dry_run=True)
+    assert code == 0, report
+    finding = next(f for f in report["findings"] if f["check"] == "unclassified")
+    carried = [p for p in finding["paths"] if "->" in p]
+    assert not any("empty-dir" in p for p in carried), finding
+    assert any(
+        p.endswith("empty-dir (empty, removed at finalize)") for p in finding["paths"]
+    ), finding
+
+
+def test_residue_audit_owns_an_empty_directory_until_finalize(
+    machine, capsys, validation, tmp_path
+):
+    repo = _fixture_repo(tmp_path)
+    (machine / ".claude" / "data" / "empty-dir").mkdir()
+    code, report = _migrate(capsys, repo=repo)
+    mid = report["migration_id"]
+    code, out = _audit(machine, repo)
+    assert "empty-dir" not in out, out
+
+    code, report = _finalize(capsys, mid, repo=repo)
+    assert code == 0, report
+    code, out = _audit(machine, repo)
+    assert code == 0, out
+    assert "empty-dir" not in out, out
 
 
 # ── rollback / restore keep carries like domains ────────────────────────────

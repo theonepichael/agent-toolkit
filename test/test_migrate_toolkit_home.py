@@ -85,7 +85,9 @@ def _legacy_stores(home: Path) -> Path:
     (grill / "topic.json").write_text(json.dumps({"schema_version": 1, "slug": "topic"}))
     (grill / "topic-plan.md").write_text("# plan\n")
     (data / "backend_calls.jsonl").write_text('{"backend": "codex"}\n')
-    (data / "unrelated-notes").mkdir()
+    notes = data / "unrelated-notes"
+    notes.mkdir()
+    (notes / "note.txt").write_text("not toolkit data\n")
     return data
 
 
