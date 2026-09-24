@@ -236,7 +236,7 @@ Shared CLI helpers used across agent-toolkit scripts.
   - `color_enabled(stream: object) -> bool` — Return whether ANSI codes should be emitted to ``stream``.
   - `preview(message: str, *, quiet: bool = False) -> None` — Print a dry-run preview line.
   - `get_logger(name: str, *, verbose: bool = False, quiet: bool = False) -> logging.Logger` — Return a stderr-only diagnostic logger, a structured complement to vprint.
-  - `append_jsonl(path: Path, record: dict[str, object], *, on_error: OnError = 'log', mode: int = 438) -> None` — Append one JSON record to ``path`` as a single JSONL line, opt-in failure reporting.
+  - `append_jsonl(path: Path, record: dict[str, object], *, on_error: OnError = 'log', mode: int = 438, max_bytes: int | None = None) -> None` — Append one JSON record to ``path`` as a single JSONL line, opt-in failure reporting.
   - `redact_secrets(text: str, *, max_length: int = 200) -> str` — Mask secret-shaped substrings, then truncate to max_length.
   - `state_dir() -> Path` — The XDG state base directory: $XDG_STATE_HOME, default ~/.local/state.
   - `timing_log_path() -> Path` — The timing log path: $XDG_STATE_HOME/agent-toolkit/timing.jsonl.
