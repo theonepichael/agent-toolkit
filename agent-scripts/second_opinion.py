@@ -89,7 +89,11 @@ Env vars
                                      falls back to SECOND_OPINION_TIMEOUT_SECONDS
                                      (opencode to max(that, 450) — its measured
                                      real-plan latency is 200-270s; the flat
-                                     default timed out on every real critique).
+                                     default timed out on every real critique;
+                                     codex to max(that, 180) — its measured
+                                     second-opinion success p99 is 119.6s
+                                     against the flat 120s default,
+                                     truncating real successes).
                                      A value above 600 is clamped to 600 —
                                      the hard ceiling on every timeout,
                                      default or overridden.
@@ -277,6 +281,14 @@ _MAX_BACKEND_TIMEOUT_SECONDS = 600  # hard ceiling on every timeout, default or
 _OPENCODE_TIMEOUT_SECONDS = 450  # ~1.7x the measured 200-270s mean; absorbs
 # pool variance. A floor, not a hard default: an explicit per-backend
 # override still wins, and a higher explicit global default applies.
+
+# codex's second-opinion success-latency FLOOR (2026-09-23): backend_calls.jsonl
+# (2026-08-31..09-24, n=42) measured p95 114s / p99 119.6s against the flat
+# 120s default -- a distribution truncated by the cap -- and 18 calls timed out
+# at ~120s (2,161s). ~1.5x the measured p99; converts near-misses into real
+# successes. Same floor-not-default contract as _OPENCODE_TIMEOUT_SECONDS:
+# an explicit override wins, and a higher global default still applies.
+_CODEX_TIMEOUT_SECONDS = 180
 
 
 def _parse_positive_int(value: str, default: int) -> int:
@@ -885,7 +897,10 @@ def run_codex(
     return llm_backends.run_codex(
         prompt,
         model=model,
-        timeout=_resolve_timeout("SECOND_OPINION_CODEX_TIMEOUT_SECONDS"),
+        timeout=_resolve_timeout(
+            "SECOND_OPINION_CODEX_TIMEOUT_SECONDS",
+            default=max(BACKEND_TIMEOUT_SECONDS, _CODEX_TIMEOUT_SECONDS),
+        ),
         **extra,
     )
 

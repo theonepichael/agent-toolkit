@@ -1855,6 +1855,77 @@ class OpencodeTimeoutFloorTests(unittest.TestCase):
             )
 
 
+class CodexTimeoutFloorTests(unittest.TestCase):
+    """codex's second-opinion success-latency FLOOR (E-05, 2026-09-23):
+
+    backend_calls.jsonl (2026-08-31..09-24, n=42) measured p95 114s / p99
+    119.6s against the flat 120s default -- a distribution truncated by the
+    cap -- and 18 calls timed out at ~120s (2,161s). So codex's unset
+    fallback must be max(global, 180), not the raw 120s global, exactly like
+    opencode's 450s floor. An explicit override still wins, and a higher
+    explicit global still applies."""
+
+    def _capture_llm_backends_codex(
+        self,
+    ) -> tuple[Callable[..., str], dict[str, object]]:
+        """Return a ``llm_backends.run_codex`` side-effect capturing its
+        timeout kwarg, plus the box."""
+        box: dict[str, object] = {}
+
+        def fake_run_codex(
+            prompt: str,
+            *,
+            model=None,
+            timeout=120,
+            mode="text-only",
+            target_dir=None,
+        ):
+            box["prompt"] = prompt
+            box["timeout"] = timeout
+            box["model"] = model
+            box["mode"] = mode
+            box["target_dir"] = target_dir
+            return "codex critique"
+
+        return fake_run_codex, box
+
+    def test_codex_unset_gets_180_floor_not_global_120(self) -> None:
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("SECOND_OPINION_CODEX_TIMEOUT_SECONDS", None)
+            with patch.object(second_opinion, "BACKEND_TIMEOUT_SECONDS", 120):
+                fake, box = self._capture_llm_backends_codex()
+                with patch.object(second_opinion.llm_backends, "run_codex", side_effect=fake):
+                    second_opinion.run_codex("prompt")
+                self.assertEqual(box["timeout"], 180)
+
+    def test_codex_floor_beats_lower_explicit_global(self) -> None:
+        """A raised global default (e.g. 150s) still must not drop codex
+        below its measured-latency floor -- a 150s budget would still sit
+        under the 119.6s p99 tail without headroom."""
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("SECOND_OPINION_CODEX_TIMEOUT_SECONDS", None)
+            with patch.object(second_opinion, "BACKEND_TIMEOUT_SECONDS", 150):
+                fake, box = self._capture_llm_backends_codex()
+                with patch.object(second_opinion.llm_backends, "run_codex", side_effect=fake):
+                    second_opinion.run_codex("prompt")
+                self.assertEqual(box["timeout"], 180)
+
+    def test_codex_explicit_override_wins_over_floor(self) -> None:
+        with patch.dict(os.environ, {"SECOND_OPINION_CODEX_TIMEOUT_SECONDS": "90"}):
+            with patch.object(second_opinion, "BACKEND_TIMEOUT_SECONDS", 120):
+                fake, box = self._capture_llm_backends_codex()
+                with patch.object(second_opinion.llm_backends, "run_codex", side_effect=fake):
+                    second_opinion.run_codex("prompt")
+                self.assertEqual(box["timeout"], 90)
+
+    def test_codex_override_above_ceiling_clamped(self) -> None:
+        with patch.dict(os.environ, {"SECOND_OPINION_CODEX_TIMEOUT_SECONDS": "700"}):
+            fake, box = self._capture_llm_backends_codex()
+            with patch.object(second_opinion.llm_backends, "run_codex", side_effect=fake):
+                second_opinion.run_codex("prompt")
+            self.assertEqual(box["timeout"], 600)
+
+
 class TimeoutErrorHintTests(unittest.TestCase):
     """A timeout failure must name its escape hatch: which env var raises
     the budget and what the hard ceiling is -- the 2026-09-03 incident read
