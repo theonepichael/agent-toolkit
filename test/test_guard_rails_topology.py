@@ -468,6 +468,112 @@ def test_bash_global_options_before_subcommand_properly_parsed(
     assert verdict3.decision == "deny"
 
 
+def test_bash_checkout_with_cd_to_worktree_allowed_from_main_checkout(
+    main_checkout: Path, worktree: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GUARD_RAILS_LIVE_REPO", str(main_checkout))
+    _git("branch", "release-1", cwd=main_checkout)
+    verdict = guard_rails.evaluate_bash_override(
+        f"cd {worktree} && git checkout -q 1d26452", str(main_checkout)
+    )
+    assert verdict.decision == "allow"
+    verdict2 = guard_rails.evaluate_bash_override(
+        f"cd {worktree} && git checkout release-1", str(main_checkout)
+    )
+    assert verdict2.decision == "allow"
+
+
+def test_bash_checkout_with_cd_to_main_checkout_denied_from_worktree(
+    main_checkout: Path, worktree: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GUARD_RAILS_LIVE_REPO", str(main_checkout))
+    _git("branch", "release-1", cwd=main_checkout)
+    verdict = guard_rails.evaluate_bash_override(
+        f"cd {main_checkout} && git checkout release-1", str(worktree)
+    )
+    assert verdict.decision == "deny"
+    assert "off its default branch" in verdict.reason
+
+
+def test_bash_checkout_with_unresolvable_cd_denied_on_main_checkout(
+    main_checkout: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GUARD_RAILS_LIVE_REPO", str(main_checkout))
+    _git("branch", "release-1", cwd=main_checkout)
+    verdict = guard_rails.evaluate_bash_override(
+        "cd $DIR && git checkout release-1", str(main_checkout)
+    )
+    assert verdict.decision == "deny"
+    assert "off its default branch" in verdict.reason
+    verdict2 = guard_rails.evaluate_bash_override(
+        "cd $(pwd) && git checkout -b foo", str(main_checkout)
+    )
+    assert verdict2.decision == "deny"
+
+
+def test_bash_checkout_with_pushd_and_chained_cd(
+    main_checkout: Path, worktree: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GUARD_RAILS_LIVE_REPO", str(main_checkout))
+    _git("branch", "release-1", cwd=main_checkout)
+    verdict1 = guard_rails.evaluate_bash_override(
+        f"pushd {worktree} && git checkout release-1", str(main_checkout)
+    )
+    assert verdict1.decision == "allow"
+    verdict2 = guard_rails.evaluate_bash_override(
+        f"cd {tmp_path} && cd {worktree} && git checkout release-1", str(main_checkout)
+    )
+    assert verdict2.decision == "allow"
+
+
+# Every form below was probed against the live-checkout rule. {main} is the
+# live install checkout and {wt} a linked worktree of it; each command is
+# evaluated from {main}. Wrappers and nested shells must not hide a checkout,
+# a cd must only move the tracked directory when it is itself the command, a
+# subshell's cd must not leak past its closing paren, and heredoc bodies are
+# data rather than commands -- unless the heredoc feeds a shell.
+_LIVE_CHECKOUT_CASES = [
+    ("git checkout release-1", "deny"),
+    ("git switch -C foo", "deny"),
+    ("git -c core.x=1 checkout -b foo", "deny"),
+    ("sudo git checkout release-1", "deny"),
+    ("env X=1 git checkout release-1", "deny"),
+    ("X=1 git checkout release-1", "deny"),
+    ("command git checkout release-1", "deny"),
+    ("time git checkout release-1", "deny"),
+    ("bash -c 'git checkout release-1'", "deny"),
+    ("sh -c 'cd /tmp; cd {main} && git checkout release-1'", "deny"),
+    ("echo hi; git checkout release-1", "deny"),
+    ("true && git checkout release-1", "deny"),
+    ("cd {wt} && git checkout -q HEAD", "allow"),
+    ("cd {wt} && cd {main} && git checkout release-1", "deny"),
+    ("cd $SOMEWHERE && git checkout release-1", "deny"),
+    ("git checkout -- README.md", "allow"),
+    ("git switch main", "allow"),
+    ("(cd {wt} && git checkout -q HEAD); git checkout release-1", "deny"),
+    ("echo cd {wt}; git checkout release-1", "deny"),
+    ("cat > /tmp/msg.txt <<'EOF'\nrun git checkout release-1 later\nEOF", "allow"),
+    ("cat <<-EOF > /tmp/msg.txt\n\tgit checkout release-1\n\tEOF\necho ok", "allow"),
+    ("cat <<EOF > /tmp/msg.txt\nnote\nEOF\ngit checkout release-1", "deny"),
+    ("bash <<'EOF'\ngit checkout release-1\nEOF", "deny"),
+]
+
+
+@pytest.mark.parametrize(("template", "expected"), _LIVE_CHECKOUT_CASES)
+def test_live_checkout_rule_probe_cases(
+    template: str,
+    expected: str,
+    main_checkout: Path,
+    worktree: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GUARD_RAILS_LIVE_REPO", str(main_checkout))
+    _git("branch", "release-1", cwd=main_checkout)
+    command = template.format(main=main_checkout, wt=worktree)
+    verdict = guard_rails.evaluate_bash_override(command, str(main_checkout))
+    assert verdict.decision == expected, (command, verdict.reason)
+
+
 # ── the shipped git hook itself, against real commits ──────────────────────
 
 

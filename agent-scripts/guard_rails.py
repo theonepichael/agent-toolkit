@@ -386,6 +386,7 @@ def _absolutize(value: str, base: str) -> str:
     not to this process's cwd, so a bare realpath() would resolve ``.git``
     against wherever the guard happens to be running and produce a path that
     does not exist."""
+    value = os.path.expanduser(value)
     if not os.path.isabs(value):
         value = os.path.join(base, value)
     return os.path.realpath(value)
@@ -721,6 +722,43 @@ def _shell_tokens(command: str) -> list[str]:
         return command.split()
 
 
+# A heredoc operator (`<<WORD`, `<<'WORD'`, `<<"WORD"`, `<<-WORD`), but not a
+# here-string (`<<<`).
+_HEREDOC_RE = re.compile(r"(?<!<)<<(-?)\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\2")
+# A heredoc whose body is run as commands: the operator follows a shell
+# interpreter in the same simple command.
+_SHELL_FED_HEREDOC_RE = re.compile(r"\b(?:bash|sh|zsh|dash|ksh)\b[^|;&]*<<")
+
+
+def _strip_heredoc_bodies(command: str) -> str:
+    """Drop heredoc bodies, which are data rather than commands.
+
+    A body fed to a shell interpreter (`bash <<EOF`) is kept, since the shell
+    runs it. A heredoc with no terminator line keeps the rest of the command,
+    so a malformed heredoc can only make the scan stricter, never looser."""
+    lines = command.split("\n")
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        out.append(line)
+        i += 1
+        if _SHELL_FED_HEREDOC_RE.search(line):
+            continue
+        for match in _HEREDOC_RE.finditer(line):
+            strip_tabs, word = match.group(1) == "-", match.group(3)
+            end = i
+            while end < len(lines):
+                body_line = lines[end].lstrip("\t") if strip_tabs else lines[end]
+                if body_line == word:
+                    break
+                end += 1
+            if end == len(lines):
+                return "\n".join(out + lines[i:])
+            i = end + 1
+    return "\n".join(out)
+
+
 def _has_config_override_flag(tokens: list[str]) -> bool:
     """Whether a ``-c``/``--config core.hooksPath=...`` override appears
     anywhere in the command. Scans every occurrence, not just the first --
@@ -884,31 +922,191 @@ _GIT_GLOBAL_OPTS_WITH_ARG = {
 }
 
 
+_SHELL_PUNCT_CHARS = set("();<>|&\n")
+
+
+_SHELLS = frozenset({"bash", "sh", "zsh", "dash", "ksh"})
+# Shell options that consume the following word as their argument.
+_SHELL_OPTS_WITH_ARG = frozenset({"-o", "+o", "-O", "+O", "--rcfile", "--init-file"})
+# A short-option cluster carrying -c (`-c`, `-lc`, `-ec`), not a long option.
+_SHELL_C_CLUSTER_RE = re.compile(r"-[A-Za-z]*c[A-Za-z]*")
+
+
+def _nested_shell_command(tokens: list[str], i: int) -> str | None:
+    """The command string of a `bash -c '...'`-style call at ``tokens[i]``,
+    or None when ``tokens[i]`` is not a shell invoked with -c."""
+    if tokens[i] not in _SHELLS:
+        return None
+    j = i + 1
+    while j < len(tokens):
+        opt = tokens[j]
+        if _SHELL_C_CLUSTER_RE.fullmatch(opt):
+            return tokens[j + 1] if j + 1 < len(tokens) else None
+        if opt in _SHELL_OPTS_WITH_ARG:
+            j += 2
+        elif opt.startswith(("-", "+")):
+            j += 1
+        else:
+            return None
+    return None
+
+
+# Tokens after which the next word starts a new command. Redirects (`<`, `>`)
+# are deliberately absent: the word after one is a filename.
+_COMMAND_SEPARATORS = frozenset({";", "&&", "||", "|", "&", "(", ")", "\n"})
+
+
+def _is_control_token(tok: str) -> bool:
+    return bool(tok) and set(tok).issubset(_SHELL_PUNCT_CHARS)
+
+
+def _parse_cd_target(args: list[str]) -> tuple[str | None, bool]:
+    """Parse directory change arguments (cd / pushd).
+    Returns (target_path_or_none, is_unresolved).
+    """
+    pos_args: list[str] = []
+    idx = 0
+    while idx < len(args):
+        arg = args[idx]
+        if arg == "--":
+            pos_args.extend(args[idx + 1 :])
+            break
+        if arg == "-" or (arg.startswith(("+", "-")) and arg not in ("-P", "-L")):
+            # cd - refers to $OLDPWD; pushd +N/-N rotates stack; unresolvable statically
+            return None, True
+        if arg in ("-P", "-L"):
+            idx += 1
+            continue
+        pos_args.append(arg)
+        idx += 1
+
+    if not pos_args:
+        # Bare cd -> ~
+        return os.path.expanduser("~"), False
+
+    target = pos_args[0]
+    if any(ch in target for ch in ("$", "`", "*", "?")):
+        return None, True
+
+    return target, False
+
+
 def _checkout_off_default_reason(
     tokens: list[str], cwd: str, info: RepoInfo | None
 ) -> str | None:
     """Whether any git invocation in tokens switches a live install main
     checkout off its default branch, returning a denial reason if so."""
     n = len(tokens)
+    current_dir = cwd
+    dir_unresolved = False
+    dir_stack: list[tuple[str, bool]] = []
+    subshell_stack: list[tuple[str, bool]] = []
+
     for i, tok in enumerate(tokens):
+        if _is_control_token(tok):
+            for ch in tok:
+                if ch == "(":
+                    subshell_stack.append((current_dir, dir_unresolved))
+                elif ch == ")" and subshell_stack:
+                    current_dir, dir_unresolved = subshell_stack.pop()
+            continue
+
+        # A directory change only counts when it is itself the command: `echo
+        # cd <dir>` or a redirect target named `cd` must not move the tracked
+        # directory, or a later checkout would be judged against the wrong repo.
+        in_command_position = i == 0 or tokens[i - 1] in _COMMAND_SEPARATORS
+        if tok in ("cd", "pushd", "popd") and not in_command_position:
+            continue
+
+        if tok in ("cd", "pushd"):
+            if tok == "pushd":
+                dir_stack.append((current_dir, dir_unresolved))
+            j = i + 1
+            cd_args: list[str] = []
+            while j < n and not _is_control_token(tokens[j]):
+                cd_args.append(tokens[j])
+                j += 1
+            target, unresolved = _parse_cd_target(cd_args)
+            if unresolved:
+                dir_unresolved = True
+            elif target is not None:
+                exp = os.path.expanduser(target)
+                if os.path.isabs(exp):
+                    current_dir = os.path.realpath(exp)
+                    dir_unresolved = False
+                elif not dir_unresolved:
+                    current_dir = _absolutize(exp, current_dir)
+                    dir_unresolved = False
+                else:
+                    dir_unresolved = True
+            continue
+
+        if tok == "popd":
+            if dir_stack:
+                current_dir, dir_unresolved = dir_stack.pop()
+            else:
+                current_dir = cwd
+                dir_unresolved = False
+            continue
+
+        nested_cmd = _nested_shell_command(tokens, i)
+        if nested_cmd is not None:
+            effective_dir = cwd if dir_unresolved else current_dir
+            effective_info = (
+                info
+                if (effective_dir == cwd and info is not None)
+                else repo_info(effective_dir)
+            )
+            nested_reason = _checkout_off_default_reason(
+                _shell_tokens(nested_cmd), effective_dir, effective_info
+            )
+            if nested_reason is not None:
+                return nested_reason
+
         if tok != "git":
             continue
+
         j = i + 1
-        target_dir = cwd
+        target_dir = current_dir
+        target_unresolved = dir_unresolved
         subcmd: str | None = None
         subcmd_args: list[str] = []
 
         # Parse global git options before the subcommand
-        while j < n and tokens[j] not in _CONTROL_OPERATORS:
+        while j < n and not _is_control_token(tokens[j]):
             curr = tokens[j]
-            if curr == "-C" and j + 1 < n and tokens[j + 1] not in _CONTROL_OPERATORS:
-                target_dir = _absolutize(tokens[j + 1], cwd)
+            if curr == "-C" and j + 1 < n and not _is_control_token(tokens[j + 1]):
+                val = tokens[j + 1]
+                if any(ch in val for ch in ("$", "`", "*", "?")):
+                    target_unresolved = True
+                else:
+                    exp = os.path.expanduser(val)
+                    if os.path.isabs(exp):
+                        target_dir = os.path.realpath(exp)
+                        target_unresolved = False
+                    elif not target_unresolved:
+                        target_dir = _absolutize(exp, current_dir)
+                        target_unresolved = False
+                    else:
+                        target_unresolved = True
                 j += 2
             elif curr.startswith("-C") and len(curr) > 2:
-                target_dir = _absolutize(curr[2:], cwd)
+                val = curr[2:]
+                if any(ch in val for ch in ("$", "`", "*", "?")):
+                    target_unresolved = True
+                else:
+                    exp = os.path.expanduser(val)
+                    if os.path.isabs(exp):
+                        target_dir = os.path.realpath(exp)
+                        target_unresolved = False
+                    elif not target_unresolved:
+                        target_dir = _absolutize(exp, current_dir)
+                        target_unresolved = False
+                    else:
+                        target_unresolved = True
                 j += 1
             elif curr in _GIT_GLOBAL_OPTS_WITH_ARG:
-                if j + 1 < n and tokens[j + 1] not in _CONTROL_OPERATORS:
+                if j + 1 < n and not _is_control_token(tokens[j + 1]):
                     j += 2
                 else:
                     j += 1
@@ -923,13 +1121,42 @@ def _checkout_off_default_reason(
         if subcmd not in ("checkout", "switch"):
             continue
 
-        while j < n and tokens[j] not in _CONTROL_OPERATORS:
+        while j < n and not _is_control_token(tokens[j]):
             subcmd_args.append(tokens[j])
             j += 1
 
-        target_info = (
-            info if (info is not None and target_dir == cwd) else repo_info(target_dir)
-        )
+        if target_unresolved:
+            if (
+                info is not None
+                and not info.is_worktree
+                and info.branch in PROTECTED_BRANCHES
+                and is_live_install_source(info)
+            ):
+                target_info = info
+                target_dir = cwd
+            else:
+                live_path = live_install_repo()
+                if live_path is not None:
+                    live_info = repo_info(str(live_path))
+                    if (
+                        live_info is not None
+                        and not live_info.is_worktree
+                        and live_info.branch in PROTECTED_BRANCHES
+                        and is_live_install_source(live_info)
+                    ):
+                        target_info = live_info
+                        target_dir = str(live_path)
+                    else:
+                        target_info = None
+                else:
+                    target_info = None
+        else:
+            target_info = (
+                info
+                if (info is not None and target_dir == cwd)
+                else repo_info(target_dir)
+            )
+
         if (
             target_info is None
             or target_info.is_worktree
@@ -952,7 +1179,7 @@ def _checkout_off_default_reason(
                 pos_args = [
                     t
                     for t in subcmd_args
-                    if not t.startswith("-") and t not in _CONTROL_OPERATORS
+                    if not t.startswith("-") and not _is_control_token(t)
                 ]
                 if not pos_args:
                     is_denied = True
@@ -975,7 +1202,7 @@ def _checkout_off_default_reason(
             if has_create_or_detach:
                 is_denied = True
             else:
-                pos_args: list[str] = []
+                pos_args = []
                 idx = 0
                 while idx < len(subcmd_args):
                     t = subcmd_args[idx]
@@ -1000,7 +1227,11 @@ def _checkout_off_default_reason(
                             if os.path.isdir(target_dir):
                                 try:
                                     ls = git(
-                                        "-C", target_dir, "ls-files", "--", target_ref
+                                        "-C",
+                                        target_dir,
+                                        "ls-files",
+                                        "--",
+                                        target_ref,
                                     )
                                     is_tracked = bool(ls and ls.strip())
                                 except Exception:
@@ -1016,6 +1247,7 @@ def _checkout_off_default_reason(
                 f"python3 ~/.claude/scripts/dev_status.py worktree <slug> "
                 f"(or dev_status.py integration-merge to land integration-branch work)."
             )
+
     return None
 
 
@@ -1032,11 +1264,18 @@ def evaluate_bash_override(command: str, cwd: str) -> Verdict:
     shell use outside the harness.
     """
     info = repo_info(cwd)
-    tokens = _shell_tokens(command)
+    tokens = _shell_tokens(_strip_heredoc_bodies(command))
 
     reason = _checkout_off_default_reason(tokens, cwd, info)
     if reason is not None:
         return Verdict("deny", reason, rule="live-checkout-off-default")
+
+    for i in range(len(tokens)):
+        nested_cmd = _nested_shell_command(tokens, i)
+        if nested_cmd is not None:
+            nested_verdict = evaluate_bash_override(nested_cmd, cwd)
+            if nested_verdict.decision == "deny":
+                return nested_verdict
 
     if info is None or info.branch not in PROTECTED_BRANCHES:
         return Verdict("allow")
