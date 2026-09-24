@@ -199,6 +199,10 @@ main, push, and clean up the worktree?" — then merge locally, push, `git
 worktree remove`, `git branch -d` on that single approval. Work-related or
 ambiguous: ask separately for merge and for push — never bundle.
 
+When landing work on an `integration_branch` (declared via `update`): merge
+through a temporary worktree via `python3 ~/.claude/scripts/dev_status.py integration-merge <slug|N> [--push]`
+— never by checking the branch out in the live main checkout.
+
 **`git worktree remove` fails with "Directory not empty"?** A dev server
 (or other long-running process) launched against this worktree during step
 9 — e.g. via the `run` skill's smoke-check pattern — can outlive the port

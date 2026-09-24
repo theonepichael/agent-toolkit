@@ -674,7 +674,11 @@ a `work-`-prefixed item or a work repo): offer the follow-on sequence as one
 bundled question (CLAUDE.md's Git section) — "merge to main, push, and
 clean up the worktree?" — then merge locally, push, `git worktree remove`,
 `git branch -d` on that single approval. Work-related or ambiguous: ask
-separately for merge and for push — never bundle.""",
+separately for merge and for push — never bundle.
+
+When landing work on an `integration_branch` (declared via `update`): merge
+through a temporary worktree via `python3 ~/.claude/scripts/dev_status.py integration-merge <slug|N> [--push]`
+— never by checking the branch out in the live main checkout.""",
         "STEP12_BODY": """\
 `dev_status.py review <slug|N>` then `approve <slug|N>` — never a bare
 `done` on an in-review item. The lifecycle order is commit → local merge →
@@ -899,7 +903,11 @@ single approval. Work-related or ambiguous: ask separately for merge and
 for push — never bundle. Run merge, push, `git worktree remove`, and `git
 branch -d` from the main checkout (`git -C <repo> merge <slug>` etc.), not
 from inside the worktree being removed — a branch cannot merge into
-itself.""",
+itself.
+
+When landing work on an `integration_branch` (declared via `update`): merge
+through a temporary worktree via `python3 ~/.claude/scripts/dev_status.py integration-merge <slug|N> [--push]`
+— never by checking the branch out in the live main checkout.""",
         "STEP12_BODY": """\
 `dev_status.py review <slug|N>` then `approve <slug|N>` — never a bare
 `done` on an in-review item. The lifecycle order is commit → local merge →
@@ -1169,7 +1177,11 @@ a `work-`-prefixed item or a work repo): offer the follow-on sequence as one
 bundled question (the shared instructions file's Git section) — "merge to
 main, push, and clean up the worktree?" — then merge locally, push, `git
 worktree remove`, `git branch -d` on that single approval. Work-related or
-ambiguous: ask separately for merge and for push — never bundle.""",
+ambiguous: ask separately for merge and for push — never bundle.
+
+When landing work on an `integration_branch` (declared via `update`): merge
+through a temporary worktree via `python3 ~/.claude/scripts/dev_status.py integration-merge $ARGUMENTS [--push]`
+— never by checking the branch out in the live main checkout.""",
         "STEP12_BODY": """\
 `dev_status.py review $ARGUMENTS` then `approve $ARGUMENTS` — never a bare
 `done` on an in-review item. The lifecycle order is commit → local merge →
@@ -1368,7 +1380,11 @@ a `work-`-prefixed item or a work repo): offer the follow-on sequence as one
 bundled question (the shared instructions file's Git section) — "merge to
 main, push, and clean up the worktree?" — then merge locally, push, `git
 worktree remove`, `git branch -d` on that single approval. Work-related or
-ambiguous: ask separately for merge and for push — never bundle.""",
+ambiguous: ask separately for merge and for push — never bundle.
+
+When landing work on an `integration_branch` (declared via `update`): merge
+through a temporary worktree via `python3 ~/.claude/scripts/dev_status.py integration-merge <slug|N> [--push]`
+— never by checking the branch out in the live main checkout.""",
         "STEP12_BODY": """\
 `dev_status.py review <slug|N>` then `approve <slug|N>` — never a bare
 `done` on an in-review item. The lifecycle order is commit → local merge →
@@ -1573,7 +1589,11 @@ a `work-`-prefixed item or a work repo): offer the follow-on sequence as one
 bundled question (the shared instructions file's Git section) — "merge to
 main, push, and clean up the worktree?" — then merge locally, push, `git
 worktree remove`, `git branch -d` on that single approval. Work-related or
-ambiguous: ask separately for merge and for push — never bundle.""",
+ambiguous: ask separately for merge and for push — never bundle.
+
+When landing work on an `integration_branch` (declared via `update`): merge
+through a temporary worktree via `python3 ~/.claude/scripts/dev_status.py integration-merge <slug|N> [--push]`
+— never by checking the branch out in the live main checkout.""",
         "STEP12_BODY": """\
 `dev_status.py review <slug|N>` then `approve <slug|N>` — never a bare
 `done` on an in-review item. The lifecycle order is commit → local merge →
@@ -1768,7 +1788,11 @@ to main, push, and clean up the worktree?" — then merge locally, push,
 `git worktree remove`, `git branch -d` on that single approval. Work-related
 or ambiguous: ask separately for merge and for push via the `question`
 tool — never bundle. Same reason as step 10: `question`, not plain text, so
-this gate registers as `blocked`, not indistinguishable from done.""",
+this gate registers as `blocked`, not indistinguishable from done.
+
+When landing work on an `integration_branch` (declared via `update`): merge
+through a temporary worktree via `python3 ~/.claude/scripts/dev_status.py integration-merge <resolved slug> [--push]`
+— never by checking the branch out in the live main checkout.""",
         "STEP12_BODY": """\
 Call the tool with `action: "review", slug: "<resolved slug>"`, then
 `action: "approve", slug: "<resolved slug>"` — never a bare `done` on an

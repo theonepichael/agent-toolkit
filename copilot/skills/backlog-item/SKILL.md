@@ -229,6 +229,10 @@ branch -d` from the main checkout (`git -C <repo> merge <slug>` etc.), not
 from inside the worktree being removed — a branch cannot merge into
 itself.
 
+When landing work on an `integration_branch` (declared via `update`): merge
+through a temporary worktree via `python3 ~/.claude/scripts/dev_status.py integration-merge <slug|N> [--push]`
+— never by checking the branch out in the live main checkout.
+
 **`git worktree remove` fails with "Directory not empty"?** A dev server
 (or other long-running process) launched against this worktree during step
 9 — e.g. via the `run` skill's smoke-check pattern — can outlive the port

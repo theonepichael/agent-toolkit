@@ -54,12 +54,14 @@ DENY_BRANCH_EXAMPLES = {
     "git-config-file-write": "echo x >> .git/config",
     "git-config-file-sed": "sed -i s/a/b/ .git/config",
     "git-config-file-tee": "echo x | tee .git/config",
+    "live-checkout-off-default": "git checkout release-1",
+    "live-switch-off-default": "git switch release-1",
 }
 
 
 def _splices(command: str) -> list[str]:
     out = [command]
-    for word in ("config", "--no-verify", "hooksPath"):
+    for word in ("config", "--no-verify", "hooksPath", "checkout", "switch"):
         if word in command:
             mid = len(word) // 2
             out.append(command.replace(word, word[:mid] + '""' + word[mid:]))
@@ -73,7 +75,9 @@ def _protected_branch_verdict(command: str) -> guard_rails.Verdict:
     info = guard_rails.RepoInfo(
         toplevel="/r", common_dir="/r/.git", branch="main", is_worktree=False, is_bare=False
     )
-    with mock.patch.object(guard_rails, "repo_info", return_value=info):
+    with mock.patch.object(guard_rails, "repo_info", return_value=info), mock.patch.object(
+        guard_rails, "is_live_install_source", return_value=True
+    ):
         return guard_rails.evaluate_bash_override(command, "/r")
 
 
