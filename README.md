@@ -115,7 +115,9 @@ rerun.
 ./install.sh --migrate-toolkit-home --harness=claude --skip-reconciliation
 # Undo one committed migration (refuses if anything was written since):
 ./install.sh --rollback-toolkit-home-migration=<id>
-# Once satisfied, delete its snapshot, staging and retired legacy links:
+# After a commit, delete the snapshot, staging and retired legacy links.
+# After a rollback or failed-validation restore, delete the retained
+# transformed copy if it still matches the journal (telemetry is reported):
 ./install.sh --finalize-toolkit-home-migration=<id>
 ```
 
