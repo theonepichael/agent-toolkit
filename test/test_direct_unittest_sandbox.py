@@ -528,3 +528,62 @@ def test_contract_files_import_without_pytest():
             f"KNOWN_EXCEPTION ({reason}). The exception has disappeared -- "
             f"either remove it from KNOWN_EXCEPTIONS or stop converting it."
         )
+
+
+@pytest.mark.allow_real_subprocess
+def test_direct_run_scrubs_git_config_env(tmp_path):
+    driver = tmp_path / "driver_git_config.py"
+    driver.write_text(
+        "import os, sys\n"
+        f"sys.path.insert(0, {str(REPO_ROOT / 'agent-scripts')!r})\n"
+        "import test_bootstrap\n"
+        "assert 'GIT_CONFIG_COUNT' not in os.environ\n"
+        "assert 'GIT_CONFIG_KEY_0' not in os.environ\n"
+        "assert 'GIT_CONFIG_VALUE_0' not in os.environ\n"
+        "assert 'GIT_CONFIG_PARAMETERS' not in os.environ\n"
+        "print('scrub-ok')\n"
+    )
+    env = os.environ.copy()
+    env["GIT_CONFIG_COUNT"] = "1"
+    env["GIT_CONFIG_KEY_0"] = "safe.bareRepository"
+    env["GIT_CONFIG_VALUE_0"] = "explicit"
+    env["GIT_CONFIG_PARAMETERS"] = "'core.hooksPath='"
+    result = subprocess.run(
+        [sys.executable, str(driver)],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, f"stdout: {result.stdout}, stderr: {result.stderr}"
+    assert "scrub-ok" in result.stdout
+
+
+@pytest.mark.allow_real_subprocess
+def test_copilot_git_config_env_does_not_break_suite():
+    env = os.environ.copy()
+    env["GIT_CONFIG_COUNT"] = "3"
+    env["GIT_CONFIG_KEY_0"] = "safe.bareRepository"
+    env["GIT_CONFIG_VALUE_0"] = "explicit"
+    env["GIT_CONFIG_KEY_1"] = "credential.interactive"
+    env["GIT_CONFIG_VALUE_1"] = "never"
+    env["GIT_CONFIG_KEY_2"] = "core.fsmonitor"
+    env["GIT_CONFIG_VALUE_2"] = ""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-o",
+            "addopts=",
+            "test/test_guard_rails_topology.py::test_bare_repo_is_detected_and_allowed",
+            "test/test_worktree_provenance.py::TestInspectItemWorktrees::test_submodule_path_is_skipped",
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, f"stdout: {result.stdout}, stderr: {result.stderr}"
+

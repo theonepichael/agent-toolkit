@@ -483,6 +483,22 @@ _CONTAINERS: dict[str, tuple[object, str]] = {
 }
 
 
+def scrub_git_config_env() -> None:
+    """Clear harness-injected GIT_CONFIG_* env vars from os.environ.
+
+    Harnesses like Copilot CLI inject GIT_CONFIG_COUNT, GIT_CONFIG_KEY_*,
+    GIT_CONFIG_VALUE_*, and GIT_CONFIG_PARAMETERS into the environment
+    (e.g. safe.bareRepository=explicit, credential.interactive=never,
+    core.fsmonitor=). The test sandbox isolates HOME but inherits these,
+    causing git queries on bare repos or submodules to fail.
+    """
+    for key in list(os.environ):
+        if key in ("GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS") or key.startswith(
+            ("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")
+        ):
+            os.environ.pop(key, None)
+
+
 def install_sandbox_home() -> Path:
     """Redirect ``HOME`` to a throwaway directory for this process.
 
@@ -495,6 +511,7 @@ def install_sandbox_home() -> Path:
     sandbox = Path(tempfile.mkdtemp(prefix="agent-toolkit-test-home-"))
     os.environ["HOME"] = str(sandbox)
     os.environ.pop("AGENT_TOOLKIT_HOME", None)
+    scrub_git_config_env()
     atexit.register(shutil.rmtree, str(sandbox), ignore_errors=True)
     _SANDBOX_HOME = sandbox
     return sandbox
@@ -504,6 +521,7 @@ def install_sandbox_home() -> Path:
 # any patching). Frozen here so install_patches never wraps a wrapper.
 _ORIGINALS: dict[str, Callable[..., object]] = {
     "builtins.open": builtins.open,
+
     "io.open": io.open,
     "os.open": os.open,
     "pathlib.Path.write_text": Path.write_text,
