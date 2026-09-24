@@ -9,6 +9,7 @@ REPO="$(cd "$HERE/.." && pwd)"
 files=(
   "$REPO/install.sh"
   "$REPO/scripts/bootstrap-worktree.sh"
+  "$REPO/scripts/rehearse-toolkit-home-migration.sh"
   "$REPO/test/run.sh"
   "$REPO/test/scenarios.sh"
   "$REPO/test/lint_shell.sh"

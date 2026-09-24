@@ -848,6 +848,9 @@ LEGACY_PATH_EXEMPT: dict[str, str] = {
     ),
     "migrate_toolkit_home.py": "migrates from the legacy layout",
     "scripts/check_toolkit_paths.py": "classifies legacy paths",
+    "scripts/rehearse-toolkit-home-migration.sh": (
+        "temporary migration rehearsal; reads the legacy layout on purpose; delete with the fork runbook after Release 2"
+    ),
 }
 
 

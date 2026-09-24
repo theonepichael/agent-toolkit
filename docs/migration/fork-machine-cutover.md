@@ -34,8 +34,8 @@ the order below is enforced by when you run it, not by anything automatic.
 - A fork installed before Release 0 has no code that reads the layout pointer
   (`~/.claude/data/toolkit_state.json`) and no installed migration lock. The
   migration's preflight checks for the lock and resolver modules under
-  `~/.claude/scripts/`, so Release 0 has to be installed before Release 1 can
-  migrate.
+  `~/.agent-toolkit/scripts/`, falling back to `~/.claude/scripts/`, so
+  Release 0 has to be installed before Release 1 can migrate.
 
 ## Before you start
 
@@ -48,6 +48,8 @@ the cutover is finalized:
 FORK=<fork checkout>          # the live install source
 UP=<upstream mirror clone>
 git -C "$FORK" status --short                  # must print nothing
+git -C "$FORK" status --short --ignored        # read every "!!" line
+git -C "$FORK" clean -nd                       # untracked files; must print nothing unexpected
 git -C "$FORK" tag pre-toolkit-home-cutover
 git -C "$FORK" show pre-toolkit-home-cutover:links.toml > ~/fork-links-before.toml
 git -C "$UP" rev-parse HEAD
@@ -73,9 +75,38 @@ recorded; it removes a directory only when it is empty. What can lose fork
 work is a conflict resolution in steps 2 and 3, so each merge is followed by a
 check.
 
+The ignored and untracked checks catch leftovers the plain status hides. On
+the desktop, an old run that used a directory inside the checkout as its
+`HOME` had left `claude/icons/{data,hooks,scripts}` behind; the suite's lint
+check then failed on 44 copied files, and the cutover stopped at its first
+step. Anything shaped like a home directory (`data/`, `scripts/`, `hooks/`)
+inside the checkout is such a leftover: compare it against the live data
+before deleting it.
+
 The harness list for this machine is every harness actually installed on it.
 Pass exactly that list to every `--harness` below; the migration only rewrites
-settings for the harnesses it is told about.
+settings for the harnesses it is told about. If this machine installs with
+`--profile=work`, pass that too wherever `--profile` appears below.
+
+### A day ahead
+
+The cutover's first step is the test suite, and on the fedora machine it
+failed for environment reasons alone: the `pi/` and `opencode/` npm
+dependencies weren't installed, `shfmt` was missing, and the installed
+opencode CLI didn't match the repository's exact pin. Find these a day early,
+when fixing them costs nothing. From the fork checkout:
+
+```bash
+scripts/bootstrap-worktree.sh          # uv sync plus both npm installs
+command -v shellcheck shfmt bwrap      # all three must print a path
+uv run pytest -q
+```
+
+On a machine without opencode, its CLI version check skips; the npm install
+under `opencode/` is still needed. `bwrap` (bubblewrap) sandboxes the
+rehearsal in step 4. If it can't be installed, the rehearsal still runs, with
+reduced fidelity. Record any failure the suite reports that isn't yours to fix
+before cutover day.
 
 ## 1. Hold
 
@@ -83,6 +114,9 @@ Do not run the sync with `--apply` until:
 
 - `release-1` has merged to upstream `main`, and
 - the main rollout has finalized cleanly on at least one personal machine.
+
+Both were met on 2026-09-24: `release-1` merged as `fe52d6f`, and both
+personal machines finalized.
 
 A dry sync (without `--apply`) only updates the mirror and is always safe.
 
@@ -95,8 +129,8 @@ sync script without `--apply`, then find that commit:
 ```bash
 git -C "$UP" log --first-parent --oneline --grep=release-1 origin/main
 # note the hash of the merge that brought release-1 into main, then:
-R1=<that merge's hash>
-R0=$(git -C "$UP" rev-parse "$R1^1")    # its first parent: main just before Release 1
+R1MERGE=<that merge's hash>
+R0=$(git -C "$UP" rev-parse "$R1MERGE^1")    # its first parent: main just before Release 1
 git -C "$UP" log -1 --oneline "$R0"
 ```
 
@@ -124,9 +158,23 @@ the hop keeps Release 0's changes separate from the migration's.
 
 ## 3. Bring in Release 1
 
-Merge the upstream commit that contains the `release-1` merge, by hand:
+Merge a later upstream `main` by hand, not the `release-1` merge itself: one
+that also contains this runbook's rehearsal script (step 4) and two migration
+fixes that landed after that merge:
+
+- `4c68e6c`: the preflight finds the installed runtime under
+  `~/.agent-toolkit/scripts/`, not only under `~/.claude/scripts/`.
+- `82efdbd`: the migration refuses installer history that records links
+  outside the home it runs in (`manifest-home`), and so does finalize. This
+  is what keeps a scratch rehearsal from deleting real links.
+
+The target must not contain Release 2 (see the last section).
 
 ```bash
+R1=$(git -C "$UP" rev-parse origin/main)
+git -C "$UP" merge-base --is-ancestor 82efdbd "$R1" && echo has-fixes
+git -C "$UP" cat-file -e "$R1:scripts/rehearse-toolkit-home-migration.sh" && echo has-script
+git -C "$UP" log --oneline "$R1MERGE..$R1"    # read it: nothing from Release 2
 cd "$FORK"
 git merge --allow-unrelated-histories --no-ff "$R1"
 ```
@@ -176,42 +224,57 @@ git merge --allow-unrelated-histories --no-ff "$R1"
 
 ## 4. Rehearse on a scratch home
 
-Rehearse the full cycle from the fork checkout before touching real data, as
-the main rollout does:
-
-Do this in a fresh shell, which you close afterwards, so the redirected
-`HOME` can't leak into anything else:
+Rehearse the full cycle from the fork checkout before touching real data, with
+the rehearsal script, not by hand:
 
 ```bash
-SCRATCH=$(mktemp -d "$HOME/toolkit-rehearsal.XXXXXX")
-mkdir -p "$SCRATCH/.claude"
-cp -a ~/.claude/data ~/.claude/scripts "$SCRATCH/.claude/"
-# Do not copy ~/.local/state/agent-toolkit/history.jsonl: its absolute
-# paths name the real home, and finalize acts on the links it records.
-export HOME="$SCRATCH" XDG_CONFIG_HOME="$SCRATCH/.config" \
-       XDG_DATA_HOME="$SCRATCH/.local/share" XDG_STATE_HOME="$SCRATCH/.local/state" \
-       XDG_CACHE_HOME="$SCRATCH/.cache"
 cd "$FORK"
-H=--harness=<this machine's harnesses>
-ID1=mig-$(date -u +%Y%m%dT%H%M%SZ)-000001
-ID2=mig-$(date -u +%Y%m%dT%H%M%SZ)-000002
-./install.sh --migrate-toolkit-home $H --migration-id "$ID1" --dry-run
-./install.sh --migrate-toolkit-home $H --migration-id "$ID1" --skip-reconciliation
-./install.sh --rollback-toolkit-home-migration "$ID1"
-./install.sh --finalize-toolkit-home-migration "$ID1"
-./install.sh --migrate-toolkit-home $H --migration-id "$ID2" --skip-reconciliation
-./install.sh --finalize-toolkit-home-migration "$ID2"
-./install.sh --check-links $H
+./install.sh --check-links --harness=<this machine's harnesses>   # before
+scripts/rehearse-toolkit-home-migration.sh --harness=<this machine's harnesses>
+./install.sh --check-links --harness=<this machine's harnesses>   # after: same result
 ```
 
-Every command must succeed, and the last one must report no residue,
-including for the fork's own links. Then `exit` the shell and delete
-`$SCRATCH`. If anything fails, stop: nothing real has changed yet.
+The two `--check-links` runs report the new `~/.agent-toolkit/` destinations
+as missing, since nothing has installed them yet. That's expected; what
+matters is that the before and after results are identical.
+
+The script builds a scratch copy of the legacy home, runs dry run, migrate,
+rollback, finalize, a second migrate and finalize, and the residue audit
+against it, pausing before each. It exists because doing this by hand went
+wrong on the desktop, twice:
+
+- **Exported variables got lost.** The manual version exported `HOME` in an
+  interactive shell. A pane that opened a new shell (one turned out to be an
+  ssh session on another machine) lost the exports, and the "rehearsal" dry
+  run inspected the real home. The script sets `HOME` and `XDG_*` on each
+  command instead.
+- **The installer history escaped the scratch home.** Without the installer
+  state, the rehearsal sees no legacy links and never exercises retiring them.
+  With a plain copy, the history still names the real home's absolute paths:
+  the scratch finalize deleted 91 real links across every harness home. The
+  script copies the history and rewrites it to the scratch home, and runs
+  every `install.sh` call under `bwrap` with everything but the scratch
+  directory read-only, so anything that still escapes fails instead. The
+  migration's own `manifest-home` check refuses the unrewritten copy too.
+
+The script aborts if any report names a real harness home, and on exit it
+compares the real home's recorded links, settings files and legacy data with
+a fingerprint taken at the start (exit 3, with the differences listed, if
+anything changed). Without `bwrap` it refuses to start. `--without-bwrap`
+runs it anyway, without copying the installer state, so link retirement goes
+unrehearsed.
+
+Every stage must succeed, the dry run's `legacy links: real home N, scratch N`
+line should show the same number twice, and the residue audit must report no
+residue, including for the fork's own links. Keep the scratch directory the
+script prints until the real migration is done; the logs are in it. If
+anything fails, stop: the tripwire says whether anything real changed.
 
 ## 5. Migrate
 
 1. Stop every agent session on the machine, including any that write markdown
-   into the data directories.
+   into the data directories, and including an agent session helping you run
+   this runbook. Run the commands below from a plain shell.
 2. Set the migration ID and run a dry run, reading every report:
 
    ```bash
@@ -226,12 +289,19 @@ including for the fork's own links. Then `exit` the shell and delete
      `~/.claude/{scripts,hooks,icons}` paths. If refused, fix the rows listed
      in the report (per step 3) and re-run.
    - Check the carry report for anything unexpected under `~/.claude/data`.
+   - The last line must read `dry-run:ok`. `dry-run:refused` names the
+     failing check above it with `[refuse]`. The `reconciliation` warning is
+     expected on a machine with no peer.
 3. Real run, with `--skip-reconciliation`, since this machine has no peer:
 
    ```bash
    ./install.sh --migrate-toolkit-home --harness=<this machine's harnesses> \
      --migration-id "$ID" --skip-reconciliation
    ```
+
+   The last line must start with `committed`. Anything else (`restored`,
+   `aborted`) means the machine is back on the legacy layout; read the
+   journal the output names before retrying.
 4. Smoke-test from the new location:
 
    ```bash
@@ -239,9 +309,31 @@ including for the fork's own links. Then `exit` the shell and delete
    python3 ~/.agent-toolkit/scripts/dev_status.py show <an item with related_files>
    ```
 
-   The item's `related_files` paths should point at files that exist. Then
-   start a session in every harness on the machine, ask for the dashboard,
-   and check it renders.
+   The item's `related_files` paths should point at files that exist.
+5. Hand-steps from the dry run's manual-edit checklist. The migration
+   reports these and deliberately doesn't change them:
+
+   - `rmdir ~/.claude/data/artifacts`. The migration carries this directory's
+     contents but leaves it behind empty, and the residue audit reports it
+     until it's gone. Skip this if the directory is already gone.
+   - Permission patterns in `~/.claude/settings.local.json`, and in any
+     work-profile settings file, still name `~/.claude/scripts/`. Change them
+     to `~/.agent-toolkit/scripts/`, then check:
+
+     ```bash
+     python3 -m json.tool ~/.claude/settings.local.json >/dev/null
+     grep -n '~/.claude/scripts\|~/.claude/data' ~/.claude/settings.local.json   # must print nothing
+     ```
+
+   - The harness global instruction files (`~/.claude/CLAUDE.md`,
+     `~/.copilot/copilot-instructions.md`, `~/.codex/AGENTS.md`,
+     `~/.pi/agent/AGENTS.md`, `~/.gemini/GEMINI.md`) still cite the legacy
+     paths. Regenerate them with whatever produces them on this machine, and
+     reinstall through the same path. On the personal machines a plain
+     `./install.sh` refused to replace these links, because another repository
+     owns them, and that repository's install wrapper did it.
+6. Start a session in every harness on the machine, ask for the dashboard,
+   and check it renders with no import, permission or missing-script error.
 
 ## 6. Finalize
 
@@ -252,6 +344,13 @@ including for the fork's own links. Then `exit` the shell and delete
 
 `--check-links` is the residue audit. It must pass before this machine counts
 as cut over.
+
+Finalize may report `legacy directory kept (holds other content)` for
+`~/.claude/scripts`, `~/.claude/hooks` or `~/.claude/commands`. That's
+expected when those directories also hold files the toolkit doesn't own (for
+example another repository's scripts, `__pycache__`, or a hook another tool
+installed). It is not residue. Residue is a toolkit-owned link left below
+`~/.claude/`, and the audit reports that.
 
 ## Rolling back
 
