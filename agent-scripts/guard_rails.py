@@ -63,6 +63,8 @@ Flags
 
 Environment
   GUARD_RAILS_OFF=1    disable every rule
+  GUARD_RAILS_NO_FAST_PATH=1
+                       force the full path; diagnostic/testing
   GUARD_RAILS_STORE    path to an alternate backlog store, for exercising the
                        guard against a throwaway store. Resolved by
                        backlog_claim_lookup.backlog_items_path() -- that
@@ -82,29 +84,12 @@ shell: hooks are spawned by the host process, so a tool call's ``export``
 never reaches this script.
 """
 
-import argparse
+# ruff: noqa: E402 -- the fast path below must run before the heavy imports.
+
+import io
 import json
 import os
-import re
-import shlex
-import subprocess
 import sys
-from dataclasses import dataclass
-from datetime import UTC, datetime
-from pathlib import Path
-
-import agent_toolkit_paths
-import backlog_claim_lookup
-import cli_common
-import migration_lock
-from backlog_claim_lookup import BacklogClaimLookup, ClaimInfo, LocalClaimLookup
-from worktree_provenance import read_marker, worktree_points_at_item
-
-# What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
-TOOLKIT_DATA = "writer"
-
-PROTECTED_BRANCHES = {"main", "master"}
-GIT_TIMEOUT = 2.0
 
 WRITE_TOOLS = {
     "write",
@@ -116,6 +101,218 @@ WRITE_TOOLS = {
     "create",
     "str_replace_editor",
 }
+
+
+def tool_family(name: object) -> str:
+    """Collapse a harness's tool name to a family. Harnesses disagree on
+    spelling -- Claude Code says ``Edit``, agy says ``replace_file_content``,
+    opencode and Pi say ``edit`` -- so nothing matches a literal name."""
+    if not isinstance(name, str):
+        return ""
+    lowered = name.strip().lower()
+    if lowered in WRITE_TOOLS:
+        return "write"
+    if lowered == "bash":
+        return "bash"
+    return ""
+
+
+def _layout_error_reason() -> str | None:
+    """Return a blocking reason if the layout cannot be resolved right now.
+
+    Checked per call, so a pointer that breaks after this process started
+    still blocks. Imports its two modules lazily: the fast path calls this
+    before the rest of this script's imports have run.
+    """
+    import agent_toolkit_paths  # noqa: PLC0415
+    import backlog_claim_lookup  # noqa: PLC0415
+
+    try:
+        agent_toolkit_paths.path_for("guard-rail-log")
+    except agent_toolkit_paths.LayoutError as exc:
+        return str(exc)
+    claim_error = backlog_claim_lookup.layout_error()
+    if claim_error is not None:
+        return str(claim_error)
+    return None
+
+
+def _audit_record(
+    harness: str, tool: str, target: str, rule: str, decision: str
+) -> dict[str, object]:
+    """Build one audit-trail record (see :func:`_audit_verdict`)."""
+    from datetime import UTC, datetime  # noqa: PLC0415
+
+    import cli_common  # noqa: PLC0415
+
+    return {
+        "ts": datetime.now(UTC).isoformat(),
+        "harness": harness,
+        "tool": tool,
+        "target": cli_common.redact_secrets(target),
+        "rule": rule,
+        "decision": decision,
+    }
+
+
+def _append_audit_record(record: dict[str, object]) -> None:
+    """Append ``record`` to the guard-rail log without ever blocking the
+    verdict already on stdout."""
+    import agent_toolkit_paths  # noqa: PLC0415
+    import cli_common  # noqa: PLC0415
+    import migration_lock  # noqa: PLC0415
+
+    # Telemetry never blocks the verdict: if the migration lock refuses the
+    # append, the line is skipped and the refusal is recorded instead.
+    # The log path is resolved inside the scope, so a layout flip cannot fall
+    # between resolving it and appending. A broken layout skips the line.
+    try:
+        with migration_lock.shared("guard-rail-log", quiet=True):
+            log_path = agent_toolkit_paths.path_for("guard-rail-log")
+            cli_common.append_jsonl(log_path, record)
+    except agent_toolkit_paths.LayoutError:
+        return
+    except migration_lock.MigrationLockBusy as exc:
+        migration_lock.observe(
+            "guard-rail-log", "refused-telemetry", str(exc), quiet=True
+        )
+
+
+# ── fast path ───────────────────────────────────────────────────────────────
+# About 80% of guard calls are Bash commands that cannot trip any bash rule,
+# or tools the guard doesn't act on. Their verdict is a plain allow, but the
+# full path pays for every import below first. The fast path answers exactly
+# those calls before those imports run, with byte-identical stdout, exit code
+# and audit record. Anything it is not certain about falls through, stdin
+# restored, to main().
+
+# Every bash deny rule needs one of these after quotes, backslashes and
+# whitespace are deleted and the text is lower-cased. The deletions make the
+# check a superset of the shlex-token view the rules use, so splicing such as
+# con""fig or --no-ver\ify still counts as a trigger.
+_BASH_TRIGGERS = ("config", "--no-verify", "hookspath")
+_NEUTRAL_ALLOW = json.dumps({"decision": "allow", "reason": ""})
+_HARNESS_ALLOW = {
+    "claude": json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse"}}),
+    "agy": json.dumps({"decision": "allow"}),
+    "copilot": json.dumps({"decision": "allow"}),
+}
+
+
+def bash_trigger_free(command: str) -> bool:
+    """Whether ``command`` provably cannot trip any bash-family deny rule."""
+    squashed = "".join(
+        ch for ch in command if ch not in "'\"\\" and not ch.isspace()
+    ).lower()
+    return not any(trigger in squashed for trigger in _BASH_TRIGGERS)
+
+
+def _fast_decide(
+    argv: list[str], raw: str | None
+) -> tuple[str, dict[str, object]] | None:
+    """Return (stdout line, audit record) for a call the fast path can
+    answer, or None to fall through. Writes nothing."""
+    off = os.environ.get("GUARD_RAILS_OFF") == "1"
+    if raw is None:  # neutral bash form, already shape-checked by the caller
+        cwd, command = argv[3], argv[5]
+        if cwd.startswith("-") or command.startswith("-"):
+            return None
+        if not bash_trigger_free(command):
+            return None
+        harness, tool, target, out = "", "bash", command, _NEUTRAL_ALLOW
+        rule = "GUARD_RAILS_OFF" if off else "default-allow"
+    else:
+        harness = argv[1]
+        payload = json.loads(raw or "{}")
+        if not isinstance(payload, dict):
+            return None
+        if harness == "claude":
+            args = payload.get("tool_input") or {}
+            if not isinstance(args, dict):
+                return None
+            path = args.get("file_path") or args.get("path") or ""
+            cwd = payload.get("cwd") or ""
+            if not isinstance(path, str) or not isinstance(cwd, str):
+                return None
+            family = tool_family(payload.get("tool_name"))
+        elif harness == "agy":
+            call = payload.get("toolCall") or {}
+            if not isinstance(call, dict):
+                return None
+            family = tool_family(call.get("name"))
+        else:
+            family = tool_family(payload.get("toolName"))
+        if family == "write":
+            return None
+        out = _HARNESS_ALLOW[harness]
+        if family == "bash" and harness == "claude":
+            command = args.get("command") or ""
+            if not isinstance(command, str) or not bash_trigger_free(command):
+                return None
+            tool, target = "bash", command
+            rule = "GUARD_RAILS_OFF" if off else "default-allow"
+        else:  # unrecognised, including bash on a harness with no bash wiring
+            tool, target, rule = "", "", "default-allow"
+    if not off and _layout_error_reason() is not None:
+        return None
+    return out, _audit_record(harness, tool, target, rule, "allow")
+
+
+def _fast_path(argv: list[str]) -> bool:
+    """Answer a trivially-allowed call before the heavy imports; True when
+    it did. Fall-through is only possible before the first byte of output."""
+    if os.environ.get("GUARD_RAILS_NO_FAST_PATH") == "1":
+        return False
+    harness_form = (
+        len(argv) == 2 and argv[0] == "--harness" and argv[1] in _HARNESS_ALLOW
+    )
+    neutral_form = (
+        len(argv) == 6
+        and argv[0::2] == ["--tool", "--cwd", "--command"]
+        and argv[1] == "bash"
+    )
+    if not (harness_form or neutral_form):
+        return False
+    raw = sys.stdin.read() if harness_form else None
+    try:
+        decided = _fast_decide(argv, raw)
+    except Exception:
+        decided = None
+    if decided is None:
+        if raw is not None:
+            sys.stdin = io.StringIO(raw)
+        return False
+    out, record = decided
+    print(out)
+    sys.stdout.flush()
+    _append_audit_record(record)
+    return True
+
+
+if __name__ == "__main__" and _fast_path(sys.argv[1:]):
+    sys.exit(0)
+
+# The imports below run only when the fast path fell through (or on import),
+# which is the point: see the fast path comment above.
+import argparse
+import re
+import shlex
+import subprocess
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+
+import agent_toolkit_paths
+import cli_common
+import migration_lock
+from backlog_claim_lookup import BacklogClaimLookup, ClaimInfo, LocalClaimLookup
+from worktree_provenance import read_marker, worktree_points_at_item
+
+# What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
+TOOLKIT_DATA = "writer"
+
+PROTECTED_BRANCHES = {"main", "master"}
+GIT_TIMEOUT = 2.0
 
 # Shell control operators a value-token scan must stop at -- past one of
 # these, whatever follows belongs to a different command, not an argument to
@@ -158,20 +355,6 @@ class RepoInfo:
     # them the marker simply reads as absent.
     git_dir: str = ""
     marker_slug: str | None = None
-
-
-def tool_family(name: object) -> str:
-    """Collapse a harness's tool name to a family. Harnesses disagree on
-    spelling -- Claude Code says ``Edit``, agy says ``replace_file_content``,
-    opencode and Pi say ``edit`` -- so nothing matches a literal name."""
-    if not isinstance(name, str):
-        return ""
-    lowered = name.strip().lower()
-    if lowered in WRITE_TOOLS:
-        return "write"
-    if lowered == "bash":
-        return "bash"
-    return ""
 
 
 def git(*args: str, cwd: str | None = None) -> str | None:
@@ -874,30 +1057,19 @@ def _audit_verdict(harness: str, req: Request | None, verdict: Verdict) -> None:
     "allow", with the deciding rule named separately ("GUARD_RAILS_OFF" for
     a disabled guard). The bash-family target is the command; the
     write-family target is the file path; both pass through
-    redact_secrets before storage."""
+    redact_secrets before storage. Record construction and the write are
+    shared with the fast path (:func:`_audit_record`,
+    :func:`_append_audit_record`), so both produce identical lines."""
     target = "" if req is None else (req.command if req.tool == "bash" else req.path)
-    record = {
-        "ts": datetime.now(UTC).isoformat(),
-        "harness": harness,
-        "tool": req.tool if req is not None else "",
-        "target": cli_common.redact_secrets(target),
-        "rule": verdict.rule or "default-allow",
-        "decision": "deny" if verdict.decision == "deny" else "allow",
-    }
-    # Telemetry never blocks the verdict: if the migration lock refuses the
-    # append, the line is skipped and the refusal is recorded instead.
-    # The log path is resolved inside the scope, so a layout flip cannot fall
-    # between resolving it and appending. A broken layout skips the line.
-    try:
-        with migration_lock.shared("guard-rail-log", quiet=True):
-            log_path = agent_toolkit_paths.path_for("guard-rail-log")
-            cli_common.append_jsonl(log_path, record)
-    except agent_toolkit_paths.LayoutError:
-        return
-    except migration_lock.MigrationLockBusy as exc:
-        migration_lock.observe(
-            "guard-rail-log", "refused-telemetry", str(exc), quiet=True
+    _append_audit_record(
+        _audit_record(
+            harness,
+            req.tool if req is not None else "",
+            target,
+            verdict.rule or "default-allow",
+            "deny" if verdict.decision == "deny" else "allow",
         )
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -919,22 +1091,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     cli_common.add_verbosity_args(parser)
     return parser
-
-
-def _layout_error_reason() -> str | None:
-    """Return a blocking reason if the layout cannot be resolved right now.
-
-    Checked per call, so a pointer that breaks after this process started
-    still blocks.
-    """
-    try:
-        agent_toolkit_paths.path_for("guard-rail-log")
-    except agent_toolkit_paths.LayoutError as exc:
-        return str(exc)
-    claim_error = backlog_claim_lookup.layout_error()
-    if claim_error is not None:
-        return str(claim_error)
-    return None
 
 
 def main(argv: list[str] | None = None) -> int:
