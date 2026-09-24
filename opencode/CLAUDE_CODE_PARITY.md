@@ -450,6 +450,44 @@ conflicting keys), same pattern as Claude Code's `~/.claude/settings.json` +
 - **`notify.ts`** — listens to `session.idle` event and dispatches cross-platform desktop toasts with the official OpenCode logo via `~/.agent-toolkit/scripts/notify.py`.
 - **`guard-rails.ts`** — delegates to `agent-scripts/guard_rails.py` on `tool.execute.before`; this list previously omitted it despite it being covered in detail in the "Pre-tool guard" section below — see that section for the verified payload shape and the no-warn-channel limitation.
 
+### Applying model/variant changes to a live TUI (2026-09-24 probe)
+
+OpenCode `1.18.32` was tested in an isolated tmux TUI with
+`XDG_CONFIG_HOME`, `XDG_DATA_HOME`, and `XDG_STATE_HOME` under `/tmp`; the
+scratch project was empty and the production configuration was not modified.
+A temporary TUI plugin exposed the public plugin client/keymap APIs and wrote
+only synthetic probe events to `/tmp`.
+
+| Candidate | Observed result | Did the next prompt use the target? |
+|---|---|---|
+| Positive control: `client.tui.openModels()` followed by selecting `MiMo-V2.6-Flash` in the built-in dialog | The dialog opened; the TUI footer changed to `MiMo-V2.6-Flash`; the next prompt logged provider `opencode`, model `mimo-v2.6-flash-free` | **Yes** |
+| `client.v2.session.switchModel({model: {providerID: "opencode-go", id: "deepseek-v4-flash"}})` | Returned an empty successful result and changed the SQLite session row to `deepseek-v4-flash` | **No** — the next prompt still logged `opencode-go/qwen3.7-plus` |
+| The same `switchModel` call followed by `api.route.navigate("home")`, then back to the session | Route navigation completed in the same TUI process | **No** — the next prompt still used `opencode-go/qwen3.7-plus` |
+| `client.tui.executeCommand({command: "/tui/open-models"})`, plus richer `args` and `model` fields | Each request returned transport success (`true`), but no model dialog opened and the TUI selection did not change | **No** — the next prompt still used `opencode-go/qwen3.7-plus` |
+| `api.keymap.dispatchCommand("command.model.choose", ...)` and `command.model.variant.cycle`, with object/string/array argument shapes | Dispatch calls returned normally, but the arguments did not produce a visible model change; a subsequent prompt still used `opencode-go/qwen3.7-plus` | **No** |
+| `api.kv.set("model-apply-probe", modelRef)` / `kv.get` | The value round-tripped through the plugin KV store, but no TUI selection changed and the next prompt still used the old model | **No** |
+
+The SQLite row and the TUI's runtime model therefore diverged after
+`switchModel`: server-side persistence is real, but it does not update the
+live prompt store. Route re-entry does not repair that divergence. The
+`executeCommand` transport also treats unknown/rich fields as a successful
+request without proving command execution.
+
+**Verdict:** no supported plugin apply mechanism was found. The stable
+compatibility path is a read-only comparison overlay followed by
+`client.tui.openModels()` (or the built-in `/models` dialog) for the actual
+selection. `api.keymap` and `api.kv` are useful plugin surfaces, but neither
+provided a model-apply contract in `1.18.32`; undocumented command argument
+shapes are not safe to depend on. Model-variant application remains
+**untested**: the variant-cycle dispatch path was probed, but no positive
+live variant selection was established, so variant support must not be
+inferred from model switching.
+
+For `atk-opencode-model-picker`, Enter should hand off to the built-in model
+dialog after showing the comparison overlay. Do not call `switchModel` and
+present the result as an applied live switch. Keep the `/models` collision
+intentional and use a distinct command/slash for the overlay.
+
 ## Sources
 
 - https://opencode.ai/docs/keybinds/
