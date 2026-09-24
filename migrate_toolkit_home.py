@@ -3173,33 +3173,14 @@ def committed_unfinalized(installer_state: Path) -> list[str]:
 def retained_legacy_links(installer_state: Path) -> set[Path]:
     """Legacy links a toolkit-home migration still needs; cleanup and the audit skip them.
 
-    A migration keeps them while it is in flight or committed (its rollback
-    needs them), and for as long as the legacy layout is live again after a
-    restore or rollback, whose settings still invoke them — including once a
-    ``restored-copy`` finalize has cleared the restored copies. Only a normal
-    finalize, which removes them itself, ends that.
+    Delegates to the stdlib-only reader in agent-scripts/retained_legacy_links
+    so the SessionStart drift hook can import just that module instead of this
+    whole migration toolchain; see that module for the journal-reading logic
+    and the exact skip rules. Its signature and contract are identical here.
     """
-    kept: set[Path] = set()
-    for directory in _journal_dirs(installer_state):
-        finalized = read_records(directory, FINALIZE_NAME)
-        if _outcome(finalized) == OUTCOME_FINALIZED:
-            begin = next(
-                (
-                    r.get("detail")
-                    for r in finalized
-                    if r.get("phase") == "finalize" and r.get("event") == "begin"
-                ),
-                None,
-            )
-            if not isinstance(begin, dict) or begin.get("mode") != "restored-copy":
-                continue
-        for record in _steps_in(read_records(directory)):
-            done = _done(record)
-            if record["phase"] != "links" or done is None:
-                continue
-            for link in done.get("retained", []):  # type: ignore[attr-defined]
-                kept.add(Path(str(link["dest"])))
-    return kept
+    from retained_legacy_links import retained_legacy_links as _read_kept
+
+    return _read_kept(installer_state)
 
 
 # ── executor ─────────────────────────────────────────────────────────────────

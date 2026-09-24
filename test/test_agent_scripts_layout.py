@@ -66,6 +66,7 @@ FROZEN_SCRIPT_DESTS = frozenset(
         "outlook_calendar.py",
         "outlook_email.py",
         "refresh_guidance.py",
+        "retained_legacy_links.py",
         "second_opinion.py",
         "sessionstart_checks.py",
         "settings_seed.py",
@@ -131,7 +132,7 @@ def test_links_toml_srcs_live_in_agent_scripts() -> None:
         if isinstance(entry.get("src"), str)
         and str(entry.get("dest", "")).startswith(f"{MANAGED_DIR_DEST}/")
     ]
-    assert len(script_links) == 43, f"expected 43 script links, got {len(script_links)}"
+    assert len(script_links) == 44, f"expected 44 script links, got {len(script_links)}"
     bad = [
         entry["src"]
         for entry in script_links

@@ -63,6 +63,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`outlook_calendar.py`](#agentscriptsoutlookcalendarpy) | outlook_calendar.py — CLI tool and agent interface for Windows Outlook Calendar via PowerShell COM. |
 | [`outlook_email.py`](#agentscriptsoutlookemailpy) | outlook_email.py — CLI tool and agent interface for Windows Outlook via PowerShell COM. |
 | [`refresh_guidance.py`](#agentscriptsrefreshguidancepy) | refresh_guidance.py — audit-by-inspection for hand-authored, agent-facing docs. |
+| [`retained_legacy_links.py`](#agentscriptsretainedlegacylinkspy) | Read which legacy symlinks an unfinalized toolkit-home migration still keeps. |
 | [`second_opinion.py`](#agentscriptssecondopinionpy) | second_opinion.py — one-shot adversarial critique of a plan from a non-Claude backend. Single-round by design: the multi-round loop, plan revision, and convergence judgment all require LLM reasoning and live in prose instructions, not here. |
 | [`seed_hook_subset_guard.py`](#agentscriptsseedhooksubsetguardpy) | seed_hook_subset_guard.py — refuse a commit that drops a seed's SessionStart hook groups. |
 | [`sessionstart_checks.py`](#agentscriptssessionstartcheckspy) | sessionstart_checks.py — run the SessionStart context checks concurrently. |
@@ -988,7 +989,7 @@ SessionStart hook + CLI: flag when a managed symlink on this machine no longer p
 - Environment: `XDG_CACHE_HOME`
 - Filesystem constants:
   - `REPO = Path(__file__).resolve().parents[1]`
-- Depends on: `cli_common.py`, `link_inspect.py`
+- Depends on: `cli_common.py`, `link_inspect.py`, `retained_legacy_links.py`
 - Public functions:
   - `build_parser() -> argparse.ArgumentParser`
 - Subcommand handlers: `cmd_check`
@@ -1270,6 +1271,19 @@ refresh_guidance.py — audit-by-inspection for hand-authored, agent-facing docs
   - `build_parser() -> argparse.ArgumentParser`
 - Subcommand handlers: `cmd_check`, `cmd_mark_reviewed`, `cmd_scaffold`
 - Tested by: `test/test_refresh_guidance.py`
+
+### `agent-scripts/retained_legacy_links.py`
+
+Read which legacy symlinks an unfinalized toolkit-home migration still keeps.
+
+- Installed at: `~/.agent-toolkit/scripts/retained_legacy_links.py` (all harnesses)
+- Entrypoint: not executable, `#!/usr/bin/env python3`
+- CLI: none (library module).
+- Exceptions:
+  - `class RetainedLinksError(OSError)` — A migration journal could not be read (unreadable directory or file, or a corrupt journal line).
+- Public functions:
+  - `retained_legacy_links(installer_state: Path) -> set[Path]` — Legacy link destinations a committed-but-unfinalized migration keeps.
+- Tested by: `test/test_link_drift_check.py`, `test/test_retained_legacy_links_parity.py`
 
 ### `agent-scripts/second_opinion.py`
 
