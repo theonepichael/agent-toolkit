@@ -49,13 +49,16 @@ def passing_validation(monkeypatch):
     monkeypatch.setattr(mth, "_run_validation", lambda _ctx: (True, []))
 
 
-def _installed_runtime(home: Path, *, enforce: bool = True) -> None:
+def _installed_runtime(
+    home: Path, *, enforce: bool = True, location: str = "legacy"
+) -> None:
     """A fake installed runtime, linked into place the way install.py links it."""
     real = home / "fake-runtime"
     real.mkdir(exist_ok=True)
     (real / "migration_lock.py").write_text(f"ENFORCE: bool = {enforce}\n")
     (real / "agent_toolkit_paths.py").write_text("# installed\n")
-    scripts = home / ".claude" / "scripts"
+    scripts = home / (".agent-toolkit" if location == "toolkit-home" else ".claude")
+    scripts = scripts / "scripts"
     scripts.mkdir(parents=True, exist_ok=True)
     for module in ("migration_lock.py", "agent_toolkit_paths.py"):
         link = scripts / module
@@ -428,6 +431,14 @@ def test_refuses_cross_device_unless_allowed(machine, capsys, monkeypatch):
 def test_refuses_runtime_that_is_not_lock_aware(machine, capsys):
     _installed_runtime(machine, enforce=False)
     _assert_initial_refusal(machine, capsys, "runtime-lock-aware")
+
+
+def test_accepts_toolkit_home_installed_runtime(sandbox, capsys):
+    _installed_runtime(sandbox, location="toolkit-home")
+    _legacy_stores(sandbox)
+    code, report = _run(capsys, dry_run=True)
+    assert code == 0
+    assert "runtime-lock-aware" in _findings(report, "ok")
 
 
 def test_refuses_missing_installed_runtime(sandbox, capsys):

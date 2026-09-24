@@ -998,7 +998,24 @@ def _check_legacy_destinations(ctx: MigrationContext) -> Finding:
 
 
 def _check_runtime(ctx: MigrationContext) -> Finding:
-    scripts = ctx.home / ".claude" / "scripts"
+    # The migration runs after the installer has been updated to the
+    # toolkit-home release, so the current runtime is normally under
+    # ~/.agent-toolkit/scripts. Keep the legacy location as a fallback for
+    # machines that have not run that installer step yet (and for the
+    # migration's isolated tests).
+    candidates = (
+        ctx.home / ".agent-toolkit" / "scripts",
+        ctx.home / ".claude" / "scripts",
+    )
+    scripts = next(
+        (
+            directory
+            for directory in candidates
+            if (directory / "migration_lock.py").is_file()
+            and (directory / "agent_toolkit_paths.py").is_file()
+        ),
+        candidates[0],
+    )
     lock_module = scripts / "migration_lock.py"
     resolver = scripts / "agent_toolkit_paths.py"
     missing = [str(p) for p in (lock_module, resolver) if not p.is_file()]
