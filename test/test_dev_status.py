@@ -40,6 +40,7 @@ import test_layouts  # noqa: E402
 import agent_toolkit_paths  # noqa: E402
 import dev_status
 import dev_status_mutation
+import dev_status_storage
 import llm_backends
 import worktree_provenance
 
@@ -65,6 +66,21 @@ class _FakeClock:
 
     def advance(self, seconds: float) -> None:
         self._now += seconds
+
+
+class _FakeDatetime(datetime):
+    """Datetime whose ``now`` returns a controllable value for debounce tests.
+
+    Inherits the real ``datetime`` so ``fromisoformat``/``isoformat`` keep
+    working; only ``now`` is overridden to a class-level fixed value that the
+    debounce tests advance manually between simulated child wake-ups.
+    """
+
+    _fixed_now = datetime(2026, 1, 1, tzinfo=UTC)
+
+    @classmethod
+    def now(cls, tz=None):
+        return cls._fixed_now
 
 
 def make_item(
@@ -3612,11 +3628,84 @@ class BacklogTestCase(BacklogFixture):
         with open(self.recap_regen_lock_file, "w") as held:
             fcntl.flock(held, fcntl.LOCK_EX)
             try:
-                with patch.object(dev_status, "_run_recap_regen") as mock_regen:
+                with (
+                    patch.object(dev_status, "_sleep"),
+                    patch.object(dev_status, "_run_recap_regen") as mock_regen,
+                ):
                     dev_status.cmd_internal_regen()
                 mock_regen.assert_not_called()
             finally:
                 fcntl.flock(held, fcntl.LOCK_UN)
+
+    # ── regen debounce (E-01) ────────────────────────────────────────────────
+
+    def _write_journal_entry_age(self, age_seconds, slug="deb"):
+        ts = _FakeDatetime._fixed_now - timedelta(seconds=age_seconds)
+        self._write_journal_line(
+            {
+                "ts": ts.isoformat(),
+                "rev": 1,
+                "machine": "test-machine",
+                "cmd": "add",
+                "kind": "backlog",
+                "slug": slug,
+                "summary": "debounce entry",
+            }
+        )
+
+    def _run_regen_child(self, run_agy):
+        with (
+            patch.object(dev_status, "_sleep"),
+            patch.object(dev_status_storage, "datetime", _FakeDatetime),
+            patch.object(dev_status, "RECAP_DEBOUNCE_SECONDS", 300),
+            patch.object(llm_backends, "available_backends", return_value=["agy"]),
+            patch.object(llm_backends, "run_agy", run_agy),
+        ):
+            dev_status.cmd_internal_regen()
+
+    def test_r17b_recent_journal_makes_child_skip_backend(self):
+        # Last journal entry 10s old (well inside the 300s debounce window):
+        # a newer mutation has spawned its own child, so this one skips.
+        # Pre-fix, cmd_internal_regen always called the backend.
+        _FakeDatetime._fixed_now = datetime.now(UTC)
+        self._write_journal_entry_age(10)
+        run_agy = MagicMock(return_value="x")
+        self._run_regen_child(run_agy)
+        run_agy.assert_not_called()
+
+    def test_r17c_quiet_journal_makes_child_call_backend_once(self):
+        # Last journal entry 400s old (older than the 300s window): the journal
+        # is quiet, so this child is the one that generates.
+        _FakeDatetime._fixed_now = datetime.now(UTC)
+        self._write_journal_entry_age(400)
+        run_agy = MagicMock(return_value="Great work.")
+        self._run_regen_child(run_agy)
+        run_agy.assert_called_once()
+
+    def test_r17d_burst_of_two_children_only_last_calls_backend(self):
+        # Two mutations 1s apart each spawn a child. After one debounce window
+        # the earlier child sees a newer journal entry (299s old) and skips;
+        # the later child finds the journal exactly at the window edge (300s)
+        # and is the one that generates.
+        base = datetime.now(UTC)
+        _FakeDatetime._fixed_now = base
+        self._write_journal_entry_age(0, slug="deb-a")
+        _FakeDatetime._fixed_now = base + timedelta(seconds=1)
+        self._write_journal_entry_age(0, slug="deb-b")
+        run_agy = MagicMock(return_value="Great work.")
+        with (
+            patch.object(dev_status, "_sleep"),
+            patch.object(dev_status_storage, "datetime", _FakeDatetime),
+            patch.object(dev_status, "RECAP_DEBOUNCE_SECONDS", 300),
+            patch.object(llm_backends, "available_backends", return_value=["agy"]),
+            patch.object(llm_backends, "run_agy", run_agy),
+        ):
+            _FakeDatetime._fixed_now = base + timedelta(seconds=300)
+            dev_status.cmd_internal_regen()
+            self.assertEqual(run_agy.call_count, 0)
+            _FakeDatetime._fixed_now = base + timedelta(seconds=301)
+            dev_status.cmd_internal_regen()
+            self.assertEqual(run_agy.call_count, 1)
 
     # ── render display rules ────────────────────────────────────────────────
 

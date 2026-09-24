@@ -938,6 +938,34 @@ def journal_last_entry_within(
     return False
 
 
+def journal_last_entry_age_seconds(*, journal_file: Path | None = None) -> float | None:
+    """Age in seconds of the journal's last entry, or None if empty/unreadable.
+
+    Used by the recap-regen debounce to decide whether a newer mutation has
+    since spawned its own regen child (see ``cmd_internal_regen`` in
+    ``dev_status_impl``). Returns None when the journal is missing, unreadable,
+    or its last line is not a parseable entry, so a caller can treat that as
+    "generate" rather than "skip".
+    """
+    j_file = journal_file or _journal_file()
+    if not j_file.exists():
+        return None
+    try:
+        non_blank = [line for line in j_file.read_text().splitlines() if line.strip()]
+    except OSError:
+        return None
+    for line in reversed(non_blank):
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        ts = parse_journal_ts(entry.get("ts") if isinstance(entry, dict) else None)
+        if ts is None:
+            return None
+        return (datetime.now(UTC) - ts).total_seconds()
+    return None
+
+
 _journal_last_entry_within = journal_last_entry_within
 
 

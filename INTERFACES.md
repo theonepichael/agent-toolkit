@@ -330,7 +330,7 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `out-of-scope remove <concept-slug>` — delete a rejected concept's record
   - `out-of-scope list` — list rejected concepts, newest-first
   - `out-of-scope show <concept-slug>` — print a rejected concept's full record
-- Environment: `DEVSTATUS_AGENT`, `DEVSTATUS_RECAP_AGY_MODEL`, `DEVSTATUS_RECAP_DISABLE`, `DEVSTATUS_RECAP_TIMEOUT_SECONDS`
+- Environment: `DEVSTATUS_AGENT`, `DEVSTATUS_RECAP_AGY_MODEL`, `DEVSTATUS_RECAP_DEBOUNCE_SECONDS`, `DEVSTATUS_RECAP_DISABLE`, `DEVSTATUS_RECAP_TIMEOUT_SECONDS`
 - Explicit exit codes: `1`, `2`
 - Depends on: `agent_toolkit_paths.py`, `cli_common.py`, `dev_status_formatting.py`, `dev_status_mutation.py`, `dev_status_storage.py`, `dev_status_types.py`, `grill.py`, `llm_backends.py`, `migration_lock.py`, `to_tickets_runner.py`, `worktree.py`
 - Public functions:
@@ -509,12 +509,13 @@ Backlog persistence, lock coordination, and journal primitives.
   - `parse_journal_ts(raw: object) -> datetime | None` — Parse a journal entry's ``ts`` field into an aware UTC ``datetime``.
   - `read_journal_entries(within_hours: float | None = None, *, journal_file: Path | None = None, verbose: bool = False) -> list[dict[str, object]]` — Read journal entries, optionally filtered to the last ``within_hours``.
   - `journal_last_entry_within(hours: float, *, journal_file: Path | None = None) -> bool` — Cheap pre-spawn check: does the journal's last entry fall within ``hours``?
+  - `journal_last_entry_age_seconds(*, journal_file: Path | None = None) -> float | None` — Age in seconds of the journal's last entry, or None if empty/unreadable.
   - `load_runs(item: str | None = None, *, runs_file: Path | None = None) -> list[RunRecord]` — Load run-evidence rows from :func:`runs_file`, optionally for one item.
   - `write_runs_file(runs: Sequence[RunRecord], *, runs_file: Path | None = None) -> None` — Atomically rewrite :func:`runs_file` with ``runs``.
   - `append_run_record(record: RunRecord, *, runs_file: Path | None = None, data_dir: Path | None = None) -> bool` — Append one run-evidence row to :func:`runs_file` (best-effort).
   - `load_recap_cache(path: Path | None = None) -> dict[str, object] | None` — Load ``recap-cache.json``, or ``None`` if missing/corrupt/malformed.
   - `save_recap_cache(backend: str, text: str, board_fingerprint: str, path: Path | None = None) -> None` — Atomically persist a recap result.
-- Tested by: `test/test_dev_status_mutation.py`, `test/test_dev_status_read.py`, `test/test_dev_status_storage.py`, `test/test_guard_rails_claim.py`, `test/test_machine_id.py`, `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`
+- Tested by: `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_dev_status_read.py`, `test/test_dev_status_storage.py`, `test/test_guard_rails_claim.py`, `test/test_machine_id.py`, `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`
 
 ### `agent-scripts/dev_status_types.py`
 

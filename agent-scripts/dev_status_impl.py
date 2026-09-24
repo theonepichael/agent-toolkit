@@ -48,6 +48,7 @@ import re
 import subprocess
 import sys
 import textwrap
+import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, date, datetime
@@ -228,6 +229,18 @@ RECAP_MAX_CHARS = 400
 RECAP_MIN_KEEP = RECAP_MAX_CHARS // 2
 RECAP_TIMEOUT_SECONDS = float(os.environ.get("DEVSTATUS_RECAP_TIMEOUT_SECONDS", "60"))
 RECAP_AGY_MODEL = os.environ.get("DEVSTATUS_RECAP_AGY_MODEL", "Gemini 3.6 Flash (High)")
+# Trailing-edge debounce for background recap regeneration: a burst of board
+# mutations each spawns a detached ``_internal-regen`` child, but a child sleeps
+# this long *before* taking the regen lock and then bails out (without a backend
+# call) if a newer mutation has since written a journal line -- that newer
+# mutation spawned its own child, which becomes the one that does the work. Only
+# the last child of a burst finds a journal older than the window and generates,
+# cutting N concurrent regens down to one. A render-triggered regen (stale
+# cache, quiet journal) also waits one window, but its result is only shown on
+# the next render anyway, so nothing observable is lost.
+RECAP_DEBOUNCE_SECONDS = float(
+    os.environ.get("DEVSTATUS_RECAP_DEBOUNCE_SECONDS", "300")
+)
 
 VALID_STATUSES = {"open", "in-progress", "in-review", "done"}
 VALID_PRIORITIES = {"high", "normal", "low"}
@@ -1426,6 +1439,14 @@ def _journal_last_entry_within(hours: float) -> bool:
 journal_last_entry_within = _journal_last_entry_within
 
 
+def _journal_last_entry_age_seconds() -> float | None:
+    """Age in seconds of the journal's last entry (None if empty/unreadable)."""
+    return dev_status_storage.journal_last_entry_age_seconds()
+
+
+journal_last_entry_age_seconds = _journal_last_entry_age_seconds
+
+
 # ── recap: cache + dispatch ─────────────────────────────────────────────────
 
 
@@ -1515,6 +1536,12 @@ def _maybe_dispatch_recap_regen() -> None:
     (e.g. a cross-machine sync landed a cache from elsewhere with no local
     journal activity) would otherwise pay that cost only to bail out anyway
     on the very next check.
+
+    Each spawn is only a *potential* regen: the spawned ``_internal-regen``
+    child sleeps :data:`RECAP_DEBOUNCE_SECONDS` and then skips its backend
+    call if a newer mutation has since written a journal line (see
+    :func:`cmd_internal_regen`) -- so a burst of mutations here yields one
+    regen, not one per mutation.
     """
     if _recap_disabled():
         return
@@ -1809,7 +1836,9 @@ def _run_recap_regen(
     :func:`_recap_section_lines`) and every dispatch decision (see
     :func:`_maybe_dispatch_recap_regen`) -- bounding a stale cache's
     lifetime to at most one more regen cycle, self-triggered by the very
-    next command or render.
+    next command or render after a :data:`RECAP_DEBOUNCE_SECONDS`
+    trailing-edge debounce delay (the only place that delay is paid; see
+    :func:`cmd_internal_regen`).
     """
     entries = read_journal_entries(
         within_hours=RECAP_DISPATCH_WINDOW_HOURS, verbose=verbose
@@ -1870,14 +1899,34 @@ def _run_recap_regen(
     return "", ""
 
 
+# Injectable sleep for tests: the debounce sleeps before taking the regen
+# lock, and tests patch this to a no-op to avoid real wall-clock waiting.
+_sleep = time.sleep
+
+
 def cmd_internal_regen() -> None:
     """Hidden re-exec entrypoint spawned by :func:`_maybe_dispatch_recap_regen`.
 
     Not registered as a normal subcommand (not in :data:`SUBCOMMANDS`) --
     ``main`` dispatches to this directly off a raw argv check, before
     argparse, so it never appears in ``--help``. Exits immediately without
-    calling any backend if another regen is already in flight.
+    calling any backend if another regen is already in flight, or if a newer
+    mutation has written a journal line within the trailing debounce window
+    (it spawned its own child, which becomes the one that does the work --
+    see :data:`RECAP_DEBOUNCE_SECONDS`).
+
+    The sleep happens *before* taking :func:`_regen_lock`, not while holding
+    it: a burst's last child must not find the lock held by an earlier
+    sleeper and bail out (``acquired=False``), which would lose the final
+    regen.
     """
+    _sleep(RECAP_DEBOUNCE_SECONDS)
+    # A journal entry younger than the window means a mutation landed after
+    # this child was spawned, so a newer child owns the next regen. Skip the
+    # backend call; that newer child will generate once the journal goes quiet.
+    last_age = _journal_last_entry_age_seconds()
+    if last_age is not None and last_age < RECAP_DEBOUNCE_SECONDS:
+        return
     with _regen_lock(blocking=False) as acquired:
         if acquired:
             _run_recap_regen()
