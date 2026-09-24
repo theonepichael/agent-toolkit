@@ -231,9 +231,14 @@ def _fast_decide(
             if not isinstance(args, dict):
                 return None
             path = args.get("file_path") or args.get("path") or ""
-            cwd = payload.get("cwd") or ""
-            if not isinstance(path, str) or not isinstance(cwd, str):
+            raw_cwd = payload.get("cwd")
+            if (
+                not isinstance(path, str)
+                or raw_cwd is not None
+                and not isinstance(raw_cwd, str)
+            ):
                 return None
+            cwd = raw_cwd or ""
             family = tool_family(payload.get("tool_name"))
         elif harness == "agy":
             call = payload.get("toolCall") or {}
@@ -246,8 +251,11 @@ def _fast_decide(
             return None
         out = _HARNESS_ALLOW[harness]
         if family == "bash" and harness == "claude":
-            command = args.get("command") or ""
-            if not isinstance(command, str) or not bash_trigger_free(command):
+            raw_command = args.get("command")
+            if raw_command is not None and not isinstance(raw_command, str):
+                return None
+            command = raw_command or ""
+            if not bash_trigger_free(command):
                 return None
             tool, target = "bash", command
             rule = "GUARD_RAILS_OFF" if off else "default-allow"
@@ -973,7 +981,9 @@ def evaluate(req: Request, claims: BacklogClaimLookup) -> Verdict:
 def parse_payload(harness: str, payload: object) -> Request | None:
     """Normalize a harness's native hook payload. Returns None when the
     payload cannot be understood -- the caller then allows, because a script
-    that cannot identify the tool must not deny every tool."""
+    that cannot identify the tool must not deny every tool. A supplied
+    non-string cwd or Claude command is malformed; missing/null values use
+    the existing empty-string default."""
     if not isinstance(payload, dict):
         return None
     try:
@@ -981,15 +991,14 @@ def parse_payload(harness: str, payload: object) -> Request | None:
             args = payload.get("tool_input") or {}
             name = payload.get("tool_name")
             path = args.get("file_path") or args.get("path") or ""
-            command = args.get("command") or ""
-            cwd = payload.get("cwd") or ""
+            raw_command = args.get("command")
+            command = raw_command or ""
         elif harness == "agy":
             call = payload.get("toolCall") or {}
             args = call.get("args") or {}
             name = call.get("name")
             path = args.get("TargetFile") or args.get("path") or ""
             command = ""
-            cwd = payload.get("cwd") or ""
         elif harness == "copilot":
             name = payload.get("toolName")
             raw = payload.get("toolArgs")
@@ -997,11 +1006,20 @@ def parse_payload(harness: str, payload: object) -> Request | None:
             args = json.loads(raw) if isinstance(raw, str) else (raw or {})
             path = args.get("path") or args.get("file_path") or ""
             command = ""
-            cwd = payload.get("cwd") or ""
         else:
             return None
     except (AttributeError, ValueError):
         return None
+    raw_cwd = payload.get("cwd")
+    if raw_cwd is not None and not isinstance(raw_cwd, str):
+        return None
+    if (
+        harness == "claude"
+        and raw_command is not None
+        and not isinstance(raw_command, str)
+    ):
+        return None
+    cwd = raw_cwd or ""
     if not isinstance(args, dict) or not isinstance(path, str):
         return None
     family = tool_family(name)
