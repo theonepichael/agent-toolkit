@@ -110,7 +110,8 @@ def _opts(**kw: object) -> mth.MigrationOptions:
 
 
 def _run(capsys, **kw: object) -> tuple[int, dict]:
-    code = mth.run(_opts(**kw), repo_root=REPO)
+    repo = kw.pop("repo_root", REPO)
+    code = mth.run(_opts(**kw), repo_root=repo)
     out = capsys.readouterr().out
     report = json.loads(out) if out.strip() else {}
     return code, report
@@ -432,6 +433,60 @@ def test_refuses_runtime_that_is_not_lock_aware(machine, capsys):
 def test_refuses_missing_installed_runtime(sandbox, capsys):
     _legacy_stores(sandbox)
     _assert_initial_refusal(sandbox, capsys, "runtime-lock-aware")
+
+
+def test_refuses_legacy_claude_destinations(machine, capsys, tmp_path):
+    repo = tmp_path / "fork_repo"
+    repo.mkdir()
+    (repo / "fork-scripts").mkdir()
+    (repo / "fork-scripts" / "custom.py").write_text("# custom\n")
+    links_toml = repo / "links.toml"
+    links_toml.write_text(
+        '[[link]]\n'
+        'src = "fork-scripts/custom.py"\n'
+        'dest = "~/.claude/scripts/custom.py"\n'
+    )
+    _assert_initial_refusal(machine, capsys, "legacy-destinations", repo_root=repo)
+    # Check that paths in finding contains suggested destination
+    code, report = _run(capsys, dry_run=True, repo_root=repo)
+    assert code == 1
+    legacy_findings = [
+        f for f in report["findings"] if f["check"] == "legacy-destinations"
+    ]
+    assert len(legacy_findings) == 1
+    assert legacy_findings[0]["status"] == "refuse"
+    assert (
+        "~/.claude/scripts/custom.py -> ~/.agent-toolkit/scripts/custom.py"
+        in legacy_findings[0]["paths"]
+    )
+
+    # Inapplicable rows (e.g. platform mismatch or harness mismatch) do not trigger refusal
+    links_toml.write_text(
+        '[[link]]\n'
+        'src = "fork-scripts/custom.py"\n'
+        'dest = "~/.claude/scripts/custom.py"\n'
+        'harness = "pi"\n'
+    )
+    code, report = _run(capsys, dry_run=True, repo_root=repo, harnesses=("claude",))
+    assert "legacy-destinations" in _findings(report, "ok")
+
+    # Harness-owned rows under ~/.claude do not trigger refusal
+    links_toml.write_text(
+        '[[link]]\n'
+        'src = "fork-scripts/custom.py"\n'
+        'dest = "~/.claude/commands/custom.md"\n'
+    )
+    code, report = _run(capsys, dry_run=True, repo_root=repo)
+    assert "legacy-destinations" in _findings(report, "ok")
+
+    # When moved to ~/.agent-toolkit/, check passes
+    links_toml.write_text(
+        '[[link]]\n'
+        'src = "fork-scripts/custom.py"\n'
+        'dest = "~/.agent-toolkit/scripts/custom.py"\n'
+    )
+    code, report = _run(capsys, dry_run=True, repo_root=repo)
+    assert "legacy-destinations" in _findings(report, "ok")
 
 
 def test_personal_real_run_refuses_without_reconciliation_override(machine, capsys):

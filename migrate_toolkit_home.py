@@ -143,6 +143,10 @@ INVENTORY_TMP_PREFIX = "inventory.json.tmp"
 HASH_CHUNK = 1 << 20
 VALIDATION_TIMEOUT = 600
 
+# The toolkit-home directories whose links.toml rows replace a legacy
+# ~/.claude path of the same relative name.
+_MAPPED_DIRS = ("scripts", "hooks", "icons")
+
 Status = Literal["ok", "warn", "refuse"]
 Action = Literal[
     "none",
@@ -954,6 +958,45 @@ def _check_checkout(ctx: MigrationContext) -> Finding:
     return Finding("checkout", "ok", "every declared runtime source is present")
 
 
+def _check_legacy_destinations(ctx: MigrationContext) -> Finding:
+    """Refuse if any applicable links.toml row targets legacy ~/.claude/{scripts,hooks,icons}."""
+    info = link_inspect.detect_wsl
+    system = os.uname().sysname
+    legacy_claude = ctx.home / ".claude"
+    offending: list[str] = []
+    for spec in link_inspect.load_links(ctx.repo_root / "links.toml"):
+        if not link_inspect.link_applies(
+            spec,
+            harnesses=ctx.opts.harnesses,
+            is_mac=system == "Darwin",
+            is_linux=system == "Linux",
+            is_wsl=info(system),
+            profile=ctx.opts.profile,
+        ):
+            continue
+        dest_path = link_inspect.expand_dest(spec.dest, ctx.home)
+        try:
+            rel = dest_path.relative_to(legacy_claude)
+        except ValueError:
+            continue
+        if rel.parts and rel.parts[0] in _MAPPED_DIRS:
+            suggested = f"~/.agent-toolkit/{rel.as_posix()}"
+            offending.append(f"{spec.dest} -> {suggested}")
+
+    if offending:
+        return Finding(
+            "legacy-destinations",
+            "refuse",
+            "links.toml declares legacy destinations under ~/.claude/{scripts,hooks,icons}; move to ~/.agent-toolkit/",
+            offending,
+        )
+    return Finding(
+        "legacy-destinations",
+        "ok",
+        "no links.toml rows target legacy ~/.claude directories",
+    )
+
+
 def _check_runtime(ctx: MigrationContext) -> Finding:
     scripts = ctx.home / ".claude" / "scripts"
     lock_module = scripts / "migration_lock.py"
@@ -1477,6 +1520,7 @@ def run_checks(ctx: MigrationContext) -> list[Finding]:
     """Every structural check, read-only and without hashing."""
     findings = [
         _check_checkout(ctx),
+        _check_legacy_destinations(ctx),
         _check_runtime(ctx),
         _check_layout(),
         _check_override(ctx),
@@ -2413,11 +2457,6 @@ def _links_apply(state: RunState, record: StepRecord) -> dict[str, object]:
             },
         )
     return {"created": len(_planned_links(record)), "retained": _retained(state)}
-
-
-# The toolkit-home directories whose links.toml rows replace a legacy
-# ~/.claude path of the same relative name.
-_MAPPED_DIRS = ("scripts", "hooks", "icons")
 
 
 def _retained(state: RunState) -> list[dict[str, str]]:

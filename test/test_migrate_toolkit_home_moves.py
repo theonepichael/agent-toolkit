@@ -895,8 +895,7 @@ def _toolkit_repo(tmp_path: Path) -> Path:
     """An agent-toolkit-shaped checkout whose shared runtime moved to the toolkit home.
 
     It carries the three ownership markers (links.toml, install.py,
-    agent-scripts/). ``gated.py`` only applies to pi, and ``keep.py`` is
-    still linked at its legacy path as well.
+    agent-scripts/). ``gated.py`` only applies to pi.
     """
     repo = tmp_path / "repo"
     scripts = repo / "agent-scripts"
@@ -904,14 +903,13 @@ def _toolkit_repo(tmp_path: Path) -> Path:
     (repo / "install.py").write_text("# installer\n")
     (repo / "claude" / "icons").mkdir(parents=True)
     rows = []
-    for name in ("tool", "stale", "dang", "rel", "gated", "foreign", "other", "keep"):
+    for name in ("tool", "stale", "dang", "rel", "gated", "foreign", "other"):
         (scripts / f"{name}.py").write_text(f"# {name}\n")
         harness = '\nharness = "pi"' if name == "gated" else ""
         rows.append(
             f'[[link]]\nsrc = "agent-scripts/{name}.py"\n'
             f'dest = "~/.agent-toolkit/scripts/{name}.py"{harness}\n'
         )
-    rows.append('[[link]]\nsrc = "agent-scripts/keep.py"\ndest = "~/.claude/scripts/keep.py"\n')
     rows.append('[[link]]\nsrc = "claude/icons"\ndest = "~/.agent-toolkit/icons"\n')
     (repo / "links.toml").write_text("\n".join(rows))
     return repo
@@ -968,8 +966,6 @@ def test_links_retain_toolkit_legacy_links_by_the_mapping(
     retained = mth.retained_legacy_links(_state_dir(machine))
     toolkit = {legacy[n] for n in ("tool", "stale", "dang", "rel", "icons")}
     assert retained == toolkit
-    keep = machine / ".claude" / "scripts" / "keep.py"
-    assert keep not in retained
 
     code, report = _finalize(capsys, report["migration_id"], repo=repo)
     assert code == 0, report
@@ -977,7 +973,6 @@ def test_links_retain_toolkit_legacy_links_by_the_mapping(
         assert not os.path.lexists(dest), dest
     assert legacy["gated"].is_symlink()
     assert legacy["foreign"].is_symlink()
-    assert keep.is_symlink()
     assert (machine / ".claude" / "scripts" / "other.py").read_text() == "a real file\n"
     dests = {e.get("dest") for e in _history(machine)}
     assert not dests & {str(d) for d in toolkit}
