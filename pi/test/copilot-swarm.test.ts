@@ -1,7 +1,15 @@
-import { execSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { spawnSync } from "node:child_process";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "./helpers/tap";
 
 // swarm-scheduling.js and swarm-herdr.js are no longer a copilot-local vendored
@@ -13,8 +21,10 @@ import { providerCrashMatch, type SwarmState } from "../extensions/swarm-lib/swa
 import { outcomePathOf } from "../extensions/swarm-lib/swarm-tool-context.js";
 
 import {
+  AMEND_INSTRUCTION,
   buildAgentStartArgv,
   buildTabCreateArgv,
+  DEV_STATUS_DISPLAY,
   parseAgentSession,
 } from "../extensions/swarm-lib/swarm-herdr.js";
 
@@ -26,6 +36,7 @@ import {
 
 import {
   defaultExec,
+  devStatusPath,
   isValidUuid,
   saveState,
   SwarmToolContext,
@@ -33,27 +44,71 @@ import {
 } from "../extensions/swarm-lib/swarm-tool-context.js";
 
 describe("Copilot Swarm: Staleness and Build Consistency", () => {
+  const rootDir = join(import.meta.dirname, "../..");
+  // All five build-copilot-swarm.sh outputs, not just the two most likely
+  // to be touched -- a stale swarm-scheduling.js/swarm-herdr.js/swarm-picker.js
+  // edited without rebuilding would otherwise ship with no direct test
+  // catching it (only indirect coverage via the extension.mjs bundle).
+  const outputPaths = [
+    "copilot/extensions/swarm/extensions/swarm/extension.mjs",
+    "copilot/extensions/swarm/lib/swarm-tool-logic.js",
+    "copilot/extensions/swarm/lib/swarm-scheduling.js",
+    "copilot/extensions/swarm/lib/swarm-herdr.js",
+    "copilot/extensions/swarm/lib/swarm-picker.js",
+  ];
+
+  // --check builds into a temp directory and compares, so neither test ever
+  // writes a tracked file.
   test("compiled artifacts match fresh build from src", () => {
-    const rootDir = join(import.meta.dirname, "../..");
-    // All five build-copilot-swarm.sh outputs, not just the two most likely
-    // to be touched -- a stale swarm-scheduling.js/swarm-herdr.js/swarm-picker.js
-    // edited without rebuilding would otherwise ship with no direct test
-    // catching it (only indirect coverage via the extension.mjs bundle).
-    const outputPaths = [
-      "copilot/extensions/swarm/extensions/swarm/extension.mjs",
-      "copilot/extensions/swarm/lib/swarm-tool-logic.js",
-      "copilot/extensions/swarm/lib/swarm-scheduling.js",
-      "copilot/extensions/swarm/lib/swarm-herdr.js",
-      "copilot/extensions/swarm/lib/swarm-picker.js",
-    ];
-    const before = outputPaths.map((p) => readFileSync(join(rootDir, p), "utf8"));
+    const result = spawnSync("./scripts/build-copilot-swarm.sh", ["--check"], {
+      cwd: rootDir,
+      encoding: "utf8",
+    });
+    expect(result.stdout + result.stderr).toBe("");
+    expect(result.status).toBe(0);
+  });
 
-    execSync("./scripts/build-copilot-swarm.sh", { cwd: rootDir });
+  test("a stale compiled artifact fails the check and is named", () => {
+    const against = mkdtempSync(join(tmpdir(), "copilot-swarm-stale-"));
+    try {
+      for (const p of outputPaths) {
+        mkdirSync(dirname(join(against, p)), { recursive: true });
+        copyFileSync(join(rootDir, p), join(against, p));
+      }
+      const stale = join(against, "copilot/extensions/swarm/lib/swarm-herdr.js");
+      writeFileSync(stale, readFileSync(stale, "utf8").replace("dev_status.py", "stale.py"));
 
-    const after = outputPaths.map((p) => readFileSync(join(rootDir, p), "utf8"));
-    for (let i = 0; i < outputPaths.length; i++) {
-      expect(after[i]).toBe(before[i]);
+      const result = spawnSync(
+        "./scripts/build-copilot-swarm.sh",
+        ["--check", "--against", against],
+        { cwd: rootDir, encoding: "utf8" },
+      );
+      expect(result.status).toBe(1);
+      expect(result.stdout).toContain("copilot/extensions/swarm/lib/swarm-herdr.js");
+      expect(result.stdout).not.toContain("swarm-scheduling.js");
+    } finally {
+      rmSync(against, { recursive: true, force: true });
     }
+  });
+});
+
+describe("Copilot Swarm: dev_status.py location", () => {
+  test("defaults to the toolkit home, and the override still wins", () => {
+    const saved = process.env.COPILOT_SWARM_DEV_STATUS_PATH;
+    try {
+      delete process.env.COPILOT_SWARM_DEV_STATUS_PATH;
+      expect(devStatusPath()).toBe(join(homedir(), ".agent-toolkit", "scripts", "dev_status.py"));
+      process.env.COPILOT_SWARM_DEV_STATUS_PATH = "/custom/dev_status.py";
+      expect(devStatusPath()).toBe("/custom/dev_status.py");
+    } finally {
+      if (saved === undefined) delete process.env.COPILOT_SWARM_DEV_STATUS_PATH;
+      else process.env.COPILOT_SWARM_DEV_STATUS_PATH = saved;
+    }
+  });
+
+  test("worker instructions show the same path the swarm runs", () => {
+    expect(DEV_STATUS_DISPLAY).toBe("~/.agent-toolkit/scripts/dev_status.py");
+    expect(AMEND_INSTRUCTION).toContain(`python3 ${DEV_STATUS_DISPLAY} show`);
   });
 });
 

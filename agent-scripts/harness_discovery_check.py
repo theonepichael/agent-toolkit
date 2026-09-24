@@ -381,7 +381,7 @@ def _check_one(
     note = (
         f"[{name}] installed {installed} ≠ pinned {pinned} — "
         f"instruction-file discovery row is unverified. "
-        f"Run `python3 ~/.claude/scripts/harness_discovery_check.py probe --harness {name}`"
+        f"Run `python3 ~/.agent-toolkit/scripts/harness_discovery_check.py probe --harness {name}`"
     )
     return note, False
 

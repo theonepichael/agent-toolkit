@@ -4,7 +4,8 @@
 ownership   Classify every ``.claude`` path reference in the tracked files as
             toolkit (moves in the cutover), harness (the Claude harness's own
             installation, never moves), or foreign (origin-repo scripts
-            symlinked into ~/.claude/scripts, never moved or flagged). A
+            symlinked into ~/.claude/scripts, and hooks a third party installs
+            into ~/.claude/hooks, never moved or flagged). A
             reference no rule covers fails. References are found three ways:
             plain text, Python ``Path`` constructions (AST), and TypeScript /
             JavaScript ``join(...)`` calls.
@@ -13,6 +14,21 @@ inventory   Check that every entry links.toml installs has a declared kind with
             optionally ``TOOLKIT_DATA_VIA``); TypeScript / JavaScript files need a
             row in ``NON_PYTHON``; everything else is an asset covered by the
             ownership check. A new entry with no kind fails.
+generators  Check the generator inventory (``GENERATORS``): every file a
+            generator emits is claimed by exactly one row, every declared
+            output is tracked, and no generated output still names a
+            toolkit-owned path under ``.claude``.
+hand-authored
+            Check every tracked file no generator emits and no test tree
+            holds: none may name a toolkit-owned path under ``.claude``,
+            unless a ``LEGACY_PATH_EXEMPT`` row covers it. Each row names its
+            owner or reason; a row that no longer matches a legacy reference
+            is stale and fails, so it is deleted when its owner lands.
+links       Check that no links.toml row installs into a harness home it does
+            not serve: a row gated to one harness stays out of every other
+            harness's home, and a row with no harness selector stays out of
+            all of them, so a single-harness install creates no other
+            harness's home.
 
 The ``TOOLKIT_DATA`` markers are declarations and these rules are a tripwire,
 not proof of lock coverage: the execution tests in
@@ -22,6 +38,9 @@ be named there.
 Usage
   check_toolkit_paths.py ownership [--report]
   check_toolkit_paths.py inventory [--report]
+  check_toolkit_paths.py generators [--report]
+  check_toolkit_paths.py hand-authored [--report]
+  check_toolkit_paths.py links [--report]
 
 Exit codes
   0 everything classified and every obligation holds; 1 problems (listed on
@@ -32,14 +51,20 @@ from __future__ import annotations
 
 import argparse
 import ast
+import importlib
 import re
 import subprocess
 import sys
 import tomllib
 from collections import Counter, defaultdict
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from types import ModuleType
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from link_inspect import LinkSpec
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -51,6 +76,9 @@ FOREIGN_SCRIPTS = frozenset(
         "gen_core_instructions.py",
     }
 )
+# Hook scripts a third party installs into ~/.claude/hooks (herdr's own
+# Claude integration); the toolkit never installs or moves them.
+FOREIGN_HOOKS = frozenset({"herdr-agent-state.sh"})
 TOOLKIT_DATA_ENTRIES = frozenset(
     {
         "backlog",
@@ -62,6 +90,14 @@ TOOLKIT_DATA_ENTRIES = frozenset(
         "backend_calls.jsonl",
         "toolkit_state.json",
         "toolkit_sync.json",
+        # unclassified data the rollout carries to the toolkit home
+        "plans",
+        "draft-issues",
+        "analysis",
+        "artifacts",
+        "bug-reports",
+        "backlog.json",
+        "backlog-history.json",
     }
 )
 # The toolkit-home migration's per-run snapshot of the legacy stores
@@ -333,7 +369,8 @@ def python_references(tree: ast.AST) -> list[tuple[int, tuple[str, ...]]]:
     return refs
 
 
-_JS_JOIN_RE = re.compile(r"\b(?:join|resolve)\(([^()]*(?:\([^()]*\)[^()]*)*)\)")
+# esbuild renames colliding imports with a numeric suffix (join2, resolve3).
+_JS_JOIN_RE = re.compile(r"\b(?:join|resolve)\d*\(([^()]*(?:\([^()]*\)[^()]*)*)\)")
 _JS_STR_RE = re.compile(r"""^\s*["'`]([^"'`]*)["'`]\s*$""")
 
 
@@ -367,6 +404,8 @@ def classify(segs: tuple[str, ...]) -> str | None:
         if segs[1].startswith(TOOLKIT_DATA_PREFIXES):
             return "toolkit"
         return None
+    if top == "hooks" and len(segs) > 1 and segs[1] in FOREIGN_HOOKS:
+        return "foreign"
     if top in TOOLKIT_TOP:
         return "toolkit"
     if top in HARNESS_TOP:
@@ -386,14 +425,12 @@ class Reference:
     marked: bool
 
 
-def tracked_files(repo: Path) -> list[str]:
+def tracked_files(repo: Path, skip: frozenset[str] = SKIP_FILES) -> list[str]:
     out = subprocess.run(
         ["git", "ls-files"], cwd=repo, capture_output=True, text=True, check=True
     ).stdout
     return [
-        f
-        for f in out.splitlines()
-        if f and f not in SKIP_FILES and "node_modules/" not in f
+        f for f in out.splitlines() if f and f not in skip and "node_modules/" not in f
     ]
 
 
@@ -650,6 +687,216 @@ def _via_cycle(start: str, modules: dict[str, PyModule]) -> bool:
     return False
 
 
+# ── generator inventory ──────────────────────────────────────────────────────
+
+GENERATED_HEADER_RE = re.compile(
+    r"<!-- generated by agent-scripts/(gen_[a-z_]+\.py) — do not edit"
+)
+SWARM_OUTPUTS = (
+    "copilot/extensions/swarm/extensions/swarm/extension.mjs",
+    "copilot/extensions/swarm/lib/swarm-tool-logic.js",
+    "copilot/extensions/swarm/lib/swarm-scheduling.js",
+    "copilot/extensions/swarm/lib/swarm-herdr.js",
+    "copilot/extensions/swarm/lib/swarm-picker.js",
+)
+
+
+def _agent_script(name: str) -> ModuleType:
+    """Import a generator module from agent-scripts/ to read its output table."""
+    scripts = str(REPO / "agent-scripts")
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
+    return importlib.import_module(name)
+
+
+@dataclass(frozen=True)
+class Generator:
+    """One generator: how to run it, how to check it, and what it emits.
+
+    ``sources`` is documentation only; nothing checks it. ``link_lines``
+    matches output lines that render a links.toml destination verbatim: those
+    move when links.toml does, not when the generator's own text does.
+    """
+
+    command: str
+    check: str | None
+    sources: tuple[str, ...]
+    outputs: Callable[[], list[str]]
+    link_lines: re.Pattern[str] | None = None
+
+
+GENERATORS: dict[str, Generator] = {
+    "gen_skills.py": Generator(
+        "python3 agent-scripts/gen_skills.py",
+        "python3 agent-scripts/gen_skills.py --check",
+        ("templates/*.md.tmpl", "agent-scripts/gen_skills_params.py"),
+        lambda: sorted(_agent_script("gen_skills").OUTPUT_PATHS.values()),
+    ),
+    "gen_second_opinion.py": Generator(
+        "python3 agent-scripts/gen_second_opinion.py",
+        "python3 agent-scripts/gen_second_opinion.py --check",
+        ("templates/second_opinion.md.tmpl", "agent-scripts/gen_second_opinion.py"),
+        lambda: sorted(_agent_script("gen_second_opinion").HARNESS_TABLE),
+    ),
+    "gen_interfaces.py": Generator(
+        "python3 agent-scripts/gen_interfaces.py [--update-fingerprints]",
+        "python3 agent-scripts/gen_interfaces.py --check",
+        ("agent-scripts/*.py", "links.toml", "the harness command trees"),
+        lambda: ["INTERFACES.md", "agent-scripts/contract_fingerprints.json"],
+        # the per-module "Installed at" line and the asset table's link column
+        re.compile(r"^(?:- Installed at: |\| `[^`]+` \| )`([^`]+)`"),
+    ),
+    "gen_shell_completion.py": Generator(
+        "python3 agent-scripts/gen_shell_completion.py --harness all",
+        None,
+        ("agent-scripts/gen_shell_completion.py",),
+        list,  # writes ~/.zsh/completions, outside the repository
+    ),
+    "build-copilot-swarm.sh": Generator(
+        "scripts/build-copilot-swarm.sh",
+        "scripts/build-copilot-swarm.sh --check",
+        ("pi/extensions/swarm-lib/*.ts", "copilot/extensions/swarm/src/extension.ts"),
+        lambda: list(SWARM_OUTPUTS),
+    ),
+}
+
+
+def generators(
+    repo: Path,
+    table: dict[str, Generator] | None = None,
+    files: Sequence[str] | None = None,
+) -> list[str]:
+    """Problems with the generator inventory: every generated file has one owner."""
+    table = GENERATORS if table is None else table
+    tracked = set(tracked_files(repo, frozenset()) if files is None else files)
+    owners: dict[str, list[str]] = defaultdict(list)
+    problems: list[str] = []
+    for name, gen in table.items():
+        for out in gen.outputs():
+            owners[out].append(name)
+            if out not in tracked:
+                problems.append(f"{name}: declared output {out} is not tracked")
+    for out, names in sorted(owners.items()):
+        if len(names) > 1:
+            problems.append(f"{out}: claimed by {', '.join(sorted(names))}")
+    for rel in sorted(tracked):
+        if not rel.endswith(".md") or rel in owners:
+            continue
+        try:
+            text = (repo / rel).read_text()
+        except (UnicodeDecodeError, IsADirectoryError, FileNotFoundError):
+            continue
+        m = GENERATED_HEADER_RE.search(text)
+        if m:
+            problems.append(
+                f"{rel}: header names {m.group(1)} but no GENERATORS row "
+                "declares it as an output"
+            )
+    return problems
+
+
+def _link_destinations(repo: Path) -> frozenset[str]:
+    data = tomllib.loads((repo / "links.toml").read_text())
+    return frozenset(
+        e["dest"] for e in data.get("link", []) if isinstance(e.get("dest"), str)
+    )
+
+
+def generated_legacy_references(
+    repo: Path, table: dict[str, Generator] | None = None
+) -> list[str]:
+    """Toolkit-owned ``.claude`` paths a generator still emits.
+
+    Harness-owned and foreign references pass, as in the ownership check. A
+    line the row's ``link_lines`` pattern matches passes when it names an
+    actual links.toml destination.
+    """
+    table = GENERATORS if table is None else table
+    dests = _link_destinations(repo)
+    problems: list[str] = []
+    for name, gen in table.items():
+        for rel in gen.outputs():
+            try:
+                text = (repo / rel).read_text()
+            except FileNotFoundError:
+                continue
+            lines = text.splitlines()
+            for ref in references_in(rel, text):
+                if ref.cls != "toolkit":
+                    continue
+                line = lines[ref.line - 1] if 0 < ref.line <= len(lines) else ""
+                m = gen.link_lines.match(line) if gen.link_lines else None
+                if m and m.group(1) in dests:
+                    continue
+                shown = "/".join((".claude",) + ref.segments)
+                problems.append(
+                    f"{rel}:{ref.line}: {shown}: legacy toolkit path emitted by "
+                    f"{name} -- route it through harness_spec.TOOLKIT_PATH_TOKENS"
+                )
+    return problems
+
+
+# ── hand-authored check ──────────────────────────────────────────────────────
+
+
+LEGACY_PATH_EXEMPT: dict[str, str] = {
+    # One tracked file per row, so each row's owner and staleness are exact.
+    # Permanent: these name the legacy layout on purpose.
+    "agent-scripts/agent_toolkit_paths.py": "resolves the legacy layout",
+    "docs/migration/fork-machine-cutover.md": (
+        "temporary fork cutover runbook; names the legacy layout on purpose; delete with the doc after Release 2"
+    ),
+    "migrate_toolkit_home.py": "migrates from the legacy layout",
+    "scripts/check_toolkit_paths.py": "classifies legacy paths",
+}
+
+
+def hand_authored_legacy_references(
+    repo: Path,
+    files: Sequence[str] | None = None,
+    exempt: dict[str, str] | None = None,
+    table: dict[str, Generator] | None = None,
+) -> list[str]:
+    """Toolkit-owned ``.claude`` paths in files no generator emits.
+
+    Scans every tracked file except generator outputs (the ``generators``
+    check's) and test trees. A file an exemption row covers is skipped; a
+    row that covers no file with a legacy reference is reported as stale.
+    """
+    exempt = LEGACY_PATH_EXEMPT if exempt is None else exempt
+    table = GENERATORS if table is None else table
+    generated = {out for gen in table.values() for out in gen.outputs()}
+    used: set[str] = set()
+    problems: list[str] = []
+    for rel in tracked_files(repo) if files is None else files:
+        if rel in generated or rel.startswith(TEST_TREES):
+            continue
+        try:
+            text = (repo / rel).read_text()
+        except (UnicodeDecodeError, IsADirectoryError, FileNotFoundError):
+            continue
+        if ".claude" not in text:
+            continue
+        legacy = [r for r in references_in(rel, text) if r.cls == "toolkit"]
+        if not legacy:
+            continue
+        if rel in exempt:
+            used.add(rel)
+            continue
+        for ref in legacy:
+            shown = "/".join((".claude",) + ref.segments)
+            problems.append(
+                f"{rel}:{ref.line}: {shown}: legacy toolkit path in a "
+                "hand-authored file -- use ~/.agent-toolkit/" + "/".join(ref.segments)
+            )
+    for pattern in sorted(set(exempt) - used):
+        problems.append(
+            f"LEGACY_PATH_EXEMPT[{pattern!r}]: stale -- it covers no legacy "
+            "reference any more; delete the row"
+        )
+    return problems
+
+
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
 
@@ -688,6 +935,83 @@ def cmd_inventory(args: argparse.Namespace) -> int:
     return 1 if problems else 0
 
 
+def cmd_generators(args: argparse.Namespace) -> int:
+    problems = generators(REPO) + generated_legacy_references(REPO)
+    for p in problems:
+        print(p)
+    if args.report:
+        print("\n# generator inventory")
+        for name, gen in GENERATORS.items():
+            check = gen.check or "(no check mode)"
+            print(f"{name}: {len(gen.outputs())} outputs; check: {check}")
+    return 1 if problems else 0
+
+
+def cmd_hand_authored(args: argparse.Namespace) -> int:
+    problems = hand_authored_legacy_references(REPO)
+    for p in problems:
+        print(p)
+    if args.report:
+        print("\n# legacy-path exemptions")
+        for pattern, reason in LEGACY_PATH_EXEMPT.items():
+            print(f"{pattern}: {reason}")
+    return 1 if problems else 0
+
+
+# ── links: harness homes ─────────────────────────────────────────────────────
+
+# The authority for where each harness keeps its own configuration, as the
+# migration plan's target model lists them. Keys must match
+# harness_spec.ALL_NAMES (the test suite asserts it), so a new harness cannot
+# slip past this check with no home declared.
+HARNESS_HOMES: dict[str, str] = {
+    "claude": "~/.claude",
+    "copilot": "~/.copilot",
+    "opencode": "~/.config/opencode",
+    "pi": "~/.pi",
+    "agy": "~/.gemini",
+    "codex": "~/.codex",
+}
+
+
+def harness_home_violations(links: Sequence[LinkSpec]) -> list[str]:
+    """Rows whose destination lies in a harness home they do not serve.
+
+    Judges each configuration row by its own ``dest`` (a directory row's
+    children all lie under it), regardless of platform or profile gates.
+    Paths compare by component in their literal ``~/...`` form, so
+    ``~/.claude-other`` is not under ``~/.claude``.
+    """
+    homes = {h: PurePosixPath(p).parts for h, p in HARNESS_HOMES.items()}
+    problems = []
+    for spec in links:
+        parts = PurePosixPath(spec.dest).parts
+        for harness, home in homes.items():
+            if harness != spec.harness and parts[: len(home)] == home:
+                problems.append(
+                    f"links.toml: {spec.src} -> {spec.dest}: installs into "
+                    f'{harness}\'s home without harness = "{harness}"'
+                )
+    return problems
+
+
+def links_check(repo: Path) -> list[str]:
+    """Run :func:`harness_home_violations` over ``repo``'s links.toml."""
+    link_inspect = _agent_script("link_inspect")
+    return harness_home_violations(link_inspect.load_links(repo / "links.toml"))
+
+
+def cmd_links(args: argparse.Namespace) -> int:
+    problems = links_check(REPO)
+    for p in problems:
+        print(p)
+    if args.report:
+        print("\n# harness homes")
+        for harness, home in HARNESS_HOMES.items():
+            print(f"{harness}: {home}")
+    return 1 if problems else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Toolkit-home migration repository checks."
@@ -696,13 +1020,22 @@ def main(argv: list[str] | None = None) -> int:
     for name, help_text in (
         ("ownership", "classify every .claude path reference"),
         ("inventory", "check every links.toml entry's declared kind"),
+        ("generators", "check the generator inventory and its emitted paths"),
+        ("hand-authored", "check files no generator emits for legacy paths"),
+        ("links", "check no links.toml row installs into another harness's home"),
     ):
         p = sub.add_parser(name, help=help_text)
         p.add_argument(
             "--report", action="store_true", help="print counts and work lists"
         )
     args = parser.parse_args(argv)
-    return {"ownership": cmd_ownership, "inventory": cmd_inventory}[args.cmd](args)
+    return {
+        "ownership": cmd_ownership,
+        "inventory": cmd_inventory,
+        "generators": cmd_generators,
+        "hand-authored": cmd_hand_authored,
+        "links": cmd_links,
+    }[args.cmd](args)
 
 
 if __name__ == "__main__":

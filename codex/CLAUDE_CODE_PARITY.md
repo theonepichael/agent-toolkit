@@ -105,12 +105,12 @@ Codex supports a user-level `notify` configuration setting in `~/.codex/config.t
 `agent-turn-complete`, appending a JSON payload string as the final CLI argument:
 `{"type":"agent-turn-complete","thread-id":"...","turn-id":"...","cwd":"...","client":"codex_exec","input-messages":["..."],"last-assistant-message":"..."}`.
 
-The shared notification dispatcher `~/.claude/scripts/notify.py` directly recognizes
+The shared notification dispatcher `~/.agent-toolkit/scripts/notify.py` directly recognizes
 and unpacks Codex's `agent-turn-complete` JSON payload (or accepts `--codex-payload <json>`),
 extracting `last-assistant-message` and delivering a desktop toast with the official
 Codex app icon without requiring any intermediate adapter script.
 
 To enable notifications, add to `~/.codex/config.toml`:
 ```toml
-notify = ["python3", "~/.claude/scripts/notify.py"]
+notify = ["python3", "~/.agent-toolkit/scripts/notify.py"]
 ```

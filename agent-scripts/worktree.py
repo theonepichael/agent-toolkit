@@ -7,8 +7,8 @@ backlog item related_files, explicit CLI flags (--repo and --branch), or
 the current working directory.
 
 Usage:
-    python3 ~/.claude/scripts/worktree.py <slug|N> [flags]
-    python3 ~/.claude/scripts/worktree.py --repo <path> --branch <name> [flags]
+    python3 ~/.agent-toolkit/scripts/worktree.py <slug|N> [flags]
+    python3 ~/.agent-toolkit/scripts/worktree.py --repo <path> --branch <name> [flags]
 
 Flags:
     --repo              Path to the git repository

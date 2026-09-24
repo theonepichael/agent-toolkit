@@ -157,7 +157,9 @@ ids created by older code on other machines must keep validating, because
 the point is a stable identity, not a particular format. Still refuses what
 is clearly broken (empty, binary, whitespace, several lines, path
 characters)."""
-MACHINE_ID_REPAIR_HINT = "python3 ~/.claude/scripts/dev_status.py machine-id --repair"
+MACHINE_ID_REPAIR_HINT = (
+    "python3 ~/.agent-toolkit/scripts/dev_status.py machine-id --repair"
+)
 
 
 class MachineIdError(RuntimeError):

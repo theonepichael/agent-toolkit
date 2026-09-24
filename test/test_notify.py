@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Tests for notify.py. Run with: python3 test_notify.py"""
 
+import os
+import shutil
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -67,6 +70,42 @@ class NotifyTestCase(unittest.TestCase):
 
         opencode_icon = notify.get_harness_icon("OpenCode")
         self.assertIsNotNone(opencode_icon)
+
+    def _icon_dirs(self) -> tuple[Path, Path, Path]:
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root)
+        repo_icons, toolkit, home = root / "repo-icons", root / "tk", root / "home"
+        repo_icons.mkdir()
+        (toolkit / "icons").mkdir(parents=True)
+        (home / ".claude" / "icons").mkdir(parents=True)
+        return repo_icons, toolkit, home
+
+    def test_icon_fallback_is_the_toolkit_home_not_claude(self) -> None:
+        repo_icons, toolkit, home = self._icon_dirs()
+        name = notify.APP_REGISTRATIONS["claude"]["icon"]
+        (home / ".claude" / "icons" / name).write_bytes(b"legacy")
+        with (
+            patch.object(notify, "ICONS_DIR", repo_icons),
+            patch.object(Path, "home", return_value=home),
+            patch.dict(os.environ, {"AGENT_TOOLKIT_HOME": str(toolkit)}),
+        ):
+            self.assertIsNone(notify.get_harness_icon("Claude"))
+            (toolkit / "icons" / name).write_bytes(b"png")
+            self.assertEqual(
+                notify.get_harness_icon("Claude"), toolkit / "icons" / name
+            )
+
+    def test_icon_fallback_skips_an_invalid_override(self) -> None:
+        repo_icons, _toolkit, home = self._icon_dirs()
+        name = notify.APP_REGISTRATIONS["claude"]["icon"]
+        with (
+            patch.object(notify, "ICONS_DIR", repo_icons),
+            patch.object(Path, "home", return_value=home),
+            patch.dict(os.environ, {"AGENT_TOOLKIT_HOME": "relative/dir"}),
+        ):
+            self.assertIsNone(notify.get_harness_icon("Claude"))
+            (repo_icons / name).write_bytes(b"png")
+            self.assertEqual(notify.get_harness_icon("Claude"), repo_icons / name)
 
     @patch("shutil.which", return_value="/usr/bin/powershell.exe")
     @patch("subprocess.run")

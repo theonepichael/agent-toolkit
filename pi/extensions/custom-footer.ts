@@ -3,7 +3,7 @@ import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
-const DEV_STATUS_PATH = join(homedir(), ".claude", "scripts", "dev_status.py");
+const DEV_STATUS_PATH = join(homedir(), ".agent-toolkit", "scripts", "dev_status.py");
 
 interface PendingItem {
   id: string;

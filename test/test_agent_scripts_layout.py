@@ -2,11 +2,11 @@
 """Regression tests for the harness-neutral scripts directory layout.
 
 The cross-harness runtime scripts moved from ``claude/scripts/`` to
-``agent-scripts/`` (repo-side only). The runtime install dest
-``~/.claude/scripts/`` is the permanent accepted shape — these tests pin
-that: every links.toml ``src`` must live under ``agent-scripts/`` and
-resolve on disk, and the dest set must stay byte-identical to the frozen
-pre-move set (no dest may drift, appear, or vanish).
+``agent-scripts/``, and their install dest is the toolkit home's
+``~/.agent-toolkit/scripts/`` — these tests pin that: every links.toml
+``src`` must live under ``agent-scripts/`` and resolve on disk, and the
+dest set must stay identical to the frozen set (no dest may drift,
+appear, or vanish).
 
 They also sweep tracked text for dead repo-path references —
 ``claude/scripts`` not preceded by a runtime-path marker — so the old
@@ -25,15 +25,15 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+MANAGED_DIR_DEST = "~/.agent-toolkit/scripts"
 
-# Frozen dest set (33 script links + the managed_dir audit entry), updated
+# Frozen dest set (the script links; the managed_dir entry is checked apart), updated
 # in lockstep with each deliberate new agent-scripts/ addition -- a drift
 # here must be an intentional edit to this list, never a silent add/remove.
-# agent-toolkit's links.toml must keep exactly these dests pointing at
-# ~/.claude/scripts; the runtime path is permanent (see the migration-cutover
-# item's out-of-scope record: XDG relocation rejected).
+# agent-toolkit's links.toml must keep exactly these dests under the
+# toolkit home's scripts directory.
 FROZEN_SCRIPT_DESTS = frozenset(
-    f"~/.claude/scripts/{name}"
+    f"{MANAGED_DIR_DEST}/{name}"
     for name in (
         "agent_toolkit_paths.py",
         "analyze_sessions.py",
@@ -66,6 +66,7 @@ FROZEN_SCRIPT_DESTS = frozenset(
         "outlook_calendar.py",
         "outlook_email.py",
         "refresh_guidance.py",
+        "retained_legacy_links.py",
         "second_opinion.py",
         "sessionstart_checks.py",
         "settings_seed.py",
@@ -80,7 +81,6 @@ FROZEN_SCRIPT_DESTS = frozenset(
         "worktree_provenance.py",
     )
 )
-MANAGED_DIR_DEST = "~/.claude/scripts"
 
 # Files where a bare `claude/scripts` mention is legitimate:
 # - MIGRATION.md: historical narrative describing the origin repo's own
@@ -130,9 +130,9 @@ def test_links_toml_srcs_live_in_agent_scripts() -> None:
         entry
         for entry in links
         if isinstance(entry.get("src"), str)
-        and "~/.claude/scripts" in str(entry.get("dest", ""))
+        and str(entry.get("dest", "")).startswith(f"{MANAGED_DIR_DEST}/")
     ]
-    assert len(script_links) == 43, f"expected 43 script links, got {len(script_links)}"
+    assert len(script_links) == 44, f"expected 44 script links, got {len(script_links)}"
     bad = [
         entry["src"]
         for entry in script_links
@@ -153,7 +153,7 @@ def test_script_dests_frozen() -> None:
         str(entry["dest"])
         for entry in links
         if isinstance(entry.get("dest"), str)
-        and str(entry["dest"]).startswith("~/.claude/scripts")
+        and str(entry["dest"]).startswith(MANAGED_DIR_DEST)
     }
     script_dests = frozenset(d for d in dests if d != MANAGED_DIR_DEST)
     assert script_dests == FROZEN_SCRIPT_DESTS, (

@@ -28,6 +28,8 @@ Toolkit-home root
 In ``"toolkit-home"`` layout, data lives under ``<toolkit-root>/data/``,
 where ``<toolkit-root>`` is ``$AGENT_TOOLKIT_HOME`` if set, otherwise
 ``<home>/.agent-toolkit``. ``AGENT_TOOLKIT_HOME`` must be absolute.
+:func:`toolkit_root` returns that root on its own. Install locations under it
+(``scripts/``, ``hooks/``, ``icons/``) are never switched by layout.
 
 Stale paths
 -----------
@@ -93,6 +95,10 @@ class LayoutError(Exception):
 
 class StaleLayoutError(LayoutError):
     """Raised when a path belongs to the layout that is no longer current."""
+
+
+class UpgradeRequiredError(LayoutError):
+    """Raised when legacy toolkit data exists without a completed migration record."""
 
 
 class UnknownDomainError(ValueError):
@@ -285,6 +291,16 @@ def layout_path(home: Path, domain: str, layout: Layout) -> Path:
     return Resolver()._path_in(home, domain, layout)
 
 
+def toolkit_root() -> Path:
+    """Return ``$AGENT_TOOLKIT_HOME``, or ``<home>/.agent-toolkit``.
+
+    Independent of layout: reads no pointer, so a malformed one cannot break a
+    lookup of an install location. Raises :class:`LayoutError` for a relative
+    override.
+    """
+    return Resolver()._toolkit_root(Path.home())
+
+
 def check_not_stale(path: Path) -> None:
     """Refuse a path from the non-current layout using :data:`DEFAULT_RESOLVER`."""
     DEFAULT_RESOLVER.check_not_stale(path)
@@ -322,3 +338,51 @@ def write_pointer(home: Path, layout: Layout) -> None:
         os.fsync(fd)
     finally:
         os.close(fd)
+
+
+def check_upgrade_required(home: Path | None = None) -> None:
+    """Raise :class:`UpgradeRequiredError` if legacy state exists without
+    a completed migration record.
+    """
+    root = home or Path.home()
+    legacy_data = root / ".claude" / "data"
+    if not legacy_data.is_dir():
+        return
+    has_legacy_state = False
+    for segment in _LEGACY_SEGMENTS.values():
+        if (legacy_data / segment).exists():
+            has_legacy_state = True
+            break
+    if not has_legacy_state:
+        try:
+            if any(p.name != POINTER_RELPATH.name for p in legacy_data.iterdir()):
+                has_legacy_state = True
+        except OSError:
+            pass
+
+    if not has_legacy_state:
+        return
+
+    history = root / ".local" / "state" / "agent-toolkit" / "history.jsonl"
+    if history.is_file():
+        try:
+            for line in history.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    entry = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if (
+                    isinstance(entry, dict)
+                    and entry.get("kind") == "migration"
+                    and entry.get("outcome") in ("committed", "finalized")
+                ):
+                    return
+        except OSError:
+            pass
+
+    raise UpgradeRequiredError(
+        f"legacy toolkit data found at {legacy_data} without a completed "
+        f"migration record in {history}; run 'install.sh --migrate-toolkit-home' to upgrade"
+    )

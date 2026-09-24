@@ -1,7 +1,7 @@
 # INTERFACES.md
 
 Scope: `claude/`, `copilot/`, `opencode/`, `agy/`, `pi/`, the shared scripts under
-`agent-scripts/` that `links.toml` installs into `~/.claude/scripts/`, and the
+`agent-scripts/` that `links.toml` installs into `~/.agent-toolkit/scripts/`, and the
 repo-root installer entrypoints those harnesses are provisioned by.
 
 **This file is generated. Do not edit it by hand — your edits will be
@@ -63,6 +63,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`outlook_calendar.py`](#agentscriptsoutlookcalendarpy) | outlook_calendar.py — CLI tool and agent interface for Windows Outlook Calendar via PowerShell COM. |
 | [`outlook_email.py`](#agentscriptsoutlookemailpy) | outlook_email.py — CLI tool and agent interface for Windows Outlook via PowerShell COM. |
 | [`refresh_guidance.py`](#agentscriptsrefreshguidancepy) | refresh_guidance.py — audit-by-inspection for hand-authored, agent-facing docs. |
+| [`retained_legacy_links.py`](#agentscriptsretainedlegacylinkspy) | Read which legacy symlinks an unfinalized toolkit-home migration still keeps. |
 | [`second_opinion.py`](#agentscriptssecondopinionpy) | second_opinion.py — one-shot adversarial critique of a plan from a non-Claude backend. Single-round by design: the multi-round loop, plan revision, and convergence judgment all require LLM reasoning and live in prose instructions, not here. |
 | [`seed_hook_subset_guard.py`](#agentscriptsseedhooksubsetguardpy) | seed_hook_subset_guard.py — refuse a commit that drops a seed's SessionStart hook groups. |
 | [`sessionstart_checks.py`](#agentscriptssessionstartcheckspy) | sessionstart_checks.py — run the SessionStart context checks concurrently. |
@@ -80,7 +81,7 @@ House style for these interfaces is in `STYLE.md`.
 
 Single source of truth for toolkit data paths.
 
-- Installed at: `~/.claude/scripts/agent_toolkit_paths.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/agent_toolkit_paths.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI: none (library module).
 - Filesystem constants:
@@ -88,6 +89,7 @@ Single source of truth for toolkit data paths.
 - Exceptions:
   - `class LayoutError(Exception)` — Raised when the layout pointer is malformed or the override is invalid.
   - `class StaleLayoutError(LayoutError)` — Raised when a path belongs to the layout that is no longer current.
+  - `class UpgradeRequiredError(LayoutError)` — Raised when legacy toolkit data exists without a completed migration record.
   - `class UnknownDomainError(ValueError)` — Raised when :func:`path_for` is asked for an unregistered domain.
 - Public classes:
   - `class Resolver` — Resolve toolkit data paths with per-process caching.
@@ -95,16 +97,18 @@ Single source of truth for toolkit data paths.
   - `path_for(domain: str) -> Path` — Resolve ``domain`` using :data:`DEFAULT_RESOLVER`.
   - `path_for_layout(domain: str, layout: Layout) -> Path` — Resolve ``domain`` for ``layout`` using :data:`DEFAULT_RESOLVER`.
   - `layout_path(home: Path, domain: str, layout: Layout) -> Path` — Resolve ``domain`` for ``layout`` under an explicit ``home``.
+  - `toolkit_root() -> Path` — Return ``$AGENT_TOOLKIT_HOME``, or ``<home>/.agent-toolkit``.
   - `check_not_stale(path: Path) -> None` — Refuse a path from the non-current layout using :data:`DEFAULT_RESOLVER`.
   - `current_layout() -> Layout` — Return the current layout using :data:`DEFAULT_RESOLVER`.
   - `write_pointer(home: Path, layout: Layout) -> None` — Atomically write the layout pointer under ``home``.
-- Tested by: `agent-scripts/test_layouts.py`, `test/test_agent_toolkit_paths.py`, `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_dev_status_storage.py`, `test/test_gen_interfaces.py`, `test/test_grill.py`, `test/test_guard_rails.py`, `test/test_llm_backends.py`, `test/test_machine_id.py`, `test/test_migrate_path_transform.py`, `test/test_migrate_toolkit_home.py`, `test/test_migrate_toolkit_home_moves.py`, `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`, `test/test_second_opinion.py`, `test/test_to_tickets_runner.py`
+  - `check_upgrade_required(home: Path | None = None) -> None` — Raise :class:`UpgradeRequiredError` if legacy state exists without a completed migration record.
+- Tested by: `agent-scripts/test_layouts.py`, `test/test_agent_toolkit_paths.py`, `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_dev_status_storage.py`, `test/test_gen_interfaces.py`, `test/test_grill.py`, `test/test_guard_rails.py`, `test/test_llm_backends.py`, `test/test_machine_id.py`, `test/test_migrate_path_transform.py`, `test/test_migrate_settings_rewrite.py`, `test/test_migrate_toolkit_home.py`, `test/test_migrate_toolkit_home_carry.py`, `test/test_migrate_toolkit_home_moves.py`, `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`, `test/test_second_opinion.py`, `test/test_to_tickets_runner.py`
 
 ### `agent-scripts/analyze_sessions.py`
 
 analyze_sessions.py — multi-harness session analysis tool.
 
-- Installed at: `~/.claude/scripts/analyze_sessions.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/analyze_sessions.py` (all harnesses)
 - Entrypoint: executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): Multi-harness session analysis tool across pi, Claude Code, opencode, Copilot CLI, and agy.
   - `--quiet/-q`
@@ -177,7 +181,7 @@ analyze_sessions.py — multi-harness session analysis tool.
 
 Read-only snapshot lookup over the backlog store for guard consumers.
 
-- Installed at: `~/.claude/scripts/backlog_claim_lookup.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/backlog_claim_lookup.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI: none (library module).
 - Environment: `GUARD_RAILS_STORE`
@@ -195,7 +199,7 @@ Read-only snapshot lookup over the backlog store for guard consumers.
 
 SessionStart hook: flag when this repo has drifted from the last commit bundled over to a GitHub-blocked work machine.
 
-- Installed at: `~/.claude/scripts/bundle_drift_check.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/bundle_drift_check.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): Flag when this repo has drifted from the last commit bundled over to a GitHub-blocked work machine.
   - `--quiet/-q`
@@ -220,7 +224,7 @@ SessionStart hook: flag when this repo has drifted from the last commit bundled 
 
 Shared CLI helpers used across agent-toolkit scripts.
 
-- Installed at: `~/.claude/scripts/cli_common.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/cli_common.py` (all harnesses)
 - Entrypoint: not executable, no shebang
 - CLI: none (library module).
 - Environment: `AGENT_TOOLKIT_TIMING`, `NO_COLOR`, `TERM`, `XDG_STATE_HOME`
@@ -247,7 +251,7 @@ Shared CLI helpers used across agent-toolkit scripts.
 
 dev_status.py v2 — slug IDs, structured dependency graph, pure render.
 
-- Installed at: `~/.claude/scripts/dev_status.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/dev_status.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): deterministic backlog dashboard v2
   - `--quiet/-q`
@@ -365,7 +369,7 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
 
 Pure text-formatting helpers shared by the backlog dashboard and recap.
 
-- Installed at: `~/.claude/scripts/dev_status_formatting.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/dev_status_formatting.py` (all harnesses)
 - Entrypoint: not executable, no shebang
 - CLI: none (library module).
 - Public functions:
@@ -388,7 +392,7 @@ Pure text-formatting helpers shared by the backlog dashboard and recap.
 
 Typed mutation service and transaction manager for dev_status (Candidate 12).
 
-- Installed at: `~/.claude/scripts/dev_status_mutation.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/dev_status_mutation.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI: none (library module).
 - Environment: `AGY_SESSION`, `AI_AGENT`, `ANTHROPIC_CLI`, `ANTIGRAVITY`, `ANTIGRAVITY_AGENT`, `ANTIGRAVITY_CONVERSATION_ID`, `CLAUDE_CODE`, `COPILOT`, `DEVSTATUS_CLAIM_TTL_SECONDS`, `DEVSTATUS_HARNESS`, `GITHUB_COPILOT`, `OPENCODE`, `OPENCODE_GATEWAY`, `PI_CODING_AGENT`, `PI_SESSION`
@@ -442,13 +446,13 @@ Typed mutation service and transaction manager for dev_status (Candidate 12).
   - `add_pending_item(request: PendingAddRequest, *, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Track a new waiting-on-someone-else item.
   - `update_pending_item(slug_or_id: str, request: PendingUpdateRequest, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Merge an update request into a pending item.
   - `mutation_transaction(*, items_path: Path | None = None, verbose: bool = False) -> Iterator[BacklogTransaction]` — Hold backlog_lock once for batch operations; yields BacklogTransaction.
-- Tested by: `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_dev_status_run_cwd.py`, `test/test_harness_spec.py`, `test/test_machine_id.py`, `test/test_migrate_path_transform.py`, `test/test_migrate_toolkit_home_moves.py`, `test/test_migration_lock_adoption.py`
+- Tested by: `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_dev_status_run_cwd.py`, `test/test_harness_spec.py`, `test/test_machine_id.py`, `test/test_migrate_path_transform.py`, `test/test_migrate_toolkit_home_carry.py`, `test/test_migrate_toolkit_home_moves.py`, `test/test_migration_lock_adoption.py`
 
 ### `agent-scripts/dev_status_read.py`
 
 Pure read-only facade over the dev_status backlog store.
 
-- Installed at: `~/.claude/scripts/dev_status_read.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/dev_status_read.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI: none (library module).
 - Depends on: `backlog_claim_lookup.py`, `dev_status_storage.py`
@@ -468,7 +472,7 @@ Pure read-only facade over the dev_status backlog store.
 
 Backlog persistence, lock coordination, and journal primitives.
 
-- Installed at: `~/.claude/scripts/dev_status_storage.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/dev_status_storage.py` (all harnesses)
 - Entrypoint: not executable, no shebang
 - CLI: none (library module).
 - Explicit exit codes: `1`
@@ -525,7 +529,7 @@ Backlog persistence, lock coordination, and journal primitives.
 
 Backlog data model — the on-disk shapes shared across the dev_status stack.
 
-- Installed at: `~/.claude/scripts/dev_status_types.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/dev_status_types.py` (all harnesses)
 - Entrypoint: not executable, no shebang
 - CLI: none (library module).
 - Public classes:
@@ -539,7 +543,7 @@ Backlog data model — the on-disk shapes shared across the dev_status stack.
 
 Named crash points for proving what a killed process leaves behind.
 
-- Installed at: `~/.claude/scripts/fault_checkpoint.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/fault_checkpoint.py` (all harnesses)
 - Entrypoint: not executable, no shebang
 - CLI: none (library module).
 - Public functions:
@@ -550,7 +554,7 @@ Named crash points for proving what a killed process leaves behind.
 
 gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources.
 
-- Installed at: `~/.claude/scripts/gen_interfaces.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/gen_interfaces.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): regenerate INTERFACES.md from the harness sources
   - `--quiet/-q`
@@ -642,7 +646,7 @@ gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources.
 
 gen_second_opinion.py — regenerate the second-opinion skill copies (one per harness, named in HARNESS_TABLE) from one canonical template.
 
-- Installed at: `~/.claude/scripts/gen_second_opinion.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/gen_second_opinion.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): regenerate the second-opinion skill copies from one template
   - `--quiet/-q`
@@ -651,7 +655,7 @@ gen_second_opinion.py — regenerate the second-opinion skill copies (one per ha
   - `--stdout` — print the rendered copies, write nothing
   - `--repo-root` — repository root (default: inferred from this script's path)
 - Explicit exit codes: `1`, `2`
-- Depends on: `cli_common.py`
+- Depends on: `cli_common.py`, `harness_spec.py`
 - Public classes:
   - `class HarnessParams` — One harness's frontmatter block plus its body placeholder values.
 - Public functions:
@@ -669,7 +673,7 @@ gen_second_opinion.py — regenerate the second-opinion skill copies (one per ha
 
 Generate a zsh `#compdef` completion file for a harness CLI.
 
-- Installed at: `~/.claude/scripts/gen_shell_completion.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/gen_shell_completion.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): Generate a zsh `#compdef` completion file for a harness CLI.
   - `--quiet/-q`
@@ -710,7 +714,7 @@ Generate a zsh `#compdef` completion file for a harness CLI.
 
 gen_skills.py — regenerate the dashboard/recap/grill-me/backlog-item/ make-skill/spec/standup/to-tickets/swarm skill copies from one template per skill, plus a shared per-harness capability table. dashboard/recap/ grill-me/backlog-item/make-skill/spec/standup/to-tickets cover all 6 harnesses (claude, copilot, opencode, agy, pi, codex); swarm covers only claude/copilot (user-directed; pi already owns the orchestration surface) — see `SKILL_HARNESSES` below and AGENTS.md's "Harness maintenance tiers" section.
 
-- Installed at: `~/.claude/scripts/gen_skills.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/gen_skills.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): regenerate the dashboard/grill-me/backlog-item/make-skill copies from one template per skill
   - `--quiet/-q`
@@ -735,7 +739,7 @@ gen_skills.py — regenerate the dashboard/recap/grill-me/backlog-item/ make-ski
 
 gen_skills_params.py — per-(skill, harness) content tables for gen_skills.py.
 
-- Installed at: `~/.claude/scripts/gen_skills_params.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/gen_skills_params.py` (all harnesses)
 - Entrypoint: not executable, no shebang
 - CLI: none (library module).
 - Public functions:
@@ -748,7 +752,7 @@ gen_skills_params.py — per-(skill, harness) content tables for gen_skills.py.
 
 grill.py — grill-me session state CLI. All session mutations go through here.
 
-- Installed at: `~/.claude/scripts/grill.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/grill.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): grill-me session state CLI (all mutations go through here)
   - `--quiet/-q`
@@ -831,7 +835,7 @@ grill.py — grill-me session state CLI. All session mutations go through here.
 
 Pre-tool guard shared by every harness: refuse a write into a repository's main checkout while a backlog item for that repository is in progress, warn when the current worktree's base has fallen behind ``origin/main`` (or ``origin/<integration_branch>`` for an item that declares one), (Bash, Claude Code only) deny the git-native ways to defeat the no-commit-on-main git hook (``githooks/pre-commit`` / ``githooks-global/pre-commit``), and require an active backlog-item claim before a write that points at an in-progress item.
 
-- Installed at: `~/.claude/scripts/guard_rails.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/guard_rails.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): pre-tool guard shared by every harness
   - `--harness` — read this harness's payload on stdin and answer in its shape (choices: claude, agy, copilot)
@@ -867,7 +871,7 @@ Pre-tool guard shared by every harness: refuse a write into a repository's main 
 
 SessionStart hook + CLI: detect when a harness's instruction-file discovery behavior may have drifted from the version-pinned facts in README.md.
 
-- Installed at: `~/.claude/scripts/harness_discovery_check.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/harness_discovery_check.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): Detect harness instruction-file discovery drift against README.md's version-pinned facts.
   - `--quiet/-q`
@@ -893,7 +897,7 @@ SessionStart hook + CLI: detect when a harness's instruction-file discovery beha
 
 Declarative harness specification registry.
 
-- Installed at: `~/.claude/scripts/harness_spec.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/harness_spec.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI: none (library module).
 - Public classes:
@@ -901,6 +905,7 @@ Declarative harness specification registry.
   - `class FeatureImplementation` — Declaration of a harness's implementation of a required feature.
   - `class HarnessSpec` — Specification and discovery facts for a single AI agent harness.
 - Public functions:
+  - `apply_toolkit_path_tokens(text: str) -> str` — Replace every `{{TOOLKIT_SCRIPTS}}` / `{{TOOLKIT_DATA}}` in ``text``.
   - `spec(name: str) -> HarnessSpec` — Return the HarnessSpec for the given harness name.
   - `binary(name: str) -> str` — Return the CLI binary name for the given harness.
   - `install_hint(name: str) -> str` — Return the installation hint for the given harness.
@@ -909,13 +914,13 @@ Declarative harness specification registry.
   - `probe_expected_root(name: str) -> frozenset[str]` — Return the fixture root tokens expected for the given harness.
   - `feature_spec(harness: str, feature: str) -> FeatureImplementation` — Return the FeatureImplementation declaration for a harness and feature.
   - `assert_feature_coverage(repo_root: Path | None = None) -> None` — Validate that all active harnesses have declared valid implementations for all required features.
-- Tested by: `test/test_harness_feature_coverage.py`, `test/test_harness_spec.py`
+- Tested by: `test/test_agent_toolkit_paths.py`, `test/test_check_toolkit_paths.py`, `test/test_harness_feature_coverage.py`, `test/test_harness_spec.py`
 
 ### `agent-scripts/herdr_delegate.py`
 
 Launch supported agents in herdr tabs to work backlog items.
 
-- Installed at: `~/.claude/scripts/herdr_delegate.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/herdr_delegate.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): Launch supported agents in herdr tabs to work backlog items.
 - Subcommands:
@@ -992,7 +997,7 @@ Launch supported agents in herdr tabs to work backlog items.
 
 SessionStart hook + CLI: flag when a managed symlink on this machine no longer points where links.toml says it should.
 
-- Installed at: `~/.claude/scripts/link_drift_check.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/link_drift_check.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): Flag managed symlinks that no longer point where links.toml says they should.
   - `--quiet/-q`
@@ -1002,7 +1007,7 @@ SessionStart hook + CLI: flag when a managed symlink on this machine no longer p
 - Environment: `XDG_CACHE_HOME`
 - Filesystem constants:
   - `REPO = Path(__file__).resolve().parents[1]`
-- Depends on: `cli_common.py`, `link_inspect.py`
+- Depends on: `cli_common.py`, `link_inspect.py`, `retained_legacy_links.py`
 - Public functions:
   - `build_parser() -> argparse.ArgumentParser`
 - Subcommand handlers: `cmd_check`
@@ -1012,7 +1017,7 @@ SessionStart hook + CLI: flag when a managed symlink on this machine no longer p
 
 link_inspect.py — link inspection, path classification, drift finding, and the self-contained audit assembly for install.py's ``--check-links`` audit and link_drift_check.py's SessionStart hook.
 
-- Installed at: `~/.claude/scripts/link_inspect.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/link_inspect.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI: none (library module).
 - Environment: `WSL_DISTRO_NAME`
@@ -1021,7 +1026,7 @@ link_inspect.py — link inspection, path classification, drift finding, and the
   - `class LinkSpec` — One row of ``links.toml``: a repo file and where it gets linked.
   - `class ManagedDirSpec` — One row of ``links.toml``: a directory this repo owns exclusively.
   - `class LinkFinding` — One render-free audit finding with structured, kind-specific facts.
-  - `class LinkAuditResult` — What one full link audit produced: typed findings plus the two aggregates that are deliberately *not* findings (see :func:`check_applicable_links` for ``foreign``).
+  - `class LinkAuditResult` — What one full link audit produced: typed findings plus the aggregates that are deliberately *not* findings (see :func:`check_applicable_links` for ``foreign``; ``exempted`` holds the orphaned destinations the caller's ``retained`` set excused).
 - Public functions:
   - `expand_dest(dest: str, home: Path) -> Path` — Expand a ``links.toml`` destination against ``home``.
   - `is_symlink(path: Path) -> bool` — Return whether ``path`` is a symlink, catching OSError when unreadable.
@@ -1041,23 +1046,23 @@ link_inspect.py — link inspection, path classification, drift finding, and the
   - `iter_concrete_links(spec: LinkSpec, *, repo_root: Path, home: Path) -> Iterator[tuple[Path, Path, str]]` — Expand one ``links.toml`` row into concrete ``(src, dest, relative_src)`` triples.
   - `dir_applies(dir_spec: ManagedDirSpec, specs: Sequence[LinkSpec], *, repo_root: Path, home: Path, harnesses: Iterable[str], is_mac: bool, is_linux: bool, is_wsl: bool, profile: str) -> bool` — Return whether a declared directory is in scope for this run.
   - `gather_links(specs: Sequence[LinkSpec], *, repo_root: Path, home: Path, harnesses: Iterable[str], is_mac: bool, is_linux: bool, is_wsl: bool, profile: str) -> list[tuple[Path, Path, str, bool]]` — Expand every ``links.toml`` row into concrete triples, once per run.
-  - `collect_link_findings(*, repo_root: Path, home: Path, harnesses: Iterable[str], is_mac: bool, is_linux: bool, is_wsl: bool, profile: str, manifest_file: Path, report_uninstalled: bool = True, force_uninstalled: bool = False, specs: Sequence[LinkSpec] | None = None, managed_dirs: Sequence[ManagedDirSpec] | None = None) -> LinkAuditResult` — Run the full read-only link audit and return typed findings.
+  - `collect_link_findings(*, repo_root: Path, home: Path, harnesses: Iterable[str], is_mac: bool, is_linux: bool, is_wsl: bool, profile: str, manifest_file: Path, report_uninstalled: bool = True, force_uninstalled: bool = False, specs: Sequence[LinkSpec] | None = None, managed_dirs: Sequence[ManagedDirSpec] | None = None, retained: Collection[Path] = frozenset()) -> LinkAuditResult` — Run the full read-only link audit and return typed findings.
   - `render_findings(findings: Iterable[LinkFinding], format_path: Callable[[Path], str], *, repo_root: Path | None = None) -> dict[str, list[str]]` — Render typed findings into the audit's bucket-of-messages shape.
-  - `audit_links(*, repo_root: Path, home: Path, harnesses: Iterable[str], is_mac: bool, is_linux: bool, is_wsl: bool, profile: str, manifest_file: Path, format_path: Callable[[Path], str], report_uninstalled: bool = True, force_uninstalled: bool = False, specs: Sequence[LinkSpec] | None = None, managed_dirs: Sequence[ManagedDirSpec] | None = None) -> tuple[dict[str, list[str]], dict[Path, int], int]` — Run the full read-only link audit and return its findings as plain data.
+  - `audit_links(*, repo_root: Path, home: Path, harnesses: Iterable[str], is_mac: bool, is_linux: bool, is_wsl: bool, profile: str, manifest_file: Path, format_path: Callable[[Path], str], report_uninstalled: bool = True, force_uninstalled: bool = False, specs: Sequence[LinkSpec] | None = None, managed_dirs: Sequence[ManagedDirSpec] | None = None, retained: Collection[Path] = frozenset()) -> tuple[dict[str, list[str]], dict[Path, int], int]` — Run the full read-only link audit and return its findings as plain data.
   - `personal_overlay_composed_target(home: Path) -> Path` — The file dotfiles actually composes and symlinks ``PERSONAL_OVERLAY_SRC_REL``'s destinations to, on a machine with both repos checked out.
   - `scan_importers(import_dir: Path, module_name: str) -> list[str]` — Return the installed modules in ``import_dir`` that import ``module_name``.
   - `check_applicable_links(links: Sequence[tuple[Path, Path, str, bool]], *, repo_root: Path, manifest_entries: Iterable[dict[str, object]] = (), report_uninstalled: bool = False, home: Path | None = None, specs: Sequence[LinkSpec] | None = None, force_uninstalled: bool = False) -> tuple[list[LinkFinding], dict[Path, int]]` — Report inconsistencies on destinations in scope for this machine.
   - `find_orphaned_links(links: Sequence[tuple[Path, Path, str, bool]], *, manifest_entries: Iterable[dict[str, object]]) -> list[Path]` — Return manifest-recorded symlink destinations no current entry produces.
-  - `check_orphaned_links(links: Sequence[tuple[Path, Path, str, bool]], *, manifest_entries: Iterable[dict[str, object]]) -> list[LinkFinding]` — Return typed findings for manifest-recorded symlinks that links.toml no longer produces.
+  - `check_orphaned_links(links: Sequence[tuple[Path, Path, str, bool]], *, manifest_entries: Iterable[dict[str, object]], retained: Collection[Path] = frozenset()) -> list[LinkFinding]` — Return typed findings for manifest-recorded symlinks that links.toml no longer produces, skipping any destination in ``retained``.
   - `live_backup_paths(manifest_entries: Iterable[dict[str, object]]) -> set[Path]` — Return manifest-recorded backups that are still live ``--rollback`` payload.
   - `check_unmanaged_files(managed_dirs: Sequence[ManagedDirSpec], links: Sequence[tuple[Path, Path, str, bool]], *, home: Path, dir_applies: Callable[[ManagedDirSpec], bool], manifest_entries: Iterable[dict[str, object]] = ()) -> tuple[list[LinkFinding], int]` — Report foreign entries in directories ``links.toml`` owns exclusively.
-- Tested by: `test/test_harness_spec.py`, `test/test_install.py`, `test/test_link_drift_check.py`, `test/test_link_inspect.py`, `test/test_migrate_toolkit_home_moves.py`
+- Tested by: `test/test_check_toolkit_paths.py`, `test/test_harness_spec.py`, `test/test_install.py`, `test/test_link_drift_check.py`, `test/test_link_inspect.py`, `test/test_migrate_settings_rewrite.py`, `test/test_migrate_toolkit_home_carry.py`, `test/test_migrate_toolkit_home_moves.py`
 
 ### `agent-scripts/llm_backends.py`
 
 llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, opencode, pi, copilot). Extracted from second_opinion.py so dev_status.py's recap generation can reuse the same process-lifecycle handling (timeouts, process-group kills, opencode JSON-event parsing) with its own timeout and model choices, without duplicating it.
 
-- Installed at: `~/.claude/scripts/llm_backends.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/llm_backends.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI: none (library module).
 - Depends on: `agent_toolkit_paths.py`, `cli_common.py`, `migration_lock.py`
@@ -1091,7 +1096,7 @@ llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, open
 
 Machine-wide migration lock: writers share it, the toolkit-home migrator owns it.
 
-- Installed at: `~/.claude/scripts/migration_lock.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/migration_lock.py` (all harnesses)
 - Entrypoint: executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): Inspect or hold the machine-wide migration lock.
 - Subcommands:
@@ -1118,13 +1123,13 @@ Machine-wide migration lock: writers share it, the toolkit-home migrator owns it
   - `exclusive(site: str, *, blocking: bool = True) -> Iterator[None]` — Hold the lock exclusively (the migrator).
   - `build_parser() -> argparse.ArgumentParser`
 - Subcommand handlers: `cmd_status`, `cmd_hold`, `cmd_observations`
-- Tested by: `test/test_dev_status_validate.py`, `test/test_guard_rails_claim.py`, `test/test_migrate_path_transform.py`, `test/test_migrate_toolkit_home.py`, `test/test_migrate_toolkit_home_moves.py`, `test/test_migration_lock.py`, `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`
+- Tested by: `test/test_dev_status_validate.py`, `test/test_guard_rails_claim.py`, `test/test_migrate_path_transform.py`, `test/test_migrate_settings_rewrite.py`, `test/test_migrate_toolkit_home.py`, `test/test_migrate_toolkit_home_carry.py`, `test/test_migrate_toolkit_home_moves.py`, `test/test_migration_lock.py`, `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`
 
 ### `agent-scripts/notify.py`
 
 Cross-platform agent notification dispatcher.
 
-- Installed at: `~/.claude/scripts/notify.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/notify.py` (all harnesses)
 - Entrypoint: executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): Cross-platform agent notification dispatcher for WSL, macOS, and Linux.
   - `--quiet/-q`
@@ -1140,7 +1145,7 @@ Cross-platform agent notification dispatcher.
 - Environment: `TMUX`, `WSL_DISTRO_NAME`, `WSL_INTEROP`
 - Filesystem constants:
   - `ICONS_DIR = Path(__file__).resolve().parent.parent / 'claude' / 'icons'`
-- Depends on: `cli_common.py`, `harness_spec.py`
+- Depends on: `agent_toolkit_paths.py`, `cli_common.py`, `harness_spec.py`
 - Public functions:
   - `is_wsl() -> bool` — Detect whether running inside Windows Subsystem for Linux.
   - `get_harness_icon(harness: str | None, custom_icon: str | None = None) -> Path | None` — Resolve the icon file path for a given harness.
@@ -1158,7 +1163,7 @@ Cross-platform agent notification dispatcher.
 
 outlook_calendar.py — CLI tool and agent interface for Windows Outlook Calendar via PowerShell COM.
 
-- Installed at: `~/.claude/scripts/outlook_calendar.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/outlook_calendar.py` (all harnesses)
 - Entrypoint: executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): Outlook Calendar tool via PowerShell COM automation.
 - Subcommands:
@@ -1185,7 +1190,7 @@ outlook_calendar.py — CLI tool and agent interface for Windows Outlook Calenda
 
 outlook_email.py — CLI tool and agent interface for Windows Outlook via PowerShell COM.
 
-- Installed at: `~/.claude/scripts/outlook_email.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/outlook_email.py` (all harnesses)
 - Entrypoint: executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): Outlook email tool via PowerShell COM automation.
 - Subcommands:
@@ -1225,7 +1230,7 @@ outlook_email.py — CLI tool and agent interface for Windows Outlook via PowerS
 
 refresh_guidance.py — audit-by-inspection for hand-authored, agent-facing docs.
 
-- Installed at: `~/.claude/scripts/refresh_guidance.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/refresh_guidance.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): Audit hand-authored, agent-facing docs for mechanically-checkable stale references and per-section human-review staleness.
   - `--quiet/-q`
@@ -1286,11 +1291,24 @@ refresh_guidance.py — audit-by-inspection for hand-authored, agent-facing docs
 - Subcommand handlers: `cmd_check`, `cmd_mark_reviewed`, `cmd_scaffold`
 - Tested by: `test/test_refresh_guidance.py`
 
+### `agent-scripts/retained_legacy_links.py`
+
+Read which legacy symlinks an unfinalized toolkit-home migration still keeps.
+
+- Installed at: `~/.agent-toolkit/scripts/retained_legacy_links.py` (all harnesses)
+- Entrypoint: not executable, `#!/usr/bin/env python3`
+- CLI: none (library module).
+- Exceptions:
+  - `class RetainedLinksError(OSError)` — A migration journal could not be read (unreadable directory or file, or a corrupt journal line).
+- Public functions:
+  - `retained_legacy_links(installer_state: Path) -> set[Path]` — Legacy link destinations a committed-but-unfinalized migration keeps.
+- Tested by: `test/test_link_drift_check.py`, `test/test_retained_legacy_links_parity.py`
+
 ### `agent-scripts/second_opinion.py`
 
 second_opinion.py — one-shot adversarial critique of a plan from a non-Claude backend. Single-round by design: the multi-round loop, plan revision, and convergence judgment all require LLM reasoning and live in prose instructions, not here.
 
-- Installed at: `~/.claude/scripts/second_opinion.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/second_opinion.py` (all harnesses)
 - Entrypoint: executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): one-shot adversarial critique of a plan from a non-Claude backend
   - `--quiet/-q`
@@ -1343,7 +1361,7 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
 
 seed_hook_subset_guard.py — refuse a commit that drops a seed's SessionStart hook groups.
 
-- Installed at: `~/.claude/scripts/seed_hook_subset_guard.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/seed_hook_subset_guard.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): refuse a commit that drops a seed's SessionStart hook groups
   - `--repo-root` — repository root (default: git's toplevel of the cwd)
@@ -1355,7 +1373,7 @@ seed_hook_subset_guard.py — refuse a commit that drops a seed's SessionStart h
 
 sessionstart_checks.py — run the SessionStart context checks concurrently.
 
-- Installed at: `~/.claude/scripts/sessionstart_checks.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/sessionstart_checks.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI: none (library module).
 - Public functions:
@@ -1366,7 +1384,7 @@ sessionstart_checks.py — run the SessionStart context checks concurrently.
 
 Copy-once settings seeding, adoption, reseed, and drift detection.
 
-- Installed at: `~/.claude/scripts/settings_seed.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/settings_seed.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI: none (library module).
 - Depends on: `cli_common.py`
@@ -1385,7 +1403,7 @@ Copy-once settings seeding, adoption, reseed, and drift detection.
 
 SessionStart hook + CLI: detect (and optionally fix) drift between the live ``~/.claude/settings.json`` / ``~/.config/opencode/opencode.jsonc`` / (under WSL) the Windows-side VS Code ``settings.json`` and ``keybindings.json`` and their seeds in this repo.
 
-- Installed at: `~/.claude/scripts/settings_seed_drift_check.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/settings_seed_drift_check.py` (all harnesses)
 - Entrypoint: executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): no `description=` set
   - `--quiet/-q`
@@ -1418,7 +1436,7 @@ SessionStart hook + CLI: detect (and optionally fix) drift between the live ``~/
 
 standup.py — /standup skill CLI and read-only fetch service.
 
-- Installed at: `~/.claude/scripts/standup.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/standup.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): /standup skill CLI
   - `--quiet/-q`
@@ -1456,7 +1474,7 @@ standup.py — /standup skill CLI and read-only fetch service.
 
 standup_adapters.py — provider-agnostic adapter interfaces for /standup.
 
-- Installed at: `~/.claude/scripts/standup_adapters.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/standup_adapters.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI: none (library module).
 - Depends on: `outlook_calendar.py`, `outlook_email.py`
@@ -1482,7 +1500,7 @@ standup_adapters.py — provider-agnostic adapter interfaces for /standup.
 
 Claude Code status line: render the model name and a color-coded context window usage bar with the used percentage, from the JSON session payload Claude Code pipes to this script on stdin.
 
-- Installed at: `~/.claude/scripts/statusline.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/statusline.py` (all harnesses)
 - Entrypoint: executable, `#!/usr/bin/env python3`
 - CLI: none (library module).
 - Explicit exit codes: `0`
@@ -1492,7 +1510,7 @@ Claude Code status line: render the model name and a color-coded context window 
 
 to_tickets_runner.py — create a linked batch of dev_status.py backlog items from a confirmed vertical-slice/tracer-bullet ticket breakdown.
 
-- Installed at: `~/.claude/scripts/to_tickets_runner.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/to_tickets_runner.py` (all harnesses)
 - Entrypoint: executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): Create a linked batch of dev_status.py backlog items from a confirmed ticket breakdown.
 - Subcommands:
@@ -1524,12 +1542,12 @@ to_tickets_runner.py — create a linked batch of dev_status.py backlog items fr
 
 vitals-promotion.py — mechanical vitals-promotion pass over grill session data.
 
-- Installed at: `~/.claude/scripts/vitals_promotion.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/vitals_promotion.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): vitals-promotion.py — mechanical vitals-promotion pass over grill session data.
   - `--quiet/-q`
   - `--verbose/-v`
-  - `--data-dir` — grill session data directory (default: ~/.claude/data/grill)
+  - `--data-dir` — grill session data directory (default: the toolkit data root's grill/)
   - `--apply` — write vitals files (default: dry-run, prints only)
   - `--search` — search vitals records for QUERY (space-separated keywords, AND-combined) and exit
   - `--backlog-slug` — with --search, also search <SLUG>.json (default: _global.json only)
@@ -1564,7 +1582,7 @@ vitals-promotion.py — mechanical vitals-promotion pass over grill session data
 
 worktree.py — automated worktree creation and dependency bootstrapping.
 
-- Installed at: `~/.claude/scripts/worktree.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/worktree.py` (all harnesses)
 - Entrypoint: executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): Automate worktree creation and dependency bootstrapping.
   - `--quiet/-q`
@@ -1598,7 +1616,7 @@ worktree.py — automated worktree creation and dependency bootstrapping.
 
 Per-worktree backlog provenance: one explicit marker, shared predicates.
 
-- Installed at: `~/.claude/scripts/worktree_provenance.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/worktree_provenance.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI: none (library module).
 - Public classes:
@@ -1753,7 +1771,7 @@ are copy-once seeds for exactly that reason.
 | `opencode/tsconfig.json` | not symlinked by `links.toml` |
 | `opencode/tui.json` | `~/.config/opencode/tui.json` (opencode) |
 | `agy/CLAUDE_CODE_PARITY.md` | not symlinked by `links.toml` |
-| `agy/hooks/agy-elapsed.js` | `~/.claude/hooks/agy-elapsed.js` (agy) |
+| `agy/hooks/agy-elapsed.js` | `~/.agent-toolkit/hooks/agy-elapsed.js` (agy) |
 | `agy/hooks/agy-elapsed.test.js` | not symlinked by `links.toml` |
 | `agy/hooks.json` | `~/.gemini/config/hooks.json` (agy) |
 | `pi/AGENTS.md` | not symlinked by `links.toml` |
@@ -1862,6 +1880,7 @@ install.py — agent-toolkit provisioner and migration controls for macOS/Linux.
   - `--depart`
   - `--yes`
   - `--check-links`
+  - `--during-migration`
   - `--report-uninstalled`
   - `--no-report-uninstalled`
   - `--migrate-toolkit-home`
@@ -1921,7 +1940,7 @@ install.py — agent-toolkit provisioner and migration controls for macOS/Linux.
   - `print_summary(ctx: Context, settings: tuple[str, str], opencode: tuple[str, str], vscode: Sequence[tuple[str, tuple[str, str]]] = (), pi_settings: tuple[str, str] = ('', '')) -> None` — Print the loud end-of-run summary: skips, drift, and next steps.
   - `do_check_links(ctx: Context) -> int` — Audit the live symlinks against ``links.toml`` and report, changing nothing.
   - `run_install(ctx: Context, specs: Sequence[LinkSpec]) -> int` — Run every install step in order and return the process exit status.
-- Tested by: `test/test_dead_installers_stripped.py`, `test/test_harness_spec.py`, `test/test_install.py`, `test/test_link_inspect.py`, `test/test_migrate_toolkit_home.py`, `test/test_migrate_toolkit_home_moves.py`, `test/test_settings_seed.py`
+- Tested by: `test/test_dead_installers_stripped.py`, `test/test_harness_spec.py`, `test/test_install.py`, `test/test_link_inspect.py`, `test/test_migrate_toolkit_home.py`, `test/test_migrate_toolkit_home_carry.py`, `test/test_migrate_toolkit_home_moves.py`, `test/test_settings_seed.py`
 
 ### `depart.py`
 
@@ -2004,7 +2023,7 @@ Pristine-state departure mode: baseline capture and ownership tracking.
   - `classify_service(recorded: dict[str, object] | None, live: dict[str, object]) -> Classification` — Classify the watchcommit service/linger key.
   - `build_gitconfig_record(value: str | None) -> dict[str, object]` — Build a ``gitconfig:`` record from an already-read global config value.
   - `classify_gitconfig(recorded: dict[str, object] | None, live: dict[str, object], managed_value: str) -> Classification` — Classify a single global git config key this installer manages.
-- Tested by: `test/test_depart.py`, `test/test_depart_transactions.py`, `test/test_install.py`
+- Tested by: `test/test_depart.py`, `test/test_depart_transactions.py`, `test/test_install.py`, `test/test_migrate_toolkit_home_carry.py`, `test/test_migrate_toolkit_home_moves.py`
 
 ### `depart_exec.py`
 
@@ -2022,6 +2041,7 @@ depart_exec.py — --depart execution: preflight, phases, confirmation, cleanup.
   - `class DepartureContext(Protocol)` — Structural subset of install.Context used by departure execution.
   - `class Deps` — Execution dependencies injected from install.py (resolved at call time).
 - Public functions:
+  - `capture_destination_records(dests: Sequence[Path], *, home: Path, state_dir: Path, blob_dir: Path | None) -> dict[str, dict[str, object]]` — Baseline records for link destinations: each file, link, backup and parent.
   - `capture_departure_baseline(deps: Deps, ctx: DepartureContext, specs: Sequence[LinkSpecLike]) -> None` — Capture this run's departure baseline layer before any install step runs.
   - `build_preflight_report(deps: Deps, ctx: DepartureContext) -> dict[str, depart.Classification] | None` — Classify every tracked ownership key, or None if there's no baseline.
   - `build_package_preflight(deps: Deps, ctx: DepartureContext) -> list[depart.PackageClassification] | None` — Classify every requested/introduced package, or None if there's no baseline.
@@ -2034,7 +2054,7 @@ depart_exec.py — --depart execution: preflight, phases, confirmation, cleanup.
   - `execute_package_phase(deps: Deps, ctx: DepartureContext, baseline: depart.Baseline, ledger: depart.DepartureLedger) -> bool` — Remove/downgrade owned packages, reverse transactions order.
   - `execute_departure(deps: Deps, ctx: DepartureContext, baseline: depart.Baseline, report: dict[str, depart.Classification]) -> depart.DepartureLedger` — Perform every safe ``owned`` action, retry-safe via the departure ledger.
   - `do_depart(deps: Deps, ctx: DepartureContext) -> int` — Preview and execute a pristine-state departure.
-- Tested by: `test/test_depart_exec_layering.py`, `test/test_install.py`
+- Tested by: `test/test_depart_exec_layering.py`, `test/test_install.py`, `test/test_migrate_toolkit_home_moves.py`
 
 ---
 

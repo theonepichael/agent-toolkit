@@ -98,7 +98,7 @@ _IMPL_MODULE_RE = re.compile(
 
 PREAMBLE = """\
 Scope: `claude/`, `copilot/`, `opencode/`, `agy/`, `pi/`, the shared scripts under
-`agent-scripts/` that `links.toml` installs into `~/.claude/scripts/`, and the
+`agent-scripts/` that `links.toml` installs into `{{TOOLKIT_SCRIPTS}}/`, and the
 repo-root installer entrypoints those harnesses are provisioned by.
 
 **This file is generated. Do not edit it by hand — your edits will be
@@ -1530,7 +1530,7 @@ def invocation_tokens(tokens: list[str], script_basename: str) -> list[str] | No
     the script's basename as the next token — rejecting lines where the
     script name is not effectively first (``cp dev_status.py backup_dir``)
     while still matching ``$ dev_status.py show 5`` or
-    ``python3 ~/.claude/scripts/dev_status.py show 5``.
+    ``python3 ~/.agent-toolkit/scripts/dev_status.py show 5``.
     """
     for index, token in enumerate(tokens):
         if Path(token).name == script_basename:
@@ -1946,7 +1946,8 @@ def build_document_and_drift(
     links = load_link_table(repo_root)
     modules = load_repo_modules(repo_root, links)
 
-    lines = [f"# {OUTPUT_NAME}", "", PREAMBLE, "", "---", ""]
+    preamble = harness_spec.apply_toolkit_path_tokens(PREAMBLE)
+    lines = [f"# {OUTPUT_NAME}", "", preamble, "", "---", ""]
     lines += ["## 1. Shared scripts (`agent-scripts/`)", ""]
     lines += ["| Module | Purpose |", "| --- | --- |"]
     for module in modules:

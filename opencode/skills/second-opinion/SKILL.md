@@ -7,19 +7,19 @@ description: Send a plan to a non-Claude model for adversarial critique, then it
 edit the body template for shared wording or the per-harness parameter table
 for harness-specific wording, then regenerate -->
 
-All backend I/O goes through `python3 ~/.claude/scripts/second_opinion.py` —
-never shell out to `codex`/`agy`/`opencode`/`pi`/`copilot` directly. Three
-operations: `detect` reports each backend's presence AND whether it currently
-meets the isolation contract (with the reason when it does not), `review`
-returns one critique, and `probe` runs one trivial, cheap, text-only request
-per model in the selected backend's pool (or its single override / default
-model) and reports per-model availability as JSON — use it to check a pool's
-health before committing to a multi-round rotation, and remember it calls the
-real models once each, so pass `--backend` deliberately. It is single-round:
-one call, one critique. The multi-round loop and plan revision are your job,
-not the script's. By default, reviews are grounded in the target codebase
-(`--dir` or current working directory) with read-only tools enabled; use
-`--text-only` to opt out.
+All backend I/O goes through `python3
+~/.agent-toolkit/scripts/second_opinion.py` — never shell out to
+`codex`/`agy`/`opencode`/`pi`/`copilot` directly. Three operations: `detect`
+reports each backend's presence AND whether it currently meets the isolation
+contract (with the reason when it does not), `review` returns one critique, and
+`probe` runs one trivial, cheap, text-only request per model in the selected
+backend's pool (or its single override / default model) and reports per-model
+availability as JSON — use it to check a pool's health before committing to a
+multi-round rotation, and remember it calls the real models once each, so pass
+`--backend` deliberately. It is single-round: one call, one critique. The
+multi-round loop and plan revision are your job, not the script's. By default,
+reviews are grounded in the target codebase (`--dir` or current working
+directory) with read-only tools enabled; use `--text-only` to opt out.
 
 ```
 second_opinion.py detect                        # which backends are present (JSON)
@@ -95,16 +95,16 @@ current conversation. If neither exists, ask the user what to review.
 
 Whenever the resolved plan has no backing file yet — inline text from the
 invoking message, or the "visible in the current conversation" fallback — write
-it to `~/.claude/data/grill/<topic-slug>-plan.md` first, the same central
-location `grill.py` plans use (never the per-session scratchpad dir — it can be
-gone by the time anything references this path later, e.g. a `dev_status.py`
-`related_files` entry read back in a future session). Use that path as
-`current_plan` for the rest of this skill. Never `mkdir -p` that directory
-first — `grill.py` and `second_opinion.py` each create it on every invocation,
-so just write the file. Never pass inline plan text to `second_opinion.py
-review`, and never embed full plan text into a prose field meant for short
-descriptions (a `context`/`next_steps`/note field on a `dev_status.py` item,
-etc.) — reference the file path there instead.
+it to `~/.agent-toolkit/data/grill/<topic-slug>-plan.md` first, the same
+central location `grill.py` plans use (never the per-session scratchpad dir —
+it can be gone by the time anything references this path later, e.g. a
+`dev_status.py` `related_files` entry read back in a future session). Use that
+path as `current_plan` for the rest of this skill. Never `mkdir -p` that
+directory first — `grill.py` and `second_opinion.py` each create it on every
+invocation, so just write the file. Never pass inline plan text to
+`second_opinion.py review`, and never embed full plan text into a prose field
+meant for short descriptions (a `context`/`next_steps`/note field on a
+`dev_status.py` item, etc.) — reference the file path there instead.
 
 ## Deriving focus hints
 
@@ -211,9 +211,9 @@ you already addressed. But before the plan is shown as final or saved to disk
 (converged or capped), do one cleanup pass: move all of it out of the plan into
 a separate critique-notes file, written to `<current_plan without its
 extension>-critique-notes.md` (e.g.
-`~/.claude/data/grill/<topic-slug>-plan-critique-notes.md`) — a round-by-round
-record of what was raised each round, what changed in response, and the
-rejected-feedback rationale. `second_opinion.py` automatically strips
+`~/.agent-toolkit/data/grill/<topic-slug>-plan-critique-notes.md`) — a
+round-by-round record of what was raised each round, what changed in response,
+and the rejected-feedback rationale. `second_opinion.py` automatically strips
 recognized ephemeral process headers (`## Critique History`, `## Review
 History`, `## Round-by-Round Notes`, `## Rejected Feedback`) before sending
 payloads to backends to conserve payload bandwidth, but the saved plan file

@@ -16,7 +16,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-const GRILL_PATH = join(homedir(), ".claude", "scripts", "grill.py");
+const GRILL_PATH = join(homedir(), ".agent-toolkit", "scripts", "grill.py");
 
 const PENDING_MARK = "Grill plan ready to execute: ";
 const PLAN_LINE = "   Plan: ";

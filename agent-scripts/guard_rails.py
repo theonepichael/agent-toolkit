@@ -73,7 +73,7 @@ Environment
                        to duplicate.
 
 Every delivered verdict is also appended, best-effort, to a durable JSONL
-audit trail at ``~/.claude/data/guard_rails_audit.jsonl`` (fields: ``ts``,
+audit trail at ``~/.agent-toolkit/data/guard_rails_audit.jsonl`` (fields: ``ts``,
 ``harness``, ``tool``, redacted ``target``, ``rule``, ``decision``). That
 write happens strictly after the verdict is on stdout and can never alter
 or suppress it.
@@ -878,7 +878,7 @@ def live_install_repo(home: Path | None = None) -> Path | None:
     if home is None:
         home = Path.home()
     for script_name in ("guard_rails.py", "dev_status.py"):
-        candidate = home / ".claude" / "scripts" / script_name
+        candidate = home / ".agent-toolkit" / "scripts" / script_name
         if candidate.is_symlink():
             try:
                 target = candidate.resolve(strict=True)
@@ -1244,7 +1244,7 @@ def _checkout_off_default_reason(
                 f"Refusing to switch the live install checkout of {target_info.toplevel} "
                 f"off its default branch ('{target_info.branch}'). Harness scripts are symlinked "
                 f"into this checkout and run live from it. Do this work in a worktree instead: "
-                f"python3 ~/.claude/scripts/dev_status.py worktree <slug> "
+                f"python3 ~/.agent-toolkit/scripts/dev_status.py worktree <slug> "
                 f"(or dev_status.py integration-merge to land integration-branch work)."
             )
 
@@ -1387,7 +1387,7 @@ def evaluate(req: Request, claims: BacklogClaimLookup) -> Verdict:
                 f"Refusing to write into the main checkout of "
                 f"{info.toplevel} on '{info.branch}' while backlog item "
                 f"'{slug}' is in progress there. Do this work in a "
-                f"worktree: python3 ~/.claude/scripts/worktree.py {slug}",
+                f"worktree: python3 ~/.agent-toolkit/scripts/worktree.py {slug}",
                 rule="main-checkout-write",
             )
 

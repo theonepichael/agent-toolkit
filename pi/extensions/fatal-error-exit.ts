@@ -25,7 +25,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 // settle NOT being `idle` (an `idle` worker is demonstrably alive, so a sentinel
 // in its pane is stale prose -- workers grep this repo and run its tests, which
 // print this line).
-// See `~/.claude/data/grill/atk-fatal-error-exit-live-smoke-findings.md` Defect 2
+// See `~/.agent-toolkit/data/grill/atk-fatal-error-exit-live-smoke-findings.md` Defect 2
 // for the measurement that established the `done`-before-gone race.
 //
 // THE SENTINEL IS NOW THE FALLBACK, NOT THE PRIMARY SIGNAL. Because the

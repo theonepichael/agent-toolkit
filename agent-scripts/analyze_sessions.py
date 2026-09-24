@@ -6,9 +6,9 @@ and agy harnesses. Exposes subcommands for calculating token/USD costs, listing
 user prompts, and searching message transcripts.
 
 Usage:
-    python3 ~/.claude/scripts/analyze_sessions.py cost [--by total|day|project|harness|model|session] [filters]
-    python3 ~/.claude/scripts/analyze_sessions.py prompts [--format markdown|jsonl] [filters]
-    python3 ~/.claude/scripts/analyze_sessions.py search <query> [--regex] [--context N] [filters]
+    python3 ~/.agent-toolkit/scripts/analyze_sessions.py cost [--by total|day|project|harness|model|session] [filters]
+    python3 ~/.agent-toolkit/scripts/analyze_sessions.py prompts [--format markdown|jsonl] [filters]
+    python3 ~/.agent-toolkit/scripts/analyze_sessions.py search <query> [--regex] [--context N] [filters]
 
 Flags:
   --harness        harness to analyze: all, pi, claude, opencode, copilot, agy

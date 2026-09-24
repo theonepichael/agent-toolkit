@@ -1,12 +1,12 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python3 ~/.claude/scripts/dev_status.py:*)",
-      "Bash(python3 ~/.claude/scripts/grill.py:*)",
-      "Bash(python3 ~/.claude/scripts/second_opinion.py:*)"
+      "Bash(python3 ~/.agent-toolkit/scripts/dev_status.py:*)",
+      "Bash(python3 ~/.agent-toolkit/scripts/grill.py:*)",
+      "Bash(python3 ~/.agent-toolkit/scripts/second_opinion.py:*)"
     ],
     "deny": [
-      "Bash(python3 ~/.claude/scripts/dev_status.py prune:*)"
+      "Bash(python3 ~/.agent-toolkit/scripts/dev_status.py prune:*)"
     ],
     "ask": [
       "Bash(git commit)",
@@ -21,7 +21,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ~/.claude/scripts/guard_rails.py --harness claude"
+            "command": "python3 ~/.agent-toolkit/scripts/guard_rails.py --harness claude"
           }
         ]
       }
@@ -43,7 +43,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ~/.claude/scripts/notify.py --harness 'Claude' --title 'Claude Code' --message 'Waiting for input' --type waiting_for_input"
+            "command": "python3 ~/.agent-toolkit/scripts/notify.py --harness 'Claude' --title 'Claude Code' --message 'Waiting for input' --type waiting_for_input"
           }
         ]
       }
@@ -53,7 +53,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ~/.claude/scripts/notify.py --harness 'Claude' --title 'Claude Code' --message 'Task completed' --type completed"
+            "command": "python3 ~/.agent-toolkit/scripts/notify.py --harness 'Claude' --title 'Claude Code' --message 'Task completed' --type completed"
           }
         ]
       }
@@ -63,7 +63,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ~/.claude/scripts/sessionstart_checks.py",
+            "command": "python3 ~/.agent-toolkit/scripts/sessionstart_checks.py",
             "timeout": 45
           }
         ]
@@ -82,7 +82,7 @@
   },
   "statusLine": {
     "type": "command",
-    "command": "python3 ~/.claude/scripts/statusline.py",
+    "command": "python3 ~/.agent-toolkit/scripts/statusline.py",
     "refreshInterval": 60
   },
   "tui": "fullscreen",

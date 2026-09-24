@@ -4,7 +4,7 @@
     "agentStop": [
       {
         "type": "command",
-        "bash": "python3 ~/.claude/scripts/notify.py --harness 'Copilot' --title 'Copilot CLI' --message 'Agent finished' --type completed",
+        "bash": "python3 ~/.agent-toolkit/scripts/notify.py --harness 'Copilot' --title 'Copilot CLI' --message 'Agent finished' --type completed",
         "timeoutSec": 10
       }
     ]

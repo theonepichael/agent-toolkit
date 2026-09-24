@@ -160,6 +160,17 @@ Commands:
             self.assertIn("--verbose", script)
             self.assertIn("--add-dir", script)
 
+    def test_generated_header_names_the_toolkit_home_script(self):
+        with patch("gen_shell_completion.run_help", return_value="Usage: mockcli\n"):
+            script = generate(HarnessSpec(cli="mockcli", format="commander"))
+        self.assertIsNotNone(script)
+        self.assertIn(
+            "# Regenerate with: python3 ~/.agent-toolkit/scripts/"
+            "gen_shell_completion.py --harness mockcli",
+            script,
+        )
+        self.assertNotIn(".claude", script)
+
     def test_generate_commander_pi_strips_repeated_cli_name(self):
         # Pi's Commands lines repeat "pi" as their own first token, unlike
         # claude/copilot — the "commander" adapter's strip_cli param (wired

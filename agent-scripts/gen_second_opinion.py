@@ -62,6 +62,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import cli_common
+import harness_spec
 
 # What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
 TOOLKIT_DATA = "none"
@@ -123,7 +124,7 @@ HARNESS_TABLE: dict[str, HarnessParams] = {
 name: second-opinion
 description: Send a plan to a non-Claude model for adversarial critique, then iterate — revise, re-send, repeat — until the critique stops surfacing anything new or a round cap is hit. Use when the user wants a second opinion, an outside critique, or to stress-test a plan against a different model.
 argument-hint: [plan file or text]
-allowed-tools: [Read, Write, AskUserQuestion, "Bash(python3 ~/.claude/scripts/second_opinion.py:*)", "Bash(python3 ~/.claude/scripts/grill.py:*)"]
+allowed-tools: [Read, Write, AskUserQuestion, "Bash(python3 {{TOOLKIT_SCRIPTS}}/second_opinion.py:*)", "Bash(python3 {{TOOLKIT_SCRIPTS}}/grill.py:*)"]
 ---
 """,
         # claude reads $ARGUMENTS directly, the harness's own invocation
@@ -164,7 +165,7 @@ allowed-tools: [Read, Write, AskUserQuestion, "Bash(python3 ~/.claude/scripts/se
         adversary_ref="opencode's",
         # every harness but Pi shells out to the script itself,
         # 2026-08-30
-        io_entrypoint="`python3 ~/.claude/scripts/second_opinion.py`",
+        io_entrypoint="`python3 {{TOOLKIT_SCRIPTS}}/second_opinion.py`",
         # every harness but Pi invokes the script through bash, so the
         # usage block stays a runnable command block, 2026-08-30
         usage_block="""\
@@ -237,7 +238,7 @@ description: "Send a plan to a non-Claude model for adversarial critique, then i
         adversary_ref="the",
         # every harness but Pi shells out to the script itself,
         # 2026-08-30
-        io_entrypoint="`python3 ~/.claude/scripts/second_opinion.py`",
+        io_entrypoint="`python3 {{TOOLKIT_SCRIPTS}}/second_opinion.py`",
         # every harness but Pi invokes the script through bash, so the
         # usage block stays a runnable command block, 2026-08-30
         usage_block="""\
@@ -310,7 +311,7 @@ description: Send a plan to a non-Claude model for adversarial critique, then it
         adversary_ref="the",
         # every harness but Pi shells out to the script itself,
         # 2026-08-30
-        io_entrypoint="`python3 ~/.claude/scripts/second_opinion.py`",
+        io_entrypoint="`python3 {{TOOLKIT_SCRIPTS}}/second_opinion.py`",
         # every harness but Pi invokes the script through bash, so the
         # usage block stays a runnable command block, 2026-08-30
         usage_block="""\
@@ -391,7 +392,7 @@ allowed-tools: shell
         adversary_ref="the",
         # every harness but Pi shells out to the script itself,
         # 2026-08-30
-        io_entrypoint="`python3 ~/.claude/scripts/second_opinion.py`",
+        io_entrypoint="`python3 {{TOOLKIT_SCRIPTS}}/second_opinion.py`",
         # every harness but Pi invokes the script through bash, so the
         # usage block stays a runnable command block, 2026-08-30
         usage_block="""\
@@ -466,7 +467,7 @@ description: Send a plan to a non-Claude model for adversarial critique, then it
         adversary_ref="the",
         # every harness but Pi shells out to the script itself,
         # 2026-08-30
-        io_entrypoint="`python3 ~/.claude/scripts/second_opinion.py`",
+        io_entrypoint="`python3 {{TOOLKIT_SCRIPTS}}/second_opinion.py`",
         # every harness but Pi invokes the script through bash, so the
         # usage block stays a runnable command block, 2026-08-30
         usage_block="""\
@@ -710,7 +711,7 @@ description: Send a plan to a non-Claude model for adversarial critique, then it
         adversary_ref="the",
         # every harness but Pi shells out to the script itself,
         # 2026-09-11
-        io_entrypoint="`python3 ~/.claude/scripts/second_opinion.py`",
+        io_entrypoint="`python3 {{TOOLKIT_SCRIPTS}}/second_opinion.py`",
         # every harness but Pi invokes the script through bash, so the
         # usage block stays a runnable command block, 2026-09-11
         usage_block="""\
@@ -801,7 +802,12 @@ def render_body(template_text: str, params: HarnessParams) -> str:
     committed output stays readable regardless of which harness's value was
     substituted in.
     """
-    values = substitutions(params)
+    # Toolkit paths resolve before the reflow, so wrapping sees final text.
+    values = {
+        k: harness_spec.apply_toolkit_path_tokens(v)
+        for k, v in substitutions(params).items()
+    }
+    values.update(harness_spec.TOOLKIT_PATH_TOKENS)
     lines = template_text.splitlines()
     out: list[str] = []
     paragraph: list[str] = []
@@ -872,7 +878,8 @@ def render_body(template_text: str, params: HarnessParams) -> str:
 def render_file(template_text: str, relpath: str, params: HarnessParams) -> str:
     """Render one harness's complete file: frontmatter, marker, body."""
     body = render_body(template_text, params)
-    return f"{params.frontmatter}\n{DO_NOT_EDIT_MARKER}\n\n{body}"
+    frontmatter = harness_spec.apply_toolkit_path_tokens(params.frontmatter)
+    return f"{frontmatter}\n{DO_NOT_EDIT_MARKER}\n\n{body}"
 
 
 def render_all(repo_root: Path) -> dict[str, str]:

@@ -12,7 +12,7 @@ Display its returned text verbatim — do not narrate, do not reformat.
 Bash fallback, only if the `dev_status` tool is truly missing from your tool list (e.g. the session was started with `--no-extensions`) — run:
 
 ```bash
-DEVSTATUS_AGENT=1 python3 ~/.claude/scripts/dev_status.py recap
+DEVSTATUS_AGENT=1 python3 ~/.agent-toolkit/scripts/dev_status.py recap
 ```
 
 (append `--refresh` if requested). Display stdout verbatim — do not narrate, do not reformat.

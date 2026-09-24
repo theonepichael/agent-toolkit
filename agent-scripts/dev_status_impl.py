@@ -441,7 +441,7 @@ def _check_worktree_guard(allow_main: bool = False, quiet: bool = False) -> None
         if is_main_worktree and branch in ("main", "master"):
             print(
                 "[start] Refusing to start item on main/master checkout in a git repository.\n"
-                "Create a dedicated worktree first (`python3 ~/.claude/scripts/worktree.py <slug>`), "
+                "Create a dedicated worktree first (`python3 ~/.agent-toolkit/scripts/worktree.py <slug>`), "
                 "or pass --allow-main to override.",
                 file=sys.stderr,
             )
@@ -1084,7 +1084,7 @@ def _out_of_scope_check_reminder(
         return
     cli_common.qprint(
         f"[{cmd}] {len(index)} rejected concept(s) on file — check "
-        "~/.claude/data/backlog-out-of-scope/ (or 'out-of-scope list') for "
+        "~/.agent-toolkit/data/backlog-out-of-scope/ (or 'out-of-scope list') for "
         "a match before proceeding",
         quiet=(quiet or _agent_quiet()),
         file=err,

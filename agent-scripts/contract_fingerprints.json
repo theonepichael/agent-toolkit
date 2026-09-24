@@ -385,7 +385,7 @@
   "vitals_promotion.py": [
     "arg (top-level) --apply: \u2014 write vitals files (default: dry-run, prints only)",
     "arg (top-level) --backlog-slug: \u2014 with --search, also search <SLUG>.json (default: _global.json only)",
-    "arg (top-level) --data-dir: \u2014 grill session data directory (default: ~/.claude/data/grill)",
+    "arg (top-level) --data-dir: \u2014 grill session data directory (default: the toolkit data root's grill/)",
     "arg (top-level) --include-superseded: \u2014 with --search, also match superseded records",
     "arg (top-level) --json: \u2014 with --search, emit matching records as a JSON list instead of plain text",
     "arg (top-level) --quiet/-q: ",

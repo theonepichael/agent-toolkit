@@ -10,7 +10,7 @@ No autonomous scanning: this only runs when invoked.
 ## 1. Fetch
 
 ```
-python3 ~/.claude/scripts/standup.py fetch [--date YYYY-MM-DD]
+python3 ~/.agent-toolkit/scripts/standup.py fetch [--date YYYY-MM-DD]
 ```
 
 `--date` overrides the reference date (defaults to today) — use it after a
@@ -52,14 +52,14 @@ user in chat first — nothing gets written until they confirm, since "was
 this actually answered" is a judgment call, not a pattern match:
 
 ```
-python3 ~/.claude/scripts/dev_status.py pending update <id> '{"status": "reply_received"}'
+python3 ~/.agent-toolkit/scripts/dev_status.py pending update <id> '{"status": "reply_received"}'
 ```
 
 Only move an item to `resolved` when the user confirms it's actually done,
 and record what happened:
 
 ```
-python3 ~/.claude/scripts/dev_status.py pending update <id> '{"status": "resolved", "outcome": "what actually happened"}'
+python3 ~/.agent-toolkit/scripts/dev_status.py pending update <id> '{"status": "resolved", "outcome": "what actually happened"}'
 ```
 
 For anything in the fetched data that looks like a new item worth tracking
@@ -68,7 +68,7 @@ request not yet approved) but isn't already in `pending_items_open`,
 propose adding it:
 
 ```
-python3 ~/.claude/scripts/dev_status.py pending add '{"id", "description", "kind", "source_ref": {...}, "context", "next_steps": [...]}'
+python3 ~/.agent-toolkit/scripts/dev_status.py pending add '{"id", "description", "kind", "source_ref": {...}, "context", "next_steps": [...]}'
 ```
 
 `<id>` can be the pending item's slug — `dev_status.py`'s cross-section
@@ -95,5 +95,5 @@ was skipped — don't pad the draft to look complete.
 
 ## 4. Save and show
 
-Write the draft to `~/.claude/data/standup/YYYY-MM-DD.md` (today's date).
+Write the draft to `~/.agent-toolkit/data/standup/YYYY-MM-DD.md` (today's date).
 Show the user the draft and the `skipped` list from step 1.

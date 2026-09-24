@@ -35,7 +35,7 @@ import fnmatch
 import json
 import os
 import tomllib
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Collection, Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -570,13 +570,15 @@ class LinkFinding:
 
 @dataclass(frozen=True)
 class LinkAuditResult:
-    """What one full link audit produced: typed findings plus the two
+    """What one full link audit produced: typed findings plus the
     aggregates that are deliberately *not* findings (see
-    :func:`check_applicable_links` for ``foreign``)."""
+    :func:`check_applicable_links` for ``foreign``; ``exempted`` holds the
+    orphaned destinations the caller's ``retained`` set excused)."""
 
     findings: list[LinkFinding]
     foreign: dict[Path, int]
     dirs_audited: int
+    exempted: tuple[Path, ...] = ()
 
 
 def collect_link_findings(
@@ -593,6 +595,7 @@ def collect_link_findings(
     force_uninstalled: bool = False,
     specs: Sequence[LinkSpec] | None = None,
     managed_dirs: Sequence[ManagedDirSpec] | None = None,
+    retained: Collection[Path] = frozenset(),
 ) -> LinkAuditResult:
     """Run the full read-only link audit and return typed findings.
 
@@ -607,9 +610,13 @@ def collect_link_findings(
     fingerprints it) — the machine facts and ``manifest_file`` are always
     live inputs to applicability gating and the orphan/backup checks.
 
+    ``retained`` names destinations the caller expects to linger (legacy
+    links an unfinalized toolkit-home migration keeps); they are left out of
+    the orphaned bucket and listed in ``exempted`` instead.
+
     Returns:
-        The typed findings, the per-other-checkout link counts, and how
-        many declared directories were audited. Malformed links.toml
+        The typed findings, the per-other-checkout link counts, how many
+        declared directories were audited, and the exempted orphans. Malformed links.toml
         propagates the parsers' ``ValueError``/``TypeError`` so the caller
         decides how loudly to fail.
     """
@@ -632,7 +639,12 @@ def collect_link_findings(
         specs=specs,
         force_uninstalled=force_uninstalled,
     )
-    orphaned = check_orphaned_links(links, manifest_entries=entries)
+    exempted = tuple(
+        dest
+        for dest in find_orphaned_links(links, manifest_entries=entries)
+        if dest in retained
+    )
+    orphaned = check_orphaned_links(links, manifest_entries=entries, retained=retained)
     unmanaged, dirs_audited = check_unmanaged_files(
         managed_dirs,
         links,
@@ -646,6 +658,7 @@ def collect_link_findings(
         findings=[*applicable, *orphaned, *unmanaged],
         foreign=foreign,
         dirs_audited=dirs_audited,
+        exempted=exempted,
     )
 
 
@@ -746,6 +759,7 @@ def audit_links(
     force_uninstalled: bool = False,
     specs: Sequence[LinkSpec] | None = None,
     managed_dirs: Sequence[ManagedDirSpec] | None = None,
+    retained: Collection[Path] = frozenset(),
 ) -> tuple[dict[str, list[str]], dict[Path, int], int]:
     """Run the full read-only link audit and return its findings as plain data.
 
@@ -772,6 +786,8 @@ def audit_links(
         specs, managed_dirs: Pre-parsed links.toml rows, for a caller that
             already parsed the table (the drift hook fingerprints it); parsed
             here when omitted.
+        retained: Destinations exempt from the orphaned bucket; see
+            :func:`collect_link_findings`.
 
     Returns:
         The findings by bucket, the per-other-checkout link counts (see
@@ -797,6 +813,7 @@ def audit_links(
         force_uninstalled=force_uninstalled,
         specs=specs,
         managed_dirs=managed_dirs,
+        retained=retained,
     )
     return (
         render_findings(result.findings, format_path, repo_root=repo_root),
@@ -1124,7 +1141,7 @@ def find_orphaned_links(
     tool (most commonly another repo's own installer, sharing this same
     destination) has already repointed it, and unlinking it here would
     delete that tool's live symlink, not ours. 2026-09-07: another repo's
-    orphan-cleanup deleted three ~/.claude/scripts/*.py symlinks
+    orphan-cleanup deleted three ~/.agent-toolkit/scripts/*.py symlinks
     agent-toolkit's installer had just created moments earlier in the same
     install-with-agent-toolkit.sh run, because this check didn't exist —
     _rollback_symlink already guards the equivalent case before removing
@@ -1155,11 +1172,14 @@ def check_orphaned_links(
     links: Sequence[tuple[Path, Path, str, bool]],
     *,
     manifest_entries: Iterable[dict[str, object]],
+    retained: Collection[Path] = frozenset(),
 ) -> list[LinkFinding]:
     """Return typed findings for manifest-recorded symlinks that links.toml
-    no longer produces."""
+    no longer produces, skipping any destination in ``retained``."""
     findings: list[LinkFinding] = []
     for dest in find_orphaned_links(links, manifest_entries=manifest_entries):
+        if dest in retained:
+            continue
         if is_symlink(dest):
             finding = LinkFinding(
                 CHECK_BUCKET_ORPHANED,

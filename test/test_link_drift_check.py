@@ -25,6 +25,7 @@ import test_bootstrap  # noqa: E402
 
 import link_drift_check as ldc
 import link_inspect as li
+import retained_legacy_links as rll
 
 # The hook reads these repo files to fingerprint the audit; a fixture repo
 # therefore carries empty stand-ins for them so cache hits can happen.
@@ -278,6 +279,76 @@ profile_exclude = ["personal"]
             f"links: orphaned (1) — run {fx.pointer()}\n",
         )
 
+    def test_retained_legacy_links_exempted_from_orphaned(self) -> None:
+        """A committed-but-unfinalized migration keeps legacy links the hook
+        must not flag as orphaned drift (between migrate and finalize)."""
+        fx = self.fixture()
+        stale = fx.expand("~/.claude/stale-link.py")
+        stale.parent.mkdir(parents=True, exist_ok=True)
+        stale.symlink_to(fx.repo / "claude" / "global-instructions.md")
+        fx.write_manifest(
+            [
+                {
+                    "kind": "symlink-created",
+                    "dest": str(stale),
+                    "src": str(fx.repo / "claude" / "global-instructions.md"),
+                }
+            ]
+        )
+        # A committed-but-unfinalized migration records this link as retained
+        # in its links step. Without the exemption the hook would report it as
+        # orphaned drift on every session until finalize or rollback.
+        journal_dir = (
+            fx.repo_home_state() / "migrations" / "mig-20260923T000000Z-abc123"
+        )
+        journal_dir.mkdir(parents=True)
+        (journal_dir / "journal.jsonl").write_text(
+            json.dumps(
+                {
+                    "seq": 1,
+                    "ts": "2026-09-23T00:00:00+00:00",
+                    "id": "mig-20260923T000000Z-abc123",
+                    "phase": "links",
+                    "event": "begin",
+                    "detail": {"planned": []},
+                }
+            )
+            + "\n"
+            + json.dumps(
+                {
+                    "seq": 2,
+                    "ts": "2026-09-23T00:00:01+00:00",
+                    "id": "mig-20260923T000000Z-abc123",
+                    "phase": "links",
+                    "event": "done",
+                    "detail": {
+                        "created": 0,
+                        "retained": [
+                            {
+                                "dest": str(stale),
+                                "target": str(
+                                    fx.repo / "claude" / "global-instructions.md"
+                                ),
+                            }
+                        ],
+                    },
+                }
+            )
+            + "\n"
+            + json.dumps(
+                {
+                    "seq": 3,
+                    "ts": "2026-09-23T00:00:02+00:00",
+                    "id": "mig-20260923T000000Z-abc123",
+                    "phase": "run",
+                    "event": "end",
+                    "detail": {"outcome": "committed"},
+                }
+            )
+            + "\n"
+        )
+        self.assertEqual(fx.check(), "")
+
     def test_missing_manifest_reads_as_empty_history(self) -> None:
         """No install has ever run: no orphan findings, no error."""
         fx = self.fixture()
@@ -454,6 +525,129 @@ class ParserTests(unittest.TestCase):
     def test_check_accepts_verbosity_flags(self) -> None:
         args = ldc.build_parser().parse_args(["check", "--quiet"])
         self.assertTrue(args.quiet)
+
+
+class RetainedLegacyLinksTests(unittest.TestCase):
+    """The stdlib-only journal reader the drift hook delegates to."""
+
+    def setUp(self) -> None:
+        self.tmpdir = Path(tempfile.mkdtemp(prefix="test-retained-links-"))
+        self.state = self.tmpdir / "state"
+        self.state.mkdir()
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _journal(
+        self,
+        migration_id: str,
+        *,
+        finalized: str | None = None,
+        finalized_mode: str | None = None,
+        retained: list[dict[str, str]] | None = None,
+    ) -> None:
+        journal_dir = self.state / "migrations" / migration_id
+        journal_dir.mkdir(parents=True)
+        links = [
+            {
+                "seq": 1,
+                "ts": "t",
+                "id": migration_id,
+                "phase": "links",
+                "event": "begin",
+                "detail": {"planned": []},
+            },
+            {
+                "seq": 2,
+                "ts": "t",
+                "id": migration_id,
+                "phase": "links",
+                "event": "done",
+                "detail": {"created": 0, "retained": retained or []},
+            },
+            {
+                "seq": 3,
+                "ts": "t",
+                "id": migration_id,
+                "phase": "run",
+                "event": "end",
+                "detail": {"outcome": "committed"},
+            },
+        ]
+        (journal_dir / "journal.jsonl").write_text(
+            "".join(json.dumps(r) + "\n" for r in links)
+        )
+        if finalized is not None:
+            finalize = [
+                {
+                    "seq": 1,
+                    "ts": "t",
+                    "id": migration_id,
+                    "phase": "finalize",
+                    "event": "begin",
+                    "detail": ({"mode": finalized_mode} if finalized_mode else {}),
+                },
+                {
+                    "seq": 2,
+                    "ts": "t",
+                    "id": migration_id,
+                    "phase": "finalize",
+                    "event": "done",
+                    "detail": {},
+                },
+                {
+                    "seq": 3,
+                    "ts": "t",
+                    "id": migration_id,
+                    "phase": "run",
+                    "event": "end",
+                    "detail": {"outcome": finalized},
+                },
+            ]
+            (journal_dir / "finalize.jsonl").write_text(
+                "".join(json.dumps(r) + "\n" for r in finalize)
+            )
+
+    def test_committed_but_unfinalized_retains_links(self) -> None:
+        self._journal("mig-a", retained=[{"dest": "/x/legacy.py", "target": "/y"}])
+        self.assertEqual(
+            rll.retained_legacy_links(self.state), {Path("/x/legacy.py")}
+        )
+
+    def test_no_journal_dir_is_empty(self) -> None:
+        self.assertEqual(rll.retained_legacy_links(self.state), set())
+
+    def test_normal_finalize_is_not_retained(self) -> None:
+        self._journal(
+            "mig-b",
+            finalized="finalized",
+            retained=[{"dest": "/x/legacy.py", "target": "/y"}],
+        )
+        self.assertEqual(rll.retained_legacy_links(self.state), set())
+
+    def test_restored_copy_finalize_is_retained(self) -> None:
+        self._journal(
+            "mig-c",
+            finalized="finalized",
+            finalized_mode="restored-copy",
+            retained=[{"dest": "/x/legacy.py", "target": "/y"}],
+        )
+        self.assertEqual(
+            rll.retained_legacy_links(self.state), {Path("/x/legacy.py")}
+        )
+
+    def test_corrupt_journal_raises(self) -> None:
+        journal_dir = self.state / "migrations" / "mig-d"
+        journal_dir.mkdir(parents=True)
+        (journal_dir / "journal.jsonl").write_text(
+            "this is not json\n"
+            + json.dumps(
+                {"seq": 2, "phase": "links", "event": "done", "detail": {}}
+            )
+            + "\n"
+        )
+        with self.assertRaises(rll.RetainedLinksError):
+            rll.retained_legacy_links(self.state)
 
 
 if __name__ == "__main__":

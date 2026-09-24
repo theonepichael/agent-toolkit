@@ -46,7 +46,7 @@ file as a Copilot session.
 ## 2. Pick the scope — ask, never assume
 
 ```bash
-python3 ~/.claude/scripts/herdr_delegate.py plan
+python3 ~/.agent-toolkit/scripts/herdr_delegate.py plan
 ```
 
 Returns each prefix in READY with its item count and whether it is worker-safe.
@@ -71,7 +71,7 @@ without weakening concurrent policy.
 One item:
 
 ```bash
-python3 ~/.claude/scripts/herdr_delegate.py launch --slug <slug> [--model <model>] [--kind {pi,copilot,agy,codex}]
+python3 ~/.agent-toolkit/scripts/herdr_delegate.py launch --slug <slug> [--model <model>] [--kind {pi,copilot,agy,codex}]
 ```
 
 For agy or codex, the delegate validates and bootstraps the item's worktree
@@ -87,7 +87,7 @@ the repository.
 The whole queue under a prefix:
 
 ```bash
-python3 ~/.claude/scripts/herdr_delegate.py launch --swarm <N> --prefix <prefix> [--model <model>] [--kind {pi,copilot}]
+python3 ~/.agent-toolkit/scripts/herdr_delegate.py launch --swarm <N> --prefix <prefix> [--model <model>] [--kind {pi,copilot}]
 ```
 
 `--swarm` starts **one** orchestrator (pi by default, or copilot when `--kind copilot` is passed) and hands it `/backlog-item --swarm=N --prefix <prefix>`; `swarm_spawn` owns the fan-out from there. Default `N` to 3 unless the user says otherwise.
@@ -95,7 +95,7 @@ python3 ~/.claude/scripts/herdr_delegate.py launch --swarm <N> --prefix <prefix>
 The same prefix queue, one isolated worker at a time:
 
 ```bash
-python3 ~/.claude/scripts/herdr_delegate.py launch --serial --prefix <prefix> [--model <model>] [--kind {pi,copilot}]
+python3 ~/.agent-toolkit/scripts/herdr_delegate.py launch --serial --prefix <prefix> [--model <model>] [--kind {pi,copilot}]
 ```
 
 `--serial` hands the orchestrator `/backlog-item --serial --prefix <prefix>`.
@@ -107,13 +107,13 @@ queue mode while a serial or concurrent orchestrator for that prefix is live.
 Mid-run, after orchestrator-side code has just landed (a `swarm-tool.ts`, `swarm-tool-logic.ts`, or `backlog-item.md` fix), the running orchestrator is still the old one. Restart it in place instead of hand-closing and hand-resuming:
 
 ```bash
-python3 ~/.claude/scripts/herdr_delegate.py restart --swarm <N> --prefix <prefix> [--run-id <runId>] [--model <model>] [--kind {pi,copilot}]
+python3 ~/.agent-toolkit/scripts/herdr_delegate.py restart --swarm <N> --prefix <prefix> [--run-id <runId>] [--model <model>] [--kind {pi,copilot}]
 ```
 
 For a serial run, use the matching mode:
 
 ```bash
-python3 ~/.claude/scripts/herdr_delegate.py restart --serial --prefix <prefix> [--run-id <runId>] [--model <model>] [--kind {pi,copilot}]
+python3 ~/.agent-toolkit/scripts/herdr_delegate.py restart --serial --prefix <prefix> [--run-id <runId>] [--model <model>] [--kind {pi,copilot}]
 ```
 
 It closes the orchestrator's tab (never the workers'), relaunches it, and
@@ -133,7 +133,7 @@ Picking a model:
 After upgrading a harness CLI (e.g. `codex-cli` or `agy`), verify that the delegate's launch recipe, interactive readiness, and prompt receipt still work before launching real items:
 
 ```bash
-python3 ~/.claude/scripts/herdr_delegate.py probe --kind {pi,copilot,agy,codex} [--model <model>]
+python3 ~/.agent-toolkit/scripts/herdr_delegate.py probe --kind {pi,copilot,agy,codex} [--model <model>]
 ```
 
 `probe` launches the kind in a scratch herdr tab with the exact worker argv, verifies interactive readiness and prompt receipt for a trivial prompt, prints `probe <kind>: PASS`, and closes the scratch tab.

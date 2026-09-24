@@ -30,8 +30,8 @@ import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 // hooks, since they're plain subprocess calls from already-running
 // extension code, not a model-invoked "bash" tool call.
 const ALLOW_PATTERNS: string[] = [
-  "python3 ~/.claude/scripts/settings_seed_drift_check.py *",
-  "python3 ~/.claude/scripts/bundle_drift_check.py *",
+  "python3 ~/.agent-toolkit/scripts/settings_seed_drift_check.py *",
+  "python3 ~/.agent-toolkit/scripts/bundle_drift_check.py *",
   "git log*",
   "git status*",
   "git diff*",
@@ -52,7 +52,7 @@ const ALLOW_PATTERNS: string[] = [
   // worktree-first policy, backlog-item.md steps 3/4/9). Staging is part of
   // step 9 and is distinct from the user approval required for commit.
   // git commit stays off this list so steps 10-11 still stop for approval.
-  "python3 ~/.claude/scripts/worktree.py*",
+  "python3 ~/.agent-toolkit/scripts/worktree.py*",
   "git worktree add*",
   "git -C * worktree add*",
   "git add*",

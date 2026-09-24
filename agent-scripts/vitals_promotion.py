@@ -25,7 +25,7 @@ Flags
   --json                  with --search, emit JSON instead of plain text
 
 Files read/written
-  The store lives under ``vitals/`` in the grill store (``~/.claude/data/grill/vitals``): a
+  The store lives under ``vitals/`` in the grill store (``~/.agent-toolkit/data/grill/vitals``): a
   ``_global.json`` plus one ``<backlog_slug>.json`` per scope — today 7 real
   files. Each file is a top-level JSON list of vitals records (VITALS_SCHEMA_VERSION
   == 1). A list item is a JSON object (a VitalsRecord); that is the whole of
@@ -52,7 +52,7 @@ Service API
       the only write path; always writes exactly the files the pass dirtied.
 
   ``vitals_dir`` is required on both because a defaulted write target would
-  silently mean the live ``~/.claude/data/grill/vitals`` store. Both take a
+  silently mean the live ``~/.agent-toolkit/data/grill/vitals`` store. Both take a
   caller-supplied ``list[Session]`` (``grill.Session`` — this module reads
   grill's schema, it does not own it) and never mutate it: each call parses the
   store afresh, so a dry run followed by a write on the same list reports the
@@ -573,7 +573,7 @@ def _main() -> None:
         "--data-dir",
         type=Path,
         default=None,
-        help="grill session data directory (default: ~/.claude/data/grill)",
+        help="grill session data directory (default: the toolkit data root's grill/)",
     )
     parser.add_argument(
         "--apply",

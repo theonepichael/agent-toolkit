@@ -242,7 +242,8 @@ def render_one(skill: str, harness: str, template_text: str, params: dict) -> st
     values = {**capability_tokens(harness), **params}
     frontmatter = values.pop("FRONTMATTER")
     body = render_body(template_text, values)
-    return f"{frontmatter}\n{do_not_edit_marker(skill, harness)}\n\n{body}"
+    text = f"{frontmatter}\n{do_not_edit_marker(skill, harness)}\n\n{body}"
+    return harness_spec.apply_toolkit_path_tokens(text)
 
 
 def render_all(

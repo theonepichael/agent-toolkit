@@ -83,7 +83,7 @@ NOT_APPLICABLE = object()
 # the descriptor sets _prompt_follows_base (a prompt flag that consumes the
 # next token as its value -- see copilot/agy).
 # Every mechanism below was verified by running it — see the plan artifact at
-# ~/.claude/data/grill/2026-08-31-meta-second-opinion-backend-isol-plan.md.
+# ~/.agent-toolkit/data/grill/2026-08-31-meta-second-opinion-backend-isol-plan.md.
 BACKEND_ISOLATION: dict[str, dict[str, object]] = {
     # Verified: in text-only mode, --disable shell_tool disables shell tools;
     # --ignore-rules and --ignore-user-config drop rulebooks and configs.
@@ -1521,7 +1521,7 @@ def run_pi(
     markup in returned text; it is not the tool permission mechanism.
 
     No retry on timeout (unlike :func:`run_opencode`): telemetry
-    (2026-08-31/09-01, ``~/.claude/data/backend_calls.jsonl``) showed a 3/3
+    (2026-08-31/09-01, ``~/.agent-toolkit/data/backend_calls.jsonl``) showed a 3/3
     failure rate on realistic review prompts (>14KB) through this same
     ``opencode-go`` gateway — a deterministic payload-size stall (~14-20KB
     band), not opencode's intermittent 20-33% flake. A retry there has real

@@ -40,11 +40,17 @@ describe("classify", () => {
     expect(classify("rm -rf /")).toBe("ask");
     expect(classify("git push")).toBe("ask");
     expect(classify("curl http://example.com")).toBe("ask");
-    expect(classify("python3 ~/.claude/scripts/dev_status.py render")).toBe("ask");
+    expect(classify("python3 ~/.agent-toolkit/scripts/dev_status.py render")).toBe("ask");
+  });
+
+  test("legacy ~/.claude/scripts forms are no longer allowed", () => {
+    expect(classify("python3 ~/.claude/scripts/worktree.py slug")).toBe("ask");
+    expect(classify("python3 ~/.claude/scripts/bundle_drift_check.py --status")).toBe("ask");
+    expect(classify("python3 ~/.claude/scripts/settings_seed_drift_check.py --check")).toBe("ask");
   });
 
   test("backlog-item --auto's worktree/build/test commands are allowed", () => {
-    expect(classify("python3 ~/.claude/scripts/worktree.py slug")).toBe("allow");
+    expect(classify("python3 ~/.agent-toolkit/scripts/worktree.py slug")).toBe("allow");
     expect(classify("git worktree add ../repo-slug -b slug")).toBe("allow");
     expect(classify("git -C /repo worktree add ../repo-slug -b slug")).toBe("allow");
     expect(classify("npm install")).toBe("allow");
@@ -300,9 +306,9 @@ describe("classify: per-pattern regression table", () => {
     const representatives: [string, string][] = [
       [
         "settings_seed_drift_check",
-        "python3 ~/.claude/scripts/settings_seed_drift_check.py --check",
+        "python3 ~/.agent-toolkit/scripts/settings_seed_drift_check.py --check",
       ],
-      ["bundle_drift_check", "python3 ~/.claude/scripts/bundle_drift_check.py --status"],
+      ["bundle_drift_check", "python3 ~/.agent-toolkit/scripts/bundle_drift_check.py --status"],
       ["git log", "git log --oneline -5"],
       ["git status", "git status"],
       ["git diff", "git diff HEAD~1"],
@@ -319,7 +325,10 @@ describe("classify: per-pattern regression table", () => {
       ["uv run pytest", "uv run pytest -q"],
       ["uv run ruff check", "uv run ruff check ."],
       ["uv run ruff format", "uv run ruff format ."],
-      ["python3 ~/.claude/scripts/worktree.py", "python3 ~/.claude/scripts/worktree.py slug"],
+      [
+        "python3 ~/.agent-toolkit/scripts/worktree.py",
+        "python3 ~/.agent-toolkit/scripts/worktree.py slug",
+      ],
       ["git worktree add", "git worktree add ../repo-slug -b slug"],
       ["git -C worktree add", "git -C /repo worktree add ../repo-slug -b slug"],
       ["npm install", "npm install"],

@@ -22,13 +22,13 @@ not a user-approval stop — same word, different mechanism, don't conflate
 them.
 
 ## 1. Resolve
-`python3 ~/.claude/scripts/dev_status.py show <slug|N>`. Read the full
+`python3 ~/.agent-toolkit/scripts/dev_status.py show <slug|N>`. Read the full
 record — never start from the dashboard's one-line summary (the shared
 instructions file). Empty context/next_steps/related_files: stop and ask
 the user to fill them in; don't fabricate a plan from the title. Numeric
 id: note the rendered rev for `--if-rev` on the next mutating call.
-related_files already names a grill plan (`~/.claude/data/grill/<slug>-plan.md`)
-or a spec (`~/.claude/data/grill/<slug>-spec.md`)?
+related_files already names a grill plan (`~/.agent-toolkit/data/grill/<slug>-plan.md`)
+or a spec (`~/.agent-toolkit/data/grill/<slug>-spec.md`)?
 Planning and critique (steps 5–6) are already done — skip to step 8.
 Worktree already has implemented, uncommitted changes (e.g. handed back
 from an external executor)? Skip straight to step 9. Either skip: the
@@ -54,7 +54,7 @@ If `start` instead exits 3 naming this machine's id file, run
 `dev_status.py machine-id --repair` and retry; never edit the id file by hand.
 
 ## 3. Branch
-Create or reuse a dedicated worktree and bootstrap dependencies via `python3 ~/.claude/scripts/dev_status.py worktree <slug|N>`. (If multiple project repos are involved or resolution fails, specify `--repo <path>`). Reuse a worktree this session already made for this item instead of a second one.
+Create or reuse a dedicated worktree and bootstrap dependencies via `python3 ~/.agent-toolkit/scripts/dev_status.py worktree <slug|N>`. (If multiple project repos are involved or resolution fails, specify `--repo <path>`). Reuse a worktree this session already made for this item instead of a second one.
 
 Work that lands on an integration branch rather than the default branch (e.g. `release-1`)? Make sure the item's `integration_branch` is set (`update <slug> '{"integration_branch": "<branch>"}'`) *before* creating the worktree: a new item branch starts from it (else from `HEAD`), and step 12's merge check targets it. Confirm the base the command reports (`Created branch '<slug>' from '<base>'`); `--base <ref>` overrides it for one call. A branch that already exists is attached as-is, never re-based.
 
@@ -88,7 +88,7 @@ now answered; cite grill-me's `plan_path` from the spec's own Context field
 as the decision record behind that field. Never interrogate architecture
 inline in the spec itself.
 
-Write the finished spec to `~/.claude/data/grill/<slug>-spec.md` (the same
+Write the finished spec to `~/.agent-toolkit/data/grill/<slug>-spec.md` (the same
 central location grill-me/second-opinion use for plan artifacts — never a
 per-session scratchpad; never `mkdir -p` first, `grill.py`/`second_opinion.py`
 each create it on every invocation, so just write the file). Update the
@@ -106,7 +106,7 @@ unclear — run one more pass before continuing: draft a 300–600 word doc
 covering the module's boundary/responsibility (one paragraph), key
 interfaces it exposes or consumes, explicit non-goals, and known
 unknowns/deferred decisions. Save it to `docs/architecture/{module-slug}.md`
-in the target repo (project documentation, not `~/.claude/data/grill/`) and
+in the target repo (project documentation, not `~/.agent-toolkit/data/grill/`) and
 reference it from the spec/plan. A later item touching the same module cites
 the existing doc instead of repeating this pass — check for it first.
 
@@ -120,7 +120,7 @@ acceptance criteria). If any step is judgment, set the item's gate before
 continuing:
 
 ```bash
-python3 ~/.claude/scripts/dev_status.py gate-set <slug|N> '{"required": true, "criteria": ["<short imperative criterion per judgment step>", "..."]}'
+python3 ~/.agent-toolkit/scripts/dev_status.py gate-set <slug|N> '{"required": true, "criteria": ["<short imperative criterion per judgment step>", "..."]}'
 ```
 
 If every step is mechanical, leave the gate unset (inert by default) —
@@ -241,7 +241,7 @@ from inside the worktree being removed — a branch cannot merge into
 itself.
 
 When landing work on an `integration_branch` (declared via `update`): merge
-through a temporary worktree via `python3 ~/.claude/scripts/dev_status.py integration-merge <slug|N> [--push]`
+through a temporary worktree via `python3 ~/.agent-toolkit/scripts/dev_status.py integration-merge <slug|N> [--push]`
 — never by checking the branch out in the live main checkout.
 
 **`git worktree remove` fails with "Directory not empty"?** A dev server

@@ -34,7 +34,7 @@ export const GuardRails: Plugin = async () => {
           const { stdout } = await run(
             "python3",
             [
-              `${process.env.HOME}/.claude/scripts/guard_rails.py`,
+              `${process.env.HOME}/.agent-toolkit/scripts/guard_rails.py`,
               "--tool",
               "bash",
               "--cwd",
@@ -65,7 +65,7 @@ export const GuardRails: Plugin = async () => {
         const { stdout } = await run(
           "python3",
           [
-            `${process.env.HOME}/.claude/scripts/guard_rails.py`,
+            `${process.env.HOME}/.agent-toolkit/scripts/guard_rails.py`,
             "--tool",
             tool,
             "--cwd",

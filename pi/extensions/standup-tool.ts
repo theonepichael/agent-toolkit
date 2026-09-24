@@ -6,13 +6,13 @@ import { Type } from "typebox";
 import { getEffectiveCwd } from "./cwd";
 
 // Wraps agent-scripts/standup.py, following the pattern set by
-// dev-status-tool.ts (see ~/.claude/data/grill/pi-tool-dev-status-spec.md).
+// dev-status-tool.ts (see ~/.agent-toolkit/data/grill/pi-tool-dev-status-spec.md).
 //
 // Scoped to `fetch` only. standup.md also calls dev_status.py for its
 // pending-item writes, and those already go through the dev_status tool --
 // this tool deliberately does not duplicate them.
 
-const STANDUP_PATH = join(homedir(), ".claude", "scripts", "standup.py");
+const STANDUP_PATH = join(homedir(), ".agent-toolkit", "scripts", "standup.py");
 
 const ACTIONS = ["fetch"] as const;
 
@@ -50,7 +50,7 @@ export default function (pi: ExtensionAPI) {
     promptSnippet: "Gather the local sources for a daily standup draft",
     promptGuidelines: [
       "Never invoke standup.py via bash -- always use standup instead.",
-      'standup covers everything standup.py does: action "fetch", optionally with a date. If you are about to compose a `python3 ~/.claude/scripts/standup.py fetch ...` bash command, use standup instead.',
+      'standup covers everything standup.py does: action "fetch", optionally with a date. If you are about to compose a `python3 ~/.agent-toolkit/scripts/standup.py fetch ...` bash command, use standup instead.',
       "standup is read-only. It never comments on a ticket, posts a message, or marks anything read.",
       "Pending-item writes are not part of this tool -- use the dev_status tool's pending_add and pending_update actions for those.",
     ],

@@ -26,6 +26,8 @@ sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(REPO / "agent-scripts"))
 
 import agent_toolkit_paths  # noqa: E402
+import depart  # noqa: E402
+import depart_exec  # noqa: E402
 import dev_status_mutation  # noqa: E402
 import install  # noqa: E402
 import link_inspect  # noqa: E402
@@ -147,10 +149,38 @@ def _full_stores(home: Path, *, skip: tuple[str, ...] = ()) -> None:
     (notes / "keep.txt").write_text("not toolkit data\n")
 
 
+# A hand-formatted uninstall baseline (indent 4, one earlier layer), so byte-exact
+# restores are distinguishable from a re-serialization.
+PRIOR_BASELINE = (
+    json.dumps(
+        {
+            "version": 1,
+            "layers": [
+                {
+                    "captured_at": "2026-01-01T00:00:00+00:00",
+                    "records": {"file:/nowhere/.bashrc": {"state": "absent"}},
+                }
+            ],
+            "transactions": [],
+            "installed_trees": {},
+        },
+        indent=4,
+    )
+    + "\n"
+).encode()
+
+
+def _baseline_file(home: Path) -> Path:
+    return home / ".local" / "state" / "agent-toolkit" / "baseline.json"
+
+
 @pytest.fixture
 def machine(sandbox):
     _installed_runtime(sandbox)
     _full_stores(sandbox)
+    baseline = _baseline_file(sandbox)
+    baseline.parent.mkdir(parents=True, exist_ok=True)
+    baseline.write_bytes(PRIOR_BASELINE)
     return sandbox
 
 
@@ -274,11 +304,15 @@ def _expected_phase_order() -> list[str]:
         "preflight",
         "inventory",
         *(f"stage:{d}" for d in domains),
+        "carry:unrelated-notes",
+        "baseline",
         "links",
+        "settings-rewrite",
         "reverify",
         *(f"promote:{d}" for d in domains),
         "flip",
         *(f"snapshot:{d}" for d in domains),
+        "carry-snapshot:unrelated-notes",
         "validate",
     ]
 
@@ -310,7 +344,7 @@ def test_full_run_moves_every_domain_flips_and_snapshots(machine, capsys, valida
     assert state["batch_hash"] == _sha(batch)
     assert (_dest("decisions") / "nested" / "notes.md").read_text() == "nested\n"
 
-    assert _tree(machine / ".claude" / "data" / "unrelated-notes") == unrelated
+    assert _tree(machine / ".agent-toolkit" / "data" / "unrelated-notes") == unrelated
     assert not (_work_dir(machine, mid) / "staging").exists() or not any(
         (_work_dir(machine, mid) / "staging").iterdir()
     )
@@ -759,13 +793,13 @@ def test_finalize_refuses_unjournalled_transform_leftover(
 
 def test_finalize_deletes_only_journal_proven_paths(machine, capsys, validation):
     mid = _commit(capsys)
-    unrelated = _tree(machine / ".claude" / "data" / "unrelated-notes")
+    unrelated = _tree(machine / ".agent-toolkit" / "data" / "unrelated-notes")
     data_after = {d: _tree(_dest(d)) for d in agent_toolkit_paths.DOMAINS}
     code, report = _finalize(capsys, mid)
     assert code == 0, report
     assert not _snapshot_dir(machine, mid).exists()
     assert not _work_dir(machine, mid).exists()
-    assert _tree(machine / ".claude" / "data" / "unrelated-notes") == unrelated
+    assert _tree(machine / ".agent-toolkit" / "data" / "unrelated-notes") == unrelated
     assert {d: _tree(_dest(d)) for d in agent_toolkit_paths.DOMAINS} == data_after
     assert _layout() == "toolkit-home"
     records = mth.read_records(_jdir(machine, mid), mth.FINALIZE_NAME)
@@ -857,19 +891,229 @@ def test_retained_legacy_links_survive_orphan_cleanup_until_finalize(
     assert old not in mth.retained_legacy_links(_state_dir(machine))
 
 
-def test_restored_finalize_keeps_legacy_links_protected(
+def _toolkit_repo(tmp_path: Path) -> Path:
+    """An agent-toolkit-shaped checkout whose shared runtime moved to the toolkit home.
+
+    It carries the three ownership markers (links.toml, install.py,
+    agent-scripts/). ``gated.py`` only applies to pi.
+    """
+    repo = tmp_path / "repo"
+    scripts = repo / "agent-scripts"
+    scripts.mkdir(parents=True)
+    (repo / "install.py").write_text("# installer\n")
+    (repo / "claude" / "icons").mkdir(parents=True)
+    rows = []
+    for name in ("tool", "stale", "dang", "rel", "gated", "foreign", "other"):
+        (scripts / f"{name}.py").write_text(f"# {name}\n")
+        harness = '\nharness = "pi"' if name == "gated" else ""
+        rows.append(
+            f'[[link]]\nsrc = "agent-scripts/{name}.py"\n'
+            f'dest = "~/.agent-toolkit/scripts/{name}.py"{harness}\n'
+        )
+    rows.append('[[link]]\nsrc = "claude/icons"\ndest = "~/.agent-toolkit/icons"\n')
+    (repo / "links.toml").write_text("\n".join(rows))
+    return repo
+
+
+def _legacy_links(home: Path, repo: Path, tmp_path: Path) -> dict[str, Path]:
+    """Legacy ~/.claude links in every shape the desktop showed."""
+    legacy = home / ".claude"
+    scripts = legacy / "scripts"
+    origin = tmp_path / "origin"
+    (origin / "claude" / "scripts").mkdir(parents=True)
+    (origin / "links.toml").write_text("")
+    (origin / "install.py").write_text("")
+    (origin / "claude" / "scripts" / "foreign.py").write_text("# origin\n")
+    links = {
+        "tool": (scripts / "tool.py", repo / "agent-scripts" / "tool.py"),
+        "stale": (scripts / "stale.py", repo / "agent-scripts" / "stale.py"),
+        "dang": (scripts / "dang.py", repo / "claude" / "scripts" / "dang.py"),
+        "rel": (
+            scripts / "rel.py",
+            Path(os.path.relpath(repo / "agent-scripts" / "rel.py", scripts)),
+        ),
+        "icons": (legacy / "icons", repo / "claude" / "icons"),
+        "gated": (scripts / "gated.py", repo / "agent-scripts" / "gated.py"),
+        "foreign": (scripts / "foreign.py", origin / "claude" / "scripts" / "foreign.py"),
+    }
+    for dest, target in links.values():
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.symlink_to(target)
+    (scripts / "other.py").write_text("a real file\n")
+    history = _state_dir(home) / "history.jsonl"
+    history.parent.mkdir(parents=True, exist_ok=True)
+    with history.open("a") as fh:
+        fh.write(
+            json.dumps(
+                {
+                    "kind": "symlink-created",
+                    "dest": str(scripts / "stale.py"),
+                    "src": str(repo / "claude" / "scripts" / "stale.py"),
+                }
+            )
+            + "\n"
+        )
+    return {name: dest for name, (dest, _target) in links.items()}
+
+
+def test_links_retain_toolkit_legacy_links_by_the_mapping(
     machine, capsys, validation, tmp_path
 ):
-    repo = _fixture_repo(tmp_path)
-    old = machine / ".claude" / "scripts" / "tool.py"
-    old.symlink_to(repo / "scripts" / "tool.py")
+    repo = _toolkit_repo(tmp_path)
+    legacy = _legacy_links(machine, repo, tmp_path)
+    code, report = _migrate(capsys, repo=repo)
+    assert code == 0, report
+    retained = mth.retained_legacy_links(_state_dir(machine))
+    toolkit = {legacy[n] for n in ("tool", "stale", "dang", "rel", "icons")}
+    assert retained == toolkit
+
+    code, report = _finalize(capsys, report["migration_id"], repo=repo)
+    assert code == 0, report
+    for dest in toolkit:
+        assert not os.path.lexists(dest), dest
+    assert legacy["gated"].is_symlink()
+    assert legacy["foreign"].is_symlink()
+    assert (machine / ".claude" / "scripts" / "other.py").read_text() == "a real file\n"
+    dests = {e.get("dest") for e in _history(machine)}
+    assert not dests & {str(d) for d in toolkit}
+
+
+def test_finalize_leaves_a_repointed_retained_link_and_its_other_history(
+    machine, capsys, validation, tmp_path
+):
+    repo = _toolkit_repo(tmp_path)
+    legacy = _legacy_links(machine, repo, tmp_path)
+    code, report = _migrate(capsys, repo=repo)
+    assert code == 0, report
+    tool = legacy["tool"]
+    journaled = str(repo / "agent-scripts" / "tool.py")
+    elsewhere = tmp_path / "elsewhere.py"
+    tool.unlink()
+    tool.symlink_to(elsewhere)
+    real = legacy["rel"]
+    real.unlink()
+    real.write_text("replaced by hand\n")
     history = _state_dir(machine) / "history.jsonl"
+    with history.open("a") as fh:
+        for src in (journaled, str(elsewhere)):
+            fh.write(json.dumps({"kind": "symlink-created", "dest": str(tool), "src": src}) + "\n")
+
+    code, report = _finalize(capsys, report["migration_id"], repo=repo)
+    assert code == 0, report
+    assert os.readlink(tool) == str(elsewhere)
+    assert real.read_text() == "replaced by hand\n"
+    kept = [(e["dest"], e["src"]) for e in _history(machine) if e.get("dest") == str(tool)]
+    assert kept == [(str(tool), str(elsewhere))]
+
+
+def _check_ctx(repo: Path) -> install.Context:
+    return install.build_context(
+        install.parse_args(["--check-links", "--harness=claude"]), repo_root=repo
+    )
+
+
+def _recorded_legacy_link(home: Path, repo: Path) -> Path:
+    """A manifest-recorded legacy link the fixture repo no longer produces."""
+    old = home / ".claude" / "scripts" / "tool.py"
+    old.symlink_to(repo / "scripts" / "tool.py")
+    history = _state_dir(home) / "history.jsonl"
     history.parent.mkdir(parents=True, exist_ok=True)
     history.write_text(
         json.dumps(
             {"kind": "symlink-created", "dest": str(old), "src": str(repo / "scripts" / "tool.py")}
-        ) + "\n"
+        )
+        + "\n"
     )
+    return old
+
+
+def test_migration_validation_passes_check_links_with_retained_links(
+    machine, capsys, monkeypatch, tmp_path
+):
+    """The real check-links, run where validation runs, sees the links journal."""
+    repo = _fixture_repo(tmp_path)
+    _recorded_legacy_link(machine, repo)
+    outputs: list[str] = []
+
+    def in_process_check(_ctx: object) -> tuple[bool, list[dict[str, object]]]:
+        code = install.do_check_links(_check_ctx(repo))
+        outputs.append(capsys.readouterr().out)
+        return code == 0, [{"command": ["check-links"], "exit": code}]
+
+    monkeypatch.setattr(mth, "_run_validation", in_process_check)
+    code, report = _migrate(capsys, repo=repo)
+    assert code == 0, (report, outputs)
+    assert "1 legacy link(s) kept for a toolkit-home migration" in outputs[0]
+
+
+def test_check_links_notes_nothing_for_a_retained_link_that_is_no_orphan(
+    machine, capsys, validation, tmp_path
+):
+    """Mapping-retained links the manifest never recorded are no finding at all."""
+    repo = _toolkit_repo(tmp_path)
+    _legacy_links(machine, repo, tmp_path)
+    code, report = _migrate(capsys, repo=repo)
+    assert code == 0, report
+    assert mth.retained_legacy_links(_state_dir(machine))
+    install.do_check_links(_check_ctx(repo))
+    out = capsys.readouterr().out
+    assert "orphaned" not in out, out
+    assert "legacy link(s) kept" not in out, out
+
+
+def test_check_links_fails_loud_when_a_migration_journal_is_unreadable(
+    machine, capsys, validation, tmp_path
+):
+    repo = _fixture_repo(tmp_path)
+    old = _recorded_legacy_link(machine, repo)
+    code, report = _migrate(capsys, repo=repo)
+    assert code == 0, report
+    journal = _jdir(machine, report["migration_id"]) / mth.JOURNAL_NAME
+    journal.chmod(0)
+    try:
+        ctx = _check_ctx(repo)
+        assert install.do_check_links(ctx) == 1
+        out = capsys.readouterr()
+        assert "journal" in (out.out + out.err) and "unreadable" in (out.out + out.err)
+        links = install.gather_links(ctx, link_inspect.load_links(repo / "links.toml"))
+        assert install._find_orphaned_links(ctx, links) == []
+        assert old.is_symlink()
+    finally:
+        journal.chmod(0o600)
+
+
+def test_legacy_layout_migrations_keep_their_links_protected(
+    machine, capsys, validation, tmp_path
+):
+    """While the legacy layout is live again its links stay exempt.
+
+    A restored or rolled-back migration returns the machine to the legacy
+    layout, whose settings still invoke the legacy links, so neither cleanup
+    nor the audit may treat them as orphans. Only a normal finalize ends that.
+    """
+    repo = _fixture_repo(tmp_path)
+    old = _recorded_legacy_link(machine, repo)
+    validation.passes = False
+    code, report = _migrate(capsys, repo=repo)
+    assert code != 0, report
+    assert old in mth.retained_legacy_links(_state_dir(machine))
+
+    validation.passes = True
+    code, report = _migrate(capsys, repo=repo)
+    assert code == 0, report
+    code, _ = _rollback(capsys, report["migration_id"], repo=repo)
+    assert code == 0
+    assert old in mth.retained_legacy_links(_state_dir(machine))
+    ctx = install.build_context(install.parse_args(["--harness=claude"]), repo_root=repo)
+    links = install.gather_links(ctx, link_inspect.load_links(repo / "links.toml"))
+    assert old not in install._find_orphaned_links(ctx, links)
+
+
+def test_restored_finalize_keeps_legacy_links_protected(
+    machine, capsys, validation, tmp_path
+):
+    repo = _fixture_repo(tmp_path)
+    old = _recorded_legacy_link(machine, repo)
     code, report = _migrate(capsys, repo=repo)
     assert code == 0, report
     mid = report["migration_id"]
@@ -1005,6 +1249,12 @@ def _pointer(root: Path) -> str:
 
 def _check_recovered(root: Path, expected: mth.Expected) -> None:
     assert _pointer(root) == expected.layout
+    baseline = _baseline_file(root)
+    if expected.layout == "legacy":
+        assert baseline.read_bytes() == PRIOR_BASELINE
+    else:
+        loaded = depart.load_baseline(baseline.parent)
+        assert loaded is not None and len(loaded.layers) == 2
     legacy_items = root / ".claude" / "data" / "backlog" / "items.json"
     dest_items = root / ".agent-toolkit" / "data" / "backlog" / "items.json"
     if expected.layout == "legacy":
@@ -1046,7 +1296,13 @@ def _assert_crash_state(home: Path, expected: mth.Expected) -> None:
 
 
 def test_oracle_covers_every_checkpoint():
-    fi.check_oracle_complete(mth.CHECKPOINTS, _oracle_rows())
+    # runtime-registered carry rows (migrate.carry.<name>.* generated from a
+    # run's journaled carried list) are legitimately undeclared: they appear
+    # only after a preflight discovers unclassified entries.
+    fi.check_oracle_complete(
+        mth.CHECKPOINTS,
+        [r for r in _oracle_rows() if not r.checkpoint.startswith("migrate.carry.")],
+    )
 
 
 @pytest.mark.allow_real_subprocess  # the migrator runs in a child killed by SIGKILL
@@ -1095,3 +1351,169 @@ def test_crash_at_checkpoint_recovers_by_the_oracle(machine, checkpoint):
         for name in (mth.JOURNAL_NAME, mth.ROLLBACK_NAME, mth.FINALIZE_NAME):
             if (jdir / name).exists():
                 assert mth.is_terminal(jdir, name), (jdir, name)
+
+
+# ── uninstall baseline ──────────────────────────────────────────────────────
+
+
+def _layer_tag(mid: str) -> str:
+    return f"toolkit-home-migration {mid}"
+
+
+def _planned_dests(records: list[dict]) -> list[str]:
+    [links] = [r for r in records if r["phase"] == "links" and r["event"] == "begin"]
+    return [str(link["dest"]) for link in links["detail"]["planned"]]
+
+
+def test_baseline_layer_records_planned_destinations_before_links(
+    machine, capsys, validation
+):
+    first = next(iter(link_inspect.load_links(REPO / "links.toml")))
+    already = f"symlink:{link_inspect.expand_dest(first.dest, machine)}"
+    prior = depart.load_baseline(_baseline_file(machine).parent)
+    prior.layers[0].records[already] = {"state": "absent"}
+    _baseline_file(machine).write_text(
+        json.dumps(depart.baseline_to_dict(prior), indent=2, sort_keys=True) + "\n"
+    )
+    code, report = _migrate(capsys)
+    assert code == 0, report
+    mid = report["migration_id"]
+    records = mth.read_records(_jdir(machine, mid))
+    begun = [r["phase"] for r in records if r["event"] == "begin"]
+    assert begun.index("baseline") < begun.index("links")
+    assert begun.index("stage:backend-log") < begun.index("baseline")
+
+    loaded = depart.load_baseline(_baseline_file(machine).parent)
+    assert [layer.captured_at for layer in loaded.layers][-1] == _layer_tag(mid)
+    ours = loaded.layers[-1].records
+    assert ours, "the migration recorded nothing"
+    assert already not in ours
+    link_keys = [k for k in ours if k.startswith(("file:", "symlink:"))]
+    assert link_keys and all(ours[k] == {"state": "absent"} for k in link_keys)
+    dests = _planned_dests(records)
+    sample = next(d for d in dests if f"symlink:{d}" != already)
+    for key in (f"file:{sample}", f"symlink:{sample}", f"file:{sample}.bak"):
+        assert key in ours, key
+    assert f"directory:{machine / '.agent-toolkit'}" in ours
+    assert not any(k.startswith("directory:") and "/.local/state" in k for k in ours)
+    assert loaded.layers[0].records == prior.layers[0].records
+
+
+def test_next_install_records_nothing_new_and_departure_owns_the_links(
+    machine, capsys, validation
+):
+    code, report = _migrate(capsys)
+    assert code == 0, report
+    records = mth.read_records(_jdir(machine, report["migration_id"]))
+    dests = [Path(d) for d in _planned_dests(records)]
+    state_dir = _baseline_file(machine).parent
+    loaded = depart.load_baseline(state_dir)
+    before = len(loaded.layers)
+    live = depart_exec.capture_destination_records(
+        dests, home=machine, state_dir=state_dir, blob_dir=state_dir
+    )
+    loaded.add_layer("next-install", live)
+    assert len(loaded.layers) == before
+    key = f"symlink:{dests[0]}"
+    verdict = depart.classify_ownership_key(key, loaded.value_for(key), live[key])
+    assert (verdict.bucket, verdict.action) == (depart.BUCKET_OWNED, depart.ACTION_REMOVE)
+
+
+def test_failed_validation_restores_the_baseline_bytes(machine, capsys, validation):
+    validation.passes = False
+    code, report = _migrate(capsys)
+    assert code == 1, report
+    assert _baseline_file(machine).read_bytes() == PRIOR_BASELINE
+
+
+def test_a_baseline_the_migration_created_is_deleted_on_restore(
+    machine, capsys, validation
+):
+    _baseline_file(machine).unlink()
+    validation.passes = False
+    code, report = _migrate(capsys)
+    assert code == 1, report
+    assert not _baseline_file(machine).exists()
+
+
+def test_narrow_rollback_restores_the_baseline_bytes(machine, capsys, validation):
+    mid = _commit(capsys)
+    code, report = _rollback(capsys, mid)
+    assert code == 0, report
+    assert _baseline_file(machine).read_bytes() == PRIOR_BASELINE
+
+
+def test_narrow_rollback_keeps_a_later_install_layer(machine, capsys, validation):
+    mid = _commit(capsys)
+    state_dir = _baseline_file(machine).parent
+    loaded = depart.load_baseline(state_dir)
+    loaded.add_layer("later-install", {"file:/nowhere/.zshrc": {"state": "absent"}})
+    depart.save_baseline(state_dir, loaded)
+    code, report = _rollback(capsys, mid)
+    assert code == 0, report
+    after = depart.load_baseline(state_dir)
+    assert [layer.captured_at for layer in after.layers] == [
+        "2026-01-01T00:00:00+00:00",
+        "later-install",
+    ]
+
+
+@pytest.mark.parametrize("damage", ["edit-layer", "drop-layer", "delete", "garble"])
+def test_narrow_rollback_refuses_a_changed_baseline(
+    machine, capsys, validation, damage
+):
+    mid = _commit(capsys)
+    path = _baseline_file(machine)
+    if damage in ("edit-layer", "drop-layer"):
+        data = json.loads(path.read_text())
+        ours = next(l for l in data["layers"] if l["captured_at"] == _layer_tag(mid))
+        if damage == "edit-layer":
+            key = next(iter(ours["records"]))
+            ours["records"][key] = {"state": "tampered"}
+        else:
+            data["layers"].remove(ours)
+        path.write_text(json.dumps(data))
+    elif damage == "delete":
+        path.unlink()
+    else:
+        path.write_text("{not json")
+    snapshot = (_tree(machine), _tree(_state_dir(machine)))
+    code, report = _rollback(capsys, mid)
+    assert code == 1, report
+    assert "baseline.json" in report["outcome"]
+    assert (_tree(machine), _tree(_state_dir(machine))) == snapshot
+
+
+def test_macos_skips_the_baseline(machine, capsys, validation, monkeypatch):
+    monkeypatch.setattr(mth, "_is_linux", lambda: False)
+    code, report = _migrate(capsys)
+    assert code == 0, report
+    assert _baseline_file(machine).read_bytes() == PRIOR_BASELINE
+    records = mth.read_records(_jdir(machine, report["migration_id"]))
+    [begin] = [r for r in records if r["phase"] == "baseline" and r["event"] == "begin"]
+    assert begin["detail"]["skipped"] == "not linux"
+
+
+def test_an_unparseable_baseline_refuses_before_any_write(machine, capsys, validation):
+    _baseline_file(machine).write_text("{not json")
+    before = _legacy_trees()
+    code, report = _migrate(capsys)
+    assert code == 1, report
+    assert "baseline.json" in report["outcome"]
+    assert _baseline_file(machine).read_text() == "{not json"
+    assert _legacy_trees() == before
+    assert _layout() == "legacy"
+
+
+def test_a_regular_file_at_a_planned_destination_refuses_before_the_baseline(
+    machine, capsys, validation
+):
+    first = next(iter(link_inspect.load_links(REPO / "links.toml")))
+    blocker = link_inspect.expand_dest(first.dest, machine)
+    blocker.parent.mkdir(parents=True, exist_ok=True)
+    blocker.write_text("user file\n")
+    code, report = _migrate(capsys)
+    assert code == 1, report
+    assert str(blocker) in report["outcome"]
+    assert _baseline_file(machine).read_bytes() == PRIOR_BASELINE
+    assert blocker.read_text() == "user file\n"

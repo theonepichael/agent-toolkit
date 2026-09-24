@@ -63,6 +63,7 @@ from pathlib import Path
 
 import cli_common
 import link_inspect
+import retained_legacy_links
 
 # What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
 TOOLKIT_DATA = "none"
@@ -283,6 +284,23 @@ def _report(findings: dict[str, list[str]], quiet: bool, repo: Path) -> None:
         print(message)
 
 
+def _retained_legacy_links(home: Path) -> set[Path]:
+    """Legacy links an unfinalized toolkit-home migration keeps, or empty.
+
+    The drift hook must stay silent about itself, so a journal it cannot read
+    degrades to no exemptions rather than crashing session start -- the
+    orphaned links are then reported (the migration owns the machine until it
+    is finalized or rolled back). The installer state directory holds the
+    journals; its path is the manifest's parent.
+    """
+    try:
+        return retained_legacy_links.retained_legacy_links(
+            link_inspect.manifest_path(home).parent
+        )
+    except OSError:
+        return set()
+
+
 def _audit(
     specs: list[link_inspect.LinkSpec],
     managed_dirs: list[link_inspect.ManagedDirSpec],
@@ -315,6 +333,7 @@ def _audit(
             report_uninstalled=True,
             specs=specs,
             managed_dirs=managed_dirs,
+            retained=_retained_legacy_links(home),
         )
     except (OSError, ValueError, TypeError):
         return None

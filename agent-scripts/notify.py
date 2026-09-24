@@ -30,11 +30,13 @@ import subprocess
 import sys
 from pathlib import Path
 
+import agent_toolkit_paths
 import cli_common
 import harness_spec
 
 # What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
-TOOLKIT_DATA = "none"
+# It reads the toolkit home's installed icons directory and writes nothing.
+TOOLKIT_DATA = "reader"
 
 ICONS_DIR = Path(__file__).resolve().parent.parent / "claude" / "icons"
 
@@ -74,13 +76,17 @@ def get_harness_icon(
     config = APP_REGISTRATIONS.get(h)
     candidate_names = [config["icon"]] if config else [f"{h}.png"]
 
+    try:
+        installed_icons: Path | None = agent_toolkit_paths.toolkit_root() / "icons"
+    except agent_toolkit_paths.LayoutError:
+        installed_icons = None
+
     for name in candidate_names:
         icon_path = ICONS_DIR / name
         if icon_path.exists():
             return icon_path
-        user_icon = Path.home() / ".claude" / "icons" / name
-        if user_icon.exists():
-            return user_icon
+        if installed_icons is not None and (installed_icons / name).exists():
+            return installed_icons / name
 
     return None
 

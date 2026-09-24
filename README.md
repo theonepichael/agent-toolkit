@@ -104,21 +104,26 @@ rerun.
 # migration is committed but not finalized; use the narrow rollback below):
 ./install.sh --rollback
 
-# Toolkit-home migration: moves the toolkit data out of ~/.claude/data.
+# Toolkit-home migration: moves the toolkit data out of its legacy home under ~/.claude.
 # Dry run: every preflight check, writes nothing:
 ./install.sh --migrate-toolkit-home --harness=claude --dry-run
 # Real run: journal under ~/.local/state/agent-toolkit/migrations/<id>/,
-# data staged, promoted, layout flipped, originals kept in
-# ~/.claude/data/.toolkit-home-snapshot-<id>/, then validated in fresh
-# processes; a failed validation restores the legacy layout.
+# data staged, promoted, layout flipped, originals kept beside the legacy
+# data in .toolkit-home-snapshot-<id>/, then validated in fresh processes;
+# a failed validation restores the legacy layout.
 # On a personal machine, run dev_status_sync.py status first, then:
 ./install.sh --migrate-toolkit-home --harness=claude --skip-reconciliation
 # Undo one committed migration (refuses if anything was written since):
 ./install.sh --rollback-toolkit-home-migration=<id>
-# After a commit, delete the snapshot, staging and retired legacy links.
-# After a rollback or failed-validation restore, delete the retained
-# transformed copy if it still matches the journal (telemetry is reported):
+# After a commit, delete the snapshot, staging and retired legacy links
+# (an emptied legacy ~/.claude/{scripts,hooks,icons} goes too; the rollout
+# carries unclassified data such as plans/ and draft-issues/ as journalled
+# carry steps, undoable like any domain):
 ./install.sh --finalize-toolkit-home-migration=<id>
+# The rollout gate: the residue audit must pass on both machines — it fails
+# on anything toolkit-owned left at a legacy location, other than the
+# layout pointer:
+./install.sh --check-links
 ```
 
 ### Shell Integration
@@ -142,9 +147,9 @@ the difference between a working install and silent fallbacks.
 
 | Path | Status | What it holds |
 | :--- | :--- | :--- |
-| `~/.claude/data/backlog/` | **Created on first use** by `dev_status.py` | The backlog/pending store (items.json, pending_items.json, _meta.json, journal.jsonl). Per-user by construction — it lives in your home, not in the repo. Hardcoded location: `Path.home() / ".claude" / "data" / "backlog"`; there is no `XDG_DATA_HOME` support. Out-of-scope concepts live in the sibling `~/.claude/data/backlog-out-of-scope/`, not nested under this path. |
-| `~/.claude/data/grill/` | **Created on first use** by `grill.py` and `second_opinion.py` | Spec, plan, and critique artifacts written by the `/spec`, `/grill-me`, and `/second-opinion` skills. Same hardcoded base path as above. |
-| `~/.claude/data/to-tickets/` | **Created on first use** by `to_tickets_runner.py` | Batch files drafted by the `/to-tickets` skill. |
+| `~/.agent-toolkit/data/backlog/` | **Created on first use** by `dev_status.py` | The backlog/pending store (items.json, pending_items.json, _meta.json, journal.jsonl). Per-user by construction — it lives in your home, not in the repo. Hardcoded location: `Path.home() / ".claude" / "data" / "backlog"`; there is no `XDG_DATA_HOME` support. Out-of-scope concepts live in the sibling `~/.agent-toolkit/data/backlog-out-of-scope/`, not nested under this path. |
+| `~/.agent-toolkit/data/grill/` | **Created on first use** by `grill.py` and `second_opinion.py` | Spec, plan, and critique artifacts written by the `/spec`, `/grill-me`, and `/second-opinion` skills. Same hardcoded base path as above. |
+| `~/.agent-toolkit/data/to-tickets/` | **Created on first use** by `to_tickets_runner.py` | Batch files drafted by the `/to-tickets` skill. |
 | `~/.secrets` (or wherever you keep shell env) | **Expected, user-supplied — never created by the installer** | This machine's `SECOND_OPINION_*` model pools live here. The toolkit itself never opens this file — it reads environment variables, however you set them. |
 
 ### Environment variables (all optional)
@@ -192,7 +197,7 @@ export SECOND_OPINION_PI_MODEL_POOL="opencode-go/glm-5.2,opencode-go/glm-5.3-fla
 
 | Harness | Primary Config | Skills / Prompts Path | Extensions / Hooks |
 | :--- | :--- | :--- | :--- |
-| **Claude Code** | `~/.claude/CLAUDE.md` | `~/.claude/commands/` | `~/.claude/scripts/guard_rails.py` |
+| **Claude Code** | `~/.claude/CLAUDE.md` | `~/.claude/commands/` | `~/.agent-toolkit/scripts/guard_rails.py` |
 | **GitHub Copilot** | `~/.copilot/copilot-instructions.md` | `~/.copilot/skills/` | `~/.copilot/hooks/` |
 | **OpenCode** | `~/.config/opencode/opencode.jsonc` | `~/.config/opencode/commands/` | `~/.config/opencode/plugin/` |
 | **Antigravity (AGY)** | `~/.gemini/GEMINI.md` | `~/.gemini/antigravity-cli/skills/` | `~/.gemini/config/hooks.json` |
@@ -247,7 +252,7 @@ JSONL to `$XDG_STATE_HOME/agent-toolkit/timing.jsonl`, defaulting to
 For example, to measure a dashboard call:
 
 ```sh
-AGENT_TOOLKIT_TIMING=1 python3 ~/.claude/scripts/dev_status.py render
+AGENT_TOOLKIT_TIMING=1 python3 ~/.agent-toolkit/scripts/dev_status.py render
 ```
 
 Each record has `name`, `started_at`, `duration_seconds`, `outcome`, `pid`,

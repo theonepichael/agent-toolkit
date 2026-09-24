@@ -132,11 +132,11 @@ class TestHarnessFeatureCoverage(unittest.TestCase):
         self.assertIn("notify.py", pi_text)
         self.assertIn("agent_settled", pi_text)
 
-        # 6. Codex: invokes ~/.claude/scripts/notify.py directly (documented in codex/CLAUDE_CODE_PARITY.md)
+        # 6. Codex: invokes ~/.agent-toolkit/scripts/notify.py directly (documented in codex/CLAUDE_CODE_PARITY.md)
         parity_path = REPO_ROOT / "codex" / "CLAUDE_CODE_PARITY.md"
         self.assertTrue(parity_path.is_file())
         parity_text = parity_path.read_text()
-        self.assertIn("~/.claude/scripts/notify.py", parity_text)
+        self.assertIn("~/.agent-toolkit/scripts/notify.py", parity_text)
 
 
 class TestCodexNotifyHandling(unittest.TestCase):

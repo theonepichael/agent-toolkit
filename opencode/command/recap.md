@@ -6,7 +6,7 @@ description: "prints a friendly prose recap of recent activity. use when the use
 Run:
 
 ```bash
-DEVSTATUS_AGENT=1 python3 ~/.claude/scripts/dev_status.py recap
+DEVSTATUS_AGENT=1 python3 ~/.agent-toolkit/scripts/dev_status.py recap
 ```
 
 Display stdout verbatim — do not narrate, do not reformat.
@@ -14,5 +14,5 @@ Display stdout verbatim — do not narrate, do not reformat.
 If invoked with `--refresh` or if the user asks to refresh/regenerate the recap, pass `--refresh`:
 
 ```bash
-DEVSTATUS_AGENT=1 python3 ~/.claude/scripts/dev_status.py recap --refresh
+DEVSTATUS_AGENT=1 python3 ~/.agent-toolkit/scripts/dev_status.py recap --refresh
 ```
