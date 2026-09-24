@@ -25,6 +25,7 @@ Three kinds of coverage:
   fails the suite instead of drifting quietly.
 """
 
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -433,6 +434,108 @@ class EndToEndTests(unittest.TestCase):
             self.assertNotIn("falls back", text, skill)
             self.assertIn("dir = true", text, skill)
             self.assertIn("~/.pi/agent/skills/", text, skill)
+
+    def _extract_frontmatter(self, text: str) -> str:
+        parts = text.split("---", 2)
+        self.assertEqual(
+            len(parts), 3, "input has no frontmatter fence (---\n...\n---)"
+        )
+        return parts[1]
+
+    def _validate_frontmatter(self, frontmatter: str, label: str) -> None:
+        """Stdlib-only check for the two YAML hazard classes this bug covers
+        (no third-party YAML parser, so test/test_*.py stays runnable with
+        plain python3 per STYLE.md):
+
+        (1) an unquoted value starting with `[`/`{` must be one complete,
+            balanced flow collection with nothing trailing its closing
+            bracket — `[--auto] [slug|N]` is invalid (the second `[...]`
+            opens an unterminated sequence); `[task description]` is valid.
+        (2) an unquoted plain-scalar value must not contain `': '` or
+            `' #'` — either is misread by a YAML parser (a nested mapping
+            indicator, or a comment start). Quoted values are opaque.
+        """
+        for raw in frontmatter.splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            # Only top-level `key: value` lines (a simple key at column 0).
+            match = re.match(r"^([A-Za-z0-9_-]+):(\s|$)", line)
+            if not match:
+                continue
+            key = match.group(1)
+            value = line[match.end():].strip()
+            if not value:
+                continue
+            if value[0] in ('"', "'"):
+                continue
+            if value[0] in ("[", "{"):
+                opener = value[0]
+                closer = "}" if opener == "{" else "]"
+                depth = 0
+                in_quote = False
+                quote_char = ""
+                for i, ch in enumerate(value):
+                    if in_quote:
+                        if ch == quote_char:
+                            in_quote = False
+                        continue
+                    if ch in ('"', "'"):
+                        in_quote = True
+                        quote_char = ch
+                        continue
+                    if ch == opener:
+                        depth += 1
+                    elif ch == closer:
+                        depth -= 1
+                        if depth == 0:
+                            if value[i + 1:].strip():
+                                self.fail(
+                                    f"{label}: flow collection for {key!r} has "
+                                    f"trailing content after its closing "
+                                    f"{closer!r}: {value!r}"
+                                )
+                            break
+                else:
+                    self.fail(
+                        f"{label}: flow collection for {key!r} is not "
+                        f"balanced: {value!r}"
+                    )
+                continue
+            # plain unquoted scalar
+            if ": " in value or " #" in value:
+                self.fail(
+                    f"{label}: unquoted plain-scalar value for {key!r} contains "
+                    f"': ' or ' #': {value!r}"
+                )
+
+    def test_committed_frontmatter_is_valid_yaml(self) -> None:
+        """Regression for pi's "Prompt conflicts" startup warning: scan every
+        committed frontmatter file — the generated command/prompt copies and
+        the hand-authored harness skills — and reject the two YAML hazard
+        classes above. Catches both the generated backlog-item/grill-me
+        argument-hint break and the hand-authored analyze-sessions
+        description break (`... and agy: calculate ...`) in one pass."""
+        globs = [
+            "claude/commands/*.md",
+            "pi/prompts/*.md",
+            "opencode/skills/*/SKILL.md",
+            "copilot/skills/*/SKILL.md",
+            "agy/skills/*/SKILL.md",
+            "codex/skills/*/SKILL.md",
+        ]
+        for pattern in globs:
+            for path in sorted(REPO_ROOT.glob(pattern)):
+                text = path.read_text(encoding="utf-8")
+                self._validate_frontmatter(
+                    self._extract_frontmatter(text),
+                    str(path.relative_to(REPO_ROOT)),
+                )
+        # Also validate the generated outputs render_all produces, so generated
+        # harness skills outside the globbed dirs stay covered too.
+        rendered = gs.render_all(REPO_ROOT, SKILL_PARAMS)
+        for relpath, text in rendered.items():
+            self._validate_frontmatter(self._extract_frontmatter(text), relpath)
 
     def test_every_output_path_has_the_marker(self) -> None:
         rendered = gs.render_all(REPO_ROOT, SKILL_PARAMS)
