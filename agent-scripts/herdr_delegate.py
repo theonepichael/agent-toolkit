@@ -52,6 +52,8 @@ Usage:
                               [--model <model>] [--kind {pi,copilot}]
     herdr_delegate.py restart --serial --prefix <prefix> [--run-id <runId>]
                               [--model <model>] [--kind {pi,copilot}]
+    herdr_delegate.py probe --kind {pi,copilot,agy,codex} [--model <model>]
+                            [--cwd <cwd>]
 """
 
 from __future__ import annotations
@@ -61,8 +63,10 @@ import contextlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -111,6 +115,24 @@ DEV_STATUS = Path(__file__).parent / "dev_status.py"
 COPILOT_PLUGIN_DIR = str(
     Path(__file__).resolve().parent.parent / "copilot" / "extensions" / "swarm"
 )
+AGY_PROMPT_TIMEOUT_S = 8.0
+AGY_PROMPT_POLL_INTERVAL_S = 0.25
+PROBE_PROMPT = "Reply with exactly READY. Do not run any command or edit any file."
+
+
+def is_inside_git_repo(path: Path) -> bool:
+    """Check whether a path is inside any git repository."""
+    cur = path.resolve()
+    for candidate in (cur, *cur.parents):
+        if (candidate / ".git").exists():
+            return True
+        if (
+            (candidate / "HEAD").is_file()
+            and (candidate / "refs").is_dir()
+            and (candidate / "objects").is_dir()
+        ):
+            return True
+    return False
 
 
 class RefusedError(RuntimeError):
@@ -279,8 +301,6 @@ def build_agent_start_argv(
         session_args = [
             "-c",
             "check_for_update_on_startup=false",
-            "--sandbox",
-            "workspace-write",
             "--approve-for-me",
         ]
         for root in writable_roots or []:
@@ -506,6 +526,19 @@ def parse_agent_names(listing: dict[str, object]) -> list[str]:
     ]
 
 
+def parse_agent_status(listing: dict[str, object], name: str) -> str | None:
+    """Agent status for ``name`` out of a `herdr agent list` envelope; None if absent."""
+    result = listing.get("result") if isinstance(listing, dict) else None
+    agents = result.get("agents") if isinstance(result, dict) else None
+    if not isinstance(agents, list):
+        return None
+    for a in agents:
+        if isinstance(a, dict) and a.get("name") == name:
+            status = a.get("agent_status")
+            return status if isinstance(status, str) else None
+    return None
+
+
 RESTART_DEREGISTER_POLLS = 20
 RESTART_DEREGISTER_INTERVAL_S = 0.25
 
@@ -671,6 +704,8 @@ def spawn_in_new_tab(
         # prompt` here means the agent DID start -- the tab holds a live
         # agent, closing it would kill it, and it must never be retried.
         herdr(["agent", "prompt", name, prompt])
+        if kind == "agy":
+            confirm_prompt_receipt(pane=pane, tab=tab, name=name, prompt=prompt)
         summary: dict[str, object] = {
             "tab": tab,
             "pane": pane,
@@ -736,12 +771,61 @@ def herdr(argv: list[str]) -> dict[str, object]:
         raise RefusedError(
             f"herdr {' '.join(argv)} failed: {result.stderr.strip()}", code=code
         )
+    if len(argv) >= 2 and argv[0] == "pane" and argv[1] == "read":
+        return {"result": {"text": result.stdout}}
     try:
         return json.loads(result.stdout)
     except json.JSONDecodeError as exc:
         raise RefusedError(
             f"herdr {' '.join(argv)} returned unparseable output: {exc}"
         ) from exc
+
+
+def read_pane_text(pane: str, *, source: str = "visible") -> str:
+    """Read a pane's terminal snapshot via `herdr pane read`."""
+    res = herdr(["pane", "read", pane, "--source", source])
+    result = res.get("result")
+    if isinstance(result, dict) and isinstance(result.get("text"), str):
+        return result["text"]
+    return ""
+
+
+def confirm_prompt_receipt(
+    *,
+    pane: str,
+    tab: str,
+    name: str,
+    prompt: str,
+    timeout_s: float = AGY_PROMPT_TIMEOUT_S,
+    poll_interval_s: float = AGY_PROMPT_POLL_INTERVAL_S,
+    max_resends: int = 1,
+) -> None:
+    """Poll pane for the echoed prompt line; resend if absent, fail loudly if still missing."""
+    target = prompt.strip()
+    resends_left = max_resends
+    while True:
+        deadline = time.monotonic() + timeout_s
+        while True:
+            text = read_pane_text(pane)
+            if target in text:
+                return
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(poll_interval_s)
+            if time.monotonic() >= deadline:
+                break
+
+        if resends_left > 0:
+            resends_left -= 1
+            listing = herdr(build_agent_list_argv())
+            if parse_agent_status(listing, name) == "working":
+                return
+            herdr(["agent", "prompt", name, prompt])
+            continue
+
+        raise RefusedError(
+            f"prompt was not received in tab {tab} (pane {pane}); check `herdr pane read {pane}`"
+        )
 
 
 def _looks_like_json_object(text: str) -> bool:
@@ -877,6 +961,66 @@ def cmd_restart(args: argparse.Namespace) -> None:
     print(json.dumps(summary))
 
 
+def cmd_probe(args: argparse.Namespace) -> None:
+    """Launch an agent in a scratch tab to confirm readiness and prompt receipt."""
+    require_herdr_env(os.environ)
+    scratch_dir: str | None = None
+    if args.cwd:
+        explicit_cwd = Path(args.cwd).resolve()
+        if is_inside_git_repo(explicit_cwd):
+            raise RefusedError(
+                f"probe --cwd cannot be inside a git repository: {args.cwd}"
+            )
+        cwd = str(explicit_cwd)
+    else:
+        scratch_dir = tempfile.mkdtemp(prefix="herdr-probe-")
+        cwd = scratch_dir
+
+    kind = args.kind
+    label = f"probe-{kind}-{uuid.uuid4().hex[:6]}"
+    name = agent_name_for(label)
+    plugin_dir = COPILOT_PLUGIN_DIR if kind == "copilot" else None
+    session_id = str(uuid.uuid4()) if kind == "copilot" else None
+    writable_roots = codex_writable_roots() if kind == "codex" else None
+    trivial_prompt = PROBE_PROMPT
+
+    tab_id: str | None = None
+    try:
+        created = herdr(build_tab_argv(cwd=cwd, label=label, kind=kind))
+        result = created["result"]
+        pane = result["root_pane"]["pane_id"]  # type: ignore[index]
+        tab_id = result["tab"]["tab_id"]  # type: ignore[index]
+
+        herdr(
+            build_agent_start_argv(
+                name=name,
+                pane=pane,
+                model=args.model,
+                kind=kind,
+                session_id=session_id,
+                plugin_dir=plugin_dir,
+                writable_roots=writable_roots,
+            )
+        )
+        herdr(["agent", "prompt", name, trivial_prompt])
+        confirm_prompt_receipt(
+            pane=pane,
+            tab=tab_id,
+            name=name,
+            prompt=trivial_prompt,
+        )
+        print(f"probe {kind}: PASS")
+    except Exception as exc:
+        print(f"probe {kind}: FAIL ({exc})", file=sys.stderr)
+        raise SystemExit(1) from exc
+    finally:
+        if tab_id:
+            with contextlib.suppress(RefusedError):
+                herdr(["tab", "close", tab_id])
+        if scratch_dir is not None:
+            shutil.rmtree(scratch_dir, ignore_errors=True)
+
+
 def main() -> None:
     """Parse arguments and dispatch."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -937,6 +1081,22 @@ def main() -> None:
         help="agent harness (pi or copilot; default: pi)",
     )
     restart.set_defaults(func=cmd_restart)
+
+    probe = sub.add_parser(
+        "probe",
+        help="verify agent readiness and prompt receipt in a scratch tab",
+    )
+    probe.add_argument(
+        "--kind",
+        choices=["pi", "copilot", "agy", "codex"],
+        required=True,
+        help="agent harness to probe",
+    )
+    probe.add_argument(
+        "--model", help="model passed through to harness after a bare --"
+    )
+    probe.add_argument("--cwd", help="scratch tab working directory")
+    probe.set_defaults(func=cmd_probe)
 
     args = parser.parse_args()
     if args.command == "launch":

@@ -936,6 +936,10 @@ Launch supported agents in herdr tabs to work backlog items.
     - `--model` — model passed through to harness after a bare --
     - `--cwd` — working directory
     - `--kind` — agent harness (pi or copilot; default: pi) (choices: pi, copilot; default: pi)
+  - `probe --kind {pi,copilot,agy,codex} [--model <MODEL>] [--cwd <CWD>]` — verify agent readiness and prompt receipt in a scratch tab
+    - `--kind` — agent harness to probe (choices: pi, copilot, agy, codex; required)
+    - `--model` — model passed through to harness after a bare --
+    - `--cwd` — scratch tab working directory
 - Environment: `COPILOT_SWARM_STATE_DIR`, `PI_SWARM_STATE_DIR`
 - Filesystem constants:
   - `DEV_STATUS = Path(__file__).parent / 'dev_status.py'`
@@ -945,6 +949,7 @@ Launch supported agents in herdr tabs to work backlog items.
 - Exceptions:
   - `class RefusedError(RuntimeError)` — A launch that must not proceed, with a reason fit to show the user.
 - Public functions:
+  - `is_inside_git_repo(path: Path) -> bool` — Check whether a path is inside any git repository.
   - `require_herdr_env(env: dict[str, str] | os._Environ[str]) -> None` — Refuse unless this process is inside a herdr-managed pane.
   - `check_launchable(*, slug: str | None = None, prefix: str | None = None) -> None` — Refuse a launch that targets the harness's own repo.
   - `canonical_prefix(prefix: str) -> str` — Slug-head form used in prompts, labels, state and comparisons.
@@ -969,6 +974,7 @@ Launch supported agents in herdr tabs to work backlog items.
   - `live_tab_ids_with_label(label: str) -> list[str]` — Ids of every live tab carrying exactly ``label``.
   - `live_queue_orchestrators(prefix: str) -> list[tuple[str, str]]` — Live serial or concurrent orchestrator tabs for one canonical prefix.
   - `parse_agent_names(listing: dict[str, object]) -> list[str]` — Agent names out of a `herdr agent list` envelope; [] on anything unexpected.
+  - `parse_agent_status(listing: dict[str, object], name: str) -> str | None` — Agent status for ``name`` out of a `herdr agent list` envelope; None if absent.
   - `wait_agent_deregistered(name: str, *, retry_advice: str = 'Retry `restart` (it relaunches once the name frees)') -> None` — Poll until no live agent carries ``name``, bounded; refuse if it persists.
   - `prepare_worker_worktree(slug: str) -> str` — Validate one item and bootstrap its exact worktree before agent startup.
   - `codex_writable_roots() -> list[str]` — Runtime paths a backlog worker writes outside its worktree.
@@ -977,7 +983,9 @@ Launch supported agents in herdr tabs to work backlog items.
   - `build_launch_plan(items: list[BacklogItem], *, kind: str = 'pi', cwd: str = '.') -> list[list[str]]` — Construct herdr tab-creation argvs for a list of backlog items.
   - `ready_slugs(claims: BacklogClaimLookup | None = None) -> list[str]` — Slugs currently in READY, sourced via select_ready().
   - `herdr(argv: list[str]) -> dict[str, object]` — Run a herdr command and return its parsed JSON result.
-- Subcommand handlers: `cmd_plan`, `cmd_launch`, `cmd_restart`
+  - `read_pane_text(pane: str, *, source: str = 'visible') -> str` — Read a pane's terminal snapshot via `herdr pane read`.
+  - `confirm_prompt_receipt(*, pane: str, tab: str, name: str, prompt: str, timeout_s: float = AGY_PROMPT_TIMEOUT_S, poll_interval_s: float = AGY_PROMPT_POLL_INTERVAL_S, max_resends: int = 1) -> None` — Poll pane for the echoed prompt line; resend if absent, fail loudly if still missing.
+- Subcommand handlers: `cmd_plan`, `cmd_launch`, `cmd_restart`, `cmd_probe`
 - Tested by: `test/test_herdr_delegate.py`
 
 ### `agent-scripts/link_drift_check.py`

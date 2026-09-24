@@ -78,11 +78,12 @@ python3 ~/.claude/scripts/herdr_delegate.py launch --slug <slug> [--model <model
 For agy or codex, the delegate validates and bootstraps the item's worktree
 before starting the agent there. These kinds support one item only. Agy starts
 in `accept-edits` mode and receives `/backlog-item --auto <slug>`; Codex uses
-`$backlog-item --auto <slug>`, workspace-write, automatic approval review, and
-additional writable roots for toolkit data and the uv cache. Protected Git
-metadata or another denied operation can still need live approval. Neither
-kind bypasses the backlog-item skill's commit and landing gates. Do not pass
-`--cwd` for these kinds; the item record determines the repository.
+`$backlog-item --auto <slug>`, automatic approval review (which implies
+workspace-write sandbox), and additional writable roots for toolkit data and
+the uv cache. Protected Git metadata or another denied operation can still need
+live approval. Neither kind bypasses the backlog-item skill's commit and
+landing gates. Do not pass `--cwd` for these kinds; the item record determines
+the repository.
 
 The whole queue under a prefix:
 
@@ -127,6 +128,16 @@ what you want.
 Picking a model:
 - For pi: check `pi --list-models <pattern>` before concluding one is unavailable. A model can resolve for pi while being absent from `~/.pi/agent/models.json`, because the fetched catalog in `models-store.json` is separate — this cost a wrong answer on 2026-09-03.
 - For copilot: check `copilot help config` under the `model:` bullet list.
+
+### Probing harness launches
+
+After upgrading a harness CLI (e.g. `codex-cli` or `agy`), verify that the delegate's launch recipe, interactive readiness, and prompt receipt still work before launching real items:
+
+```bash
+python3 ~/.claude/scripts/herdr_delegate.py probe --kind {pi,copilot,agy,codex} [--model <model>]
+```
+
+`probe` launches the kind in a scratch herdr tab with the exact worker argv, verifies interactive readiness and prompt receipt for a trivial prompt, prints `probe <kind>: PASS`, and closes the scratch tab.
 
 ## 4. Watch, do not poll
 

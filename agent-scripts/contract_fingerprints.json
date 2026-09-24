@@ -302,6 +302,9 @@
     "arg launch --serial: \u2014 run a prefix queue one worker at a time",
     "arg launch --slug: \u2014 single item for one unattended worker",
     "arg launch --swarm: \u2014 fan out across N workers",
+    "arg probe --cwd: \u2014 scratch tab working directory",
+    "arg probe --kind: \u2014 agent harness to probe (choices: pi, copilot, agy, codex; required)",
+    "arg probe --model: \u2014 model passed through to harness after a bare --",
     "arg restart --cwd: \u2014 working directory",
     "arg restart --kind: \u2014 agent harness (pi or copilot; default: pi) (choices: pi, copilot; default: pi)",
     "arg restart --model: \u2014 model passed through to harness after a bare --",
@@ -312,9 +315,11 @@
     "exit codes: 1",
     "handler launch: Create a tab, start a worker or orchestrator, and hand it its prompt.",
     "handler plan: Print the READY queue grouped by prefix, as JSON. No side effects.",
+    "handler probe: Launch an agent in a scratch tab to confirm readiness and prompt receipt.",
     "handler restart: Close a live swarm orchestrator's tab, relaunch it, and prompt it to resume. Ordered so nothing destructive happens before everything checkable has passed: the runId is resolved and validated first, so a failure there leaves the running orchestrator untouched. Workers are never touched -- only the orchestrator's own tab is a close candidate.",
     "subcommand launch: start a worker, or a pi/copilot queue orchestrator",
     "subcommand plan: READY queue grouped by prefix, as JSON",
+    "subcommand probe: verify agent readiness and prompt receipt in a scratch tab",
     "subcommand restart: close a live swarm orchestrator's tab, relaunch it, resume the same run"
   ],
   "refresh_guidance.py": [
