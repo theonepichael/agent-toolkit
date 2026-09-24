@@ -21,7 +21,7 @@ markers = [
 # The live isolation canaries cost an API call each and depend on an upstream
 # gateway that stalls intermittently, so they never run in a normal pass. Opt
 # in with: uv run pytest test/test_backend_isolation_live.py -m live_backends
-addopts = "-m 'not live_backends' -n auto"
+addopts = "-m 'not live_backends' -n auto --dist worksteal"
 
 [tool.ruff]
 # Enforce the exclusions even on explicitly-passed paths — without this,
