@@ -369,6 +369,24 @@ def test_claude_script_links_use_correct_dest(links):
             assert spec.dest == f"~/.agent-toolkit/scripts/{name}", spec.src
 
 
+def test_no_links_target_legacy_claude_dirs(links):
+    """No links.toml row may target legacy ~/.claude/{scripts,hooks,icons}.
+
+    A downstream fork merging Release 1 catches leftover rows right after
+    the merge, before running the migration.
+    """
+    legacy_prefixes = ("~/.claude/scripts", "~/.claude/hooks", "~/.claude/icons")
+    offenders = [
+        (spec.src, spec.dest)
+        for spec in links
+        if any(
+            spec.dest == prefix or spec.dest.startswith(prefix + "/")
+            for prefix in legacy_prefixes
+        )
+    ]
+    assert not offenders, f"links.toml rows targeting legacy dirs: {offenders}"
+
+
 def test_every_claude_command_has_a_links_entry(links):
     """The command-dir twin of test_every_claude_script_has_a_links_entry.
     swarm.md shipped as a generated command with no links.toml entry while
