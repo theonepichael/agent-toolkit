@@ -361,6 +361,78 @@ class AppendJsonlTests(unittest.TestCase):
         cli_common.append_jsonl(path, {"i": 1}, mode=0o666)
         self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
+    def test_no_rotation_under_max_bytes(self) -> None:
+        """Phase A: when the file stays under the cap, rotation never fires
+        and appends accumulate normally."""
+        path = self.tmp / "out.jsonl"
+        cli_common.append_jsonl(path, {"i": 1}, max_bytes=1024)
+        self.assertFalse(path.with_suffix(path.suffix + ".1").exists())
+        cli_common.append_jsonl(path, {"i": 2}, max_bytes=1024)
+        self.assertFalse(path.with_suffix(path.suffix + ".1").exists())
+        self.assertEqual(
+            [json.loads(line)["i"] for line in path.read_text().splitlines()], [1, 2]
+        )
+
+    def test_rotation_keeps_one_generation(self) -> None:
+        """Phase A: when the existing file already exceeds max_bytes, it is
+        rotated to <name>.1 and a fresh file holds exactly the new line."""
+        path = self.tmp / "out.jsonl"
+        path.write_text(json.dumps({"i": 0}) + "\n" + "x" * 1024)
+        max_bytes = path.stat().st_size - 512  # already over the cap
+        cli_common.append_jsonl(path, {"i": 1}, max_bytes=max_bytes)
+        rotated = path.with_suffix(path.suffix + ".1")
+        self.assertTrue(rotated.exists(), "expected a .1 rotated sibling")
+        self.assertEqual(len(rotated.read_text().splitlines()), 2)
+        lines = path.read_text().splitlines()
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(json.loads(lines[0])["i"], 1)
+
+    def test_rotation_replaces_existing_generation(self) -> None:
+        """Phase A: a second rotation overwrites the stale .1, not a .2."""
+        path = self.tmp / "out.jsonl"
+        rotated = path.with_suffix(path.suffix + ".1")
+        rotated.write_text(json.dumps({"old": True}) + "\n")
+        path.write_text(json.dumps({"i": 0}) + "\n" + "x" * 1024)
+        max_bytes = path.stat().st_size - 512
+        cli_common.append_jsonl(path, {"i": 1}, max_bytes=max_bytes)
+        lines = path.read_text().splitlines()
+        self.assertEqual(json.loads(lines[0])["i"], 1)
+        # One generation only: the .1 holds the just-rotated prior run, not a
+        # .2 sibling, and the pre-seeded stale .1 content is overwritten.
+        self.assertFalse(path.with_suffix(".jsonl.2").exists())
+        self.assertIn("i", rotated.read_text())
+
+    def test_rotation_race_stat_gone_does_not_raise(self) -> None:
+        """Phase A fix: a concurrent rotation can make stat() raise
+        FileNotFoundError though exists() just returned True (the other writer
+        renamed the file away in between). append_jsonl must swallow it — the
+        append then creates a fresh file — and never raise into the caller,
+        even with on_error='raise'."""
+        path = self.tmp / "out.jsonl"
+        with patch.object(cli_common.Path, "exists", return_value=True), patch.object(
+            cli_common.Path, "stat", side_effect=FileNotFoundError
+        ):
+            cli_common.append_jsonl(path, {"i": 1}, max_bytes=1, on_error="raise")
+        lines = path.read_text().splitlines()
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(json.loads(lines[0])["i"], 1)
+
+    def test_rotation_failure_does_not_raise_or_block_append(self) -> None:
+        """Phase A fix: a failed rotation (os.replace raises) is logged at
+        debug and skipped, never honoured via on_error='raise', and the append
+        still proceeds — the existing line is retained and the new one written."""
+        path = self.tmp / "out.jsonl"
+        path.write_text(json.dumps({"i": 0, "pad": "x" * 1024}) + "\n")
+
+        def bad_replace(src: object, dst: object) -> object:
+            raise OSError("rotation boom")
+
+        with patch.object(os, "replace", side_effect=bad_replace):
+            cli_common.append_jsonl(path, {"i": 1}, max_bytes=1, on_error="raise")
+        lines = path.read_text().splitlines()
+        self.assertEqual(len(lines), 2)  # old line kept, new line appended
+        self.assertEqual(json.loads(lines[1])["i"], 1)
+
 
 class RedactSecretsTests(unittest.TestCase):
     """Tests for redact_secrets: named patterns, redact-then-truncate."""
