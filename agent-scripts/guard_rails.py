@@ -190,7 +190,7 @@ def _append_audit_record(record: dict[str, object]) -> None:
 # whitespace are deleted and the text is lower-cased. The deletions make the
 # check a superset of the shlex-token view the rules use, so splicing such as
 # con""fig or --no-ver\ify still counts as a trigger.
-_BASH_TRIGGERS = ("config", "--no-verify", "hookspath")
+_BASH_TRIGGERS = ("config", "--no-verify", "hookspath", "checkout", "switch")
 _NEUTRAL_ALLOW = json.dumps({"decision": "allow", "reason": ""})
 _HARNESS_ALLOW = {
     "claude": json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse"}}),
@@ -231,9 +231,14 @@ def _fast_decide(
             if not isinstance(args, dict):
                 return None
             path = args.get("file_path") or args.get("path") or ""
-            cwd = payload.get("cwd") or ""
-            if not isinstance(path, str) or not isinstance(cwd, str):
+            raw_cwd = payload.get("cwd")
+            if (
+                not isinstance(path, str)
+                or raw_cwd is not None
+                and not isinstance(raw_cwd, str)
+            ):
                 return None
+            cwd = raw_cwd or ""
             family = tool_family(payload.get("tool_name"))
         elif harness == "agy":
             call = payload.get("toolCall") or {}
@@ -246,8 +251,11 @@ def _fast_decide(
             return None
         out = _HARNESS_ALLOW[harness]
         if family == "bash" and harness == "claude":
-            command = args.get("command") or ""
-            if not isinstance(command, str) or not bash_trigger_free(command):
+            raw_command = args.get("command")
+            if raw_command is not None and not isinstance(raw_command, str):
+                return None
+            command = raw_command or ""
+            if not bash_trigger_free(command):
                 return None
             tool, target = "bash", command
             rule = "GUARD_RAILS_OFF" if off else "default-allow"
@@ -824,6 +832,193 @@ def _writes_git_config_file(tokens: list[str]) -> bool:
     return False
 
 
+def live_install_repo(home: Path | None = None) -> Path | None:
+    """Return the repository root of the live install source, or None if unknown."""
+    override = os.environ.get("GUARD_RAILS_LIVE_REPO")
+    if override:
+        return Path(override).resolve()
+    if home is None:
+        home = Path.home()
+    for script_name in ("guard_rails.py", "dev_status.py"):
+        candidate = home / ".claude" / "scripts" / script_name
+        if candidate.is_symlink():
+            try:
+                target = candidate.resolve(strict=True)
+                return target.parents[1]
+            except (OSError, IndexError):
+                pass
+    try:
+        return Path(__file__).resolve().parents[1]
+    except (IndexError, ValueError):
+        return None
+
+
+def is_live_install_source(info: RepoInfo) -> bool:
+    """Whether this repository is the live install source where harness
+    scripts are symlinked from."""
+    override = os.environ.get("GUARD_RAILS_LIVE_REPO")
+    if override is not None:
+        try:
+            return Path(override).resolve() == Path(info.toplevel).resolve()
+        except OSError:
+            return False
+    live = live_install_repo()
+    if live is not None:
+        try:
+            return live.resolve() == Path(info.toplevel).resolve()
+        except OSError:
+            return False
+    return False
+
+
+_GIT_GLOBAL_OPTS_WITH_ARG = {
+    "-C",
+    "-c",
+    "--config",
+    "--config-env",
+    "--git-dir",
+    "--work-tree",
+    "--namespace",
+    "--super-prefix",
+    "--exec-path",
+}
+
+
+def _checkout_off_default_reason(
+    tokens: list[str], cwd: str, info: RepoInfo | None
+) -> str | None:
+    """Whether any git invocation in tokens switches a live install main
+    checkout off its default branch, returning a denial reason if so."""
+    n = len(tokens)
+    for i, tok in enumerate(tokens):
+        if tok != "git":
+            continue
+        j = i + 1
+        target_dir = cwd
+        subcmd: str | None = None
+        subcmd_args: list[str] = []
+
+        # Parse global git options before the subcommand
+        while j < n and tokens[j] not in _CONTROL_OPERATORS:
+            curr = tokens[j]
+            if curr == "-C" and j + 1 < n and tokens[j + 1] not in _CONTROL_OPERATORS:
+                target_dir = _absolutize(tokens[j + 1], cwd)
+                j += 2
+            elif curr.startswith("-C") and len(curr) > 2:
+                target_dir = _absolutize(curr[2:], cwd)
+                j += 1
+            elif curr in _GIT_GLOBAL_OPTS_WITH_ARG:
+                if j + 1 < n and tokens[j + 1] not in _CONTROL_OPERATORS:
+                    j += 2
+                else:
+                    j += 1
+            elif curr.startswith("-"):
+                # Global boolean flag or option with attached value (-c<k=v>, --git-dir=..., etc.)
+                j += 1
+            else:
+                subcmd = curr
+                j += 1
+                break
+
+        if subcmd not in ("checkout", "switch"):
+            continue
+
+        while j < n and tokens[j] not in _CONTROL_OPERATORS:
+            subcmd_args.append(tokens[j])
+            j += 1
+
+        target_info = (
+            info if (info is not None and target_dir == cwd) else repo_info(target_dir)
+        )
+        if (
+            target_info is None
+            or target_info.is_worktree
+            or target_info.branch not in PROTECTED_BRANCHES
+        ):
+            continue
+        if not is_live_install_source(target_info):
+            continue
+
+        is_denied = False
+        if subcmd == "switch":
+            has_create = any(
+                t in ("-c", "-C", "--create", "-d", "--detach", "--orphan")
+                or t.startswith(("-c", "-C"))
+                for t in subcmd_args
+            )
+            if has_create:
+                is_denied = True
+            else:
+                pos_args = [
+                    t
+                    for t in subcmd_args
+                    if not t.startswith("-") and t not in _CONTROL_OPERATORS
+                ]
+                if not pos_args:
+                    is_denied = True
+                else:
+                    target_branch = pos_args[0]
+                    if (
+                        target_branch != target_info.branch
+                        and target_branch not in PROTECTED_BRANCHES
+                    ):
+                        is_denied = True
+
+        elif subcmd == "checkout":
+            if "--" in subcmd_args:
+                continue
+            has_create_or_detach = any(
+                t in ("-b", "-B", "-d", "--detach", "--orphan")
+                or t.startswith(("-b", "-B"))
+                for t in subcmd_args
+            )
+            if has_create_or_detach:
+                is_denied = True
+            else:
+                pos_args: list[str] = []
+                idx = 0
+                while idx < len(subcmd_args):
+                    t = subcmd_args[idx]
+                    if t in ("-b", "-B", "--orphan", "-u"):
+                        idx += 2
+                        continue
+                    if t.startswith("-"):
+                        idx += 1
+                        continue
+                    pos_args.append(t)
+                    idx += 1
+                if pos_args:
+                    target_ref = pos_args[0]
+                    if (
+                        target_ref != target_info.branch
+                        and target_ref not in PROTECTED_BRANCHES
+                    ):
+                        cand_path = Path(target_dir) / target_ref
+                        top_path = Path(target_info.toplevel) / target_ref
+                        if not (cand_path.exists() or top_path.exists()):
+                            is_tracked = False
+                            if os.path.isdir(target_dir):
+                                try:
+                                    ls = git(
+                                        "-C", target_dir, "ls-files", "--", target_ref
+                                    )
+                                    is_tracked = bool(ls and ls.strip())
+                                except Exception:
+                                    is_tracked = False
+                            if not is_tracked:
+                                is_denied = True
+
+        if is_denied:
+            return (
+                f"Refusing to switch the live install checkout of {target_info.toplevel} "
+                f"off its default branch ('{target_info.branch}'). Harness scripts are symlinked "
+                f"into this checkout and run live from it. Do this work in a worktree instead: "
+                f"python3 ~/.claude/scripts/dev_status.py worktree <slug> "
+                f"(or dev_status.py integration-merge to land integration-branch work)."
+            )
+    return None
+
+
 def evaluate_bash_override(command: str, cwd: str) -> Verdict:
     """Deny the git-native ways to defeat the no-commit-on-main git hook, on
     a protected branch only -- see the module docstring. Fails open (allow)
@@ -837,6 +1032,12 @@ def evaluate_bash_override(command: str, cwd: str) -> Verdict:
     shell use outside the harness.
     """
     info = repo_info(cwd)
+    tokens = _shell_tokens(command)
+
+    reason = _checkout_off_default_reason(tokens, cwd, info)
+    if reason is not None:
+        return Verdict("deny", reason, rule="live-checkout-off-default")
+
     if info is None or info.branch not in PROTECTED_BRANCHES:
         return Verdict("allow")
 
@@ -848,8 +1049,6 @@ def evaluate_bash_override(command: str, cwd: str) -> Verdict:
             "supply an override value a static check can't otherwise see.",
             rule="hookspath-shell-substitution",
         )
-
-    tokens = _shell_tokens(command)
 
     if "git" in tokens and "--no-verify" in tokens:
         return Verdict(
@@ -973,7 +1172,9 @@ def evaluate(req: Request, claims: BacklogClaimLookup) -> Verdict:
 def parse_payload(harness: str, payload: object) -> Request | None:
     """Normalize a harness's native hook payload. Returns None when the
     payload cannot be understood -- the caller then allows, because a script
-    that cannot identify the tool must not deny every tool."""
+    that cannot identify the tool must not deny every tool. A supplied
+    non-string cwd or Claude command is malformed; missing/null values use
+    the existing empty-string default."""
     if not isinstance(payload, dict):
         return None
     try:
@@ -981,15 +1182,14 @@ def parse_payload(harness: str, payload: object) -> Request | None:
             args = payload.get("tool_input") or {}
             name = payload.get("tool_name")
             path = args.get("file_path") or args.get("path") or ""
-            command = args.get("command") or ""
-            cwd = payload.get("cwd") or ""
+            raw_command = args.get("command")
+            command = raw_command or ""
         elif harness == "agy":
             call = payload.get("toolCall") or {}
             args = call.get("args") or {}
             name = call.get("name")
             path = args.get("TargetFile") or args.get("path") or ""
             command = ""
-            cwd = payload.get("cwd") or ""
         elif harness == "copilot":
             name = payload.get("toolName")
             raw = payload.get("toolArgs")
@@ -997,11 +1197,20 @@ def parse_payload(harness: str, payload: object) -> Request | None:
             args = json.loads(raw) if isinstance(raw, str) else (raw or {})
             path = args.get("path") or args.get("file_path") or ""
             command = ""
-            cwd = payload.get("cwd") or ""
         else:
             return None
     except (AttributeError, ValueError):
         return None
+    raw_cwd = payload.get("cwd")
+    if raw_cwd is not None and not isinstance(raw_cwd, str):
+        return None
+    if (
+        harness == "claude"
+        and raw_command is not None
+        and not isinstance(raw_command, str)
+    ):
+        return None
+    cwd = raw_cwd or ""
     if not isinstance(args, dict) or not isinstance(path, str):
         return None
     family = tool_family(name)

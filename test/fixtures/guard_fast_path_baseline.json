@@ -51,6 +51,19 @@
     "exit": 0,
     "stdout": "{\"decision\": \"allow\"}\n"
   },
+  "agy-write-nonstr-cwd": {
+    "audit": [
+      {
+        "decision": "allow",
+        "harness": "agy",
+        "rule": "default-allow",
+        "target": "",
+        "tool": ""
+      }
+    ],
+    "exit": 0,
+    "stdout": "{\"decision\": \"allow\"}\n"
+  },
   "broken-claude-bash-ls": {
     "audit": [],
     "exit": 0,
@@ -87,6 +100,32 @@
         "rule": "default-allow",
         "target": "",
         "tool": "bash"
+      }
+    ],
+    "exit": 0,
+    "stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\"}}\n"
+  },
+  "claude-bash-falsey-command": {
+    "audit": [
+      {
+        "decision": "allow",
+        "harness": "claude",
+        "rule": "default-allow",
+        "target": "",
+        "tool": ""
+      }
+    ],
+    "exit": 0,
+    "stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\"}}\n"
+  },
+  "claude-bash-falsey-cwd": {
+    "audit": [
+      {
+        "decision": "allow",
+        "harness": "claude",
+        "rule": "default-allow",
+        "target": "",
+        "tool": ""
       }
     ],
     "exit": 0,
@@ -171,14 +210,30 @@
     "stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\"}}\n"
   },
   "claude-bash-nonstr-command": {
-    "audit": [],
-    "exit": 1,
-    "stdout": ""
+    "audit": [
+      {
+        "decision": "allow",
+        "harness": "claude",
+        "rule": "default-allow",
+        "target": "",
+        "tool": ""
+      }
+    ],
+    "exit": 0,
+    "stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\"}}\n"
   },
   "claude-bash-nonstr-cwd": {
-    "audit": [],
-    "exit": 1,
-    "stdout": ""
+    "audit": [
+      {
+        "decision": "allow",
+        "harness": "claude",
+        "rule": "default-allow",
+        "target": "",
+        "tool": ""
+      }
+    ],
+    "exit": 0,
+    "stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\"}}\n"
   },
   "claude-bash-nonstr-path": {
     "audit": [
@@ -344,6 +399,19 @@
         "rule": "default-allow",
         "target": "<REPO>/README.md",
         "tool": "write"
+      }
+    ],
+    "exit": 0,
+    "stdout": "{\"decision\": \"allow\"}\n"
+  },
+  "copilot-create-nonstr-cwd": {
+    "audit": [
+      {
+        "decision": "allow",
+        "harness": "copilot",
+        "rule": "default-allow",
+        "target": "",
+        "tool": ""
       }
     ],
     "exit": 0,

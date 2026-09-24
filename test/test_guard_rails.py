@@ -24,6 +24,7 @@ import test_layouts  # noqa: E402
 import agent_toolkit_paths  # noqa: E402
 import guard_rails  # noqa: E402
 import backlog_claim_lookup  # noqa: E402
+from pytest_shim import pytest  # noqa: E402
 
 
 class FakeLookup:
@@ -115,6 +116,30 @@ class PayloadParsingTests(unittest.TestCase):
     def test_malformed_payload_yields_no_request_rather_than_raising(self) -> None:
         self.assertIsNone(guard_rails.parse_payload("claude", {"nonsense": True}))
         self.assertIsNone(guard_rails.parse_payload("agy", []))
+
+    @pytest.mark.regression(
+        "guard-nonstring-native-fields",
+        "AssertionError: Request(tool='bash', cwd=123, path='', command='ls') is not None",
+    )
+    def test_nonstring_native_fields_yield_no_request(self) -> None:
+        for value in (123, 0, False, [], {}):
+            cases = (
+                ("claude", {"tool_name": "Bash", "tool_input": {"command": "ls"}, "cwd": value}),
+                ("claude", {"tool_name": "Bash", "tool_input": {"command": value}, "cwd": "/repo"}),
+                ("claude", {"tool_name": "Edit", "tool_input": {"file_path": "a.py", "command": value}, "cwd": "/repo"}),
+                ("agy", {"toolCall": {"name": "write_to_file", "args": {"TargetFile": "a.py"}}, "cwd": value}),
+                ("copilot", {"toolName": "edit", "toolArgs": '{"path":"a.py"}', "cwd": value}),
+            )
+            for harness, payload in cases:
+                with self.subTest(harness=harness, payload=payload):
+                    self.assertIsNone(guard_rails.parse_payload(harness, payload))
+
+    def test_null_native_fields_keep_empty_string_defaults(self) -> None:
+        req = guard_rails.parse_payload(
+            "claude",
+            {"tool_name": "Bash", "tool_input": {"command": None}, "cwd": None},
+        )
+        self.assertEqual(req, guard_rails.Request("bash", "", "", ""))
 
     def test_claude_bash_payload_extracts_the_command(self) -> None:
         req = guard_rails.parse_payload(

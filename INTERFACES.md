@@ -317,6 +317,10 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
     - `--skip-bootstrap` — Skip dependency bootstrapping (default: False)
     - `--force/-f` — Pass --force to git worktree add (default: False)
     - `--json` — Emit structured result as JSON (default: False)
+  - `integration-merge <slug|N> [--push] [--repo <REPO>] [--branch <BRANCH>]` — merge an integration-branch item through a temporary worktree without touching main checkout HEAD
+    - `--push` — push to remote after merging (default: False)
+    - `--repo` — Path to git repository
+    - `--branch` — Source branch to merge (default: item slug)
   - `pending` — manage pending (waiting-on-reply) items
   - `pending add '{"id", "description", "kind", ["source_ref"], ["context"], ["next_steps"], ["blocking"]}'` — track a new pending item
   - `pending update <slug|N> '{"status": "reply_received", ...}' [--if-rev <N>]` — merge a JSON patch into an existing pending item
@@ -354,7 +358,7 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `confirm_resolution(cmd: str, arg: str | int, item: BacklogItem | PendingItem, summary_key: str = 'summary', *, quiet: bool = False) -> None` — Echo what a mutating command resolved to, so misresolution is visible.
   - `format_run_rows(runs: list[RunRecord]) -> list[str]` — One ``runs`` listing line per record, naming the commit and checkout.
   - `build_parser() -> argparse.ArgumentParser` — Build the full argument parser for every subcommand.
-- Subcommand handlers: `cmd_internal_regen`, `cmd_recap`, `cmd_worktree`, `cmd_render`, `cmd_ready`, `cmd_list`, `cmd_show`, `cmd_validate`, `cmd_add`, `cmd_update`, `cmd_start`, `cmd_done`, `cmd_reopen`, `cmd_review`, `cmd_approve`, `cmd_reject`, `cmd_gate_set`, `cmd_gate_pass`, `cmd_run`, `cmd_machine_id`, `cmd_runs`, `cmd_backfill_gate`, `cmd_rename`, `cmd_block`, `cmd_unblock`, `cmd_out_of_scope_add`, `cmd_out_of_scope_link`, `cmd_out_of_scope_unlink`, `cmd_out_of_scope_remove`, `cmd_out_of_scope_list`, `cmd_out_of_scope_show`, `cmd_pending_add`, `cmd_pending_update`, `cmd_pending_list`, `cmd_remove`, `cmd_prune`
+- Subcommand handlers: `cmd_internal_regen`, `cmd_recap`, `cmd_worktree`, `cmd_integration_merge`, `cmd_render`, `cmd_ready`, `cmd_list`, `cmd_show`, `cmd_validate`, `cmd_add`, `cmd_update`, `cmd_start`, `cmd_done`, `cmd_reopen`, `cmd_review`, `cmd_approve`, `cmd_reject`, `cmd_gate_set`, `cmd_gate_pass`, `cmd_run`, `cmd_machine_id`, `cmd_runs`, `cmd_backfill_gate`, `cmd_rename`, `cmd_block`, `cmd_unblock`, `cmd_out_of_scope_add`, `cmd_out_of_scope_link`, `cmd_out_of_scope_unlink`, `cmd_out_of_scope_remove`, `cmd_out_of_scope_list`, `cmd_out_of_scope_show`, `cmd_pending_add`, `cmd_pending_update`, `cmd_pending_list`, `cmd_remove`, `cmd_prune`
 - Tested by: `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_dev_status_storage.py`, `test/test_dev_status_validate.py`, `test/test_path_for_per_use.py`, `test/test_sweep_dead_claims.py`, `test/test_to_tickets_runner.py`
 
 ### `agent-scripts/dev_status_formatting.py`
@@ -837,7 +841,7 @@ Pre-tool guard shared by every harness: refuse a write into a repository's main 
   - `--command` — shell command, for the neutral bash-family form
   - `--quiet/-q`
   - `--verbose/-v`
-- Environment: `GUARD_RAILS_NO_FAST_PATH`, `GUARD_RAILS_OFF`
+- Environment: `GUARD_RAILS_LIVE_REPO`, `GUARD_RAILS_NO_FAST_PATH`, `GUARD_RAILS_OFF`
 - Explicit exit codes: `0`
 - Depends on: `agent_toolkit_paths.py`, `backlog_claim_lookup.py`, `cli_common.py`, `dev_status_impl.py`, `dev_status_storage.py`, `migration_lock.py`, `worktree_provenance.py`
 - Public classes:
@@ -850,6 +854,8 @@ Pre-tool guard shared by every harness: refuse a write into a repository's main 
   - `git(*args: str, cwd: str | None = None) -> str | None` — Run git, returning stripped stdout, or None on any failure.
   - `common_dir_of(directory: str) -> str | None` — Canonical git common directory for a path, or None if it is not in a repo.
   - `repo_info(directory: str) -> RepoInfo | None` — Classify a directory: which repo, worktree or main checkout, bare or not, and on which branch.
+  - `live_install_repo(home: Path | None = None) -> Path | None` — Return the repository root of the live install source, or None if unknown.
+  - `is_live_install_source(info: RepoInfo) -> bool` — Whether this repository is the live install source where harness scripts are symlinked from.
   - `evaluate_bash_override(command: str, cwd: str) -> Verdict` — Deny the git-native ways to defeat the no-commit-on-main git hook, on a protected branch only -- see the module docstring.
   - `evaluate(req: Request, claims: BacklogClaimLookup) -> Verdict` — Apply R2 then R3 to write-family calls, and R4's claim check to any checkout they land in, plus the bash-family override check to Bash calls.
   - `parse_payload(harness: str, payload: object) -> Request | None` — Normalize a harness's native hook payload.

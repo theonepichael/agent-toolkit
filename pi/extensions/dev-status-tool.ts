@@ -41,6 +41,7 @@ const ACTIONS = [
   "recap",
   "worktree",
   "machine_id",
+  "integration_merge",
   "pending_add",
   "pending_update",
   "pending_list",
@@ -76,7 +77,8 @@ export type Field =
   | "repo"
   | "branch"
   | "base"
-  | "repair";
+  | "repair"
+  | "push";
 
 interface ActionFields {
   readonly allowed: readonly Field[];
@@ -117,6 +119,10 @@ const ACTION_FIELDS: Record<Action, ActionFields> = {
     required: [],
   },
   machine_id: { allowed: ["repair"], required: [] },
+  integration_merge: {
+    allowed: ["slug", "repo", "branch", "push"],
+    required: ["slug"],
+  },
   pending_add: { allowed: ["patch"], required: ["patch"] },
   pending_update: { allowed: ["slug", "patch"], required: ["slug", "patch"] },
   pending_list: { allowed: [], required: [] },
@@ -158,6 +164,7 @@ const MUTATING_ACTIONS: ReadonlySet<Action> = new Set([
   "remove",
   "block",
   "unblock",
+  "integration_merge",
   "pending_update",
   "out_of_scope_link",
   "out_of_scope_unlink",
@@ -190,6 +197,7 @@ export interface DevStatusParams {
   branch?: string;
   base?: string;
   repair?: boolean;
+  push?: boolean;
 }
 
 export function assertNotNumericIdentity(action: Action, params: DevStatusParams): void {
@@ -321,6 +329,14 @@ export function buildArgv(action: Action, params: DevStatusParams): string[] {
       ];
     case "machine_id":
       return ["machine-id", ...(params.repair ? ["--repair"] : [])];
+    case "integration_merge":
+      return [
+        "integration-merge",
+        params.slug!,
+        ...(params.repo ? ["--repo", params.repo] : []),
+        ...(params.branch ? ["--branch", params.branch] : []),
+        ...(params.push ? ["--push"] : []),
+      ];
     case "pending_add":
       return ["pending", "add", patchJson()];
     case "pending_update":
@@ -357,7 +373,7 @@ export default function (pi: ExtensionAPI) {
     promptSnippet: "Read or mutate the personal backlog/pending store",
     promptGuidelines: [
       "Never invoke dev_status.py via bash, for any reason, including a plain read like listing pending items or checking status -- always use dev_status instead. This applies to every action, not just ones a slash command already told you to use dev_status for.",
-      "dev_status covers everything dev_status.py's CLI does: render, list, ready, show, add, update, validate, start, done, reopen, review, approve, reject, gate_set, gate_pass, run, runs, backfill_gate, rename, remove, block, unblock, prune, recap, worktree, machine_id, pending_add, pending_update, pending_list, and the out_of_scope_* actions. If you're about to compose a `python3 ~/.claude/scripts/dev_status.py ...` bash command for any of these, use dev_status with the matching action instead.",
+      "dev_status covers everything dev_status.py's CLI does: render, list, ready, show, add, update, validate, start, done, reopen, review, approve, reject, gate_set, gate_pass, run, runs, backfill_gate, rename, remove, block, unblock, prune, recap, worktree, machine_id, integration_merge, pending_add, pending_update, pending_list, and the out_of_scope_* actions. If you're about to compose a `python3 ~/.claude/scripts/dev_status.py ...` bash command for any of these, use dev_status with the matching action instead.",
       "dev_status's patch field is a plain object, not a JSON string -- never hand-encode it.",
       'dev_status refuses a numeric slug on any mutating action -- call action: "show" first to resolve a numeric position to its real slug.',
       "start refuses to run from a main/master checkout (worktree guard) or when the item is actively claimed by another live session (claim collision) -- pass cwd to evaluate the guard and stamp the claim from a dedicated worktree, allowMain to bypass the guard, force to take over a live claim, or claimedBy to correct a wrong auto-detected harness name.",
@@ -433,18 +449,25 @@ export default function (pi: ExtensionAPI) {
       ),
       repo: Type.Optional(
         Type.String({
-          description: "worktree: path to git repository (when not resolving from backlog item).",
+          description:
+            "worktree/integration_merge: path to git repository (when not resolving from backlog item).",
         }),
       ),
       branch: Type.Optional(
         Type.String({
-          description: "worktree: explicit branch name for worktree.",
+          description:
+            "worktree: explicit branch name for worktree. integration_merge: source branch to merge (default: item slug).",
         }),
       ),
       base: Type.Optional(
         Type.String({
           description:
             "worktree: start point for a newly created branch (default: the item's integration_branch, else HEAD).",
+        }),
+      ),
+      push: Type.Optional(
+        Type.Boolean({
+          description: "integration_merge: push to remote after merging.",
         }),
       ),
       refresh: Type.Optional(Type.Boolean({ description: "recap: bypass the freshness cache." })),

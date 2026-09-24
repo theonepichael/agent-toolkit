@@ -5,7 +5,9 @@ Shared by test/test_guard_rails_fast_path.py and by this module's own
 test/fixtures/guard_fast_path_baseline.json from the pre-fast-path script.
 That committed baseline is what the identity tests compare against: comparing
 the new fast path only against the new module's own slow path could not catch
-a change both paths share.
+a change both paths share. The two non-string Claude Bash crash entries were
+updated when payload validation began returning an allow verdict, and cases
+added since that recording establish the same fast/slow contract.
 
 Each case runs the real script in a subprocess under a throwaway ``HOME``
 holding a git repository on ``main``, so the bash rules see a protected
@@ -48,6 +50,8 @@ CASES: list[tuple[str, list[str], object, dict[str, str], str | None]] = [
     ("claude-bash-empty-command", ["--harness", "claude"], _claude("Bash", {"command": ""}), {}, None),
     ("claude-bash-nonstr-command", ["--harness", "claude"], _claude("Bash", {"command": 5}), {}, None),
     ("claude-bash-nonstr-cwd", ["--harness", "claude"], _claude("Bash", {"command": "ls"}, cwd=123), {}, None),
+    ("claude-bash-falsey-command", ["--harness", "claude"], _claude("Bash", {"command": 0}), {}, None),
+    ("claude-bash-falsey-cwd", ["--harness", "claude"], _claude("Bash", {"command": "ls"}, cwd=[]), {}, None),
     ("claude-bash-nondict-input", ["--harness", "claude"], _claude("Bash", "ls"), {}, None),
     ("claude-bash-nonstr-path", ["--harness", "claude"], _claude("Bash", {"command": "ls", "file_path": 7}), {}, None),
     ("claude-read", ["--harness", "claude"], _claude("Read", {"file_path": "<REPO>/README.md"}), {}, None),
@@ -60,10 +64,12 @@ CASES: list[tuple[str, list[str], object, dict[str, str], str | None]] = [
     ("agy-view", ["--harness", "agy"], {"toolCall": {"name": "view_file", "args": {"path": "<REPO>/README.md"}}, "cwd": "<REPO>"}, {}, None),
     ("agy-bash", ["--harness", "agy"], {"toolCall": {"name": "bash", "args": {}}, "cwd": "<REPO>"}, {}, None),
     ("agy-write", ["--harness", "agy"], {"toolCall": {"name": "write_to_file", "args": {"TargetFile": "<REPO>/README.md"}}, "cwd": "<REPO>"}, {}, None),
+    ("agy-write-nonstr-cwd", ["--harness", "agy"], {"toolCall": {"name": "write_to_file", "args": {"TargetFile": "README.md"}}, "cwd": 123}, {}, None),
     ("agy-nondict-call", ["--harness", "agy"], {"toolCall": "view_file", "cwd": "<REPO>"}, {}, None),
     ("copilot-view", ["--harness", "copilot"], {"toolName": "view", "toolArgs": '{"path": "<REPO>/README.md"}', "cwd": "<REPO>"}, {}, None),
     ("copilot-bad-args", ["--harness", "copilot"], {"toolName": "view", "toolArgs": "{not json", "cwd": "<REPO>"}, {}, None),
     ("copilot-create", ["--harness", "copilot"], {"toolName": "create", "toolArgs": '{"path": "<REPO>/README.md"}', "cwd": "<REPO>"}, {}, None),
+    ("copilot-create-nonstr-cwd", ["--harness", "copilot"], {"toolName": "create", "toolArgs": '{"path": "README.md"}', "cwd": 123}, {}, None),
     ("neutral-bash-ls", ["--tool", "bash", "--cwd", "<REPO>", "--command", "ls"], None, {}, None),
     ("neutral-bash-empty", ["--tool", "bash", "--cwd", "<REPO>", "--command", ""], None, {}, None),
     ("neutral-bash-no-verify", ["--tool", "bash", "--cwd", "<REPO>", "--command", "git commit --no-verify"], None, {}, None),

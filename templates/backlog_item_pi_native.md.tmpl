@@ -204,6 +204,12 @@ or ambiguous: ask separately for merge and for push via the `question`
 tool — never bundle. Same reason as step 10: `question`, not plain text, so
 this gate registers as `blocked`, not indistinguishable from done.
 
+When landing work on an `integration_branch` (declared via `update`): merge
+through a temporary worktree via `python3 ~/.claude/scripts/dev_status.py integration-merge <resolved slug> [--push]`
+(or `git worktree add --detach <tmp> <branch>; git merge <slug>; git update-ref refs/heads/<branch> HEAD; git push origin <branch>; git worktree remove <tmp>`)
+— never by checking the branch out in the live main checkout. Then remove the
+worktree and branch as normal.
+
 **`git worktree remove` fails with "Directory not empty"?** A dev server
 (or other long-running process) launched against this worktree during step
 9 — e.g. via the `run` skill's smoke-check pattern — can outlive the port
