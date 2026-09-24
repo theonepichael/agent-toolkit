@@ -352,6 +352,55 @@ class RunBackendCommandTests(unittest.TestCase):
             llm_backends.run_backend_command(py("pass"), timeout=30)
         self.assertIn("produced no output", str(cm.exception))
 
+    def test_33_permission_denied_stderr_is_classified_and_sanitized(self) -> None:
+        # A grounded run whose tool use is auto-denied emits the vendor's
+        # "re-run with --dangerously-skip-permissions" hint on stderr and exits
+        # 0 with no stdout. That dangerous hint must NOT reach the user:
+        # run_backend_command classifies it as a permission-denied empty output
+        # and raises BackendToolPermissionDeniedError with the hint replaced by
+        # a neutral cause.
+        with self.assertRaises(llm_backends.BackendToolPermissionDeniedError) as cm:
+            llm_backends.run_backend_command(
+                py(
+                    "import sys; "
+                    "sys.stderr.write('no output produced - a tool required the "
+                    "command permission; re-run with --dangerously-skip-permissions'); "
+                    "sys.exit(0)"
+                ),
+                timeout=30,
+            )
+        msg = str(cm.exception)
+        self.assertNotIn("--dangerously-skip-permissions", msg)
+        self.assertIn("auto-denied", msg)
+
+    def test_34_plain_empty_output_stays_plain_backend_error(self) -> None:
+        # A genuine empty output with no permission-denial marker stays a plain
+        # BackendError, not the permission-denied subtype.
+        with self.assertRaises(llm_backends.BackendError) as cm:
+            llm_backends.run_backend_command(py("pass"), timeout=30)
+        self.assertNotIsInstance(
+            cm.exception, llm_backends.BackendToolPermissionDeniedError
+        )
+
+    def test_35_permission_denied_nonzero_exit_is_classified_and_sanitized(self) -> None:
+        # A backend may exit nonzero (not just 0) while printing the vendor's
+        # "re-run with --dangerously-skip-permissions" hint on stderr. The
+        # dangerous hint must be stripped on this path too, not just on the
+        # exit-0 empty-stdout path.
+        with self.assertRaises(llm_backends.BackendToolPermissionDeniedError) as cm:
+            llm_backends.run_backend_command(
+                py(
+                    "import sys; "
+                    "sys.stderr.write('a tool required the command permission; "
+                    "re-run with --dangerously-skip-permissions'); "
+                    "sys.exit(1)"
+                ),
+                timeout=30,
+            )
+        msg = str(cm.exception)
+        self.assertNotIn("--dangerously-skip-permissions", msg)
+        self.assertIn("auto-denied", msg)
+
 
 # Command prefixes the isolation contract produces. Kept as constants so a
 # deliberate contract change updates one place, and so these argv assertions
@@ -785,6 +834,26 @@ class RunOpencodeTests(_ContainmentStubbed):
             self.assertEqual(
                 llm_backends.run_opencode("prompt", model=None, timeout=60), text
             )
+
+    def test_opencode_permission_denied_stderr_is_sanitized(self) -> None:
+        # opencode can reach its "no text output" path with the vendor's
+        # permission hint on stderr. The dangerous hint must be stripped, not
+        # passed through to the user-facing error.
+        stdout = json.dumps({"type": "other"}) + "\n"
+        with (
+            self._run_command_returning(
+                stdout,
+                stderr=(
+                    "no output produced - a tool required the command permission; "
+                    "re-run with --dangerously-skip-permissions"
+                ),
+            ),
+            self.assertRaises(llm_backends.BackendToolPermissionDeniedError) as cm,
+        ):
+            llm_backends.run_opencode("prompt", model=None, timeout=60)
+        msg = str(cm.exception)
+        self.assertNotIn("--dangerously-skip-permissions", msg)
+        self.assertIn("auto-denied", msg)
 
 
 class ToolCallLeakDetectionTests(unittest.TestCase):
@@ -1310,6 +1379,46 @@ class CodexBackendTests(unittest.TestCase):
         ) as mock_run:
             result = llm_backends.run_codex("prompt", model=None, timeout=60)
         self.assertEqual(result, "critique content")
+
+    def test_codex_nonzero_exit_permission_denied_is_sanitized(self) -> None:
+        # A codex run can exit nonzero while printing the vendor's
+        # "re-run with --dangerously-skip-permissions" hint on stderr. The
+        # dangerous hint must be stripped on this path, not just on the
+        # exit-0 empty-stdout path.
+        with patch.object(
+            llm_backends,
+            "_run_command",
+            return_value=(
+                1,
+                "",
+                "a tool required the command permission; "
+                "re-run with --dangerously-skip-permissions",
+            ),
+        ):
+            with self.assertRaises(llm_backends.BackendToolPermissionDeniedError) as cm:
+                llm_backends.run_codex("prompt", model=None, timeout=60)
+        msg = str(cm.exception)
+        self.assertNotIn("--dangerously-skip-permissions", msg)
+        self.assertIn("auto-denied", msg)
+
+    def test_codex_empty_output_permission_denied_is_sanitized(self) -> None:
+        # codex exits 0 with empty stdout and the permission hint on stderr.
+        # The dangerous hint must be stripped on this path too.
+        with patch.object(
+            llm_backends,
+            "_run_command",
+            return_value=(
+                0,
+                "",
+                "no output produced - a tool required the command permission; "
+                "re-run with --dangerously-skip-permissions",
+            ),
+        ):
+            with self.assertRaises(llm_backends.BackendToolPermissionDeniedError) as cm:
+                llm_backends.run_codex("prompt", model=None, timeout=60)
+        msg = str(cm.exception)
+        self.assertNotIn("--dangerously-skip-permissions", msg)
+        self.assertIn("auto-denied", msg)
 
 
 class GroundedModeTests(unittest.TestCase):

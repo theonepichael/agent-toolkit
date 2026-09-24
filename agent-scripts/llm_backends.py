@@ -692,6 +692,71 @@ class BackendModelPolicyError(BackendError):
     """
 
 
+class BackendToolPermissionDeniedError(BackendError):
+    """A backend's tool use was auto-denied, so it produced no output.
+
+    A grounded run whose backend needs a tool's command permission the
+    isolated/headless invocation refuses exits 0 with empty stdout and a
+    stderr message telling the user to re-run with
+    ``--dangerously-skip-permissions`` (seen 2026-09-23 with agy) — e.g.
+    "no output produced ... a tool required the command permission ... re-run
+    with --dangerously-skip-permissions". That hint would break the caller's
+    read-only isolation contract, so :func:`run_backend_command` raises this
+    type with the dangerous hint replaced by a neutral statement of cause.
+
+    A strict BackendError subclass: every existing ``except BackendError``
+    call site keeps catching this unchanged; second_opinion adds specific
+    handling to suggest ``--text-only`` instead of loosening permissions.
+    """
+
+
+def _is_auto_denied_permission_output(detail: str) -> bool:
+    """True when a backend's stderr reports its tool use was auto-denied.
+
+    Matches the vendor message a grounded run emits when it needs a tool's
+    command permission the isolated/headless invocation refuses — agy's
+    "no output produced ... a tool required the command permission ... re-run
+    with --dangerously-skip-permissions". The vendor's own dangerous flag name
+    is the stable signal: its presence (alongside a permission keyword) means
+    an auto-denied tool, not a genuine critique failure, and is exactly the
+    text that must be replaced before the message reaches a user.
+    """
+    lowered = detail.lower()
+    return "dangerously-skip-permissions" in lowered and "permission" in lowered
+
+
+# The neutral statement of cause used in place of a backend's own
+# "re-run with --dangerously-skip-permissions" hint. Shared by both exit paths
+# in run_backend_command so a permission-denied run names the real cause once.
+_PERMISSION_DENIED_CAUSE = (
+    "the backend's tool use was auto-denied (no command permission), "
+    "so it produced no output"
+)
+
+
+def _backend_failure(
+    prefix: str, *, stderr: str, stdout: str = "", limit: int | None = None
+) -> BackendError:
+    """Build a BackendError (or permission-denied subtype) from backend output.
+
+    The single chokepoint for every user-facing backend-failure message. When
+    ``stderr`` (or ``stdout`` when stderr is blank) is the vendor's
+    auto-denied-permission message, returns
+    :class:`BackendToolPermissionDeniedError` with the dangerous
+    ``--dangerously-skip-permissions`` hint stripped and replaced by
+    :data:`_PERMISSION_DENIED_CAUSE`; otherwise a plain ``BackendError`` whose
+    message is ``f"{prefix}: {detail}"`` (detail = stderr, or stdout[:200] when
+    stderr is blank, or "(no output)"). Routing all raise sites through this
+    means no path can leak the dangerous hint into a user-facing error.
+    ``limit`` caps the detail shown in the plain message (codex writes verbose
+    progress to stderr); detection always sees the full text.
+    """
+    detail = stderr.strip() or stdout.strip()[:200] or "(no output)"
+    if _is_auto_denied_permission_output(detail):
+        return BackendToolPermissionDeniedError(f"{prefix}: {_PERMISSION_DENIED_CAUSE}")
+    return BackendError(f"{prefix}: {detail if limit is None else detail[:limit]}")
+
+
 # Fallback-chain telemetry handoff. When run_with_fallback moves to the
 # next candidate after a failure, it parks the failed attempt's outcome
 # ("timeout"/"error" — the same bounded enum _track_backend_call logs) in
@@ -944,19 +1009,26 @@ def run_backend_command(cmd: list[str], timeout: float) -> str:
 
     Raises:
         BackendError: If the process exits nonzero, or exits 0 with empty
-            stdout (still a failure — see inline comment).
+            stdout (still a failure — see inline comment). On either path, when
+            the backend's stderr is the vendor's auto-denied-permission message,
+            raises :class:`BackendToolPermissionDeniedError` with the dangerous
+            ``--dangerously-skip-permissions`` hint stripped (see
+            :func:`_is_auto_denied_permission_output`).
     """
     returncode, stdout, stderr = _run_command(cmd, timeout)
     if returncode != 0:
-        raise BackendError(f"exited {returncode}: {stderr.strip()}")
+        raise _backend_failure(f"exited {returncode}", stderr=stderr, stdout=stdout)
     result = stdout.strip()
     if not result:
         # Exit 0 with empty stdout is still a failure — e.g. agy in headless
         # mode has its tool calls auto-denied, prints "no output produced" to
         # stderr, and exits 0. Treating that as success would silently pass
-        # empty output through and skip the caller's priority fallback.
-        detail = stderr.strip() or "(no stderr)"
-        raise BackendError(f"exited 0 but produced no output: {detail}")
+        # empty output through and skip the caller's priority fallback. The
+        # permission-denial sanitizer lives in _backend_failure, so both this
+        # path and the nonzero path above route through it.
+        raise _backend_failure(
+            "exited 0 but produced no output", stderr=stderr, stdout=stdout
+        )
     return result
 
 
@@ -1111,8 +1183,8 @@ def run_codex(
     with _track_backend_call("codex", model, prompt):
         returncode, stdout, stderr = _run_command(cmd, timeout)
         if returncode != 0:
-            raise BackendError(
-                f"codex exited {returncode}: {stderr.strip() or stdout.strip()[:200]}"
+            raise _backend_failure(
+                f"codex exited {returncode}", stderr=stderr, stdout=stdout
             )
         messages: list[str] = []
         for line in stdout.splitlines():
@@ -1134,7 +1206,9 @@ def run_codex(
         stripped = stdout.strip()
         if stripped:
             return stripped
-        raise BackendError(f"no text output from codex: {stderr.strip()[:200]}")
+        raise _backend_failure(
+            "no text output from codex", stderr=stderr, stdout=stdout, limit=200
+        )
 
 
 def run_agy(
@@ -1489,4 +1563,4 @@ def run_opencode(
             if e.get("type") == "error":
                 message = _safe_get(e, "error", "data", "message")
                 raise BackendError(f"error: {message or e.get('error')}")
-        raise BackendError(f"no text output: {stderr.strip() or stdout.strip()[:200]}")
+        raise _backend_failure("no text output", stderr=stderr, stdout=stdout)

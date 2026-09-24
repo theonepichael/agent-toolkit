@@ -844,6 +844,24 @@ class RunOpencodeTests(unittest.TestCase):
         with self._run_command_returning(stdout):
             self.assertEqual(second_opinion.run_opencode("prompt"), critique)
 
+    def test_opencode_permission_denied_stderr_is_sanitized(self) -> None:
+        # opencode reaches its "no text output" path with the vendor's
+        # permission hint on stderr. The dangerous --dangerously-skip-permissions
+        # hint must be stripped from the raised error (not passed through).
+        stdout = json.dumps({"type": "other"}) + "\n"
+        with self._run_command_returning(
+            stdout,
+            stderr=(
+                "no output produced - a tool required the command permission; "
+                "re-run with --dangerously-skip-permissions"
+            ),
+        ):
+            with self.assertRaises(llm_backends.BackendToolPermissionDeniedError) as cm:
+                second_opinion.run_opencode("prompt")
+        msg = str(cm.exception)
+        self.assertNotIn("--dangerously-skip-permissions", msg)
+        self.assertIn("auto-denied", msg)
+
 
 class CmdDetectTests(unittest.TestCase):
     def test_41_detect_reports_presence_and_eligibility(self) -> None:
@@ -2549,6 +2567,69 @@ class BackendListFallbackTests(unittest.TestCase):
                 second_opinion.review_plan(self._plan(backend="agy"))
         self.assertIn("agy broke", str(cm.exception))
         self.assertNotIn("opencode", str(cm.exception))
+
+    def test_permission_denied_empty_output_suggests_text_only(self) -> None:
+        # A grounded run whose tool use was auto-denied surfaces an
+        # AllBackendsFailedError that points the user at --text-only, never at
+        # the backend's own --dangerously-skip-permissions hint (which would
+        # break the critic's read-only isolation). The BackendError llm_backends
+        # raises here is the permission-denied subtype it produces after
+        # stripping that dangerous hint.
+        with (
+            patch.dict(os.environ, self.ENV),
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(
+                second_opinion,
+                "BACKEND_RUNNERS",
+                {
+                    "agy": lambda p, model_index=None: (_ for _ in ()).throw(
+                        llm_backends.BackendToolPermissionDeniedError(
+                            "exited 0 but produced no output: the backend's tool "
+                            "use was auto-denied (no command permission), so it "
+                            "produced no output"
+                        )
+                    ),
+                },
+            ),
+        ):
+            with self.assertRaises(second_opinion.AllBackendsFailedError) as cm:
+                second_opinion.review_plan(self._plan(backend="agy"))
+        msg = str(cm.exception)
+        self.assertIn("--text-only", msg)
+        self.assertNotIn("--dangerously-skip-permissions", msg)
+
+    def test_permission_denied_last_in_backend_list_suggests_text_only(self) -> None:
+        # The auto-denied backend is the LAST candidate in a comma-separated
+        # --backend list, with a failing backend before it. The final
+        # AllBackendsFailedError must still surface the --text-only hint and
+        # never the backend's own --dangerously-skip-permissions hint, proving
+        # the hint survives the real review_plan fallback path (not just a
+        # single-backend run).
+        with (
+            patch.dict(os.environ, self.ENV),
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(
+                second_opinion,
+                "BACKEND_RUNNERS",
+                {
+                    "opencode": lambda p, model_index=None: (_ for _ in ()).throw(
+                        second_opinion.BackendError("opencode broke")
+                    ),
+                    "agy": lambda p, model_index=None: (_ for _ in ()).throw(
+                        llm_backends.BackendToolPermissionDeniedError(
+                            "exited 0 but produced no output: the backend's tool "
+                            "use was auto-denied (no command permission), so it "
+                            "produced no output"
+                        )
+                    ),
+                },
+            ),
+        ):
+            with self.assertRaises(second_opinion.AllBackendsFailedError) as cm:
+                second_opinion.review_plan(self._plan(backend="opencode,agy"))
+        msg = str(cm.exception)
+        self.assertIn("--text-only", msg)
+        self.assertNotIn("--dangerously-skip-permissions", msg)
 
     def test_whitespace_only_critique_counts_as_failure(self) -> None:
         with (

@@ -1052,6 +1052,7 @@ llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, open
   - `class BackendPayloadSizeError(BackendError)` — A backend call was rejected before invocation because the payload exceeds the maximum size known to work reliably for that backend.
   - `class BackendToolUseError(BackendError)` — A backend answered with a tool-use transcript instead of a critique.
   - `class BackendModelPolicyError(BackendError)` — A backend rejected a model because the ACCOUNT cannot select models through the model flag -- an entitlement failure, not a bad model id.
+  - `class BackendToolPermissionDeniedError(BackendError)` — A backend's tool use was auto-denied, so it produced no output.
 - Public functions:
   - `containment_available() -> bool` — Whether OS containment can actually be established on this host.
   - `daemon_listening(backend: str) -> bool` — Whether a daemon belonging to ``backend`` currently holds a listening socket.

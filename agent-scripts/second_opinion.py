@@ -131,6 +131,7 @@ import llm_backends
 import migration_lock
 from llm_backends import (
     BackendError,
+    _backend_failure,
     _finalize_text_response,
     _opencode_json_events,
     _opencode_text_chunks,
@@ -983,7 +984,7 @@ def run_opencode(
         if e.get("type") == "error":
             message = _safe_get(e, "error", "data", "message")
             raise BackendError(f"adversary agent error: {message or e.get('error')}")
-    raise BackendError(f"no text output: {stderr.strip() or stdout.strip()[:200]}")
+    raise _backend_failure("no text output", stderr=stderr, stdout=stdout)
 
 
 def run_copilot(
@@ -1265,6 +1266,16 @@ def review_plan(
                         f" — raise SECOND_OPINION_{backend.upper()}_TIMEOUT_SECONDS "
                         f"(hard ceiling {_MAX_BACKEND_TIMEOUT_SECONDS}s) to allow "
                         "longer runs"
+                    )
+                if isinstance(exc, llm_backends.BackendToolPermissionDeniedError):
+                    # A grounded run whose tool use was auto-denied produced no
+                    # output. llm_backends already stripped the backend's own
+                    # dangerous --dangerously-skip-permissions hint (it would
+                    # break this critic's read-only isolation); point the user
+                    # at the safe alternative instead of loosening permissions.
+                    hint = (
+                        " — retry with --text-only (the grounded critique's tool "
+                        "use was auto-denied; do not loosen permissions)"
                     )
                 if (
                     isinstance(exc, llm_backends.BackendToolUseError)
