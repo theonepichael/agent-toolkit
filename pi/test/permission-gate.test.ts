@@ -55,9 +55,14 @@ describe("classify", () => {
     expect(classify("npm run format")).toBe("allow");
   });
 
-  test("commit-gate commands stay on ask even after the --auto allowlist extension", () => {
-    expect(classify("git add -A")).toBe("ask");
+  test("staging is allowed but commit approval stays on ask", () => {
+    expect(classify("git add -A")).toBe("allow");
+    expect(classify("git -C /repo add src/new.ts")).toBe("allow");
+    expect(classify('git -C /wt commit -m "please add tests"')).toBe("ask");
+    expect(classify("git add . && git commit -m x")).toBe("ask");
     expect(classify("git commit -m msg")).toBe("ask");
+    expect(classify('git -C /wt commit -m "add x"')).toBe("ask");
+    expect(classify('git commit -m "git add"')).toBe("ask");
   });
 
   test("leading and trailing whitespace does not bypass the gate", () => {

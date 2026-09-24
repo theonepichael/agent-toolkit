@@ -74,6 +74,24 @@ class CapabilityFixtureTests(unittest.TestCase):
         params = SKILL_PARAMS[skill][harness]
         return gs.render_one(skill, harness, template_text, params)
 
+    def test_backlog_item_requires_staged_verification_before_commit_gate(self) -> None:
+        rendered = gs.render_all(REPO_ROOT, SKILL_PARAMS)
+        outputs = [
+            path
+            for (skill, _harness), path in gs.OUTPUT_PATHS.items()
+            if skill == "backlog-item"
+        ]
+        old_step9 = "Run the full suite (and lint, if present) in the worktree"
+        for path in outputs:
+            text = rendered[path]
+            step9 = text.split("## 9. Verify", 1)[1].split("## 10.", 1)[0]
+            step10 = text.split("## 10.", 1)[1].split("## 11.", 1)[0]
+            self.assertIn("git diff --cached", step9)
+            self.assertIn("staged", step9)
+            self.assertNotIn(old_step9, step9)
+            self.assertLess(text.index("git diff --cached"), text.index("## 10."))
+            self.assertIn("git diff --cached", step10)
+
     # -- dashboard --------------------------------------------------------
 
     def test_dashboard_claude(self) -> None:
