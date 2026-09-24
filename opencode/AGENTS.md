@@ -28,7 +28,24 @@ wrap lives in `agent-scripts/`.
 
 ## Local Conventions
 
-No local test tier of its own — opencode-specific behavior is covered by
-`agent-scripts/` tests that assert on generated output for all harnesses
-(see `agent-scripts/AGENTS.md`). Regenerate skills with
-`python3 agent-scripts/gen_skills.py`.
+`opencode/package.json` drives four stages, all run from the repository suite
+by `test/test_opencode_ts_checks.py` via `npm run <stage>`:
+
+| Stage | Command |
+|---|---|
+| `test` | `node --import tsx --test --test-concurrency=1 --test-timeout=30000 test/*.test.ts` |
+| `typecheck` | `tsc --noEmit` |
+| `lint` | `oxlint plugin test` |
+| `format:check` | `prettier --check plugin test` |
+
+The specs use Node's built-in test runner and strict assertions directly.
+Static imports in `opencode/test/plugins.test.ts` load all three plugin factories
+without invoking their hooks or opencode's runtime registration machinery.
+
+Run the stages from `opencode/`. A fresh worktree has no
+`opencode/node_modules` or `opencode/node_modules/.bin`; the Python gate fails
+rather than skipping until `npm install` or `scripts/bootstrap-worktree.sh` has
+run. Lint and format cover only `plugin` and `test`, deliberately leaving this
+file and its `CLAUDE.md` symlink outside Prettier's TypeScript path.
+
+Regenerate skills with `python3 agent-scripts/gen_skills.py`.

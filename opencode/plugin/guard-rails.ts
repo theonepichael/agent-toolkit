@@ -16,7 +16,10 @@ type Verdict = { decision: "allow" | "deny" | "warn"; reason?: string }
 
 export const GuardRails: Plugin = async () => {
   return {
-    "tool.execute.before": async (input: { tool?: string }, output: { args?: Record<string, unknown> }) => {
+    "tool.execute.before": async (
+      input: { tool?: string },
+      output: { args?: Record<string, unknown> },
+    ) => {
       const tool = input?.tool
 
       if (tool === "bash") {
@@ -32,9 +35,12 @@ export const GuardRails: Plugin = async () => {
             "python3",
             [
               `${process.env.HOME}/.claude/scripts/guard_rails.py`,
-              "--tool", "bash",
-              "--cwd", process.cwd(),
-              "--command", command,
+              "--tool",
+              "bash",
+              "--cwd",
+              process.cwd(),
+              "--command",
+              command,
             ],
             { timeout: 5000 },
           )
@@ -60,9 +66,12 @@ export const GuardRails: Plugin = async () => {
           "python3",
           [
             `${process.env.HOME}/.claude/scripts/guard_rails.py`,
-            "--tool", tool,
-            "--cwd", dirname(filePath),
-            "--path", filePath,
+            "--tool",
+            tool,
+            "--cwd",
+            dirname(filePath),
+            "--path",
+            filePath,
           ],
           { timeout: 5000 },
         )

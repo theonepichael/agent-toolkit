@@ -74,12 +74,12 @@ cd ~/Workspace/agent-toolkit
 ### Fresh worktrees: bootstrap dependencies first
 
 `node_modules` is untracked, so a fresh `git worktree add` of this repo has
-no `pi/node_modules` (and no root venv) — the pi TypeScript checks skip
-silently until it exists. Run the per-directory installs in one
-step after creating a worktree:
+no `pi/node_modules`, no `opencode/node_modules`, and no root venv. The Pi and
+opencode TypeScript gates fail rather than skip until their dependency roots
+exist. Run all per-directory installs in one step after creating a worktree:
 
 ```bash
-scripts/bootstrap-worktree.sh   # uv sync at the root + npm install in pi/
+scripts/bootstrap-worktree.sh   # root uv sync + npm installs in pi/ and opencode/
 ```
 
 It warns (and skips that step) if `uv` or `npm` is missing, and is safe to

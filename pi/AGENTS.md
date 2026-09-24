@@ -59,14 +59,14 @@ swarm toolset down with them.
 every session — but a check you have to notice is a worse fix than not
 creating the state at all.
 
-## This is the only TypeScript tree with pi's own toolchain
+## Pi's TypeScript toolchain
 
-The one exception is `copilot/extensions/swarm/src/*.ts`, built by
-`scripts/build-copilot-swarm.sh` (`esbuild` straight to plain JS) rather
-than loaded live the way pi loads its own extensions — Copilot CLI
-extensions must be `.mjs`/`.cjs`, not TypeScript, so pi's live-TS-loading
-approach does not apply there. This is a second, independent toolchain, not
-covered by the four stages below.
+Pi and opencode each have their own npm dependency root and four-stage gate.
+The separate `copilot/extensions/swarm/src/*.ts` tree is built by
+`scripts/build-copilot-swarm.sh` (`esbuild` straight to plain JS) rather than
+loaded live the way pi loads its own extensions — Copilot CLI extensions must
+be `.mjs`/`.cjs`, not TypeScript, so pi's live-TS-loading approach does not
+apply there. That build is not covered by the four stages below.
 
 `pi/extensions/swarm-lib/` is the single shared source for scheduling,
 herdr recovery, and `SwarmToolContext`. The context receives a host picker
