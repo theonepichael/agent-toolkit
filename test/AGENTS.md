@@ -13,7 +13,12 @@ runs. It:
   `check_output` too),
 - blocks writes, deletes, renames and `mkdir` under the **real**
   `~/.claude`, `~/.config`, `~/.local/state/agent-toolkit`, and
-  `~/.agent-toolkit`.
+  `~/.agent-toolkit`,
+- scrubs harness-injected git config environment variables (`GIT_CONFIG_COUNT`,
+  `GIT_CONFIG_KEY_*`, `GIT_CONFIG_VALUE_*`, `GIT_CONFIG_PARAMETERS`) so
+  harnesses like Copilot CLI do not leak settings like `safe.bareRepository=explicit`
+  into test git queries.
+
 
 The path guard resolves every path argument the way the kernel would —
 relative and `..`-laden paths against the call's `dir_fd=` anchor (via the
@@ -65,6 +70,19 @@ consolidating the location, not the style below).
   these, and give a new one the same line rather than relying on being
   colocated.
 
+  A file in this tier that wants pytest markers imports them through the
+  stdlib-only shim, `from pytest_shim import pytest` (see
+  `test/pytest_shim.py`), never a bare `import pytest` — under pytest the
+  shim re-exports the real module; on a direct run it hands back an
+  identity stand-in whose `mark.<anything>` accepts both bare and called
+  decorator forms. The shim covers markers only: a file needing any other
+  pytest API (fixtures, `pytest.raises`, annotations like
+  `pytest.MonkeyPatch`) is not dependency-free and must keep a real
+  `import pytest` — `test_settings_seed.py` is the current precedent.
+  The contract is enforced by `test_contract_files_import_without_pytest`
+  in `test/test_direct_unittest_sandbox.py` (its `CONTRACT_TEST_FILES` /
+  `KNOWN_EXCEPTIONS` lists, kept honest in both directions).
+
 Both styles are collected by the same `uv run pytest` from the repo root
 — `pyproject.toml` sets `testpaths = ["test", "scripts"]` (`scripts/` has
 no `test_*.py` of its own; the entry currently collects nothing there) —
@@ -91,8 +109,10 @@ unittest-style file calls `test_bootstrap.run_unittest_main()` from its
 
 ### Direct-run divergences from pytest
 
-1. **Subprocess guard is off for direct runs**: plain unittest has no
-   marker machinery like `@pytest.mark.allow_real_subprocess`, and the
+1. **Subprocess guard is off for direct runs**: plain unittest applies no
+   marker machinery — under `pytest_shim` the marker decorators are
+   accepted but inert, so `@pytest.mark.allow_real_subprocess` neither
+   fails nor opts in — and the
    unittest-style tests frequently spawn subprocesses (`git`, child
    python interpreters). The sandboxed `HOME` limits blast radius.
 2. **Path guard has no direct-run opt-out**: there is no

@@ -54,7 +54,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`guard_rails.py`](#agentscriptsguardrailspy) | Pre-tool guard shared by every harness: refuse a write into a repository's main checkout while a backlog item for that repository is in progress, warn when the current worktree's base has fallen behind ``origin/main`` (or ``origin/<integration_branch>`` for an item that declares one), (Bash, Claude Code only) deny the git-native ways to defeat the no-commit-on-main git hook (``githooks/pre-commit`` / ``githooks-global/pre-commit``), and require an active backlog-item claim before a write that points at an in-progress item. |
 | [`harness_discovery_check.py`](#agentscriptsharnessdiscoverycheckpy) | SessionStart hook + CLI: detect when a harness's instruction-file discovery behavior may have drifted from the version-pinned facts in README.md. |
 | [`harness_spec.py`](#agentscriptsharnessspecpy) | Declarative harness specification registry. |
-| [`herdr_delegate.py`](#agentscriptsherdrdelegatepy) | Launch pi agents in herdr tabs to work backlog items. |
+| [`herdr_delegate.py`](#agentscriptsherdrdelegatepy) | Launch supported agents in herdr tabs to work backlog items. |
 | [`link_drift_check.py`](#agentscriptslinkdriftcheckpy) | SessionStart hook + CLI: flag when a managed symlink on this machine no longer points where links.toml says it should. |
 | [`link_inspect.py`](#agentscriptslinkinspectpy) | link_inspect.py — link inspection, path classification, drift finding, and the self-contained audit assembly for install.py's ``--check-links`` audit and link_drift_check.py's SessionStart hook. |
 | [`llm_backends.py`](#agentscriptsllmbackendspy) | llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, opencode, pi, copilot). Extracted from second_opinion.py so dev_status.py's recap generation can reuse the same process-lifecycle handling (timeouts, process-group kills, opencode JSON-event parsing) with its own timeout and model choices, without duplicating it. |
@@ -321,6 +321,10 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
     - `--skip-bootstrap` — Skip dependency bootstrapping (default: False)
     - `--force/-f` — Pass --force to git worktree add (default: False)
     - `--json` — Emit structured result as JSON (default: False)
+  - `integration-merge <slug|N> [--push] [--repo <REPO>] [--branch <BRANCH>]` — merge an integration-branch item through a temporary worktree without touching main checkout HEAD
+    - `--push` — push to remote after merging (default: False)
+    - `--repo` — Path to git repository
+    - `--branch` — Source branch to merge (default: item slug)
   - `pending` — manage pending (waiting-on-reply) items
   - `pending add '{"id", "description", "kind", ["source_ref"], ["context"], ["next_steps"], ["blocking"]}'` — track a new pending item
   - `pending update <slug|N> '{"status": "reply_received", ...}' [--if-rev <N>]` — merge a JSON patch into an existing pending item
@@ -358,7 +362,7 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `confirm_resolution(cmd: str, arg: str | int, item: BacklogItem | PendingItem, summary_key: str = 'summary', *, quiet: bool = False) -> None` — Echo what a mutating command resolved to, so misresolution is visible.
   - `format_run_rows(runs: list[RunRecord]) -> list[str]` — One ``runs`` listing line per record, naming the commit and checkout.
   - `build_parser() -> argparse.ArgumentParser` — Build the full argument parser for every subcommand.
-- Subcommand handlers: `cmd_internal_regen`, `cmd_recap`, `cmd_worktree`, `cmd_render`, `cmd_ready`, `cmd_list`, `cmd_show`, `cmd_validate`, `cmd_add`, `cmd_update`, `cmd_start`, `cmd_done`, `cmd_reopen`, `cmd_review`, `cmd_approve`, `cmd_reject`, `cmd_gate_set`, `cmd_gate_pass`, `cmd_run`, `cmd_machine_id`, `cmd_runs`, `cmd_backfill_gate`, `cmd_rename`, `cmd_block`, `cmd_unblock`, `cmd_out_of_scope_add`, `cmd_out_of_scope_link`, `cmd_out_of_scope_unlink`, `cmd_out_of_scope_remove`, `cmd_out_of_scope_list`, `cmd_out_of_scope_show`, `cmd_pending_add`, `cmd_pending_update`, `cmd_pending_list`, `cmd_remove`, `cmd_prune`
+- Subcommand handlers: `cmd_internal_regen`, `cmd_recap`, `cmd_worktree`, `cmd_integration_merge`, `cmd_render`, `cmd_ready`, `cmd_list`, `cmd_show`, `cmd_validate`, `cmd_add`, `cmd_update`, `cmd_start`, `cmd_done`, `cmd_reopen`, `cmd_review`, `cmd_approve`, `cmd_reject`, `cmd_gate_set`, `cmd_gate_pass`, `cmd_run`, `cmd_machine_id`, `cmd_runs`, `cmd_backfill_gate`, `cmd_rename`, `cmd_block`, `cmd_unblock`, `cmd_out_of_scope_add`, `cmd_out_of_scope_link`, `cmd_out_of_scope_unlink`, `cmd_out_of_scope_remove`, `cmd_out_of_scope_list`, `cmd_out_of_scope_show`, `cmd_pending_add`, `cmd_pending_update`, `cmd_pending_list`, `cmd_remove`, `cmd_prune`
 - Tested by: `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_dev_status_storage.py`, `test/test_dev_status_validate.py`, `test/test_path_for_per_use.py`, `test/test_sweep_dead_claims.py`, `test/test_to_tickets_runner.py`
 
 ### `agent-scripts/dev_status_formatting.py`
@@ -841,7 +845,8 @@ Pre-tool guard shared by every harness: refuse a write into a repository's main 
   - `--command` — shell command, for the neutral bash-family form
   - `--quiet/-q`
   - `--verbose/-v`
-- Environment: `GUARD_RAILS_OFF`
+- Environment: `GUARD_RAILS_LIVE_REPO`, `GUARD_RAILS_NO_FAST_PATH`, `GUARD_RAILS_OFF`
+- Explicit exit codes: `0`
 - Depends on: `agent_toolkit_paths.py`, `backlog_claim_lookup.py`, `cli_common.py`, `dev_status_impl.py`, `dev_status_storage.py`, `migration_lock.py`, `worktree_provenance.py`
 - Public classes:
   - `class Request` — A normalized tool call: what family, from where, against which path (write-family) or command (bash-family).
@@ -849,15 +854,18 @@ Pre-tool guard shared by every harness: refuse a write into a repository's main 
   - `class RepoInfo`
 - Public functions:
   - `tool_family(name: object) -> str` — Collapse a harness's tool name to a family.
+  - `bash_trigger_free(command: str) -> bool` — Whether ``command`` provably cannot trip any bash-family deny rule.
   - `git(*args: str, cwd: str | None = None) -> str | None` — Run git, returning stripped stdout, or None on any failure.
   - `common_dir_of(directory: str) -> str | None` — Canonical git common directory for a path, or None if it is not in a repo.
   - `repo_info(directory: str) -> RepoInfo | None` — Classify a directory: which repo, worktree or main checkout, bare or not, and on which branch.
+  - `live_install_repo(home: Path | None = None) -> Path | None` — Return the repository root of the live install source, or None if unknown.
+  - `is_live_install_source(info: RepoInfo) -> bool` — Whether this repository is the live install source where harness scripts are symlinked from.
   - `evaluate_bash_override(command: str, cwd: str) -> Verdict` — Deny the git-native ways to defeat the no-commit-on-main git hook, on a protected branch only -- see the module docstring.
   - `evaluate(req: Request, claims: BacklogClaimLookup) -> Verdict` — Apply R2 then R3 to write-family calls, and R4's claim check to any checkout they land in, plus the bash-family override check to Bash calls.
   - `parse_payload(harness: str, payload: object) -> Request | None` — Normalize a harness's native hook payload.
   - `render(harness: str | None, verdict: Verdict) -> tuple[str, int]` — Shape a verdict into the harness's own reply.
   - `build_parser() -> argparse.ArgumentParser`
-- Tested by: `test/test_guard_rails.py`, `test/test_guard_rails_claim.py`, `test/test_guard_rails_stale_base.py`, `test/test_guard_rails_topology.py`, `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`
+- Tested by: `test/test_guard_rails.py`, `test/test_guard_rails_claim.py`, `test/test_guard_rails_fast_path.py`, `test/test_guard_rails_stale_base.py`, `test/test_guard_rails_topology.py`, `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`
 
 ### `agent-scripts/harness_discovery_check.py`
 
@@ -910,21 +918,21 @@ Declarative harness specification registry.
 
 ### `agent-scripts/herdr_delegate.py`
 
-Launch pi agents in herdr tabs to work backlog items.
+Launch supported agents in herdr tabs to work backlog items.
 
 - Installed at: `~/.agent-toolkit/scripts/herdr_delegate.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
-- CLI (`argparse`): Launch pi agents in herdr tabs to work backlog items.
+- CLI (`argparse`): Launch supported agents in herdr tabs to work backlog items.
 - Subcommands:
   - `plan` — READY queue grouped by prefix, as JSON
-  - `launch [--slug <SLUG>] [--swarm <SWARM>] [--serial] [--prefix <PREFIX>] [--model <MODEL>] [--cwd <CWD>] [--kind {pi,copilot}]` — start a pi or copilot worker or orchestrator
+  - `launch [--slug <SLUG>] [--swarm <SWARM>] [--serial] [--prefix <PREFIX>] [--model <MODEL>] [--cwd <CWD>] [--kind {pi,copilot,agy,codex}]` — start a worker, or a pi/copilot queue orchestrator
     - `--slug` — single item for one unattended worker
     - `--swarm` — fan out across N workers
     - `--serial` — run a prefix queue one worker at a time
     - `--prefix` — queue scope, required with --swarm or --serial
     - `--model` — model passed through to harness after a bare --
-    - `--cwd` — working directory
-    - `--kind` — agent harness (pi or copilot; default: pi) (choices: pi, copilot; default: pi)
+    - `--cwd` — working directory (pi/copilot only)
+    - `--kind` — agent harness (agy/codex support --slug only; default: pi) (choices: pi, copilot, agy, codex; default: pi)
   - `restart [--swarm <SWARM>] [--serial] [--prefix <PREFIX>] [--run-id <RUN_ID>] [--model <MODEL>] [--cwd <CWD>] [--kind {pi,copilot}]` — close a live swarm orchestrator's tab, relaunch it, resume the same run
     - `--swarm` — fan out across N workers
     - `--serial` — resume a one-worker serial queue
@@ -933,15 +941,20 @@ Launch pi agents in herdr tabs to work backlog items.
     - `--model` — model passed through to harness after a bare --
     - `--cwd` — working directory
     - `--kind` — agent harness (pi or copilot; default: pi) (choices: pi, copilot; default: pi)
+  - `probe --kind {pi,copilot,agy,codex} [--model <MODEL>] [--cwd <CWD>]` — verify agent readiness and prompt receipt in a scratch tab
+    - `--kind` — agent harness to probe (choices: pi, copilot, agy, codex; required)
+    - `--model` — model passed through to harness after a bare --
+    - `--cwd` — scratch tab working directory
 - Environment: `COPILOT_SWARM_STATE_DIR`, `PI_SWARM_STATE_DIR`
 - Filesystem constants:
   - `DEV_STATUS = Path(__file__).parent / 'dev_status.py'`
   - `COPILOT_PLUGIN_DIR = str(Path(__file__).resolve().parent.parent / 'copilot' / 'extensions' / 'swarm')`
 - Explicit exit codes: `1`
-- Depends on: `backlog_claim_lookup.py`, `dev_status.py`, `dev_status_storage.py`
+- Depends on: `agent_toolkit_paths.py`, `backlog_claim_lookup.py`, `cli_common.py`, `dev_status.py`, `dev_status_impl.py`, `dev_status_storage.py`, `worktree.py`
 - Exceptions:
   - `class RefusedError(RuntimeError)` — A launch that must not proceed, with a reason fit to show the user.
 - Public functions:
+  - `is_inside_git_repo(path: Path) -> bool` — Check whether a path is inside any git repository.
   - `require_herdr_env(env: dict[str, str] | os._Environ[str]) -> None` — Refuse unless this process is inside a herdr-managed pane.
   - `check_launchable(*, slug: str | None = None, prefix: str | None = None) -> None` — Refuse a launch that targets the harness's own repo.
   - `canonical_prefix(prefix: str) -> str` — Slug-head form used in prompts, labels, state and comparisons.
@@ -951,7 +964,7 @@ Launch pi agents in herdr tabs to work backlog items.
   - `agent_name_for(label: str) -> str` — The herdr agent name derived from a tab label.
   - `build_tab_list_argv() -> list[str]` — `herdr tab list` argv.
   - `build_agent_list_argv() -> list[str]` — `herdr agent list` argv.
-  - `build_agent_start_argv(*, name: str, pane: str, model: str | None, kind: str = 'pi', session_id: str | None = None, allow_all_tools: bool = True, plugin_dir: str | None = None) -> list[str]` — `herdr agent start` argv, with flags passed through after a bare ``--``.
+  - `build_agent_start_argv(*, name: str, pane: str, model: str | None, kind: str = 'pi', session_id: str | None = None, allow_all_tools: bool = True, plugin_dir: str | None = None, writable_roots: list[str] | None = None) -> list[str]` — `herdr agent start` argv, with flags passed through after a bare ``--``.
   - `worker_prompt(slug: str, kind: str = 'pi') -> str` — One worker, one item, unattended.
   - `orchestrator_prompt(concurrency: int, prefix: str, kind: str = 'pi') -> str` — One orchestrator; `swarm_spawn` owns the fan-out from here.
   - `orchestrator_resume_prompt(concurrency: int, run_id: str, prefix: str, kind: str = 'pi') -> str` — One orchestrator, resuming an interrupted run.
@@ -966,13 +979,18 @@ Launch pi agents in herdr tabs to work backlog items.
   - `live_tab_ids_with_label(label: str) -> list[str]` — Ids of every live tab carrying exactly ``label``.
   - `live_queue_orchestrators(prefix: str) -> list[tuple[str, str]]` — Live serial or concurrent orchestrator tabs for one canonical prefix.
   - `parse_agent_names(listing: dict[str, object]) -> list[str]` — Agent names out of a `herdr agent list` envelope; [] on anything unexpected.
+  - `parse_agent_status(listing: dict[str, object], name: str) -> str | None` — Agent status for ``name`` out of a `herdr agent list` envelope; None if absent.
   - `wait_agent_deregistered(name: str, *, retry_advice: str = 'Retry `restart` (it relaunches once the name frees)') -> None` — Poll until no live agent carries ``name``, bounded; refuse if it persists.
-  - `spawn_in_new_tab(*, cwd: str, label: str, prompt: str, model: str | None, kind: str = 'pi', session_id: str | None = None, allow_all_tools: bool = True, plugin_dir: str | None = None) -> dict[str, object]` — Create a tab, start pi or copilot in it, and hand it its prompt.
+  - `prepare_worker_worktree(slug: str) -> str` — Validate one item and bootstrap its exact worktree before agent startup.
+  - `codex_writable_roots() -> list[str]` — Runtime paths a backlog worker writes outside its worktree.
+  - `spawn_in_new_tab(*, cwd: str, label: str, prompt: str, model: str | None, kind: str = 'pi', session_id: str | None = None, allow_all_tools: bool = True, plugin_dir: str | None = None, writable_roots: list[str] | None = None) -> dict[str, object]` — Create a tab, start an agent in it, and hand it its prompt.
   - `select_ready(prefix: str | None = None, claims: BacklogClaimLookup | None = None) -> list[BacklogItem]` — Select open backlog items matching an optional prefix using claims lookup.
   - `build_launch_plan(items: list[BacklogItem], *, kind: str = 'pi', cwd: str = '.') -> list[list[str]]` — Construct herdr tab-creation argvs for a list of backlog items.
   - `ready_slugs(claims: BacklogClaimLookup | None = None) -> list[str]` — Slugs currently in READY, sourced via select_ready().
   - `herdr(argv: list[str]) -> dict[str, object]` — Run a herdr command and return its parsed JSON result.
-- Subcommand handlers: `cmd_plan`, `cmd_launch`, `cmd_restart`
+  - `read_pane_text(pane: str, *, source: str = 'visible') -> str` — Read a pane's terminal snapshot via `herdr pane read`.
+  - `confirm_prompt_receipt(*, pane: str, tab: str, name: str, prompt: str, timeout_s: float = AGY_PROMPT_TIMEOUT_S, poll_interval_s: float = AGY_PROMPT_POLL_INTERVAL_S, max_resends: int = 1) -> None` — Poll pane for the echoed prompt line; resend if absent, fail loudly if still missing.
+- Subcommand handlers: `cmd_plan`, `cmd_launch`, `cmd_restart`, `cmd_probe`
 - Tested by: `test/test_herdr_delegate.py`
 
 ### `agent-scripts/link_drift_check.py`
@@ -1055,6 +1073,7 @@ llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, open
   - `class BackendPayloadSizeError(BackendError)` — A backend call was rejected before invocation because the payload exceeds the maximum size known to work reliably for that backend.
   - `class BackendToolUseError(BackendError)` — A backend answered with a tool-use transcript instead of a critique.
   - `class BackendModelPolicyError(BackendError)` — A backend rejected a model because the ACCOUNT cannot select models through the model flag -- an entitlement failure, not a bad model id.
+  - `class BackendToolPermissionDeniedError(BackendError)` — A backend's tool use was auto-denied, so it produced no output.
 - Public functions:
   - `containment_available() -> bool` — Whether OS containment can actually be established on this host.
   - `daemon_listening(backend: str) -> bool` — Whether a daemon belonging to ``backend`` currently holds a listening socket.
@@ -1296,12 +1315,16 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
   - `--verbose/-v`
 - Subcommands:
   - `detect` — list available backends as JSON
-  - `review <plan-file-or-text> [--backend NAME[,NAME...]] [--dir <DIR>] [--text-only] [--focus-file <FOCUS_FILE>] [--model-index N]` — get one critique from the priority-selected backend
+  - `probe [--backend NAME[,NAME...]]` — probe each backend's model pool and report per-model availability as JSON
+    - `--backend` — probe only these backend(s) (comma-separated list allowed) instead of every installed backend in priority order; an entry not installed is reported as not_installed, not an error
+  - `review <plan-file-or-text> [--backend NAME[,NAME...]] [--dir <DIR>] [--text-only] [--focus-file <FOCUS_FILE>] [--model-index N] [--run-id ID] [--allow-extra-round]` — get one critique from the priority-selected backend
     - `--backend` — force backend(s) in order, first success wins (comma-separated list allowed) instead of priority-order fallback; a single name keeps the strict one-backend-only contract, while a list skips an entry that is not installed with a notice
     - `--dir` — root directory of the codebase to inspect in grounded review (defaults to current working directory)
     - `--text-only` — disable codebase exploration and run ungrounded text-only critique (default: False)
     - `--focus-file` — path to a file of plan-specific risk hints, appended to the critique prompt as areas to scrutinize (supplements, not replaces, the generic adversarial mandate)
     - `--model-index` — 0-based index into the backend model pool (SECOND_OPINION_{CODEX,AGY,PI,OPENCODE,COPILOT}_MODEL_POOL) for this call -- round 1 of a rotation is index 0, round 2 is index 1, etc. Supported for codex/agy/pi/opencode/copilot; an explicit index selects the pool even when a single-model override is set, and is a hard error if the pool is unset/empty or the index is out of range (was previously a silent no-op/fallback).
+    - `--run-id` — stable id for one iterative critique session; the per-round cap is enforced by counting reviews per run-id (or per plan file when omitted). The second-opinion skill passes one for the whole loop.
+    - `--allow-extra-round` — permit review calls beyond the per-run cap (for a user who deliberately wants another round) (default: False)
 - Environment: `SECOND_OPINION_AGY_MODEL`, `SECOND_OPINION_AGY_MODEL_POOL`, `SECOND_OPINION_AGY_TIMEOUT_SECONDS`, `SECOND_OPINION_CODEX_MODEL`, `SECOND_OPINION_CODEX_MODEL_POOL`, `SECOND_OPINION_CODEX_TIMEOUT_SECONDS`, `SECOND_OPINION_COPILOT_MODEL`, `SECOND_OPINION_COPILOT_MODEL_POOL`, `SECOND_OPINION_COPILOT_TIMEOUT_SECONDS`, `SECOND_OPINION_OPENCODE_MODEL`, `SECOND_OPINION_OPENCODE_MODEL_POOL`, `SECOND_OPINION_OPENCODE_TIMEOUT_SECONDS`, `SECOND_OPINION_PI_MODEL`, `SECOND_OPINION_PI_MODEL_POOL`, `SECOND_OPINION_PI_TIMEOUT_SECONDS`, `SECOND_OPINION_TIMEOUT_SECONDS`
 - Explicit exit codes: `1`
 - Depends on: `agent_toolkit_paths.py`, `cli_common.py`, `llm_backends.py`, `migration_lock.py`
@@ -1319,6 +1342,9 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
   - `die(msg: str) -> NoReturn` — Print an error to stderr, prefixed for this script, and exit with status 1.
   - `sanitize_plan_text(plan_text: str) -> tuple[str, int]` — Strip ephemeral review debris headers/sections from a plan.
   - `resolve_plan_text(arg: str) -> str` — Resolve a CLI argument to plan text: a file's contents, or the arg itself.
+  - `round_count_for(state: dict[str, object]) -> int` — The number of reviews already recorded for a run's state dict.
+  - `would_exceed_cap(count: int) -> bool` — True when ``count`` already reaches the cap (the call must be refused).
+  - `record_review(state: dict[str, object]) -> dict[str, object]` — Return a copy of ``state`` with the review count incremented and the ``updated`` timestamp refreshed.
   - `run_codex(prompt: str, *, model_index: int | None = None, mode: str | None = None, target_dir: Path | None = None) -> str` — Run the ``codex`` backend and return its critique text.
   - `run_agy(prompt: str, *, model_index: int | None = None, mode: str | None = None, target_dir: Path | None = None) -> str` — Run the ``agy`` backend and return its critique text.
   - `run_opencode(prompt: str, *, model_index: int | None = None, mode: str | None = None, target_dir: Path | None = None) -> str` — Run the ``opencode`` backend's adversary agent and return its critique text.
@@ -1328,7 +1354,7 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
   - `review_plan(request: ReviewRequest, *, verbose: bool = False, quiet: bool = False) -> ReviewResult` — Run one adversarial review of ``request.plan_text`` and return the result.
   - `build_parser() -> argparse.ArgumentParser` — Build the full argument parser for every subcommand.
   - `ensure_data_dir() -> None` — Create the shared artifact directory if it is missing.
-- Subcommand handlers: `cmd_detect`, `cmd_review`
+- Subcommand handlers: `cmd_detect`, `cmd_probe`, `cmd_review`
 - Tested by: `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`, `test/test_second_opinion.py`, `test/test_timing.py`
 
 ### `agent-scripts/seed_hook_subset_guard.py`
@@ -1686,7 +1712,7 @@ the workflow's template plus its generator's capability/parameter tables.
   - Generated from: `templates/standup.md.tmpl` by `gen_skills.py`
   - `claude/commands/{name}.md` is the rendered Claude Code port — edit the template or generator, then regenerate.
   - Installed at: `~/.claude/commands/standup.md` (claude)
-- **`/swarm`** — Hand READY backlog items to pi or copilot agents running in herdr tabs — concurrently by default, serially when requested, or as one named item. Use when the user says 'swarm', 'run the queue serially', 'hand this to pi', 'give <item> to a pi agent', 'hand this to copilot', or 'delegate to a worker'. Requires HERDR_ENV=1; says so and stops otherwise.
+- **`/swarm`** — Hand READY backlog items to pi or copilot queue agents, or one item to an agy or codex worker, in herdr tabs. Use when the user says 'swarm', 'run the queue serially', 'hand this to pi', 'hand this to copilot', 'hand this to agy', 'hand this to codex', or 'delegate to a worker'. Requires HERDR_ENV=1; says so and stops otherwise.
   - Generated from: `templates/swarm.md.tmpl` by `gen_skills.py`
   - `claude/commands/{name}.md` is the rendered Claude Code port — edit the template or generator, then regenerate.
   - Installed at: `~/.claude/commands/swarm.md` (claude)

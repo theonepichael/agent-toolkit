@@ -12,6 +12,7 @@ import functools
 import json
 import os
 import re
+import select
 import shutil
 import signal
 import subprocess
@@ -646,7 +647,17 @@ class BackendTimeoutError(BackendError):
 
     A strict BackendError subclass: every existing ``except BackendError``
     call site keeps catching this unchanged.
+
+    ``stalled`` marks the *output-stall* variant (no bytes arrived for
+    ``stall_seconds``) as opposed to a plain wall-clock timeout. Callers that
+    treat the two differently -- e.g. ``_run_command`` only retries after a
+    stall, never after a full timeout -- branch on this flag rather than on
+    the message text.
     """
+
+    def __init__(self, message: str, *, stalled: bool = False) -> None:
+        super().__init__(message)
+        self.stalled = stalled
 
 
 class BackendPayloadSizeError(BackendError):
@@ -690,6 +701,71 @@ class BackendModelPolicyError(BackendError):
     call site keeps catching this unchanged, while callers reporting
     rule-outs distinguish it.
     """
+
+
+class BackendToolPermissionDeniedError(BackendError):
+    """A backend's tool use was auto-denied, so it produced no output.
+
+    A grounded run whose backend needs a tool's command permission the
+    isolated/headless invocation refuses exits 0 with empty stdout and a
+    stderr message telling the user to re-run with
+    ``--dangerously-skip-permissions`` (seen 2026-09-23 with agy) — e.g.
+    "no output produced ... a tool required the command permission ... re-run
+    with --dangerously-skip-permissions". That hint would break the caller's
+    read-only isolation contract, so :func:`run_backend_command` raises this
+    type with the dangerous hint replaced by a neutral statement of cause.
+
+    A strict BackendError subclass: every existing ``except BackendError``
+    call site keeps catching this unchanged; second_opinion adds specific
+    handling to suggest ``--text-only`` instead of loosening permissions.
+    """
+
+
+def _is_auto_denied_permission_output(detail: str) -> bool:
+    """True when a backend's stderr reports its tool use was auto-denied.
+
+    Matches the vendor message a grounded run emits when it needs a tool's
+    command permission the isolated/headless invocation refuses — agy's
+    "no output produced ... a tool required the command permission ... re-run
+    with --dangerously-skip-permissions". The vendor's own dangerous flag name
+    is the stable signal: its presence (alongside a permission keyword) means
+    an auto-denied tool, not a genuine critique failure, and is exactly the
+    text that must be replaced before the message reaches a user.
+    """
+    lowered = detail.lower()
+    return "dangerously-skip-permissions" in lowered and "permission" in lowered
+
+
+# The neutral statement of cause used in place of a backend's own
+# "re-run with --dangerously-skip-permissions" hint. Shared by both exit paths
+# in run_backend_command so a permission-denied run names the real cause once.
+_PERMISSION_DENIED_CAUSE = (
+    "the backend's tool use was auto-denied (no command permission), "
+    "so it produced no output"
+)
+
+
+def _backend_failure(
+    prefix: str, *, stderr: str, stdout: str = "", limit: int | None = None
+) -> BackendError:
+    """Build a BackendError (or permission-denied subtype) from backend output.
+
+    The single chokepoint for every user-facing backend-failure message. When
+    ``stderr`` (or ``stdout`` when stderr is blank) is the vendor's
+    auto-denied-permission message, returns
+    :class:`BackendToolPermissionDeniedError` with the dangerous
+    ``--dangerously-skip-permissions`` hint stripped and replaced by
+    :data:`_PERMISSION_DENIED_CAUSE`; otherwise a plain ``BackendError`` whose
+    message is ``f"{prefix}: {detail}"`` (detail = stderr, or stdout[:200] when
+    stderr is blank, or "(no output)"). Routing all raise sites through this
+    means no path can leak the dangerous hint into a user-facing error.
+    ``limit`` caps the detail shown in the plain message (codex writes verbose
+    progress to stderr); detection always sees the full text.
+    """
+    detail = stderr.strip() or stdout.strip()[:200] or "(no output)"
+    if _is_auto_denied_permission_output(detail):
+        return BackendToolPermissionDeniedError(f"{prefix}: {_PERMISSION_DENIED_CAUSE}")
+    return BackendError(f"{prefix}: {detail if limit is None else detail[:limit]}")
 
 
 # Fallback-chain telemetry handoff. When run_with_fallback moves to the
@@ -841,9 +917,100 @@ def _kill_active_process() -> None:
     proc.wait()
 
 
+def _decode_buf(buf: bytearray) -> str:
+    """Decode a byte buffer captured from a backend stream into text."""
+    return bytes(buf).decode("utf-8", errors="replace")
+
+
+def _read_with_stall(
+    proc: "subprocess.Popen[bytes]", timeout: float, stall_seconds: float
+) -> tuple[str, str, str, float]:
+    """Read ``proc``'s stdout/stderr incrementally, watching for an output stall.
+
+    Returns ``(stdout, stderr, outcome, remaining)`` where ``outcome`` is one
+    of:
+
+    - ``"complete"`` — both streams reached EOF within the overall
+      ``timeout``;
+    - ``"stalled"`` — no byte arrived for ``stall_seconds`` after the last
+      byte (or after spawn, before the first);
+    - ``"timeout"`` — the overall ``timeout`` elapsed while progress was still
+      being made inside each ``stall_seconds`` window (a slow, not stalled,
+      process).
+
+    The caller owns reaping ``proc`` on the ``stalled``/``"timeout"`` outcomes;
+    this helper leaves the pipes open so a kill + drain can happen once. The
+    fourth element is how much of the overall ``timeout`` budget remained at
+    return — the caller spends it reaping an already-EOF process before
+    trusting its exit code. Built
+    on :func:`select.select` and :func:`time.monotonic` so the stall window is
+    observable and unit-testable without real sleeps — tests patch both.
+    """
+    out_fd = proc.stdout.fileno()
+    err_fd = proc.stderr.fileno()
+    stdout_buf = bytearray()
+    stderr_buf = bytearray()
+    open_fds = {out_fd, err_fd}
+    last_byte = time.monotonic()
+    deadline = time.monotonic() + timeout
+    while True:
+        now = time.monotonic()
+        stall_remaining = stall_seconds - (now - last_byte)
+        overall_remaining = deadline - now
+        if stall_remaining <= 0:
+            # No output for a full stall window: a silent gateway stall, not a
+            # merely slow run. Return what we have; the caller kills + drains.
+            return (
+                _decode_buf(stdout_buf),
+                _decode_buf(stderr_buf),
+                "stalled",
+                max(0.0, deadline - time.monotonic()),
+            )
+        if overall_remaining <= 0:
+            # The hard cap elapsed, but progress kept arriving inside each stall
+            # window — a genuinely long run, distinct from a stall.
+            return (
+                _decode_buf(stdout_buf),
+                _decode_buf(stderr_buf),
+                "timeout",
+                max(0.0, deadline - time.monotonic()),
+            )
+        wait = min(stall_remaining, overall_remaining)
+        ready, _, _ = select.select(list(open_fds), [], [], wait)
+        if not ready:
+            # select() hit the window we asked for with nothing ready; the top
+            # of the loop now resolves it into stalled/timeout. Loop to re-check.
+            continue
+        for fd in ready:
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                # EOF on this stream: drop it. When both are gone the run is
+                # genuinely complete.
+                open_fds.discard(fd)
+                if not open_fds:
+                    return (
+                        _decode_buf(stdout_buf),
+                        _decode_buf(stderr_buf),
+                        "complete",
+                        max(0.0, deadline - time.monotonic()),
+                    )
+                continue
+            if fd == out_fd:
+                stdout_buf.extend(chunk)
+            else:
+                stderr_buf.extend(chunk)
+            # Any byte resets the stall window; a stalled gateway emits nothing
+            # so this never advances once output stops.
+            last_byte = time.monotonic()
+
+
 @cli_common.timing_span("backend_call")
 def _run_command(
-    cmd: list[str], timeout: float, *, retries: int = 0
+    cmd: list[str],
+    timeout: float,
+    *,
+    retries: int = 0,
+    stall_seconds: float | None = None,
 ) -> tuple[int, str, str]:
     """Run ``cmd`` as a subprocess, capturing its output.
 
@@ -865,15 +1032,27 @@ def _run_command(
     Args:
         cmd: The command and arguments to execute.
         timeout: Seconds to wait before killing the process.
-        retries: Extra attempts after an initial timeout, before raising —
+        retries: Extra attempts after an initial *timeout*, before raising —
             each retry re-runs ``cmd`` from scratch (a fresh subprocess),
             waiting up to ``timeout`` again, so worst-case wall time is
-            ``timeout * (1 + retries)``. Only a *timeout* triggers a retry;
-            a nonzero exit or a failed-to-start error still raises/returns
-            on the first attempt (those aren't the observed opencode
-            failure mode this exists for — see ``run_opencode``). Default
-            0 preserves the original no-retry behavior for every other
-            caller (agy, copilot).
+            ``timeout * (1 + retries)``. Only a *timeout* triggers a retry
+            when ``stall_seconds`` is unset; a nonzero exit or a
+            failed-to-start error still raises/returns on the first attempt
+            (those aren't the observed opencode failure mode this exists for
+            — see ``run_opencode``). Default 0 preserves the original
+            no-retry behavior for every other caller (agy, copilot).
+        stall_seconds: When set, detect a *silent output stall* — no byte
+            arrives for this many seconds after the last byte (or after
+            spawn, before the first) — and kill the process group, instead
+            of waiting the full ``timeout`` for a process that will never
+            emit anything more. A stall is treated as a recoverable liveness
+            failure: it triggers a retry when ``retries > 0`` (and tags the
+            eventual telemetry record with ``fallback_reason="stall"``),
+            whereas a full ``timeout`` — progress kept arriving inside each
+            stall window — does **not** retry. ``None`` keeps the original
+            wall-clock-only behavior. Set to ~90 for opencode, which the
+            gateway stalls far more often than it runs slowly (see
+            ``run_opencode``).
 
     Returns:
         ``(returncode, stdout, stderr)``.
@@ -881,11 +1060,14 @@ def _run_command(
     Raises:
         BackendError: If ``cmd``'s executable can't be started.
         BackendTimeoutError: If every attempt (the initial one plus
-            ``retries``) times out. A strict ``BackendError`` subclass, so
-            existing ``except BackendError`` call sites still catch it.
+            ``retries``) times out or stalls. A strict ``BackendError``
+            subclass, so existing ``except BackendError`` call sites still
+            catch it; the ``stalled`` attribute marks the output-stall
+            variant.
     """
-    global _active_process
+    global _active_process, _pending_fallback_reason
     attempt = 0
+    attempt_outcomes: list[str] = []
     # Sanitize environment: omit variables > 32KB to protect total ARG_MAX budget
     env = {k: v for k, v in os.environ.items() if len(k) + len(v) <= 32768}
     while True:
@@ -908,15 +1090,82 @@ def _run_command(
                 raise BackendError(f"failed to start {cmd[0]}: {e}") from e
             _active_process = proc
             try:
-                stdout, stderr = proc.communicate(timeout=timeout)
+                if stall_seconds is None:
+                    stdout, stderr = proc.communicate(timeout=timeout)
+                else:
+                    stdout, stderr, outcome, remaining = _read_with_stall(
+                        proc, timeout, stall_seconds
+                    )
+                    if outcome == "complete":
+                        # Both pipes hit EOF, but a process can close its pipes a
+                        # moment before it actually exits, so returncode can
+                        # still be None here. Reap it within the remaining
+                        # overall budget to obtain a real exit code; if even that
+                        # hangs, the completion read was a red herring and we
+                        # must treat it as a timeout rather than return a None
+                        # returncode (which every caller would misread as error).
+                        try:
+                            proc.wait(timeout=remaining)
+                        except subprocess.TimeoutExpired:
+                            outcome = "timeout"
+                        if outcome == "complete":
+                            timing["outcome"] = (
+                                "success" if proc.returncode == 0 else "error"
+                            )
+                            timing["exit_code"] = proc.returncode
+                            return proc.returncode, stdout, stderr
+                    # stalled or timeout: the process must die and its pipes drain
+                    timing["outcome"] = "stall" if outcome == "stalled" else "timeout"
+                    _kill_active_process()
+                    # `_kill_active_process` only reaps the process (`wait()`); the
+                    # stdout/stderr pipes opened by Popen(...) are still open at
+                    # this point. A second `communicate()` on the now-dead process
+                    # drains and closes them — without it, the fds leak until the
+                    # Popen object happens to get garbage-collected.
+                    proc.communicate()
+                    attempt_outcomes.append(outcome)
+                    if outcome == "stalled" and attempt < retries:
+                        # A stall is a recoverable liveness failure, unlike a
+                        # genuine slow run. Retry once and park the prior outcome
+                        # so the eventual `_track_backend_call` records it as
+                        # `fallback_reason="stall"` — exactly the stall frequency
+                        # the telemetry was added to measure.
+                        _pending_fallback_reason = "stall"
+                        attempt += 1
+                        continue
+                    # Suffix describes the attempts actually made, not a fixed
+                    # "all N" claim: e.g. "(attempt 1 stalled; attempt 2 timed
+                    # out)". A full timeout does not retry, so "all N attempts
+                    # timed out" would be inaccurate when only one attempt ran.
+                    # Internal outcome names map to readable phrases here — a
+                    # raw "timeout" would read as a noun, not a verb.
+                    outcome_labels = {"stalled": "stalled", "timeout": "timed out"}
+                    suffix = (
+                        " ("
+                        + "; ".join(
+                            f"attempt {i + 1} {outcome_labels[o]}"
+                            for i, o in enumerate(attempt_outcomes)
+                        )
+                        + ")"
+                    )
+                    if outcome == "stalled":
+                        raise BackendTimeoutError(
+                            f"stalled after {stall_seconds}s with no output"
+                            f" — killed{suffix}",
+                            stalled=True,
+                        )
+                    raise BackendTimeoutError(
+                        f"timed out after {timeout}s — killed{suffix}"
+                    )
             except subprocess.TimeoutExpired:
+                # Only reachable from the `stall_seconds is None` path:
+                # `_read_with_stall` signals a stall/timeout by returning, never
+                # by raising. A genuine wall-clock timeout is the observed
+                # opencode failure mode's cousin for the other backends, and
+                # keeps the original retry-on-timeout contract when no stall
+                # monitoring is configured.
                 timing["outcome"] = "timeout"
                 _kill_active_process()
-                # `_kill_active_process` only reaps the process (`wait()`); the
-                # stdout/stderr pipes opened by Popen(..., stdout=PIPE, stderr=PIPE)
-                # are still open at this point. A second `communicate()` on the
-                # now-dead process drains and closes them — without it, the fds
-                # leak until the Popen object happens to get garbage-collected.
                 proc.communicate()
                 if attempt < retries:
                     attempt += 1
@@ -944,19 +1193,26 @@ def run_backend_command(cmd: list[str], timeout: float) -> str:
 
     Raises:
         BackendError: If the process exits nonzero, or exits 0 with empty
-            stdout (still a failure — see inline comment).
+            stdout (still a failure — see inline comment). On either path, when
+            the backend's stderr is the vendor's auto-denied-permission message,
+            raises :class:`BackendToolPermissionDeniedError` with the dangerous
+            ``--dangerously-skip-permissions`` hint stripped (see
+            :func:`_is_auto_denied_permission_output`).
     """
     returncode, stdout, stderr = _run_command(cmd, timeout)
     if returncode != 0:
-        raise BackendError(f"exited {returncode}: {stderr.strip()}")
+        raise _backend_failure(f"exited {returncode}", stderr=stderr, stdout=stdout)
     result = stdout.strip()
     if not result:
         # Exit 0 with empty stdout is still a failure — e.g. agy in headless
         # mode has its tool calls auto-denied, prints "no output produced" to
         # stderr, and exits 0. Treating that as success would silently pass
-        # empty output through and skip the caller's priority fallback.
-        detail = stderr.strip() or "(no stderr)"
-        raise BackendError(f"exited 0 but produced no output: {detail}")
+        # empty output through and skip the caller's priority fallback. The
+        # permission-denial sanitizer lives in _backend_failure, so both this
+        # path and the nonzero path above route through it.
+        raise _backend_failure(
+            "exited 0 but produced no output", stderr=stderr, stdout=stdout
+        )
     return result
 
 
@@ -994,18 +1250,23 @@ def _log_backend_call(
     ``error_snippet`` carries the failing attempt's exception text,
     redacted through :func:`cli_common.redact_secrets` (the record ships to
     disk, so sanitization is not optional and truncation alone would never
-    count) and ``None`` on success. ``fallback_reason`` names the *prior*
-    attempt's outcome when this call follows a fallback ("timeout" or
-    "error" — the same bounded enum ``outcome`` uses, never free text) and
-    is ``None`` for the first attempt in a chain. Both fields are additive:
-    nothing outside this module parses the file, and readers tolerate the
-    nulls.
+    count) and ``None`` on success. ``outcome`` is ``"success"``,
+    ``"timeout"``, ``"error"`` — or ``"skipped"``: second_opinion.py's
+    skip-to-next-model record, which marks the *decision* to move to the
+    next pool model (the failed attempt's own ``error`` record precedes it;
+    ``wall_seconds`` is 0.0 there, the wall time lives on the error record).
+    ``fallback_reason`` names the *prior* attempt's outcome when this call
+    follows a fallback ("timeout", "error", "stall" — the same bounded enum
+    ``outcome`` uses, plus "pool_skip" for "the prior pool entry was
+    skipped") and is ``None`` for the first attempt in a chain. Both fields
+    are additive: nothing outside this module parses the file, and readers
+    tolerate the nulls.
     """
     record = {
         "ts": datetime.now(UTC).isoformat(timespec="seconds"),
         "backend": backend,
         "model": model,
-        "outcome": outcome,  # "success" | "timeout" | "error"
+        "outcome": outcome,  # "success" | "timeout" | "error" | "skipped"
         "wall_seconds": round(wall_seconds, 2),
         "prompt_bytes": prompt_bytes,
         "error_snippet": (
@@ -1050,15 +1311,15 @@ def _track_backend_call(backend: str, model: str | None, prompt: str) -> Iterato
     ``error_snippet``: every BackendError this module raises already embeds
     the relevant subprocess detail in its own message, so the exception text
     captures the full failure surface. A non-None ``fallback_reason`` —
-    parked by :func:`run_with_fallback` when the prior candidate failed — is
+    parked by :func:`run_with_fallback` when the prior candidate failed, or
+    by :func:`_run_command` when it internally retries after a stall — is
     consumed here so it lands on exactly one record, this attempt's.
     """
-    global _last_attempt_outcome
+    global _last_attempt_outcome, _pending_fallback_reason
     start = time.monotonic()
     prompt_bytes = len(prompt.encode())
     outcome = "success"
     error_snippet: str | None = None
-    fallback_reason = _pending_fallback_reason
     try:
         yield
     except BackendTimeoutError as exc:
@@ -1070,6 +1331,16 @@ def _track_backend_call(backend: str, model: str | None, prompt: str) -> Iterato
         error_snippet = str(exc)
         raise
     finally:
+        # Read the parked prior-attempt outcome AFTER the yield, not before:
+        # `_run_command` performs an internal stall-retry inside this try block
+        # and only parks "stall" once it has actually stalled and decided to
+        # retry, so an entry-time snapshot would never see it. run_with_fallback
+        # sets _pending_fallback_reason before each candidate's runner (which
+        # enters a fresh _track_backend_call), so a post-yield read still
+        # captures cross-backend fallbacks correctly. Reset it after consuming
+        # so a dead chain can never leak into an unrelated later call.
+        fallback_reason = _pending_fallback_reason
+        _pending_fallback_reason = None
         _log_backend_call(
             backend,
             model,
@@ -1111,8 +1382,8 @@ def run_codex(
     with _track_backend_call("codex", model, prompt):
         returncode, stdout, stderr = _run_command(cmd, timeout)
         if returncode != 0:
-            raise BackendError(
-                f"codex exited {returncode}: {stderr.strip() or stdout.strip()[:200]}"
+            raise _backend_failure(
+                f"codex exited {returncode}", stderr=stderr, stdout=stdout
             )
         messages: list[str] = []
         for line in stdout.splitlines():
@@ -1134,7 +1405,9 @@ def run_codex(
         stripped = stdout.strip()
         if stripped:
             return stripped
-        raise BackendError(f"no text output from codex: {stderr.strip()[:200]}")
+        raise _backend_failure(
+            "no text output from codex", stderr=stderr, stdout=stdout, limit=200
+        )
 
 
 def run_agy(
@@ -1460,15 +1733,17 @@ def run_opencode(
             an explicit error event was emitted, or because nothing
             recognizable was produced at all.
 
-    Retries once on a timeout (``retries=1``): confirmed via direct
-    bisection (2026-08-17) that opencode's CLI intermittently stalls its
-    event stream (emits ``step_start`` and then nothing, no ``text``/
-    ``step_finish``/error — a genuine stall, not merely slow) at roughly a
-    20-33% rate on prompts around 20KB, independent of exact byte count,
-    the model-pool index, and whether the prompt is passed inline or via
-    ``-f``/``--file`` — no fix is available at this layer, so one retry is
-    the practical mitigation (drops the practical failure rate to roughly
-    4-10%).
+    Retries once, but only after an *output stall* — not after a full
+    timeout. ``_run_command`` is passed ``stall_seconds=90`` (see its
+    docstring): it streams the child's stdout and kills the process group the
+    moment no byte has arrived for that window, then retries once. A gateway
+    stall "never produces output — it only fails slower", so waiting the full
+    timeout only fails slower; the 2026-09 efficiency analysis measured
+    production-length retries (450s cap) succeeding 0 of 6, costing 2,107s.
+    A *slow-but-progressing* run (bytes keep arriving inside each stall
+    window) is not a stall and is left to run to its overall ``timeout``
+    without a retry. A successful stall-retry is recorded in
+    ``backend_calls.jsonl`` with ``fallback_reason="stall"``.
     """
     check_prompt_size(prompt)
     kwargs: dict[str, object] = {}
@@ -1478,7 +1753,7 @@ def run_opencode(
         kwargs["target_dir"] = target_dir
     cmd = build_isolated_command("opencode", prompt, model=model, **kwargs)
     with _track_backend_call("opencode", model, prompt):
-        _, stdout, stderr = _run_command(cmd, timeout, retries=1)
+        _, stdout, stderr = _run_command(cmd, timeout, retries=1, stall_seconds=90)
         events = _opencode_json_events(stdout)
         allowed = {"read", "grep", "glob"} if mode == "grounded" else None
         _raise_on_tool_use(events, context="opencode", allowed_tools=allowed)
@@ -1489,4 +1764,4 @@ def run_opencode(
             if e.get("type") == "error":
                 message = _safe_get(e, "error", "data", "message")
                 raise BackendError(f"error: {message or e.get('error')}")
-        raise BackendError(f"no text output: {stderr.strip() or stdout.strip()[:200]}")
+        raise _backend_failure("no text output", stderr=stderr, stdout=stdout)

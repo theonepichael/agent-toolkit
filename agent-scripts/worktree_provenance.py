@@ -605,6 +605,9 @@ def _inspect_one_worktree(
         )
     prov = classify(wt)
     if prov is None:
+        raw = _git_raw("-C", str(wt), "rev-parse", "--git-dir", "--git-common-dir")
+        if raw is not None and "safe.bareRepository" in raw[2]:
+            return _OneWorktree()
         return _OneWorktree(
             WorktreeInspection(
                 target=str(wt),

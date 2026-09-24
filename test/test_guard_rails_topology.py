@@ -152,12 +152,30 @@ def test_bare_repo_is_detected_and_allowed(tmp_path: Path) -> None:
     assert verdict.decision == "allow"
 
 
+def test_bare_repo_returns_none_under_explicit_bare_repo_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "safe.bareRepository")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "explicit")
+    bare = tmp_path / "bare_explicit.git"
+    bare.mkdir()
+    _git("-c", "safe.bareRepository=all", "init", "-q", "--bare", ".", cwd=bare)
+    info = guard_rails.repo_info(str(bare))
+    assert info is None
+    verdict = guard_rails.evaluate(
+        guard_rails.Request("write", str(bare), str(bare / "x.txt")), _fake_lookup()
+    )
+    assert verdict.decision == "allow"
+
+
 def test_submodule_resolves_to_its_own_repository(
     main_checkout: Path, tmp_path: Path
 ) -> None:
     """A submodule is a distinct repo and must be matched on its own
     identity, not folded into the superproject's."""
     inner = _init_repo(tmp_path / "inner")
+
     _git(
         "-c",
         "protocol.file.allow=always",
@@ -345,6 +363,109 @@ def test_bash_override_allows_on_detached_head(main_checkout: Path) -> None:
         "git config --unset core.hooksPath", str(main_checkout)
     )
     assert verdict.decision == "allow"
+
+
+def test_bash_checkout_off_default_denied_on_live_install_main_checkout(
+    main_checkout: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GUARD_RAILS_LIVE_REPO", str(main_checkout))
+    _git("branch", "release-1", cwd=main_checkout)
+    verdict = guard_rails.evaluate_bash_override(
+        "git checkout release-1", str(main_checkout)
+    )
+    assert verdict.decision == "deny"
+    assert "off its default branch" in verdict.reason
+    assert "worktree" in verdict.reason
+
+
+def test_bash_checkout_off_default_allowed_in_linked_worktree(
+    main_checkout: Path, worktree: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GUARD_RAILS_LIVE_REPO", str(main_checkout))
+    _git("branch", "release-1", cwd=main_checkout)
+    verdict = guard_rails.evaluate_bash_override(
+        "git checkout release-1", str(worktree)
+    )
+    assert verdict.decision == "allow"
+
+
+def test_bash_checkout_default_branch_allowed_on_main_checkout(
+    main_checkout: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GUARD_RAILS_LIVE_REPO", str(main_checkout))
+    verdict = guard_rails.evaluate_bash_override(
+        "git checkout main", str(main_checkout)
+    )
+    assert verdict.decision == "allow"
+
+
+def test_bash_checkout_file_allowed_on_main_checkout(
+    main_checkout: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GUARD_RAILS_LIVE_REPO", str(main_checkout))
+    verdict = guard_rails.evaluate_bash_override(
+        "git checkout -- f.txt", str(main_checkout)
+    )
+    assert verdict.decision == "allow"
+    verdict2 = guard_rails.evaluate_bash_override(
+        "git checkout f.txt", str(main_checkout)
+    )
+    assert verdict2.decision == "allow"
+
+
+def test_bash_switch_off_default_denied_on_live_install_main_checkout(
+    main_checkout: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GUARD_RAILS_LIVE_REPO", str(main_checkout))
+    _git("branch", "release-1", cwd=main_checkout)
+    verdict = guard_rails.evaluate_bash_override(
+        "git switch release-1", str(main_checkout)
+    )
+    assert verdict.decision == "deny"
+
+
+def test_bash_checkout_off_default_allowed_on_non_live_repo(
+    main_checkout: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    other_repo = _init_repo(tmp_path / "other")
+    _git("branch", "release-1", cwd=other_repo)
+    monkeypatch.setenv("GUARD_RAILS_LIVE_REPO", str(main_checkout))
+    verdict = guard_rails.evaluate_bash_override(
+        "git checkout release-1", str(other_repo)
+    )
+    assert verdict.decision == "allow"
+
+
+def test_bash_switch_create_flags_denied_on_live_install_main_checkout(
+    main_checkout: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GUARD_RAILS_LIVE_REPO", str(main_checkout))
+    verdict1 = guard_rails.evaluate_bash_override(
+        "git switch -C foo", str(main_checkout)
+    )
+    assert verdict1.decision == "deny"
+    verdict2 = guard_rails.evaluate_bash_override(
+        "git switch -c foo", str(main_checkout)
+    )
+    assert verdict2.decision == "deny"
+
+
+def test_bash_global_options_before_subcommand_properly_parsed(
+    main_checkout: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GUARD_RAILS_LIVE_REPO", str(main_checkout))
+    verdict1 = guard_rails.evaluate_bash_override(
+        "git -c core.x=1 checkout -b foo", str(main_checkout)
+    )
+    assert verdict1.decision == "deny"
+    verdict2 = guard_rails.evaluate_bash_override(
+        "git --no-pager switch -C foo", str(main_checkout)
+    )
+    assert verdict2.decision == "deny"
+    verdict3 = guard_rails.evaluate_bash_override(
+        f"git -C {main_checkout} -c core.x=1 checkout -b foo", str(REPO_ROOT)
+    )
+    assert verdict3.decision == "deny"
 
 
 # ── the shipped git hook itself, against real commits ──────────────────────

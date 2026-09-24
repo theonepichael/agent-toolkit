@@ -9,13 +9,17 @@ for harness-specific wording, then regenerate -->
 
 All backend I/O goes through `python3
 ~/.agent-toolkit/scripts/second_opinion.py` — never shell out to
-`codex`/`agy`/`opencode`/`pi`/`copilot` directly. Two operations: `detect`
+`codex`/`agy`/`opencode`/`pi`/`copilot` directly. Three operations: `detect`
 reports each backend's presence AND whether it currently meets the isolation
-contract (with the reason when it does not), `review` returns one critique. It
-is single-round: one call, one critique. The multi-round loop and plan revision
-are your job, not the script's. By default, reviews are grounded in the target
-codebase (`--dir` or current working directory) with read-only tools enabled;
-use `--text-only` to opt out.
+contract (with the reason when it does not), `review` returns one critique, and
+`probe` runs one trivial, cheap, text-only request per model in the selected
+backend's pool (or its single override / default model) and reports per-model
+availability as JSON — use it to check a pool's health before committing to a
+multi-round rotation, and remember it calls the real models once each, so pass
+`--backend` deliberately. It is single-round: one call, one critique. The
+multi-round loop and plan revision are your job, not the script's. By default,
+reviews are grounded in the target codebase (`--dir` or current working
+directory) with read-only tools enabled; use `--text-only` to opt out.
 
 ```
 second_opinion.py detect                        # which backends are present (JSON)
@@ -56,11 +60,14 @@ in order, first success wins) to make the script itself fall through at runtime
 — a list skips an entry that is not installed with a one-line notice and never
 touches the priority order; a single name keeps the strict one-backend-only
 contract (that call fails outright with no fallback). A model whose run
-answered with a tool-use transcript instead of a critique is quarantined for
-the process — pool rotation skips it for later requests in the same process,
-while a fresh CLI invocation starts clean — so do not pin `--model-index`
-across rounds on a machine whose pool is known to contain a tool-hungry model;
-let the list rotate instead. On a machine with no pool at all for the
+answered with a tool-use transcript instead of a critique — or whose access the
+gateway refuses outright ("Model access is disabled") — is skipped to the next
+pool model instead of failing the round (even a pinned `--model-index` rotates
+forward) and quarantined for the process — later requests in the same process
+skip it, while a fresh CLI invocation starts clean — so do not pin
+`--model-index` across rounds on a machine whose pool is known to contain a
+tool-hungry or access-disabled model; let the rotation skip instead, and repair
+the pool with `probe`'s report. On a machine with no pool at all for the
 dispatched backend, the script itself prints a one-line stderr notice
 (suppressed by `--quiet`) naming the absent pool variable, where to set it, and
 a realistic example — the run still proceeds with the backend's default model,
@@ -136,6 +143,7 @@ it stays free to surface things you didn't think to flag.
 ## Iteration loop
 
 ```
+run_id = <a stable id for this whole critique loop — the grill session slug if a grill session is active, else a short timestamped slug; passed to every review call so the script's per-run cap is scoped to this loop and not to the plan path alone>
 round = 1
 current_plan = <resolved input>
 prior_critique = None
@@ -145,11 +153,11 @@ loop:
                   (see above), or skip if nothing specific stands out
     critique = second_opinion.py review <current_plan> \
                    [--focus-file <focus-hints-path>] \
-                   --model-index <round - 1>   # one call
+                   --model-index <round - 1> --run-id <run_id>   # one call
     if that call exited nonzero with a "--model-index ... requires
        ... POOL ..." configuration error (not a backend-failure message):
         critique = second_opinion.py review <current_plan> \
-                       [--focus-file <focus-hints-path>]   # retry, no index —
+                       [--focus-file <focus-hints-path>] --run-id <run_id>   # retry, no index —
                                                             # no pool configured
                                                             # for this backend,
                                                             # not an error to
@@ -226,6 +234,15 @@ a file. The critique-notes file is new each run, so it doesn't need the same
 overwrite confirmation.
 
 ## On cap-out without convergence
+
+The 3-round cap is enforced by `second_opinion.py` itself, not just this prose:
+a 4th `review` call for the same run is refused with a message telling you to
+stop and finalize (clean up the plan, write the critique-notes file, list the
+open points). Treat that refusal as the cap — do not loop again for this plan.
+A user who genuinely wants more rounds can pass `--allow-extra-round`
+(documented for humans; never surfaced in the refusal text), but reaching the
+cap mid-disagreement usually means you should stop and surface the open points
+rather than grind on.
 
 State plainly, distinct from a converged finish:
 

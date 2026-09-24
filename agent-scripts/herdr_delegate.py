@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Launch pi agents in herdr tabs to work backlog items.
+"""Launch supported agents in herdr tabs to work backlog items.
 
 Owns the launch recipe so no session has to re-derive it. It launches only:
 ``swarm_spawn``/``swarm_poll`` in ``pi/extensions/swarm-tool.ts`` keep owning
@@ -42,7 +42,8 @@ failure. Any other failure still fails on the first attempt, unchanged.
 
 Usage:
     herdr_delegate.py plan
-    herdr_delegate.py launch --slug <slug> [--model <model>] [--kind {pi,copilot}]
+    herdr_delegate.py launch --slug <slug> [--model <model>]
+                             [--kind {pi,copilot,agy,codex}]
     herdr_delegate.py launch --swarm <N> --prefix <prefix> [--model <model>]
                              [--kind {pi,copilot}]
     herdr_delegate.py launch --serial --prefix <prefix> [--model <model>]
@@ -51,6 +52,8 @@ Usage:
                               [--model <model>] [--kind {pi,copilot}]
     herdr_delegate.py restart --serial --prefix <prefix> [--run-id <runId>]
                               [--model <model>] [--kind {pi,copilot}]
+    herdr_delegate.py probe --kind {pi,copilot,agy,codex} [--model <model>]
+                            [--cwd <cwd>]
 """
 
 from __future__ import annotations
@@ -60,8 +63,10 @@ import contextlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -75,6 +80,8 @@ from pathlib import Path
 # same as any other file open.
 sys.path.insert(0, str(Path(__file__).parent))
 
+import agent_toolkit_paths  # noqa: E402
+import cli_common  # noqa: E402
 from backlog_claim_lookup import (  # noqa: E402
     BacklogClaimLookup,
     LocalClaimLookup,
@@ -85,7 +92,13 @@ from dev_status import (  # noqa: E402
     is_worker_safe,
     prefix_of,
 )
+from dev_status_impl import serial_safety  # noqa: E402
 from dev_status_storage import BacklogItem  # noqa: E402
+from worktree import (  # noqa: E402
+    WorktreeError,
+    resolve_backlog_item,
+    resolve_worktree_config,
+)
 
 # What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
 TOOLKIT_DATA = "reader"
@@ -102,6 +115,24 @@ DEV_STATUS = Path(__file__).parent / "dev_status.py"
 COPILOT_PLUGIN_DIR = str(
     Path(__file__).resolve().parent.parent / "copilot" / "extensions" / "swarm"
 )
+AGY_PROMPT_TIMEOUT_S = 8.0
+AGY_PROMPT_POLL_INTERVAL_S = 0.25
+PROBE_PROMPT = "Reply with exactly READY. Do not run any command or edit any file."
+
+
+def is_inside_git_repo(path: Path) -> bool:
+    """Check whether a path is inside any git repository."""
+    cur = path.resolve()
+    for candidate in (cur, *cur.parents):
+        if (candidate / ".git").exists():
+            return True
+        if (
+            (candidate / "HEAD").is_file()
+            and (candidate / "refs").is_dir()
+            and (candidate / "objects").is_dir()
+        ):
+            return True
+    return False
 
 
 class RefusedError(RuntimeError):
@@ -242,6 +273,7 @@ def build_agent_start_argv(
     session_id: str | None = None,
     allow_all_tools: bool = True,
     plugin_dir: str | None = None,
+    writable_roots: list[str] | None = None,
 ) -> list[str]:
     """`herdr agent start` argv, with flags passed through after a bare ``--``."""
     argv = ["agent", "start", name, "--kind", kind, "--pane", pane]
@@ -259,6 +291,24 @@ def build_agent_start_argv(
             argv += ["--", *session_args]
         return argv
 
+    if kind == "agy":
+        session_args = ["--mode", "accept-edits"]
+        if model:
+            session_args += ["--model", model]
+        return [*argv, "--", *session_args]
+
+    if kind == "codex":
+        session_args = [
+            "-c",
+            "check_for_update_on_startup=false",
+            "--approve-for-me",
+        ]
+        for root in writable_roots or []:
+            session_args += ["--add-dir", root]
+        if model:
+            session_args += ["--model", model]
+        return [*argv, "--", *session_args]
+
     if model:
         argv += ["--", "--model", model]
     return argv
@@ -266,7 +316,8 @@ def build_agent_start_argv(
 
 def worker_prompt(slug: str, kind: str = "pi") -> str:
     """One worker, one item, unattended."""
-    return f"/backlog-item --auto {slug}"
+    invoke = "$backlog-item" if kind == "codex" else "/backlog-item"
+    return f"{invoke} --auto {slug}"
 
 
 def orchestrator_prompt(concurrency: int, prefix: str, kind: str = "pi") -> str:
@@ -475,6 +526,19 @@ def parse_agent_names(listing: dict[str, object]) -> list[str]:
     ]
 
 
+def parse_agent_status(listing: dict[str, object], name: str) -> str | None:
+    """Agent status for ``name`` out of a `herdr agent list` envelope; None if absent."""
+    result = listing.get("result") if isinstance(listing, dict) else None
+    agents = result.get("agents") if isinstance(result, dict) else None
+    if not isinstance(agents, list):
+        return None
+    for a in agents:
+        if isinstance(a, dict) and a.get("name") == name:
+            status = a.get("agent_status")
+            return status if isinstance(status, str) else None
+    return None
+
+
 RESTART_DEREGISTER_POLLS = 20
 RESTART_DEREGISTER_INTERVAL_S = 0.25
 
@@ -516,6 +580,55 @@ AGENT_START_TIMEOUT_RETRIES can never desync from a fixed-length backoff
 list and index out of range."""
 
 
+def prepare_worker_worktree(slug: str) -> str:
+    """Validate one item and bootstrap its exact worktree before agent startup."""
+    item = resolve_backlog_item(slug)
+    if item is None:
+        raise RefusedError(f"no backlog item matches {slug!r}")
+    safe, reason = serial_safety(item)
+    if not safe:
+        raise RefusedError(f"item {slug!r} is not safe for delegation: {reason}")
+    try:
+        config = resolve_worktree_config(slug)
+    except WorktreeError as exc:
+        raise RefusedError(str(exc)) from exc
+    result = subprocess.run(
+        [sys.executable, str(DEV_STATUS), "worktree", slug, "--json"],
+        cwd=str(config.repo),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RefusedError(
+            f"worktree setup failed for {slug!r}: {result.stderr.strip()}"
+        )
+    try:
+        payload = json.loads(result.stdout)
+        actual = Path(payload["worktree_path"]).resolve()
+    except (ValueError, KeyError, TypeError) as exc:
+        raise RefusedError("worktree setup returned no valid path") from exc
+    if actual != config.worktree_path:
+        raise RefusedError(
+            f"worktree setup returned {actual}, expected {config.worktree_path}"
+        )
+    return str(actual)
+
+
+def codex_writable_roots() -> list[str]:
+    """Runtime paths a backlog worker writes outside its worktree."""
+    cache = subprocess.run(
+        ["uv", "cache", "dir"], capture_output=True, text=True, check=False
+    )
+    if cache.returncode != 0 or not cache.stdout.strip():
+        raise RefusedError(f"cannot resolve uv cache: {cache.stderr.strip()}")
+    return [
+        str(agent_toolkit_paths.path_for("work-items").parent),
+        str(cli_common.state_dir() / "agent-toolkit"),
+        str(Path(cache.stdout.strip()).resolve()),
+    ]
+
+
 def spawn_in_new_tab(
     *,
     cwd: str,
@@ -526,8 +639,9 @@ def spawn_in_new_tab(
     session_id: str | None = None,
     allow_all_tools: bool = True,
     plugin_dir: str | None = None,
+    writable_roots: list[str] | None = None,
 ) -> dict[str, object]:
-    """Create a tab, start pi or copilot in it, and hand it its prompt.
+    """Create a tab, start an agent in it, and hand it its prompt.
 
     The one launch sequence, shared by `launch` and `restart` so the two
     cannot drift apart. A `timeout`-coded `agent start` failure is retried
@@ -556,6 +670,7 @@ def spawn_in_new_tab(
                     session_id=session_id,
                     allow_all_tools=allow_all_tools,
                     plugin_dir=plugin_dir,
+                    writable_roots=writable_roots,
                 )
             )
         except RefusedError as exc:
@@ -589,6 +704,8 @@ def spawn_in_new_tab(
         # prompt` here means the agent DID start -- the tab holds a live
         # agent, closing it would kill it, and it must never be retried.
         herdr(["agent", "prompt", name, prompt])
+        if kind == "agy":
+            confirm_prompt_receipt(pane=pane, tab=tab, name=name, prompt=prompt)
         summary: dict[str, object] = {
             "tab": tab,
             "pane": pane,
@@ -654,12 +771,61 @@ def herdr(argv: list[str]) -> dict[str, object]:
         raise RefusedError(
             f"herdr {' '.join(argv)} failed: {result.stderr.strip()}", code=code
         )
+    if len(argv) >= 2 and argv[0] == "pane" and argv[1] == "read":
+        return {"result": {"text": result.stdout}}
     try:
         return json.loads(result.stdout)
     except json.JSONDecodeError as exc:
         raise RefusedError(
             f"herdr {' '.join(argv)} returned unparseable output: {exc}"
         ) from exc
+
+
+def read_pane_text(pane: str, *, source: str = "visible") -> str:
+    """Read a pane's terminal snapshot via `herdr pane read`."""
+    res = herdr(["pane", "read", pane, "--source", source])
+    result = res.get("result")
+    if isinstance(result, dict) and isinstance(result.get("text"), str):
+        return result["text"]
+    return ""
+
+
+def confirm_prompt_receipt(
+    *,
+    pane: str,
+    tab: str,
+    name: str,
+    prompt: str,
+    timeout_s: float = AGY_PROMPT_TIMEOUT_S,
+    poll_interval_s: float = AGY_PROMPT_POLL_INTERVAL_S,
+    max_resends: int = 1,
+) -> None:
+    """Poll pane for the echoed prompt line; resend if absent, fail loudly if still missing."""
+    target = prompt.strip()
+    resends_left = max_resends
+    while True:
+        deadline = time.monotonic() + timeout_s
+        while True:
+            text = read_pane_text(pane)
+            if target in text:
+                return
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(poll_interval_s)
+            if time.monotonic() >= deadline:
+                break
+
+        if resends_left > 0:
+            resends_left -= 1
+            listing = herdr(build_agent_list_argv())
+            if parse_agent_status(listing, name) == "working":
+                return
+            herdr(["agent", "prompt", name, prompt])
+            continue
+
+        raise RefusedError(
+            f"prompt was not received in tab {tab} (pane {pane}); check `herdr pane read {pane}`"
+        )
 
 
 def _looks_like_json_object(text: str) -> bool:
@@ -677,7 +843,7 @@ def cmd_plan(_args: argparse.Namespace) -> None:
 
 
 def cmd_launch(args: argparse.Namespace) -> None:
-    """Create a tab, start pi or copilot in it, and hand it its prompt."""
+    """Create a tab, start a worker or orchestrator, and hand it its prompt."""
     require_herdr_env(os.environ)
     kind = getattr(args, "kind", "pi")
     plugin_dir = COPILOT_PLUGIN_DIR if kind == "copilot" else None
@@ -707,16 +873,24 @@ def cmd_launch(args: argparse.Namespace) -> None:
                 "resume or restart that run instead"
             )
 
+    cwd = args.cwd or os.getcwd()
+    writable_roots: list[str] | None = None
+    if kind in ("agy", "codex"):
+        cwd = prepare_worker_worktree(args.slug)
+        if kind == "codex":
+            writable_roots = codex_writable_roots()
+
     print(
         json.dumps(
             spawn_in_new_tab(
-                cwd=args.cwd,
+                cwd=cwd,
                 label=label,
                 prompt=prompt,
                 model=args.model,
                 kind=kind,
                 session_id=session_id,
                 plugin_dir=plugin_dir,
+                writable_roots=writable_roots,
             )
         )
     )
@@ -787,6 +961,66 @@ def cmd_restart(args: argparse.Namespace) -> None:
     print(json.dumps(summary))
 
 
+def cmd_probe(args: argparse.Namespace) -> None:
+    """Launch an agent in a scratch tab to confirm readiness and prompt receipt."""
+    require_herdr_env(os.environ)
+    scratch_dir: str | None = None
+    if args.cwd:
+        explicit_cwd = Path(args.cwd).resolve()
+        if is_inside_git_repo(explicit_cwd):
+            raise RefusedError(
+                f"probe --cwd cannot be inside a git repository: {args.cwd}"
+            )
+        cwd = str(explicit_cwd)
+    else:
+        scratch_dir = tempfile.mkdtemp(prefix="herdr-probe-")
+        cwd = scratch_dir
+
+    kind = args.kind
+    label = f"probe-{kind}-{uuid.uuid4().hex[:6]}"
+    name = agent_name_for(label)
+    plugin_dir = COPILOT_PLUGIN_DIR if kind == "copilot" else None
+    session_id = str(uuid.uuid4()) if kind == "copilot" else None
+    writable_roots = codex_writable_roots() if kind == "codex" else None
+    trivial_prompt = PROBE_PROMPT
+
+    tab_id: str | None = None
+    try:
+        created = herdr(build_tab_argv(cwd=cwd, label=label, kind=kind))
+        result = created["result"]
+        pane = result["root_pane"]["pane_id"]  # type: ignore[index]
+        tab_id = result["tab"]["tab_id"]  # type: ignore[index]
+
+        herdr(
+            build_agent_start_argv(
+                name=name,
+                pane=pane,
+                model=args.model,
+                kind=kind,
+                session_id=session_id,
+                plugin_dir=plugin_dir,
+                writable_roots=writable_roots,
+            )
+        )
+        herdr(["agent", "prompt", name, trivial_prompt])
+        confirm_prompt_receipt(
+            pane=pane,
+            tab=tab_id,
+            name=name,
+            prompt=trivial_prompt,
+        )
+        print(f"probe {kind}: PASS")
+    except Exception as exc:
+        print(f"probe {kind}: FAIL ({exc})", file=sys.stderr)
+        raise SystemExit(1) from exc
+    finally:
+        if tab_id:
+            with contextlib.suppress(RefusedError):
+                herdr(["tab", "close", tab_id])
+        if scratch_dir is not None:
+            shutil.rmtree(scratch_dir, ignore_errors=True)
+
+
 def main() -> None:
     """Parse arguments and dispatch."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -796,7 +1030,7 @@ def main() -> None:
     plan.set_defaults(func=cmd_plan)
 
     launch = sub.add_parser(
-        "launch", help="start a pi or copilot worker or orchestrator"
+        "launch", help="start a worker, or a pi/copilot queue orchestrator"
     )
     # Flat rather than a mutually exclusive group: gen_interfaces.py extracts a
     # subcommand's flags from add_argument calls on the subparser itself, so a
@@ -813,12 +1047,12 @@ def main() -> None:
     launch.add_argument(
         "--model", help="model passed through to harness after a bare --"
     )
-    launch.add_argument("--cwd", default=os.getcwd(), help="working directory")
+    launch.add_argument("--cwd", help="working directory (pi/copilot only)")
     launch.add_argument(
         "--kind",
-        choices=["pi", "copilot"],
+        choices=["pi", "copilot", "agy", "codex"],
         default="pi",
-        help="agent harness (pi or copilot; default: pi)",
+        help="agent harness (agy/codex support --slug only; default: pi)",
     )
     launch.set_defaults(func=cmd_launch)
 
@@ -848,6 +1082,22 @@ def main() -> None:
     )
     restart.set_defaults(func=cmd_restart)
 
+    probe = sub.add_parser(
+        "probe",
+        help="verify agent readiness and prompt receipt in a scratch tab",
+    )
+    probe.add_argument(
+        "--kind",
+        choices=["pi", "copilot", "agy", "codex"],
+        required=True,
+        help="agent harness to probe",
+    )
+    probe.add_argument(
+        "--model", help="model passed through to harness after a bare --"
+    )
+    probe.add_argument("--cwd", help="scratch tab working directory")
+    probe.set_defaults(func=cmd_probe)
+
     args = parser.parse_args()
     if args.command == "launch":
         selectors = (
@@ -859,6 +1109,11 @@ def main() -> None:
             parser.error(
                 "--swarm and --serial require --prefix; an unscoped queue mixes projects"
             )
+        if args.kind in ("agy", "codex"):
+            if not args.slug:
+                parser.error(f"--kind {args.kind} supports single-item --slug only")
+            if args.cwd is not None:
+                parser.error(f"--kind {args.kind} resolves the worktree; omit --cwd")
     if args.command == "restart":
         selectors = int(args.swarm is not None) + int(args.serial)
         if selectors != 1:

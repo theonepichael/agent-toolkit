@@ -3,9 +3,9 @@
 
 The script's source of truth is this repo (the origin repo's copy was retired in the
 cutover; the live ~/.claude/scripts symlink points here). Everything is
-tested in process: herdr is faked at the module's herdr() boundary -- the
-only function that shells out -- so nothing here reaches the real herdr
-socket or spawns a subprocess, and the conftest sandbox needs no marking.
+tested in process: herdr is faked at the module's herdr() boundary, and
+worktree setup subprocesses are mocked. Nothing here reaches the real herdr
+socket or mutates a real worktree, so the conftest sandbox needs no marking.
 
 Covered: the CLI contract (help, usage errors), the launch-path failure
 cleanup, and the `restart` subcommand's whole decision tree --
@@ -42,11 +42,17 @@ class FakeHerdr:
         tabs: list[dict[str, str]] | None = None,
         agents: list[dict[str, str]] | None = None,
         agent_list_script: list[list[dict[str, str]]] | None = None,
+        pane_text: str | None = None,
+        pane_read_script: list[str] | None = None,
     ) -> None:
         self.tabs = list(tabs or [])
         self.agents = list(agents or [])
         # Consumed in order by `agent list` before falling back to self.agents.
         self.agent_list_script = list(agent_list_script or [])
+        self.pane_text = pane_text
+        self.pane_read_script = (
+            list(pane_read_script) if pane_read_script is not None else None
+        )
         self.calls: list[list[str]] = []
 
     def __call__(self, argv: list[str]) -> dict[str, object]:
@@ -73,6 +79,15 @@ class FakeHerdr:
             if head == ("agent", "start"):
                 self.agents = [*self.agents, {"name": argv[2]}]
             return {"result": {}}
+        if head == ("pane", "read"):
+            if self.pane_read_script is not None:
+                if self.pane_read_script:
+                    return {"result": {"text": self.pane_read_script.pop(0)}}
+                return {"result": {"text": ""}}
+            if self.pane_text is not None:
+                return {"result": {"text": self.pane_text}}
+            prompts = [c[3] for c in self.named("agent", "prompt") if len(c) > 3]
+            return {"result": {"text": "\n".join(prompts)}}
         return {"result": {}}
 
     def named(self, command: str, subcommand: str) -> list[list[str]]:
@@ -149,6 +164,13 @@ def make_fake_herdr(
             if agent_list_steps:
                 return {"result": {"agents": agent_list_steps.pop(0)}}
             return {"result": {"agents": []}}
+        if argv[0] == "pane" and argv[1] == "read":
+            prompts = [
+                c[3]
+                for c in argvs
+                if len(c) > 3 and c[0] == "agent" and c[1] == "prompt"
+            ]
+            return {"result": {"text": "\n".join(prompts)}}
         return {"result": {"type": "ok"}}
 
     return fake, argvs
@@ -1066,6 +1088,176 @@ class CopilotKindTests(DelegateTests):
             self.assertEqual(summary["session_id"], session_id)
 
 
+class NewWorkerKindTests(DelegateTests):
+    """Agy and Codex start as single-item workers with their own CLI setup."""
+
+    def test_new_kind_start_argv_and_prompt(self) -> None:
+        agy = herdr_delegate.build_agent_start_argv(
+            name="agy-worker", pane="w:p1", model="gemini-test", kind="agy"
+        )
+        self.assertEqual(
+            agy,
+            ["agent", "start", "agy-worker", "--kind", "agy", "--pane", "w:p1",
+             "--", "--mode", "accept-edits", "--model", "gemini-test"],
+        )
+        self.assertEqual(
+            herdr_delegate.worker_prompt("iron-lb-example", kind="agy"),
+            "/backlog-item --auto iron-lb-example",
+        )
+
+        codex = herdr_delegate.build_agent_start_argv(
+            name="codex-worker", pane="w:p1", model="gpt-test", kind="codex",
+            writable_roots=["/tmp/toolkit data", "/tmp/uv-cache"],
+        )
+        self.assertEqual(
+            codex,
+            ["agent", "start", "codex-worker", "--kind", "codex", "--pane", "w:p1",
+             "--", "-c", "check_for_update_on_startup=false",
+             "--approve-for-me", "--add-dir", "/tmp/toolkit data",
+             "--add-dir", "/tmp/uv-cache", "--model", "gpt-test"],
+        )
+        self.assertEqual(
+            herdr_delegate.worker_prompt("iron-lb-example", kind="codex"),
+            "$backlog-item --auto iron-lb-example",
+        )
+
+    def test_new_kinds_reject_queues_before_herdr(self) -> None:
+        fake = FakeHerdr()
+        with (
+            mock.patch.object(herdr_delegate, "herdr", fake),
+            mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
+        ):
+            for kind in ("agy", "codex"):
+                code, _, err = self.run_main(
+                    ["launch", "--swarm", "2", "--prefix", "iron-lb", "--kind", kind]
+                )
+                self.assertEqual(code, 2)
+                self.assertIn("single-item", err)
+            self.assertEqual(fake.calls, [])
+
+    def test_launch_new_kinds_uses_prepared_worktree(self) -> None:
+        for kind in ("agy", "codex"):
+            fake = FakeHerdr()
+            with (
+                mock.patch.object(herdr_delegate, "herdr", fake),
+                mock.patch.object(
+                    herdr_delegate, "prepare_worker_worktree", return_value="/tmp/item worktree"
+                ) as prepare,
+                mock.patch.object(
+                    herdr_delegate, "codex_writable_roots", return_value=["/tmp/data"]
+                ) as roots,
+                mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
+            ):
+                code, out, _ = self.run_main(
+                    ["launch", "--slug", "iron-lb-example", "--kind", kind]
+                )
+                self.assertEqual(code, 0)
+                prepare.assert_called_once_with("iron-lb-example")
+                self.assertEqual(roots.call_count, int(kind == "codex"))
+                self.assertEqual(
+                    fake.named("tab", "create")[0][2:4],
+                    ["--cwd", "/tmp/item worktree"],
+                )
+                start = fake.named("agent", "start")[0]
+                self.assertEqual(start[start.index("--kind") + 1], kind)
+                self.assertEqual(
+                    fake.named("agent", "prompt")[0][3],
+                    herdr_delegate.worker_prompt("iron-lb-example", kind),
+                )
+                self.assertEqual(json.loads(out)["tab"], "w9:tN")
+
+    def test_preparation_refuses_unknown_item_before_mutation(self) -> None:
+        with (
+            mock.patch.object(herdr_delegate, "resolve_backlog_item", return_value=None),
+            mock.patch.object(herdr_delegate.subprocess, "run") as run,
+        ):
+            with self.assertRaises(herdr_delegate.RefusedError):
+                herdr_delegate.prepare_worker_worktree("unknown-example")
+            run.assert_not_called()
+
+    def test_preparation_refuses_unsafe_item_before_mutation(self) -> None:
+        with (
+            mock.patch.object(
+                herdr_delegate, "resolve_backlog_item", return_value={"id": "iron-lb-example"}
+            ),
+            mock.patch.object(
+                herdr_delegate, "serial_safety", return_value=(False, "multiple repos")
+            ),
+            mock.patch.object(herdr_delegate.subprocess, "run") as run,
+        ):
+            with self.assertRaisesRegex(herdr_delegate.RefusedError, "multiple repos"):
+                herdr_delegate.prepare_worker_worktree("iron-lb-example")
+            run.assert_not_called()
+
+    def test_preparation_bootstraps_exact_validated_worktree(self) -> None:
+        worktree = Path("/tmp/repo-item-worktree")
+        config = mock.Mock(repo=Path("/tmp/repo"), worktree_path=worktree)
+        result = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=json.dumps({"worktree_path": str(worktree)}),
+            stderr="",
+        )
+        with (
+            mock.patch.object(
+                herdr_delegate, "resolve_backlog_item", return_value={"id": "iron-lb-example"}
+            ),
+            mock.patch.object(herdr_delegate, "serial_safety", return_value=(True, None)),
+            mock.patch.object(herdr_delegate, "resolve_worktree_config", return_value=config),
+            mock.patch.object(herdr_delegate.subprocess, "run", return_value=result) as run,
+        ):
+            self.assertEqual(
+                herdr_delegate.prepare_worker_worktree("iron-lb-example"),
+                str(worktree),
+            )
+            args, kwargs = run.call_args
+            self.assertEqual(args[0][-3:], ["worktree", "iron-lb-example", "--json"])
+            self.assertEqual(kwargs["cwd"], "/tmp/repo")
+
+        mismatched = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=json.dumps({"worktree_path": "/tmp/other"}),
+            stderr="",
+        )
+        with (
+            mock.patch.object(
+                herdr_delegate, "resolve_backlog_item", return_value={"id": "iron-lb-example"}
+            ),
+            mock.patch.object(herdr_delegate, "serial_safety", return_value=(True, None)),
+            mock.patch.object(herdr_delegate, "resolve_worktree_config", return_value=config),
+            mock.patch.object(herdr_delegate.subprocess, "run", return_value=mismatched),
+        ):
+            with self.assertRaisesRegex(herdr_delegate.RefusedError, "expected"):
+                herdr_delegate.prepare_worker_worktree("iron-lb-example")
+
+    def test_codex_roots_follow_runtime_paths(self) -> None:
+        cache = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="/tmp/custom uv cache\n", stderr=""
+        )
+        with (
+            mock.patch.object(herdr_delegate.subprocess, "run", return_value=cache),
+            mock.patch.object(
+                herdr_delegate.agent_toolkit_paths, "path_for",
+                return_value=Path("/tmp/toolkit/data/backlog"),
+            ),
+            mock.patch.object(
+                herdr_delegate.cli_common, "state_dir", return_value=Path("/tmp/xdg-state")
+            ),
+        ):
+            self.assertEqual(
+                herdr_delegate.codex_writable_roots(),
+                ["/tmp/toolkit/data", "/tmp/xdg-state/agent-toolkit", "/tmp/custom uv cache"],
+            )
+
+    def test_explicit_cwd_rejected_for_new_kinds(self) -> None:
+        fake = FakeHerdr()
+        with mock.patch.object(herdr_delegate, "herdr", fake):
+            code, _, err = self.run_main(
+                ["launch", "--slug", "iron-lb-example", "--kind", "codex",
+                 "--cwd", "/tmp/other-repo"]
+            )
+            self.assertEqual(code, 2)
+            self.assertIn("omit --cwd", err)
+            self.assertEqual(fake.calls, [])
+
+
 class FakeClaimsLookup:
     """Fake BacklogClaimLookup for testing readiness selection."""
 
@@ -1179,6 +1371,191 @@ class QueueFacadeTests(unittest.TestCase):
             ],
         )
         self.assertNotIn("--env", plan[0])
+
+
+class AgyPromptReceiptTests(DelegateTests):
+    """Confirm prompt receipt after launch for agy workers."""
+
+    def test_agy_prompt_receipt_immediate(self) -> None:
+        fake = FakeHerdr()
+        with (
+            mock.patch.object(herdr_delegate, "herdr", fake),
+            mock.patch.object(
+                herdr_delegate, "prepare_worker_worktree", return_value="/tmp/item"
+            ),
+            mock.patch.object(herdr_delegate.time, "sleep", lambda _s: None),
+            mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
+        ):
+            code, out, err = self.run_main(
+                ["launch", "--slug", "iron-lb-example", "--kind", "agy"]
+            )
+            self.assertEqual(code, 0)
+            self.assertEqual(len(fake.named("agent", "prompt")), 1)
+            self.assertTrue(len(fake.named("pane", "read")) >= 1)
+
+    def test_agy_prompt_receipt_retried_after_initial_drop(self) -> None:
+        fake = FakeHerdr(
+            pane_read_script=[
+                "banner only: ✓ 3s · done",
+                "/backlog-item --auto iron-lb-example",
+            ]
+        )
+        clock = [100.0]
+        def sleep(_s: float) -> None:
+            clock[0] += 10.0
+
+        with (
+            mock.patch.object(herdr_delegate, "herdr", fake),
+            mock.patch.object(
+                herdr_delegate, "prepare_worker_worktree", return_value="/tmp/item"
+            ),
+            mock.patch.object(herdr_delegate.time, "monotonic", lambda: clock[0]),
+            mock.patch.object(herdr_delegate.time, "sleep", sleep),
+            mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
+        ):
+            code, out, err = self.run_main(
+                ["launch", "--slug", "iron-lb-example", "--kind", "agy"]
+            )
+            self.assertEqual(code, 0)
+            # Re-sent once when initial poll did not find prompt
+            self.assertEqual(len(fake.named("agent", "prompt")), 2)
+            self.assertEqual(len(fake.named("pane", "read")), 2)
+
+    def test_agy_prompt_receipt_exhaustion_fails_loudly(self) -> None:
+        fake = FakeHerdr(
+            pane_read_script=[
+                "banner only: ✓ 3s · done",
+                "still no prompt here",
+            ]
+        )
+        clock = [100.0]
+        def sleep(_s: float) -> None:
+            clock[0] += 10.0
+
+        with (
+            mock.patch.object(herdr_delegate, "herdr", fake),
+            mock.patch.object(
+                herdr_delegate, "prepare_worker_worktree", return_value="/tmp/item"
+            ),
+            mock.patch.object(herdr_delegate.time, "monotonic", lambda: clock[0]),
+            mock.patch.object(herdr_delegate.time, "sleep", sleep),
+            mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
+        ):
+            code, out, err = self.run_main(
+                ["launch", "--slug", "iron-lb-example", "--kind", "agy"]
+            )
+            self.assertEqual(code, 1)
+            self.assertIn("prompt was not received", err)
+            self.assertIn("tab w9:tN", err)
+            self.assertIn("pane w9:pN", err)
+            # Re-sent once before giving up
+            self.assertEqual(len(fake.named("agent", "prompt")), 2)
+
+    def test_agy_prompt_receipt_detects_working_status_without_resend(self) -> None:
+        fake = FakeHerdr(
+            pane_read_script=["banner only: ✓ 3s · done"],
+            agents=[{"name": "iron-lb-example", "agent_status": "working"}],
+        )
+        clock = [100.0]
+        def sleep(_s: float) -> None:
+            clock[0] += 10.0
+
+        with (
+            mock.patch.object(herdr_delegate, "herdr", fake),
+            mock.patch.object(
+                herdr_delegate, "prepare_worker_worktree", return_value="/tmp/item"
+            ),
+            mock.patch.object(herdr_delegate.time, "monotonic", lambda: clock[0]),
+            mock.patch.object(herdr_delegate.time, "sleep", sleep),
+            mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
+        ):
+            code, out, err = self.run_main(
+                ["launch", "--slug", "iron-lb-example", "--kind", "agy"]
+            )
+            self.assertEqual(code, 0)
+            # The agent is working, so no resend is performed
+            self.assertEqual(len(fake.named("agent", "prompt")), 1)
+            self.assertEqual(len(fake.named("agent", "list")), 1)
+
+
+class ProbeSubcommandTests(DelegateTests):
+    """Subcommand `probe --kind <kind>` verifies agent readiness and closes the scratch tab."""
+
+    def test_probe_default_cwd_is_temp_dir_and_removed(self) -> None:
+        fake = FakeHerdr()
+        with (
+            mock.patch.object(herdr_delegate, "herdr", fake),
+            mock.patch.object(herdr_delegate.time, "sleep", lambda _s: None),
+            mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
+        ):
+            code, out, err = self.run_main(["probe", "--kind", "pi"])
+            self.assertEqual(code, 0)
+            tab_create = fake.named("tab", "create")
+            self.assertEqual(len(tab_create), 1)
+            cwd_arg = tab_create[0][3]
+            self.assertIn("herdr-probe-", cwd_arg)
+            # Temp dir was removed in finally
+            self.assertFalse(os.path.exists(cwd_arg))
+
+    def test_probe_refuses_cwd_inside_git_repo(self) -> None:
+        fake = FakeHerdr()
+        repo_dir = str(Path(__file__).resolve().parent)
+        with (
+            mock.patch.object(herdr_delegate, "herdr", fake),
+            mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
+        ):
+            code, out, err = self.run_main(
+                ["probe", "--kind", "codex", "--cwd", repo_dir]
+            )
+            self.assertEqual(code, 1)
+            self.assertIn("cannot be inside a git repository", err)
+            # Refused before any herdr call
+            self.assertEqual(fake.calls, [])
+
+    def test_probe_success_all_kinds(self) -> None:
+        for kind in ("pi", "copilot", "agy", "codex"):
+            fake = FakeHerdr()
+            with (
+                mock.patch.object(herdr_delegate, "herdr", fake),
+                mock.patch.object(
+                    herdr_delegate, "codex_writable_roots", return_value=["/tmp/data"]
+                ),
+                mock.patch.object(herdr_delegate.time, "sleep", lambda _s: None),
+                mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
+            ):
+                code, out, err = self.run_main(["probe", "--kind", kind])
+                self.assertEqual(code, 0)
+                self.assertIn(f"probe {kind}: PASS", out)
+                self.assertEqual(len(fake.named("tab", "create")), 1)
+                self.assertEqual(len(fake.named("agent", "start")), 1)
+                self.assertEqual(len(fake.named("agent", "prompt")), 1)
+                # Tab is always closed on completion
+                self.assertEqual(len(fake.named("tab", "close")), 1)
+                self.assertEqual(fake.named("tab", "close")[0][2], "w9:tN")
+
+    def test_probe_failure_reports_fail_and_closes_tab(self) -> None:
+        fake = FakeHerdr(
+            pane_read_script=[
+                "never received prompt",
+                "still never received",
+            ]
+        )
+        clock = [100.0]
+        def sleep(_s: float) -> None:
+            clock[0] += 10.0
+
+        with (
+            mock.patch.object(herdr_delegate, "herdr", fake),
+            mock.patch.object(herdr_delegate.time, "monotonic", lambda: clock[0]),
+            mock.patch.object(herdr_delegate.time, "sleep", sleep),
+            mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
+        ):
+            code, out, err = self.run_main(["probe", "--kind", "agy"])
+            self.assertEqual(code, 1)
+            self.assertIn("probe agy: FAIL", err)
+            # Tab is still closed on failure!
+            self.assertEqual(len(fake.named("tab", "close")), 1)
+            self.assertEqual(fake.named("tab", "close")[0][2], "w9:tN")
 
 
 if __name__ == "__main__":

@@ -32,10 +32,9 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))
 import test_bootstrap  # noqa: E402
+from pytest_shim import pytest
 import test_layouts  # noqa: E402
 import agent_toolkit_paths  # noqa: E402
 import dev_status
@@ -3583,6 +3582,32 @@ class BacklogTestCase(BacklogFixture):
         dev_status._maybe_dispatch_recap_regen()
         self.mock_popen.assert_called_once()
 
+    def test_render_dispatch_reuses_fingerprint_without_reload(self):
+        # render computes current_fingerprint from the board it already loaded
+        # and passes it to the dispatch check, so dispatch must NOT reload the
+        # store again to recompute the fingerprint. With a fresh+accurate
+        # cache, dispatch short-circuits and load_items is called exactly once
+        # (render's own load) -- pre-fix it was called twice.
+        self.write_items([make_item("x")])
+        self._seed_recent_journal()
+        current_fp = dev_status._current_board_fingerprint()
+        self._write_cache("Cached.", age_hours=0, board_fingerprint=current_fp)
+        load_calls = {"n": 0}
+        real_load_items = dev_status.load_items
+
+        def counting_load_items(*args, **kwargs):
+            load_calls["n"] += 1
+            return real_load_items(*args, **kwargs)
+
+        with (
+            patch.object(dev_status, "load_items", side_effect=counting_load_items),
+            patch.object(
+                dev_status, "_journal_last_entry_within", return_value=True
+            ),
+        ):
+            dev_status.render(dispatch=True)
+        self.assertEqual(load_calls["n"], 1)
+
     def test_r14_journal_last_line_older_than_48h_spawns_nothing(self):
         self._seed_recent_journal(hours_ago=50)
         dev_status._maybe_dispatch_recap_regen()
@@ -3708,6 +3733,24 @@ class BacklogTestCase(BacklogFixture):
             self.assertEqual(run_agy.call_count, 1)
 
     # ── render display rules ────────────────────────────────────────────────
+
+    def test_r17e_fresh_accurate_cache_makes_child_skip_backend(self):
+        # A render-triggered child spawned during a quiet journal window lands
+        # here after the debounce sleep with no newer mutation -- but the recap
+        # cache is already fresh and still accurate (its board fingerprint
+        # matches the live board and it is within TTL). It must skip the
+        # backend rather than regenerate an identical recap. Pre-fix the child
+        # always called the backend.
+        _FakeDatetime._fixed_now = datetime.now(UTC)
+        self._write_journal_entry_age(400)  # quiet journal, older than window
+        self.write_items([make_item("x")])
+        current_fp = dev_status._current_board_fingerprint()
+        self._write_cache(
+            "Already fresh.", age_hours=0, board_fingerprint=current_fp
+        )
+        run_agy = MagicMock(return_value="Great work.")
+        self._run_regen_child(run_agy)
+        run_agy.assert_not_called()
 
     def test_r18_no_section_without_cache(self):
         self.write_items([make_item("x")])

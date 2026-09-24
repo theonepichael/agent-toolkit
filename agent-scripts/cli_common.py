@@ -253,9 +253,10 @@ def append_jsonl(
     # concurrent rotation can't break the never-raises contract: a second
     # writer may have already renamed the file away, so stat() raises
     # FileNotFoundError, which is harmless — the append below just creates a
-    # fresh file. Any other OSError is logged at debug and skipped; rotation is
-    # best-effort and never honours on_error (so on_error="raise" cannot be
-    # triggered by a rotation failure), and the append always proceeds.
+    # fresh file. Any other OSError is logged at debug and skipped, except for
+    # a silent caller (on_error="silent"), which emits nothing; rotation is
+    # best-effort and never honours on_error="raise" (a rotation failure
+    # cannot trigger a raise), and the append always proceeds.
     if max_bytes is not None:
         try:
             if path.stat().st_size > max_bytes:
@@ -263,9 +264,10 @@ def append_jsonl(
         except FileNotFoundError:
             pass  # rotated away by a concurrent writer; fresh file created below
         except OSError as exc:  # rotation hiccup: never block the append
-            get_logger(_MODULE_LOGGER_NAME, verbose=True).debug(
-                "append_jsonl rotation skipped for %s: %s", path, exc
-            )
+            if on_error != "silent":
+                get_logger(_MODULE_LOGGER_NAME, verbose=True).debug(
+                    "append_jsonl rotation skipped for %s: %s", path, exc
+                )
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, mode)

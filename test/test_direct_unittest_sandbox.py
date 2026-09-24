@@ -421,3 +421,169 @@ def test_path_keyword_target_args_denied(tmp_path, api_name):
                 getattr(self_path, spec.qualname.split(".")[-1])(target=target)
     finally:
         test_bootstrap.GUARDED_HOME_SUBDIRS[:] = orig
+
+
+# Former agent-scripts unittest-style suites (moved in commit 5cdf77c). They
+# must stay runnable on a machine that has never run `uv sync` -- no pytest in
+# site-packages. Each resolves `pytest` through `test/pytest_shim` (a marker-only
+# shim) instead of a bare `import pytest`, or does not import pytest at all.
+# This is the dependency-free contract documented in test/AGENTS.md.
+#
+# CONTRACT_TEST_FILES: every former agent-scripts test file that MUST import
+# (and thus run directly) without pytest installed. If any of these later gains
+# a hard top-level `import pytest`, this test fails.
+#
+# KNOWN_EXCEPTIONS: contract files that genuinely require pytest at import time
+# (a real pytest API beyond markers). They are expected to FAIL the no-pytest
+# import. If one starts importing cleanly, its exception has disappeared and the
+# test fails -- so the exception list cannot go silently stale.
+CONTRACT_TEST_FILES = [
+    "test_analyze_sessions.py",
+    "test_backlog_claim_lookup.py",
+    "test_bundle_drift_check.py",
+    "test_cli_common.py",
+    "test_dev_status.py",
+    "test_dev_status_mutation.py",
+    "test_dev_status_read.py",
+    "test_gen_interfaces.py",
+    "test_gen_second_opinion.py",
+    "test_gen_shell_completion.py",
+    "test_gen_skills.py",
+    "test_grill.py",
+    "test_guard_rails.py",
+    "test_harness_discovery_check.py",
+    "test_harness_feature_coverage.py",
+    "test_harness_spec.py",
+    "test_herdr_delegate.py",
+    "test_hooks_config.py",
+    "test_link_drift_check.py",
+    "test_link_inspect.py",
+    "test_llm_backends.py",
+    "test_notify.py",
+    "test_outlook_calendar.py",
+    "test_outlook_email.py",
+    "test_refresh_guidance.py",
+    "test_second_opinion.py",
+    "test_sessionstart_checks.py",
+    "test_settings_seed_drift_check.py",
+    "test_standup.py",
+    "test_statusline.py",
+    "test_sweep_dead_claims.py",
+    "test_timing.py",
+    "test_to_tickets_runner.py",
+    "test_vitals_promotion.py",
+]
+
+KNOWN_EXCEPTIONS = {
+    "test_settings_seed.py": (
+        "uses pytest.MonkeyPatch as a function-parameter type annotation, "
+        "evaluated at import time"
+    ),
+}
+
+
+def _import_without_pytest(filename: str) -> "subprocess.CompletedProcess[str]":
+    modname = filename[:-3]
+    code = (
+        "import sys; "
+        f"sys.path.insert(0, {str(REPO_ROOT / 'agent-scripts')!r}); "
+        f"sys.path.insert(0, {str(REPO_ROOT / 'test')!r}); "
+        f"import {modname}; "
+        "print('import-ok')"
+    )
+    return subprocess.run(
+        [sys.executable, "-S", "-c", code],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+@pytest.mark.allow_real_subprocess
+@pytest.mark.regression(
+    "unittest-no-hard-pytest-import",
+    "ModuleNotFoundError: No module named 'pytest'",
+)
+def test_contract_files_import_without_pytest():
+    # Every former agent-scripts unittest-style test file in CONTRACT_TEST_FILES
+    # must import on a machine without pytest installed. Pre-fix, the ones that
+    # used `import pytest` crashed `python3 -S <file>` with:
+    #   ModuleNotFoundError: No module named 'pytest'
+    # They now resolve `pytest` through test/pytest_shim, which hands back a
+    # marker-only shim when pytest is absent.
+    for filename in CONTRACT_TEST_FILES:
+        proc = _import_without_pytest(filename)
+        assert proc.returncode == 0, (
+            f"{filename} failed to import without pytest:\n{proc.stderr}"
+        )
+        assert "import-ok" in proc.stdout
+
+    # Known exceptions must still fail to import without pytest, so the
+    # exception set stays honest: if one starts importing cleanly, the reason
+    # has gone away (or was never real) and the list is stale.
+    for filename, reason in KNOWN_EXCEPTIONS.items():
+        proc = _import_without_pytest(filename)
+        assert proc.returncode != 0, (
+            f"{filename} imported cleanly without pytest, but is listed as a "
+            f"KNOWN_EXCEPTION ({reason}). The exception has disappeared -- "
+            f"either remove it from KNOWN_EXCEPTIONS or stop converting it."
+        )
+
+
+@pytest.mark.allow_real_subprocess
+def test_direct_run_scrubs_git_config_env(tmp_path):
+    driver = tmp_path / "driver_git_config.py"
+    driver.write_text(
+        "import os, sys\n"
+        f"sys.path.insert(0, {str(REPO_ROOT / 'agent-scripts')!r})\n"
+        "import test_bootstrap\n"
+        "assert 'GIT_CONFIG_COUNT' not in os.environ\n"
+        "assert 'GIT_CONFIG_KEY_0' not in os.environ\n"
+        "assert 'GIT_CONFIG_VALUE_0' not in os.environ\n"
+        "assert 'GIT_CONFIG_PARAMETERS' not in os.environ\n"
+        "print('scrub-ok')\n"
+    )
+    env = os.environ.copy()
+    env["GIT_CONFIG_COUNT"] = "1"
+    env["GIT_CONFIG_KEY_0"] = "safe.bareRepository"
+    env["GIT_CONFIG_VALUE_0"] = "explicit"
+    env["GIT_CONFIG_PARAMETERS"] = "'core.hooksPath='"
+    result = subprocess.run(
+        [sys.executable, str(driver)],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, f"stdout: {result.stdout}, stderr: {result.stderr}"
+    assert "scrub-ok" in result.stdout
+
+
+@pytest.mark.allow_real_subprocess
+def test_copilot_git_config_env_does_not_break_suite():
+    env = os.environ.copy()
+    env["GIT_CONFIG_COUNT"] = "3"
+    env["GIT_CONFIG_KEY_0"] = "safe.bareRepository"
+    env["GIT_CONFIG_VALUE_0"] = "explicit"
+    env["GIT_CONFIG_KEY_1"] = "credential.interactive"
+    env["GIT_CONFIG_VALUE_1"] = "never"
+    env["GIT_CONFIG_KEY_2"] = "core.fsmonitor"
+    env["GIT_CONFIG_VALUE_2"] = ""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-o",
+            "addopts=",
+            "test/test_guard_rails_topology.py::test_bare_repo_is_detected_and_allowed",
+            "test/test_worktree_provenance.py::TestInspectItemWorktrees::test_submodule_path_is_skipped",
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, f"stdout: {result.stdout}, stderr: {result.stderr}"
+

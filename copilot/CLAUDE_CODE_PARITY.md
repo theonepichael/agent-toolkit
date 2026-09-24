@@ -306,9 +306,9 @@ it up automatically.
 
 ---
 
-## 5. Native multi-agent / remote-session capabilities (2026-09-16, CLI 1.0.85)
+## 5. Native multi-agent / remote-session capabilities (2026-09-24, CLI 1.0.88)
 
-Verified directly against an installed `@github/copilot` 1.0.85 (`copilot
+Verified directly against an installed `@github/copilot` 1.0.88 (`copilot
 --help`, `copilot help commands`, `copilot help environment`) — not from
 docs or web summaries, which for `--fleet` specifically turned out to
 disagree with each other on details this section doesn't repeat until
@@ -337,9 +337,35 @@ decision for later, not implied by anything below.
   value alongside `"tmux"`/`"none"` — Copilot CLI has first-party awareness
   of the multiplexer this repo's swarm tooling runs on.
 
+### Live probe (2026-09-24, CLI 1.0.88)
+
+An isolated scratch repository was run with `COPILOT_HOME` set to a temporary
+directory plus `--no-custom-instructions --disable-builtin-mcps
+--no-auto-update`. A real `--fleet -p` prompt launched two named,
+overlapping general-purpose agents. Each created a marker containing its
+absolute path, `git rev-parse --show-toplevel`, and `git rev-parse
+--git-common-dir`; both markers resolved to the same scratch checkout and the
+same `.git` directory. `git worktree list` showed no additional worktree.
+This demonstrates parallel in-session agents in the tested mode, not
+worktree isolation; it does not rule out a different behavior for other fleet
+prompts or modes.
+
+`--remote`/`--connect` were not exercised end-to-end. Remote control exports a
+session for GitHub web/mobile or another CLI; this research did not authorize
+transmitting the scratch session, so prompt acceptance, target-turn start, and
+target-turn completion remain unverified. A successful local `--connect` flag
+parse would not establish receipt.
+
+The initial repository baseline run failed
+`test_bare_repo_is_detected_and_allowed` and
+`TestInspectItemWorktrees.test_submodule_path_is_skipped` because Copilot's
+shell environment injected `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_*`/
+`GIT_CONFIG_VALUE_*` (`safe.bareRepository=explicit`, among other settings).
+Both passed when those injected variables were removed; this is a harness
+environment artifact, not a repository baseline failure.
+
 What this section does **not** establish: whether `--fleet` subagents get
-isolated git worktrees automatically (unverified — this sandbox has no
-authenticated `copilot` account to run one live), and whether `--fleet`'s
+isolated git worktrees outside the tested prompt/mode, and whether `--fleet`'s
 task-decomposition model could substitute for `dev_status.py`'s
 backlog-queue scheduling, `worker_safe`/`serial_safe` classification, or
 resumable run-ids — `--fleet` has no visible concept of any of those; it
