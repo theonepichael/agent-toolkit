@@ -226,6 +226,24 @@ def test_classify(home, value, kind, expected):
     assert got.new == (expected.format(**fill) if expected else None)
 
 
+def test_classify_carried_roots_rewrite(home):
+    legacy = home / ".claude/data"
+    carried = mpt.RootMap.for_home(
+        home,
+        carried_dirs=[(legacy / "draft-issues", home / ".agent-toolkit/data/draft-issues")],
+        carried_files=[(legacy / "backlog.json", home / ".agent-toolkit/data/backlog.json")],
+    )
+    got = carried.classify(str(home / ".claude/data/draft-issues/x.md"))
+    assert got.kind == "rewrite"
+    assert got.new == str(home / ".agent-toolkit/data/draft-issues/x.md")
+    exact = carried.classify(str(legacy / "backlog.json"))
+    assert exact.kind == "rewrite"
+    assert exact.new == str(home / ".agent-toolkit/data/backlog.json")
+    # carried FILE roots still rewrite only an exact match
+    inner = carried.classify(str(home / ".claude/data/backlog.json/child"))
+    assert inner.kind == "unmatched-structured"
+
+
 # ── plan ────────────────────────────────────────────────────────────────────
 
 

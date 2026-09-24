@@ -44,7 +44,7 @@ def test_real_repository_passes_both_checks():
         (("projects",), "harness"),
         (("settings.json",), "harness"),
         ((), "harness"),
-        (("data", "draft-issues"), None),
+        (("data", "draft-issues"), "toolkit"),
         (("mystery",), None),
     ],
 )
@@ -100,7 +100,7 @@ def test_unclassified_reference_fails_with_a_useful_message(tmp_path):
 
 
 def test_unknown_data_entry_fails(tmp_path):
-    rel = write(tmp_path, "a.md", "~/.claude/data/draft-issues/x.md\n")
+    rel = write(tmp_path, "a.md", "~/.claude/data/mystery/x.md\n")
     assert c.ownership(tmp_path, [rel])[1]
 
 

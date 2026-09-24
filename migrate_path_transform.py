@@ -89,7 +89,13 @@ class RootMap:
     files: tuple[tuple[Path, Path], ...]
 
     @classmethod
-    def for_home(cls, home: Path) -> RootMap:
+    def for_home(
+        cls,
+        home: Path,
+        *,
+        carried_dirs: Sequence[tuple[Path, Path]] = (),
+        carried_files: Sequence[tuple[Path, Path]] = (),
+    ) -> RootMap:
         dirs: list[tuple[Path, Path]] = []
         files: list[tuple[Path, Path]] = []
         for domain in agent_toolkit_paths.DOMAINS:
@@ -98,6 +104,8 @@ class RootMap:
                 agent_toolkit_paths.layout_path(home, domain, "toolkit-home"),
             )
             (files if domain in FILE_DOMAINS else dirs).append(pair)
+        dirs.extend(carried_dirs)
+        files.extend(carried_files)
         return cls(home=home, dirs=tuple(dirs), files=tuple(files))
 
     def _old_roots(self) -> list[str]:
@@ -586,6 +594,58 @@ def stale_report(
 ) -> list[StaleRef]:
     """Every old-root reference the transform leaves in place."""
     return plan_transform(stores, roots, extra_files).stale
+
+
+TEXT_SUFFIXES = frozenset({".md", ".json", ".jsonl", ".txt"})
+
+
+def mentions_in_tree(
+    root: Path, roots: RootMap, *, legacy: Path | None = None
+) -> list[dict[str, str]]:
+    """Old-root mentions in every TEXT file under ``root`` (md/json/jsonl/txt).
+
+    The carry step's prose scan: carried trees are reported, never rewritten,
+    and the report is text-only by design (binary files are skipped). An
+    UNREADABLE text file is reported as its own record, never silently
+    dropped. Each record names both the file's path under the scanned copy
+    and — when ``legacy`` is given — the legacy source path the file returns
+    to on undo, so the reference stays findable after an abort or recovery.
+    """
+    records: list[dict[str, str]] = []
+    stack = [root]
+    while stack:
+        current = stack.pop()
+        if not current.is_dir() or current.is_symlink():
+            continue
+        for child in sorted(current.iterdir()):
+            if child.is_dir() and not child.is_symlink():
+                stack.append(child)
+                continue
+            if child.suffix not in TEXT_SUFFIXES or child.is_symlink():
+                continue
+            try:
+                lines = child.read_text(encoding="utf-8", errors="strict").splitlines()
+            except (OSError, UnicodeDecodeError) as exc:
+                records.append(
+                    {
+                        "file": str(child),
+                        "line": "0",
+                        "value": f"unreadable ({type(exc).__name__}: {exc})",
+                        "kind": "unreadable",
+                    }
+                )
+                continue
+            for number, line in enumerate(lines, start=1):
+                for match in roots.mentions(line):
+                    record = {
+                        "file": str(child),
+                        "line": str(number),
+                        "value": match,
+                    }
+                    if legacy is not None:
+                        record["source"] = str(legacy / child.relative_to(root))
+                    records.append(record)
+    return records
 
 
 # ── saved plan ───────────────────────────────────────────────────────────────

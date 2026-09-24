@@ -102,7 +102,7 @@ Single source of truth for toolkit data paths.
   - `current_layout() -> Layout` — Return the current layout using :data:`DEFAULT_RESOLVER`.
   - `write_pointer(home: Path, layout: Layout) -> None` — Atomically write the layout pointer under ``home``.
   - `check_upgrade_required(home: Path | None = None) -> None` — Raise :class:`UpgradeRequiredError` if legacy state exists without a completed migration record.
-- Tested by: `agent-scripts/test_layouts.py`, `test/test_agent_toolkit_paths.py`, `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_dev_status_storage.py`, `test/test_gen_interfaces.py`, `test/test_grill.py`, `test/test_guard_rails.py`, `test/test_llm_backends.py`, `test/test_machine_id.py`, `test/test_migrate_path_transform.py`, `test/test_migrate_settings_rewrite.py`, `test/test_migrate_toolkit_home.py`, `test/test_migrate_toolkit_home_moves.py`, `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`, `test/test_second_opinion.py`, `test/test_to_tickets_runner.py`
+- Tested by: `agent-scripts/test_layouts.py`, `test/test_agent_toolkit_paths.py`, `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_dev_status_storage.py`, `test/test_gen_interfaces.py`, `test/test_grill.py`, `test/test_guard_rails.py`, `test/test_llm_backends.py`, `test/test_machine_id.py`, `test/test_migrate_path_transform.py`, `test/test_migrate_settings_rewrite.py`, `test/test_migrate_toolkit_home.py`, `test/test_migrate_toolkit_home_carry.py`, `test/test_migrate_toolkit_home_moves.py`, `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`, `test/test_second_opinion.py`, `test/test_to_tickets_runner.py`
 
 ### `agent-scripts/analyze_sessions.py`
 
@@ -442,7 +442,7 @@ Typed mutation service and transaction manager for dev_status (Candidate 12).
   - `add_pending_item(request: PendingAddRequest, *, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Track a new waiting-on-someone-else item.
   - `update_pending_item(slug_or_id: str, request: PendingUpdateRequest, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Merge an update request into a pending item.
   - `mutation_transaction(*, items_path: Path | None = None, verbose: bool = False) -> Iterator[BacklogTransaction]` — Hold backlog_lock once for batch operations; yields BacklogTransaction.
-- Tested by: `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_dev_status_run_cwd.py`, `test/test_harness_spec.py`, `test/test_machine_id.py`, `test/test_migrate_path_transform.py`, `test/test_migrate_toolkit_home_moves.py`, `test/test_migration_lock_adoption.py`
+- Tested by: `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_dev_status_run_cwd.py`, `test/test_harness_spec.py`, `test/test_machine_id.py`, `test/test_migrate_path_transform.py`, `test/test_migrate_toolkit_home_carry.py`, `test/test_migrate_toolkit_home_moves.py`, `test/test_migration_lock_adoption.py`
 
 ### `agent-scripts/dev_status_read.py`
 
@@ -1038,7 +1038,7 @@ link_inspect.py — link inspection, path classification, drift finding, and the
   - `check_orphaned_links(links: Sequence[tuple[Path, Path, str, bool]], *, manifest_entries: Iterable[dict[str, object]], retained: Collection[Path] = frozenset()) -> list[LinkFinding]` — Return typed findings for manifest-recorded symlinks that links.toml no longer produces, skipping any destination in ``retained``.
   - `live_backup_paths(manifest_entries: Iterable[dict[str, object]]) -> set[Path]` — Return manifest-recorded backups that are still live ``--rollback`` payload.
   - `check_unmanaged_files(managed_dirs: Sequence[ManagedDirSpec], links: Sequence[tuple[Path, Path, str, bool]], *, home: Path, dir_applies: Callable[[ManagedDirSpec], bool], manifest_entries: Iterable[dict[str, object]] = ()) -> tuple[list[LinkFinding], int]` — Report foreign entries in directories ``links.toml`` owns exclusively.
-- Tested by: `test/test_check_toolkit_paths.py`, `test/test_harness_spec.py`, `test/test_install.py`, `test/test_link_drift_check.py`, `test/test_link_inspect.py`, `test/test_migrate_settings_rewrite.py`, `test/test_migrate_toolkit_home_moves.py`
+- Tested by: `test/test_check_toolkit_paths.py`, `test/test_harness_spec.py`, `test/test_install.py`, `test/test_link_drift_check.py`, `test/test_link_inspect.py`, `test/test_migrate_settings_rewrite.py`, `test/test_migrate_toolkit_home_carry.py`, `test/test_migrate_toolkit_home_moves.py`
 
 ### `agent-scripts/llm_backends.py`
 
@@ -1104,7 +1104,7 @@ Machine-wide migration lock: writers share it, the toolkit-home migrator owns it
   - `exclusive(site: str, *, blocking: bool = True) -> Iterator[None]` — Hold the lock exclusively (the migrator).
   - `build_parser() -> argparse.ArgumentParser`
 - Subcommand handlers: `cmd_status`, `cmd_hold`, `cmd_observations`
-- Tested by: `test/test_dev_status_validate.py`, `test/test_guard_rails_claim.py`, `test/test_migrate_path_transform.py`, `test/test_migrate_settings_rewrite.py`, `test/test_migrate_toolkit_home.py`, `test/test_migrate_toolkit_home_moves.py`, `test/test_migration_lock.py`, `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`
+- Tested by: `test/test_dev_status_validate.py`, `test/test_guard_rails_claim.py`, `test/test_migrate_path_transform.py`, `test/test_migrate_settings_rewrite.py`, `test/test_migrate_toolkit_home.py`, `test/test_migrate_toolkit_home_carry.py`, `test/test_migrate_toolkit_home_moves.py`, `test/test_migration_lock.py`, `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`
 
 ### `agent-scripts/notify.py`
 
@@ -1850,6 +1850,7 @@ install.py — agent-toolkit provisioner and migration controls for macOS/Linux.
   - `--depart`
   - `--yes`
   - `--check-links`
+  - `--during-migration`
   - `--report-uninstalled`
   - `--no-report-uninstalled`
   - `--migrate-toolkit-home`
@@ -1909,7 +1910,7 @@ install.py — agent-toolkit provisioner and migration controls for macOS/Linux.
   - `print_summary(ctx: Context, settings: tuple[str, str], opencode: tuple[str, str], vscode: Sequence[tuple[str, tuple[str, str]]] = (), pi_settings: tuple[str, str] = ('', '')) -> None` — Print the loud end-of-run summary: skips, drift, and next steps.
   - `do_check_links(ctx: Context) -> int` — Audit the live symlinks against ``links.toml`` and report, changing nothing.
   - `run_install(ctx: Context, specs: Sequence[LinkSpec]) -> int` — Run every install step in order and return the process exit status.
-- Tested by: `test/test_dead_installers_stripped.py`, `test/test_harness_spec.py`, `test/test_install.py`, `test/test_link_inspect.py`, `test/test_migrate_toolkit_home.py`, `test/test_migrate_toolkit_home_moves.py`, `test/test_settings_seed.py`
+- Tested by: `test/test_dead_installers_stripped.py`, `test/test_harness_spec.py`, `test/test_install.py`, `test/test_link_inspect.py`, `test/test_migrate_toolkit_home.py`, `test/test_migrate_toolkit_home_carry.py`, `test/test_migrate_toolkit_home_moves.py`, `test/test_settings_seed.py`
 
 ### `depart.py`
 
@@ -1992,7 +1993,7 @@ Pristine-state departure mode: baseline capture and ownership tracking.
   - `classify_service(recorded: dict[str, object] | None, live: dict[str, object]) -> Classification` — Classify the watchcommit service/linger key.
   - `build_gitconfig_record(value: str | None) -> dict[str, object]` — Build a ``gitconfig:`` record from an already-read global config value.
   - `classify_gitconfig(recorded: dict[str, object] | None, live: dict[str, object], managed_value: str) -> Classification` — Classify a single global git config key this installer manages.
-- Tested by: `test/test_depart.py`, `test/test_depart_transactions.py`, `test/test_install.py`, `test/test_migrate_toolkit_home_moves.py`
+- Tested by: `test/test_depart.py`, `test/test_depart_transactions.py`, `test/test_install.py`, `test/test_migrate_toolkit_home_carry.py`, `test/test_migrate_toolkit_home_moves.py`
 
 ### `depart_exec.py`
 

@@ -90,6 +90,14 @@ TOOLKIT_DATA_ENTRIES = frozenset(
         "backend_calls.jsonl",
         "toolkit_state.json",
         "toolkit_sync.json",
+        # unclassified data the rollout carries to the toolkit home
+        "plans",
+        "draft-issues",
+        "analysis",
+        "artifacts",
+        "bug-reports",
+        "backlog.json",
+        "backlog-history.json",
     }
 )
 # The toolkit-home migration's per-run snapshot of the legacy stores

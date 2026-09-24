@@ -111,7 +111,7 @@ import shutil
 import stat
 import subprocess
 import sys
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -203,6 +203,11 @@ class PreflightReport:
     outcome: str = ""
     manual_edit_checklist: list[str] = field(default_factory=list)
     telemetry_lines_discarded: dict[str, int | None] = field(default_factory=dict)
+    stale_references: list[dict[str, str]] = field(default_factory=list)
+    recovered_stale_references: list[dict[str, str]] = field(default_factory=list)
+    legacy_dirs_kept: list[str] = field(default_factory=list)
+    unclassified_left: list[str] = field(default_factory=list)
+    unfinished_migrations: list[str] = field(default_factory=list)
 
     @property
     def refused(self) -> bool:
@@ -219,6 +224,11 @@ class PreflightReport:
             "journal": self.journal,
             "manual_edit_checklist": self.manual_edit_checklist,
             "telemetry_lines_discarded": self.telemetry_lines_discarded,
+            "stale_references": self.stale_references,
+            "recovered_stale_references": self.recovered_stale_references,
+            "legacy_dirs_kept": self.legacy_dirs_kept,
+            "unclassified_left": self.unclassified_left,
+            "unfinished_migrations": self.unfinished_migrations,
         }
 
 
@@ -262,7 +272,13 @@ def _per_domain(template: str) -> tuple[str, ...]:
 
 
 _RESTORE_STEPS = ("begun", "pointer", "promoted-aside", "undone")
-_FINALIZE_STEPS = ("begun", "snapshot-removed", "staging-removed", "links-removed")
+_FINALIZE_STEPS = (
+    "begun",
+    "snapshot-removed",
+    "staging-removed",
+    "links-removed",
+    "legacy-dir-removed",
+)
 _RESTORED_FINALIZE_STEPS = (
     "restored-begun",
     "restored-removed",
@@ -396,8 +412,28 @@ def _oracle() -> dict[str, Expected]:
     )
     for step in _FINALIZE_STEPS:
         rows[f"migrate.finalize.{step}"] = Expected(
-            "resume-finalize", True, "begin", True, True, "toolkit-home", FINALIZE_NAME
+            "resume-finalize",
+            True,
+            event(f"migrate.finalize.{step}"),
+            True,
+            True,
+            "toolkit-home",
+            FINALIZE_NAME,
         )
+    # staging-removed and links-removed fire after the per-entry
+    # snapshot-removed steps journal their done records, so the journal's
+    # last event at those crash points is 'done'.
+    rows["migrate.finalize.staging-removed"] = Expected(
+        "resume-finalize", True, "done", True, True, "toolkit-home", FINALIZE_NAME
+    )
+    rows["migrate.finalize.links-removed"] = Expected(
+        "resume-finalize", True, "done", True, True, "toolkit-home", FINALIZE_NAME
+    )
+    # legacy-dir-removed fires after the links cleanup, before any per-dir
+    # removal, so the journal's last event there is also a 'done'.
+    rows["migrate.finalize.legacy-dir-removed"] = Expected(
+        "resume-finalize", True, "done", True, True, "toolkit-home", FINALIZE_NAME
+    )
     for step in _RESTORED_FINALIZE_STEPS:
         rows[f"migrate.finalize.{step}"] = Expected(
             "resume-finalize", True, "begin", True, True, "legacy", FINALIZE_NAME
@@ -1067,13 +1103,126 @@ def _check_domains(ctx: MigrationContext) -> list[Finding]:
     return findings
 
 
-def _check_unclassified(ctx: MigrationContext) -> Finding:
-    data_root = ctx.home / ".claude" / "data"
+def _lstat_no_symlink(root: Path) -> None:
+    """Refuse a symlinked ``root`` or any of its ancestors, before any walk.
+
+    ``is_dir()``/``iterdir()`` follow symlinks, so a symlinked legacy data
+    root would make carry and snapshot operate on an external tree; the
+    unlocked advisory pass runs before the lock, so this cheap lstat walk is
+    what stops it, not the later locked refusal.
+    """
+    path = root
+    while path.parent != path:
+        if path.is_symlink():
+            raise MigrationError(f"{path} is a symlink; refusing to traverse it")
+        path = path.parent
+
+
+def _shape(root: Path) -> tuple[str, ...]:
+    """Sorted relative paths of every directory under ``root`` (``root`` itself excluded).
+
+    ``_digest_tree`` records files and symlinks but not directories, so a
+    shape record travels beside it wherever digest drift must also catch an
+    added or removed directory.
+    """
+    dirs: list[str] = []
+    stack = [root]
+    while stack:
+        path = stack.pop()
+        for child in sorted(path.iterdir()):
+            if child.is_dir() and not child.is_symlink():
+                dirs.append(str(child.relative_to(root)))
+                stack.append(child)
+    return tuple(dirs)
+
+
+def _tree_differences(
+    root: Path, expected_files: Digests, expected_shape: Sequence[str]
+) -> list[str]:
+    """Digest drift AND directory-shape drift of ``root`` against the journal."""
+    problems = _differences(root, expected_files, _digest_tree(root))
+    if _lexists(root) and root.is_dir() and not root.is_symlink():
+        current = _shape(root)
+        for added in sorted(set(current) - set(expected_shape)):
+            problems.append(f"{root / added} (directory added)")
+        for removed in sorted(set(expected_shape) - set(current)):
+            problems.append(f"{root / removed} (directory removed)")
+    return problems
+
+
+def _unclassified_entries(data_root: Path) -> tuple[list[Path], list[Path], list[Path]]:
+    """Unclassified entries under the legacy data root, split by shape.
+
+    Returns (carry candidates, empty directories, snapshot directories).
+    Snapshot directories are never carry candidates; they belong to an
+    older migration's finalize.
+    """
     known = {_legacy(d).name for d in agent_toolkit_paths.DOMAINS}
     known.add(agent_toolkit_paths.POINTER_RELPATH.name)
+    carries: list[Path] = []
+    empties: list[Path] = []
+    stale: list[Path] = []
+    if not data_root.is_dir() or data_root.is_symlink():
+        return carries, empties, stale
+    for path in sorted(data_root.iterdir()):
+        if path.name in known:
+            continue
+        if path.name.startswith(".toolkit-home-snapshot-"):
+            stale.append(path)
+            continue
+        if path.is_dir() and not path.is_symlink():
+            if any(path.iterdir()):
+                carries.append(path)
+            else:
+                empties.append(path)
+        else:
+            carries.append(path)
+    return carries, empties, stale
+
+
+def _check_unclassified(ctx: MigrationContext) -> Finding:
+    data_root = ctx.home / ".claude" / "data"
     if not data_root.is_dir():
         return Finding("unclassified", "ok", "no legacy data root")
-    extra = sorted(p for p in data_root.iterdir() if p.name not in known)
+    known = {_legacy(d).name for d in agent_toolkit_paths.DOMAINS}
+    extra = [
+        p
+        for p in data_root.iterdir()
+        if p.name not in known and p.name != agent_toolkit_paths.POINTER_RELPATH.name
+    ]
+    for entry in extra:
+        if entry.is_symlink():
+            return Finding(
+                "unclassified",
+                "refuse",
+                "an unclassified legacy entry is a symlink; refusing to carry it",
+                [str(entry)],
+            )
+        if entry.is_dir() and not entry.is_symlink():
+            stack = [entry]
+            while stack:
+                current = stack.pop()
+                for child in sorted(current.iterdir()):
+                    if child.is_symlink():
+                        return Finding(
+                            "unclassified",
+                            "refuse",
+                            "a symlink inside an unclassified legacy tree; its "
+                            "target may sit under a moved root, so the carry "
+                            "refuses",
+                            [str(child)],
+                        )
+                    if child.is_dir():
+                        stack.append(child)
+    stale = [p for p in extra if p.name.startswith(".toolkit-home-snapshot-")]
+    if stale:
+        return Finding(
+            "unclassified",
+            "refuse",
+            "a toolkit-home snapshot directory still sits at the legacy data "
+            "root; finalize the migration it belongs to first",
+            sorted(str(p) for p in stale),
+        )
     if not extra:
         return Finding("unclassified", "ok", "nothing unclassified")
 
@@ -1083,7 +1232,7 @@ def _check_unclassified(ctx: MigrationContext) -> Finding:
     for p in extra:
         dest = dest_data / p.name
         pairs.append(f"{p} -> {dest}")
-        if _lexists(dest) and (not dest.is_dir() or any(dest.iterdir())):
+        if _lexists(dest):
             collisions.append(str(dest))
 
     if collisions:
@@ -1169,19 +1318,42 @@ def _check_swarm_state(ctx: MigrationContext) -> Finding:
     return Finding("swarm-state", "ok", "no swarm run-state files found")
 
 
+MANUAL_EDIT_FILES = (
+    ".claude/CLAUDE.md",
+    ".gemini/GEMINI.md",
+    ".copilot/copilot-instructions.md",
+    ".codex/AGENTS.md",
+    ".pi/agent/AGENTS.md",
+)
+
+_DATA_ROOT_MARKERS = (
+    ".claude/data/plans",
+    ".claude/data/draft-issues",
+    ".claude/data/analysis",
+    ".claude/data/artifacts",
+    ".claude/data/bug-reports",
+)
+
+
 def _check_manual_edits(ctx: MigrationContext) -> Finding:
     checklist: list[str] = []
-
-    claude_md = ctx.home / ".claude" / "CLAUDE.md"
-    if claude_md.is_file():
+    for rel in MANUAL_EDIT_FILES:
+        path = ctx.home / rel
+        if not path.is_file():
+            continue
         try:
-            content = claude_md.read_text(encoding="utf-8")
-            if ".claude/scripts" in content or "dev_status.py" in content:
-                checklist.append(
-                    f"{claude_md} (global instructions naming legacy script paths)"
-                )
+            content = path.read_text(encoding="utf-8")
         except OSError:
-            pass
+            continue
+        reasons: list[str] = []
+        if ".claude/scripts" in content or "dev_status.py" in content:
+            reasons.append("legacy script paths")
+        if any(marker in content for marker in _DATA_ROOT_MARKERS) or (
+            ".claude/data" in content and "toolkit_state.json" not in content
+        ):
+            reasons.append("legacy data-root references")
+        if reasons:
+            checklist.append(f"{path} ({' and '.join(reasons)})")
 
     settings_local = ctx.home / ".claude" / "settings.local.json"
     if settings_local.is_file():
@@ -1711,6 +1883,11 @@ def _differences(root: Path, expected: Digests, current: Digests) -> list[str]:
 # ── the built-in steps ───────────────────────────────────────────────────────
 
 
+def _record_only(_state: RunState, _record: StepRecord) -> dict[str, object]:
+    """A stale-scan step only records; its apply never mutates."""
+    return {}
+
+
 def _no_undo(_state: RunState, _record: StepRecord) -> None:
     return None
 
@@ -1719,13 +1896,82 @@ def _always(_state: RunState, _record: StepRecord) -> bool:
     return True
 
 
+def _data_root(ctx: MigrationContext) -> Path:
+    return ctx.home / ".claude" / "data"
+
+
+def _discover_carries(
+    ctx: MigrationContext,
+) -> tuple[list[dict[str, object]], list[Path]]:
+    """Structured, journaled discovery of what this run carries.
+
+    Taken under the migration lock; the authoritative record the carry
+    scheduling, the RootMap carried roots and recovery all read. Refuses
+    unsafe shapes (a symlink entry, a nested symlink, a non-regular file)
+    instead of carrying them, and refuses a pre-existing
+    ``.toolkit-home-snapshot-*`` directory — that is an older migration's
+    finalize evidence, never a carry candidate. EMPTY directories are not
+    carried: nothing to move, and an empty-to-empty replacement would make
+    crash-window ownership undecidable.
+    """
+    data_root = _data_root(ctx)
+    candidates, empties, _stale = _unclassified_entries(data_root)
+    _lstat_no_symlink(data_root)
+    dest_data = _toolkit_root() / "data"
+    carries: list[dict[str, object]] = []
+    for path in candidates:
+        info = path.lstat()
+        name = path.name
+        if stat.S_ISLNK(info.st_mode):
+            raise MigrationError(f"{path} is a symlink; refusing to carry it")
+        if stat.S_ISDIR(info.st_mode):
+            kind = "dir"
+            inner = _nested_symlink(path)
+            if inner is not None:
+                raise MigrationError(
+                    f"{inner} is a symlink inside {path}; its target may sit "
+                    "under a moved root, so the carry refuses"
+                )
+        elif stat.S_ISREG(info.st_mode):
+            kind = "file"
+        else:
+            raise MigrationError(f"refusing to carry a non-regular entry: {path}")
+        dest = dest_data / name
+        if _lexists(dest):
+            raise MigrationError(
+                f"{dest} is occupied; the carry destination must not exist, "
+                "empty directories included"
+            )
+        carries.append(
+            {
+                "name": name,
+                "kind": kind,
+                "legacy": str(path),
+                "dest": str(dest),
+                "staging": _carry_staging_path(ctx, name),
+                "absent": False,
+                "files": _digest_tree(path),
+                "shape": _shape(path) if kind == "dir" else (),
+                "dest_existed": False,
+            }
+        )
+    return carries, empties
+
+
 def _preflight_apply(state: RunState, _record: StepRecord) -> dict[str, object]:
     if _lexists(state.work_dir):
         raise MigrationError(f"{state.work_dir} already exists")
+    _lstat_no_symlink(_data_root(state.ctx))
+    carries, empties = _discover_carries(state.ctx)
+    _register_carry_oracle([str(e["name"]) for e in carries])
+    dest_data = _toolkit_root() / "data"
     return {
         "warnings": state.warnings,
         "work_dir": str(state.work_dir),
         "snapshot_dir": str(state.snapshot_dir),
+        "carry": carries,
+        "carry_empties": [str(p) for p in empties],
+        "dest_data_existed": dest_data.is_dir() and not dest_data.is_symlink(),
     }
 
 
@@ -1734,6 +1980,264 @@ def _inventory_apply(state: RunState, _record: StepRecord) -> dict[str, object]:
     digest = write_inventory(state.require_journal().directory, inventory)
     state.inventory = inventory
     return {"sha256": digest}
+
+
+def _journaled_carries(state: RunState) -> list[dict[str, object]]:
+    """The carried list journaled by this run's preflight, or [] on older journals."""
+    preflight = state.step("preflight")
+    detail = _done(preflight) if preflight is not None else None
+    if not isinstance(detail, dict):
+        return []
+    entries = detail.get("carry")
+    return entries if isinstance(entries, list) else []
+
+
+def _register_carry_oracle(names: list[str]) -> None:
+    """Oracle rows for runtime-discovered carry checkpoints.
+
+    ``_checkpoint`` asserts membership in the statically built oracle, so the
+    journaled carried list generates rows for its names before any carry
+    phase runs. A fresh process (crash recovery, resume) calls this from
+    ``_load_state`` with the same journaled list, so the rows exist before
+    any carry-phase recovery relies on them.
+    """
+    for name in names:
+        for suffix in ("copied", "promoted"):
+            RECOVERY_ORACLE.setdefault(
+                f"migrate.carry.{name}.{suffix}",
+                Expected("rollback", True, "begin", True, False),
+            )
+        RECOVERY_ORACLE.setdefault(
+            f"migrate.carry.{name}.severed",
+            Expected("roll-forward", True, "done", True, False, "toolkit-home"),
+        )
+
+
+def _carry_begin(state: RunState, phase: str) -> dict[str, object]:
+    name = phase.partition(":")[2]
+    for entry in _journaled_carries(state):
+        if entry.get("name") == name:
+            return dict(entry)
+    raise MigrationError(
+        f"{name} was not discovered at preflight; refusing to carry it"
+    )
+
+
+def _carry_apply(state: RunState, record: StepRecord) -> dict[str, object]:
+    begin = _begin(record)
+    if begin["absent"]:
+        return {"absent": True}
+    legacy, staging = Path(str(begin["legacy"])), Path(str(begin["staging"]))
+    dest = Path(str(begin["dest"]))
+    if _lexists(staging):
+        raise MigrationError(f"{staging} is occupied; refusing to stage over it")
+    _mkdir_durable(staging.parent)
+    _lstat_no_symlink(dest)
+    if _lexists(dest):
+        raise MigrationError(
+            f"{dest} is occupied; the carry destination must not exist, "
+            "empty directories included"
+        )
+    info = legacy.lstat()
+    if stat.S_ISDIR(info.st_mode):
+        inner = _nested_symlink(legacy)
+        if inner is not None:
+            raise MigrationError(
+                f"{inner} is a symlink inside the carried tree; its target may "
+                "sit under a moved root, so the carry refuses"
+            )
+    elif not stat.S_ISREG(info.st_mode):
+        raise MigrationError(f"refusing to carry non-regular entry: {legacy}")
+    _copy_durable(legacy, staging)
+    _fsync_dir(staging.parent)
+    copied = _differences(
+        staging,
+        begin["files"],
+        _digest_tree(staging),  # type: ignore[arg-type]
+    )
+    if copied:
+        raise MigrationError(
+            "a carried copy differs from its inventoried source: " + "; ".join(copied)
+        )
+    _checkpoint(f"migrate.carry.{_domain(record)}.copied")
+    stale = _stale_entries(state, staging, legacy, dest)
+    if stale:
+        journal = state.require_journal()
+        journal.begin(f"stale-scan:carry:{_domain(record)}", stale=stale)
+        journal.done(f"stale-scan:carry:{_domain(record)}", stale=stale)
+    _rename_durable(staging, dest)
+    _checkpoint(f"migrate.carry.{_domain(record)}.promoted")
+    return {
+        "files": _digest_tree(dest),
+        "shape": _shape(dest) if dest.is_dir() else (),
+        "stale": stale,
+    }
+
+
+def _stale_entries(
+    state: RunState, root: Path, legacy: Path, dest: Path
+) -> list[dict[str, str]]:
+    """Old-root mentions in the staged copy, journaled with BOTH paths.
+
+    The record keeps the legacy source path AND the intended destination, so
+    the reported file stays findable after a pre-flip abort or recovery: undo
+    puts the copy back at its legacy source and removes the destination, and
+    a destination-only record would point at a file that no longer exists.
+    """
+    import migrate_path_transform as mpt
+
+    roots = _transform_roots(state)
+    records: list[dict[str, str]] = []
+    for record in mpt.mentions_in_tree(root, roots):
+        rel = os.path.relpath(record["file"], root)
+        if record.get("kind") == "unreadable":
+            source = Path(legacy)
+            target = Path(dest)
+        else:
+            source = Path(legacy) / rel
+            target = Path(dest) / rel
+        records.append(
+            {
+                "file": str(target),
+                "source": str(source),
+                "line": record["line"],
+                "value": record["value"],
+            }
+        )
+    return records
+
+
+def _final_path(staged: str, staging: Path, dest: Path) -> str:
+    """The file's FINAL destination path, not the temporary staging path."""
+    rel = os.path.relpath(staged, staging)
+    return str(dest / rel)
+
+
+def _transform_roots(state: RunState) -> object:
+    """RootMap for this run: the domain roots plus every carried root."""
+    import migrate_path_transform as mpt
+
+    carries = _journaled_carries(state)
+    carried_dirs = [
+        (Path(str(e["legacy"])), Path(str(e["dest"])))
+        for e in carries
+        if e.get("kind") == "dir"
+    ]
+    carried_files = [
+        (Path(str(e["legacy"])), Path(str(e["dest"])))
+        for e in carries
+        if e.get("kind") == "file"
+    ]
+    return mpt.RootMap.for_home(
+        state.ctx.home, carried_dirs=carried_dirs, carried_files=carried_files
+    )
+
+
+def _nested_symlink(root: Path) -> Path | None:
+    stack = [root]
+    while stack:
+        path = stack.pop()
+        for child in sorted(path.iterdir()):
+            if child.is_symlink():
+                return child
+            if child.is_dir():
+                stack.append(child)
+    return None
+
+
+def _carry_undo(state: RunState, record: StepRecord) -> None:
+    begin = _begin(record)
+    if begin.get("absent"):
+        return
+    staging = Path(str(begin["staging"]))
+    dest = Path(str(begin["dest"]))
+    legacy = Path(str(begin["legacy"]))
+    if _lexists(staging):
+        _remove_path(staging, within=state.work_dir)
+    if _lexists(dest) and _lexists(legacy):
+        # the pre-flip case: the copy at dest is the run's, the legacy
+        # original is intact, so the copy is redundant and the journal's
+        # digests prove it is this carry's
+        problems = _tree_differences(dest, begin["files"], begin.get("shape", ()))
+        problems += _tree_differences(legacy, begin["files"], begin.get("shape", ()))
+        if problems:
+            raise MigrationError(
+                "the carried copy or its legacy source changed, so nothing was "
+                "deleted: " + "; ".join(problems)
+            )
+        _remove_path(dest, within=dest.parent)
+    elif _lexists(dest) and not _lexists(legacy):
+        raise MigrationError(
+            f"{dest} exists but its legacy original is gone; resolve it by hand"
+        )
+
+
+def _carry_verify(state: RunState, record: StepRecord) -> bool:
+    begin = _begin(record)
+    if begin.get("absent"):
+        return True
+    staging = Path(str(begin["staging"]))
+    dest = Path(str(begin["dest"]))
+    return _lexists(staging) or _lexists(dest)
+
+
+def _carry_snapshot_begin(state: RunState, phase: str) -> dict[str, object]:
+    name = phase.partition(":")[2]
+    carry = state.step(f"carry:{name}")
+    if carry is None or _done(carry) is None or _absent(carry):
+        raise MigrationError(f"{name} was never carried")
+    legacy = Path(str(_begin(carry)["legacy"]))
+    return {
+        "legacy": str(legacy),
+        "snapshot": str(state.snapshot_dir / name),
+        "absent": False,
+    }
+
+
+def _carry_snapshot_apply(_state: RunState, record: StepRecord) -> dict[str, object]:
+    begin = _begin(record)
+    legacy, snapshot = Path(str(begin["legacy"])), Path(str(begin["snapshot"]))
+    if _lexists(snapshot):
+        raise MigrationError(f"{snapshot} already exists")
+    carry = _state_step(_state, f"carry:{_domain(record)}")
+    done = _done(carry) if carry is not None else None
+    if done is None:
+        raise MigrationError(f"{legacy} was never carried")
+    if _lexists(legacy):
+        problems = _tree_differences(legacy, done["files"], done.get("shape", ()))
+        if problems:
+            raise MigrationError(
+                f"{legacy} no longer matches the journal, so nothing was "
+                "severed: " + "; ".join(problems)
+            )
+    _rename_durable(legacy, snapshot)
+    return {}
+
+
+def _carry_snapshot_undo(state: RunState, record: StepRecord) -> None:
+    begin = _begin(record)
+    legacy, snapshot = Path(str(begin["legacy"])), Path(str(begin["snapshot"]))
+    if _lexists(snapshot):
+        if _lexists(legacy):
+            raise MigrationError(
+                f"{legacy} was recreated while its original is still in "
+                f"{snapshot}; resolve it by hand"
+            )
+        _rename_durable(snapshot, legacy)
+    parent = snapshot.parent
+    if parent.is_dir() and not parent.is_symlink() and not any(parent.iterdir()):
+        parent.rmdir()
+        _fsync_dir(parent.parent)
+
+
+def _carry_snapshot_verify(state: RunState, record: StepRecord) -> bool:
+    begin = _begin(record)
+    legacy, snapshot = Path(str(begin["legacy"])), Path(str(begin["snapshot"]))
+    return _lexists(snapshot) and not _lexists(legacy)
+
+
+def _state_step(state: RunState, phase: str) -> StepRecord | None:
+    return state.step(phase)
 
 
 def _stage_begin(state: RunState, phase: str) -> dict[str, object]:
@@ -1758,6 +2262,9 @@ def _transform_staged(
         path = staging / name
         return path if path.exists() else None
 
+    dest = Path(str(state.domain_entry(domain)["destination"]))
+    legacy = Path(str(state.domain_entry(domain)["legacy"]))
+
     stores = {
         "work-items": lambda: mpt.StoreFiles(
             root=staging,
@@ -1773,7 +2280,19 @@ def _transform_staged(
     if stores is None:
         return None
     try:
-        plan = mpt.plan_transform(stores(), mpt.RootMap.for_home(state.ctx.home))
+        plan = mpt.plan_transform(stores(), _transform_roots(state))
+        if plan.stale:
+            journal = state.require_journal()
+            record = [
+                {
+                    "file": _final_path(r.file, staging, dest),
+                    "line": r.pointer,
+                    "value": r.value,
+                }
+                for r in plan.stale
+            ]
+            journal.begin(f"stale-scan:{domain}", stale=record, source=str(legacy))
+            journal.done(f"stale-scan:{domain}", stale=record, source=str(legacy))
         if not plan.changes:
             return None
         plan_dir, manifest_sha256 = mpt.save_plan(plan, work)
@@ -2486,9 +3005,16 @@ def _settings_snapshot_dir(state: RunState) -> Path:
 
 
 def _settings_rewrite_begin(state: RunState, _phase: str) -> dict[str, object]:
+    """Plan only — no filesystem writes here.
+
+    ``_run_phase`` calls a step's begin handler BEFORE journalling begin, so a
+    handler that created the snapshot directory and files would leave an
+    unjournaled tree a crash could not recover: this computes ONLY the planned
+    paths and digests. The snapshots are written by the apply, after the begin
+    record exists and before any settings write.
+    """
     ctx = state.ctx
     targets = _settings_targets(ctx)
-    snapshot_dir = _settings_snapshot_dir(state)
     plan: list[dict[str, object]] = []
     index = 0
     for t in targets:
@@ -2522,11 +3048,6 @@ def _settings_rewrite_begin(state: RunState, _phase: str) -> dict[str, object]:
                 entry["present"] = True
         if entry["present"]:
             path = Path(str(entry["path"]))
-            if not snapshot_dir.exists():
-                _mkdir_durable(snapshot_dir)
-            snap = snapshot_dir / str(index)
-            _write_durable(snap, path.read_bytes(), 0o444)
-            _fsync_file(snap)
             entry["snapshot_rel"] = str(index)
             entry["original_digest"] = _sha256(path)
             index += 1
@@ -2537,6 +3058,25 @@ def _settings_rewrite_begin(state: RunState, _phase: str) -> dict[str, object]:
 def _settings_rewrite_apply(state: RunState, record: StepRecord) -> dict[str, object]:
     begin = _begin(record)
     targets = list(begin["targets"])  # type: ignore[arg-type]
+    snapshot_dir = _settings_snapshot_dir(state)
+    # COPY-BEFORE-WRITE invariant: every original is durably snapshotted and
+    # verified BEFORE the first settings write, so a crash can never leave a
+    # rewritten file whose original snapshot was never completed.
+    _mkdir_durable(snapshot_dir)
+    saved: list[dict[str, object]] = []
+    for entry in targets:
+        if not entry["present"]:
+            continue
+        path = Path(str(entry["path"]))
+        snap = snapshot_dir / str(entry["snapshot_rel"])
+        _write_durable(snap, path.read_bytes(), 0o444)
+        _fsync_file(snap)
+        if _sha256(path) != entry["original_digest"]:
+            raise MigrationError(
+                f"{path} changed between the begin record and its snapshot"
+            )
+        saved.append(entry)
+    _fsync_dir(snapshot_dir)
     mapping = _manifest_path_map(state.ctx.repo_root)
     done_targets: list[dict[str, object]] = []
     for entry in targets:
@@ -2607,6 +3147,10 @@ def _settings_rewrite_undo(state: RunState, record: StepRecord) -> None:
         mode = path.stat().st_mode & 0o777 if path.exists() else 0o644
         _write_durable(path, original, mode)
         _fsync_file(path)
+    # the snapshot tree is journal-proven migration-owned bookkeeping: without
+    # removing it, the skeleton sweep could never rmdir a work_dir that saved
+    # settings snapshots.
+    shutil.rmtree(snapshot_dir, ignore_errors=True)
 
 
 def _settings_rewrite_verify(state: RunState, record: StepRecord) -> bool:
@@ -2679,6 +3223,20 @@ def _reverify_apply(state: RunState, _record: StepRecord) -> dict[str, object]:
         expected = _inventory_digests(state, domain)
         problems += _differences(legacy, expected, _digest_tree(legacy))
         checked += len(expected)
+    for record in _steps_in(state.records):
+        if not str(record["phase"]).startswith("carry:"):
+            continue
+        done = _done(record)
+        if done is None or _absent(record):
+            continue
+        begin = _begin(record)
+        problems += _tree_differences(
+            Path(str(begin["dest"])), done["files"], done.get("shape", ())
+        )
+        problems += _tree_differences(
+            Path(str(begin["legacy"])), begin["files"], begin.get("shape", ())
+        )
+        checked += len(done["files"])  # type: ignore[arg-type]
     if problems:
         raise MigrationError(
             "changed between staging and promotion, so nothing was promoted: "
@@ -2765,10 +3323,14 @@ def _snapshot_begin(state: RunState, phase: str) -> dict[str, object]:
     domain = phase.partition(":")[2]
     stage = state.step(f"stage:{domain}")
     legacy = Path(str(state.domain_entry(domain)["legacy"]))
+    absent = stage is None or _absent(stage)
     return {
         "legacy": str(legacy),
         "snapshot": str(state.snapshot_dir / legacy.name),
-        "absent": stage is None or _absent(stage),
+        "absent": absent,
+        "shape": ()
+        if absent or not (legacy.is_dir() and not legacy.is_symlink())
+        else _shape(legacy),
     }
 
 
@@ -2819,6 +3381,7 @@ def _validation_commands(ctx: MigrationContext) -> list[list[str]]:
         [
             str(ctx.repo_root / "install.sh"),
             "--check-links",
+            "--during-migration",
             f"--harness={','.join(ctx.opts.harnesses)}",
             f"--profile={ctx.opts.profile}",
         ],
@@ -2893,6 +3456,17 @@ register_step(
     ),
     in_run=True,
 )
+register_step("carry:", Step(_carry_apply, _carry_undo, _carry_verify, _carry_begin))
+register_step(
+    "carry-snapshot:",
+    Step(
+        _carry_snapshot_apply,
+        _carry_snapshot_undo,
+        _carry_snapshot_verify,
+        _carry_snapshot_begin,
+    ),
+)
+register_step("stale-scan:", Step(_record_only, _no_undo, _always))
 
 
 # ── run, restore, recover ────────────────────────────────────────────────────
@@ -2919,6 +3493,11 @@ def _before_flip(state: RunState) -> None:
             begun=f"migrate.stage.{d}.begun",
             done=f"migrate.stage.{d}.done",
         )
+    for entry in _journaled_carries(state):
+        if entry.get("absent"):
+            continue
+        _run_phase(state, f"carry:{entry['name']}")
+    _prune_empty_tree(state.work_dir / "staging")
     _run_phase(
         state, "baseline", begun="migrate.baseline.begun", done="migrate.baseline.done"
     )
@@ -2965,6 +3544,19 @@ def _finish_snapshots(state: RunState) -> None:
             step = step_for(phase)
             detail = {} if step.verify(state, existing) else step.apply(state, existing)
             journal.done(phase, **detail)
+    for entry in _journaled_carries(state):
+        if entry.get("absent"):
+            continue
+        name = str(entry["name"])
+        phase = f"carry-snapshot:{name}"
+        existing = state.step(phase)
+        if existing is None:
+            _run_phase(state, phase, done=f"migrate.carry.{name}.severed")
+        elif _done(existing) is None:
+            step = step_for(phase)
+            detail = {} if step.verify(state, existing) else step.apply(state, existing)
+            journal.done(phase, **detail)
+            _checkpoint(f"migrate.carry.{name}.severed")
 
 
 def _validated(state: RunState) -> bool:
@@ -3000,6 +3592,56 @@ def _after_flip(state: RunState, *, lock_held: bool) -> tuple[str, str]:
     return OUTCOME_RESTORED, reason
 
 
+def _prune_empty_tree(root: Path) -> None:
+    """Remove every empty directory under ``root``, deepest first, idempotently."""
+    if not root.is_dir() or root.is_symlink():
+        return
+    for child in sorted(root.iterdir()):
+        if child.is_dir() and not child.is_symlink():
+            _prune_empty_tree(child)
+            if not any(child.iterdir()):
+                child.rmdir()
+
+
+def _sweep_skeletons(state: RunState) -> None:
+    """Remove the migration's empty skeletons; never a dir holding anything.
+
+    Runs on the abort, restore, narrow-rollback and pre-flip crash-recovery
+    paths, never inside finalize's apply. ``work_dir/settings-rewrite`` is
+    removed by ``_settings_rewrite_undo`` (before this sweep, newest-first),
+    ``restored/`` holding set-aside data is never swept — it belongs to the
+    restored-cleanup finalize. The created-empty toolkit-home ``data`` dir is
+    pruned only when the journal proves the run created it (the preflight
+    detail records whether the parent pre-existed), and the toolkit root
+    itself only when it is empty too.
+    """
+    work = state.work_dir
+    if work.is_dir() and not work.is_symlink():
+        for name in ("staging", "transform", "restored"):
+            root = work / name
+            _prune_empty_tree(root)
+        for name in ("staging", "transform"):
+            root = work / name
+            if root.is_dir() and not root.is_symlink() and not any(root.iterdir()):
+                root.rmdir()
+                _fsync_dir(work)
+        if not any(work.iterdir()):
+            work.rmdir()
+            _fsync_dir(work.parent)
+    preflight = state.step("preflight")
+    detail = _done(preflight) if preflight is not None else None
+    if not isinstance(detail, dict) or detail.get("dest_data_existed"):
+        return
+    root = _toolkit_root()
+    data = root / "data"
+    if data.is_dir() and not data.is_symlink() and not any(data.iterdir()):
+        data.rmdir()
+        _fsync_dir(root)
+        if root.is_dir() and not root.is_symlink() and not any(root.iterdir()):
+            root.rmdir()
+            _fsync_dir(root.parent)
+
+
 def _write_guard(state: RunState) -> list[str]:
     """What changed in the toolkit home since promotion (telemetry exempt)."""
     problems: list[str] = []
@@ -3016,6 +3658,15 @@ def _write_guard(state: RunState) -> list[str]:
             dest = Path(str(state.domain_entry(domain)["destination"]))
             if _lexists(dest):
                 problems.append(f"{dest} (created after the migration)")
+        elif phase.startswith("carry:"):
+            dest = Path(str(_begin(record)["dest"]))
+            if _absent(record):
+                if _lexists(dest):
+                    problems.append(f"{dest} (created after the migration)")
+            else:
+                problems += _tree_differences(
+                    dest, done["files"], done.get("shape", ())
+                )
     for record in _steps_in(state.records):
         guard = step_for(str(record["phase"])).guard
         if guard is not None:
@@ -3045,6 +3696,7 @@ def restore(
     steps = _steps_in(state.records)
     for record in steps:
         step_for(str(record["phase"]))
+    _check_restore_collisions(state, steps, resume=resume)
     if not resume:
         if guarded:
             problems = _write_guard(state)
@@ -3072,10 +3724,61 @@ def restore(
         ):
             dest = Path(str(state.domain_entry(domain)["destination"]))
             _set_aside(dest, aside / domain)
+        elif phase.startswith("carry:") and not _absent(record):
+            _set_aside(Path(str(_begin(record)["dest"])), aside / "carry" / domain)
     _checkpoint(f"migrate.{label}.promoted-aside")
     _undo_steps(state, steps)
+    _sweep_skeletons(state)
     _checkpoint(f"migrate.{label}.undone")
     journal.done("restore")
+
+
+def _check_restore_collisions(
+    state: RunState, steps: list[StepRecord], *, resume: bool
+) -> None:
+    """A legacy path recreated while the migration still holds its data refuses.
+
+    Runs BEFORE any restore mutation, on the ``guarded=False`` path too — the
+    path validation failure takes while the lock is still held and skips the
+    guard entirely. The check is per-snapshot: for a restore RESUMING after an
+    interrupted undo, originals already returned to legacy are recognized by
+    the snapshot being ABSENT (``_snapshot_undo`` journals nothing when it
+    returns one), so "snapshot absent, legacy present" is not a collision;
+    "snapshot AND legacy both present" is. A recreated legacy path is refused
+    up front instead of letting ``_snapshot_undo`` discover the collision only
+    after the pointer already flipped.
+    """
+    collisions: list[str] = []
+    for record in steps:
+        phase = str(record["phase"])
+        if _done(record) is None or _absent(record):
+            continue
+        if phase.startswith("snapshot:"):
+            snapshot = Path(str(_begin(record)["snapshot"]))
+            legacy = _domain_legacy(state, _domain(record))
+            if legacy is not None and _lexists(snapshot) and _lexists(legacy):
+                collisions.append(
+                    f"{legacy} (recreated while {snapshot} holds its original)"
+                )
+        elif phase.startswith("carry:"):
+            legacy = Path(str(_begin(record)["legacy"]))
+            dest = Path(str(_begin(record)["dest"]))
+            if _lexists(legacy) and _lexists(dest):
+                collisions.append(
+                    f"{legacy} (recreated while {dest} holds the carried copy)"
+                )
+    if collisions:
+        raise RestoreRefused(
+            "a legacy path was recreated while the migration still holds its "
+            "original or copy; resolve it by hand: " + "; ".join(collisions)
+        )
+
+
+def _domain_legacy(state: RunState, domain: str) -> Path | None:
+    try:
+        return Path(str(state.domain_entry(domain)["legacy"]))
+    except KeyError:
+        return None
 
 
 def _load_state(
@@ -3097,6 +3800,11 @@ def _load_state(
     )
     if not isinstance(preflight, dict) or "work_dir" not in preflight:
         raise MigrationError(f"{directory} records no migration paths")
+    carry = preflight.get("carry")
+    if isinstance(carry, list):
+        _register_carry_oracle(
+            [str(e["name"]) for e in carry if isinstance(e, dict) and e.get("name")]
+        )
     ctx = MigrationContext(
         opts=MigrationOptions(
             harnesses=tuple(inventory["harnesses"]),
@@ -3146,6 +3854,7 @@ def _recover_data_run(
             flip = state.step("flip")
         if flip is None or _done(flip) is None:
             _undo_steps(state, _steps_in(journal.records))
+            _sweep_skeletons(state)
             journal.abandon("rolled back: the run died before the layout flip")
             return "abandoned", "rollback"
         outcome, _reason = _after_flip(state, lock_held=False)
@@ -3231,6 +3940,7 @@ def _finalize_plan(state: RunState) -> dict[str, object]:
     """What finalize deletes; refuses, changing nothing, if the snapshot drifted."""
     problems: list[str] = []
     expected_names: set[str] = set()
+    snapshots: list[dict[str, object]] = []
     for record in _steps_in(state.records):
         if not str(record["phase"]).startswith("snapshot:") or _absent(record):
             continue
@@ -3238,6 +3948,36 @@ def _finalize_plan(state: RunState) -> dict[str, object]:
         expected_names.add(snapshot.name)
         expected = _inventory_digests(state, _domain(record))
         problems += _differences(snapshot, expected, _digest_tree(snapshot))
+        snapshots.append(
+            {
+                "name": snapshot.name,
+                "files": expected,
+                "shape": list(_begin(record).get("shape", ())),
+            }
+        )
+    for record in _steps_in(state.records):
+        if not str(record["phase"]).startswith("carry-snapshot:") or _absent(record):
+            continue
+        name = _domain(record)
+        snapshot = Path(str(_begin(record)["snapshot"]))
+        expected_names.add(snapshot.name)
+        carry = state.step(f"carry:{name}")
+        done = _done(carry) if carry is not None else None
+        if done is None:
+            raise MigrationError(f"{name} was carried without a done record")
+        problems += _tree_differences(snapshot, done["files"], done.get("shape", ()))
+        snapshots.append(
+            {
+                "name": snapshot.name,
+                "files": done["files"],
+                "shape": list(done.get("shape", ())),
+            }
+        )
+        legacy = Path(str(_begin(record)["legacy"]))
+        if _lexists(legacy):
+            problems.append(
+                f"{legacy} (the carried legacy copy was recreated before finalize)"
+            )
     if state.snapshot_dir.is_dir():
         for child in sorted(state.snapshot_dir.iterdir()):
             if child.name not in expected_names:
@@ -3249,12 +3989,34 @@ def _finalize_plan(state: RunState) -> dict[str, object]:
         )
     links = state.step("links")
     done = _done(links) if links is not None else None
+    begin = _begin(links) if links is not None else None
+    legacy_dirs = _legacy_dir_candidates_from_links(state.ctx.home, begin)
     return {
         "mode": "committed",
         "snapshot_dir": str(state.snapshot_dir),
         "work_dir": str(state.work_dir),
         "retained": (done or {}).get("retained", []),
+        "snapshots": snapshots,
+        "legacy_dirs": [str(p) for p in legacy_dirs],
     }
+
+
+def _legacy_dir_candidates_from_links(home: Path, links_detail: object) -> list[Path]:
+    """The begin-recorded legacy dirs, or the mapped three on older journals."""
+    mapped = [home / ".claude" / name for name in _MAPPED_DIRS]
+    if not isinstance(links_detail, dict):
+        return sorted(set(mapped))
+    extra: set[Path] = set()
+    for link in links_detail.get("planned", []):
+        if not isinstance(link, dict):
+            continue
+        dest = Path(str(link.get("dest", "")))
+        if not dest.is_relative_to(home / ".claude"):
+            continue
+        parent = dest.parent
+        if parent != home / ".claude":
+            extra.add(parent)
+    return sorted(set(mapped) | extra)
 
 
 def _restored_manifest(work_dir: Path) -> dict[str, dict[str, str]]:
@@ -3304,12 +4066,38 @@ def _restored_finalize_plan(state: RunState) -> dict[str, object]:
     expected_work = _toolkit_root() / f".migration-{state.ctx.migration_id}"
     if work_dir != expected_work or work_dir.is_symlink():
         raise MigrationError(f"unsafe migration work directory: {work_dir}")
-    if not work_dir.is_dir() or _toolkit_root().is_symlink():
-        raise MigrationError(f"missing or unsafe migration work directory: {work_dir}")
+    if _toolkit_root().is_symlink():
+        raise MigrationError(f"unsafe migration toolkit root: {_toolkit_root()}")
+    if not work_dir.is_dir():
+        # a MISSING work directory is the valid already-empty state: the
+        # skeleton sweep removed it after a restore with nothing to set
+        # aside, and there is nothing left to clean — an empty manifest.
+        return {
+            "mode": "restored-copy",
+            "work_dir": str(work_dir),
+            "restored": str(work_dir / "restored"),
+            "staging": str(work_dir / "staging"),
+            "transform": str(work_dir / "transform"),
+            "manifest": {},
+            "telemetry_lines_discarded": {},
+        }
     restored = work_dir / "restored"
     problems: list[str] = []
     expected_domains: set[str] = set()
+    carry_expected: set[str] = set()
     counts: dict[str, int | None] = {}
+    for record in _steps_in(state.records):
+        if not str(record["phase"]).startswith("carry:"):
+            continue
+        done = _done(record)
+        if done is None or _absent(record):
+            continue
+        name = _domain(record)
+        path = restored / "carry" / name
+        carry_expected.add(name)
+        problems += _tree_differences(path, done["files"], done.get("shape", ()))
+        if not _lexists(path):
+            problems.append(f"{path} (removed)")
     for record in _steps_in(state.records):
         if not str(record["phase"]).startswith("promote:"):
             continue
@@ -3336,11 +4124,18 @@ def _restored_finalize_plan(state: RunState) -> dict[str, object]:
                 )
     if restored.is_dir():
         for path in restored.iterdir():
+            if path.name == "carry":
+                continue
             if path.name not in expected_domains and not (
                 path.name in TELEMETRY_DOMAINS
                 and state.step(f"promote:{path.name}") is not None
             ):
                 problems.append(f"{path} (not a promoted domain)")
+        carry_dir = restored / "carry"
+        if carry_dir.is_dir():
+            for path in carry_dir.iterdir():
+                if path.name not in carry_expected:
+                    problems.append(f"{path} (not a promoted domain)")
     for domain in expected_domains:
         if not _lexists(restored / domain):
             problems.append(f"{restored / domain} (removed)")
@@ -3366,10 +4161,86 @@ def _restored_finalize_plan(state: RunState) -> dict[str, object]:
 
 
 def _finalize_apply(state: RunState, plan: dict[str, object]) -> None:
+    """Per-entry deletion, journalled, safe to repeat on resume.
+
+    The removal decision runs AFTER the retained links are removed (a
+    directory containing only a retained link looks non-empty before that
+    cleanup), never in the plan: the plan journals the candidate set, the
+    empty check happens when the removal runs, and each directory's OBSERVED
+    result is persisted as a finalize JOURNAL record (phase
+    ``legacy-dir:<dir>``, begin/done like any step — a ``_checkpoint`` call
+    asserts oracle membership only and stores nothing), so a resumed finalize
+    and the report reconstruct what actually happened.
+
+    Snapshot entries are removed one by one, each verified against its
+    journal digests AND directory shape immediately before its own removal,
+    on the fresh path AND on resume (which replays the saved plan directly):
+    a snapshot entry written after the plan was journaled refuses that
+    entry's deletion with the files named, while unchanged entries still
+    proceed. Each entry's removal is journaled as ``snapshot-removed:<name>`` —
+    its begin event BEFORE the deletion starts and its done event after — so
+    every crash window is covered: on resume, an ABSENT entry is expected
+    when its removal begin record exists (this finalize deleted it, caught
+    between begin and done) or when its done record exists; an absent entry
+    with NEITHER record is a deletion by another process and refuses with the
+    path named. A crash INSIDE an entry's recursive removal has its own
+    recovery rule: with the entry's removal begin record present, the
+    REMAINING content must be a subset of the journal-verified content —
+    every remaining file matches its journal digest and shape — and removal
+    continues; a remaining file that matches nothing is a foreign write and
+    refuses. The ownership limit is the same as the carry destination's and
+    is stated for snapshots too: digest-and-shape matching cannot
+    distinguish a recreated file with identical bytes from the journal's
+    copy; the exclusive migration lock is the documented ownership
+    assumption for the snapshot directory, and the guarantee protects writes
+    PRESENT at the check.
+    """
+    journal = state.require_journal()
     snapshot_dir = Path(str(plan["snapshot_dir"]))
     work_dir = Path(str(plan["work_dir"]))
-    _remove_path(snapshot_dir, within=snapshot_dir)
-    _checkpoint("migrate.finalize.snapshot-removed")
+    prior_done = {
+        str(r.get("phase")).partition(":")[2]
+        for r in journal.records
+        if r.get("phase", "").startswith("snapshot-removed:")
+        and r.get("event") == "done"
+    }
+    prior_begins = {
+        str(r.get("phase")).partition(":")[2]
+        for r in journal.records
+        if r.get("phase", "").startswith("snapshot-removed:")
+        and r.get("event") == "begin"
+    }
+    fired = False
+    for entry in plan.get("snapshots", []):  # type: ignore[attr-defined]
+        name = str(entry["name"])
+        if name in prior_done:
+            continue
+        path = snapshot_dir / name
+        journal.begin(f"snapshot-removed:{name}", snapshot=str(path))
+        if not fired:
+            _checkpoint("migrate.finalize.snapshot-removed")
+            fired = True
+        if not _lexists(path):
+            if name not in prior_begins:
+                raise MigrationError(
+                    f"{path} is absent without a removal record; something "
+                    "else deleted it"
+                )
+        else:
+            problems = _tree_differences(path, entry["files"], entry.get("shape", ()))
+            if problems:
+                raise MigrationError(
+                    f"{path} changed before its deletion: " + "; ".join(problems)
+                )
+            _remove_path(path, within=snapshot_dir)
+        journal.done(f"snapshot-removed:{name}")
+    if snapshot_dir.is_dir():
+        if any(snapshot_dir.iterdir()):
+            _checkpoint("migrate.finalize.snapshot-removed")
+        else:
+            snapshot_dir.rmdir()
+            _fsync_dir(snapshot_dir.parent)
+            _checkpoint("migrate.finalize.snapshot-removed")
     for leftover in ("staging", "transform"):
         _remove_path(work_dir / leftover, within=work_dir)
     if work_dir.is_dir() and not any(work_dir.iterdir()):
@@ -3398,6 +4269,24 @@ def _finalize_apply(state: RunState, plan: dict[str, object]) -> None:
         ),
     )
     _checkpoint("migrate.finalize.links-removed")
+    _checkpoint("migrate.finalize.legacy-dir-removed")
+    kept: list[str] = []
+    for dir_path in plan.get("legacy_dirs", []):  # type: ignore[attr-defined]
+        directory = Path(str(dir_path))
+        if not _lexists(directory):
+            continue
+        if any(directory.iterdir()):
+            kept.append(str(directory))
+            journal.begin(f"legacy-dir:{directory.name}", path=str(directory))
+            journal.done(
+                f"legacy-dir:{directory.name}", observed="left (holds other content)"
+            )
+            continue
+        journal.begin(f"legacy-dir:{directory.name}", path=str(directory))
+        directory.rmdir()
+        _fsync_dir(directory.parent)
+        journal.done(f"legacy-dir:{directory.name}", observed="removed")
+    plan["legacy_dirs_kept"] = kept
 
 
 def _remove_fd_tree(parent_fd: int, name: str) -> None:
@@ -3649,6 +4538,10 @@ def _post_commit(
                         report.outcome = (
                             f"{OUTCOME_FINALIZED}: the legacy snapshot is gone"
                         )
+                    report.legacy_dirs_kept = [
+                        str(p)
+                        for p in plan.get("legacy_dirs_kept", [])  # type: ignore[arg-type]
+                    ]
     except migration_lock.MigrationLockBusy as exc:
         report.outcome = f"lock-busy: {exc}"
         _emit(report, opts)
@@ -3673,6 +4566,270 @@ def finalize_command(
 ) -> int:
     """``--finalize-toolkit-home-migration``: delete one migration's leftovers."""
     return _post_commit("finalize", migration_id, opts, repo_root=repo_root)
+
+
+def _strict_journal_dirs(installer_state: Path) -> list[Path]:
+    """Migration journal directories, refusing anything the lenient scan skips.
+
+    The strict evidence check the residue audit uses: a SYMLINKED
+    ``migrations`` root, a symlinked journal directory, a non-directory entry
+    under ``migrations/``, a missing MAIN journal file, a malformed final
+    (torn) line and a corrupt earlier line all refuse — a strict scan must
+    not report a clean audit while expected journals went uninspected, and
+    incomplete evidence is not a pass. The lenient reader
+    (``agent-scripts/retained_legacy_links``) keeps its existing behavior for
+    the session-start drift hook.
+    """
+    root = installer_state / "migrations"
+    if root.is_symlink():
+        raise MigrationError(f"{root} is a symlink; refusing to audit it")
+    if not root.is_dir():
+        return []
+    dirs: list[Path] = []
+    for entry in sorted(root.iterdir()):
+        if entry.is_symlink():
+            raise MigrationError(f"{entry} is a symlink; refusing to audit it")
+        if not entry.is_dir():
+            raise MigrationError(
+                f"{entry} is not a directory; refusing to audit past it"
+            )
+        if not (entry / JOURNAL_NAME).is_file():
+            raise MigrationError(
+                f"{entry} has no {JOURNAL_NAME}; refusing to audit past it"
+            )
+        dirs.append(entry)
+    return dirs
+
+
+def _strict_records(directory: Path) -> list[dict[str, object]]:
+    """Journal records with a torn-tail refusal (the lenient reader skips it)."""
+    raw = (directory / JOURNAL_NAME).read_bytes()
+    records, _offset, torn = _split_valid(raw)
+    if torn:
+        raise MigrationError(
+            f"{directory / JOURNAL_NAME} ends with a malformed final line"
+        )
+    return records
+
+
+def _mapped_dirs(home: Path) -> set[Path]:
+    """The mapped legacy toolkit directories (``_MAPPED_DIRS``)."""
+    return {home / ".claude" / name for name in _MAPPED_DIRS}
+
+
+def _carry_staging_path(ctx: MigrationContext, name: str) -> str:
+    return str(
+        _toolkit_root() / f".migration-{ctx.migration_id}" / "staging" / "carry" / name
+    )
+
+
+def _migration_states(installer_state: Path) -> list[dict[str, object]]:
+    """One per-journal state row for the residue audit's ownership rules."""
+    rows: list[dict[str, object]] = []
+    for directory in _strict_journal_dirs(installer_state):
+        records = _strict_records(directory)
+        outcome = _outcome([dict(r) for r in records]) or ""
+        finalized = (
+            _outcome([dict(r) for r in read_records(directory, FINALIZE_NAME)])
+            == OUTCOME_FINALIZED
+        )
+        rolled_back = (
+            _outcome([dict(r) for r in read_records(directory, ROLLBACK_NAME)])
+            == OUTCOME_ROLLED_BACK
+        )
+        if not outcome:
+            state = "live"
+        elif outcome == OUTCOME_COMMITTED:
+            state = (
+                "rolled-back"
+                if rolled_back
+                else ("finalized" if finalized else "committed-unfinalized")
+            )
+        elif outcome == OUTCOME_RESTORED:
+            state = "finalized-restored" if finalized else "restored-unfinalized"
+        else:
+            state = "abandoned"
+        rows.append(
+            {
+                "id": directory.name,
+                "state": state,
+                "carried": _carried_names(records),
+                "legacy_dirs": _legacy_dirs_from_records(directory, records),
+            }
+        )
+    return rows
+
+
+def _carried_names(records: list[dict[str, object]]) -> list[str]:
+    """The carried entry names journaled by this migration's preflight."""
+    for record in records:
+        if record.get("phase") == "preflight" and record.get("event") == "done":
+            detail = record.get("detail")
+            if isinstance(detail, dict):
+                carry = detail.get("carry")
+                if isinstance(carry, list):
+                    return [
+                        str(e.get("name"))
+                        for e in carry
+                        if isinstance(e, dict) and e.get("name")
+                    ]
+    return []
+
+
+def _legacy_dirs_from_records(
+    directory: Path, records: list[dict[str, object]]
+) -> set[Path]:
+    """The legacy toolkit dirs this migration's links step recorded.
+
+    Older journals predate the begin field: their fallback is the mapped
+    three plus their own planned and retained destinations' legacy parents.
+    """
+    home = Path.home()
+    mapped = {home / ".claude" / name for name in _MAPPED_DIRS}
+    extra: set[Path] = set()
+    destinations: set[str] = set()
+    for record in records:
+        if record.get("phase") != "links":
+            continue
+        detail = record.get("detail")
+        if not isinstance(detail, dict):
+            continue
+        for key in ("planned", "retained"):
+            for link in detail.get(key, []) or []:
+                if isinstance(link, dict) and link.get("dest"):
+                    destinations.add(str(link["dest"]))
+    for dest in destinations:
+        path = Path(dest)
+        if path.is_relative_to(home / ".claude") and path.parent != home / ".claude":
+            extra.add(path.parent)
+    return mapped | extra
+
+
+def residue_findings(home: Path, installer_state: Path) -> dict[str, list[str]]:
+    """Toolkit-owned residue at legacy locations, for --check-links.
+
+    ONE rule, per journal, no global suppression: the layout must be
+    toolkit-home and residue checking ALWAYS runs, exempting only what a
+    journal legitimately owns — its snapshot directory (live or awaiting its
+    finalize), its retained links (while retention is live), its carried
+    legacy entries (while the journal is live), its restored copies, and its
+    journaled legacy toolkit directories until its finalize completes.
+    Everything else fails, including residue left by a committed-finalized
+    journal and an overlapping name any closed journal should have removed.
+    Each unfinalized restored journal is also reported as cleanup still
+    owed. Fails closed: raises on unreadable journal state (never a silent
+    pass). After all journals have finalized, ANY non-empty unclassified
+    legacy entry that shows no toolkit attribution is a classify-by-hand
+    listing — older journals never recorded carry names, so the audit does
+    not rely on carried-name attribution for them.
+    """
+    if agent_toolkit_paths.current_layout() != "toolkit-home":
+        rows = _migration_states(installer_state)
+        return {
+            "residue": [],
+            "manual": [],
+            "owed": [
+                f"{row['id']} — run --finalize-toolkit-home-migration {row['id']}"
+                for row in rows
+                if row["state"] == "restored-unfinalized"
+            ],
+        }
+    rows = _migration_states(installer_state)
+    owned_snapshots: set[str] = set()
+    owned_carried: set[str] = set()
+    owned_dirs: set[Path] = set()
+    for row in rows:
+        if row["state"] in ("live", "committed-unfinalized", "restored-unfinalized"):
+            owned_snapshots.add(f".toolkit-home-snapshot-{row['id']}")
+        if row["state"] in ("live", "committed-unfinalized"):
+            owned_carried |= set(row["carried"])
+        owned_dirs |= set(row["legacy_dirs"])
+    carried_by_any: set[str] = set()
+    for row in rows:
+        carried_by_any |= set(row["carried"])
+
+    residue: list[str] = []
+    manual: list[str] = []
+    owed: list[str] = []
+    data_root = home / ".claude" / "data"
+    domain_names = {_legacy(d).name for d in agent_toolkit_paths.DOMAINS}
+    pointer = agent_toolkit_paths.POINTER_RELPATH.name
+    if data_root.is_dir() and not data_root.is_symlink():
+        for entry in sorted(data_root.iterdir()):
+            if entry.name == pointer:
+                continue
+            if entry.name.startswith(".toolkit-home-snapshot-"):
+                if entry.name not in owned_snapshots:
+                    residue.append(str(entry))
+                continue
+            if entry.name in domain_names:
+                residue.append(str(entry))
+                continue
+            if entry.name in owned_carried:
+                continue
+            if entry.name in carried_by_any:
+                residue.append(str(entry))
+                continue
+            manual.append(str(entry))
+
+    for directory in sorted(_mapped_dirs(home) | owned_dirs):
+        if not _lexists(directory) or not directory.is_dir() or directory.is_symlink():
+            continue
+        if directory in owned_dirs:
+            continue
+        holds_toolkit = False
+        for child in directory.iterdir():
+            if child.is_symlink():
+                if os.readlink(child).startswith(str(home / ".agent-toolkit")):
+                    holds_toolkit = True
+                    break
+            elif child.is_relative_to(home / ".agent-toolkit"):
+                holds_toolkit = True
+                break
+        if holds_toolkit:
+            residue.append(f"{directory} (holds a toolkit-owned link)")
+        elif not any(directory.iterdir()):
+            residue.append(f"{directory} (empty and still present after finalize)")
+        else:
+            manual.append(f"{directory} (holds content matching no toolkit-owned rule)")
+
+    owed = [
+        f"{row['id']} — run --finalize-toolkit-home-migration {row['id']}"
+        for row in rows
+        if row["state"] == "restored-unfinalized"
+    ]
+    return {
+        "residue": sorted(set(residue)),
+        "manual": sorted(set(manual)),
+        "owed": owed,
+    }
+
+
+def _collect_stale_references(installer_state: Path) -> list[dict[str, str]]:
+    """Stale references recorded in the journals of finished migrations.
+
+    recover() returns only migration id and action summaries, and run() emits
+    a NEW report for its new migration — so a crash after staging leaves the
+    promised review checklist only in an old journal. This reads the journals
+    directly (the stale-scan step records survive every exit path, including
+    a carry that fails after its scan but before its done record) so the
+    earlier run's references reach the report the rollout operator actually
+    reads.
+    """
+    records: list[dict[str, str]] = []
+    for directory in _journal_dirs(installer_state):
+        for record in read_records(directory):
+            if not str(record.get("phase", "")).startswith("stale-scan:"):
+                continue
+            if record.get("event") != "done":
+                continue
+            detail = record.get("detail")
+            if not isinstance(detail, dict):
+                continue
+            for ref in detail.get("stale", []) or []:
+                if isinstance(ref, dict):
+                    records.append({k: str(v) for k, v in ref.items()})
+    return records
 
 
 def committed_unfinalized(installer_state: Path) -> list[str]:
@@ -3730,6 +4887,30 @@ def _emit(report: PreflightReport, opts: MigrationOptions) -> None:
                 print(f"      {path}", file=stream)
     for item in report.recovered:
         print(f"  recovered {item['id']}: {item['action']}", file=stream)
+    for item in report.unfinished_migrations:
+        print(
+            f"  unfinished migration {item}: finalize or roll it back before "
+            "re-running; its journal holds the stale-reference checklist",
+            file=stream,
+        )
+    for ref in [*report.recovered_stale_references, *report.stale_references]:
+        where = ref.get("source") or ref.get("file")
+        print(
+            f"  stale reference: {where} ({ref.get('file')}) "
+            f"line {ref['line']}: {ref['value']}",
+            file=stream,
+        )
+    for path in report.legacy_dirs_kept:
+        print(
+            f"  legacy directory kept (holds other content): {path}",
+            file=stream,
+        )
+    for path in report.unclassified_left:
+        print(
+            f"  empty unclassified legacy directory left in place, classify by "
+            f"hand: {path}",
+            file=stream,
+        )
     print(f"{report.outcome}  (migration {report.migration_id})", file=stream)
     if report.journal:
         print(f"journal: {report.journal}", file=stream)
@@ -3761,6 +4942,7 @@ def run(opts: MigrationOptions, *, repo_root: Path) -> int:
         (f.paths for f in report.findings if f.check == "manual-edit-checklist"), []
     )
 
+    report.unfinished_migrations = committed_unfinalized(history.parent)
     if opts.dry_run:
         if not any(
             f.check == "inventory-types" and f.status == "refuse"
@@ -3785,6 +4967,9 @@ def run(opts: MigrationOptions, *, repo_root: Path) -> int:
             report.recovered = recover(
                 ctx.installer_state, ctx.history, repo_root=ctx.repo_root
             )
+            report.recovered_stale_references = _collect_stale_references(
+                ctx.installer_state
+            )
             report.findings = run_checks(ctx)
             report.manual_edit_checklist = next(
                 (
@@ -3804,6 +4989,17 @@ def run(opts: MigrationOptions, *, repo_root: Path) -> int:
                 outcome, reason = _run_journalled(ctx, journal, report)
             finally:
                 journal.close()
+                report.stale_references = _collect_stale_references(ctx.installer_state)
+                for record in read_records(journal.directory):
+                    if (
+                        record.get("phase") == "preflight"
+                        and record.get("event") == "done"
+                    ):
+                        detail = record.get("detail")
+                        if isinstance(detail, dict):
+                            report.unclassified_left = [
+                                str(p) for p in detail.get("carry_empties", []) or []
+                            ]
             append_history(
                 ctx.history,
                 {
@@ -3850,6 +5046,7 @@ def _run_journalled(
         report.inventory = state.inventory or None
         try:
             _undo_steps(state, _steps_in(state.records))
+            _sweep_skeletons(state)
         except Exception as undo_exc:
             raise MigrationError(
                 f"{exc}; undoing the run also failed, so the next run will retry: "

@@ -304,6 +304,7 @@ def _expected_phase_order() -> list[str]:
         "preflight",
         "inventory",
         *(f"stage:{d}" for d in domains),
+        "carry:unrelated-notes",
         "baseline",
         "links",
         "settings-rewrite",
@@ -311,6 +312,7 @@ def _expected_phase_order() -> list[str]:
         *(f"promote:{d}" for d in domains),
         "flip",
         *(f"snapshot:{d}" for d in domains),
+        "carry-snapshot:unrelated-notes",
         "validate",
     ]
 
@@ -342,7 +344,7 @@ def test_full_run_moves_every_domain_flips_and_snapshots(machine, capsys, valida
     assert state["batch_hash"] == _sha(batch)
     assert (_dest("decisions") / "nested" / "notes.md").read_text() == "nested\n"
 
-    assert _tree(machine / ".claude" / "data" / "unrelated-notes") == unrelated
+    assert _tree(machine / ".agent-toolkit" / "data" / "unrelated-notes") == unrelated
     assert not (_work_dir(machine, mid) / "staging").exists() or not any(
         (_work_dir(machine, mid) / "staging").iterdir()
     )
@@ -791,13 +793,13 @@ def test_finalize_refuses_unjournalled_transform_leftover(
 
 def test_finalize_deletes_only_journal_proven_paths(machine, capsys, validation):
     mid = _commit(capsys)
-    unrelated = _tree(machine / ".claude" / "data" / "unrelated-notes")
+    unrelated = _tree(machine / ".agent-toolkit" / "data" / "unrelated-notes")
     data_after = {d: _tree(_dest(d)) for d in agent_toolkit_paths.DOMAINS}
     code, report = _finalize(capsys, mid)
     assert code == 0, report
     assert not _snapshot_dir(machine, mid).exists()
     assert not _work_dir(machine, mid).exists()
-    assert _tree(machine / ".claude" / "data" / "unrelated-notes") == unrelated
+    assert _tree(machine / ".agent-toolkit" / "data" / "unrelated-notes") == unrelated
     assert {d: _tree(_dest(d)) for d in agent_toolkit_paths.DOMAINS} == data_after
     assert _layout() == "toolkit-home"
     records = mth.read_records(_jdir(machine, mid), mth.FINALIZE_NAME)
@@ -1299,7 +1301,13 @@ def _assert_crash_state(home: Path, expected: mth.Expected) -> None:
 
 
 def test_oracle_covers_every_checkpoint():
-    fi.check_oracle_complete(mth.CHECKPOINTS, _oracle_rows())
+    # runtime-registered carry rows (migrate.carry.<name>.* generated from a
+    # run's journaled carried list) are legitimately undeclared: they appear
+    # only after a preflight discovers unclassified entries.
+    fi.check_oracle_complete(
+        mth.CHECKPOINTS,
+        [r for r in _oracle_rows() if not r.checkpoint.startswith("migrate.carry.")],
+    )
 
 
 @pytest.mark.allow_real_subprocess  # the migrator runs in a child killed by SIGKILL
