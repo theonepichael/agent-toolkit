@@ -1533,6 +1533,52 @@ def _check_legacy_links(ctx: MigrationContext) -> tuple[Finding, list[dict[str, 
     ), links
 
 
+def _within_home(home: Path, dest: Path) -> bool:
+    """Whether ``dest`` names a path under ``home``, lexically or via its parent.
+
+    Only the parent is resolved: resolving ``dest`` itself would follow the
+    link out to its target.
+    """
+    normalized = Path(os.path.normpath(dest))
+    if normalized.is_relative_to(home):
+        return True
+    try:
+        return normalized.parent.resolve().is_relative_to(home.resolve())
+    except OSError:
+        return False
+
+
+def _check_manifest_home(ctx: MigrationContext) -> Finding:
+    """Refuse installer history that records link destinations outside HOME.
+
+    The history stores absolute destinations. A copy of it under a scratch
+    HOME (a rehearsal) still names the real home, and the links phase and
+    finalize act on what it names, so finalize would delete real links.
+    """
+    outside = sorted(
+        {
+            str(entry.get("dest"))
+            for entry in link_inspect.read_manifest_entries(ctx.history)
+            if entry.get("kind") == "symlink-created"
+            and entry.get("dest")
+            and not _within_home(ctx.home, Path(str(entry["dest"])))
+        }
+    )
+    if outside:
+        return Finding(
+            "manifest-home",
+            "refuse",
+            f"the installer history at {ctx.history} records link destinations "
+            f"outside {ctx.home}; a copied installer state (e.g. a scratch "
+            "rehearsal) must have its paths rewritten to this home, or not be "
+            "copied at all",
+            outside,
+        )
+    return Finding(
+        "manifest-home", "ok", "every recorded link destination is under this home"
+    )
+
+
 def run_checks(ctx: MigrationContext) -> list[Finding]:
     """Every structural check, read-only and without hashing."""
     findings = [
@@ -1549,6 +1595,7 @@ def run_checks(ctx: MigrationContext) -> list[Finding]:
         *_check_journals(ctx),
         _check_reconciliation(ctx),
         _check_legacy_links(ctx)[0],
+        _check_manifest_home(ctx),
         Finding("harness-selection", "ok", ",".join(ctx.opts.harnesses)),
     ]
     if ctx.opts.dry_run:
@@ -4252,6 +4299,19 @@ def _finalize_apply(state: RunState, plan: dict[str, object]) -> None:
     PRESENT at the check.
     """
     journal = state.require_journal()
+    # A journal written before the manifest-home preflight existed can still
+    # carry retained links from a copied history; refuse before deleting
+    # anything rather than act outside HOME.
+    outside = [
+        str(link["dest"])
+        for link in plan["retained"]  # type: ignore[attr-defined]
+        if not _within_home(state.ctx.home, Path(str(link["dest"])))
+    ]
+    if outside:
+        raise MigrationError(
+            f"the plan retains links outside {state.ctx.home}, refusing to "
+            "finalize: " + ", ".join(outside)
+        )
     snapshot_dir = Path(str(plan["snapshot_dir"]))
     work_dir = Path(str(plan["work_dir"]))
     prior_done = {

@@ -1006,6 +1006,60 @@ def test_finalize_leaves_a_repointed_retained_link_and_its_other_history(
     assert kept == [(str(tool), str(elsewhere))]
 
 
+def _foreign_home_link(machine: Path, repo: Path, tmp_path: Path) -> Path:
+    """A copied installer history recording a link in another home.
+
+    This is the scratch-rehearsal shape: HOME points at a scratch copy, but
+    the copied history still names the real home's absolute destinations.
+    """
+    real = tmp_path / "real-home" / ".claude" / "scripts" / "tool.py"
+    real.parent.mkdir(parents=True)
+    real.symlink_to(repo / "scripts" / "tool.py")
+    history = _state_dir(machine) / "history.jsonl"
+    history.parent.mkdir(parents=True, exist_ok=True)
+    history.write_text(
+        json.dumps(
+            {"kind": "symlink-created", "dest": str(real), "src": str(repo / "scripts" / "tool.py")}
+        )
+        + "\n"
+    )
+    return real
+
+
+def test_refuses_installer_history_naming_another_home(
+    machine, capsys, validation, tmp_path
+):
+    repo = _fixture_repo(tmp_path)
+    real = _foreign_home_link(machine, repo, tmp_path)
+    code, report = _migrate(capsys, repo=repo)
+    if code == 0:
+        _finalize(capsys, report["migration_id"], repo=repo)
+    assert real.is_symlink(), "a link outside HOME was deleted"
+    assert code == 1, report
+    refused = {f["check"]: f for f in report["findings"] if f["status"] == "refuse"}
+    assert "manifest-home" in refused, report["findings"]
+    assert str(real) in refused["manifest-home"]["paths"]
+
+
+def test_finalize_refuses_a_journaled_link_outside_home(
+    machine, capsys, validation, tmp_path, monkeypatch
+):
+    """A journal written without the preflight guard still cannot delete outside HOME."""
+    repo = _fixture_repo(tmp_path)
+    real = _foreign_home_link(machine, repo, tmp_path)
+    monkeypatch.setattr(
+        mth,
+        "_check_manifest_home",
+        lambda ctx: mth.Finding("manifest-home", "ok", "guard disabled"),
+        raising=False,
+    )
+    code, report = _migrate(capsys, repo=repo)
+    assert code == 0, report
+    code, report = _finalize(capsys, report["migration_id"], repo=repo)
+    assert real.is_symlink(), "a link outside HOME was deleted"
+    assert code != 0, report
+
+
 def _check_ctx(repo: Path) -> install.Context:
     return install.build_context(
         install.parse_args(["--check-links", "--harness=claude"]), repo_root=repo
