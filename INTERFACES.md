@@ -371,7 +371,7 @@ Pure text-formatting helpers shared by the backlog dashboard and recap.
   - `project_prefix(slug: str, known_prefixes: Sequence[str]) -> str` — Extract a canonical project prefix, with a generic slug fallback.
   - `project_divider(project: str, count: int, width: int) -> str` — Render an uncolored divider row for a project group.
   - `format_age(seconds: float) -> str` — Render an age in seconds as a short marker: ``45m`` or ``3h``.
-  - `render_changelog(entries: list[dict[str, object]], parse_timestamp: Callable[[object], datetime | None]) -> str` — Pre-render non-completion journal entries into dense prompt facts.
+  - `render_changelog(entries: list[dict[str, object]], parse_timestamp: Callable[[object], datetime | None], max_lines: int = 60) -> str` — Pre-render non-completion journal entries into dense, per-item prompt facts.
   - `render_done_facts(items: list[dict[str, object]], done_stamp: Callable[[dict[str, object]], datetime | None]) -> str` — Render selected completed items as dated, slug-free prompt facts.
   - `bucket_summary(in_progress: int, ready: int, blocked: int, in_review: int, done: int, pending: int) -> str` — Render bucket section counts as a compact recap-prompt fact.
   - `build_recap_prompt(changelog: str, buckets: str, completed: str, template: str = RECAP_PROMPT) -> str` — Build the recap prompt from activity, selected completions, and counts.

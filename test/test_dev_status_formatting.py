@@ -92,38 +92,169 @@ class ChangelogAndFactsTestCase(unittest.TestCase):
         entries = [{"to_status": "done", "cmd": "done", "ts": "x"}]
         self.assertEqual(fmt.render_changelog(entries, self._parse), "")
 
-    def test_render_changelog_renders_slug_when_no_summary(self):
-        entries = [{"cmd": "start", "slug": "atk-1", "ts": "x"}]
-        self.assertEqual(fmt.render_changelog(entries, self._parse), "[12:30] start atk-1")
+    def test_render_changelog_uses_slug_label_when_no_summary(self):
+        entries = [
+            {
+                "cmd": "start",
+                "slug": "atk-1",
+                "from_status": "open",
+                "to_status": "in-progress",
+                "ts": "x",
+            }
+        ]
+        self.assertEqual(fmt.render_changelog(entries, self._parse), "[12:30] atk-1 — open→in-progress")
 
     def test_render_changelog_prefers_summary_over_slug(self):
         entries = [
-            {"cmd": "start", "slug": "atk-1", "summary": "Do the thing", "ts": "x"}
-        ]
-        line = fmt.render_changelog(entries, self._parse)
-        self.assertEqual(line, "[12:30] start — Do the thing")
-
-    def test_render_changelog_renders_status_transition_detail(self):
-        entries = [
-            {"cmd": "review", "from_status": "in-progress", "to_status": "review", "ts": "x"}
-        ]
-        line = fmt.render_changelog(entries, self._parse)
-        self.assertIn("(in-progress→review)", line)
-
-    def test_render_changelog_renders_fields_feedback_and_count(self):
-        entries = [
             {
-                "cmd": "update",
-                "fields": ["priority", "context"],
-                "feedback": "needs work",
-                "count": 2,
+                "cmd": "start",
+                "slug": "atk-1",
+                "summary": "Do the thing",
+                "from_status": "open",
+                "to_status": "in-progress",
                 "ts": "x",
             }
         ]
         line = fmt.render_changelog(entries, self._parse)
-        self.assertIn("changed: priority, context", line)
+        self.assertEqual(line, "[12:30] Do the thing — open→in-progress")
+        self.assertNotIn("atk-1", line)
+
+    def test_render_changelog_renders_status_transition_detail(self):
+        entries = [
+            {
+                "cmd": "review",
+                "slug": "atk-1",
+                "summary": "Do the thing",
+                "from_status": "in-progress",
+                "to_status": "review",
+                "ts": "x",
+            }
+        ]
+        line = fmt.render_changelog(entries, self._parse)
+        self.assertIn("in-progress→review", line)
+        self.assertIn("Do the thing", line)
+
+    def test_render_changelog_renders_fields_feedback_and_edit_count(self):
+        entries = [
+            {
+                "cmd": "update",
+                "slug": "atk-1",
+                "summary": "Do the thing",
+                "fields": ["priority", "context"],
+                "feedback": "needs work",
+                "ts": "x",
+            }
+        ]
+        line = fmt.render_changelog(entries, self._parse)
+        self.assertIn("1 edit", line)
+        self.assertIn("fields: priority, context", line)
         self.assertIn("feedback: needs work", line)
-        self.assertIn("2 item(s)", line)
+
+    def test_render_changelog_coalesces_one_item_to_single_line(self):
+        # 5 field edits + a start (open→in-progress) + a review
+        # (in-progress→in-review) on one item collapse to one line.
+        entries = [
+            {
+                "cmd": "start",
+                "slug": "atk-1",
+                "summary": "Do the thing",
+                "from_status": "open",
+                "to_status": "in-progress",
+                "ts": "x",
+            },
+            {"cmd": "update", "slug": "atk-1", "summary": "Do the thing",
+             "fields": ["context"], "ts": "x"},
+            {"cmd": "update", "slug": "atk-1", "summary": "Do the thing",
+             "fields": ["context"], "ts": "x"},
+            {"cmd": "update", "slug": "atk-1", "summary": "Do the thing",
+             "fields": ["context"], "ts": "x"},
+            {"cmd": "update", "slug": "atk-1", "summary": "Do the thing",
+             "fields": ["context"], "ts": "x"},
+            {"cmd": "update", "slug": "atk-1", "summary": "Do the thing",
+             "fields": ["context"], "ts": "x"},
+            {
+                "cmd": "review",
+                "slug": "atk-1",
+                "summary": "Do the thing",
+                "from_status": "in-progress",
+                "to_status": "in-review",
+                "ts": "x",
+            },
+        ]
+        lines = fmt.render_changelog(entries, self._parse).splitlines()
+        self.assertEqual(len(lines), 1)
+        line = lines[0]
+        self.assertIn("open→in-review", line)
+        self.assertIn("5 edits", line)
+        self.assertIn("fields: context", line)
+        self.assertNotIn("atk-1", line)
+
+    def test_render_changelog_keeps_reject_feedback(self):
+        entries = [
+            {
+                "cmd": "start",
+                "slug": "atk-2",
+                "summary": "Polish the doc",
+                "from_status": "open",
+                "to_status": "in-progress",
+                "ts": "x",
+            },
+            {"cmd": "update", "slug": "atk-2", "summary": "Polish the doc",
+             "fields": ["context"], "ts": "x"},
+            {
+                "cmd": "reject",
+                "slug": "atk-2",
+                "summary": "Polish the doc",
+                "feedback": "needs a sharper intro",
+                "ts": "x",
+            },
+        ]
+        line = fmt.render_changelog(entries, self._parse).splitlines()[0]
+        self.assertIn("open→in-progress", line)
+        self.assertIn("1 edit", line)
+        self.assertIn("feedback: needs a sharper intro", line)
+
+    def test_render_changelog_lists_other_actions(self):
+        # block/unblock/gate-set/gate-pass carry neither a status transition
+        # nor field edits — they must survive coalescing as an action list.
+        entries = [
+            {"cmd": "block", "slug": "atk-3", "summary": "Fix the bug", "ts": "x"},
+            {"cmd": "unblock", "slug": "atk-3", "summary": "Fix the bug", "ts": "x"},
+            {"cmd": "gate-set", "slug": "atk-3", "summary": "Fix the bug", "ts": "x"},
+            {"cmd": "gate-pass", "slug": "atk-3", "summary": "Fix the bug", "ts": "x"},
+        ]
+        line = fmt.render_changelog(entries, self._parse).splitlines()[0]
+        self.assertIn("block, gate-pass, gate-set, unblock", line)
+        self.assertNotIn("→", line)
+
+    def test_render_changelog_board_wide_event_keeps_count(self):
+        # prune/backfill-gate have no item identity but carry a count.
+        entries = [{"cmd": "prune", "count": 10, "ts": "x"}]
+        self.assertEqual(
+            fmt.render_changelog(entries, self._parse), "[12:30] prune (10 item(s))"
+        )
+
+    def test_render_changelog_caps_at_max_lines_with_marker(self):
+        entries = [
+            {
+                "cmd": "update",
+                "slug": f"item-{i}",
+                "summary": f"Summary {i}",
+                "fields": ["context"],
+                "ts": "x",
+            }
+            for i in range(100)
+        ]
+        text = fmt.render_changelog(entries, self._parse, max_lines=60)
+        lines = text.splitlines()
+        self.assertEqual(len(lines), 61)
+        self.assertEqual(lines[0], "(+40 earlier items)")
+        # Most recent 60 retained; oldest 40 dropped. The label is the
+        # summary (slug is not echoed when a summary is present).
+        self.assertIn("Summary 99", text)
+        self.assertIn("Summary 40", text)
+        self.assertNotIn("Summary 39", text)
+        self.assertNotIn("Summary 0", text)
 
     def test_render_changelog_missing_timestamp_renders_placeholder(self):
         entries = [{"cmd": "start", "slug": "atk-1"}]
