@@ -288,7 +288,7 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `run <slug|N> [--if-rev <N>] [--timeout SECONDS] [--cwd PATH] -- <command...>` — execute a command and record it as run evidence for an item
     - `--if-rev` — required when <id> is numeric; get the current value from render/list/show immediately before this call
     - `--timeout` — kill the command after this many seconds (default: 1800) (default: 1800.0)
-    - `--cwd` — working directory for command execution (defaults to repo root of item's related_files, or session cwd)
+    - `--cwd` — working directory for the command (default: the item's own worktree; else a related repo's main checkout only when it is on the item's merge target with the work merged; else refuse. With no related repo, the session cwd)
     - `command` — command to execute and record (everything after --; no shell) (nargs: *)
   - `runs <slug|N>` — list recorded run evidence for an item
   - `machine-id [--repair]` — print this machine's id; --repair fixes a missing or invalid id file
@@ -352,6 +352,7 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `append_run_record(record: RunRecord) -> bool` — Append one run-evidence row to :func:`dev_status_storage.runs_file` (best-effort).
   - `read_journal_entries(within_hours: float | None = None, *, verbose: bool = False) -> list[dict[str, object]]` — Read journal entries, optionally filtered to the last ``within_hours``.
   - `confirm_resolution(cmd: str, arg: str | int, item: BacklogItem | PendingItem, summary_key: str = 'summary', *, quiet: bool = False) -> None` — Echo what a mutating command resolved to, so misresolution is visible.
+  - `format_run_rows(runs: list[RunRecord]) -> list[str]` — One ``runs`` listing line per record, naming the commit and checkout.
   - `build_parser() -> argparse.ArgumentParser` — Build the full argument parser for every subcommand.
 - Subcommand handlers: `cmd_internal_regen`, `cmd_recap`, `cmd_worktree`, `cmd_render`, `cmd_ready`, `cmd_list`, `cmd_show`, `cmd_validate`, `cmd_add`, `cmd_update`, `cmd_start`, `cmd_done`, `cmd_reopen`, `cmd_review`, `cmd_approve`, `cmd_reject`, `cmd_gate_set`, `cmd_gate_pass`, `cmd_run`, `cmd_machine_id`, `cmd_runs`, `cmd_backfill_gate`, `cmd_rename`, `cmd_block`, `cmd_unblock`, `cmd_out_of_scope_add`, `cmd_out_of_scope_link`, `cmd_out_of_scope_unlink`, `cmd_out_of_scope_remove`, `cmd_out_of_scope_list`, `cmd_out_of_scope_show`, `cmd_pending_add`, `cmd_pending_update`, `cmd_pending_list`, `cmd_remove`, `cmd_prune`
 - Tested by: `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_dev_status_storage.py`, `test/test_dev_status_validate.py`, `test/test_path_for_per_use.py`, `test/test_sweep_dead_claims.py`, `test/test_to_tickets_runner.py`
@@ -437,7 +438,7 @@ Typed mutation service and transaction manager for dev_status (Candidate 12).
   - `add_pending_item(request: PendingAddRequest, *, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Track a new waiting-on-someone-else item.
   - `update_pending_item(slug_or_id: str, request: PendingUpdateRequest, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Merge an update request into a pending item.
   - `mutation_transaction(*, items_path: Path | None = None, verbose: bool = False) -> Iterator[BacklogTransaction]` — Hold backlog_lock once for batch operations; yields BacklogTransaction.
-- Tested by: `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_harness_spec.py`, `test/test_machine_id.py`, `test/test_migrate_path_transform.py`, `test/test_migrate_toolkit_home_moves.py`, `test/test_migration_lock_adoption.py`
+- Tested by: `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_dev_status_run_cwd.py`, `test/test_harness_spec.py`, `test/test_machine_id.py`, `test/test_migrate_path_transform.py`, `test/test_migrate_toolkit_home_moves.py`, `test/test_migration_lock_adoption.py`
 
 ### `agent-scripts/dev_status_read.py`
 
@@ -1576,6 +1577,7 @@ Per-worktree backlog provenance: one explicit marker, shared predicates.
 - Public classes:
   - `class WorktreeProvenance` — Git facts that answer "which item owns this directory's worktree?".
   - `class WorktreeInspection` — Facts about one target attributable to a backlog item.
+  - `class RunCheckout` — Where a run for an item executes: ``path``, or why it must not run.
 - Public functions:
   - `marker_path(git_dir: Path) -> Path` — Where a worktree's provenance marker lives, given its git dir.
   - `read_marker(git_dir: Path | None) -> str | None` — The slug in a git dir's marker, or None when absent/unreadable.
@@ -1585,7 +1587,9 @@ Per-worktree backlog provenance: one explicit marker, shared predicates.
   - `worktree_points_at_item(*, marker_slug: str | None, is_linked_worktree: bool, branch: str, item_id: str, in_progress_ids: set[str]) -> bool` — Whether a write in this worktree points at backlog ``item_id``.
   - `branch_name_problem(name: object) -> str | None` — Why ``name`` is not a usable bare local branch name, or None when it is.
   - `inspect_item_worktrees(*, related_files: object, slug: str, cwd: str | Path | None = None, target_branch: str | None = None) -> list[WorktreeInspection]` — Read-only committed-work facts for every target attributable to ``slug``: linked worktrees marked for the item (marker wins over the branch heuristic), the caller's current checkout when its branch equals the slug, and — only when no attributed worktree exists — each discovered repository's surviving slug branch.
-- Tested by: `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_guard_rails_claim.py`, `test/test_worktree.py`, `test/test_worktree_provenance.py`
+  - `resolve_run_checkout(*, related_files: object, slug: str, in_progress_ids: set[str], target_branch: str | None, cwd: Path | None = None) -> RunCheckout` — The checkout a run for ``slug`` should execute in, or why none may.
+  - `read_head(directory: Path) -> tuple[str | None, str | None]` — (HEAD sha, problem) for ``directory``; (None, None) outside any repo.
+- Tested by: `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_dev_status_run_cwd.py`, `test/test_guard_rails_claim.py`, `test/test_worktree.py`, `test/test_worktree_provenance.py`
 
 ---
 

@@ -5626,6 +5626,21 @@ class RunEvidenceTestCase(BacklogFixture):
     RUN_ID_B = "bbbb2222bbbb2222bbbb2222bbbb2222"
     RUN_ID_MISSING = "ffff9999ffff9999ffff9999ffff9999"
 
+    HEAD_SHA = "c0ffee" * 6 + "abcd"
+
+    def setUp(self):
+        super().setUp()
+        # These tests mock subprocess.run wholesale to observe the command;
+        # checkout resolution and the HEAD probe are git calls of their own,
+        # covered against real repositories in test_dev_status_run_cwd.py.
+        for name, value in (
+            ("resolve_run_checkout", worktree_provenance.RunCheckout()),
+            ("read_head", (self.HEAD_SHA, None)),
+        ):
+            stubbed = patch.object(worktree_provenance, name, return_value=value)
+            stubbed.start()
+            self.addCleanup(stubbed.stop)
+
     # ── fixtures ─────────────────────────────────────────────────────────
 
     def _gate_item(self, criteria=("criterion one", "criterion two")):
@@ -5900,6 +5915,7 @@ class RunEvidenceTestCase(BacklogFixture):
         self.assertIs(row["timed_out"], False)
         self.assertIsInstance(row["duration_s"], float)
         self.assertEqual(row["cwd"], os.getcwd())
+        self.assertEqual(row["head"], self.HEAD_SHA)
         datetime.fromisoformat(row["started_at"])
         self.assertRegex(row["run_id"], r"^[0-9a-f]{32}$")
 
@@ -5948,19 +5964,20 @@ class RunEvidenceTestCase(BacklogFixture):
             related_files=[{"path": str(file_path), "note": "entry point"}],
         )
         self.write_items([item])
-
-        def fake_subprocess_run(cmd, *args, **kwargs):
-            if isinstance(cmd, list) and cmd[:2] == ["git", "-C"]:
-                mock_res = MagicMock()
-                mock_res.returncode = 0
-                mock_res.stdout = f"{repo_root.resolve()}\n"
-                return mock_res
-            return MagicMock(returncode=0)
-
-        with patch("subprocess.run", side_effect=fake_subprocess_run) as m:
+        resolved = worktree_provenance.RunCheckout(path=repo_root.resolve())
+        with (
+            patch.object(
+                worktree_provenance, "resolve_run_checkout", return_value=resolved
+            ) as resolver,
+            patch("subprocess.run", MagicMock(return_value=MagicMock(returncode=0))),
+        ):
             dev_status.cmd_run(
                 _args(id="gt-item", command=["pytest", "-q"], timeout=60)
             )
+        kwargs = resolver.call_args.kwargs
+        self.assertEqual(kwargs["slug"], "gt-item")
+        self.assertEqual(kwargs["related_files"], item["related_files"])
+        self.assertIn("gt-item", kwargs["in_progress_ids"])
         row = self._read_runs()[0]
         self.assertEqual(row["cwd"], str(repo_root.resolve()))
 

@@ -55,8 +55,10 @@ class RunRecord(TypedDict):
     Written by the ``run`` subcommand, which executes the command itself
     (never accepting a self-reported result) and appends one JSON line per
     run: ``{run_id, item, command, exit_code, timed_out, started_at,
-    duration_s, cwd}``. ``exit_code`` is ``None`` exactly when
-    ``timed_out`` is true. ``gate-pass`` cites rows from this file as
+    duration_s, cwd, head}``. ``exit_code`` is ``None`` exactly when
+    ``timed_out`` is true. ``head`` is the commit checked out in ``cwd``
+    when the run started (None outside any git repository); rows written
+    before it existed omit it. ``gate-pass`` cites rows from this file as
     per-criterion evidence; ``item`` holds the owning backlog slug.
     """
 
@@ -68,6 +70,7 @@ class RunRecord(TypedDict):
     started_at: str
     duration_s: float
     cwd: str
+    head: NotRequired[str | None]
 
 
 class BacklogItem(TypedDict):
