@@ -18,6 +18,7 @@ output shows the compiler/linter diagnostics, not just an exit code.
 """
 
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -145,6 +146,40 @@ def test_pi_package_scripts_never_mention_bun() -> None:
     scripts = json.loads((PI_DIR / "package.json").read_text())["scripts"]
     offenders = {name: value for name, value in scripts.items() if _mentions_bun(value)}
     assert not offenders, f"pi/ scripts still mention bun: {offenders}"
+
+
+# Node's `--test-timeout` also bounds each *file-level* test node, not just
+# individual subtests. Under `--test-concurrency=1` a large, fully
+# sequential file (notably test/swarm-tool.test.ts: ~340 stubbed subtests)
+# accumulates its subtest wall-time inside that one node, so a 5000ms cap
+# trips intermittently on a loaded machine. The full suite once failed a
+# single test (1 failed / 3699 passed) on a run where other workers were
+# executing suites concurrently; three immediate reruns were green. Keep a
+# floor with comfortable headroom so a normally-quiet suite can't flake
+# during a per-machine cutover run.
+MIN_TEST_TIMEOUT_MS = 15_000
+
+
+def test_pi_test_timeout_survives_machine_load() -> None:
+    """The npm `test` script's --test-timeout must stay above the load floor.
+
+    Regression guard: the previous 5000ms value made the largest sequential
+    pi test file time out at the file level under CPU contention, which
+    surfaced as an unexplained intermittent red only when the machine was
+    under load (other suites running concurrently). Assert on the configured
+    value directly so re-tightening it (or a future `npm pkg set`) re-breaks
+    the build loudly instead of silently reintroducing the flake.
+    """
+    test_script = json.loads((PI_DIR / "package.json").read_text())["scripts"]["test"]
+    match = re.search(r"--test-timeout=(\d+)", test_script)
+    assert match is not None, f"pi/ `test` script is missing --test-timeout: {test_script}"
+    configured = int(match.group(1))
+    assert configured >= MIN_TEST_TIMEOUT_MS, (
+        f"pi/ `test` --test-timeout={configured}ms is at/under the load floor "
+        f"({MIN_TEST_TIMEOUT_MS}ms); a large sequential file can time out at "
+        f"the file level under CPU contention (the load-induced intermittent"
+        f" failure this guard prevents)"
+    )
 
 
 def _mentions_bun(value: str) -> bool:
