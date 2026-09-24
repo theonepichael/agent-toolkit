@@ -235,9 +235,27 @@ usage: ./install.sh --harness=<claude,copilot,opencode,agy,pi,codex>[,...] [--pr
               ModuleNotFoundError — naming the importers and the absolute-path
               fix command; link_drift_check prints these messages on every
               run, even under --quiet.
+              The audit also reports the toolkit-home migration's residue:
+              anything toolkit-owned still sitting at a legacy location
+              (a domain's legacy path, a migration snapshot directory, a
+              carried entry re-created at legacy, a legacy toolkit directory
+              holding a toolkit-owned link or lingering empty after
+              finalize) fails the audit; entries that show no toolkit
+              attribution are listed as "classify by hand" instead, and the
+              layout pointer stays exempt by design. While a migration is
+              unfinalized its own residue is exempt, and an unfinalized
+              restored journal is reported as cleanup still owed. An
+              unreadable journal fails the audit closed.
+  --during-migration
+              report the residue findings without enforcing them: migration
+              validation invokes --check-links with this flag, so a later
+              run's validation does not restore because an earlier
+              migration's cleanup debt is still on disk. Only valid
+              alongside --check-links.
               No other flag may be combined with --check-links.
-              Exits 0 when nothing is wrong, 1 when any bucket is
-              non-empty, 2 if links.toml itself cannot be read.
+              Exits 0 when nothing is wrong, 1 when any bucket or residue
+              finding is non-empty (except under --during-migration, which
+              reports and exits 0), 2 if links.toml itself cannot be read.
   --migrate-toolkit-home
               move toolkit data to the toolkit home. Runs every preflight
               check (installed runtime enforces the migration lock, legacy
@@ -520,6 +538,7 @@ class Options:
     depart: bool = False
     yes: bool = False
     check_links: bool = False
+    during_migration: bool = False
     report_uninstalled: bool = True
     force_uninstalled: bool = False
     quiet: bool = False
@@ -695,6 +714,9 @@ def parse_args(argv: Sequence[str]) -> Options:
     parser.add_argument("--depart", action="store_true")
     parser.add_argument("--yes", action="store_true")
     parser.add_argument("--check-links", dest="check_links", action="store_true")
+    parser.add_argument(
+        "--during-migration", dest="during_migration", action="store_true"
+    )
     parser.add_argument(
         "--report-uninstalled", dest="report_uninstalled", action="store_true"
     )
@@ -902,6 +924,9 @@ def parse_args(argv: Sequence[str]) -> Options:
     if args.wipe and not args.rollback:
         _fail("--wipe can only be used with --rollback")
 
+    if args.during_migration and not args.check_links:
+        _fail("--during-migration can only be used with --check-links")
+
     if args.report_uninstalled and not args.check_links:
         _fail("--report-uninstalled can only be used with --check-links")
 
@@ -945,6 +970,7 @@ def parse_args(argv: Sequence[str]) -> Options:
         depart=args.depart,
         yes=args.yes,
         check_links=args.check_links,
+        during_migration=args.during_migration,
         report_uninstalled=not args.no_report_uninstalled,
         force_uninstalled=args.report_uninstalled,
         quiet=args.quiet,
@@ -2637,6 +2663,28 @@ def do_check_links(ctx: Context) -> int:
             )
         )
 
+    # The residue findings are computed together with the link findings, and
+    # BEFORE any early return: do_check_links returns 0 as soon as link
+    # findings are empty, so an audit appended after that return would be
+    # skipped exactly when links are clean, the case where residue matters
+    # most. The success message reflects both finding sets.
+    residue = None
+    try:
+        residue = migrate_toolkit_home.residue_findings(
+            ctx.home, ctx.manifest.path.parent
+        )
+    except (migrate_toolkit_home.MigrationError, OSError) as exc:
+        if not ctx.opts.quiet:
+            print(
+                PALETTE.warn(
+                    f"  warning: the toolkit-home residue audit could not read "
+                    f"a migration journal: {exc} — failing closed."
+                )
+            )
+        if ctx.opts.during_migration:
+            return 0
+        return 1
+
     total = sum(len(lines) for lines in findings.values())
     if not total:
         audited = len(specs) - sum(foreign.values())
@@ -2654,7 +2702,9 @@ def do_check_links(ctx: Context) -> int:
                     "nothing foreign in any of them."
                 )
             )
-        return 0
+        if residue is None:
+            return 0
+        return _print_residue(residue, ctx.opts.during_migration)
 
     for bucket in CHECK_BUCKETS:
         lines = findings[bucket]
@@ -2665,7 +2715,65 @@ def do_check_links(ctx: Context) -> int:
             print(PALETTE.warn(f"    {line}"))
 
     print(PALETTE.warn(f"⚠ {total} link problem(s) found — nothing was changed."))
+    if residue is not None and not ctx.opts.during_migration:
+        for line in residue["manual"]:
+            print(PALETTE.dim(f"  note: classify by hand: {line}"))
+        for line in residue["owed"]:
+            print(
+                PALETTE.warn(
+                    f"  warning: an earlier migration's cleanup is still owed: {line}"
+                )
+            )
     return 1
+
+
+def _print_residue(residue: dict[str, list[str]], during: bool) -> int:
+    """Print the residue audit's findings; returns the process exit code.
+
+    In ``--during-migration`` mode the findings are REPORTED but not enforced
+    (exit 0) — a later run's validation must not restore because an earlier
+    migration's cleanup debt is still on disk — while a standalone
+    ``--check-links`` enforces exit 1 on residue or on an owed cleanup.
+    """
+    if residue["residue"] and not during:
+        print(PALETTE.header("  legacy residue:"))
+        for line in residue["residue"]:
+            print(PALETTE.warn(f"    {line}"))
+        print(
+            PALETTE.warn(
+                f"⚠ {len(residue['residue'])} toolkit-owned residue "
+                "finding(s) at legacy locations — finalize or clean by hand."
+            )
+        )
+        return 1
+    if during:
+        print(
+            PALETTE.dim(
+                "  residue audit: toolkit-owned residue at legacy locations: "
+                f"{len(residue['residue'])} (reported, not enforced; the migration's "
+                "snapshot stays until finalize)"
+            )
+        )
+        for line in residue["residue"]:
+            print(PALETTE.dim(f"    {line}"))
+        for line in residue["owed"]:
+            print(
+                PALETTE.dim(
+                    f"  note: an earlier migration's cleanup is still owed: {line}"
+                )
+            )
+        return 0
+    for line in residue["manual"]:
+        print(PALETTE.dim(f"  note: classify by hand: {line}"))
+    if residue["owed"]:
+        for line in residue["owed"]:
+            print(
+                PALETTE.warn(
+                    f"  warning: an earlier migration's cleanup is still owed: {line}"
+                )
+            )
+        return 1
+    return 0
 
 
 # ── entry point ───────────────────────────────────────────────────────────────

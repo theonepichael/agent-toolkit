@@ -115,10 +115,15 @@ rerun.
 ./install.sh --migrate-toolkit-home --harness=claude --skip-reconciliation
 # Undo one committed migration (refuses if anything was written since):
 ./install.sh --rollback-toolkit-home-migration=<id>
-# After a commit, delete the snapshot, staging and retired legacy links.
-# After a rollback or failed-validation restore, delete the retained
-# transformed copy if it still matches the journal (telemetry is reported):
+# After a commit, delete the snapshot, staging and retired legacy links
+# (an emptied legacy ~/.claude/{scripts,hooks,icons} goes too; the rollout
+# carries unclassified data such as plans/ and draft-issues/ as journalled
+# carry steps, undoable like any domain):
 ./install.sh --finalize-toolkit-home-migration=<id>
+# The rollout gate: the residue audit must pass on both machines — it fails
+# on anything toolkit-owned left at a legacy location, other than the
+# layout pointer:
+./install.sh --check-links
 ```
 
 ### Shell Integration
