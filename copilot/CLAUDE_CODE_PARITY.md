@@ -350,11 +350,43 @@ This demonstrates parallel in-session agents in the tested mode, not
 worktree isolation; it does not rule out a different behavior for other fleet
 prompts or modes.
 
-`--remote`/`--connect` were not exercised end-to-end. Remote control exports a
-session for GitHub web/mobile or another CLI; this research did not authorize
-transmitting the scratch session, so prompt acceptance, target-turn start, and
-target-turn completion remain unverified. A successful local `--connect` flag
-parse would not establish receipt.
+### Live `--remote`/`--connect` receipt probe (2026-09-24)
+
+The authorized probe used CLI 1.0.88 in a throwaway git repository containing
+only an empty `README.md`, with a temporary `COPILOT_HOME`, disabled custom
+instructions/built-in MCPs/auto-update, and no real session identifier. A
+target CLI was started with `--remote` in a PTY. A second CLI connected with
+`--connect --allow-all-tools --output-format json` and submitted the unique
+prompt `Respond with exactly CONNECTED_RECEIPT_PROBE`.
+
+The connecting CLI exited 0 and emitted a machine-readable JSONL event stream.
+The observed sequence was:
+
+1. `user.message` with `delivery: "idle"` and a fresh `messageId`;
+2. `assistant.turn_start` for `turnId: "0"` and the same `interactionId`;
+3. `assistant.message_start` and streamed `assistant.message_delta` events;
+4. `assistant.message` containing the exact synthetic marker;
+5. `assistant.turn_end` for `turnId: "0"`;
+6. `assistant.idle`, followed by a successful `result` with `exitCode: 0`.
+
+This is direct evidence that, for this idle-session run, the driving CLI can
+observe prompt submission, target-turn start, the target response, and a
+terminal turn event. It is stronger than a successful flag parse because the
+target returned the unique marker, and the event stream carried correlated
+message/interaction/turn identifiers. It remains an observation of CLI 1.0.88,
+not a documented delivery guarantee: busy-session queuing, interruption,
+disconnect/reconnect recovery, and remote-session revocation were not tested.
+The JSONL output is usable by an automation layer, but event semantics beyond
+this observed sequence are not established.
+
+The result does **not** justify replacing herdr's worker orchestration. Herdr
+still owns worker identity, worktree selection and isolation, backlog queue
+state, scheduling/concurrency policy, lifecycle and crash reporting,
+resumability/cleanup, and support for Pi and other non-Copilot workers.
+`--connect` is a candidate Copilot-specific prompt transport and receipt
+source for a separate implementation experiment; until busy and failure
+semantics are characterized, the existing herdr submission and acknowledgement
+path remains the supported worker protocol.
 
 The initial repository baseline run failed
 `test_bare_repo_is_detected_and_allowed` and
