@@ -410,6 +410,38 @@ class TestInspectItemWorktrees:
         assert out[0].problem is None
         assert out[0].head_ancestor_of_default is True
 
+    def test_submodule_path_is_skipped_under_explicit_bare_repo_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+        monkeypatch.setenv("GIT_CONFIG_KEY_0", "safe.bareRepository")
+        monkeypatch.setenv("GIT_CONFIG_VALUE_0", "explicit")
+        repo, wt = self._merged_wt(tmp_path, "slug-q2")
+        sub = _init_repo(tmp_path / "proj-q2-sub")
+        _git(
+            "-c",
+            "protocol.file.allow=always",
+            "-c",
+            "safe.bareRepository=all",
+            "submodule",
+            "add",
+            "-q",
+            str(sub),
+            "sub",
+            cwd=wt,
+        )
+        _git("commit", "-qm", "add submodule", cwd=wt)
+        _git("merge", "-q", "--no-ff", "slug-q2", cwd=repo)
+        out = wp.inspect_item_worktrees(
+            related_files=[str(repo / "tracked.txt"), str(wt / "sub" / "tracked.txt")],
+            slug="slug-q2",
+            cwd=tmp_path,
+        )
+        assert len(out) == 1
+        assert out[0].problem is None
+        assert out[0].head_ancestor_of_default is True
+
+
     def test_multiple_repos_all_inspected(self, tmp_path) -> None:
         repo1, wt1 = self._unmerged_wt(tmp_path, "slug-r")
         repo2 = _init_repo(tmp_path / "proj-r2")

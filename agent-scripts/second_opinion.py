@@ -23,6 +23,13 @@ on the result/exception instead of printing, and raises typed errors
 a BackendError subclass — when every candidate fails). cmd_review is a thin
 adapter over it.
 
+Subcommands
+  detect   print each backend's presence and isolation-contract eligibility as JSON
+  review   one adversarial critique of a plan file or inline text
+  probe    run one trivial text-only health request per pool model and print a
+           per-model availability report as JSON (exit 1 when any probed model
+           is unavailable; tests must mock the runners, never probe for real)
+
 Flags
   --quiet, -q      suppress non-essential output
   --verbose, -v    emit extra diagnostic messages to stderr
@@ -98,7 +105,31 @@ Env vars
                                      the hard ceiling on every timeout,
                                      default or overridden.
 
-Files read: <plan-file-or-text> (if a path), --focus-file. Nothing written.
+Pool skip-to-next-model: a pool attempt that fails with a tool-call-instead-
+of-text reply (BackendToolUseError — a real tool_use event or leaked
+tool-call markup), or, for the opencode backend, an error naming the model
+access as disabled ("Model access is disabled"), skips to the next pool
+model instead of failing the round. A skipped pair is quarantined for the
+process (:data:`_UNFIT_MODELS`), the skip is recorded in backend_calls.jsonl
+as an ``outcome="skipped"`` record, and the surviving attempt's record names
+``fallback_reason="pool_skip"``. A single-model override stays strict: the
+caller named the model, so there is no silent replacement.
+
+Files read: <plan-file-or-text> (if a path), --focus-file.
+Files written: <data-dir>/second-opinion-runs/<sha256>.json — a per-run
+  critique counter used to enforce the round cap (see Round-cap enforcement
+  below).
+
+Round-cap enforcement (added 2026-09-24, after a worker ignored the documented cap and ran 31 critique rounds on one spec): ``review`` refuses
+  once a run has already had ``MAX_ROUNDS`` critiques. The counter is keyed by
+  the caller-supplied ``--run-id`` (the second-opinion skill passes one per
+  loop) or, when that is omitted, by the resolved absolute plan-file path — so
+  a loop on the same plan file is caught even without ``--run-id``. Inline-text
+  reviews with no ``--run-id`` have nothing stable to key on and stay
+  unenforced. The ``--allow-extra-round`` flag lifts the cap; it is documented
+  for humans (this docstring, INTERFACES.md, the generated skill text) but
+  deliberately never named in the refusal message, so a runaway loop cannot
+  read the bypass out of it.
 
 Absent-config notice: a review whose dispatched backend has no model pool
 and no single-model override configured (both env vars unset) prints a
@@ -114,11 +145,13 @@ Requires Python 3.12+.
 """
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
 import signal
 import sys
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -131,6 +164,7 @@ import llm_backends
 import migration_lock
 from llm_backends import (
     BackendError,
+    _backend_failure,
     _finalize_text_response,
     _opencode_json_events,
     _opencode_text_chunks,
@@ -234,6 +268,62 @@ _UNSET = object()
 """Sentinel for :func:`backend_label`'s ``model`` parameter: "re-resolve"
 versus an explicit captured model (``None`` means "resolved to nothing").
 """
+
+_OPENCODE_MODEL_ACCESS_DISABLED_MARKER = "Model access is disabled"
+"""Error-text fragment the opencode-go gateway emits for a pooled model id
+its access policy refuses outright (observed 2026-09-23 on
+``opencode-go/deepseek-v4-flash`` during the atk-r1-generated-paths spec
+critique). A pool entry that fails this way can never succeed within the
+process, so it is a skip-to-next-model condition, not a round-failing one —
+see :func:`_pool_skip_condition`. opencode only: other backends' error
+texts are not matched against this fragment (pi shares the gateway but its
+error surface is unverified — extend deliberately, with evidence).
+"""
+
+
+def _pool_skip_condition(backend: str, exc: BaseException) -> bool:
+    """True when ``exc`` should skip to the next pool model, not fail the round.
+
+    The two conditions, from the 2026-09-23 atk-r1-generated-paths spec
+    critique (2 of 3 pool entries dead): a tool-call-instead-of-text reply —
+    :class:`llm_backends.BackendToolUseError` covers both a real ``tool_use``
+    event (:func:`llm_backends._raise_on_tool_use`) and tool-call markup
+    leaking through as text (:func:`llm_backends._raise_on_emitted_tool_call`)
+    — and, opencode only, the gateway's access-disabled rejection
+    (:data:`_OPENCODE_MODEL_ACCESS_DISABLED_MARKER`). A generic
+    :class:`llm_backends.BackendError` that merely contains the fragment in
+    its text counts: the fragment's presence is the classification, whether
+    it arrived via stderr or an error event.
+
+    Only meaningful for pool-derived attempts (``model_index is not None`` in
+    ``review_plan``'s loop); a single-model override ignores it by contract.
+    """
+    if isinstance(exc, llm_backends.BackendToolUseError):
+        return True
+    return backend == "opencode" and _OPENCODE_MODEL_ACCESS_DISABLED_MARKER in str(exc)
+
+
+def _log_pool_skip(
+    backend: str, model: str | None, exc: BaseException, prompt_bytes: int
+) -> None:
+    """Record one skip-to-next-model decision in backend-call telemetry.
+
+    Best-effort, like :func:`llm_backends._log_backend_call` (which never
+    raises): the failed attempt's own ``error`` record already exists — logged
+    by the runner's ``_track_backend_call`` — so this writes the *decision*
+    record (``outcome="skipped"``) naming the pair, then parks
+    ``fallback_reason="pool_skip"`` so the surviving attempt's record shows
+    why it follows a skip. The parked value is reset when a candidate's
+    attempts end without another call, so it can never leak into an
+    unrelated later chain.
+    """
+    try:
+        llm_backends._log_backend_call(
+            backend, model, "skipped", 0.0, prompt_bytes, error_snippet=str(exc)
+        )
+        llm_backends._pending_fallback_reason = "pool_skip"
+    except Exception as exc_log:  # noqa: BLE001 — telemetry must never raise
+        print(f"[second_opinion] skip logging failed: {exc_log}", file=sys.stderr)
 
 
 class AllBackendsFailedError(BackendError):
@@ -555,15 +645,57 @@ def _backend_list_arg(value: str) -> list[str]:
 
 _UNFIT_MODELS: set[tuple[str, str]] = set()
 """(backend, model) pairs whose adversarial run answered with a tool-use
-transcript instead of a critique.
+transcript instead of a critique, or whose model access is disabled — the
+two skip-to-next-model conditions (:func:`_pool_skip_condition`).
 
 Process-lifetime: a fresh process starts clean, and nothing here is persisted
 to disk — a later CLI invocation (the second-opinion skill's separate calls)
 can select a model quarantined by an earlier one, deliberately. A quarantined
 pair is skipped by pool rotation within the process (see
 :func:`_attempts_for`), so a model that answers the critique prompt by driving
-an agent's tools is not re-selected request after request.
+an agent's tools — or one the gateway refuses outright — is not re-selected
+request after request.
 """
+
+
+PROBE_PROMPT = """\
+Health probe. Reply with exactly the single word: ok
+Plain prose only — never emit tool-call markup (XML or JSON tool blocks).
+"""
+"""The trivial probe request: one cheap text-only round trip per pool model.
+Cheap means a one-line prompt with no codebase exploration — the point is
+per-model availability (a dead gateway route answers with the access-disabled
+error; a tool-hungry model answers with markup), not critique quality. Probed
+through the same BACKEND_RUNNERS the review path uses, in text-only mode, so
+stall detection, timeout floors, and telemetry behave identically.
+"""
+
+
+def _probe_attempts(
+    backend: str, env: Mapping[str, str] | None = None
+) -> tuple[str, str, list[tuple[int | None, str | None]]]:
+    """The ``(config, pool_var, attempts)`` probe list for ``backend``.
+
+    Unlike the review path's rotation, probe never skips or quarantines: it
+    probes every entry independently, because its job is reporting per-model
+    availability, not getting one critique through. A configured pool probes
+    all of its entries (``config="pool"``, indexes attached); a single-model
+    override probes that one model (``config="single"``); neither probes the
+    backend's own default (``config="default"``, model ``None``). A pool
+    takes precedence over a single override — the pool is what needs health
+    checking, and its entries are what rotation would select.
+
+    Pure: reads ``env`` when given (a plain dict in tests) and ``os.environ``
+    otherwise.
+    """
+    pool_var, single_var = _POOL_ENV_VARS[backend]
+    pool = _parse_pool(pool_var, env)
+    if pool:
+        return "pool", pool_var, [(i, m) for i, m in enumerate(pool)]
+    single = _env_stripped(single_var, env)
+    if single:
+        return "single", pool_var, [(None, single)]
+    return "default", pool_var, [(None, None)]
 
 
 def _resolved_model(backend: str, model_index: int | None) -> str | None:
@@ -818,6 +950,194 @@ def resolve_plan_text(arg: str) -> str:
     return arg
 
 
+# --- round-cap enforcement ------------------------------------------------
+#
+# The second-opinion skill documents a 3-round cap, but it lived only in the
+# skill's prose — a worker that ignored the text looped 31 times on one spec
+# (2026-09-24). The cap is now enforced here: every
+# `review` increments a per-run counter and the (MAX_ROUNDS+1)-th call is
+# refused. The counter key is the caller-supplied `--run-id` (the skill passes
+# one per loop) or, when that is absent, the resolved absolute plan-file path —
+# so a loop on the same plan file is caught even when `--run-id` is omitted.
+# Inline-text reviews with no run-id have nothing stable to key on and stay
+# unenforced.
+
+MAX_ROUNDS = 3
+_RUNS_DIR_NAME = "second-opinion-runs"
+_RUN_TTL_SECONDS = 7 * 24 * 3600  # drop run counters older than a week
+_PATH_KEY_TTL_SECONDS = (
+    6 * 3600
+)  # a plan-path key (--run-id omitted) is a fresh run after this long idle
+
+_ROUND_CAP_MESSAGE = (
+    f"second-opinion round cap ({MAX_ROUNDS}) reached for this review run. "
+    "The cap is enforced by second_opinion.py, not just the skill text — stop "
+    "and finalize: move the round-by-round notes out of the plan into a "
+    "'<plan>-critique-notes.md' companion, record any unresolved points, and "
+    "end the loop here. Do not call review again for this plan."
+)
+
+
+def _runs_dir() -> Path:
+    """The per-run critique-counter directory, under the shared data dir.
+
+    Created lock-free (like :func:`ensure_data_dir`): a critique run must not be
+    refused while a migration holds the lock, so this never takes
+    ``migration_lock`` — it only ever creates an already-owned directory.
+    """
+    return _data_dir() / _RUNS_DIR_NAME
+
+
+def _ensure_runs_dir() -> Path:
+    """Create the runs directory if missing; return it."""
+    runs_dir = _runs_dir()
+    if not runs_dir.is_dir():
+        runs_dir.mkdir(parents=True, exist_ok=True)
+    return runs_dir
+
+
+def _compute_round_key(args: argparse.Namespace) -> str | None:
+    """Return the counter key for one `review` call, or ``None`` if unkeyed.
+
+    ``--run-id`` wins (the skill passes a stable id per loop). Without it, the
+    resolved absolute plan-file path is used — a loop on the same plan file is
+    caught even when ``--run-id`` is omitted. Inline-text reviews (the arg is
+    not an existing file) with no ``--run-id`` have nothing stable to key on
+    and return ``None`` (no enforcement for that case).
+    """
+    run_id = getattr(args, "run_id", None)
+    if run_id:
+        return "run:" + run_id
+    plan = getattr(args, "plan", None)
+    if plan:
+        try:
+            path = Path(plan).expanduser()
+            is_file = path.is_file()
+        except OSError:
+            path = None
+            is_file = False
+        if path is not None and is_file:
+            return "plan:" + str(path.resolve())
+    return None
+
+
+def round_count_for(state: dict[str, object]) -> int:
+    """The number of reviews already recorded for a run's state dict."""
+    return int(state.get("count", 0))
+
+
+def would_exceed_cap(count: int) -> bool:
+    """True when ``count`` already reaches the cap (the call must be refused).
+
+    Compared ``>= MAX_ROUNDS`` *before* incrementing, so MAX_ROUNDS successful
+    reviews are allowed and the (MAX_ROUNDS+1)-th is refused.
+    """
+    return count >= MAX_ROUNDS
+
+
+def record_review(state: dict[str, object]) -> dict[str, object]:
+    """Return a copy of ``state`` with the review count incremented and the
+    ``updated`` timestamp refreshed. Does not touch disk."""
+    updated: dict[str, object] = dict(state)
+    updated["count"] = int(state.get("count", 0)) + 1
+    updated["updated"] = time.time()
+    return updated
+
+
+def _run_state_path(key: str) -> Path:
+    """The state file for one counter key — a hashed name so arbitrary
+    run-ids / plan paths never collide with the filesystem or leak into it."""
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
+    return _runs_dir() / f"{digest}.json"
+
+
+def _load_run_state(path: Path, key: str) -> dict[str, object]:
+    """Load one run's state from disk, or a fresh zeroed state when absent or corrupt."""
+    if path.is_file():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            data = None
+        if isinstance(data, dict):
+            data.setdefault("key", key)
+            data.setdefault("count", 0)
+            data.setdefault("updated", 0.0)
+            return data
+    return {"key": key, "count": 0, "updated": 0.0}
+
+
+def _save_run_state(path: Path, state: dict[str, object]) -> None:
+    """Atomically write one run's state (temp file + rename)."""
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(state), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _prune_stale_runs(runs_dir: Path) -> None:
+    """Best-effort: remove run-state files not updated within the TTL.
+
+    Keeps the directory bounded across many sessions. Failures are ignored —
+    pruning is optional hygiene, never a reason to fail a critique.
+    """
+    try:
+        cutoff = time.time() - _RUN_TTL_SECONDS
+        for entry in runs_dir.iterdir():
+            if entry.suffix != ".json":
+                continue
+            try:
+                data = json.loads(entry.read_text(encoding="utf-8"))
+                if float(data.get("updated", 0.0)) < cutoff:
+                    entry.unlink()
+            except (json.JSONDecodeError, OSError, ValueError):
+                continue
+    except OSError:
+        return
+
+
+def _load_state_for_key(path: Path, key: str) -> dict[str, object]:
+    """Load state for ``key``, resetting a stale plan-path counter to zero.
+
+    A plan-file-path key (used only when --run-id is omitted) must not leak the
+    cap across days: a separate critique of the same plan file much later is a
+    fresh run, so its counter starts at zero once the prior one is older than
+    _PATH_KEY_TTL_SECONDS. Run-id keys keep their full 7-day lifetime and are
+    never reset here.
+    """
+    state = _load_run_state(path, key)
+    if key.startswith("plan:"):
+        last = float(state.get("updated", 0.0))
+        if last > 0.0 and (time.time() - last) > _PATH_KEY_TTL_SECONDS:
+            state["count"] = 0
+    return state
+
+
+def _refuse_if_cap_reached(key: str) -> None:
+    """Die with the cap message when ``key``'s review count has reached the cap.
+
+    The cap is checked *before* dispatching the backend, so a run that has
+    already had MAX_ROUNDS successful reviews cannot start another. The refusal
+    message never names ``--allow-extra-round`` (see :data:`_ROUND_CAP_MESSAGE`).
+    """
+    _ensure_runs_dir()
+    path = _run_state_path(key)
+    state = _load_state_for_key(path, key)
+    if would_exceed_cap(round_count_for(state)):
+        die(_ROUND_CAP_MESSAGE)
+
+
+def _record_successful_review(key: str) -> None:
+    """Increment and persist ``key``'s counter after a critique was produced.
+
+    Only successful reviews consume a round — a failed review (backend outage)
+    does not, so a flaky backend can be retried without the override.
+    """
+    path = _run_state_path(key)
+    state = record_review(_load_state_for_key(path, key))
+    state["key"] = key
+    _save_run_state(path, state)
+    _prune_stale_runs(_runs_dir())
+
+
 def _kill_active_process() -> None:
     """Kill the currently-running backend subprocess's entire process group, if any."""
     llm_backends._kill_active_process()
@@ -834,7 +1154,11 @@ def _handle_termination(signum: int, frame: FrameType | None) -> NoReturn:
 
 
 def _run_command(
-    cmd: list[str], timeout: int | None = None, *, retries: int = 0
+    cmd: list[str],
+    timeout: int | None = None,
+    *,
+    retries: int = 0,
+    stall_seconds: float | None = None,
 ) -> tuple[int, str, str]:
     """Run ``cmd`` as a subprocess, capturing its output.
 
@@ -843,14 +1167,16 @@ def _run_command(
     *this* module's global at call time, matching pre-extraction behavior for
     anything that patches it. ``timeout`` defaults to
     :data:`BACKEND_TIMEOUT_SECONDS` when not given (``None``); callers with a
-    resolved per-backend override pass their own value. ``retries`` is
-    passed straight through to :func:`llm_backends._run_command` — see its
-    docstring.
+    resolved per-backend override pass their own value. ``retries`` and
+    ``stall_seconds`` are passed straight through to
+    :func:`llm_backends._run_command` — see its docstring (the opencode runner
+    sets ``stall_seconds=90`` for output-stall detection).
     """
     return llm_backends._run_command(
         cmd,
         timeout if timeout is not None else BACKEND_TIMEOUT_SECONDS,
         retries=retries,
+        stall_seconds=stall_seconds,
     )
 
 
@@ -954,6 +1280,14 @@ def run_opencode(
     ``model_index`` picks an entry from ``SECOND_OPINION_OPENCODE_MODEL_POOL``
     if that's set; otherwise unset/empty means the live opencode config's
     model.
+
+    Retries once, but only after an *output stall* — not after a full timeout
+    (``_run_command`` is passed ``stall_seconds=90``). A silent gateway stall
+    produces no output, so the only useful action is a fast kill + retry, not
+    waiting the whole ``timeout``; the 2026-09 efficiency analysis measured
+    production-length retries (450s cap) succeeding 0 of 6. A successful
+    stall-retry is recorded in ``backend_calls.jsonl`` with
+    ``fallback_reason="stall"``.
     """
     model = _resolve_pooled_model(
         "SECOND_OPINION_OPENCODE_MODEL_POOL",
@@ -972,6 +1306,13 @@ def run_opencode(
             default=max(BACKEND_TIMEOUT_SECONDS, _OPENCODE_TIMEOUT_SECONDS),
         ),
         retries=1,
+        # Stall, don't blind-retry: stream the child's stdout and kill it the
+        # moment no byte arrives for ~90s (a silent gateway stall), then retry
+        # once. The 2026-09 efficiency analysis measured production-length
+        # retries (450s cap) succeeding 0 of 6 — waiting the full timeout only
+        # fails slower. A slow-but-progressing run is left to the overall
+        # timeout without a retry.
+        stall_seconds=90,
     )
     events = _opencode_json_events(stdout)
     allowed = {"read", "grep", "glob"} if mode == "grounded" else None
@@ -983,7 +1324,7 @@ def run_opencode(
         if e.get("type") == "error":
             message = _safe_get(e, "error", "data", "message")
             raise BackendError(f"adversary agent error: {message or e.get('error')}")
-    raise BackendError(f"no text output: {stderr.strip() or stdout.strip()[:200]}")
+    raise _backend_failure("no text output", stderr=stderr, stdout=stdout)
 
 
 def run_copilot(
@@ -1116,6 +1457,78 @@ def cmd_detect(args: argparse.Namespace) -> None:
     print(json.dumps(llm_backends.eligibility_report(), indent=2))
 
 
+def _probe_one_model(
+    backend: str, model_index: int | None
+) -> tuple[str | None, str | None]:
+    """Run one probe request for ``(backend, model_index)``; return (detail, latency).
+
+    ``detail`` is ``None`` on success, else the redacted error text of the
+    failure (or "empty output" for a silent-but-successful call). Never
+    raises: every probe outcome is a report entry, not a failure.
+    """
+    start = time.monotonic()
+    detail: str | None = None
+    try:
+        runner = BACKEND_RUNNERS[backend]
+        runner_kwargs = _filter_runner_kwargs(
+            runner, model_index=model_index, mode="text-only"
+        )
+        text = runner(PROBE_PROMPT, **runner_kwargs)
+        if not text.strip():
+            detail = "empty output (probe prompt, no usable text)"
+    except llm_backends.BackendError as exc:
+        detail = cli_common.redact_secrets(str(exc), max_length=500)
+    return detail, round(time.monotonic() - start, 2)
+
+
+def cmd_probe(args: argparse.Namespace) -> None:
+    """Handle ``probe``: per-pool-model availability report as JSON.
+
+    Probes every entry of each requested backend's model pool (or its single
+    override / default model when no pool is configured) with one trivial,
+    cheap, text-only request each, and prints ``{"probes": [...]}`` where
+    each entry carries ``backend``, ``config`` ("pool"/"single"/"default"),
+    ``pool_var``, ``index``, ``model``, ``status`` ("ok"/"unavailable"),
+    redacted ``detail`` on failure, and ``latency_seconds``. A backend not on
+    PATH yields a ``{"backend", "status": "not_installed"}`` entry and
+    probes nothing. Exit 1 when any probed model is unavailable (a
+    ``not_installed`` entry does not affect the exit code); exit 0 when every
+    probed model answered. Probe never rotates, never quarantines, and never
+    mutates configuration — it reports; the pool itself is the user's to
+    edit. Probe calls are logged to backend_calls.jsonl like any other
+    backend call.
+    """
+    if args.backend:
+        backends = list(args.backend)
+    else:
+        backends = [b for b in available_backends() if b in BACKEND_RUNNERS]
+    probes: list[dict[str, object]] = []
+    healthy = True
+    for backend in backends:
+        if not shutil.which(backend):
+            probes.append({"backend": backend, "status": "not_installed"})
+            continue
+        config, pool_var, attempts = _probe_attempts(backend)
+        for index, model in attempts:
+            detail, latency = _probe_one_model(backend, index)
+            entry: dict[str, object] = {
+                "backend": backend,
+                "config": config,
+                "pool_var": pool_var,
+                "index": index,
+                "model": model,
+                "status": "ok" if detail is None else "unavailable",
+                "detail": detail,
+                "latency_seconds": latency,
+            }
+            if detail is not None:
+                healthy = False
+            probes.append(entry)
+    print(json.dumps({"probes": probes}, indent=2))
+    if not healthy:
+        sys.exit(1)
+
+
 def review_plan(
     request: ReviewRequest, *, verbose: bool = False, quiet: bool = False
 ) -> ReviewResult:
@@ -1218,7 +1631,11 @@ def review_plan(
             failures.append(f"{backend}: {skipped}")
             continue
 
-        for model_index, model in _attempts_for(backend, request.model_index):
+        attempts = list(_attempts_for(backend, request.model_index))
+        attempt_pos = 0
+        while attempt_pos < len(attempts):
+            model_index, model = attempts[attempt_pos]
+            attempt_pos += 1
             choice_notice = _pool_choice_notice(backend, model_index)
             if verbose and choice_notice is not None:
                 notices.append(choice_notice)
@@ -1266,25 +1683,52 @@ def review_plan(
                         f"(hard ceiling {_MAX_BACKEND_TIMEOUT_SECONDS}s) to allow "
                         "longer runs"
                     )
-                if (
-                    isinstance(exc, llm_backends.BackendToolUseError)
-                    and model is not None
-                ):
-                    # A tool-use transcript quarantines the (backend, model)
-                    # pair for this process: a model that answered the critique
-                    # prompt by taking actions would be re-selected for the
-                    # very next request otherwise. Rotation continues to the
-                    # next pool entry immediately when the caller did not pin
-                    # the model; a pinned run fails the candidate outright.
-                    _UNFIT_MODELS.add((backend, model))
+                if isinstance(exc, llm_backends.BackendToolPermissionDeniedError):
+                    # A grounded run whose tool use was auto-denied produced no
+                    # output. llm_backends already stripped the backend's own
+                    # dangerous --dangerously-skip-permissions hint (it would
+                    # break this critic's read-only isolation); point the user
+                    # at the safe alternative instead of loosening permissions.
+                    hint = (
+                        " — retry with --text-only (the grounded critique's tool "
+                        "use was auto-denied; do not loosen permissions)"
+                    )
+                if _pool_skip_condition(backend, exc) and model_index is not None:
+                    # A skip-to-next-model condition (tool-call-instead-of-text
+                    # reply, or opencode's "Model access is disabled"): the
+                    # round moves to the next pool model instead of failing,
+                    # and the pair is quarantined for the process — a dead
+                    # entry would be re-selected for the very next request
+                    # otherwise. When the caller pinned the attempt with an
+                    # explicit --model-index, the attempt list holds only that
+                    # entry, so extend it with the pool entries after the pin
+                    # (unseen, unquarantined) for the round to actually skip;
+                    # an unpinned pool attempt already has its remaining
+                    # entries listed. A single-model override never lands
+                    # here: its attempt has model_index None, so the strict
+                    # contract holds — the caller named the model.
+                    if model is not None:
+                        _UNFIT_MODELS.add((backend, model))
+                    if request.model_index is not None:
+                        pool_var, _ = _POOL_ENV_VARS[backend]
+                        pool = _parse_pool(pool_var, os.environ)
+                        seen = {m for _, m in attempts}
+                        attempts.extend(
+                            (i, m)
+                            for i, m in enumerate(pool)
+                            if i > model_index
+                            and (backend, m) not in _UNFIT_MODELS
+                            and m not in seen
+                        )
                     caught.append(exc)
                     if verbose:
                         notices.append(
                             f"[second_opinion] "
                             f"{backend_label(backend, model=model)} "
-                            f"failed: {exc}"
+                            f"failed: {exc} — skipping to next pool model"
                         )
-                    failures.append(f"{backend}: {exc}")
+                    failures.append(f"{backend}: {exc} (skipped to next pool model)")
+                    _log_pool_skip(backend, model, exc, prompt_bytes)
                     continue
                 if isinstance(exc, llm_backends.BackendPayloadSizeError):
                     size_rule_outs.append(exc)
@@ -1297,12 +1741,20 @@ def review_plan(
                     )
                 failures.append(f"{backend}: {exc}{hint}")
                 break
+            # A skip parked fallback_reason for the next attempt; on success
+            # that attempt consumed it (real runners) or never got it (mocks)
+            # — reset so a parked value can never leak past this candidate.
+            llm_backends._pending_fallback_reason = None
             return ReviewResult(
                 backend_label=backend_label(backend, model=model),
                 response_text=critique,
                 bytes_saved=bytes_saved,
                 notices=tuple(notices),
             )
+        # The candidate's attempts ended (break or exhausted) with no further
+        # call this chain: drop any parked skip reason before the next
+        # candidate's first attempt inherits it as its own fallback cause.
+        llm_backends._pending_fallback_reason = None
 
     if size_rule_outs and len(size_rule_outs) == len(candidates):
         raise AllBackendsFailedError(
@@ -1364,6 +1816,14 @@ def cmd_review(args: argparse.Namespace) -> None:
         text_only=getattr(args, "text_only", False),
         target_dir=getattr(args, "dir", None),
     )
+    # Round-cap enforcement: the (MAX_ROUNDS+1)-th *successful* review for this
+    # run is refused. Keyed by --run-id or the resolved plan-file path; the
+    # --allow-extra-round flag lifts it. Failed reviews (backend outage) do not
+    # consume a round, so a flaky backend can be retried without the override.
+    key = _compute_round_key(args)
+    allow_extra = getattr(args, "allow_extra_round", False)
+    if key is not None and not allow_extra:
+        _refuse_if_cap_reached(key)
     verbose = getattr(args, "verbose", False)
     quiet = getattr(args, "quiet", False)
     try:
@@ -1374,6 +1834,9 @@ def cmd_review(args: argparse.Namespace) -> None:
         die(str(exc))
     except ReviewError as exc:
         die(str(exc))
+    # Record a successful review against the cap now that one was produced.
+    if key is not None and not allow_extra:
+        _record_successful_review(key)
     for notice in result.notices:
         print(notice, file=sys.stderr)
     print(f"Second opinion via {result.backend_label}:")
@@ -1410,10 +1873,25 @@ def build_parser() -> argparse.ArgumentParser:
     # dev_status.py's build_parser() for the full rationale.
     verbosity_parent = argparse.ArgumentParser(add_help=False)
     cli_common.add_verbosity_args(verbosity_parent)
-    sub = parser.add_subparsers(dest="cmd", metavar="{detect,review}")
+    sub = parser.add_subparsers(dest="cmd", metavar="{detect,review,probe}")
 
     sub.add_parser(
         "detect", help="list available backends as JSON", parents=[verbosity_parent]
+    )
+
+    p = sub.add_parser(
+        "probe",
+        help="probe each backend's model pool and report per-model availability as JSON",
+        parents=[verbosity_parent],
+    )
+    p.add_argument(
+        "--backend",
+        type=_backend_list_arg,
+        default=None,
+        metavar="NAME[,NAME...]",
+        help="probe only these backend(s) (comma-separated list allowed) "
+        "instead of every installed backend in priority order; an entry not "
+        "installed is reported as not_installed, not an error",
     )
 
     p = sub.add_parser(
@@ -1465,6 +1943,21 @@ def build_parser() -> argparse.ArgumentParser:
         "if the pool is unset/empty or the index is out of range (was "
         "previously a silent no-op/fallback).",
     )
+    p.add_argument(
+        "--run-id",
+        default=None,
+        metavar="ID",
+        help="stable id for one iterative critique session; the per-round cap is "
+        "enforced by counting reviews per run-id (or per plan file when omitted). "
+        "The second-opinion skill passes one for the whole loop.",
+    )
+    p.add_argument(
+        "--allow-extra-round",
+        action="store_true",
+        default=False,
+        help="permit review calls beyond the per-run cap (for a user who "
+        "deliberately wants another round)",
+    )
 
     return parser
 
@@ -1496,7 +1989,7 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
 
-    dispatch = {"detect": cmd_detect, "review": cmd_review}
+    dispatch = {"detect": cmd_detect, "review": cmd_review, "probe": cmd_probe}
     if args.cmd in dispatch:
         with cli_common.timing_span(
             "command", script="second_opinion", command=args.cmd

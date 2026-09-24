@@ -9,7 +9,13 @@ import devStatusExtension, {
 
 describe("assertNotNumericIdentity", () => {
   test("rejects numeric slugs on mutating actions", () => {
-    for (const action of ["update", "start", "block", "pending_update"] as Action[]) {
+    for (const action of [
+      "update",
+      "start",
+      "block",
+      "integration_merge",
+      "pending_update",
+    ] as Action[]) {
       expect(() => assertNotNumericIdentity(action, { action, slug: "17" })).toThrow(
         /slug must be a slug|secondarySlug must be a slug/,
       );
@@ -110,6 +116,31 @@ describe("assertFields", () => {
         branch: "feat",
       }),
     ).not.toThrow();
+  });
+
+  test("integration_merge requires slug and accepts repo, branch, push", () => {
+    expect(() => assertFields("integration_merge", { action: "integration_merge" })).toThrow(
+      "requires: slug",
+    );
+    expect(() =>
+      assertFields("integration_merge", { action: "integration_merge", slug: "abc" }),
+    ).not.toThrow();
+    expect(() =>
+      assertFields("integration_merge", {
+        action: "integration_merge",
+        slug: "abc",
+        repo: "/path/to/repo",
+        branch: "custom-branch",
+        push: true,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertFields("integration_merge", {
+        action: "integration_merge",
+        slug: "abc",
+        force: true,
+      }),
+    ).toThrow("does not accept: force");
   });
 });
 
@@ -246,6 +277,30 @@ describe("buildArgv", () => {
       "abc",
       "--base",
       "release-1",
+    ]);
+  });
+
+  test("integration_merge action builds argv with flags", () => {
+    expect(buildArgv("integration_merge", { action: "integration_merge", slug: "abc" })).toEqual([
+      "integration-merge",
+      "abc",
+    ]);
+    expect(
+      buildArgv("integration_merge", {
+        action: "integration_merge",
+        slug: "abc",
+        repo: "/repo",
+        branch: "feature-branch",
+        push: true,
+      }),
+    ).toEqual([
+      "integration-merge",
+      "abc",
+      "--repo",
+      "/repo",
+      "--branch",
+      "feature-branch",
+      "--push",
     ]);
   });
 

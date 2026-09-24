@@ -184,7 +184,7 @@ GRILL_ME_PARAMS: dict[str, dict[str, str]] = {
 ---
 name: grill-me
 description: Interview the user relentlessly about a plan or design until reaching shared understanding, resolving each branch of the decision tree. Use when user wants to stress-test a plan, get grilled on their design, or mentions "grill me".
-argument-hint: [--verify | --auto] [topic or plan to grill on]
+argument-hint: "[--verify | --auto] [topic or plan to grill on]"
 allowed-tools: [Read, Glob, Grep, Write, AskUserQuestion, "Bash(python3 {{TOOLKIT_SCRIPTS}}/grill.py:*)", "Bash(python3 {{TOOLKIT_SCRIPTS}}/second_opinion.py:*)"]
 ---""",
         "DEFAULT_MODE_OPENING": (
@@ -564,7 +564,7 @@ If this session was started with `--backlog-slug` (the batch-backlog-items
         "FRONTMATTER": """\
 ---
 description: "Interview the user relentlessly about a plan or design until reaching shared understanding, resolving each branch of the decision tree. Use when user wants to stress-test a plan, get grilled on their design, or mentions 'grill me'."
-argument-hint: [--verify | --auto] [topic or plan to grill on]
+argument-hint: "[--verify | --auto] [topic or plan to grill on]"
 ---""",
     },
 }
@@ -575,7 +575,7 @@ BACKLOG_ITEM_PARAMS: dict[str, dict[str, str]] = {
 ---
 name: backlog-item
 description: "Runs a dev_status.py backlog item end-to-end: resolve, worktree, spec (escalating to grill-me only for a genuinely open design branch), second-opinion critique, execution handoff, TDD implement, verify, commit/merge/push gates, review+approve. Use when the user says 'work on backlog item 4', 'pick up <slug>', 'let's do the next backlog item', or otherwise names a specific item to work end-to-end. Add --auto (optionally with a slug) for an unattended single-item or full-READY-batch run — commit and merge/push gates still stop live, per item."
-argument-hint: [--auto] [slug|N]
+argument-hint: "[--auto] [slug|N]"
 ---""",
         "OPENING_PARAGRAPH": """\
 Work the named item to done, one step at a time. Every user-approval gate
@@ -674,7 +674,11 @@ a `work-`-prefixed item or a work repo): offer the follow-on sequence as one
 bundled question (CLAUDE.md's Git section) — "merge to main, push, and
 clean up the worktree?" — then merge locally, push, `git worktree remove`,
 `git branch -d` on that single approval. Work-related or ambiguous: ask
-separately for merge and for push — never bundle.""",
+separately for merge and for push — never bundle.
+
+When landing work on an `integration_branch` (declared via `update`): merge
+through a temporary worktree via `python3 {{TOOLKIT_SCRIPTS}}/dev_status.py integration-merge <slug|N> [--push]`
+— never by checking the branch out in the live main checkout.""",
         "STEP12_BODY": """\
 `dev_status.py review <slug|N>` then `approve <slug|N>` — never a bare
 `done` on an in-review item. The lifecycle order is commit → local merge →
@@ -899,7 +903,11 @@ single approval. Work-related or ambiguous: ask separately for merge and
 for push — never bundle. Run merge, push, `git worktree remove`, and `git
 branch -d` from the main checkout (`git -C <repo> merge <slug>` etc.), not
 from inside the worktree being removed — a branch cannot merge into
-itself.""",
+itself.
+
+When landing work on an `integration_branch` (declared via `update`): merge
+through a temporary worktree via `python3 {{TOOLKIT_SCRIPTS}}/dev_status.py integration-merge <slug|N> [--push]`
+— never by checking the branch out in the live main checkout.""",
         "STEP12_BODY": """\
 `dev_status.py review <slug|N>` then `approve <slug|N>` — never a bare
 `done` on an in-review item. The lifecycle order is commit → local merge →
@@ -1169,7 +1177,11 @@ a `work-`-prefixed item or a work repo): offer the follow-on sequence as one
 bundled question (the shared instructions file's Git section) — "merge to
 main, push, and clean up the worktree?" — then merge locally, push, `git
 worktree remove`, `git branch -d` on that single approval. Work-related or
-ambiguous: ask separately for merge and for push — never bundle.""",
+ambiguous: ask separately for merge and for push — never bundle.
+
+When landing work on an `integration_branch` (declared via `update`): merge
+through a temporary worktree via `python3 {{TOOLKIT_SCRIPTS}}/dev_status.py integration-merge $ARGUMENTS [--push]`
+— never by checking the branch out in the live main checkout.""",
         "STEP12_BODY": """\
 `dev_status.py review $ARGUMENTS` then `approve $ARGUMENTS` — never a bare
 `done` on an in-review item. The lifecycle order is commit → local merge →
@@ -1368,7 +1380,11 @@ a `work-`-prefixed item or a work repo): offer the follow-on sequence as one
 bundled question (the shared instructions file's Git section) — "merge to
 main, push, and clean up the worktree?" — then merge locally, push, `git
 worktree remove`, `git branch -d` on that single approval. Work-related or
-ambiguous: ask separately for merge and for push — never bundle.""",
+ambiguous: ask separately for merge and for push — never bundle.
+
+When landing work on an `integration_branch` (declared via `update`): merge
+through a temporary worktree via `python3 {{TOOLKIT_SCRIPTS}}/dev_status.py integration-merge <slug|N> [--push]`
+— never by checking the branch out in the live main checkout.""",
         "STEP12_BODY": """\
 `dev_status.py review <slug|N>` then `approve <slug|N>` — never a bare
 `done` on an in-review item. The lifecycle order is commit → local merge →
@@ -1573,7 +1589,11 @@ a `work-`-prefixed item or a work repo): offer the follow-on sequence as one
 bundled question (the shared instructions file's Git section) — "merge to
 main, push, and clean up the worktree?" — then merge locally, push, `git
 worktree remove`, `git branch -d` on that single approval. Work-related or
-ambiguous: ask separately for merge and for push — never bundle.""",
+ambiguous: ask separately for merge and for push — never bundle.
+
+When landing work on an `integration_branch` (declared via `update`): merge
+through a temporary worktree via `python3 {{TOOLKIT_SCRIPTS}}/dev_status.py integration-merge <slug|N> [--push]`
+— never by checking the branch out in the live main checkout.""",
         "STEP12_BODY": """\
 `dev_status.py review <slug|N>` then `approve <slug|N>` — never a bare
 `done` on an in-review item. The lifecycle order is commit → local merge →
@@ -1768,7 +1788,11 @@ to main, push, and clean up the worktree?" — then merge locally, push,
 `git worktree remove`, `git branch -d` on that single approval. Work-related
 or ambiguous: ask separately for merge and for push via the `question`
 tool — never bundle. Same reason as step 10: `question`, not plain text, so
-this gate registers as `blocked`, not indistinguishable from done.""",
+this gate registers as `blocked`, not indistinguishable from done.
+
+When landing work on an `integration_branch` (declared via `update`): merge
+through a temporary worktree via `python3 {{TOOLKIT_SCRIPTS}}/dev_status.py integration-merge <resolved slug> [--push]`
+— never by checking the branch out in the live main checkout.""",
         "STEP12_BODY": """\
 Call the tool with `action: "review", slug: "<resolved slug>"`, then
 `action: "approve", slug: "<resolved slug>"` — never a bare `done` on an
@@ -1847,7 +1871,7 @@ read that file for the full queue-runner procedure.""",
         "FRONTMATTER": """\
 ---
 description: "Runs a dev_status.py backlog item end-to-end: resolve, worktree, spec (escalating to grill-me only for a genuinely open design branch), second-opinion critique, execution handoff, TDD implement, verify, commit/merge/push gates, review+approve. Use when the user says 'work on backlog item 4', 'pick up <slug>', 'let's do the next backlog item', or otherwise names a specific item to work end-to-end. Add --auto for unattended single-item or READY-batch work, --swarm[=N] for a concurrent prefix queue, or --serial for a one-worker prefix queue. Queue modes require HERDR_ENV=1."
-argument-hint: [--auto] [--swarm[=N] | --serial] [--prefix <prefix>] [slug|N]
+argument-hint: "[--auto] [--swarm[=N] | --serial] [--prefix <prefix>] [slug|N]"
 ---""",
     },
 }
@@ -2960,7 +2984,7 @@ SWARM_PARAMS: dict[str, dict[str, str]] = {
         "FRONTMATTER": """\
 ---
 name: swarm
-description: "Hand READY backlog items to pi or copilot agents running in herdr tabs — concurrently by default, serially when requested, or as one named item. Use when the user says 'swarm', 'run the queue serially', 'hand this to pi', 'give <item> to a pi agent', 'hand this to copilot', or 'delegate to a worker'. Requires HERDR_ENV=1; says so and stops otherwise."
+description: "Hand READY backlog items to pi or copilot queue agents, or one item to an agy or codex worker, in herdr tabs. Use when the user says 'swarm', 'run the queue serially', 'hand this to pi', 'hand this to copilot', 'hand this to agy', 'hand this to codex', or 'delegate to a worker'. Requires HERDR_ENV=1; says so and stops otherwise."
 ---""",
         # Transcribed verbatim from the hand-authored original this
         # generated output replaces (ff05d19) -- byte-for-byte, so the
@@ -2978,7 +3002,7 @@ about which project.""",
         "FRONTMATTER": """\
 ---
 name: swarm
-description: "Hand READY backlog items to pi or copilot agents running in herdr tabs — concurrently by default, serially when requested, or as one named item. Use when the user says 'swarm', 'run the queue serially', 'hand this to pi', 'give <item> to a pi agent', 'hand this to copilot', or 'delegate to a worker'. Requires HERDR_ENV=1; says so and stops otherwise."
+description: "Hand READY backlog items to pi or copilot queue agents, or one item to an agy or codex worker, in herdr tabs. Use when the user says 'swarm', 'run the queue serially', 'hand this to pi', 'hand this to copilot', 'hand this to agy', 'hand this to codex', or 'delegate to a worker'. Requires HERDR_ENV=1; says so and stops otherwise."
 allowed-tools: shell
 ---""",
         # Same mechanics adaptation as every copilot params entry: no

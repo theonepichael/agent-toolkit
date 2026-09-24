@@ -8,18 +8,22 @@ edit the body template for shared wording or the per-harness parameter table
 for harness-specific wording, then regenerate -->
 
 All backend I/O goes through the `second_opinion` tool — never shell out to
-`codex`/`agy`/`opencode`/`pi`/`copilot` directly. Two operations: `detect`
+`codex`/`agy`/`opencode`/`pi`/`copilot` directly. Three operations: `detect`
 reports each backend's presence AND whether it currently meets the isolation
-contract (with the reason when it does not), `review` returns one critique. It
-is single-round: one call, one critique. The multi-round loop and plan revision
-are your job, not the script's. By default, reviews are grounded in the target
-codebase (`--dir` or current working directory) with read-only tools enabled;
-use `--text-only` to opt out.
+contract (with the reason when it does not), `review` returns one critique, and
+`probe` runs one trivial, cheap, text-only request per model in the selected
+backend's pool (or its single override / default model) and reports per-model
+availability as JSON — use it to check a pool's health before committing to a
+multi-round rotation, and remember it calls the real models once each, so pass
+`--backend` deliberately. It is single-round: one call, one critique. The
+multi-round loop and plan revision are your job, not the script's. By default,
+reviews are grounded in the target codebase (`--dir` or current working
+directory) with read-only tools enabled; use `--text-only` to opt out.
 
 Call the `second_opinion` tool. Action `detect` lists the available backends as
 JSON. Action `review` returns one critique of the plan at `planFile`,
-optionally scoped with `focusFile`, `modelIndex`, `dir`, and `textOnly`. Never
-run `second_opinion.py` via bash.
+optionally scoped with `backend`, `model`, `timeoutSeconds`, `focusFile`,
+`modelIndex`, `dir`, and `textOnly`. Never run `second_opinion.py` via bash.
 
 `--model-index` is a 0-based index into a per-machine model pool
 (`SECOND_OPINION_CODEX_MODEL_POOL` / `_AGY_MODEL_POOL` / `_PI_MODEL_POOL` /
@@ -48,11 +52,14 @@ in order, first success wins) to make the script itself fall through at runtime
 — a list skips an entry that is not installed with a one-line notice and never
 touches the priority order; a single name keeps the strict one-backend-only
 contract (that call fails outright with no fallback). A model whose run
-answered with a tool-use transcript instead of a critique is quarantined for
-the process — pool rotation skips it for later requests in the same process,
-while a fresh CLI invocation starts clean — so do not pin `--model-index`
-across rounds on a machine whose pool is known to contain a tool-hungry model;
-let the list rotate instead. On a machine with no pool at all for the
+answered with a tool-use transcript instead of a critique — or whose access the
+gateway refuses outright ("Model access is disabled") — is skipped to the next
+pool model instead of failing the round (even a pinned `--model-index` rotates
+forward) and quarantined for the process — later requests in the same process
+skip it, while a fresh CLI invocation starts clean — so do not pin
+`--model-index` across rounds on a machine whose pool is known to contain a
+tool-hungry or access-disabled model; let the rotation skip instead, and repair
+the pool with `probe`'s report. On a machine with no pool at all for the
 dispatched backend, the script itself prints a one-line stderr notice
 (suppressed by `--quiet`) naming the absent pool variable, where to set it, and
 a realistic example — the run still proceeds with the backend's default model,
@@ -66,9 +73,10 @@ single-model override (`SECOND_OPINION_<BACKEND>_MODEL`, the model's id or
 display name as that backend lists it — confirm it exists first, e.g. `agy
 models`) for every round, and omit `--model-index` — an explicit index selects
 the pool over the override, so passing it would silently replace the model the
-user asked for. Where the call goes through a shell, prefix it with the
-variable; where it goes through a native tool with no model parameter, ask the
-user to set the variable in the environment the harness was launched from.
+user asked for. Where the call goes through the native `second_opinion` tool,
+pass the model as the `model` parameter (paired with `backend`) and raise the
+timeout with `timeoutSeconds` (clamped to 600) — never set the env var
+directly.
 
 ## Resolving the target plan
 
@@ -129,6 +137,7 @@ it stays free to surface things you didn't think to flag.
 ## Iteration loop
 
 ```
+run_id = <a stable id for this whole critique loop — the grill session slug if a grill session is active, else a short timestamped slug; passed to every review call so the script's per-run cap is scoped to this loop and not to the plan path alone>
 round = 1
 current_plan = <resolved input>
 prior_critique = None
@@ -139,12 +148,12 @@ loop:
     critique = second_opinion review
                    planFile = <current_plan>
                    [focusFile = <focus-hints-path>]
-                   modelIndex = <round - 1>   # one call
+                   modelIndex = <round - 1> runId = <run_id>   # one call
     if that call exited nonzero with a "--model-index ... requires
        ... POOL ..." configuration error (not a backend-failure message):
         critique = second_opinion review
                        planFile = <current_plan>
-                       [focusFile = <focus-hints-path>]   # retry, no index —
+                       [focusFile = <focus-hints-path>] runId = <run_id>   # retry, no index —
                                                             # no pool configured
                                                             # for this backend,
                                                             # not an error to
@@ -221,6 +230,15 @@ a file. The critique-notes file is new each run, so it doesn't need the same
 overwrite confirmation.
 
 ## On cap-out without convergence
+
+The 3-round cap is enforced by `second_opinion.py` itself, not just this prose:
+a 4th `review` call for the same run is refused with a message telling you to
+stop and finalize (clean up the plan, write the critique-notes file, list the
+open points). Treat that refusal as the cap — do not loop again for this plan.
+A user who genuinely wants more rounds can pass `--allow-extra-round`
+(documented for humans; never surfaced in the refusal text), but reaching the
+cap mid-disagreement usually means you should stop and surface the open points
+rather than grind on.
 
 State plainly, distinct from a converged finish:
 

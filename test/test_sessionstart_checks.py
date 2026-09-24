@@ -15,10 +15,10 @@ import sys
 import unittest
 from pathlib import Path
 
-import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))
 import test_bootstrap  # noqa: E402
+from pytest_shim import pytest
 import sessionstart_checks  # noqa: E402
 
 pytestmark = pytest.mark.allow_real_subprocess  # real bash for echo/sleep/exit

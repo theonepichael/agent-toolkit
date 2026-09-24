@@ -122,12 +122,36 @@ class TimingTests(unittest.TestCase):
     def test_custom_opencode_and_fallback_linked(self) -> None:
         plan = Path(self.tmp.name) / "plan.md"
         plan.write_text("Private plan content")
+        # The opencode runner now streams stdout with stall detection, so the
+        # fake process must expose real-looking fds and the select/os.read
+        # fakes below feed the whole critique in one read then report EOF.
         proc = Mock(returncode=0)
-        proc.communicate.return_value = ('{"type":"text","part":{"text":"critique"}}\n', "")
+        reads = {3: 0, 4: 0}
+        stdout_bytes = b'{"type":"text","part":{"text":"critique"}}\n'
+        proc.stdout = Mock(fileno=Mock(return_value=3))
+        proc.stderr = Mock(fileno=Mock(return_value=4))
+
+        def fake_select(rlist, wlist, xlist, timeout):
+            return list(rlist), [], []
+
+        def fake_read(fd, n):
+            if reads[fd] == 0:
+                reads[fd] = 1
+                return stdout_bytes if fd == 3 else b""
+            return b""  # EOF after the first read
+
         # Use main's actual parser to avoid coupling this test to argument destination names.
         args = second_opinion.build_parser().parse_args(["review", str(plan), "--quiet"])
         runners = {"agy": Mock(side_effect=llm_backends.BackendError("private")), "opencode": second_opinion.run_opencode}
-        with patch.object(second_opinion, "available_backends", return_value=["agy", "opencode"]), patch.dict(second_opinion.BACKEND_RUNNERS, runners), patch.object(llm_backends, "build_isolated_command", return_value=["fake"]), patch.object(llm_backends.subprocess, "Popen", return_value=proc), redirect_stdout(io.StringIO()):
+        with (
+            patch.object(second_opinion, "available_backends", return_value=["agy", "opencode"]),
+            patch.dict(second_opinion.BACKEND_RUNNERS, runners),
+            patch.object(llm_backends, "build_isolated_command", return_value=["fake"]),
+            patch.object(llm_backends.subprocess, "Popen", return_value=proc),
+            patch.object(llm_backends.select, "select", fake_select),
+            patch.object(llm_backends.os, "read", fake_read),
+            redirect_stdout(io.StringIO()),
+        ):
             with cli_common.timing_span("command"):
                 second_opinion.cmd_review(args)
         rows = self.records()

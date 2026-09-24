@@ -13,10 +13,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))  # noqa: E402
 import test_bootstrap  # noqa: E402
+from pytest_shim import pytest
 from unittest.mock import patch
 
 import cli_common
-import pytest
 
 
 class AddVerbosityArgsTests(unittest.TestCase):
@@ -409,8 +409,17 @@ class AppendJsonlTests(unittest.TestCase):
         append then creates a fresh file — and never raise into the caller,
         even with on_error='raise'."""
         path = self.tmp / "out.jsonl"
-        with patch.object(cli_common.Path, "exists", return_value=True), patch.object(
-            cli_common.Path, "stat", side_effect=FileNotFoundError
+        original_stat = cli_common.Path.stat
+
+        def stat_target_only(
+            candidate: Path, *, follow_symlinks: bool = True
+        ) -> object:
+            if candidate == path:
+                raise FileNotFoundError
+            return original_stat(candidate, follow_symlinks=follow_symlinks)
+
+        with patch.object(
+            cli_common.Path, "stat", autospec=True, side_effect=stat_target_only
         ):
             cli_common.append_jsonl(path, {"i": 1}, max_bytes=1, on_error="raise")
         lines = path.read_text().splitlines()
@@ -429,6 +438,31 @@ class AppendJsonlTests(unittest.TestCase):
 
         with patch.object(os, "replace", side_effect=bad_replace):
             cli_common.append_jsonl(path, {"i": 1}, max_bytes=1, on_error="raise")
+        lines = path.read_text().splitlines()
+        self.assertEqual(len(lines), 2)  # old line kept, new line appended
+        self.assertEqual(json.loads(lines[1])["i"], 1)
+
+    def test_rotation_failure_is_silent_when_on_error_silent(self) -> None:
+        """Follow-up: a non-FileNotFoundError OSError during rotation (e.g.
+        os.replace raises PermissionError) must emit nothing on stderr when
+        the caller asked to stay silent -- the timing writer passes
+        on_error='silent', so its rotation hiccups must not leak to stderr."""
+        path = self.tmp / "out.jsonl"
+        path.write_text(json.dumps({"i": 0, "pad": "x" * 1024}) + "\n")
+
+        def bad_replace(src: object, dst: object) -> object:
+            raise PermissionError("rotation denied")
+
+        captured = io.StringIO()
+        with (
+            patch.object(os, "replace", side_effect=bad_replace),
+            patch("sys.stderr", new=captured),
+        ):
+            cli_common.append_jsonl(
+                path, {"i": 1}, max_bytes=1, on_error="silent"
+            )
+        self.assertEqual(captured.getvalue(), "")
+        # The append still proceeds despite the silent rotation failure.
         lines = path.read_text().splitlines()
         self.assertEqual(len(lines), 2)  # old line kept, new line appended
         self.assertEqual(json.loads(lines[1])["i"], 1)

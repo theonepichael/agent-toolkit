@@ -22,10 +22,10 @@ import textwrap
 import unittest
 from pathlib import Path
 
-import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))
 import test_bootstrap  # noqa: E402
+from pytest_shim import pytest
 import gen_interfaces as gi
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

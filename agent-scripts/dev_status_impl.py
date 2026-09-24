@@ -356,6 +356,7 @@ SUBCOMMANDS = (
     "recap",
     "worktree",
     "machine-id",
+    "integration-merge",
 )
 RESERVED_SLUGS = set(SUBCOMMANDS) | {"pending", "out-of-scope", "all", "help", "new"}
 SLUG_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)+$")
@@ -1186,7 +1187,7 @@ def render(
         if not _agent_quiet():
             print(f"item-map: rev={rev}", file=err)
         if dispatch:
-            _maybe_dispatch_recap_regen()
+            _maybe_dispatch_recap_regen(current_fingerprint)
         return
 
     color = _use_color(out)
@@ -1350,7 +1351,7 @@ def render(
         print(f"item-map: rev={rev} {map_str}", file=err)
 
     if dispatch:
-        _maybe_dispatch_recap_regen()
+        _maybe_dispatch_recap_regen(current_fingerprint)
 
 
 # ── recap: event journal ────────────────────────────────────────────────────
@@ -1516,8 +1517,14 @@ def _regen_lock(*, blocking: bool) -> Iterator[bool]:
                 fcntl.flock(f, fcntl.LOCK_UN)
 
 
-def _maybe_dispatch_recap_regen() -> None:
+def _maybe_dispatch_recap_regen(fingerprint: str | None = None) -> None:
     """Spawn a detached recap-regen child if it looks worth refreshing.
+
+    ``fingerprint`` lets a caller pass a board fingerprint it already
+    computed from the items it has loaded (``render`` has one from the
+    board it just rendered) so this freshness check need not reload the
+    whole store to recompute it. When omitted, the live fingerprint is
+    computed here.
 
     Never blocks and never calls a backend itself — this only decides
     whether to spawn ``_internal-regen`` as a fully detached child process.
@@ -1550,9 +1557,10 @@ def _maybe_dispatch_recap_regen() -> None:
     cache = _load_recap_cache()
     if cache is not None:
         age = _recap_cache_age_seconds(cache)
-        fingerprint_matches = (
-            cache.get("board_fingerprint") == _current_board_fingerprint()
+        live_fingerprint = (
+            fingerprint if fingerprint is not None else _current_board_fingerprint()
         )
+        fingerprint_matches = cache.get("board_fingerprint") == live_fingerprint
         if age is not None and age <= RECAP_TTL_SECONDS and fingerprint_matches:
             return  # fresh and still accurate -- nothing to refresh
     subprocess.Popen(
@@ -1913,7 +1921,10 @@ def cmd_internal_regen() -> None:
     calling any backend if another regen is already in flight, or if a newer
     mutation has written a journal line within the trailing debounce window
     (it spawned its own child, which becomes the one that does the work --
-    see :data:`RECAP_DEBOUNCE_SECONDS`).
+    see :data:`RECAP_DEBOUNCE_SECONDS`), or if the recap cache is already
+    fresh and accurate for the live board -- a render-triggered child that
+    lands here after a quiet window would otherwise regenerate an identical
+    recap.
 
     The sleep happens *before* taking :func:`_regen_lock`, not while holding
     it: a burst's last child must not find the lock held by an earlier
@@ -1927,6 +1938,21 @@ def cmd_internal_regen() -> None:
     last_age = _journal_last_entry_age_seconds()
     if last_age is not None and last_age < RECAP_DEBOUNCE_SECONDS:
         return
+    # A render-triggered child that lands here after one debounce window with
+    # no newer mutation may still find the recap cache fresh and accurate:
+    # its board fingerprint still matches the live board and it is within
+    # TTL. Regenerating would only produce an identical recap, so skip the
+    # backend call. (The reload is unavoidable in this detached child but is
+    # paid at most once per quiet burst, not once per render.)
+    cache = _load_recap_cache()
+    if cache is not None:
+        age = _recap_cache_age_seconds(cache)
+        if (
+            age is not None
+            and age <= RECAP_TTL_SECONDS
+            and cache.get("board_fingerprint") == _current_board_fingerprint()
+        ):
+            return
     with _regen_lock(blocking=False) as acquired:
         if acquired:
             _run_recap_regen()
@@ -2022,6 +2048,249 @@ def cmd_worktree(args: argparse.Namespace) -> None:
     except worktree.WorktreeError as err:
         print(f"[worktree] error: {err}", file=sys.stderr)
         sys.exit(1)
+
+
+def _run_git(cmd: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *cmd],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+
+
+def cmd_integration_merge(args: argparse.Namespace) -> None:
+    """Handle ``integration-merge``: merge an integration-branch backlog item
+    through a temporary detached worktree without switching or touching the
+    main checkout's HEAD."""
+    import shutil
+    import tempfile
+
+    import worktree
+
+    items = load_items()
+    pending = load_pending()
+    try:
+        kind, slug = resolve_id(args.id, items, pending)
+    except NotFoundError as err:
+        print(f"[integration-merge] error: {err}", file=sys.stderr)
+        sys.exit(1)
+
+    if kind != "backlog":
+        print(
+            f"[integration-merge] error: '{args.id}' is a pending item; only backlog items can be merged",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    matched = next((it for it in items if it["id"] == slug), None)
+    if matched is None:
+        print(
+            f"[integration-merge] error: backlog item '{slug}' not found",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    target_branch = matched.get("integration_branch")
+    if not target_branch:
+        print(
+            f"[integration-merge] error: item '{slug}' does not declare an integration_branch; "
+            "integration-merge only applies to integration-branch work.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # Resolve repo
+    repo_root: Path | None = None
+    if getattr(args, "repo", None):
+        repo_root = worktree.find_repo_for_path(Path(args.repo))
+        if repo_root is None:
+            print(
+                f"[integration-merge] error: specified --repo is not inside a git repository: {args.repo}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+    else:
+        repos: set[Path] = set()
+        for rf in matched.get("related_files", []):
+            if isinstance(rf, dict) and "path" in rf:
+                r = worktree.find_repo_for_path(Path(str(rf["path"])))
+                if r is not None:
+                    repos.add(r)
+        if len(repos) == 1:
+            repo_root = next(iter(repos))
+        elif not repos:
+            cwd_repo = worktree.find_repo_for_path(Path.cwd())
+            if cwd_repo is not None:
+                repo_root = cwd_repo
+
+    if repo_root is None:
+        print(
+            f"[integration-merge] error: could not determine target repository for item '{slug}'; specify --repo <path>",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    source_branch = getattr(args, "branch", None) or slug
+
+    # Verify source branch
+    cp = _run_git(["rev-parse", "--verify", f"refs/heads/{source_branch}"], repo_root)
+    if cp.returncode != 0:
+        cp_rem = _run_git(
+            ["rev-parse", "--verify", f"refs/remotes/origin/{source_branch}"], repo_root
+        )
+        if cp_rem.returncode == 0:
+            _run_git(["branch", source_branch, f"origin/{source_branch}"], repo_root)
+        else:
+            print(
+                f"[integration-merge] error: source branch '{source_branch}' not found in {repo_root}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+    # Verify target integration branch
+    cp = _run_git(["rev-parse", "--verify", f"refs/heads/{target_branch}"], repo_root)
+    if cp.returncode != 0:
+        cp_rem = _run_git(
+            ["rev-parse", "--verify", f"refs/remotes/origin/{target_branch}"], repo_root
+        )
+        if cp_rem.returncode == 0:
+            _run_git(["branch", target_branch, f"origin/{target_branch}"], repo_root)
+        else:
+            print(
+                f"[integration-merge] error: target integration branch '{target_branch}' not found in {repo_root}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+    # Refuse if target branch is checked out in any worktree
+    wt_cp = _run_git(["worktree", "list", "--porcelain"], repo_root)
+    if wt_cp.returncode == 0:
+        current_wt: str | None = None
+        for line in wt_cp.stdout.splitlines():
+            if line.startswith("worktree "):
+                current_wt = line[len("worktree ") :].strip()
+            elif line.startswith("branch "):
+                b = line[len("branch ") :].strip()
+                if b in (f"refs/heads/{target_branch}", target_branch):
+                    wt_desc = f" ({current_wt})" if current_wt else ""
+                    print(
+                        f"[integration-merge] error: target branch '{target_branch}' is currently checked out in a worktree{wt_desc}; "
+                        "refusing to merge because updating its ref would desync that checkout's index and files.",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+
+    cp_target_sha = _run_git(["rev-parse", f"refs/heads/{target_branch}"], repo_root)
+    if cp_target_sha.returncode != 0:
+        print(
+            f"[integration-merge] error resolving target branch sha: {cp_target_sha.stderr.strip()}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    target_old_sha = cp_target_sha.stdout.strip()
+
+    # Check if already merged
+    cp_ancestor = _run_git(
+        ["merge-base", "--is-ancestor", source_branch, target_branch], repo_root
+    )
+    if cp_ancestor.returncode == 0:
+        pushed = False
+        if getattr(args, "push", False):
+            cp_push = _run_git(["push", "origin", target_branch], repo_root)
+            if cp_push.returncode != 0:
+                print(
+                    f"[integration-merge] error pushing to origin: {cp_push.stderr.strip()}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            pushed = True
+        if not getattr(args, "quiet", False):
+            print(
+                f"[integration-merge] '{source_branch}' is already merged into '{target_branch}'."
+            )
+            if pushed:
+                print(f"[integration-merge] Pushed '{target_branch}' to origin.")
+        return
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix=f"merge-{target_branch}-"))
+    new_head: str = ""
+    try:
+        res = _run_git(
+            ["worktree", "add", "--detach", str(tmp_dir), target_branch], repo_root
+        )
+        if res.returncode != 0:
+            print(
+                f"[integration-merge] error creating temporary worktree: {res.stderr.strip()}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        res_merge = _run_git(
+            [
+                "merge",
+                "--no-ff",
+                source_branch,
+                "-m",
+                f"Merge branch '{source_branch}' into {target_branch}",
+            ],
+            tmp_dir,
+        )
+        if res_merge.returncode != 0:
+            _run_git(["merge", "--abort"], tmp_dir)
+            print(
+                f"[integration-merge] error: merge conflict or failure merging '{source_branch}' into '{target_branch}':\n"
+                f"{res_merge.stderr.strip() or res_merge.stdout.strip()}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        res_head = _run_git(["rev-parse", "HEAD"], tmp_dir)
+        new_head = res_head.stdout.strip()
+        res_update = _run_git(
+            ["update-ref", f"refs/heads/{target_branch}", new_head, target_old_sha],
+            repo_root,
+        )
+        if res_update.returncode != 0:
+            print(
+                f"[integration-merge] error updating branch '{target_branch}': {res_update.stderr.strip()}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+    finally:
+        _run_git(["worktree", "remove", "--force", str(tmp_dir)], repo_root)
+        if tmp_dir.exists():
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    pushed = False
+    if getattr(args, "push", False):
+        remotes_cp = _run_git(["remote"], repo_root)
+        if "origin" in remotes_cp.stdout.splitlines():
+            res_push = _run_git(["push", "origin", target_branch], repo_root)
+            if res_push.returncode != 0:
+                print(
+                    f"[integration-merge] error pushing to origin: {res_push.stderr.strip()}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            pushed = True
+        else:
+            print(
+                "[integration-merge] warning: no remote 'origin' found; skipped push",
+                file=sys.stderr,
+            )
+
+    if os.environ.get("DEVSTATUS_AGENT") == "1":
+        print(
+            f"[integration-merge] slug={slug} branch={source_branch} target={target_branch} "
+            f"commit={new_head[:7]} pushed={'true' if pushed else 'false'}"
+        )
+    elif not getattr(args, "quiet", False):
+        print(
+            f"[integration-merge] Merged '{source_branch}' into '{target_branch}' ({new_head[:7]})"
+        )
+        if pushed:
+            print(f"[integration-merge] Pushed '{target_branch}' to origin.")
 
 
 # ── mutation infrastructure ───────────────────────────────────────────────────
@@ -3780,6 +4049,7 @@ dispatch: dict[str, Callable[[argparse.Namespace], None]] = {
     "recap": cmd_recap,
     "worktree": cmd_worktree,
     "machine-id": cmd_machine_id,
+    "integration-merge": cmd_integration_merge,
 }
 
 if __name__ == "__main__" and set(dispatch) != set(SUBCOMMANDS):
@@ -4223,6 +4493,29 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help="Emit structured result as JSON",
+    )
+
+    p = sub.add_parser(
+        "integration-merge",
+        help="merge an integration-branch item through a temporary worktree without touching main checkout HEAD",
+        parents=[verbosity_parent],
+    )
+    _add_id_arg(p)
+    p.add_argument(
+        "--push",
+        action="store_true",
+        default=False,
+        help="push to remote after merging",
+    )
+    p.add_argument(
+        "--repo",
+        default=None,
+        help="Path to git repository",
+    )
+    p.add_argument(
+        "--branch",
+        default=None,
+        help="Source branch to merge (default: item slug)",
     )
 
     # No `parents=[verbosity_parent]` here: `pending` has its own nested
