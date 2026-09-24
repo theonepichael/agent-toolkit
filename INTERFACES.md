@@ -837,7 +837,8 @@ Pre-tool guard shared by every harness: refuse a write into a repository's main 
   - `--command` — shell command, for the neutral bash-family form
   - `--quiet/-q`
   - `--verbose/-v`
-- Environment: `GUARD_RAILS_OFF`
+- Environment: `GUARD_RAILS_NO_FAST_PATH`, `GUARD_RAILS_OFF`
+- Explicit exit codes: `0`
 - Depends on: `agent_toolkit_paths.py`, `backlog_claim_lookup.py`, `cli_common.py`, `dev_status_impl.py`, `dev_status_storage.py`, `migration_lock.py`, `worktree_provenance.py`
 - Public classes:
   - `class Request` — A normalized tool call: what family, from where, against which path (write-family) or command (bash-family).
@@ -845,6 +846,7 @@ Pre-tool guard shared by every harness: refuse a write into a repository's main 
   - `class RepoInfo`
 - Public functions:
   - `tool_family(name: object) -> str` — Collapse a harness's tool name to a family.
+  - `bash_trigger_free(command: str) -> bool` — Whether ``command`` provably cannot trip any bash-family deny rule.
   - `git(*args: str, cwd: str | None = None) -> str | None` — Run git, returning stripped stdout, or None on any failure.
   - `common_dir_of(directory: str) -> str | None` — Canonical git common directory for a path, or None if it is not in a repo.
   - `repo_info(directory: str) -> RepoInfo | None` — Classify a directory: which repo, worktree or main checkout, bare or not, and on which branch.
@@ -853,7 +855,7 @@ Pre-tool guard shared by every harness: refuse a write into a repository's main 
   - `parse_payload(harness: str, payload: object) -> Request | None` — Normalize a harness's native hook payload.
   - `render(harness: str | None, verdict: Verdict) -> tuple[str, int]` — Shape a verdict into the harness's own reply.
   - `build_parser() -> argparse.ArgumentParser`
-- Tested by: `test/test_guard_rails.py`, `test/test_guard_rails_claim.py`, `test/test_guard_rails_stale_base.py`, `test/test_guard_rails_topology.py`, `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`
+- Tested by: `test/test_guard_rails.py`, `test/test_guard_rails_claim.py`, `test/test_guard_rails_fast_path.py`, `test/test_guard_rails_stale_base.py`, `test/test_guard_rails_topology.py`, `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`
 
 ### `agent-scripts/harness_discovery_check.py`
 

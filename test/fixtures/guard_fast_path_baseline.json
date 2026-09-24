@@ -1,0 +1,497 @@
+{
+  "agy-bash": {
+    "audit": [
+      {
+        "decision": "allow",
+        "harness": "agy",
+        "rule": "default-allow",
+        "target": "",
+        "tool": ""
+      }
+    ],
+    "exit": 0,
+    "stdout": "{\"decision\": \"allow\"}\n"
+  },
+  "agy-nondict-call": {
+    "audit": [
+      {
+        "decision": "allow",
+        "harness": "agy",
+        "rule": "default-allow",
+        "target": "",
+        "tool": ""
+      }
+    ],
+    "exit": 0,
+    "stdout": "{\"decision\": \"allow\"}\n"
+  },
+  "agy-view": {
+    "audit": [
+      {
+        "decision": "allow",
+        "harness": "agy",
+        "rule": "default-allow",
+        "target": "",
+        "tool": ""
+      }
+    ],
+    "exit": 0,
+    "stdout": "{\"decision\": \"allow\"}\n"
+  },
+  "agy-write": {
+    "audit": [
+      {
+        "decision": "allow",
+        "harness": "agy",
+        "rule": "default-allow",
+        "target": "<REPO>/README.md",
+        "tool": "write"
+      }
+    ],
+    "exit": 0,
+    "stdout": "{\"decision\": \"allow\"}\n"
+  },
+  "broken-claude-bash-ls": {
+    "audit": [],
+    "exit": 0,
+    "stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\", \"permissionDecision\": \"deny\", \"permissionDecisionReason\": \"malformed layout pointer <HOME>/.claude/data/toolkit_state.json: expected schema 1, got 999; remove it to restore the legacy layout\"}}\n"
+  },
+  "broken-copilot-view": {
+    "audit": [],
+    "exit": 2,
+    "stdout": "{\"decision\": \"deny\", \"reason\": \"malformed layout pointer <HOME>/.claude/data/toolkit_state.json: expected schema 1, got 999; remove it to restore the legacy layout\"}\n"
+  },
+  "broken-neutral-bash-ls": {
+    "audit": [],
+    "exit": 0,
+    "stdout": "{\"decision\": \"deny\", \"reason\": \"malformed layout pointer <HOME>/.claude/data/toolkit_state.json: expected schema 1, got 999; remove it to restore the legacy layout\"}\n"
+  },
+  "claude-bash-config-read": {
+    "audit": [
+      {
+        "decision": "allow",
+        "harness": "claude",
+        "rule": "default-allow",
+        "target": "git config --get user.name",
+        "tool": "bash"
+      }
+    ],
+    "exit": 0,
+    "stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\"}}\n"
+  },
+  "claude-bash-empty-command": {
+    "audit": [
+      {
+        "decision": "allow",
+        "harness": "claude",
+        "rule": "default-allow",
+        "target": "",
+        "tool": "bash"
+      }
+    ],
+    "exit": 0,
+    "stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\"}}\n"
+  },
+  "claude-bash-hookspath-set": {
+    "audit": [
+      {
+        "decision": "deny",
+        "harness": "claude",
+        "rule": "hookspath-mutation",
+        "target": "git config core.hooksPath /tmp/x",
+        "tool": "bash"
+      }
+    ],
+    "exit": 0,
+    "stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\", \"permissionDecision\": \"deny\", \"permissionDecisionReason\": \"Setting or unsetting core.hooksPath is blocked on a protected branch -- it would disable the no-commit-on-main hook.\"}}\n"
+  },
+  "claude-bash-lower-name": {
+    "audit": [
+      {
+        "decision": "allow",
+        "harness": "claude",
+        "rule": "default-allow",
+        "target": "git status",
+        "tool": "bash"
+      }
+    ],
+    "exit": 0,
+    "stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\"}}\n"
+  },
+  "claude-bash-ls": {
+    "audit": [
+      {
+        "decision": "allow",
+        "harness": "claude",
+        "rule": "default-allow",
+        "target": "ls",
+        "tool": "bash"
+      }
+    ],
+    "exit": 0,
+    "stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\"}}\n"
+  },
+  "claude-bash-ls-quiet": {
+    "audit": [
+      {
+        "decision": "allow",
+        "harness": "claude",
+        "rule": "default-allow",
+        "target": "ls",
+        "tool": "bash"
+      }
+    ],
+    "exit": 0,
+    "stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\"}}\n"
+  },
+  "claude-bash-no-verify": {
+    "audit": [
+      {
+        "decision": "deny",
+        "harness": "claude",
+        "rule": "no-verify",
+        "target": "git commit --no-verify -m x",
+        "tool": "bash"
+      }
+    ],
+    "exit": 0,
+    "stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\", \"permissionDecision\": \"deny\", \"permissionDecisionReason\": \"git --no-verify is blocked on a protected branch -- it would skip the no-commit-on-main hook entirely.\"}}\n"
+  },
+  "claude-bash-nondict-input": {
+    "audit": [
+      {
+        "decision": "allow",
+        "harness": "claude",
+        "rule": "default-allow",
+        "target": "",
+        "tool": ""
+      }
+    ],
+    "exit": 0,
+    "stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\"}}\n"
+  },
+  "claude-bash-nonstr-command": {
+    "audit": [],
+    "exit": 1,
+    "stdout": ""
+  },
+  "claude-bash-nonstr-cwd": {
+    "audit": [],
+    "exit": 1,
+    "stdout": ""
+  },
+  "claude-bash-nonstr-path": {
+    "audit": [
+      {
+        "decision": "allow",
+        "harness": "claude",
+        "rule": "default-allow",
+        "target": "",
+        "tool": ""
+      }
+    ],
+    "exit": 0,
+    "stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\"}}\n"
+  },
+  "claude-bash-padded-name": {
+    "audit": [
+      {
+        "decision": "allow",
+        "harness": "claude",
+        "rule": "default-allow",
+        "target": "ls",
+        "tool": "bash"
+      }
+    ],
+    "exit": 0,
+    "stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\"}}\n"
+  },
+  "claude-bash-quote-splice": {
+    "audit": [
+      {
+        "decision": "deny",
+        "harness": "claude",
+        "rule": "no-verify",
+        "target": "git commit --no-ver\"\"ify -m x",
+        "tool": "bash"
+      }
+    ],
+    "exit": 0,
+    "stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\", \"permissionDecision\": \"deny\", \"permissionDecisionReason\": \"git --no-verify is blocked on a protected branch -- it would skip the no-commit-on-main hook entirely.\"}}\n"
+  },
+  "claude-bash-secret": {
+    "audit": [
+      {
+        "decision": "allow",
+        "harness": "claude",
+        "rule": "default-allow",
+        "target": "curl -H 'Authorization: [REDACTED]' x",
+        "tool": "bash"
+      }
+    ],
+    "exit": 0,
+    "stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\"}}\n"
+  },
+  "claude-edit": {
+    "audit": [
+      {
+        "decision": "allow",
+        "harness": "claude",
+        "rule": "default-allow",
+        "target": "<REPO>/README.md",
+        "tool": "write"
+      }
+    ],
+    "exit": 0,
+    "stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\"}}\n"
+  },
+  "claude-empty-stdin": {
+    "audit": [
+      {
+        "decision": "allow",
+        "harness": "claude",
+        "rule": "default-allow",
+        "target": "",
+        "tool": ""
+      }
+    ],
+    "exit": 0,
+    "stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\"}}\n"
+  },
+  "claude-glob": {
+    "audit": [
+      {
+        "decision": "allow",
+        "harness": "claude",
+        "rule": "default-allow",
+        "target": "",
+        "tool": ""
+      }
+    ],
+    "exit": 0,
+    "stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\"}}\n"
+  },
+  "claude-json-list": {
+    "audit": [
+      {
+        "decision": "allow",
+        "harness": "claude",
+        "rule": "default-allow",
+        "target": "",
+        "tool": ""
+      }
+    ],
+    "exit": 0,
+    "stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\"}}\n"
+  },
+  "claude-malformed-json": {
+    "audit": [
+      {
+        "decision": "allow",
+        "harness": "claude",
+        "rule": "default-allow",
+        "target": "",
+        "tool": ""
+      }
+    ],
+    "exit": 0,
+    "stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\"}}\n"
+  },
+  "claude-nonstr-name": {
+    "audit": [
+      {
+        "decision": "allow",
+        "harness": "claude",
+        "rule": "default-allow",
+        "target": "",
+        "tool": ""
+      }
+    ],
+    "exit": 0,
+    "stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\"}}\n"
+  },
+  "claude-read": {
+    "audit": [
+      {
+        "decision": "allow",
+        "harness": "claude",
+        "rule": "default-allow",
+        "target": "",
+        "tool": ""
+      }
+    ],
+    "exit": 0,
+    "stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\"}}\n"
+  },
+  "copilot-bad-args": {
+    "audit": [
+      {
+        "decision": "allow",
+        "harness": "copilot",
+        "rule": "default-allow",
+        "target": "",
+        "tool": ""
+      }
+    ],
+    "exit": 0,
+    "stdout": "{\"decision\": \"allow\"}\n"
+  },
+  "copilot-create": {
+    "audit": [
+      {
+        "decision": "allow",
+        "harness": "copilot",
+        "rule": "default-allow",
+        "target": "<REPO>/README.md",
+        "tool": "write"
+      }
+    ],
+    "exit": 0,
+    "stdout": "{\"decision\": \"allow\"}\n"
+  },
+  "copilot-view": {
+    "audit": [
+      {
+        "decision": "allow",
+        "harness": "copilot",
+        "rule": "default-allow",
+        "target": "",
+        "tool": ""
+      }
+    ],
+    "exit": 0,
+    "stdout": "{\"decision\": \"allow\"}\n"
+  },
+  "neutral-bash-dash-command": {
+    "audit": [],
+    "exit": 2,
+    "stdout": ""
+  },
+  "neutral-bash-dash-cwd": {
+    "audit": [],
+    "exit": 2,
+    "stdout": ""
+  },
+  "neutral-bash-empty": {
+    "audit": [
+      {
+        "decision": "allow",
+        "harness": "",
+        "rule": "default-allow",
+        "target": "",
+        "tool": "bash"
+      }
+    ],
+    "exit": 0,
+    "stdout": "{\"decision\": \"allow\", \"reason\": \"\"}\n"
+  },
+  "neutral-bash-ls": {
+    "audit": [
+      {
+        "decision": "allow",
+        "harness": "",
+        "rule": "default-allow",
+        "target": "ls",
+        "tool": "bash"
+      }
+    ],
+    "exit": 0,
+    "stdout": "{\"decision\": \"allow\", \"reason\": \"\"}\n"
+  },
+  "neutral-bash-no-verify": {
+    "audit": [
+      {
+        "decision": "deny",
+        "harness": "",
+        "rule": "no-verify",
+        "target": "git commit --no-verify",
+        "tool": "bash"
+      }
+    ],
+    "exit": 0,
+    "stdout": "{\"decision\": \"deny\", \"reason\": \"git --no-verify is blocked on a protected branch -- it would skip the no-commit-on-main hook entirely.\"}\n"
+  },
+  "neutral-read": {
+    "audit": [
+      {
+        "decision": "allow",
+        "harness": "",
+        "rule": "default-allow",
+        "target": "<REPO>/README.md",
+        "tool": ""
+      }
+    ],
+    "exit": 0,
+    "stdout": "{\"decision\": \"allow\", \"reason\": \"\"}\n"
+  },
+  "off-broken-claude-bash-ls": {
+    "audit": [],
+    "exit": 0,
+    "stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\"}}\n"
+  },
+  "off-claude-bash-ls": {
+    "audit": [
+      {
+        "decision": "allow",
+        "harness": "claude",
+        "rule": "GUARD_RAILS_OFF",
+        "target": "ls",
+        "tool": "bash"
+      }
+    ],
+    "exit": 0,
+    "stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\"}}\n"
+  },
+  "off-claude-bash-no-verify": {
+    "audit": [
+      {
+        "decision": "allow",
+        "harness": "claude",
+        "rule": "GUARD_RAILS_OFF",
+        "target": "git commit --no-verify",
+        "tool": "bash"
+      }
+    ],
+    "exit": 0,
+    "stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\"}}\n"
+  },
+  "off-claude-read": {
+    "audit": [
+      {
+        "decision": "allow",
+        "harness": "claude",
+        "rule": "default-allow",
+        "target": "",
+        "tool": ""
+      }
+    ],
+    "exit": 0,
+    "stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\"}}\n"
+  },
+  "off-copilot-view": {
+    "audit": [
+      {
+        "decision": "allow",
+        "harness": "copilot",
+        "rule": "default-allow",
+        "target": "",
+        "tool": ""
+      }
+    ],
+    "exit": 0,
+    "stdout": "{\"decision\": \"allow\"}\n"
+  },
+  "off-neutral-bash-ls": {
+    "audit": [
+      {
+        "decision": "allow",
+        "harness": "",
+        "rule": "GUARD_RAILS_OFF",
+        "target": "ls",
+        "tool": "bash"
+      }
+    ],
+    "exit": 0,
+    "stdout": "{\"decision\": \"allow\", \"reason\": \"\"}\n"
+  }
+}
