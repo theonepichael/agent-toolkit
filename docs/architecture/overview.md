@@ -100,7 +100,7 @@ flowchart TD
     GateCheck -->|No| Handoff[7. Executor Handoff]
     Critique --> Handoff
     Handoff --> TDD[8. Red / Green TDD]
-    TDD --> Verify[9. Verify: Full Suite & Linters]
+    TDD --> Verify[9. Stage Intended Files, Verify Staged Tree]
     Verify --> GateCommit[10. User Gate: Commit Approval]
     GateCommit --> GateLand[11. User Gate: Land / Push / Cleanup]
     GateLand --> Close[12. Review & Approve in dev_status]

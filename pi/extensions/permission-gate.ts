@@ -49,12 +49,13 @@ const ALLOW_PATTERNS: string[] = [
   "uv run ruff check*",
   "uv run ruff format*",
   // backlog-item --auto's own worktree/baseline/verify steps (CLAUDE.md's
-  // worktree-first policy, backlog-item.md steps 3/4/9). git add/git commit
-  // stay off this list on purpose -- backlog-item's steps 10-11 require
-  // those to stop for live user approval even in --auto mode.
+  // worktree-first policy, backlog-item.md steps 3/4/9). Staging is part of
+  // step 9 and is distinct from the user approval required for commit.
+  // git commit stays off this list so steps 10-11 still stop for approval.
   "python3 ~/.agent-toolkit/scripts/worktree.py*",
   "git worktree add*",
   "git -C * worktree add*",
+  "git add*",
   "npm install*",
   "npm test*",
   "npm run test*",
@@ -117,7 +118,7 @@ export function patternToRegExp(pattern: string): RegExp {
   return new RegExp(`^${escaped}$`);
 }
 
-const ALLOW_REGEXPS = ALLOW_PATTERNS.map(patternToRegExp);
+const ALLOW_REGEXPS = [...ALLOW_PATTERNS.map(patternToRegExp), /^git -C \S+ add(?: .*)?$/];
 const DENY_REGEXPS = DENY_PATTERNS.map(patternToRegExp);
 
 export type Verdict = "allow" | "deny" | "ask";

@@ -663,7 +663,7 @@ don't offer the opencode/GLM route at all.""",
             "names, then the minimal implementation."
         ),
         "STEP10_BODY": (
-            "Show the full diff. Stop — AskUserQuestion for explicit commit "
+            "Show the full staged diff with `git diff --cached`. Stop — AskUserQuestion for explicit commit "
             "approval. No exceptions for being mid-pipeline, and no exception for "
             "code an external executor wrote (CLAUDE.md)."
         ),
@@ -870,7 +870,9 @@ conversation:
     including `git commit` — the prompt is the only enforcement) — treat
     like the step 9 rejection case below, using the pre-handoff SHA (not
     `HEAD`) as the reset target. Unchanged → proceed to step 9 as normal;
-    the diff comes from `git -C <worktree> diff` directly, the log isn't
+    proceed to step 9, where intended files must be staged and the
+    worktree/index delta must be empty before verification; review the staged
+    tree with `git diff --cached`, not only an unstaged diff. The log isn't
     needed on a clean run.
 
   Step 9 rejection/rework path — if review finds the diff unacceptable
@@ -1165,7 +1167,7 @@ conversation:
             "names, then the minimal implementation."
         ),
         "STEP10_BODY": (
-            "Show the full diff. Stop — use the `question` tool for explicit "
+            "Show the full staged diff with `git diff --cached`. Stop — use the `question` tool for explicit "
             "commit approval. No exceptions for being mid-pipeline, and no "
             "exception for code an external executor wrote (the shared "
             "instructions file)."
@@ -1367,7 +1369,7 @@ don't offer the cheaper-model branch at all.""",
             "names, then the minimal implementation."
         ),
         "STEP10_BODY": """\
-Show the full diff. Ask for explicit commit approval, then stop and yield
+Show the full staged diff with `git diff --cached`. Ask for explicit commit approval, then stop and yield
 the turn. Do not run `git commit` under any circumstances until the user's
 next message contains an explicit yes — stating the question is not the
 same as getting an answer. No exceptions for being mid-pipeline, and no
@@ -1576,7 +1578,7 @@ don't offer the cheaper-model branch at all.""",
         "STEP8_BODY": """\
 TDD in the worktree: a failing test that proves the gap the plan names, then the minimal implementation.""",
         "STEP10_BODY": """\
-Show the full diff. Ask for explicit commit approval, then stop and yield
+Show the full staged diff with `git diff --cached`. Ask for explicit commit approval, then stop and yield
 the turn. Do not run `git commit` under any circumstances until the user's
 next message contains an explicit yes — stating the question is not the
 same as getting an answer. No exceptions for being mid-pipeline, and no
@@ -1763,7 +1765,7 @@ structured-choice tool at all, so plain text is the only option there):
             "names, then the minimal implementation."
         ),
         "STEP10_BODY": """\
-Show the full diff. Stop — use the `question` tool for explicit commit
+Show the full staged diff with `git diff --cached`. Stop — use the `question` tool for explicit commit
 approval, recommended option first (e.g. "Yes, commit (Recommended)" / "No,
 don't commit"), per CLAUDE.md's judgment-call convention. No exceptions for
 being mid-pipeline, and no exception for code an external executor wrote

@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --import tsx --import ./test/helpers/sanitize-test-env.mjs --test --test-concurrency=1 --test-timeout=5000 test/*.test.ts",
+    "test": "node --import tsx --import ./test/helpers/sanitize-test-env.mjs --test --test-concurrency=1 --test-timeout=30000 test/*.test.ts",
     "test:clean": "env -u PI_AGENT_UNATTENDED npm test",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint extensions test",

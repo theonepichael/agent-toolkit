@@ -182,15 +182,24 @@ don't offer the cheaper-model branch at all.
 TDD in the worktree: a failing test that proves the gap the plan names, then the minimal implementation.
 
 ## 9. Verify
-Run the full suite (and lint, if present) in the worktree and show the output — "should work" is not verification (the shared instructions file).
+Stage every intended deliverable, without staging unrelated worktree changes,
+then ensure the worktree matches the staged index before checking it. Run the
+target repository's full suite and its own lint/type/format checks against
+that staged tree. Review `git status` and `git diff --cached` afterward; if
+the intended content changes or a retry edits files, stage those intended
+changes again, re-establish the clean worktree/index delta, and rerun the
+checks. Show the output — "should work" is not verification
+(the shared instructions file).
 
 ## 10. Gate: commit
-Show the full diff. Ask for explicit commit approval, then stop and yield
+Show the full staged diff with `git diff --cached`. Ask for explicit commit approval, then stop and yield
 the turn. Do not run `git commit` under any circumstances until the user's
 next message contains an explicit yes — stating the question is not the
 same as getting an answer. No exceptions for being mid-pipeline, and no
 exception for code an external executor wrote (the shared instructions
-file).
+file). The proposed commit is the staged tree: review
+`git status` and `git diff --cached`, not only an unstaged `git diff`, before
+requesting approval.
 
 ## 11. Gate: commit-then-land
 On approval, commit (conventional format) — this gate is never bundled with

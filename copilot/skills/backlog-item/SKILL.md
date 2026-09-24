@@ -188,7 +188,9 @@ conversation:
     including `git commit` — the prompt is the only enforcement) — treat
     like the step 9 rejection case below, using the pre-handoff SHA (not
     `HEAD`) as the reset target. Unchanged → proceed to step 9 as normal;
-    the diff comes from `git -C <worktree> diff` directly, the log isn't
+    proceed to step 9, where intended files must be staged and the
+    worktree/index delta must be empty before verification; review the staged
+    tree with `git diff --cached`, not only an unstaged diff. The log isn't
     needed on a clean run.
 
   Step 9 rejection/rework path — if review finds the diff unacceptable
@@ -208,13 +210,22 @@ worktree: a failing test that proves the gap the plan names, then the
 minimal implementation.
 
 ## 9. Verify
-Run the full suite (and lint, if present) in the worktree and show the output — "should work" is not verification (the shared instructions file).
+Stage every intended deliverable, without staging unrelated worktree changes,
+then ensure the worktree matches the staged index before checking it. Run the
+target repository's full suite and its own lint/type/format checks against
+that staged tree. Review `git status` and `git diff --cached` afterward; if
+the intended content changes or a retry edits files, stage those intended
+changes again, re-establish the clean worktree/index delta, and rerun the
+checks. Show the output — "should work" is not verification
+(the shared instructions file).
 
 ## 10. Gate: commit
 Show the full diff (read from the worktree, not root). Stop — ask in
 plain text for explicit commit approval, stating your recommendation
 first. No exceptions for being mid-pipeline, and no exception for code an
-external executor wrote (the shared instructions file).
+external executor wrote (the shared instructions file). The proposed commit is the staged tree: review
+`git status` and `git diff --cached`, not only an unstaged `git diff`, before
+requesting approval.
 
 ## 11. Gate: commit-then-land
 On approval, commit (conventional format) — this gate is never bundled
