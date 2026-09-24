@@ -1186,7 +1186,7 @@ def render(
         if not _agent_quiet():
             print(f"item-map: rev={rev}", file=err)
         if dispatch:
-            _maybe_dispatch_recap_regen()
+            _maybe_dispatch_recap_regen(current_fingerprint)
         return
 
     color = _use_color(out)
@@ -1350,7 +1350,7 @@ def render(
         print(f"item-map: rev={rev} {map_str}", file=err)
 
     if dispatch:
-        _maybe_dispatch_recap_regen()
+        _maybe_dispatch_recap_regen(current_fingerprint)
 
 
 # ── recap: event journal ────────────────────────────────────────────────────
@@ -1516,8 +1516,14 @@ def _regen_lock(*, blocking: bool) -> Iterator[bool]:
                 fcntl.flock(f, fcntl.LOCK_UN)
 
 
-def _maybe_dispatch_recap_regen() -> None:
+def _maybe_dispatch_recap_regen(fingerprint: str | None = None) -> None:
     """Spawn a detached recap-regen child if it looks worth refreshing.
+
+    ``fingerprint`` lets a caller pass a board fingerprint it already
+    computed from the items it has loaded (``render`` has one from the
+    board it just rendered) so this freshness check need not reload the
+    whole store to recompute it. When omitted, the live fingerprint is
+    computed here.
 
     Never blocks and never calls a backend itself — this only decides
     whether to spawn ``_internal-regen`` as a fully detached child process.
@@ -1550,9 +1556,10 @@ def _maybe_dispatch_recap_regen() -> None:
     cache = _load_recap_cache()
     if cache is not None:
         age = _recap_cache_age_seconds(cache)
-        fingerprint_matches = (
-            cache.get("board_fingerprint") == _current_board_fingerprint()
+        live_fingerprint = (
+            fingerprint if fingerprint is not None else _current_board_fingerprint()
         )
+        fingerprint_matches = cache.get("board_fingerprint") == live_fingerprint
         if age is not None and age <= RECAP_TTL_SECONDS and fingerprint_matches:
             return  # fresh and still accurate -- nothing to refresh
     subprocess.Popen(
@@ -1913,7 +1920,10 @@ def cmd_internal_regen() -> None:
     calling any backend if another regen is already in flight, or if a newer
     mutation has written a journal line within the trailing debounce window
     (it spawned its own child, which becomes the one that does the work --
-    see :data:`RECAP_DEBOUNCE_SECONDS`).
+    see :data:`RECAP_DEBOUNCE_SECONDS`), or if the recap cache is already
+    fresh and accurate for the live board -- a render-triggered child that
+    lands here after a quiet window would otherwise regenerate an identical
+    recap.
 
     The sleep happens *before* taking :func:`_regen_lock`, not while holding
     it: a burst's last child must not find the lock held by an earlier
@@ -1927,6 +1937,21 @@ def cmd_internal_regen() -> None:
     last_age = _journal_last_entry_age_seconds()
     if last_age is not None and last_age < RECAP_DEBOUNCE_SECONDS:
         return
+    # A render-triggered child that lands here after one debounce window with
+    # no newer mutation may still find the recap cache fresh and accurate:
+    # its board fingerprint still matches the live board and it is within
+    # TTL. Regenerating would only produce an identical recap, so skip the
+    # backend call. (The reload is unavoidable in this detached child but is
+    # paid at most once per quiet burst, not once per render.)
+    cache = _load_recap_cache()
+    if cache is not None:
+        age = _recap_cache_age_seconds(cache)
+        if (
+            age is not None
+            and age <= RECAP_TTL_SECONDS
+            and cache.get("board_fingerprint") == _current_board_fingerprint()
+        ):
+            return
     with _regen_lock(blocking=False) as acquired:
         if acquired:
             _run_recap_regen()

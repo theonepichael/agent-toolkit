@@ -433,6 +433,31 @@ class AppendJsonlTests(unittest.TestCase):
         self.assertEqual(len(lines), 2)  # old line kept, new line appended
         self.assertEqual(json.loads(lines[1])["i"], 1)
 
+    def test_rotation_failure_is_silent_when_on_error_silent(self) -> None:
+        """Follow-up: a non-FileNotFoundError OSError during rotation (e.g.
+        os.replace raises PermissionError) must emit nothing on stderr when
+        the caller asked to stay silent -- the timing writer passes
+        on_error='silent', so its rotation hiccups must not leak to stderr."""
+        path = self.tmp / "out.jsonl"
+        path.write_text(json.dumps({"i": 0, "pad": "x" * 1024}) + "\n")
+
+        def bad_replace(src: object, dst: object) -> object:
+            raise PermissionError("rotation denied")
+
+        captured = io.StringIO()
+        with (
+            patch.object(os, "replace", side_effect=bad_replace),
+            patch("sys.stderr", new=captured),
+        ):
+            cli_common.append_jsonl(
+                path, {"i": 1}, max_bytes=1, on_error="silent"
+            )
+        self.assertEqual(captured.getvalue(), "")
+        # The append still proceeds despite the silent rotation failure.
+        lines = path.read_text().splitlines()
+        self.assertEqual(len(lines), 2)  # old line kept, new line appended
+        self.assertEqual(json.loads(lines[1])["i"], 1)
+
 
 class RedactSecretsTests(unittest.TestCase):
     """Tests for redact_secrets: named patterns, redact-then-truncate."""
