@@ -17,8 +17,8 @@ import sys
 import tempfile
 import time
 import unittest
-from collections.abc import Callable
-from contextlib import AbstractContextManager
+from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -715,7 +715,12 @@ class RunOpencodeTests(_ContainmentStubbed):
             llm_backends.run_opencode("prompt", model=None, timeout=60)
         argv, timeout = mock_run.call_args[0]
         self.assertEqual(timeout, 60)
-        self.assertEqual(mock_run.call_args[1], {"retries": 1})
+        # opencode now also asks for output-stall detection, not a blind
+        # retry-after-timeout: a gateway stall never produces output, so the
+        # useful action is a fast kill + retry, not waiting the whole timeout.
+        self.assertEqual(
+            mock_run.call_args[1], {"retries": 1, "stall_seconds": 90}
+        )
         self.assertEqual(argv[:3], ["unshare", "-Urm", "--map-root-user"])
         self.assertEqual(argv[argv.index("--agent") + 1], "adversary")
         self.assertNotIn("-m", argv)
@@ -1441,5 +1446,362 @@ class GroundedModeTests(unittest.TestCase):
         self.assertIn("--allow-tool=view", cmd)
 
 
-if __name__ == "__main__":
+class _StallStream:
+    """A fake stdout/stderr: carries a fixed fileno for the select/os.read fakes."""
+
+    def __init__(self, harness: "_StallHarness", fd: int) -> None:
+        self._harness = harness
+        self._fd = fd
+
+    def fileno(self) -> int:
+        return self._fd
+
+
+class _FakeProc:
+    """A subprocess stand-in: the Popen-ish surface `_run_command` and
+    `_kill_active_process` actually touch (stdout/stderr filenos, pid, poll,
+    wait, communicate)."""
+
+    def __init__(self, harness: "_StallHarness") -> None:
+        self._harness = harness
+        self.pid = 12345
+        self.returncode: int | None = None
+        self.stdout = _StallStream(harness, harness.STDOUT_FD)
+        self.stderr = _StallStream(harness, harness.STDERR_FD)
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+    def wait(self, timeout: float | None = None) -> int:
+        if self._harness._wait_raises:
+            # Model a hung reaping attempt — but only once: in the real world
+            # the caller SIGKILLs the process group after the wait timeout, and
+            # a post-SIGKILL wait() always succeeds, so subsequent waits (the
+            # kill + drain path's `_kill_active_process`) behave normally.
+            self._harness._wait_raises = False
+            raise subprocess.TimeoutExpired(
+                self._harness.active.get("cmd", "fake"), timeout
+            )
+        self.returncode = self._harness.active.get("returncode", 0)  # type: ignore[arg-type]
+        return self.returncode
+
+    def communicate(self, timeout: float | None = None) -> tuple[str, str]:
+        self.returncode = self._harness.active.get("returncode", 0)  # type: ignore[arg-type]
+        return "", ""
+
+
+class _StallHarness:
+    """Fake subprocess + clock + select for `_run_command`'s stall detection.
+
+    ``attempts`` is a list of per-Popen attempt specs, consumed in order (so a
+    retry starts a fresh attempt). Each spec is a dict with optional ``stdout``
+    and ``stderr`` event lists (each ``(deliver_after_seconds, bytes)``, times
+    relative to when that attempt starts), an ``exit_at`` time (both streams hit
+    EOF then; relative to attempt start), and ``returncode``. No real
+    subprocess and no real sleep: the clock only advances inside ``select()`` to
+    the next scripted event or the wait deadline, and ``os.read``/``select`` are
+    faked, so the stall window is observable in fast, deterministic tests.
+    """
+
+    STDOUT_FD = 3
+    STDERR_FD = 4
+
+    def __init__(
+        self,
+        attempts: list[dict[str, object]],
+        *,
+        set_returncode_on_eof: bool = True,
+        wait_raises: bool = False,
+    ) -> None:
+        self._attempts = list(attempts)
+        self._next = 0
+        self.clock = 0.0
+        self.active: dict[str, object] = {}
+        self._current_proc: _FakeProc | None = None
+        self._set_rc_on_eof = set_returncode_on_eof
+        self._wait_raises = wait_raises
+        self._buf: dict[int, bytes] = {self.STDOUT_FD: b"", self.STDERR_FD: b""}
+        self._idx: dict[int, int] = {self.STDOUT_FD: 0, self.STDERR_FD: 0}
+
+    # ---- fakes wired into llm_backends ----
+    def monotonic(self) -> float:
+        return self.clock
+
+    def popen(self, *args: object, **kwargs: object) -> _FakeProc:
+        spec = dict(self._attempts[self._next])
+        self._next += 1
+        spec["_start"] = self.clock
+        self.active = spec
+        self._buf = {self.STDOUT_FD: b"", self.STDERR_FD: b""}
+        self._idx = {self.STDOUT_FD: 0, self.STDERR_FD: 0}
+        self._current_proc = _FakeProc(self)
+        return self._current_proc
+
+    def _events(self, fd: int) -> list[tuple[float, bytes]]:
+        key = "stdout" if fd == self.STDOUT_FD else "stderr"
+        return self.active.get(key, [])  # type: ignore[return-value]
+
+    def _eof(self, fd: int) -> bool:
+        events = self._events(fd)
+        base = self.active["_start"]  # type: ignore[index]
+        exit_at = self.active.get("exit_at", float("inf"))  # type: ignore[arg-type]
+        return self._idx[fd] >= len(events) and self.clock >= (exit_at + base)
+
+    def select(
+        self,
+        rlist: list[int],
+        wlist: list[int],
+        xlist: list[int],
+        timeout: float | None,
+    ) -> tuple[list[int], list[int], list[int]]:
+        now = self.clock
+        next_event = float("inf")
+        for fd in (self.STDOUT_FD, self.STDERR_FD):
+            events = self._events(fd)
+            if self._idx[fd] < len(events):
+                next_event = min(
+                    next_event, events[self._idx[fd]][0] + self.active["_start"]
+                )
+        target = min(now + (timeout or 0), next_event)
+        self.clock = target
+        for fd in (self.STDOUT_FD, self.STDERR_FD):
+            events = self._events(fd)
+            base = self.active["_start"]
+            while (
+                self._idx[fd] < len(events)
+                and (events[self._idx[fd]][0] + base) <= target
+            ):
+                self._buf[fd] += events[self._idx[fd]][1]
+                self._idx[fd] += 1
+        ready: list[int] = []
+        for fd in rlist:
+            if self._buf[fd]:
+                ready.append(fd)
+            elif self._eof(fd):
+                ready.append(fd)
+        return ready, [], []
+
+    def read(self, fd: int, n: int) -> bytes:
+        if self._eof(fd) and not self._buf[fd]:
+            # Both streams at EOF means the process completed; mirror Popen
+            # setting returncode once the streams close — unless the test wants
+            # returncode to stay None until wait() is called (Bug 1 repro).
+            if (
+                self._set_rc_on_eof
+                and self._eof(self.STDOUT_FD)
+                and self._eof(self.STDERR_FD)
+                and self._current_proc is not None
+                and self._current_proc.returncode is None
+            ):
+                self._current_proc.returncode = self.active.get(
+                    "returncode", 0
+                )  # type: ignore[arg-type]
+            return b""
+        data = self._buf[fd][:n]
+        self._buf[fd] = self._buf[fd][n:]
+        return data
+
+
+@contextmanager
+def _patched_harness(harness: _StallHarness) -> Iterator[None]:
+    """Patch the subprocess/clock/select primitives `_run_command` uses."""
+    with (
+        patch.object(llm_backends.subprocess, "Popen", harness.popen),
+        patch.object(llm_backends.select, "select", harness.select),
+        patch.object(llm_backends.time, "monotonic", harness.monotonic),
+        patch.object(llm_backends.os, "read", harness.read),
+        patch.object(llm_backends.os, "killpg", lambda *a, **k: None),
+        patch.object(llm_backends.os, "getpgid", lambda pid: pid),
+    ):
+        yield
+
+
+class StallDetectionTests(unittest.TestCase):
+    """`_run_command`'s output-stall detection, with faked process/clock/select.
+
+    The earlier retry tests (test_60/test_61) sleep for real; these exercise the
+    stall path without real subprocesses or sleeps, per the backlog plan's
+    "must not sleep for real (patch the clock/select)" requirement.
+    """
+
+    def test_stall_raises_with_stalled_flag_and_no_retry(self) -> None:
+        # A process that emits one line then goes silent: a silent gateway
+        # stall. With retries=0 it raises immediately, flagged stalled=True, and
+        # was killed at the stall window (~0.2s), not the 10s overall cap.
+        harness = _StallHarness(
+            [{"stdout": [(0.1, b"step_start\n")], "exit_at": float("inf")}]
+        )
+        with _patched_harness(harness):
+            with self.assertRaises(llm_backends.BackendTimeoutError) as cm:
+                llm_backends._run_command(
+                    ["opencode"], 10, retries=0, stall_seconds=0.2
+                )
+        self.assertTrue(cm.exception.stalled)
+        self.assertIn("stalled after 0.2s", str(cm.exception))
+        self.assertIsNone(llm_backends._active_process)
+        # No retry: only the single attempt was ever spawned.
+        self.assertEqual(harness._next, 1)
+
+    def test_slow_but_progressing_is_not_killed(self) -> None:
+        # A slow-but-progressing run: bytes keep arriving inside each stall
+        # window. It must complete normally, never be killed as a stall, and
+        # never be retried.
+        harness = _StallHarness(
+            [
+                {
+                    "stdout": [(0.1, b"a\n"), (0.2, b"b\n"), (0.3, b"c\n")],
+                    "exit_at": 0.4,
+                    "returncode": 0,
+                }
+            ]
+        )
+        with _patched_harness(harness):
+            rc, out, err = llm_backends._run_command(
+                ["opencode"], 10, retries=1, stall_seconds=0.2
+            )
+        self.assertEqual(rc, 0)
+        self.assertEqual(out, "a\nb\nc\n")
+        self.assertEqual(harness._next, 1)
+
+    def test_full_timeout_is_not_a_stall_and_does_not_retry(self) -> None:
+        # One event far beyond the overall timeout, but within the much larger
+        # stall window: this is a (very slow) timeout, not a stall. It must NOT
+        # retry and must report stalled=False.
+        harness = _StallHarness(
+            [{"stdout": [(5.0, b"late\n")], "exit_at": float("inf")}]
+        )
+        with _patched_harness(harness):
+            with self.assertRaises(llm_backends.BackendTimeoutError) as cm:
+                llm_backends._run_command(
+                    ["opencode"], 2, retries=1, stall_seconds=10
+                )
+        self.assertFalse(cm.exception.stalled)
+        self.assertIn("timed out after 2s", str(cm.exception))
+        self.assertEqual(harness._next, 1)
+
+    def test_complete_reaps_process_before_returning_returncode(self) -> None:
+        # Both pipes hit EOF, but a real process can close its pipes a moment
+        # before it exits, leaving returncode None. `_run_command` must reap
+        # the process (wait()) and return its real exit code — not a None that
+        # every caller would misread as error. The fake's returncode stays
+        # None until wait() is called, so a passing test proves wait() ran.
+        harness = _StallHarness(
+            [{"stdout": [(0.1, b"out\n")], "exit_at": 0.2, "returncode": 7}],
+            set_returncode_on_eof=False,
+        )
+        with _patched_harness(harness):
+            rc, out, err = llm_backends._run_command(
+                ["opencode"], 10, retries=1, stall_seconds=0.2
+            )
+        self.assertEqual(rc, 7)
+        self.assertEqual(out, "out\n")
+
+    def test_complete_wait_timeout_falls_to_kill_and_drain(self) -> None:
+        # EOF on both pipes but the process never actually exits within the
+        # remaining overall budget: the completion read was a red herring, so
+        # the run must go down the kill + drain timeout path — raising a
+        # non-stalled BackendTimeoutError — rather than returning a None
+        # returncode.
+        harness = _StallHarness(
+            [{"stdout": [(0.1, b"out\n")], "exit_at": 0.2, "returncode": 7}],
+            set_returncode_on_eof=False,
+            wait_raises=True,
+        )
+        with _patched_harness(harness):
+            with self.assertRaises(llm_backends.BackendTimeoutError) as cm:
+                llm_backends._run_command(
+                    ["opencode"], 2, retries=0, stall_seconds=0.2
+                )
+        self.assertFalse(cm.exception.stalled)
+        self.assertIn("timed out after 2s", str(cm.exception))
+        self.assertIn("(attempt 1 timed out)", str(cm.exception))
+
+    def test_stall_then_timeout_suffix_names_both_attempts(self) -> None:
+        # Attempt 1 stalls and retries; attempt 2 runs out the overall
+        # timeout. A full timeout does not retry, so the plain-timeout suffix
+        # "(all N attempts timed out)" would be wrong here — the message must
+        # name each attempt's actual outcome.
+        harness = _StallHarness(
+            [
+                {"stdout": [(0.1, b"step_start\n")], "exit_at": float("inf")},
+                # Attempt 2 keeps bytes arriving every 0.15s (inside each 0.2s
+                # stall window) until the 2s overall cap expires: a slow run,
+                # not a stall.
+                {
+                    "stdout": [(0.1 + 0.15 * k, b"x") for k in range(13)],
+                    "exit_at": float("inf"),
+                },
+            ]
+        )
+        with _patched_harness(harness):
+            with self.assertRaises(llm_backends.BackendTimeoutError) as cm:
+                llm_backends._run_command(
+                    ["opencode"], 2, retries=1, stall_seconds=0.2
+                )
+        self.assertFalse(cm.exception.stalled)
+        self.assertIn(
+            "timed out after 2s — killed (attempt 1 stalled; attempt 2 timed out)",
+            str(cm.exception),
+        )
+        self.assertEqual(harness._next, 2)
+
+    def test_stall_then_stall_suffix_names_both_attempts(self) -> None:
+        # Both attempts stall (the gateway is down, not slow). With retries=1
+        # the second stall is terminal: the suffix must read "(attempt 1
+        # stalled; attempt 2 stalled)", not a blanket "all N attempts timed
+        # out".
+        harness = _StallHarness(
+            [
+                {"stdout": [(0.1, b"step_start\n")], "exit_at": float("inf")},
+                {"stdout": [(0.1, b"step_start\n")], "exit_at": float("inf")},
+            ]
+        )
+        with _patched_harness(harness):
+            with self.assertRaises(llm_backends.BackendTimeoutError) as cm:
+                llm_backends._run_command(
+                    ["opencode"], 2, retries=1, stall_seconds=0.2
+                )
+        self.assertTrue(cm.exception.stalled)
+        self.assertIn(
+            "stalled after 0.2s with no output — killed (attempt 1 stalled;"
+            " attempt 2 stalled)",
+            str(cm.exception),
+        )
+        self.assertEqual(harness._next, 2)
+
+
+class StallRetryTelemetryTests(_LogPathRedirected):
+    """A stall-triggered retry records fallback_reason="stall" in the telemetry."""
+
+    def test_stall_retry_records_fallback_reason_stall(self) -> None:
+        # Attempt 0 stalls (silent after one line); attempt 1 recovers with
+        # output. The single backend-call record for the whole run must carry
+        # fallback_reason="stall" and a success outcome.
+        harness = _StallHarness(
+            [
+                {"stdout": [(0.1, b"step_start\n")], "exit_at": float("inf")},
+                {"stdout": [(0.1, b"done\n")], "exit_at": 0.2, "returncode": 0},
+            ]
+        )
+        with (
+            _patched_harness(harness),
+            patch.object(llm_backends, "_backend_call_log_path", lambda: self.log_path),
+        ):
+            with llm_backends._track_backend_call("opencode", "m", "p"):
+                rc, out, err = llm_backends._run_command(
+                    ["opencode"], 10, retries=1, stall_seconds=0.2
+                )
+        self.assertEqual(rc, 0)
+        self.assertEqual(out, "done\n")
+        records = _read_jsonl(self.log_path)
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["outcome"], "success")
+        self.assertEqual(records[0]["fallback_reason"], "stall")
+
+
+def _run_unittest() -> None:
     test_bootstrap.run_unittest_main(verbosity=1)
+
+
+if __name__ == "__main__":
+    _run_unittest()

@@ -641,15 +641,20 @@ class RunOpencodeTests(unittest.TestCase):
         self,
     ) -> tuple[Callable[..., tuple[int, str, str]], dict[str, list[str] | int]]:
         """Return a `_run_command` side-effect capturing its argv and timeout, plus the box."""
-        box: dict[str, list[str] | int] = {}
+        box: dict[str, object] = {}
 
         def capture(
-            cmd: list[str], timeout: int | None = None, *, retries: int = 0
+            cmd: list[str],
+            timeout: int | None = None,
+            *,
+            retries: int = 0,
+            stall_seconds: float | None = None,
         ) -> tuple[int, str, str]:
             box["cmd"] = cmd
             if timeout is not None:
                 box["timeout"] = timeout
             box["retries"] = retries
+            box["stall_seconds"] = stall_seconds
             return (
                 0,
                 json.dumps({"type": "text", "part": {"text": "critique"}}) + "\n",
@@ -741,7 +746,11 @@ class RunOpencodeTests(unittest.TestCase):
         capture, box = self._capture_cmd()
         with patch.object(second_opinion, "_run_command", side_effect=capture):
             second_opinion.run_opencode("my prompt")
+        # A stall (no output) is the recoverable failure mode, not a full
+        # timeout: ask for one retry after a ~90s output stall, not a blind
+        # retry-after-timeout (production retries succeeded 0 of 6).
         self.assertEqual(box["retries"], 1)
+        self.assertEqual(box["stall_seconds"], 90)
 
     def test_60_tool_use_event_raises_backend_error(self) -> None:
         # Regression: the adversary agent must be stateless and text-only; a

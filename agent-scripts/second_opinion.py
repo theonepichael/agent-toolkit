@@ -835,7 +835,11 @@ def _handle_termination(signum: int, frame: FrameType | None) -> NoReturn:
 
 
 def _run_command(
-    cmd: list[str], timeout: int | None = None, *, retries: int = 0
+    cmd: list[str],
+    timeout: int | None = None,
+    *,
+    retries: int = 0,
+    stall_seconds: float | None = None,
 ) -> tuple[int, str, str]:
     """Run ``cmd`` as a subprocess, capturing its output.
 
@@ -844,14 +848,16 @@ def _run_command(
     *this* module's global at call time, matching pre-extraction behavior for
     anything that patches it. ``timeout`` defaults to
     :data:`BACKEND_TIMEOUT_SECONDS` when not given (``None``); callers with a
-    resolved per-backend override pass their own value. ``retries`` is
-    passed straight through to :func:`llm_backends._run_command` — see its
-    docstring.
+    resolved per-backend override pass their own value. ``retries`` and
+    ``stall_seconds`` are passed straight through to
+    :func:`llm_backends._run_command` — see its docstring (the opencode runner
+    sets ``stall_seconds=90`` for output-stall detection).
     """
     return llm_backends._run_command(
         cmd,
         timeout if timeout is not None else BACKEND_TIMEOUT_SECONDS,
         retries=retries,
+        stall_seconds=stall_seconds,
     )
 
 
@@ -955,6 +961,14 @@ def run_opencode(
     ``model_index`` picks an entry from ``SECOND_OPINION_OPENCODE_MODEL_POOL``
     if that's set; otherwise unset/empty means the live opencode config's
     model.
+
+    Retries once, but only after an *output stall* — not after a full timeout
+    (``_run_command`` is passed ``stall_seconds=90``). A silent gateway stall
+    produces no output, so the only useful action is a fast kill + retry, not
+    waiting the whole ``timeout``; the 2026-09 efficiency analysis measured
+    production-length retries (450s cap) succeeding 0 of 6. A successful
+    stall-retry is recorded in ``backend_calls.jsonl`` with
+    ``fallback_reason="stall"``.
     """
     model = _resolve_pooled_model(
         "SECOND_OPINION_OPENCODE_MODEL_POOL",
@@ -973,6 +987,13 @@ def run_opencode(
             default=max(BACKEND_TIMEOUT_SECONDS, _OPENCODE_TIMEOUT_SECONDS),
         ),
         retries=1,
+        # Stall, don't blind-retry: stream the child's stdout and kill it the
+        # moment no byte arrives for ~90s (a silent gateway stall), then retry
+        # once. The 2026-09 efficiency analysis measured production-length
+        # retries (450s cap) succeeding 0 of 6 — waiting the full timeout only
+        # fails slower. A slow-but-progressing run is left to the overall
+        # timeout without a retry.
+        stall_seconds=90,
     )
     events = _opencode_json_events(stdout)
     allowed = {"read", "grep", "glob"} if mode == "grounded" else None
