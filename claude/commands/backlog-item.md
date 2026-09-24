@@ -174,7 +174,10 @@ merge target; planning-only items with no attributable local work
 pass. If `approve` refuses citing an unmet gate,
 actually check each criterion from `show <slug|N>` against the diff — don't
 pass it reflexively — then cover every criterion with evidence:
-`dev_status.py run <slug|N> -- <command>` executes and records a command,
+`dev_status.py run <slug|N> -- <command>` executes and records a command —
+in the item's own worktree by default; once that is gone it refuses unless
+the main checkout is on the merge target with the work merged, so pass
+`--cwd <a checkout of the merge target>` —
 and `gate-pass <slug|N> '{"coverage": {"<N>": "run:<run_id>" or
 "manual:<note>"}}'` refuses until each criterion cites a recorded run or a
 manual note. Then retry `approve`. Display the full dashboard stdout these

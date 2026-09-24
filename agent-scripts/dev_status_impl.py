@@ -3047,13 +3047,24 @@ def cmd_runs(args: argparse.Namespace) -> None:
         cli_common.qprint(f"[runs] {slug}: no runs recorded", quiet=args.quiet)
         return
     cli_common.qprint(f"[runs] {slug}: {len(runs)} recorded run(s)", quiet=args.quiet)
+    for line in format_run_rows(runs):
+        cli_common.qprint(line, quiet=args.quiet)
+
+
+def format_run_rows(runs: list[RunRecord]) -> list[str]:
+    """One ``runs`` listing line per record, naming the commit and checkout.
+
+    Rows recorded before ``head`` existed show ``-`` in its place.
+    """
+    lines: list[str] = []
     for run in runs:
-        cli_common.qprint(
+        head = run.get("head") or "-"
+        lines.append(
             f"  {run.get('run_id', '?')}  {_run_state(run)}  "
             f"{run.get('started_at', '?')}  {run.get('duration_s', '?')}s  "
-            f"{run.get('command', '?')}",
-            quiet=args.quiet,
+            f"{head[:12]} {run.get('cwd', '?')}  {run.get('command', '?')}"
         )
+    return lines
 
 
 def cmd_backfill_gate(args: argparse.Namespace) -> None:
@@ -3996,7 +4007,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         metavar="PATH",
-        help="working directory for command execution (defaults to repo root of item's related_files, or session cwd)",
+        help=(
+            "working directory for the command (default: the item's own "
+            "worktree; else a related repo's main checkout only when it is on "
+            "the item's merge target with the work merged; else refuse. With no "
+            "related repo, the session cwd)"
+        ),
     )
     p.add_argument(
         "command",
