@@ -202,6 +202,10 @@ src = "agent-scripts/gen_interfaces.py"
 dest = "~/.agent-toolkit/scripts/gen_interfaces.py"
 
 [[link]]
+src = "agent-scripts/gen_keybinds.py"
+dest = "~/.agent-toolkit/scripts/gen_keybinds.py"
+
+[[link]]
 src = "agent-scripts/gen_second_opinion.py"
 dest = "~/.agent-toolkit/scripts/gen_second_opinion.py"
 

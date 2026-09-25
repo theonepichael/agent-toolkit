@@ -281,22 +281,41 @@ Source: [opencode.ai/docs/keybinds](https://opencode.ai/docs/keybinds),
 cross-checked against the installed binary's keybind `Definitions` object (162
 keybinds). The two agree exactly. Last verified 2026-09-25.
 
-`test/test_opencode_trust_wiring.py` derives the harness denylist from the block
-below, so this table is the single source for which chords are taken. Re-verify
-it on every opencode upgrade. If a harness chord ever appears in this table,
-move the harness chord — never delete a core row. Note that
-`messages_toggle_conceal` and `tips_toggle` share `<leader>h`, so there is not
-one row per command. Digits 1-9 and `<leader>down` are also taken
-(`session_quick_switch_*`, `session_child_first`) and are unioned in the test
-rather than listed here.
+The block below is **generated** — edit
+`agent-scripts/gen_keybinds.py`, never the table. Regenerate with
+`python3 agent-scripts/gen_keybinds.py`, or check for staleness with `--check`
+(a test runs it, so an opencode upgrade that changes these chords fails the
+suite rather than passing silently). It is extracted from the opencode binary
+actually installed on this machine, so it is a snapshot of the installed version
+rather than of upstream; `opencode.ai/docs/keybinds` is the published reference
+and the two agreed when this was last generated.
+
+`test/test_opencode_trust_wiring.py` derives the harness denylist from this
+table and pins the letter set separately, so a regenerated table fails the suite
+until someone confirms the change was intended. If a harness chord ever appears
+here, move the harness chord — never delete a core row. Note that
+`messages_toggle_conceal` and `tips_toggle` share `<leader>h`, and
+`app_exit` shares `<leader>q` with `session_queued_prompts`, so there is not
+one row per command. Digits 1-9 and `<leader>down` are chords too and are listed
+here like any other.
 
 <!-- leader-chords-core:begin -->
 
 | Chord | Core keybind |
 |---|---|
+| `<leader>1` | `session_quick_switch_1` |
+| `<leader>2` | `session_quick_switch_2` |
+| `<leader>3` | `session_quick_switch_3` |
+| `<leader>4` | `session_quick_switch_4` |
+| `<leader>5` | `session_quick_switch_5` |
+| `<leader>6` | `session_quick_switch_6` |
+| `<leader>7` | `session_quick_switch_7` |
+| `<leader>8` | `session_quick_switch_8` |
+| `<leader>9` | `session_quick_switch_9` |
 | `<leader>a` | `agent_list` |
 | `<leader>b` | `sidebar_toggle` |
 | `<leader>c` | `session_compact` |
+| `<leader>down` | `session_child_first` |
 | `<leader>e` | `editor_open` |
 | `<leader>g` | `session_timeline` |
 | `<leader>h` | `messages_toggle_conceal`, `tips_toggle` |
