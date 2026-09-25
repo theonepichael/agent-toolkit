@@ -271,27 +271,69 @@ setting everything to `allow`, since explicit `deny` rules still apply).
 
 ## 4. Keybind conflicts to resolve
 
-Harness-owned chords, added 2026-09-25. `<leader>y` toggles trust mode for the
+Harness-owned chords, added 2026-09-25. `<leader>d` toggles trust mode for the
 current session (guard-rails + permission prompts); `<leader>p` toggles the
-permission gate alone. Both are free in the **union** of the two available
-sources of opencode's defaults — the installed binary's keybind table and the
-list in this section below — because those two sources disagree: the binary
-does not bind `<leader>u`/`<leader>r`/`<leader>a`, while this section records
-them as `messages_undo`/`messages_redo`/agent list. Picking from either source
-alone gives a wrong answer. `<leader>t` was rejected for `trust-session` because
-it is `theme_list`.
+permission gate alone. Both are chosen from the free letters below.
 
-| Chord | Command | Scope |
-|---|---|---|
-| `<leader>y` | `trust-session.toggle` | this session |
-| `<leader>p` | `permission-gate.toggle` | this session |
+### Core leader chords
+
+Source: [opencode.ai/docs/keybinds](https://opencode.ai/docs/keybinds),
+cross-checked against the installed binary's keybind `Definitions` object (162
+keybinds). The two agree exactly. Last verified 2026-09-25.
+
+`test/test_opencode_trust_wiring.py` derives the harness denylist from the block
+below, so this table is the single source for which chords are taken. Re-verify
+it on every opencode upgrade. If a harness chord ever appears in this table,
+move the harness chord — never delete a core row. Note that
+`messages_toggle_conceal` and `tips_toggle` share `<leader>h`, so there is not
+one row per command. Digits 1-9 and `<leader>down` are also taken
+(`session_quick_switch_*`, `session_child_first`) and are unioned in the test
+rather than listed here.
+
+<!-- leader-chords-core:begin -->
+
+| Chord | Core keybind |
+|---|---|
+| `<leader>a` | `agent_list` |
+| `<leader>b` | `sidebar_toggle` |
+| `<leader>c` | `session_compact` |
+| `<leader>e` | `editor_open` |
+| `<leader>g` | `session_timeline` |
+| `<leader>h` | `messages_toggle_conceal`, `tips_toggle` |
+| `<leader>l` | `session_list` |
+| `<leader>m` | `model_list` |
+| `<leader>n` | `session_new` |
+| `<leader>q` | `app_exit`, `session_queued_prompts` |
+| `<leader>r` | `messages_redo` |
+| `<leader>s` | `status_view` |
+| `<leader>t` | `theme_list` |
+| `<leader>u` | `messages_undo` |
+| `<leader>x` | `session_export` |
+| `<leader>y` | `messages_copy` |
+
+<!-- leader-chords-core:end -->
+
+Free letters: `d f i j k o p v w z`.
+
+### Harness-owned chords
 
 Both live in `opencode/tui/*.ts` as `keymap.registerLayer` bindings, not in
 `tui.json`'s `keybinds` block — see §8 for why, and for why they are not typed
-slash commands. `test/test_opencode_trust_wiring.py` asserts no plugin binds a
-chord already on that denylist, and that each bound chord appears exactly once
-in this section. Neither check can see a future opencode release that claims one
-of these letters: no supported surface exposes the live default keymap.
+slash commands.
+
+<!-- leader-chords-harness:begin -->
+
+| Chord | Command | Scope |
+|---|---|---|
+| `<leader>d` | `trust-session.toggle` | this session |
+| `<leader>p` | `permission-gate.toggle` | this session |
+
+<!-- leader-chords-harness:end -->
+
+`test/test_opencode_trust_wiring.py` asserts that no plugin binds a chord from
+the core table, and that each bound chord appears exactly once above. Neither
+check can see a future opencode release that claims one of the free letters:
+no supported surface exposes the live default keymap.
 
 Full default keybind list pulled from `opencode.ai/docs/keybinds`. Verified
 against Claude Code's actual shortcuts (corrected from an earlier draft of
@@ -492,12 +534,16 @@ enter submits the text to the model as an ordinary prompt. The overlay entry
 works when *selected*; typing the name out and submitting blind does not. The
 supported invocations are:
 
+<!-- cheatsheet-chords:begin -->
+
 | What you want | How |
 |---|---|
-| Trust mode for this session | `<leader>y` |
+| Trust mode for this session | `<leader>d` |
 | Permission gate for this session | `<leader>p` |
 | Either, discovered | `ctrl+p`, then search `trust` / `permission` |
 | Either, by typing | `/trust`, then select the overlay entry (do not just hit enter) |
+
+<!-- cheatsheet-chords:end -->
 
 This is distinct from `opencode/command/*.md`, which *are* real typed slash
 commands: typing the name and pressing enter dispatches them. It is also

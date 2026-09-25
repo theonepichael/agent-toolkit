@@ -86,12 +86,134 @@ def test_server_guard_uses_session_scoped_trust_state() -> None:
 
 TUI_PLUGIN_DIR = REPO_ROOT / "opencode" / "tui"
 
-# Leader chords already claimed by opencode, as the UNION of two sources that
-# disagree: the installed binary's keybind-defaults table, and the chord list in
-# opencode/CLAUDE_CODE_PARITY.md section 4. Reading either alone gives a wrong
-# answer -- the binary does not bind <leader>u, while the doc records it as
-# messages_undo. Unresolved which source is current, so take the union.
-TAKEN_LEADER_CHORDS = frozenset("abceglmnqrstux") | frozenset(f"{n}" for n in range(1, 10))
+# ── leader-chord denylist, derived from the parity doc ───────────────────────
+#
+# A harness plugin must not bind a leader chord opencode already owns: the chord
+# silently stops doing what the user expects. That is not hypothetical -- a
+# hand-typed denylist here shipped trust-session on <leader>y, which core binds
+# to messages_copy, with the whole suite green.
+#
+# So the denylist is PARSED from a single complete table in
+# opencode/CLAUDE_CODE_PARITY.md, not hand-typed. The literals below are
+# verification snapshots, not the source: they exist to catch a table that was
+# wrongly edited, which a bare "is it non-empty" check cannot.
+#
+# Provenance: opencode.ai/docs/keybinds, cross-checked against the installed
+# binary's keybind Definitions object (162 keybinds). The two agree exactly.
+#
+# KNOWN LIMIT: nothing here re-reads opencode's real defaults, so a future
+# opencode release that claims a new leader letter is invisible to CI. The doc
+# carries a refresh note for that; closing it needs a test that reads the
+# installed binary, which is out of scope here.
+
+# Verification snapshot of the upstream letter set. NOT the source: the guard's
+# denylist is _core_chords(), parsed from the doc.
+CORE_LETTERS = frozenset("abceghlmnqrstuxy")
+
+# Non-letter core chords, unioned in code rather than added as doc table rows.
+# Note the explicit element construction: frozenset("down123456789") would iterate
+# CHARACTERS (d, o, w, n, 1..9) and so mark <leader>d as taken -- the very chord
+# trust-session binds. Each of these is a single token.
+CORE_NON_LETTERS = frozenset({"down"} | {str(n) for n in range(1, 10)})
+
+_PARITY = REPO_ROOT / "opencode" / "CLAUDE_CODE_PARITY.md"
+
+
+def _anchored_block(anchor: str) -> str:
+    """Return the body of one <!-- anchor:begin/end --> block in the parity doc.
+
+    Presence is not enough: a duplicated or inverted pair would let the regex
+    silently select an unintended span, which is the same class of silent-green
+    failure as an empty denylist. So require exactly one begin, exactly one end,
+    and begin before end.
+    """
+    doc = _PARITY.read_text()
+    begin, end = f"<!-- {anchor}:begin -->", f"<!-- {anchor}:end -->"
+    if doc.count(begin) != 1 or doc.count(end) != 1:
+        raise AssertionError(
+            f"opencode/CLAUDE_CODE_PARITY.md must contain exactly one {begin} and one "
+            f"{end} pair for the {anchor!r} block; found {doc.count(begin)} and "
+            f"{doc.count(end)}. The denylist is derived from that block, so a missing "
+            f"or duplicated anchor silently changes which chords are considered taken."
+        )
+    start, stop = doc.index(begin), doc.index(end)
+    if start > stop:
+        raise AssertionError(
+            f"opencode/CLAUDE_CODE_PARITY.md has {end} before {begin} for the "
+            f"{anchor!r} block; begin must precede end."
+        )
+    return doc[start + len(begin) : stop]
+
+
+def _cells(row: str) -> list[str]:
+    """Split a markdown table row into stripped, unbackticked cells."""
+    return [cell.strip().strip("`") for cell in row.strip().strip("|").split("|")]
+
+
+def _chord_token(cell: str) -> str | None:
+    """Normalise a first-cell chord to its BARE token ('<leader>y' -> 'y').
+
+    Both sides of every comparison must be bare tokens. Storing '<leader>y' here
+    while the binding under test normalises to 'y' would make every membership
+    test false and the guard would pass for every chord -- green and broken.
+    """
+    if not cell.startswith("<leader>"):
+        return None
+    return cell.removeprefix("<leader>").strip()
+
+
+def _core_chords() -> dict[str, set[str]]:
+    """Bare chord token -> core command names that own it, from the doc table."""
+    mapping: dict[str, set[str]] = {}
+    for row in _anchored_block("leader-chords-core").splitlines():
+        if not row.strip().startswith("|"):
+            continue
+        cells = _cells(row)
+        token = _chord_token(cells[0])
+        if token is None or set(token) <= set("-: "):
+            continue
+        assert token, f"core chord row has an empty token: {row!r}"
+        assert " " not in token and "\u2026" not in token, (
+            f"core chord token {token!r} is not a single bare token. A compressed row "
+            f"like `<leader>1`\u2026`<leader>9` would capture a garbage token; list "
+            f"non-letter chords in CORE_NON_LETTERS instead."
+        )
+        assert len(cells) > 1 and cells[1], f"core chord row has no command: {row!r}"
+        mapping.setdefault(token, set()).add(cells[1])
+    assert mapping, "the core chord block yielded no chords at all"
+    return mapping
+
+
+def _core_chord_rows() -> list[tuple[str, str]]:
+    """Every (bare token, command) row in the core block, in document order.
+
+    Kept as a list, not a dict, so a duplicated chord can be detected -- a dict
+    would silently collapse the duplicate and leave the derived set unchanged, so
+    the set-equality snapshot would not notice it.
+    """
+    rows: list[tuple[str, str]] = []
+    for row in _anchored_block("leader-chords-core").splitlines():
+        if not row.strip().startswith("|"):
+            continue
+        cells = _cells(row)
+        token = _chord_token(cells[0])
+        if token is None or set(token) <= set("-: "):
+            continue
+        rows.append((token, cells[1] if len(cells) > 1 else ""))
+    return rows
+
+
+def _core_chord_tokens() -> frozenset[str]:
+    return frozenset(token for token, _ in _core_chord_rows())
+
+
+def _taken_chords() -> frozenset[str]:
+    """The effective denylist: parsed table rows plus the code-unioned non-letters.
+
+    Digits 1-9 and <leader>down are NOT doc rows (see CORE_NON_LETTERS), so the
+    parsed set alone does not describe what is actually taken.
+    """
+    return _core_chord_tokens() | CORE_NON_LETTERS
 
 
 def _balanced(text: str, opener: str, closer: str, start: int) -> str:
@@ -186,53 +308,126 @@ def test_every_tui_slash_command_has_a_keybinding() -> None:
             )
 
 
+def test_core_chord_table_matches_verified_snapshot() -> None:
+    """The parsed core table must match the upstream snapshot, letter for letter.
+
+    A non-emptiness floor is not enough: deleting 15 of 16 rows still leaves a
+    non-empty set, the guard still passes, and everything is green -- which is
+    exactly how a chord collision shipped before. Set-equality is what detects a
+    table that was wrongly edited.
+    """
+    rows = _core_chord_rows()
+    tokens = _core_chord_tokens()
+    assert len(tokens) >= 16, (
+        f"core chord table yielded only {len(tokens)} chords ({''.join(sorted(tokens))}); "
+        "expected at least 16 letters"
+    )
+    letters = frozenset(t for t in tokens if t.isalpha())
+    assert letters == CORE_LETTERS, (
+        f"core chord letters {''.join(sorted(letters))} do not match the verified "
+        f"snapshot {''.join(sorted(CORE_LETTERS))}. If opencode genuinely changed, "
+        f"update CORE_LETTERS and the doc table together and note the refresh."
+    )
+    effective = _taken_chords()
+    assert CORE_NON_LETTERS <= effective, (
+        f"effective denylist is missing {sorted(CORE_NON_LETTERS - effective)}"
+    )
+    assert not (CORE_NON_LETTERS & tokens), (
+        f"core chord table lists {sorted(CORE_NON_LETTERS & tokens)} as rows, but "
+        "those are unioned in code; having both duplicates the source of truth"
+    )
+
+
+def test_core_chord_table_has_no_duplicate_chords() -> None:
+    """A duplicated chord row would hide behind the set-equality snapshot.
+
+    The derived denylist is a set, so a second row for the same chord collapses
+    silently and the letter set still matches the snapshot. It would also make
+    the chord-to-command diagnostic misleading about what is actually bound.
+    """
+    seen: dict[str, int] = {}
+    for token, _ in _core_chord_rows():
+        seen[token] = seen.get(token, 0) + 1
+    duplicated = {t: n for t, n in seen.items() if n > 1}
+    assert not duplicated, f"core chord table has duplicate rows for {duplicated}"
+
+
+@pytest.mark.regression(
+    "harness-chord-collides-with-core-chord",
+    "trust-session.ts: binds '<leader>y', but opencode already owns that leader "
+    "chord: messages_copy. Pick a free letter or move the core command in tui.json "
+    "instead of shadowing it.",
+)
 def test_tui_bindings_use_unclaimed_leader_chords() -> None:
     """No plugin may take a leader chord opencode already owns.
 
-    This catches our own mistakes -- picking a taken letter, or drifting the
-    denylist. It CANNOT catch a future opencode release that claims one of these
-    chords: no supported surface exposes the live default keymap (the SDK does
-    not export it and there is no CLI dump), so upstream drift is left to the
-    manual live check.
+    Carries the regression marker because this is the assertion that failed when
+    trust-session shipped on <leader>y, colliding with core messages_copy. The
+    failure names the core command via the table's second column, so the report
+    says what was hijacked rather than just a bare letter.
     """
+    core = _core_chords()
+    taken = _taken_chords()
     for path in _tui_plugin_files():
         for key in _binding_keys(_register_layer(path.read_text())):
             if not key.startswith("<leader>"):
                 continue
-            suffix = key.removeprefix("<leader>")
-            assert suffix not in TAKEN_LEADER_CHORDS, (
-                f"{path.name}: binds {key!r}, but {suffix!r} is already claimed by "
-                "opencode or recorded as claimed in opencode/CLAUDE_CODE_PARITY.md "
-                f"section 4. Taken: {''.join(sorted(TAKEN_LEADER_CHORDS))}"
+            token = _chord_token(key)
+            assert token is not None, f"unnormalizable binding key {key!r}"
+            assert token not in taken, (
+                f"{path.name}: binds {key!r}, but opencode already owns that leader "
+                f"chord: {', '.join(sorted(core.get(token, {'a non-letter chord'})))}. "
+                f"Pick a free letter or move the core command in tui.json instead of "
+                f"shadowing it."
             )
 
 
-def test_bound_chords_are_documented_exactly_once() -> None:
-    """Each chord a plugin binds must get exactly one row in the parity doc's table.
+def test_documented_harness_chords_are_claimable() -> None:
+    """Neither doc table may advertise a chord the core already owns.
 
-    Kept to table rows rather than counting the string across the whole file: a
-    chord is *expected* to be mentioned in prose as well, and a count of every
-    mention would fail on good documentation. What must not happen is the chord
-    appearing in the keybind table zero times (undocumented) or twice (ambiguous
-    about what it does).
+    Catches a stale chord surviving an edit: the parity doc mentions harness
+    chords in three places (section 4 prose, the section 4 table's first cell, and
+    the section 8 cheatsheet's SECOND cell), and only the first-cell form is
+    visible to a first-cell matcher. A leftover <leader>y here would advertise a
+    binding the plugin no longer has, over a chord core owns.
     """
-    parity = (REPO_ROOT / "opencode" / "CLAUDE_CODE_PARITY.md").read_text()
-    rows = [line for line in parity.splitlines() if line.lstrip().startswith("|")]
+    core = _core_chords()
+    for anchor in ("leader-chords-harness", "cheatsheet-chords"):
+        for row in _anchored_block(anchor).splitlines():
+            if not row.strip().startswith("|"):
+                continue
+            for cell in _cells(row):
+                token = _chord_token(cell)
+                if token is None or set(token) <= set("-: "):
+                    continue
+                assert token not in core, (
+                    f"opencode/CLAUDE_CODE_PARITY.md {anchor!r} block advertises "
+                    f"<leader>{token}> in row {row.strip()!r}, but opencode already "
+                    f"owns that chord: {', '.join(sorted(core[token]))}"
+                )
+
+
+def test_bound_chords_are_documented_exactly_once() -> None:
+    """Each chord a plugin binds must get exactly one row in the harness table.
+
+    Scoped to the harness block rather than every `|` line in the file: the core
+    table has the same first-cell shape, and scanning the whole document would let
+    a core row satisfy a harness-chord lookup -- or vice versa.
+    """
+    rows = [row for row in _anchored_block("leader-chords-harness").splitlines() if row.strip().startswith("|")]
     checked = 0
     for path in _tui_plugin_files():
         for key in _binding_keys(_register_layer(path.read_text())):
             checked += 1
             pattern = re.compile(rf"^\|\s*`?{re.escape(key)}`?\s*\|")
-            entries = [row for row in rows if pattern.match(row.lstrip())]
+            entries = [row for row in rows if pattern.match(row.strip())]
             assert len(entries) == 1, (
-                f"{path.name}: binds {key!r} but opencode/CLAUDE_CODE_PARITY.md has "
-                f"{len(entries)} keybind-table row(s) for it; expected exactly 1. "
-                f"Matching rows: {entries}"
+                f"{path.name}: binds {key!r} but the harness chord table has "
+                f"{len(entries)} row(s) for it; expected exactly 1. Rows: {entries}"
             )
     # Floor. Without it this test passes vacuously the moment a plugin loses its
-    # bindings -- there is nothing left to check, so the loop body never runs and
-    # it reports green while verifying nothing. That is the same trap as an empty
-    # glob, one level down.
+    # bindings -- nothing left to check, so the loop body never runs and it reports
+    # green while verifying nothing.
     assert checked > 0, (
         "no keybindings found in opencode/tui/*.ts, so doc/code chord consistency "
         "was not checked at all"

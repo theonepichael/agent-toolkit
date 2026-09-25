@@ -36,7 +36,7 @@ export const TrustSession: TuiPlugin = async (api) => {
         run: () => toggle(api),
       },
     ],
-    bindings: [{ key: "<leader>y", cmd: "trust-session.toggle" }],
+    bindings: [{ key: "<leader>d", cmd: "trust-session.toggle" }],
   })
 }
 
