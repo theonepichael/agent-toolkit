@@ -271,6 +271,28 @@ setting everything to `allow`, since explicit `deny` rules still apply).
 
 ## 4. Keybind conflicts to resolve
 
+Harness-owned chords, added 2026-09-25. `<leader>y` toggles trust mode for the
+current session (guard-rails + permission prompts); `<leader>p` toggles the
+permission gate alone. Both are free in the **union** of the two available
+sources of opencode's defaults — the installed binary's keybind table and the
+list in this section below — because those two sources disagree: the binary
+does not bind `<leader>u`/`<leader>r`/`<leader>a`, while this section records
+them as `messages_undo`/`messages_redo`/agent list. Picking from either source
+alone gives a wrong answer. `<leader>t` was rejected for `trust-session` because
+it is `theme_list`.
+
+| Chord | Command | Scope |
+|---|---|---|
+| `<leader>y` | `trust-session.toggle` | this session |
+| `<leader>p` | `permission-gate.toggle` | this session |
+
+Both live in `opencode/tui/*.ts` as `keymap.registerLayer` bindings, not in
+`tui.json`'s `keybinds` block — see §8 for why, and for why they are not typed
+slash commands. `test/test_opencode_trust_wiring.py` asserts no plugin binds a
+chord already on that denylist, and that each bound chord appears exactly once
+in this section. Neither check can see a future opencode release that claims one
+of these letters: no supported surface exposes the live default keymap.
+
 Full default keybind list pulled from `opencode.ai/docs/keybinds`. Verified
 against Claude Code's actual shortcuts (corrected from an earlier draft of
 this doc, which had `Ctrl+R`/`Ctrl+O` swapped):
@@ -449,6 +471,52 @@ conflicting keys), same pattern as Claude Code's `~/.claude/settings.json` +
 - **`ruff-format-on-edit.ts`** — auto-formats Python files on `tool.execute.after` for `edit` and `write`.
 - **`notify.ts`** — listens to `session.idle` event and dispatches cross-platform desktop toasts with the official OpenCode logo via `~/.agent-toolkit/scripts/notify.py`.
 - **`guard-rails.ts`** — delegates to `agent-scripts/guard_rails.py` on `tool.execute.before`; this list previously omitted it despite it being covered in detail in the "Pre-tool guard" section below — see that section for the verified payload shape and the no-warn-channel limitation.
+
+Both directories are scanned: the loader globs `{plugin,plugins}/*.{ts,js}`,
+so `opencode/plugin/` (singular) and `opencode/plugins/` (plural) are
+equivalent. The official docs list only the plural form; the implementation
+accepts either.
+
+### The TUI plugin layer (`opencode/tui/`) — palette commands, not slash commands
+
+`opencode/tui/trust-session.ts` and `opencode/tui/permission-gate.ts` are
+**TUI** plugins, a different layer from the ones above. Each registers a
+`keymap` command with a `slashName`, which surfaces it in two places:
+
+- the **`ctrl+p` command palette** (`command_list`, default `ctrl+p`), and
+- the prompt's slash **completion overlay**, whose `onSelect` dispatches the
+  command.
+
+**They are not typed slash commands.** Typing `/trust-session` and pressing
+enter submits the text to the model as an ordinary prompt. The overlay entry
+works when *selected*; typing the name out and submitting blind does not. The
+supported invocations are:
+
+| What you want | How |
+|---|---|
+| Trust mode for this session | `<leader>y` |
+| Permission gate for this session | `<leader>p` |
+| Either, discovered | `ctrl+p`, then search `trust` / `permission` |
+| Either, by typing | `/trust`, then select the overlay entry (do not just hit enter) |
+
+This is distinct from `opencode/command/*.md`, which *are* real typed slash
+commands: typing the name and pressing enter dispatches them. It is also
+distinct from built-ins like `/undo` and `/redo`, which have their own typed
+surface — so "nothing maps a typed `/name` onto a keymap command" is a statement
+about *plugin* `slashName` commands only, not a general rule.
+
+**Why these two are not `command/*.md` files.** A command body becomes a
+prompt template sent to the LLM, and the documented placeholders
+(`$ARGUMENTS`, `$1`…`$n`, ``!`shell` ``, `@file`) include **no session-ID
+substitution**. Trust state is per-session by design, so a command file could
+not address the right session; it would also cost a full model round-trip to
+flip a boolean and would pollute session context. Hence a TUI plugin.
+
+**Known gap:** whether the `tui.json` `keybinds` block accepts a *plugin*
+command name (so a user could rebind these without editing the repo) is
+unverified. The `ctrl+o` precedent above binds a *core* name
+(`session_toggle_generic_tool_output`), which is not evidence either way. Until
+that is demonstrated, do not document an override path here.
 
 ### Applying model/variant changes to a live TUI (2026-09-24 probe)
 

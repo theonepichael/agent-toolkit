@@ -36,7 +36,7 @@ export const PermissionGate: TuiPlugin = async (api) => {
         run: () => toggle(api),
       },
     ],
-    bindings: [],
+    bindings: [{ key: "<leader>p", cmd: "permission-gate.toggle" }],
   })
 }
 
