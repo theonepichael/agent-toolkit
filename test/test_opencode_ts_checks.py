@@ -27,6 +27,7 @@ EXACT_SEMVER = re.compile(
 VERSION_LINE = re.compile(
     r"v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)"
 )
+DEV_BUILD_PATTERN = re.compile(r"^0\.0\.0-dev.*")
 
 
 def _read_object(path: Path) -> dict[str, object]:
@@ -108,6 +109,11 @@ def _check_opencode_cli_version(expected: str) -> None:
         f"--- stderr ---\n{result.stderr}"
     )
     actual = _parse_version_output(result.stdout)
+    if DEV_BUILD_PATTERN.fullmatch(actual):
+        pytest.skip(
+            f"opencode CLI is a development build ({actual}); "
+            f"SDK version {expected} is not enforced against dev builds"
+        )
     assert actual == expected, (
         f"opencode CLI {actual} does not match pinned SDK {expected}; "
         "change the installed CLI or deliberately update the SDK pin and lockfile together"
@@ -292,3 +298,18 @@ def test_version_check_rejects_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(pytest.fail.Exception) as excinfo:
         _check_opencode_cli_version("1.18.32")
     assert "timed out" in str(excinfo.value)
+
+
+def test_version_check_skips_on_dev_build(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/opencode")
+    monkeypatch.setattr(
+        "test_opencode_ts_checks.subprocess.run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            [], 0, "0.0.0-dev-202609250015\n", ""
+        ),
+    )
+    with pytest.raises(pytest.skip.Exception) as excinfo:
+        _check_opencode_cli_version("1.18.32")
+    assert "development build" in str(excinfo.value)
+    assert "0.0.0-dev-202609250015" in str(excinfo.value)
+
