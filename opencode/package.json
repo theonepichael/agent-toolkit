@@ -5,9 +5,9 @@
   "scripts": {
     "test": "node --import tsx --test --test-concurrency=1 --test-timeout=30000 test/*.test.ts",
     "typecheck": "tsc --noEmit",
-    "lint": "oxlint plugin test",
-    "format": "prettier --write plugin test",
-    "format:check": "prettier --check plugin test"
+    "lint": "oxlint plugin plugins test",
+    "format": "prettier --write plugin plugins test trust-state.ts",
+    "format:check": "prettier --check plugin plugins test trust-state.ts"
   },
   "devDependencies": {
     "@opencode-ai/plugin": "1.18.32",

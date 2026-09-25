@@ -2,6 +2,7 @@ import { execFile } from "node:child_process"
 import { dirname } from "node:path"
 import { promisify } from "node:util"
 import type { Plugin } from "@opencode-ai/plugin"
+import { readTrustState } from "../trust-state"
 
 const run = promisify(execFile)
 
@@ -17,9 +18,10 @@ type Verdict = { decision: "allow" | "deny" | "warn"; reason?: string }
 export const GuardRails: Plugin = async () => {
   return {
     "tool.execute.before": async (
-      input: { tool?: string },
+      input: { tool?: string; sessionID?: string },
       output: { args?: Record<string, unknown> },
     ) => {
+      if (input.sessionID && readTrustState(input.sessionID).trusted) return
       const tool = input?.tool
 
       if (tool === "bash") {
