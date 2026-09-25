@@ -141,6 +141,14 @@ NON_PYTHON: dict[str, tuple[str, str]] = {
         "no-toolkit-data",
         "calls the locked Python CLI; writes no toolkit data itself",
     ),
+    "opencode/plugins/trust-session.ts": (
+        "no-toolkit-data",
+        "reads per-session trust state; does not write toolkit data",
+    ),
+    "opencode/trust-state.ts": (
+        "no-toolkit-data",
+        "shared state helper writes only explicit per-session trust records",
+    ),
     "opencode/plugin/notify.ts": (
         "no-toolkit-data",
         "calls the locked Python CLI; writes no toolkit data itself",

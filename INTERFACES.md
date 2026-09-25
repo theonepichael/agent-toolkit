@@ -60,6 +60,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`llm_backends.py`](#agentscriptsllmbackendspy) | llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, opencode, pi, copilot). Extracted from second_opinion.py so dev_status.py's recap generation can reuse the same process-lifecycle handling (timeouts, process-group kills, opencode JSON-event parsing) with its own timeout and model choices, without duplicating it. |
 | [`migration_lock.py`](#agentscriptsmigrationlockpy) | Machine-wide migration lock: writers share it, the toolkit-home migrator owns it. |
 | [`notify.py`](#agentscriptsnotifypy) | Cross-platform agent notification dispatcher. |
+| [`opencode_trust.py`](#agentscriptsopencodetrustpy) | Control per-session trust for the supported OpenCode permission plugin. |
 | [`outlook_calendar.py`](#agentscriptsoutlookcalendarpy) | outlook_calendar.py — CLI tool and agent interface for Windows Outlook Calendar via PowerShell COM. |
 | [`outlook_email.py`](#agentscriptsoutlookemailpy) | outlook_email.py — CLI tool and agent interface for Windows Outlook via PowerShell COM. |
 | [`refresh_guidance.py`](#agentscriptsrefreshguidancepy) | refresh_guidance.py — audit-by-inspection for hand-authored, agent-facing docs. |
@@ -1159,6 +1160,23 @@ Cross-platform agent notification dispatcher.
   - `build_parser() -> argparse.ArgumentParser`
 - Tested by: `test/test_harness_feature_coverage.py`, `test/test_notify.py`
 
+### `agent-scripts/opencode_trust.py`
+
+Control per-session trust for the supported OpenCode permission plugin.
+
+- Installed at: `~/.agent-toolkit/scripts/opencode_trust.py` (opencode)
+- Entrypoint: not executable, `#!/usr/bin/env python3`
+- CLI (`argparse`): Control per-session trust for the supported OpenCode permission plugin.
+  - `operation` (choices: on, off, status)
+  - `--session-id` (required)
+- Filesystem constants:
+  - `STATE_RELATIVE = Path('.local/state/agent-toolkit/trust-sessions')`
+- Public functions:
+  - `state_path(session_id: str) -> Path`
+  - `read_state(session_id: str) -> dict[str, object]`
+  - `write_state(session_id: str, trusted: bool) -> None`
+- Tested by: `test/test_opencode_trust.py`
+
 ### `agent-scripts/outlook_calendar.py`
 
 outlook_calendar.py — CLI tool and agent interface for Windows Outlook Calendar via PowerShell COM.
@@ -1767,7 +1785,10 @@ are copy-once seeds for exactly that reason.
 | `opencode/plugin/guard-rails.ts` | `~/.config/opencode/plugin/guard-rails.ts` (opencode) |
 | `opencode/plugin/notify.ts` | `~/.config/opencode/plugin/notify.ts` (opencode) |
 | `opencode/plugin/ruff-format-on-edit.ts` | `~/.config/opencode/plugin/ruff-format-on-edit.ts` (opencode) |
+| `opencode/plugins/trust-session.ts` | `~/.config/opencode/plugins/trust-session.ts` (opencode) |
 | `opencode/test/plugins.test.ts` | not symlinked by `links.toml` |
+| `opencode/test/trust-state.test.ts` | not symlinked by `links.toml` |
+| `opencode/trust-state.ts` | `~/.config/opencode/trust-state.ts` (opencode) |
 | `opencode/tsconfig.json` | not symlinked by `links.toml` |
 | `opencode/tui.json` | `~/.config/opencode/tui.json` (opencode) |
 | `agy/CLAUDE_CODE_PARITY.md` | not symlinked by `links.toml` |

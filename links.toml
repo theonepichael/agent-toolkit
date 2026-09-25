@@ -510,6 +510,21 @@ src = "opencode/plugin/guard-rails.ts"
 dest = "~/.config/opencode/plugin/guard-rails.ts"
 harness = "opencode"
 
+[[link]]
+src = "opencode/trust-state.ts"
+dest = "~/.config/opencode/trust-state.ts"
+harness = "opencode"
+
+[[link]]
+src = "opencode/plugins/trust-session.ts"
+dest = "~/.config/opencode/plugins/trust-session.ts"
+harness = "opencode"
+
+[[link]]
+src = "agent-scripts/opencode_trust.py"
+dest = "~/.agent-toolkit/scripts/opencode_trust.py"
+harness = "opencode"
+
 # ── agy (Google Antigravity CLI) ─────────────────────────────────────────
 
 [[link]]
