@@ -2,7 +2,7 @@
 """analyze_sessions.py — multi-harness session analysis tool.
 
 Analyzes coding-agent sessions across pi, Claude Code, opencode, Copilot CLI,
-and agy harnesses. Exposes subcommands for calculating token/USD costs, listing
+agy, and Codex harnesses. Exposes subcommands for calculating token/USD costs, listing
 user prompts, and searching message transcripts.
 
 Usage:
@@ -11,7 +11,7 @@ Usage:
     python3 ~/.agent-toolkit/scripts/analyze_sessions.py search <query> [--regex] [--context N] [filters]
 
 Flags:
-  --harness        harness to analyze: all, pi, claude, opencode, copilot, agy
+  --harness        harness to analyze: all, pi, claude, opencode, copilot, agy, codex
                    (default: all; note: agy is opt-in and excluded from 'all')
   --since          filter sessions on/after date/time (ISO 8601 YYYY-MM-DD or
                    YYYY-MM-DDTHH:MM:SS, or relative e.g. 7d, today)
@@ -38,6 +38,7 @@ Files read:
   ~/.local/share/opencode/opencode.db
   ~/.copilot/session-store.db
   ~/.gemini/antigravity-cli/brain/**/transcript_full.jsonl (or transcript.jsonl)
+  ~/.codex/sessions/**/*.jsonl
 Files written: none.
 Exit codes: 0 success; 1 operational error; 2 bad usage.
 """
@@ -96,6 +97,7 @@ CLAUDE_PRICING: dict[str, tuple[float, float, float, float]] = {
     "claude-opus-4-7": (5.0, 25.0, 0.50, 6.25),
     "claude-opus-4-8": (5.0, 25.0, 0.50, 6.25),
     "claude-opus-5": (5.0, 25.0, 0.50, 6.25),
+    "claude-opus-5-5": (4.0, 20.0, 0.20, 5.00),
     "claude-opus": (5.0, 25.0, 0.50, 6.25),  # generic fallback
     # Fable/Mythos 5.1 use a special 0.025x cache-hit multiplier (vs. the
     # standard 0.1x every other model above uses) -- Fable/Mythos 5 (no
@@ -220,11 +222,67 @@ def calculate_claude_cost(
     return cost, "derived"
 
 
+OPENAI_PRICING: dict[str, tuple[float, float, float, float]] = {
+    # per 1,000,000 tokens: (input, output, cache_read, cache_write).
+    # Verified against platform.openai.com/pricing (September 2026).
+    # calculate_openai_cost() below matches by LONGEST substring hit.
+    "gpt-6-astra": (10.0, 50.0, 1.0, 0.0),
+    "gpt-6-sol": (2.0, 10.0, 0.20, 0.0),
+    "gpt-6-luna": (0.10, 0.50, 0.01, 0.0),
+    "gpt-6": (2.0, 10.0, 0.20, 0.0),  # generic fallback
+    "gpt-5.6-sol": (4.0, 20.0, 0.40, 0.0),
+    "gpt-5.6-terra": (2.0, 12.0, 0.20, 0.0),
+    "gpt-5.6-luna": (0.20, 1.20, 0.02, 0.0),
+    "gpt-5.6": (2.0, 12.0, 0.20, 0.0),  # generic fallback
+    "gpt-5.5": (2.0, 12.0, 0.20, 0.0),
+    "gpt-5.4-mini": (0.75, 4.50, 0.075, 0.0),
+    "gpt-5-mini": (0.25, 2.0, 0.025, 0.0),
+    "gpt-5-nano": (0.05, 0.40, 0.005, 0.0),
+    "gpt-5": (1.25, 10.0, 0.125, 0.0),
+    "gpt-4o-mini": (0.15, 0.60, 0.075, 0.0),
+    "gpt-4o": (2.50, 10.0, 1.25, 0.0),
+    "gpt-4.5": (75.0, 150.0, 37.50, 0.0),
+    "gpt-4-turbo": (10.0, 30.0, 5.0, 0.0),
+    "gpt-4": (30.0, 60.0, 0.0, 0.0),
+    "gpt-3.5-turbo": (0.50, 1.50, 0.0, 0.0),
+    "o3-mini": (1.10, 4.40, 0.55, 0.0),
+    "o3": (2.0, 8.0, 0.50, 0.0),
+    "o1-mini": (1.10, 4.40, 0.55, 0.0),
+    "o1-preview": (15.0, 60.0, 7.50, 0.0),
+    "o1": (15.0, 60.0, 7.50, 0.0),
+    "codex": (2.0, 12.0, 0.20, 0.0),  # generic fallback
+}
+
+
+def calculate_openai_cost(
+    model: str | None,
+    in_tok: int,
+    out_tok: int,
+    cr_tok: int,
+    cw_tok: int,
+) -> tuple[float | None, str]:
+    if not model:
+        return None, "unavailable"
+    m_lower = model.lower()
+    best_key = max(
+        (key for key in OPENAI_PRICING if key in m_lower), key=len, default=None
+    )
+    if best_key is None:
+        return None, "unavailable"
+    in_rate, out_rate, cr_rate, cw_rate = OPENAI_PRICING[best_key]
+    cost = (
+        in_tok * in_rate + out_tok * out_rate + cr_tok * cr_rate + cw_tok * cw_rate
+    ) / 1_000_000.0
+    return cost, "derived"
+
+
 # ── Query service ─────────────────────────────────────────────────────────
 
 # agy is opt-in everywhere in this tool, so "no explicit harnesses" means
 # everything except agy — preserving the historical --harness all behavior.
-_DEFAULT_HARNESSES: frozenset[str] = frozenset({"pi", "claude", "opencode", "copilot"})
+_DEFAULT_HARNESSES: frozenset[str] = frozenset(
+    {"pi", "claude", "opencode", "copilot", "codex"}
+)
 # Line-level decode diagnostics are capped per file; overflow collapses into
 # one summary SkippedRecord. Parsing itself never stops early.
 _DECODE_SKIP_CAP = 10
@@ -521,6 +579,19 @@ def query_sessions(
                 ),
             )
         )
+    if "codex" in requested:
+        tasks.append(
+            (
+                "codex",
+                lambda: load_codex_records(
+                    _root("codex"),
+                    query.since,
+                    query.until,
+                    query.session_id,
+                    query.cwd,
+                ),
+            )
+        )
 
     records: list[SessionRecord] = []
     skipped: list[SkippedRecord] = []
@@ -564,6 +635,7 @@ _DEFAULT_ROOT_GETTERS: dict[str, Callable[[], Path]] = {
     "opencode": lambda: Path.home() / ".local" / "share" / "opencode" / "opencode.db",
     "copilot": lambda: Path.home() / ".copilot" / "session-store.db",
     "agy": lambda: Path.home() / ".gemini" / "antigravity-cli" / "brain",
+    "codex": lambda: Path.home() / ".codex" / "sessions",
 }
 
 
@@ -1038,6 +1110,17 @@ def load_copilot_records(
             u_info = usage_map.get((sess_id, t_idx), (None, 0, 0, 0, 0))
             model, in_tok, out_tok, cr_tok, cw_tok = u_info
             if a_resp or in_tok or out_tok:
+                cost_usd: float | None = None
+                cost_origin = "unavailable"
+                if model and (in_tok or out_tok or cr_tok or cw_tok):
+                    cost_usd, cost_origin = calculate_claude_cost(
+                        model, in_tok, out_tok, cr_tok, cw_tok
+                    )
+                    if cost_origin == "unavailable":
+                        cost_usd, cost_origin = calculate_openai_cost(
+                            model, in_tok, out_tok, cr_tok, cw_tok
+                        )
+
                 records.append(
                     SessionRecord(
                         harness="copilot",
@@ -1051,8 +1134,8 @@ def load_copilot_records(
                         output_tokens=out_tok,
                         cache_read_tokens=cr_tok,
                         cache_write_tokens=cw_tok,
-                        cost_usd=None,
-                        cost_origin="unavailable",
+                        cost_usd=cost_usd,
+                        cost_origin=cost_origin,
                         is_subagent=False,
                     )
                 )
@@ -1138,6 +1221,274 @@ def load_agy_records(
     return records, skipped
 
 
+def load_codex_records(
+    base_dir: Path | None = None,
+    since_dt: datetime | None = None,
+    until_dt: datetime | None = None,
+    session_filter: str | None = None,
+    cwd_filter: str | None = None,
+) -> tuple[list[SessionRecord], list[SkippedRecord]]:
+    if base_dir is None:
+        base_dir = Path.home() / ".codex" / "sessions"
+    records: list[SessionRecord] = []
+    skipped: list[SkippedRecord] = []
+    if not base_dir.exists():
+        return records, skipped
+
+    search_dir = base_dir / "sessions" if (base_dir / "sessions").is_dir() else base_dir
+    for p in sorted(search_dir.rglob("*.jsonl")):
+        if p.name in ("session_index.jsonl", "history.jsonl"):
+            continue
+        is_subagent_path = "subagent" in str(p).lower()
+        session_id = p.stem
+        session_cwd: str | None = None
+
+        items: list[dict[str, object]] = []
+        for item in _iter_jsonl(p, "codex"):
+            if isinstance(item, SkippedRecord):
+                skipped.append(item)
+            else:
+                items.append(item)
+
+        for obj in items:
+            if obj.get("type") == "session_meta":
+                payload = obj.get("payload") or {}
+                if isinstance(payload, dict):
+                    session_id = str(
+                        payload.get("id") or payload.get("session_id") or session_id
+                    )
+                    if payload.get("cwd"):
+                        session_cwd = str(payload["cwd"])
+                    if (
+                        payload.get("is_subagent")
+                        or payload.get("source") == "subagent"
+                        or payload.get("originator") == "subagent"
+                    ):
+                        is_subagent_path = True
+                break
+
+        if (
+            session_filter
+            and session_filter not in session_id
+            and session_filter not in p.name
+        ):
+            continue
+
+        turn_usage: dict[str, dict[str, int]] = {}
+        for obj in items:
+            if obj.get("type") == "token_usage_record":
+                payload = obj.get("payload") or {}
+                if isinstance(payload, dict):
+                    tid = payload.get("turn_id")
+                    usage = payload.get("usage") or {}
+                    if tid and isinstance(usage, dict):
+                        in_tok = int(usage.get("input_tokens", 0) or 0)
+                        cr_tok = int(usage.get("cached_input_tokens", 0) or 0)
+                        cw_tok = int(usage.get("cache_write_input_tokens", 0) or 0)
+                        out_tok = int(usage.get("output_tokens", 0) or 0)
+                        net_in = max(0, in_tok - cr_tok)
+                        if tid not in turn_usage:
+                            turn_usage[tid] = {
+                                "input": 0,
+                                "output": 0,
+                                "cache_read": 0,
+                                "cache_write": 0,
+                            }
+                        turn_usage[tid]["input"] += net_in
+                        turn_usage[tid]["output"] += out_tok
+                        turn_usage[tid]["cache_read"] += cr_tok
+                        turn_usage[tid]["cache_write"] += cw_tok
+
+        last_assistant_idx: dict[str, int] = {}
+        for i, obj in enumerate(items):
+            if obj.get("type") == "response_item":
+                payload = obj.get("payload") or {}
+                if (
+                    isinstance(payload, dict)
+                    and payload.get("type") == "message"
+                    and payload.get("role") == "assistant"
+                ):
+                    passthrough = payload.get(
+                        "internal_chat_message_metadata_passthrough"
+                    )
+                    tid = (
+                        passthrough.get("turn_id")
+                        if isinstance(passthrough, dict)
+                        else None
+                    )
+                    if tid:
+                        last_assistant_idx[tid] = i
+
+        current_cwd = session_cwd
+        current_model: str | None = None
+        last_ts_str = ""
+
+        for i, obj in enumerate(items):
+            t = obj.get("type")
+            payload = obj.get("payload") or {}
+            if not isinstance(payload, dict):
+                continue
+
+            if t == "turn_context":
+                if payload.get("cwd"):
+                    current_cwd = str(payload["cwd"])
+                if payload.get("model"):
+                    current_model = str(payload["model"])
+                continue
+
+            if t == "event_msg" and payload.get("type") == "thread_settings_applied":
+                ts = payload.get("thread_settings") or {}
+                if isinstance(ts, dict) and ts.get("model"):
+                    current_model = str(ts["model"])
+                continue
+
+            if t == "response_item" and payload.get("type") == "message":
+                role = payload.get("role")
+                if role not in ("user", "assistant"):
+                    continue
+
+                ts_val = obj.get("timestamp") or payload.get("timestamp")
+                ts_str, dt = normalize_timestamp(ts_val)
+                if ts_str:
+                    last_ts_str = ts_str
+                if since_dt and dt and dt < since_dt:
+                    continue
+                if until_dt and dt and dt > until_dt:
+                    continue
+                if cwd_filter and current_cwd and cwd_filter not in current_cwd:
+                    continue
+
+                content = payload.get("content")
+                text_parts: list[str] = []
+                if isinstance(content, str):
+                    text_parts.append(content)
+                elif isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict):
+                            if "text" in block and isinstance(block["text"], str):
+                                text_parts.append(block["text"])
+                            elif (
+                                block.get("type")
+                                in ("input_text", "output_text", "text")
+                                and "text" in block
+                            ):
+                                text_parts.append(str(block["text"]))
+                        elif isinstance(block, str):
+                            text_parts.append(block)
+                text = "\n".join(text_parts).strip()
+
+                in_tok, out_tok, cr_tok, cw_tok = 0, 0, 0, 0
+                cost_usd: float | None = None
+                cost_origin = "unavailable"
+                rec_model = current_model
+
+                if role == "assistant":
+                    inline_usage = payload.get("usage") or obj.get("usage")
+                    if isinstance(inline_usage, dict):
+                        raw_in = int(
+                            inline_usage.get("input_tokens", 0)
+                            or inline_usage.get("input", 0)
+                            or 0
+                        )
+                        cr_tok = int(
+                            inline_usage.get("cached_input_tokens", 0)
+                            or inline_usage.get("cache_read_tokens", 0)
+                            or inline_usage.get("cacheRead", 0)
+                            or 0
+                        )
+                        cw_tok = int(
+                            inline_usage.get("cache_write_input_tokens", 0)
+                            or inline_usage.get("cache_write_tokens", 0)
+                            or inline_usage.get("cacheWrite", 0)
+                            or 0
+                        )
+                        out_tok = int(
+                            inline_usage.get("output_tokens", 0)
+                            or inline_usage.get("output", 0)
+                            or 0
+                        )
+                        in_tok = max(0, raw_in - cr_tok)
+                        cost_val = inline_usage.get("cost") or payload.get("cost")
+                        if cost_val is not None:
+                            try:
+                                cost_usd = float(cost_val)
+                                cost_origin = "native"
+                            except (ValueError, TypeError):
+                                pass
+                    else:
+                        passthrough = payload.get(
+                            "internal_chat_message_metadata_passthrough"
+                        )
+                        tid = (
+                            passthrough.get("turn_id")
+                            if isinstance(passthrough, dict)
+                            else None
+                        )
+                        if (
+                            tid
+                            and last_assistant_idx.get(tid) == i
+                            and tid in turn_usage
+                        ):
+                            u = turn_usage.pop(tid)
+                            in_tok = u["input"]
+                            out_tok = u["output"]
+                            cr_tok = u["cache_read"]
+                            cw_tok = u["cache_write"]
+
+                    if cost_usd is None and (in_tok or out_tok or cr_tok or cw_tok):
+                        cost_usd, cost_origin = calculate_openai_cost(
+                            rec_model, in_tok, out_tok, cr_tok, cw_tok
+                        )
+
+                records.append(
+                    SessionRecord(
+                        harness="codex",
+                        session_id=session_id,
+                        cwd=current_cwd,
+                        timestamp=ts_str,
+                        role=role,
+                        text=text,
+                        model=rec_model,
+                        input_tokens=in_tok,
+                        output_tokens=out_tok,
+                        cache_read_tokens=cr_tok,
+                        cache_write_tokens=cw_tok,
+                        cost_usd=cost_usd,
+                        cost_origin=cost_origin,
+                        is_subagent=is_subagent_path,
+                    )
+                )
+
+        for _tid, u in turn_usage.items():
+            cost_usd, cost_origin = calculate_openai_cost(
+                current_model,
+                u["input"],
+                u["output"],
+                u["cache_read"],
+                u["cache_write"],
+            )
+            records.append(
+                SessionRecord(
+                    harness="codex",
+                    session_id=session_id,
+                    cwd=current_cwd,
+                    timestamp=last_ts_str,
+                    role="assistant",
+                    text="",
+                    model=current_model,
+                    input_tokens=u["input"],
+                    output_tokens=u["output"],
+                    cache_read_tokens=u["cache_read"],
+                    cache_write_tokens=u["cache_write"],
+                    cost_usd=cost_usd,
+                    cost_origin=cost_origin,
+                    is_subagent=is_subagent_path,
+                )
+            )
+
+    return records, skipped
+
+
 def load_all_records(
     harness: str = "all",
     since_dt: datetime | None = None,
@@ -1152,6 +1503,7 @@ def load_all_records(
     opencode_db: Path | None = None,
     copilot_db: Path | None = None,
     agy_dir: Path | None = None,
+    codex_dir: Path | None = None,
 ) -> list[SessionRecord]:
     """Legacy shim: same positional contract and bare-list return as always.
 
@@ -1166,6 +1518,7 @@ def load_all_records(
         "opencode": opencode_db,
         "copilot": copilot_db,
         "agy": agy_dir,
+        "codex": codex_dir,
     }
     query = SessionQuery(
         harnesses=None if harness == "all" else frozenset({harness}),
@@ -1458,7 +1811,7 @@ def cmd_search(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="analyze_sessions.py",
-        description="Multi-harness session analysis tool across pi, Claude Code, opencode, Copilot CLI, and agy.",
+        description="Multi-harness session analysis tool across pi, Claude Code, opencode, Copilot CLI, agy, and Codex.",
     )
     cli_common.add_verbosity_args(parser)
 
@@ -1467,9 +1820,9 @@ def build_parser() -> argparse.ArgumentParser:
     def add_common_filters(p: argparse.ArgumentParser) -> None:
         p.add_argument(
             "--harness",
-            choices=["all", "pi", "claude", "opencode", "copilot", "agy"],
+            choices=["all", "pi", "claude", "opencode", "copilot", "agy", "codex"],
             default="all",
-            help="harness to analyze: all, pi, claude, opencode, copilot, agy (default: all; note: agy is opt-in and excluded from 'all')",
+            help="harness to analyze: all, pi, claude, opencode, copilot, agy, codex (default: all; note: agy is opt-in and excluded from 'all')",
         )
         p.add_argument(
             "--since",

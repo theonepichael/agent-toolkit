@@ -112,12 +112,12 @@ analyze_sessions.py — multi-harness session analysis tool.
 
 - Installed at: `~/.agent-toolkit/scripts/analyze_sessions.py` (all harnesses)
 - Entrypoint: executable, `#!/usr/bin/env python3`
-- CLI (`argparse`): Multi-harness session analysis tool across pi, Claude Code, opencode, Copilot CLI, and agy.
+- CLI (`argparse`): Multi-harness session analysis tool across pi, Claude Code, opencode, Copilot CLI, agy, and Codex.
   - `--quiet/-q`
   - `--verbose/-v`
 - Subcommands:
-  - `cost [--harness {all,pi,claude,opencode,copilot,agy}] [--since <SINCE>] [--until <UNTIL>] [--cwd <CWD>] [--model <MODEL>] [--session <SESSION>] [--limit <LIMIT>] [--grep <GREP>] [--json] [--quiet] [--verbose] [--by {total,day,project,harness,model,session}] [--no-subagents]` — token and USD cost analysis and rollups
-    - `--harness` — harness to analyze: all, pi, claude, opencode, copilot, agy (default: all; note: agy is opt-in and excluded from 'all') (choices: all, pi, claude, opencode, copilot, agy; default: all)
+  - `cost [--harness {all,pi,claude,opencode,copilot,agy,codex}] [--since <SINCE>] [--until <UNTIL>] [--cwd <CWD>] [--model <MODEL>] [--session <SESSION>] [--limit <LIMIT>] [--grep <GREP>] [--json] [--quiet] [--verbose] [--by {total,day,project,harness,model,session}] [--no-subagents]` — token and USD cost analysis and rollups
+    - `--harness` — harness to analyze: all, pi, claude, opencode, copilot, agy, codex (default: all; note: agy is opt-in and excluded from 'all') (choices: all, pi, claude, opencode, copilot, agy, codex; default: all)
     - `--since` — filter sessions on/after date/time (ISO 8601 YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS, or relative e.g. 7d, today)
     - `--until` — filter sessions on/before date/time (ISO 8601 YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS)
     - `--cwd` — filter by working directory substring
@@ -128,8 +128,8 @@ analyze_sessions.py — multi-harness session analysis tool.
     - `--json` — emit output as JSON
     - `--by` — rollup grouping: total, day, project, harness, model, session (default: total) (choices: total, day, project, harness, model, session; default: total)
     - `--no-subagents` — exclude subagent / child sessions (included by default)
-  - `prompts [--harness {all,pi,claude,opencode,copilot,agy}] [--since <SINCE>] [--until <UNTIL>] [--cwd <CWD>] [--model <MODEL>] [--session <SESSION>] [--limit <LIMIT>] [--grep <GREP>] [--json] [--quiet] [--verbose] [--format {markdown,jsonl}] [--include-subagents]` — list user prompts
-    - `--harness` — harness to analyze: all, pi, claude, opencode, copilot, agy (default: all; note: agy is opt-in and excluded from 'all') (choices: all, pi, claude, opencode, copilot, agy; default: all)
+  - `prompts [--harness {all,pi,claude,opencode,copilot,agy,codex}] [--since <SINCE>] [--until <UNTIL>] [--cwd <CWD>] [--model <MODEL>] [--session <SESSION>] [--limit <LIMIT>] [--grep <GREP>] [--json] [--quiet] [--verbose] [--format {markdown,jsonl}] [--include-subagents]` — list user prompts
+    - `--harness` — harness to analyze: all, pi, claude, opencode, copilot, agy, codex (default: all; note: agy is opt-in and excluded from 'all') (choices: all, pi, claude, opencode, copilot, agy, codex; default: all)
     - `--since` — filter sessions on/after date/time (ISO 8601 YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS, or relative e.g. 7d, today)
     - `--until` — filter sessions on/before date/time (ISO 8601 YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS)
     - `--cwd` — filter by working directory substring
@@ -140,9 +140,9 @@ analyze_sessions.py — multi-harness session analysis tool.
     - `--json` — emit output as JSON
     - `--format` — output format (default: markdown) (choices: markdown, jsonl; default: markdown)
     - `--include-subagents` — include subagent / child sessions (excluded by default)
-  - `search [<query>] [--harness {all,pi,claude,opencode,copilot,agy}] [--since <SINCE>] [--until <UNTIL>] [--cwd <CWD>] [--model <MODEL>] [--session <SESSION>] [--limit <LIMIT>] [--grep <GREP>] [--json] [--quiet] [--verbose] [--regex] [--context <CONTEXT>] [--include-subagents]` — search message transcripts
+  - `search [<query>] [--harness {all,pi,claude,opencode,copilot,agy,codex}] [--since <SINCE>] [--until <UNTIL>] [--cwd <CWD>] [--model <MODEL>] [--session <SESSION>] [--limit <LIMIT>] [--grep <GREP>] [--json] [--quiet] [--verbose] [--regex] [--context <CONTEXT>] [--include-subagents]` — search message transcripts
     - `query` — search query text (nargs: ?)
-    - `--harness` — harness to analyze: all, pi, claude, opencode, copilot, agy (default: all; note: agy is opt-in and excluded from 'all') (choices: all, pi, claude, opencode, copilot, agy; default: all)
+    - `--harness` — harness to analyze: all, pi, claude, opencode, copilot, agy, codex (default: all; note: agy is opt-in and excluded from 'all') (choices: all, pi, claude, opencode, copilot, agy, codex; default: all)
     - `--since` — filter sessions on/after date/time (ISO 8601 YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS, or relative e.g. 7d, today)
     - `--until` — filter sessions on/before date/time (ISO 8601 YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS)
     - `--cwd` — filter by working directory substring
@@ -155,7 +155,7 @@ analyze_sessions.py — multi-harness session analysis tool.
     - `--context/-C` — context lines around match (default: 0) (default: 0)
     - `--include-subagents` — include subagent / child sessions (excluded by default)
 - Filesystem constants:
-  - `_DEFAULT_ROOT_GETTERS = {'pi': lambda: Path.home() / '.pi' / 'agent' / 'sessions', 'claude': lambda: Path.home() / '.claude' / 'projects', 'opencode': lambda: Path.home() / '.local' / 'share' / 'opencode' / 'opencode.db', 'copilot': lambda: Path.home() / '.copilot' / 'session-store.db', 'agy': lambda: Path.home() / '.gemini' / 'antigravity-cli' / 'brain'}`
+  - `_DEFAULT_ROOT_GETTERS = {'pi': lambda: Path.home() / '.pi' / 'agent' / 'sessions', 'claude': lambda: Path.home() / '.claude' / 'projects', 'opencode': lambda: Path.home() / '.local' / 'share' / 'opencode' / 'opencode.db', 'copilot': lambda: Path.home() / '.copilot' / 'session-store.db', 'agy': lambda: Path.home() / '.gemini' / 'antigravity-cli' / 'brain', 'codex': lambda: Path.home() / '.codex' / 'sessions'}`
 - Depends on: `cli_common.py`
 - Public classes:
   - `class SessionRecord`
@@ -167,6 +167,7 @@ analyze_sessions.py — multi-harness session analysis tool.
   - `normalize_timestamp(ts: object) -> tuple[str, datetime | None]` — Convert string ISO timestamp or int/float epoch ms/s into ISO 8601 string and datetime.
   - `parse_date_boundary(val: str | None, *, is_until: bool = False) -> datetime | None`
   - `calculate_claude_cost(model: str | None, in_tok: int, out_tok: int, cr_tok: int, cw_tok: int) -> tuple[float | None, str]`
+  - `calculate_openai_cost(model: str | None, in_tok: int, out_tok: int, cr_tok: int, cw_tok: int) -> tuple[float | None, str]`
   - `aggregate_cost(records: Sequence[SessionRecord]) -> CostSummary` — Pure builder: aggregate + cost-origin classification over a record list.
   - `query_sessions(query: SessionQuery, *, roots: Mapping[str, Path | None] | None = None) -> SessionQueryResult` — Read-only query/report service over harness session stores.
   - `load_pi_records(base_dir: Path | None = None, since_dt: datetime | None = None, until_dt: datetime | None = None) -> tuple[list[SessionRecord], list[SkippedRecord]]`
@@ -174,7 +175,8 @@ analyze_sessions.py — multi-harness session analysis tool.
   - `load_opencode_records(db_path: Path | None = None, since_dt: datetime | None = None, until_dt: datetime | None = None, cwd_filter: str | None = None, session_filter: str | None = None) -> tuple[list[SessionRecord], list[SkippedRecord]]`
   - `load_copilot_records(db_path: Path | None = None, since_dt: datetime | None = None, until_dt: datetime | None = None, cwd_filter: str | None = None, session_filter: str | None = None) -> tuple[list[SessionRecord], list[SkippedRecord]]`
   - `load_agy_records(base_dir: Path | None = None, since_dt: datetime | None = None, until_dt: datetime | None = None, session_filter: str | None = None) -> tuple[list[SessionRecord], list[SkippedRecord]]`
-  - `load_all_records(harness: str = 'all', since_dt: datetime | None = None, until_dt: datetime | None = None, cwd_filter: str | None = None, model_filter: str | None = None, session_filter: str | None = None, *, include_subagents: bool = True, pi_dir: Path | None = None, claude_dir: Path | None = None, opencode_db: Path | None = None, copilot_db: Path | None = None, agy_dir: Path | None = None) -> list[SessionRecord]` — Legacy shim: same positional contract and bare-list return as always.
+  - `load_codex_records(base_dir: Path | None = None, since_dt: datetime | None = None, until_dt: datetime | None = None, session_filter: str | None = None, cwd_filter: str | None = None) -> tuple[list[SessionRecord], list[SkippedRecord]]`
+  - `load_all_records(harness: str = 'all', since_dt: datetime | None = None, until_dt: datetime | None = None, cwd_filter: str | None = None, model_filter: str | None = None, session_filter: str | None = None, *, include_subagents: bool = True, pi_dir: Path | None = None, claude_dir: Path | None = None, opencode_db: Path | None = None, copilot_db: Path | None = None, agy_dir: Path | None = None, codex_dir: Path | None = None) -> list[SessionRecord]` — Legacy shim: same positional contract and bare-list return as always.
   - `build_parser() -> argparse.ArgumentParser`
 - Subcommand handlers: `cmd_cost`, `cmd_prompts`, `cmd_search`
 - Tested by: `test/test_analyze_sessions.py`

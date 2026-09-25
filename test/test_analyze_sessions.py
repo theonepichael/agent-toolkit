@@ -266,6 +266,40 @@ class TestAnalyzeSessionsAdapters(unittest.TestCase):
         self.assertIsNone(a_rec.cost_usd)
         self.assertEqual(a_rec.cost_origin, "unavailable")
 
+    def test_copilot_adapter_derived_cost(self) -> None:
+        db_path = self.root / "session-store-derived.db"
+        conn = sqlite3.connect(str(db_path))
+        cursor = conn.cursor()
+        cursor.execute(
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, cwd TEXT, repository TEXT, branch TEXT, created_at TEXT, updated_at TEXT)"
+        )
+        cursor.execute(
+            "CREATE TABLE turns (id INTEGER PRIMARY KEY, session_id TEXT, turn_index INTEGER, user_message TEXT, assistant_response TEXT, timestamp TEXT)"
+        )
+        cursor.execute(
+            "CREATE TABLE assistant_usage_events (id INTEGER PRIMARY KEY, session_id TEXT, turn_index INTEGER, model TEXT, input_tokens INTEGER, output_tokens INTEGER, cache_read_tokens INTEGER, cache_write_tokens INTEGER)"
+        )
+        cursor.execute(
+            "INSERT INTO sessions VALUES ('cop_sess2', '/home/user/proj', 'myrepo', 'main', '2026-08-31 10:00:00', '2026-08-31 10:05:00')"
+        )
+        cursor.execute(
+            "INSERT INTO turns VALUES (1, 'cop_sess2', 1, 'Hello', 'Hi there', '2026-08-31 10:00:05')"
+        )
+        cursor.execute(
+            "INSERT INTO assistant_usage_events VALUES (1, 'cop_sess2', 1, 'gpt-4o', 1000000, 100000, 500000, 0)"
+        )
+        conn.commit()
+        conn.close()
+
+        records, _skipped = analyze_sessions.load_copilot_records(db_path=db_path)
+        self.assertEqual(len(records), 2)
+        a_rec = records[1]
+        self.assertEqual(a_rec.role, "assistant")
+        self.assertEqual(a_rec.model, "gpt-4o")
+        # 1M * 2.50 + 0.1M * 10.0 + 0.5M * 1.25 = 2.50 + 1.00 + 0.625 = 4.125
+        self.assertAlmostEqual(a_rec.cost_usd or 0, 4.125)
+        self.assertEqual(a_rec.cost_origin, "derived")
+
     def test_agy_adapter(self) -> None:
         brain_dir = (
             self.root
@@ -322,6 +356,198 @@ class TestAnalyzeSessionsAdapters(unittest.TestCase):
             agy_dir=self.root / ".gemini" / "antigravity-cli" / "brain",
         )
         self.assertEqual(len(agy_records), 2)
+
+    def test_codex_adapter(self) -> None:
+        codex_dir = (
+            self.root
+            / ".codex"
+            / "sessions"
+            / "2026"
+            / "09"
+            / "22"
+        )
+        codex_dir.mkdir(parents=True)
+        session_file = (
+            codex_dir
+            / "rollout-2026-09-22T14-37-24-01a0ca68-8b84-7371-958f-f50b1431b709.jsonl"
+        )
+        lines = [
+            {
+                "timestamp": "2026-09-22T14:37:24.000Z",
+                "type": "session_meta",
+                "payload": {
+                    "id": "01a0ca68-8b84-7371-958f-f50b1431b709",
+                    "cwd": "/home/user/codexproj",
+                    "source": "cli",
+                },
+            },
+            {
+                "timestamp": "2026-09-22T14:37:24.100Z",
+                "type": "turn_context",
+                "payload": {
+                    "turn_id": "turn_1",
+                    "model": "gpt-5.6-terra",
+                    "cwd": "/home/user/codexproj",
+                },
+            },
+            {
+                "timestamp": "2026-09-22T14:37:24.200Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "developer",
+                    "content": [{"type": "input_text", "text": "system prompt"}],
+                },
+            },
+            {
+                "timestamp": "2026-09-22T14:37:25.000Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "Run tests and refactor"}],
+                    "internal_chat_message_metadata_passthrough": {
+                        "turn_id": "turn_1",
+                    },
+                },
+            },
+            {
+                "timestamp": "2026-09-22T14:37:26.000Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "I will examine the codebase."}],
+                    "internal_chat_message_metadata_passthrough": {
+                        "turn_id": "turn_1",
+                    },
+                },
+            },
+            {
+                "timestamp": "2026-09-22T14:37:27.000Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "custom_tool_call",
+                    "name": "exec",
+                },
+            },
+            {
+                "timestamp": "2026-09-22T14:37:27.100Z",
+                "type": "token_usage_record",
+                "payload": {
+                    "turn_id": "turn_1",
+                    "usage": {
+                        "input_tokens": 10000,
+                        "cached_input_tokens": 4000,
+                        "cache_write_input_tokens": 0,
+                        "output_tokens": 200,
+                        "total_tokens": 10200,
+                    },
+                },
+            },
+            {
+                "timestamp": "2026-09-22T14:37:30.000Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "Tests passed and refactored."}],
+                    "internal_chat_message_metadata_passthrough": {
+                        "turn_id": "turn_1",
+                    },
+                },
+            },
+            {
+                "timestamp": "2026-09-22T14:37:30.100Z",
+                "type": "token_usage_record",
+                "payload": {
+                    "turn_id": "turn_1",
+                    "usage": {
+                        "input_tokens": 15000,
+                        "cached_input_tokens": 5000,
+                        "cache_write_input_tokens": 0,
+                        "output_tokens": 800,
+                        "total_tokens": 15800,
+                    },
+                },
+            },
+        ]
+        with session_file.open("w", encoding="utf-8") as f:
+            for item in lines:
+                f.write(json.dumps(item) + "\n")
+
+        records, skipped = analyze_sessions.load_codex_records(
+            base_dir=self.root / ".codex" / "sessions"
+        )
+        self.assertEqual(skipped, [])
+        self.assertEqual(len(records), 3)
+
+        u_rec = records[0]
+        self.assertEqual(u_rec.role, "user")
+        self.assertEqual(u_rec.text, "Run tests and refactor")
+        self.assertEqual(u_rec.session_id, "01a0ca68-8b84-7371-958f-f50b1431b709")
+        self.assertEqual(u_rec.cwd, "/home/user/codexproj")
+        self.assertFalse(u_rec.is_subagent)
+        self.assertEqual(u_rec.input_tokens, 0)
+        self.assertEqual(u_rec.output_tokens, 0)
+
+        a1_rec = records[1]
+        self.assertEqual(a1_rec.role, "assistant")
+        self.assertEqual(a1_rec.text, "I will examine the codebase.")
+        self.assertEqual(a1_rec.model, "gpt-5.6-terra")
+        self.assertEqual(a1_rec.input_tokens, 0)
+        self.assertEqual(a1_rec.output_tokens, 0)
+
+        a2_rec = records[2]
+        self.assertEqual(a2_rec.role, "assistant")
+        self.assertEqual(a2_rec.text, "Tests passed and refactored.")
+        self.assertEqual(a2_rec.model, "gpt-5.6-terra")
+        self.assertEqual(a2_rec.input_tokens, 16000)
+        self.assertEqual(a2_rec.cache_read_tokens, 9000)
+        self.assertEqual(a2_rec.output_tokens, 1000)
+        self.assertEqual(a2_rec.cache_write_tokens, 0)
+        self.assertEqual(a2_rec.total_tokens, 26000)
+        self.assertEqual(a2_rec.cost_origin, "derived")
+        expected_cost = (16000 * 2.0 + 1000 * 12.0 + 9000 * 0.20) / 1_000_000.0
+        self.assertAlmostEqual(a2_rec.cost_usd or 0, expected_cost, places=6)
+
+    def test_codex_adapter_subagent_and_inline_usage(self) -> None:
+        codex_dir = self.root / ".codex" / "sessions"
+        codex_dir.mkdir(parents=True, exist_ok=True)
+        sub_file = codex_dir / "subagent_rollout_1.jsonl"
+        lines = [
+            {
+                "type": "session_meta",
+                "payload": {"id": "sub_1", "cwd": "/work", "source": "subagent"},
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "Subagent response"}],
+                    "usage": {
+                        "input_tokens": 5000,
+                        "cached_input_tokens": 1000,
+                        "output_tokens": 300,
+                        "cost": 0.015,
+                    },
+                },
+            },
+        ]
+        with sub_file.open("w", encoding="utf-8") as f:
+            for item in lines:
+                f.write(json.dumps(item) + "\n")
+
+        records, _ = analyze_sessions.load_codex_records(base_dir=codex_dir)
+        self.assertEqual(len(records), 1)
+        rec = records[0]
+        self.assertTrue(rec.is_subagent)
+        self.assertEqual(rec.input_tokens, 4000)
+        self.assertEqual(rec.cache_read_tokens, 1000)
+        self.assertEqual(rec.output_tokens, 300)
+        self.assertEqual(rec.cost_usd, 0.015)
+        self.assertEqual(rec.cost_origin, "native")
 
 
 class TestCalculateClaudeCost(unittest.TestCase):
@@ -404,6 +630,14 @@ class TestCalculateClaudeCost(unittest.TestCase):
         self.assertEqual(origin, "derived")
         self.assertAlmostEqual(cost, 1.0)
 
+    def test_claude_opus_5_5_rate(self) -> None:
+        cost, origin = analyze_sessions.calculate_claude_cost(
+            "claude-opus-5-5-20260922", 1_000_000, 100_000, 500_000, 200_000
+        )
+        self.assertEqual(origin, "derived")
+        # 1M * 4.0 + 0.1M * 20.0 + 0.5M * 0.20 + 0.2M * 5.0 = 4.0 + 2.0 + 0.10 + 1.0 = 7.10
+        self.assertAlmostEqual(cost or 0, 7.10)
+
     def test_unrecognized_model_stays_unavailable(self) -> None:
         cost, origin = analyze_sessions.calculate_claude_cost(
             "gpt-4o", 1_000_000, 0, 0, 0
@@ -413,6 +647,81 @@ class TestCalculateClaudeCost(unittest.TestCase):
 
     def test_none_model_stays_unavailable(self) -> None:
         cost, origin = analyze_sessions.calculate_claude_cost(None, 1_000_000, 0, 0, 0)
+        self.assertIsNone(cost)
+        self.assertEqual(origin, "unavailable")
+
+
+class TestCalculateOpenAICost(unittest.TestCase):
+    def test_gpt_6_astra_rate(self) -> None:
+        cost, origin = analyze_sessions.calculate_openai_cost(
+            "gpt-6-astra", 1_000_000, 100_000, 500_000, 0
+        )
+        self.assertEqual(origin, "derived")
+        # 1M * 10 + 0.1M * 50 + 0.5M * 1.0 = 10 + 5 + 0.5 = 15.5
+        self.assertAlmostEqual(cost or 0, 15.5)
+
+    def test_gpt_5_6_terra_rate(self) -> None:
+        cost, origin = analyze_sessions.calculate_openai_cost(
+            "gpt-5.6-terra", 1_000_000, 0, 0, 0
+        )
+        self.assertEqual(origin, "derived")
+        self.assertAlmostEqual(cost or 0, 2.0)
+
+    def test_gpt_6_sol_rate(self) -> None:
+        cost, origin = analyze_sessions.calculate_openai_cost(
+            "gpt-6-sol", 1_000_000, 0, 0, 0
+        )
+        self.assertEqual(origin, "derived")
+        self.assertAlmostEqual(cost or 0, 2.0)
+
+    def test_gpt_5_6_luna_rate(self) -> None:
+        cost, origin = analyze_sessions.calculate_openai_cost(
+            "gpt-5.6-luna", 1_000_000, 1_000_000, 0, 0
+        )
+        self.assertEqual(origin, "derived")
+        # 1M * 0.20 + 1M * 1.20 = 1.40
+        self.assertAlmostEqual(cost or 0, 1.40)
+
+    def test_o3_mini_rate(self) -> None:
+        cost, origin = analyze_sessions.calculate_openai_cost(
+            "o3-mini", 1_000_000, 1_000_000, 0, 0
+        )
+        self.assertEqual(origin, "derived")
+        self.assertAlmostEqual(cost or 0, 5.50)
+
+    def test_o3_rate(self) -> None:
+        cost, origin = analyze_sessions.calculate_openai_cost(
+            "o3", 1_000_000, 100_000, 500_000, 0
+        )
+        self.assertEqual(origin, "derived")
+        # 1M * 2.0 + 0.1M * 8.0 + 0.5M * 0.50 = 2.0 + 0.8 + 0.25 = 3.05
+        self.assertAlmostEqual(cost or 0, 3.05)
+
+    def test_gpt_5_mini_rate(self) -> None:
+        cost, origin = analyze_sessions.calculate_openai_cost(
+            "gpt-5-mini", 1_000_000, 1_000_000, 1_000_000, 0
+        )
+        self.assertEqual(origin, "derived")
+        # 1M * 0.25 + 1M * 2.0 + 1M * 0.025 = 0.25 + 2.0 + 0.025 = 2.275
+        self.assertAlmostEqual(cost or 0, 2.275)
+
+    def test_gpt_4_5_rate(self) -> None:
+        cost, origin = analyze_sessions.calculate_openai_cost(
+            "gpt-4.5-preview", 1_000_000, 100_000, 500_000, 0
+        )
+        self.assertEqual(origin, "derived")
+        # 1M * 75 + 0.1M * 150 + 0.5M * 37.5 = 75 + 15 + 18.75 = 108.75
+        self.assertAlmostEqual(cost or 0, 108.75)
+
+    def test_unrecognized_model_stays_unavailable(self) -> None:
+        cost, origin = analyze_sessions.calculate_openai_cost(
+            "claude-opus-5", 1_000_000, 0, 0, 0
+        )
+        self.assertIsNone(cost)
+        self.assertEqual(origin, "unavailable")
+
+    def test_none_model_stays_unavailable(self) -> None:
+        cost, origin = analyze_sessions.calculate_openai_cost(None, 1_000_000, 0, 0, 0)
         self.assertIsNone(cost)
         self.assertEqual(origin, "unavailable")
 
@@ -732,6 +1041,7 @@ class TestSessionQueryService(unittest.TestCase):
             "claude": self.root / "claude" / "proj",
             "opencode": self.root / "none-opencode.db",
             "copilot": self.root / "none-copilot.db",
+            "codex": self.root / "none-codex",
         }
 
     def tearDown(self) -> None:
@@ -776,6 +1086,49 @@ class TestSessionQueryService(unittest.TestCase):
         result = analyze_sessions.query_sessions(q, roots=roots)
         self.assertEqual(len(result.records), 1)
         self.assertEqual(result.records[0].text, "Build UI")
+
+    def test_codex_query(self) -> None:
+        codex_root = self.root / "codex-sessions"
+        sess_dir = codex_root / "2026" / "09" / "22"
+        sess_dir.mkdir(parents=True)
+        self._write_jsonl(
+            sess_dir / "rollout-codex1.jsonl",
+            [
+                {
+                    "type": "session_meta",
+                    "payload": {"id": "codex_1", "cwd": "/work"},
+                },
+                {
+                    "type": "turn_context",
+                    "payload": {"model": "gpt-6-sol", "cwd": "/work"},
+                },
+                {
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "Codex prompt"}],
+                    },
+                },
+                {
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "Codex answer"}],
+                    },
+                },
+            ],
+        )
+        roots = dict(self.roots)
+        roots["codex"] = codex_root
+        q = analyze_sessions.SessionQuery(harnesses=frozenset({"codex"}))
+        result = analyze_sessions.query_sessions(q, roots=roots)
+        self.assertEqual(len(result.records), 2)
+        self.assertEqual(result.records[0].text, "Codex prompt")
+        self.assertEqual(result.records[0].harness, "codex")
+        self.assertEqual(result.records[1].text, "Codex answer")
+        self.assertEqual(result.records[1].model, "gpt-6-sol")
 
     def test_since_until_inclusive_boundaries(self) -> None:
         since = datetime(2026, 8, 31, 12, 0, 0, tzinfo=UTC)  # exactly at record
@@ -985,6 +1338,7 @@ class TestSessionQueryService(unittest.TestCase):
             claude_dir=self.roots["claude"],
             opencode_db=self.roots["opencode"],
             copilot_db=self.roots["copilot"],
+            codex_dir=self.roots["codex"],
         )
         result = self._query(include_subagents=True)
         self.assertIsInstance(legacy, list)
