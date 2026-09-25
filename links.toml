@@ -490,13 +490,13 @@ dest = "~/.config/opencode/skills/spec/SKILL.md"
 harness = "opencode"
 
 [[link]]
-src = "opencode/skills/analyze-sessions/SKILL.md"
-dest = "~/.config/opencode/skills/analyze-sessions/SKILL.md"
+src = "opencode/command/analyze-sessions.md"
+dest = "~/.config/opencode/commands/analyze-sessions.md"
 harness = "opencode"
 
 [[link]]
-src = "opencode/skills/refresh-guidance/SKILL.md"
-dest = "~/.config/opencode/skills/refresh-guidance/SKILL.md"
+src = "opencode/command/refresh-guidance.md"
+dest = "~/.config/opencode/commands/refresh-guidance.md"
 harness = "opencode"
 
 [[link]]

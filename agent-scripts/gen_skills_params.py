@@ -3024,6 +3024,125 @@ silently — the user asked for a queue, not for a guess about which project."""
     },
 }
 
+_ANALYZE_SESSIONS_DESCRIPTION = (
+    "Analyze coding-agent sessions across pi, Claude Code, opencode, Copilot CLI, "
+    "and agy: calculate token/USD cost rollups, list user prompts, or search message "
+    "transcripts. Use when the user asks about session costs, token usage, previous "
+    "prompts, or wants to search past coding session transcripts across harnesses."
+)
+
+ANALYZE_SESSIONS_PARAMS: dict[str, dict[str, str]] = {
+    "claude": {
+        "FRONTMATTER": f"""\
+---
+name: analyze-sessions
+description: "{_ANALYZE_SESSIONS_DESCRIPTION}"
+---""",
+    },
+    "copilot": {
+        "FRONTMATTER": f"""\
+---
+name: analyze-sessions
+description: "{_ANALYZE_SESSIONS_DESCRIPTION}"
+allowed-tools: shell
+---""",
+    },
+    "opencode": {
+        "FRONTMATTER": f"""\
+---
+description: "{_ANALYZE_SESSIONS_DESCRIPTION}"
+---""",
+    },
+    "agy": {
+        "FRONTMATTER": f"""\
+---
+name: analyze-sessions
+description: "{_ANALYZE_SESSIONS_DESCRIPTION}"
+---""",
+    },
+    "pi": {
+        "FRONTMATTER": f"""\
+---
+name: analyze-sessions
+description: "{_ANALYZE_SESSIONS_DESCRIPTION}"
+---""",
+    },
+    "pi-prompt": {
+        "FRONTMATTER": f"""\
+---
+description: "{_ANALYZE_SESSIONS_DESCRIPTION}"
+---""",
+    },
+    "codex": {
+        "FRONTMATTER": f"""\
+---
+name: analyze-sessions
+description: "{_ANALYZE_SESSIONS_DESCRIPTION}"
+---""",
+    },
+}
+
+_REFRESH_GUIDANCE_DESCRIPTION = (
+    "Audit this repo's hand-authored, agent-facing docs (AGENTS.md, README.md, "
+    "STYLE.md, CHANGELOG.md, etc.) for mechanically-broken citations — dead file "
+    "paths, dead command/flag references — and surface which `##` sections haven't "
+    "had a human-confirmed review in a while. Use when the user says 'refresh guidance', "
+    "'audit the docs', 'check the docs for staleness', 'run refresh-guidance', or asks "
+    "which doc sections need review."
+)
+
+REFRESH_GUIDANCE_PARAMS: dict[str, dict[str, str]] = {
+    "claude": {
+        "FRONTMATTER": f"""\
+---
+name: refresh-guidance
+description: "{_REFRESH_GUIDANCE_DESCRIPTION}"
+allowed-tools: [Read, "Bash(python3 {{{{TOOLKIT_SCRIPTS}}}}/refresh_guidance.py:*)", "Bash(git rev-parse:*)"]
+---""",
+    },
+    "copilot": {
+        "FRONTMATTER": f"""\
+---
+name: refresh-guidance
+description: "{_REFRESH_GUIDANCE_DESCRIPTION}"
+allowed-tools: shell
+---""",
+    },
+    "opencode": {
+        "FRONTMATTER": f"""\
+---
+description: "{_REFRESH_GUIDANCE_DESCRIPTION}"
+---""",
+    },
+    "agy": {
+        "FRONTMATTER": f"""\
+---
+name: refresh-guidance
+description: "{_REFRESH_GUIDANCE_DESCRIPTION}"
+---""",
+    },
+    "pi": {
+        "FRONTMATTER": f"""\
+---
+name: refresh-guidance
+description: "{_REFRESH_GUIDANCE_DESCRIPTION}"
+---""",
+    },
+    "pi-prompt": {
+        "FRONTMATTER": f"""\
+---
+description: "{_REFRESH_GUIDANCE_DESCRIPTION}"
+---""",
+    },
+    "codex": {
+        "FRONTMATTER": f"""\
+---
+name: refresh-guidance
+description: "{_REFRESH_GUIDANCE_DESCRIPTION}"
+---""",
+    },
+}
+
 SKILL_PARAMS: dict[str, dict[str, dict[str, str]]] = {
     "dashboard": DASHBOARD_PARAMS,
     "recap": RECAP_PARAMS,
@@ -3034,4 +3153,6 @@ SKILL_PARAMS: dict[str, dict[str, dict[str, str]]] = {
     "standup": STANDUP_PARAMS,
     "to-tickets": TO_TICKETS_PARAMS,
     "swarm": SWARM_PARAMS,
+    "analyze-sessions": ANALYZE_SESSIONS_PARAMS,
+    "refresh-guidance": REFRESH_GUIDANCE_PARAMS,
 }

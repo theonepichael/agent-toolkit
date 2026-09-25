@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """gen_skills.py — regenerate the dashboard/recap/grill-me/backlog-item/
-make-skill/spec/standup/to-tickets/swarm skill copies from one template per
-skill, plus a shared per-harness capability table. dashboard/recap/
-grill-me/backlog-item/make-skill/spec/standup/to-tickets cover all 6
-harnesses (claude, copilot, opencode, agy, pi, codex); swarm covers only
-claude/copilot (user-directed; pi already owns the orchestration surface) —
-see `SKILL_HARNESSES` below and AGENTS.md's "Harness maintenance tiers" section.
+make-skill/spec/standup/to-tickets/swarm/analyze-sessions/refresh-guidance
+skill copies from one template per skill, plus a shared per-harness capability
+table. dashboard/recap/grill-me/backlog-item/make-skill/spec/standup/to-tickets/
+analyze-sessions/refresh-guidance cover all 6 harnesses (claude, copilot,
+opencode, agy, pi, codex); swarm covers only claude/copilot (user-directed; pi
+already owns the orchestration surface) — see `SKILL_HARNESSES` below and
+AGENTS.md's "Harness maintenance tiers" section.
 
 The first 4 skills used to live as hand-forked copies, one per harness, with
 no mechanism keeping them in sync (see `meta-pi-skill-content-mismatch`'s
@@ -15,7 +16,7 @@ SessionStart hook — that are factually wrong for Pi, which has both).
 spec/standup/to-tickets had the same drift for Pi specifically
 (`meta-pi-residual-skill-drift`). This script replaces those copies with
 generated output: one body template per skill
-(`templates/{dashboard,recap,grill_me,backlog_item,make_skill,spec,standup,to_tickets,swarm}.md.tmpl`)
+(`templates/{dashboard,recap,grill_me,backlog_item,make_skill,spec,standup,to_tickets,swarm,analyze_sessions,refresh_guidance}.md.tmpl`)
 plus the shared `CAPABILITY_TABLE` below, mirroring
 `gen_second_opinion.py`'s generator/--check/--stdout shape for the
 second-opinion skill (which this script does not touch — a separate,
@@ -40,11 +41,11 @@ Usage:
 
 Flags: --check, --stdout, --repo-root <path>, --quiet/-q, --verbose/-v.
 Env vars: none.
-Files read: <repo>/templates/{dashboard,recap,grill_me,backlog_item,make_skill,spec,standup,to_tickets,swarm}.md.tmpl.
-Files written: the 58 (skill, harness) copies named in OUTPUT_PATHS —
-8 skills x 6 harnesses (48), plus swarm x {claude, copilot} (2), plus a
-second pi/prompts/*.md output for each of the 8 skills under the synthetic
-"pi-prompt" harness (8), per `SKILL_HARNESSES` (skipped by --check and
+Files read: <repo>/templates/{dashboard,recap,grill_me,backlog_item,make_skill,spec,standup,to_tickets,swarm,analyze_sessions,refresh_guidance}.md.tmpl.
+Files written: the 72 (skill, harness) copies named in OUTPUT_PATHS —
+10 skills x 6 harnesses (60), plus swarm x {claude, copilot} (2), plus a
+second pi/prompts/*.md output for each of the 10 skills under the synthetic
+"pi-prompt" harness (10), per `SKILL_HARNESSES` (skipped by --check and
 --stdout).
 Exit codes: 0 success; 1 --check found stale output; 2 bad usage.
 
@@ -73,6 +74,8 @@ SKILLS = (
     "standup",
     "to-tickets",
     "swarm",
+    "analyze-sessions",
+    "refresh-guidance",
 )
 HARNESSES = harness_spec.ALL_NAMES
 
@@ -85,7 +88,7 @@ HARNESSES = harness_spec.ALL_NAMES
 # "second copy is a second thing to drift" problem swarm.md's own closing
 # section warns against.
 _ACTIVE_TIER = HARNESSES
-# The 8 gen_skills.py-managed skills each get a second pi output --
+# The 10 gen_skills.py-managed skills each get a second pi output --
 # pi/prompts/{name}.md, the "pi-prompt" synthetic harness (see
 # TEMPLATE_PATH_OVERRIDES) -- alongside their pi/skills/{name}/SKILL.md.
 # swarm doesn't: pi already owns the swarm orchestration surface natively
@@ -102,6 +105,8 @@ SKILL_HARNESSES: dict[str, tuple[str, ...]] = {
     "standup": _ACTIVE_TIER + ("pi-prompt",),
     "to-tickets": _ACTIVE_TIER + ("pi-prompt",),
     "swarm": ("claude", "copilot"),
+    "analyze-sessions": HARNESSES + ("pi-prompt",),
+    "refresh-guidance": HARNESSES + ("pi-prompt",),
 }
 
 TEMPLATE_PATHS: dict[str, str] = {
@@ -114,6 +119,8 @@ TEMPLATE_PATHS: dict[str, str] = {
     "standup": "templates/standup.md.tmpl",
     "to-tickets": "templates/to_tickets.md.tmpl",
     "swarm": "templates/swarm.md.tmpl",
+    "analyze-sessions": "templates/analyze_sessions.md.tmpl",
+    "refresh-guidance": "templates/refresh_guidance.md.tmpl",
 }
 
 # Per-(skill, harness) template overrides. Pi has two output surfaces per

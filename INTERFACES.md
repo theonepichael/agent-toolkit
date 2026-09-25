@@ -49,7 +49,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`gen_interfaces.py`](#agentscriptsgeninterfacespy) | gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources. |
 | [`gen_second_opinion.py`](#agentscriptsgensecondopinionpy) | gen_second_opinion.py — regenerate the second-opinion skill copies (one per harness, named in HARNESS_TABLE) from one canonical template. |
 | [`gen_shell_completion.py`](#agentscriptsgenshellcompletionpy) | Generate a zsh `#compdef` completion file for a harness CLI. |
-| [`gen_skills.py`](#agentscriptsgenskillspy) | gen_skills.py — regenerate the dashboard/recap/grill-me/backlog-item/ make-skill/spec/standup/to-tickets/swarm skill copies from one template per skill, plus a shared per-harness capability table. dashboard/recap/ grill-me/backlog-item/make-skill/spec/standup/to-tickets cover all 6 harnesses (claude, copilot, opencode, agy, pi, codex); swarm covers only claude/copilot (user-directed; pi already owns the orchestration surface) — see `SKILL_HARNESSES` below and AGENTS.md's "Harness maintenance tiers" section. |
+| [`gen_skills.py`](#agentscriptsgenskillspy) | gen_skills.py — regenerate the dashboard/recap/grill-me/backlog-item/ make-skill/spec/standup/to-tickets/swarm/analyze-sessions/refresh-guidance skill copies from one template per skill, plus a shared per-harness capability table. dashboard/recap/grill-me/backlog-item/make-skill/spec/standup/to-tickets/ analyze-sessions/refresh-guidance cover all 6 harnesses (claude, copilot, opencode, agy, pi, codex); swarm covers only claude/copilot (user-directed; pi already owns the orchestration surface) — see `SKILL_HARNESSES` below and AGENTS.md's "Harness maintenance tiers" section. |
 | [`gen_skills_params.py`](#agentscriptsgenskillsparamspy) | gen_skills_params.py — per-(skill, harness) content tables for gen_skills.py. |
 | [`grill.py`](#agentscriptsgrillpy) | grill.py — grill-me session state CLI. All session mutations go through here. |
 | [`guard_rails.py`](#agentscriptsguardrailspy) | Pre-tool guard shared by every harness: refuse a write into a repository's main checkout while a backlog item for that repository is in progress, warn when the current worktree's base has fallen behind ``origin/main`` (or ``origin/<integration_branch>`` for an item that declares one), (Bash, Claude Code only) deny the git-native ways to defeat the no-commit-on-main git hook (``githooks/pre-commit`` / ``githooks-global/pre-commit``), and require an active backlog-item claim before a write that points at an in-progress item. |
@@ -731,7 +731,7 @@ Generate a zsh `#compdef` completion file for a harness CLI.
 
 ### `agent-scripts/gen_skills.py`
 
-gen_skills.py — regenerate the dashboard/recap/grill-me/backlog-item/ make-skill/spec/standup/to-tickets/swarm skill copies from one template per skill, plus a shared per-harness capability table. dashboard/recap/ grill-me/backlog-item/make-skill/spec/standup/to-tickets cover all 6 harnesses (claude, copilot, opencode, agy, pi, codex); swarm covers only claude/copilot (user-directed; pi already owns the orchestration surface) — see `SKILL_HARNESSES` below and AGENTS.md's "Harness maintenance tiers" section.
+gen_skills.py — regenerate the dashboard/recap/grill-me/backlog-item/ make-skill/spec/standup/to-tickets/swarm/analyze-sessions/refresh-guidance skill copies from one template per skill, plus a shared per-harness capability table. dashboard/recap/grill-me/backlog-item/make-skill/spec/standup/to-tickets/ analyze-sessions/refresh-guidance cover all 6 harnesses (claude, copilot, opencode, agy, pi, codex); swarm covers only claude/copilot (user-directed; pi already owns the orchestration surface) — see `SKILL_HARNESSES` below and AGENTS.md's "Harness maintenance tiers" section.
 
 - Installed at: `~/.agent-toolkit/scripts/gen_skills.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
@@ -1687,14 +1687,14 @@ the workflow's template plus its generator's capability/parameter tables.
 
 | Workflow | Origin | claude | copilot | opencode | agy | pi | codex |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `/analyze-sessions` | hand-authored | yes | yes | yes | yes | yes | — |
+| `/analyze-sessions` | template | yes | yes | yes | yes | yes | yes |
 | `/backlog-item` | template | yes | yes | yes | yes | yes | yes |
 | `/dashboard` | template | yes | yes | yes | yes | yes | yes |
 | `/draft-voice` | hand-authored | yes | — | — | — | — | — |
 | `/grill-me` | template | yes | yes | yes | yes | yes | yes |
 | `/make-skill` | template | yes | yes | yes | yes | yes | yes |
 | `/recap` | template | yes | yes | yes | yes | yes | yes |
-| `/refresh-guidance` | hand-authored | yes | yes | yes | yes | yes | yes |
+| `/refresh-guidance` | template | yes | yes | yes | yes | yes | yes |
 | `/second-opinion` | template | yes | yes | yes | yes | yes | yes |
 | `/skill-drift-audit` | hand-authored | yes | — | — | — | — | — |
 | `/skill-map` | hand-authored | yes | — | — | — | — | — |
@@ -1704,7 +1704,8 @@ the workflow's template plus its generator's capability/parameter tables.
 | `/to-tickets` | template | yes | yes | yes | yes | yes | yes |
 
 - **`/analyze-sessions`** — Analyze coding-agent sessions across pi, Claude Code, opencode, Copilot CLI, and agy: calculate token/USD cost rollups, list user prompts, or search message transcripts. Use when the user asks about session costs, token usage, previous prompts, or wants to search past coding session transcripts across harnesses.
-  - Source: `claude/commands/analyze-sessions.md` (hand-authored)
+  - Generated from: `templates/analyze_sessions.md.tmpl` by `gen_skills.py`
+  - `claude/commands/{name}.md` is the rendered Claude Code port — edit the template or generator, then regenerate.
   - Installed at: `~/.claude/commands/analyze-sessions.md` (claude)
 - **`/backlog-item`** — Runs a dev_status.py backlog item end-to-end: resolve, worktree, spec (escalating to grill-me only for a genuinely open design branch), second-opinion critique, execution handoff, TDD implement, verify, commit/merge/push gates, review+approve. Use when the user says 'work on backlog item 4', 'pick up <slug>', 'let's do the next backlog item', or otherwise names a specific item to work end-to-end. Add --auto (optionally with a slug) for an unattended single-item or full-READY-batch run — commit and merge/push gates still stop live, per item.
   - Generated from: `templates/backlog_item.md.tmpl` by `gen_skills.py`
@@ -1730,7 +1731,8 @@ the workflow's template plus its generator's capability/parameter tables.
   - `claude/commands/{name}.md` is the rendered Claude Code port — edit the template or generator, then regenerate.
   - Installed at: `~/.claude/commands/recap.md` (claude)
 - **`/refresh-guidance`** — Audit this repo's hand-authored, agent-facing docs (AGENTS.md, README.md, STYLE.md, CHANGELOG.md, etc.) for mechanically-broken citations — dead file paths, dead command/flag references — and surface which `##` sections haven't had a human-confirmed review in a while. Use when the user says 'refresh guidance', 'audit the docs', 'check the docs for staleness', 'run refresh-guidance', or asks which doc sections need review.
-  - Source: `claude/commands/refresh-guidance.md` (hand-authored)
+  - Generated from: `templates/refresh_guidance.md.tmpl` by `gen_skills.py`
+  - `claude/commands/{name}.md` is the rendered Claude Code port — edit the template or generator, then regenerate.
   - Installed at: `~/.claude/commands/refresh-guidance.md` (claude)
 - **`/second-opinion`** — Send a plan to a non-Claude model for adversarial critique, then iterate — revise, re-send, repeat — until the critique stops surfacing anything new or a round cap is hit. Use when the user wants a second opinion, an outside critique, or to stress-test a plan against a different model.
   - Generated from: `templates/second_opinion.md.tmpl` by `gen_second_opinion.py`
@@ -2116,8 +2118,10 @@ named doc, not regenerating this file.
 | --- | --- |
 | `agy/skills/analyze-sessions/SKILL.md` | OK |
 | `claude/commands/analyze-sessions.md` | OK |
+| `codex/skills/analyze-sessions/SKILL.md` | OK |
 | `copilot/skills/analyze-sessions/SKILL.md` | OK |
-| `opencode/skills/analyze-sessions/SKILL.md` | OK |
+| `opencode/command/analyze-sessions.md` | OK |
+| `pi/skills/analyze-sessions/SKILL.md` | OK |
 
 ### `dev_status.py`
 
@@ -2233,7 +2237,8 @@ named doc, not regenerating this file.
 | `claude/commands/refresh-guidance.md` | OK |
 | `codex/skills/refresh-guidance/SKILL.md` | OK |
 | `copilot/skills/refresh-guidance/SKILL.md` | OK |
-| `opencode/skills/refresh-guidance/SKILL.md` | OK |
+| `opencode/command/refresh-guidance.md` | OK |
+| `pi/skills/refresh-guidance/SKILL.md` | OK |
 
 ### `second_opinion.py`
 

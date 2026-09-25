@@ -415,6 +415,69 @@ class CapabilityFixtureTests(unittest.TestCase):
         self.assertIn("ask in plain text", text)
         self.assertNotIn("AskUserQuestion", text)
 
+    # -- analyze-sessions ---------------------------------------------------
+
+    def test_analyze_sessions_claude(self) -> None:
+        text = self._render("analyze-sessions", "claude")
+        self.assertIn("name: analyze-sessions", text)
+        self.assertIn("analyze_sessions.py", text)
+
+    def test_analyze_sessions_copilot(self) -> None:
+        text = self._render("analyze-sessions", "copilot")
+        self.assertIn("allowed-tools: shell", text)
+        self.assertIn("analyze_sessions.py", text)
+
+    def test_analyze_sessions_opencode(self) -> None:
+        text = self._render("analyze-sessions", "opencode")
+        self.assertIn("analyze_sessions.py", text)
+
+    def test_analyze_sessions_agy(self) -> None:
+        text = self._render("analyze-sessions", "agy")
+        self.assertIn("name: analyze-sessions", text)
+        self.assertIn("analyze_sessions.py", text)
+
+    def test_analyze_sessions_pi(self) -> None:
+        text = self._render("analyze-sessions", "pi")
+        self.assertIn("name: analyze-sessions", text)
+        self.assertIn("analyze_sessions.py", text)
+
+    def test_analyze_sessions_codex(self) -> None:
+        text = self._render("analyze-sessions", "codex")
+        self.assertIn("name: analyze-sessions", text)
+        self.assertIn("analyze_sessions.py", text)
+
+    # -- refresh-guidance ---------------------------------------------------
+
+    def test_refresh_guidance_claude(self) -> None:
+        text = self._render("refresh-guidance", "claude")
+        self.assertIn("name: refresh-guidance", text)
+        self.assertIn("refresh_guidance.py", text)
+        self.assertIn("allowed-tools: [Read,", text)
+
+    def test_refresh_guidance_copilot(self) -> None:
+        text = self._render("refresh-guidance", "copilot")
+        self.assertIn("allowed-tools: shell", text)
+        self.assertIn("refresh_guidance.py", text)
+
+    def test_refresh_guidance_opencode(self) -> None:
+        text = self._render("refresh-guidance", "opencode")
+        self.assertIn("refresh_guidance.py", text)
+
+    def test_refresh_guidance_agy(self) -> None:
+        text = self._render("refresh-guidance", "agy")
+        self.assertIn("name: refresh-guidance", text)
+        self.assertIn("refresh_guidance.py", text)
+
+    def test_refresh_guidance_pi(self) -> None:
+        text = self._render("refresh-guidance", "pi")
+        self.assertIn("name: refresh-guidance", text)
+        self.assertIn("refresh_guidance.py", text)
+
+    def test_refresh_guidance_codex(self) -> None:
+        text = self._render("refresh-guidance", "codex")
+        self.assertIn("name: refresh-guidance", text)
+        self.assertIn("refresh_guidance.py", text)
+
 
 class EndToEndTests(unittest.TestCase):
     """Assert the real templates + params render to exactly what's committed."""
@@ -424,7 +487,7 @@ class EndToEndTests(unittest.TestCase):
 
     def test_all_50_copies_are_up_to_date(self) -> None:
         rendered = gs.render_all(REPO_ROOT, SKILL_PARAMS)
-        self.assertEqual(len(rendered), 58)
+        self.assertEqual(len(rendered), 72)
         stale = []
         for relpath, text in rendered.items():
             on_disk = (REPO_ROOT / relpath).read_text(encoding="utf-8")
