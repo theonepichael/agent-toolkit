@@ -10,5 +10,5 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["plugin/**/*.ts", "plugins/**/*.ts", "trust-state.ts", "test/**/*.ts"]
+  "include": ["plugin/**/*.ts", "plugins/**/*.ts", "tui/**/*.ts", "trust-state.ts", "test/**/*.ts"]
 }

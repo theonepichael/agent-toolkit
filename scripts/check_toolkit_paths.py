@@ -145,6 +145,14 @@ NON_PYTHON: dict[str, tuple[str, str]] = {
         "no-toolkit-data",
         "reads per-session trust state; does not write toolkit data",
     ),
+    "opencode/tui/permission-gate.ts": (
+        "no-toolkit-data",
+        "toggles only explicit per-session trust state",
+    ),
+    "opencode/tui/trust-session.ts": (
+        "no-toolkit-data",
+        "toggles only explicit per-session trust state",
+    ),
     "opencode/trust-state.ts": (
         "no-toolkit-data",
         "shared state helper writes only explicit per-session trust records",

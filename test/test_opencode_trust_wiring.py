@@ -23,6 +23,8 @@ def test_opencode_trust_files_are_installed() -> None:
             "opencode/plugins/trust-session.ts",
             "~/.config/opencode/plugins/trust-session.ts",
         ),
+        ("opencode/tui/permission-gate.ts", "~/.config/opencode/tui/permission-gate.ts"),
+        ("opencode/tui/trust-session.ts", "~/.config/opencode/tui/trust-session.ts"),
         ("opencode/trust-state.ts", "~/.config/opencode/trust-state.ts"),
         (
             "agent-scripts/opencode_trust.py",
@@ -37,6 +39,8 @@ def test_state_path_has_one_definition() -> None:
     assert ".local/state/agent-toolkit/trust-sessions" in state
     for path in (
         "opencode/plugins/trust-session.ts",
+        "opencode/tui/permission-gate.ts",
+        "opencode/tui/trust-session.ts",
         "opencode/plugin/guard-rails.ts",
     ):
         assert ".local/state/agent-toolkit/trust-sessions" not in _source(path)
@@ -48,6 +52,18 @@ def test_permission_plugin_only_handles_permission_events() -> None:
     assert "postSessionIdPermissionsPermissionId" in source
     assert 'response: "once"' in source
     assert "question" not in source
+
+
+def test_tui_plugins_register_slash_commands() -> None:
+    permission = _source("opencode/tui/permission-gate.ts")
+    trust = _source("opencode/tui/trust-session.ts")
+    tui_config = __import__("json").loads(_source("opencode/tui.json"))
+    assert 'slashName: "permission-gate"' in permission
+    assert 'slashName: "trust-session"' in trust
+    assert "./tui/permission-gate.ts" in tui_config["plugin"]
+    assert "./tui/trust-session.ts" in tui_config["plugin"]
+    assert "writeTrustState" in permission
+    assert "writeTrustState" in trust
 
 
 def test_server_guard_uses_session_scoped_trust_state() -> None:

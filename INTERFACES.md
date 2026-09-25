@@ -1790,6 +1790,8 @@ are copy-once seeds for exactly that reason.
 | `opencode/test/trust-state.test.ts` | not symlinked by `links.toml` |
 | `opencode/trust-state.ts` | `~/.config/opencode/trust-state.ts` (opencode) |
 | `opencode/tsconfig.json` | not symlinked by `links.toml` |
+| `opencode/tui/permission-gate.ts` | `~/.config/opencode/tui/permission-gate.ts` (opencode) |
+| `opencode/tui/trust-session.ts` | `~/.config/opencode/tui/trust-session.ts` (opencode) |
 | `opencode/tui.json` | `~/.config/opencode/tui.json` (opencode) |
 | `agy/CLAUDE_CODE_PARITY.md` | not symlinked by `links.toml` |
 | `agy/hooks/agy-elapsed.js` | `~/.agent-toolkit/hooks/agy-elapsed.js` (agy) |
