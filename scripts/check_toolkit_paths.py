@@ -754,6 +754,19 @@ GENERATORS: dict[str, Generator] = {
         ("templates/second_opinion.md.tmpl", "agent-scripts/gen_second_opinion.py"),
         lambda: sorted(_agent_script("gen_second_opinion").HARNESS_TABLE),
     ),
+    "gen_hooks.py": Generator(
+        "python3 agent-scripts/gen_hooks.py",
+        "python3 agent-scripts/gen_hooks.py --check",
+        (
+            "agent-scripts/harness_spec.py",
+            "claude/settings.json",
+            "claude/settings.work.json",
+        ),
+        lambda: [
+            str(p.relative_to(REPO))
+            for p in _agent_script("gen_hooks").compile_hooks(REPO)
+        ],
+    ),
     "gen_interfaces.py": Generator(
         "python3 agent-scripts/gen_interfaces.py [--update-fingerprints]",
         "python3 agent-scripts/gen_interfaces.py --check",

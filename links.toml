@@ -210,6 +210,10 @@ src = "agent-scripts/gen_skills.py"
 dest = "~/.agent-toolkit/scripts/gen_skills.py"
 
 [[link]]
+src = "agent-scripts/gen_hooks.py"
+dest = "~/.agent-toolkit/scripts/gen_hooks.py"
+
+[[link]]
 src = "agent-scripts/gen_skills_params.py"
 dest = "~/.agent-toolkit/scripts/gen_skills_params.py"
 

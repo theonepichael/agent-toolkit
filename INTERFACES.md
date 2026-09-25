@@ -45,6 +45,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`dev_status_storage.py`](#agentscriptsdevstatusstoragepy) | Backlog persistence, lock coordination, and journal primitives. |
 | [`dev_status_types.py`](#agentscriptsdevstatustypespy) | Backlog data model — the on-disk shapes shared across the dev_status stack. |
 | [`fault_checkpoint.py`](#agentscriptsfaultcheckpointpy) | Named crash points for proving what a killed process leaves behind. |
+| [`gen_hooks.py`](#agentscriptsgenhookspy) | gen_hooks.py — compile lifecycle hooks across Claude, Copilot, and agy. |
 | [`gen_interfaces.py`](#agentscriptsgeninterfacespy) | gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources. |
 | [`gen_second_opinion.py`](#agentscriptsgensecondopinionpy) | gen_second_opinion.py — regenerate the second-opinion skill copies (one per harness, named in HARNESS_TABLE) from one canonical template. |
 | [`gen_shell_completion.py`](#agentscriptsgenshellcompletionpy) | Generate a zsh `#compdef` completion file for a harness CLI. |
@@ -551,6 +552,23 @@ Named crash points for proving what a killed process leaves behind.
   - `checkpoint(name: str) -> None` — Die here by SIGKILL if the harness armed this checkpoint; else return.
 - Tested by: `agent-scripts/test_fault_injection.py`, `test/test_fault_checkpoint.py`
 
+### `agent-scripts/gen_hooks.py`
+
+gen_hooks.py — compile lifecycle hooks across Claude, Copilot, and agy.
+
+- Installed at: `~/.agent-toolkit/scripts/gen_hooks.py` (all harnesses)
+- Entrypoint: not executable, `#!/usr/bin/env python3`
+- CLI (`argparse`): Compile lifecycle hooks across Claude, Copilot, and agy from harness_spec.py.
+  - `--check` — exit 1 if any target file differs from compiled output
+  - `--stdout` — print rendered output to stdout and write nothing
+  - `--repo-root` — repository root directory (default: parent of agent-scripts/)
+  - `--quiet/-q`
+  - `--verbose/-v`
+- Depends on: `cli_common.py`, `harness_spec.py`
+- Public functions:
+  - `compile_hooks(repo_root: Path) -> dict[Path, str]` — Compile declarative hook manifests into target file contents.
+- Tested by: `test/test_gen_hooks.py`
+
 ### `agent-scripts/gen_interfaces.py`
 
 gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources.
@@ -901,6 +919,8 @@ Declarative harness specification registry.
 - Installed at: `~/.agent-toolkit/scripts/harness_spec.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI: none (library module).
+- Filesystem constants:
+  - `LIFECYCLE_HOOKS = {'PreToolUse': {'claude': {'type': 'command', 'matcher': 'Write|Edit|MultiEdit|NotebookEdit|Bash', 'command': 'python3 ~/.agent-toolkit/scripts/guard_rails.py --harness claude'}, 'copilot': {'type': 'command', 'matcher': 'create|edit', 'bash': 'python3 ~/.agent-toolkit/scripts/guard_rails.py --harness copilot', 'timeoutSec': 10}, 'agy': {'block': 'worktree-guard', 'matcher': 'write_to_file|replace_file_content', 'command': 'python3 ~/.agent-toolkit/scripts/guard_rails.py --harness agy', 'timeout': 10, 'type': 'command'}}, 'PostToolUse': {'claude': {'type': 'command', 'matcher': 'Write|Edit', 'command': 'jq -r \'.tool_response.filePath // .tool_input.file_path // empty\' | { read -r f; [ -n "$f" ] || exit 0; case "$f" in *.py) ;; *) exit 0 ;; esac; d=$(dirname "$f"); while [ "$d" != "/" ] && [ ! -f "$d/pyproject.toml" ]; do d=$(dirname "$d"); done; [ -f "$d/pyproject.toml" ] || exit 0; ( cd "$d" && uv run ruff check --fix "$f" >/dev/null 2>&1; uv run ruff format "$f" >/dev/null 2>&1 ); } || true'}, 'copilot': {'type': 'command', 'matcher': 'create|edit', 'bash': 'jq -r \'.toolArgs | fromjson | .path // empty\' | { read -r f; [ -n "$f" ] || exit 0; case "$f" in *.py) ;; *) exit 0 ;; esac; d=$(dirname "$f"); while [ "$d" != "/" ] && [ ! -f "$d/pyproject.toml" ]; do d=$(dirname "$d"); done; [ -f "$d/pyproject.toml" ] || exit 0; ( cd "$d" && uv run ruff format "$f" >/dev/null 2>&1 && uv run ruff check --fix "$f" >/dev/null 2>&1 ); } || true', 'timeoutSec': 15}, 'agy': {'block': 'ruff-format-on-edit', 'matcher': 'write_to_file|replace_file_content', 'command': 'f=$(jq -r \'.toolCall.args.TargetFile // empty\'); case "$f" in *.py) d=$(dirname "$f"); while [ "$d" != "/" ] && [ ! -f "$d/pyproject.toml" ]; do d=$(dirname "$d"); done; if [ -f "$d/pyproject.toml" ]; then ( cd "$d" && uv run ruff format "$f" >/dev/null 2>&1 && uv run ruff check --fix "$f" >/dev/null 2>&1 ); fi ;; esac; echo \'{}\'', 'timeout': 15, 'type': 'command'}}, 'SessionStart': {'claude': [{'hooks': [{'type': 'command', 'command': 'python3 ~/.agent-toolkit/scripts/sessionstart_checks.py', 'timeout': 45}]}, {'matcher': '*', 'hooks': [{'type': 'command', 'command': '[ ! -f ~/.claude/hooks/herdr-agent-state.sh ] || bash ~/.claude/hooks/herdr-agent-state.sh session', 'timeout': 10}]}], 'claude-work': [{'hooks': [{'type': 'command', 'command': "python3 ~/.agent-toolkit/scripts/dev_status.py render 2>&1 || echo '[dev_status] render failed — run /dashboard to debug'"}, {'type': 'command', 'command': 'python3 ~/.agent-toolkit/scripts/grill.py pending-plan --consume'}, {'type': 'command', 'command': 'python3 ~/.agent-toolkit/scripts/bundle_drift_check.py 2>/dev/null'}, {'type': 'command', 'command': 'python3 ~/.agent-toolkit/scripts/settings_seed_drift_check.py 2>/dev/null'}]}], 'copilot': {'type': 'command', 'bash': 'python3 ~/.agent-toolkit/scripts/sessionstart_checks.py', 'timeoutSec': 45}}, 'PreInvocation': {'agy': {'block': 'herdr', 'command': '[ ! -f ~/.gemini/config/hooks/herdr-agent-state.sh ] || bash ~/.gemini/config/hooks/herdr-agent-state.sh session', 'timeout': 10, 'type': 'command'}}, 'Notification': {'claude': {'type': 'command', 'matcher': 'idle_prompt|permission_prompt', 'command': "python3 ~/.agent-toolkit/scripts/notify.py --harness 'Claude' --title 'Claude Code' --message 'Waiting for input' --type waiting_for_input"}}, 'Stop': {'claude': {'type': 'command', 'command': "python3 ~/.agent-toolkit/scripts/notify.py --harness 'Claude' --title 'Claude Code' --message 'Task completed' --type completed"}, 'copilot': {'type': 'command', 'bash': "python3 ~/.agent-toolkit/scripts/notify.py --harness 'Copilot' --title 'Copilot CLI' --message 'Agent finished' --type completed", 'timeoutSec': 10}, 'agy': {'block': 'notify-on-stop', 'command': "python3 ~/.agent-toolkit/scripts/notify.py --harness 'AGY' --title 'Antigravity' --message 'Run completed' --type completed >/dev/null 2>&1; echo '{}'", 'timeout': 10, 'type': 'command'}}}`
 - Public classes:
   - `class FeatureSupportState(StrEnum)` — Lifecycle support states for a required feature declaration.
   - `class FeatureImplementation` — Declaration of a harness's implementation of a required feature.
@@ -915,7 +935,7 @@ Declarative harness specification registry.
   - `probe_expected_root(name: str) -> frozenset[str]` — Return the fixture root tokens expected for the given harness.
   - `feature_spec(harness: str, feature: str) -> FeatureImplementation` — Return the FeatureImplementation declaration for a harness and feature.
   - `assert_feature_coverage(repo_root: Path | None = None) -> None` — Validate that all active harnesses have declared valid implementations for all required features.
-- Tested by: `test/test_agent_toolkit_paths.py`, `test/test_check_toolkit_paths.py`, `test/test_harness_feature_coverage.py`, `test/test_harness_spec.py`
+- Tested by: `test/test_agent_toolkit_paths.py`, `test/test_check_toolkit_paths.py`, `test/test_gen_hooks.py`, `test/test_harness_feature_coverage.py`, `test/test_harness_spec.py`
 
 ### `agent-scripts/herdr_delegate.py`
 

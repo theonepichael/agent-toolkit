@@ -395,3 +395,151 @@ def assert_feature_coverage(repo_root: Path | None = None) -> None:
                 raise AssertionError(
                     f"Unknown FeatureSupportState {impl.state} for {key}"
                 )
+
+
+# ── Lifecycle hook definitions ──────────────────────────────────────────
+
+LIFECYCLE_HOOKS: dict[str, dict[str, object]] = {
+    "PreToolUse": {
+        "claude": {
+            "type": "command",
+            "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash",
+            "command": "python3 ~/.agent-toolkit/scripts/guard_rails.py --harness claude",
+        },
+        "copilot": {
+            "type": "command",
+            "matcher": "create|edit",
+            "bash": "python3 ~/.agent-toolkit/scripts/guard_rails.py --harness copilot",
+            "timeoutSec": 10,
+        },
+        "agy": {
+            "block": "worktree-guard",
+            "matcher": "write_to_file|replace_file_content",
+            "command": "python3 ~/.agent-toolkit/scripts/guard_rails.py --harness agy",
+            "timeout": 10,
+            "type": "command",
+        },
+    },
+    "PostToolUse": {
+        "claude": {
+            "type": "command",
+            "matcher": "Write|Edit",
+            "command": (
+                "jq -r '.tool_response.filePath // .tool_input.file_path // empty' | { "
+                'read -r f; [ -n "$f" ] || exit 0; case "$f" in *.py) ;; *) exit 0 ;; esac; '
+                'd=$(dirname "$f"); while [ "$d" != "/" ] && [ ! -f "$d/pyproject.toml" ]; '
+                'do d=$(dirname "$d"); done; [ -f "$d/pyproject.toml" ] || exit 0; '
+                '( cd "$d" && uv run ruff check --fix "$f" >/dev/null 2>&1; '
+                'uv run ruff format "$f" >/dev/null 2>&1 ); } || true'
+            ),
+        },
+        "copilot": {
+            "type": "command",
+            "matcher": "create|edit",
+            "bash": (
+                "jq -r '.toolArgs | fromjson | .path // empty' | { "
+                'read -r f; [ -n "$f" ] || exit 0; case "$f" in *.py) ;; *) exit 0 ;; esac; '
+                'd=$(dirname "$f"); while [ "$d" != "/" ] && [ ! -f "$d/pyproject.toml" ]; '
+                'do d=$(dirname "$d"); done; [ -f "$d/pyproject.toml" ] || exit 0; '
+                '( cd "$d" && uv run ruff format "$f" >/dev/null 2>&1 && '
+                'uv run ruff check --fix "$f" >/dev/null 2>&1 ); } || true'
+            ),
+            "timeoutSec": 15,
+        },
+        "agy": {
+            "block": "ruff-format-on-edit",
+            "matcher": "write_to_file|replace_file_content",
+            "command": (
+                "f=$(jq -r '.toolCall.args.TargetFile // empty'); case \"$f\" in *.py) "
+                'd=$(dirname "$f"); while [ "$d" != "/" ] && [ ! -f "$d/pyproject.toml" ]; '
+                'do d=$(dirname "$d"); done; if [ -f "$d/pyproject.toml" ]; then '
+                '( cd "$d" && uv run ruff format "$f" >/dev/null 2>&1 && '
+                "uv run ruff check --fix \"$f\" >/dev/null 2>&1 ); fi ;; esac; echo '{}'"
+            ),
+            "timeout": 15,
+            "type": "command",
+        },
+    },
+    "SessionStart": {
+        "claude": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "python3 ~/.agent-toolkit/scripts/sessionstart_checks.py",
+                        "timeout": 45,
+                    }
+                ]
+            },
+            {
+                "matcher": "*",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "[ ! -f ~/.claude/hooks/herdr-agent-state.sh ] || bash ~/.claude/hooks/herdr-agent-state.sh session",
+                        "timeout": 10,
+                    }
+                ],
+            },
+        ],
+        "claude-work": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "python3 ~/.agent-toolkit/scripts/dev_status.py render 2>&1 || echo '[dev_status] render failed — run /dashboard to debug'",
+                    },
+                    {
+                        "type": "command",
+                        "command": "python3 ~/.agent-toolkit/scripts/grill.py pending-plan --consume",
+                    },
+                    {
+                        "type": "command",
+                        "command": "python3 ~/.agent-toolkit/scripts/bundle_drift_check.py 2>/dev/null",
+                    },
+                    {
+                        "type": "command",
+                        "command": "python3 ~/.agent-toolkit/scripts/settings_seed_drift_check.py 2>/dev/null",
+                    },
+                ]
+            }
+        ],
+        "copilot": {
+            "type": "command",
+            "bash": "python3 ~/.agent-toolkit/scripts/sessionstart_checks.py",
+            "timeoutSec": 45,
+        },
+    },
+    "PreInvocation": {
+        "agy": {
+            "block": "herdr",
+            "command": "[ ! -f ~/.gemini/config/hooks/herdr-agent-state.sh ] || bash ~/.gemini/config/hooks/herdr-agent-state.sh session",
+            "timeout": 10,
+            "type": "command",
+        }
+    },
+    "Notification": {
+        "claude": {
+            "type": "command",
+            "matcher": "idle_prompt|permission_prompt",
+            "command": "python3 ~/.agent-toolkit/scripts/notify.py --harness 'Claude' --title 'Claude Code' --message 'Waiting for input' --type waiting_for_input",
+        },
+    },
+    "Stop": {
+        "claude": {
+            "type": "command",
+            "command": "python3 ~/.agent-toolkit/scripts/notify.py --harness 'Claude' --title 'Claude Code' --message 'Task completed' --type completed",
+        },
+        "copilot": {
+            "type": "command",
+            "bash": "python3 ~/.agent-toolkit/scripts/notify.py --harness 'Copilot' --title 'Copilot CLI' --message 'Agent finished' --type completed",
+            "timeoutSec": 10,
+        },
+        "agy": {
+            "block": "notify-on-stop",
+            "command": "python3 ~/.agent-toolkit/scripts/notify.py --harness 'AGY' --title 'Antigravity' --message 'Run completed' --type completed >/dev/null 2>&1; echo '{}'",
+            "timeout": 10,
+            "type": "command",
+        },
+    },
+}
