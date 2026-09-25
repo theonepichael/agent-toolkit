@@ -521,6 +521,16 @@ dest = "~/.config/opencode/plugins/trust-session.ts"
 harness = "opencode"
 
 [[link]]
+src = "opencode/tui/permission-gate.ts"
+dest = "~/.config/opencode/tui/permission-gate.ts"
+harness = "opencode"
+
+[[link]]
+src = "opencode/tui/trust-session.ts"
+dest = "~/.config/opencode/tui/trust-session.ts"
+harness = "opencode"
+
+[[link]]
 src = "agent-scripts/opencode_trust.py"
 dest = "~/.agent-toolkit/scripts/opencode_trust.py"
 harness = "opencode"
