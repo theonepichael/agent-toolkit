@@ -63,13 +63,29 @@ def test_permission_plugin_only_handles_permission_events() -> None:
 def test_tui_plugins_declare_palette_commands() -> None:
     permission = _source("opencode/tui/permission-gate.ts")
     trust = _source("opencode/tui/trust-session.ts")
+    model_picker = _source("opencode/tui/model-picker.ts")
     tui_config = __import__("json").loads(_source("opencode/tui.json"))
     assert 'slashName: "permission-gate"' in permission
     assert 'slashName: "trust-session"' in trust
+    assert 'slashName: "model-info"' in model_picker
     assert "./tui/permission-gate.ts" in tui_config["plugin"]
     assert "./tui/trust-session.ts" in tui_config["plugin"]
+    assert "./tui/model-picker.ts" in tui_config["plugin"]
     assert "writeTrustState" in permission
     assert "writeTrustState" in trust
+
+
+def test_model_picker_is_installed() -> None:
+    installed = {
+        (link["src"], link["dest"])
+        for link in LINKS
+        if link.get("harness") == "opencode"
+    }
+    assert (
+        "opencode/tui/model-picker.ts",
+        "~/.config/opencode/tui/model-picker.ts",
+    ) in installed
+
 
 
 def test_server_guard_uses_session_scoped_trust_state() -> None:

@@ -336,7 +336,7 @@ Free letters: `d f i j k o p v w z`.
 
 ### Harness-owned chords
 
-Both live in `opencode/tui/*.ts` as `keymap.registerLayer` bindings, not in
+All live in `opencode/tui/*.ts` as `keymap.registerLayer` bindings, not in
 `tui.json`'s `keybinds` block — see §8 for why, and for why they are not typed
 slash commands.
 
@@ -346,8 +346,10 @@ slash commands.
 |---|---|---|
 | `<leader>d` | `trust-session.toggle` | this session |
 | `<leader>p` | `permission-gate.toggle` | this session |
+| `<leader>i` | `model-picker.open` | global |
 
 <!-- leader-chords-harness:end -->
+
 
 `test/test_opencode_trust_wiring.py` asserts that no plugin binds a chord from
 the core table, and that each bound chord appears exactly once above. Neither
@@ -540,9 +542,10 @@ accepts either.
 
 ### The TUI plugin layer (`opencode/tui/`) — palette commands, not slash commands
 
-`opencode/tui/trust-session.ts` and `opencode/tui/permission-gate.ts` are
-**TUI** plugins, a different layer from the ones above. Each registers a
-`keymap` command with a `slashName`, which surfaces it in two places:
+`opencode/tui/trust-session.ts`, `opencode/tui/permission-gate.ts`, and
+`opencode/tui/model-picker.ts` are **TUI** plugins, a different layer from the
+ones above. Each registers a `keymap` command with a `slashName`, which
+surfaces it in two places:
 
 - the **`ctrl+p` command palette** (`command_list`, default `ctrl+p`), and
 - the prompt's slash **completion overlay**, whose `onSelect` dispatches the
@@ -559,8 +562,9 @@ supported invocations are:
 |---|---|
 | Trust mode for this session | `<leader>d` |
 | Permission gate for this session | `<leader>p` |
-| Either, discovered | `ctrl+p`, then search `trust` / `permission` |
-| Either, by typing | `/trust`, then select the overlay entry (do not just hit enter) |
+| Model comparison overlay | `<leader>i` |
+| Any, discovered | `ctrl+p`, then search `trust` / `permission` / `model` |
+| Any, by typing | `/trust`, `/permission`, `/model-info`, then select the overlay entry (do not just hit enter) |
 
 <!-- cheatsheet-chords:end -->
 

@@ -153,6 +153,10 @@ NON_PYTHON: dict[str, tuple[str, str]] = {
         "no-toolkit-data",
         "toggles only explicit per-session trust state",
     ),
+    "opencode/tui/model-picker.ts": (
+        "no-toolkit-data",
+        "read-only model comparison overlay; delegates model switch to built-in dialog and defaults to global config",
+    ),
     "opencode/trust-state.ts": (
         "no-toolkit-data",
         "shared state helper writes only explicit per-session trust records",
