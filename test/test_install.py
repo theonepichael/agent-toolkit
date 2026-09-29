@@ -1949,8 +1949,8 @@ def _disable_systemctl(monkeypatch):
     checks ``unit_path.is_symlink()`` before ever calling ``have()``, so
     with no symlink this never fires and never touches ``run_command``.
     Tests that *do* run a real install first (``links.toml`` records real
-    watchcommit.service/opencode-skills-sync.service symlinks for
-    personal+linux, and ``offline_install`` only stubs the install-time
+    watchcommit.service symlinks for personal+linux, and
+    ``offline_install`` only stubs the install-time
     ``enable_managed_services`` call, not the symlinks themselves) must use
     ``_watchcommit_available`` instead — forcing
     systemd "unavailable" against a real unit symlink is a genuine anomaly

@@ -72,7 +72,6 @@ FOREIGN_SCRIPTS = frozenset(
     {
         "dev_status_sync.py",
         "watchcommit_activity.py",
-        "opencode_skills_sync_activity.py",
         "gen_core_instructions.py",
     }
 )

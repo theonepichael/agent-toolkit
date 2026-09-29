@@ -1441,7 +1441,7 @@ sessionstart_checks.py — run the SessionStart context checks concurrently.
 - CLI: none (library module).
 - Public functions:
   - `run_checks(checks: list[tuple[str, int]] | None = None) -> str` — Run all checks concurrently, returning their outputs concatenated in the original list order — not completion order — so the session-start context stays stable and reviewable run over run.
-- Tested by: `test/test_sessionstart_checks.py`
+- Tested by: `test/test_check_toolkit_paths.py`, `test/test_sessionstart_checks.py`
 
 ### `agent-scripts/settings_seed.py`
 

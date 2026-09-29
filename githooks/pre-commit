@@ -11,17 +11,6 @@
 # two distinct exit codes (1 = stale file, 3 = doc drift).
 set -uo pipefail
 
-# opencode-skills-live is a dedicated worktree (scripts/opencode_skills_sync.py)
-# that holds a raw, uncurated mirror of live opencode skills for loss
-# protection only -- never source code, never meant to be symlinked via
-# links.toml or to match any generated-doc template. None of the checks
-# below are meaningful there, so skip them entirely on that branch rather
-# than teaching each generator about a mirror path it has no real stake in.
-branch="$(git rev-parse --abbrev-ref HEAD)"
-if [ "$branch" = "opencode-skills-live" ]; then
-    exit 0
-fi
-
 repo_root="$(git rev-parse --show-toplevel)"
 
 # Path resolution: this lib lives under githooks-global/, a different

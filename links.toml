@@ -854,10 +854,10 @@ dir = true
 dest = "~/.agent-toolkit/scripts"
 # The toolkit home holds nothing but what this table installs, so it takes no
 # ignore list. The origin repo's personal-only scripts (dev_status_sync.py,
-# watchcommit_activity.py, opencode_skills_sync_activity.py,
-# gen_core_instructions.py) stay in the Claude home's scripts directory
-# permanently; that directory is no longer declared exclusive, so the audit
-# claims neither those foreign files nor links an older install left there.
+# watchcommit_activity.py, gen_core_instructions.py) stay in the Claude
+# home's scripts directory permanently; that directory is no longer declared
+# exclusive, so the audit claims neither those foreign files nor links an
+# older install left there.
 
 
 [[managed_dir]]

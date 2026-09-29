@@ -2,6 +2,7 @@
 """Tests for scripts/check_toolkit_paths.py (path ownership + writer inventory)."""
 
 import ast
+import re
 import sys
 import time
 from pathlib import Path
@@ -25,6 +26,27 @@ def test_real_repository_passes_both_checks():
     _counts, problems = c.inventory(c.REPO)
     assert problems == []
     assert time.monotonic() - start < 5
+
+
+@pytest.mark.regression(
+    "sessionstart-runs-retired-foreign-script",
+    "AssertionError: assert {'opencode_sk..._activity.py'} <= frozenset({'d...activity.py'})",
+)
+def test_sessionstart_claude_scripts_are_declared_foreign() -> None:
+    # A ~/.claude/scripts/ path in the SessionStart fan-out is an
+    # origin-repo script this repo never installs, and its 2>/dev/null
+    # hides the failure once that repo retires it. Tying each one to
+    # FOREIGN_SCRIPTS means dropping a retired name from FOREIGN_SCRIPTS
+    # fails loudly until its SessionStart line goes too.
+    sys.path.insert(0, str(REPO / "agent-scripts"))
+    import sessionstart_checks
+
+    named = {
+        m
+        for command, _guard in sessionstart_checks.CHECKS
+        for m in re.findall(r"~/\.claude/scripts/([\w.-]+)", command)
+    }
+    assert named <= c.FOREIGN_SCRIPTS
 
 
 # ── classification rules ─────────────────────────────────────────────────────

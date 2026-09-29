@@ -66,7 +66,6 @@ CHECKS: list[tuple[str, int]] = [
         15,
     ),
     ("python3 ~/.claude/scripts/watchcommit_activity.py 2>/dev/null", 15),
-    ("python3 ~/.claude/scripts/opencode_skills_sync_activity.py 2>/dev/null", 15),
 ]
 
 
