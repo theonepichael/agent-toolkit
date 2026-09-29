@@ -1942,20 +1942,21 @@ def test_rollback_without_history_exits_1(home, capsys):
 
 
 def _disable_systemctl(monkeypatch):
-    """Make the watchcommit-wipe gate see systemd --user as unavailable.
+    """Make the managed-service wipe gate see systemd --user as unavailable.
 
     Only safe for tests with no unit symlink on disk at all (the no-manifest
     cases below, which never call ``run_install``): ``_wipe_service``
     checks ``unit_path.is_symlink()`` before ever calling ``have()``, so
     with no symlink this never fires and never touches ``run_command``.
-    Tests that *do* run a real install first (``links.toml`` records real
-    watchcommit.service symlinks for personal+linux, and
-    ``offline_install`` only stubs the install-time
-    ``enable_managed_services`` call, not the symlinks themselves) must use
-    ``_watchcommit_available`` instead — forcing
-    systemd "unavailable" against a real unit symlink is a genuine anomaly
-    (SKIPPED, exit 1) by design, not a quiet no-op, so it would wrongly
-    fail unrelated assertions about backup deletion or nvim-dir sweeping.
+    Today ``install.MANAGED_SERVICES`` is empty and ``links.toml`` ships no
+    systemd unit symlinks, so no test can reach that probe at all. If a
+    managed service is ever added, tests that run a real install first
+    (``offline_install`` only stubs the install-time
+    ``enable_managed_services`` call, not the unit symlinks themselves) must
+    use ``_watchcommit_available`` instead — forcing systemd "unavailable"
+    against a real unit symlink is a genuine anomaly (SKIPPED, exit 1) by
+    design, not a quiet no-op, so it would wrongly fail unrelated assertions
+    about backup deletion or nvim-dir sweeping.
     """
     monkeypatch.setattr(install, "have", lambda exe: exe != "systemctl")
 

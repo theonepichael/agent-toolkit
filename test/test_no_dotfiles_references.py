@@ -15,7 +15,8 @@ Allowlist design: every entry is a *narrow* functional substring, not bare
 allowed substrings, each of which names a load-bearing detection of the
 real two-repo personal-machine convention (compose-guard checkout
 detection, dev_status repo-name mapping, notify's Windows cache dir,
-opencode permission rules, container-suite simulated layout). Files with
+opencode permission rules, the container suite steering clear of the
+compose-guard). Files with
 no entry must be zero-hit. Known limitation, deliberate: a *new* hit that
 happens to reuse an existing allowed substring inside an allowlisted file
 is not caught here — diff review of allowlisted files is the backstop.
@@ -74,12 +75,9 @@ ALLOWLIST: dict[str, tuple[str, ...]] = {
     "opencode/opencode.jsonc": (
         '"~/dotfiles',  # the two ~/dotfiles[...] allow rules
     ),
-    # ── container suite simulates the personal-machine layout (repo at ~/dotfiles) ──
+    # ── container suite must NOT copy the repo to ~/dotfiles (compose-guard) ──
     "test/run.sh": (
-        "/dotfiles",  # the container mount path + copied checkout location
-    ),
-    "test/scenarios.sh": (
-        'REPO_ROOT="$HOME/dotfiles"',  # the simulated checkout location
+        "~/dotfiles",  # comment: why the copy lands at ~/agent-toolkit instead
     ),
     # ── INTERFACES.md renders the allowlisted docstrings verbatim ──
     "INTERFACES.md": (
