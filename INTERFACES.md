@@ -1440,6 +1440,7 @@ sessionstart_checks.py — run the SessionStart context checks concurrently.
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI: none (library module).
 - Public functions:
+  - `foreign_script(command: str) -> str | None` — Return the origin-repo script a check command runs, or None if none.
   - `run_checks(checks: list[tuple[str, int]] | None = None) -> str` — Run all checks concurrently, returning their outputs concatenated in the original list order — not completion order — so the session-start context stays stable and reviewable run over run.
 - Tested by: `test/test_check_toolkit_paths.py`, `test/test_sessionstart_checks.py`
 

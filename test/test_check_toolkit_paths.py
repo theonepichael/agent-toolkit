@@ -34,10 +34,11 @@ def test_real_repository_passes_both_checks():
 )
 def test_sessionstart_claude_scripts_are_declared_foreign() -> None:
     # A ~/.claude/scripts/ path in the SessionStart fan-out is an
-    # origin-repo script this repo never installs, and its 2>/dev/null
-    # hides the failure once that repo retires it. Tying each one to
-    # FOREIGN_SCRIPTS means dropping a retired name from FOREIGN_SCRIPTS
-    # fails loudly until its SessionStart line goes too.
+    # origin-repo script this repo never installs. At runtime a retired one
+    # (its installed symlink left dangling) prints a "[sessionstart] ... is
+    # a broken link" notice (test_sessionstart_checks.py); tying each one to
+    # FOREIGN_SCRIPTS additionally means dropping a retired name from
+    # FOREIGN_SCRIPTS fails loudly until its SessionStart line goes too.
     sys.path.insert(0, str(REPO / "agent-scripts"))
     import sessionstart_checks
 

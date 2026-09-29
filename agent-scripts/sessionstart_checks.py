@@ -21,11 +21,25 @@ startup-only fan-out.
 Failures never abort the chain: each entry runs in its own subprocess and
 thread; a crash prints whatever it produced and the remaining results still
 come out.
+
+Entries that run an origin-repo script (one another repo installs into
+the harness scripts directory, not this repo — e.g.
+``~/.claude/scripts/watchcommit_activity.py``) are checked before they
+spawn. The owning repo installs them as symlinks into its checkout, so
+when it retires a script the link dangles, and the entry's ``2>/dev/null``
+would swallow python's "can't open file" — the check went silent with
+nobody noticing. A dangling link now prints one ``[sessionstart] <path> is
+a broken link`` notice saying to drop its CHECKS line. A path that does not
+exist at all was never installed on this machine (a profile that excludes
+it, or no origin repo here) and is skipped silently, without running.
+A script that exists runs exactly as before, failures included.
 """
 
+import re
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 # What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
 TOOLKIT_DATA = "none"
@@ -69,11 +83,54 @@ CHECKS: list[tuple[str, int]] = [
 ]
 
 
+# An origin-repo script path inside a CHECKS command. Same pattern
+# test_check_toolkit_paths.py uses to tie these names to FOREIGN_SCRIPTS.
+_FOREIGN_SCRIPT = re.compile(r"~/\.claude/scripts/[\w.-]+")
+
+
+def foreign_script(command: str) -> str | None:
+    """Return the origin-repo script a check command runs, or None if none.
+
+    The path comes back in the ``~/``-relative form the command writes it
+    in, e.g. ``~/.claude/scripts/watchcommit_activity.py``."""
+    match = _FOREIGN_SCRIPT.search(command)
+    return match.group(0) if match else None
+
+
+def _foreign_script_output(command: str) -> str | None:
+    """What to print instead of running a check whose origin-repo script is
+    not usable here, or None to run the check normally.
+
+    A dangling symlink is the retired-script signature (the owning repo
+    installs these as links into its checkout, and deleting the source
+    leaves the link dangling), so it gets a one-line notice. A path that
+    does not exist at all means the script was never installed here (a
+    profile that excludes it, or no origin repo on this machine) — a normal
+    setup, so the check is skipped silently."""
+    script = foreign_script(command)
+    if script is None:
+        return None
+    path = Path.home() / script.removeprefix("~/")
+    if path.exists():
+        return None
+    if path.is_symlink():
+        return (
+            f"[sessionstart] {script} is a broken link — its owning repo may"
+            " have retired it; drop its CHECKS line in sessionstart_checks.py\n"
+        )
+    return ""
+
+
 def _run(command: str, guard: int) -> str:
     """Run one check via bash, return its full output (stdout then stderr —
     the same channels the serial hooks passed through). A hang-guard expiry
     kills the process and returns whatever it printed so far plus a note;
-    an unspawnable command reports the reason. Never raises."""
+    an unspawnable command reports the reason, and a check whose
+    origin-repo script is a broken link or absent is not run (see
+    _foreign_script_output). Never raises."""
+    instead = _foreign_script_output(command)
+    if instead is not None:
+        return instead
     try:
         result = subprocess.run(
             ["bash", "-c", command],
