@@ -329,6 +329,17 @@ For each open question, instead of asking the user: form your own leading
      spawned *without* a configured model would inherit the primary's model
      and be a weaker, same-model critique, which is why this always targets
      `adversary` by name rather than the generic `general` subagent.
+
+     This path has no code-level backstop against a leaked tool call the way
+     the `second_opinion.py` path does (`llm_backends._raise_on_emitted_tool_call`
+     never runs on a native Task-tool spawn) — you are the backstop. Before
+     treating the returned text as a critique, check it isn't actually a
+     denied tool call that leaked through as prose: literal `<tool_calls>`/
+     `<invoke name=...>` XML, a JSON `"tool_calls": [...]` block, or a
+     response that's mostly one of those shapes rather than argued prose. If
+     it is, that round produced no real critique — don't record it as one;
+     retry once, and if it leaks again treat `adversary` as erroring and fall
+     through to the Alternative path below.
    - **Alternative — `second_opinion.py review`**: use this instead (or in
      addition, for a third opinion) when you specifically want `agy`'s Gemini
      backend rather than `adversary`'s configured model, or if `adversary` is
@@ -595,6 +606,8 @@ _ARGS = {
     "pi": "the invocation's arguments",
     "pi-prompt": "`$ARGUMENTS`",
     "codex": "the invocation's arguments",
+    # opencode's skill() tool passes no arguments.
+    "opencode-skill": "the request that loaded this skill",
 }
 
 
@@ -602,6 +615,8 @@ def _frontmatter(harness: str, skill: str, description: str) -> str:
     """Frontmatter for review-diff/land, in each harness's house shape."""
     lines = ["---"]
     if harness not in ("opencode", "pi-prompt"):
+        # opencode's skill surface requires `name:`; its command surface
+        # doesn't take one.
         lines.append(f"name: {skill}")
     lines.append(f'description: "{description}"')
     if harness in ("claude", "opencode", "pi-prompt"):
@@ -620,7 +635,10 @@ def _land_frontmatter(harness: str) -> str:
 _DELEGATE_HOW = {
     "claude": "the `{skill}` skill (Skill tool)",
     "copilot": "the `{skill}` skill (its `skill` tool)",
-    "opencode": "`{skill}`: read `~/.config/opencode/commands/{skill}.md` and follow it",
+    "opencode": (
+        "the `{skill}` skill via opencode's native skill tool "
+        '(`skill({{ name: "{skill}" }})`)'
+    ),
     "agy": (
         "the {skill} skill, using the same suspend-and-return framing as step 5 "
         "(checkpoint marker, persisted return pointer, absolute-path re-read on "
@@ -2056,6 +2074,9 @@ LAND_PARAMS["pi-prompt"] = {
     "ARGS": _ARGS["pi-prompt"],
 }
 
+# The real harness behind each synthetic one (see gen_skills.SYNTHETIC_HARNESSES).
+_BASE_HARNESS = {"pi-prompt": "pi", "opencode-skill": "opencode"}
+
 REVIEW_DIFF_PARAMS: dict[str, dict[str, str]] = {
     harness: {
         "FRONTMATTER": _frontmatter(harness, "review-diff", _REVIEW_DIFF_DESCRIPTION),
@@ -2064,7 +2085,7 @@ REVIEW_DIFF_PARAMS: dict[str, dict[str, str]] = {
         "EXCLUDE_SELF": (
             ""
             if harness == "claude"
-            else f" --exclude-backend {harness.removesuffix('-prompt')}"
+            else f" --exclude-backend {_BASE_HARNESS.get(harness, harness)}"
         ),
     }
     for harness in _ARGS
@@ -3333,6 +3354,77 @@ name: refresh-guidance
 description: "{_REFRESH_GUIDANCE_DESCRIPTION}"
 ---""",
     },
+}
+
+# ── opencode-skill: opencode/skills/<name>/SKILL.md ─────────────────────────
+#
+# The copy opencode's native `skill({ name })` tool loads, for the skills
+# other skills delegate to that way. Same facts as the opencode command copy;
+# only what differs between the two surfaces is overridden: the frontmatter
+# (a skill needs `name:`, and takes no `argument-hint`), and anything that
+# reads `$ARGUMENTS`, since skill() passes no arguments.
+
+
+def _opencode_skill_frontmatter(skill: str, command_frontmatter: str) -> str:
+    """The opencode command frontmatter, plus `name:`, minus `argument-hint`."""
+    lines = [
+        line
+        for line in command_frontmatter.splitlines()
+        if not line.startswith("argument-hint:")
+    ]
+    return "\n".join([lines[0], f"name: {skill}", *lines[1:]])
+
+
+def _opencode_skill_plumbing(skill: str) -> str:
+    """Plumbing steps for a generated opencode/skills/<skill>/SKILL.md."""
+    src = f"opencode/skills/{skill}/SKILL.md"
+    return (
+        f"1. File lives at {edit_root(src)}, generated alongside "
+        f"`opencode/command/{skill}.md` — edit the template, not the copy.\n"
+        f'2. Add a `[[link]]` entry (`src = "{src}"`, '
+        f'`dest = "~/.config/opencode/skills/{skill}/SKILL.md"`, '
+        '`harness = "opencode"`) in `links.toml` next to the existing ones.\n'
+        "3. Conventional commit, scope `opencode`: `feat`."
+    )
+
+
+SPEC_PARAMS["opencode-skill"] = {
+    **SPEC_PARAMS["opencode"],
+    "FRONTMATTER": _opencode_skill_frontmatter(
+        "spec", SPEC_PARAMS["opencode"]["FRONTMATTER"]
+    ),
+    "OPENING_LINE": (
+        "If the invoking context names a task (e.g. another command or skill "
+        "delegated to you with an item's context/next_steps), spec that task. "
+        "Otherwise spec the task under discussion in the conversation; if "
+        "neither applies, ask the user what to spec."
+    ),
+    "ARGS_TOKEN": "the named task",
+    "STEP6_AUDIT_OFFER": SPEC_PARAMS["opencode"]["STEP6_AUDIT_OFFER"].replace(
+        "`/second-opinion`'s", "the `second-opinion` skill's"
+    ),
+    "PLUMBING_STEPS": _opencode_skill_plumbing("spec"),
+}
+
+GRILL_ME_PARAMS["opencode-skill"] = {
+    **GRILL_ME_PARAMS["opencode"],
+    "FRONTMATTER": _opencode_skill_frontmatter(
+        "grill-me", GRILL_ME_PARAMS["opencode"]["FRONTMATTER"]
+    ),
+    "DEFAULT_MODE_OPENING": (
+        "If the invoking context names a topic (e.g. another command or skill "
+        "delegated to you with a specific subject), grill that topic. Otherwise "
+        "grill the plan under discussion when the conversation makes it "
+        "obvious; if neither applies, ask the user what to grill before "
+        "proceeding. Explicit `--verify` and `--auto` requests each run their "
+        "own section below instead of this Q&A loop."
+    ),
+}
+
+LAND_PARAMS["opencode-skill"] = {
+    **LAND_PARAMS["opencode"],
+    "FRONTMATTER": _frontmatter("opencode-skill", "land", _LAND_DESCRIPTION),
+    "ARGS": _ARGS["opencode-skill"],
 }
 
 SKILL_PARAMS: dict[str, dict[str, dict[str, str]]] = {

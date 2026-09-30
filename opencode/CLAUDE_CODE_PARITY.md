@@ -194,6 +194,16 @@ separate (see `opencode.ai/docs/commands/` vs `opencode.ai/docs/skills/`):
   wiring analogous to commands — the same drift class this section was
   written to close, and the reason the two `backlog-item` skills are
   repo-tracked + wired rather than dropped in place.
+  **Update, 2026-09-29:** analyze-sessions and refresh-guidance have since
+  moved to generated `opencode/command/` copies, and none of these skills
+  is hand-kept any more. The hand-kept `spec` and `grill-me` copies had
+  drifted from their commands (older Output-format wording, a pre-`--search`
+  vitals step), so a delegated `skill({ name: "spec" })` load got stale
+  instructions. `gen_skills.py` now renders `opencode/skills/{spec,grill-me,
+  review-diff,land}/SKILL.md` from the same templates as the commands (its
+  `opencode-skill` harness), and `gen_second_opinion.py` renders
+  `opencode/skills/second-opinion/SKILL.md`. `backlog-item`'s review and
+  land steps load `review-diff` and `land` through `skill({ name })` too.
 
 ### History of the staged pull-into-repo (kept for reference)
 

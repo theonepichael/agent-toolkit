@@ -138,10 +138,10 @@ checks. Show the output — "should work" is not verification
 (the shared instructions file).
 
 ## 10. Review
-Delegate to `review-diff`: read `~/.config/opencode/commands/review-diff.md` and follow it with this item's worktree path — every item, no ask, `--auto` included. It reviews step 9's staged tree with a non-Claude reviewer (same-model subagent fallback), triages each finding fix or reject-with-reason, fixes and re-verifies, max 2 rounds. Keep the reviewer line and triage table it prints: step 11's commit gate shows them. Don't commit here.
+Delegate to the `review-diff` skill via opencode's native skill tool (`skill({ name: "review-diff" })`) with this item's worktree path — every item, no ask, `--auto` included. It reviews step 9's staged tree with a non-Claude reviewer (same-model subagent fallback), triages each finding fix or reject-with-reason, fixes and re-verifies, max 2 rounds. Keep the reviewer line and triage table it prints: step 11's commit gate shows them. Don't commit here.
 
 ## 11. Land
-Delegate to `land`: read `~/.config/opencode/commands/land.md` and follow it with this item's worktree path and slug. It owns the commit gate (showing step 10's report), the merge/push/cleanup gate, and the close (`review` then `approve`, with `gate-pass` evidence when the item has a gate). Each of its gates stops for the user. Don't commit, merge, or close the item outside it.
+Delegate to the `land` skill via opencode's native skill tool (`skill({ name: "land" })`) with this item's worktree path and slug. It owns the commit gate (showing step 10's report), the merge/push/cleanup gate, and the close (`review` then `approve`, with `gate-pass` evidence when the item has a gate). Each of its gates stops for the user. Don't commit, merge, or close the item outside it.
 
 ---
 

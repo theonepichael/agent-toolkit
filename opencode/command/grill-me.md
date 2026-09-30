@@ -117,6 +117,17 @@ it trades interactivity for adversarial rigor instead of just guessing.
      spawned *without* a configured model would inherit the primary's model
      and be a weaker, same-model critique, which is why this always targets
      `adversary` by name rather than the generic `general` subagent.
+
+     This path has no code-level backstop against a leaked tool call the way
+     the `second_opinion.py` path does (`llm_backends._raise_on_emitted_tool_call`
+     never runs on a native Task-tool spawn) — you are the backstop. Before
+     treating the returned text as a critique, check it isn't actually a
+     denied tool call that leaked through as prose: literal `<tool_calls>`/
+     `<invoke name=...>` XML, a JSON `"tool_calls": [...]` block, or a
+     response that's mostly one of those shapes rather than argued prose. If
+     it is, that round produced no real critique — don't record it as one;
+     retry once, and if it leaks again treat `adversary` as erroring and fall
+     through to the Alternative path below.
    - **Alternative — `second_opinion.py review`**: use this instead (or in
      addition, for a third opinion) when you specifically want `agy`'s Gemini
      backend rather than `adversary`'s configured model, or if `adversary` is
