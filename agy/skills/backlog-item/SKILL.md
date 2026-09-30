@@ -22,8 +22,16 @@ instructions file). Empty context/next_steps/related_files: stop and ask
 the user to fill them in; don't fabricate a plan from the title. Numeric
 id: note the rendered rev for `--if-rev` on the next mutating call.
 related_files already names a grill plan (`~/.agent-toolkit/data/grill/<slug>-plan.md`)
-or a spec (`~/.agent-toolkit/data/grill/<slug>-spec.md`)? Planning and critique
-(steps 5–6) are already done — skip to step 8. Worktree already has
+or a spec (`~/.agent-toolkit/data/grill/<slug>-spec.md`)? Don't redraft it. Gated
+(`show` has `gate.required: true`)? Skip to step 8 only if its critique
+already ran — a `<artifact without .md>-critique-notes.md` companion sits
+next to that plan or spec (e.g.
+`~/.agent-toolkit/data/grill/<slug>-spec-critique-notes.md`; second-opinion
+writes it when it finalizes); otherwise resume at step 6. No gate? An
+unset gate can't tell "all steps mechanical" from "paused before
+classifying", so redo only step 5's gate classification against that
+artifact, then continue at step 6 (which skips itself if the gate stays
+unset). Worktree already has
 implemented, uncommitted changes (e.g. handed back from an external
 executor)? Skip straight to step 9. `next_steps` starts with "Resume
 backlog-item at step N" (a return pointer left by an earlier suspend, see
@@ -120,7 +128,8 @@ don't call `gate-set` for a step breakdown with no judgment calls in it.
 If step 5 set a gate (judgment steps present), run the second-opinion
 skill against the resulting plan or spec file unconditionally, no ask,
 using the same suspend-and-return framing as step 5 (checkpoint marker,
-persisted return pointer, absolute-path re-read on return) — critique the
+persisted return pointer, absolute-path re-read on return, restore of the
+item's original next_steps on return) — critique the
 plan before committing to an executor. If step 5 left the gate unset (all
 steps mechanical), skip this step; a critique adds nothing to a rote
 transformation.
@@ -177,10 +186,10 @@ checks. Show the output — "should work" is not verification
 (the shared instructions file).
 
 ## 10. Review
-Delegate to the review-diff skill, using the same suspend-and-return framing as step 5 (checkpoint marker, persisted return pointer, absolute-path re-read on return) with this item's worktree path — every item, no ask, `--auto` included. It reviews step 9's staged tree with a non-Claude reviewer (same-model subagent fallback), triages each finding fix or reject-with-reason, fixes and re-verifies, max 2 rounds. Keep the reviewer line and triage table it prints: step 11's commit gate shows them. Don't commit here.
+Delegate to the review-diff skill, using the same suspend-and-return framing as step 5 (checkpoint marker, persisted return pointer, absolute-path re-read on return, restore of the item's original next_steps on return) with this item's worktree path — every item, no ask, `--auto` included. It reviews step 9's staged tree with a non-Claude reviewer (same-model subagent fallback), triages each finding fix or reject-with-reason, fixes and re-verifies, max 2 rounds. Keep the reviewer line and triage table it prints: step 11's commit gate shows them. Don't commit here.
 
 ## 11. Land
-Delegate to the land skill, using the same suspend-and-return framing as step 5 (checkpoint marker, persisted return pointer, absolute-path re-read on return) with this item's worktree path and slug. It owns the commit gate (showing step 10's report), the merge/push/cleanup gate, and the close (`review` then `approve`, with `gate-pass` evidence when the item has a gate). Each of its gates stops for the user. Don't commit, merge, or close the item outside it.
+Delegate to the land skill, using the same suspend-and-return framing as step 5 (checkpoint marker, persisted return pointer, absolute-path re-read on return, restore of the item's original next_steps on return) with this item's worktree path and slug. It owns the commit gate (showing step 10's report), the merge/push/cleanup gate, and the close (`review` then `approve`, with `gate-pass` evidence when the item has a gate). Each of its gates stops for the user. Don't commit, merge, or close the item outside it.
 
 ---
 

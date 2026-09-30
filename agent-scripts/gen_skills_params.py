@@ -648,12 +648,12 @@ _DELEGATE_HOW = {
     "agy": (
         "the {skill} skill, using the same suspend-and-return framing as step 5 "
         "(checkpoint marker, persisted return pointer, absolute-path re-read on "
-        "return)"
+        "return, restore of the item's original next_steps on return)"
     ),
     "codex": (
         "the {skill} skill, using the same suspend-and-return framing as step 5 "
         "(checkpoint marker, persisted return pointer, absolute-path re-read on "
-        "return)"
+        "return, restore of the item's original next_steps on return)"
     ),
 }
 
@@ -709,8 +709,16 @@ Empty context/next_steps/related_files: stop and ask the user to fill them
 in; don't fabricate a plan from the title. Numeric id: note the rendered rev
 for `--if-rev` on the next mutating call. related_files already names a
 grill plan (`{{TOOLKIT_DATA}}/grill/<slug>-plan.md`) or a spec
-(`{{TOOLKIT_DATA}}/grill/<slug>-spec.md`)? Planning and critique (steps 5–6)
-are already done — skip to step 8. Worktree already has
+(`{{TOOLKIT_DATA}}/grill/<slug>-spec.md`)? Don't redraft it. Gated
+(`show` has `gate.required: true`)? Skip to step 8 only if its critique
+already ran — a `<artifact without .md>-critique-notes.md` companion sits
+next to that plan or spec (e.g.
+`{{TOOLKIT_DATA}}/grill/<slug>-spec-critique-notes.md`; second-opinion
+writes it when it finalizes); otherwise resume at step 6. No gate? An
+unset gate can't tell "all steps mechanical" from "paused before
+classifying", so redo only step 5's gate classification against that
+artifact, then continue at step 6 (which skips itself if the gate stays
+unset). Worktree already has
 implemented, uncommitted changes (e.g. handed back from an external
 executor)? Skip straight to step 9.""",
         "STEP2_BODY": """\
@@ -831,7 +839,16 @@ the user to fill them in; don't fabricate a plan from the title. Numeric
 id: note the rendered rev for `--if-rev` on the next mutating call.
 related_files already names a grill plan (`{{TOOLKIT_DATA}}/grill/<slug>-plan.md`)
 or a spec (`{{TOOLKIT_DATA}}/grill/<slug>-spec.md`)?
-Planning and critique (steps 5–6) are already done — skip to step 8.
+Don't redraft it. Gated
+(`show` has `gate.required: true`)? Skip to step 8 only if its critique
+already ran — a `<artifact without .md>-critique-notes.md` companion sits
+next to that plan or spec (e.g.
+`{{TOOLKIT_DATA}}/grill/<slug>-spec-critique-notes.md`; second-opinion
+writes it when it finalizes); otherwise resume at step 6. No gate? An
+unset gate can't tell "all steps mechanical" from "paused before
+classifying", so redo only step 5's gate classification against that
+artifact, then continue at step 6 (which skips itself if the gate stays
+unset).
 Worktree already has implemented, uncommitted changes (e.g. handed back
 from an external executor)? Skip straight to step 9. Either skip: the
 worktree lives at `$(dirname <repo>)/<repo-name>-<slug>`, where `<repo>` is
@@ -1122,8 +1139,16 @@ instructions file). Empty context/next_steps/related_files: stop and ask
 the user to fill them in; don't fabricate a plan from the title. Numeric
 id: note the rendered rev for `--if-rev` on the next mutating call.
 related_files already names a grill plan (`{{TOOLKIT_DATA}}/grill/<slug>-plan.md`)
-or a spec (`{{TOOLKIT_DATA}}/grill/<slug>-spec.md`)? Planning and critique
-(steps 5–6) are already done — skip to step 8. Worktree already has
+or a spec (`{{TOOLKIT_DATA}}/grill/<slug>-spec.md`)? Don't redraft it. Gated
+(`show` has `gate.required: true`)? Skip to step 8 only if its critique
+already ran — a `<artifact without .md>-critique-notes.md` companion sits
+next to that plan or spec (e.g.
+`{{TOOLKIT_DATA}}/grill/<slug>-spec-critique-notes.md`; second-opinion
+writes it when it finalizes); otherwise resume at step 6. No gate? An
+unset gate can't tell "all steps mechanical" from "paused before
+classifying", so redo only step 5's gate classification against that
+artifact, then continue at step 6 (which skips itself if the gate stays
+unset). Worktree already has
 implemented, uncommitted changes (e.g. handed back from an external
 executor)? Skip straight to step 9.""",
         "STEP2_BODY": """\
@@ -1235,8 +1260,16 @@ instructions file). Empty context/next_steps/related_files: stop and ask
 the user to fill them in; don't fabricate a plan from the title. Numeric
 id: note the rendered rev for `--if-rev` on the next mutating call.
 related_files already names a grill plan (`{{TOOLKIT_DATA}}/grill/<slug>-plan.md`)
-or a spec (`{{TOOLKIT_DATA}}/grill/<slug>-spec.md`)? Planning and critique
-(steps 5–6) are already done — skip to step 8. Worktree already has
+or a spec (`{{TOOLKIT_DATA}}/grill/<slug>-spec.md`)? Don't redraft it. Gated
+(`show` has `gate.required: true`)? Skip to step 8 only if its critique
+already ran — a `<artifact without .md>-critique-notes.md` companion sits
+next to that plan or spec (e.g.
+`{{TOOLKIT_DATA}}/grill/<slug>-spec-critique-notes.md`; second-opinion
+writes it when it finalizes); otherwise resume at step 6. No gate? An
+unset gate can't tell "all steps mechanical" from "paused before
+classifying", so redo only step 5's gate classification against that
+artifact, then continue at step 6 (which skips itself if the gate stays
+unset). Worktree already has
 implemented, uncommitted changes (e.g. handed back from an external
 executor)? Skip straight to step 9. `next_steps` starts with "Resume
 backlog-item at step N" (a return pointer left by an earlier suspend, see
@@ -1293,7 +1326,8 @@ don't also record it as a second, competing artifact.""",
 If step 5 set a gate (judgment steps present), run the second-opinion
 skill against the resulting plan or spec file unconditionally, no ask,
 using the same suspend-and-return framing as step 5 (checkpoint marker,
-persisted return pointer, absolute-path re-read on return) — critique the
+persisted return pointer, absolute-path re-read on return, restore of the
+item's original next_steps on return) — critique the
 plan before committing to an executor. If step 5 left the gate unset (all
 steps mechanical), skip this step; a critique adds nothing to a rote
 transformation.""",
@@ -1394,8 +1428,16 @@ instructions file). Empty context/next_steps/related_files: stop and ask
 the user to fill them in; don't fabricate a plan from the title. Numeric
 id: note the rendered rev for `--if-rev` on the next mutating call.
 related_files already names a grill plan (`{{TOOLKIT_DATA}}/grill/<slug>-plan.md`)
-or a spec (`{{TOOLKIT_DATA}}/grill/<slug>-spec.md`)? Planning and critique
-(steps 5–6) are already done — skip to step 8. Worktree already has
+or a spec (`{{TOOLKIT_DATA}}/grill/<slug>-spec.md`)? Don't redraft it. Gated
+(`show` has `gate.required: true`)? Skip to step 8 only if its critique
+already ran — a `<artifact without .md>-critique-notes.md` companion sits
+next to that plan or spec (e.g.
+`{{TOOLKIT_DATA}}/grill/<slug>-spec-critique-notes.md`; second-opinion
+writes it when it finalizes); otherwise resume at step 6. No gate? An
+unset gate can't tell "all steps mechanical" from "paused before
+classifying", so redo only step 5's gate classification against that
+artifact, then continue at step 6 (which skips itself if the gate stays
+unset). Worktree already has
 implemented, uncommitted changes (e.g. handed back from an external
 executor)? Skip straight to step 9. `next_steps` starts with "Resume
 backlog-item at step N" (a return pointer left by an earlier suspend, see
@@ -1451,7 +1493,8 @@ don't also record it as a second, competing artifact.""",
 If step 5 set a gate (judgment steps present), run the second-opinion
 skill against the resulting plan or spec file unconditionally, no ask,
 using the same suspend-and-return framing as step 5 (checkpoint marker,
-persisted return pointer, absolute-path re-read on return) — critique the
+persisted return pointer, absolute-path re-read on return, restore of the
+item's original next_steps on return) — critique the
 plan before committing to an executor. If step 5 left the gate unset (all
 steps mechanical), skip this step; a critique adds nothing to a rote
 transformation.""",
@@ -1557,8 +1600,16 @@ from the dashboard's one-line summary (CLAUDE.md). Empty
 context/next_steps/related_files: stop and ask the user to fill them in;
 don't fabricate a plan from the title. related_files already names a grill
 plan (`{{TOOLKIT_DATA}}/grill/<slug>-plan.md`) or a spec
-(`{{TOOLKIT_DATA}}/grill/<slug>-spec.md`)? Planning and critique (steps 5–6)
-are already done — skip to step 8. Worktree already has implemented,
+(`{{TOOLKIT_DATA}}/grill/<slug>-spec.md`)? Don't redraft it. Gated
+(`show` has `gate.required: true`)? Skip to step 8 only if its critique
+already ran — a `<artifact without .md>-critique-notes.md` companion sits
+next to that plan or spec (e.g.
+`{{TOOLKIT_DATA}}/grill/<slug>-spec-critique-notes.md`; second-opinion
+writes it when it finalizes); otherwise resume at step 6. No gate? An
+unset gate can't tell "all steps mechanical" from "paused before
+classifying", so redo only step 5's gate classification against that
+artifact, then continue at step 6 (which skips itself if the gate stays
+unset). Worktree already has implemented,
 uncommitted changes (e.g. handed back from an external executor)? Skip
 straight to step 9. If the `dev_status` tool is genuinely unavailable (e.g.
 the session was started with `--no-extensions`), fall back to
