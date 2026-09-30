@@ -197,6 +197,25 @@ describe("buildArgv", () => {
   });
 });
 
+describe("critique-notes binding actions", () => {
+  for (const action of ["bind-notes", "check-notes"] as const) {
+    test(`${action} requires planFile`, () => {
+      expect(() => assertFields(action, { action })).toThrow(/requires: planFile/);
+    });
+
+    test(`${action} accepts only planFile`, () => {
+      expect(() => assertFields(action, { action, planFile: "/tmp/p.md" })).not.toThrow();
+      expect(() =>
+        assertFields(action, { action, planFile: "/tmp/p.md", runId: "loop-1" }),
+      ).toThrow(/does not accept: runId/);
+    });
+
+    test(`${action} argv is the subcommand and the path`, () => {
+      expect(buildArgv(action, { action, planFile: "/tmp/p.md" })).toEqual([action, "/tmp/p.md"]);
+    });
+  }
+});
+
 describe("buildEnvPrefix", () => {
   test("no model/timeout -> empty", () => {
     expect(buildEnvPrefix({ action: "review", planFile: "/tmp/p.md" })).toEqual([]);

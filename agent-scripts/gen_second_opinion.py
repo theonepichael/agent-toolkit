@@ -89,6 +89,8 @@ CONTRACT_TOKENS = (
     "detect",
     "review",
     "probe",
+    "bind-notes",
+    "check-notes",
     "--backend",
     "--dir",
     "--focus-file",
@@ -782,6 +784,15 @@ def substitutions(params: HarnessParams) -> dict[str, str]:
             "variable; where it goes through a native tool with no model "
             "parameter, ask the user to set the variable in the environment "
             "the harness was launched from."
+        ),
+        # Same io_entrypoint split: Pi binds through its native tool's
+        # action, since second_opinion.py is off Pi's bash allowlist.
+        "BIND_NOTES_CALL": (
+            "the `second_opinion` tool's `bind-notes` action with `planFile` "
+            "set to the saved plan path"
+            if params.io_entrypoint == "the `second_opinion` tool"
+            else "`python3 {{TOOLKIT_SCRIPTS}}/second_opinion.py bind-notes "
+            "<plan path>`"
         ),
     }
 

@@ -1394,6 +1394,8 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
     - `--prompt-only` — print the prompt this review would send and exit, calling no backend and spending no round (for a caller's own reviewer) (default: False)
     - `--run-id` — stable id for one iterative critique session; the per-round cap is enforced by counting reviews per run-id (or per plan file when omitted). The second-opinion skill passes one for the whole loop.
     - `--allow-extra-round` — permit review calls beyond the per-run cap (for a user who deliberately wants another round) (default: False)
+  - `bind-notes <artifact>` — stamp <artifact>'s critique-notes companion with the artifact's content hash
+  - `check-notes <artifact>` — print whether <artifact>'s critique-notes binding is current, stale, unbound, missing, or no-artifact (always exit 0)
 - Environment: `SECOND_OPINION_AGY_MODEL`, `SECOND_OPINION_AGY_MODEL_POOL`, `SECOND_OPINION_AGY_TIMEOUT_SECONDS`, `SECOND_OPINION_CODEX_MODEL`, `SECOND_OPINION_CODEX_MODEL_POOL`, `SECOND_OPINION_CODEX_TIMEOUT_SECONDS`, `SECOND_OPINION_COPILOT_MODEL`, `SECOND_OPINION_COPILOT_MODEL_POOL`, `SECOND_OPINION_COPILOT_TIMEOUT_SECONDS`, `SECOND_OPINION_OPENCODE_MODEL`, `SECOND_OPINION_OPENCODE_MODEL_POOL`, `SECOND_OPINION_OPENCODE_TIMEOUT_SECONDS`, `SECOND_OPINION_PI_MODEL`, `SECOND_OPINION_PI_MODEL_POOL`, `SECOND_OPINION_PI_TIMEOUT_SECONDS`, `SECOND_OPINION_TIMEOUT_SECONDS`
 - Explicit exit codes: `1`
 - Depends on: `agent_toolkit_paths.py`, `cli_common.py`, `llm_backends.py`, `migration_lock.py`
@@ -1423,8 +1425,12 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
   - `backend_label(backend: str, *, model_index: int | None = None, model: object = _UNSET) -> str` — Return ``backend``'s display label, appending the resolved model if any.
   - `review_plan(request: ReviewRequest, *, verbose: bool = False, quiet: bool = False) -> ReviewResult` — Run one adversarial review of ``request.plan_text`` and return the result.
   - `build_parser() -> argparse.ArgumentParser` — Build the full argument parser for every subcommand.
+  - `critique_notes_path(artifact: Path) -> Path` — Return the ``<artifact without suffix>-critique-notes.md`` companion.
+  - `artifact_digest(artifact: Path) -> str` — Return the SHA-256 hex digest of the artifact's raw bytes.
+  - `bind_notes(artifact: Path) -> Path` — Stamp the artifact's digest as the notes file's first line.
+  - `notes_status(artifact: Path) -> str` — Classify the artifact's critique-notes binding (see check-notes).
   - `ensure_data_dir() -> None` — Create the shared artifact directory if it is missing.
-- Subcommand handlers: `cmd_detect`, `cmd_probe`, `cmd_review`
+- Subcommand handlers: `cmd_detect`, `cmd_probe`, `cmd_review`, `cmd_bind_notes`, `cmd_check_notes`
 - Tested by: `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`, `test/test_second_opinion.py`, `test/test_timing.py`
 
 ### `agent-scripts/seed_hook_subset_guard.py`
@@ -2387,7 +2393,7 @@ new one, `--check` catches it the same as any other stale content.
 | `/recap` | — |
 | `/refresh-guidance` | — |
 | `/review-diff` | `backlog-item`, `land` |
-| `/second-opinion` | — |
+| `/second-opinion` | `backlog-item` |
 | `/skill-drift-audit` | `land` |
 | `/skill-map` | — |
 | `/spec` | `backlog-item`, `grill-me`, `second-opinion` |

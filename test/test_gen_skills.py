@@ -171,6 +171,24 @@ class CapabilityFixtureTests(unittest.TestCase):
             self.assertIn("-critique-notes.md", step1, path)
             self.assertIn("resume at step 6", step1, path)
 
+    def test_backlog_item_step1_trusts_only_a_current_critique_binding(self) -> None:
+        # The notes file alone only proves a critique ran at some point; an
+        # edit to the plan/spec made after it went unnoticed. Step 1 must
+        # gate the skip-to-8 on the content-hash binding being current.
+        rendered = gs.render_all(REPO_ROOT, SKILL_PARAMS)
+        for (skill, harness), path in gs.OUTPUT_PATHS.items():
+            if skill != "backlog-item":
+                continue
+            step1 = rendered[path].split("## 1. Resolve", 1)[1].split("## 2.", 1)[0]
+            step1 = " ".join(step1.split())
+            if harness in ("pi", "pi-prompt"):
+                self.assertIn("`check-notes` action", step1, path)
+            else:
+                self.assertIn("second_opinion.py check-notes", step1, path)
+            self.assertIn("prints `current`", step1, path)
+            self.assertIn("`no-artifact`", step1, path)
+            self.assertIn("before the implemented-changes shortcut", step1, path)
+
     @pytest.mark.regression(
         "agy-codex-reused-suspend-framing-drops-next-steps-restore",
         "AssertionError: \"restore of the item's original next_steps on return\" not found in",

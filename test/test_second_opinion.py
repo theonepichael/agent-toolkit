@@ -2238,6 +2238,126 @@ class DataDirSelfEnsureTests(unittest.TestCase):
         self.assertTrue(self.data_dir.is_dir())
 
 
+class CritiqueNotesBindingTests(unittest.TestCase):
+    """bind-notes / check-notes tie a critique-notes file to the artifact bytes.
+
+    backlog-item's resume check used to accept the mere existence of the
+    notes companion as proof the critique ran, so an edit to the plan made
+    after the critique went unnoticed.
+    """
+
+    def setUp(self) -> None:
+        self.tmpdir = tempfile.mkdtemp()
+        test_layouts.activate_sandbox_home(Path(self.tmpdir), self.addCleanup)
+        self.data_dir = agent_toolkit_paths.path_for("decisions")
+        self.work = Path(self.tmpdir) / "work"
+        self.work.mkdir()
+        self.artifact = self.work / "topic-spec.md"
+        self.notes = self.work / "topic-spec-critique-notes.md"
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmpdir)
+
+    def _main(self, *argv: str) -> tuple[str, str]:
+        out, err = io.StringIO(), io.StringIO()
+        with (
+            patch.object(sys, "argv", ["second_opinion.py", *argv]),
+            patch("sys.stdout", out),
+            patch("sys.stderr", err),
+        ):
+            try:
+                second_opinion.main()
+            except SystemExit as exc:
+                if exc.code not in (0, None):
+                    raise
+        return out.getvalue(), err.getvalue()
+
+    def test_notes_path_strips_the_suffix(self) -> None:
+        self.assertEqual(second_opinion.critique_notes_path(self.artifact), self.notes)
+        bare = self.work / "plan"
+        self.assertEqual(
+            second_opinion.critique_notes_path(bare), self.work / "plan-critique-notes.md"
+        )
+
+    def test_status_missing_and_no_artifact(self) -> None:
+        self.assertEqual(second_opinion.notes_status(self.artifact), "no-artifact")
+        self.artifact.write_text("plan\n")
+        self.assertEqual(second_opinion.notes_status(self.artifact), "missing")
+
+    def test_unmarked_notes_are_unbound(self) -> None:
+        self.artifact.write_text("plan\n")
+        self.notes.write_text("# notes\nround 1\n")
+        self.assertEqual(second_opinion.notes_status(self.artifact), "unbound")
+
+    def test_bind_then_current_then_stale_after_edit(self) -> None:
+        self.artifact.write_text("plan v1\n")
+        self.notes.write_text("# notes\nround 1\n")
+        self.assertEqual(second_opinion.bind_notes(self.artifact), self.notes)
+        self.assertEqual(second_opinion.notes_status(self.artifact), "current")
+        body = self.notes.read_text()
+        self.assertEqual(
+            body.splitlines()[0],
+            f"<!-- critiqued-sha256: {second_opinion.artifact_digest(self.artifact)} -->",
+        )
+        self.assertTrue(body.endswith("# notes\nround 1\n"))
+        self.artifact.write_text("plan v2\n")
+        self.assertEqual(second_opinion.notes_status(self.artifact), "stale")
+
+    def test_rebind_replaces_the_marker(self) -> None:
+        self.artifact.write_text("v1\n")
+        self.notes.write_text("# notes\n")
+        second_opinion.bind_notes(self.artifact)
+        self.artifact.write_text("v2\n")
+        second_opinion.bind_notes(self.artifact)
+        body = self.notes.read_text()
+        self.assertEqual(body.count("critiqued-sha256"), 1)
+        self.assertEqual(second_opinion.notes_status(self.artifact), "current")
+        self.assertTrue(body.endswith("# notes\n"))
+
+    def test_marker_not_on_first_line_or_malformed_is_unbound(self) -> None:
+        self.artifact.write_text("v1\n")
+        digest = second_opinion.artifact_digest(self.artifact)
+        self.notes.write_text(f"# notes\n<!-- critiqued-sha256: {digest} -->\n")
+        self.assertEqual(second_opinion.notes_status(self.artifact), "unbound")
+        self.notes.write_text(f"<!-- critiqued-sha256: {digest[:10]} -->\n")
+        self.assertEqual(second_opinion.notes_status(self.artifact), "unbound")
+
+    def test_non_utf8_notes_still_get_a_status_and_survive_a_bind(self) -> None:
+        self.artifact.write_text("v1\n")
+        self.notes.write_bytes(b"# notes \xff\xfe\n")
+        self.assertEqual(second_opinion.notes_status(self.artifact), "unbound")
+        second_opinion.bind_notes(self.artifact)
+        self.assertEqual(second_opinion.notes_status(self.artifact), "current")
+        self.assertTrue(self.notes.read_bytes().endswith(b"# notes \xff\xfe\n"))
+
+    def test_bind_refuses_without_notes_or_artifact(self) -> None:
+        with self.assertRaises(FileNotFoundError):
+            second_opinion.bind_notes(self.artifact)
+        self.artifact.write_text("v1\n")
+        with self.assertRaises(FileNotFoundError):
+            second_opinion.bind_notes(self.artifact)
+
+    def test_cli_check_prints_status_and_exits_zero_without_data_dir(self) -> None:
+        out, _ = self._main("check-notes", str(self.artifact))
+        self.assertEqual(out.strip(), "no-artifact")
+        self.artifact.write_text("v1\n")
+        self.notes.write_text("# notes\n")
+        out, _ = self._main("check-notes", str(self.artifact))
+        self.assertEqual(out.strip(), "unbound")
+        self.assertFalse(self.data_dir.exists())
+
+    def test_cli_bind_prints_notes_path_and_errors_when_missing(self) -> None:
+        self.artifact.write_text("v1\n")
+        with self.assertRaises(SystemExit) as ctx:
+            self._main("bind-notes", str(self.artifact))
+        self.assertEqual(ctx.exception.code, 1)
+        self.notes.write_text("# notes\n")
+        out, _ = self._main("bind-notes", str(self.artifact))
+        self.assertEqual(out.strip(), str(self.notes))
+        out, _ = self._main("check-notes", str(self.artifact))
+        self.assertEqual(out.strip(), "current")
+        self.assertFalse(self.data_dir.exists())
+
 class FocusFileTruncationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmpdir = tempfile.mkdtemp()

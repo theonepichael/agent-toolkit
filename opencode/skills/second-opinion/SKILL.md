@@ -230,8 +230,18 @@ Show the final revised plan and the summary, and save both files: the
 cleaned-up plan and the critique-notes file described above. If the plan came
 from an existing file (e.g. a `grill.py` `plan_path`), confirm before
 overwriting it — `question` tool: `Yes, overwrite (recommended)` / `No, leave
-as-is`. Never silently rewrite a file. The critique-notes file is new each run,
-so it doesn't need the same overwrite confirmation.
+as-is`. Never silently rewrite a file. The critique-notes file is new each run
+— write it whole, replacing any earlier notes file for this plan — so it
+doesn't need the same overwrite confirmation.
+
+Once the final plan and the critique-notes file are both saved, bind them with
+`bind-notes`: run `python3 ~/.agent-toolkit/scripts/second_opinion.py
+bind-notes <plan path>`. It stamps the plan's content hash as the notes file's
+first line, and a later resume (backlog-item step 1, via `check-notes`) trusts
+the critique only while that hash still matches the plan on disk — any later
+edit to the plan means another critique. If the user declined overwriting the
+plan file, do not bind: the notes describe a revision that is not on disk, and
+leaving them unbound is what makes a resume re-critique.
 
 ## On cap-out without convergence
 
@@ -253,7 +263,9 @@ Unresolved: <specific remaining disagreement>.
 
 Then `question` tool: `Keep the current approach (recommended)` / `Use the
 reviewer's suggestion` / `Let me decide manually`. Never silently pick a side
-when the round cap is hit mid-disagreement.
+when the round cap is hit mid-disagreement. Once the choice is applied and the
+resulting plan and critique-notes file are saved, bind them exactly as on
+convergence; while the choice is still pending, do not bind.
 
 ## Recording it in the backlog
 

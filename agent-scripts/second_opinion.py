@@ -30,6 +30,21 @@ Subcommands
   probe    run one trivial text-only health request per pool model and print a
            per-model availability report as JSON (exit 1 when any probed model
            is unavailable; tests must mock the runners, never probe for real)
+  bind-notes <artifact>
+           stamp <artifact without suffix>-critique-notes.md with the
+           artifact's SHA-256 as its first line
+           (``<!-- critiqued-sha256: <hex> -->``), replacing any earlier
+           marker; prints the notes path. Exit 1 when the artifact or the
+           notes file is missing. Run by the second-opinion skill after the
+           final plan and notes are saved.
+  check-notes <artifact>
+           print one status for that binding and exit 0 whatever it is:
+           current (marker matches the artifact's bytes), stale (artifact
+           changed since binding), unbound (notes lack a first-line marker),
+           missing (no notes file), no-artifact. backlog-item's resume check
+           trusts a finished critique only on ``current``. Writes nothing.
+  Neither notes subcommand creates the data directory, takes the migration
+  lock, or counts as a review round.
 
 Flags
   --quiet, -q      suppress non-essential output
@@ -174,6 +189,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -2040,7 +2056,9 @@ def build_parser() -> argparse.ArgumentParser:
     # dev_status.py's build_parser() for the full rationale.
     verbosity_parent = argparse.ArgumentParser(add_help=False)
     cli_common.add_verbosity_args(verbosity_parent)
-    sub = parser.add_subparsers(dest="cmd", metavar="{detect,review,probe}")
+    sub = parser.add_subparsers(
+        dest="cmd", metavar="{detect,review,probe,bind-notes,check-notes}"
+    )
 
     sub.add_parser(
         "detect", help="list available backends as JSON", parents=[verbosity_parent]
@@ -2158,7 +2176,94 @@ def build_parser() -> argparse.ArgumentParser:
         "deliberately wants another round)",
     )
 
+    p = sub.add_parser(
+        "bind-notes",
+        help="stamp <artifact>'s critique-notes companion with the artifact's "
+        "content hash",
+        parents=[verbosity_parent],
+    )
+    p.add_argument("artifact", metavar="<artifact>")
+    p = sub.add_parser(
+        "check-notes",
+        help="print whether <artifact>'s critique-notes binding is current, "
+        "stale, unbound, missing, or no-artifact (always exit 0)",
+        parents=[verbosity_parent],
+    )
+    p.add_argument("artifact", metavar="<artifact>")
+
     return parser
+
+
+# The first line of a critique-notes file that binds it to the exact bytes of
+# the plan/spec it critiqued. See bind_notes / notes_status.
+_NOTES_MARKER_RE = re.compile(r"<!-- critiqued-sha256: ([0-9a-f]{64}) -->")
+
+
+def critique_notes_path(artifact: Path) -> Path:
+    """Return the ``<artifact without suffix>-critique-notes.md`` companion."""
+    return artifact.with_name(f"{artifact.with_suffix('').name}-critique-notes.md")
+
+
+def artifact_digest(artifact: Path) -> str:
+    """Return the SHA-256 hex digest of the artifact's raw bytes."""
+    return hashlib.sha256(artifact.read_bytes()).hexdigest()
+
+
+def bind_notes(artifact: Path) -> Path:
+    """Stamp the artifact's digest as the notes file's first line.
+
+    Every well-formed marker already in the file is removed first, so a
+    rebind leaves exactly one. Raises FileNotFoundError when the artifact or
+    its notes file is missing — there is nothing to bind.
+    """
+    notes = critique_notes_path(artifact)
+    if not artifact.is_file():
+        raise FileNotFoundError(f"artifact not found: {artifact}")
+    if not notes.is_file():
+        raise FileNotFoundError(f"critique-notes file not found: {notes}")
+    digest = artifact_digest(artifact)
+    # surrogateescape round-trips any non-UTF-8 bytes in the notes untouched.
+    text = notes.read_text(encoding="utf-8", errors="surrogateescape")
+    kept = [
+        line
+        for line in text.splitlines(keepends=True)
+        if not _NOTES_MARKER_RE.fullmatch(line.rstrip("\r\n"))
+    ]
+    notes.write_text(
+        f"<!-- critiqued-sha256: {digest} -->\n" + "".join(kept),
+        encoding="utf-8",
+        errors="surrogateescape",
+    )
+    return notes
+
+
+def notes_status(artifact: Path) -> str:
+    """Classify the artifact's critique-notes binding (see check-notes)."""
+    if not artifact.is_file():
+        return "no-artifact"
+    notes = critique_notes_path(artifact)
+    if not notes.is_file():
+        return "missing"
+    lines = notes.read_text(encoding="utf-8", errors="replace").splitlines()
+    match = _NOTES_MARKER_RE.fullmatch(lines[0]) if lines else None
+    if match is None:
+        return "unbound"
+    return "current" if match.group(1) == artifact_digest(artifact) else "stale"
+
+
+def cmd_bind_notes(args: argparse.Namespace) -> None:
+    """Handle ``bind-notes``: stamp the notes file, print its path."""
+    try:
+        notes = bind_notes(Path(args.artifact).expanduser())
+    except FileNotFoundError as exc:
+        print(f"[second_opinion] bind-notes: {exc}", file=sys.stderr)
+        sys.exit(1)
+    print(notes)
+
+
+def cmd_check_notes(args: argparse.Namespace) -> None:
+    """Handle ``check-notes``: print the binding status, always exit 0."""
+    print(notes_status(Path(args.artifact).expanduser()))
 
 
 def ensure_data_dir() -> None:
@@ -2181,12 +2286,22 @@ def ensure_data_dir() -> None:
 @cli_common.timing_span("script", script="second_opinion")
 def main() -> None:
     """Register termination handlers, parse argv, and dispatch to a subcommand."""
+    parser = build_parser()
+    args = parser.parse_args()
+
+    # The notes subcommands only touch the named artifact and its companion,
+    # so they skip the data-dir setup (and its migration lock) entirely.
+    notes_dispatch = {"bind-notes": cmd_bind_notes, "check-notes": cmd_check_notes}
+    if args.cmd in notes_dispatch:
+        with cli_common.timing_span(
+            "command", script="second_opinion", command=args.cmd
+        ):
+            notes_dispatch[args.cmd](args)
+        return
+
     ensure_data_dir()
     signal.signal(signal.SIGTERM, _handle_termination)
     signal.signal(signal.SIGINT, _handle_termination)
-
-    parser = build_parser()
-    args = parser.parse_args()
 
     dispatch = {"detect": cmd_detect, "review": cmd_review, "probe": cmd_probe}
     if args.cmd in dispatch:

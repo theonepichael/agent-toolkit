@@ -709,18 +709,27 @@ Empty context/next_steps/related_files: stop and ask the user to fill them
 in; don't fabricate a plan from the title. Numeric id: note the rendered rev
 for `--if-rev` on the next mutating call. related_files already names a
 grill plan (`{{TOOLKIT_DATA}}/grill/<slug>-plan.md`) or a spec
-(`{{TOOLKIT_DATA}}/grill/<slug>-spec.md`)? Don't redraft it. Gated
-(`show` has `gate.required: true`)? Skip to step 8 only if its critique
-already ran — a `<artifact without .md>-critique-notes.md` companion sits
-next to that plan or spec (e.g.
-`{{TOOLKIT_DATA}}/grill/<slug>-spec-critique-notes.md`; second-opinion
-writes it when it finalizes); otherwise resume at step 6. No gate? An
+(`{{TOOLKIT_DATA}}/grill/<slug>-spec.md`)? Don't redraft it. Gated (`show`
+has `gate.required: true`)? Skip to step 8 only if its critique already
+ran against the artifact as it is now: `python3
+{{TOOLKIT_SCRIPTS}}/second_opinion.py check-notes <plan-or-spec path>`
+prints `current`. Second-opinion binds the `<artifact without
+.md>-critique-notes.md` companion (e.g.
+`{{TOOLKIT_DATA}}/grill/<slug>-spec-critique-notes.md`) to the artifact's
+content hash when it finalizes, so any later edit reads `stale`. `stale`,
+`unbound` (notes from before binding existed) or `missing`: resume at step
+6; once that critique finalizes, continue at step 8 if it changed the plan
+or spec in a way existing implemented changes don't satisfy, else at step
+9. `no-artifact`: stop and report the recorded plan or spec file is gone —
+never pass a missing path to a review, which reads it as inline text. For
+a gated item this check runs before the implemented-changes shortcut
+below. No gate? An
 unset gate can't tell "all steps mechanical" from "paused before
 classifying", so redo only step 5's gate classification against that
 artifact, then continue at step 6 (which skips itself if the gate stays
-unset). Worktree already has
-implemented, uncommitted changes (e.g. handed back from an external
-executor)? Skip straight to step 9.""",
+unset). Worktree already has implemented, uncommitted changes (e.g. handed
+back from an external executor)? Skip straight to step 9 (a gated item
+takes the binding check above first).""",
         "STEP2_BODY": """\
 If the item is already in-progress: STOP immediately — do not proceed to
 step 3 or touch any worktree. Report the existing claim details (`claimed_by`
@@ -839,18 +848,27 @@ the user to fill them in; don't fabricate a plan from the title. Numeric
 id: note the rendered rev for `--if-rev` on the next mutating call.
 related_files already names a grill plan (`{{TOOLKIT_DATA}}/grill/<slug>-plan.md`)
 or a spec (`{{TOOLKIT_DATA}}/grill/<slug>-spec.md`)?
-Don't redraft it. Gated
-(`show` has `gate.required: true`)? Skip to step 8 only if its critique
-already ran — a `<artifact without .md>-critique-notes.md` companion sits
-next to that plan or spec (e.g.
-`{{TOOLKIT_DATA}}/grill/<slug>-spec-critique-notes.md`; second-opinion
-writes it when it finalizes); otherwise resume at step 6. No gate? An
+Don't redraft it. Gated (`show` has `gate.required: true`)? Skip to step 8
+only if its critique already ran against the artifact as it is now:
+`python3 {{TOOLKIT_SCRIPTS}}/second_opinion.py check-notes <plan-or-spec
+path>` prints `current`. Second-opinion binds the `<artifact without
+.md>-critique-notes.md` companion (e.g.
+`{{TOOLKIT_DATA}}/grill/<slug>-spec-critique-notes.md`) to the artifact's
+content hash when it finalizes, so any later edit reads `stale`. `stale`,
+`unbound` (notes from before binding existed) or `missing`: resume at step
+6; once that critique finalizes, continue at step 8 if it changed the plan
+or spec in a way existing implemented changes don't satisfy, else at step
+9. `no-artifact`: stop and report the recorded plan or spec file is gone —
+never pass a missing path to a review, which reads it as inline text. For
+a gated item this check runs before the implemented-changes shortcut
+below. No gate? An
 unset gate can't tell "all steps mechanical" from "paused before
 classifying", so redo only step 5's gate classification against that
 artifact, then continue at step 6 (which skips itself if the gate stays
 unset).
 Worktree already has implemented, uncommitted changes (e.g. handed back
-from an external executor)? Skip straight to step 9. Either skip: the
+from an external executor)? Skip straight to step 9 (a gated item takes
+the binding check above first). Either skip: the
 worktree lives at `$(dirname <repo>)/<repo-name>-<slug>`, where `<repo>` is
 the absolute path from `related_files` — resolve that path explicitly and
 work there, not the root checkout. Do not assume `cd ../<repo-name>-<slug>`
@@ -1139,18 +1157,27 @@ instructions file). Empty context/next_steps/related_files: stop and ask
 the user to fill them in; don't fabricate a plan from the title. Numeric
 id: note the rendered rev for `--if-rev` on the next mutating call.
 related_files already names a grill plan (`{{TOOLKIT_DATA}}/grill/<slug>-plan.md`)
-or a spec (`{{TOOLKIT_DATA}}/grill/<slug>-spec.md`)? Don't redraft it. Gated
-(`show` has `gate.required: true`)? Skip to step 8 only if its critique
-already ran — a `<artifact without .md>-critique-notes.md` companion sits
-next to that plan or spec (e.g.
-`{{TOOLKIT_DATA}}/grill/<slug>-spec-critique-notes.md`; second-opinion
-writes it when it finalizes); otherwise resume at step 6. No gate? An
+or a spec (`{{TOOLKIT_DATA}}/grill/<slug>-spec.md`)? Don't redraft it.
+Gated (`show` has `gate.required: true`)? Skip to step 8 only if its
+critique already ran against the artifact as it is now: `python3
+{{TOOLKIT_SCRIPTS}}/second_opinion.py check-notes <plan-or-spec path>`
+prints `current`. Second-opinion binds the `<artifact without
+.md>-critique-notes.md` companion (e.g.
+`{{TOOLKIT_DATA}}/grill/<slug>-spec-critique-notes.md`) to the artifact's
+content hash when it finalizes, so any later edit reads `stale`. `stale`,
+`unbound` (notes from before binding existed) or `missing`: resume at step
+6; once that critique finalizes, continue at step 8 if it changed the plan
+or spec in a way existing implemented changes don't satisfy, else at step
+9. `no-artifact`: stop and report the recorded plan or spec file is gone —
+never pass a missing path to a review, which reads it as inline text. For
+a gated item this check runs before the implemented-changes shortcut
+below. No gate? An
 unset gate can't tell "all steps mechanical" from "paused before
 classifying", so redo only step 5's gate classification against that
 artifact, then continue at step 6 (which skips itself if the gate stays
-unset). Worktree already has
-implemented, uncommitted changes (e.g. handed back from an external
-executor)? Skip straight to step 9.""",
+unset). Worktree already has implemented, uncommitted changes (e.g. handed
+back from an external executor)? Skip straight to step 9 (a gated item
+takes the binding check above first).""",
         "STEP2_BODY": """\
 If the item is already in-progress: STOP immediately — do not proceed to
 step 3 or touch any worktree. Report the existing claim details (`claimed_by`
@@ -1260,18 +1287,27 @@ instructions file). Empty context/next_steps/related_files: stop and ask
 the user to fill them in; don't fabricate a plan from the title. Numeric
 id: note the rendered rev for `--if-rev` on the next mutating call.
 related_files already names a grill plan (`{{TOOLKIT_DATA}}/grill/<slug>-plan.md`)
-or a spec (`{{TOOLKIT_DATA}}/grill/<slug>-spec.md`)? Don't redraft it. Gated
-(`show` has `gate.required: true`)? Skip to step 8 only if its critique
-already ran — a `<artifact without .md>-critique-notes.md` companion sits
-next to that plan or spec (e.g.
-`{{TOOLKIT_DATA}}/grill/<slug>-spec-critique-notes.md`; second-opinion
-writes it when it finalizes); otherwise resume at step 6. No gate? An
+or a spec (`{{TOOLKIT_DATA}}/grill/<slug>-spec.md`)? Don't redraft it.
+Gated (`show` has `gate.required: true`)? Skip to step 8 only if its
+critique already ran against the artifact as it is now: `python3
+{{TOOLKIT_SCRIPTS}}/second_opinion.py check-notes <plan-or-spec path>`
+prints `current`. Second-opinion binds the `<artifact without
+.md>-critique-notes.md` companion (e.g.
+`{{TOOLKIT_DATA}}/grill/<slug>-spec-critique-notes.md`) to the artifact's
+content hash when it finalizes, so any later edit reads `stale`. `stale`,
+`unbound` (notes from before binding existed) or `missing`: resume at step
+6; once that critique finalizes, continue at step 8 if it changed the plan
+or spec in a way existing implemented changes don't satisfy, else at step
+9. `no-artifact`: stop and report the recorded plan or spec file is gone —
+never pass a missing path to a review, which reads it as inline text. For
+a gated item this check runs before the implemented-changes shortcut
+below. No gate? An
 unset gate can't tell "all steps mechanical" from "paused before
 classifying", so redo only step 5's gate classification against that
 artifact, then continue at step 6 (which skips itself if the gate stays
-unset). Worktree already has
-implemented, uncommitted changes (e.g. handed back from an external
-executor)? Skip straight to step 9. `next_steps` starts with "Resume
+unset). Worktree already has implemented, uncommitted changes (e.g. handed
+back from an external executor)? Skip straight to step 9 (a gated item
+takes the binding check above first). `next_steps` starts with "Resume
 backlog-item at step N" (a return pointer left by an earlier suspend, see
 step 5–6)? That step N is where to resume, not step 1's normal dispatch.""",
         "STEP2_BODY": """\
@@ -1428,18 +1464,27 @@ instructions file). Empty context/next_steps/related_files: stop and ask
 the user to fill them in; don't fabricate a plan from the title. Numeric
 id: note the rendered rev for `--if-rev` on the next mutating call.
 related_files already names a grill plan (`{{TOOLKIT_DATA}}/grill/<slug>-plan.md`)
-or a spec (`{{TOOLKIT_DATA}}/grill/<slug>-spec.md`)? Don't redraft it. Gated
-(`show` has `gate.required: true`)? Skip to step 8 only if its critique
-already ran — a `<artifact without .md>-critique-notes.md` companion sits
-next to that plan or spec (e.g.
-`{{TOOLKIT_DATA}}/grill/<slug>-spec-critique-notes.md`; second-opinion
-writes it when it finalizes); otherwise resume at step 6. No gate? An
+or a spec (`{{TOOLKIT_DATA}}/grill/<slug>-spec.md`)? Don't redraft it.
+Gated (`show` has `gate.required: true`)? Skip to step 8 only if its
+critique already ran against the artifact as it is now: `python3
+{{TOOLKIT_SCRIPTS}}/second_opinion.py check-notes <plan-or-spec path>`
+prints `current`. Second-opinion binds the `<artifact without
+.md>-critique-notes.md` companion (e.g.
+`{{TOOLKIT_DATA}}/grill/<slug>-spec-critique-notes.md`) to the artifact's
+content hash when it finalizes, so any later edit reads `stale`. `stale`,
+`unbound` (notes from before binding existed) or `missing`: resume at step
+6; once that critique finalizes, continue at step 8 if it changed the plan
+or spec in a way existing implemented changes don't satisfy, else at step
+9. `no-artifact`: stop and report the recorded plan or spec file is gone —
+never pass a missing path to a review, which reads it as inline text. For
+a gated item this check runs before the implemented-changes shortcut
+below. No gate? An
 unset gate can't tell "all steps mechanical" from "paused before
 classifying", so redo only step 5's gate classification against that
 artifact, then continue at step 6 (which skips itself if the gate stays
-unset). Worktree already has
-implemented, uncommitted changes (e.g. handed back from an external
-executor)? Skip straight to step 9. `next_steps` starts with "Resume
+unset). Worktree already has implemented, uncommitted changes (e.g. handed
+back from an external executor)? Skip straight to step 9 (a gated item
+takes the binding check above first). `next_steps` starts with "Resume
 backlog-item at step N" (a return pointer left by an earlier suspend, see
 step 5–6)? That step N is where to resume, not step 1's normal dispatch.""",
         "STEP2_BODY": """\
@@ -1600,18 +1645,28 @@ from the dashboard's one-line summary (CLAUDE.md). Empty
 context/next_steps/related_files: stop and ask the user to fill them in;
 don't fabricate a plan from the title. related_files already names a grill
 plan (`{{TOOLKIT_DATA}}/grill/<slug>-plan.md`) or a spec
-(`{{TOOLKIT_DATA}}/grill/<slug>-spec.md`)? Don't redraft it. Gated
-(`show` has `gate.required: true`)? Skip to step 8 only if its critique
-already ran — a `<artifact without .md>-critique-notes.md` companion sits
-next to that plan or spec (e.g.
-`{{TOOLKIT_DATA}}/grill/<slug>-spec-critique-notes.md`; second-opinion
-writes it when it finalizes); otherwise resume at step 6. No gate? An
+(`{{TOOLKIT_DATA}}/grill/<slug>-spec.md`)? Don't redraft it. Gated (`show`
+has `gate.required: true`)? Skip to step 8 only if its critique already
+ran against the artifact as it is now: the `second_opinion` tool's
+`check-notes` action with `planFile` set to that plan or spec path prints
+`current`. Second-opinion binds the `<artifact without
+.md>-critique-notes.md` companion (e.g.
+`{{TOOLKIT_DATA}}/grill/<slug>-spec-critique-notes.md`) to the artifact's
+content hash when it finalizes, so any later edit reads `stale`. `stale`,
+`unbound` (notes from before binding existed) or `missing`: resume at step
+6; once that critique finalizes, continue at step 8 if it changed the plan
+or spec in a way existing implemented changes don't satisfy, else at step
+9. `no-artifact`: stop and report the recorded plan or spec file is gone —
+never pass a missing path to a review, which reads it as inline text. For
+a gated item this check runs before the implemented-changes shortcut
+below. No gate? An
 unset gate can't tell "all steps mechanical" from "paused before
 classifying", so redo only step 5's gate classification against that
 artifact, then continue at step 6 (which skips itself if the gate stays
-unset). Worktree already has implemented,
-uncommitted changes (e.g. handed back from an external executor)? Skip
-straight to step 9. If the `dev_status` tool is genuinely unavailable (e.g.
+unset). Worktree already has implemented, uncommitted changes (e.g. handed
+back from an external executor)? Skip straight to step 9 (a gated item
+takes the binding check above first). If the `dev_status` tool is
+genuinely unavailable (e.g.
 the session was started with `--no-extensions`), fall back to
 `python3 {{TOOLKIT_SCRIPTS}}/dev_status.py show <slug|N>` for this and every
 other step below — in that fallback path only, a numeric id needs a fresh,
