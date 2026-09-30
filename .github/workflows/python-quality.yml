@@ -32,6 +32,13 @@ jobs:
         working-directory: opencode
         run: npm install
 
+      # The runner has no opencode on PATH, so the pytest staleness test skips
+      # here. This step is what compares the committed leader-chord table with
+      # the pinned opencode release (downloaded via npm pack); a fetch or parse
+      # failure exits 2 and fails the job.
+      - name: opencode leader-chord table vs pinned release
+        run: uv run python agent-scripts/gen_keybinds.py --check --fetch-pinned
+
       - name: ruff check
         run: uv run ruff check .
 
