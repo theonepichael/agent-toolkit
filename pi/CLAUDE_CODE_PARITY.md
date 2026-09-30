@@ -6,7 +6,7 @@ shared instructions, same skills, same backlog/pending-items/git
 conventions — as a 5th harness alongside Claude Code, Copilot, opencode,
 and agy (a 6th, Codex CLI, joined the toolkit 2026-09-08, after this intro
 was written — see root `AGENTS.md`'s "Harness maintenance tiers"; the rest
-of this doc, §3/§7 included, already reflects the current 8-skill/6-harness
+of this doc, §3/§7 included, already reflects the current skill/harness
 state). Compiled 2026-08-30 from the docs bundled with the installed
 package (`~/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/docs/`,
 version 0.84.4 at time of writing) and from live probes against that same
@@ -38,8 +38,8 @@ install, not from search-engine summaries.
   standard](https://agentskills.io/specification) (`docs/skills.md`), and
   explicitly supports pointing at *another* harness's skill directory via
   the `skills` setting — its own docs give `~/.claude/skills` as the
-  worked example. **All 8 skills are generated into `pi/skills/`** (7 by
-  `gen_skills.py`, `second-opinion` by `gen_second_opinion.py`) and found
+  worked example. **Every skill is generated into `pi/skills/`** (by
+  `gen_skills.py`, and `second-opinion` by `gen_second_opinion.py`) and found
   purely through Pi's default scan of `~/.pi/agent/skills/` — symlinked
   from `pi/skills/` — since `pi/settings.json` carries no `skills` key (see
   §3 for why an explicit `pi/skills` entry there is wrong, not just
@@ -110,11 +110,11 @@ have:
   (§1); the only gate is whatever `permission-gate.ts` (§5) itself denies
   or blocks.
 
-## 3. Skills — 8 generated skills in `pi/skills/`, found via Pi's default scan
+## 3. Skills — generated into `pi/skills/`, found via Pi's default scan
 
-`pi/skills/` holds all 8 generated skills (`backlog-item`, `dashboard`,
-`grill-me`, `make-skill`, `spec`, `standup`, `to-tickets` via `gen_skills.py`,
-and `second-opinion` via `gen_second_opinion.py`). `pi/settings.json`
+`pi/skills/` holds the generated skills: every skill `gen_skills.py`'s
+`SKILL_HARNESSES` table lists `pi` for, plus `second-opinion` via
+`gen_second_opinion.py`. `pi/settings.json`
 (copy-once like `claude/settings.json` — Pi rewrites parts of this file
 live via `/settings`, `/model` Ctrl+S, etc., same detach risk that file's
 comment warns about) carries **no** `skills` key:
@@ -125,13 +125,13 @@ comment warns about) carries **no** `skills` key:
 }
 ```
 
-All 8 skills are found purely through Pi's default, always-on scan of
+All skills are found purely through Pi's default, always-on scan of
 `~/.pi/agent/skills/`, which `links.toml` (§ below) symlinks straight to
 `pi/skills/`. An earlier version of this file explicitly listed
 `"skills": ["/home/yanil/agent-toolkit/pi/skills", "/home/yanil/agent-toolkit/agy/skills"]`
 — that was wrong, not just redundant: Pi's `skills` config is *additive* to
 the default scan, not a replacement for it (`docs/skills.md`), so listing
-`pi/skills` a second time made every one of the 8 skills resolve at two
+`pi/skills` a second time made every skill resolve at two
 different absolute paths (the symlink target from the default scan, plus
 the explicit array entry) and collide with itself — a repo-wide collision
 warning on every skill. Dropping the `skills` key entirely is the fix;

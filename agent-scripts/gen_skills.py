@@ -1,22 +1,20 @@
 #!/usr/bin/env python3
-"""gen_skills.py — regenerate the dashboard/recap/grill-me/backlog-item/
-make-skill/spec/standup/to-tickets/swarm/analyze-sessions/refresh-guidance/
-review-diff/land skill copies from one template per skill, plus a shared per-harness capability
-table. dashboard/recap/grill-me/backlog-item/make-skill/spec/standup/to-tickets/
-analyze-sessions/refresh-guidance/review-diff/land cover all 6 harnesses (claude, copilot,
-opencode, agy, pi, codex); swarm covers only claude/copilot (user-directed; pi
-already owns the orchestration surface) — see `SKILL_HARNESSES` below and
-AGENTS.md's "Harness maintenance tiers" section.
+"""gen_skills.py — regenerate the generated skill copies (every skill in
+`SKILLS`) from one template per skill, plus a shared per-harness capability
+table. Each skill covers the harnesses listed for it in `SKILL_HARNESSES`:
+most cover every harness in `harness_spec.ALL_NAMES`; swarm covers only
+claude/copilot (user-directed; pi already owns the orchestration surface) —
+see AGENTS.md's "Harness maintenance tiers" section.
 
-The first 4 skills used to live as hand-forked copies, one per harness, with
-no mechanism keeping them in sync (see `meta-pi-skill-content-mismatch`'s
+dashboard/recap/grill-me/backlog-item used to live as hand-forked copies,
+one per harness, with no mechanism keeping them in sync (see `meta-pi-skill-content-mismatch`'s
 backlog record for the drift this caused: Pi's copies were reused from
 agy's, describing agy's constraints — no structured multi-choice widget, no
 SessionStart hook — that are factually wrong for Pi, which has both).
 spec/standup/to-tickets had the same drift for Pi specifically
 (`meta-pi-residual-skill-drift`). This script replaces those copies with
 generated output: one body template per skill
-(`templates/{dashboard,recap,grill_me,backlog_item,make_skill,spec,standup,to_tickets,swarm,analyze_sessions,refresh_guidance,review_diff,land}.md.tmpl`)
+(`TEMPLATE_PATHS`, with per-harness `TEMPLATE_PATH_OVERRIDES`)
 plus the shared `CAPABILITY_TABLE` below, mirroring
 `gen_second_opinion.py`'s generator/--check/--stdout shape for the
 second-opinion skill (which this script does not touch — a separate,
@@ -41,14 +39,14 @@ Usage:
 
 Flags: --check, --stdout, --repo-root <path>, --quiet/-q, --verbose/-v.
 Env vars: none.
-Files read: <repo>/templates/{dashboard,recap,grill_me,backlog_item,make_skill,spec,standup,to_tickets,swarm,analyze_sessions,refresh_guidance,review_diff,land}.md.tmpl.
-Files written: the 90 (skill, harness) copies named in OUTPUT_PATHS —
-12 skills x 6 harnesses (72), plus swarm x {claude, copilot} (2), plus a
-second pi/prompts/*.md output for each of the 12 skills under the synthetic
-"pi-prompt" harness (12), plus a second opencode/skills/<name>/SKILL.md
-output for spec/grill-me/review-diff/land under the synthetic
-"opencode-skill" harness (4), per `SKILL_HARNESSES` (skipped by --check and
---stdout).
+Files read: <repo>/templates/*.md.tmpl — each (skill, harness) pair's
+template per `template_path_for` (`TEMPLATE_PATHS` plus
+`TEMPLATE_PATH_OVERRIDES`).
+Files written: every path in `OUTPUT_PATHS` — one copy per (skill, harness)
+pair in `SKILL_HARNESSES`, at that harness's skill path, plus the synthetic
+harnesses' second surfaces: "pi-prompt" (pi/prompts/<name>.md) and
+"opencode-skill" (opencode/skills/<name>/SKILL.md) for the skills that list
+them (skipped by --check and --stdout).
 Exit codes: 0 success; 1 --check found stale output; 2 bad usage.
 
 Requires Python 3.12+.
@@ -92,7 +90,7 @@ HARNESSES = harness_spec.ALL_NAMES
 # "second copy is a second thing to drift" problem swarm.md's own closing
 # section warns against.
 _ACTIVE_TIER = HARNESSES
-# The 10 gen_skills.py-managed skills each get a second pi output --
+# Every gen_skills.py-managed skill except swarm gets a second pi output --
 # pi/prompts/{name}.md, the "pi-prompt" synthetic harness (see
 # TEMPLATE_PATH_OVERRIDES) -- alongside their pi/skills/{name}/SKILL.md.
 # swarm doesn't: pi already owns the swarm orchestration surface natively
@@ -145,13 +143,13 @@ TEMPLATE_PATHS: dict[str, str] = {
 # Per-(skill, harness) template overrides. Pi has two output surfaces per
 # skill: `pi/prompts/{name}.md` binds pi's literal `/name` slash command
 # (prompt-template mechanism), and `pi/skills/{name}/SKILL.md` binds
-# `/skill:name` or semantic match. 7 of the 8 skills integrate pi-native
+# `/skill:name` or semantic match. Some skills integrate pi-native
 # extension tools (`dev_status`, `grill`, `standup`, `question`, `delegate`,
 # `swarm_resolve_blocked`) that the generic bash-oriented templates never
 # reference. Both Pi surfaces (`pi` and `pi-prompt`) render from the dedicated
-# native template for those 7 skills, unifying Pi's behavior across `/name`
-# and `/skill:name`. `make-skill` is deliberately absent: it has no
-# native-tool content, so both its outputs reuse TEMPLATE_PATHS["make-skill"]
+# native template for those skills, unifying Pi's behavior across `/name`
+# and `/skill:name`. A skill absent below (e.g. `make-skill`) has no
+# native-tool content, so both its pi outputs reuse its TEMPLATE_PATHS entry
 # unchanged (same pattern gen_second_opinion.py uses for second-opinion).
 TEMPLATE_PATH_OVERRIDES: dict[tuple[str, str], str] = {
     ("dashboard", "pi"): "templates/dashboard_pi_native.md.tmpl",
@@ -256,7 +254,7 @@ def render_body(template_text: str, values: dict[str, str]) -> str:
     the substitution result being re-wrapped. Every other line is substituted
     in place and emitted exactly as the template wrote it -- deliberately no
     `textwrap.fill` pass (unlike `gen_second_opinion.py`'s `render_body`):
-    these 4 skills' bodies are numbered/bulleted lists with no blank line
+    these skills' bodies are numbered/bulleted lists with no blank line
     between items, and joining list-item lines into one paragraph before
     refilling would merge them into broken prose.
     """

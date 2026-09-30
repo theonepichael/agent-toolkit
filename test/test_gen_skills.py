@@ -1011,5 +1011,30 @@ class OpencodeGrillMeAutoNotesTests(unittest.TestCase):
             self.assertIn("no per-spawn model override", text, path)
             self.assertIn("agent.adversary.model", text, path)
 
+
+class ModuleDocstringHasNoCountsTests(unittest.TestCase):
+    """The module docstring is rendered into INTERFACES.md, so a hand-written
+    total there ("90 (skill, harness) copies", "12 skills x 6 harnesses") goes
+    stale every time a skill or harness is added. It describes the output set
+    structurally (SKILL_HARNESSES / OUTPUT_PATHS) instead."""
+
+    COUNT_PHRASE = re.compile(
+        r"\b\d+\s+(?:[\w(),/-]+\s+){0,3}?"
+        r"(?:skills?|harnesses|copies|outputs|templates)\b"
+        r"|\b\d+\s*x\s*\d+\b"
+        r"|\ball\s+\d+\b",
+        re.IGNORECASE,
+    )
+
+    @pytest.mark.regression(
+        "gen-skills-docstring-hardcoded-counts",
+        "AssertionError: Lists differ: ['all 6', '4 skills', "
+        "'90 (skill, harness) copies', '12 skills', '6 harnesses', '12 skills'] != []",
+    )
+    def test_docstring_names_no_skill_harness_or_copy_totals(self) -> None:
+        doc = gs.__doc__ or ""
+        self.assertEqual(self.COUNT_PHRASE.findall(doc), [])
+
+
 if __name__ == "__main__":
     test_bootstrap.run_unittest_main()

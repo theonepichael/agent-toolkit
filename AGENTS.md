@@ -54,10 +54,10 @@ dangling references across skills. Full generated content parity is now
 maintained across all six harnesses (`_ACTIVE_TIER = HARNESSES`).
 
 - **Actively maintained parity** — Claude Code, Copilot, opencode, agy, Pi,
-  and Codex CLI. Generated skills (`dashboard`, `recap`, `grill-me`,
-  `backlog-item`, `make-skill`, `spec`, `standup`, `to-tickets`) cover all six
-  harnesses; capability facts (`CAPABILITY_TABLE` in `agent-scripts/gen_skills.py`,
-  and its `gen_second_opinion.py` analog) get kept current for all six.
+  and Codex CLI. Every generated skill in `agent-scripts/gen_skills.py`'s
+  `SKILL_HARNESSES` except `swarm` covers all six harnesses; capability
+  facts (`CAPABILITY_TABLE` in `agent-scripts/gen_skills.py`, and its
+  `gen_second_opinion.py` analog) get kept current for all six.
 - **Exceptions** — `swarm` remains intentionally restricted to `("claude", "copilot")`
   because Pi owns its own native TypeScript orchestration layer (`swarm-tool.ts`,
   `--swarm[=N]`) and other harnesses do not have swarm runner infrastructure.
