@@ -8,7 +8,7 @@ Scope & philosophy
 - Development tooling is a separate concern: test/ and CI use uv with pinned pytest and ruff. Keep those dependencies out of anything that runs at harness runtime.
 
 Python
-- Target: Python 3.12+ for all non-trivial scripts.
+- Target: Python 3.14 is the default runtime; code must still run on the 3.12 floor (requires-python >=3.12, tested by the python-quality-3-12 CI job) until the work machine's Python is confirmed.
 - Shebangs: use #!/usr/bin/env python3 for Python entrypoints.
 - Use the standard library for CLIs: argparse or getopt only (no external CLI libs). Prefer argparse for new CLIs.
 - Type hints are required on every function/method signature (all parameters and the return type), using modern 3.12+ syntax: built-in generics (`list[str]`, `dict[str, int]`), not `typing.List`/`typing.Dict`; `X | None`, not `Optional[X]`; `X | Y`, not `Union[X, Y]`. Avoid `Any` unless genuinely unavoidable; prefer `object` or a narrower union. Enforced by ruff's ANN rules (see Formatting & linting).

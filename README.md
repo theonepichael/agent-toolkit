@@ -41,7 +41,7 @@ Install whichever CLI harness(es) you plan to use:
 | **Codex CLI** | `npm install -g @openai/codex` |
 
 System tools:
-- **Python 3.12+**
+- **Python 3.14** is the default runtime (dev venv, primary CI job). Hooks and `githooks/` run bare `python3`, so make that resolve to 3.14 (e.g. `uv python install 3.14 --default`, with `~/.local/bin` ahead of `/usr/bin` on PATH). 3.12 stays a supported, CI-tested floor until the work machine's Python is confirmed. `./install.sh` prefers `python3.14` when it is on PATH.
 - **Git**
 - Optional: `uv` (recommended for test execution), `npm` + Node 22.19 or newer (for Pi TypeScript extensions; the floor is Pi's own `engines` requirement)
 

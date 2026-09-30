@@ -1948,8 +1948,8 @@ are copy-once seeds for exactly that reason.
 
 Not harness code, but the plumbing that puts everything above in
 place. `install.sh` is a POSIX-sh bootstrap with no interface of its
-own: it locates a Python 3.12+ interpreter and execs `install.py`,
-forwarding argv unchanged.
+own: it locates a Python 3.12+ interpreter (preferring `python3.14`,
+then `python3`) and execs `install.py`, forwarding argv unchanged.
 
 ### `install.py`
 

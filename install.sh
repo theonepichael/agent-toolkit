@@ -8,13 +8,13 @@ set -eu
 # shellcheck disable=SC1007 # CDPATH= clears CDPATH for this one command so cd ignores it.
 DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 
-for candidate in python3.13 python3.12 python3 python; do
+for candidate in python3.14 python3 python3.13 python3.12 python; do
   bin="$(command -v "$candidate" 2>/dev/null)" || continue
   if "$bin" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)' 2>/dev/null; then
     exec "$bin" "$DIR/install.py" "$@"
   fi
 done
 
-echo "install.sh: no Python 3.12+ found on PATH (tried python3.13, python3.12, python3, python)." >&2
+echo "install.sh: no Python 3.12+ found on PATH (tried python3.14, python3, python3.13, python3.12, python)." >&2
 echo "install.sh: install Python 3.12 or newer, then re-run — refusing to fall back to an older one." >&2
 exit 1
