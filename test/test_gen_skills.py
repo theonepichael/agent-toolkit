@@ -35,6 +35,7 @@ import test_bootstrap  # noqa: E402
 import gen_skills as gs
 import gen_skills_params
 from gen_skills_params import SKILL_PARAMS
+from pytest_shim import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -112,6 +113,45 @@ class CapabilityFixtureTests(unittest.TestCase):
             # No commit/merge/close text left behind outside `land`.
             self.assertNotIn("integration-merge", text, path)
             self.assertNotIn("step 12", text, path)
+
+    @pytest.mark.regression(
+        "backlog-item-claims-spec-skill-missing",
+        "AssertionError: 'no `spec` skill' unexpectedly found in '---\\nname: backlog-item\\n",
+    )
+    def test_backlog_item_step5_delegates_to_spec_everywhere(self) -> None:
+        # spec ships to every harness, so no backlog-item copy may still
+        # claim it's missing or draft the spec inline instead of delegating.
+        self.assertEqual(gs.SKILL_HARNESSES["spec"], gs.HARNESSES + ("pi-prompt",))
+        rendered = gs.render_all(REPO_ROOT, SKILL_PARAMS)
+        return_paths = {
+            "agy": "~/.gemini/antigravity-cli/skills/backlog-item/SKILL.md",
+            "codex": "~/.codex/skills/backlog-item/SKILL.md",
+        }
+        for (skill, harness), path in gs.OUTPUT_PATHS.items():
+            if skill != "backlog-item":
+                continue
+            text = rendered[path]
+            self.assertNotIn("no `spec` skill", text, path)
+            self.assertNotIn("excluded from", text, path)
+            step5 = text.split("## 5. Spec or plan", 1)[1].split("### ", 1)[0]
+            step5 = " ".join(step5.split())
+            self.assertIn("spec", step5, path)
+            self.assertIn("step 4 generation offer", step5, path)
+            self.assertNotIn("- **Objective** —", step5, path)
+            # spec names its file after its topic slug; step 1's resume
+            # branch only recognizes the backlog slug's spec path.
+            self.assertIn("slug as its topic slug", step5, path)
+            self.assertIn("grill/<slug>-spec.md", step5, path)
+            if harness in return_paths:
+                # Step 6 and the review/land delegations cite step 5's
+                # suspend-and-return framing, so step 5 must define it.
+                self.assertIn("[CHECKPOINT: suspending backlog-item", step5, path)
+                self.assertIn("at step 5 for spec", step5, path)
+                self.assertIn("dev_status.py update", step5, path)
+                self.assertIn(return_paths[harness], step5, path)
+                self.assertIn("restore the item's original next_steps", step5, path)
+                auto = " ".join(text.split("## `--auto` mode", 1)[1].split())
+                self.assertNotIn("inline spec-drafting", auto, path)
 
     def test_review_diff_and_land_cover_every_harness(self) -> None:
         for skill in ("review-diff", "land"):

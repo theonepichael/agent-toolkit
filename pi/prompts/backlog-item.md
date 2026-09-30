@@ -83,7 +83,9 @@ starting code work").
 
 ## 5. Spec or plan
 Load the `spec` skill via `/skill:spec` with the item's context/next_steps
-as the task. Let it draft and save the spec end-to-end (its steps 1–4) —
+as the task and the item's slug as its topic slug, so it saves
+`~/.agent-toolkit/data/grill/<slug>-spec.md` — the path step 1's resume check
+looks for. Let it draft and save the spec end-to-end (its steps 1–4) —
 including its own internal escalation to `grill-me` if a field's design is
 genuinely open; `spec`'s step 3 owns that handoff and the resume-after
 entirely, there is nothing to orchestrate here. Decline spec's own step 4

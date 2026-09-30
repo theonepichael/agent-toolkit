@@ -2241,7 +2241,6 @@ named doc, not regenerating this file.
 
 | Doc | Status |
 | --- | --- |
-| `agy/skills/backlog-item/SKILL.md` | OK |
 | `agy/skills/grill-me/SKILL.md` | OK |
 | `agy/skills/second-opinion/SKILL.md` | OK |
 | `agy/skills/spec/SKILL.md` | OK |
@@ -2250,12 +2249,10 @@ named doc, not regenerating this file.
 | `claude/commands/second-opinion.md` | OK |
 | `claude/commands/spec.md` | OK |
 | `claude/commands/to-tickets.md` | OK |
-| `codex/skills/backlog-item/SKILL.md` | OK |
 | `codex/skills/grill-me/SKILL.md` | OK |
 | `codex/skills/second-opinion/SKILL.md` | OK |
 | `codex/skills/spec/SKILL.md` | OK |
 | `codex/skills/to-tickets/SKILL.md` | OK |
-| `copilot/skills/backlog-item/SKILL.md` | OK |
 | `copilot/skills/grill-me/SKILL.md` | OK |
 | `copilot/skills/second-opinion/SKILL.md` | OK |
 | `copilot/skills/spec/SKILL.md` | OK |
@@ -2296,7 +2293,6 @@ named doc, not regenerating this file.
 
 | Doc | Status |
 | --- | --- |
-| `agy/skills/backlog-item/SKILL.md` | OK |
 | `agy/skills/grill-me/SKILL.md` | OK |
 | `agy/skills/review-diff/SKILL.md` | OK |
 | `agy/skills/second-opinion/SKILL.md` | OK |
@@ -2305,12 +2301,10 @@ named doc, not regenerating this file.
 | `claude/commands/review-diff.md` | OK |
 | `claude/commands/second-opinion.md` | OK |
 | `claude/commands/spec.md` | OK |
-| `codex/skills/backlog-item/SKILL.md` | OK |
 | `codex/skills/grill-me/SKILL.md` | OK |
 | `codex/skills/review-diff/SKILL.md` | OK |
 | `codex/skills/second-opinion/SKILL.md` | OK |
 | `codex/skills/spec/SKILL.md` | OK |
-| `copilot/skills/backlog-item/SKILL.md` | OK |
 | `copilot/skills/grill-me/SKILL.md` | OK |
 | `copilot/skills/review-diff/SKILL.md` | OK |
 | `copilot/skills/second-opinion/SKILL.md` | OK |
