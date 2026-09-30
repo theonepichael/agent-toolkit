@@ -14,7 +14,7 @@ import { getEffectiveCwd } from "./cwd";
 
 const SECOND_OPINION_PATH = join(homedir(), ".agent-toolkit", "scripts", "second_opinion.py");
 
-const ACTIONS = ["detect", "review", "bind-notes", "check-notes"] as const;
+const ACTIONS = ["detect", "review", "probe", "bind-notes", "check-notes"] as const;
 
 export type Action = (typeof ACTIONS)[number];
 
@@ -50,6 +50,9 @@ const ACTION_FIELDS: Record<Action, ActionFields> = {
     ],
     required: ["planFile"],
   },
+  // Mirrors `second_opinion.py probe [--backend NAME[,NAME...]]`; `model` and
+  // `timeoutSeconds` reach it through the same env vars review uses.
+  probe: { allowed: ["backend", "model", "timeoutSeconds"], required: [] },
   "bind-notes": { allowed: ["planFile"], required: ["planFile"] },
   "check-notes": { allowed: ["planFile"], required: ["planFile"] },
 };
@@ -115,7 +118,13 @@ export function assertFields(action: Action, params: SecondOpinionParams): void 
   // would otherwise become arbitrary SECOND_OPINION_<NAME>_* env vars the
   // script silently ignores.
   if (params.backend !== undefined) {
-    const unknown = unknownBackends(splitBackends(params.backend));
+    const names = splitBackends(params.backend);
+    // The script's own list parser rejects a value with no names in it
+    // ("," or whitespace); refuse it here rather than passing it through.
+    if (names.length === 0) {
+      throw new Error("backend must name at least one backend");
+    }
+    const unknown = unknownBackends(names);
     if (unknown.length > 0) {
       throw new Error(
         `backend must name known backends (${KNOWN_BACKENDS.join(", ")}) — unknown: ${unknown.join(", ")}`,
@@ -157,6 +166,8 @@ export function buildArgv(action: Action, params: SecondOpinionParams): string[]
   switch (action) {
     case "detect":
       return ["detect"];
+    case "probe":
+      return ["probe", ...(params.backend ? ["--backend", params.backend] : [])];
     case "bind-notes":
     case "check-notes":
       return [action, params.planFile!];
@@ -215,17 +226,54 @@ export function buildEnvPrefix(params: SecondOpinionParams): string[] {
   return env;
 }
 
+const PROBE_STATUSES = new Set(["ok", "unavailable", "not_installed"]);
+
+export interface ProbeCounts {
+  ok: number;
+  unavailable: number;
+  notInstalled: number;
+}
+
+/**
+ * Parse `second_opinion.py probe` stdout into per-status counts, or `null`
+ * when it is not a well-formed report: a JSON object whose `probes` array
+ * holds only objects with a string `backend` and a known `status`.
+ */
+export function parseProbeReport(stdout: string): ProbeCounts | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) return null;
+  const probes = (parsed as { probes?: unknown }).probes;
+  if (!Array.isArray(probes)) return null;
+  const counts: ProbeCounts = { ok: 0, unavailable: 0, notInstalled: 0 };
+  for (const entry of probes) {
+    if (typeof entry !== "object" || entry === null) return null;
+    const { backend, status } = entry as { backend?: unknown; status?: unknown };
+    if (typeof backend !== "string" || typeof status !== "string") return null;
+    if (!PROBE_STATUSES.has(status)) return null;
+    if (status === "ok") counts.ok++;
+    else if (status === "unavailable") counts.unavailable++;
+    else counts.notInstalled++;
+  }
+  return counts;
+}
+
 export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "second_opinion",
     label: "Critique",
     description:
-      "Get one adversarial critique of a plan from a non-Claude backend, list which backends are available, or bind/check a plan's critique-notes companion against its content hash.",
+      "Get one adversarial critique of a plan from a non-Claude backend, list which backends are available, probe each backend's model pool for per-model availability, or bind/check a plan's critique-notes companion against its content hash.",
     promptSnippet: "Get an outside adversarial critique of a plan file",
     promptGuidelines: [
       "Never invoke second_opinion.py via bash -- always use second_opinion instead.",
-      'second_opinion covers everything second_opinion.py does: action "detect" lists available backends as JSON, action "review" returns one critique of the plan at planFile, action "bind-notes" stamps planFile\'s -critique-notes.md companion with planFile\'s content hash, and action "check-notes" prints that binding\'s status (current, stale, unbound, missing, or no-artifact). If you are about to compose a `python3 ~/.agent-toolkit/scripts/second_opinion.py ...` bash command, use second_opinion instead.',
+      'second_opinion covers everything second_opinion.py does: action "detect" lists available backends as JSON, action "review" returns one critique of the plan at planFile, action "probe" sends one trivial request to each model in the selected backend\'s pool (or its single override / default model) and returns a per-model availability report as JSON, action "bind-notes" stamps planFile\'s -critique-notes.md companion with planFile\'s content hash, and action "check-notes" prints that binding\'s status (current, stale, unbound, missing, or no-artifact). If you are about to compose a `python3 ~/.agent-toolkit/scripts/second_opinion.py ...` bash command, use second_opinion instead.',
       "Never shell out to codex, agy, pi, opencode, or copilot directly for a critique -- all backend I/O goes through this tool.",
+      'Action "probe" calls every probed model once for real, so pass `backend` deliberately rather than probing every installed backend. An unavailable model is not a tool error: the JSON report comes back with a second line counting ok, unavailable, and not-installed entries. A report with 0 ok tested nothing. `model` (with one `backend`) pins the model probed only when that backend has no pool configured; a configured pool is probed instead.',
       "It is single-round: one call, one critique. The multi-round loop, the plan revision between rounds, and the convergence judgment are yours, not the tool's.",
       "The script enforces a per-run cap (3 rounds by default): pass a stable `runId` for the whole loop (or rely on the plan-file path) and the 4th `review` call for that run is refused with a finalize-and-stop message.",
       "Always pass planFile as a path. Never inline plan text -- write the plan to a file first.",
@@ -243,7 +291,8 @@ export default function (pi: ExtensionAPI) {
       backend: Type.Optional(
         Type.String({
           description:
-            "review: force this backend instead of priority-order fallback. Use action detect to see what is available.",
+            "review: force this backend instead of priority-order fallback. Use action detect to see what is available. " +
+            "probe: probe only these backend(s) (comma-separated) instead of every installed backend.",
         }),
       ),
       dir: Type.Optional(
@@ -274,7 +323,8 @@ export default function (pi: ExtensionAPI) {
       model: Type.Optional(
         Type.String({
           description:
-            "review: force the model used for the critique. Requires `backend` — it sets " +
+            "review/probe: force the model used for the critique (probe: the model probed when " +
+            "the backend has no pool configured). Requires `backend` — it sets " +
             "SECOND_OPINION_<BACKEND>_MODEL for the named backend (the script has no global " +
             "model override).",
         }),
@@ -283,7 +333,7 @@ export default function (pi: ExtensionAPI) {
         Type.Integer({
           minimum: 1,
           description:
-            "review: per-call timeout in seconds, clamped to the [1, 600] range and written to " +
+            "review/probe: per-call timeout in seconds, clamped to the [1, 600] range and written to " +
             "SECOND_OPINION_<BACKEND>_TIMEOUT_SECONDS (or the global SECOND_OPINION_TIMEOUT_SECONDS " +
             "when no backend is set).",
         }),
@@ -321,13 +371,40 @@ export default function (pi: ExtensionAPI) {
         ...(cwd ? { cwd } : {}),
       });
 
-      if (result.code !== 0) {
+      // `probe` exits 1 when any probed model is unavailable, right after
+      // printing its full report. That report is the answer the model asked
+      // for, so only that exact shape (a valid report with at least one
+      // unavailable entry) is returned; every other nonzero exit still throws.
+      const probeCounts = typed.action === "probe" ? parseProbeReport(result.stdout) : null;
+      const probeReportExit =
+        result.code === 1 && probeCounts !== null && probeCounts.unavailable > 0;
+
+      if (result.code !== 0 && !probeReportExit) {
         throw new Error(
           result.stderr || result.stdout || `second_opinion.py exited ${result.code}`,
         );
       }
 
       const text = result.stderr ? `${result.stdout}\n\n${result.stderr}` : result.stdout;
+
+      if (probeCounts !== null) {
+        // The summary is a separate block so the first one stays the
+        // script's JSON verbatim. Counts, not a healthy flag: a report with
+        // zero ok entries exits 0 yet tested nothing.
+        const summary = `probe: ${probeCounts.ok} ok, ${probeCounts.unavailable} unavailable, ${probeCounts.notInstalled} not installed`;
+        return {
+          content: [
+            { type: "text", text },
+            { type: "text", text: summary },
+          ],
+          details: {
+            stdout: result.stdout,
+            stderr: result.stderr,
+            exitCode: result.code,
+            ...probeCounts,
+          },
+        };
+      }
 
       return {
         content: [{ type: "text", text }],

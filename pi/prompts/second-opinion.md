@@ -15,15 +15,20 @@ contract (with the reason when it does not), `review` returns one critique, and
 backend's pool (or its single override / default model) and reports per-model
 availability as JSON — use it to check a pool's health before committing to a
 multi-round rotation, and remember it calls the real models once each, so pass
-`--backend` deliberately. It is single-round: one call, one critique. The
-multi-round loop and plan revision are your job, not the script's. By default,
-reviews are grounded in the target codebase (`--dir` or current working
-directory) with read-only tools enabled; use `--text-only` to opt out.
+the `backend` parameter deliberately. It is single-round: one call, one
+critique. The multi-round loop and plan revision are your job, not the
+script's. By default, reviews are grounded in the target codebase (`--dir` or
+current working directory) with read-only tools enabled; use `--text-only` to
+opt out.
 
 Call the `second_opinion` tool. Action `detect` lists the available backends as
 JSON. Action `review` returns one critique of the plan at `planFile`,
 optionally scoped with `backend`, `model`, `timeoutSeconds`, `focusFile`,
-`modelIndex`, `dir`, and `textOnly`. Never run `second_opinion.py` via bash.
+`modelIndex`, `dir`, and `textOnly`. Action `probe` reports per-model
+availability as JSON, optionally scoped with `backend`, `model`, and
+`timeoutSeconds`; an unavailable model comes back in that report, followed by
+an ok/unavailable/not-installed count line, rather than as a tool error. Never
+run `second_opinion.py` via bash.
 
 `--model-index` is a 0-based index into a per-machine model pool
 (`SECOND_OPINION_CODEX_MODEL_POOL` / `_AGY_MODEL_POOL` / `_PI_MODEL_POOL` /

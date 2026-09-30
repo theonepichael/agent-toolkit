@@ -161,5 +161,26 @@ class EndToEndTests(unittest.TestCase):
             self.assertFalse(missing, f"{relpath} missing markers: {missing}")
 
 
+
+class PiProbeWordingTests(unittest.TestCase):
+    """Pi reaches probe through its native tool, so its copies must name the
+    tool's `probe` action and `backend` parameter, not the script's flag."""
+
+    PI_COPIES = ("pi/prompts/second-opinion.md", "pi/skills/second-opinion/SKILL.md")
+
+    def test_pi_copies_name_the_probe_action_and_backend_parameter(self) -> None:
+        for relpath in self.PI_COPIES:
+            text = " ".join((REPO_ROOT / relpath).read_text().split())
+            self.assertIn("Action `probe` reports per-model availability", text)
+            self.assertIn("pass the `backend` parameter deliberately", text)
+            self.assertNotIn("pass `--backend` deliberately", text)
+
+    def test_shell_harnesses_keep_the_backend_flag(self) -> None:
+        for relpath, params in gso.HARNESS_TABLE.items():
+            if relpath in self.PI_COPIES:
+                continue
+            self.assertEqual(gso.substitutions(params)["PROBE_BACKEND_REF"], "`--backend`")
+
+
 if __name__ == "__main__":
     test_bootstrap.run_unittest_main(verbosity=1)
