@@ -368,7 +368,10 @@ recorded here.
   than an argparse error: `new` needs `payload.topic`, `ask`/`decide` need
   `payload.id`, and a `VERIFIED` or `DISPUTED` verdict needs `evidence`,
   matching `grill.py`'s own `EVIDENCE_REQUIRED`.
-- **`second-opinion-tool.ts`** — `detect` and `review`. `modelIndex` is
+- **`second-opinion-tool.ts`** — `detect`, `review`, `probe`, `bind-notes`
+  and `check-notes`. `probe` exits 1 when a model is unavailable; the tool
+  returns that report (plus an ok/unavailable/not-installed count line)
+  instead of raising, and still raises on any other nonzero exit. `modelIndex` is
   compared against `undefined`, not truthiness: index 0 is round 1 of the
   rotation, and a truthiness test would silently drop it and fall back to
   the single-model override instead of the pool. The multi-round loop,

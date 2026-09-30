@@ -559,12 +559,19 @@ argument-hint: [plan file or text]
         # `model` pairs with `backend` (it sets SECOND_OPINION_<BACKEND>_MODEL);
         # `timeoutSeconds` raises SECOND_OPINION_<BACKEND>_TIMEOUT_SECONDS
         # (or the global var) for the call, 2026-09-23
+        # `probe` is a native action too; its exit-1 "model unavailable"
+        # report is returned, not raised, 2026-09-30
         usage_block=(
             "Call the `second_opinion` tool. Action `detect` lists the "
             "available backends as JSON. Action `review` returns one "
             "critique of the plan at `planFile`, optionally scoped with "
             "`backend`, `model`, `timeoutSeconds`, `focusFile`, `modelIndex`, "
-            "`dir`, and `textOnly`. Never run `second_opinion.py` via bash."
+            "`dir`, and `textOnly`. Action `probe` reports per-model "
+            "availability as JSON, optionally scoped with `backend`, `model`, "
+            "and `timeoutSeconds`; an unavailable model comes back in that "
+            "report, followed by an ok/unavailable/not-installed count line, "
+            "rather than as a tool error. Never run `second_opinion.py` via "
+            "bash."
         ),
         # the loop's per-round call, naming the tool and its parameter
         # names rather than the script and its CLI flags, 2026-08-30
@@ -642,12 +649,19 @@ description: "Send a plan to a non-Claude model for adversarial critique, then i
         # `model` pairs with `backend` (it sets SECOND_OPINION_<BACKEND>_MODEL);
         # `timeoutSeconds` raises SECOND_OPINION_<BACKEND>_TIMEOUT_SECONDS
         # (or the global var) for the call, 2026-09-23
+        # `probe` is a native action too; its exit-1 "model unavailable"
+        # report is returned, not raised, 2026-09-30
         usage_block=(
             "Call the `second_opinion` tool. Action `detect` lists the "
             "available backends as JSON. Action `review` returns one "
             "critique of the plan at `planFile`, optionally scoped with "
             "`backend`, `model`, `timeoutSeconds`, `focusFile`, `modelIndex`, "
-            "`dir`, and `textOnly`. Never run `second_opinion.py` via bash."
+            "`dir`, and `textOnly`. Action `probe` reports per-model "
+            "availability as JSON, optionally scoped with `backend`, `model`, "
+            "and `timeoutSeconds`; an unavailable model comes back in that "
+            "report, followed by an ok/unavailable/not-installed count line, "
+            "rather than as a tool error. Never run `second_opinion.py` via "
+            "bash."
         ),
         # the loop's per-round call, naming the tool and its parameter
         # names rather than the script and its CLI flags, 2026-09-01
@@ -793,6 +807,13 @@ def substitutions(params: HarnessParams) -> dict[str, str]:
             if params.io_entrypoint == "the `second_opinion` tool"
             else "`python3 {{TOOLKIT_SCRIPTS}}/second_opinion.py bind-notes "
             "<plan path>`"
+        ),
+        # Same io_entrypoint split: Pi scopes a probe with the native tool's
+        # `backend` parameter, not the script's `--backend` flag.
+        "PROBE_BACKEND_REF": (
+            "the `backend` parameter"
+            if params.io_entrypoint == "the `second_opinion` tool"
+            else "`--backend`"
         ),
     }
 

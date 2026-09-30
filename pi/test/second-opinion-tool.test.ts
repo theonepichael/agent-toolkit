@@ -416,3 +416,166 @@ describe("secondOpinionExtension execute", () => {
     expect(capturedCmd).toBe("python3");
   });
 });
+
+describe("probe action", () => {
+  test("probe takes no required fields", () => {
+    expect(() => assertFields("probe", { action: "probe" })).not.toThrow();
+  });
+
+  test("probe accepts backend (list), model with one backend, and timeoutSeconds", () => {
+    expect(() => assertFields("probe", { action: "probe", backend: "codex,agy" })).not.toThrow();
+    expect(() =>
+      assertFields("probe", { action: "probe", backend: "codex", model: "o3" }),
+    ).not.toThrow();
+    expect(() => assertFields("probe", { action: "probe", timeoutSeconds: 30 })).not.toThrow();
+  });
+
+  test("probe refuses review-only fields", () => {
+    for (const [field, value] of [
+      ["planFile", "/tmp/p.md"],
+      ["modelIndex", 0],
+      ["runId", "loop-1"],
+      ["focusFile", "/tmp/f.md"],
+      ["dir", "/tmp"],
+      ["textOnly", true],
+    ] as const) {
+      expect(() => assertFields("probe", { action: "probe", [field]: value })).toThrow(
+        new RegExp(`does not accept: ${field}`),
+      );
+    }
+  });
+
+  test("probe model still needs exactly one backend", () => {
+    expect(() => assertFields("probe", { action: "probe", model: "o3" })).toThrow(
+      /model requires a single backend/,
+    );
+  });
+
+  test("probe rejects unknown backends", () => {
+    expect(() => assertFields("probe", { action: "probe", backend: "codex,nope" })).toThrow(
+      /unknown: nope/,
+    );
+  });
+
+  test("a backend that parses to an empty list is rejected on every action", () => {
+    for (const backend of [",", " ", " , "]) {
+      expect(() => assertFields("probe", { action: "probe", backend })).toThrow(
+        /backend must name at least one backend/,
+      );
+      expect(() =>
+        assertFields("review", { action: "review", planFile: "/tmp/p.md", backend }),
+      ).toThrow(/backend must name at least one backend/);
+    }
+  });
+
+  test("probe argv mirrors `second_opinion.py probe [--backend LIST]`", () => {
+    expect(buildArgv("probe", { action: "probe" })).toEqual(["probe"]);
+    expect(buildArgv("probe", { action: "probe", backend: "codex,agy" })).toEqual([
+      "probe",
+      "--backend",
+      "codex,agy",
+    ]);
+  });
+
+  test("probe model and timeout route through env like review", () => {
+    expect(
+      buildEnvPrefix({ action: "probe", backend: "agy", model: "m1", timeoutSeconds: 45 }),
+    ).toEqual(["SECOND_OPINION_AGY_MODEL=m1", "SECOND_OPINION_AGY_TIMEOUT_SECONDS=45"]);
+  });
+});
+
+describe("probe execute", () => {
+  function setup(result: { code: number; stdout: string; stderr: string }) {
+    let toolDef: any;
+    let capturedArgs: string[] = [];
+    const mockPi = {
+      registerTool: (def: any) => {
+        toolDef = def;
+      },
+      exec: async (_cmd: string, argv: string[], _options: any) => {
+        capturedArgs = argv;
+        return result;
+      },
+    } as any;
+    secondOpinionExtension(mockPi);
+    const ctx = { cwd: "/launch/dir", sessionManager: { getBranch: () => [] } } as any;
+    const run = (params: Record<string, unknown>) =>
+      toolDef.execute("call-p", { action: "probe", ...params }, undefined, undefined, ctx);
+    return { run, args: () => capturedArgs };
+  }
+
+  const report = (probes: unknown[]) => JSON.stringify({ probes }, null, 2);
+  const ok = { backend: "codex", config: "pool", index: 0, model: "a", status: "ok" };
+  const bad = {
+    backend: "codex",
+    config: "pool",
+    index: 1,
+    model: "b",
+    status: "unavailable",
+    detail: "boom",
+  };
+  const missing = { backend: "agy", status: "not_installed" };
+
+  test("exit 1 with an unavailable model returns the report, not an error", async () => {
+    const stdout = report([ok, bad, missing]);
+    const { run, args } = setup({ code: 1, stdout, stderr: "" });
+    const result = await run({ backend: "codex,agy" });
+    expect(args()).toContain("probe");
+    expect(result.content[0]).toEqual({ type: "text", text: stdout });
+    expect(result.content[1].text).toBe("probe: 1 ok, 1 unavailable, 1 not installed");
+    expect(result.details).toMatchObject({
+      exitCode: 1,
+      ok: 1,
+      unavailable: 1,
+      notInstalled: 1,
+    });
+  });
+
+  test("exit 0 still carries counts, including a report that tested nothing", async () => {
+    const { run } = setup({ code: 0, stdout: report([missing]), stderr: "" });
+    const result = await run({});
+    expect(result.content[1].text).toBe("probe: 0 ok, 0 unavailable, 1 not installed");
+    expect(result.details).toMatchObject({ exitCode: 0, ok: 0, notInstalled: 1 });
+  });
+
+  test("exit 0 with unparseable stdout is returned without a summary", async () => {
+    const { run } = setup({ code: 0, stdout: "not json", stderr: "" });
+    const result = await run({});
+    expect(result.content).toHaveLength(1);
+    expect(result.content[0].text).toBe("not json");
+  });
+
+  for (const [name, stdout] of [
+    ["non-JSON stdout", "Traceback: boom"],
+    ["JSON without probes", JSON.stringify({ other: [] })],
+    ["an empty probes array", report([])],
+    ["no unavailable entry", report([ok])],
+    ["an entry with an unknown status", report([bad, { backend: "agy", status: "weird" }])],
+    ["an entry missing its backend", report([bad, { status: "ok" }])],
+  ] as const) {
+    test(`exit 1 with ${name} still throws`, async () => {
+      const { run } = setup({ code: 1, stdout, stderr: "" });
+      await expect(run({})).rejects.toThrow();
+    });
+  }
+
+  test("exit 2 (argparse error) still throws", async () => {
+    const { run } = setup({ code: 2, stdout: "", stderr: "usage: error" });
+    await expect(run({})).rejects.toThrow(/usage: error/);
+  });
+
+  test("a non-probe action keeps throwing on exit 1 even with a probes-shaped stdout", async () => {
+    let toolDef: any;
+    const mockPi = {
+      registerTool: (def: any) => {
+        toolDef = def;
+      },
+      exec: async () => ({ code: 1, stdout: report([bad]), stderr: "" }),
+    } as any;
+    secondOpinionExtension(mockPi);
+    const ctx = { cwd: "/x", sessionManager: { getBranch: () => [] } } as any;
+    await expect(
+      toolDef.execute("c", { action: "detect" }, undefined, undefined, ctx),
+    ).rejects.toThrow();
+  });
+});
