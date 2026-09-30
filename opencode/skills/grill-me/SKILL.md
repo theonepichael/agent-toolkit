@@ -129,6 +129,12 @@ it trades interactivity for adversarial rigor instead of just guessing.
      it is, that round produced no real critique — don't record it as one;
      retry once, and if it leaks again treat `adversary` as erroring and fall
      through to the Alternative path below.
+
+     No model rotation is available on this path: opencode's Task tool has
+     no per-spawn model override (its parameters are `description`,
+     `prompt`, `subagent_type`, `task_id`, `command`, and `background` — no
+     `model` field), so a spawned `adversary` always uses whatever's fixed
+     in `opencode.jsonc`'s `agent.adversary.model`, every round.
    - **Alternative — `second_opinion.py review`**: use this instead (or in
      addition, for a third opinion) when you specifically want `agy`'s Gemini
      backend rather than `adversary`'s configured model, or if `adversary` is

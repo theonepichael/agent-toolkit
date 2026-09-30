@@ -402,22 +402,22 @@ class CapabilityFixtureTests(unittest.TestCase):
         self.assertIn("allowed-tools: shell", text)
         self.assertNotIn("AskUserQuestion", text)
         self.assertIn("ask, in plain text with a recommendation", text)
-        self.assertIn("copilot/skills/spec/SKILL.md", text)
+        self.assertNotIn("copilot/skills/spec/SKILL.md", text)
 
     def test_spec_agy(self) -> None:
         text = self._render("spec", "agy")
         self.assertIn("name: spec", text)
         self.assertNotIn("AskUserQuestion", text)
         self.assertIn("ask, in plain text with a recommendation", text)
-        self.assertIn("agy/skills/spec/SKILL.md", text)
+        self.assertNotIn("agy/skills/spec/SKILL.md", text)
 
     def test_spec_codex(self) -> None:
         text = self._render("spec", "codex")
         self.assertIn("name: spec", text)
         self.assertNotIn("AskUserQuestion", text)
         self.assertIn("ask, in plain text with a recommendation", text)
-        self.assertIn("codex/skills/spec/SKILL.md", text)
-        self.assertIn("sync_codex_skills", text)
+        self.assertNotIn("codex/skills/spec/SKILL.md", text)
+        self.assertNotIn("sync_codex_skills", text)
 
     # -- standup --------------------------------------------------------
 
@@ -593,7 +593,7 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(stale, [], f"stale (run gen_skills.py): {stale}")
 
     def test_pi_plumbing_steps_claim_no_settings_json_skills_array(self) -> None:
-        """Regression: the generated pi make-skill/spec plumbing steps
+        """Regression: the generated pi make-skill plumbing steps
         claimed an active pi/settings.json ``skills`` array and an
         agy/skills fallback that this repo's actual pi/settings.json does
         not have (no skills key at all). Pi discovers skills via its
@@ -601,7 +601,7 @@ class EndToEndTests(unittest.TestCase):
         ``dir = true`` row for pi/skills symlinks straight to -- no
         fallback exists.
         """
-        for skill in ("make-skill", "spec"):
+        for skill in ("make-skill",):
             text = gs.render_one(
                 skill,
                 "pi",
@@ -869,6 +869,59 @@ class OpencodeSkillSurfaceTests(unittest.TestCase):
                 rows[src]["dest"], f"~/.config/opencode/skills/{skill}/SKILL.md"
             )
 
+
+
+class SpecHasNoPlumbingSectionTests(unittest.TestCase):
+    """spec used to end with a "Plumbing (house convention)" section telling
+    whoever ran it to add the spec skill file itself to links.toml, symlink
+    it, and commit it -- sediment from authoring the skill, unrelated to
+    writing a spec, and a source of duplicate links.toml rows and unrequested
+    commits. make-skill genuinely authors skills, so its section stays."""
+
+    def test_no_rendered_spec_copy_carries_plumbing(self) -> None:
+        rendered = gs.render_all(REPO_ROOT, SKILL_PARAMS)
+        harnesses = gs.SKILL_HARNESSES["spec"]
+        self.assertIn("pi-prompt", harnesses)
+        self.assertIn("opencode-skill", harnesses)
+        for harness in harnesses:
+            path = gs.OUTPUT_PATHS[("spec", harness)]
+            text = rendered[path]
+            self.assertNotIn("Plumbing", text, path)
+            self.assertNotIn("links.toml", text, path)
+            self.assertNotIn("## 7.", text, path)
+
+    def test_spec_params_have_no_plumbing_steps(self) -> None:
+        for harness, params in SKILL_PARAMS["spec"].items():
+            self.assertNotIn("PLUMBING_STEPS", params, harness)
+
+    def test_spec_templates_have_no_plumbing_section(self) -> None:
+        for rel in {gs.template_path_for("spec", h) for h in gs.SKILL_HARNESSES["spec"]}:
+            text = (REPO_ROOT / rel).read_text(encoding="utf-8")
+            self.assertNotIn("Plumbing", text, rel)
+            self.assertNotIn("PLUMBING_STEPS", text, rel)
+
+    def test_make_skill_copies_keep_plumbing(self) -> None:
+        rendered = gs.render_all(REPO_ROOT, SKILL_PARAMS)
+        for harness in gs.SKILL_HARNESSES["make-skill"]:
+            path = gs.OUTPUT_PATHS[("make-skill", harness)]
+            self.assertIn("## 5. Plumbing (house convention)", rendered[path], path)
+            self.assertIn("links.toml", rendered[path], path)
+
+
+class OpencodeGrillMeAutoNotesTests(unittest.TestCase):
+    """The opencode grill-me --auto Primary path spawns `adversary` through
+    the Task tool, whose parameters (description, prompt, subagent_type,
+    task_id, command, background) have no per-spawn model field -- so the
+    critique model is fixed by opencode.jsonc every round. This note was
+    dropped when the opencode skill copy became generated."""
+
+    def test_both_opencode_copies_state_no_per_spawn_model_override(self) -> None:
+        rendered = gs.render_all(REPO_ROOT, SKILL_PARAMS)
+        for harness in ("opencode", "opencode-skill"):
+            path = gs.OUTPUT_PATHS[("grill-me", harness)]
+            text = rendered[path]
+            self.assertIn("no per-spawn model override", text, path)
+            self.assertIn("agent.adversary.model", text, path)
 
 if __name__ == "__main__":
     test_bootstrap.run_unittest_main()

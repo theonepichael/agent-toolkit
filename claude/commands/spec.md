@@ -46,10 +46,3 @@ If yes: implement directly in this session, using the spec as the source of trut
 After generation, check the result against every **Evaluation criteria** and **Edge cases** line explicitly, and actually run the **Verification steps** — execute them, don't just describe them. If anything fails, revise and re-check. Cap this at 3 rounds (same cap as `/second-opinion`'s convergence loop); if verification steps are still failing after round 3, stop and state plainly, distinct from a passing finish: "Stopped after 3 rounds — still failing: `<specific step>`." Then ask the user how to proceed rather than looping further.
 
 Once verification passes (or is stopped-and-reported), ask via AskUserQuestion: "Run an audit pass for specification gaming?" — `Yes (recommended unless this is trivial)` / `No, done`. A yes reuses `/second-opinion`'s adversarial critique loop against the result and the spec's Objective — does it satisfy the letter while missing the intent? — rather than self-grading.
-
-## 7. Plumbing (house convention)
-
-1. File lives at the repo's `claude/commands/spec.md`.
-2. Add a `[[link]]` entry (`src = "claude/commands/spec.md"`, `dest = "~/.claude/commands/spec.md"`, `harness = "claude"`) in `links.toml` next to the existing ones.
-3. Create the live symlink now: `ln -s "$(git rev-parse --show-toplevel)/claude/commands/spec.md" "~/.claude/commands/spec.md"`.
-4. Conventional commit, scope `claude`: `feat`.

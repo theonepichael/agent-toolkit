@@ -44,10 +44,3 @@ If yes: implement directly in this session, using the spec as the source of trut
 After generation, check the result against every **Evaluation criteria** and **Edge cases** line explicitly, and actually run the **Verification steps** — execute them, don't just describe them. If anything fails, revise and re-check. Cap this at 3 rounds (same cap as `/second-opinion`'s convergence loop); if verification steps are still failing after round 3, stop and state plainly, distinct from a passing finish: "Stopped after 3 rounds — still failing: `<specific step>`." Then ask the user how to proceed rather than looping further.
 
 Once verification passes (or is stopped-and-reported), ask, in plain text with a recommendation: "Run an audit pass for specification gaming?" — recommend yes unless this is trivial. A yes reuses `/second-opinion`'s `second_opinion.py review` loop against the spec's Objective and the result — does it satisfy the letter while missing the intent? — rather than self-grading.
-
-## 7. Plumbing (house convention)
-
-1. File lives at the repo's `agy/skills/spec/SKILL.md`.
-2. Add a `[[link]]` entry (`src = "agy/skills/spec/SKILL.md"`, `dest = "~/.gemini/antigravity-cli/skills/spec/SKILL.md"`, `harness = "agy"`) in `links.toml` next to the existing ones.
-3. Create the live symlink now: `ln -s "$(git rev-parse --show-toplevel)/agy/skills/spec/SKILL.md" "~/.gemini/antigravity-cli/skills/spec/SKILL.md"`.
-4. Conventional commit, scope `agy`: `feat`.

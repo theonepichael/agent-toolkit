@@ -340,6 +340,12 @@ For each open question, instead of asking the user: form your own leading
      it is, that round produced no real critique — don't record it as one;
      retry once, and if it leaks again treat `adversary` as erroring and fall
      through to the Alternative path below.
+
+     No model rotation is available on this path: opencode's Task tool has
+     no per-spawn model override (its parameters are `description`,
+     `prompt`, `subagent_type`, `task_id`, `command`, and `background` — no
+     `model` field), so a spawned `adversary` always uses whatever's fixed
+     in `opencode.jsonc`'s `agent.adversary.model`, every round.
    - **Alternative — `second_opinion.py review`**: use this instead (or in
      addition, for a third opinion) when you specifically want `agy`'s Gemini
      backend rather than `adversary`'s configured model, or if `adversary` is
@@ -2359,11 +2365,6 @@ allowed-tools: [Read, Glob, Grep, Write, AskUserQuestion, "Bash(python3 {{TOOLKI
             "result and the spec's Objective — does it satisfy the letter "
             "while missing the intent? — rather than self-grading."
         ),
-        "PLUMBING_STEPS": f"""\
-1. File lives at {edit_root("claude/commands/spec.md")}.
-2. Add a `[[link]]` entry (`src = "claude/commands/spec.md"`, `dest = "~/.claude/commands/spec.md"`, `harness = "claude"`) in `links.toml` next to the existing ones.
-3. Create the live symlink now: {symlink_cmd("claude/commands/spec.md", "~/.claude/commands/spec.md")}.
-4. Conventional commit, scope `claude`: `feat`.""",
     },
     "opencode": {
         "FRONTMATTER": """\
@@ -2414,10 +2415,6 @@ description: "Turn a vague coding task into a structured specification (objectiv
             "`/second-opinion`'s `second_opinion.py review` loop only if "
             "`adversary` is erroring or unavailable."
         ),
-        "PLUMBING_STEPS": f"""\
-1. File lives at {edit_root("opencode/command/spec.md")}.
-2. Add a `[[link]]` entry (`src = "opencode/command/spec.md"`, `dest = "~/.config/opencode/commands/spec.md"`, `harness = "opencode"`) in `links.toml` next to the existing ones.
-3. Conventional commit, scope `opencode`: `feat`.""",
     },
     "pi": {
         "FRONTMATTER": """\
@@ -2480,9 +2477,6 @@ description: "Turn a vague coding task into a structured specification (objectiv
             "does — this always goes through the shared `second_opinion.py` "
             "critique loop instead."
         ),
-        "PLUMBING_STEPS": f"""\
-1. File lives at {edit_root("pi/skills/spec/SKILL.md")}. `pi/skills` is already wired into `links.toml` as one `dir = true` row, symlinked straight to `~/.pi/agent/skills/` — a new file under it needs no new `links.toml` row of its own, just the file.
-2. Conventional commit, scope `pi`: `feat`.""",
     },
     "pi-prompt": {
         "FRONTMATTER": """\
@@ -2533,11 +2527,6 @@ allowed-tools: shell
             "against the spec's Objective and the result — does it satisfy "
             "the letter while missing the intent? — rather than self-grading."
         ),
-        "PLUMBING_STEPS": f"""\
-1. File lives at {edit_root("copilot/skills/spec/SKILL.md")}.
-2. Add a `[[link]]` entry (`src = "copilot/skills/spec/SKILL.md"`, `dest = "~/.copilot/skills/spec/SKILL.md"`, `harness = "copilot"`) in `links.toml` next to the existing ones.
-3. Create the live symlink now: {symlink_cmd("copilot/skills/spec/SKILL.md", "~/.copilot/skills/spec/SKILL.md")}.
-4. Conventional commit, scope `copilot`: `feat`.""",
     },
     "agy": {
         "FRONTMATTER": """\
@@ -2580,11 +2569,6 @@ description: "Turn a vague coding task into a structured specification (objectiv
             "against the spec's Objective and the result — does it satisfy "
             "the letter while missing the intent? — rather than self-grading."
         ),
-        "PLUMBING_STEPS": f"""\
-1. File lives at {edit_root("agy/skills/spec/SKILL.md")}.
-2. Add a `[[link]]` entry (`src = "agy/skills/spec/SKILL.md"`, `dest = "~/.gemini/antigravity-cli/skills/spec/SKILL.md"`, `harness = "agy"`) in `links.toml` next to the existing ones.
-3. Create the live symlink now: {symlink_cmd("agy/skills/spec/SKILL.md", "~/.gemini/antigravity-cli/skills/spec/SKILL.md")}.
-4. Conventional commit, scope `agy`: `feat`.""",
     },
     "codex": {
         "FRONTMATTER": """\
@@ -2627,11 +2611,6 @@ description: "Turn a vague coding task into a structured specification (objectiv
             "against the spec's Objective and the result — does it satisfy "
             "the letter while missing the intent? — rather than self-grading."
         ),
-        "PLUMBING_STEPS": f"""\
-1. File lives at {edit_root("codex/skills/spec/SKILL.md")}.
-2. Nothing to add to `links.toml`: unlike every other harness here, Codex's skills are NOT `[[link]]` symlink rows. Codex's skill scanner does not follow symlinks for USER-scope discovery. A new skill directory under `codex/skills/` is picked up automatically by `install.py`'s `sync_codex_skills()`, which globs that directory — no per-skill registration needed there either.
-3. Apply it now: run `python3 install.py --harness=codex` (from this repo's root) to copy the new `~/.codex/skills/spec/SKILL.md` into place immediately, rather than waiting for the next full install.
-4. Conventional commit, scope `codex`: `feat`.""",
     },
 }
 
@@ -3334,19 +3313,6 @@ def _opencode_skill_frontmatter(skill: str, command_frontmatter: str) -> str:
     return "\n".join([lines[0], f"name: {skill}", *lines[1:]])
 
 
-def _opencode_skill_plumbing(skill: str) -> str:
-    """Plumbing steps for a generated opencode/skills/<skill>/SKILL.md."""
-    src = f"opencode/skills/{skill}/SKILL.md"
-    return (
-        f"1. File lives at {edit_root(src)}, generated alongside "
-        f"`opencode/command/{skill}.md` — edit the template, not the copy.\n"
-        f'2. Add a `[[link]]` entry (`src = "{src}"`, '
-        f'`dest = "~/.config/opencode/skills/{skill}/SKILL.md"`, '
-        '`harness = "opencode"`) in `links.toml` next to the existing ones.\n'
-        "3. Conventional commit, scope `opencode`: `feat`."
-    )
-
-
 SPEC_PARAMS["opencode-skill"] = {
     **SPEC_PARAMS["opencode"],
     "FRONTMATTER": _opencode_skill_frontmatter(
@@ -3362,7 +3328,6 @@ SPEC_PARAMS["opencode-skill"] = {
     "STEP6_AUDIT_OFFER": SPEC_PARAMS["opencode"]["STEP6_AUDIT_OFFER"].replace(
         "`/second-opinion`'s", "the `second-opinion` skill's"
     ),
-    "PLUMBING_STEPS": _opencode_skill_plumbing("spec"),
 }
 
 GRILL_ME_PARAMS["opencode-skill"] = {

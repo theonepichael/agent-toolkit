@@ -44,10 +44,3 @@ If yes: implement directly in this session, using the spec as the source of trut
 After generation, check the result against every **Evaluation criteria** and **Edge cases** line explicitly, and actually run the **Verification steps** — execute them, don't just describe them. If anything fails, revise and re-check. Cap this at 3 rounds (same cap as `/second-opinion`'s convergence loop); if verification steps are still failing after round 3, stop and state plainly, distinct from a passing finish: "Stopped after 3 rounds — still failing: `<specific step>`." Then ask the user how to proceed rather than looping further.
 
 Once verification passes (or is stopped-and-reported), ask, in plain text with a recommendation: "Run an audit pass for specification gaming?" — recommend yes unless this is trivial. A yes reuses `/second-opinion`'s `second_opinion.py review` loop against the spec's Objective and the result — does it satisfy the letter while missing the intent? — rather than self-grading.
-
-## 7. Plumbing (house convention)
-
-1. File lives at the repo's `codex/skills/spec/SKILL.md`.
-2. Nothing to add to `links.toml`: unlike every other harness here, Codex's skills are NOT `[[link]]` symlink rows. Codex's skill scanner does not follow symlinks for USER-scope discovery. A new skill directory under `codex/skills/` is picked up automatically by `install.py`'s `sync_codex_skills()`, which globs that directory — no per-skill registration needed there either.
-3. Apply it now: run `python3 install.py --harness=codex` (from this repo's root) to copy the new `~/.codex/skills/spec/SKILL.md` into place immediately, rather than waiting for the next full install.
-4. Conventional commit, scope `codex`: `feat`.

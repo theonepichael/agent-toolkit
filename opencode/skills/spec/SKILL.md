@@ -44,9 +44,3 @@ If yes: implement directly in this session, using the spec as the source of trut
 After generation, check the result against every **Evaluation criteria** and **Edge cases** line explicitly, and actually run the **Verification steps** — execute them, don't just describe them. If anything fails, revise and re-check. Cap this at 3 rounds (same cap as `/second-opinion`'s convergence loop); if verification steps are still failing after round 3, stop and state plainly, distinct from a passing finish: "Stopped after 3 rounds — still failing: `<specific step>`." Then ask the user how to proceed rather than looping further.
 
 Once verification passes (or is stopped-and-reported), ask via the `question` tool: "Run an audit pass for specification gaming?" — `Yes (recommended unless this is trivial)` / `No, done`. A yes checks whether the result satisfies the letter while missing the Objective, via adversarial critique — prefer the native path since you're already running inside opencode: spawn the `adversary` agent (Task tool, no subprocess) with the spec's Objective, the result, and a prompt that argues the result games the spec rather than satisfies it. Fall back to the `second-opinion` skill's `second_opinion.py review` loop only if `adversary` is erroring or unavailable.
-
-## 7. Plumbing (house convention)
-
-1. File lives at the repo's `opencode/skills/spec/SKILL.md`, generated alongside `opencode/command/spec.md` — edit the template, not the copy.
-2. Add a `[[link]]` entry (`src = "opencode/skills/spec/SKILL.md"`, `dest = "~/.config/opencode/skills/spec/SKILL.md"`, `harness = "opencode"`) in `links.toml` next to the existing ones.
-3. Conventional commit, scope `opencode`: `feat`.
