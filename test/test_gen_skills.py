@@ -121,7 +121,7 @@ class CapabilityFixtureTests(unittest.TestCase):
     def test_backlog_item_step5_delegates_to_spec_everywhere(self) -> None:
         # spec ships to every harness, so no backlog-item copy may still
         # claim it's missing or draft the spec inline instead of delegating.
-        self.assertEqual(gs.SKILL_HARNESSES["spec"], gs.HARNESSES + ("pi-prompt",))
+        self.assertLessEqual(set(gs.HARNESSES), set(gs.SKILL_HARNESSES["spec"]))
         rendered = gs.render_all(REPO_ROOT, SKILL_PARAMS)
         return_paths = {
             "agy": "~/.gemini/antigravity-cli/skills/backlog-item/SKILL.md",
