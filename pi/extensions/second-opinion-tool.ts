@@ -14,7 +14,7 @@ import { getEffectiveCwd } from "./cwd";
 
 const SECOND_OPINION_PATH = join(homedir(), ".agent-toolkit", "scripts", "second_opinion.py");
 
-const ACTIONS = ["detect", "review"] as const;
+const ACTIONS = ["detect", "review", "bind-notes", "check-notes"] as const;
 
 export type Action = (typeof ACTIONS)[number];
 
@@ -50,6 +50,8 @@ const ACTION_FIELDS: Record<Action, ActionFields> = {
     ],
     required: ["planFile"],
   },
+  "bind-notes": { allowed: ["planFile"], required: ["planFile"] },
+  "check-notes": { allowed: ["planFile"], required: ["planFile"] },
 };
 
 export interface SecondOpinionParams {
@@ -155,6 +157,9 @@ export function buildArgv(action: Action, params: SecondOpinionParams): string[]
   switch (action) {
     case "detect":
       return ["detect"];
+    case "bind-notes":
+    case "check-notes":
+      return [action, params.planFile!];
     case "review":
       return [
         "review",
@@ -215,11 +220,11 @@ export default function (pi: ExtensionAPI) {
     name: "second_opinion",
     label: "Critique",
     description:
-      "Get one adversarial critique of a plan from a non-Claude backend, or list which backends are available.",
+      "Get one adversarial critique of a plan from a non-Claude backend, list which backends are available, or bind/check a plan's critique-notes companion against its content hash.",
     promptSnippet: "Get an outside adversarial critique of a plan file",
     promptGuidelines: [
       "Never invoke second_opinion.py via bash -- always use second_opinion instead.",
-      'second_opinion covers everything second_opinion.py does: action "detect" lists available backends as JSON, and action "review" returns one critique of the plan at planFile. If you are about to compose a `python3 ~/.agent-toolkit/scripts/second_opinion.py ...` bash command, use second_opinion instead.',
+      'second_opinion covers everything second_opinion.py does: action "detect" lists available backends as JSON, action "review" returns one critique of the plan at planFile, action "bind-notes" stamps planFile\'s -critique-notes.md companion with planFile\'s content hash, and action "check-notes" prints that binding\'s status (current, stale, unbound, missing, or no-artifact). If you are about to compose a `python3 ~/.agent-toolkit/scripts/second_opinion.py ...` bash command, use second_opinion instead.',
       "Never shell out to codex, agy, pi, opencode, or copilot directly for a critique -- all backend I/O goes through this tool.",
       "It is single-round: one call, one critique. The multi-round loop, the plan revision between rounds, and the convergence judgment are yours, not the tool's.",
       "The script enforces a per-run cap (3 rounds by default): pass a stable `runId` for the whole loop (or rely on the plan-file path) and the 4th `review` call for that run is refused with a finalize-and-stop message.",
@@ -232,7 +237,7 @@ export default function (pi: ExtensionAPI) {
       planFile: Type.Optional(
         Type.String({
           description:
-            "review: path to the plan file to critique, conventionally ~/.agent-toolkit/data/grill/<topic-slug>-plan.md. A path, never inline plan text.",
+            "review: path to the plan file to critique, conventionally ~/.agent-toolkit/data/grill/<topic-slug>-plan.md. A path, never inline plan text. bind-notes/check-notes: the plan or spec whose -critique-notes.md companion to bind or check.",
         }),
       ),
       backend: Type.Optional(

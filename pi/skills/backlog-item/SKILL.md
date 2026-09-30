@@ -41,16 +41,25 @@ to fill them in; don't fabricate a plan from the title. related_files
 already names a grill plan (`~/.agent-toolkit/data/grill/<slug>-plan.md`) or a
 spec (`~/.agent-toolkit/data/grill/<slug>-spec.md`)? Don't redraft it. Gated
 (`show` has `gate.required: true`)? Skip to step 8 only if its critique
-already ran — a `<artifact without .md>-critique-notes.md` companion sits
-next to that plan or spec (e.g.
-`~/.agent-toolkit/data/grill/<slug>-spec-critique-notes.md`; second-opinion
-writes it when it finalizes); otherwise resume at step 6. No gate? An
+already ran against the artifact as it is now: the `second_opinion` tool's
+`check-notes` action with `planFile` set to that plan or spec path prints
+`current`. Second-opinion binds the `<artifact without
+.md>-critique-notes.md` companion (e.g.
+`~/.agent-toolkit/data/grill/<slug>-spec-critique-notes.md`) to the artifact's
+content hash when it finalizes, so any later edit reads `stale`. `stale`,
+`unbound` (notes from before binding existed) or `missing`: resume at step
+6; once that critique finalizes, continue at step 8 if it changed the plan
+or spec in a way existing implemented changes don't satisfy, else at step
+9. `no-artifact`: stop and report the recorded plan or spec file is gone —
+never pass a missing path to a review, which reads it as inline text. For
+a gated item this check runs before the implemented-changes shortcut
+below. No gate? An
 unset gate can't tell "all steps mechanical" from "paused before
 classifying", so redo only step 5's gate classification against that
 artifact, then continue at step 6 (which skips itself if the gate stays
-unset). Worktree already has implemented,
-uncommitted changes (e.g. handed back from an external executor)? Skip
-straight to step 9.
+unset). Worktree already has implemented, uncommitted changes (e.g. handed
+back from an external executor)? Skip straight to step 9 (a gated item
+takes the binding check above first).
 
 ## 2. Start
 If the item is already in-progress: STOP immediately — do not proceed to

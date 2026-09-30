@@ -42,7 +42,22 @@ REQUIRED_MARKERS = (
     # a grounded run denied a tool falls back to text-only, never to
     # loosened permissions
     "never loosen the backend's permissions",
+    # finalize binds the notes to the saved plan's bytes, and never binds a
+    # revision that is not on disk
+    "do not bind",
 )
+
+# Finalize binds the critique-notes file to the saved plan's content hash —
+# backlog-item's resume check trusts only a binding that still matches. Five
+# copies run the script; pi's names its native tool's action, because
+# second_opinion.py is deliberately off pi's bash allowlist.
+BIND_NOTES_MARKERS = {
+    "pi/prompts/second-opinion.md": ("`second_opinion` tool's `bind-notes` action",),
+    "pi/skills/second-opinion/SKILL.md": (
+        "`second_opinion` tool's `bind-notes` action",
+    ),
+}
+DEFAULT_BIND_NOTES_MARKERS = ("second_opinion.py bind-notes <plan path>",)
 
 # The usage block and the loop's per-round call are the two sections whose
 # form is genuinely per-harness: five copies show runnable commands naming
@@ -94,10 +109,11 @@ def missing_markers(rel_path: str, text: str) -> list[str]:
     """
     index_markers = MODEL_INDEX_MARKERS.get(rel_path, DEFAULT_MODEL_INDEX_MARKERS)
     grill_markers = GRILL_LOOKUP_MARKERS.get(rel_path, DEFAULT_GRILL_LOOKUP_MARKERS)
+    bind_markers = BIND_NOTES_MARKERS.get(rel_path, DEFAULT_BIND_NOTES_MARKERS)
     flat_text = " ".join(text.split())
     return [
         m
-        for m in (*REQUIRED_MARKERS, *index_markers, *grill_markers)
+        for m in (*REQUIRED_MARKERS, *index_markers, *grill_markers, *bind_markers)
         if " ".join(m.split()) not in flat_text
     ]
 
