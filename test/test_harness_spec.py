@@ -157,7 +157,7 @@ class TestHarnessSpecRegistry(unittest.TestCase):
         self.assertEqual(gen_skills.HARNESSES, harness_spec.ALL_NAMES)
         self.assertEqual(
             set(gen_skills.CAPABILITY_TABLE.keys()),
-            set(harness_spec.ALL_NAMES) | {"pi-prompt"},
+            set(harness_spec.ALL_NAMES) | {"pi-prompt", "opencode-skill"},
         )
         for name, spec in harness_spec.HARNESSES.items():
             self.assertEqual(gen_skills.CAPABILITY_TABLE[name], spec.capability_facts())

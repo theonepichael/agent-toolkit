@@ -514,6 +514,16 @@ dest = "~/.config/opencode/skills/spec/SKILL.md"
 harness = "opencode"
 
 [[link]]
+src = "opencode/skills/review-diff/SKILL.md"
+dest = "~/.config/opencode/skills/review-diff/SKILL.md"
+harness = "opencode"
+
+[[link]]
+src = "opencode/skills/land/SKILL.md"
+dest = "~/.config/opencode/skills/land/SKILL.md"
+harness = "opencode"
+
+[[link]]
 src = "opencode/command/analyze-sessions.md"
 dest = "~/.config/opencode/commands/analyze-sessions.md"
 harness = "opencode"

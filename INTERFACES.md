@@ -770,6 +770,7 @@ gen_skills.py — regenerate the dashboard/recap/grill-me/backlog-item/ make-ski
 - Depends on: `cli_common.py`, `gen_skills_params.py`, `harness_spec.py`
 - Public functions:
   - `template_path_for(skill: str, harness: str) -> str` — Return the template path this (skill, harness) pair renders from.
+  - `output_path_for(skill: str, harness: str) -> str` — Return the repo-relative file this (skill, harness) pair renders to.
   - `do_not_edit_marker(skill: str, harness: str) -> str` — Return this (skill, harness) pair's marker, naming its real template.
   - `capability_tokens(harness: str) -> dict[str, str]` — Map the shared capability facts to the `{{TOKEN}}` names templates use.
   - `apply_placeholders(text: str, values: dict[str, str]) -> str` — Replace every `{{TOKEN}}` in ``text`` with its harness-specific value.
@@ -2210,6 +2211,7 @@ named doc, not regenerating this file.
 | `opencode/command/second-opinion.md` | OK |
 | `opencode/command/standup.md` | OK |
 | `opencode/command/to-tickets.md` | OK |
+| `opencode/skills/land/SKILL.md` | OK |
 | `opencode/skills/second-opinion/SKILL.md` | OK |
 | `pi/skills/backlog-item/SKILL.md` | OK |
 | `pi/skills/dashboard/SKILL.md` | OK |
@@ -2314,6 +2316,7 @@ named doc, not regenerating this file.
 | `opencode/command/second-opinion.md` | OK |
 | `opencode/command/spec.md` | OK |
 | `opencode/skills/grill-me/SKILL.md` | OK |
+| `opencode/skills/review-diff/SKILL.md` | OK |
 | `opencode/skills/second-opinion/SKILL.md` | OK |
 | `opencode/skills/spec/SKILL.md` | OK |
 | `pi/skills/grill-me/SKILL.md` | OK |

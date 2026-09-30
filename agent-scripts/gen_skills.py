@@ -42,10 +42,12 @@ Usage:
 Flags: --check, --stdout, --repo-root <path>, --quiet/-q, --verbose/-v.
 Env vars: none.
 Files read: <repo>/templates/{dashboard,recap,grill_me,backlog_item,make_skill,spec,standup,to_tickets,swarm,analyze_sessions,refresh_guidance,review_diff,land}.md.tmpl.
-Files written: the 86 (skill, harness) copies named in OUTPUT_PATHS —
+Files written: the 90 (skill, harness) copies named in OUTPUT_PATHS —
 12 skills x 6 harnesses (72), plus swarm x {claude, copilot} (2), plus a
 second pi/prompts/*.md output for each of the 12 skills under the synthetic
-"pi-prompt" harness (12), per `SKILL_HARNESSES` (skipped by --check and
+"pi-prompt" harness (12), plus a second opencode/skills/<name>/SKILL.md
+output for spec/grill-me/review-diff/land under the synthetic
+"opencode-skill" harness (4), per `SKILL_HARNESSES` (skipped by --check and
 --stdout).
 Exit codes: 0 success; 1 --check found stale output; 2 bad usage.
 
@@ -97,20 +99,31 @@ _ACTIVE_TIER = HARNESSES
 # (pi/prompts/backlog-item.md's --swarm[=N] section), so a swarm-specific
 # pi/prompts output would be exactly the "second copy is a second thing to
 # drift" problem this fix exists to close, not extend.
+#
+# opencode likewise has two surfaces: `opencode/command/{name}.md` (its
+# `/name` slash command) and `opencode/skills/{name}/SKILL.md`, which its
+# native `skill({ name })` tool loads. The "opencode-skill" synthetic harness
+# renders the second one, for the skills other skills load that way on
+# opencode (spec, grill-me, review-diff, land). spec and grill-me used to be
+# hand-kept there and drifted from their generated command copies, so a
+# delegated `skill({ name: "spec" })` load got stale instructions.
+# second-opinion's opencode skill copy is gen_second_opinion.py's, not this
+# script's.
+SYNTHETIC_HARNESSES = ("pi-prompt", "opencode-skill")
 SKILL_HARNESSES: dict[str, tuple[str, ...]] = {
     "dashboard": HARNESSES + ("pi-prompt",),
     "recap": HARNESSES + ("pi-prompt",),
-    "grill-me": HARNESSES + ("pi-prompt",),
+    "grill-me": HARNESSES + ("pi-prompt", "opencode-skill"),
     "backlog-item": HARNESSES + ("pi-prompt",),
     "make-skill": HARNESSES + ("pi-prompt",),
-    "spec": _ACTIVE_TIER + ("pi-prompt",),
+    "spec": _ACTIVE_TIER + ("pi-prompt", "opencode-skill"),
     "standup": _ACTIVE_TIER + ("pi-prompt",),
     "to-tickets": _ACTIVE_TIER + ("pi-prompt",),
     "swarm": ("claude", "copilot"),
     "analyze-sessions": HARNESSES + ("pi-prompt",),
     "refresh-guidance": HARNESSES + ("pi-prompt",),
-    "review-diff": HARNESSES + ("pi-prompt",),
-    "land": HARNESSES + ("pi-prompt",),
+    "review-diff": HARNESSES + ("pi-prompt", "opencode-skill"),
+    "land": HARNESSES + ("pi-prompt", "opencode-skill"),
 }
 
 TEMPLATE_PATHS: dict[str, str] = {
@@ -163,12 +176,17 @@ def template_path_for(skill: str, harness: str) -> str:
     return TEMPLATE_PATH_OVERRIDES.get((skill, harness), TEMPLATE_PATHS[skill])
 
 
+def output_path_for(skill: str, harness: str) -> str:
+    """Return the repo-relative file this (skill, harness) pair renders to."""
+    if harness == "pi-prompt":
+        return f"pi/prompts/{skill}.md"
+    if harness == "opencode-skill":
+        return f"opencode/skills/{skill}/SKILL.md"
+    return harness_spec.HARNESSES[harness].skill_output_path(skill)
+
+
 OUTPUT_PATHS: dict[tuple[str, str], str] = {
-    (skill, harness): (
-        f"pi/prompts/{skill}.md"
-        if harness == "pi-prompt"
-        else harness_spec.HARNESSES[harness].skill_output_path(skill)
-    )
+    (skill, harness): output_path_for(skill, harness)
     for skill in SKILLS
     for harness in SKILL_HARNESSES[skill]
 }
@@ -197,11 +215,13 @@ def do_not_edit_marker(skill: str, harness: str) -> str:
 
 
 # Derived from agent-scripts/harness_spec.py (single source of truth).
-# "pi-prompt" mirrors "pi" facts for make-skill's prompt-mode output.
+# The synthetic harnesses mirror their real harness's facts: "pi-prompt" is
+# pi, "opencode-skill" is opencode.
 CAPABILITY_TABLE: dict[str, dict[str, str | bool]] = {
     name: spec.capability_facts() for name, spec in harness_spec.HARNESSES.items()
 }
 CAPABILITY_TABLE["pi-prompt"] = dict(CAPABILITY_TABLE["pi"])
+CAPABILITY_TABLE["opencode-skill"] = dict(CAPABILITY_TABLE["opencode"])
 
 
 def capability_tokens(harness: str) -> dict[str, str]:
@@ -314,7 +334,7 @@ def main() -> None:
         if not (repo_root / relpath).is_file():
             print(f"[gen_skills] no {relpath} under {repo_root}", file=sys.stderr)
             sys.exit(2)
-    valid_harnesses = set(HARNESSES) | {"pi-prompt"}
+    valid_harnesses = set(HARNESSES) | set(SYNTHETIC_HARNESSES)
     for (override_skill, override_harness), relpath in TEMPLATE_PATH_OVERRIDES.items():
         if override_skill not in SKILLS:
             print(
