@@ -23,8 +23,16 @@ Empty context/next_steps/related_files: stop and ask the user to fill them
 in; don't fabricate a plan from the title. Numeric id: note the rendered rev
 for `--if-rev` on the next mutating call. related_files already names a
 grill plan (`~/.agent-toolkit/data/grill/<slug>-plan.md`) or a spec
-(`~/.agent-toolkit/data/grill/<slug>-spec.md`)? Planning and critique (steps 5–6)
-are already done — skip to step 8. Worktree already has
+(`~/.agent-toolkit/data/grill/<slug>-spec.md`)? Don't redraft it. Gated
+(`show` has `gate.required: true`)? Skip to step 8 only if its critique
+already ran — a `<artifact without .md>-critique-notes.md` companion sits
+next to that plan or spec (e.g.
+`~/.agent-toolkit/data/grill/<slug>-spec-critique-notes.md`; second-opinion
+writes it when it finalizes); otherwise resume at step 6. No gate? An
+unset gate can't tell "all steps mechanical" from "paused before
+classifying", so redo only step 5's gate classification against that
+artifact, then continue at step 6 (which skips itself if the gate stays
+unset). Worktree already has
 implemented, uncommitted changes (e.g. handed back from an external
 executor)? Skip straight to step 9.
 

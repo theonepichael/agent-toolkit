@@ -153,6 +153,52 @@ class CapabilityFixtureTests(unittest.TestCase):
                 auto = " ".join(text.split("## `--auto` mode", 1)[1].split())
                 self.assertNotIn("inline spec-drafting", auto, path)
 
+    @pytest.mark.regression(
+        "backlog-item-resume-skips-gated-critique",
+        "AssertionError: 'are already done — skip to step 8' unexpectedly found in",
+    )
+    def test_backlog_item_step1_resume_keeps_critique_for_gated_items(self) -> None:
+        # A gated item that paused after step 5 saved its spec, but before
+        # step 6's critique ran, must resume at step 6 — the plan/spec path
+        # alone is not evidence the critique happened.
+        rendered = gs.render_all(REPO_ROOT, SKILL_PARAMS)
+        for (skill, _harness), path in gs.OUTPUT_PATHS.items():
+            if skill != "backlog-item":
+                continue
+            step1 = rendered[path].split("## 1. Resolve", 1)[1].split("## 2.", 1)[0]
+            step1 = " ".join(step1.split())
+            self.assertNotIn("are already done — skip to step 8", step1, path)
+            self.assertIn("Skip to step 8 only if its critique", step1, path)
+            self.assertIn("redo only step 5's gate classification", step1, path)
+            self.assertIn("gate.required: true", step1, path)
+            self.assertIn("-critique-notes.md", step1, path)
+            self.assertIn("resume at step 6", step1, path)
+
+    @pytest.mark.regression(
+        "agy-codex-reused-suspend-framing-drops-next-steps-restore",
+        "AssertionError: \"restore of the item's original next_steps on return\" not found in",
+    )
+    def test_agy_codex_reused_suspend_framing_restores_next_steps(self) -> None:
+        # Steps 6, 10 and 11 reuse step 5's suspend-and-return framing; the
+        # reference must carry step 5's restore of the original next_steps,
+        # or the "Resume backlog-item at step N" pointer outlives the return.
+        rendered = gs.render_all(REPO_ROOT, SKILL_PARAMS)
+        sections = (
+            ("## 6. Critique", "## 7."),
+            ("## 10. Review", "## 11."),
+            ("## 11. Land", "## `--auto` mode"),
+        )
+        for harness in ("agy", "codex"):
+            text = rendered[gs.OUTPUT_PATHS[("backlog-item", harness)]]
+            for start, end in sections:
+                body = " ".join(text.split(start, 1)[1].split(end, 1)[0].split())
+                self.assertIn("suspend-and-return framing", body, (harness, start))
+                self.assertIn(
+                    "restore of the item's original next_steps on return",
+                    body,
+                    (harness, start),
+                )
+
     def test_review_diff_and_land_cover_every_harness(self) -> None:
         for skill in ("review-diff", "land"):
             self.assertEqual(
