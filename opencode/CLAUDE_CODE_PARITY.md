@@ -288,17 +288,32 @@ permission gate alone. Both are chosen from the free letters below.
 ### Core leader chords
 
 Source: [opencode.ai/docs/keybinds](https://opencode.ai/docs/keybinds),
-cross-checked against the installed binary's keybind `Definitions` object (162
-keybinds). The two agree exactly. Last verified 2026-09-25.
+cross-checked against the keybind definitions object in the opencode 1.18.32
+binary (184 keybinds, 26 leader chords). The two agree exactly. Last verified
+2026-09-30.
 
 The block below is **generated** — edit
-`agent-scripts/gen_keybinds.py`, never the table. Regenerate with
-`python3 agent-scripts/gen_keybinds.py`, or check for staleness with `--check`
-(a test runs it, so an opencode upgrade that changes these chords fails the
-suite rather than passing silently). It is extracted from the opencode binary
-actually installed on this machine, so it is a snapshot of the installed version
-rather than of upstream; `opencode.ai/docs/keybinds` is the published reference
-and the two agreed when this was last generated.
+`agent-scripts/gen_keybinds.py`, never the table. It tracks the **pinned**
+opencode release (the `@opencode-ai/plugin` version in `opencode/package.json`,
+which the repo treats as the CLI pin). Regenerate with
+`python3 agent-scripts/gen_keybinds.py --fetch-pinned`, which downloads that
+release's binary with `npm pack` and extracts the table from it; writing from
+any other build is refused. `opencode.ai/docs/keybinds` is the published
+reference and the two agreed when this was last generated.
+
+What checks it:
+
+- **CI** runs `gen_keybinds.py --check --fetch-pinned` in the `python-quality`
+  workflow. So a pin bump to a release that changes these chords fails CI until
+  the table is regenerated (and then the `CORE_LETTERS` snapshot below fails
+  until a human updates it). A fetch or parse failure also fails CI (exit 2),
+  never passes it.
+- **Locally**, `test/test_opencode_trust_wiring.py` runs `--check
+  --allow-unpinned` against the `opencode` on `PATH`, whatever its version, so
+  a development build that diverges from the pinned table fails the suite on
+  that machine.
+- **Not caught**: a newer upstream release that nobody has pinned or installed
+  yet, and chords registered by third-party plugins rather than core.
 
 `test/test_opencode_trust_wiring.py` derives the harness denylist from this
 table and pins the letter set separately, so a regenerated table fails the suite
@@ -362,9 +377,9 @@ slash commands.
 
 
 `test/test_opencode_trust_wiring.py` asserts that no plugin binds a chord from
-the core table, and that each bound chord appears exactly once above. Neither
-check can see a future opencode release that claims one of the free letters:
-no supported surface exposes the live default keymap.
+the core table, and that each bound chord appears exactly once above. Those
+checks are only as current as the core table, which the generator keeps in step
+with the pinned release (see above).
 
 Full default keybind list pulled from `opencode.ai/docs/keybinds`. Verified
 against Claude Code's actual shortcuts (corrected from an earlier draft of

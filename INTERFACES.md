@@ -47,7 +47,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`fault_checkpoint.py`](#agentscriptsfaultcheckpointpy) | Named crash points for proving what a killed process leaves behind. |
 | [`gen_hooks.py`](#agentscriptsgenhookspy) | gen_hooks.py — compile lifecycle hooks across Claude, Copilot, and agy. |
 | [`gen_interfaces.py`](#agentscriptsgeninterfacespy) | gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources. |
-| [`gen_keybinds.py`](#agentscriptsgenkeybindspy) | Regenerate the opencode leader-chord table in the parity doc from the installed CLI. |
+| [`gen_keybinds.py`](#agentscriptsgenkeybindspy) | Regenerate the opencode leader-chord table in the parity doc from an opencode binary. |
 | [`gen_second_opinion.py`](#agentscriptsgensecondopinionpy) | gen_second_opinion.py — regenerate the second-opinion skill copies (one per harness, named in HARNESS_TABLE) from one canonical template. |
 | [`gen_shell_completion.py`](#agentscriptsgenshellcompletionpy) | Generate a zsh `#compdef` completion file for a harness CLI. |
 | [`gen_skills.py`](#agentscriptsgenskillspy) | gen_skills.py — regenerate the generated skill copies (every skill in `SKILLS`) from one template per skill, plus a shared per-harness capability table. Each skill covers the harnesses listed for it in `SKILL_HARNESSES`: most cover every harness in `harness_spec.ALL_NAMES`; swarm covers only claude/copilot (user-directed; pi already owns the orchestration surface) — see AGENTS.md's "Harness maintenance tiers" section. |
@@ -666,25 +666,30 @@ gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources.
 
 ### `agent-scripts/gen_keybinds.py`
 
-Regenerate the opencode leader-chord table in the parity doc from the installed CLI.
+Regenerate the opencode leader-chord table in the parity doc from an opencode binary.
 
 - Installed at: `~/.agent-toolkit/scripts/gen_keybinds.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
-- CLI (`argparse`): Regenerate the opencode leader-chord table in the parity doc from the installed CLI.
-  - `--check` — exit 1 if the committed table is stale, without writing
+- CLI (`argparse`): Regenerate the opencode leader-chord table in the parity doc.
+  - `--check` — exit 1 if the committed table is stale, 2 if it cannot be checked
+  - `--binary` — read this opencode binary instead of PATH's
+  - `--fetch-pinned` — download the pinned release with npm pack and read that (what CI runs)
+  - `--allow-unpinned` — with --check: compare against a binary that is not the pinned release
 - Filesystem constants:
   - `REPO_ROOT = Path(__file__).resolve().parent.parent`
   - `PARITY_DOC = REPO_ROOT / 'opencode' / 'CLAUDE_CODE_PARITY.md'`
+  - `PACKAGE_JSON = REPO_ROOT / 'opencode' / 'package.json'`
 - Exceptions:
   - `class KeybindExtractionError(RuntimeError)` — The opencode keybind table could not be read with confidence.
 - Public functions:
-  - `opencode_binary() -> Path | None` — Path to the installed opencode binary, or None if it is not on PATH.
-  - `opencode_version(binary: Path) -> str` — The binary's reported version, for the doc's provenance line.
+  - `pinned_version(package_json: Path) -> str` — The pinned opencode release: the ``@opencode-ai/plugin`` devDependency.
+  - `opencode_version(binary: Path) -> str` — The binary's reported version; raises unless it ran and printed one.
+  - `fetch_pinned_binary(version: str, dest: Path) -> Path` — Download the pinned release's binary for this platform into ``dest``.
   - `leader_chords(binary: Path) -> dict[str, list[str]]` — Map each leader-chord token to the keybind names that own it.
   - `render_block(chords: dict[str, list[str]]) -> str` — The markdown table body, without the surrounding anchors.
   - `current_block(text: str) -> str` — The block currently committed between the anchors.
   - `splice_block(text: str, body: str) -> str` — Return ``text`` with the anchored region replaced by ``body``.
-- Tested by: nothing
+- Tested by: `test/test_gen_keybinds.py`
 
 ### `agent-scripts/gen_second_opinion.py`
 
