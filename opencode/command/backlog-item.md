@@ -9,9 +9,9 @@ given) — what remains is the target item, a slug or an integer N. If
 `--auto` was given, skip straight to the `--auto mode` section at the end
 of this file instead of running the numbered steps live. Otherwise, if the
 remaining target is empty, ask the user which item — never guess. Every
-user-approval gate below (`## 10`, `## 11`) stops and waits for the user —
+user-approval gate in step 11 (`land`'s commit and merge gates) stops and waits for the user —
 never collapse two gates into one approval. Distinct from those: the item's
-own `gate` field in `dev_status.py` (step 5, step 12) is a judgment-step
+own `gate` field in `dev_status.py` (step 5, and `land`'s close in step 11) is a judgment-step
 verification checkpoint, not a user-approval stop — same word, different
 mechanism, don't conflate them.
 
@@ -45,7 +45,7 @@ If `start` instead exits 3 naming this machine's id file, run
 ## 3. Branch
 Create or reuse a dedicated worktree and bootstrap dependencies via `python3 ~/.agent-toolkit/scripts/dev_status.py worktree <slug|N>`. (If multiple project repos are involved or resolution fails, specify `--repo <path>`). Reuse a worktree this session already made for this item instead of a second one.
 
-Work that lands on an integration branch rather than the default branch (e.g. `release-1`)? Make sure the item's `integration_branch` is set (`update <slug> '{"integration_branch": "<branch>"}'`) *before* creating the worktree: a new item branch starts from it (else from `HEAD`), and step 12's merge check targets it. Confirm the base the command reports (`Created branch '<slug>' from '<base>'`); `--base <ref>` overrides it for one call. A branch that already exists is attached as-is, never re-based.
+Work that lands on an integration branch rather than the default branch (e.g. `release-1`)? Make sure the item's `integration_branch` is set (`update <slug> '{"integration_branch": "<branch>"}'`) *before* creating the worktree: a new item branch starts from it (else from `HEAD`), and `land`'s close (step 11) checks the merge against it. Confirm the base the command reports (`Created branch '<slug>' from '<base>'`); `--base <ref>` overrides it for one call. A branch that already exists is attached as-is, never re-based.
 
 ## 4. Baseline
 Run that repo's test suite (or the most relevant targeted subset) in the fresh worktree before touching anything (the shared instructions file's "Baseline tests before starting code work").
@@ -137,69 +137,20 @@ changes again, re-establish the clean worktree/index delta, and rerun the
 checks. Show the output — "should work" is not verification
 (the shared instructions file).
 
-## 10. Gate: commit
-Show the full staged diff with `git diff --cached`. Stop — use the `question` tool for explicit commit approval. No exceptions for being mid-pipeline, and no exception for code an external executor wrote (the shared instructions file). The proposed commit is the staged tree: review
-`git status` and `git diff --cached`, not only an unstaged `git diff`, before
-requesting approval.
+## 10. Review
+Delegate to `review-diff`: read `~/.config/opencode/commands/review-diff.md` and follow it with this item's worktree path — every item, no ask, `--auto` included. It reviews step 9's staged tree with a non-Claude reviewer (same-model subagent fallback), triages each finding fix or reject-with-reason, fixes and re-verifies, max 2 rounds. Keep the reviewer line and triage table it prints: step 11's commit gate shows them. Don't commit here.
 
-## 11. Gate: commit-then-land
-On approval, commit (conventional format) — this gate is never bundled with
-what follows. Personal project (this repo, a personal side project — never
-a `work-`-prefixed item or a work repo): offer the follow-on sequence as one
-bundled question (the shared instructions file's Git section) — "merge to
-main, push, and clean up the worktree?" — then merge locally, push, `git
-worktree remove`, `git branch -d` on that single approval. Work-related or
-ambiguous: ask separately for merge and for push — never bundle.
-
-When landing work on an `integration_branch` (declared via `update`): merge
-through a temporary worktree via `python3 ~/.agent-toolkit/scripts/dev_status.py integration-merge $ARGUMENTS [--push]`
-— never by checking the branch out in the live main checkout.
-
-**`git worktree remove` fails with "Directory not empty"?** A dev server
-(or other long-running process) launched against this worktree during step
-9 — e.g. via the `run` skill's smoke-check pattern — can outlive the port
-kill that pattern documents: killing the port's listener doesn't always
-reap a wrapper's child process (a `bun run dev` parent whose `node .../next
-dev` child keeps the worktree as its cwd). `git worktree remove` then fails
-partway, and can strip the worktree's git-admin metadata (it drops out of
-`git worktree list`) while leaving the directory on disk — a second
-`remove` won't find it. Find what's still holding it open with `lsof +D
-<worktree-path>`, `kill` those exact PIDs (never a broad `pkill -f` — it
-can match unrelated processes, including the agent's own), then remove the
-orphaned directory directly (`rm -rf <worktree-path>`) and retry
-`git branch -d`.
-
-## 12. Close
-`dev_status.py review $ARGUMENTS` then `approve $ARGUMENTS` — never a bare
-`done` on an in-review item. The lifecycle order is commit → local merge →
-review → approve → done: all three refuse with a typed error while the
-item's attributable local work is uncommitted or not merged into its
-merge target: the repo's local default branch, or instead the item's
-declared `integration_branch` when one is set via `update` (e.g.
-`release-1` work that lands before main). Merge ancestry is the contract — a
-squash/rebase merge clears the check only by deleting the stale local
-branch or worktree, after a human confirms the content reached the
-merge target; planning-only items with no attributable local work
-pass. If `approve` refuses citing an unmet gate,
-actually check each criterion from `show $ARGUMENTS` against the diff —
-don't pass it reflexively — then cover every criterion with evidence:
-`dev_status.py run $ARGUMENTS -- <command>` executes and records a command —
-in the item's own worktree by default; once that is gone it refuses unless
-the main checkout is on the merge target with the work merged, so pass
-`--cwd <a checkout of the merge target>` —
-and `gate-pass $ARGUMENTS '{"coverage": {"<N>": "run:<run_id>" or
-"manual:<note>"}}'` refuses until each criterion cites a recorded run or a
-manual note. Then retry `approve`. Display the full dashboard stdout these
-print; don't just narrate a one-line confirmation.
+## 11. Land
+Delegate to `land`: read `~/.config/opencode/commands/land.md` and follow it with this item's worktree path and slug. It owns the commit gate (showing step 10's report), the merge/push/cleanup gate, and the close (`review` then `approve`, with `gate-pass` evidence when the item has a gate). Each of its gates stops for the user. Don't commit, merge, or close the item outside it.
 
 ---
 
 ## `--auto` mode
 
 Runs the per-item procedure above end to end with minimal live input — the
-user has explicitly asked for unattended execution. Steps 10 (commit) and 11
-(merge/push/cleanup) always stay live, per item, no exception: the shared instructions file's
-commit-approval rule holds even mid-pipeline. Steps not called out below run
+user has explicitly asked for unattended execution. The commit and
+merge/push/cleanup gates inside step 11 (`land`) always stay live, per item, no
+exception: the shared instructions file's commit-approval rule holds even mid-pipeline. Steps not called out below run
 exactly as written above.
 
 **Invocation.** A slug/N present after stripping `--auto` runs just that
@@ -235,11 +186,12 @@ procedure below across the queue.
    trigger from the shared instructions file that would otherwise fire mid-run (baseline-
    failure backlog offers, proactive backlog capture, pending-item
    tracking, rejected-idea capture) queues into the digest instead.
-8. **Steps 10–11** — unchanged, always live, per item, exactly as written
-   above.
-9. **Step 12 (Close)** — unchanged; `review`/`approve`/`gate-pass` is
-   already agent-performed self-verification against stored gate criteria,
-   not a user-facing ask.
+8. **Step 10 (Review)** — runs for every item, no ask. Its triage/fix loop
+   is agent-side; it retries within its own 2-round cap.
+9. **Step 11 (Land)** — its commit and merge/push gates are unchanged:
+   always live, per item. Its close (`review`/`approve`/`gate-pass`) is
+   agent-performed self-verification against stored gate criteria, not a
+   user-facing ask.
 
 **End of run.** When the queue is exhausted (or the single item completes),
 show a dashboard-style summary of every item processed — done, skipped

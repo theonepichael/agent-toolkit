@@ -51,7 +51,7 @@ const ALLOW_PATTERNS: string[] = [
   // backlog-item --auto's own worktree/baseline/verify steps (CLAUDE.md's
   // worktree-first policy, backlog-item.md steps 3/4/9). Staging is part of
   // step 9 and is distinct from the user approval required for commit.
-  // git commit stays off this list so steps 10-11 still stop for approval.
+  // git commit stays off this list so step 11's `land` gates still stop for approval.
   "python3 ~/.agent-toolkit/scripts/worktree.py*",
   "git worktree add*",
   "git -C * worktree add*",

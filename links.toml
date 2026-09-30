@@ -90,6 +90,16 @@ src = "claude/commands/refresh-guidance.md"
 dest = "~/.claude/commands/refresh-guidance.md"
 harness = "claude"
 
+[[link]]
+src = "claude/commands/review-diff.md"
+dest = "~/.claude/commands/review-diff.md"
+harness = "claude"
+
+[[link]]
+src = "claude/commands/land.md"
+dest = "~/.claude/commands/land.md"
+harness = "claude"
+
 # Generated from templates/swarm.md.tmpl (gen_skills.py SWARM_PARAMS). The
 # toolkit's own generated copy superseded the origin repo's hand-authored original --
 # the swarm/herdr source-of-truth verdict leaves this repo as sole author.
@@ -422,6 +432,16 @@ dest = "~/.copilot/skills/refresh-guidance/SKILL.md"
 harness = "copilot"
 
 [[link]]
+src = "copilot/skills/review-diff/SKILL.md"
+dest = "~/.copilot/skills/review-diff/SKILL.md"
+harness = "copilot"
+
+[[link]]
+src = "copilot/skills/land/SKILL.md"
+dest = "~/.copilot/skills/land/SKILL.md"
+harness = "copilot"
+
+[[link]]
 src = "copilot/aliases.zsh"
 dest = "~/.copilot_aliases"
 harness = "copilot"
@@ -501,6 +521,16 @@ harness = "opencode"
 [[link]]
 src = "opencode/command/refresh-guidance.md"
 dest = "~/.config/opencode/commands/refresh-guidance.md"
+harness = "opencode"
+
+[[link]]
+src = "opencode/command/review-diff.md"
+dest = "~/.config/opencode/commands/review-diff.md"
+harness = "opencode"
+
+[[link]]
+src = "opencode/command/land.md"
+dest = "~/.config/opencode/commands/land.md"
 harness = "opencode"
 
 [[link]]
@@ -611,6 +641,16 @@ dest = "~/.gemini/antigravity-cli/skills/refresh-guidance/SKILL.md"
 harness = "agy"
 
 [[link]]
+src = "agy/skills/review-diff/SKILL.md"
+dest = "~/.gemini/antigravity-cli/skills/review-diff/SKILL.md"
+harness = "agy"
+
+[[link]]
+src = "agy/skills/land/SKILL.md"
+dest = "~/.gemini/antigravity-cli/skills/land/SKILL.md"
+harness = "agy"
+
+[[link]]
 src = "agy/hooks.json"
 dest = "~/.gemini/config/hooks.json"
 harness = "agy"
@@ -705,6 +745,16 @@ harness = "pi"
 [[link]]
 src = "pi/prompts/refresh-guidance.md"
 dest = "~/.pi/agent/prompts/refresh-guidance.md"
+harness = "pi"
+
+[[link]]
+src = "pi/prompts/review-diff.md"
+dest = "~/.pi/agent/prompts/review-diff.md"
+harness = "pi"
+
+[[link]]
+src = "pi/prompts/land.md"
+dest = "~/.pi/agent/prompts/land.md"
 harness = "pi"
 
 [[link]]

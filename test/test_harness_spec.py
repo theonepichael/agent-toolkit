@@ -177,6 +177,26 @@ class TestHarnessSpecRegistry(unittest.TestCase):
             self.assertIsInstance(adapter, gen_shell_completion.HarnessAdapter)
             self.assertEqual(adapter.cli, harness_spec.binary(name))
 
+    def test_subagent_tool_facts(self) -> None:
+        # Probed against the real CLIs 2026-09-29: every harness has one.
+        expected = {
+            "claude": "the Agent tool",
+            "copilot": "the `task` tool",
+            "opencode": "the `task` tool",
+            "agy": "the `invoke_subagent` tool",
+            "pi": "the `delegate` tool (harness `pi`)",
+            "codex": "the `spawn_agent` tool",
+        }
+        for name, spec in harness_spec.HARNESSES.items():
+            facts = spec.capability_facts()
+            self.assertEqual(facts["subagent_tool"], expected[name])
+            self.assertIs(facts["has_subagents"], True)
+            self.assertEqual(
+                gen_skills.capability_tokens(name)["SUBAGENT_TOOL"], expected[name]
+            )
+        bare = harness_spec.HarnessSpec(name="x", cli="x", install_hint="")
+        self.assertIs(bare.capability_facts()["has_subagents"], False)
+
     def test_deferred_consumers_documented(self) -> None:
         """Explicitly documents that all known consumers are now unified.
 

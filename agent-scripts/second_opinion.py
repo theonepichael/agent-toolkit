@@ -25,7 +25,8 @@ adapter over it.
 
 Subcommands
   detect   print each backend's presence and isolation-contract eligibility as JSON
-  review   one adversarial critique of a plan file or inline text
+  review   one adversarial critique of a plan file or inline text, or, with
+           --diff, a bug-hunting review of the staged diff in --dir
   probe    run one trivial text-only health request per pool model and print a
            per-model availability report as JSON (exit 1 when any probed model
            is unavailable; tests must mock the runners, never probe for real)
@@ -34,6 +35,29 @@ Flags
   --quiet, -q      suppress non-essential output
   --verbose, -v    emit extra diagnostic messages to stderr
   --dir <path>     (review only) root directory of the codebase to inspect in grounded review (default: current working directory)
+  --diff           (review only) review the staged diff (`git diff --cached` in
+                   --dir) instead of a plan: the prompt hunts for correctness
+                   bugs, regressions, missed callers, test gaps and doc drift,
+                   and answers "No findings." when there are none. Mutually
+                   exclusive with <plan-file-or-text>; an empty staged diff or
+                   a git failure is an error (exit 1), never a silent pass.
+                   The round cap applies only with --run-id (a diff has no
+                   stable file path to key on).
+  --exclude-backend NAME  (review only) skip NAME in priority-order backend
+                   selection; repeatable. Used so a review of a change never
+                   comes from the harness that wrote it. Excluding every
+                   installed backend is the usual "no backend available"
+                   error (exit 1). An unknown NAME, or combining it with
+                   --backend, is an error.
+  --diff-path P    (review only, with --diff) limit the staged diff to git
+                   pathspec P; repeatable, and ':!<glob>' excludes. Splits a
+                   diff too large for one prompt (see the payload-size limit)
+                   into reviewable parts. Without --diff it is an error.
+  --prompt-only    (review only) print the exact prompt the review would send
+                   (plan or --diff, grounded or --text-only) and exit 0,
+                   calling no backend and spending no round — for a caller
+                   running its own reviewer, e.g. a same-model subagent when
+                   no backend is available.
   --text-only      (review only) disable codebase exploration and run ungrounded text-only critique
   --model-index N  (review only) 0-based index into the backend model pool
                    (SECOND_OPINION_<BACKEND>_MODEL_POOL) for this call, e.g.
@@ -115,7 +139,8 @@ as an ``outcome="skipped"`` record, and the surviving attempt's record names
 ``fallback_reason="pool_skip"``. A single-model override stays strict: the
 caller named the model, so there is no silent replacement.
 
-Files read: <plan-file-or-text> (if a path), --focus-file.
+Files read: <plan-file-or-text> (if a path), --focus-file; with --diff, the
+  staged diff via `git diff --cached` in --dir.
 Files written: <data-dir>/second-opinion-runs/<sha256>.json — a per-run
   critique counter used to enforce the round cap (see Round-cap enforcement
   below).
@@ -139,7 +164,8 @@ backend's default model. See README.md's "What you supply vs. what the
 toolkit creates" section for the full supplied-vs-created contract.
 
 Exit codes: 0 success; 1 any failure (no backend available, all backends failed,
-bad --focus-file, unknown subcommand).
+bad --focus-file, unknown subcommand, --diff with an empty staged diff or a
+plan argument, neither a plan nor --diff).
 
 Requires Python 3.12+.
 """
@@ -150,6 +176,7 @@ import json
 import os
 import shutil
 import signal
+import subprocess
 import sys
 import time
 from collections.abc import Mapping
@@ -222,6 +249,8 @@ class ReviewRequest:
     model_index: int | None = None
     text_only: bool = False
     target_dir: Path | None = None
+    diff: bool = False
+    exclude_backends: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -819,28 +848,75 @@ scrutinize them closely, but don't let them limit the rest of your review:
 {hints}
 """
 
+DIFF_TOOLS_GROUNDED = """You have read-only access to the codebase. Use your read/grep/find tools to read
+the changed files in full, find callers of changed functions, and check the
+tests, before you report a finding. Never attempt to write or edit files."""
+
+DIFF_TOOLS_TEXT_ONLY = """Respond in plain prose only: you have no tools, so never emit tool-call
+markup (XML like <tool_calls>, JSON tool-call blocks, or fenced tool
+invocations) — judge from the diff alone and say when you could not check
+something."""
+
+DIFF_REVIEW_PROMPT = """You are reviewing a staged diff written by another AI assistant, before it is
+committed. Your job is to find bugs, not to summarize or approve.
+
+{tools_section}
+
+Look for:
+- correctness bugs: wrong logic, bad edge cases, broken error handling
+- regressions: behavior that worked before this diff and now does not
+- missed callers or sites the change should also have updated
+- test gaps: changed behavior with no test that would catch it breaking
+- doc drift: docs, help text or comments the change makes wrong
+
+Report numbered findings. Each finding gives: file:line, what breaks, a
+concrete failing scenario (input or state -> wrong result), and a severity
+(high, medium, low). Do not report style, naming or formatting nits. Do not
+emit replacement code listings.
+{focus_section}
+If you find nothing real, answer exactly "No findings." and stop. Skip preamble.
+
+---
+{plan_text}
+"""
+
+DIFF_FOCUS_SECTION = """
+The change's author flagged these as its specific risk points — scrutinize
+them closely, but don't let them limit the rest of your review:
+{hints}
+"""
+
 
 def build_prompt(
-    plan_text: str, focus_hints: str | None, *, grounded: bool = True
+    plan_text: str,
+    focus_hints: str | None,
+    *,
+    grounded: bool = True,
+    diff: bool = False,
 ) -> str:
     """Build the critique prompt, optionally inserting plan-specific focus hints.
 
     Args:
-        plan_text: The plan to review.
+        plan_text: The plan to review, or the staged diff when ``diff``.
         focus_hints: Bullet-point text naming risk areas specific to this
             plan, or ``None``/blank to omit the section entirely.
         grounded: When True (default), prompt models to inspect actual codebase
             files using read-only tools. When False, instructs models that no tools
             are available.
+        diff: When True, use the bug-hunting diff-review prompt instead of the
+            plan-critique prompt.
 
     Returns:
         The fully-formatted critique prompt.
     """
-    focus_section = (
-        FOCUS_SECTION.format(hints=focus_hints.strip())
-        if focus_hints and focus_hints.strip()
-        else ""
-    )
+    hints = focus_hints.strip() if focus_hints else ""
+    if diff:
+        return DIFF_REVIEW_PROMPT.format(
+            tools_section=DIFF_TOOLS_GROUNDED if grounded else DIFF_TOOLS_TEXT_ONLY,
+            focus_section=DIFF_FOCUS_SECTION.format(hints=hints) if hints else "",
+            plan_text=plan_text,
+        )
+    focus_section = FOCUS_SECTION.format(hints=hints) if hints else ""
     tmpl = GROUNDED_CRITIQUE_PROMPT if grounded else CRITIQUE_PROMPT
     return tmpl.format(plan_text=plan_text, focus_section=focus_section)
 
@@ -929,6 +1005,33 @@ def sanitize_plan_text(plan_text: str) -> tuple[str, int]:
     orig_bytes = len(plan_text.encode("utf-8"))
     sanitized_bytes = len(sanitized.encode("utf-8"))
     return sanitized, max(0, orig_bytes - sanitized_bytes)
+
+
+def read_staged_diff(target_dir: Path, pathspecs: list[str] | None = None) -> str:
+    """Return the staged diff (``git diff --cached``) of the repo at ``target_dir``.
+
+    ``pathspecs`` narrows it with ordinary git pathspecs (``':!*.md'`` excludes).
+
+    Dies (exit 1) when git fails or the staged diff is empty: a diff review
+    with nothing to read must never pass silently as "no findings".
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(target_dir), "diff", "--cached", "--no-color"]
+            + (["--", *pathspecs] if pathspecs else []),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as exc:
+        die(f"--diff: could not run git: {exc}")
+    if proc.returncode != 0:
+        die(f"--diff: git diff --cached failed in {target_dir}: {proc.stderr.strip()}")
+    if not proc.stdout.strip():
+        die(
+            f"--diff: the staged diff is empty in {target_dir} — stage the changes first"
+        )
+    return proc.stdout
 
 
 def resolve_plan_text(arg: str) -> str:
@@ -1561,21 +1664,43 @@ def review_plan(
             # (see the per-candidate check below).
             raise UnknownBackendError(f"{candidates[0]} not found on PATH")
     else:
-        candidates = [b for b in available_backends() if b in BACKEND_RUNNERS]
+        candidates = [
+            b
+            for b in available_backends()
+            if b in BACKEND_RUNNERS and b not in request.exclude_backends
+        ]
         if not candidates:
+            excluded = (
+                f" (excluded: {', '.join(request.exclude_backends)})"
+                if request.exclude_backends
+                else ""
+            )
             raise NoBackendAvailableError(
-                "no backend available — install one of: " + ", ".join(BACKEND_PRIORITY)
+                "no backend available"
+                + excluded
+                + " — install one of: "
+                + ", ".join(BACKEND_PRIORITY)
             )
 
     notices: list[str] = []
-    plan_text, bytes_saved = sanitize_plan_text(request.plan_text)
+    # A diff is code, not a plan: its context lines can look like the
+    # review-debris headings sanitize_plan_text strips, so leave it whole.
+    if request.diff:
+        plan_text, bytes_saved = request.plan_text, 0
+    else:
+        plan_text, bytes_saved = sanitize_plan_text(request.plan_text)
     if bytes_saved > 0:
         notices.append(
             f"[second_opinion] stripped inline review debris from plan ({bytes_saved} bytes saved)"
         )
     target_dir = (request.target_dir or Path.cwd()).resolve()
     mode = "text-only" if request.text_only else "grounded"
-    prompt = build_prompt(plan_text, request.focus_hints, grounded=(mode == "grounded"))
+    prompt = build_prompt(
+        plan_text,
+        request.focus_hints,
+        grounded=(mode == "grounded"),
+        diff=request.diff,
+    )
     prompt_bytes = len(prompt.encode("utf-8"))
     failures: list[str] = []
     caught: list[BackendError] = []
@@ -1784,8 +1909,33 @@ def cmd_review(args: argparse.Namespace) -> None:
     notices, the first successful critique, and returns. Exits nonzero only
     if the facade raises (configuration error, or every candidate failed).
     """
+    diff = getattr(args, "diff", False)
+    plan_arg = getattr(args, "plan", None)
+    if diff and plan_arg is not None:
+        die("--diff reviews the staged diff; do not also pass a plan")
+    if not diff and plan_arg is None:
+        die("review needs a <plan-file-or-text> argument, or --diff")
+    exclude = tuple(getattr(args, "exclude_backend", None) or ())
+    unknown = [b for b in exclude if b not in BACKEND_PRIORITY]
+    if unknown:
+        # A typo must not silently let the author's own harness review it.
+        die(
+            f"--exclude-backend: unknown backend {', '.join(unknown)} "
+            f"(known: {', '.join(BACKEND_PRIORITY)})"
+        )
+    if exclude and args.backend:
+        die(
+            "--exclude-backend applies only to priority-order selection; drop --backend"
+        )
+    diff_paths = getattr(args, "diff_path", None)
+    if diff_paths and not diff:
+        die("--diff-path only applies with --diff")
     with cli_common.timing_span("prepare"):
-        plan_text = resolve_plan_text(args.plan)
+        if diff:
+            target = getattr(args, "dir", None)
+            plan_text = read_staged_diff((target or Path.cwd()).resolve(), diff_paths)
+        else:
+            plan_text = resolve_plan_text(plan_arg)
         focus_hints = None
         if args.focus_file:
             focus_path = Path(args.focus_file).expanduser()
@@ -1806,6 +1956,21 @@ def cmd_review(args: argparse.Namespace) -> None:
                 focus_hints = truncated
             else:
                 focus_hints = raw_focus
+    if getattr(args, "prompt_only", False):
+        # Same prompt review_plan would send, for a caller's own reviewer
+        # (e.g. a same-model subagent fallback). No backend, no round spent.
+        if not diff:
+            plan_text, _ = sanitize_plan_text(plan_text)
+        print(
+            build_prompt(
+                plan_text,
+                focus_hints,
+                grounded=not getattr(args, "text_only", False),
+                diff=diff,
+            ),
+            end="",
+        )
+        return
     request = ReviewRequest(
         plan_text=plan_text,
         focus_hints=focus_hints,
@@ -1815,6 +1980,8 @@ def cmd_review(args: argparse.Namespace) -> None:
         model_index=getattr(args, "model_index", None),
         text_only=getattr(args, "text_only", False),
         target_dir=getattr(args, "dir", None),
+        diff=diff,
+        exclude_backends=exclude,
     )
     # Round-cap enforcement: the (MAX_ROUNDS+1)-th *successful* review for this
     # run is refused. Keyed by --run-id or the resolved plan-file path; the
@@ -1899,7 +2066,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="get one critique from the priority-selected backend",
         parents=[verbosity_parent],
     )
-    p.add_argument("plan", metavar="<plan-file-or-text>")
+    p.add_argument("plan", metavar="<plan-file-or-text>", nargs="?", default=None)
+    p.add_argument(
+        "--diff",
+        action="store_true",
+        default=False,
+        help="review the staged diff (git diff --cached in --dir) for bugs "
+        "instead of critiquing a plan; do not also pass a plan",
+    )
     p.add_argument(
         "--backend",
         type=_backend_list_arg,
@@ -1942,6 +2116,31 @@ def build_parser() -> argparse.ArgumentParser:
         "pool even when a single-model override is set, and is a hard error "
         "if the pool is unset/empty or the index is out of range (was "
         "previously a silent no-op/fallback).",
+    )
+    p.add_argument(
+        "--exclude-backend",
+        action="append",
+        default=None,
+        metavar="NAME",
+        help="skip this backend in priority-order selection (repeatable) — "
+        "e.g. the harness that wrote the change, so the review really comes "
+        "from another model; cannot be combined with --backend",
+    )
+    p.add_argument(
+        "--diff-path",
+        action="append",
+        default=None,
+        metavar="PATHSPEC",
+        help="with --diff, limit the staged diff to this git pathspec "
+        "(repeatable; ':!<glob>' excludes) — for splitting a diff too large "
+        "for one review",
+    )
+    p.add_argument(
+        "--prompt-only",
+        action="store_true",
+        default=False,
+        help="print the prompt this review would send and exit, calling no "
+        "backend and spending no round (for a caller's own reviewer)",
     )
     p.add_argument(
         "--run-id",

@@ -3401,3 +3401,221 @@ class CmdProbeTests(unittest.TestCase):
             second_opinion.cmd_probe(self._args(["opencode"]))
         entries = json.loads(out.getvalue())["probes"]
         self.assertEqual(entries[0]["detail"], "REDACTED")
+
+
+class DiffReviewTests(unittest.TestCase):
+    """`review --diff`: the staged diff is the input, with a bug-hunting prompt."""
+
+    def _git_ok(self, stdout: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=["git"], returncode=0, stdout=stdout, stderr=""
+        )
+
+    def test_build_prompt_diff_grounded_uses_diff_review_prompt(self) -> None:
+        prompt = second_opinion.build_prompt("+x = 1\n", None, diff=True)
+        self.assertIn("staged diff", prompt)
+        self.assertIn("read-only access to the codebase", prompt)
+        self.assertIn("No findings", prompt)
+        self.assertIn("+x = 1", prompt)
+        self.assertNotIn("reviewing a plan", prompt)
+
+    def test_build_prompt_diff_text_only_says_no_tools(self) -> None:
+        prompt = second_opinion.build_prompt(
+            "+x = 1\n", None, grounded=False, diff=True
+        )
+        self.assertIn("staged diff", prompt)
+        self.assertIn("you have no tools", prompt)
+        self.assertNotIn("read-only access to the codebase", prompt)
+
+    def test_build_prompt_diff_focus_section_names_the_change(self) -> None:
+        prompt = second_opinion.build_prompt("+x\n", "- the lock", diff=True)
+        self.assertIn("- the lock", prompt)
+        self.assertNotIn("plan's author", prompt)
+
+    def test_read_staged_diff_runs_git_in_dir(self) -> None:
+        calls: list[list[str]] = []
+
+        def fake_run(argv: list[str], **kwargs: object):
+            calls.append(argv)
+            return self._git_ok("diff --git a/x b/x\n+y\n")
+
+        with patch.object(second_opinion.subprocess, "run", side_effect=fake_run):
+            text = second_opinion.read_staged_diff(Path("/tmp/repo"))
+        self.assertEqual(text, "diff --git a/x b/x\n+y\n")
+        self.assertEqual(
+            calls, [["git", "-C", "/tmp/repo", "diff", "--cached", "--no-color"]]
+        )
+
+    def test_read_staged_diff_empty_is_an_error(self) -> None:
+        with (
+            patch.object(
+                second_opinion.subprocess, "run", return_value=self._git_ok("  \n")
+            ),
+            redirect_stderr(io.StringIO()) as err,
+            self.assertRaises(SystemExit) as cm,
+        ):
+            second_opinion.read_staged_diff(Path("/tmp/repo"))
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("staged diff is empty", err.getvalue())
+
+    def test_read_staged_diff_git_failure_is_an_error(self) -> None:
+        failed = subprocess.CompletedProcess(
+            args=["git"], returncode=128, stdout="", stderr="not a git repository"
+        )
+        with (
+            patch.object(second_opinion.subprocess, "run", return_value=failed),
+            redirect_stderr(io.StringIO()) as err,
+            self.assertRaises(SystemExit),
+        ):
+            second_opinion.read_staged_diff(Path("/tmp/repo"))
+        self.assertIn("not a git repository", err.getvalue())
+
+    def test_cmd_review_diff_sends_staged_diff_with_diff_prompt(self) -> None:
+        captured: dict[str, object] = {}
+
+        def fake_runner(prompt: str, *, model_index=None, mode="grounded", target_dir=None):
+            captured["prompt"] = prompt
+            captured["target_dir"] = target_dir
+            return "1. bug"
+
+        diff_text = "diff --git a/a.py b/a.py\n+## Critique notes\n"
+        repo = Path("/tmp/my-repo")
+        with (
+            patch("shutil.which", return_value="/usr/bin/codex"),
+            patch.dict(second_opinion.BACKEND_RUNNERS, {"codex": fake_runner}),
+            patch.object(
+                second_opinion.subprocess,
+                "run",
+                return_value=self._git_ok(diff_text),
+            ) as run,
+            patch("sys.stdout", io.StringIO()) as out,
+        ):
+            second_opinion.cmd_review(
+                ns(plan=None, diff=True, backend="codex", dir=repo, text_only=False)
+            )
+        run.assert_called_once()
+        self.assertEqual(run.call_args.args[0][:3], ["git", "-C", str(repo.resolve())])
+        self.assertEqual(
+            captured["prompt"], second_opinion.build_prompt(diff_text, None, diff=True)
+        )
+        self.assertEqual(captured["target_dir"], repo.resolve())
+        self.assertIn("1. bug", out.getvalue())
+
+    def test_parser_requires_exactly_one_of_plan_or_diff(self) -> None:
+        parser = second_opinion.build_parser()
+        args = parser.parse_args(["review", "--diff"])
+        self.assertTrue(args.diff)
+        self.assertIsNone(args.plan)
+        for argv in (["review"], ["review", "plan.md", "--diff"]):
+            with (
+                redirect_stderr(io.StringIO()),
+                self.assertRaises(SystemExit) as cm,
+            ):
+                second_opinion.cmd_review(parser.parse_args(argv))
+            self.assertEqual(cm.exception.code, 1)
+
+    def test_cmd_review_prompt_only_prints_prompt_and_calls_no_backend(self) -> None:
+        diff_text = "diff --git a/a.py b/a.py\n+x\n"
+        with (
+            patch("shutil.which", return_value=None),
+            patch.dict(second_opinion.BACKEND_RUNNERS, {}, clear=True),
+            patch.object(
+                second_opinion.subprocess, "run", return_value=self._git_ok(diff_text)
+            ),
+            patch("sys.stdout", io.StringIO()) as out,
+        ):
+            second_opinion.cmd_review(
+                ns(plan=None, diff=True, dir=Path("/tmp/r"), prompt_only=True)
+            )
+        self.assertEqual(
+            out.getvalue(), second_opinion.build_prompt(diff_text, None, diff=True)
+        )
+
+    def test_read_staged_diff_passes_pathspecs(self) -> None:
+        with patch.object(
+            second_opinion.subprocess, "run", return_value=self._git_ok("+y\n")
+        ) as run:
+            second_opinion.read_staged_diff(Path("/r"), ["agent-scripts", ":!*.md"])
+        self.assertEqual(
+            run.call_args.args[0],
+            ["git", "-C", "/r", "diff", "--cached", "--no-color", "--",
+             "agent-scripts", ":!*.md"],
+        )
+
+    def test_cmd_review_diff_path_flag_reaches_git(self) -> None:
+        parser = second_opinion.build_parser()
+        args = parser.parse_args(
+            ["review", "--diff", "--diff-path", "a", "--diff-path", ":!b", "--prompt-only"]
+        )
+        with (
+            patch.object(
+                second_opinion.subprocess, "run", return_value=self._git_ok("+y\n")
+            ) as run,
+            patch("sys.stdout", io.StringIO()),
+        ):
+            second_opinion.cmd_review(args)
+        self.assertEqual(run.call_args.args[0][-3:], ["--", "a", ":!b"])
+
+    def test_diff_path_without_diff_is_an_error(self) -> None:
+        args = second_opinion.build_parser().parse_args(
+            ["review", "plan.md", "--diff-path", "a"]
+        )
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            second_opinion.cmd_review(args)
+
+    def test_exclude_backend_skips_the_author_harness(self) -> None:
+        used: list[str] = []
+
+        def runner(name: str):
+            def run(prompt: str, *, model_index=None, mode="grounded", target_dir=None):
+                used.append(name)
+                return "No findings."
+            return run
+
+        with (
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.dict(
+                second_opinion.BACKEND_RUNNERS,
+                {"codex": runner("codex"), "agy": runner("agy")},
+                clear=True,
+            ),
+            patch.object(
+                second_opinion, "available_backends", return_value=["codex", "agy"]
+            ),
+        ):
+            second_opinion.review_plan(
+                second_opinion.ReviewRequest(
+                    plan_text="+x\n", diff=True, exclude_backends=("codex",)
+                )
+            )
+        self.assertEqual(used, ["agy"])
+
+    def test_exclude_backend_leaving_none_is_no_backend(self) -> None:
+        with (
+            patch.object(second_opinion, "available_backends", return_value=["codex"]),
+            patch.dict(second_opinion.BACKEND_RUNNERS, {"codex": lambda p, **k: "x"}),
+            self.assertRaises(second_opinion.NoBackendAvailableError),
+        ):
+            second_opinion.review_plan(
+                second_opinion.ReviewRequest(plan_text="p", exclude_backends=("codex",))
+            )
+
+    def test_exclude_backend_flag_parses_and_conflicts_with_backend(self) -> None:
+        parser = second_opinion.build_parser()
+        args = parser.parse_args(
+            ["review", "p", "--exclude-backend", "codex", "--exclude-backend", "pi"]
+        )
+        self.assertEqual(args.exclude_backend, ["codex", "pi"])
+        args = parser.parse_args(
+            ["review", "p", "--backend", "agy", "--exclude-backend", "codex"]
+        )
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            second_opinion.cmd_review(args)
+
+    def test_exclude_backend_rejects_unknown_name(self) -> None:
+        args = second_opinion.build_parser().parse_args(
+            ["review", "p", "--exclude-backend", "CODEX"]
+        )
+        with redirect_stderr(io.StringIO()) as err, self.assertRaises(SystemExit):
+            second_opinion.cmd_review(args)
+        self.assertIn("unknown backend", err.getvalue())

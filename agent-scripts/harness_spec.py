@@ -74,6 +74,9 @@ class HarnessSpec:
     skill_ref_dir: str = "ref"
     probe_command: str = ""
     commit_scope: str = ""
+    # How a skill starts a fresh same-model subagent here ("" = none). Each
+    # value was probed against the real CLI's tool list on 2026-09-29.
+    subagent_tool: str = ""
     display_name: str = ""
     app_id: str = ""
     icon: str = ""
@@ -98,6 +101,8 @@ class HarnessSpec:
             "skill_ref_dir": self.skill_ref_dir,
             "probe_command": self.probe_command,
             "commit_scope": self.commit_scope,
+            "subagent_tool": self.subagent_tool,
+            "has_subagents": bool(self.subagent_tool),
         }
 
 
@@ -120,6 +125,7 @@ HARNESSES: dict[str, HarnessSpec] = {
         skill_ref_dir="ref",
         probe_command="claude -p",
         commit_scope="claude",
+        subagent_tool="the Agent tool",
         display_name="Claude Code",
         app_id="Agent.Claude",
         icon="claude.png",
@@ -147,6 +153,7 @@ HARNESSES: dict[str, HarnessSpec] = {
         skill_ref_dir="ref",
         probe_command="copilot -p",
         commit_scope="copilot",
+        subagent_tool="the `task` tool",
         display_name="GitHub Copilot",
         app_id="Agent.Copilot",
         icon="copilot.png",
@@ -168,6 +175,7 @@ HARNESSES: dict[str, HarnessSpec] = {
         skill_ref_dir="ref",
         probe_command="opencode -p",
         commit_scope="opencode",
+        subagent_tool="the `task` tool",
         display_name="OpenCode",
         app_id="Agent.OpenCode",
         icon="opencode.png",
@@ -189,6 +197,7 @@ HARNESSES: dict[str, HarnessSpec] = {
         skill_ref_dir="references",
         probe_command="agy -p",
         commit_scope="agy",
+        subagent_tool="the `invoke_subagent` tool",
         display_name="Antigravity (AGY)",
         app_id="Agent.AGY",
         icon="agy.png",
@@ -210,6 +219,7 @@ HARNESSES: dict[str, HarnessSpec] = {
         skill_ref_dir="references",
         probe_command="pi -p",
         commit_scope="pi",
+        subagent_tool="the `delegate` tool (harness `pi`)",
         display_name="Pi Coding Agent",
         app_id="Agent.Pi",
         icon="pi.png",
@@ -231,6 +241,7 @@ HARNESSES: dict[str, HarnessSpec] = {
         skill_ref_dir="ref",
         probe_command="codex exec",
         commit_scope="codex",
+        subagent_tool="the `spawn_agent` tool",
         display_name="Codex CLI",
         app_id="Agent.Codex",
         icon="codex.png",

@@ -85,12 +85,66 @@ class CapabilityFixtureTests(unittest.TestCase):
         for path in outputs:
             text = rendered[path]
             step9 = text.split("## 9. Verify", 1)[1].split("## 10.", 1)[0]
-            step10 = text.split("## 10.", 1)[1].split("## 11.", 1)[0]
             self.assertIn("git diff --cached", step9)
             self.assertIn("staged", step9)
             self.assertNotIn(old_step9, step9)
             self.assertLess(text.index("git diff --cached"), text.index("## 10."))
-            self.assertIn("git diff --cached", step10)
+        # The commit gate itself now lives in `land`, which backlog-item
+        # delegates to; it must still review the staged tree.
+        for (skill, _harness), path in gs.OUTPUT_PATHS.items():
+            if skill != "land":
+                continue
+            gate = rendered[path].split("## 1. Gate: commit", 1)[1].split("## 2.", 1)[0]
+            self.assertIn("git diff --cached", gate, path)
+            self.assertIn("review-diff did not run", gate, path)
+
+    def test_backlog_item_delegates_review_then_land(self) -> None:
+        rendered = gs.render_all(REPO_ROOT, SKILL_PARAMS)
+        for (skill, harness), path in gs.OUTPUT_PATHS.items():
+            if skill != "backlog-item":
+                continue
+            text = rendered[path]
+            review = text.split("## 10. Review", 1)[1].split("## 11. Land", 1)[0]
+            land = text.split("## 11. Land", 1)[1].split("---", 1)[0]
+            self.assertIn("review-diff", review, path)
+            self.assertIn("land", land, path)
+            self.assertNotIn("## 12.", text, path)
+            # No commit/merge/close text left behind outside `land`.
+            self.assertNotIn("integration-merge", text, path)
+            self.assertNotIn("step 12", text, path)
+
+    def test_review_diff_and_land_cover_every_harness(self) -> None:
+        for skill in ("review-diff", "land"):
+            self.assertEqual(gs.SKILL_HARNESSES[skill], gs.HARNESSES + ("pi-prompt",))
+        rendered = gs.render_all(REPO_ROOT, SKILL_PARAMS)
+        for (skill, harness), path in gs.OUTPUT_PATHS.items():
+            if skill not in ("review-diff", "land"):
+                continue
+            text = rendered[path]
+            self.assertNotIn("{{", text, path)
+            if skill == "review-diff":
+                self.assertIn("review --diff --dir <worktree>", text, path)
+                self.assertIn("--prompt-only", text, path)
+                self.assertIn("ruled out by payload size", text, path)
+                self.assertIn(
+                    gs.CAPABILITY_TABLE[harness]["subagent_tool"], text, path
+                )
+                self.assertIn("Max 2 review rounds", text, path)
+                self.assertIn("diff --stat` must be empty", text, path)
+                self.assertIn("keeping any `--diff-path`", text, path)
+                self.assertIn("worktree path to read", text, path)
+                self.assertIn("no review ran: nothing staged", text, path)
+                self.assertIn("status --porcelain", text, path)
+                self.assertIn("keep one rendered copy per changed template", text, path)
+                own = harness.removesuffix("-prompt")
+                if harness == "claude":
+                    self.assertNotIn("--exclude-backend", text, path)
+                else:
+                    self.assertIn(f"--exclude-backend {own}\n", text, path)
+            else:
+                self.assertIn("No slug? Stop here", text, path)
+                self.assertIn("git -C <worktree>", text, path)
+                self.assertNotIn("$ARGUMENTS [--push]", text, path)
 
     # -- dashboard --------------------------------------------------------
 
@@ -487,7 +541,7 @@ class EndToEndTests(unittest.TestCase):
 
     def test_all_50_copies_are_up_to_date(self) -> None:
         rendered = gs.render_all(REPO_ROOT, SKILL_PARAMS)
-        self.assertEqual(len(rendered), 72)
+        self.assertEqual(len(rendered), 86)
         stale = []
         for relpath, text in rendered.items():
             on_disk = (REPO_ROOT / relpath).read_text(encoding="utf-8")

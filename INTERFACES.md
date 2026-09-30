@@ -50,7 +50,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`gen_keybinds.py`](#agentscriptsgenkeybindspy) | Regenerate the opencode leader-chord table in the parity doc from the installed CLI. |
 | [`gen_second_opinion.py`](#agentscriptsgensecondopinionpy) | gen_second_opinion.py — regenerate the second-opinion skill copies (one per harness, named in HARNESS_TABLE) from one canonical template. |
 | [`gen_shell_completion.py`](#agentscriptsgenshellcompletionpy) | Generate a zsh `#compdef` completion file for a harness CLI. |
-| [`gen_skills.py`](#agentscriptsgenskillspy) | gen_skills.py — regenerate the dashboard/recap/grill-me/backlog-item/ make-skill/spec/standup/to-tickets/swarm/analyze-sessions/refresh-guidance skill copies from one template per skill, plus a shared per-harness capability table. dashboard/recap/grill-me/backlog-item/make-skill/spec/standup/to-tickets/ analyze-sessions/refresh-guidance cover all 6 harnesses (claude, copilot, opencode, agy, pi, codex); swarm covers only claude/copilot (user-directed; pi already owns the orchestration surface) — see `SKILL_HARNESSES` below and AGENTS.md's "Harness maintenance tiers" section. |
+| [`gen_skills.py`](#agentscriptsgenskillspy) | gen_skills.py — regenerate the dashboard/recap/grill-me/backlog-item/ make-skill/spec/standup/to-tickets/swarm/analyze-sessions/refresh-guidance/ review-diff/land skill copies from one template per skill, plus a shared per-harness capability table. dashboard/recap/grill-me/backlog-item/make-skill/spec/standup/to-tickets/ analyze-sessions/refresh-guidance/review-diff/land cover all 6 harnesses (claude, copilot, opencode, agy, pi, codex); swarm covers only claude/copilot (user-directed; pi already owns the orchestration surface) — see `SKILL_HARNESSES` below and AGENTS.md's "Harness maintenance tiers" section. |
 | [`gen_skills_params.py`](#agentscriptsgenskillsparamspy) | gen_skills_params.py — per-(skill, harness) content tables for gen_skills.py. |
 | [`grill.py`](#agentscriptsgrillpy) | grill.py — grill-me session state CLI. All session mutations go through here. |
 | [`guard_rails.py`](#agentscriptsguardrailspy) | Pre-tool guard shared by every harness: refuse a write into a repository's main checkout while a backlog item for that repository is in progress, warn when the current worktree's base has fallen behind ``origin/main`` (or ``origin/<integration_branch>`` for an item that declares one), (Bash, Claude Code only) deny the git-native ways to defeat the no-commit-on-main git hook (``githooks/pre-commit`` / ``githooks-global/pre-commit``), and require an active backlog-item claim before a write that points at an in-progress item. |
@@ -756,7 +756,7 @@ Generate a zsh `#compdef` completion file for a harness CLI.
 
 ### `agent-scripts/gen_skills.py`
 
-gen_skills.py — regenerate the dashboard/recap/grill-me/backlog-item/ make-skill/spec/standup/to-tickets/swarm/analyze-sessions/refresh-guidance skill copies from one template per skill, plus a shared per-harness capability table. dashboard/recap/grill-me/backlog-item/make-skill/spec/standup/to-tickets/ analyze-sessions/refresh-guidance cover all 6 harnesses (claude, copilot, opencode, agy, pi, codex); swarm covers only claude/copilot (user-directed; pi already owns the orchestration surface) — see `SKILL_HARNESSES` below and AGENTS.md's "Harness maintenance tiers" section.
+gen_skills.py — regenerate the dashboard/recap/grill-me/backlog-item/ make-skill/spec/standup/to-tickets/swarm/analyze-sessions/refresh-guidance/ review-diff/land skill copies from one template per skill, plus a shared per-harness capability table. dashboard/recap/grill-me/backlog-item/make-skill/spec/standup/to-tickets/ analyze-sessions/refresh-guidance/review-diff/land cover all 6 harnesses (claude, copilot, opencode, agy, pi, codex); swarm covers only claude/copilot (user-directed; pi already owns the orchestration surface) — see `SKILL_HARNESSES` below and AGENTS.md's "Harness maintenance tiers" section.
 
 - Installed at: `~/.agent-toolkit/scripts/gen_skills.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
@@ -1380,12 +1380,17 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
   - `detect` — list available backends as JSON
   - `probe [--backend NAME[,NAME...]]` — probe each backend's model pool and report per-model availability as JSON
     - `--backend` — probe only these backend(s) (comma-separated list allowed) instead of every installed backend in priority order; an entry not installed is reported as not_installed, not an error
-  - `review <plan-file-or-text> [--backend NAME[,NAME...]] [--dir <DIR>] [--text-only] [--focus-file <FOCUS_FILE>] [--model-index N] [--run-id ID] [--allow-extra-round]` — get one critique from the priority-selected backend
+  - `review [<plan-file-or-text>] [--diff] [--backend NAME[,NAME...]] [--dir <DIR>] [--text-only] [--focus-file <FOCUS_FILE>] [--model-index N] [--exclude-backend NAME] [--diff-path PATHSPEC] [--prompt-only] [--run-id ID] [--allow-extra-round]` — get one critique from the priority-selected backend
+    - `plan` (nargs: ?)
+    - `--diff` — review the staged diff (git diff --cached in --dir) for bugs instead of critiquing a plan; do not also pass a plan (default: False)
     - `--backend` — force backend(s) in order, first success wins (comma-separated list allowed) instead of priority-order fallback; a single name keeps the strict one-backend-only contract, while a list skips an entry that is not installed with a notice
     - `--dir` — root directory of the codebase to inspect in grounded review (defaults to current working directory)
     - `--text-only` — disable codebase exploration and run ungrounded text-only critique (default: False)
     - `--focus-file` — path to a file of plan-specific risk hints, appended to the critique prompt as areas to scrutinize (supplements, not replaces, the generic adversarial mandate)
     - `--model-index` — 0-based index into the backend model pool (SECOND_OPINION_{CODEX,AGY,PI,OPENCODE,COPILOT}_MODEL_POOL) for this call -- round 1 of a rotation is index 0, round 2 is index 1, etc. Supported for codex/agy/pi/opencode/copilot; an explicit index selects the pool even when a single-model override is set, and is a hard error if the pool is unset/empty or the index is out of range (was previously a silent no-op/fallback).
+    - `--exclude-backend` — skip this backend in priority-order selection (repeatable) — e.g. the harness that wrote the change, so the review really comes from another model; cannot be combined with --backend
+    - `--diff-path` — with --diff, limit the staged diff to this git pathspec (repeatable; ':!<glob>' excludes) — for splitting a diff too large for one review
+    - `--prompt-only` — print the prompt this review would send and exit, calling no backend and spending no round (for a caller's own reviewer) (default: False)
     - `--run-id` — stable id for one iterative critique session; the per-round cap is enforced by counting reviews per run-id (or per plan file when omitted). The second-opinion skill passes one for the whole loop.
     - `--allow-extra-round` — permit review calls beyond the per-run cap (for a user who deliberately wants another round) (default: False)
 - Environment: `SECOND_OPINION_AGY_MODEL`, `SECOND_OPINION_AGY_MODEL_POOL`, `SECOND_OPINION_AGY_TIMEOUT_SECONDS`, `SECOND_OPINION_CODEX_MODEL`, `SECOND_OPINION_CODEX_MODEL_POOL`, `SECOND_OPINION_CODEX_TIMEOUT_SECONDS`, `SECOND_OPINION_COPILOT_MODEL`, `SECOND_OPINION_COPILOT_MODEL_POOL`, `SECOND_OPINION_COPILOT_TIMEOUT_SECONDS`, `SECOND_OPINION_OPENCODE_MODEL`, `SECOND_OPINION_OPENCODE_MODEL_POOL`, `SECOND_OPINION_OPENCODE_TIMEOUT_SECONDS`, `SECOND_OPINION_PI_MODEL`, `SECOND_OPINION_PI_MODEL_POOL`, `SECOND_OPINION_PI_TIMEOUT_SECONDS`, `SECOND_OPINION_TIMEOUT_SECONDS`
@@ -1401,9 +1406,10 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
   - `class ReviewRequest` — One review request for :func:`review_plan`.
   - `class ReviewResult` — A successful critique: the backend used, its response, and diagnostics.
 - Public functions:
-  - `build_prompt(plan_text: str, focus_hints: str | None, *, grounded: bool = True) -> str` — Build the critique prompt, optionally inserting plan-specific focus hints.
+  - `build_prompt(plan_text: str, focus_hints: str | None, *, grounded: bool = True, diff: bool = False) -> str` — Build the critique prompt, optionally inserting plan-specific focus hints.
   - `die(msg: str) -> NoReturn` — Print an error to stderr, prefixed for this script, and exit with status 1.
   - `sanitize_plan_text(plan_text: str) -> tuple[str, int]` — Strip ephemeral review debris headers/sections from a plan.
+  - `read_staged_diff(target_dir: Path, pathspecs: list[str] | None = None) -> str` — Return the staged diff (``git diff --cached``) of the repo at ``target_dir``.
   - `resolve_plan_text(arg: str) -> str` — Resolve a CLI argument to plan text: a file's contents, or the arg itself.
   - `round_count_for(state: dict[str, object]) -> int` — The number of reviews already recorded for a run's state dict.
   - `would_exceed_cap(count: int) -> bool` — True when ``count`` already reaches the cap (the call must be refused).
@@ -1718,9 +1724,11 @@ the workflow's template plus its generator's capability/parameter tables.
 | `/dashboard` | template | yes | yes | yes | yes | yes | yes |
 | `/draft-voice` | hand-authored | yes | — | — | — | — | — |
 | `/grill-me` | template | yes | yes | yes | yes | yes | yes |
+| `/land` | template | yes | yes | yes | yes | yes | yes |
 | `/make-skill` | template | yes | yes | yes | yes | yes | yes |
 | `/recap` | template | yes | yes | yes | yes | yes | yes |
 | `/refresh-guidance` | template | yes | yes | yes | yes | yes | yes |
+| `/review-diff` | template | yes | yes | yes | yes | yes | yes |
 | `/second-opinion` | template | yes | yes | yes | yes | yes | yes |
 | `/skill-drift-audit` | hand-authored | yes | — | — | — | — | — |
 | `/skill-map` | hand-authored | yes | — | — | — | — | — |
@@ -1748,6 +1756,10 @@ the workflow's template plus its generator's capability/parameter tables.
   - Generated from: `templates/grill_me.md.tmpl` by `gen_skills.py`
   - `claude/commands/{name}.md` is the rendered Claude Code port — edit the template or generator, then regenerate.
   - Installed at: `~/.claude/commands/grill-me.md` (claude)
+- **`/land`** — Land finished work from a worktree: the commit approval gate (showing the review-diff triage table), the merge/push/cleanup gate, and, given a backlog slug, the dev_status review/approve close. Every gate stops for the user. Use when the user says 'land this', 'commit and merge', 'ship it', or when backlog-item delegates its landing step.
+  - Generated from: `templates/land.md.tmpl` by `gen_skills.py`
+  - `claude/commands/{name}.md` is the rendered Claude Code port — edit the template or generator, then regenerate.
+  - Installed at: `~/.claude/commands/land.md` (claude)
 - **`/make-skill`** — Author or revise a Claude Code skill (slash command) using a trigger/structure/steering/pruning rubric. Use when the user wants to create a new skill, improve or simplify an existing one, or complains a skill isn't triggering or isn't being followed.
   - Generated from: `templates/make_skill.md.tmpl` by `gen_skills.py`
   - `claude/commands/{name}.md` is the rendered Claude Code port — edit the template or generator, then regenerate.
@@ -1760,6 +1772,10 @@ the workflow's template plus its generator's capability/parameter tables.
   - Generated from: `templates/refresh_guidance.md.tmpl` by `gen_skills.py`
   - `claude/commands/{name}.md` is the rendered Claude Code port — edit the template or generator, then regenerate.
   - Installed at: `~/.claude/commands/refresh-guidance.md` (claude)
+- **`/review-diff`** — Review the staged git diff for bugs before committing: a non-Claude, grounded reviewer (second_opinion.py review --diff), then triage each finding fix or reject-with-reason, fix, re-verify, max 2 rounds, and print a triage table for the commit gate; falls back to a fresh same-model subagent when no backend is available. Use when the user says 'review the diff', 'review my changes', 'review before commit', or when backlog-item delegates its review step.
+  - Generated from: `templates/review_diff.md.tmpl` by `gen_skills.py`
+  - `claude/commands/{name}.md` is the rendered Claude Code port — edit the template or generator, then regenerate.
+  - Installed at: `~/.claude/commands/review-diff.md` (claude)
 - **`/second-opinion`** — Send a plan to a non-Claude model for adversarial critique, then iterate — revise, re-send, repeat — until the critique stops surfacing anything new or a round cap is hit. Use when the user wants a second opinion, an outside critique, or to stress-test a plan against a different model.
   - Generated from: `templates/second_opinion.md.tmpl` by `gen_second_opinion.py`
   - `claude/commands/{name}.md` is the rendered Claude Code port — edit the template or generator, then regenerate.
@@ -1885,9 +1901,11 @@ are copy-once seeds for exactly that reason.
 | `pi/prompts/backlog-item.md` | `~/.pi/agent/prompts/backlog-item.md` (pi) |
 | `pi/prompts/dashboard.md` | `~/.pi/agent/prompts/dashboard.md` (pi) |
 | `pi/prompts/grill-me.md` | `~/.pi/agent/prompts/grill-me.md` (pi) |
+| `pi/prompts/land.md` | `~/.pi/agent/prompts/land.md` (pi) |
 | `pi/prompts/make-skill.md` | `~/.pi/agent/prompts/make-skill.md` (pi) |
 | `pi/prompts/recap.md` | `~/.pi/agent/prompts/recap.md` (pi) |
 | `pi/prompts/refresh-guidance.md` | `~/.pi/agent/prompts/refresh-guidance.md` (pi) |
+| `pi/prompts/review-diff.md` | `~/.pi/agent/prompts/review-diff.md` (pi) |
 | `pi/prompts/second-opinion.md` | `~/.pi/agent/prompts/second-opinion.md` (pi) |
 | `pi/prompts/spec.md` | `~/.pi/agent/prompts/spec.md` (pi) |
 | `pi/prompts/standup.md` | `~/.pi/agent/prompts/standup.md` (pi) |
@@ -2157,12 +2175,14 @@ named doc, not regenerating this file.
 | --- | --- |
 | `agy/skills/backlog-item/SKILL.md` | OK |
 | `agy/skills/dashboard/SKILL.md` | OK |
+| `agy/skills/land/SKILL.md` | OK |
 | `agy/skills/recap/SKILL.md` | OK |
 | `agy/skills/second-opinion/SKILL.md` | OK |
 | `agy/skills/standup/SKILL.md` | OK |
 | `agy/skills/to-tickets/SKILL.md` | OK |
 | `claude/commands/backlog-item.md` | OK |
 | `claude/commands/dashboard.md` | OK |
+| `claude/commands/land.md` | OK |
 | `claude/commands/recap.md` | OK |
 | `claude/commands/second-opinion.md` | OK |
 | `claude/commands/standup.md` | OK |
@@ -2170,12 +2190,14 @@ named doc, not regenerating this file.
 | `claude/commands/to-tickets.md` | OK |
 | `codex/skills/backlog-item/SKILL.md` | OK |
 | `codex/skills/dashboard/SKILL.md` | OK |
+| `codex/skills/land/SKILL.md` | OK |
 | `codex/skills/recap/SKILL.md` | OK |
 | `codex/skills/second-opinion/SKILL.md` | OK |
 | `codex/skills/standup/SKILL.md` | OK |
 | `codex/skills/to-tickets/SKILL.md` | OK |
 | `copilot/skills/backlog-item/SKILL.md` | OK |
 | `copilot/skills/dashboard/SKILL.md` | OK |
+| `copilot/skills/land/SKILL.md` | OK |
 | `copilot/skills/recap/SKILL.md` | OK |
 | `copilot/skills/second-opinion/SKILL.md` | OK |
 | `copilot/skills/standup/SKILL.md` | OK |
@@ -2183,6 +2205,7 @@ named doc, not regenerating this file.
 | `copilot/skills/to-tickets/SKILL.md` | OK |
 | `opencode/command/backlog-item.md` | OK |
 | `opencode/command/dashboard.md` | OK |
+| `opencode/command/land.md` | OK |
 | `opencode/command/recap.md` | OK |
 | `opencode/command/second-opinion.md` | OK |
 | `opencode/command/standup.md` | OK |
@@ -2190,6 +2213,7 @@ named doc, not regenerating this file.
 | `opencode/skills/second-opinion/SKILL.md` | OK |
 | `pi/skills/backlog-item/SKILL.md` | OK |
 | `pi/skills/dashboard/SKILL.md` | OK |
+| `pi/skills/land/SKILL.md` | OK |
 | `pi/skills/recap/SKILL.md` | OK |
 | `pi/skills/second-opinion/SKILL.md` | OK |
 | `pi/skills/standup/SKILL.md` | OK |
@@ -2274,26 +2298,32 @@ named doc, not regenerating this file.
 | --- | --- |
 | `agy/skills/backlog-item/SKILL.md` | OK |
 | `agy/skills/grill-me/SKILL.md` | OK |
+| `agy/skills/review-diff/SKILL.md` | OK |
 | `agy/skills/second-opinion/SKILL.md` | OK |
 | `agy/skills/spec/SKILL.md` | OK |
 | `claude/commands/grill-me.md` | OK |
+| `claude/commands/review-diff.md` | OK |
 | `claude/commands/second-opinion.md` | OK |
 | `claude/commands/spec.md` | OK |
 | `codex/skills/backlog-item/SKILL.md` | OK |
 | `codex/skills/grill-me/SKILL.md` | OK |
+| `codex/skills/review-diff/SKILL.md` | OK |
 | `codex/skills/second-opinion/SKILL.md` | OK |
 | `codex/skills/spec/SKILL.md` | OK |
 | `copilot/skills/backlog-item/SKILL.md` | OK |
 | `copilot/skills/grill-me/SKILL.md` | OK |
+| `copilot/skills/review-diff/SKILL.md` | OK |
 | `copilot/skills/second-opinion/SKILL.md` | OK |
 | `copilot/skills/spec/SKILL.md` | OK |
 | `opencode/command/grill-me.md` | OK |
+| `opencode/command/review-diff.md` | OK |
 | `opencode/command/second-opinion.md` | OK |
 | `opencode/command/spec.md` | OK |
 | `opencode/skills/grill-me/SKILL.md` | OK |
 | `opencode/skills/second-opinion/SKILL.md` | OK |
 | `opencode/skills/spec/SKILL.md` | OK |
 | `pi/skills/grill-me/SKILL.md` | OK |
+| `pi/skills/review-diff/SKILL.md` | OK |
 | `pi/skills/second-opinion/SKILL.md` | OK |
 | `pi/skills/spec/SKILL.md` | OK |
 
@@ -2351,17 +2381,19 @@ new one, `--check` catches it the same as any other stale content.
 | Skill | Mentions |
 | --- | --- |
 | `/analyze-sessions` | — |
-| `/backlog-item` | `dashboard`, `grill-me`, `second-opinion`, `spec` |
+| `/backlog-item` | `dashboard`, `grill-me`, `land`, `review-diff`, `second-opinion`, `spec` |
 | `/dashboard` | `recap` |
 | `/draft-voice` | — |
 | `/grill-me` | `second-opinion`, `spec` |
+| `/land` | `backlog-item`, `dashboard`, `review-diff` |
 | `/make-skill` | `grill-me` |
 | `/recap` | — |
 | `/refresh-guidance` | — |
+| `/review-diff` | `backlog-item`, `land` |
 | `/second-opinion` | — |
-| `/skill-drift-audit` | — |
+| `/skill-drift-audit` | `land` |
 | `/skill-map` | — |
 | `/spec` | `backlog-item`, `grill-me`, `second-opinion` |
-| `/standup` | `dashboard` |
+| `/standup` | `dashboard`, `land` |
 | `/swarm` | `backlog-item` |
 | `/to-tickets` | `grill-me`, `second-opinion`, `spec` |

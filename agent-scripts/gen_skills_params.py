@@ -569,6 +569,96 @@ argument-hint: "[--verify | --auto] [topic or plan to grill on]"
     },
 }
 
+_REVIEW_DIFF_DESCRIPTION = (
+    "Review the staged git diff for bugs before committing: a non-Claude, "
+    "grounded reviewer (second_opinion.py review --diff), then triage each "
+    "finding fix or reject-with-reason, fix, re-verify, max 2 rounds, and print "
+    "a triage table for the commit gate; falls back to a fresh same-model "
+    "subagent when no backend is available. Use when the user says 'review the "
+    "diff', 'review my changes', 'review before commit', or when backlog-item "
+    "delegates its review step."
+)
+_LAND_DESCRIPTION = (
+    "Land finished work from a worktree: the commit approval gate (showing the "
+    "review-diff triage table), the merge/push/cleanup gate, and, given a "
+    "backlog slug, the dev_status review/approve close. Every gate stops for "
+    "the user. Use when the user says 'land this', 'commit and merge', 'ship "
+    "it', or when backlog-item delegates its landing step."
+)
+_ARG_HINTS = {"review-diff": "[worktree]", "land": "[worktree] [slug]"}
+# Where each harness's copy reads its invocation arguments from.
+_ARGS = {
+    "claude": "`$ARGUMENTS`",
+    "copilot": "the invocation's arguments",
+    "opencode": "`$ARGUMENTS`",
+    "agy": "the invocation's arguments",
+    "pi": "the invocation's arguments",
+    "pi-prompt": "`$ARGUMENTS`",
+    "codex": "the invocation's arguments",
+}
+
+
+def _frontmatter(harness: str, skill: str, description: str) -> str:
+    """Frontmatter for review-diff/land, in each harness's house shape."""
+    lines = ["---"]
+    if harness not in ("opencode", "pi-prompt"):
+        lines.append(f"name: {skill}")
+    lines.append(f'description: "{description}"')
+    if harness in ("claude", "opencode", "pi-prompt"):
+        lines.append(f'argument-hint: "{_ARG_HINTS[skill]}"')
+    if harness == "copilot":
+        lines.append("allowed-tools: shell")
+    lines.append("---")
+    return "\n".join(lines)
+
+
+def _land_frontmatter(harness: str) -> str:
+    return _frontmatter(harness, "land", _LAND_DESCRIPTION)
+
+
+# How backlog-item's copy for each harness hands off to another skill.
+_DELEGATE_HOW = {
+    "claude": "the `{skill}` skill (Skill tool)",
+    "copilot": "the `{skill}` skill (its `skill` tool)",
+    "opencode": "`{skill}`: read `~/.config/opencode/commands/{skill}.md` and follow it",
+    "agy": (
+        "the {skill} skill, using the same suspend-and-return framing as step 5 "
+        "(checkpoint marker, persisted return pointer, absolute-path re-read on "
+        "return)"
+    ),
+    "codex": (
+        "the {skill} skill, using the same suspend-and-return framing as step 5 "
+        "(checkpoint marker, persisted return pointer, absolute-path re-read on "
+        "return)"
+    ),
+}
+
+
+def _review_step(harness: str) -> str:
+    """backlog-item step 10: delegate to review-diff."""
+    how = _DELEGATE_HOW[harness].format(skill="review-diff")
+    return (
+        f"Delegate to {how} with this item's worktree path — every item, no "
+        "ask, `--auto` included. It reviews step 9's staged tree with a "
+        "non-Claude reviewer (same-model subagent fallback), triages each "
+        "finding fix or reject-with-reason, fixes and re-verifies, max 2 rounds. "
+        "Keep the reviewer line and triage table it prints: step 11's commit "
+        "gate shows them. Don't commit here."
+    )
+
+
+def _land_step(harness: str) -> str:
+    """backlog-item step 11: delegate to land."""
+    how = _DELEGATE_HOW[harness].format(skill="land")
+    return (
+        f"Delegate to {how} with this item's worktree path and slug. It owns "
+        "the commit gate (showing step 10's report), the merge/push/cleanup "
+        "gate, and the close (`review` then `approve`, with `gate-pass` "
+        "evidence when the item has a gate). Each of its gates stops for the "
+        "user. Don't commit, merge, or close the item outside it."
+    )
+
+
 BACKLOG_ITEM_PARAMS: dict[str, dict[str, str]] = {
     "claude": {
         "FRONTMATTER": """\
@@ -579,9 +669,9 @@ argument-hint: "[--auto] [slug|N]"
 ---""",
         "OPENING_PARAGRAPH": """\
 Work the named item to done, one step at a time. Every user-approval gate
-below (`## 10`, `## 11`) stops and waits for the user — never collapse two
+in step 11 (`land`'s commit and merge gates) stops and waits for the user — never collapse two
 gates into one approval. Distinct from those: the item's own `gate` field in
-`dev_status.py` (step 5, step 12) is a judgment-step verification checkpoint,
+`dev_status.py` (step 5, and `land`'s close in step 11) is a judgment-step verification checkpoint,
 not a user-approval stop — same word, different mechanism, don't conflate
 them.
 
@@ -662,45 +752,8 @@ don't offer the opencode/GLM route at all.""",
             "TDD in the worktree: a failing test that proves the gap the plan "
             "names, then the minimal implementation."
         ),
-        "STEP10_BODY": (
-            "Show the full staged diff with `git diff --cached`. Stop — AskUserQuestion for explicit commit "
-            "approval. No exceptions for being mid-pipeline, and no exception for "
-            "code an external executor wrote (CLAUDE.md)."
-        ),
-        "STEP11_BODY": """\
-On approval, commit (conventional format) — this gate is never bundled with
-what follows. Personal project (this repo, a personal side project — never
-a `work-`-prefixed item or a work repo): offer the follow-on sequence as one
-bundled question (CLAUDE.md's Git section) — "merge to main, push, and
-clean up the worktree?" — then merge locally, push, `git worktree remove`,
-`git branch -d` on that single approval. Work-related or ambiguous: ask
-separately for merge and for push — never bundle.
-
-When landing work on an `integration_branch` (declared via `update`): merge
-through a temporary worktree via `python3 {{TOOLKIT_SCRIPTS}}/dev_status.py integration-merge <slug|N> [--push]`
-— never by checking the branch out in the live main checkout.""",
-        "STEP12_BODY": """\
-`dev_status.py review <slug|N>` then `approve <slug|N>` — never a bare
-`done` on an in-review item. The lifecycle order is commit → local merge →
-review → approve → done: all three refuse with a typed error while the
-item's attributable local work is uncommitted or not merged into its
-merge target: the repo's local default branch, or instead the item's
-declared `integration_branch` when one is set via `update` (e.g.
-`release-1` work that lands before main). Merge ancestry is the contract — a
-squash/rebase merge clears the check only by deleting the stale local
-branch or worktree, after a human confirms the content reached the
-merge target; planning-only items with no attributable local work
-pass. If `approve` refuses citing an unmet gate,
-actually check each criterion from `show <slug|N>` against the diff — don't
-pass it reflexively — then cover every criterion with evidence:
-`dev_status.py run <slug|N> -- <command>` executes and records a command —
-in the item's own worktree by default; once that is gone it refuses unless
-the main checkout is on the merge target with the work merged, so pass
-`--cwd <a checkout of the merge target>` —
-and `gate-pass <slug|N> '{"coverage": {"<N>": "run:<run_id>" or
-"manual:<note>"}}'` refuses until each criterion cites a recorded run or a
-manual note. Then retry `approve`. Display the full dashboard stdout these
-print; don't just narrate a one-line confirmation.""",
+        "STEP10_BODY": _review_step("claude"),
+        "STEP11_BODY": _land_step("claude"),
         "AUTO_INVOCATION": """\
 **Invocation.** `--auto <slug|N>` runs just that item under this mode.
 `--auto` with no slug batch-processes every READY item, in dashboard order;
@@ -739,9 +792,9 @@ this file. Both require `--prefix` and neither accepts a single-item target.
 Otherwise, if no target item was named, ask which item — never guess.
 
 Work the named item to done, one step at a time. Every user-approval gate
-below (`## 10`, `## 11`) stops and waits for the user — never collapse two
+in step 11 (`land`'s commit and merge gates) stops and waits for the user — never collapse two
 gates into one approval. Distinct from those: the item's own `gate` field in
-`dev_status.py` (step 5, step 12) is a judgment-step verification checkpoint,
+`dev_status.py` (step 5, and `land`'s close in step 11) is a judgment-step verification checkpoint,
 not a user-approval stop — same word, different mechanism, don't conflate
 them.""",
         "STEP1_BODY": """\
@@ -889,49 +942,8 @@ for every shell command in this step and the next three; do not run
 TDD/test/diff/merge commands against the root checkout. TDD in the
 worktree: a failing test that proves the gap the plan names, then the
 minimal implementation.""",
-        "STEP10_BODY": """\
-Show the full diff (read from the worktree, not root). Stop — ask in
-plain text for explicit commit approval, stating your recommendation
-first. No exceptions for being mid-pipeline, and no exception for code an
-external executor wrote (the shared instructions file).""",
-        "STEP11_BODY": """\
-On approval, commit (conventional format) — this gate is never bundled
-with what follows. Personal project (this repo, a personal side project —
-never a `work-`-prefixed item or a work repo): offer the follow-on
-sequence as one bundled plain-text question (the shared instructions
-file's Git section) — "merge to main, push, and clean up the worktree?" —
-then merge locally, push, `git worktree remove`, `git branch -d` on that
-single approval. Work-related or ambiguous: ask separately for merge and
-for push — never bundle. Run merge, push, `git worktree remove`, and `git
-branch -d` from the main checkout (`git -C <repo> merge <slug>` etc.), not
-from inside the worktree being removed — a branch cannot merge into
-itself.
-
-When landing work on an `integration_branch` (declared via `update`): merge
-through a temporary worktree via `python3 {{TOOLKIT_SCRIPTS}}/dev_status.py integration-merge <slug|N> [--push]`
-— never by checking the branch out in the live main checkout.""",
-        "STEP12_BODY": """\
-`dev_status.py review <slug|N>` then `approve <slug|N>` — never a bare
-`done` on an in-review item. The lifecycle order is commit → local merge →
-review → approve → done: all three refuse with a typed error while the
-item's attributable local work is uncommitted or not merged into its
-merge target: the repo's local default branch, or instead the item's
-declared `integration_branch` when one is set via `update` (e.g.
-`release-1` work that lands before main). Merge ancestry is the contract — a
-squash/rebase merge clears the check only by deleting the stale local
-branch or worktree, after a human confirms the content reached the
-merge target; planning-only items with no attributable local work
-pass. If `approve` refuses citing an unmet gate,
-actually check each criterion from `show <slug|N>` against the diff — don't
-pass it reflexively — then cover every criterion with evidence:
-`dev_status.py run <slug|N> -- <command>` executes and records a command —
-in the item's own worktree by default; once that is gone it refuses unless
-the main checkout is on the merge target with the work merged, so pass
-`--cwd <a checkout of the merge target>` —
-and `gate-pass <slug|N> '{"coverage": {"<N>": "run:<run_id>" or
-"manual:<note>"}}'` refuses until each criterion cites a recorded run or a
-manual note. Then retry `approve`. Display the full dashboard stdout these
-print; don't just narrate a one-line confirmation.""",
+        "STEP10_BODY": _review_step("copilot"),
+        "STEP11_BODY": _land_step("copilot"),
         "AUTO_INVOCATION": """\
 **Invocation.** `--auto` with a slug/N runs just that item under this mode.
 `--auto` alone batch-processes every READY item, in dashboard order; any IN
@@ -1049,8 +1061,8 @@ a crash/restart, crash recovery, and concurrency-cap accounting.
 2. Loop: call `swarm_poll`. It blocks until at least one worker settles and
    returns every event that settled in that window (process all of them
    before polling again):
-   - **`blocked`** — a worker hit an approval gate (almost always step 10
-     commit or step 11 merge/push, or another stop). `swarm_poll` reports that
+   - **`blocked`** — a worker hit an approval gate (almost always
+     `land`'s commit or merge/push gate in step 11, or another stop). `swarm_poll` reports that
      event with the quoted prompt. Never answer commit or merge gates on the
      user's behalf. Call `swarm_resolve_blocked` with the agent id and prompt.
      Note: Copilot swarm currently delegates option matching to manual
@@ -1076,7 +1088,7 @@ a crash/restart, crash recovery, and concurrency-cap accounting.
    proactive-capture digest entries (including those captured from workers via
    `COPILOT_SWARM_CAPTURE_FILE`).
 
-Steps 10 and 11's live-approval requirement is never bypassed in this mode.""",
+Step 11's (`land`'s) live-approval requirement is never bypassed in this mode.""",
     },
     "opencode": {
         "FRONTMATTER": """\
@@ -1090,9 +1102,9 @@ given) — what remains is the target item, a slug or an integer N. If
 `--auto` was given, skip straight to the `--auto mode` section at the end
 of this file instead of running the numbered steps live. Otherwise, if the
 remaining target is empty, ask the user which item — never guess. Every
-user-approval gate below (`## 10`, `## 11`) stops and waits for the user —
+user-approval gate in step 11 (`land`'s commit and merge gates) stops and waits for the user —
 never collapse two gates into one approval. Distinct from those: the item's
-own `gate` field in `dev_status.py` (step 5, step 12) is a judgment-step
+own `gate` field in `dev_status.py` (step 5, and `land`'s close in step 11) is a judgment-step
 verification checkpoint, not a user-approval stop — same word, different
 mechanism, don't conflate them.""",
         "STEP1_BODY": """\
@@ -1166,46 +1178,8 @@ conversation:
             "TDD in the worktree: a failing test that proves the gap the plan "
             "names, then the minimal implementation."
         ),
-        "STEP10_BODY": (
-            "Show the full staged diff with `git diff --cached`. Stop — use the `question` tool for explicit "
-            "commit approval. No exceptions for being mid-pipeline, and no "
-            "exception for code an external executor wrote (the shared "
-            "instructions file)."
-        ),
-        "STEP11_BODY": """\
-On approval, commit (conventional format) — this gate is never bundled with
-what follows. Personal project (this repo, a personal side project — never
-a `work-`-prefixed item or a work repo): offer the follow-on sequence as one
-bundled question (the shared instructions file's Git section) — "merge to
-main, push, and clean up the worktree?" — then merge locally, push, `git
-worktree remove`, `git branch -d` on that single approval. Work-related or
-ambiguous: ask separately for merge and for push — never bundle.
-
-When landing work on an `integration_branch` (declared via `update`): merge
-through a temporary worktree via `python3 {{TOOLKIT_SCRIPTS}}/dev_status.py integration-merge $ARGUMENTS [--push]`
-— never by checking the branch out in the live main checkout.""",
-        "STEP12_BODY": """\
-`dev_status.py review $ARGUMENTS` then `approve $ARGUMENTS` — never a bare
-`done` on an in-review item. The lifecycle order is commit → local merge →
-review → approve → done: all three refuse with a typed error while the
-item's attributable local work is uncommitted or not merged into its
-merge target: the repo's local default branch, or instead the item's
-declared `integration_branch` when one is set via `update` (e.g.
-`release-1` work that lands before main). Merge ancestry is the contract — a
-squash/rebase merge clears the check only by deleting the stale local
-branch or worktree, after a human confirms the content reached the
-merge target; planning-only items with no attributable local work
-pass. If `approve` refuses citing an unmet gate,
-actually check each criterion from `show $ARGUMENTS` against the diff —
-don't pass it reflexively — then cover every criterion with evidence:
-`dev_status.py run $ARGUMENTS -- <command>` executes and records a command —
-in the item's own worktree by default; once that is gone it refuses unless
-the main checkout is on the merge target with the work merged, so pass
-`--cwd <a checkout of the merge target>` —
-and `gate-pass $ARGUMENTS '{"coverage": {"<N>": "run:<run_id>" or
-"manual:<note>"}}'` refuses until each criterion cites a recorded run or a
-manual note. Then retry `approve`. Display the full dashboard stdout these
-print; don't just narrate a one-line confirmation.""",
+        "STEP10_BODY": _review_step("opencode"),
+        "STEP11_BODY": _land_step("opencode"),
         "AUTO_INVOCATION": """\
 **Invocation.** A slug/N present after stripping `--auto` runs just that
 item under this mode. No slug batch-processes every READY item, in
@@ -1237,10 +1211,10 @@ Work the named item to done, one step at a time. If the user's prompt names
 `--auto` (with or without a target item), skip straight to the `--auto
 mode` section at the end of this file instead of running the numbered
 steps live. Otherwise, if the user didn't name a specific item (slug or N),
-ask which one — never guess. Every user-approval gate below (`## 10`,
-`## 11`) stops and waits for the user — never collapse two gates into one
+ask which one — never guess. Every user-approval gate in step 11 (`land`'s
+commit and merge gates) stops and waits for the user — never collapse two gates into one
 approval. Distinct from those: the item's own `gate` field in
-`dev_status.py` (step 5, step 12) is a judgment-step verification
+`dev_status.py` (step 5, and `land`'s close in step 11) is a judgment-step verification
 checkpoint, not a user-approval stop — same word, different mechanism,
 don't conflate them.""",
         "STEP1_BODY": """\
@@ -1368,47 +1342,8 @@ don't offer the cheaper-model branch at all.""",
             "TDD in the worktree: a failing test that proves the gap the plan "
             "names, then the minimal implementation."
         ),
-        "STEP10_BODY": """\
-Show the full staged diff with `git diff --cached`. Ask for explicit commit approval, then stop and yield
-the turn. Do not run `git commit` under any circumstances until the user's
-next message contains an explicit yes — stating the question is not the
-same as getting an answer. No exceptions for being mid-pipeline, and no
-exception for code an external executor wrote (the shared instructions
-file).""",
-        "STEP11_BODY": """\
-On approval, commit (conventional format) — this gate is never bundled with
-what follows. Personal project (this repo, a personal side project — never
-a `work-`-prefixed item or a work repo): offer the follow-on sequence as one
-bundled question (the shared instructions file's Git section) — "merge to
-main, push, and clean up the worktree?" — then merge locally, push, `git
-worktree remove`, `git branch -d` on that single approval. Work-related or
-ambiguous: ask separately for merge and for push — never bundle.
-
-When landing work on an `integration_branch` (declared via `update`): merge
-through a temporary worktree via `python3 {{TOOLKIT_SCRIPTS}}/dev_status.py integration-merge <slug|N> [--push]`
-— never by checking the branch out in the live main checkout.""",
-        "STEP12_BODY": """\
-`dev_status.py review <slug|N>` then `approve <slug|N>` — never a bare
-`done` on an in-review item. The lifecycle order is commit → local merge →
-review → approve → done: all three refuse with a typed error while the
-item's attributable local work is uncommitted or not merged into its
-merge target: the repo's local default branch, or instead the item's
-declared `integration_branch` when one is set via `update` (e.g.
-`release-1` work that lands before main). Merge ancestry is the contract — a
-squash/rebase merge clears the check only by deleting the stale local
-branch or worktree, after a human confirms the content reached the
-merge target; planning-only items with no attributable local work
-pass. If `approve` refuses citing an unmet gate,
-actually check each criterion from `show <slug|N>` against the diff — don't
-pass it reflexively — then cover every criterion with evidence:
-`dev_status.py run <slug|N> -- <command>` executes and records a command —
-in the item's own worktree by default; once that is gone it refuses unless
-the main checkout is on the merge target with the work merged, so pass
-`--cwd <a checkout of the merge target>` —
-and `gate-pass <slug|N> '{"coverage": {"<N>": "run:<run_id>" or
-"manual:<note>"}}'` refuses until each criterion cites a recorded run or a
-manual note. Then retry `approve`. Display the full dashboard stdout these
-print; don't just narrate a one-line confirmation.""",
+        "STEP10_BODY": _review_step("agy"),
+        "STEP11_BODY": _land_step("agy"),
         "AUTO_INVOCATION": """\
 **Invocation.** `--auto` with a slug/N runs just that item under this mode.
 `--auto` alone batch-processes every READY item, in dashboard order; any IN
@@ -1450,10 +1385,10 @@ Work the named item to done, one step at a time. If the user's prompt names
 `--auto` (with or without a target item), skip straight to the `--auto
 mode` section at the end of this file instead of running the numbered
 steps live. Otherwise, if the user didn't name a specific item (slug or N),
-ask which one — never guess. Every user-approval gate below (`## 10`,
-`## 11`) stops and waits for the user — never collapse two gates into one
+ask which one — never guess. Every user-approval gate in step 11 (`land`'s
+commit and merge gates) stops and waits for the user — never collapse two gates into one
 approval. Distinct from those: the item's own `gate` field in
-`dev_status.py` (step 5, step 12) is a judgment-step verification
+`dev_status.py` (step 5, and `land`'s close in step 11) is a judgment-step verification
 checkpoint, not a user-approval stop — same word, different mechanism,
 don't conflate them.""",
         "STEP1_BODY": """\
@@ -1577,47 +1512,8 @@ For a work-related item, only the first two options are on the table —
 don't offer the cheaper-model branch at all.""",
         "STEP8_BODY": """\
 TDD in the worktree: a failing test that proves the gap the plan names, then the minimal implementation.""",
-        "STEP10_BODY": """\
-Show the full staged diff with `git diff --cached`. Ask for explicit commit approval, then stop and yield
-the turn. Do not run `git commit` under any circumstances until the user's
-next message contains an explicit yes — stating the question is not the
-same as getting an answer. No exceptions for being mid-pipeline, and no
-exception for code an external executor wrote (the shared instructions
-file).""",
-        "STEP11_BODY": """\
-On approval, commit (conventional format) — this gate is never bundled with
-what follows. Personal project (this repo, a personal side project — never
-a `work-`-prefixed item or a work repo): offer the follow-on sequence as one
-bundled question (the shared instructions file's Git section) — "merge to
-main, push, and clean up the worktree?" — then merge locally, push, `git
-worktree remove`, `git branch -d` on that single approval. Work-related or
-ambiguous: ask separately for merge and for push — never bundle.
-
-When landing work on an `integration_branch` (declared via `update`): merge
-through a temporary worktree via `python3 {{TOOLKIT_SCRIPTS}}/dev_status.py integration-merge <slug|N> [--push]`
-— never by checking the branch out in the live main checkout.""",
-        "STEP12_BODY": """\
-`dev_status.py review <slug|N>` then `approve <slug|N>` — never a bare
-`done` on an in-review item. The lifecycle order is commit → local merge →
-review → approve → done: all three refuse with a typed error while the
-item's attributable local work is uncommitted or not merged into its
-merge target: the repo's local default branch, or instead the item's
-declared `integration_branch` when one is set via `update` (e.g.
-`release-1` work that lands before main). Merge ancestry is the contract — a
-squash/rebase merge clears the check only by deleting the stale local
-branch or worktree, after a human confirms the content reached the
-merge target; planning-only items with no attributable local work
-pass. If `approve` refuses citing an unmet gate,
-actually check each criterion from `show <slug|N>` against the diff — don't
-pass it reflexively — then cover every criterion with evidence:
-`dev_status.py run <slug|N> -- <command>` executes and records a command —
-in the item's own worktree by default; once that is gone it refuses unless
-the main checkout is on the merge target with the work merged, so pass
-`--cwd <a checkout of the merge target>` —
-and `gate-pass <slug|N> '{"coverage": {"<N>": "run:<run_id>" or
-"manual:<note>"}}'` refuses until each criterion cites a recorded run or a
-manual note. Then retry `approve`. Display the full dashboard stdout these
-print; don't just narrate a one-line confirmation.""",
+        "STEP10_BODY": _review_step("codex"),
+        "STEP11_BODY": _land_step("codex"),
         "AUTO_INVOCATION": """\
 **Invocation.** `--auto` with a slug/N runs just that item under this mode.
 `--auto` alone batch-processes every READY item, in dashboard order; any IN
@@ -1656,10 +1552,10 @@ Work the named item to done, one step at a time. If the invocation names
 `--auto` (with or without a target item), skip straight to the `--auto
 mode` section at the end of this file instead of running the numbered
 steps live. Otherwise, if no target item (slug or N) was named, ask which
-one — never guess. Every user-approval gate below (`## 10`, `## 11`) stops
+one — never guess. Every user-approval gate in step 11 (`land`'s commit and merge gates) stops
 and waits for the user — never collapse two gates into one approval.
 Distinct from those: the item's own `gate` field in `dev_status.py` (step
-5, step 12) is a judgment-step verification checkpoint, not a
+5, and `land`'s close in step 11) is a judgment-step verification checkpoint, not a
 user-approval stop — same word, different mechanism, don't conflate them.
 
 There is also a `--swarm[=N]` mode -- `N` concurrent recursive pi workers
@@ -1764,52 +1660,6 @@ structured-choice tool at all, so plain text is the only option there):
             "TDD in the worktree: a failing test that proves the gap the plan "
             "names, then the minimal implementation."
         ),
-        "STEP10_BODY": """\
-Show the full staged diff with `git diff --cached`. Stop — use the `question` tool for explicit commit
-approval, recommended option first (e.g. "Yes, commit (Recommended)" / "No,
-don't commit"), per CLAUDE.md's judgment-call convention. No exceptions for
-being mid-pipeline, and no exception for code an external executor wrote
-(CLAUDE.md). Use `question`, not plain text: its interactive prompt is what
-herdr's pi integration reports as agent state `blocked` — asking in plain
-text instead ends the turn like normal completion does, leaving this gate
-indistinguishable from the agent simply finishing, to anything watching
-over herdr's socket API (`--swarm` mode's relay, in particular).
-
-`herdr-blocked-bridge.ts` is what raises that state, not the question tool
-itself: it listens to pi's own `ui_prompt_start`/`ui_prompt_end` events, so
-every blocking prompt reports `blocked` without each call site having to
-remember to emit anything. The consequence worth knowing: a session started
-with `-ne`/`--no-extensions` has no bridge and no herdr integration, so
-nothing it does will ever report `blocked`.""",
-        "STEP11_BODY": """\
-On approval, commit (conventional format) — this gate is never bundled with
-what follows. Personal project (this repo, a personal side project — never
-a `work-`-prefixed item or a work repo): offer the follow-on sequence as one
-bundled question via the `question` tool (CLAUDE.md's Git section) — "merge
-to main, push, and clean up the worktree?" — then merge locally, push,
-`git worktree remove`, `git branch -d` on that single approval. Work-related
-or ambiguous: ask separately for merge and for push via the `question`
-tool — never bundle. Same reason as step 10: `question`, not plain text, so
-this gate registers as `blocked`, not indistinguishable from done.
-
-When landing work on an `integration_branch` (declared via `update`): merge
-through a temporary worktree via `python3 {{TOOLKIT_SCRIPTS}}/dev_status.py integration-merge <resolved slug> [--push]`
-— never by checking the branch out in the live main checkout.""",
-        "STEP12_BODY": """\
-Call the tool with `action: "review", slug: "<resolved slug>"`, then
-`action: "approve", slug: "<resolved slug>"` — never a bare `done` on an
-in-review item. If `approve` refuses citing an unmet gate, actually check
-each criterion from `show`'s record against the diff — don't pass it
-reflexively — then cover every criterion with evidence (`action: "run"`
-executes and records a command, in the item's own worktree by default —
-once that is gone it refuses unless the main checkout is on the merge target
-with the work merged, so pass `cwd` pointing at a checkout of it; `action:
-"gate_pass"` takes a `patch`
-`{"coverage": {"<N>": "run:<run_id>" or "manual:<note>"}}` and refuses
-until each criterion cites a recorded run or a manual note) and retry
-`approve`. Display the full dashboard text these return; don't just
-narrate a one-line confirmation. (Bash fallback, per step 1: the
-equivalent `dev_status.py` commands, same caveats.)""",
         "AUTO_INVOCATION": """\
 **Invocation.** `--auto` with a slug/N runs just that item under this mode.
 `--auto` alone batch-processes every READY item, in dashboard order; any IN
@@ -1876,6 +1726,348 @@ description: "Runs a dev_status.py backlog item end-to-end: resolve, worktree, s
 argument-hint: "[--auto] [--swarm[=N] | --serial] [--prefix <prefix>] [slug|N]"
 ---""",
     },
+}
+
+# land: steps 10-12 moved out of backlog-item (which now delegates to it).
+LAND_PARAMS: dict[str, dict[str, str]] = {
+    "claude": {
+        "FRONTMATTER": _land_frontmatter("claude"),
+        "ARGS": _ARGS["claude"],
+        "COMMIT_GATE_BODY": (
+            "Show the full staged diff with `git diff --cached`. Stop — AskUserQuestion for explicit commit "
+            "approval. No exceptions for being mid-pipeline, and no exception for "
+            "code an external executor wrote (CLAUDE.md)."
+        ),
+        "LAND_BODY": (
+            """\
+On approval, commit (conventional format) — this gate is never bundled with
+what follows. Personal project (this repo, a personal side project — never
+a `work-`-prefixed item or a work repo): offer the follow-on sequence as one
+bundled question (CLAUDE.md's Git section) — "merge to main, push, and
+clean up the worktree?" — then merge locally, push, `git worktree remove`,
+`git branch -d` on that single approval. Work-related or ambiguous: ask
+separately for merge and for push — never bundle.
+
+When landing work on an `integration_branch` (declared via `update`): merge
+through a temporary worktree via `python3 {{TOOLKIT_SCRIPTS}}/dev_status.py integration-merge <slug> [--push]`
+— never by checking the branch out in the live main checkout."""
+        ),
+        "CLOSE_BODY": (
+            """\
+`dev_status.py review <slug>` then `approve <slug>` — never a bare
+`done` on an in-review item. The lifecycle order is commit → local merge →
+review → approve → done: all three refuse with a typed error while the
+item's attributable local work is uncommitted or not merged into its
+merge target: the repo's local default branch, or instead the item's
+declared `integration_branch` when one is set via `update` (e.g.
+`release-1` work that lands before main). Merge ancestry is the contract — a
+squash/rebase merge clears the check only by deleting the stale local
+branch or worktree, after a human confirms the content reached the
+merge target; planning-only items with no attributable local work
+pass. If `approve` refuses citing an unmet gate,
+actually check each criterion from `show <slug>` against the diff — don't
+pass it reflexively — then cover every criterion with evidence:
+`dev_status.py run <slug> -- <command>` executes and records a command —
+in the item's own worktree by default; once that is gone it refuses unless
+the main checkout is on the merge target with the work merged, so pass
+`--cwd <a checkout of the merge target>` —
+and `gate-pass <slug> '{"coverage": {"<N>": "run:<run_id>" or
+"manual:<note>"}}'` refuses until each criterion cites a recorded run or a
+manual note. Then retry `approve`. Display the full dashboard stdout these
+print; don't just narrate a one-line confirmation."""
+        ),
+    },
+    "copilot": {
+        "FRONTMATTER": _land_frontmatter("copilot"),
+        "ARGS": _ARGS["copilot"],
+        "COMMIT_GATE_BODY": (
+            """\
+Show the full diff (read from the worktree, not root). Stop — ask in
+plain text for explicit commit approval, stating your recommendation
+first. No exceptions for being mid-pipeline, and no exception for code an
+external executor wrote (the shared instructions file)."""
+        ),
+        "LAND_BODY": (
+            """\
+On approval, commit (conventional format) — this gate is never bundled
+with what follows. Personal project (this repo, a personal side project —
+never a `work-`-prefixed item or a work repo): offer the follow-on
+sequence as one bundled plain-text question (the shared instructions
+file's Git section) — "merge to main, push, and clean up the worktree?" —
+then merge locally, push, `git worktree remove`, `git branch -d` on that
+single approval. Work-related or ambiguous: ask separately for merge and
+for push — never bundle. Run merge, push, `git worktree remove`, and `git
+branch -d` from the main checkout (`git -C <repo> merge <slug>` etc.), not
+from inside the worktree being removed — a branch cannot merge into
+itself.
+
+When landing work on an `integration_branch` (declared via `update`): merge
+through a temporary worktree via `python3 {{TOOLKIT_SCRIPTS}}/dev_status.py integration-merge <slug> [--push]`
+— never by checking the branch out in the live main checkout."""
+        ),
+        "CLOSE_BODY": (
+            """\
+`dev_status.py review <slug>` then `approve <slug>` — never a bare
+`done` on an in-review item. The lifecycle order is commit → local merge →
+review → approve → done: all three refuse with a typed error while the
+item's attributable local work is uncommitted or not merged into its
+merge target: the repo's local default branch, or instead the item's
+declared `integration_branch` when one is set via `update` (e.g.
+`release-1` work that lands before main). Merge ancestry is the contract — a
+squash/rebase merge clears the check only by deleting the stale local
+branch or worktree, after a human confirms the content reached the
+merge target; planning-only items with no attributable local work
+pass. If `approve` refuses citing an unmet gate,
+actually check each criterion from `show <slug>` against the diff — don't
+pass it reflexively — then cover every criterion with evidence:
+`dev_status.py run <slug> -- <command>` executes and records a command —
+in the item's own worktree by default; once that is gone it refuses unless
+the main checkout is on the merge target with the work merged, so pass
+`--cwd <a checkout of the merge target>` —
+and `gate-pass <slug> '{"coverage": {"<N>": "run:<run_id>" or
+"manual:<note>"}}'` refuses until each criterion cites a recorded run or a
+manual note. Then retry `approve`. Display the full dashboard stdout these
+print; don't just narrate a one-line confirmation."""
+        ),
+    },
+    "opencode": {
+        "FRONTMATTER": _land_frontmatter("opencode"),
+        "ARGS": _ARGS["opencode"],
+        "COMMIT_GATE_BODY": (
+            "Show the full staged diff with `git diff --cached`. Stop — use the `question` tool for explicit "
+            "commit approval. No exceptions for being mid-pipeline, and no "
+            "exception for code an external executor wrote (the shared "
+            "instructions file)."
+        ),
+        "LAND_BODY": (
+            """\
+On approval, commit (conventional format) — this gate is never bundled with
+what follows. Personal project (this repo, a personal side project — never
+a `work-`-prefixed item or a work repo): offer the follow-on sequence as one
+bundled question (the shared instructions file's Git section) — "merge to
+main, push, and clean up the worktree?" — then merge locally, push, `git
+worktree remove`, `git branch -d` on that single approval. Work-related or
+ambiguous: ask separately for merge and for push — never bundle.
+
+When landing work on an `integration_branch` (declared via `update`): merge
+through a temporary worktree via `python3 {{TOOLKIT_SCRIPTS}}/dev_status.py integration-merge <slug> [--push]`
+— never by checking the branch out in the live main checkout."""
+        ),
+        "CLOSE_BODY": (
+            """\
+`dev_status.py review <slug>` then `approve <slug>` — never a bare
+`done` on an in-review item. The lifecycle order is commit → local merge →
+review → approve → done: all three refuse with a typed error while the
+item's attributable local work is uncommitted or not merged into its
+merge target: the repo's local default branch, or instead the item's
+declared `integration_branch` when one is set via `update` (e.g.
+`release-1` work that lands before main). Merge ancestry is the contract — a
+squash/rebase merge clears the check only by deleting the stale local
+branch or worktree, after a human confirms the content reached the
+merge target; planning-only items with no attributable local work
+pass. If `approve` refuses citing an unmet gate,
+actually check each criterion from `show <slug>` against the diff —
+don't pass it reflexively — then cover every criterion with evidence:
+`dev_status.py run <slug> -- <command>` executes and records a command —
+in the item's own worktree by default; once that is gone it refuses unless
+the main checkout is on the merge target with the work merged, so pass
+`--cwd <a checkout of the merge target>` —
+and `gate-pass <slug> '{"coverage": {"<N>": "run:<run_id>" or
+"manual:<note>"}}'` refuses until each criterion cites a recorded run or a
+manual note. Then retry `approve`. Display the full dashboard stdout these
+print; don't just narrate a one-line confirmation."""
+        ),
+    },
+    "agy": {
+        "FRONTMATTER": _land_frontmatter("agy"),
+        "ARGS": _ARGS["agy"],
+        "COMMIT_GATE_BODY": (
+            """\
+Show the full staged diff with `git diff --cached`. Ask for explicit commit approval, then stop and yield
+the turn. Do not run `git commit` under any circumstances until the user's
+next message contains an explicit yes — stating the question is not the
+same as getting an answer. No exceptions for being mid-pipeline, and no
+exception for code an external executor wrote (the shared instructions
+file)."""
+        ),
+        "LAND_BODY": (
+            """\
+On approval, commit (conventional format) — this gate is never bundled with
+what follows. Personal project (this repo, a personal side project — never
+a `work-`-prefixed item or a work repo): offer the follow-on sequence as one
+bundled question (the shared instructions file's Git section) — "merge to
+main, push, and clean up the worktree?" — then merge locally, push, `git
+worktree remove`, `git branch -d` on that single approval. Work-related or
+ambiguous: ask separately for merge and for push — never bundle.
+
+When landing work on an `integration_branch` (declared via `update`): merge
+through a temporary worktree via `python3 {{TOOLKIT_SCRIPTS}}/dev_status.py integration-merge <slug> [--push]`
+— never by checking the branch out in the live main checkout."""
+        ),
+        "CLOSE_BODY": (
+            """\
+`dev_status.py review <slug>` then `approve <slug>` — never a bare
+`done` on an in-review item. The lifecycle order is commit → local merge →
+review → approve → done: all three refuse with a typed error while the
+item's attributable local work is uncommitted or not merged into its
+merge target: the repo's local default branch, or instead the item's
+declared `integration_branch` when one is set via `update` (e.g.
+`release-1` work that lands before main). Merge ancestry is the contract — a
+squash/rebase merge clears the check only by deleting the stale local
+branch or worktree, after a human confirms the content reached the
+merge target; planning-only items with no attributable local work
+pass. If `approve` refuses citing an unmet gate,
+actually check each criterion from `show <slug>` against the diff — don't
+pass it reflexively — then cover every criterion with evidence:
+`dev_status.py run <slug> -- <command>` executes and records a command —
+in the item's own worktree by default; once that is gone it refuses unless
+the main checkout is on the merge target with the work merged, so pass
+`--cwd <a checkout of the merge target>` —
+and `gate-pass <slug> '{"coverage": {"<N>": "run:<run_id>" or
+"manual:<note>"}}'` refuses until each criterion cites a recorded run or a
+manual note. Then retry `approve`. Display the full dashboard stdout these
+print; don't just narrate a one-line confirmation."""
+        ),
+    },
+    "codex": {
+        "FRONTMATTER": _land_frontmatter("codex"),
+        "ARGS": _ARGS["codex"],
+        "COMMIT_GATE_BODY": (
+            """\
+Show the full staged diff with `git diff --cached`. Ask for explicit commit approval, then stop and yield
+the turn. Do not run `git commit` under any circumstances until the user's
+next message contains an explicit yes — stating the question is not the
+same as getting an answer. No exceptions for being mid-pipeline, and no
+exception for code an external executor wrote (the shared instructions
+file)."""
+        ),
+        "LAND_BODY": (
+            """\
+On approval, commit (conventional format) — this gate is never bundled with
+what follows. Personal project (this repo, a personal side project — never
+a `work-`-prefixed item or a work repo): offer the follow-on sequence as one
+bundled question (the shared instructions file's Git section) — "merge to
+main, push, and clean up the worktree?" — then merge locally, push, `git
+worktree remove`, `git branch -d` on that single approval. Work-related or
+ambiguous: ask separately for merge and for push — never bundle.
+
+When landing work on an `integration_branch` (declared via `update`): merge
+through a temporary worktree via `python3 {{TOOLKIT_SCRIPTS}}/dev_status.py integration-merge <slug> [--push]`
+— never by checking the branch out in the live main checkout."""
+        ),
+        "CLOSE_BODY": (
+            """\
+`dev_status.py review <slug>` then `approve <slug>` — never a bare
+`done` on an in-review item. The lifecycle order is commit → local merge →
+review → approve → done: all three refuse with a typed error while the
+item's attributable local work is uncommitted or not merged into its
+merge target: the repo's local default branch, or instead the item's
+declared `integration_branch` when one is set via `update` (e.g.
+`release-1` work that lands before main). Merge ancestry is the contract — a
+squash/rebase merge clears the check only by deleting the stale local
+branch or worktree, after a human confirms the content reached the
+merge target; planning-only items with no attributable local work
+pass. If `approve` refuses citing an unmet gate,
+actually check each criterion from `show <slug>` against the diff — don't
+pass it reflexively — then cover every criterion with evidence:
+`dev_status.py run <slug> -- <command>` executes and records a command —
+in the item's own worktree by default; once that is gone it refuses unless
+the main checkout is on the merge target with the work merged, so pass
+`--cwd <a checkout of the merge target>` —
+and `gate-pass <slug> '{"coverage": {"<N>": "run:<run_id>" or
+"manual:<note>"}}'` refuses until each criterion cites a recorded run or a
+manual note. Then retry `approve`. Display the full dashboard stdout these
+print; don't just narrate a one-line confirmation."""
+        ),
+    },
+    "pi": {
+        "FRONTMATTER": _land_frontmatter("pi"),
+        "ARGS": _ARGS["pi"],
+        "COMMIT_GATE_BODY": """\
+Show the full staged diff with `git diff --cached`. Stop — use the `question` tool for explicit commit
+approval, recommended option first (e.g. "Yes, commit (Recommended)" / "No,
+don't commit"), per CLAUDE.md's judgment-call convention. No exceptions for
+being mid-pipeline, and no exception for code an external executor wrote
+(CLAUDE.md). Use `question`, not plain text: its interactive prompt is what
+herdr's pi integration reports as agent state `blocked` — asking in plain
+text instead ends the turn like normal completion does, leaving this gate
+indistinguishable from the agent simply finishing, to anything watching
+over herdr's socket API (`--swarm` mode's relay, in particular).
+
+`herdr-blocked-bridge.ts` is what raises that state, not the question tool
+itself: it listens to pi's own `ui_prompt_start`/`ui_prompt_end` events, so
+every blocking prompt reports `blocked` without each call site having to
+remember to emit anything. The consequence worth knowing: a session started
+with `-ne`/`--no-extensions` has no bridge and no herdr integration, so
+nothing it does will ever report `blocked`.""",
+        "LAND_BODY": """\
+On approval, commit (conventional format) — this gate is never bundled with
+what follows. Personal project (this repo, a personal side project — never
+a `work-`-prefixed item or a work repo): offer the follow-on sequence as one
+bundled question via the `question` tool (CLAUDE.md's Git section) — "merge
+to main, push, and clean up the worktree?" — then merge locally, push,
+`git worktree remove`, `git branch -d` on that single approval. Work-related
+or ambiguous: ask separately for merge and for push via the `question`
+tool — never bundle. Same reason as step 1: `question`, not plain text, so
+this gate registers as `blocked`, not indistinguishable from done.
+
+When landing work on an `integration_branch` (declared via `update`): merge
+through a temporary worktree via `python3 {{TOOLKIT_SCRIPTS}}/dev_status.py integration-merge <slug> [--push]`
+(or `git worktree add --detach <tmp> <branch>; git merge <slug>; git update-ref refs/heads/<branch> HEAD; git push origin <branch>; git worktree remove <tmp>`)
+— never by checking the branch out in the live main checkout. Then remove the
+worktree and branch as normal.""",
+        "CLOSE_BODY": """\
+Call the tool with `action: "review", slug: "<slug>"`, then
+`action: "approve", slug: "<slug>"` — never a bare `done` on an
+in-review item. The lifecycle order is commit → local merge → review →
+approve → done: `review`, `approve` and `done` all refuse with a typed
+error while the item's attributable local work is uncommitted or not yet
+merged into its merge target: the repo's local default branch, or instead
+the item's declared `integration_branch` when one is set via `update`
+(e.g. `release-1` work that lands before main). Merge ancestry is the
+contract — a squash/rebase merge clears the check only by deleting the
+stale local branch or worktree, after a human confirms the content
+actually reached the merge target; planning-only items with no
+attributable local work pass. If `approve` refuses citing an unmet gate,
+actually check
+each criterion from `show`'s record against the diff — don't pass it
+reflexively — then cover every criterion with evidence (`action: "run"`
+executes and records a command, in the item's own worktree by default —
+once that is gone it refuses unless the main checkout is on the merge target
+with the work merged, so pass `cwd` pointing at a checkout of it; `action:
+"gate_pass"` takes a `patch`
+`{"coverage": {"<N>": "run:<run_id>" or "manual:<note>"}}` and refuses
+until each criterion cites a recorded run or a manual note) and retry
+`approve`. Display the full dashboard text these return; don't just
+narrate a one-line confirmation.
+
+If the `dev_status` tool is genuinely unavailable at any of the steps
+above, fall back to the equivalent bash `dev_status.py` command named in
+this repo's other harness prompts (`show`/`start`/`gate-set`/`review`/
+`approve`/`gate-pass <slug|N> [--if-rev <N>]`) — in that fallback path
+only, a numeric id needs a fresh, non-quiet `render` immediately before
+each mutating call to read the current rev for `--if-rev` (CLAUDE.md's
+Backlog section).""",
+    },
+}
+LAND_PARAMS["pi-prompt"] = {
+    **LAND_PARAMS["pi"],
+    "FRONTMATTER": _land_frontmatter("pi-prompt"),
+    "ARGS": _ARGS["pi-prompt"],
+}
+
+REVIEW_DIFF_PARAMS: dict[str, dict[str, str]] = {
+    harness: {
+        "FRONTMATTER": _frontmatter(harness, "review-diff", _REVIEW_DIFF_DESCRIPTION),
+        "ARGS": _ARGS[harness],
+        # Never let the harness that wrote the change review it.
+        "EXCLUDE_SELF": (
+            ""
+            if harness == "claude"
+            else f" --exclude-backend {harness.removesuffix('-prompt')}"
+        ),
+    }
+    for harness in _ARGS
 }
 
 MAKE_SKILL_PARAMS: dict[str, dict[str, str]] = {
@@ -3155,4 +3347,6 @@ SKILL_PARAMS: dict[str, dict[str, dict[str, str]]] = {
     "swarm": SWARM_PARAMS,
     "analyze-sessions": ANALYZE_SESSIONS_PARAMS,
     "refresh-guidance": REFRESH_GUIDANCE_PARAMS,
+    "review-diff": REVIEW_DIFF_PARAMS,
+    "land": LAND_PARAMS,
 }

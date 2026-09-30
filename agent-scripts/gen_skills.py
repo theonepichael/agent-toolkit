@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """gen_skills.py — regenerate the dashboard/recap/grill-me/backlog-item/
-make-skill/spec/standup/to-tickets/swarm/analyze-sessions/refresh-guidance
-skill copies from one template per skill, plus a shared per-harness capability
+make-skill/spec/standup/to-tickets/swarm/analyze-sessions/refresh-guidance/
+review-diff/land skill copies from one template per skill, plus a shared per-harness capability
 table. dashboard/recap/grill-me/backlog-item/make-skill/spec/standup/to-tickets/
-analyze-sessions/refresh-guidance cover all 6 harnesses (claude, copilot,
+analyze-sessions/refresh-guidance/review-diff/land cover all 6 harnesses (claude, copilot,
 opencode, agy, pi, codex); swarm covers only claude/copilot (user-directed; pi
 already owns the orchestration surface) — see `SKILL_HARNESSES` below and
 AGENTS.md's "Harness maintenance tiers" section.
@@ -16,7 +16,7 @@ SessionStart hook — that are factually wrong for Pi, which has both).
 spec/standup/to-tickets had the same drift for Pi specifically
 (`meta-pi-residual-skill-drift`). This script replaces those copies with
 generated output: one body template per skill
-(`templates/{dashboard,recap,grill_me,backlog_item,make_skill,spec,standup,to_tickets,swarm,analyze_sessions,refresh_guidance}.md.tmpl`)
+(`templates/{dashboard,recap,grill_me,backlog_item,make_skill,spec,standup,to_tickets,swarm,analyze_sessions,refresh_guidance,review_diff,land}.md.tmpl`)
 plus the shared `CAPABILITY_TABLE` below, mirroring
 `gen_second_opinion.py`'s generator/--check/--stdout shape for the
 second-opinion skill (which this script does not touch — a separate,
@@ -41,11 +41,11 @@ Usage:
 
 Flags: --check, --stdout, --repo-root <path>, --quiet/-q, --verbose/-v.
 Env vars: none.
-Files read: <repo>/templates/{dashboard,recap,grill_me,backlog_item,make_skill,spec,standup,to_tickets,swarm,analyze_sessions,refresh_guidance}.md.tmpl.
-Files written: the 72 (skill, harness) copies named in OUTPUT_PATHS —
-10 skills x 6 harnesses (60), plus swarm x {claude, copilot} (2), plus a
-second pi/prompts/*.md output for each of the 10 skills under the synthetic
-"pi-prompt" harness (10), per `SKILL_HARNESSES` (skipped by --check and
+Files read: <repo>/templates/{dashboard,recap,grill_me,backlog_item,make_skill,spec,standup,to_tickets,swarm,analyze_sessions,refresh_guidance,review_diff,land}.md.tmpl.
+Files written: the 86 (skill, harness) copies named in OUTPUT_PATHS —
+12 skills x 6 harnesses (72), plus swarm x {claude, copilot} (2), plus a
+second pi/prompts/*.md output for each of the 12 skills under the synthetic
+"pi-prompt" harness (12), per `SKILL_HARNESSES` (skipped by --check and
 --stdout).
 Exit codes: 0 success; 1 --check found stale output; 2 bad usage.
 
@@ -76,6 +76,8 @@ SKILLS = (
     "swarm",
     "analyze-sessions",
     "refresh-guidance",
+    "review-diff",
+    "land",
 )
 HARNESSES = harness_spec.ALL_NAMES
 
@@ -107,6 +109,8 @@ SKILL_HARNESSES: dict[str, tuple[str, ...]] = {
     "swarm": ("claude", "copilot"),
     "analyze-sessions": HARNESSES + ("pi-prompt",),
     "refresh-guidance": HARNESSES + ("pi-prompt",),
+    "review-diff": HARNESSES + ("pi-prompt",),
+    "land": HARNESSES + ("pi-prompt",),
 }
 
 TEMPLATE_PATHS: dict[str, str] = {
@@ -121,6 +125,8 @@ TEMPLATE_PATHS: dict[str, str] = {
     "swarm": "templates/swarm.md.tmpl",
     "analyze-sessions": "templates/analyze_sessions.md.tmpl",
     "refresh-guidance": "templates/refresh_guidance.md.tmpl",
+    "review-diff": "templates/review_diff.md.tmpl",
+    "land": "templates/land.md.tmpl",
 }
 
 # Per-(skill, harness) template overrides. Pi has two output surfaces per
@@ -207,6 +213,7 @@ def capability_tokens(harness: str) -> dict[str, str]:
         "SKILL_REF_DIR": str(facts["skill_ref_dir"]),
         "PROBE_COMMAND": str(facts["probe_command"]),
         "COMMIT_SCOPE": str(facts["commit_scope"]),
+        "SUBAGENT_TOOL": str(facts["subagent_tool"]),
     }
 
 
