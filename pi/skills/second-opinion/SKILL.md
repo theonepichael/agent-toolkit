@@ -17,9 +17,9 @@ availability as JSON — use it to check a pool's health before committing to a
 multi-round rotation, and remember it calls the real models once each, so pass
 the `backend` parameter deliberately. It is single-round: one call, one
 critique. The multi-round loop and plan revision are your job, not the
-script's. By default, reviews are grounded in the target codebase (`--dir` or
-current working directory) with read-only tools enabled; use `--text-only` to
-opt out.
+script's. By default, reviews are grounded in the target codebase (`dir` or
+current working directory) with read-only tools enabled; use `textOnly = true`
+to opt out.
 
 Call the `second_opinion` tool. Action `detect` lists the available backends as
 JSON. Action `review` returns one critique of the plan at `planFile`,
@@ -30,7 +30,7 @@ availability as JSON, optionally scoped with `backend`, `model`, and
 an ok/unavailable/not-installed count line, rather than as a tool error. Never
 run `second_opinion.py` via bash.
 
-`--model-index` is a 0-based index into a per-machine model pool
+`modelIndex` is a 0-based index into a per-machine model pool
 (`SECOND_OPINION_CODEX_MODEL_POOL` / `_AGY_MODEL_POOL` / `_PI_MODEL_POOL` /
 `_OPENCODE_MODEL_POOL` / `_COPILOT_MODEL_POOL`, set by the user, not this
 skill) — round 1 of the loop below is index 0, round 2 is index 1, etc. All
@@ -40,46 +40,46 @@ copilot's `--model` flag requires a GitHub Copilot Pro or Enterprise plan, so
 free tier, leave it unset so copilot uses its default model; a set pool there
 fails with an entitlement error naming the variable, not a bad-id error. An
 explicit index selects the pool entry for that call even when a single-model
-override (`SECOND_OPINION_<BACKEND>_MODEL`) is also set; without
-`--model-index` the single override (or the backend default) applies. An
-explicit index is a hard error if the selected backend's pool is unset/empty or
-the index is out of range — it no longer silently falls back. Because of that,
-don't assume a pool is configured: pass `--model-index` every round as before,
-but if that call exits nonzero with a `--model-index ... requires ... POOL ...`
-configuration error (not a backend-failure message), retry that same round's
-call once, identical except omitting `--model-index` — this is the safe,
-always-valid fallback (single-model override or backend default), not a skipped
-round. See the loop below for exactly where this retry sits. If only some
-backends are pool-configured, automatic selection stops on the first priority
-candidate with a pool config error; use `--backend <configured-backend>` to
-target a working one, or `--backend <name>,<name>,...` (comma-separated, tried
-in order, first success wins) to make the script itself fall through at runtime
-— a list skips an entry that is not installed with a one-line notice and never
-touches the priority order; a single name keeps the strict one-backend-only
-contract (that call fails outright with no fallback). A model whose run
-answered with a tool-use transcript instead of a critique — or whose access the
-gateway refuses outright ("Model access is disabled") — is skipped to the next
-pool model instead of failing the round (even a pinned `--model-index` rotates
-forward) and quarantined for the process — later requests in the same process
-skip it, while a fresh CLI invocation starts clean — so do not pin
-`--model-index` across rounds on a machine whose pool is known to contain a
-tool-hungry or access-disabled model; let the rotation skip instead, and repair
-the pool with `probe`'s report. On a machine with no pool at all for the
-dispatched backend, the script itself prints a one-line stderr notice
-(suppressed by `--quiet`) naming the absent pool variable, where to set it, and
-a realistic example — the run still proceeds with the backend's default model,
-so nothing to act on unless you want pool rotation. See the toolkit README's
-"What you supply vs. what the toolkit creates" section for the full config
-contract.
+override (`SECOND_OPINION_<BACKEND>_MODEL`) is also set; without `modelIndex`
+the single override (or the backend default) applies. An explicit index is a
+hard error if the selected backend's pool is unset/empty or the index is out of
+range — it no longer silently falls back. Because of that, don't assume a pool
+is configured: pass `modelIndex` every round as before, but if that call exits
+nonzero with a `--model-index ... requires ... POOL ...` configuration error
+(not a backend-failure message), retry that same round's call once, identical
+except omitting `modelIndex` — this is the safe, always-valid fallback
+(single-model override or backend default), not a skipped round. See the loop
+below for exactly where this retry sits. If only some backends are
+pool-configured, automatic selection stops on the first priority candidate with
+a pool config error; use `backend = <configured-backend>` to target a working
+one, or `backend = <name>,<name>,...` (comma-separated, tried in order, first
+success wins) to make the script itself fall through at runtime — a list skips
+an entry that is not installed with a one-line notice and never touches the
+priority order; a single name keeps the strict one-backend-only contract (that
+call fails outright with no fallback). A model whose run answered with a
+tool-use transcript instead of a critique — or whose access the gateway refuses
+outright ("Model access is disabled") — is skipped to the next pool model
+instead of failing the round (even a pinned `modelIndex` rotates forward) and
+quarantined for the process — later requests in the same process skip it, while
+a fresh CLI invocation starts clean — so do not pin `modelIndex` across rounds
+on a machine whose pool is known to contain a tool-hungry or access-disabled
+model; let the rotation skip instead, and repair the pool with `probe`'s
+report. On a machine with no pool at all for the dispatched backend, the script
+itself prints a one-line stderr notice (the `second_opinion` tool has no quiet
+parameter, so it always reaches you) naming the absent pool variable, where to
+set it, and a realistic example — the run still proceeds with the backend's
+default model, so nothing to act on unless you want pool rotation. See the
+toolkit README's "What you supply vs. what the toolkit creates" section for the
+full config contract.
 
 Pinning a model the user names: when the user asks for a specific backend and
-model for the critique, target the backend with `--backend <name>` and set its
+model for the critique, target the backend with `backend = <name>` and set its
 single-model override (`SECOND_OPINION_<BACKEND>_MODEL`, the model's id or
 display name as that backend lists it — confirm it exists first, e.g. `agy
-models`) for every round, and omit `--model-index` — an explicit index selects
-the pool over the override, so passing it would silently replace the model the
-user asked for. Where the call goes through the native `second_opinion` tool,
-pass the model as the `model` parameter (paired with `backend`) and raise the
+models`) for every round, and omit `modelIndex` — an explicit index selects the
+pool over the override, so passing it would silently replace the model the user
+asked for. Where the call goes through the native `second_opinion` tool, pass
+the model as the `model` parameter (paired with `backend`) and raise the
 timeout with `timeoutSeconds` (clamped to 600) — never set the env var
 directly.
 
@@ -112,9 +112,9 @@ code", "handle errors") but what's actually likely to go wrong given what the
 plan does (e.g. "concurrent writes during the migration window", "auth token
 refresh on the retry path", "the fallback UI state when the API times out").
 Write them as a short bullet list to `<current_plan without its
-extension>-focus.md` and pass `--focus-file <that path>` to `review`. Skip
-`--focus-file` entirely if nothing plan-specific stands out — never write
-generic filler bullets just to have something to pass.
+extension>-focus.md` and pass `focusFile = <that path>` to `review`. Skip
+`focusFile` entirely if nothing plan-specific stands out — never write generic
+filler bullets just to have something to pass.
 
 This is a fresh judgment call each round, not a one-time setup step: the plan
 changes between rounds (see the revision step below), so the risk areas can
@@ -166,8 +166,8 @@ loop:
                                                             # user — the script
                                                             # itself prints a
                                                             # stderr notice
-                                                            # (suppressed by
-                                                            # --quiet) naming
+                                                            # (always shown
+                                                            # by the tool) naming
                                                             # the pool var and
                                                             # an example; the
                                                             # run still falls
@@ -251,7 +251,9 @@ The 3-round cap is enforced by `second_opinion.py` itself, not just this prose:
 a 4th `review` call for the same run is refused with a message telling you to
 stop and finalize (clean up the plan, write the critique-notes file, list the
 open points). Treat that refusal as the cap — do not loop again for this plan.
-A user who genuinely wants more rounds can pass `--allow-extra-round`
+A user who genuinely wants more rounds can run `second_opinion.py review` with
+`--allow-extra-round` themselves, from a shell outside Pi (the `second_opinion`
+tool has no parameter for it, and the script is off Pi's bash allowlist)
 (documented for humans; never surfaced in the refusal text), but reaching the
 cap mid-disagreement usually means you should stop and surface the open points
 rather than grind on.
@@ -293,9 +295,9 @@ retry with that variable raised — up to its 600-second ceiling — the same wa
 as a model pin above. Slower models (a "Pro"/"High" tier) routinely need 300s
 or more. - **Grounded run produced no output because the backend was denied a
 tool** (headless mode auto-denied a permission it could not prompt for): retry
-with `--text-only`, and tell the user the critique could not read the codebase.
-Never add allow-rules or a skip-permissions flag to get the grounded run
-through — never loosen the backend's permissions; the critic's read-only
+with `textOnly = true`, and tell the user the critique could not read the
+codebase. Never add allow-rules or a skip-permissions flag to get the grounded
+run through — never loosen the backend's permissions; the critic's read-only
 isolation is the contract.
 
 A second failure of the same kind ends the loop as above.

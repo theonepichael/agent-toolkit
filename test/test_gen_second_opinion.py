@@ -182,5 +182,98 @@ class PiProbeWordingTests(unittest.TestCase):
             self.assertEqual(gso.substitutions(params)["PROBE_BACKEND_REF"], "`--backend`")
 
 
+class PiToolParameterWordingTests(unittest.TestCase):
+    """Pi reaches second_opinion.py only through its native tool, so its
+    copies must name the tool's parameters wherever the shared template names
+    a script flag the tool exposes -- a Pi agent told to pass `--dir` has no
+    such knob to turn."""
+
+    PI_COPIES = PiProbeWordingTests.PI_COPIES
+    EXPOSED_FLAGS = (
+        "--backend",
+        "--dir",
+        "--focus-file",
+        "--model-index",
+        "--text-only",
+        "--run-id",
+    )
+    # Mentions that stay literal on purpose: the quoted script error text Pi
+    # receives verbatim through the tool, and a sentence about the flag's
+    # own history.
+    LITERAL_ALLOWLIST = (
+        "`--model-index ... requires ... POOL ...`",
+        '"--model-index ... requires ... POOL ..."',
+        "the `--model-index` hard-error ship",
+        "with `--allow-extra-round` themselves, from a shell outside Pi",
+    )
+
+    def flat(self, relpath: str) -> str:
+        return " ".join((REPO_ROOT / relpath).read_text().split())
+
+    def test_pi_copies_name_no_exposed_script_flag(self) -> None:
+        for relpath in self.PI_COPIES:
+            text = self.flat(relpath)
+            for phrase in self.LITERAL_ALLOWLIST:
+                text = text.replace(phrase, "")
+            for flag in (*self.EXPOSED_FLAGS, "--quiet", "--allow-extra-round"):
+                with self.subTest(relpath=relpath, flag=flag):
+                    self.assertNotIn(flag, text)
+
+    def test_pi_copies_name_the_tool_parameters(self) -> None:
+        expected = (
+            "(`dir` or current working directory)",
+            "use `textOnly = true` to opt out",
+            "retry with `textOnly = true`",
+            "pass `focusFile = <that path>` to `review`",
+            "Skip `focusFile` entirely",
+            "`modelIndex` is a 0-based index",
+            "without `modelIndex` the single override",
+            "use `backend = <configured-backend>` to target",
+            "target the backend with `backend = <name>`",
+            "run `second_opinion.py review` with `--allow-extra-round` "
+            "themselves, from a shell outside Pi",
+            "the `second_opinion` tool has no quiet parameter",
+        )
+        for relpath in self.PI_COPIES:
+            text = self.flat(relpath)
+            for phrase in expected:
+                with self.subTest(relpath=relpath, phrase=phrase):
+                    self.assertIn(phrase, text)
+
+    def test_pi_pseudocode_quiet_comment(self) -> None:
+        for relpath in self.PI_COPIES:
+            text = (REPO_ROOT / relpath).read_text()
+            self.assertIn("# (always shown\n", text)
+            self.assertIn("# by the tool) naming\n", text)
+
+    def test_no_copy_keeps_an_unresolved_marker(self) -> None:
+        for relpath in gso.HARNESS_TABLE:
+            self.assertNotIn("{{", (REPO_ROOT / relpath).read_text(), relpath)
+
+    def test_flag_table_matches_the_tool(self) -> None:
+        import re
+
+        source = (REPO_ROOT / "pi/extensions/second-opinion-tool.ts").read_text()
+        emitted = dict(
+            re.findall(r'params\.(\w+)(?: !== undefined)? \? \["(--[a-z-]+)"', source)
+        )
+        self.assertEqual(
+            {param: flag for flag, param in gso.PI_TOOL_PARAMS.items()}, emitted
+        )
+
+    def test_render_flag_forms(self) -> None:
+        pi = gso.HARNESS_TABLE["pi/prompts/second-opinion.md"]
+        shell = gso.HARNESS_TABLE["claude/commands/second-opinion.md"]
+        self.assertEqual(gso.render_flag("--dir", shell), "`--dir`")
+        self.assertEqual(
+            gso.render_flag("--backend <name>", shell), "`--backend <name>`"
+        )
+        self.assertEqual(gso.render_flag("--dir", pi), "`dir`")
+        self.assertEqual(gso.render_flag("--text-only", pi), "`textOnly = true`")
+        self.assertEqual(gso.render_flag("--backend <name>", pi), "`backend = <name>`")
+        with self.assertRaisesRegex(ValueError, "--nope"):
+            gso.render_flag("--nope", pi)
+
+
 if __name__ == "__main__":
     test_bootstrap.run_unittest_main(verbosity=1)

@@ -708,6 +708,8 @@ gen_second_opinion.py — regenerate the second-opinion skill copies (one per ha
 - Public classes:
   - `class HarnessParams` — One harness's frontmatter block plus its body placeholder values.
 - Public functions:
+  - `is_native_tool(params: HarnessParams) -> bool` — Return True for a harness that reaches the script through Pi's tool.
+  - `render_flag(marker_body: str, params: HarnessParams) -> str` — Render one `{{FLAG:...}}` marker body for ``params``'s harness.
   - `substitutions(params: HarnessParams) -> dict[str, str]` — Map each `{{TOKEN}}` in the template to this harness's value.
   - `apply_placeholders(text: str, values: dict[str, str]) -> str` — Replace every `{{TOKEN}}` in ``text`` with its harness-specific value.
   - `render_body(template_text: str, params: HarnessParams) -> str` — Render one harness's body: substitute placeholders, then reflow prose.

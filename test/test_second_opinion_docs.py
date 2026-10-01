@@ -23,8 +23,6 @@ REQUIRED_MARKERS = (
     "don't assume a pool is configured",
     # the POOL-config-error retry inside the loop
     "retry, no index",
-    # the focus-hints mechanism (callers + risk areas)
-    "--focus-file",
     # the caller-check rule for tooling-script changes
     "Caller check for tooling changes",
     # the backlog-recording step
@@ -83,6 +81,14 @@ GRILL_LOOKUP_MARKERS = {
 }
 DEFAULT_GRILL_LOOKUP_MARKERS = ("`grill.py show`",)
 
+# The focus-hints mechanism (callers + risk areas). Seven copies pass it as
+# the script's flag; pi's name the native tool's `focusFile` parameter.
+FOCUS_FILE_MARKERS = {
+    "pi/prompts/second-opinion.md": ("focusFile = <that path>",),
+    "pi/skills/second-opinion/SKILL.md": ("focusFile = <that path>",),
+}
+DEFAULT_FOCUS_FILE_MARKERS = ("--focus-file",)
+
 COPIES = (
     "claude/commands/second-opinion.md",
     "opencode/command/second-opinion.md",
@@ -110,10 +116,17 @@ def missing_markers(rel_path: str, text: str) -> list[str]:
     index_markers = MODEL_INDEX_MARKERS.get(rel_path, DEFAULT_MODEL_INDEX_MARKERS)
     grill_markers = GRILL_LOOKUP_MARKERS.get(rel_path, DEFAULT_GRILL_LOOKUP_MARKERS)
     bind_markers = BIND_NOTES_MARKERS.get(rel_path, DEFAULT_BIND_NOTES_MARKERS)
+    focus_markers = FOCUS_FILE_MARKERS.get(rel_path, DEFAULT_FOCUS_FILE_MARKERS)
     flat_text = " ".join(text.split())
     return [
         m
-        for m in (*REQUIRED_MARKERS, *index_markers, *grill_markers, *bind_markers)
+        for m in (
+            *REQUIRED_MARKERS,
+            *index_markers,
+            *grill_markers,
+            *bind_markers,
+            *focus_markers,
+        )
         if " ".join(m.split()) not in flat_text
     ]
 

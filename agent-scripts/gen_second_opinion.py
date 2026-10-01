@@ -99,6 +99,28 @@ CONTRACT_TOKENS = (
 )
 
 
+# `{{FLAG:--flag[ argument]}}` marks a script flag the Pi tool also exposes.
+# Shell harnesses render the marker body verbatim in backticks; Pi renders
+# the tool's parameter name instead (see render_flag). The marker keeps the
+# literal flag in the template, so check_contract_shape still sees it.
+FLAG_MARKER = re.compile(r"\{\{FLAG:([^}\n]+)\}\}")
+
+# Script flag -> the `second_opinion` tool's parameter that emits it
+# (buildArgv in pi/extensions/second-opinion-tool.ts).
+PI_TOOL_PARAMS = {
+    "--backend": "backend",
+    "--dir": "dir",
+    "--text-only": "textOnly",
+    "--focus-file": "focusFile",
+    "--run-id": "runId",
+    "--model-index": "modelIndex",
+}
+# Flags that take no argument; the tool exposes them as booleans.
+PI_BOOLEAN_FLAGS = frozenset({"--text-only"})
+
+NATIVE_TOOL_ENTRYPOINT = "the `second_opinion` tool"
+
+
 @dataclass(frozen=True)
 class HarnessParams:
     """One harness's frontmatter block plus its body placeholder values."""
@@ -765,6 +787,29 @@ second_opinion.py review <plan-file-or-text> \\
 # ── rendering ────────────────────────────────────────────────────────────────
 
 
+def is_native_tool(params: HarnessParams) -> bool:
+    """Return True for a harness that reaches the script through Pi's tool."""
+    return params.io_entrypoint == NATIVE_TOOL_ENTRYPOINT
+
+
+def render_flag(marker_body: str, params: HarnessParams) -> str:
+    """Render one `{{FLAG:...}}` marker body for ``params``'s harness.
+
+    Shell harnesses get the body verbatim in backticks. Pi gets the tool
+    parameter, as `param`, `param = <argument>`, or `param = true` for a
+    boolean flag. An unknown flag raises, so a typo fails generation.
+    """
+    flag, _, argument = marker_body.partition(" ")
+    if flag not in PI_TOOL_PARAMS:
+        raise ValueError(f"{{{{FLAG:{marker_body}}}}}: unknown flag {flag!r}")
+    if not is_native_tool(params):
+        return f"`{marker_body}`"
+    param = PI_TOOL_PARAMS[flag]
+    if flag in PI_BOOLEAN_FLAGS:
+        return f"`{param} = true`"
+    return f"`{param} = {argument}`" if argument else f"`{param}`"
+
+
 def substitutions(params: HarnessParams) -> dict[str, str]:
     """Map each `{{TOKEN}}` in the template to this harness's value."""
     return {
@@ -793,7 +838,7 @@ def substitutions(params: HarnessParams) -> dict[str, str]:
             "the model as the `model` parameter (paired with `backend`) and "
             "raise the timeout with `timeoutSeconds` (clamped to 600) — never "
             "set the env var directly."
-            if params.io_entrypoint == "the `second_opinion` tool"
+            if is_native_tool(params)
             else "Where the call goes through a shell, prefix it with the "
             "variable; where it goes through a native tool with no model "
             "parameter, ask the user to set the variable in the environment "
@@ -804,17 +849,39 @@ def substitutions(params: HarnessParams) -> dict[str, str]:
         "BIND_NOTES_CALL": (
             "the `second_opinion` tool's `bind-notes` action with `planFile` "
             "set to the saved plan path"
-            if params.io_entrypoint == "the `second_opinion` tool"
+            if is_native_tool(params)
             else "`python3 {{TOOLKIT_SCRIPTS}}/second_opinion.py bind-notes "
             "<plan path>`"
         ),
         # Same io_entrypoint split: Pi scopes a probe with the native tool's
         # `backend` parameter, not the script's `--backend` flag.
         "PROBE_BACKEND_REF": (
-            "the `backend` parameter"
-            if params.io_entrypoint == "the `second_opinion` tool"
-            else "`--backend`"
+            "the `backend` parameter" if is_native_tool(params) else "`--backend`"
         ),
+        # Same io_entrypoint split: the tool has no parameter for
+        # --allow-extra-round, and the script is off Pi's bash allowlist, so
+        # Pi points the user at a shell outside Pi instead.
+        "EXTRA_ROUND_REF": (
+            "run `second_opinion.py review` with `--allow-extra-round` "
+            "themselves, from a shell outside Pi (the `second_opinion` tool "
+            "has no parameter for it, and the script is off Pi's bash "
+            "allowlist)"
+            if is_native_tool(params)
+            else "pass `--allow-extra-round`"
+        ),
+        # Same io_entrypoint split: the tool never passes --quiet and returns
+        # stderr alongside stdout, so Pi always sees the no-pool notice.
+        "QUIET_NOTE": (
+            "(the `second_opinion` tool has no quiet parameter, so it always "
+            "reaches you)"
+            if is_native_tool(params)
+            else "(suppressed by `--quiet`)"
+        ),
+        # The same note split across two fenced pseudocode comment lines.
+        "QUIET_NOTE_OPEN": "(always shown"
+        if is_native_tool(params)
+        else "(suppressed by",
+        "QUIET_NOTE_CLOSE": "by the tool)" if is_native_tool(params) else "--quiet)",
     }
 
 
@@ -840,6 +907,11 @@ def render_body(template_text: str, params: HarnessParams) -> str:
         for k, v in substitutions(params).items()
     }
     values.update(harness_spec.TOOLKIT_PATH_TOKENS)
+    # Flag markers resolve first: each sits inside one template line, and the
+    # reflow below must see the final text.
+    template_text = FLAG_MARKER.sub(
+        lambda m: render_flag(m.group(1), params), template_text
+    )
     lines = template_text.splitlines()
     out: list[str] = []
     paragraph: list[str] = []
