@@ -26,8 +26,11 @@ adapter over it.
 Subcommands
   detect   print each backend's presence and isolation-contract eligibility as JSON
   review   one adversarial critique of a plan file or inline text, or, with
-           --diff, a bug-hunting review of the staged diff in --dir
-  probe    run one trivial text-only health request per pool model and print a
+           --diff, a bug-hunting review of the staged diff in --dir. When
+           stdout is a regular file another live run is already writing,
+           refuses (exit 1) before calling any backend: concurrent redirects
+           into one file splice the critiques together
+  probe   run one trivial text-only health request per pool model and print a
            per-model availability report as JSON (exit 1 when any probed model
            is unavailable; tests must mock the runners, never probe for real)
   bind-notes <artifact>
@@ -186,20 +189,23 @@ Requires Python 3.12+.
 """
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import FrameType
-from typing import NoReturn
+from typing import NoReturn, TextIO
 
 import agent_toolkit_paths
 import cli_common
@@ -1186,10 +1192,20 @@ def _load_run_state(path: Path, key: str) -> dict[str, object]:
 
 
 def _save_run_state(path: Path, state: dict[str, object]) -> None:
-    """Atomically write one run's state (temp file + rename)."""
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(state), encoding="utf-8")
-    os.replace(tmp, path)
+    """Atomically write one run's state (temp file + rename).
+
+    The temp file is unique per call: a fixed name let two concurrent runs
+    with the same key write the same temp path, and the second rename then
+    failed because the first had already moved it away.
+    """
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f"{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(state))
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
 
 
 def _prune_stale_runs(runs_dir: Path) -> None:
@@ -1917,14 +1933,110 @@ def review_plan(
     )
 
 
+_OUTPUT_LOCK_REFUSAL = (
+    "another second_opinion.py run is writing the same output file; the two "
+    "outputs would overwrite each other — capture each call in its own file "
+    "(mktemp), never a fixed name shared with other runs"
+)
+
+_OUTPUT_TAMPERED_WARNING = (
+    "[second_opinion] warning: another process wrote to this run's output file "
+    "while it ran — the file is shared; capture each call in its own file (mktemp)"
+)
+
+
+def _lock_output_file(stream: TextIO) -> int | None:
+    """Take an exclusive lock on ``stream`` when it is a regular file.
+
+    Parallel callers that redirect ``review`` into one fixed file (``> r1.txt``)
+    splice each other's critiques: each redirect truncates at open, every
+    process writes at its own offset, and the last to finish overwrites only
+    the head of a longer earlier critique. The shell's truncation happens
+    before this process starts, so it cannot be prevented here — but a second
+    live run on the same file can be refused before it reaches a backend.
+
+    ``flock`` conflicts between separate open file descriptions of one inode
+    (two shell redirects) and is released when the process exits. Returns the
+    locked fd, or ``None`` when ``stream`` is not a regular file (a pipe, a
+    tty, ``/dev/null``, or a stream with no fd at all). Dies when another
+    process already holds the lock.
+    """
+    try:
+        fd = stream.fileno()
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+    except (AttributeError, OSError, ValueError):
+        # io.UnsupportedOperation (no fd) is an OSError and a ValueError.
+        return None
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        die(_OUTPUT_LOCK_REFUSAL)
+    except OSError:
+        # A filesystem without flock support: no detection, same as before.
+        return None
+    return fd
+
+
+def _warn_if_output_tampered(fd: int | None) -> bool:
+    """Warn on stderr when another process changed this run's output file.
+
+    Called just before the critique is printed. After flushing, this process's
+    own write offset and the file's size agree unless something else
+    truncated the file or wrote into it — e.g. a refused run's ``2>&1``
+    refusal. A truncation of a still-empty file, or a write after this check,
+    is not visible; per-call output files are the guarantee, this only flags
+    a collision it can see. An append-mode fd (a shell ``>>``) is skipped: its
+    offset starts at 0 on a non-empty file, and every write lands at the end
+    anyway, so nothing can be spliced into the middle of it.
+
+    Returns True when tampering was seen, so the caller can trim any foreign
+    bytes left past its own output (:func:`_trim_foreign_tail`).
+    """
+    if fd is None:
+        return False
+    try:
+        if fcntl.fcntl(fd, fcntl.F_GETFL) & os.O_APPEND:
+            return False
+        sys.stdout.flush()
+        sys.stderr.flush()
+        tampered = os.fstat(fd).st_size != os.lseek(fd, 0, os.SEEK_CUR)
+    except OSError:
+        return False
+    if tampered:
+        print(_OUTPUT_TAMPERED_WARNING, file=sys.stderr)
+        sys.stderr.flush()
+    return tampered
+
+
+def _trim_foreign_tail(fd: int) -> None:
+    """Cut the output file at this run's own write offset.
+
+    Only called after :func:`_warn_if_output_tampered` saw another writer: a
+    refused run's refusal can be longer than this run's whole output, and
+    without the trim its tail would survive past the critique — the splice
+    this guard exists to stop. This run still holds the lock, so no other
+    ``second_opinion.py`` run is writing here.
+    """
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os.ftruncate(fd, os.lseek(fd, 0, os.SEEK_CUR))
+    except OSError:
+        return
+
+
 def cmd_review(args: argparse.Namespace) -> None:
     """Handle ``review``: get one critique from the priority-selected backend.
 
     Thin argv adapter over :func:`review_plan`: resolves the plan and focus
     file, builds a :class:`ReviewRequest`, prints the facade's collected
     notices, the first successful critique, and returns. Exits nonzero only
-    if the facade raises (configuration error, or every candidate failed).
+    if the facade raises (configuration error, or every candidate failed), or
+    when stdout is a file another live run is already writing (see
+    :func:`_lock_output_file`).
     """
+    output_lock = _lock_output_file(sys.stdout)
     diff = getattr(args, "diff", False)
     plan_arg = getattr(args, "plan", None)
     if diff and plan_arg is not None:
@@ -2017,13 +2129,18 @@ def cmd_review(args: argparse.Namespace) -> None:
         die(str(exc))
     except ReviewError as exc:
         die(str(exc))
-    # Record a successful review against the cap now that one was produced.
-    if key is not None and not allow_extra:
+    # Record a successful review against the cap now that one was produced —
+    # unless another process disturbed this run's output file: the warning
+    # tells the caller to rerun the round, so it must not spend one.
+    tampered = _warn_if_output_tampered(output_lock)
+    if key is not None and not allow_extra and not tampered:
         _record_successful_review(key)
     for notice in result.notices:
         print(notice, file=sys.stderr)
     print(f"Second opinion via {result.backend_label}:")
     print(result.response_text)
+    if tampered and output_lock is not None:
+        _trim_foreign_tail(output_lock)
 
 
 def _non_negative_int(value: str) -> int:

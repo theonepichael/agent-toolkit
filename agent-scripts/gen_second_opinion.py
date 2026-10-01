@@ -877,6 +877,28 @@ def substitutions(params: HarnessParams) -> dict[str, str]:
             if is_native_tool(params)
             else "(suppressed by `--quiet`)"
         ),
+        # Same io_entrypoint split: a shell harness can redirect review
+        # output into a file, and parallel agents that share one scratch
+        # directory once redirected into the same fixed name and read each
+        # other's critiques spliced together. Pi's tool returns the output
+        # directly, so it only needs the never-a-shared-file half.
+        "REVIEW_OUTPUT_NOTE": (
+            "The `second_opinion` tool returns each call's output directly; "
+            "never relay it through a shared, fixed-name file."
+            if is_native_tool(params)
+            else "Read each `review` call's output straight from the command. "
+            "If you save it to a file, give every call its own file "
+            "(`mktemp`), never a fixed name like `r1.txt`: parallel agents "
+            "often share one scratch directory, and two runs redirected to one "
+            "file overwrite each other, leaving one critique with the tail of "
+            "another. Keep the review's own exit status "
+            '(`second_opinion.py review ... > "$out" 2>&1; rc=$?`) — a trailing '
+            "`; cat` reports `cat`'s status instead. `review` refuses to start "
+            "(exit 1) while another run is writing its output file, and warns "
+            '"another process wrote to this run\'s output file" when its file '
+            "was disturbed; neither is a backend failure — rerun the same round "
+            "with a per-call file."
+        ),
         # The same note split across two fenced pseudocode comment lines.
         "QUIET_NOTE_OPEN": "(always shown"
         if is_native_tool(params)

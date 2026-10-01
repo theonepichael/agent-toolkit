@@ -198,6 +198,9 @@ loop:
 show the final revised plan + a round-by-round summary of what changed and why
 ```
 
+The `second_opinion` tool returns each call's output directly; never relay it
+through a shared, fixed-name file.
+
 "Raises nothing substantively new" is your judgment call, made by reading both
 critiques side by side — not delegated to the reviewer model or to
 deterministic code. A repeated suggestion you already rejected (and noted as

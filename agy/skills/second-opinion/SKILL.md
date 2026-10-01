@@ -197,6 +197,17 @@ loop:
 show the final revised plan + a round-by-round summary of what changed and why
 ```
 
+Read each `review` call's output straight from the command. If you save it to a
+file, give every call its own file (`mktemp`), never a fixed name like
+`r1.txt`: parallel agents often share one scratch directory, and two runs
+redirected to one file overwrite each other, leaving one critique with the tail
+of another. Keep the review's own exit status (`second_opinion.py review ... >
+"$out" 2>&1; rc=$?`) — a trailing `; cat` reports `cat`'s status instead.
+`review` refuses to start (exit 1) while another run is writing its output
+file, and warns "another process wrote to this run's output file" when its file
+was disturbed; neither is a backend failure — rerun the same round with a
+per-call file.
+
 "Raises nothing substantively new" is your judgment call, made by reading both
 critiques side by side — not delegated to the reviewer model or to
 deterministic code. A repeated suggestion you already rejected (and noted as

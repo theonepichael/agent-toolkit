@@ -30,12 +30,22 @@ python3 ~/.agent-toolkit/scripts/second_opinion.py review --diff --dir <worktree
 
 The reviewer is the label it prints (`Second opinion via <label>:`).
 
+Read its output straight from the command. If you save it to a file, give
+every call its own file (`mktemp`), never a fixed name like `rd1.txt`:
+parallel agents often share one scratch directory, and two runs redirected to
+one file overwrite each other. Keep the review's own exit status
+(`... > "$out" 2>&1; rc=$?`), not a trailing `cat`'s.
+
 Refused as too large ("ruled out by payload size")? Split the diff, never
 drop hand-written code: first leave out generated copies whose source
 (template, params) is in the review — `--diff-path . --diff-path ':!<glob>'` —
 but keep one rendered copy per changed template, so the rendering itself is
 read. Still too large? Review path groups with one call each (`--diff-path
 <paths>`, run-id `<run-id>-<group>`). Every staged file lands in some group.
+
+Refused because "another second_opinion.py run is writing the same output
+file", or its output warns "another process wrote to this run's output file"?
+That is not a backend failure: rerun the round with a per-call output file.
 
 It exits nonzero (no backend installed, or every backend failed)? Fall back:
 print the same prompt — the same command with `--prompt-only` in place of

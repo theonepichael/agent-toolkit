@@ -1438,7 +1438,7 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
   - `notes_status(artifact: Path) -> str` — Classify the artifact's critique-notes binding (see check-notes).
   - `ensure_data_dir() -> None` — Create the shared artifact directory if it is missing.
 - Subcommand handlers: `cmd_detect`, `cmd_probe`, `cmd_review`, `cmd_bind_notes`, `cmd_check_notes`
-- Tested by: `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`, `test/test_second_opinion.py`, `test/test_timing.py`
+- Tested by: `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`, `test/test_second_opinion.py`, `test/test_second_opinion_concurrency.py`, `test/test_timing.py`
 
 ### `agent-scripts/seed_hook_subset_guard.py`
 
