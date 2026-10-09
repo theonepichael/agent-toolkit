@@ -47,11 +47,11 @@ await joinSession({
           pluginDir: {
             type: "string",
             description:
-              "Absolute path to this checkout's copilot/extensions/swarm, passed to every " +
-              "worker's --plugin-dir. Omit only if this checkout is literally at " +
-              "~/Workspace/agent-toolkit -- otherwise the default guess is wrong and every " +
-              "worker spawn in this run will fail. Persists on the run's state, so only the " +
-              "first swarm_spawn call for a runId needs to pass it.",
+              "Absolute path to a checkout's copilot/extensions/swarm, passed to every " +
+              "worker's --plugin-dir. Omit it to use the plugin this tool was loaded from " +
+              "(located from its own install); pass it only to run workers against a " +
+              "different checkout, e.g. a worktree. Persists on the run's state, so only " +
+              "the first swarm_spawn call for a runId needs to pass it.",
           },
         },
         required: ["runId"],

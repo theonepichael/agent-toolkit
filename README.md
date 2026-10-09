@@ -66,10 +66,24 @@ SEED_HOOK_ALLOW_DROP=1 git commit ...
 Clone the repository and run the provisioner:
 
 ```bash
-git clone git@github.com:theonepichael/agent-toolkit.git ~/Workspace/agent-toolkit
-cd ~/Workspace/agent-toolkit
+git clone git@github.com:theonepichael/agent-toolkit.git ~/Workspace/agent-toolkit/agent-toolkit
+cd ~/Workspace/agent-toolkit/agent-toolkit
 ./install.sh
 ```
+
+The extra directory level is optional but recommended. Worktrees are created
+beside the checkout, so nesting it keeps them inside `~/Workspace/agent-toolkit/`
+instead of next to every other project. Tools that need to find the checkout
+look in this order:
+
+1. their own install location;
+2. `$AGENT_TOOLKIT_PATH`;
+3. `~/Workspace/agent-toolkit/agent-toolkit`;
+4. `~/Workspace/agent-toolkit`.
+
+So a flat clone, or a clone anywhere else with `AGENT_TOOLKIT_PATH` set, works
+too. `python3 ~/.agent-toolkit/scripts/toolkit_checkout.py checkout`
+prints the checkout they resolve.
 
 ### Fresh worktrees: bootstrap dependencies first
 

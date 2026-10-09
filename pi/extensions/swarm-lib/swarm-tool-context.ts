@@ -4,9 +4,18 @@
 // resume, and host-selected state persistence.
 
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import {
   appendOutcome,
@@ -97,10 +106,99 @@ export function devStatusPath(): string {
   return process.env.COPILOT_SWARM_DEV_STATUS_PATH ?? join(homedir(), ...DEV_STATUS_HOME_SEGMENTS);
 }
 
-export function copilotPluginDir(): string {
-  return (
-    process.env.COPILOT_SWARM_PLUGIN_DIR ??
-    join(homedir(), "Workspace", "agent-toolkit", "copilot", "extensions", "swarm")
+/** The `name` in the swarm plugin's plugin.json. */
+export const SWARM_PLUGIN_NAME = "copilot-swarm";
+
+const PLUGIN_RELPATH = ["copilot", "extensions", "swarm"] as const;
+
+function readPluginNameAt(dir: string): string | undefined {
+  try {
+    const name = JSON.parse(readFileSync(join(dir, "plugin.json"), "utf8"))?.name;
+    return typeof name === "string" ? name : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** True when `dir` has install.py and links.toml files and an agent-scripts/ dir. */
+function isToolkitCheckout(dir: string): boolean {
+  try {
+    return (
+      statSync(join(dir, "install.py")).isFile() &&
+      statSync(join(dir, "links.toml")).isFile() &&
+      statSync(join(dir, "agent-scripts")).isDirectory()
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The swarm plugin directory Copilot workers load with --plugin-dir when the
+ * caller passes none. In order:
+ * 1. $COPILOT_SWARM_PLUGIN_DIR, verbatim.
+ * 2. This module's own location: walking up from it, the first directory that
+ *    is the swarm plugin (a bundle under lib/ or extensions/swarm/), or else
+ *    the first agent-toolkit checkout, whose copilot/extensions/swarm is used
+ *    if it is the plugin. The walk stops at that checkout either way.
+ * 3. $AGENT_TOOLKIT_PATH, which must then be a checkout holding the plugin.
+ * 4. ~/Workspace/agent-toolkit/agent-toolkit (the nested layout), then
+ *    ~/Workspace/agent-toolkit (the flat layout).
+ * Throws when none applies, rather than spawning workers against a wrong path.
+ */
+export function copilotPluginDir(
+  opts: {
+    env?: NodeJS.ProcessEnv;
+    home?: string;
+    moduleUrl?: string;
+    readPluginName?: (dir: string) => string | undefined;
+    isCheckout?: (dir: string) => boolean;
+  } = {},
+): string {
+  const env = opts.env ?? process.env;
+  const home = opts.home ?? homedir();
+  const readPluginName = opts.readPluginName ?? readPluginNameAt;
+  const isCheckout = opts.isCheckout ?? isToolkitCheckout;
+  const isPlugin = (dir: string) => readPluginName(dir) === SWARM_PLUGIN_NAME;
+  const pluginIn = (checkout: string) => join(checkout, ...PLUGIN_RELPATH);
+
+  if (env.COPILOT_SWARM_PLUGIN_DIR) return env.COPILOT_SWARM_PLUGIN_DIR;
+
+  let dir: string | undefined;
+  try {
+    dir = dirname(realpathSync(fileURLToPath(opts.moduleUrl ?? import.meta.url)));
+  } catch {
+    dir = undefined;
+  }
+  while (dir !== undefined) {
+    if (isPlugin(dir)) return dir;
+    if (isCheckout(dir)) {
+      if (isPlugin(pluginIn(dir))) return pluginIn(dir);
+      break;
+    }
+    const parent = dirname(dir);
+    dir = parent === dir ? undefined : parent;
+  }
+
+  const configured = env.AGENT_TOOLKIT_PATH;
+  if (configured) {
+    if (isCheckout(configured) && isPlugin(pluginIn(configured))) return pluginIn(configured);
+    throw new Error(
+      `AGENT_TOOLKIT_PATH is set to ${JSON.stringify(configured)}, which is not an agent-toolkit ` +
+        `checkout with the swarm plugin; fix it, set COPILOT_SWARM_PLUGIN_DIR, or pass swarm_spawn's pluginDir.`,
+    );
+  }
+  const tried: string[] = [];
+  for (const checkout of [
+    join(home, "Workspace", "agent-toolkit", "agent-toolkit"),
+    join(home, "Workspace", "agent-toolkit"),
+  ]) {
+    if (isCheckout(checkout) && isPlugin(pluginIn(checkout))) return pluginIn(checkout);
+    tried.push(checkout);
+  }
+  throw new Error(
+    `cannot locate the copilot swarm plugin (tried this module's checkout, ${tried.join(", ")}); ` +
+      `set COPILOT_SWARM_PLUGIN_DIR or AGENT_TOOLKIT_PATH, or pass swarm_spawn's pluginDir.`,
   );
 }
 

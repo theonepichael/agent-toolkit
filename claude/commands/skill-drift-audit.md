@@ -4,7 +4,7 @@ description: Audit agent-toolkit's skill docs against the current behavior of th
 argument-hint: [since-ref-or-date]
 ---
 
-Repo: `R=${AGENT_TOOLKIT_PATH:-$HOME/Workspace/agent-toolkit}`. Steps 1–5 are read-only — run them against `$R`'s main checkout.
+Repo: `R=$(python3 ~/.agent-toolkit/scripts/toolkit_checkout.py checkout)`. Steps 1–5 are read-only — run them against `$R`'s main checkout.
 
 ## 1. Window
 `$ARGUMENTS` (a ref or `YYYY-MM-DD`) sets the start; else the local tag `skill-audit/last` (`git -C "$R" rev-parse -q --verify skill-audit/last`); else ask. The end is `END=$(git -C "$R" rev-parse main)` — record it now; step 7 tags exactly this sha.

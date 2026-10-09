@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
@@ -304,6 +305,144 @@ class CrossRepoScriptsTestCase(unittest.TestCase):
             del rg.DOC_SETS["custom-cross-repo"]
         self.assertEqual(len(result.findings), 1)
         self.assertIn("no such script", result.findings[0].detail)
+
+    def _cite_shared_tool(self) -> None:
+        (self.repo / "README.md").write_text(
+            "## Usage\n\nRun `python3 shared_tool.py --flag`.\n"
+        )
+        _commit_all(self.repo, "add readme")
+
+    def test_lazy_default_resolves_the_toolkit_checkout(self) -> None:
+        self._cite_shared_tool()
+        rg.DOC_SETS["custom-cross-repo"] = self.doc_set
+        try:
+            with mock.patch.object(
+                rg.toolkit_checkout,
+                "toolkit_checkout",
+                return_value=self.agent_toolkit_root,
+            ) as resolver:
+                result = rg.run_check(self.repo, "custom-cross-repo")
+        finally:
+            del rg.DOC_SETS["custom-cross-repo"]
+        resolver.assert_called_once_with()
+        self.assertEqual(result.findings, [])
+
+    def test_doc_set_without_cross_repo_scripts_never_resolves(self) -> None:
+        self._cite_shared_tool()
+        rg.DOC_SETS["custom-local"] = rg.DocSetConfig(
+            fixed_docs=("README.md",), script_dirs=("scripts",)
+        )
+        try:
+            with mock.patch.object(
+                rg.toolkit_checkout,
+                "toolkit_checkout",
+                side_effect=AssertionError("resolver must not run"),
+            ):
+                rg.run_check(self.repo, "custom-local")
+        finally:
+            del rg.DOC_SETS["custom-local"]
+
+    def test_run_check_propagates_an_unresolvable_checkout(self) -> None:
+        self._cite_shared_tool()
+        rg.DOC_SETS["custom-cross-repo"] = self.doc_set
+        try:
+            with mock.patch.object(
+                rg.toolkit_checkout,
+                "toolkit_checkout",
+                side_effect=rg.toolkit_checkout.CheckoutNotFoundError("none"),
+            ):
+                with self.assertRaises(rg.toolkit_checkout.CheckoutNotFoundError):
+                    rg.run_check(self.repo, "custom-cross-repo")
+        finally:
+            del rg.DOC_SETS["custom-cross-repo"]
+
+    def test_cmd_check_exits_2_when_the_checkout_is_unresolvable(self) -> None:
+        self._cite_shared_tool()
+        rg.DOC_SETS["custom-cross-repo"] = self.doc_set
+        stderr = io.StringIO()
+        try:
+            with (
+                mock.patch.object(
+                    rg.toolkit_checkout,
+                    "toolkit_checkout",
+                    side_effect=rg.toolkit_checkout.CheckoutNotFoundError("none"),
+                ),
+                contextlib.redirect_stderr(stderr),
+                self.assertRaises(SystemExit) as ctx,
+            ):
+                rg.cmd_check(self.repo, "custom-cross-repo", quiet=True)
+        finally:
+            del rg.DOC_SETS["custom-cross-repo"]
+        self.assertEqual(ctx.exception.code, 2)
+        self.assertIn("--agent-toolkit-root", stderr.getvalue())
+
+    def test_mark_reviewed_honors_an_explicit_root(self) -> None:
+        self._cite_shared_tool()
+        rg.DOC_SETS["custom-cross-repo"] = self.doc_set
+        try:
+            with mock.patch.object(
+                rg.toolkit_checkout,
+                "toolkit_checkout",
+                side_effect=AssertionError("explicit root must skip the resolver"),
+            ):
+                rg.cmd_mark_reviewed(
+                    self.repo,
+                    "custom-cross-repo",
+                    "README.md",
+                    "Usage",
+                    commit="abc1234",
+                    date="2026-10-09",
+                    agent_toolkit_root=self.agent_toolkit_root,
+                    quiet=True,
+                )
+        finally:
+            del rg.DOC_SETS["custom-cross-repo"]
+
+    def test_mark_reviewed_exits_2_when_the_checkout_is_unresolvable(self) -> None:
+        self._cite_shared_tool()
+        rg.DOC_SETS["custom-cross-repo"] = self.doc_set
+        try:
+            with (
+                mock.patch.object(
+                    rg.toolkit_checkout,
+                    "toolkit_checkout",
+                    side_effect=rg.toolkit_checkout.CheckoutNotFoundError("none"),
+                ),
+                contextlib.redirect_stderr(io.StringIO()),
+                self.assertRaises(SystemExit) as ctx,
+            ):
+                rg.cmd_mark_reviewed(
+                    self.repo,
+                    "custom-cross-repo",
+                    "README.md",
+                    "Usage",
+                    commit="abc1234",
+                    date="2026-10-09",
+                    quiet=True,
+                )
+        finally:
+            del rg.DOC_SETS["custom-cross-repo"]
+        self.assertEqual(ctx.exception.code, 2)
+
+    def test_main_threads_the_flag_to_mark_reviewed(self) -> None:
+        argv = [
+            "refresh_guidance.py",
+            "mark-reviewed",
+            "--repo-root",
+            str(self.repo),
+            "--agent-toolkit-root",
+            str(self.agent_toolkit_root),
+            "README.md",
+            "Usage",
+        ]
+        with (
+            mock.patch.object(sys, "argv", argv),
+            mock.patch.object(rg, "cmd_mark_reviewed") as handler,
+        ):
+            rg.main()
+        self.assertEqual(
+            handler.call_args.kwargs["agent_toolkit_root"], self.agent_toolkit_root
+        )
 
     def test_cross_repo_path_claim_bare_and_qualified_not_flagged(self) -> None:
         (self.agent_toolkit_root / "MIGRATION.md").write_text("## Migration\n\nContent.\n")

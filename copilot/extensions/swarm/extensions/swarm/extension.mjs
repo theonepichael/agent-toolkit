@@ -3,9 +3,18 @@ import { joinSession } from "@github/copilot-sdk/extension";
 
 // pi/extensions/swarm-lib/swarm-tool-context.ts
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  writeFileSync
+} from "node:fs";
 import { homedir } from "node:os";
-import { join as join2 } from "node:path";
+import { dirname as dirname2, join as join2 } from "node:path";
+import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 
 // pi/extensions/swarm-lib/swarm-scheduling.ts
@@ -671,8 +680,64 @@ function herdrStateDir() {
 function devStatusPath() {
   return process.env.COPILOT_SWARM_DEV_STATUS_PATH ?? join2(homedir(), ...DEV_STATUS_HOME_SEGMENTS);
 }
-function copilotPluginDir() {
-  return process.env.COPILOT_SWARM_PLUGIN_DIR ?? join2(homedir(), "Workspace", "agent-toolkit", "copilot", "extensions", "swarm");
+var SWARM_PLUGIN_NAME = "copilot-swarm";
+var PLUGIN_RELPATH = ["copilot", "extensions", "swarm"];
+function readPluginNameAt(dir) {
+  try {
+    const name = JSON.parse(readFileSync(join2(dir, "plugin.json"), "utf8"))?.name;
+    return typeof name === "string" ? name : void 0;
+  } catch {
+    return void 0;
+  }
+}
+function isToolkitCheckout(dir) {
+  try {
+    return statSync(join2(dir, "install.py")).isFile() && statSync(join2(dir, "links.toml")).isFile() && statSync(join2(dir, "agent-scripts")).isDirectory();
+  } catch {
+    return false;
+  }
+}
+function copilotPluginDir(opts = {}) {
+  const env = opts.env ?? process.env;
+  const home = opts.home ?? homedir();
+  const readPluginName = opts.readPluginName ?? readPluginNameAt;
+  const isCheckout = opts.isCheckout ?? isToolkitCheckout;
+  const isPlugin = (dir2) => readPluginName(dir2) === SWARM_PLUGIN_NAME;
+  const pluginIn = (checkout) => join2(checkout, ...PLUGIN_RELPATH);
+  if (env.COPILOT_SWARM_PLUGIN_DIR) return env.COPILOT_SWARM_PLUGIN_DIR;
+  let dir;
+  try {
+    dir = dirname2(realpathSync(fileURLToPath(opts.moduleUrl ?? import.meta.url)));
+  } catch {
+    dir = void 0;
+  }
+  while (dir !== void 0) {
+    if (isPlugin(dir)) return dir;
+    if (isCheckout(dir)) {
+      if (isPlugin(pluginIn(dir))) return pluginIn(dir);
+      break;
+    }
+    const parent = dirname2(dir);
+    dir = parent === dir ? void 0 : parent;
+  }
+  const configured = env.AGENT_TOOLKIT_PATH;
+  if (configured) {
+    if (isCheckout(configured) && isPlugin(pluginIn(configured))) return pluginIn(configured);
+    throw new Error(
+      `AGENT_TOOLKIT_PATH is set to ${JSON.stringify(configured)}, which is not an agent-toolkit checkout with the swarm plugin; fix it, set COPILOT_SWARM_PLUGIN_DIR, or pass swarm_spawn's pluginDir.`
+    );
+  }
+  const tried = [];
+  for (const checkout of [
+    join2(home, "Workspace", "agent-toolkit", "agent-toolkit"),
+    join2(home, "Workspace", "agent-toolkit")
+  ]) {
+    if (isCheckout(checkout) && isPlugin(pluginIn(checkout))) return pluginIn(checkout);
+    tried.push(checkout);
+  }
+  throw new Error(
+    `cannot locate the copilot swarm plugin (tried this module's checkout, ${tried.join(", ")}); set COPILOT_SWARM_PLUGIN_DIR or AGENT_TOOLKIT_PATH, or pass swarm_spawn's pluginDir.`
+  );
 }
 var DEFAULT_CONCURRENCY = 3;
 var DEFAULT_WAIT_TIMEOUT_MS = 30 * 60 * 1e3;
@@ -2565,7 +2630,7 @@ await joinSession({
           },
           pluginDir: {
             type: "string",
-            description: "Absolute path to this checkout's copilot/extensions/swarm, passed to every worker's --plugin-dir. Omit only if this checkout is literally at ~/Workspace/agent-toolkit -- otherwise the default guess is wrong and every worker spawn in this run will fail. Persists on the run's state, so only the first swarm_spawn call for a runId needs to pass it."
+            description: "Absolute path to a checkout's copilot/extensions/swarm, passed to every worker's --plugin-dir. Omit it to use the plugin this tool was loaded from (located from its own install); pass it only to run workers against a different checkout, e.g. a worktree. Persists on the run's state, so only the first swarm_spawn call for a runId needs to pass it."
           }
         },
         required: ["runId"]
