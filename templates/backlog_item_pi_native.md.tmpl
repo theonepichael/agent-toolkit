@@ -371,9 +371,10 @@ concurrency-cap accounting.
    over the wire and there is no acknowledgement to wait for.
 
    The two gates read that variable and reach deliberately different
-   conclusions. `permission-gate.ts` starts disabled: its ask tier is
+   conclusions. `permission-gate.ts` starts deny-only: its ask tier is
    everything outside a narrow allowlist, and a worker that cannot run tests
-   or git is useless. `guard-rails.ts` stays fully armed and instead
+   or git is useless, so only its deny tier (blocks, never prompts) stays
+   armed. `guard-rails.ts` stays fully armed and instead
    **blocks** its two interactive confirmations — `rm -rf` and `sudo` are
    refused with a reason the worker can read, rather than raising a dialog
    nobody will answer. Every other guard-rails rule, including the

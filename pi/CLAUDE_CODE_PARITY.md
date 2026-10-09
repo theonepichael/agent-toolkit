@@ -200,13 +200,18 @@ Enforces safety and workflow guard rails:
 
 ### `permission-gate.ts`
 
-Replicates `opencode.jsonc`'s `permission.bash` allowlist — the same rule
-set, re-expressed for Pi's `tool_call` event instead of a declarative
-config Pi has no equivalent of (§1: no built-in permission system at all).
-Only bash is gated, matching `opencode.jsonc`'s actual current scope (no
-deny entries exist there today, only allow + a `"*": "ask"` default);
-`opencode.jsonc`'s separate `external_directory` permission type has no
-direct Pi analog and is out of scope.
+Enforces the shared bash policy in `agent-scripts/permission_matrix.py` —
+the same matrix `gen_permissions.py` compiles into Claude's settings and
+`opencode.jsonc` — re-expressed for Pi's `tool_call` event, since Pi has no
+declarative permission config (§1: no built-in permission system at all).
+The allow / ask / deny lists sit in a generated, anchored region of the
+file; edit the matrix and regenerate, never the region. Deny wins, then
+ask, then allow, default ask. `<dir>` in `git -C <dir> …` matches one
+argument exactly here, which is why Pi alone keeps those allows.
+Unattended (`PI_AGENT_UNATTENDED=1`) sessions start deny-only: allow and
+ask pass through, a deny still blocks. `opencode.jsonc`'s separate
+`external_directory` permission type has no direct Pi analog and is out of
+scope.
 - **Toggle command**: `/permission-gate [on|off|status]` for session-scoped override.
   (And `/trust-session [on|off|status]` in `trust-session.ts` to toggle both gates simultaneously).
 

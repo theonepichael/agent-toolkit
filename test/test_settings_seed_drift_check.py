@@ -18,6 +18,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))
 import test_bootstrap  # noqa: E402
+from pytest_shim import pytest  # noqa: E402
 import settings_seed_drift_check as ssdc
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -467,18 +468,255 @@ class SettingsSeedDriftCheckTestCase(unittest.TestCase):
             ["Bash(rm *)", "Bash(LIVE_EXTRA)"],
         )
 
-    def test_fix_permissions_ask_flag_and_skip_when_differing(self) -> None:
-        # Live ask and seed ask differ but neither is a weakened subset of
-        # the other → flag-and-skip (preserve live, report).
+    def test_fix_permissions_ask_union_when_differing(self) -> None:
+        # Live ask and seed ask differ → union: the seed's prompts are added,
+        # live's own extra prompts kept. Adding an ask can only add a prompt.
         seed = {"permissions": {"allow": [], "ask": ["Bash(git commit)"]}}
         self.write_settings_seed(seed)
         live = {"permissions": {"allow": [], "ask": ["Bash(git push)"]}}
         self.write_live_settings(live)
         out, _ = self.run_fix()
         repaired = self.load_live_settings()
-        self.assertEqual(repaired["permissions"]["ask"], ["Bash(git push)"])  # type: ignore[index]
+        self.assertEqual(
+            repaired["permissions"]["ask"],  # type: ignore[index]
+            ["Bash(git push)", "Bash(git commit)"],
+        )
         self.assertIn("permissions.ask", out)
-        self.assertIn("leaving live", out)
+
+    @pytest.mark.regression(
+        "fix-keeps-stale-deny-on-same-count-replacement",
+        "AssertionError: 'Bash(SEED_DENY)' not found in ['Bash(STALE_DENY)']",
+    )
+    def test_fix_permissions_deny_union_on_same_count_replacement(self) -> None:
+        # Live has one stale deny (an old path), seed has one current deny:
+        # equal counts, so the old "weakened subset" test never fired and the
+        # current deny never reached live. Deny/ask now merge as seed ∪ live.
+        seed = {"permissions": {"allow": [], "deny": ["Bash(SEED_DENY)"], "ask": []}}
+        self.write_settings_seed(seed)
+        live = {"permissions": {"allow": [], "deny": ["Bash(STALE_DENY)"], "ask": []}}
+        self.write_live_settings(live)
+        self.run_fix()
+        deny = self.load_live_settings()["permissions"]["deny"]  # type: ignore[index]
+        self.assertIn("Bash(SEED_DENY)", deny)
+        self.assertIn("Bash(STALE_DENY)", deny)
+
+    @pytest.mark.regression(
+        "fix-allow-appended-after-live-ask-overrides-it",
+        "AssertionError: 3 not less than 1",
+    )
+    def test_fix_opencode_added_allow_lands_after_catch_all_before_live_ask(
+        self,
+    ) -> None:
+        # Last match wins in opencode. Appending a new seed allow to the end of
+        # live put it after a live ask it should never override; inserting it
+        # before the catch-all would let "*": "ask" shadow it. It belongs
+        # right after the catch-all.
+        import gen_permissions
+
+        seed_bash = {
+            "*": "ask",
+            "ls*": "allow",
+            "git commit --dry-run*": "allow",
+            "git commit*": "ask",
+        }
+        self.write_opencode_seed({"permission": {"bash": seed_bash}})
+        live_bash = {"*": "ask", "git commit*": "ask"}
+        self.write_live_opencode({"permission": {"bash": live_bash}})
+        self.run_fix()
+        repaired = json.loads(
+            (self.home / ".config" / "opencode" / "opencode.jsonc").read_text()
+        )["permission"]["bash"]
+        keys = list(repaired)
+        self.assertEqual(keys[0], "*")
+        self.assertLess(keys.index("git commit --dry-run*"), keys.index("git commit*"))
+        self.assertEqual(
+            gen_permissions.opencode_verdict(repaired, "git commit --dry-run"),
+            gen_permissions.opencode_verdict(seed_bash, "git commit --dry-run"),
+        )
+        self.assertEqual(gen_permissions.opencode_verdict(repaired, "ls -la"), "allow")
+
+    def test_fix_opencode_added_ask_and_deny_go_last(self) -> None:
+        seed_bash = {"*": "ask", "git *": "allow", "git push*": "ask", "rm *": "deny"}
+        self.write_opencode_seed({"permission": {"bash": seed_bash}})
+        self.write_live_opencode({"permission": {"bash": {"*": "ask", "git *": "allow"}}})
+        self.run_fix()
+        repaired = json.loads(
+            (self.home / ".config" / "opencode" / "opencode.jsonc").read_text()
+        )["permission"]["bash"]
+        self.assertEqual(list(repaired), ["*", "git *", "git push*", "rm *"])
+
+    def _repaired_bash(self) -> dict[str, object]:
+        return json.loads(
+            (self.home / ".config" / "opencode" / "opencode.jsonc").read_text()
+        )["permission"]["bash"]
+
+    @pytest.mark.regression(
+        "fix-appended-ask-overrides-live-deny",
+        "AssertionError: 'ask' != 'deny'",
+    )
+    def test_fix_opencode_added_ask_never_weakens_live_deny(self) -> None:
+        import gen_permissions
+
+        seed_bash = {"*": "ask", "git commit*": "ask"}
+        self.write_opencode_seed({"permission": {"bash": seed_bash}})
+        live_bash = {"*": "ask", "git status*": "allow", "git *": "deny"}
+        self.write_live_opencode({"permission": {"bash": live_bash}})
+        self.run_fix()
+        repaired = self._repaired_bash()
+        self.assertEqual(gen_permissions.opencode_verdict(repaired, "git commit -m x"), "deny")
+        self.assertLess(list(repaired).index("git status*"), list(repaired).index("git commit*"))
+
+    @pytest.mark.regression(
+        "fix-appends-missing-catch-all-after-live-allows",
+        "AssertionError: 'ask' != 'allow'",
+    )
+    def test_fix_opencode_missing_catch_all_goes_first(self) -> None:
+        import gen_permissions
+
+        self.write_opencode_seed({"permission": {"bash": {"*": "ask", "ls*": "allow"}}})
+        self.write_live_opencode({"permission": {"bash": {"git status*": "allow"}}})
+        self.run_fix()
+        repaired = self._repaired_bash()
+        self.assertEqual(gen_permissions.opencode_verdict(repaired, "git status"), "allow")
+        self.assertEqual(list(repaired)[0], "*")
+
+    @pytest.mark.regression(
+        "fix-adds-allows-over-a-live-deny-catch-all",
+        "AssertionError: 'allow' != 'deny'",
+    )
+    def test_fix_opencode_never_adds_allows_over_live_deny_catch_all(self) -> None:
+        import gen_permissions
+
+        self.write_opencode_seed({"permission": {"bash": {"*": "ask", "ls*": "allow"}}})
+        self.write_live_opencode({"permission": {"bash": {"*": "deny"}}})
+        out, _ = self.run_fix()
+        repaired = self._repaired_bash()
+        self.assertEqual(gen_permissions.opencode_verdict(repaired, "ls"), "deny")
+        self.assertIn("ls*", out)
+
+    @pytest.mark.regression(
+        "fix-added-ask-overrides-live-deny-catch-all",
+        "AssertionError: 'ask' != 'deny'",
+    )
+    def test_fix_opencode_never_adds_asks_over_live_deny_catch_all(self) -> None:
+        # Same lockdown reasoning as the allow case above: a seed ask placed
+        # after a live "*": "deny" catch-all converts deny → ask under
+        # last-match-wins, weakening a deliberate lockdown.
+        import gen_permissions
+
+        self.write_opencode_seed(
+            {"permission": {"bash": {"*": "deny", "git commit*": "ask"}}}
+        )
+        self.write_live_opencode({"permission": {"bash": {"*": "deny"}}})
+        out, _ = self.run_fix()
+        repaired = self._repaired_bash()
+        self.assertEqual(
+            gen_permissions.opencode_verdict(repaired, "git commit -m x"), "deny"
+        )
+        self.assertIn("git commit*", out)
+
+    @pytest.mark.regression(
+        "fix-added-ask-shadowed-by-later-live-allow",
+        "AssertionError: 'git commit*' unexpectedly found in {'*': 'ask', "
+        "'git commit*': 'ask', 'rm *': 'deny', 'git *': 'allow'}",
+    )
+    def test_fix_opencode_skips_ask_shadowed_by_later_live_allow(self) -> None:
+        # A new ask is inserted before the first live deny so it can never
+        # weaken one — but a live allow positioned after that point still
+        # decides (last match wins), making the "added" ask inert. Silent
+        # insertion would report a repair that never takes effect.
+        import gen_permissions
+
+        self.write_opencode_seed(
+            {
+                "permission": {
+                    "bash": {
+                        "*": "ask",
+                        "rm *": "deny",
+                        "git *": "allow",
+                        "git commit*": "ask",
+                    }
+                }
+            }
+        )
+        self.write_live_opencode(
+            {"permission": {"bash": {"*": "ask", "rm *": "deny", "git *": "allow"}}}
+        )
+        out, _ = self.run_fix()
+        repaired = self._repaired_bash()
+        self.assertNotIn("git commit*", repaired)
+        self.assertIn("git commit*", out)
+        # live verdict untouched
+        self.assertEqual(
+            gen_permissions.opencode_verdict(repaired, "git commit -m x"), "allow"
+        )
+
+    @pytest.mark.regression(
+        "fix-hoists-live-deny-catch-all-and-flips-verdict",
+        "AssertionError: 'allow' != 'deny'",
+    )
+    def test_fix_preserves_live_catch_all_position(self) -> None:
+        # Reordering the live rules themselves — hoisting a trailing "*":
+        # "deny" backstop to the front — flips commands the user had locked
+        # down; adding a seed rule must never do that.
+        import gen_permissions
+
+        self.write_opencode_seed(
+            {
+                "permission": {
+                    "bash": {"*": "deny", "git status*": "allow", "rm -rf *": "deny"}
+                }
+            }
+        )
+        self.write_live_opencode(
+            {"permission": {"bash": {"git status*": "allow", "*": "deny"}}}
+        )
+        self.run_fix()
+        repaired = self._repaired_bash()
+        self.assertEqual(
+            gen_permissions.opencode_verdict(repaired, "git status"), "deny"
+        )
+
+    @pytest.mark.regression(
+        "fix-skips-ask-on-unrelated-later-live-allow",
+        "AssertionError: 'git commit*' not found in {'*': 'ask', 'git *': "
+        "'allow', 'rm *': 'deny', 'ls*': 'allow'}",
+    )
+    def test_fix_adds_ask_despite_unrelated_later_live_allow(self) -> None:
+        # Only an overlapping later live allow can shadow the new ask; an
+        # unrelated one (ls* vs git commit*) must not suppress the repair.
+        import gen_permissions
+
+        self.write_opencode_seed(
+            {
+                "permission": {
+                    "bash": {
+                        "*": "ask",
+                        "git commit*": "ask",
+                        "rm *": "deny",
+                        "ls*": "allow",
+                    }
+                }
+            }
+        )
+        self.write_live_opencode(
+            {
+                "permission": {
+                    "bash": {
+                        "*": "ask",
+                        "git *": "allow",
+                        "rm *": "deny",
+                        "ls*": "allow",
+                    }
+                }
+            }
+        )
+        self.run_fix()
+        repaired = self._repaired_bash()
+        self.assertIn("git commit*", repaired)
+        self.assertEqual(
+            gen_permissions.opencode_verdict(repaired, "git commit -m x"), "ask"
+        )
 
     def test_fix_hooks_wholesale_overwritten_from_seed(self) -> None:
         # hooks are not live-modified by approvals → any divergence is

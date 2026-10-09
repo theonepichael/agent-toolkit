@@ -2,7 +2,9 @@
 """Declarative harness specification registry.
 
 Single source of truth for per-harness metadata across generators, interface
-renderers, installers, link inspection, and discovery probes.
+renderers, installers, link inspection, and discovery probes. The shared bash
+permission policy lives beside it in permission_matrix.py (compiled by
+gen_permissions.py), validated against the HARNESSES keys here.
 """
 
 from __future__ import annotations

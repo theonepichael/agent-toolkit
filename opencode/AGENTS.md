@@ -23,11 +23,14 @@ wrap lives in `agent-scripts/`.
   silently overwritten. A new skill that other skills load with
   `skill({ name })` on opencode needs an `opencode-skill` row in
   `gen_skills.SKILL_HARNESSES` and a `links.toml` entry, or the load fails.
-- `opencode.jsonc`'s `permission.bash` block is a per-exact-command-prefix
-  allow-list, not a wildcard — it must be kept aligned with Claude Code's
-  and Codex's equivalent permission rules by hand whenever one changes, or
-  the harnesses silently diverge on which commands run without a prompt
-  (see recent history for a fix of exactly this drift).
+- `opencode.jsonc`'s `permission.bash` block is generated — never hand-edit
+  it. `agent-scripts/gen_permissions.py` compiles it, Claude's
+  `settings*.json` permissions and Pi's `permission-gate.ts` lists from the
+  one matrix in `agent-scripts/permission_matrix.py` (last-match-wins order
+  behind a `"*": "ask"` catch-all). Edit the matrix and the hand-approved
+  literal in `test/test_install.py`, then regenerate; `--check` fails
+  pre-commit and CI on drift. `external_directory` is still hand-authored.
+  Codex's rules are not generated and stay aligned by hand.
 - Full porting/parity record (confirmed facts, open decisions, keybind
   conflicts, hooks-vs-plugin-system tradeoffs) lives in
   `opencode/CLAUDE_CODE_PARITY.md` — read it before changing how a skill or

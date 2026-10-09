@@ -52,6 +52,8 @@
     "subcommand search: search message transcripts"
   ],
   "dev_status.py": [
+    "arg (top-level) --compact: \u2014 single-line structured confirmation on stdout instead of full dashboard (default: False)",
+    "arg (top-level) --full/--no-compact: \u2014 force full dashboard render even under DEVSTATUS_AGENT=1 (default: False)",
     "arg (top-level) --quiet/-q: ",
     "arg (top-level) --verbose/-v: ",
     "arg add json: ",

@@ -588,6 +588,11 @@ def extract_cli(tree: ast.Module, module_doc: str) -> CliSpec | None:
         target = symbols.get(owner)
         if method == "add_subparsers" and isinstance(target, _ParserRef):
             return _SubparsersRef(target.subcommand)
+        if method == "add_mutually_exclusive_group" and isinstance(target, _ParserRef):
+            # The group is not a parser, but its add_argument calls belong to
+            # the same CLI surface; bind it as the same ref (gen_permissions'
+            # --check/--stdout/--audit-live mode flags live here).
+            return _ParserRef(target.subcommand)
         if method == "add_parser" and isinstance(target, _SubparsersRef):
             subcommand = register(target, call)
             return _ParserRef(subcommand) if subcommand else None

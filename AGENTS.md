@@ -79,8 +79,9 @@ not the rules themselves; the mechanics stay in the directory file.
   `aliases.zsh`'s `--allow-tool` wildcard only matches single-word command
   stems. See `copilot/AGENTS.md`.
 - **`opencode/`** — `opencode/skills/` is generated output, and
-  `opencode.jsonc`'s `permission.bash` allow-list must be kept aligned with
-  Claude/Codex by hand. See `opencode/AGENTS.md`.
+  `opencode.jsonc`'s `permission.bash` is generated from
+  `agent-scripts/permission_matrix.py` (with Claude's and Pi's permission
+  lists) by `gen_permissions.py`. See `opencode/AGENTS.md`.
 - **`herdr_remote/`** — every non-static route is its own auth-enforcement
   point; a world-readable token file is refused at load. See
   `herdr_remote/AGENTS.md`.
