@@ -217,12 +217,13 @@ def test_e2_custom_dir_outside_both_layouts_is_still_created(local, tmp_path):
     "store-path-ignores-home-change",
     "AssertionError: assert False",
 )
-def test_e3_first_run_on_fresh_home_creates_legacy_store(tmp_path):
+def test_e3_first_run_on_fresh_home_creates_toolkit_home_store(tmp_path):
     fresh = test_layouts.SandboxHome(tmp_path / "fresh", agent_toolkit_paths.write_pointer)
     fresh.home.mkdir()
     with fresh.activated():
         _save_one_item("first")
-    assert (fresh.legacy_data / "backlog" / "items.json").exists()
+    assert (fresh.toolkit_home / "data" / "backlog" / "items.json").exists()
+    assert not fresh.legacy_data.exists()
 
 
 @pytest.mark.regression(
@@ -449,12 +450,13 @@ def test_h_low_level_writers_refuse_held_legacy_paths(local, write):
 # ── check_not_stale: new API ─────────────────────────────────────────────────
 
 
-def test_i_overlapping_roots_never_flag_a_live_path(local, monkeypatch):
+def test_i_overlapping_roots_are_refused(local, monkeypatch):
+    # An override at ~/.claude makes both pointer candidates the same file,
+    # so the resolver refuses the configuration instead of guessing.
     monkeypatch.setenv("AGENT_TOOLKIT_HOME", str(local.home / ".claude"))
     local.flip("toolkit-home")
-    live = agent_toolkit_paths.path_for("work-items")
-    assert live == local.legacy_data / "backlog"
-    agent_toolkit_paths.check_not_stale(live / "items.json")
+    with pytest.raises(agent_toolkit_paths.LayoutError, match="same file"):
+        agent_toolkit_paths.path_for("work-items")
 
 
 def test_i_relative_override_is_ignored_under_legacy(local, monkeypatch):

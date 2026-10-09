@@ -5313,7 +5313,7 @@ class BacklogTestCase(BacklogFixture):
         item["related_files"] = [
             {"path": "/repos/agent-toolkit/a.py", "note": "target"},
             {
-                "path": str(Path.home() / ".claude/data/grill/item-spec.md"),
+                "path": str(agent_toolkit_paths.path_for("decisions") / "item-spec.md"),
                 "note": "durable plan",
             },
         ]
@@ -5329,7 +5329,7 @@ class BacklogTestCase(BacklogFixture):
         artifacts_only = make_item("atk-artifacts-only")
         artifacts_only["related_files"] = [
             {
-                "path": str(Path.home() / ".claude/data/grill/only-plan.md"),
+                "path": str(agent_toolkit_paths.path_for("decisions") / "only-plan.md"),
                 "note": "durable plan",
             }
         ]
@@ -6535,9 +6535,10 @@ class ThinLauncherTests(unittest.TestCase):
             with test_layouts.SandboxHome(
                 Path(tmp), agent_toolkit_paths.write_pointer
             ).activated():
+                # A fresh home (no pointer, no legacy data) is toolkit-home.
                 self.assertEqual(
                     dev_status.ITEMS_FILE,
-                    Path(tmp) / ".claude" / "data" / "backlog" / "items.json",
+                    Path(tmp) / ".agent-toolkit" / "data" / "backlog" / "items.json",
                 )
         with self.assertRaises(AttributeError):
             dev_status.NOT_A_STORE_PATH  # noqa: B018

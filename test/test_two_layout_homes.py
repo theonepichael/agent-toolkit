@@ -57,7 +57,9 @@ def test_flip_is_seen_by_a_fresh_read_in_the_same_process(two_layout_homes):
 def test_custom_pointer_writer_replaces_the_default(tmp_path):
     calls = []
     homes = test_layouts.build_two_layout_homes(
-        tmp_path, pointer_writer=lambda home, layout: calls.append((home, layout))
+        tmp_path, pointer_writer=lambda home, layout, *, toolkit_root: calls.append(
+            (home, layout)
+        )
     )
     homes.local.flip("toolkit-home")
     assert calls == [
@@ -84,3 +86,13 @@ def test_module_touches_no_production_path_constant():
     code = source.split('"""', 2)[2]  # skip the module docstring
     assert not re.search(r"\bDATA_DIR\b", code)
     assert "import dev_status" not in code
+
+
+def test_flip_with_toolkit_root_writes_the_physical_new_pointer(tmp_path):
+    homes = test_layouts.build_two_layout_homes(tmp_path)
+    local = homes.local
+    local.flip("toolkit-home", toolkit_root=local.toolkit_home)
+    # Read the file directly: _pointer() reads the legacy location.
+    new = local.toolkit_home / "data" / "toolkit_state.json"
+    assert json.loads(new.read_text()) == {"schema": 1, "layout": "toolkit-home"}
+    assert _pointer(local.home) == "legacy"

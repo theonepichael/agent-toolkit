@@ -73,9 +73,14 @@ die() {
 [ -n "$HARNESS" ] || die "--harness=<list> is required"
 [ "$(id -u)" -ne 0 ] || die "refusing to run as root"
 [ -x "$CHECKOUT/install.sh" ] || die "no install.sh in $CHECKOUT"
-if [ -e "$REAL_HOME/.claude/data/toolkit_state.json" ]; then
-  die "this machine already has a layout pointer; there is no legacy home to rehearse"
-fi
+# Release 1 leaves the pointer under ~/.claude/data; the Release 2 pointer
+# move leaves it only in the toolkit home.
+for pointer in "$REAL_HOME/.claude/data/toolkit_state.json" \
+  "${AGENT_TOOLKIT_HOME:-$REAL_HOME/.agent-toolkit}/data/toolkit_state.json"; do
+  if [ -e "$pointer" ]; then
+    die "this machine already has a layout pointer; there is no legacy home to rehearse"
+  fi
+done
 if [ "$USE_BWRAP" -eq 1 ]; then
   command -v bwrap >/dev/null 2>&1 ||
     die "bwrap not found; install bubblewrap, or pass --without-bwrap for a reduced rehearsal"

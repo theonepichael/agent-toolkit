@@ -17,11 +17,17 @@ backend-log          ``backend_calls.jsonl``
 
 Layout pointer
 --------------
-Release 0 stores a pointer at ``<home>/.claude/data/toolkit_state.json``.
-The file is a JSON object with ``schema`` set to ``1`` and ``layout`` set to
-``"legacy"`` or ``"toolkit-home"``. When the pointer is missing the layout
-is ``"legacy"``. A malformed pointer raises :class:`LayoutError`; removing
-the pointer restores the legacy layout.
+The pointer is a JSON object with ``schema`` set to ``1`` and ``layout`` set
+to ``"legacy"`` or ``"toolkit-home"`` (:func:`pointer_payload`). Release 2
+reads it from two places: ``<toolkit-root>/data/toolkit_state.json`` first,
+then the legacy ``<home>/.claude/data/toolkit_state.json``. When both exist
+the toolkit-home copy wins, never an error. When neither exists the layout
+is ``"legacy"`` if a legacy domain entry exists under ``.claude/data`` (an
+unmigrated machine) and ``"toolkit-home"`` otherwise (a fresh install). A
+malformed or unreadable pointer raises :class:`LayoutError`, as does an
+``AGENT_TOOLKIT_HOME`` that makes both locations the same file.
+``install.sh --move-layout-pointer`` moves a legacy pointer to the new
+location.
 
 Toolkit-home root
 -----------------
@@ -42,10 +48,10 @@ domain to the same place, and a path under neither layout passes.
 
 Caching
 -------
-A :class:`Resolver` caches the parsed layout keyed by the pointer's
-``(st_ino, st_mtime_ns, st_size)`` (or a sentinel for "missing") and the
-current ``<home>``. Every call re-``stat``s the pointer and invalidates the
-cache when the signature or ``<home>`` changes.
+A :class:`Resolver` caches the parsed layout keyed by ``<home>``, the
+toolkit root, and both pointers' ``(st_ino, st_mtime_ns, st_size)`` (or a
+sentinel for "missing"). Every call re-``stat``s both pointers, legacy
+first, and re-reads when any part of the key changes.
 
 Requires Python 3.12+.
 """
@@ -73,6 +79,7 @@ DOMAINS: tuple[str, ...] = (
     "backend-log",
 )
 POINTER_RELPATH = Path(".claude") / "data" / "toolkit_state.json"
+TOOLKIT_HOME_POINTER_RELPATH = Path("data") / "toolkit_state.json"
 POINTER_SCHEMA = 1
 ENV_HOME = "AGENT_TOOLKIT_HOME"
 
@@ -87,6 +94,7 @@ _LEGACY_SEGMENTS: dict[str, str] = {
 }
 
 _MISSING = object()
+_SELECT_ATTEMPTS = 3
 
 
 class LayoutError(Exception):
@@ -111,15 +119,15 @@ class UnknownDomainError(ValueError):
         self.domain = domain
 
 
+class _Vanished(Exception):
+    """A pointer that ``stat`` just saw was gone by the time it was read."""
+
+
 class Resolver:
     """Resolve toolkit data paths with per-process caching."""
 
     def __init__(self) -> None:
-        self._cache: dict[str, object] = {
-            "home": "",
-            "signature": _MISSING,
-            "layout": "legacy",
-        }
+        self._cache: dict[str, object] = {"key": None, "layout": "legacy"}
 
     def _home(self) -> Path:
         return Path.home()
@@ -136,31 +144,28 @@ class Resolver:
     def _read_pointer(self, pointer: Path) -> Layout:
         try:
             raw = pointer.read_text()
-        except FileNotFoundError:
-            return "legacy"
+        except FileNotFoundError as exc:
+            raise _Vanished from exc
         except OSError as exc:
             raise LayoutError(
-                f"cannot read layout pointer {pointer}: {exc}; "
-                "remove it to restore the legacy layout"
+                f"cannot read layout pointer {pointer}: {exc}; fix or remove it"
             ) from exc
         except UnicodeDecodeError as exc:
             raise LayoutError(
-                f"malformed layout pointer {pointer}: {exc}; "
-                "remove it to restore the legacy layout"
+                f"malformed layout pointer {pointer}: {exc}; fix or remove it"
             ) from exc
 
         try:
             data = json.loads(raw)
         except json.JSONDecodeError as exc:
             raise LayoutError(
-                f"malformed layout pointer {pointer}: {exc}; "
-                "remove it to restore the legacy layout"
+                f"malformed layout pointer {pointer}: {exc}; fix or remove it"
             ) from exc
 
         if not isinstance(data, dict):
             raise LayoutError(
                 f"malformed layout pointer {pointer}: not a JSON object; "
-                "remove it to restore the legacy layout"
+                "fix or remove it"
             )
 
         schema = data.get("schema")
@@ -168,7 +173,7 @@ class Resolver:
             raise LayoutError(
                 f"malformed layout pointer {pointer}: "
                 f"expected schema {POINTER_SCHEMA}, got {schema!r}; "
-                "remove it to restore the legacy layout"
+                "fix or remove it"
             )
 
         layout = data.get("layout")
@@ -176,7 +181,7 @@ class Resolver:
             raise LayoutError(
                 f"malformed layout pointer {pointer}: "
                 f"unknown layout {layout!r}; "
-                "remove it to restore the legacy layout"
+                "fix or remove it"
             )
 
         return layout  # type: ignore[return-value]
@@ -184,35 +189,90 @@ class Resolver:
     def _signature(self, pointer: Path) -> object:
         try:
             stat = pointer.stat()
-        except OSError:
+        except (FileNotFoundError, NotADirectoryError):
             return _MISSING
+        except OSError as exc:
+            raise LayoutError(f"cannot stat layout pointer {pointer}: {exc}") from exc
         return (stat.st_ino, stat.st_mtime_ns, stat.st_size)
+
+    def _has_legacy_data(self, home: Path) -> bool:
+        """True if any legacy domain entry exists under ``~/.claude/data``.
+
+        Only the domain names count, so foreign leftovers in that directory
+        do not make a pointerless home look like an unmigrated one.
+        """
+        data = home / ".claude" / "data"
+        for segment in _LEGACY_SEGMENTS.values():
+            try:
+                (data / segment).lstat()
+            except (FileNotFoundError, NotADirectoryError):
+                continue
+            except OSError as exc:
+                raise LayoutError(f"cannot inspect {data / segment}: {exc}") from exc
+            return True
+        return False
+
+    def _select(
+        self,
+        home: Path,
+        legacy: tuple[Path, object],
+        new: tuple[Path, object] | None,
+        root_error: LayoutError | None,
+    ) -> Layout:
+        legacy_path, legacy_sig = legacy
+        if new is not None:
+            new_path, new_sig = new
+            # realpath, not samefile: the aliasing is a misconfiguration even
+            # when neither pointer exists yet.
+            if os.path.realpath(new_path) == os.path.realpath(legacy_path):
+                raise LayoutError(
+                    f"the toolkit-home pointer {new_path} and the legacy pointer "
+                    f"{legacy_path} are the same file; {ENV_HOME} must not "
+                    "point at ~/.claude"
+                )
+            if new_sig is not _MISSING:
+                return self._read_pointer(new_path)
+        if legacy_sig is not _MISSING:
+            return self._read_pointer(legacy_path)
+        if self._has_legacy_data(home):
+            return "legacy"
+        if root_error is not None:
+            raise root_error
+        return "toolkit-home"
 
     def _load(self) -> tuple[Path, Layout]:
         home = self._home()
-        pointer = home / POINTER_RELPATH
-        signature = self._signature(pointer)
-
-        if (
-            str(home) != self._cache["home"]  # type: ignore[comparison-overlap]
-            or signature != self._cache["signature"]
-        ):
-            layout = self._read_pointer(pointer)
-            self._cache = {
-                "home": str(home),
-                "signature": signature,
-                "layout": layout,
-            }
-
-        return home, self._cache["layout"]  # type: ignore[return-value]
+        legacy_path = home / POINTER_RELPATH
+        root: Path | None
+        try:
+            root = self._toolkit_root(home)
+            root_error = None
+        except LayoutError as exc:
+            root, root_error = None, exc
+        new_path = None if root is None else root / TOOLKIT_HOME_POINTER_RELPATH
+        for _attempt in range(_SELECT_ATTEMPTS):
+            # Legacy first: the move writes the new pointer before deleting the
+            # old one, so this order can never observe both as absent.
+            legacy_sig = self._signature(legacy_path)
+            new_sig = _MISSING if new_path is None else self._signature(new_path)
+            key = (str(home), str(root), legacy_sig, new_sig)
+            if key == self._cache["key"]:
+                return home, self._cache["layout"]  # type: ignore[return-value]
+            new = None if new_path is None else (new_path, new_sig)
+            try:
+                layout = self._select(home, (legacy_path, legacy_sig), new, root_error)
+            except _Vanished:
+                continue
+            self._cache = {"key": key, "layout": layout}
+            return home, layout
+        raise LayoutError(
+            f"layout pointer kept changing while it was read ({legacy_path}, "
+            f"{new_path}); retry the command"
+        )
 
     def invalidate(self) -> None:
         """Drop the cached layout so the next call re-reads the pointer."""
-        self._cache = {
-            "home": "",
-            "signature": _MISSING,
-            "layout": "legacy",
-        }
+        self._cache = {"key": None, "layout": "legacy"}
 
     def layout(self) -> Layout:
         """Return the current layout, reading the pointer if necessary."""
@@ -301,6 +361,11 @@ def toolkit_root() -> Path:
     return Resolver()._toolkit_root(Path.home())
 
 
+def has_legacy_data(home: Path) -> bool:
+    """True if a legacy domain entry exists in ``home``'s legacy data directory."""
+    return Resolver()._has_legacy_data(home)
+
+
 def check_not_stale(path: Path) -> None:
     """Refuse a path from the non-current layout using :data:`DEFAULT_RESOLVER`."""
     DEFAULT_RESOLVER.check_not_stale(path)
@@ -311,24 +376,33 @@ def current_layout() -> Layout:
     return DEFAULT_RESOLVER.layout()
 
 
-def write_pointer(home: Path, layout: Layout) -> None:
-    """Atomically write the layout pointer under ``home``.
+def pointer_payload(layout: Layout) -> bytes:
+    """The canonical bytes of a layout pointer saying ``layout``."""
+    return (json.dumps({"schema": POINTER_SCHEMA, "layout": layout}) + "\n").encode()
 
-    Creates the parent directory. The write is atomic and durable: a
-    temporary file in the same directory is fsynced, renamed over the
-    pointer with ``os.replace``, and the directory is fsynced.
+
+def write_pointer(home: Path, layout: Layout, *, toolkit_root: Path | None) -> None:
+    """Atomically write the layout pointer.
+
+    ``toolkit_root=None`` writes the legacy pointer under ``home``; a path
+    writes ``<toolkit_root>/data/toolkit_state.json``. Creates the parent
+    directory. The write is atomic and durable: a temporary file in the same
+    directory is fsynced, renamed over the pointer with ``os.replace``, and
+    the directory is fsynced.
     """
-    pointer = home / POINTER_RELPATH
+    if toolkit_root is None:
+        pointer = home / POINTER_RELPATH
+    else:
+        pointer = toolkit_root / TOOLKIT_HOME_POINTER_RELPATH
     pointer.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps({"schema": POINTER_SCHEMA, "layout": layout}) + "\n"
     with tempfile.NamedTemporaryFile(
-        mode="w",
+        mode="wb",
         dir=pointer.parent,
         prefix=".toolkit_state",
         suffix=".tmp",
         delete=False,
     ) as fh:
-        fh.write(payload)
+        fh.write(pointer_payload(layout))
         fh.flush()
         os.fsync(fh.fileno())
         tmp_path = Path(fh.name)

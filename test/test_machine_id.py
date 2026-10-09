@@ -462,7 +462,7 @@ RUNNER = str(REPO / "agent-scripts" / "to_tickets_runner.py")
 class TestCliWithBrokenId(unittest.TestCase):
     def setUp(self) -> None:
         self.home = Path(tempfile.mkdtemp())
-        self.data = self.home / ".claude" / "data" / "backlog"
+        self.data = self.home / ".agent-toolkit" / "data" / "backlog"
         self.env = dict(
             os.environ,
             HOME=str(self.home),

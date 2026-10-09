@@ -369,5 +369,23 @@ After finalize, the snapshot is gone and there is no rollback. Fix forward.
 ## Release 2
 
 Do not run the sync with `--apply` on any commit that contains Release 2
-until this machine has been finalized. Release 2 removes the rule that a
-missing layout pointer means the legacy layout.
+until this machine has been finalized. Release 2 changes what a missing
+layout pointer means: a home with legacy toolkit data under `~/.claude/data`
+still resolves to the legacy layout, but a home without any now resolves to
+the toolkit-home layout.
+
+Once this machine is finalized and running Release 2, move the layout
+pointer out of `~/.claude/data`:
+
+```bash
+./install.sh --move-layout-pointer
+```
+
+It writes `~/.agent-toolkit/data/toolkit_state.json`, deletes the old
+pointer, and removes `~/.claude/data` if that leaves it empty (anything else
+there is kept and listed). It refuses, writing nothing, unless the Release 1
+migration is finalized, the deployed path resolver is the Release 2 one, and
+any existing pointer holds the canonical toolkit-home pointer. If it is
+interrupted, run it again: every step checks the current state first.
+Afterwards, restart any long-running toolkit process that was started
+before the Release 2 upgrade.

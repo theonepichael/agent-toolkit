@@ -89,6 +89,7 @@ Single source of truth for toolkit data paths.
 - CLI: none (library module).
 - Filesystem constants:
   - `POINTER_RELPATH = Path('.claude') / 'data' / 'toolkit_state.json'`
+  - `TOOLKIT_HOME_POINTER_RELPATH = Path('data') / 'toolkit_state.json'`
 - Exceptions:
   - `class LayoutError(Exception)` — Raised when the layout pointer is malformed or the override is invalid.
   - `class StaleLayoutError(LayoutError)` — Raised when a path belongs to the layout that is no longer current.
@@ -101,11 +102,13 @@ Single source of truth for toolkit data paths.
   - `path_for_layout(domain: str, layout: Layout) -> Path` — Resolve ``domain`` for ``layout`` using :data:`DEFAULT_RESOLVER`.
   - `layout_path(home: Path, domain: str, layout: Layout) -> Path` — Resolve ``domain`` for ``layout`` under an explicit ``home``.
   - `toolkit_root() -> Path` — Return ``$AGENT_TOOLKIT_HOME``, or ``<home>/.agent-toolkit``.
+  - `has_legacy_data(home: Path) -> bool` — True if a legacy domain entry exists in ``home``'s legacy data directory.
   - `check_not_stale(path: Path) -> None` — Refuse a path from the non-current layout using :data:`DEFAULT_RESOLVER`.
   - `current_layout() -> Layout` — Return the current layout using :data:`DEFAULT_RESOLVER`.
-  - `write_pointer(home: Path, layout: Layout) -> None` — Atomically write the layout pointer under ``home``.
+  - `pointer_payload(layout: Layout) -> bytes` — The canonical bytes of a layout pointer saying ``layout``.
+  - `write_pointer(home: Path, layout: Layout, *, toolkit_root: Path | None) -> None` — Atomically write the layout pointer.
   - `check_upgrade_required(home: Path | None = None) -> None` — Raise :class:`UpgradeRequiredError` if legacy state exists without a completed migration record.
-- Tested by: `agent-scripts/test_layouts.py`, `test/test_agent_toolkit_paths.py`, `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_dev_status_storage.py`, `test/test_gen_interfaces.py`, `test/test_grill.py`, `test/test_guard_rails.py`, `test/test_llm_backends.py`, `test/test_machine_id.py`, `test/test_migrate_path_transform.py`, `test/test_migrate_settings_rewrite.py`, `test/test_migrate_toolkit_home.py`, `test/test_migrate_toolkit_home_carry.py`, `test/test_migrate_toolkit_home_moves.py`, `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`, `test/test_second_opinion.py`, `test/test_to_tickets_runner.py`
+- Tested by: `agent-scripts/test_layouts.py`, `test/test_agent_toolkit_paths.py`, `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_dev_status_storage.py`, `test/test_gen_interfaces.py`, `test/test_grill.py`, `test/test_guard_rails.py`, `test/test_install.py`, `test/test_llm_backends.py`, `test/test_machine_id.py`, `test/test_migrate_path_transform.py`, `test/test_migrate_settings_rewrite.py`, `test/test_migrate_toolkit_home.py`, `test/test_migrate_toolkit_home_carry.py`, `test/test_migrate_toolkit_home_moves.py`, `test/test_migration_lock_adoption.py`, `test/test_move_layout_pointer.py`, `test/test_path_for_per_use.py`, `test/test_second_opinion.py`, `test/test_to_tickets_runner.py`
 
 ### `agent-scripts/analyze_sessions.py`
 
@@ -1177,7 +1180,7 @@ Machine-wide migration lock: writers share it, the toolkit-home migrator owns it
   - `exclusive(site: str, *, blocking: bool = True) -> Iterator[None]` — Hold the lock exclusively (the migrator).
   - `build_parser() -> argparse.ArgumentParser`
 - Subcommand handlers: `cmd_status`, `cmd_hold`, `cmd_observations`
-- Tested by: `test/test_dev_status_validate.py`, `test/test_guard_rails_claim.py`, `test/test_migrate_path_transform.py`, `test/test_migrate_settings_rewrite.py`, `test/test_migrate_toolkit_home.py`, `test/test_migrate_toolkit_home_carry.py`, `test/test_migrate_toolkit_home_moves.py`, `test/test_migration_lock.py`, `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`
+- Tested by: `test/test_dev_status_validate.py`, `test/test_guard_rails_claim.py`, `test/test_migrate_path_transform.py`, `test/test_migrate_settings_rewrite.py`, `test/test_migrate_toolkit_home.py`, `test/test_migrate_toolkit_home_carry.py`, `test/test_migrate_toolkit_home_moves.py`, `test/test_migration_lock.py`, `test/test_migration_lock_adoption.py`, `test/test_move_layout_pointer.py`, `test/test_path_for_per_use.py`
 
 ### `agent-scripts/notify.py`
 
@@ -1995,6 +1998,7 @@ install.py — agent-toolkit provisioner and migration controls for macOS/Linux.
   - `--migration-id`
   - `--rollback-toolkit-home-migration`
   - `--finalize-toolkit-home-migration`
+  - `--move-layout-pointer`
   - `-h/--help`
 - Environment: `AGENT_TOOLKIT_INSTALL_WRAPPER`, `LOGNAME`, `PATH`, `USER`
 - Filesystem constants:
@@ -2045,7 +2049,7 @@ install.py — agent-toolkit provisioner and migration controls for macOS/Linux.
   - `print_summary(ctx: Context, settings: tuple[str, str], opencode: tuple[str, str], vscode: Sequence[tuple[str, tuple[str, str]]] = (), pi_settings: tuple[str, str] = ('', '')) -> None` — Print the loud end-of-run summary: skips, drift, and next steps.
   - `do_check_links(ctx: Context) -> int` — Audit the live symlinks against ``links.toml`` and report, changing nothing.
   - `run_install(ctx: Context, specs: Sequence[LinkSpec]) -> int` — Run every install step in order and return the process exit status.
-- Tested by: `test/test_dead_installers_stripped.py`, `test/test_harness_spec.py`, `test/test_install.py`, `test/test_link_inspect.py`, `test/test_migrate_toolkit_home.py`, `test/test_migrate_toolkit_home_carry.py`, `test/test_migrate_toolkit_home_moves.py`, `test/test_settings_seed.py`
+- Tested by: `test/test_dead_installers_stripped.py`, `test/test_harness_spec.py`, `test/test_install.py`, `test/test_link_inspect.py`, `test/test_migrate_toolkit_home.py`, `test/test_migrate_toolkit_home_carry.py`, `test/test_migrate_toolkit_home_moves.py`, `test/test_move_layout_pointer.py`, `test/test_settings_seed.py`
 
 ### `depart.py`
 

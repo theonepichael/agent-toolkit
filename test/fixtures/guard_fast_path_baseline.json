@@ -67,17 +67,17 @@
   "broken-claude-bash-ls": {
     "audit": [],
     "exit": 0,
-    "stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\", \"permissionDecision\": \"deny\", \"permissionDecisionReason\": \"malformed layout pointer <HOME>/.claude/data/toolkit_state.json: expected schema 1, got 999; remove it to restore the legacy layout\"}}\n"
+    "stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\", \"permissionDecision\": \"deny\", \"permissionDecisionReason\": \"malformed layout pointer <HOME>/.claude/data/toolkit_state.json: expected schema 1, got 999; fix or remove it\"}}\n"
   },
   "broken-copilot-view": {
     "audit": [],
     "exit": 2,
-    "stdout": "{\"decision\": \"deny\", \"reason\": \"malformed layout pointer <HOME>/.claude/data/toolkit_state.json: expected schema 1, got 999; remove it to restore the legacy layout\"}\n"
+    "stdout": "{\"decision\": \"deny\", \"reason\": \"malformed layout pointer <HOME>/.claude/data/toolkit_state.json: expected schema 1, got 999; fix or remove it\"}\n"
   },
   "broken-neutral-bash-ls": {
     "audit": [],
     "exit": 0,
-    "stdout": "{\"decision\": \"deny\", \"reason\": \"malformed layout pointer <HOME>/.claude/data/toolkit_state.json: expected schema 1, got 999; remove it to restore the legacy layout\"}\n"
+    "stdout": "{\"decision\": \"deny\", \"reason\": \"malformed layout pointer <HOME>/.claude/data/toolkit_state.json: expected schema 1, got 999; fix or remove it\"}\n"
   },
   "claude-bash-config-read": {
     "audit": [

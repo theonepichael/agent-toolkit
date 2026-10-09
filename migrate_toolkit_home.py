@@ -1936,7 +1936,7 @@ def _place_link(dest: Path, target: str) -> None:
 
 
 def _write_pointer(home: Path, layout: agent_toolkit_paths.Layout) -> None:
-    agent_toolkit_paths.write_pointer(home, layout)
+    agent_toolkit_paths.write_pointer(home, layout, toolkit_root=None)
     agent_toolkit_paths.DEFAULT_RESOLVER.invalidate()
 
 
@@ -4691,6 +4691,248 @@ def finalize_command(
 ) -> int:
     """``--finalize-toolkit-home-migration``: delete one migration's leftovers."""
     return _post_commit("finalize", migration_id, opts, repo_root=repo_root)
+
+
+# ── --move-layout-pointer (Release 2) ───────────────────────────────────────
+#
+# Moves the layout pointer from ~/.claude/data into the toolkit home, then
+# removes ~/.claude/data if that leaves it empty. There is no journal: every
+# step decides what to do from the files as they are now, so an interrupted
+# run is finished by running the command again. Deleting the old pointer is
+# authorized by byte equality with the canonical toolkit-home payload: both
+# files then say the same thing, and the new one is already in place.
+
+POINTER_MOVE_CHECKPOINTS: tuple[str, ...] = (
+    "pointer-move.written",
+    "pointer-move.old-deleted",
+    "pointer-move.data-removed",
+)
+OUTCOME_POINTER_MOVED = "moved"
+OUTCOME_POINTER_ALREADY_MOVED = "already-moved"
+_BLOCKING_STATES = frozenset(
+    {
+        "live",
+        "committed-unfinalized",
+        "restored-unfinalized",
+        "rolled-back",
+        "finalized-restored",
+    }
+)
+
+
+class PointerMoveRefused(MigrationError):
+    """A precondition of ``--move-layout-pointer`` does not hold."""
+
+
+@dataclass
+class PointerMoveReport:
+    old_pointer: str = ""
+    new_pointer: str = ""
+    outcome: str = ""
+    data_dir_kept: list[str] = field(default_factory=list)
+    stray_temp_files: list[str] = field(default_factory=list)
+
+    def to_json(self) -> dict[str, object]:
+        return asdict(self)
+
+
+def _pointer_move_checkpoint(name: str) -> None:
+    if name not in POINTER_MOVE_CHECKPOINTS:
+        raise ValueError(f"undeclared pointer-move checkpoint {name!r}")
+    fault_checkpoint.checkpoint(name)
+
+
+def _refuse_symlink(path: Path) -> None:
+    try:
+        info = path.lstat()
+    except (FileNotFoundError, NotADirectoryError):
+        return
+    if stat.S_ISLNK(info.st_mode):
+        raise PointerMoveRefused(f"{path} is a symlink; move it aside by hand first")
+
+
+def _refuse_symlinked_components(top: Path, bottom: Path) -> None:
+    """Refuse a symlink at ``top`` or any existing component down to ``bottom``."""
+    probe = top
+    _refuse_symlink(probe)
+    for part in bottom.relative_to(top).parts:
+        probe = probe / part
+        _refuse_symlink(probe)
+
+
+def _pointer_bytes(path: Path) -> bytes | None:
+    """The pointer's bytes, None if absent; refuses anything but a regular file."""
+    try:
+        info = path.lstat()
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    if not stat.S_ISREG(info.st_mode):
+        raise PointerMoveRefused(f"{path} is not a regular file")
+    return path.read_bytes()
+
+
+def _check_deployed_resolver(root: Path) -> None:
+    """Refuse unless every toolkit reader already runs Release 2 resolver code.
+
+    The pre-Release-2 resolver reads a missing legacy pointer as "legacy", so
+    deleting it under an old reader would flip that reader back to legacy
+    paths. Hooks import the deployed module, so that is what must be current.
+    """
+    deployed = root / "scripts" / "agent_toolkit_paths.py"
+    try:
+        source = deployed.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise PointerMoveRefused(
+            f"cannot read the deployed resolver {deployed}: {exc}; "
+            "install Release 2 on this machine first"
+        ) from exc
+    running = Path(agent_toolkit_paths.__file__).resolve()
+    if deployed.resolve() == running:
+        return
+    if "TOOLKIT_HOME_POINTER_RELPATH" not in source:
+        raise PointerMoveRefused(
+            f"the deployed resolver {deployed} predates Release 2; pull and "
+            "install Release 2 on this machine first"
+        )
+
+
+def _check_release1_finished(home: Path) -> None:
+    installer_state = link_inspect.manifest_path(home).parent
+    rows = _migration_states(installer_state)
+    blocking = [r for r in rows if r["state"] in _BLOCKING_STATES]
+    if blocking:
+        names = ", ".join(f"{r['id']} ({r['state']})" for r in blocking)
+        raise PointerMoveRefused(
+            f"a Release 1 migration is unfinished or was rolled back: {names}; "
+            "resolve it before moving the pointer"
+        )
+    if any(r["state"] == "finalized" for r in rows):
+        return
+    if agent_toolkit_paths.has_legacy_data(home):
+        raise PointerMoveRefused(
+            "no finalized Release 1 migration, and legacy data is still present "
+            "under ~/.claude/data"
+        )
+
+
+def _move_layout_pointer(home: Path, report: PointerMoveReport) -> None:
+    claude = home / ".claude"
+    data = claude / "data"
+    old = home / agent_toolkit_paths.POINTER_RELPATH
+    root = agent_toolkit_paths.toolkit_root()
+    new = root / agent_toolkit_paths.TOOLKIT_HOME_POINTER_RELPATH
+    canon = agent_toolkit_paths.pointer_payload("toolkit-home")
+    report.old_pointer, report.new_pointer = str(old), str(new)
+
+    # Preflight: read-only, and every refusal happens before any write.
+    canonical_root = Path(os.path.realpath(root))
+    canonical_claude = Path(os.path.realpath(claude))
+    if canonical_root == canonical_claude or canonical_root.is_relative_to(
+        canonical_claude
+    ):
+        raise PointerMoveRefused(
+            f"the toolkit root {root} is inside {claude}, which this move retires"
+        )
+    _refuse_symlink(claude)
+    _refuse_symlink(data)
+    _refuse_symlinked_components(root, new)
+    for path in (old, new):
+        found = _pointer_bytes(path)
+        if found is not None and found != canon:
+            raise PointerMoveRefused(
+                f"{path} does not hold the canonical toolkit-home pointer; "
+                f"reconcile {old} and {new} by hand"
+            )
+    _check_deployed_resolver(root)
+    agent_toolkit_paths.DEFAULT_RESOLVER.invalidate()
+    if agent_toolkit_paths.current_layout() != "toolkit-home":
+        raise PointerMoveRefused("the current layout is not toolkit-home")
+    _check_release1_finished(home)
+
+    acted = False
+    if _pointer_bytes(new) is None:
+        _mkdir_durable(new.parent)
+        _refuse_symlinked_components(root, new)
+        agent_toolkit_paths.write_pointer(home, "toolkit-home", toolkit_root=root)
+        acted = True
+    _pointer_move_checkpoint("pointer-move.written")
+
+    agent_toolkit_paths.DEFAULT_RESOLVER.invalidate()
+    if (
+        _pointer_bytes(new) != canon
+        or agent_toolkit_paths.current_layout() != "toolkit-home"
+    ):
+        raise MigrationError(f"{new} did not read back as the toolkit-home pointer")
+
+    found = _pointer_bytes(old)
+    if found is not None:
+        if found != canon:
+            raise PointerMoveRefused(f"{old} changed during the move; left in place")
+        old.unlink()
+        _fsync_dir(data)
+        acted = True
+    _pointer_move_checkpoint("pointer-move.old-deleted")
+
+    if _lexists(data):
+        kept = sorted(data.iterdir())
+        if kept:
+            report.data_dir_kept = [str(p) for p in kept]
+        else:
+            data.rmdir()
+            _fsync_dir(claude)
+            acted = True
+    _pointer_move_checkpoint("pointer-move.data-removed")
+
+    if _lexists(old) or _pointer_bytes(new) != canon:
+        raise MigrationError("the pointer move did not reach its final state")
+    report.stray_temp_files = sorted(
+        str(p) for p in new.parent.glob(".toolkit_state*.tmp")
+    )
+    agent_toolkit_paths.DEFAULT_RESOLVER.invalidate()
+    report.outcome = OUTCOME_POINTER_MOVED if acted else OUTCOME_POINTER_ALREADY_MOVED
+
+
+def _emit_pointer_move(report: PointerMoveReport, opts: MigrationOptions) -> None:
+    if opts.json_report:
+        print(json.dumps(report.to_json(), indent=2, sort_keys=True))
+        return
+    print(f"{report.outcome}")
+    if report.outcome.startswith("refused:") and not report.old_pointer:
+        return
+    if not opts.quiet or report.outcome.startswith("refused:"):
+        print(f"  old pointer: {report.old_pointer}")
+        print(f"  new pointer: {report.new_pointer}")
+    for path in report.data_dir_kept:
+        print(f"  ~/.claude/data kept, it still holds: {path}")
+    for path in report.stray_temp_files:
+        print(f"  leftover temporary file from an interrupted write: {path}")
+    if report.outcome in (OUTCOME_POINTER_MOVED, OUTCOME_POINTER_ALREADY_MOVED):
+        print(
+            "  restart any long-running toolkit process started before the "
+            "Release 2 upgrade so it reads the new pointer"
+        )
+
+
+def move_layout_pointer_command(opts: MigrationOptions, *, repo_root: Path) -> int:
+    """``--move-layout-pointer``: move the layout pointer into the toolkit home.
+
+    Idempotent: an interrupted run is completed by running it again.
+    """
+    del repo_root  # same signature as the other post-commit commands
+    report = PointerMoveReport()
+    try:
+        with migration_lock.exclusive(LOCK_SITE, blocking=False):
+            _move_layout_pointer(Path.home(), report)
+    except migration_lock.MigrationLockBusy as exc:
+        report.outcome = f"lock-busy: {exc}"
+        _emit_pointer_move(report, opts)
+        return migration_lock.REFUSAL_EXIT_CODE
+    except (MigrationError, agent_toolkit_paths.LayoutError, OSError) as exc:
+        report.outcome = f"refused: {exc}"
+        _emit_pointer_move(report, opts)
+        return 1
+    _emit_pointer_move(report, opts)
+    return 0
 
 
 def _strict_journal_dirs(installer_state: Path) -> list[Path]:

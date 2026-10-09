@@ -14,6 +14,9 @@ Usage
 Environment
   MIGRATE_DRIVER_VALIDATION=pass|fail   what the stubbed validation reports
                                         (default pass)
+  MIGRATE_DRIVER_STATES=finalized       stub the Release 1 status rows with
+                                        one finalized migration (the
+                                        --move-layout-pointer precondition)
 """
 
 import json
@@ -38,6 +41,10 @@ def _stub_validation(_ctx: object) -> tuple[bool, list[dict[str, object]]]:
 
 def main() -> int:
     mth._run_validation = _stub_validation
+    if os.environ.get("MIGRATE_DRIVER_STATES") == "finalized":
+        mth._migration_states = lambda _state: [
+            {"id": "mig-20260101T000000Z-aaaaaa", "state": "finalized"}
+        ]
     mode, args = sys.argv[1], sys.argv[2:]
     if mode == "install":
         return install.main(args)
