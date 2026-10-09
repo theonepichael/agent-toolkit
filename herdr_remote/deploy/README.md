@@ -21,19 +21,19 @@ Auth: one static bearer token, enforced by the bridge on every /api route.
 ## One-time: workstation (this machine, WSL2)
 
 ```zsh
+R=$(python3 ~/.agent-toolkit/scripts/toolkit_checkout.py checkout)  # the toolkit checkout
 mkdir -p ~/.config/herdr-bridge
-cat > ~/.config/herdr-bridge/config.toml <<'EOF'
+# Unquoted heredoc on purpose: the bridge only expands ~, so write real paths.
+cat > ~/.config/herdr-bridge/config.toml <<EOF
 socket_path = "$HOME/.config/herdr/herdr.sock"
 token_path = "$HOME/.config/herdr-bridge/token"
-assets_dir = "$HOME/Workspace/agent-toolkit/herdr_remote/pwa"
+assets_dir = "$R/herdr_remote/pwa"
 bind_host = "0.0.0.0"
 bind_port = 8765
 EOF
-uv run --directory ~/Workspace/agent-toolkit python -m herdr_remote gen-token
-# user unit (adjust --directory path to wherever the toolkit lives)
-mkdir -p ~/.config/systemd/user
-cp herdr_remote/deploy/herdr-remote-bridge.service ~/.config/systemd/user/
-systemctl --user daemon-reload
+uv run --directory "$R" python -m herdr_remote gen-token
+# user unit: rendered from the template for this checkout, then daemon-reload
+python3 "$R/herdr_remote/deploy/install_unit.py"
 systemctl --user enable --now herdr-remote-bridge.service
 ```
 
@@ -81,7 +81,8 @@ screen, watch agent statuses, send a prompt.
 ```zsh
 # --directory cds into the repo: python -m herdr_remote only resolves with
 # the repo root as cwd (package = false; --project alone does not cd there)
-uv run --directory ~/Workspace/agent-toolkit python -m herdr_remote gen-token
+R=$(python3 ~/.agent-toolkit/scripts/toolkit_checkout.py checkout)
+uv run --directory "$R" python -m herdr_remote gen-token
 herdr_remote/deploy/deploy.sh   # restarts the bridge so it picks up the new token
 ```
 

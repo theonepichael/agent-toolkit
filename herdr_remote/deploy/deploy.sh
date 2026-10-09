@@ -8,6 +8,7 @@
 # One-time (manual, see README.md): tailscale serve route + first token gen.
 
 set -euo pipefail
+python3 "${0:A:h}/install_unit.py" --check  # a bad checkout path or unit template aborts before either half changes
 
 HOST=theon@fedora
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -22,6 +23,7 @@ scp -q "$CADDY_SNIPPET" "$HOST":/tmp/herdr-remote.caddyfile
 ssh "$HOST" 'sudo install -m 644 /tmp/herdr-remote.caddyfile /etc/caddy/Caddyfile.d/herdr-remote.caddyfile && rm /tmp/herdr-remote.caddyfile && sudo caddy validate --config /etc/caddy/Caddyfile >/dev/null && sudo systemctl reload caddy'
 echo "deployed: PWA + Caddy config on $HOST (from commit $DEPLOY_SHA)"
 
+python3 "$REPO_ROOT/herdr_remote/deploy/install_unit.py"  # re-render the unit in case the checkout or template moved
 systemctl --user restart herdr-remote-bridge.service
 BRIDGE_VERSION=""
 for _ in $(seq 1 10); do

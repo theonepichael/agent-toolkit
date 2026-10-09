@@ -76,9 +76,11 @@ import sys
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import NoReturn
 
 import cli_common
 import gen_interfaces
+import toolkit_checkout
 
 # What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
 TOOLKIT_DATA = "none"
@@ -142,7 +144,8 @@ class DocSetConfig:
     state_path: str = "refresh-guidance-state.json"
     cross_repo_scripts: bool = False
     """When True, script discovery also indexes `agent-scripts/*.py` under
-    the resolved agent-toolkit root (see :data:`DEFAULT_AGENT_TOOLKIT_ROOT`),
+    the resolved agent-toolkit root (``--agent-toolkit-root``, else
+    :func:`toolkit_checkout.toolkit_checkout`),
     and path claim checks (both directory-qualified paths and bare-filename
     basename lookups) consult that checkout as well, matching the
     `AGENT_TOOLKIT_PATH` convention the bundle-transfer installer on the
@@ -175,13 +178,6 @@ class DocSetConfig:
     nothing but noise -- everything real about *this* repo's install
     surface in a parity doc is already covered by the command-claim check
     (which stays on), and by AGENTS.md/STYLE.md/README.md."""
-
-
-DEFAULT_AGENT_TOOLKIT_ROOT = Path(
-    os.environ.get(
-        "AGENT_TOOLKIT_PATH", str(Path.home() / "Workspace" / "agent-toolkit")
-    )
-)
 
 
 DOC_SETS: dict[str, DocSetConfig] = {
@@ -897,9 +893,18 @@ class CheckResult:
 def run_check(
     repo_root: Path,
     doc_set_name: str | None,
-    agent_toolkit_root: Path = DEFAULT_AGENT_TOOLKIT_ROOT,
+    agent_toolkit_root: Path | None = None,
 ) -> CheckResult:
+    """Check the doc-set's claims and section review ages.
+
+    A ``None`` ``agent_toolkit_root`` is resolved with
+    :func:`toolkit_checkout.toolkit_checkout` only when the doc-set has
+    ``cross_repo_scripts``; its :class:`~toolkit_checkout.CheckoutNotFoundError`
+    propagates to the caller.
+    """
     doc_set, _label = resolve_doc_set(repo_root, doc_set_name)
+    if doc_set.cross_repo_scripts and agent_toolkit_root is None:
+        agent_toolkit_root = toolkit_checkout.toolkit_checkout()
     docs = discovered_docs(repo_root, doc_set)
     scripts = discover_scripts(repo_root, doc_set, agent_toolkit_root)
     known_basenames = set(scripts)
@@ -1118,10 +1123,17 @@ def render_report(result: CheckResult, doc_set_label: str) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _exit_unresolved_checkout(
+    exc: toolkit_checkout.CheckoutNotFoundError,
+) -> NoReturn:
+    print(f"refresh_guidance: {exc} -- or pass --agent-toolkit-root", file=sys.stderr)
+    sys.exit(2)
+
+
 def cmd_check(
     repo_root: Path,
     doc_set_name: str | None,
-    agent_toolkit_root: Path = DEFAULT_AGENT_TOOLKIT_ROOT,
+    agent_toolkit_root: Path | None = None,
     quiet: bool = False,
 ) -> None:
     if not repo_root.is_dir():
@@ -1132,7 +1144,10 @@ def cmd_check(
     except ConfigError as exc:
         print(f"refresh_guidance: {exc}", file=sys.stderr)
         sys.exit(2)
-    result = run_check(repo_root, doc_set_name, agent_toolkit_root)
+    try:
+        result = run_check(repo_root, doc_set_name, agent_toolkit_root)
+    except toolkit_checkout.CheckoutNotFoundError as exc:
+        _exit_unresolved_checkout(exc)
     if not quiet:
         print(render_report(result, label), end="")
 
@@ -1195,6 +1210,7 @@ def cmd_mark_reviewed(
     heading: str,
     commit: str | None,
     date: str | None,
+    agent_toolkit_root: Path | None = None,
     quiet: bool = False,
 ) -> None:
     try:
@@ -1221,7 +1237,10 @@ def cmd_mark_reviewed(
 
     resolved_commit = commit or _git_head_short(repo_root)
     resolved_date = date or dt.date.today().isoformat()
-    result = run_check(repo_root, doc_set_name)
+    try:
+        result = run_check(repo_root, doc_set_name, agent_toolkit_root)
+    except toolkit_checkout.CheckoutNotFoundError as exc:
+        _exit_unresolved_checkout(exc)
     try:
         mark_reviewed(
             repo_root,
@@ -1374,10 +1393,11 @@ def _add_doc_set_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--agent-toolkit-root",
         type=Path,
-        default=DEFAULT_AGENT_TOOLKIT_ROOT,
+        default=None,
         help="agent-toolkit checkout used to resolve cross-repo script "
-        "citations for doc-sets with cross_repo_scripts set (default: "
-        "$AGENT_TOOLKIT_PATH or ~/Workspace/agent-toolkit)",
+        "citations for doc-sets with cross_repo_scripts set (default: this "
+        "script's own checkout, else $AGENT_TOOLKIT_PATH, else "
+        "~/Workspace/agent-toolkit/agent-toolkit, else ~/Workspace/agent-toolkit)",
     )
 
 
@@ -1443,7 +1463,7 @@ def main() -> None:
     quiet = getattr(args, "quiet", False)
     repo_root = getattr(args, "repo_root", DEFAULT_REPO_ROOT).resolve()
     doc_set_name = getattr(args, "doc_set", None)
-    agent_toolkit_root = getattr(args, "agent_toolkit_root", DEFAULT_AGENT_TOOLKIT_ROOT)
+    agent_toolkit_root = getattr(args, "agent_toolkit_root", None)
 
     if subcommand == "check":
         cmd_check(repo_root, doc_set_name, agent_toolkit_root, quiet=quiet)
@@ -1455,6 +1475,7 @@ def main() -> None:
             args.heading,
             args.commit,
             args.date,
+            agent_toolkit_root=agent_toolkit_root,
             quiet=quiet,
         )
     elif subcommand == "scaffold":

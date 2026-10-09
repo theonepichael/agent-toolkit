@@ -76,6 +76,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`standup_adapters.py`](#agentscriptsstandupadapterspy) | standup_adapters.py — provider-agnostic adapter interfaces for /standup. |
 | [`statusline.py`](#agentscriptsstatuslinepy) | Claude Code status line: render the model name and a color-coded context window usage bar with the used percentage, from the JSON session payload Claude Code pipes to this script on stdin. |
 | [`to_tickets_runner.py`](#agentscriptstoticketsrunnerpy) | to_tickets_runner.py — create a linked batch of dev_status.py backlog items from a confirmed vertical-slice/tracer-bullet ticket breakdown. |
+| [`toolkit_checkout.py`](#agentscriptstoolkitcheckoutpy) | Locate the agent-toolkit source checkout. |
 | [`vitals_promotion.py`](#agentscriptsvitalspromotionpy) | vitals-promotion.py — mechanical vitals-promotion pass over grill session data. |
 | [`worktree.py`](#agentscriptsworktreepy) | worktree.py — automated worktree creation and dependency bootstrapping. |
 | [`worktree_provenance.py`](#agentscriptsworktreeprovenancepy) | Per-worktree backlog provenance: one explicit marker, shared predicates. |
@@ -1313,11 +1314,11 @@ refresh_guidance.py — audit-by-inspection for hand-authored, agent-facing docs
   - `check [--repo-root <REPO_ROOT>] [--doc-set <DOC_SET>] [--agent-toolkit-root <AGENT_TOOLKIT_ROOT>]` — scan the configured doc-set and print a findings + staleness report (default)
     - `--repo-root` — repo root to scan (default: this checkout)
     - `--doc-set` — which built-in doc-set config to use. No default -- either pass this, or let <repo-root>/refresh-guidance.toml be auto-discovered (never both). (choices computed at runtime)
-    - `--agent-toolkit-root` — agent-toolkit checkout used to resolve cross-repo script citations for doc-sets with cross_repo_scripts set (default: $AGENT_TOOLKIT_PATH or ~/Workspace/agent-toolkit)
+    - `--agent-toolkit-root` — agent-toolkit checkout used to resolve cross-repo script citations for doc-sets with cross_repo_scripts set (default: this script's own checkout, else $AGENT_TOOLKIT_PATH, else ~/Workspace/agent-toolkit/agent-toolkit, else ~/Workspace/agent-toolkit)
   - `mark-reviewed [--repo-root <REPO_ROOT>] [--doc-set <DOC_SET>] [--agent-toolkit-root <AGENT_TOOLKIT_ROOT>] <doc> <heading> [--commit <COMMIT>] [--date <DATE>]` — record human sign-off that one doc's `## <heading>` section is current
     - `--repo-root` — repo root to scan (default: this checkout)
     - `--doc-set` — which built-in doc-set config to use. No default -- either pass this, or let <repo-root>/refresh-guidance.toml be auto-discovered (never both). (choices computed at runtime)
-    - `--agent-toolkit-root` — agent-toolkit checkout used to resolve cross-repo script citations for doc-sets with cross_repo_scripts set (default: $AGENT_TOOLKIT_PATH or ~/Workspace/agent-toolkit)
+    - `--agent-toolkit-root` — agent-toolkit checkout used to resolve cross-repo script citations for doc-sets with cross_repo_scripts set (default: this script's own checkout, else $AGENT_TOOLKIT_PATH, else ~/Workspace/agent-toolkit/agent-toolkit, else ~/Workspace/agent-toolkit)
     - `doc` — repo-relative doc path, e.g. AGENTS.md
     - `heading` — exact `## <heading>` text
     - `--commit` — commit sha to record (default: current HEAD)
@@ -1325,15 +1326,13 @@ refresh_guidance.py — audit-by-inspection for hand-authored, agent-facing docs
   - `scaffold [--repo-root <REPO_ROOT>] [--doc-set <DOC_SET>] [--agent-toolkit-root <AGENT_TOOLKIT_ROOT>] <directory> [--force]` — scaffold a rubric-compliant AGENTS.md and paired CLAUDE.md symlink in a directory
     - `--repo-root` — repo root to scan (default: this checkout)
     - `--doc-set` — which built-in doc-set config to use. No default -- either pass this, or let <repo-root>/refresh-guidance.toml be auto-discovered (never both). (choices computed at runtime)
-    - `--agent-toolkit-root` — agent-toolkit checkout used to resolve cross-repo script citations for doc-sets with cross_repo_scripts set (default: $AGENT_TOOLKIT_PATH or ~/Workspace/agent-toolkit)
+    - `--agent-toolkit-root` — agent-toolkit checkout used to resolve cross-repo script citations for doc-sets with cross_repo_scripts set (default: this script's own checkout, else $AGENT_TOOLKIT_PATH, else ~/Workspace/agent-toolkit/agent-toolkit, else ~/Workspace/agent-toolkit)
     - `directory` — repo-relative directory path to scaffold
     - `--force/-f` — overwrite existing AGENTS.md or CLAUDE.md
-- Environment: `AGENT_TOOLKIT_PATH`
 - Filesystem constants:
   - `DEFAULT_REPO_ROOT = Path(__file__).resolve().parents[1]`
-  - `DEFAULT_AGENT_TOOLKIT_ROOT = Path(os.environ.get('AGENT_TOOLKIT_PATH', str(Path.home() / 'Workspace' / 'agent-toolkit')))`
 - Explicit exit codes: `2`
-- Depends on: `cli_common.py`, `gen_interfaces.py`
+- Depends on: `cli_common.py`, `gen_interfaces.py`, `toolkit_checkout.py`
 - Exceptions:
   - `class ConfigError(Exception)` — A refresh-guidance.toml or --doc-set resolution problem.
 - Public classes:
@@ -1358,7 +1357,7 @@ refresh_guidance.py — audit-by-inspection for hand-authored, agent-facing docs
   - `check_command_claim(claim: Claim, scripts: dict[str, Path], cli_cache: dict[Path, gen_interfaces.CliSpec | None], repo_root: Path, basename_index: dict[str, list[str]]) -> str | None` — Verify a command claim's script exists and its cited flags/subcommands are real, by reusing `gen_interfaces`'s own argparse extraction and invocation validator -- the same machinery it uses to keep INTERFACES.md honest, rather than a second implementation of argparse introspection.
   - `git_blame_range(repo_root: Path, doc: str, start_line: int, end_line: int) -> tuple[str | None, str | None]` — Last commit (short sha, date) that touched a section's line range, via `git log -L` -- the secondary staleness signal for a section with no review-state entry yet.
   - `load_state(repo_root: Path, doc_set: DocSetConfig) -> dict[str, dict[str, str]]`
-  - `run_check(repo_root: Path, doc_set_name: str | None, agent_toolkit_root: Path = DEFAULT_AGENT_TOOLKIT_ROOT) -> CheckResult`
+  - `run_check(repo_root: Path, doc_set_name: str | None, agent_toolkit_root: Path | None = None) -> CheckResult` — Check the doc-set's claims and section review ages.
   - `render_report(result: CheckResult, doc_set_label: str) -> str`
   - `mark_reviewed(repo_root: Path, doc_set: DocSetConfig, doc: str, heading: str, result: CheckResult, *, commit: str | None = None, date: str | None = None, reviewed_by: str = 'human-confirmed') -> None` — Record human sign-off that one doc's ``## <heading>`` section is current — the sole supported state-writer in this module.
   - `build_parser() -> argparse.ArgumentParser`
@@ -1624,6 +1623,20 @@ to_tickets_runner.py — create a linked batch of dev_status.py backlog items fr
   - `build_parser() -> argparse.ArgumentParser`
 - Subcommand handlers: `cmd_run`
 - Tested by: `test/test_migrate_path_transform.py`, `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`, `test/test_to_tickets_runner.py`
+
+### `agent-scripts/toolkit_checkout.py`
+
+Locate the agent-toolkit source checkout.
+
+- Installed at: `~/.agent-toolkit/scripts/toolkit_checkout.py` (all harnesses)
+- Entrypoint: not executable, `#!/usr/bin/env python3`
+- CLI: hand-rolled `sys.argv` dispatch — not statically enumerable; see the module docstring above.
+- Exceptions:
+  - `class CheckoutNotFoundError(LookupError)` — No candidate location is an agent-toolkit checkout.
+- Public functions:
+  - `is_toolkit_checkout(path: Path) -> bool` — True when ``path`` has install.py and links.toml files and an agent-scripts/ dir.
+  - `toolkit_checkout(*, env: Mapping[str, str] | None = None, home: Path | None = None, self_path: Path | None = None) -> Path` — Return the agent-toolkit checkout, resolved.
+- Tested by: `test/test_toolkit_checkout.py`
 
 ### `agent-scripts/vitals_promotion.py`
 
@@ -1929,6 +1942,7 @@ are copy-once seeds for exactly that reason.
 | `pi/prompts/to-tickets.md` | `~/.pi/agent/prompts/to-tickets.md` (pi) |
 | `pi/settings.json` | not symlinked by `links.toml` |
 | `pi/test/compaction-backlog-sync.test.ts` | not symlinked by `links.toml` |
+| `pi/test/copilot-plugin-dir.test.ts` | not symlinked by `links.toml` |
 | `pi/test/copilot-swarm.test.ts` | not symlinked by `links.toml` |
 | `pi/test/cwd.test.ts` | not symlinked by `links.toml` |
 | `pi/test/delegate-tool.test.ts` | not symlinked by `links.toml` |
