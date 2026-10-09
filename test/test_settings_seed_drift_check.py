@@ -346,6 +346,27 @@ class SettingsSeedDriftCheckTestCase(unittest.TestCase):
         out, _ = self.run_check()
         self.assertIn("permission", out)
 
+    def test_check_opencode_drift_message_names_file_and_fix(self) -> None:
+        # Regression: the opencode line used to be the bare key list
+        # ("model, permission"), with no file name or remediation.
+        self.write_settings_seed({"permissions": {"allow": []}})
+        self.write_opencode_seed({"permission": {"bash": {"git status*": "allow"}}})
+        self.write_live_opencode({"permission": {"bash": {"rm -f *": "allow"}}})
+        out, _ = self.run_check()
+        self.assertIn("opencode.jsonc drifted from seed", out)
+        self.assertIn("settings_seed_drift_check.py fix`", out)
+
+    def test_check_opencode_model_is_cosmetic(self) -> None:
+        # The top-level model is a per-machine choice, as it is for Claude.
+        self.write_settings_seed({"permissions": {"allow": []}})
+        self.write_opencode_seed({"permission": {"bash": {"git status*": "allow"}}})
+        self.write_live_opencode(
+            {"model": "opencode/big-pickle", "permission": {"bash": {"git status*": "allow"}}}
+        )
+        out, code = self.run_check()
+        self.assertEqual(out, "")
+        self.assertEqual(code, 0)
+
     def test_check_opencode_reports_security_bypass(self) -> None:
         self.write_settings_seed({"permissions": {"allow": []}})
         self.write_opencode_seed({"permission": {"bash": {"git status*": "allow"}}})

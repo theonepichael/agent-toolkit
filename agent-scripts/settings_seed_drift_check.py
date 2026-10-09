@@ -32,7 +32,7 @@ forcing a human to either silence it (add to cosmetics) or investigate.
                     tui, statusLine, autoMode
                     reported: everything else (permissions, hooks, and any
                     unknown future top-level key)
-    opencode.jsonc  cosmetic: $schema, agent
+    opencode.jsonc  cosmetic: $schema, agent, model
                     reported: everything else (permission, and any unknown
                     future top-level key); an ``xargs *`` / ``awk *``
                     bypass under ``permission.bash`` is surfaced verbatim
@@ -258,7 +258,7 @@ SETTINGS_COSMETIC_KEYS: frozenset[str] = frozenset(
         "autoMode",
     }
 )
-OPENCODE_COSMETIC_KEYS: frozenset[str] = frozenset({"$schema", "agent"})
+OPENCODE_COSMETIC_KEYS: frozenset[str] = frozenset({"$schema", "agent", "model"})
 
 # opencode allowlist-bypass patterns stripped by the FIX path (see
 # _merge_opencode_permission). This is the hook's fix-strip policy, not a
@@ -538,8 +538,13 @@ def cmd_check(quiet: bool = False) -> int:
             )
             exit_code = 1
         else:
-            if oc_drifted:
+            if oc_drifted.startswith("SECURITY:"):
                 messages.append(oc_drifted)
+            elif oc_drifted:
+                messages.append(
+                    f"opencode.jsonc drifted from seed on: {oc_drifted} — "
+                    "run `python3 ~/.agent-toolkit/scripts/settings_seed_drift_check.py fix`"
+                )
 
     vscode_user_dir = _vscode_wsl_user_dir()
     if vscode_user_dir is not None:
