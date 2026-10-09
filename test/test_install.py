@@ -39,6 +39,7 @@ import settings_seed_drift_check  # noqa: E402 — must follow sys.path.insert a
 import depart  # noqa: E402 — must follow sys.path.insert above
 import depart_exec  # noqa: E402 — must follow sys.path.insert above
 import install  # noqa: E402 — must follow sys.path.insert above
+import agent_toolkit_paths  # noqa: E402 — must follow sys.path.insert above
 import link_inspect  # noqa: E402 — must follow sys.path.insert above
 import settings_seed  # noqa: E402 — must follow sys.path.insert above
 
@@ -4385,10 +4386,17 @@ def test_check_links_skips_directories_and_junk_in_declared_dir(
     assert "unmanaged (" not in capsys.readouterr().out
 
 
-def test_check_links_reports_unreadable_declared_dir(home, managed_repo, capsys):
+def test_check_links_reports_unreadable_declared_dir(
+    home, managed_repo, capsys, monkeypatch
+):
     """A declared directory that cannot be read was not verified, so it fails."""
     if os.geteuid() == 0:
         pytest.skip("root can read a 000 directory, so the fault cannot occur")
+    # Pin the legacy layout so the toolkit-home residue audit stays out of it.
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("AGENT_TOOLKIT_HOME", raising=False)
+    agent_toolkit_paths.write_pointer(home, "legacy", toolkit_root=None)
+    agent_toolkit_paths.DEFAULT_RESOLVER.invalidate()
 
     ctx = check_links_ctx(home, managed_repo, harnesses=("claude",))
     wire_check_links(ctx, ("scripts/one.py", "~/.claude/scripts/one.py"))

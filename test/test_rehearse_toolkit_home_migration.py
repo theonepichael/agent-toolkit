@@ -187,11 +187,16 @@ def test_without_bwrap_does_not_copy_the_installer_state(machine):
 
 
 @pytest.mark.allow_real_subprocess  # runs the script; it refuses before writing anything
-def test_refuses_a_machine_that_is_already_migrated(machine):
-    (machine["home"] / ".claude/data/toolkit_state.json").write_text(
-        '{"schema": 1, "layout": "toolkit-home"}'
-    )
-    result = _rehearse(machine)
+@pytest.mark.parametrize(
+    "pointer",
+    [".claude/data/toolkit_state.json", ".agent-toolkit/data/toolkit_state.json"],
+)
+def test_refuses_a_machine_that_is_already_migrated(machine, pointer):
+    # The Release 2 pointer move leaves only the toolkit-home pointer.
+    path = machine["home"] / pointer
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('{"schema": 1, "layout": "toolkit-home"}')
+    result = _rehearse(machine, AGENT_TOOLKIT_HOME="")
     assert result.returncode == 1
     assert "already has a layout pointer" in result.stderr
     assert not machine["scratch"].exists()

@@ -40,13 +40,22 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Protocol
 
 import agent_toolkit_paths
 
 Layout = agent_toolkit_paths.Layout
-PointerWriter = Callable[[Path, Layout], None]
-"""``(home, layout)``: writes the layout pointer under ``home``."""
+
+
+class PointerWriter(Protocol):
+    """Writes the layout pointer: the legacy one under ``home`` when
+    ``toolkit_root`` is None, else ``<toolkit_root>/data/toolkit_state.json``.
+    """
+
+    def __call__(
+        self, home: Path, layout: Layout, *, toolkit_root: Path | None
+    ) -> None: ...
+
 
 LEGACY_DATA_DIRS: tuple[str, ...] = (
     "backlog",
@@ -77,9 +86,13 @@ class SandboxHome:
     def toolkit_home(self) -> Path:
         return self.home / ".agent-toolkit"
 
-    def flip(self, layout: Layout) -> None:
-        """Point this home at ``layout`` through the pointer writer."""
-        self.pointer_writer(self.home, layout)
+    def flip(self, layout: Layout, *, toolkit_root: Path | None = None) -> None:
+        """Point this home at ``layout`` through the pointer writer.
+
+        ``toolkit_root=None`` writes the legacy-location pointer; a path
+        writes the toolkit-home pointer under that root instead.
+        """
+        self.pointer_writer(self.home, layout, toolkit_root=toolkit_root)
 
     @contextmanager
     def activated(self) -> Iterator[Path]:

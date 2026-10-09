@@ -366,8 +366,202 @@ git -C "$FORK" reset --keep pre-toolkit-home-cutover
 
 After finalize, the snapshot is gone and there is no rollback. Fix forward.
 
-## Release 2
+## Release 2: move the layout pointer
 
-Do not run the sync with `--apply` on any commit that contains Release 2
-until this machine has been finalized. Release 2 removes the rule that a
-missing layout pointer means the legacy layout.
+Release 2 of the migration plan has two parts. Only the first has landed:
+
+- **The layout pointer move** (upstream `407dd4d`). The path resolver reads the
+  pointer from `~/.agent-toolkit/data/toolkit_state.json` first and falls back
+  to `~/.claude/data/toolkit_state.json`, and
+  `./install.sh --move-layout-pointer` moves it. This section covers that.
+- **The public name renames** (`depart` to `uninstall`, then the other
+  scripts, `dev_status` last). These change names that fork-only rows and
+  files may reference, so they will get their own section here when they
+  land. Until then, the merge below must not include any of them.
+
+Do not start until this machine is finalized (step 6). That was done on
+2026-10-08.
+
+### If an agent is helping
+
+An agent can run these steps. Unlike step 5, sessions don't have to stay
+stopped throughout: code that already has the Release 2 resolver reads the
+same layout before, during and after the move. Code that loaded the older
+resolver doesn't, so R2.5 ends with a restart, and R2.6 must come after it.
+Rules for the agent:
+
+- Stop after each check and show the user its output before going on.
+- Never resolve a conflict by taking one side wholesale: no `-X theirs`,
+  `-X ours`, `-s ours`, `checkout --theirs` or `checkout --ours`, and no
+  `reset --hard`. A conflict inside a fork-only change goes to the user.
+- If a check prints something unexpected, stop. Don't work around it.
+
+### R2.1 Protect the fork
+
+Same as before the Release 1 merge, with a new tag. Re-run the sync-script
+check from "Before you start" too, since the script may have changed.
+
+```bash
+FORK=<fork checkout>          # the live install source
+UP=<upstream mirror clone>
+git -C "$FORK" status --short                  # must print nothing
+git -C "$FORK" status --short --ignored        # read every "!!" line
+git -C "$FORK" clean -nd                       # must print nothing unexpected
+git -C "$FORK" tag pre-release-2
+git -C "$FORK" show pre-release-2:links.toml > ~/fork-links-before-r2.toml
+readlink -f ~/.agent-toolkit/scripts/agent_toolkit_paths.py   # must resolve inside $FORK
+```
+
+### R2.2 Pick the upstream commit
+
+Update the mirror with the sync script without `--apply`, then choose the
+target: upstream `main` at or after `407dd4d`, with no rename commit.
+
+```bash
+R2=$(git -C "$UP" rev-parse origin/main)
+git -C "$UP" merge-base --is-ancestor 407dd4d "$R2" && echo has-pointer-move
+LAST=$(git -C "$FORK" merge-base pre-release-2 "$R2")   # last upstream commit already in the fork
+git -C "$UP" log --oneline "$LAST..$R2"                 # read every line
+```
+
+`has-pointer-move` must print. In the log, a commit that renames a public
+name (a script, command or flag) is part of the renames: pick the commit
+just before the first one as `R2` instead, and re-run these checks.
+
+Record what the fork changes on top of upstream before the merge. The checks
+in R2.4 compare against it:
+
+```bash
+git -C "$FORK" diff --name-status "$LAST" pre-release-2 > ~/fork-delta-before-r2.txt
+git -C "$FORK" diff "$LAST" pre-release-2 > ~/fork-delta-before-r2.diff
+wc -l ~/fork-delta-before-r2.txt    # the fork's own files; must not be 0
+```
+
+### R2.3 Merge by hand
+
+```bash
+cd "$FORK"
+git merge --no-ff "$R2"
+```
+
+The pointer move doesn't touch `links.toml`. It changes `install.py`,
+`migrate_toolkit_home.py`, `agent-scripts/agent_toolkit_paths.py`,
+`agent-scripts/test_layouts.py`, `README.md`, `INTERFACES.md`, this runbook,
+`scripts/rehearse-toolkit-home-migration.sh` and tests. A conflict in any
+file the fork also changed: keep upstream's change and the fork's change
+together. If the two can't both stand, stop and ask the user.
+
+Don't commit yet if anything conflicted. Run R2.4 first, on the resolved
+tree.
+
+### R2.4 Check that the fork kept its own changes
+
+The fork's delta on top of upstream must be the same set of files after the
+merge as before it:
+
+```bash
+cd "$FORK"
+git diff --name-status "$R2" > ~/fork-delta-after-r2.txt   # working tree vs new upstream
+diff ~/fork-delta-before-r2.txt ~/fork-delta-after-r2.txt
+```
+
+`diff` should print nothing. A `<` line is a file the fork changed that the
+merge dropped back to upstream's copy; a `>` line is a file the fork didn't
+change before but does now.
+
+The file list can't see a conflict resolved by keeping the fork's old copy
+of a file the fork already changed: that undoes upstream's change inside the
+file, and the list stays the same. Compare the changed lines too:
+
+```bash
+changed() {   # every changed line, prefixed with its file
+  awk '/^diff --git /{next} /^--- a\//{f=substr($0,7);next}
+       /^\+\+\+ b\//{f=substr($0,7);next} /^(---|\+\+\+) /{next}
+       /^[-+]/{print f": "$0}' | sort
+}
+diff <(changed < ~/fork-delta-before-r2.diff) <(git diff "$R2" | changed)
+```
+
+This should print nothing either. A `<` line is a fork change the merge lost:
+restore it from `pre-release-2`. A `>` line is an upstream change the merge
+undid, usually by keeping the fork's side of a conflict wholesale: take
+upstream's version of those lines and re-apply only the fork's own edit. The
+one expected difference is where upstream and the fork edited the same line
+and the resolution merged both edits into it; read those, and confirm with
+the user. Tested on a scratch fork: a correct resolution prints nothing; a
+dropped fork edit, an undone upstream edit, and a fork edit moved into
+another file each print the lines involved.
+
+The same row check as Release 1, for `links.toml`:
+
+```bash
+comm -23 <(grep -o '^src = ".*"' ~/fork-links-before-r2.toml | sort -u) \
+         <(grep -o '^src = ".*"' links.toml | sort -u)
+grep -n 'dest = "~/.claude/\(scripts\|hooks\|icons\)' links.toml
+```
+
+Both must print nothing. Then commit the merge.
+
+### R2.5 Install and test
+
+```bash
+cd "$FORK"
+uv run pytest -q
+./install.sh --harness=<this machine's harnesses>
+./install.sh --check-links --harness=<this machine's harnesses>
+```
+
+If this machine installs with `--profile=work`, pass it to every
+`install.sh --harness` and `--check-links` call from here on, including the
+rollback below. A suite failure that also fails on `pre-release-2` isn't from
+this merge; note it and go on. `--check-links` must pass.
+
+Then restart before moving the pointer. Quit every agent session, including
+the one helping you (resume it afterwards), and stop any long-running toolkit
+process (`ps -eo pid,cmd | grep -E 'agent-toolkit|agent_toolkit|dev_status'`).
+A process that loaded the pre-Release-2 resolver reads a missing
+`~/.claude/data/toolkit_state.json` as the legacy layout, so once R2.6
+deletes it, that process would use the old, empty paths. Start a session in
+every harness and check the dashboard renders, as in step 5.
+
+### R2.6 Move the pointer
+
+```bash
+./install.sh --move-layout-pointer
+./install.sh --move-layout-pointer    # second run: must print already-moved
+ls -A ~/.claude/data 2>/dev/null || echo "gone"   # "gone", or only non-toolkit files
+python3 ~/.agent-toolkit/scripts/dev_status.py render
+./install.sh --check-links --harness=<this machine's harnesses>
+```
+
+The first run must print `moved`. It writes
+`~/.agent-toolkit/data/toolkit_state.json`, deletes the old pointer, and
+removes `~/.claude/data` if that leaves it empty; anything else there is
+kept and listed. It refuses, writing nothing, unless the Release 1 migration
+is finalized, the deployed resolver is the Release 2 one, and any existing
+pointer holds the canonical toolkit-home pointer. `lock-busy` (exit 75)
+means a toolkit command was running at that moment: run it again. If it is
+interrupted, run it again too: every step checks the current state first.
+
+Keep the `pre-release-2` tag until the next upstream merge.
+
+### Rolling back Release 2
+
+Before R2.6, the move hasn't happened, so the merge alone can be undone:
+
+```bash
+git -C "$FORK" reset --keep pre-release-2
+./install.sh --harness=<this machine's harnesses>
+```
+
+After R2.6, never put the fork back on code older than the pointer move
+without restoring the old pointer first. Older code reads a missing
+`~/.claude/data/toolkit_state.json` as the legacy layout, and every toolkit
+command would then use the empty legacy paths:
+
+```bash
+mkdir -p ~/.claude/data
+cp -p ~/.agent-toolkit/data/toolkit_state.json ~/.claude/data/toolkit_state.json
+git -C "$FORK" reset --keep pre-release-2
+./install.sh --harness=<this machine's harnesses>
+```

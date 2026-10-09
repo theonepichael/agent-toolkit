@@ -8,8 +8,14 @@ cwd (systemd ``WorkingDirectory=`` / ``uv run --directory``), or it fails
 with ModuleNotFoundError when run from anywhere else. Pure file checks.
 """
 
+import importlib.util
 import re
+import subprocess
 from pathlib import Path
+from types import ModuleType
+from unittest import mock
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -17,7 +23,10 @@ SERVICE = REPO_ROOT / "herdr_remote" / "deploy" / "herdr-remote-bridge.service"
 README = REPO_ROOT / "herdr_remote" / "deploy" / "README.md"
 DEPLOY_SH = REPO_ROOT / "herdr_remote" / "deploy" / "deploy.sh"
 
-TOOLKIT = "%h/Workspace/agent-toolkit"
+INSTALL_UNIT = REPO_ROOT / "herdr_remote" / "deploy" / "install_unit.py"
+
+# The repo copy of the unit is a template; install_unit.py renders the checkout in.
+TOOLKIT = "@AGENT_TOOLKIT_CHECKOUT@"
 
 
 def test_service_sets_working_directory_to_repo_root() -> None:
@@ -79,3 +88,127 @@ def test_deploy_script_installs_caddy_snippet_with_loadable_extension() -> None:
     installs = re.findall(r"Caddyfile\.d/[\w.-]+", text)
     assert installs, "deploy.sh lost its Caddyfile.d install target"
     assert all(name.endswith(".caddyfile") for name in installs), installs
+
+
+
+# --- install_unit.py: the only renderer of the unit template --------------
+
+
+def _install_unit() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("install_unit", INSTALL_UNIT)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _checkout(path: Path) -> Path:
+    (path / "agent-scripts").mkdir(parents=True)
+    (path / "install.py").write_text("")
+    (path / "links.toml").write_text("")
+    return path
+
+
+def test_template_has_exactly_the_two_placeholders() -> None:
+    lines = SERVICE.read_text().splitlines()
+    hits = [ln for ln in lines if TOOLKIT in ln]
+    assert len(hits) == 2, hits
+    assert hits[0].startswith("WorkingDirectory=")
+    assert hits[1].startswith("ExecStart=")
+    assert "Workspace" not in SERVICE.read_text()
+
+
+def test_renders_the_checkout_into_the_unit_dir(tmp_path: Path) -> None:
+    checkout = _checkout(tmp_path / "Workspace" / "agent-toolkit" / "agent-toolkit")
+    unit_dir = tmp_path / "units"
+    code = _install_unit().main(
+        ["--checkout", str(checkout), "--unit-dir", str(unit_dir), "--no-reload"]
+    )
+    assert code == 0
+    rendered = (unit_dir / "herdr-remote-bridge.service").read_text()
+    assert f"WorkingDirectory={checkout}\n" in rendered
+    assert f"--project {checkout} python -m herdr_remote serve" in rendered
+    assert not re.search(r"@[A-Z_]+@", rendered)
+
+
+def test_reloads_systemd_unless_told_not_to(tmp_path: Path) -> None:
+    checkout = _checkout(tmp_path / "atk")
+    module = _install_unit()
+    with mock.patch.object(module.subprocess, "run") as run:
+        code = module.main(
+            ["--checkout", str(checkout), "--unit-dir", str(tmp_path / "u")]
+        )
+    assert code == 0
+    run.assert_called_once_with(["systemctl", "--user", "daemon-reload"], check=True)
+
+
+def test_check_writes_nothing(tmp_path: Path) -> None:
+    checkout = _checkout(tmp_path / "atk")
+    unit_dir = tmp_path / "units"
+    code = _install_unit().main(
+        ["--checkout", str(checkout), "--unit-dir", str(unit_dir), "--check"]
+    )
+    assert code == 0
+    assert not unit_dir.exists()
+
+
+@pytest.mark.parametrize("bad", ["with space", "with%percent", "with#hash", "with$dollar"])
+def test_refuses_paths_systemd_or_sed_would_mangle(
+    tmp_path: Path, bad: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    checkout = _checkout(tmp_path / bad)
+    unit_dir = tmp_path / "units"
+    code = _install_unit().main(
+        ["--checkout", str(checkout), "--unit-dir", str(unit_dir), "--no-reload"]
+    )
+    assert code == 1
+    assert not unit_dir.exists()
+    assert "unsupported character" in capsys.readouterr().err
+
+
+def test_refuses_a_checkout_without_the_markers(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    not_checkout = tmp_path / "container"
+    not_checkout.mkdir()
+    code = _install_unit().main(
+        ["--checkout", str(not_checkout), "--unit-dir", str(tmp_path / "u"), "--no-reload"]
+    )
+    assert code == 1
+    assert "not an agent-toolkit checkout" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "template",
+    [
+        "WorkingDirectory=@AGENT_TOOLKIT_CHECKOUT@\nExecStart=uv run --project @AGENT_TOOLKIT_CHEKOUT@\n",
+        "WorkingDirectory=@AGENT_TOOLKIT_CHECKOUT@\n",
+        "WorkingDirectory=@AGENT_TOOLKIT_CHECKOUT@\nExecStart=uv --project @AGENT_TOOLKIT_CHECKOUT@\n# @AGENT_TOOLKIT_CHECKOUT@\n",
+        "WorkingDirectory=@AGENT_TOOLKIT_CHECKOUT@\nExecStart=uv --project @AGENT_TOOLKIT_CHECKOUT@ @OTHER@\n",
+    ],
+)
+def test_rejects_a_malformed_template(template: str) -> None:
+    module = _install_unit()
+    with pytest.raises(module.UnitTemplateError):
+        module.render_unit(template, Path("/home/u/atk"))
+
+
+def test_deploy_validates_before_touching_either_half() -> None:
+    lines = DEPLOY_SH.read_text().splitlines()
+    set_line = lines.index("set -euo pipefail")
+    following = next(ln for ln in lines[set_line + 1 :] if ln.strip())
+    assert "install_unit.py" in following and "--check" in following, following
+    text = "\n".join(lines)
+    write = re.search(r"^.*install_unit\.py(?!.*--check).*$", text, re.MULTILINE)
+    assert write, "deploy.sh never renders the unit for real"
+    restart = text.index("systemctl --user restart herdr-remote-bridge.service")
+    assert write.start() < restart
+
+
+def test_readme_renders_absolute_paths_and_has_no_hardcoded_checkout() -> None:
+    text = README.read_text()
+    assert "config.toml <<'EOF'" not in text
+    assert re.search(r"cat > ~/\.config/herdr-bridge/config\.toml <<EOF", text)
+    assert 'assets_dir = "$R/herdr_remote/pwa"' in text
+    assert "Workspace/agent-toolkit" not in text
+    assert "install_unit.py" in text

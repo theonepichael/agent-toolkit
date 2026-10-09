@@ -402,6 +402,9 @@ def test_absent_domain_is_recorded_and_skipped(sandbox, capsys, validation):
 
 def test_fresh_machine_commits_with_nothing_to_move(sandbox, capsys, validation):
     _installed_runtime(sandbox)
+    # A Release 0 machine with nothing to move still carries a legacy pointer;
+    # without one it already resolves to toolkit-home.
+    agent_toolkit_paths.write_pointer(sandbox, "legacy", toolkit_root=None)
     code, report = _migrate(capsys)
     assert code == 0, report
     assert _layout() == "toolkit-home"
@@ -589,6 +592,26 @@ def test_narrow_rollback_returns_to_legacy_and_is_idempotent(
     assert _symlinks(machine) == links_before
     code, _ = _finalize(capsys, mid)
     assert code == 0
+
+
+def test_pointer_move_after_a_real_migrate_and_finalize(machine, capsys, validation):
+    """Release 2 end to end: migrate, finalize, then move the layout pointer."""
+    mid = _commit(capsys)
+    code, report = _finalize(capsys, mid)
+    assert code == 0, report
+    scripts = machine / ".agent-toolkit" / "scripts"
+    scripts.mkdir(parents=True, exist_ok=True)
+    deployed = scripts / "agent_toolkit_paths.py"
+    if not deployed.exists():
+        deployed.symlink_to(REPO / "agent-scripts" / "agent_toolkit_paths.py")
+    code = mth.move_layout_pointer_command(_opts(), repo_root=REPO)
+    report = _report(capsys)
+    assert code == 0, report
+    assert report["outcome"] == "moved"
+    new = machine / ".agent-toolkit" / "data" / "toolkit_state.json"
+    assert new.read_bytes() == agent_toolkit_paths.pointer_payload("toolkit-home")
+    assert not os.path.lexists(machine / agent_toolkit_paths.POINTER_RELPATH)
+    assert _layout() == "toolkit-home"
 
 
 def test_narrow_rollback_refuses_after_a_write_and_mutates_nothing(

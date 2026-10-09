@@ -96,17 +96,17 @@ def test_cache_invalidation_on_same_size_rewrite(two_layout_homes):
     with local.activated():
         local.flip("legacy")
         first = path_for("decisions")
-        write_pointer(local.home, "legacy")
+        write_pointer(local.home, "legacy", toolkit_root=None)
         second = path_for("decisions")
         assert second == first
 
 
 def test_write_pointer_changes_inode(tmp_path):
     home = tmp_path / "home"
-    write_pointer(home, "legacy")
+    write_pointer(home, "legacy", toolkit_root=None)
     pointer = home / POINTER_RELPATH
     first = pointer.stat().st_ino
-    write_pointer(home, "legacy")
+    write_pointer(home, "legacy", toolkit_root=None)
     second = pointer.stat().st_ino
     assert second != first
 
@@ -188,7 +188,7 @@ def test_guard_rails_with_invalid_utf8_pointer_emits_deny_not_crash(two_layout_h
 def test_relative_agent_toolkit_home_raises(tmp_path, monkeypatch):
     home = tmp_path / "home"
     home.mkdir()
-    write_pointer(home, "toolkit-home")
+    write_pointer(home, "toolkit-home", toolkit_root=None)
     monkeypatch.setenv("AGENT_TOOLKIT_HOME", "relative/path")
     monkeypatch.setenv("HOME", str(home))
     agent_toolkit_paths.DEFAULT_RESOLVER.invalidate()
@@ -204,7 +204,7 @@ def test_absolute_agent_toolkit_home_moves_only_toolkit_paths(two_layout_homes, 
     local = two_layout_homes.local
     override = local.home / "toolkit-override"
     override.mkdir()
-    write_pointer(local.home, "toolkit-home")
+    write_pointer(local.home, "toolkit-home", toolkit_root=None)
     monkeypatch.setenv("HOME", str(local.home))
     monkeypatch.setenv("AGENT_TOOLKIT_HOME", str(override))
     agent_toolkit_paths.DEFAULT_RESOLVER.invalidate()
@@ -232,7 +232,7 @@ def test_pointer_format_and_schema(two_layout_homes):
 
 def test_resolver_path_for_does_not_create_directories(two_layout_homes, tmp_path, monkeypatch):
     home = tmp_path / "fresh"
-    write_pointer(home, "legacy")
+    write_pointer(home, "legacy", toolkit_root=None)
     resolver = Resolver()
     monkeypatch.setenv("HOME", str(home))
     agent_toolkit_paths.DEFAULT_RESOLVER.invalidate()
@@ -345,3 +345,160 @@ def test_check_upgrade_required_unmigrated_legacy_install(tmp_path):
     with pytest.raises(agent_toolkit_paths.UpgradeRequiredError) as exc_info:
         agent_toolkit_paths.check_upgrade_required(tmp_path)
     assert "legacy toolkit data found" in str(exc_info.value).lower()
+
+
+# ── Release 2: two pointer locations ─────────────────────────────────────────
+
+
+@pytest.fixture
+def bare_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """An empty HOME with no override; the default resolver is reset around it."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv(agent_toolkit_paths.ENV_HOME, raising=False)
+    agent_toolkit_paths.DEFAULT_RESOLVER.invalidate()
+    yield home
+    agent_toolkit_paths.DEFAULT_RESOLVER.invalidate()
+
+
+def _root(home: Path) -> Path:
+    return home / ".agent-toolkit"
+
+
+def _new_pointer(home: Path) -> Path:
+    return _root(home) / agent_toolkit_paths.TOOLKIT_HOME_POINTER_RELPATH
+
+
+def _write_new(home: Path, layout: str) -> None:
+    write_pointer(home, layout, toolkit_root=_root(home))
+
+
+def _write_old(home: Path, layout: str) -> None:
+    write_pointer(home, layout, toolkit_root=None)
+
+
+def test_pointer_payload_is_what_write_pointer_writes(bare_home):
+    _write_new(bare_home, "toolkit-home")
+    assert _new_pointer(bare_home).read_bytes() == agent_toolkit_paths.pointer_payload(
+        "toolkit-home"
+    )
+    assert json.loads(agent_toolkit_paths.pointer_payload("legacy")) == {
+        "schema": POINTER_SCHEMA,
+        "layout": "legacy",
+    }
+
+
+def test_write_pointer_with_toolkit_root_writes_only_the_new_location(bare_home):
+    _write_new(bare_home, "toolkit-home")
+    assert _new_pointer(bare_home).is_file()
+    assert not (bare_home / POINTER_RELPATH).exists()
+
+
+def test_toolkit_home_pointer_alone_is_read(bare_home):
+    _write_new(bare_home, "toolkit-home")
+    assert Resolver().layout() == "toolkit-home"
+
+
+def test_both_pointers_prefer_toolkit_home_without_raising(bare_home):
+    _write_old(bare_home, "legacy")
+    _write_new(bare_home, "toolkit-home")
+    assert Resolver().layout() == "toolkit-home"
+
+
+def test_neither_pointer_without_legacy_data_is_toolkit_home(bare_home):
+    assert Resolver().layout() == "toolkit-home"
+
+
+def test_neither_pointer_with_legacy_data_is_legacy(bare_home):
+    (bare_home / ".claude" / "data" / "backlog").mkdir(parents=True)
+    assert Resolver().layout() == "legacy"
+
+
+def test_foreign_content_in_legacy_data_dir_is_not_legacy_data(bare_home):
+    data = bare_home / ".claude" / "data"
+    data.mkdir(parents=True)
+    (data / "something-else.txt").write_text("not toolkit data")
+    assert Resolver().layout() == "toolkit-home"
+
+
+def test_override_aliasing_the_legacy_pointer_raises(bare_home, monkeypatch):
+    _write_old(bare_home, "toolkit-home")
+    monkeypatch.setenv(agent_toolkit_paths.ENV_HOME, str(bare_home / ".claude"))
+    with pytest.raises(LayoutError) as exc_info:
+        Resolver().layout()
+    assert "same file" in str(exc_info.value)
+
+
+def test_unstattable_toolkit_home_candidate_raises_not_falls_back(bare_home):
+    _write_old(bare_home, "legacy")
+    data = _root(bare_home) / "data"
+    data.mkdir(parents=True)
+    data.chmod(0o000)
+    try:
+        with pytest.raises(LayoutError) as exc_info:
+            Resolver().layout()
+        assert str(_new_pointer(bare_home)) in str(exc_info.value)
+    finally:
+        data.chmod(0o755)
+
+
+def test_invalid_override_ignored_while_legacy_pointer_resolves(bare_home, monkeypatch):
+    _write_old(bare_home, "legacy")
+    monkeypatch.setenv(agent_toolkit_paths.ENV_HOME, "relative/path")
+    assert Resolver().layout() == "legacy"
+
+
+def test_invalid_override_raises_when_legacy_cannot_resolve(bare_home, monkeypatch):
+    monkeypatch.setenv(agent_toolkit_paths.ENV_HOME, "relative/path")
+    with pytest.raises(LayoutError):
+        Resolver().layout()
+
+
+def test_cache_follows_the_new_pointer_appearing_and_vanishing(bare_home):
+    resolver = Resolver()
+    _write_old(bare_home, "legacy")
+    assert resolver.layout() == "legacy"
+    _write_new(bare_home, "toolkit-home")
+    assert resolver.layout() == "toolkit-home"
+    _new_pointer(bare_home).unlink()
+    assert resolver.layout() == "legacy"
+
+
+def test_cache_follows_a_toolkit_root_change(bare_home, monkeypatch):
+    resolver = Resolver()
+    _write_old(bare_home, "legacy")
+    other = bare_home / "other-root"
+    write_pointer(bare_home, "toolkit-home", toolkit_root=other)
+    assert resolver.layout() == "legacy"
+    monkeypatch.setenv(agent_toolkit_paths.ENV_HOME, str(other))
+    assert resolver.layout() == "toolkit-home"
+
+
+@pytest.mark.regression(
+    "pointer-vanishing-between-stat-and-read-reads-as-legacy",
+    "AssertionError",
+)
+def test_pointer_vanishing_between_stat_and_read_is_reselected(bare_home):
+    """A pointer deleted after stat must not be read as an implicit legacy."""
+    _write_old(bare_home, "toolkit-home")
+
+    class Racing(Resolver):
+        raced = False
+
+        def _read_pointer(self, pointer: Path):  # type: ignore[override]
+            if not Racing.raced:
+                Racing.raced = True
+                pointer.unlink()
+            return super()._read_pointer(pointer)
+
+    assert Racing().layout() == "toolkit-home"
+
+
+def test_override_aliasing_the_legacy_pointer_raises_with_no_pointer(
+    bare_home, monkeypatch
+):
+    monkeypatch.setenv(agent_toolkit_paths.ENV_HOME, str(bare_home / ".claude"))
+    with pytest.raises(LayoutError) as exc_info:
+        Resolver().layout()
+    assert "same file" in str(exc_info.value)

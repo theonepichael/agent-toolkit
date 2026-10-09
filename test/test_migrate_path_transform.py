@@ -498,7 +498,7 @@ def test_symlinked_target_blocks_apply(tmp_path, home):
 
 
 def _flip(home: Path, layout: str) -> None:
-    agent_toolkit_paths.write_pointer(home, layout)
+    agent_toolkit_paths.write_pointer(home, layout, toolkit_root=None)
 
 
 @pytest.mark.allow_real_subprocess  # approve_item's lifecycle check may run git

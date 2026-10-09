@@ -139,6 +139,10 @@ src = "agent-scripts/agent_toolkit_paths.py"
 dest = "~/.agent-toolkit/scripts/agent_toolkit_paths.py"
 
 [[link]]
+src = "agent-scripts/toolkit_checkout.py"
+dest = "~/.agent-toolkit/scripts/toolkit_checkout.py"
+
+[[link]]
 src = "agent-scripts/dev_status.py"
 dest = "~/.agent-toolkit/scripts/dev_status.py"
 

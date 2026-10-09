@@ -121,6 +121,7 @@ usage: ./install.sh --harness=<claude,copilot,opencode,agy,pi,codex>[,...] [--pr
        ./install.sh --migrate-toolkit-home --harness=... [--profile=personal|work] [--dry-run] [--json] [--skip-reconciliation] [--cross-filesystem] [--migration-id=<id>] [--quiet | --verbose]
        ./install.sh --rollback-toolkit-home-migration=<id> [--json] [--quiet | --verbose]
        ./install.sh --finalize-toolkit-home-migration=<id> [--json] [--quiet | --verbose]
+       ./install.sh --move-layout-pointer [--json] [--quiet | --verbose]
 
   --quiet, -q   suppress non-essential output
   --verbose, -v emit extra diagnostic messages to stderr
@@ -289,6 +290,16 @@ usage: ./install.sh --harness=<claude,copilot,opencode,agy,pi,codex>[,...] [--pr
               copy only if non-telemetry files still match the journal;
               report discarded telemetry lines. A second finalize is a
               no-op. Accepts only --json, --quiet and --verbose.
+  --move-layout-pointer
+              Release 2: move the layout pointer from the legacy data
+              directory into the toolkit home, then remove that legacy
+              directory if it is empty.
+              Pull and install Release 2 on this machine first. Refuses,
+              writing nothing, unless the Release 1 migration is finalized
+              and both pointer files (where present) hold the canonical
+              toolkit-home pointer. Safe to re-run: an interrupted move is
+              finished by running it again. Accepts only --json, --quiet
+              and --verbose.
   --json      with --migrate-toolkit-home or either command above: print
               the report as JSON.
   --skip-reconciliation
@@ -551,6 +562,7 @@ class Options:
     migration_id: str | None = None
     rollback_migration: str | None = None
     finalize_migration: str | None = None
+    move_layout_pointer: bool = False
 
 
 @dataclass
@@ -740,6 +752,9 @@ def parse_args(argv: Sequence[str]) -> Options:
     parser.add_argument(
         "--finalize-toolkit-home-migration", dest="finalize_migration", default=None
     )
+    parser.add_argument(
+        "--move-layout-pointer", dest="move_layout_pointer", action="store_true"
+    )
     parser.add_argument("-h", "--help", dest="help", action="store_true")
 
     args, extras = parser.parse_known_args(list(argv))
@@ -789,6 +804,7 @@ def parse_args(argv: Sequence[str]) -> Options:
         for flag, value in (
             ("--rollback-toolkit-home-migration", args.rollback_migration),
             ("--finalize-toolkit-home-migration", args.finalize_migration),
+            ("--move-layout-pointer", args.move_layout_pointer or None),
         )
         if value is not None
     ]
@@ -832,8 +848,9 @@ def parse_args(argv: Sequence[str]) -> Options:
     ):
         _fail("--check-links must be used alone, apart from --harness and --profile")
 
-    # The post-commit migration commands act on one journalled migration id;
-    # every install, migration or undo flag would be silently ignored.
+    # The post-commit migration commands (and --move-layout-pointer) are
+    # standalone; every install, migration or undo flag would be silently
+    # ignored.
     if post_commit and (
         len(post_commit) > 1
         or harness_set
@@ -983,6 +1000,7 @@ def parse_args(argv: Sequence[str]) -> Options:
         migration_id=args.migration_id,
         rollback_migration=args.rollback_migration,
         finalize_migration=args.finalize_migration,
+        move_layout_pointer=args.move_layout_pointer,
     )
 
 
@@ -2883,6 +2901,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ),
                 repo_root=Path(__file__).resolve().parent,
             )
+
+    if opts.move_layout_pointer:
+        return migrate_toolkit_home.move_layout_pointer_command(
+            migrate_toolkit_home.MigrationOptions(
+                harnesses=(),
+                json_report=opts.json_report,
+                quiet=opts.quiet,
+                verbose=opts.verbose,
+            ),
+            repo_root=Path(__file__).resolve().parent,
+        )
 
     ctx = build_context(opts)
 

@@ -78,6 +78,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`standup_adapters.py`](#agentscriptsstandupadapterspy) | standup_adapters.py — provider-agnostic adapter interfaces for /standup. |
 | [`statusline.py`](#agentscriptsstatuslinepy) | Claude Code status line: render the model name and a color-coded context window usage bar with the used percentage, from the JSON session payload Claude Code pipes to this script on stdin. |
 | [`to_tickets_runner.py`](#agentscriptstoticketsrunnerpy) | to_tickets_runner.py — create a linked batch of dev_status.py backlog items from a confirmed vertical-slice/tracer-bullet ticket breakdown. |
+| [`toolkit_checkout.py`](#agentscriptstoolkitcheckoutpy) | Locate the agent-toolkit source checkout. |
 | [`vitals_promotion.py`](#agentscriptsvitalspromotionpy) | vitals-promotion.py — mechanical vitals-promotion pass over grill session data. |
 | [`worktree.py`](#agentscriptsworktreepy) | worktree.py — automated worktree creation and dependency bootstrapping. |
 | [`worktree_provenance.py`](#agentscriptsworktreeprovenancepy) | Per-worktree backlog provenance: one explicit marker, shared predicates. |
@@ -91,6 +92,7 @@ Single source of truth for toolkit data paths.
 - CLI: none (library module).
 - Filesystem constants:
   - `POINTER_RELPATH = Path('.claude') / 'data' / 'toolkit_state.json'`
+  - `TOOLKIT_HOME_POINTER_RELPATH = Path('data') / 'toolkit_state.json'`
 - Exceptions:
   - `class LayoutError(Exception)` — Raised when the layout pointer is malformed or the override is invalid.
   - `class StaleLayoutError(LayoutError)` — Raised when a path belongs to the layout that is no longer current.
@@ -103,11 +105,13 @@ Single source of truth for toolkit data paths.
   - `path_for_layout(domain: str, layout: Layout) -> Path` — Resolve ``domain`` for ``layout`` using :data:`DEFAULT_RESOLVER`.
   - `layout_path(home: Path, domain: str, layout: Layout) -> Path` — Resolve ``domain`` for ``layout`` under an explicit ``home``.
   - `toolkit_root() -> Path` — Return ``$AGENT_TOOLKIT_HOME``, or ``<home>/.agent-toolkit``.
+  - `has_legacy_data(home: Path) -> bool` — True if a legacy domain entry exists in ``home``'s legacy data directory.
   - `check_not_stale(path: Path) -> None` — Refuse a path from the non-current layout using :data:`DEFAULT_RESOLVER`.
   - `current_layout() -> Layout` — Return the current layout using :data:`DEFAULT_RESOLVER`.
-  - `write_pointer(home: Path, layout: Layout) -> None` — Atomically write the layout pointer under ``home``.
+  - `pointer_payload(layout: Layout) -> bytes` — The canonical bytes of a layout pointer saying ``layout``.
+  - `write_pointer(home: Path, layout: Layout, *, toolkit_root: Path | None) -> None` — Atomically write the layout pointer.
   - `check_upgrade_required(home: Path | None = None) -> None` — Raise :class:`UpgradeRequiredError` if legacy state exists without a completed migration record.
-- Tested by: `agent-scripts/test_layouts.py`, `test/test_agent_toolkit_paths.py`, `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_dev_status_storage.py`, `test/test_gen_interfaces.py`, `test/test_grill.py`, `test/test_guard_rails.py`, `test/test_llm_backends.py`, `test/test_machine_id.py`, `test/test_migrate_path_transform.py`, `test/test_migrate_settings_rewrite.py`, `test/test_migrate_toolkit_home.py`, `test/test_migrate_toolkit_home_carry.py`, `test/test_migrate_toolkit_home_moves.py`, `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`, `test/test_second_opinion.py`, `test/test_to_tickets_runner.py`
+- Tested by: `agent-scripts/test_layouts.py`, `test/test_agent_toolkit_paths.py`, `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_dev_status_storage.py`, `test/test_gen_interfaces.py`, `test/test_grill.py`, `test/test_guard_rails.py`, `test/test_install.py`, `test/test_llm_backends.py`, `test/test_machine_id.py`, `test/test_migrate_path_transform.py`, `test/test_migrate_settings_rewrite.py`, `test/test_migrate_toolkit_home.py`, `test/test_migrate_toolkit_home_carry.py`, `test/test_migrate_toolkit_home_moves.py`, `test/test_migration_lock_adoption.py`, `test/test_move_layout_pointer.py`, `test/test_path_for_per_use.py`, `test/test_second_opinion.py`, `test/test_to_tickets_runner.py`
 
 ### `agent-scripts/analyze_sessions.py`
 
@@ -1213,7 +1217,7 @@ Machine-wide migration lock: writers share it, the toolkit-home migrator owns it
   - `exclusive(site: str, *, blocking: bool = True) -> Iterator[None]` — Hold the lock exclusively (the migrator).
   - `build_parser() -> argparse.ArgumentParser`
 - Subcommand handlers: `cmd_status`, `cmd_hold`, `cmd_observations`
-- Tested by: `test/test_dev_status_validate.py`, `test/test_guard_rails_claim.py`, `test/test_migrate_path_transform.py`, `test/test_migrate_settings_rewrite.py`, `test/test_migrate_toolkit_home.py`, `test/test_migrate_toolkit_home_carry.py`, `test/test_migrate_toolkit_home_moves.py`, `test/test_migration_lock.py`, `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`
+- Tested by: `test/test_dev_status_validate.py`, `test/test_guard_rails_claim.py`, `test/test_migrate_path_transform.py`, `test/test_migrate_settings_rewrite.py`, `test/test_migrate_toolkit_home.py`, `test/test_migrate_toolkit_home_carry.py`, `test/test_migrate_toolkit_home_moves.py`, `test/test_migration_lock.py`, `test/test_migration_lock_adoption.py`, `test/test_move_layout_pointer.py`, `test/test_path_for_per_use.py`
 
 ### `agent-scripts/notify.py`
 
@@ -1366,11 +1370,11 @@ refresh_guidance.py — audit-by-inspection for hand-authored, agent-facing docs
   - `check [--repo-root <REPO_ROOT>] [--doc-set <DOC_SET>] [--agent-toolkit-root <AGENT_TOOLKIT_ROOT>]` — scan the configured doc-set and print a findings + staleness report (default)
     - `--repo-root` — repo root to scan (default: this checkout)
     - `--doc-set` — which built-in doc-set config to use. No default -- either pass this, or let <repo-root>/refresh-guidance.toml be auto-discovered (never both). (choices computed at runtime)
-    - `--agent-toolkit-root` — agent-toolkit checkout used to resolve cross-repo script citations for doc-sets with cross_repo_scripts set (default: $AGENT_TOOLKIT_PATH or ~/Workspace/agent-toolkit)
+    - `--agent-toolkit-root` — agent-toolkit checkout used to resolve cross-repo script citations for doc-sets with cross_repo_scripts set (default: this script's own checkout, else $AGENT_TOOLKIT_PATH, else ~/Workspace/agent-toolkit/agent-toolkit, else ~/Workspace/agent-toolkit)
   - `mark-reviewed [--repo-root <REPO_ROOT>] [--doc-set <DOC_SET>] [--agent-toolkit-root <AGENT_TOOLKIT_ROOT>] <doc> <heading> [--commit <COMMIT>] [--date <DATE>]` — record human sign-off that one doc's `## <heading>` section is current
     - `--repo-root` — repo root to scan (default: this checkout)
     - `--doc-set` — which built-in doc-set config to use. No default -- either pass this, or let <repo-root>/refresh-guidance.toml be auto-discovered (never both). (choices computed at runtime)
-    - `--agent-toolkit-root` — agent-toolkit checkout used to resolve cross-repo script citations for doc-sets with cross_repo_scripts set (default: $AGENT_TOOLKIT_PATH or ~/Workspace/agent-toolkit)
+    - `--agent-toolkit-root` — agent-toolkit checkout used to resolve cross-repo script citations for doc-sets with cross_repo_scripts set (default: this script's own checkout, else $AGENT_TOOLKIT_PATH, else ~/Workspace/agent-toolkit/agent-toolkit, else ~/Workspace/agent-toolkit)
     - `doc` — repo-relative doc path, e.g. AGENTS.md
     - `heading` — exact `## <heading>` text
     - `--commit` — commit sha to record (default: current HEAD)
@@ -1378,15 +1382,13 @@ refresh_guidance.py — audit-by-inspection for hand-authored, agent-facing docs
   - `scaffold [--repo-root <REPO_ROOT>] [--doc-set <DOC_SET>] [--agent-toolkit-root <AGENT_TOOLKIT_ROOT>] <directory> [--force]` — scaffold a rubric-compliant AGENTS.md and paired CLAUDE.md symlink in a directory
     - `--repo-root` — repo root to scan (default: this checkout)
     - `--doc-set` — which built-in doc-set config to use. No default -- either pass this, or let <repo-root>/refresh-guidance.toml be auto-discovered (never both). (choices computed at runtime)
-    - `--agent-toolkit-root` — agent-toolkit checkout used to resolve cross-repo script citations for doc-sets with cross_repo_scripts set (default: $AGENT_TOOLKIT_PATH or ~/Workspace/agent-toolkit)
+    - `--agent-toolkit-root` — agent-toolkit checkout used to resolve cross-repo script citations for doc-sets with cross_repo_scripts set (default: this script's own checkout, else $AGENT_TOOLKIT_PATH, else ~/Workspace/agent-toolkit/agent-toolkit, else ~/Workspace/agent-toolkit)
     - `directory` — repo-relative directory path to scaffold
     - `--force/-f` — overwrite existing AGENTS.md or CLAUDE.md
-- Environment: `AGENT_TOOLKIT_PATH`
 - Filesystem constants:
   - `DEFAULT_REPO_ROOT = Path(__file__).resolve().parents[1]`
-  - `DEFAULT_AGENT_TOOLKIT_ROOT = Path(os.environ.get('AGENT_TOOLKIT_PATH', str(Path.home() / 'Workspace' / 'agent-toolkit')))`
 - Explicit exit codes: `2`
-- Depends on: `cli_common.py`, `gen_interfaces.py`
+- Depends on: `cli_common.py`, `gen_interfaces.py`, `toolkit_checkout.py`
 - Exceptions:
   - `class ConfigError(Exception)` — A refresh-guidance.toml or --doc-set resolution problem.
 - Public classes:
@@ -1411,7 +1413,7 @@ refresh_guidance.py — audit-by-inspection for hand-authored, agent-facing docs
   - `check_command_claim(claim: Claim, scripts: dict[str, Path], cli_cache: dict[Path, gen_interfaces.CliSpec | None], repo_root: Path, basename_index: dict[str, list[str]]) -> str | None` — Verify a command claim's script exists and its cited flags/subcommands are real, by reusing `gen_interfaces`'s own argparse extraction and invocation validator -- the same machinery it uses to keep INTERFACES.md honest, rather than a second implementation of argparse introspection.
   - `git_blame_range(repo_root: Path, doc: str, start_line: int, end_line: int) -> tuple[str | None, str | None]` — Last commit (short sha, date) that touched a section's line range, via `git log -L` -- the secondary staleness signal for a section with no review-state entry yet.
   - `load_state(repo_root: Path, doc_set: DocSetConfig) -> dict[str, dict[str, str]]`
-  - `run_check(repo_root: Path, doc_set_name: str | None, agent_toolkit_root: Path = DEFAULT_AGENT_TOOLKIT_ROOT) -> CheckResult`
+  - `run_check(repo_root: Path, doc_set_name: str | None, agent_toolkit_root: Path | None = None) -> CheckResult` — Check the doc-set's claims and section review ages.
   - `render_report(result: CheckResult, doc_set_label: str) -> str`
   - `mark_reviewed(repo_root: Path, doc_set: DocSetConfig, doc: str, heading: str, result: CheckResult, *, commit: str | None = None, date: str | None = None, reviewed_by: str = 'human-confirmed') -> None` — Record human sign-off that one doc's ``## <heading>`` section is current — the sole supported state-writer in this module.
   - `build_parser() -> argparse.ArgumentParser`
@@ -1677,6 +1679,20 @@ to_tickets_runner.py — create a linked batch of dev_status.py backlog items fr
   - `build_parser() -> argparse.ArgumentParser`
 - Subcommand handlers: `cmd_run`
 - Tested by: `test/test_migrate_path_transform.py`, `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`, `test/test_to_tickets_runner.py`
+
+### `agent-scripts/toolkit_checkout.py`
+
+Locate the agent-toolkit source checkout.
+
+- Installed at: `~/.agent-toolkit/scripts/toolkit_checkout.py` (all harnesses)
+- Entrypoint: not executable, `#!/usr/bin/env python3`
+- CLI: hand-rolled `sys.argv` dispatch — not statically enumerable; see the module docstring above.
+- Exceptions:
+  - `class CheckoutNotFoundError(LookupError)` — No candidate location is an agent-toolkit checkout.
+- Public functions:
+  - `is_toolkit_checkout(path: Path) -> bool` — True when ``path`` has install.py and links.toml files and an agent-scripts/ dir.
+  - `toolkit_checkout(*, env: Mapping[str, str] | None = None, home: Path | None = None, self_path: Path | None = None) -> Path` — Return the agent-toolkit checkout, resolved.
+- Tested by: `test/test_toolkit_checkout.py`
 
 ### `agent-scripts/vitals_promotion.py`
 
@@ -1982,6 +1998,7 @@ are copy-once seeds for exactly that reason.
 | `pi/prompts/to-tickets.md` | `~/.pi/agent/prompts/to-tickets.md` (pi) |
 | `pi/settings.json` | not symlinked by `links.toml` |
 | `pi/test/compaction-backlog-sync.test.ts` | not symlinked by `links.toml` |
+| `pi/test/copilot-plugin-dir.test.ts` | not symlinked by `links.toml` |
 | `pi/test/copilot-swarm.test.ts` | not symlinked by `links.toml` |
 | `pi/test/cwd.test.ts` | not symlinked by `links.toml` |
 | `pi/test/delegate-tool.test.ts` | not symlinked by `links.toml` |
@@ -2051,6 +2068,7 @@ install.py — agent-toolkit provisioner and migration controls for macOS/Linux.
   - `--migration-id`
   - `--rollback-toolkit-home-migration`
   - `--finalize-toolkit-home-migration`
+  - `--move-layout-pointer`
   - `-h/--help`
 - Environment: `AGENT_TOOLKIT_INSTALL_WRAPPER`, `LOGNAME`, `PATH`, `USER`
 - Filesystem constants:
@@ -2101,7 +2119,7 @@ install.py — agent-toolkit provisioner and migration controls for macOS/Linux.
   - `print_summary(ctx: Context, settings: tuple[str, str], opencode: tuple[str, str], vscode: Sequence[tuple[str, tuple[str, str]]] = (), pi_settings: tuple[str, str] = ('', '')) -> None` — Print the loud end-of-run summary: skips, drift, and next steps.
   - `do_check_links(ctx: Context) -> int` — Audit the live symlinks against ``links.toml`` and report, changing nothing.
   - `run_install(ctx: Context, specs: Sequence[LinkSpec]) -> int` — Run every install step in order and return the process exit status.
-- Tested by: `test/test_dead_installers_stripped.py`, `test/test_harness_spec.py`, `test/test_install.py`, `test/test_link_inspect.py`, `test/test_migrate_toolkit_home.py`, `test/test_migrate_toolkit_home_carry.py`, `test/test_migrate_toolkit_home_moves.py`, `test/test_settings_seed.py`
+- Tested by: `test/test_dead_installers_stripped.py`, `test/test_harness_spec.py`, `test/test_install.py`, `test/test_link_inspect.py`, `test/test_migrate_toolkit_home.py`, `test/test_migrate_toolkit_home_carry.py`, `test/test_migrate_toolkit_home_moves.py`, `test/test_move_layout_pointer.py`, `test/test_settings_seed.py`
 
 ### `depart.py`
 

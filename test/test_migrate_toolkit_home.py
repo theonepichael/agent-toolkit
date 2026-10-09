@@ -315,9 +315,18 @@ def test_real_run_writes_journal_inventory_and_history(machine, capsys):
 
 def test_real_run_on_a_fresh_machine_has_an_empty_inventory(sandbox, capsys):
     _installed_runtime(sandbox)
+    agent_toolkit_paths.write_pointer(sandbox, "legacy", toolkit_root=None)
     code, report = _run(capsys)
     assert code == 0, report
     assert all(not d["files"] for d in report["inventory"]["domains"].values())
+
+
+def test_pointerless_fresh_machine_is_already_toolkit_home(sandbox, capsys):
+    # No pointer and no legacy data resolves to toolkit-home: nothing to migrate.
+    _installed_runtime(sandbox)
+    code, report = _run(capsys, dry_run=True)
+    assert code != 0
+    assert "layout" in _findings(report, "refuse"), report["findings"]
 
 
 def test_journal_follows_home_not_xdg(machine, capsys, tmp_path, monkeypatch):
@@ -376,7 +385,7 @@ def _assert_initial_refusal(machine, capsys, check: str, **kw: object) -> None:
 
 
 def test_refuses_when_already_migrated(machine, capsys):
-    agent_toolkit_paths.write_pointer(machine, "toolkit-home")
+    agent_toolkit_paths.write_pointer(machine, "toolkit-home", toolkit_root=None)
     _assert_initial_refusal(machine, capsys, "layout")
 
 
@@ -686,6 +695,7 @@ def test_real_installed_lock_module_counts_as_lock_aware(sandbox, capsys):
     scripts.mkdir(parents=True)
     for name in ("migration_lock.py", "agent_toolkit_paths.py"):
         (scripts / name).symlink_to(REPO / "agent-scripts" / name)
+    agent_toolkit_paths.write_pointer(sandbox, "legacy", toolkit_root=None)
     code, report = _run(capsys, dry_run=True)
     assert "runtime-lock-aware" in _findings(report, "ok"), report["findings"]
     assert code == 0

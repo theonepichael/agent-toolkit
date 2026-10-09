@@ -66,10 +66,24 @@ SEED_HOOK_ALLOW_DROP=1 git commit ...
 Clone the repository and run the provisioner:
 
 ```bash
-git clone git@github.com:theonepichael/agent-toolkit.git ~/Workspace/agent-toolkit
-cd ~/Workspace/agent-toolkit
+git clone git@github.com:theonepichael/agent-toolkit.git ~/Workspace/agent-toolkit/agent-toolkit
+cd ~/Workspace/agent-toolkit/agent-toolkit
 ./install.sh
 ```
+
+The extra directory level is optional but recommended. Worktrees are created
+beside the checkout, so nesting it keeps them inside `~/Workspace/agent-toolkit/`
+instead of next to every other project. Tools that need to find the checkout
+look in this order:
+
+1. their own install location;
+2. `$AGENT_TOOLKIT_PATH`;
+3. `~/Workspace/agent-toolkit/agent-toolkit`;
+4. `~/Workspace/agent-toolkit`.
+
+So a flat clone, or a clone anywhere else with `AGENT_TOOLKIT_PATH` set, works
+too. `python3 ~/.agent-toolkit/scripts/toolkit_checkout.py checkout`
+prints the checkout they resolve.
 
 ### Fresh worktrees: bootstrap dependencies first
 
@@ -124,6 +138,10 @@ rerun.
 # on anything toolkit-owned left at a legacy location, other than the
 # layout pointer:
 ./install.sh --check-links
+# Release 2, once finalized: move the layout pointer into the toolkit home
+# and remove the emptied legacy data directory (safe to re-run if
+# interrupted):
+./install.sh --move-layout-pointer
 ```
 
 ### Shell Integration
@@ -147,8 +165,8 @@ the difference between a working install and silent fallbacks.
 
 | Path | Status | What it holds |
 | :--- | :--- | :--- |
-| `~/.agent-toolkit/data/backlog/` | **Created on first use** by `dev_status.py` | The backlog/pending store (items.json, pending_items.json, _meta.json, journal.jsonl). Per-user by construction — it lives in your home, not in the repo. Hardcoded location: `Path.home() / ".claude" / "data" / "backlog"`; there is no `XDG_DATA_HOME` support. Out-of-scope concepts live in the sibling `~/.agent-toolkit/data/backlog-out-of-scope/`, not nested under this path. |
-| `~/.agent-toolkit/data/grill/` | **Created on first use** by `grill.py` and `second_opinion.py` | Spec, plan, and critique artifacts written by the `/spec`, `/grill-me`, and `/second-opinion` skills. Same hardcoded base path as above. |
+| `~/.agent-toolkit/data/backlog/` | **Created on first use** by `dev_status.py` | The backlog/pending store (items.json, pending_items.json, _meta.json, journal.jsonl). Per-user by construction — it lives in your home, not in the repo. Resolved at each use by `agent_toolkit_paths.path_for("work-items")` (honors `AGENT_TOOLKIT_HOME`); there is no `XDG_DATA_HOME` support. Out-of-scope concepts live in the sibling `~/.agent-toolkit/data/backlog-out-of-scope/`, not nested under this path. |
+| `~/.agent-toolkit/data/grill/` | **Created on first use** by `grill.py` and `second_opinion.py` | Spec, plan, and critique artifacts written by the `/spec`, `/grill-me`, and `/second-opinion` skills. Resolved the same way, as `path_for("decisions")`. |
 | `~/.agent-toolkit/data/to-tickets/` | **Created on first use** by `to_tickets_runner.py` | Batch files drafted by the `/to-tickets` skill. |
 | `~/.secrets` (or wherever you keep shell env) | **Expected, user-supplied — never created by the installer** | This machine's `SECOND_OPINION_*` model pools live here. The toolkit itself never opens this file — it reads environment variables, however you set them. |
 
