@@ -88,14 +88,22 @@ _BYPASS_BASH_PATTERNS = (
     "node -e *",
     "python3 -c *",
     "python3 - *",
-    # Network-fetches and runs lifecycle hooks / arbitrary packages.
-    "npm install*",
-    "npm install",
+    # Fetches and runs arbitrary packages. (`npm install*` also runs lifecycle
+    # scripts but is a deliberate allow in permission_matrix.py, user-decided
+    # 2026-09-30, so it is not listed: an entry the seed itself allows could
+    # never fire, and would only contradict the policy.)
     "npx *",
     # Delegates to a CLI with its own separate permission model, or the
     # same CLI redirected/auto-approved via specific flags.
     "opencode run*",  # --auto/--dir make this a real bypass
     "copilot *",
+    # Dropped from the shared allow when permission_matrix.py replaced the
+    # hand-kept lists; fix never removes a live allow, so a live config that
+    # still has one is surfaced here instead.
+    "DEVSTATUS_AGENT=1 python3 *",  # any python3 script, not just dev_status.py
+    "env DEVSTATUS_AGENT=1 python3 *",
+    "find *",  # -exec/-delete/-fprint run commands or write files
+    "sed -n *",  # GNU sed's e/w commands run shell or write files
 )
 
 

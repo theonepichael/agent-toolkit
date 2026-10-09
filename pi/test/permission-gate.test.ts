@@ -1,8 +1,14 @@
 import { afterEach, describe, expect, test } from "./helpers/tap";
+import { readFileSync } from "node:fs";
 import permissionGate, {
   agentUnattendedByEnv,
+  ALLOW_PATTERNS,
+  ASK_PATTERNS,
   classify,
+  DENY_PATTERNS,
+  initialDenyOnly,
   initialGateEnabled,
+  isDenyOnly,
   isPermissionGateEnabled,
   patternToRegExp,
 } from "../extensions/permission-gate";
@@ -275,7 +281,7 @@ describe("classify: false-positive classes the scanner must not break", () => {
   });
 
   test("escaped operators and line continuations are not boundaries", () => {
-    expect(classify("find . -exec ls {} \\;")).toBe("allow");
+    expect(classify("echo a \\; b")).toBe("allow");
     expect(classify("echo foo \\\nbar")).toBe("allow");
     // continuation then a real operator: the operator still segments
     expect(classify("echo foo \\\n; rm -rf /tmp/x")).toBe("ask");
@@ -331,6 +337,16 @@ describe("classify: per-pattern regression table", () => {
       ],
       ["git worktree add", "git worktree add ../repo-slug -b slug"],
       ["git -C worktree add", "git -C /repo worktree add ../repo-slug -b slug"],
+      ["git worktree list", "git worktree list --porcelain"],
+      ["git add", "git add -A"],
+      ["git rev-parse", "git rev-parse HEAD"],
+      ["git branch", "git branch"],
+      ["git branch --show-current", "git branch --show-current"],
+      ["git branch --list", "git branch --list 'atk-*'"],
+      ["git branch -vv", "git branch -vv"],
+      ["git checkout -b", "git checkout -b feat"],
+      ["git -C checkout -b", "git -C /repo checkout -b feat"],
+      ["bootstrap-worktree", "./scripts/bootstrap-worktree.sh"],
       ["npm install", "npm install"],
       ["npm test", "npm test"],
       ["npm run test", "npm run test"],
@@ -349,7 +365,6 @@ describe("classify: per-pattern regression table", () => {
       ["uniq *", "uniq f"],
       ["grep", "grep -n foo f"],
       ["rg", "rg foo"],
-      ["find", "find . -name x"],
       ["file", "file f"],
       ["stat", "stat f"],
       ["du", "du -sh ."],
@@ -359,7 +374,6 @@ describe("classify: per-pattern regression table", () => {
       ["env", "env"],
       ["printenv", "printenv HOME"],
       ["cat *", "cat f"],
-      ["sed -n", "sed -n 1p f"],
       ["strings", "strings f"],
       ["readlink", "readlink -f f"],
       ["jq", "jq . f"],
@@ -382,5 +396,89 @@ describe("classify: per-pattern regression table", () => {
     for (const [, command] of representatives) {
       expect(classify(command)).toBe("allow");
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The shared matrix (agent-scripts/permission_matrix.py) as Pi compiles it.
+// ---------------------------------------------------------------------------
+
+describe("patternToRegExp: neutral grammar", () => {
+  test("<dir> is exactly one whitespace-free argument", () => {
+    const re = patternToRegExp("git -C <dir> log*");
+    expect(re.test("git -C /repo log --oneline")).toBe(true);
+    expect(re.test("git -C r reset --hard logfile")).toBe(false);
+    expect(re.test("git -C r push origin log-fix")).toBe(false);
+  });
+
+  test("a trailing ' *' that is the only wildcard also matches the bare command", () => {
+    expect(patternToRegExp("lsof *").test("lsof")).toBe(true);
+    expect(patternToRegExp("lsof *").test("lsofx")).toBe(false);
+    expect(patternToRegExp("git branch --list *").test("git branch --list")).toBe(true);
+  });
+
+  test("anywhere mode matches after a leading assignment or wrapper", () => {
+    const re = patternToRegExp("git commit*", "anywhere");
+    expect(re.test("git commit -m x")).toBe(true);
+    expect(re.test("FOO=1 git commit -m x")).toBe(true);
+    expect(re.test("nice -n 5 git commit")).toBe(true);
+    expect(re.test("xgit commit")).toBe(false);
+  });
+});
+
+describe("classify: generated policy", () => {
+  test("the generated lists are non-empty and git commit is an ask everywhere", () => {
+    expect(ALLOW_PATTERNS.length).toBe(86);
+    expect(ASK_PATTERNS).toContain("git commit*");
+    expect(ASK_PATTERNS).toContain("git -C <dir> commit*");
+    expect(DENY_PATTERNS).toContain("python3 ~/.agent-toolkit/scripts/dev_status.py prune*");
+  });
+
+  test("an ask rule beats an allow rule", () => {
+    expect(classify("git checkout -b feat")).toBe("allow");
+    expect(classify("git checkout -b feat -f")).toBe("ask");
+    expect(classify("git worktree add -B slug ../p")).toBe("ask");
+  });
+
+  test("the prune deny holds behind wrappers and assignments", () => {
+    const prune = "python3 ~/.agent-toolkit/scripts/dev_status.py prune";
+    expect(classify(prune)).toBe("deny");
+    expect(classify(`DEVSTATUS_AGENT=1 ${prune}`)).toBe("deny");
+    expect(classify(`env -i ${prune}`)).toBe("deny");
+    expect(classify(`nice -n 5 ${prune}`)).toBe("deny");
+  });
+
+  test("every case in the shared cross-harness corpus", () => {
+    const corpus = JSON.parse(
+      readFileSync(new URL("../../test/fixtures/permission_corpus.json", import.meta.url), "utf8"),
+    ) as { cases: { command: string; pi: string }[] };
+    expect(corpus.cases.length > 20).toBe(true);
+    for (const c of corpus.cases) {
+      expect([c.command, classify(c.command)]).toEqual([c.command, c.pi]);
+    }
+  });
+});
+
+describe("unattended deny-only state", () => {
+  test("an unattended session keeps the deny tier armed", () => {
+    expect(initialDenyOnly({ PI_AGENT_UNATTENDED: "1" })).toBe(true);
+    expect(initialDenyOnly({})).toBe(false);
+    expect(initialDenyOnly({ PI_AGENT_UNATTENDED: "true" })).toBe(false);
+  });
+
+  test("an explicit /permission-gate choice replaces deny-only", async () => {
+    const commands: Record<string, { handler: Handler }> = {};
+    permissionGate({
+      on: () => {},
+      registerCommand: (name: string, opts: { handler: Handler }) => {
+        commands[name] = opts;
+      },
+      events: { on: () => () => {}, emit: () => {} },
+    } as never);
+    await commands["permission-gate"]!.handler("off", { ui: { notify: () => {} } });
+    expect(isPermissionGateEnabled()).toBe(false);
+    expect(isDenyOnly()).toBe(false);
+    await commands["permission-gate"]!.handler("on", { ui: { notify: () => {} } });
+    expect(isPermissionGateEnabled()).toBe(true);
   });
 });

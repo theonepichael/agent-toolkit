@@ -12,6 +12,10 @@ Usage:
     python3 agent-scripts/gen_hooks.py --stdout    print the rendered copies,
                                                    write nothing
 
+Never run this and gen_permissions.py concurrently: both rewrite
+claude/settings*.json whole (this one owns `hooks`, that one `permissions`),
+and this one writes the snapshot it read. Run serially, in either order.
+
 Flags: --check, --stdout, --repo-root <path>, --quiet/-q, --verbose/-v.
 Env vars: none.
 Files read: agent-scripts/harness_spec.py, claude/settings.json, claude/settings.work.json.

@@ -97,14 +97,19 @@ Subcommands
 
             * ``permissions.allow``: union — append seed entries not in
               live; never remove live entries.
-            * ``permissions.deny`` / ``permissions.ask``: overwrite from
-              seed only when live is a *weakened subset* (live has fewer
-              entries than the seed — a security regression); otherwise
-              preserve live.
+            * ``permissions.deny`` / ``permissions.ask``: union — append
+              seed entries not in live; never remove live entries (adding
+              a deny or ask only ever adds a block or a prompt).
             * ``permission.bash`` (opencode): union of seed patterns into
-              live; never remove live patterns — **except** the
-              ``xargs *`` / ``awk *`` allowlist bypasses, which are
-              stripped from live even under additive policy.
+              live, placed for last-match-wins — the ``"*"`` catch-all
+              first, a new allow right after it, a new ask just before the
+              first live deny, a new deny last; never
+              remove live patterns — **except** the ``xargs *`` /
+              ``awk *`` allowlist bypasses, which are stripped from live
+              even under additive policy.
+            * ``fix`` never narrows a live allow or repairs a live key
+              order it did not write; run ``gen_permissions.py
+              --audit-live`` afterwards to see what still differs.
             * ``hooks``: wholesale-overwrite from seed (hooks are not
               live-modified by approval flows, so any divergence is
               genuine drift) — **except** when the seed's SessionStart
@@ -569,9 +574,11 @@ def _merge_permissions_additive(
     that were intentionally left untouched (flag-and-skip).
 
     * ``allow``: union — append seed entries not in live; never remove.
-    * ``deny`` / ``ask``: overwrite from seed only when live is a
-      *weakened subset* (live has fewer entries than seed — a security
-      regression); otherwise preserve live.
+    * ``deny`` / ``ask``: union — append seed entries not in live; never
+      remove live entries. Adding a deny or ask can only add a block or a
+      prompt, so this is safe to apply unattended. (It replaced a "restore
+      only when live is a weakened subset" rule, which missed a same-count
+      replacement such as a stale deny on an old script path.)
     * Other ``permissions`` sub-keys: append from seed if missing in live;
       flag-and-skip if present in both but differ.
     """
@@ -592,7 +599,7 @@ def _merge_permissions_additive(
     elif "allow" in seed_perm and seed_perm.get("allow") != live_allow:
         skipped.append("permissions.allow differs — leaving live")
 
-    # deny, ask: wholesale overwrite only when live is a weakened subset
+    # deny, ask: additive union (can only add blocks / prompts)
     for sub in ("deny", "ask"):
         seed_v = seed_perm.get(sub, [])
         live_v = new.get(sub, [])
@@ -600,16 +607,11 @@ def _merge_permissions_additive(
             if sub in seed_perm and seed_perm.get(sub) != live_v:
                 skipped.append(f"permissions.{sub} differs — leaving live")
             continue
-        if set(live_v) < set(seed_v):
-            # live is a strict subset of seed → live has fewer entries →
-            # weakenend (e.g. live deny=[] but seed deny=["Bash(rm *)"]).
-            new[sub] = list(seed_v)
+        missing = [e for e in seed_v if e not in live_v]
+        if missing:
+            new[sub] = list(live_v) + missing
             applied.append(
-                f"permissions.{sub} restored from seed (live was weakened subset)"
-            )
-        elif set(live_v) != set(seed_v):
-            skipped.append(
-                f"permissions.{sub} differs (live={live_v!r}, seed={seed_v!r}) — leaving live"
+                f"permissions.{sub} +[" + ", ".join(repr(e) for e in missing) + "]"
             )
 
     # other permission sub-keys
@@ -784,6 +786,29 @@ def _opencode_permission_live_only(
     return fragments
 
 
+def _possibly_overlap(p: str, q: str) -> bool:
+    """Conservative "can one command match both?" check for ``*``-globs.
+
+    Two prefix globs (``literal*`` or exact) can match a shared command
+    when their literal prefixes are prefix-compatible. Any pattern with a
+    mid-pattern wildcard (or ``?``) falls back to ``True`` — never claim
+    non-overlap that cannot be proven, since a false "no overlap" would
+    place an ask that a live allow silently defeats.
+    """
+
+    def literal(pattern: str) -> str | None:
+        if "?" in pattern:
+            return None
+        if pattern.endswith("*") and "*" in pattern[:-1]:
+            return None
+        return pattern.removesuffix("*")
+
+    plit, qlit = literal(p), literal(q)
+    if plit is None or qlit is None:
+        return True
+    return plit.startswith(qlit) or qlit.startswith(plit)
+
+
 def _merge_opencode_permission(
     seed_perm: dict[str, object], live_perm: dict[str, object]
 ) -> tuple[dict[str, object], list[str], list[str]]:
@@ -795,8 +820,15 @@ def _merge_opencode_permission(
     ``_bash_permissions`` helper (which expects a top-level config and
     looks up ``config["permission"]["bash"]``).
 
-    * ``permission.bash``: union — append seed patterns not in live;
-      differing verdicts on shared patterns are flag-and-skip; bypass
+    * ``permission.bash``: union — add seed patterns not in live, placed
+      for last-match-wins (a seed catch-all first only when live has none;
+      a live "*" keeps its owner's position — a trailing backstop must not
+      be hoisted; a new allow right after the "*"; a new ask just before
+      the first live deny; a new deny last); differing verdicts on shared
+      patterns are flag-and-skip; seed allows *and asks* are skipped under
+      a live deny catch-all (both would loosen the lockdown), as are asks
+      an overlapping live allow after the first deny would shadow (last
+      match wins — the ask would be inert); bypass
       patterns (``xargs *`` / ``awk *``) present live-but-not-seed are
       stripped (security regression takes priority over preserving
       live-only entries).
@@ -815,17 +847,88 @@ def _merge_opencode_permission(
     if isinstance(seed_bash, dict) or isinstance(live_bash, dict):
         seed_bash_d = seed_bash if isinstance(seed_bash, dict) else {}
         live_bash_d = live_bash if isinstance(live_bash, dict) else {}
-        merged_bash: dict[str, object] = dict(live_bash_d)
-        # append seed patterns not in live
+        # Last match wins in opencode, so placement decides the verdict:
+        # - the "*" catch-all goes first (anywhere later it shadows rules);
+        # - a new allow goes right after it, before every other live key, so
+        #   it can never override a live ask or deny;
+        # - a new ask goes just before the first live deny (or last when live
+        #   has none), so it overrides live allows but never weakens a deny;
+        # - a new deny goes last.
+        added: dict[str, dict[str, object]] = {"allow": {}, "ask": {}, "deny": {}}
+        added_catch_all: dict[str, object] = {}
+        live_denies_all = live_bash_d.get("*") == "deny"
+        live_pairs = list(live_bash_d.items())
+        star_pos = next((i for i, (p, _) in enumerate(live_pairs) if p == "*"), None)
+        # A new ask is inserted just before the first live deny so it can
+        # never weaken one — but a live *allow* positioned after that point
+        # still decides under last-match-wins, leaving the added ask inert.
+        # Skip asks only when such an allow can actually match the same
+        # command (conservative prefix-glob overlap); an unrelated allow
+        # must not suppress the repair. (A live "*": "deny" implies
+        # live_denies_all, which already skips asks, so a deny found here
+        # is a real anchor.)
+        first_deny = next(
+            (i for i, (p, v) in enumerate(live_pairs) if v == "deny" and p != "*"),
+            None,
+        )
         for pat, verdict in seed_bash_d.items():
-            if pat not in merged_bash:
-                merged_bash[pat] = verdict
+            if pat not in live_bash_d:
+                if pat == "*":
+                    added_catch_all[pat] = verdict
+                elif verdict == "deny":
+                    added["deny"][pat] = verdict
+                elif live_denies_all:
+                    # A live "*": "deny" is a deliberate lockdown; a seed
+                    # allow or ask placed after it would loosen it under
+                    # last-match-wins. Report, never add.
+                    skipped.append(
+                        f"permission.bash +[{pat!r}] skipped — live catch-all is deny"
+                    )
+                    continue
+                elif (
+                    verdict != "allow"
+                    and first_deny is not None
+                    and any(
+                        v == "allow" and _possibly_overlap(pat, p)
+                        for p, v in live_pairs[first_deny:]
+                    )
+                ):
+                    skipped.append(
+                        f"permission.bash +[{pat!r}] skipped — a live allow after "
+                        "the first live deny would shadow it (last match wins)"
+                    )
+                    continue
+                else:
+                    tier = "allow" if verdict == "allow" else "ask"
+                    added[tier][pat] = verdict
                 applied.append(f"permission.bash +[{pat!r}]")
-            elif merged_bash.get(pat) != verdict:
+            elif live_bash_d.get(pat) != verdict:
                 skipped.append(
                     f"permission.bash[{pat!r}] verdict differs "
-                    f"(live={merged_bash.get(pat)!r}, seed={verdict!r}) — leaving live"
+                    f"(live={live_bash_d.get(pat)!r}, seed={verdict!r}) — leaving live"
                 )
+        # Assemble while preserving live order: a live "*" keeps the
+        # position its owner chose (a trailing deny backstop must not be
+        # hoisted — reordering live rules alone flips verdicts). Seed
+        # catch-all first only when live has none; added allows right
+        # after the "*"; added asks before the first live deny; added
+        # denies last.
+        merged_pairs: list[tuple[str, object]] = list(added_catch_all.items())
+        if star_pos is not None:
+            merged_pairs.extend(live_pairs[: star_pos + 1])
+        merged_pairs.extend(added["allow"].items())
+        asks_placed = False
+        for i, (pat, verdict) in enumerate(live_pairs):
+            if star_pos is not None and i <= star_pos:
+                continue  # already appended, before the added allows
+            if not asks_placed and verdict == "deny" and pat != "*":
+                merged_pairs.extend(added["ask"].items())
+                asks_placed = True
+            merged_pairs.append((pat, verdict))
+        if not asks_placed:
+            merged_pairs.extend(added["ask"].items())
+        merged_pairs.extend(added["deny"].items())
+        merged_bash: dict[str, object] = dict(merged_pairs)
         # strip bypass patterns present live-but-not-seed (security regression)
         stripped = [
             pat

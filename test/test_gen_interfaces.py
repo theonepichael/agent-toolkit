@@ -293,6 +293,30 @@ class CliExtractionTests(unittest.TestCase):
         self.assertEqual([o.label for o in spec.options], ["--profile"])
         self.assertIn("default: personal", spec.options[0].notes)
 
+    @pytest.mark.regression(
+        "gen-interfaces-skips-mutually-exclusive-group-args",
+        "AssertionError: Lists differ: [] != ['--check', '--fix']",
+    )
+    def test_mutually_exclusive_group_arguments_are_extracted(self) -> None:
+        # gen_permissions.py's mode flags (--check/--stdout/--audit-live) live
+        # on add_mutually_exclusive_group(); the group's add_argument calls
+        # must land on the parser's option list like any other.
+        spec = cli_of(
+            """
+            import argparse
+
+
+            def main(argv=None):
+                parser = argparse.ArgumentParser(description="Tool.")
+                mode = parser.add_mutually_exclusive_group()
+                mode.add_argument("--check", action="store_true")
+                mode.add_argument("--fix", action="store_true")
+            """
+        )
+        self.assertEqual(
+            sorted(o.label for o in spec.options), ["--check", "--fix"]
+        )
+
     def test_nested_helper_body_is_not_walked_as_caller_statements(self) -> None:
         # `add_flag`'s parameter is also named `p`; without skipping nested
         # function bodies its argument would land on whatever `p` points at.

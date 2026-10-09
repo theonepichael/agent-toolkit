@@ -48,6 +48,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`gen_hooks.py`](#agentscriptsgenhookspy) | gen_hooks.py — compile lifecycle hooks across Claude, Copilot, and agy. |
 | [`gen_interfaces.py`](#agentscriptsgeninterfacespy) | gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources. |
 | [`gen_keybinds.py`](#agentscriptsgenkeybindspy) | Regenerate the opencode leader-chord table in the parity doc from an opencode binary. |
+| [`gen_permissions.py`](#agentscriptsgenpermissionspy) | gen_permissions.py — compile the shared bash-permission matrix into every seed. |
 | [`gen_second_opinion.py`](#agentscriptsgensecondopinionpy) | gen_second_opinion.py — regenerate the second-opinion skill copies (one per harness, named in HARNESS_TABLE) from one canonical template. |
 | [`gen_shell_completion.py`](#agentscriptsgenshellcompletionpy) | Generate a zsh `#compdef` completion file for a harness CLI. |
 | [`gen_skills.py`](#agentscriptsgenskillspy) | gen_skills.py — regenerate the generated skill copies (every skill in `SKILLS`) from one template per skill, plus a shared per-harness capability table. Each skill covers the harnesses listed for it in `SKILL_HARNESSES`: most cover every harness in `harness_spec.ALL_NAMES`; swarm covers only claude/copilot (user-directed; pi already owns the orchestration surface) — see AGENTS.md's "Harness maintenance tiers" section. |
@@ -65,6 +66,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`opencode_trust.py`](#agentscriptsopencodetrustpy) | Control per-session trust for the supported OpenCode permission plugin. |
 | [`outlook_calendar.py`](#agentscriptsoutlookcalendarpy) | outlook_calendar.py — CLI tool and agent interface for Windows Outlook Calendar via PowerShell COM. |
 | [`outlook_email.py`](#agentscriptsoutlookemailpy) | outlook_email.py — CLI tool and agent interface for Windows Outlook via PowerShell COM. |
+| [`permission_matrix.py`](#agentscriptspermissionmatrixpy) | Declarative bash-permission matrix shared by every harness's global seed. |
 | [`refresh_guidance.py`](#agentscriptsrefreshguidancepy) | refresh_guidance.py — audit-by-inspection for hand-authored, agent-facing docs. |
 | [`retained_legacy_links.py`](#agentscriptsretainedlegacylinkspy) | Read which legacy symlinks an unfinalized toolkit-home migration still keeps. |
 | [`second_opinion.py`](#agentscriptssecondopinionpy) | second_opinion.py — one-shot adversarial critique of a plan from a non-Claude backend. Single-round by design: the multi-round loop, plan revision, and convergence judgment all require LLM reasoning and live in prose instructions, not here. |
@@ -261,6 +263,8 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
 - CLI (`argparse`): deterministic backlog dashboard v2
   - `--quiet/-q`
   - `--verbose/-v`
+  - `--compact` — single-line structured confirmation on stdout instead of full dashboard (default: False)
+  - `--full/--no-compact` — force full dashboard render even under DEVSTATUS_AGENT=1 (default: False)
 - Subcommands:
   - `render` — render dashboard (pure — no side effects)
   - `list [--status <STATUS>] [--raw]` — grouped backlog table (--raw for tab-separated output)
@@ -570,7 +574,7 @@ gen_hooks.py — compile lifecycle hooks across Claude, Copilot, and agy.
 - Depends on: `cli_common.py`, `harness_spec.py`
 - Public functions:
   - `compile_hooks(repo_root: Path) -> dict[Path, str]` — Compile declarative hook manifests into target file contents.
-- Tested by: `test/test_gen_hooks.py`
+- Tested by: `test/test_gen_hooks.py`, `test/test_gen_permissions.py`
 
 ### `agent-scripts/gen_interfaces.py`
 
@@ -690,6 +694,38 @@ Regenerate the opencode leader-chord table in the parity doc from an opencode bi
   - `current_block(text: str) -> str` — The block currently committed between the anchors.
   - `splice_block(text: str, body: str) -> str` — Return ``text`` with the anchored region replaced by ``body``.
 - Tested by: `test/test_gen_keybinds.py`
+
+### `agent-scripts/gen_permissions.py`
+
+gen_permissions.py — compile the shared bash-permission matrix into every seed.
+
+- Installed at: `~/.agent-toolkit/scripts/gen_permissions.py` (all harnesses)
+- Entrypoint: not executable, `#!/usr/bin/env python3`
+- CLI (`argparse`): Compile permission_matrix.py into the Claude, opencode and Pi seeds.
+  - `--check` — exit 1 if any target differs from compiled output
+  - `--stdout` — print rendered targets and write nothing
+  - `--audit-live` — read-only: compare live Claude/opencode permission rules to the seeds
+  - `--home` — home directory whose live configs --audit-live reads (default: $HOME)
+  - `--repo-root` — repository root directory (default: parent of agent-scripts/)
+  - `--quiet/-q`
+  - `--verbose/-v`
+- Depends on: `cli_common.py`, `permission_matrix.py`
+- Exceptions:
+  - `class GenerationError(Exception)` — A target cannot be rendered safely; nothing is written.
+- Public functions:
+  - `to_glob(pattern: str) -> str` — Neutral pattern -> glob for targets whose only wildcard is ``*``.
+  - `emit_claude(rules: dict[Tier, tuple[str, ...]]) -> dict[str, list[str]]` — Claude ``permissions`` lists (precedence is deny>ask>allow by design).
+  - `emit_opencode(rules: dict[Tier, tuple[str, ...]]) -> dict[str, str]` — opencode ``permission.bash``: last match wins, so allow < ask < deny.
+  - `emit_pi_region(rules: dict[Tier, tuple[str, ...]]) -> str` — The text between (and including) the permission-gate.ts anchors.
+  - `splice_region(text: str, region: str, *, where: str) -> str` — Replace the single anchored region in ``text`` with ``region``.
+  - `compile_permissions(repo_root: Path) -> dict[Path, str]` — Render every target; raises GenerationError on an invalid matrix or target.
+  - `scan_command(command: str) -> tuple[list[str], bool, bool]` — Quote-aware split into segments, as Pi's scanCommand does.
+  - `claude_match(command: str, glob: str) -> bool` — Claude Code's documented Bash-rule glob (code.claude.com/docs/en/permissions).
+  - `claude_verdict(perms: dict[str, object], command: str) -> str` — Rules-only Claude verdict: deny > ask > allow per segment, default ask.
+  - `opencode_match(command: str, pattern: str) -> bool` — Transcription of opencode's ``Wildcard.match`` (binary 0.0.0-dev-202609250015).
+  - `opencode_verdict(bash: dict[str, object], command: str) -> str` — opencode verdict: the last matching ``permission.bash`` entry, per segment.
+  - `audit_live(repo_root: Path, home: Path) -> tuple[int, list[str]]` — Compare live Claude/opencode permission rules to the generated seeds.
+- Tested by: `test/test_gen_permissions.py`, `test/test_install.py`, `test/test_settings_seed_drift_check.py`
 
 ### `agent-scripts/gen_second_opinion.py`
 
@@ -968,7 +1004,7 @@ Declarative harness specification registry.
   - `probe_expected_root(name: str) -> frozenset[str]` — Return the fixture root tokens expected for the given harness.
   - `feature_spec(harness: str, feature: str) -> FeatureImplementation` — Return the FeatureImplementation declaration for a harness and feature.
   - `assert_feature_coverage(repo_root: Path | None = None) -> None` — Validate that all active harnesses have declared valid implementations for all required features.
-- Tested by: `test/test_agent_toolkit_paths.py`, `test/test_check_toolkit_paths.py`, `test/test_gen_hooks.py`, `test/test_harness_feature_coverage.py`, `test/test_harness_spec.py`
+- Tested by: `test/test_agent_toolkit_paths.py`, `test/test_check_toolkit_paths.py`, `test/test_gen_hooks.py`, `test/test_harness_feature_coverage.py`, `test/test_harness_spec.py`, `test/test_permission_matrix.py`
 
 ### `agent-scripts/herdr_delegate.py`
 
@@ -1297,6 +1333,26 @@ outlook_email.py — CLI tool and agent interface for Windows Outlook via PowerS
   - `get_recent_correspondence(since: date | None = None, limit: int = 50, runner: Callable[[str], str] | None = None) -> list[dict[str, object]]` — Retrieve recent emails received in Inbox.
 - Tested by: `test/test_outlook_email.py`
 
+### `agent-scripts/permission_matrix.py`
+
+Declarative bash-permission matrix shared by every harness's global seed.
+
+- Installed at: `~/.agent-toolkit/scripts/permission_matrix.py` (all harnesses)
+- Entrypoint: not executable, `#!/usr/bin/env python3`
+- CLI: none (library module).
+- Depends on: `harness_spec.py`
+- Public classes:
+  - `class Tier(StrEnum)` — Permission tier of a rule.
+  - `class Rule` — One neutral permission rule.
+  - `class PatternException` — Remove one named ALLOW pattern from one target.
+  - `class TokenException` — A target's syntax cannot express ``token``: drop its ALLOW rules there.
+- Public functions:
+  - `pattern_violations(pattern: str) -> list[str]` — Return every grammar violation in one neutral pattern.
+  - `validate(rules: tuple[Rule, ...] = RULES, exceptions: tuple[PatternException | TokenException, ...] = EXCEPTIONS) -> list[str]` — Return every violation in the matrix; ``[]`` when it is sound.
+  - `rules_for(target: str, rules: tuple[Rule, ...] = RULES, exceptions: tuple[PatternException | TokenException, ...] = EXCEPTIONS) -> dict[Tier, tuple[str, ...]]` — Neutral patterns per tier for ``target``, in matrix order, exceptions applied.
+  - `shared_allow(rules: tuple[Rule, ...] = RULES) -> frozenset[str]` — Every ALLOW pattern in the matrix, before any exception.
+- Tested by: `test/test_gen_permissions.py`, `test/test_install.py`, `test/test_permission_matrix.py`
+
 ### `agent-scripts/refresh_guidance.py`
 
 refresh_guidance.py — audit-by-inspection for hand-authored, agent-facing docs.
@@ -1481,7 +1537,7 @@ Copy-once settings seeding, adoption, reseed, and drift detection.
   - `describe_opencode_drift(seed: Path, live: Path) -> str` — Describe how a live opencode.jsonc diverged from its seed.
   - `describe_vscode_drift(seed: Path, live: Path) -> str` — Describe how a live VS Code settings/keybindings file diverged from its seed.
   - `seed_file(ctx: Context, seed: Path, dest: Path, *, skip_label: str, drift: Callable[[Path, Path], str], adopt_drift: Callable[[str, str], str] | None = None, adopt_blocker: Callable[[Context, Path, Path, str, str], str | None] | None = None, run_command: Callable[..., CommandOutcome]) -> str` — Copy ``seed`` to ``dest`` once, or report drift if it's already there.
-- Tested by: `test/test_install.py`, `test/test_settings_seed.py`
+- Tested by: `test/test_gen_permissions.py`, `test/test_install.py`, `test/test_settings_seed.py`
 
 ### `agent-scripts/settings_seed_drift_check.py`
 

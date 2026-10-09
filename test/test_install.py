@@ -920,7 +920,7 @@ def test_drift_helpers_on_raw_dicts():
 
 
 def test_opencode_bypass_drift_covers_all_extended_patterns():
-    """Each of the 13 newly-classified patterns triggers, not just xargs/awk."""
+    """Each classified pattern triggers, not just xargs/awk."""
     new_patterns = [
         "git --no-pager *",
         "uv *",
@@ -928,13 +928,15 @@ def test_opencode_bypass_drift_covers_all_extended_patterns():
         "python3 -c *",
         "python3 -m *",
         "python3 - *",
-        "npm install*",
-        "npm install",
         "npx *",
         "sqlite3 *",
         "opencode run*",
         "copilot *",
         "nohup *",
+        "DEVSTATUS_AGENT=1 python3 *",
+        "env DEVSTATUS_AGENT=1 python3 *",
+        "find *",
+        "sed -n *",
     ]
     for pattern in new_patterns:
         result = install.opencode_bypass_drift(
@@ -946,7 +948,7 @@ def test_opencode_bypass_drift_covers_all_extended_patterns():
 
 def test_opencode_bypass_drift_does_not_catch_unnamed_patterns():
     """The curated set is a snapshot, not a generalized diff — an unnamed
-    bypass-shaped pattern (perl -e *, not one of the 15) is not flagged.
+    bypass-shaped pattern (perl -e *, not in the curated set) is not flagged.
     Full-policy compliance is the pytest allowlist-equality test's job."""
     assert (
         install.opencode_bypass_drift(
@@ -959,21 +961,18 @@ def test_opencode_bypass_drift_does_not_catch_unnamed_patterns():
 
 # ── seed policy compliance (allowlist equality) ─────────────────────────────
 
-# Hand-authored from this audit's classification (see
-# ~/.claude/data/grill/meta-opencode-seed-bypass-audit-spec.md) — NOT
-# derived at runtime from the seed file, since that would make the
-# equality assertion below vacuous. Any future legitimate
-# permission.bash change (new script, new KEEP) must update this
-# literal in the same commit, or the test below goes red.
+# The second key of a two-key policy review. The policy itself lives in
+# agent-scripts/permission_matrix.py and gen_permissions.py compiles it into
+# every seed; this literal is hand-authored and NOT derived from the matrix, so
+# a rule added to the matrix alone (a bad rule "ported straight in") turns this
+# test red until a human also writes it here. Any legitimate policy change
+# updates both in the same commit.
 #
-# Three members are known, frozen bypass-shaped gaps, deliberately left
-# out of this audit's scope (they predate it): `find *` (-delete/-exec
-# run arbitrary commands), `sed -n *` (GNU sed's `e` command executes
-# shell), and `env` (`env FOO=bar <command>` runs an arbitrary trailing
-# command) — same shape as xargs/awk, just not touched here.
+# Neutral syntax: `<dir>` is one whitespace-free argument, expressible only by
+# Pi; Claude and opencode drop those rules (a recorded TokenException).
 _APPROVED_BASH_PATTERNS = frozenset(
     {
-        # 5 named shared workflow scripts + vitals promotion
+        # shared workflow scripts
         "python3 ~/.agent-toolkit/scripts/dev_status.py *",
         "python3 ~/.agent-toolkit/scripts/grill.py *",
         "python3 ~/.agent-toolkit/scripts/second_opinion.py *",
@@ -981,13 +980,12 @@ _APPROVED_BASH_PATTERNS = frozenset(
         "python3 ~/.agent-toolkit/scripts/bundle_drift_check.py *",
         "python3 ~/.agent-toolkit/scripts/vitals_promotion.py *",
         "python3 agent-scripts/vitals_promotion.py *",
-        # dev_status with environment variable
-        "DEVSTATUS_AGENT=1 python3 *",
-        "env DEVSTATUS_AGENT=1 python3 *",
-        # npm / TypeScript tooling -- enumerated rather than a bare `npm *`
-        # wildcard, mirroring the uv block below. `npm test*` is its own entry
-        # because test:clean invokes bare `npm test`, which `npm run test*`
-        # does not match.
+        "python3 ~/.agent-toolkit/scripts/worktree.py *",
+        # dev_status behind DEVSTATUS_AGENT=1 -- narrowed from any python3 script
+        "DEVSTATUS_AGENT=1 python3 ~/.agent-toolkit/scripts/dev_status.py *",
+        "env DEVSTATUS_AGENT=1 python3 ~/.agent-toolkit/scripts/dev_status.py *",
+        # npm / TypeScript tooling -- enumerated rather than a bare `npm *`.
+        # `npm install*` is a deliberate allow (it runs lifecycle scripts).
         "npm install*",
         "npm test*",
         "npm run test*",
@@ -999,52 +997,49 @@ _APPROVED_BASH_PATTERNS = frozenset(
         "scripts/bootstrap-worktree.sh*",
         "./scripts/build-copilot-swarm.sh*",
         "scripts/build-copilot-swarm.sh*",
-        # git workflow commands (plain/-C *)
-        "git log*",
-        "git status*",
-        "git diff*",
-        "git show*",
-        "git ls-files*",
-        "git check-ignore*",
-        "git add*",
-        "git branch*",
-        "git checkout*",
-        "git worktree*",
-        "git rev-parse*",
-        "git -C * log*",
-        "git -C * status*",
-        "git -C * diff*",
-        "git -C * show*",
-        "git -C * ls-files*",
-        "git -C * check-ignore*",
-        "git -C * add*",
-        "git -C * branch*",
-        "git -C * checkout*",
-        "git -C * worktree*",
-        "git -C * rev-parse*",
+        # git: read, stage, and listing/creation forms only (plain and -C <dir>)
+        *(
+            prefix + rest
+            for prefix in ("git ", "git -C <dir> ")
+            for rest in (
+                "log*",
+                "status*",
+                "diff*",
+                "show*",
+                "ls-files*",
+                "check-ignore*",
+                "add*",
+                "rev-parse*",
+                "branch",
+                "branch --show-current",
+                "branch --list *",
+                "branch -a",
+                "branch -v",
+                "branch -vv",
+                "branch -av",
+                "branch -avv",
+                "checkout -b *",
+                "worktree list *",
+                "worktree add *",
+            )
+        ),
         # 4 named uv commands
         "uv sync*",
         "uv run pytest*",
         "uv run ruff check*",
         "uv run ruff format*",
-        # pre-existing generic read-only-utility tier (never documented
-        # in README before this audit)
+        # read-only utilities (find *, sed -n * dropped: bypass-shaped).
+        # `env` (bare) stays: it prints; `env FOO=1 cmd` does not match it.
         "ls*",
         "pwd",
         "which *",
         "head *",
-        "head",
         "tail *",
-        "tail",
         "wc *",
-        "wc",
         "sort *",
-        "sort",
         "uniq *",
-        "uniq",
         "grep *",
         "rg *",
-        "find *",
         "file *",
         "stat *",
         "du *",
@@ -1054,19 +1049,14 @@ _APPROVED_BASH_PATTERNS = frozenset(
         "env",
         "printenv*",
         "cat *",
-        "cat",
-        "sed -n *",
         "strings *",
         "readlink *",
         "jq *",
         "diff *",
-        "diff",
         "echo *",
-        "echo",
         "systemctl status*",
         "systemctl is-active*",
         "systemctl is-enabled*",
-        # newly-recognized read-only system/process inspection
         "lsof *",
         "ps *",
         "pgrep *",
@@ -1075,15 +1065,34 @@ _APPROVED_BASH_PATTERNS = frozenset(
 )
 
 
-def test_seed_permission_bash_matches_approved_patterns():
-    """The repo seed's permission.bash allow-set equals the documented
-    policy exactly — this is the unconditional guard against e2363f73's
-    failure mode (a bad rule ported straight into the seed), since it
-    doesn't depend on any seed/live diff existing."""
+def _gen_permissions():
+    import gen_permissions
+
+    return gen_permissions
+
+
+def test_matrix_allow_set_matches_approved_patterns():
+    """The matrix's shared ALLOW set equals the hand-approved policy exactly."""
+    import permission_matrix
+
+    assert permission_matrix.shared_allow() == _APPROVED_BASH_PATTERNS
+
+
+def test_every_seed_allow_set_is_matrix_minus_its_exceptions():
+    """Each emitted seed's allow set is the approved set minus that target's
+    recorded exceptions -- nothing added, nothing silently dropped."""
+    import permission_matrix
+
+    gp = _gen_permissions()
+    for target in permission_matrix.TARGETS:
+        expected = permission_matrix.rules_for(target)[permission_matrix.Tier.ALLOW]
+        assert set(expected) <= _APPROVED_BASH_PATTERNS
     seed = json.loads((REPO_ROOT / "opencode" / "opencode.jsonc").read_text())
-    bash = seed["permission"]["bash"]
-    allow_keys = {k for k, v in bash.items() if v == "allow"}
-    assert allow_keys == _APPROVED_BASH_PATTERNS
+    allow_keys = {k for k, v in seed["permission"]["bash"].items() if v == "allow"}
+    assert allow_keys == {
+        gp.to_glob(p)
+        for p in permission_matrix.rules_for("opencode")[permission_matrix.Tier.ALLOW]
+    }
 
 
 def test_seed_permission_bash_catch_all_is_ask():
@@ -1091,15 +1100,19 @@ def test_seed_permission_bash_catch_all_is_ask():
     would pass the equality test above silently (it's excluded from the
     literal either way), so this pins it directly."""
     seed = json.loads((REPO_ROOT / "opencode" / "opencode.jsonc").read_text())
-    assert seed["permission"]["bash"]["*"] == "ask"
+    assert next(iter(seed["permission"]["bash"].items())) == ("*", "ask")
 
 
 def test_seed_permission_bash_git_commit_is_ask():
-    """Ensures git commit requires interactive approval even with git workflow allowed."""
+    """git commit requires interactive approval on every seed."""
     seed = json.loads((REPO_ROOT / "opencode" / "opencode.jsonc").read_text())
     bash = seed["permission"]["bash"]
     assert bash.get("git commit*") == "ask"
     assert bash.get("git -C * commit*") == "ask"
+    for name in ("settings.json", "settings.work.json"):
+        perms = json.loads((REPO_ROOT / "claude" / name).read_text())["permissions"]
+        assert "Bash(git commit*)" in perms["ask"], name
+        assert "Bash(git -C * commit*)" in perms["ask"], name
 
 
 # ── --reseed ─────────────────────────────────────────────────────────────────

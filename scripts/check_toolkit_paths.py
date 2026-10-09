@@ -770,6 +770,27 @@ GENERATORS: dict[str, Generator] = {
             for p in _agent_script("gen_hooks").compile_hooks(REPO)
         ],
     ),
+    "gen_permissions.py": Generator(
+        "python3 agent-scripts/gen_permissions.py",
+        "python3 agent-scripts/gen_permissions.py --check",
+        (
+            "agent-scripts/permission_matrix.py",
+            "claude/settings.json",
+            "claude/settings.work.json",
+            "opencode/opencode.jsonc",
+            "pi/extensions/permission-gate.ts",
+        ),
+        # claude/settings*.json are co-generated key by key: gen_hooks.py owns
+        # `hooks`, gen_permissions.py owns `permissions`. The one-owner rule is
+        # per file, so those two stay on the gen_hooks.py row and only the
+        # files gen_permissions.py alone writes are declared here.
+        lambda: [
+            str(p.relative_to(REPO))
+            for p in _agent_script("gen_permissions").compile_permissions(REPO)
+            if str(p.relative_to(REPO))
+            not in _agent_script("gen_permissions").CLAUDE_TARGETS
+        ],
+    ),
     "gen_interfaces.py": Generator(
         "python3 agent-scripts/gen_interfaces.py [--update-fingerprints]",
         "python3 agent-scripts/gen_interfaces.py --check",
