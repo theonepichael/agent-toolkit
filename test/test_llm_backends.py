@@ -1372,6 +1372,43 @@ class CodexBackendTests(unittest.TestCase):
         self.assertIn("--ephemeral", cmd)
         self.assertIn("my prompt", cmd)
 
+    def test_codex_text_only_skips_git_repo_check(self) -> None:
+        # codex refuses to start when its working root is outside a git
+        # repository unless --skip-git-repo-check is passed; a text-only
+        # review run from a non-git cwd would otherwise fail before any model
+        # call.
+        cmd = llm_backends.build_isolated_command(
+            "codex", "-my prompt", model="o3", mode="text-only"
+        )
+        self.assertIn("--skip-git-repo-check", cmd)
+        self.assertEqual(cmd[-1], "-my prompt")
+        self.assertEqual(cmd[cmd.index("-m") + 1], "o3")
+
+    def test_codex_grounded_skips_git_repo_check(self) -> None:
+        # The check applies to the -C root, so a grounded review whose --dir is
+        # not a git repository (e.g. a plan directory) needs the flag too.
+        target = Path("/tmp/not-a-repo")
+        cmd = llm_backends.build_isolated_command(
+            "codex", "my prompt", model="o3", mode="grounded", target_dir=target
+        )
+        self.assertIn("--skip-git-repo-check", cmd)
+        self.assertEqual(cmd[-1], "my prompt")
+        self.assertEqual(cmd[cmd.index("-C") + 1], str(target))
+        self.assertEqual(cmd[cmd.index("-m") + 1], "o3")
+        self.assertEqual(cmd[cmd.index("-s") + 1], "read-only")
+
+    def test_codex_grounded_without_target_skips_git_repo_check(self) -> None:
+        cmd = llm_backends.build_isolated_command(
+            "codex", "my prompt", model=None, mode="grounded"
+        )
+        self.assertIn("--skip-git-repo-check", cmd)
+        self.assertNotIn("-C", cmd)
+        self.assertEqual(cmd[-1], "my prompt")
+
+    def test_codex_isolation_descriptor_base_skips_git_repo_check(self) -> None:
+        base = llm_backends.BACKEND_ISOLATION["codex"]["_base"]
+        self.assertIn("--skip-git-repo-check", base)
+
     def test_run_codex_json_parsing(self) -> None:
         stdout = (
             '{"type":"thread.started","thread_id":"123"}\n'

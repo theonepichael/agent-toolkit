@@ -88,8 +88,13 @@ BACKEND_ISOLATION: dict[str, dict[str, object]] = {
     # Verified: in text-only mode, --disable shell_tool disables shell tools;
     # --ignore-rules and --ignore-user-config drop rulebooks and configs.
     # In grounded mode, -s read-only -C <dir> natively sandboxes execution.
+    # --skip-git-repo-check (in _base and both builder branches) only lifts
+    # codex's "working root must be inside a git repository" precondition,
+    # which otherwise fails a review run from a non-git cwd or against a
+    # non-git -C target before any model call. It is not an isolation
+    # mechanism: it changes no sandbox, config, or tool setting.
     "codex": {
-        "_base": ["codex", "exec", "--color", "never"],
+        "_base": ["codex", "exec", "--color", "never", "--skip-git-repo-check"],
         "tools_execution": ["--disable", "shell_tool"],
         "tools_reach": NOT_APPLICABLE,
         "skills": ["--disable", "shell_tool"],
@@ -323,6 +328,7 @@ def build_isolated_command(
                 "--color",
                 "never",
                 "--ephemeral",
+                "--skip-git-repo-check",
                 "-s",
                 "read-only",
             ]
@@ -338,6 +344,7 @@ def build_isolated_command(
             "--color",
             "never",
             "--ephemeral",
+            "--skip-git-repo-check",
             "--ignore-rules",
             "--ignore-user-config",
             "--disable",
@@ -1364,8 +1371,8 @@ def run_codex(
     """Run Codex CLI non-interactively and return its critique text.
 
     In ``mode="grounded"``, codex runs under native read-only
-    sandboxing (``-s read-only -C <dir>``), exploring real repository files while
-    preventing any filesystem modifications. In ``mode="text-only"`` (default), shell_tool
+    sandboxing (``-s read-only -C <dir>``), exploring the target directory's
+    files while preventing any filesystem modifications. In ``mode="text-only"`` (default), shell_tool
     is disabled and ambient user instructions/rules are stripped.
 
     Raises:
