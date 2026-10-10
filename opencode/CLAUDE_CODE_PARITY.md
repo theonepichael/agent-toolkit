@@ -288,7 +288,7 @@ permission gate alone. Both are chosen from the free letters below.
 ### Core leader chords
 
 Source: [opencode.ai/docs/keybinds](https://opencode.ai/docs/keybinds),
-cross-checked against the keybind definitions object in the opencode 1.18.32
+cross-checked against the keybind definitions object in the opencode 1.18.35
 binary (184 keybinds, 26 leader chords). The two agree exactly. Last verified
 2026-09-30.
 

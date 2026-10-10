@@ -10,7 +10,7 @@
     "format:check": "prettier --check plugin plugins test tui trust-state.ts"
   },
   "devDependencies": {
-    "@opencode-ai/plugin": "1.18.32",
+    "@opencode-ai/plugin": "1.18.35",
     "@types/node": "^22.19.0",
     "oxlint": "^1.80.0",
     "prettier": "^3.9.6",
