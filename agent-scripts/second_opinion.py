@@ -141,8 +141,11 @@ Env vars
                                      default timed out on every real critique;
                                      codex to max(that, 180) — its measured
                                      second-opinion success p99 is 119.6s
-                                     against the flat 120s default,
-                                     truncating real successes).
+                                     against the flat 120s default, truncating
+                                     real successes; agy/copilot grounded
+                                     reviews to max(that, 600) — a grounded
+                                     review reads the codebase and large specs
+                                     timed out at the flat 120s default).
                                      A value above 600 is clamped to 600 —
                                      the hard ceiling on every timeout,
                                      default or overridden.
@@ -417,8 +420,9 @@ _MAX_BACKEND_TIMEOUT_SECONDS = 600  # hard ceiling on every timeout, default or
 # spec-critique-notes.md), so the flat 120s default timed out on essentially
 # every real plan and the failure read as a backend outage. A floor, not a
 # default: a lower global timeout must not drop opencode below what it
-# physically needs. agy/pi/copilot keep the 120s fallback -- no measured
-# latency evidence exists to change them.
+# physically needs. pi keeps the flat 120s fallback (size-ruled-out before its
+# timeout is exercised on large specs); agy/copilot's grounded floor is
+# _GROUNDED_TIMEOUT_SECONDS below (measured 2026-10-08).
 _OPENCODE_TIMEOUT_SECONDS = 450  # ~1.7x the measured 200-270s mean; absorbs
 # pool variance. A floor, not a hard default: an explicit per-backend
 # override still wins, and a higher explicit global default applies.
@@ -430,6 +434,21 @@ _OPENCODE_TIMEOUT_SECONDS = 450  # ~1.7x the measured 200-270s mean; absorbs
 # successes. Same floor-not-default contract as _OPENCODE_TIMEOUT_SECONDS:
 # an explicit override wins, and a higher global default still applies.
 _CODEX_TIMEOUT_SECONDS = 180
+
+
+# grounded-mode timeout FLOOR for agy/copilot (2026-10-08): a grounded review
+# of a 57k spec timed out on both backends at the flat 120s default and only
+# succeeded with the per-backend override at 600. Grounded reviews read the
+# codebase, so their latency is dominated by that read + thinking, not by plan
+# size (opencode's own comment above documents 200-270s regardless of payload
+# size) -- a flat floor is the right model, not size-scaling. The floor equals
+# the hard ceiling, the only measured-working value, so grounded agy/copilot
+# default to the max allowed budget. Same floor-not-default contract as the
+# opencode/codex floors: an explicit override wins, and a higher global still
+# applies. pi is deliberately excluded: it is size-ruled-out (over
+# PI_MAX_PROMPT_BYTES) for the large specs that motivated this, so there is no
+# measured evidence its grounded reviews time out.
+_GROUNDED_TIMEOUT_SECONDS = _MAX_BACKEND_TIMEOUT_SECONDS  # 600
 
 
 def _parse_positive_int(value: str, default: int) -> int:
@@ -467,8 +486,9 @@ def _resolve_timeout(env_var: str, default: int | None = None) -> int:
     Falls back to ``default`` (``default=None`` means
     :data:`BACKEND_TIMEOUT_SECONDS`) if ``env_var`` is unset, blank,
     non-integer, zero, or negative. Callers pass an explicit ``default``
-    when their backend needs more than the global baseline (opencode's
-    measured-latency floor). Read fresh from the environment on every call
+    when their backend needs more than the global baseline (opencode's and
+    codex's measured-latency floors, or agy/copilot's grounded floor). Read
+    fresh from the environment on every call
     (unlike the module-latched global) -- matches how
     :func:`_resolve_pooled_model`'s single-override env var is already read
     fresh per call, not latched.
@@ -477,6 +497,23 @@ def _resolve_timeout(env_var: str, default: int | None = None) -> int:
         os.environ.get(env_var, ""),
         BACKEND_TIMEOUT_SECONDS if default is None else default,
     )
+
+
+def _default_timeout_for(backend: str, mode: str | None) -> int:
+    """Return the fallback (no-env-override) timeout for ``backend`` in ``mode``.
+
+    ``mode=None`` means text-only (e.g. a runner called directly, not through
+    :func:`review_plan`). opencode and codex keep their measured-latency
+    floors; agy/copilot get the grounded floor only when grounded, else the
+    flat global default; pi keeps the flat global in every mode.
+    """
+    if backend == "opencode":
+        return max(BACKEND_TIMEOUT_SECONDS, _OPENCODE_TIMEOUT_SECONDS)
+    if backend == "codex":
+        return max(BACKEND_TIMEOUT_SECONDS, _CODEX_TIMEOUT_SECONDS)
+    if backend in ("agy", "copilot") and mode == "grounded":
+        return max(BACKEND_TIMEOUT_SECONDS, _GROUNDED_TIMEOUT_SECONDS)
+    return BACKEND_TIMEOUT_SECONDS
 
 
 # backend -> (pool env var, single-override env var). The single source of
@@ -1391,7 +1428,10 @@ def run_agy(
     return llm_backends.run_agy(
         prompt,
         model=model,
-        timeout=_resolve_timeout("SECOND_OPINION_AGY_TIMEOUT_SECONDS"),
+        timeout=_resolve_timeout(
+            "SECOND_OPINION_AGY_TIMEOUT_SECONDS",
+            default=_default_timeout_for("agy", mode),
+        ),
         **extra,
     )
 
@@ -1487,7 +1527,10 @@ def run_copilot(
             "SECOND_OPINION_COPILOT_MODEL",
             model_index,
         ),
-        timeout=_resolve_timeout("SECOND_OPINION_COPILOT_TIMEOUT_SECONDS"),
+        timeout=_resolve_timeout(
+            "SECOND_OPINION_COPILOT_TIMEOUT_SECONDS",
+            default=_default_timeout_for("copilot", mode),
+        ),
         **extra,
     )
 
@@ -1835,11 +1878,47 @@ def review_plan(
                 # (2026-09-03: exactly that misread cost a debugging session).
                 hint = ""
                 if isinstance(exc, llm_backends.BackendTimeoutError):
-                    hint = (
-                        f" — raise SECOND_OPINION_{backend.upper()}_TIMEOUT_SECONDS "
-                        f"(hard ceiling {_MAX_BACKEND_TIMEOUT_SECONDS}s) to allow "
-                        "longer runs"
-                    )
+                    if exc.stalled:
+                        # A silent output stall is a liveness failure, not a
+                        # budget problem (the message already says "stalled ...
+                        # with no output", and the opencode runner already
+                        # retried): raising the budget would not help.
+                        hint = " — a silent output stall, not a slow run"
+                    else:
+                        effective = _resolve_timeout(
+                            f"SECOND_OPINION_{backend.upper()}_TIMEOUT_SECONDS",
+                            default=_default_timeout_for(backend, mode),
+                        )
+                        if effective >= _MAX_BACKEND_TIMEOUT_SECONDS:
+                            if mode == "grounded":
+                                if request.diff:
+                                    hint = (
+                                        f" — timed out at the {_MAX_BACKEND_TIMEOUT_SECONDS}s "
+                                        "ceiling; grounded reviews read the codebase "
+                                        "(agy/copilot default to that ceiling) — narrow "
+                                        "the diff scope (--diff-path) rather than dropping "
+                                        "to --text-only, which would unground the review"
+                                    )
+                                else:
+                                    hint = (
+                                        f" — timed out at the {_MAX_BACKEND_TIMEOUT_SECONDS}s "
+                                        "ceiling; grounded reviews read the codebase "
+                                        "(agy/copilot default to that ceiling) — retry "
+                                        "with --text-only or narrow the scope"
+                                    )
+                            else:
+                                hint = (
+                                    f" — timed out at the {_MAX_BACKEND_TIMEOUT_SECONDS}s "
+                                    "ceiling — retry with a split or trimmed plan"
+                                )
+                        else:
+                            hint = (
+                                f" — raise SECOND_OPINION_{backend.upper()}_TIMEOUT_SECONDS "
+                                f"(currently {effective}s, hard ceiling "
+                                f"{_MAX_BACKEND_TIMEOUT_SECONDS}s) to allow longer runs"
+                            )
+                            if mode == "grounded":
+                                hint += " (a grounded, codebase-reading review)"
                 if isinstance(exc, llm_backends.BackendToolPermissionDeniedError):
                     # A grounded run whose tool use was auto-denied produced no
                     # output. llm_backends already stripped the backend's own

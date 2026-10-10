@@ -299,14 +299,20 @@ happens). Relay that message and stop — don't fall back to critiquing the plan
 yourself. Two failures get exactly one retry of the same round first, and you
 say which one you made:
 
-- **Timed out** (the message names `SECOND_OPINION_<BACKEND>_TIMEOUT_SECONDS`):
-retry with that variable raised — up to its 600-second ceiling — the same way
-as a model pin above. Slower models (a "Pro"/"High" tier) routinely need 300s
-or more. - **Grounded run produced no output because the backend was denied a
-tool** (headless mode auto-denied a permission it could not prompt for): retry
-with `--text-only`, and tell the user the critique could not read the codebase.
-Never add allow-rules or a skip-permissions flag to get the grounded run
-through — never loosen the backend's permissions; the critic's read-only
-isolation is the contract.
+- **Timed out** (a `BackendTimeoutError`): if the message says "silent output
+stall", the backend produced no output and the runner already retried — raising
+the budget would not help, so treat it as a failed round and move on. Otherwise
+the message names `SECOND_OPINION_<BACKEND>_TIMEOUT_SECONDS` when below the
+ceiling: if it says it timed out at the 600-second ceiling, the budget is
+already exhausted — for a grounded run retry with `--text-only` or narrow the
+scope, for a text-only run retry with a split or trimmed plan. Otherwise retry
+with `SECOND_OPINION_<BACKEND>_TIMEOUT_SECONDS` raised — up to its 600-second
+ceiling, the same way as a model pin above. Slower models (a "Pro"/"High" tier)
+routinely need 300s or more. - **Grounded run produced no output because the
+backend was denied a tool** (headless mode auto-denied a permission it could
+not prompt for): retry with `--text-only`, and tell the user the critique could
+not read the codebase. Never add allow-rules or a skip-permissions flag to get
+the grounded run through — never loosen the backend's permissions; the critic's
+read-only isolation is the contract.
 
 A second failure of the same kind ends the loop as above.

@@ -1839,8 +1839,9 @@ class OpencodeTimeoutFloorTests(unittest.TestCase):
             self.assertEqual(box["timeout"], 600)
 
     def test_89c_other_backends_keep_120_default(self) -> None:
-        """The floor is opencode-only: no measured latency evidence for
-        agy/pi/copilot, so their unset fallback stays the 120s global."""
+        """The 120s fallback is text-only-only for agy/copilot (their grounded
+        floor lives in the runner's explicit default, not in _resolve_timeout's
+        own fallback), and every-mode for pi."""
         with patch.dict(os.environ, {}, clear=False):
             self._clear_timeout_vars()
             with patch.object(second_opinion, "BACKEND_TIMEOUT_SECONDS", 120):
@@ -1954,6 +1955,154 @@ class CodexTimeoutFloorTests(unittest.TestCase):
             self.assertEqual(box["timeout"], 600)
 
 
+class GroundedTimeoutFloorTests(unittest.TestCase):
+    """grounded-mode timeout FLOOR for agy/copilot (2026-10-08): a grounded
+    review of a 57k spec timed out on both backends at the flat 120s default
+    and only succeeded at 600. A grounded agy/copilot review with unset env
+    vars must therefore fall back to max(global, 600), while text-only keeps
+    the flat global and pi stays flat in every mode. An explicit override
+    still wins, a higher global still applies, and everything clamps to the
+    600 ceiling."""
+
+    def _capture_agy(self) -> tuple[Callable[..., str], dict[str, object]]:
+        box: dict[str, object] = {}
+
+        def fake_run_agy(
+            prompt: str,
+            *,
+            model: str,
+            timeout: int = 120,
+            mode: str = "text-only",
+            target_dir=None,
+        ) -> str:
+            box["timeout"] = timeout
+            box["mode"] = mode
+            return "agy critique"
+
+        return fake_run_agy, box
+
+    def _capture_copilot(self) -> tuple[Callable[..., str], dict[str, object]]:
+        box: dict[str, object] = {}
+
+        def fake_run_copilot(
+            prompt: str,
+            *,
+            model: str | None = None,
+            timeout: int = 120,
+            mode: str = "text-only",
+            target_dir=None,
+        ) -> str:
+            box["timeout"] = timeout
+            box["mode"] = mode
+            return "copilot critique"
+
+        return fake_run_copilot, box
+
+    def _capture_pi(self) -> tuple[Callable[..., str], dict[str, object]]:
+        box: dict[str, object] = {}
+
+        def fake_run_pi(
+            prompt: str,
+            *,
+            model: str | None = None,
+            timeout: int = 120,
+            mode: str = "text-only",
+            target_dir=None,
+        ) -> str:
+            box["timeout"] = timeout
+            return "pi critique"
+
+        return fake_run_pi, box
+
+    def test_grounded_agy_unset_gets_600(self) -> None:
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("SECOND_OPINION_AGY_TIMEOUT_SECONDS", None)
+            with patch.object(second_opinion, "BACKEND_TIMEOUT_SECONDS", 120):
+                fake, box = self._capture_agy()
+                with patch.object(
+                    second_opinion.llm_backends, "run_agy", side_effect=fake
+                ):
+                    second_opinion.run_agy("prompt", mode="grounded")
+                self.assertEqual(box["timeout"], 600)
+
+    def test_grounded_copilot_unset_gets_600(self) -> None:
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("SECOND_OPINION_COPILOT_TIMEOUT_SECONDS", None)
+            with patch.object(second_opinion, "BACKEND_TIMEOUT_SECONDS", 120):
+                fake, box = self._capture_copilot()
+                with patch.object(
+                    second_opinion.llm_backends, "run_copilot", side_effect=fake
+                ):
+                    second_opinion.run_copilot("prompt", mode="grounded")
+                self.assertEqual(box["timeout"], 600)
+
+    def test_text_only_agy_keeps_global(self) -> None:
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("SECOND_OPINION_AGY_TIMEOUT_SECONDS", None)
+            with patch.object(second_opinion, "BACKEND_TIMEOUT_SECONDS", 120):
+                fake, box = self._capture_agy()
+                with patch.object(
+                    second_opinion.llm_backends, "run_agy", side_effect=fake
+                ):
+                    second_opinion.run_agy("prompt", mode="text-only")
+                self.assertEqual(box["timeout"], 120)
+
+    def test_text_only_copilot_keeps_global(self) -> None:
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("SECOND_OPINION_COPILOT_TIMEOUT_SECONDS", None)
+            with patch.object(second_opinion, "BACKEND_TIMEOUT_SECONDS", 120):
+                fake, box = self._capture_copilot()
+                with patch.object(
+                    second_opinion.llm_backends, "run_copilot", side_effect=fake
+                ):
+                    second_opinion.run_copilot("prompt", mode="text-only")
+                self.assertEqual(box["timeout"], 120)
+
+    def test_pi_grounded_keeps_global(self) -> None:
+        """pi is deliberately excluded: size-ruled-out for the large specs
+        that motivated this, so its grounded reviews have no measured reason
+        to change."""
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("SECOND_OPINION_PI_TIMEOUT_SECONDS", None)
+            with patch.object(second_opinion, "BACKEND_TIMEOUT_SECONDS", 120):
+                fake, box = self._capture_pi()
+                with patch.object(
+                    second_opinion.llm_backends, "run_pi", side_effect=fake
+                ):
+                    second_opinion.run_pi("prompt", mode="grounded")
+                self.assertEqual(box["timeout"], 120)
+
+    def test_grounded_agy_explicit_override_wins(self) -> None:
+        with patch.dict(os.environ, {"SECOND_OPINION_AGY_TIMEOUT_SECONDS": "60"}):
+            with patch.object(second_opinion, "BACKEND_TIMEOUT_SECONDS", 120):
+                fake, box = self._capture_agy()
+                with patch.object(
+                    second_opinion.llm_backends, "run_agy", side_effect=fake
+                ):
+                    second_opinion.run_agy("prompt", mode="grounded")
+                self.assertEqual(box["timeout"], 60)
+
+    def test_grounded_agy_override_above_ceiling_clamped(self) -> None:
+        with patch.dict(os.environ, {"SECOND_OPINION_AGY_TIMEOUT_SECONDS": "700"}):
+            fake, box = self._capture_agy()
+            with patch.object(second_opinion.llm_backends, "run_agy", side_effect=fake):
+                second_opinion.run_agy("prompt", mode="grounded")
+            self.assertEqual(box["timeout"], 600)
+
+    def test_grounded_floor_beats_lower_global(self) -> None:
+        """A raised global (e.g. 300s) still must not drop grounded agy below
+        its 600s floor."""
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("SECOND_OPINION_AGY_TIMEOUT_SECONDS", None)
+            with patch.object(second_opinion, "BACKEND_TIMEOUT_SECONDS", 300):
+                fake, box = self._capture_agy()
+                with patch.object(
+                    second_opinion.llm_backends, "run_agy", side_effect=fake
+                ):
+                    second_opinion.run_agy("prompt", mode="grounded")
+                self.assertEqual(box["timeout"], 600)
+
+
 class TimeoutErrorHintTests(unittest.TestCase):
     """A timeout failure must name its escape hatch: which env var raises
     the budget and what the hard ceiling is -- the 2026-09-03 incident read
@@ -1975,11 +2124,112 @@ class TimeoutErrorHintTests(unittest.TestCase):
                 ),
             ),
         ):
-            second_opinion.cmd_review(ns(plan="text", backend="agy"))
+            second_opinion.cmd_review(ns(plan="text", backend="agy", text_only=True))
         self.assertEqual(cm.exception.code, 1)
         combined = err.getvalue()
         self.assertIn("SECOND_OPINION_AGY_TIMEOUT_SECONDS", combined)
         self.assertIn("600", combined)
+
+
+class GroundedTimeoutHintTests(unittest.TestCase):
+    """The timeout-failure hint must describe the effective budget honestly:
+    a grounded at-ceiling timeout names grounded mode and the text-only
+    alternative, a below-ceiling timeout surfaces the effective value and the
+    raise-var lever, a text-only at-ceiling timeout offers split/trim, and a
+    stall gets a liveness hint rather than budget advice."""
+
+    def _failures(
+        self,
+        backend: str,
+        text_only: bool,
+        exc: llm_backends.BackendTimeoutError,
+        env: dict[str, str] | None = None,
+        diff: bool = False,
+    ) -> str:
+        env = dict(env or {})
+        with (
+            patch("shutil.which", return_value=f"/usr/bin/{backend}"),
+            patch.dict(os.environ, env, clear=False),
+            patch.object(
+                second_opinion,
+                "BACKEND_RUNNERS",
+                {
+                    backend: lambda p, model_index=None, mode=None, target_dir=None: (
+                        _ for _ in ()
+                    ).throw(exc)
+                },
+            ),
+        ):
+            var = f"SECOND_OPINION_{backend.upper()}_TIMEOUT_SECONDS"
+            if var not in env:
+                os.environ.pop(var, None)
+            with self.assertRaises(second_opinion.AllBackendsFailedError) as cm:
+                second_opinion.review_plan(
+                    second_opinion.ReviewRequest(
+                        plan_text="my plan",
+                        backend=backend,
+                        text_only=text_only,
+                        diff=diff,
+                    )
+                )
+        return "".join(cm.exception.failures)
+
+    def test_grounded_at_ceiling_names_grounded_and_text_only(self) -> None:
+        text = self._failures(
+            "agy",
+            False,
+            llm_backends.BackendTimeoutError("timed out after 600s — killed"),
+        )
+        self.assertIn("grounded reviews read the codebase", text)
+        self.assertIn("--text-only", text)
+        self.assertNotIn("SECOND_OPINION_AGY_TIMEOUT_SECONDS", text)
+
+    def test_grounded_low_override_surfaces_effective_and_lever(self) -> None:
+        text = self._failures(
+            "agy",
+            False,
+            llm_backends.BackendTimeoutError("timed out after 60s — killed"),
+            env={"SECOND_OPINION_AGY_TIMEOUT_SECONDS": "60"},
+        )
+        self.assertIn("currently 60s", text)
+        self.assertIn("grounded, codebase-reading review", text)
+        self.assertIn("SECOND_OPINION_AGY_TIMEOUT_SECONDS", text)
+        self.assertNotIn("timed out at the 600s", text)
+
+    def test_text_only_at_ceiling_advises_split(self) -> None:
+        text = self._failures(
+            "agy",
+            True,
+            llm_backends.BackendTimeoutError("timed out after 600s — killed"),
+            env={"SECOND_OPINION_AGY_TIMEOUT_SECONDS": "600"},
+        )
+        self.assertIn("split or trimmed plan", text)
+        self.assertNotIn("--text-only", text)
+
+    def test_diff_at_ceiling_advises_narrow_not_text_only(self) -> None:
+        """A grounded --diff review must not be told to drop to --text-only:
+        that would unground the review and risk a false "No findings" from the
+        diff text alone."""
+        text = self._failures(
+            "agy",
+            False,
+            llm_backends.BackendTimeoutError("timed out after 600s — killed"),
+            diff=True,
+        )
+        self.assertIn("narrow the diff scope", text)
+        self.assertIn("--diff-path", text)
+        self.assertNotIn("retry with --text-only", text)
+
+    def test_stall_gets_liveness_hint(self) -> None:
+        text = self._failures(
+            "opencode",
+            False,
+            llm_backends.BackendTimeoutError(
+                "stalled after 90s with no output — killed", stalled=True
+            ),
+        )
+        self.assertIn("silent output stall", text)
+        self.assertNotIn("raise SECOND_OPINION", text)
 
 
 class PerBackendTimeoutIsolationTests(unittest.TestCase):

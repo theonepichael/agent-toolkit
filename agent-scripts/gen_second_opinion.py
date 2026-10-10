@@ -844,6 +844,17 @@ def substitutions(params: HarnessParams) -> dict[str, str]:
             "parameter, ask the user to set the variable in the environment "
             "the harness was launched from."
         ),
+        # The "Timed out" bullet names the lever for a below-ceiling budget.
+        # Pi's native tool takes `timeoutSeconds` (and its skill says never to
+        # set the env var directly); every other harness shells out and raises
+        # the per-backend env var.
+        "TIMEOUT_RAISE_REF": (
+            "pass a higher `timeoutSeconds` (clamped to 600) — never set the "
+            "env var directly"
+            if is_native_tool(params)
+            else "retry with `SECOND_OPINION_<BACKEND>_TIMEOUT_SECONDS` raised "
+            "— up to its 600-second ceiling"
+        ),
         # Same io_entrypoint split: Pi binds through its native tool's
         # action, since second_opinion.py is off Pi's bash allowlist.
         "BIND_NOTES_CALL": (
