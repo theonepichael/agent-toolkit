@@ -59,6 +59,8 @@ import tempfile
 from collections import defaultdict
 from pathlib import Path
 
+import harness_spec
+
 # Reads an opencode binary and rewrites one region of a tracked doc; --fetch-pinned
 # downloads into a throwaway temp dir. Touches no toolkit data path -- no
 # ~/.agent-toolkit/data, no ~/.local/state/agent-toolkit.
@@ -67,7 +69,7 @@ TOOLKIT_DATA = "none"
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PARITY_DOC = REPO_ROOT / "opencode" / "CLAUDE_CODE_PARITY.md"
 PACKAGE_JSON = REPO_ROOT / "opencode" / "package.json"
-PIN_PACKAGE = "@opencode-ai/plugin"
+PIN_PACKAGE = harness_spec.HARNESSES["opencode"].version_pin_package
 
 BEGIN_ANCHOR = "<!-- leader-chords-core:begin -->"
 END_ANCHOR = "<!-- leader-chords-core:end -->"
@@ -91,7 +93,6 @@ MIN_KEYBINDS_PARSED = 50
 MIN_LEADER_CHORDS = 10
 IDENTITY_KEYS = frozenset({"app_exit", "session_new", "messages_copy"})
 
-VERSION_RE = re.compile(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?")
 # What `opencode --version` may print: the same grammar the SDK pin check in
 # test_opencode_ts_checks.py accepts (optional leading v, optional +build).
 VERSION_LINE_RE = re.compile(
@@ -108,17 +109,10 @@ class KeybindExtractionError(RuntimeError):
 
 def pinned_version(package_json: Path) -> str:
     """The pinned opencode release: the ``@opencode-ai/plugin`` devDependency."""
-    data = json.loads(package_json.read_text(encoding="utf-8"))
-    pin = (
-        data.get("devDependencies", {}).get(PIN_PACKAGE)
-        if isinstance(data, dict)
-        else None
-    )
-    if not isinstance(pin, str) or not VERSION_RE.fullmatch(pin):
-        raise KeybindExtractionError(
-            f"{package_json} has no exact {PIN_PACKAGE} devDependency pin (got {pin!r})"
-        )
-    return pin
+    try:
+        return harness_spec.read_manifest_pin(package_json, PIN_PACKAGE)
+    except harness_spec.VersionPinError as exc:
+        raise KeybindExtractionError(str(exc)) from exc
 
 
 def opencode_version(binary: Path) -> str:

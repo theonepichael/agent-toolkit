@@ -232,6 +232,12 @@ def test_pinned_version_reads_the_sdk_pin(tmp_path: Path) -> None:
         gk.pinned_version(pkg)
 
 
+def test_pin_package_comes_from_the_harness_registry() -> None:
+    import harness_spec
+
+    assert gk.PIN_PACKAGE == harness_spec.HARNESSES["opencode"].version_pin_package
+
+
 # ── fetching the pinned binary ────────────────────────────────────────────────
 
 

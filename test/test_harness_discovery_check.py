@@ -22,6 +22,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))
 import test_bootstrap  # noqa: E402
 import harness_discovery_check as hdc
+import harness_spec
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -114,7 +115,7 @@ class CheckTestCase(unittest.TestCase):
         fake = fake_run_factory(
             versions={
                 "claude": hdc.CLAUDE_CODE_PINNED_VERSION,
-                "opencode": hdc.OPENCODE_PINNED_VERSION,
+                "opencode": hdc.pinned_version("opencode"),
             }
         )
         code, output = self.run_check(fake_run=fake)
@@ -125,7 +126,7 @@ class CheckTestCase(unittest.TestCase):
         fake = fake_run_factory(
             versions={
                 "claude": "2.1.999",
-                "opencode": hdc.OPENCODE_PINNED_VERSION,
+                "opencode": hdc.pinned_version("opencode"),
             }
         )
         code, output = self.run_check(fake_run=fake)
@@ -139,7 +140,7 @@ class CheckTestCase(unittest.TestCase):
         fake = fake_run_factory(
             versions={
                 "claude": "2.1.999",
-                "opencode": hdc.OPENCODE_PINNED_VERSION,
+                "opencode": hdc.pinned_version("opencode"),
             }
         )
         code, _ = self.run_check(fake_run=fake, strict=True)
@@ -171,7 +172,7 @@ class CheckTestCase(unittest.TestCase):
         fake = fake_run_factory(
             versions={
                 "claude": hdc.CLAUDE_CODE_PINNED_VERSION,
-                "opencode": hdc.OPENCODE_PINNED_VERSION,
+                "opencode": hdc.pinned_version("opencode"),
             }
         )
         code, output = self.run_check(fake_run=fake, hook=True)
@@ -534,6 +535,19 @@ class VersionExtractionTestCase(unittest.TestCase):
     def test_agy(self) -> None:
         self.assertEqual(hdc._extract_version("agy", "1.1.22"), "1.1.22")
 
+    def test_opencode_dev_build_is_not_truncated(self) -> None:
+        """A dev build's version must be reported whole; truncating
+        ``0.0.0-dev-202609250015`` to ``0.0.0`` misnamed the installed
+        binary in the SessionStart drift note."""
+        self.assertEqual(
+            hdc._extract_version("opencode", "0.0.0-dev-202609250015"),
+            "0.0.0-dev-202609250015",
+        )
+
+    def test_prerelease_kept_build_metadata_dropped(self) -> None:
+        self.assertEqual(hdc._extract_version("opencode", "v1.19.0-rc.1"), "1.19.0-rc.1")
+        self.assertEqual(hdc._extract_version("opencode", "1.18.32+build.5"), "1.18.32")
+
     def test_unparseable_returns_raw(self) -> None:
         self.assertEqual(hdc._extract_version("claude", "nightly"), "nightly")
 
@@ -604,6 +618,148 @@ class IntegrationSanityTestCase(unittest.TestCase):
     def test_parser_check_strict(self) -> None:
         args = hdc.build_parser().parse_args(["check", "--strict"])
         self.assertTrue(args.strict)
+
+
+def _write_manifest(root: Path, payload: object) -> Path:
+    manifest = root / "opencode" / "package.json"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(payload if isinstance(payload, str) else json.dumps(payload))
+    return manifest
+
+
+class ManifestPinTestCase(unittest.TestCase):
+    """The opencode pin has one source of truth: the exact
+    ``@opencode-ai/plugin`` devDependency in ``opencode/package.json``. A
+    second literal in this script drifted (1.18.25 vs the manifest's
+    1.18.32), so the SessionStart note named the wrong pin."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+
+    def test_no_opencode_version_literal(self) -> None:
+        self.assertFalse(hasattr(hdc, "OPENCODE_PINNED_VERSION"))
+
+    def test_opencode_pin_is_the_manifest_pin(self) -> None:
+        data = json.loads((REPO_ROOT / "opencode" / "package.json").read_text())
+        self.assertEqual(
+            hdc.pinned_version("opencode"),
+            data["devDependencies"]["@opencode-ai/plugin"],
+        )
+
+    def test_manifest_change_moves_the_checked_pin(self) -> None:
+        _write_manifest(self.root, {"devDependencies": {"@opencode-ai/plugin": "9.9.9"}})
+        self.assertEqual(hdc.pinned_version("opencode", repo_root=self.root), "9.9.9")
+
+    def test_claude_pin_unchanged(self) -> None:
+        self.assertEqual(hdc.pinned_version("claude"), hdc.CLAUDE_CODE_PINNED_VERSION)
+
+    def test_malformed_manifests_raise(self) -> None:
+        bad: list[object] = [
+            "{not json",
+            ["a list"],
+            {"devDependencies": ["@opencode-ai/plugin"]},
+            {"devDependencies": {}},
+            {"devDependencies": {"@opencode-ai/plugin": "^1.18.32"}},
+            {"devDependencies": {"@opencode-ai/plugin": 1}},
+        ]
+        for payload in bad:
+            with self.subTest(payload=payload):
+                manifest = _write_manifest(self.root, payload)
+                with self.assertRaises(harness_spec.VersionPinError):
+                    harness_spec.read_manifest_pin(manifest, "@opencode-ai/plugin")
+                with self.assertRaises(hdc.HarnessCheckError):
+                    hdc.pinned_version("opencode", repo_root=self.root)
+
+    def test_missing_manifest_raises(self) -> None:
+        with self.assertRaises(harness_spec.VersionPinError):
+            harness_spec.manifest_pinned_version("opencode", repo_root=self.root)
+
+    def test_harness_without_manifest_raises(self) -> None:
+        with self.assertRaises(harness_spec.VersionPinError):
+            harness_spec.manifest_pinned_version("agy", repo_root=self.root)
+
+    def test_symlinked_install_resolves_the_real_repo(self) -> None:
+        """The hook runs ``~/.agent-toolkit/scripts/harness_spec.py``, a
+        symlink into the checkout; the manifest must resolve through it,
+        whatever the caller's cwd."""
+        import importlib.util
+
+        link = self.root / "scripts" / "harness_spec.py"
+        link.parent.mkdir()
+        link.symlink_to(REPO_ROOT / "agent-scripts" / "harness_spec.py")
+        cwd = os.getcwd()
+        os.chdir(self.root)
+        self.addCleanup(os.chdir, cwd)
+        spec = importlib.util.spec_from_file_location("harness_spec_linked", link)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        # dataclasses resolve annotations through sys.modules.
+        with patch.dict(sys.modules, {"harness_spec_linked": module}):
+            spec.loader.exec_module(module)
+        self.assertEqual(module.REPO_ROOT, REPO_ROOT)
+        self.assertEqual(
+            module.manifest_pinned_version("opencode"),
+            hdc.pinned_version("opencode"),
+        )
+
+    def test_unreadable_pin_is_a_loud_checker_failure(self) -> None:
+        cache = tempfile.TemporaryDirectory()
+        self.addCleanup(cache.cleanup)
+        out = io.StringIO()
+        fake = fake_run_factory(
+            versions={"claude": hdc.CLAUDE_CODE_PINNED_VERSION, "opencode": "1.18.32"}
+        )
+        with (
+            patch.dict(os.environ, {"XDG_CACHE_HOME": cache.name}),
+            patch.object(hdc, "resolve_binary", fake_resolve_binary),
+            patch.object(harness_spec, "REPO_ROOT", self.root),
+            patch("sys.stdout", out),
+        ):
+            code = hdc.cmd_check(hook=True, run_command=fake)
+        self.assertEqual(code, 1)
+        self.assertIn("checker failed", out.getvalue())
+
+
+class LegacyCacheEntryTestCase(VersionCacheTestCase):
+    def test_pre_fix_cache_entry_is_remeasured(self) -> None:
+        """An entry the truncating parser wrote (no schema field) must not
+        keep answering ``0.0.0`` after the parser fix: it is a miss."""
+        entries: dict[str, object] = {}
+        for name in ("claude", "opencode"):
+            key = hdc._stat_key(self._fake_binary(name))
+            assert key is not None
+            entries[name] = {
+                "path": key[0],
+                "mtime_ns": key[1],
+                "size": key[2],
+                "version": "0.0.0",
+            }
+        self._cache_file().parent.mkdir(parents=True, exist_ok=True)
+        self._cache_file().write_text(json.dumps(entries))
+        counter: dict[str, int] = {"version": 0, "other": 0}
+        _code, output = self._run_check(counter)
+        self.assertEqual(counter["version"], 2)
+        self.assertNotIn("installed 0.0.0 ", output)
+        data = json.loads(self._cache_file().read_text())
+        self.assertEqual(data["opencode"]["version"], "1.19.999")
+
+
+class ProbeUsesResolvedBinaryTestCase(unittest.TestCase):
+    def test_probe_runs_the_resolved_binary(self) -> None:
+        """The probe must run the file whose version is reported — also a
+        fallback-path binary that is not on ``PATH``."""
+        seen: list[Sequence[str]] = []
+
+        def fake_run(cmd: Sequence[str], **kwargs: object) -> object:
+            seen.append(cmd)
+            return _make_result(stdout=hdc._TOKEN_AGENTS_ROOT)
+
+        with patch.object(hdc, "resolve_binary", fake_resolve_binary):
+            found, error = hdc._run_probe("opencode", Path("/tmp"), run_command=fake_run)
+        self.assertIsNone(error)
+        self.assertEqual(seen[0][0], "/fake/bin/opencode")
 
 
 if __name__ == "__main__":

@@ -49,7 +49,10 @@ Subcommands
     check   resolve the load-bearing harness binaries, run ``--version``
             (memoized in a binary-identity-keyed cache so an unchanged
             binary is not re-spawned), and compare against the pinned
-            constants. Silent when versions match. Prints a one-line note
+            versions (Claude Code: a constant here; opencode: the exact
+            ``@opencode-ai/plugin`` pin in ``opencode/package.json``, an
+            unreadable pin being a checker failure). Silent when versions
+            match. Prints a one-line note
             naming harness, installed version, pinned version, and the
             affected row when they differ. The note prints every run while
             the mismatch stands — deliberate nag, not one-shot suppression.
@@ -96,10 +99,13 @@ import harness_spec
 # What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
 TOOLKIT_DATA = "none"
 
-# ── version pins — keep in lockstep with README.md's harness table ──────────
-# README.md "Harness instruction-file discovery" table, 2026-08-30
+# ── version pins ─────────────────────────────────────────────────────────────
+# The release each harness's discovery row was measured at. opencode has no
+# literal here: its pin is the toolkit's pinned opencode release, read from
+# the manifest harness_spec declares for it (opencode/package.json's
+# @opencode-ai/plugin devDependency), so it cannot drift from the SDK pin.
+# Bumping that pin re-pins this check too — probe the new release first.
 CLAUDE_CODE_PINNED_VERSION: str = "2.1.252"
-OPENCODE_PINNED_VERSION: str = "1.18.25"
 PI_PINNED_VERSION: str = "0.84.4"
 COPILOT_PINNED_VERSION: str = "1.0.80"
 AGY_PINNED_VERSION: str = "1.1.22"
@@ -209,12 +215,29 @@ def _extract_version(name: str, first_line: str) -> str:
     """
     line = first_line.strip()
     # claude: "2.1.252 (Claude Code)"
-    # opencode: "1.18.25"
+    # opencode: "1.18.32", or a dev build "0.0.0-dev-202609250015" (the
+    #   prerelease suffix is kept: truncating it misnames the binary)
     # pi: "0.84.4"
     # copilot: "GitHub Copilot CLI 1.0.80."
     # agy: "1.1.22"
-    m = re.search(r"(\d+(?:\.\d+)+)", line)
+    m = re.search(r"(\d+(?:\.\d+)+(?:-[0-9A-Za-z.-]*[0-9A-Za-z])?)", line)
     return m.group(1) if m else line
+
+
+def pinned_version(name: str, repo_root: Path | None = None) -> str:
+    """Return the pinned release ``check`` compares ``name`` against.
+
+    Claude Code's pin is :data:`CLAUDE_CODE_PINNED_VERSION`; opencode's is
+    read from its manifest via :func:`harness_spec.manifest_pinned_version`
+    (``repo_root`` overrides the checkout, for tests). Raise
+    :class:`HarnessCheckError` when the manifest pin cannot be read.
+    """
+    if name == "claude":
+        return CLAUDE_CODE_PINNED_VERSION
+    try:
+        return harness_spec.manifest_pinned_version(name, repo_root=repo_root)
+    except harness_spec.VersionPinError as exc:
+        raise HarnessCheckError(f"{name}: pinned version unavailable: {exc}") from exc
 
 
 def run_version(
@@ -253,6 +276,10 @@ def run_version(
 # read/write problem degrades silently to the uncached behavior.
 _CACHE_REPO_DIRNAME: str = "agent-toolkit"
 _CACHE_FILENAME: str = "harness-discovery-version-cache.json"
+# Bumped whenever the version *parser* changes: an entry is keyed on binary
+# identity only, so without it a value measured by an older parser (e.g. a
+# dev build truncated to "0.0.0") would be served until the binary changed.
+_CACHE_SCHEMA: int = 2
 
 
 def _cache_path() -> Path:
@@ -276,7 +303,7 @@ def _stat_key(binary: Path) -> tuple[str, int, int] | None:
 def _parsed_entry(entry: object) -> tuple[tuple[str, int, int], str] | None:
     """Parse one cache entry into ``(stat_key, version)``, or ``None`` when
     malformed (treated as a cache miss)."""
-    if not isinstance(entry, dict):
+    if not isinstance(entry, dict) or entry.get("schema") != _CACHE_SCHEMA:
         return None
     path = entry.get("path")
     mtime_ns = entry.get("mtime_ns")
@@ -366,6 +393,7 @@ def _check_one(
             return f"[{name}] {exc}", True
         if key is not None and cache is not None:
             cache[name] = {
+                "schema": _CACHE_SCHEMA,
                 "path": key[0],
                 "mtime_ns": key[1],
                 "size": key[2],
@@ -407,10 +435,11 @@ def cmd_check(
     notes: list[str] = []
     errors: list[str] = []
     for name in _LOAD_BEARING:
-        pinned = {
-            "claude": CLAUDE_CODE_PINNED_VERSION,
-            "opencode": OPENCODE_PINNED_VERSION,
-        }[name]
+        try:
+            pinned = pinned_version(name)
+        except HarnessCheckError as exc:
+            errors.append(f"[{name}] {exc}")
+            continue
         note, is_error = _check_one(
             name,
             pinned,
@@ -551,7 +580,10 @@ def _run_probe(
     if binary is None:
         return set(), f"{name}: binary not found"
     prompt = _probe_prompt(_ALL_TOKENS)
-    cmd = _harness_probe_command(name, prompt)
+    # Run the resolved file, not the bare command name: the probe must
+    # exercise the same binary ``check`` versions — including a fallback-path
+    # install that is not on PATH.
+    cmd = [str(binary), *_harness_probe_command(name, prompt)[1:]]
     # `cwd=` alone chdir()s the child but leaves the inherited `PWD` env var
     # stale at the caller's own directory. opencode resolves its project
     # root from `$PWD`, not the real working directory, so a stale PWD here
