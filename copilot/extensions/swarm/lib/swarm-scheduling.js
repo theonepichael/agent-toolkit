@@ -208,7 +208,7 @@ function selectSchedulable(candidates, takenPaths, headroom, mode = "concurrent"
     if (eligibility !== true) {
       refused.push({
         slug: candidate.id,
-        reason: mode === "serial" && typeof candidate.serial_safety_reason === "string" ? candidate.serial_safety_reason : eligibility === false ? "the backlog reports this item is not worker-safe -- its prefix names the harness repo, or is unrecognised. A worker would be editing the code it is running. Work it in a normal session." : `dev_status.py ready reported no ${mode === "serial" ? "serial_safe" : "worker_safe"} field for this item, so eligibility is unknown and it is refused rather than assumed safe. Update the installed dev_status.py.`
+        reason: mode === "serial" && typeof candidate.serial_safety_reason === "string" ? candidate.serial_safety_reason : typeof candidate.worker_safety_reason === "string" ? candidate.worker_safety_reason : eligibility === false ? "the backlog reports this item is not worker-safe -- its prefix names the harness repo, or is unrecognised. A worker would be editing the code it is running. Work it in a normal session." : `dev_status.py ready reported no ${mode === "serial" ? "serial_safe" : "worker_safe"} field for this item, so eligibility is unknown and it is refused rather than assumed safe. Update the installed dev_status.py.`
       });
       continue;
     }

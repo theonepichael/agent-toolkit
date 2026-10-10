@@ -499,6 +499,20 @@ export interface SwarmState {
    */
   pluginDir?: string;
   /**
+   * The run's explicit slug scope, when the orchestrator supplied `--items`
+   * rather than relying on prefix-based automatic selection. Persisted so a
+   * resume (and any later spawn that omits the flag) still selects only these
+   * slugs; re-supplying it overwrites (last-writer-wins). Mutually exclusive
+   * with `exclude` — supplying one clears the other.
+   */
+  items?: string[];
+  /**
+   * Slugs to drop from the re-read READY set on every spawn, when the
+   * orchestrator supplied `--exclude`. Persisted so a resume that omits the
+   * flag still filters; re-supplying it overwrites (last-writer-wins).
+   */
+  exclude?: string[];
+  /**
    * Every reconciled worker outcome this run has observed, in decision order.
    *
    * Optional for the same reason every other field added here is optional:
@@ -586,6 +600,8 @@ export interface ReadyItem {
   serial_safe?: unknown;
   /** Stable classifier explanation emitted by dev_status.py for a serial refusal. */
   serial_safety_reason?: unknown;
+  /** Stable classifier explanation for a concurrent refusal (e.g. `no_worker`). */
+  worker_safety_reason?: unknown;
   related_files?: { path?: unknown }[];
 }
 
@@ -953,13 +969,15 @@ export function selectSchedulable(
         reason:
           mode === "serial" && typeof candidate.serial_safety_reason === "string"
             ? candidate.serial_safety_reason
-            : eligibility === false
-              ? "the backlog reports this item is not worker-safe -- its prefix " +
-                "names the harness repo, or is unrecognised. A worker would be " +
-                "editing the code it is running. Work it in a normal session."
-              : `dev_status.py ready reported no ${mode === "serial" ? "serial_safe" : "worker_safe"} field for this ` +
-                "item, so eligibility is unknown and it is refused rather than " +
-                "assumed safe. Update the installed dev_status.py.",
+            : typeof candidate.worker_safety_reason === "string"
+              ? candidate.worker_safety_reason
+              : eligibility === false
+                ? "the backlog reports this item is not worker-safe -- its prefix " +
+                  "names the harness repo, or is unrecognised. A worker would be " +
+                  "editing the code it is running. Work it in a normal session."
+                : `dev_status.py ready reported no ${mode === "serial" ? "serial_safe" : "worker_safe"} field for this ` +
+                  "item, so eligibility is unknown and it is refused rather than " +
+                  "assumed safe. Update the installed dev_status.py.",
       });
       continue;
     }

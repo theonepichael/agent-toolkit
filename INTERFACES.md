@@ -1028,11 +1028,13 @@ Launch supported agents in herdr tabs to work backlog items.
 - CLI (`argparse`): Launch supported agents in herdr tabs to work backlog items.
 - Subcommands:
   - `plan` — READY queue grouped by prefix, as JSON
-  - `launch [--slug <SLUG>] [--swarm <SWARM>] [--serial] [--prefix <PREFIX>] [--model <MODEL>] [--cwd <CWD>] [--kind {pi,copilot,agy,codex}]` — start a worker, or a pi/copilot queue orchestrator
+  - `launch [--slug <SLUG>] [--swarm <SWARM>] [--serial] [--prefix <PREFIX>] [--items <ITEMS>] [--exclude <EXCLUDE>] [--model <MODEL>] [--cwd <CWD>] [--kind {pi,copilot,agy,codex}]` — start a worker, or a pi/copilot queue orchestrator
     - `--slug` — single item for one unattended worker
     - `--swarm` — fan out across N workers
     - `--serial` — run a prefix queue one worker at a time
     - `--prefix` — queue scope, required with --swarm or --serial
+    - `--items` — explicit slugs for the queue (with --swarm or --serial)
+    - `--exclude` — slugs to skip in the prefix queue (with --swarm or --serial)
     - `--model` — model passed through to harness after a bare --
     - `--cwd` — working directory (pi/copilot only)
     - `--kind` — agent harness (agy/codex support --slug only; default: pi) (choices: pi, copilot, agy, codex; default: pi)
@@ -1053,7 +1055,7 @@ Launch supported agents in herdr tabs to work backlog items.
   - `DEV_STATUS = Path(__file__).parent / 'dev_status.py'`
   - `COPILOT_PLUGIN_DIR = str(Path(__file__).resolve().parent.parent / 'copilot' / 'extensions' / 'swarm')`
 - Explicit exit codes: `1`
-- Depends on: `agent_toolkit_paths.py`, `backlog_claim_lookup.py`, `cli_common.py`, `dev_status.py`, `dev_status_impl.py`, `dev_status_storage.py`, `worktree.py`
+- Depends on: `agent_toolkit_paths.py`, `backlog_claim_lookup.py`, `cli_common.py`, `dev_status.py`, `dev_status_impl.py`, `dev_status_mutation.py`, `dev_status_storage.py`, `worktree.py`
 - Exceptions:
   - `class RefusedError(RuntimeError)` — A launch that must not proceed, with a reason fit to show the user.
 - Public functions:
@@ -1069,9 +1071,9 @@ Launch supported agents in herdr tabs to work backlog items.
   - `build_agent_list_argv() -> list[str]` — `herdr agent list` argv.
   - `build_agent_start_argv(*, name: str, pane: str, model: str | None, kind: str = 'pi', session_id: str | None = None, allow_all_tools: bool = True, plugin_dir: str | None = None, writable_roots: list[str] | None = None) -> list[str]` — `herdr agent start` argv, with flags passed through after a bare ``--``.
   - `worker_prompt(slug: str, kind: str = 'pi') -> str` — One worker, one item, unattended.
-  - `orchestrator_prompt(concurrency: int, prefix: str, kind: str = 'pi') -> str` — One orchestrator; `swarm_spawn` owns the fan-out from here.
+  - `orchestrator_prompt(concurrency: int, prefix: str, kind: str = 'pi', items: list[str] | None = None, exclude: list[str] | None = None) -> str` — One orchestrator; `swarm_spawn` owns the fan-out from here.
   - `orchestrator_resume_prompt(concurrency: int, run_id: str, prefix: str, kind: str = 'pi') -> str` — One orchestrator, resuming an interrupted run.
-  - `serial_orchestrator_prompt(prefix: str) -> str` — One orchestrator running the shared scheduler with a single worker.
+  - `serial_orchestrator_prompt(prefix: str, items: list[str] | None = None, exclude: list[str] | None = None) -> str` — One orchestrator running the shared scheduler with a single worker.
   - `serial_orchestrator_resume_prompt(run_id: str, prefix: str) -> str` — Resume one serial orchestrator without changing its run identity.
   - `validate_run_id(run_id: str) -> str` — Refuse a runId the delegate cannot safely pass through.
   - `swarm_state_dir(kind: str = 'pi') -> Path` — Where swarm state is persisted for kind (same override, same default).

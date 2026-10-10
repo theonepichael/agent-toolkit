@@ -5363,6 +5363,62 @@ class BacklogTestCase(BacklogFixture):
                     dev_status._serial_repo_name_for_path(str(escaped / "new.py"))
                 )
 
+    def test_ws11_ready_reports_no_worker_opt_out_fail_closed(self):
+        opted = make_item("atk-opted")
+        opted["no_worker"] = True
+        opted["no_worker_reason"] = "cross-repo"
+        normal = make_item("atk-normal")
+        self.write_items([opted, normal])
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            dev_status.cmd_ready(_args(prefix=None))
+        by_id = {i["id"]: i for i in json.loads(out.getvalue())}
+        self.assertIs(by_id["atk-opted"]["worker_safe"], False)
+        self.assertIs(by_id["atk-opted"]["serial_safe"], False)
+        self.assertIn("cross-repo", by_id["atk-opted"]["worker_safety_reason"])
+        self.assertIn("cross-repo", by_id["atk-opted"]["serial_safety_reason"])
+        self.assertIs(by_id["atk-normal"]["worker_safe"], True)
+
+    def test_ws12_ready_no_worker_without_reason_uses_generic(self):
+        item = make_item("atk-opted")
+        item["no_worker"] = True
+        self.write_items([item])
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            dev_status.cmd_ready(_args(prefix=None))
+        record = json.loads(out.getvalue())[0]
+        self.assertIs(record["worker_safe"], False)
+        self.assertIn(
+            "opted out of worker delegation", record["worker_safety_reason"]
+        )
+
+    def test_ws13_serial_safety_refuses_no_worker(self):
+        item = make_item("atk-opted")
+        item["no_worker"] = True
+        item["no_worker_reason"] = "cross-repo"
+        safe, reason = dev_status.serial_safety(item)
+        self.assertIs(safe, False)
+        self.assertIn("cross-repo", reason or "")
+
+    def test_ws14_add_reads_no_worker_from_json(self):
+        args = _args(
+            json='{"id": "atk-opted", "summary": "x", '
+            '"no_worker": true, "no_worker_reason": "r"}'
+        )
+        dev_status.cmd_add(args)
+        item = self._item_by_id("atk-opted")
+        self.assertIs(item["no_worker"], True)
+        self.assertEqual(item["no_worker_reason"], "r")
+
+    def test_ws15_update_clears_no_worker_via_null(self):
+        item = make_item("atk-opted")
+        item["no_worker"] = True
+        item["no_worker_reason"] = "r"
+        self.write_items([item])
+        dev_status.cmd_update(_args(id="atk-opted", patch='{"no_worker": null}'))
+        self.assertNotIn("no_worker", self._item_by_id("atk-opted"))
+        self.assertNotIn("no_worker_reason", self._item_by_id("atk-opted"))
+
 
 # Every env var _detect_harness consults, in its documented resolution order.
 _HARNESS_ENV_VARS = (

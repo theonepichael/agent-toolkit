@@ -18,6 +18,11 @@ A `--prefix <prefix>` tail (sent by
 `herdr_delegate.py launch`) or a `resume <runId> --prefix <prefix>` tail (sent
 by `herdr_delegate.py restart`) carries that run's queue scope and/or resume
 directive without changing the selected mode — see that section's step 1.
+A `--items <slug...>` or `--exclude <slug...>` tail (sent by
+`herdr_delegate.py launch --items`/`--exclude`) is an explicit-slug scope or a
+prefix-queue filter respectively; pass them through to `swarm_spawn` on the
+first spawn of the run — its persisted state carries the scope for every later
+spawn and for a resume.
 Otherwise, if no target item (slug or N) was named, ask the user which item —
 never guess. Every user-approval gate in step 11 (`land`'s commit and merge gates) stops and waits
 for the user — never collapse two gates into one approval. Distinct from those:
@@ -329,7 +334,11 @@ rather than a fixed list of slugs: it re-reads the READY set from
 finished is picked up on the next spawn without you naming it. A `prefix` is
 required when you do not pass `items` — selecting from the whole READY queue
 unscoped would pull unrelated projects into one run. Neither queue mode takes
-a single-item target (see the invocation note above).
+a single-item target (see the invocation note above). If the invocation carried
+`--items <slug...>` or `--exclude <slug...>`, pass those through to
+`swarm_spawn` (`items` / `exclude`) alongside the prefix; the run's scope is
+immutable once the first spawn persists it, so later spawns (and a resume)
+reuse it — do not re-derive it.
 
 Eligibility is mode-specific and fail-closed. Concurrent mode requires the
 existing `worker_safe: true`. Serial mode requires `serial_safe: true`, which
@@ -345,8 +354,9 @@ shell-interpolated), state persistence across a crash/restart, and the
 concurrency-cap accounting.
 
 1. Pick a `runId` for this invocation (e.g. a short timestamp-based slug)
-   and call `swarm_spawn` with the run's `prefix`, explicit `mode`, and (for
-   concurrent mode) concurrency — it
+   and call `swarm_spawn` with the run's `prefix`, explicit `mode`, (for
+   concurrent mode) concurrency, and any `items`/`exclude` from the invocation
+   tail — it
    spawns up to the cap, reporting any items skipped (cap), deferred (file
    overlap) or failed to spawn.
 

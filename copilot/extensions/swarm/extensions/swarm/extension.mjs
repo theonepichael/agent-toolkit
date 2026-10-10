@@ -227,7 +227,7 @@ function selectSchedulable(candidates, takenPaths, headroom, mode = "concurrent"
     if (eligibility !== true) {
       refused.push({
         slug: candidate.id,
-        reason: mode === "serial" && typeof candidate.serial_safety_reason === "string" ? candidate.serial_safety_reason : eligibility === false ? "the backlog reports this item is not worker-safe -- its prefix names the harness repo, or is unrecognised. A worker would be editing the code it is running. Work it in a normal session." : `dev_status.py ready reported no ${mode === "serial" ? "serial_safe" : "worker_safe"} field for this item, so eligibility is unknown and it is refused rather than assumed safe. Update the installed dev_status.py.`
+        reason: mode === "serial" && typeof candidate.serial_safety_reason === "string" ? candidate.serial_safety_reason : typeof candidate.worker_safety_reason === "string" ? candidate.worker_safety_reason : eligibility === false ? "the backlog reports this item is not worker-safe -- its prefix names the harness repo, or is unrecognised. A worker would be editing the code it is running. Work it in a normal session." : `dev_status.py ready reported no ${mode === "serial" ? "serial_safe" : "worker_safe"} field for this item, so eligibility is unknown and it is refused rather than assumed safe. Update the installed dev_status.py.`
       });
       continue;
     }
@@ -1983,6 +1983,15 @@ ${capture}` } };
         state.concurrency = params.concurrency;
       }
       if (params.pluginDir !== void 0) state.pluginDir = params.pluginDir;
+      const explicitItemsThisCall = params.items !== void 0;
+      if (params.items !== void 0) {
+        state.items = params.items;
+        state.exclude = void 0;
+      }
+      if (params.exclude !== void 0) {
+        state.exclude = params.exclude;
+        state.items = void 0;
+      }
       const pruneLines = await this.pruneStaleWorkers(state);
       if (!canSpawnNew(state)) {
         return {
@@ -2012,9 +2021,10 @@ ${capture}` } };
           details: { spawned: [], failed: [], skipped: [], deferred: [], refused: [] }
         };
       }
+      const excludeSet = new Set(state.exclude ?? []);
       let candidates;
-      if (params.items) {
-        const explicitSlugs = params.items;
+      if (state.items !== void 0) {
+        const explicitSlugs = state.items;
         const readyResult = await this.exec("python3", buildReadyArgv(params.prefix).slice(1), {
           timeout: PROBE_TIMEOUT_MS
         });
@@ -2025,7 +2035,13 @@ ${capture}` } };
         }
         const parsed = parseReadyItems(readyResult.stdout);
         const byId = new Map(parsed.map((i) => [i.id, i]));
+        const attempted = new Set(state.attempted ?? []);
+        const refused2 = new Set((state.refused ?? []).map((entry) => entry.slug));
         candidates = explicitSlugs.map((id) => byId.get(id) ?? { id });
+        if (!explicitItemsThisCall) {
+          candidates = candidates.filter((c) => !attempted.has(c.id) && !refused2.has(c.id));
+        }
+        candidates = candidates.filter((c) => !excludeSet.has(c.id));
       } else {
         const readyResult = await this.exec("python3", buildReadyArgv(params.prefix).slice(1), {
           timeout: PROBE_TIMEOUT_MS
@@ -2038,7 +2054,7 @@ ${capture}` } };
         candidates = parseReadyItems(readyResult.stdout);
         const attempted = new Set(state.attempted ?? []);
         const refused2 = new Set((state.refused ?? []).map((entry) => entry.slug));
-        candidates = candidates.filter((c) => !attempted.has(c.id) && !refused2.has(c.id));
+        candidates = candidates.filter((c) => !attempted.has(c.id) && !refused2.has(c.id)).filter((c) => !excludeSet.has(c.id));
       }
       const takenPaths = [];
       for (const w of state.workers) {
@@ -2614,6 +2630,11 @@ await joinSession({
           prefix: {
             type: "string",
             description: "Slug prefix scoping automatic selection, e.g. 'atk-'."
+          },
+          exclude: {
+            type: "array",
+            items: { type: "string" },
+            description: "Backlog item slugs to skip when selecting from the READY queue via prefix."
           },
           concurrency: {
             type: "number",

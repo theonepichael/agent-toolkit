@@ -331,7 +331,10 @@ rather than a fixed list of slugs: it re-reads the READY set from
 finished is picked up on the next spawn without you naming it. A `prefix` is
 required when you do not pass `items` — selecting from the whole READY queue
 unscoped would pull unrelated projects into one run. Neither mode takes a
-single-item target. Concurrent mode requires `worker_safe: true`; serial mode
+single-item target. If the invocation carried `--items <slug...>` or
+`--exclude <slug...>`, pass those through to `swarm_spawn` (`items` /
+`exclude`) alongside the prefix; the run's scope persists once the first spawn
+sets it, so later spawns (and a resume) reuse it. Concurrent mode requires `worker_safe: true`; serial mode
 requires `serial_safe: true`, allowing single-repository harness work while
 refusing cross-repo, work/unknown, pathless, unresolved, or mismatched items.
 
@@ -341,8 +344,9 @@ provided by the Copilot swarm extension (`copilot/extensions/swarm/`) — never 
 a crash/restart, crash recovery, and concurrency-cap accounting.
 
 1. Pick a `runId` for this invocation (e.g. a short timestamp-based slug)
-   and call `swarm_spawn` with the run's `prefix`, explicit `mode`, and (for
-   concurrent mode) concurrency — it
+   and call `swarm_spawn` with the run's `prefix`, explicit `mode`, (for
+   concurrent mode) concurrency, and any `items`/`exclude` from the invocation
+   tail — it
    spawns up to the cap, reporting any items skipped (cap), deferred (file
    overlap) or failed to spawn.
 

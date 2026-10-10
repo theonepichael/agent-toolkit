@@ -502,6 +502,28 @@ class SmokeTests(DelegateTests):
         self.assertEqual(code, 2)
         self.assertIn("--prefix", err)
 
+    def test_launch_items_and_exclude_are_mutually_exclusive(self) -> None:
+        code, _, err = self.run_main(
+            [
+                "launch", "--swarm", "3", "--prefix", "atk",
+                "--items", "atk-a", "--exclude", "atk-b",
+            ]
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("mutually exclusive", err)
+
+    def test_launch_items_with_slug_is_refused(self) -> None:
+        code, _, err = self.run_main(["launch", "--slug", "atk-a", "--items", "atk-b"])
+        self.assertEqual(code, 2)
+        self.assertIn("--items", err)
+
+    def test_launch_items_requires_valid_slug(self) -> None:
+        code, _, err = self.run_main(
+            ["launch", "--swarm", "3", "--prefix", "atk", "--items", "Not A Slug"]
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("slug", err)
+
     def test_launch_serial_is_mutually_exclusive(self) -> None:
         code, _, err = self.run_main(
             ["launch", "--serial", "--swarm", "1", "--prefix", "atk"]
@@ -546,6 +568,24 @@ class PromptContractTests(unittest.TestCase):
             "/backlog-item --serial resume r1 --prefix atk",
         )
 
+    def test_orchestrator_prompt_with_items(self) -> None:
+        self.assertEqual(
+            herdr_delegate.orchestrator_prompt(3, "atk", items=["atk-a", "atk-b"]),
+            "/backlog-item --swarm=3 --prefix atk --items atk-a atk-b",
+        )
+
+    def test_orchestrator_prompt_with_exclude(self) -> None:
+        self.assertEqual(
+            herdr_delegate.orchestrator_prompt(3, "atk", exclude=["atk-x"]),
+            "/backlog-item --swarm=3 --prefix atk --exclude atk-x",
+        )
+
+    def test_serial_orchestrator_prompt_with_items(self) -> None:
+        self.assertEqual(
+            herdr_delegate.serial_orchestrator_prompt("atk", items=["atk-a"]),
+            "/backlog-item --serial --prefix atk --items atk-a",
+        )
+
 
 @mock.patch.dict(os.environ, {"HERDR_ENV": "1"})
 class LaunchTests(DelegateTests):
@@ -567,6 +607,35 @@ class LaunchTests(DelegateTests):
         self.assertEqual(len(prompts), 1)
         self.assertEqual(prompts[0][2], "swarm-atk")
         self.assertEqual(prompts[0][3], "/backlog-item --swarm=3 --prefix atk")
+
+    def test_swarm_launch_with_items_prompts_scope(self) -> None:
+        code, out, _ = self.run_main(
+            [
+                "launch", "--swarm", "3", "--prefix", "atk",
+                "--items", "atk-a", "atk-b", "--cwd", "/tmp",
+            ]
+        )
+        self.assertEqual(code, 0)
+        prompts = self.fake.named("agent", "prompt")
+        self.assertEqual(
+            prompts[0][3], "/backlog-item --swarm=3 --prefix atk --items atk-a atk-b"
+        )
+
+    def test_launch_slug_refuses_no_worker_item(self) -> None:
+        with mock.patch.object(
+            herdr_delegate,
+            "resolve_backlog_item",
+            return_value={
+                "id": "atk-opted",
+                "no_worker": True,
+                "no_worker_reason": "cross-repo",
+            },
+        ):
+            code, _, err = self.run_main(
+                ["launch", "--slug", "atk-opted", "--cwd", "/tmp"]
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("cross-repo", err)
 
     def test_serial_launch_allows_meta_and_uses_distinct_label(self) -> None:
         code, out, _ = self.run_main(

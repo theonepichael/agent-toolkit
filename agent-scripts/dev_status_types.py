@@ -86,7 +86,12 @@ class BacklogItem(TypedDict):
     absence-means-default convention ``priority`` already uses.
     ``integration_branch`` is absent unless declared via ``update``: a bare
     local branch name that replaces the default branch as the merge target
-    of the review/approve/done committed-work guard.
+    of the review/approve/done committed-work guard. ``no_worker`` is absent
+    unless an item opts out of every worker queue (concurrent swarm, serial
+    queue, and single-item ``launch --slug``); when ``true``, ``ready`` stamps
+    both ``worker_safe`` and ``serial_safe`` false regardless of prefix.
+    ``no_worker_reason`` is an optional human-readable explanation surfaced
+    in refusal messages, only meaningful while ``no_worker`` is truthy.
     """
 
     id: str
@@ -105,6 +110,8 @@ class BacklogItem(TypedDict):
     review_content_hash: NotRequired[str]
     gate: NotRequired[Gate]
     integration_branch: NotRequired[str]
+    no_worker: NotRequired[bool]
+    no_worker_reason: NotRequired[str]
 
 
 class PendingItem(TypedDict):

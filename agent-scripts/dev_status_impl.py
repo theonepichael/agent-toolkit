@@ -858,6 +858,13 @@ def _is_serial_context_artifact(path: str) -> bool:
 
 def serial_safety(item: BacklogItem) -> tuple[bool, str | None]:
     """Whether one READY item is safe for isolated serial delegation."""
+    if item.get("no_worker"):
+        reason = item.get("no_worker_reason")
+        return False, (
+            str(reason)
+            if isinstance(reason, str) and reason.strip()
+            else "item opted out of worker delegation"
+        )
     slug = str(item.get("id", ""))
     prefix = prefix_of(slug)
     repo_for_prefix = {value: key for key, value in REPO_PREFIXES.items()}
@@ -2518,13 +2525,21 @@ def cmd_ready(args: argparse.Namespace) -> None:
     stamped: list[dict[str, object]] = []
     for item in ready:
         serial_safe, serial_reason = serial_safety(item)
+        no_worker = bool(item.get("no_worker"))
         record: dict[str, object] = {
             **item,
-            "worker_safe": is_worker_safe(prefix_of(str(item["id"]))),
+            "worker_safe": is_worker_safe(prefix_of(str(item["id"]))) and not no_worker,
             "serial_safe": serial_safe,
         }
         if serial_reason is not None:
             record["serial_safety_reason"] = serial_reason
+        if no_worker:
+            reason = item.get("no_worker_reason")
+            record["worker_safety_reason"] = (
+                str(reason)
+                if isinstance(reason, str) and reason.strip()
+                else "item opted out of worker delegation"
+            )
         stamped.append(record)
     print(json.dumps(stamped, indent=2))
 
@@ -2869,6 +2884,12 @@ def cmd_add(args: argparse.Namespace) -> None:
         ),
         blocked_by=tuple(str(dep) for dep in _list_field(patch, "blocked_by")),
         priority=cast(str, patch["priority"]) if "priority" in patch else None,
+        no_worker=cast(bool, patch["no_worker"]) if "no_worker" in patch else None,
+        no_worker_reason=(
+            cast(str, patch["no_worker_reason"])
+            if "no_worker_reason" in patch
+            else None
+        ),
     )
     try:
         res = add_item(req, verbose=getattr(args, "verbose", False))
@@ -2990,6 +3011,14 @@ def cmd_update(args: argparse.Namespace) -> None:
         integration_branch=(
             cast(str | None, patch["integration_branch"])
             if "integration_branch" in patch
+            else UNSET
+        ),
+        no_worker=(
+            cast(bool | None, patch["no_worker"]) if "no_worker" in patch else UNSET
+        ),
+        no_worker_reason=(
+            cast(str | None, patch["no_worker_reason"])
+            if "no_worker_reason" in patch
             else UNSET
         ),
     )

@@ -2121,6 +2121,100 @@ describe("swarm_spawn worker bootstrap", () => {
     expect(loadState("scoped", dir)?.prefix).toBe("atk-");
   });
 
+  test("exclude drops slugs from the spawned set and persists the scope", async () => {
+    const { spawn, stub } = stubFor((argv) => {
+      if (argv.includes("ready")) {
+        return {
+          code: 0,
+          stdout: JSON.stringify([
+            { id: "a1", worker_safe: true, serial_safe: true, related_files: [] },
+            { id: "a2", worker_safe: true, serial_safe: true, related_files: [] },
+            { id: "b1", worker_safe: true, serial_safe: true, related_files: [] },
+          ]),
+          stderr: "",
+        };
+      }
+      return tabCreateOk(argv);
+    });
+
+    await spawn.execute(
+      ...([
+        "call-1",
+        { runId: "exclrun", prefix: "atk-", exclude: ["a1"], concurrency: 1 },
+      ] as unknown as never[]),
+    );
+
+    const itemPrompts = prompts(stub).map((c) => c.argv[3] ?? "");
+    expect(itemPrompts).not.toContain("/backlog-item --auto a1");
+    expect(itemPrompts).toContain("/backlog-item --auto a2");
+    expect(loadState("exclrun", dir)?.exclude).toEqual(["a1"]);
+  });
+
+  test("an items-scoped run persists its scope and selects only those slugs", async () => {
+    const { spawn, stub } = stubFor((argv) => {
+      if (argv.includes("ready")) {
+        return {
+          code: 0,
+          stdout: JSON.stringify([
+            { id: "a1", worker_safe: true, serial_safe: true, related_files: [] },
+            { id: "a2", worker_safe: true, serial_safe: true, related_files: [] },
+          ]),
+          stderr: "",
+        };
+      }
+      return tabCreateOk(argv);
+    });
+
+    await spawn.execute(
+      ...([
+        "call-1",
+        { runId: "itemrun", prefix: "atk-", items: ["a1"], concurrency: 1 },
+      ] as unknown as never[]),
+    );
+
+    const itemPrompts = prompts(stub).map((c) => c.argv[3] ?? "");
+    expect(itemPrompts).toContain("/backlog-item --auto a1");
+    expect(itemPrompts).not.toContain("/backlog-item --auto a2");
+    expect(loadState("itemrun", dir)?.items).toEqual(["a1"]);
+  });
+
+  test("a refill with persisted items does not reselect an attempted slug", async () => {
+    const { spawn, stub } = stubFor((argv) => {
+      if (argv.includes("ready")) {
+        return {
+          code: 0,
+          stdout: JSON.stringify([
+            { id: "a1", worker_safe: true, serial_safe: true, related_files: [] },
+          ]),
+          stderr: "",
+        };
+      }
+      return tabCreateOk(argv);
+    });
+
+    // A prior spawn already handed a1 to a worker (which died without leaving
+    // READY), and the slot is free again: the item is still READY and the
+    // persisted `items` scope still names it.
+    saveState(
+      {
+        runId: "refill",
+        concurrency: 1,
+        mode: "concurrent",
+        nextCounter: 1,
+        workers: [],
+        attempted: ["a1"],
+        items: ["a1"],
+      },
+      dir,
+    );
+
+    await spawn.execute(
+      ...(["call-1", { runId: "refill", prefix: "atk-", concurrency: 1 }] as unknown as never[]),
+    );
+
+    expect(prompts(stub).map((c) => c.argv[3] ?? "")).toEqual([]);
+  });
+
   test("a serial run persists its mode and forces concurrency one", async () => {
     const { spawn } = stubFor(tabCreateOk);
 
@@ -3796,6 +3890,42 @@ describe("selectSchedulable", () => {
     );
     expect(result.slugs).toEqual([]);
     expect(result.refused[0]?.reason).toContain("multiple repositories");
+  });
+
+  test("concurrent mode surfaces worker_safety_reason for a no_worker item", () => {
+    const result = selectSchedulable(
+      [
+        {
+          id: "atk-opted",
+          worker_safe: false,
+          serial_safe: false,
+          worker_safety_reason: "cross-repo",
+        },
+      ],
+      [],
+      1,
+      "concurrent",
+    );
+    expect(result.slugs).toEqual([]);
+    expect(result.refused[0]?.reason).toContain("cross-repo");
+  });
+
+  test("serial mode surfaces a no_worker serial_safety_reason", () => {
+    const result = selectSchedulable(
+      [
+        {
+          id: "atk-opted",
+          worker_safe: false,
+          serial_safe: false,
+          serial_safety_reason: "cross-repo",
+        },
+      ],
+      [],
+      1,
+      "serial",
+    );
+    expect(result.slugs).toEqual([]);
+    expect(result.refused[0]?.reason).toContain("cross-repo");
   });
 });
 
