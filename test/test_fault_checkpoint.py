@@ -141,11 +141,31 @@ def _recover(toy: dict[str, Path], *extra: str) -> str:
 
 
 def _process_gone(pid: int) -> bool:
+    """True once ``pid`` has exited: no /proc entry, a zombie (Z), or dead (X).
+
+    X (EXIT_DEAD) is the brief state while the reaper releases a zombie, so
+    a reaped pid can read Z, then X, then vanish.
+    """
     try:
         stat = Path(f"/proc/{pid}/stat").read_text()
     except (FileNotFoundError, ProcessLookupError):
         return True
-    return stat.rsplit(")", 1)[1].split()[0] == "Z"
+    return stat.rsplit(")", 1)[1].split()[0] in ("Z", "X")
+
+
+def _wait_gone(pid: int, timeout: float, interval: float = 0.05) -> bool:
+    """Poll until ``pid`` is gone or ``timeout`` seconds pass.
+
+    Returns on the first gone sample and never samples again: exit is
+    one-way, and a re-check can only land on a transient /proc read.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        if _process_gone(pid):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(interval)
 
 
 @pytest.mark.regression(
@@ -160,6 +180,50 @@ def test_process_gone_treats_a_vanishing_process_as_gone(monkeypatch):
 
     monkeypatch.setattr(Path, "read_text", vanish)
     assert _process_gone(123456)
+
+
+def _fake_stat(state: str) -> str:
+    return f"123456 (python3) {state} 1 123 123 0 -1 4228108 918 0 0 0"
+
+
+@pytest.mark.regression(
+    "process-gone-misreads-exit-dead-as-alive",
+    "where False = _process_gone(123456)",
+)
+@pytest.mark.parametrize("state", ["Z", "X"])
+def test_process_gone_treats_dead_states_as_gone(monkeypatch, state):
+    # X (EXIT_DEAD) is the brief state while the reaper releases a zombie;
+    # /proc still shows the pid, but the process is gone.
+    monkeypatch.setattr(Path, "read_text", lambda self, *a, **k: _fake_stat(state))
+    assert _process_gone(123456)
+
+
+@pytest.mark.parametrize("state", ["R", "S", "D"])
+def test_process_gone_treats_live_states_as_alive(monkeypatch, state):
+    monkeypatch.setattr(Path, "read_text", lambda self, *a, **k: _fake_stat(state))
+    assert not _process_gone(123456)
+
+
+def test_wait_gone_trusts_the_first_gone_sample(monkeypatch):
+    # Once a sample says gone, a later sample must not be consulted: a reaped
+    # pid's /proc entry can flicker through states on its way out.
+    samples = iter([False, True, False])
+    calls = []
+
+    def fake(pid):
+        calls.append(pid)
+        return next(samples)
+
+    monkeypatch.setattr(sys.modules[__name__], "_process_gone", fake)
+    assert _wait_gone(42, timeout=5, interval=0)
+    assert calls == [42, 42]
+
+
+def test_wait_gone_gives_up_at_the_deadline(monkeypatch):
+    monkeypatch.setattr(sys.modules[__name__], "_process_gone", lambda pid: False)
+    started = time.monotonic()
+    assert not _wait_gone(42, timeout=0.2, interval=0.01)
+    assert time.monotonic() - started >= 0.2
 
 
 # ── fault_checkpoint.checkpoint ───────────────────────────────────────────────
@@ -333,10 +397,7 @@ def test_no_descendant_survives(toy, tmp_path, mode):
     # The harness must kill, not wait out, a stalled child (it sleeps 60s).
     assert time.monotonic() - started < 20
     pid = int(pidfile.read_text())
-    deadline = time.monotonic() + 5
-    while not _process_gone(pid) and time.monotonic() < deadline:
-        time.sleep(0.05)
-    assert _process_gone(pid)
+    assert _wait_gone(pid, timeout=5)
 
 
 ENV_PROBE = textwrap.dedent(
