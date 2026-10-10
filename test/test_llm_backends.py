@@ -487,7 +487,7 @@ class RunAgyTests(_ContainmentStubbed):
 
     def test_33c_containment_stages_target_dir_in_grounded_mode(self) -> None:
         """In grounded mode, containment must stage SB_TARGET_DIR into $STAGE/target
-        before $HOME tmpfs is mounted and bind it into $H/workspace read-only."""
+        before $HOME tmpfs is mounted and bind it into $H/.so-workspace read-only."""
         with patch.object(
             llm_backends, "run_backend_command", return_value="t"
         ) as mock_run:
@@ -502,8 +502,8 @@ class RunAgyTests(_ContainmentStubbed):
         script = " ".join(argv)
         self.assertIn("SB_TARGET_DIR=/test/repo", argv)
         self.assertIn('mount --bind "$SB_TARGET_DIR" "$STAGE/target"', script)
-        self.assertIn('mount --bind "$STAGE/target" "$H/workspace"', script)
-        self.assertIn('mount -o remount,ro,bind "$H/workspace"', script)
+        self.assertIn('mount --bind "$STAGE/target" "$H/.so-workspace"', script)
+        self.assertIn('mount -o remount,ro,bind "$H/.so-workspace"', script)
         stage_idx = script.index('mount --bind "$SB_TARGET_DIR" "$STAGE/target"')
         tmpfs_h_idx = script.index('mount -t tmpfs tmpfs "$H"')
         self.assertLess(stage_idx, tmpfs_h_idx)
@@ -1334,6 +1334,21 @@ class RunCommandEnvSanitizationTests(unittest.TestCase):
             self.assertEqual(passed_env.get("NORMAL_VAR"), "normal")
 
 class CodexBackendTests(unittest.TestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        # Grounded codex now wraps in OS containment (its read tools are back
+        # on, so tools_reach is containment-dependent); stub the probe that
+        # would otherwise shell out to `unshare` and be blocked by conftest.
+        patcher = patch.object(llm_backends, "containment_available", lambda: True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        # These are command-shape tests; stub PATH resolution so the resolved
+        # install-root rewrite (tested in GroundedContainmentExposureTests)
+        # does not fire and cmd[0] stays the bare backend name.
+        which = patch.object(llm_backends.shutil, "which", return_value=None)
+        which.start()
+        self.addCleanup(which.stop)
+
     def test_codex_in_backend_priority(self) -> None:
         self.assertEqual(llm_backends.BACKEND_PRIORITY[0], "codex")
         self.assertEqual(
@@ -1365,8 +1380,11 @@ class CodexBackendTests(unittest.TestCase):
         self.assertIn("exec", cmd)
         self.assertIn("-s", cmd)
         self.assertIn("read-only", cmd)
-        self.assertIn("-C", cmd)
-        self.assertIn(str(target), cmd)
+        # Grounded codex wraps in OS containment; its working dir is the
+        # wrapper's target bind, so -C (which would name a blanked path) is
+        # dropped.
+        self.assertEqual(cmd[0], "unshare")
+        self.assertNotIn("-C", cmd)
         self.assertIn("-m", cmd)
         self.assertIn("o3", cmd)
         self.assertIn("--ephemeral", cmd)
@@ -1393,7 +1411,8 @@ class CodexBackendTests(unittest.TestCase):
         )
         self.assertIn("--skip-git-repo-check", cmd)
         self.assertEqual(cmd[-1], "my prompt")
-        self.assertEqual(cmd[cmd.index("-C") + 1], str(target))
+        # -C is dropped under containment (the wrapper binds the target as cwd).
+        self.assertNotIn("-C", cmd)
         self.assertEqual(cmd[cmd.index("-m") + 1], "o3")
         self.assertEqual(cmd[cmd.index("-s") + 1], "read-only")
 
@@ -1464,6 +1483,13 @@ class CodexBackendTests(unittest.TestCase):
 
 
 class GroundedModeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        # Grounded codex/pi/copilot now wrap in OS containment; stub the probe.
+        patcher = patch.object(llm_backends, "containment_available", lambda: True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_pi_grounded_command(self) -> None:
         target = Path("/tmp/sample-repo")
         cmd = llm_backends.build_isolated_command(
@@ -1481,6 +1507,254 @@ class GroundedModeTests(unittest.TestCase):
         self.assertIn("--available-tools", cmd)
         self.assertIn("view,grep,glob", cmd)
         self.assertIn("--allow-tool=view", cmd)
+
+
+class GroundedContainmentExposureTests(unittest.TestCase):
+    """Grounded codex/pi/copilot wrap in OS containment; the wrapper must
+    re-expose only the target, the backend's credential dir, and its install
+    tree (read-only), and bind the target at its real absolute path when it
+    lives under $HOME (plans cite absolute worktree paths)."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        patcher = patch.object(llm_backends, "containment_available", lambda: True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _fake_backend(
+        self,
+        home: Path,
+        link_dir: str,
+        pkg_dir: str,
+        name: str,
+        *,
+        shebang: str = "#!/usr/bin/env node\n",
+        with_package_json: bool = True,
+    ) -> tuple[Path, Path, Path]:
+        """Create a script ``name`` under ``home/<pkg_dir>/bin`` (with an
+        optional package.json), and a PATH-entry symlink at
+        ``home/<link_dir>/name`` pointing at it. Returns (link, script, pkg)."""
+        pkg = home / pkg_dir
+        (pkg / "bin").mkdir(parents=True)
+        if with_package_json:
+            (pkg / "package.json").write_text("{}\n")
+        script = pkg / "bin" / name
+        script.write_text(shebang)
+        link = home / link_dir / name
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.symlink_to(script)
+        return link, script, pkg
+
+    def test_grounded_codex_wraps_and_exposes_credential_and_install_root(
+        self,
+    ) -> None:
+        """Grounded codex re-exposes only the target, ~/.codex, and its own
+        package directory (narrow), never the whole ~/.npm-global prefix, and
+        invokes the resolved script path directly rather than the bare name."""
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            link, script, pkg = self._fake_backend(
+                home,
+                ".npm-global/bin",
+                ".npm-global/lib/node_modules/@openai/codex",
+                "codex",
+            )
+            target = home / "projects" / "repo"
+            target.mkdir(parents=True)
+            with (
+                patch.object(
+                    llm_backends.os.path, "expanduser", return_value=str(home)
+                ),
+                patch.object(
+                    llm_backends.shutil,
+                    "which",
+                    side_effect=lambda b: str(link) if b == "codex" else None,
+                ),
+            ):
+                cmd = llm_backends.build_isolated_command(
+                    "codex", "p", model=None, mode="grounded", target_dir=target
+                )
+        self.assertEqual(cmd[0], "unshare")
+        argv = cmd
+        self.assertIn("SB_EXPOSE=.codex", argv)
+        self.assertIn(f"SB_EXPOSE_RO={pkg.relative_to(home)}", argv)
+        self.assertNotIn("SB_EXPOSE_RO=.npm-global", argv)
+        self.assertIn("SB_BIND_TARGET_REAL=1", argv)
+        self.assertIn(str(script.resolve()), argv)
+
+    def test_backend_install_exposure_npm_package_is_narrow(self) -> None:
+        """An npm-global install exposes only that package's directory, not
+        ~/.npm-global or ~/.npm-global/bin wholesale."""
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            link, script, pkg = self._fake_backend(
+                home,
+                ".npm-global/bin",
+                ".npm-global/lib/node_modules/@openai/codex",
+                "codex",
+            )
+            with (
+                patch.object(
+                    llm_backends.os.path, "expanduser", return_value=str(home)
+                ),
+                patch.object(
+                    llm_backends.shutil,
+                    "which",
+                    side_effect=lambda b: str(link) if b == "codex" else None,
+                ),
+            ):
+                invoke, ro = llm_backends._backend_install_exposure("codex")
+        assert invoke == str(script.resolve())
+        assert str(pkg.relative_to(home)) in ro
+        assert ".npm-global" not in ro
+        assert ".npm-global/bin" not in ro
+
+    def test_backend_install_exposure_local_bin_not_wholesale(self) -> None:
+        """A backend at ~/.local/bin pointing into ~/.local/share/<pkg> must
+        not expose ~/.local or ~/.local/share wholesale — only the package
+        directory."""
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            link, script, pkg = self._fake_backend(
+                home, ".local/bin", ".local/share/pkg", "foo"
+            )
+            with (
+                patch.object(
+                    llm_backends.os.path, "expanduser", return_value=str(home)
+                ),
+                patch.object(
+                    llm_backends.shutil,
+                    "which",
+                    side_effect=lambda b: str(link) if b == "foo" else None,
+                ),
+            ):
+                invoke, ro = llm_backends._backend_install_exposure("foo")
+        assert str(pkg.relative_to(home)) in ro
+        assert ".local" not in ro
+        assert ".local/share" not in ro
+        assert ".local/bin" not in ro
+
+    def test_backend_install_exposure_includes_interpreter_under_home(self) -> None:
+        """A script whose interpreter resolves under $HOME (e.g. nvm node)
+        exposes only that interpreter's own directory."""
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            node = home / ".nvm" / "versions" / "node" / "v20" / "bin" / "node"
+            node.parent.mkdir(parents=True)
+            node.write_text("binary")
+            link, script, pkg = self._fake_backend(
+                home,
+                ".local/bin",
+                ".local/share/tool",
+                "tool",
+                shebang=f"#!{node}\n",
+            )
+            with (
+                patch.object(
+                    llm_backends.os.path, "expanduser", return_value=str(home)
+                ),
+                patch.object(
+                    llm_backends.shutil,
+                    "which",
+                    side_effect=lambda b: str(link) if b == "tool" else None,
+                ),
+            ):
+                invoke, ro = llm_backends._backend_install_exposure("tool")
+        assert str(node.parent.relative_to(home)) in ro
+        assert ".nvm" not in ro
+
+    def test_backend_install_exposure_native_binary_own_dir(self) -> None:
+        """A native binary (no package.json, no shebang) exposes only its own
+        directory, not the containing top-level dir."""
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            bindir = home / ".local" / "bin"
+            bindir.mkdir(parents=True)
+            binfile = bindir / "mytool"
+            binfile.write_bytes(b"\x7fELF")
+            with (
+                patch.object(
+                    llm_backends.os.path, "expanduser", return_value=str(home)
+                ),
+                patch.object(
+                    llm_backends.shutil,
+                    "which",
+                    side_effect=lambda b: str(binfile) if b == "mytool" else None,
+                ),
+            ):
+                invoke, ro = llm_backends._backend_install_exposure("mytool")
+        assert invoke == str(binfile)
+        assert ".local/bin" in ro
+        assert ".local" not in ro
+
+    def test_backend_install_exposure_empty_when_not_on_path(self) -> None:
+        with patch.object(llm_backends.shutil, "which", return_value=None):
+            assert llm_backends._backend_install_exposure("codex") == (None, [])
+
+    def test_target_under_tmp_is_not_bound_at_real_path(self) -> None:
+        """A /tmp target is in the hidden set; only the workspace bind exposes
+        it, so the real-path bind flag must be absent (its real path is blanked)."""
+        cmd = llm_backends.build_isolated_command(
+            "pi", "p", model=None, mode="grounded", target_dir=Path("/tmp/repo")
+        )
+        self.assertIn("SB_TARGET_DIR=/tmp/repo", cmd)
+        self.assertNotIn("SB_BIND_TARGET_REAL=1", cmd)
+
+    def test_target_inside_exposed_dir_is_not_bound_at_real_path(self) -> None:
+        """A target already inside a re-exposed dir is visible through that
+        dir's full bind; re-binding would write into the real dir via its bind
+        mount. The overlap guard must suppress the real-path bind."""
+        home = os.path.expanduser("~")
+        cmd = llm_backends.build_isolated_command(
+            "codex",
+            "p",
+            model=None,
+            mode="grounded",
+            target_dir=Path(f"{home}/.codex/scratch"),
+        )
+        self.assertNotIn("SB_BIND_TARGET_REAL=1", cmd)
+
+    def test_target_under_workspace_dir_is_bound_at_real_path(self) -> None:
+        """The workspace bind lives at the hidden $HOME/.so-workspace, so a
+        real target named ``workspace`` (lowercase) no longer collides with it:
+        its real absolute path must still be bound so plans citing it resolve."""
+        home = os.path.expanduser("~")
+        cmd = llm_backends.build_isolated_command(
+            "pi",
+            "p",
+            model=None,
+            mode="grounded",
+            target_dir=Path(f"{home}/workspace/repo"),
+        )
+        self.assertIn("SB_BIND_TARGET_REAL=1", cmd)
+
+    def test_target_under_reserved_bind_path_is_not_bound(self) -> None:
+        """The reserved $HOME/.so-workspace bind path collides with a real
+        target named .so-workspace: recreating its parent chain would try to
+        mkdir inside the read-only bind and abort the script under set -e."""
+        home = os.path.expanduser("~")
+        cmd = llm_backends.build_isolated_command(
+            "codex",
+            "p",
+            model=None,
+            mode="grounded",
+            target_dir=Path(f"{home}/.so-workspace/repo"),
+        )
+        self.assertNotIn("SB_BIND_TARGET_REAL=1", cmd)
+
+    def test_target_is_home_does_not_crash(self) -> None:
+        """A target equal to $HOME itself yields Path(".") from relative_to,
+        whose .parts is empty — indexing [0] would raise IndexError before
+        dispatch. The guard must treat it as "no real-path bind", not crash."""
+        home = os.path.expanduser("~")
+        cmd = llm_backends.build_isolated_command(
+            "copilot",
+            "p",
+            model=None,
+            mode="grounded",
+            target_dir=Path(home),
+        )
+        self.assertNotIn("SB_BIND_TARGET_REAL=1", cmd)
 
 
 class _StallStream:

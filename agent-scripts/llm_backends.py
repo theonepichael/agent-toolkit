@@ -102,6 +102,13 @@ BACKEND_ISOLATION: dict[str, dict[str, object]] = {
         "context": ["--ignore-rules", "--ignore-user-config"],
         "templates": ["--ignore-user-config"],
         "session": ["--ephemeral"],
+        # Grounded mode turns the read tools back on (-s read-only -C <dir>),
+        # so tools_reach is no longer NOT_APPLICABLE: there is read reach to
+        # constrain, and OS containment is the only mechanism this repo has.
+        # _contain names what the $HOME tmpfs re-exposes: ~/.codex (auth) and,
+        # read-only, the binary's install tree (resolved at build time).
+        "_grounded": {"tools_reach": OS_CONTAINED},
+        "_contain": {"expose": [".codex"], "shadow": {}},
     },
     # Verified: --no-tools reports "no tools are available in this session";
     # -nc/-np leave no instruction text in context. Skills and MCP servers
@@ -115,6 +122,10 @@ BACKEND_ISOLATION: dict[str, dict[str, object]] = {
         "context": ["--no-context-files"],
         "templates": ["--no-prompt-templates"],
         "session": ["--no-session"],
+        # Grounded mode re-enables read,grep,find,ls tools, so read reach
+        # exists again and OS containment is the only constraining mechanism.
+        "_grounded": {"tools_reach": OS_CONTAINED},
+        "_contain": {"expose": [".pi"], "shadow": {}},
     },
     # Verified: --no-custom-instructions drops the instruction files, and
     # --deny-tool blocks the tools explicitly. Headless copilot also happens
@@ -137,6 +148,10 @@ BACKEND_ISOLATION: dict[str, dict[str, object]] = {
         "context": ["--no-custom-instructions"],
         "templates": ["--no-custom-instructions"],
         "session": [],
+        # Grounded mode re-enables view,grep,glob tools, so read reach exists
+        # again and OS containment is the only constraining mechanism.
+        "_grounded": {"tools_reach": OS_CONTAINED},
+        "_contain": {"expose": [".copilot"], "shadow": {}},
     },
     # The adversary agent's "permission": "deny" genuinely blocks tools —
     # verified, it refused a canary write. But opencode reads
@@ -268,6 +283,26 @@ def _uncovered_clauses(spec: dict[str, object]) -> list[str]:
     return [clause for clause in ISOLATION_CLAUSES if clause not in spec]
 
 
+def _effective_spec(spec: dict[str, object], mode: str) -> dict[str, object]:
+    """The per-mode view of a descriptor's contract clauses.
+
+    The static descriptor states each clause's mechanism for the default
+    (text-only) mode. A backend that re-enables tools in grounded mode has
+    different reach there, so its descriptor carries a ``_grounded`` dict of
+    clause overrides applied only when ``mode == "grounded"``. The grounded
+    builder branches must be checked against this effective view rather than
+    the static one, or they bypass the reach clause exactly as they did before
+    (measured 2026-09-30: grounded codex read a canary outside ``--dir``).
+    """
+    if mode == "grounded":
+        overrides = spec.get("_grounded")
+        if isinstance(overrides, dict):
+            merged = dict(spec)
+            merged.update(overrides)
+            return merged
+    return spec
+
+
 def build_isolated_command(
     backend: str,
     prompt: str,
@@ -312,7 +347,8 @@ def build_isolated_command(
             "retry."
         )
 
-    contained = [c for c in ISOLATION_CLAUSES if spec[c] is OS_CONTAINED]
+    effective = _effective_spec(spec, mode)
+    contained = [c for c in ISOLATION_CLAUSES if effective[c] is OS_CONTAINED]
     if contained and not containment_available():
         raise IsolationError(
             f"{backend}: clause(s) {', '.join(contained)} can only be satisfied "
@@ -332,11 +368,23 @@ def build_isolated_command(
                 "-s",
                 "read-only",
             ]
-            if target_dir:
+            if target_dir and not contained:
+                # -C sets codex's working dir; under containment the wrapper
+                # already cd's into the target ($H/.so-workspace), so -C is
+                # redundant and harmful when the raw path is blanked (a /tmp
+                # target is hidden once /tmp is blanked). Drop it there.
                 cmd += ["-C", str(target_dir)]
             if model:
                 cmd += ["-m", model]
             cmd.append(prompt)
+            if contained:
+                cmd = _wrap_in_containment(
+                    cmd,
+                    spec.get("_contain", {}),
+                    target_dir=target_dir,
+                    mode=mode,
+                    backend=backend,
+                )
             return cmd
         cmd = [
             "codex",
@@ -372,6 +420,14 @@ def build_isolated_command(
         if model:
             cmd += ["--model", model]
         cmd.append(prompt)
+        if contained:
+            cmd = _wrap_in_containment(
+                cmd,
+                spec.get("_contain", {}),
+                target_dir=target_dir,
+                mode=mode,
+                backend=backend,
+            )
         return cmd
 
     if backend == "copilot" and mode == "grounded":
@@ -391,6 +447,14 @@ def build_isolated_command(
         ]
         if model:
             cmd += ["--model", model]
+        if contained:
+            cmd = _wrap_in_containment(
+                cmd,
+                spec.get("_contain", {}),
+                target_dir=target_dir,
+                mode=mode,
+                backend=backend,
+            )
         return cmd
 
     if backend == "opencode" and mode == "grounded":
@@ -456,6 +520,14 @@ for src in $SB_EXPOSE; do
     fi
     i=$((i + 1))
 done
+j=0
+for src in $SB_EXPOSE_RO; do
+    if [ -e "$H/$src" ]; then
+        mkdir -p "$STAGE/r$j"
+        mount --bind "$H/$src" "$STAGE/r$j"
+    fi
+    j=$((j + 1))
+done
 if [ -n "$SB_SHADOW_DIR" ] && [ -d "$H/$SB_SHADOW_DIR" ]; then
     mkdir -p "$STAGE/real"
     mount --bind "$H/$SB_SHADOW_DIR" "$STAGE/real"
@@ -474,6 +546,19 @@ for src in $SB_EXPOSE; do
         mount --bind "$STAGE/e$i" "$H/$src"
     fi
     i=$((i + 1))
+done
+
+# Read-only exposures (the backend's install tree): bind them back, then
+# remount read-only so a compromised model cannot modify its own binary even
+# though the directory is inside the sandbox.
+j=0
+for src in $SB_EXPOSE_RO; do
+    if [ -e "$STAGE/r$j" ]; then
+        mkdir -p "$H/$src"
+        mount --bind "$STAGE/r$j" "$H/$src"
+        mount -o remount,ro,bind "$H/$src"
+    fi
+    j=$((j + 1))
 done
 
 # Rebuild the shadowed directory entry by entry, omitting the named ones.
@@ -498,17 +583,35 @@ if [ -d "$STAGE/real" ]; then
 fi
 
 if [ -d "$STAGE/target" ]; then
-    mkdir -p "$H/workspace"
-    mount --bind "$STAGE/target" "$H/workspace"
-    mount -o remount,ro,bind "$H/workspace"
+    mkdir -p "$H/.so-workspace"
+    mount --bind "$STAGE/target" "$H/.so-workspace"
+    mount -o remount,ro,bind "$H/.so-workspace"
+fi
+
+# Bind the target at its real absolute path too (for targets under $HOME), so
+# a plan that cites an absolute worktree path still resolves. Recreate only
+# the parent chain on the tmpfs; nothing else under $HOME is exposed. The
+# builder only sets SB_BIND_TARGET_REAL when the target is not already inside
+# a re-exposed directory (whose full-directory bind already makes the real
+# path visible). A target under /tmp is deliberately NOT re-bound: /tmp is
+# blanked below and the workspace bind above is its only exposure (a target
+# under /tmp is in the documented hidden set).
+if [ -d "$STAGE/target" ] && [ -n "${SB_TARGET_DIR:-}" ] && [ -n "${SB_BIND_TARGET_REAL:-}" ]; then
+    case "$SB_TARGET_DIR" in
+        "$H"/*)
+            mkdir -p "$SB_TARGET_DIR"
+            mount --bind "$STAGE/target" "$SB_TARGET_DIR"
+            mount -o remount,ro,bind "$SB_TARGET_DIR"
+            ;;
+    esac
 fi
 
 # Blank /tmp and land in the target directory (or empty cwd). $HOME alone is not
 # the user's data: scratch files, worktrees and anything the caller happens to
 # be sitting in are all reachable otherwise.
 mount -t tmpfs tmpfs /tmp
-if [ -d "$H/workspace" ]; then
-    cd "$H/workspace"
+if [ -d "$H/.so-workspace" ]; then
+    cd "$H/.so-workspace"
 else
     mkdir -p /tmp/cwd
     cd /tmp/cwd
@@ -518,12 +621,105 @@ exec "$@"
 """
 
 
+def _script_interpreter(script: Path) -> Path | None:
+    """Resolve the interpreter a script's shebang names, or None.
+
+    A script backend (``#!/usr/bin/env node`` / ``#!/path/to/python``) needs its
+    interpreter to survive the $HOME tmpfs when that interpreter itself lives
+    under $HOME. Returns the resolved interpreter path when there is one and it
+    can be located; None for a non-script (native binary) or an unresolvable
+    shebang.
+    """
+    try:
+        with script.open("rb") as fh:
+            head = fh.read(256)
+    except OSError:
+        return None
+    if not head.startswith(b"#!"):
+        return None
+    line = head.splitlines()[0][2:].decode("utf-8", errors="replace").strip()
+    parts = line.split()
+    if not parts:
+        return None
+    interp = parts[0]
+    if interp == "env" or interp.endswith("/env"):
+        # "#!/usr/bin/env node" — the interpreter is the next token, found via
+        # PATH.
+        if len(parts) < 2:
+            return None
+        found = shutil.which(parts[1])
+        return Path(found) if found else None
+    if interp.startswith("/"):
+        return Path(interp)
+    return None
+
+
+def _backend_install_exposure(backend: str) -> tuple[str | None, list[str]]:
+    """Resolve a backend to ``(invoke_path, read-only exposures)``.
+
+    ``invoke_path`` is the absolute resolved path of the backend's executable:
+    invoking it directly removes any need to expose the PATH-entry symlink farm
+    (``~/.npm-global/bin`` and friends). ``read-only exposures`` are the
+    narrowest $HOME-relative paths that make the backend run — the install root
+    (for an npm package, the package directory found by walking up to its
+    ``package.json``; otherwise the binary's own directory) and, for a script,
+    its interpreter's own directory when that also resolves under $HOME.
+
+    Never a whole top-level dir: a backend under ``~/.local`` must not drag in
+    ``~/.local/share`` or ``~/.local/state`` wholesale (they hold signal-cli
+    keys, pki, and toolkit state on this host). Returns ``(None, [])`` when the
+    backend is not on PATH.
+    """
+    exe = shutil.which(backend)
+    if not exe:
+        return None, []
+    home = Path(os.path.expanduser("~")).resolve()
+
+    resolved = Path(exe)
+    with suppress(OSError, RuntimeError):
+        resolved = resolved.resolve()
+
+    exposures: list[str] = []
+
+    def _add(path: Path) -> None:
+        try:
+            rel = str(path.resolve().relative_to(home))
+        except (ValueError, OSError, RuntimeError):
+            return
+        if rel and rel != "." and rel not in exposures:
+            exposures.append(rel)
+
+    # Install root: the nearest package.json up the tree (npm), else the
+    # binary's own directory (a native binary's install dir).
+    root = resolved.parent
+    node = resolved.parent
+    while True:
+        if (node / "package.json").is_file():
+            root = node
+            break
+        if node.parent == node:
+            break
+        node = node.parent
+    _add(root)
+
+    # Interpreter: a script's interpreter must survive if it is itself under
+    # $HOME (e.g. node installed via nvm). Expose its own directory (narrow).
+    interp = _script_interpreter(resolved)
+    if interp is not None:
+        with suppress(OSError, RuntimeError):
+            interp = interp.resolve()
+        _add(interp.parent)
+
+    return str(resolved), exposures
+
+
 def _wrap_in_containment(
     cmd: list[str],
     contain: dict[str, object],
     *,
     target_dir: Path | None = None,
     mode: str = "text-only",
+    backend: str | None = None,
 ) -> list[str]:
     """Wrap ``cmd`` so it runs with the user's home blanked.
 
@@ -537,9 +733,27 @@ def _wrap_in_containment(
     both under ~/.gemini, so hiding the directory wholesale drops it into an
     interactive Google OAuth flow. That directory is rebuilt entry by entry
     with the named files omitted.
+
+    ``expose_ro`` holds read-only re-exposures (the backend's install root and
+    interpreter): bound back and remounted read-only so a compromised model
+    cannot modify its own binary. ``backend`` supplies the executable to
+    resolve — its resolved absolute path replaces ``cmd[0]`` (so the PATH-entry
+    symlink farm is not needed), and its narrow install root / interpreter are
+    added to ``expose_ro`` rather than any whole top-level dir.
     """
     home = os.path.expanduser("~")
     expose = list(contain.get("expose", []))  # type: ignore[arg-type]
+    expose_ro = list(contain.get("expose_ro", []))  # type: ignore[arg-type]
+    if backend:
+        invoke_path, ro = _backend_install_exposure(backend)
+        if invoke_path and invoke_path != cmd[0]:
+            # Run the resolved absolute path directly, so the PATH-entry
+            # symlink farm is not needed and only the install root (below) is
+            # exposed.
+            cmd = [invoke_path, *cmd[1:]]
+        for entry in ro:
+            if entry and entry not in expose and entry not in expose_ro:
+                expose_ro.append(entry)
     shadow_spec: dict[str, list[str]] = contain.get("shadow", {})  # type: ignore[assignment]
     shadow_dir = next(iter(shadow_spec), "")
     omit = shadow_spec.get(shadow_dir, []) if shadow_dir else []
@@ -547,12 +761,26 @@ def _wrap_in_containment(
     env_vars = [
         f"SB_HOME={home}",
         f"SB_EXPOSE={' '.join(expose)}",
+        f"SB_EXPOSE_RO={' '.join(expose_ro)}",
         f"SB_SHADOW_DIR={shadow_dir}",
         f"SB_SHADOW_OMIT={' '.join(omit)}",
     ]
     if mode == "grounded":
         effective_target = (target_dir or Path.cwd()).resolve()
         env_vars.append(f"SB_TARGET_DIR={effective_target}")
+        # Bind at the real absolute path only when the target is under $HOME
+        # and not already inside a re-exposed dir (whose full-dir bind makes
+        # the real path visible), not the reserved ``workspace`` bind path, and
+        # not $HOME itself (relative_to yields Path(".") with empty parts).
+        # Otherwise recreating the parent chain under an exposed dir would
+        # write into the real dir via its bind mount, or index an empty tuple.
+        try:
+            rel = effective_target.relative_to(Path(home).resolve())
+        except ValueError:
+            rel = None
+        reserved = set(expose) | set(expose_ro) | {".so-workspace"}
+        if rel is not None and rel.parts and rel.parts[0] not in reserved:
+            env_vars.append("SB_BIND_TARGET_REAL=1")
 
     return [
         "unshare",
@@ -568,11 +796,15 @@ def _wrap_in_containment(
     ]
 
 
-def eligibility_report() -> dict[str, dict[str, object]]:
+def eligibility_report(mode: str = "text-only") -> dict[str, dict[str, object]]:
     """Per-backend presence and contract eligibility, with a reason when not.
 
     Surfaces an ineligible or unavailable backend before a critique is needed
-    rather than at the moment one is wanted.
+    rather than at the moment one is wanted. ``mode`` selects the contract
+    view: ``"text-only"`` (default) checks the static descriptor, ``"grounded"``
+    checks the per-mode reach override too — a backend whose read tools come
+    back on in grounded mode can be containment-dependent there while staying
+    eligible for text-only (the default callers rely on).
     """
     can_contain = containment_available()
     report: dict[str, dict[str, object]] = {}
@@ -586,15 +818,21 @@ def eligibility_report() -> dict[str, dict[str, object]]:
                 "reason": "no isolation descriptor",
             }
             continue
-        uncovered = _uncovered_clauses(spec)
+        effective = _effective_spec(spec, mode)
+        uncovered = _uncovered_clauses(effective)
         if uncovered:
             reason = f"descriptor does not cover {', '.join(uncovered)}"
         elif not present:
             reason = "not installed"
         elif (
-            any(spec[c] is OS_CONTAINED for c in ISOLATION_CLAUSES) and not can_contain
+            any(effective[c] is OS_CONTAINED for c in ISOLATION_CLAUSES)
+            and not can_contain
         ):
-            reason = "requires OS containment, unavailable on this host"
+            reason = (
+                "requires OS containment, unavailable on this host"
+                if mode == "text-only"
+                else "requires OS containment for grounded mode, unavailable on this host"
+            )
         else:
             reason = ""
         report[name] = {
@@ -817,7 +1055,7 @@ def available_backends() -> list[str]:
     return [b for b in BACKEND_PRIORITY if shutil.which(b)]
 
 
-def eligible_backends() -> list[str]:
+def eligible_backends(mode: str = "text-only") -> list[str]:
     """Backends that are installed AND meet the isolation contract, in priority
     order.
 
@@ -825,15 +1063,16 @@ def eligible_backends() -> list[str]:
     places. This is the capability filter: a backend that cannot meet the
     contract is never returned, so it is never tried and never used as a
     fallback. A backend that is eligible but hangs is a liveness failure, and
-    that is what :func:`run_with_fallback` handles.
+    that is what :func:`run_with_fallback` handles. ``mode`` selects the
+    contract view (``"grounded"`` checks the per-mode reach override).
     """
-    report = eligibility_report()
+    report = eligibility_report(mode=mode)
     return [b for b in BACKEND_PRIORITY if report.get(b, {}).get("eligible")]
 
 
-def resolve_backend() -> str | None:
+def resolve_backend(mode: str = "text-only") -> str | None:
     """Return the highest-priority eligible backend, or ``None`` if none is."""
-    backends = eligible_backends()
+    backends = eligible_backends(mode=mode)
     return backends[0] if backends else None
 
 
@@ -1370,10 +1609,13 @@ def run_codex(
 ) -> str:
     """Run Codex CLI non-interactively and return its critique text.
 
-    In ``mode="grounded"``, codex runs under native read-only
-    sandboxing (``-s read-only -C <dir>``), exploring the target directory's
-    files while preventing any filesystem modifications. In ``mode="text-only"`` (default), shell_tool
-    is disabled and ambient user instructions/rules are stripped.
+    In ``mode="grounded"``, codex runs under native read-only sandboxing
+    (``-s read-only -C <dir>``) AND inside this repo's OS containment wrapper
+    (``unshare`` + $HOME/tmpfs) — the native flag confines writes while the
+    wrapper confines reads to the target, since ``-s read-only`` alone does
+    not (measured 2026-09-30: a grounded codex read a canary outside ``-C``).
+    In ``mode="text-only"`` (default), shell_tool is disabled and ambient user
+    instructions/rules are stripped.
 
     Raises:
         BackendError: If the process exits nonzero, fails to produce output,

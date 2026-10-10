@@ -1186,11 +1186,11 @@ llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, open
   - `containment_available() -> bool` — Whether OS containment can actually be established on this host.
   - `daemon_listening(backend: str) -> bool` — Whether a daemon belonging to ``backend`` currently holds a listening socket.
   - `build_isolated_command(backend: str, prompt: str, *, model: str | None = None, mode: str = 'text-only', target_dir: Path | None = None) -> list[str]` — Build the only command any caller may run for ``backend``.
-  - `eligibility_report() -> dict[str, dict[str, object]]` — Per-backend presence and contract eligibility, with a reason when not.
+  - `eligibility_report(mode: str = 'text-only') -> dict[str, dict[str, object]]` — Per-backend presence and contract eligibility, with a reason when not.
   - `check_prompt_size(prompt: str, max_bytes: int = GLOBAL_MAX_PROMPT_BYTES) -> None` — Raise :class:`BackendPayloadSizeError` if ``prompt`` exceeds ``max_bytes``.
   - `available_backends() -> list[str]` — Return the backends in :data:`BACKEND_PRIORITY` that are on ``PATH``.
-  - `eligible_backends() -> list[str]` — Backends that are installed AND meet the isolation contract, in priority order.
-  - `resolve_backend() -> str | None` — Return the highest-priority eligible backend, or ``None`` if none is.
+  - `eligible_backends(mode: str = 'text-only') -> list[str]` — Backends that are installed AND meet the isolation contract, in priority order.
+  - `resolve_backend(mode: str = 'text-only') -> str | None` — Return the highest-priority eligible backend, or ``None`` if none is.
   - `run_with_fallback(runner: 'Callable[[str], str]', *, backends: list[str] | None = None) -> tuple[str, str]` — Try each eligible backend in turn; return ``(backend, output)``.
   - `run_backend_command(cmd: list[str], timeout: float) -> str` — Run a backend CLI command and return its critique/prose text.
   - `run_codex(prompt: str, *, model: str | None = None, timeout: float = 120, mode: str = 'text-only', target_dir: Path | None = None) -> str` — Run Codex CLI non-interactively and return its critique text.
@@ -1457,7 +1457,8 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
   - `--quiet/-q`
   - `--verbose/-v`
 - Subcommands:
-  - `detect` — list available backends as JSON
+  - `detect [--mode {text-only,grounded}]` — list available backends as JSON
+    - `--mode` — contract view to report: text-only (default) or grounded (checks the per-mode read-reach override, so a containment-dependent backend reports as unavailable for grounded mode when containment is unavailable) (choices: text-only, grounded; default: text-only)
   - `probe [--backend NAME[,NAME...]]` — probe each backend's model pool and report per-model availability as JSON
     - `--backend` — probe only these backend(s) (comma-separated list allowed) instead of every installed backend in priority order; an entry not installed is reported as not_installed, not an error
   - `review [<plan-file-or-text>] [--diff] [--backend NAME[,NAME...]] [--dir <DIR>] [--text-only] [--focus-file <FOCUS_FILE>] [--model-index N] [--exclude-backend NAME] [--diff-path PATHSPEC] [--prompt-only] [--run-id ID] [--allow-extra-round]` — get one critique from the priority-selected backend

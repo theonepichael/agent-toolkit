@@ -25,6 +25,8 @@ adapter over it.
 
 Subcommands
   detect   print each backend's presence and isolation-contract eligibility as JSON
+           (--mode text-only|grounded selects the contract view; grounded also
+           checks the per-mode read-reach override)
   review   one adversarial critique of a plan file or inline text, or, with
            --diff, a bug-hunting review of the staged diff in --dir. When
            stdout is a regular file another live run is already writing,
@@ -1627,12 +1629,17 @@ def cmd_detect(args: argparse.Namespace) -> None:
     isolation contract is never used, so reporting it as simply available
     invited the discovery to happen at the moment a critique was wanted rather
     than before. Each entry carries ``present``, ``eligible`` and, when
-    ineligible, the ``reason``.
+    ineligible, the ``reason``. ``--mode`` selects the contract view:
+    ``text-only`` (default) or ``grounded`` (which also checks the per-mode
+    read-reach override, so a backend that re-enables read tools under
+    containment reports as unavailable for grounded mode when containment is
+    unavailable, while staying eligible for text-only).
 
     The legacy boolean shape is preserved under each backend's ``present``
     key so existing callers keep a one-line migration.
     """
-    print(json.dumps(llm_backends.eligibility_report(), indent=2))
+    mode = getattr(args, "mode", "text-only")
+    print(json.dumps(llm_backends.eligibility_report(mode=mode), indent=2))
 
 
 def _probe_one_model(
@@ -1731,6 +1738,7 @@ def review_plan(
             original exceptions on ``errors`` and the pre-exhaustion
             diagnostics on ``notices``.
     """
+    mode = "text-only" if request.text_only else "grounded"
     if request.backend:
         candidates = _split_backend_list(request.backend)
         if len(candidates) == 1 and not shutil.which(candidates[0]):
@@ -1758,6 +1766,50 @@ def review_plan(
             )
 
     notices: list[str] = []
+    # Grounded mode constrains read reach, so candidate selection must filter
+    # by the per-mode eligibility view, not just presence. A backend whose
+    # grounded branch is containment-dependent (codex/pi/copilot re-enable read
+    # tools there) is ineligible on a host without user namespaces, and its
+    # build_isolated_command would raise IsolationError — a capability failure,
+    # not a BackendError, so the attempt loop below would let it escape rather
+    # than fall through (measured 2026-09-30). Filter here, before dispatch.
+    #
+    # Only *installed but grounded-ineligible* backends are dropped: a
+    # not-installed entry is left in place so the loop's lazy skip still emits
+    # its "not found on PATH" notice (a comma list skips a missing install, a
+    # grounded-ineligible one is skipped here).
+    if mode == "grounded":
+        report = llm_backends.eligibility_report(mode="grounded")
+        pre_filter = list(candidates)
+        dropped = [
+            b
+            for b in candidates
+            if report.get(b, {}).get("present") is True
+            and report.get(b, {}).get("eligible") is False
+        ]
+        candidates = [b for b in candidates if b not in dropped]
+        if request.backend and len(pre_filter) == 1 and not candidates:
+            # Strict single-name contract: a forced backend that cannot meet
+            # grounded reach fails with the reason, never a silent fallback.
+            reason = report.get(pre_filter[0], {}).get("reason", "unknown")
+            raise ReviewError(
+                f"{pre_filter[0]} is not eligible for grounded review — {reason}"
+            )
+        if not candidates:
+            raise NoBackendAvailableError(
+                "no backend is eligible for grounded review — "
+                + "; ".join(
+                    f"{b}: {report.get(b, {}).get('reason', 'unknown')}"
+                    for b in pre_filter
+                )
+                + " — retry with --text-only"
+            )
+        for b in dropped:
+            notices.append(
+                f"[second_opinion] {b} not eligible for grounded review "
+                f"({report.get(b, {}).get('reason', 'unknown')}) — skipped"
+            )
+
     # A diff is code, not a plan: its context lines can look like the
     # review-debris headings sanitize_plan_text strips, so leave it whole.
     if request.diff:
@@ -1769,7 +1821,6 @@ def review_plan(
             f"[second_opinion] stripped inline review debris from plan ({bytes_saved} bytes saved)"
         )
     target_dir = (request.target_dir or Path.cwd()).resolve()
-    mode = "text-only" if request.text_only else "grounded"
     prompt = build_prompt(
         plan_text,
         request.focus_hints,
@@ -2256,8 +2307,17 @@ def build_parser() -> argparse.ArgumentParser:
         dest="cmd", metavar="{detect,review,probe,bind-notes,check-notes}"
     )
 
-    sub.add_parser(
+    detect_parser = sub.add_parser(
         "detect", help="list available backends as JSON", parents=[verbosity_parent]
+    )
+    detect_parser.add_argument(
+        "--mode",
+        choices=("text-only", "grounded"),
+        default="text-only",
+        help="contract view to report: text-only (default) or grounded "
+        "(checks the per-mode read-reach override, so a containment-dependent "
+        "backend reports as unavailable for grounded mode when containment is "
+        "unavailable)",
     )
 
     p = sub.add_parser(
