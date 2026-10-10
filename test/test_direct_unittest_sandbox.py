@@ -560,6 +560,70 @@ def test_direct_run_scrubs_git_config_env(tmp_path):
 
 
 @pytest.mark.allow_real_subprocess
+@pytest.mark.regression(
+    "recap-disable-not-set-process-wide",
+    "assert os.environ.get('DEVSTATUS_RECAP_DISABLE') == '1'",
+)
+def test_direct_run_sets_recap_disable_by_default(tmp_path):
+    # The recap kill-switch must be set process-wide by test_bootstrap's
+    # bootstrap() so a test that spawns the real dev_status CLI without using
+    # cli_env() still inherits it. The existing /proc regression test goes
+    # through cli_env(), which sets the switch itself, so it cannot catch a
+    # removal of the bootstrap() default -- this test can.
+    driver = tmp_path / "driver_recap_disable.py"
+    driver.write_text(
+        "import os, subprocess, sys\n"
+        f"sys.path.insert(0, {str(REPO_ROOT / 'agent-scripts')!r})\n"
+        "import test_bootstrap\n"
+        "assert os.environ.get('DEVSTATUS_RECAP_DISABLE') == '1'\n"
+        "grandchild = subprocess.run(\n"
+        "    [sys.executable, '-c', "
+        "\"import os; assert os.environ.get('DEVSTATUS_RECAP_DISABLE') == '1'\"],\n"
+        "    env=os.environ.copy(), capture_output=True, text=True,\n"
+        ")\n"
+        "assert grandchild.returncode == 0, grandchild.stderr\n"
+        "print('recap-disable-ok')\n"
+    )
+    env = os.environ.copy()
+    env.pop("DEVSTATUS_RECAP_DISABLE", None)
+    result = subprocess.run(
+        [sys.executable, str(driver)],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, f"stdout: {result.stdout}, stderr: {result.stderr}"
+    assert "recap-disable-ok" in result.stdout
+
+
+@pytest.mark.allow_real_subprocess
+def test_direct_run_preserves_recap_disable_optout(tmp_path):
+    # bootstrap() must use setdefault, not an unconditional assignment, so a
+    # caller that pre-sets an opt-out value ("" or "0") before import keeps
+    # live recap regen instead of being clobbered back to "1".
+    driver = tmp_path / "driver_recap_optout.py"
+    driver.write_text(
+        "import os, sys\n"
+        f"sys.path.insert(0, {str(REPO_ROOT / 'agent-scripts')!r})\n"
+        "import test_bootstrap\n"
+        "assert os.environ.get('DEVSTATUS_RECAP_DISABLE') == '0'\n"
+        "print('optout-preserved')\n"
+    )
+    env = os.environ.copy()
+    env["DEVSTATUS_RECAP_DISABLE"] = "0"
+    result = subprocess.run(
+        [sys.executable, str(driver)],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, f"stdout: {result.stdout}, stderr: {result.stderr}"
+    assert "optout-preserved" in result.stdout
+
+
+@pytest.mark.allow_real_subprocess
 def test_copilot_git_config_env_does_not_break_suite():
     env = os.environ.copy()
     env["GIT_CONFIG_COUNT"] = "3"

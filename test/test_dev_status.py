@@ -15,6 +15,7 @@ same day, in test_dev_status_formatting.py.
 """
 
 import fcntl
+import functools
 import inspect
 import io
 import json
@@ -124,6 +125,23 @@ def make_item(
 # bare prefix substring: `render` also writes an `item-map:` line to stderr that
 # contains the slug, so `assertNotIn("atk-", ...)` matches that instead.
 _PREFIX_MARKER = "carries the prefix"
+
+
+def _recap_dispatch_enabled(func):
+    """Opt a recap test back into the live dispatch/display path.
+
+    ``test_bootstrap`` sets ``DEVSTATUS_RECAP_DISABLE=1`` process-wide so
+    every test subprocess inherits the kill-switch by default; the recap
+    dispatch/display tests exercise that code path itself, so they must
+    unset it explicitly to keep asserting their real behavior.
+    """
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        with patch.dict("os.environ", {"DEVSTATUS_RECAP_DISABLE": ""}):
+            return func(*args, **kwargs)
+
+    return wrapper
 
 
 class BacklogFixture(unittest.TestCase):
@@ -3540,6 +3558,7 @@ class BacklogTestCase(BacklogFixture):
 
     # ── dispatch ────────────────────────────────────────────────────────────
 
+    @_recap_dispatch_enabled
     def test_r12_trigger_passes_spawns_detached_internal_regen(self):
         self._seed_recent_journal()
         dev_status._maybe_dispatch_recap_regen()
@@ -3552,12 +3571,14 @@ class BacklogTestCase(BacklogFixture):
         self.assertEqual(kwargs["stdout"], dev_status.subprocess.DEVNULL)
         self.assertEqual(kwargs["stderr"], dev_status.subprocess.DEVNULL)
 
+    @_recap_dispatch_enabled
     def test_r13_fresh_cache_spawns_nothing(self):
         self._seed_recent_journal()
         self._write_cache("Fresh.", age_hours=0)
         dev_status._maybe_dispatch_recap_regen()
         self.mock_popen.assert_not_called()
 
+    @_recap_dispatch_enabled
     def test_r13b_dispatch_fires_on_fingerprint_drift_despite_fresh_ttl(self):
         self.write_items([make_item("x")])
         self._write_cache(
@@ -3569,6 +3590,7 @@ class BacklogTestCase(BacklogFixture):
         dev_status._maybe_dispatch_recap_regen()
         self.mock_popen.assert_called_once()
 
+    @_recap_dispatch_enabled
     def test_r13c_missing_board_fingerprint_key_dispatches_despite_fresh_ttl(self):
         self.write_items([make_item("x")])
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -3582,6 +3604,7 @@ class BacklogTestCase(BacklogFixture):
         dev_status._maybe_dispatch_recap_regen()
         self.mock_popen.assert_called_once()
 
+    @_recap_dispatch_enabled
     def test_render_dispatch_reuses_fingerprint_without_reload(self):
         # render computes current_fingerprint from the board it already loaded
         # and passes it to the dispatch check, so dispatch must NOT reload the
@@ -3608,6 +3631,7 @@ class BacklogTestCase(BacklogFixture):
             dev_status.render(dispatch=True)
         self.assertEqual(load_calls["n"], 1)
 
+    @_recap_dispatch_enabled
     def test_r14_journal_last_line_older_than_48h_spawns_nothing(self):
         self._seed_recent_journal(hours_ago=50)
         dev_status._maybe_dispatch_recap_regen()
@@ -3617,6 +3641,14 @@ class BacklogTestCase(BacklogFixture):
         self.write_items([make_item("x")])
         self._seed_recent_journal()
         self._write_cache("Should be hidden.", age_hours=0)
+        # Baseline: with the kill-switch off, a fresh cache displays.
+        with patch.dict("os.environ", {"DEVSTATUS_RECAP_DISABLE": ""}):
+            out = io.StringIO()
+            with patch("sys.stdout", out):
+                dev_status.render()
+            self.assertIn("RECAP", out.getvalue())
+            self.assertIn("Should be hidden", out.getvalue())
+        # With the kill-switch on, nothing spawns and nothing displays.
         with patch.dict("os.environ", {"DEVSTATUS_RECAP_DISABLE": "1"}):
             dev_status._maybe_dispatch_recap_regen()
             self.mock_popen.assert_not_called()
@@ -3626,6 +3658,7 @@ class BacklogTestCase(BacklogFixture):
             self.assertNotIn("RECAP", out.getvalue())
             self.assertNotIn("Should be hidden", out.getvalue())
 
+    @_recap_dispatch_enabled
     def test_r16_dispatch_never_fires_while_backlog_lock_is_held(self):
         self.write_items([make_item("lk-item", status="in-progress")])
         self._seed_recent_journal()
@@ -3752,6 +3785,7 @@ class BacklogTestCase(BacklogFixture):
         self._run_regen_child(run_agy)
         run_agy.assert_not_called()
 
+    @_recap_dispatch_enabled
     def test_r18_no_section_without_cache(self):
         self.write_items([make_item("x")])
         out = io.StringIO()
@@ -3759,6 +3793,7 @@ class BacklogTestCase(BacklogFixture):
             dev_status.render()
         self.assertNotIn("RECAP", out.getvalue())
 
+    @_recap_dispatch_enabled
     def test_r19_fresh_cache_shown_without_age_marker(self):
         self.write_items([make_item("x")])
         self._write_cache("Great progress today.", age_hours=0)
@@ -3769,6 +3804,7 @@ class BacklogTestCase(BacklogFixture):
         self.assertIn("Great progress today.", out.getvalue())
         self.assertNotIn("ago)", out.getvalue())
 
+    @_recap_dispatch_enabled
     def test_r19b_fingerprint_mismatch_suppresses_display_even_when_fresh(self):
         self.write_items([make_item("x")])
         self._write_cache(
@@ -3781,6 +3817,7 @@ class BacklogTestCase(BacklogFixture):
             dev_status.render()
         self.assertNotIn("RECAP", out.getvalue())
 
+    @_recap_dispatch_enabled
     def test_r19d_counts_unchanged_but_identities_swapped_still_suppresses(self):
         # Two items, one ready and one blocked-by the other. Cache the
         # fingerprint for that state, then swap which one is ready and
@@ -3806,6 +3843,7 @@ class BacklogTestCase(BacklogFixture):
             dev_status.render()
         self.assertNotIn("RECAP", out.getvalue())
 
+    @_recap_dispatch_enabled
     def test_r19e_summary_edit_alone_still_suppresses(self):
         # Same status, same blocked_by, same bucket counts -- only the
         # item's title changes. Bucket membership is untouched, but the
@@ -3823,6 +3861,7 @@ class BacklogTestCase(BacklogFixture):
             dev_status.render()
         self.assertNotIn("RECAP", out.getvalue())
 
+    @_recap_dispatch_enabled
     def test_r19c_missing_board_fingerprint_key_suppresses_display(self):
         self.write_items([make_item("x")])
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -3837,6 +3876,7 @@ class BacklogTestCase(BacklogFixture):
             dev_status.render()
         self.assertNotIn("RECAP", out.getvalue())
 
+    @_recap_dispatch_enabled
     def test_r20_stale_cache_shown_with_age_marker(self):
         self.write_items([make_item("x")])
         self._write_cache("Yesterday's news.", age_hours=3)
@@ -3846,6 +3886,7 @@ class BacklogTestCase(BacklogFixture):
         self.assertIn("RECAP", out.getvalue())
         self.assertIn("ago)", out.getvalue())
 
+    @_recap_dispatch_enabled
     def test_r21_cache_older_than_24h_omitted(self):
         self.write_items([make_item("x")])
         self._write_cache("Old news.", age_hours=25)
@@ -3854,6 +3895,7 @@ class BacklogTestCase(BacklogFixture):
             dev_status.render()
         self.assertNotIn("RECAP", out.getvalue())
 
+    @_recap_dispatch_enabled
     def test_r22_empty_text_cache_suppressed_and_not_retried(self):
         self.write_items([make_item("x")])
         self._write_cache("", age_hours=0)
@@ -3865,12 +3907,14 @@ class BacklogTestCase(BacklogFixture):
         dev_status._maybe_dispatch_recap_regen()
         self.mock_popen.assert_not_called()
 
+    @_recap_dispatch_enabled
     def test_r22b_render_wraps_long_recap_to_section_width(self):
         self.write_items([make_item("x")])
         self._write_cache(("word " * 40).strip(), age_hours=0)
         out = io.StringIO()
         with patch("sys.stdout", out):
             dev_status.render()
+        self.assertIn("RECAP", out.getvalue())
         recap_lines = [
             line for line in out.getvalue().splitlines() if line.startswith("│")
         ]
