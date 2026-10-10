@@ -5201,3 +5201,34 @@ def test_no_watchcommit_named_callables_on_install_module():
         if inspect.isfunction(obj) and "watchcommit" in name.lower()
     ]
     assert watchcommit_fns == [], f"watchcommit-named callables: {watchcommit_fns}"
+
+
+# ── install-summary repo-layout reminder ───────────────────────────────────────
+
+
+def test_summary_names_selected_harnesses_via_run_install(
+    home, links, offline_install, capsys
+):
+    """A real run's summary reminds that the repo's per-harness dirs are
+    shared source, naming only the harnesses selected this run."""
+    ctx = make_ctx(home, harnesses=("claude", "pi"))
+    install.run_install(ctx, links)
+    out = capsys.readouterr().out
+
+    # The repo-layout point, and the two selected harnesses in authoring order.
+    assert "shared source" in out
+    assert "Claude Code, Pi Coding Agent" in out
+    # An unselected harness is never named by the reminder.
+    assert "GitHub Copilot" not in out
+
+
+def test_summary_dry_run_omits_repo_layout_reminder(
+    home, links, offline_install, capsys
+):
+    """A dry run writes nothing, so the summary must not describe harnesses
+    as selected-for-provisioning."""
+    ctx = make_ctx(home, harnesses=("claude",), dry_run=True)
+    install.run_install(ctx, links)
+    out = capsys.readouterr().out
+
+    assert "shared source" not in out

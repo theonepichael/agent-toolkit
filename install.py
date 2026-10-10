@@ -2397,6 +2397,16 @@ def print_summary(
     if dry:
         return
 
+    dirs = ", ".join(f"{name}/" for name in harness_spec.HARNESSES)
+    selected = ", ".join(
+        harness_spec.HARNESSES[h].display_name for h in ctx.opts.harnesses
+    )
+    print(
+        f"Harness files selected this run: {selected} — the repo's per-harness "
+        f"directories ({dirs}) are shared source for all "
+        f"{len(harness_spec.HARNESSES)}, not a report of what is set up in your home"
+    )
+
     print()
     print("Manual steps:")
     if ctx.is_mac:

@@ -68,7 +68,7 @@ Clone the repository and run the provisioner:
 ```bash
 git clone git@github.com:theonepichael/agent-toolkit.git ~/Workspace/agent-toolkit/agent-toolkit
 cd ~/Workspace/agent-toolkit/agent-toolkit
-./install.sh
+./install.sh --harness=claude
 ```
 
 The extra directory level is optional but recommended. Worktrees are created
@@ -106,10 +106,10 @@ rerun.
 ./install.sh --harness=claude,pi
 
 # Work profile (skips personal sync endpoints):
-./install.sh --profile=work
+./install.sh --profile=work --harness=claude
 
 # Dry run (preview symlinks and config without mutating filesystem):
-./install.sh --dry-run
+./install.sh --dry-run --harness=claude
 
 # Audit symlinks against manifest:
 ./install.sh --check-links
@@ -160,6 +160,20 @@ The toolkit never asks you to configure anything before it runs — but a few
 scripts read state from outside this repo, and knowing which of those paths
 the toolkit **creates**, which it **expects**, and which are **optional** is
 the difference between a working install and silent fallbacks.
+
+### Repo layout vs. your home
+
+The clone's top-level `claude/`, `copilot/`, `opencode/`, `agy/`, `pi/`, and
+`codex/` directories are **shared source** for all six harnesses — this is a
+multi-harness monorepo, so every clone shows all six no matter which harness
+you plan to use. They are not a report of what got installed into your home:
+harness-specific files (skills, commands, config) are written only to the
+destinations of the harness(es) you name with `--harness`, while the shared
+toolkit (`~/.agent-toolkit/`, its state under
+`~/.local/state/agent-toolkit/`, and the `~/.agent-tools.zsh` helper) is
+harness-independent. Installs are additive in one direction: selecting a
+different `--harness` on a later run adds the new harness's files without
+uninstalling the ones already in place.
 
 ### Paths
 

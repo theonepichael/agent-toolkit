@@ -12,6 +12,28 @@ def test_readme_harness_tiers_not_stale():
     assert "docs/architecture/overview.md" in readme
 
 
+def test_readme_explains_repo_dirs_are_shared_source():
+    readme = (REPO_ROOT / "README.md").read_text()
+    # The repo's per-harness top-level dirs are source for all six harnesses,
+    # not a report of what got installed into the home.
+    assert "### Repo layout vs. your home" in readme
+    assert "shared source" in readme
+
+
+def test_readme_quick_start_passes_a_harness():
+    readme = (REPO_ROOT / "README.md").read_text()
+    # A normal install rejects a bare `./install.sh` (no --harness), so the
+    # Quick Start example must select one. Assert on the Quick Start code
+    # block's own context (not the Options & Flags examples further down,
+    # which already pass --harness).
+    assert "agent-toolkit\n./install.sh --harness=claude\n" in readme
+    assert "agent-toolkit\n./install.sh\n" not in readme
+    # The Options & Flags install examples must also pass --harness (a bare
+    # install without one is rejected by parse_args).
+    assert "./install.sh --profile=work --harness=claude" in readme
+    assert "./install.sh --dry-run --harness=claude" in readme
+
+
 def test_agents_md_links_overview_doc():
     agents = (REPO_ROOT / "AGENTS.md").read_text()
     assert "docs/architecture/overview.md" in agents
