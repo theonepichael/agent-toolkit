@@ -147,6 +147,10 @@ class TimingTests(unittest.TestCase):
             patch.object(second_opinion, "available_backends", return_value=["agy", "opencode"]),
             patch.dict(second_opinion.BACKEND_RUNNERS, runners),
             patch.object(llm_backends, "build_isolated_command", return_value=["fake"]),
+            # review_plan's grounded candidate filter consults containment
+            # availability; stub it so the real unshare probe (which would hit
+            # the mocked Popen below) is never run.
+            patch.object(llm_backends, "containment_available", lambda: True),
             patch.object(llm_backends.subprocess, "Popen", return_value=proc),
             patch.object(llm_backends.select, "select", fake_select),
             patch.object(llm_backends.os, "read", fake_read),

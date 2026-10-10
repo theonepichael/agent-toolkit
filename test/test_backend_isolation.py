@@ -340,3 +340,69 @@ def test_no_eligible_backend_is_an_isolation_error_not_a_backend_error(
 
     with pytest.raises(llm_backends.IsolationError):
         llm_backends.run_with_fallback(lambda b: "unreachable")
+
+
+# ── the contract is mode-aware (read reach re-appears in grounded mode) ────
+
+
+def test_grounded_reach_is_containment_for_codex_pi_copilot() -> None:
+    """Measured 2026-09-30: grounded codex (-s read-only -C dir) read a canary
+    outside --dir, and pi/copilot grounded re-enable read tools too. Their
+    text-only tools_reach stays NOT_APPLICABLE (no tools), but the grounded
+    override must declare OS_CONTAINED — otherwise the grounded builder
+    branches return early and skip the reach clause exactly as they did."""
+    for name in ("codex", "pi", "copilot"):
+        spec = llm_backends.BACKEND_ISOLATION[name]
+        assert spec["tools_reach"] is llm_backends.NOT_APPLICABLE, name
+        assert spec["_grounded"]["tools_reach"] is llm_backends.OS_CONTAINED, name
+
+
+def test_grounded_builder_wraps_in_containment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A grounded codex/pi/copilot command whose read tools are back on must be
+    wrapped in OS containment, never returned bare."""
+    monkeypatch.setattr(llm_backends, "containment_available", lambda: True)
+    for name in ("codex", "pi", "copilot"):
+        cmd = llm_backends.build_isolated_command(
+            name, "p", model=None, mode="grounded", target_dir=Path("/tmp/x")
+        )
+        assert cmd[0] == "unshare", name
+
+
+def test_grounded_builder_refuses_when_containment_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A host without user namespaces cannot meet grounded read reach for
+    codex/pi/copilot; the builder must refuse, not silently run uncontained."""
+    monkeypatch.setattr(llm_backends, "containment_available", lambda: False)
+    for name in ("codex", "pi", "copilot"):
+        with pytest.raises(llm_backends.IsolationError):
+            llm_backends.build_isolated_command(
+                name, "p", model=None, mode="grounded", target_dir=Path("/tmp/x")
+            )
+
+
+def test_text_only_reach_stays_uncontained() -> None:
+    """The text-only branches must keep their flag-based mechanisms and not
+    gain containment: tools_reach is NOT_APPLICABLE there because there are no
+    tools."""
+    for name in ("codex", "pi", "copilot"):
+        cmd = llm_backends.build_isolated_command(name, "p", model=None)
+        assert cmd[0] != "unshare", name
+
+
+def test_grounded_eligibility_reports_unavailable_on_uncontainable_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Per-mode eligibility: on a host without containment, codex/pi/copilot
+    stay eligible for text-only but report as ineligible for grounded mode,
+    with a reason naming the mode."""
+    monkeypatch.setattr(llm_backends, "containment_available", lambda: False)
+    monkeypatch.setattr(llm_backends.shutil, "which", lambda name: f"/usr/bin/{name}")
+    grounded = llm_backends.eligibility_report(mode="grounded")
+    text_only = llm_backends.eligibility_report(mode="text-only")
+    for name in ("codex", "pi", "copilot"):
+        assert text_only[name]["eligible"], name
+        assert not grounded[name]["eligible"], name
+        assert "grounded" in grounded[name]["reason"], name

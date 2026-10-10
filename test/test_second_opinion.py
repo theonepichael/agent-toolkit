@@ -3327,6 +3327,97 @@ class BackendListFallbackTests(unittest.TestCase):
         self.assertEqual(calls, [0, 1, 1])
 
 
+class GroundedEligibilityFilterTests(unittest.TestCase):
+    """Grounded mode filters candidates by per-mode eligibility, not just
+    presence. A backend whose grounded read tools are containment-dependent
+    (codex/pi/copilot) is skipped (or refused, when forced) on a host without
+    user namespaces, rather than escaping the attempt loop as IsolationError.
+    """
+
+    ENV = {
+        "SECOND_OPINION_AGY_MODEL": "Gemini 3.7 Flash (High)",
+        "SECOND_OPINION_OPENCODE_MODEL_POOL": "model-a,model-b",
+    }
+
+    def _plan(self, **kw: object) -> second_opinion.ReviewRequest:
+        defaults: dict[str, object] = {"plan_text": "my plan"}
+        defaults.update(kw)
+        return second_opinion.ReviewRequest(**defaults)  # type: ignore[arg-type]
+
+    def test_single_name_grounded_ineligible_raises_review_error(self) -> None:
+        with (
+            patch.dict(os.environ, self.ENV),
+            patch(
+                "shutil.which",
+                side_effect=lambda b: "/usr/bin/codex" if b == "codex" else None,
+            ),
+            patch.object(
+                second_opinion.llm_backends, "containment_available", lambda: False
+            ),
+        ):
+            with self.assertRaises(second_opinion.ReviewError) as cm:
+                second_opinion.review_plan(self._plan(backend="codex"))
+        self.assertIn("not eligible for grounded review", str(cm.exception))
+        self.assertIn("grounded", str(cm.exception))
+
+    def test_auto_selection_raises_when_no_backend_is_grounded_eligible(
+        self,
+    ) -> None:
+        # On a host without user namespaces, every grounded backend is
+        # containment-dependent, so automatic grounded selection has nothing to
+        # run: it must fail with a clear, per-backend reason and point at
+        # --text-only, not fall through to an unisolated backend.
+        with (
+            patch.dict(os.environ, self.ENV),
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(
+                second_opinion.llm_backends, "containment_available", lambda: False
+            ),
+        ):
+            with self.assertRaises(second_opinion.NoBackendAvailableError) as cm:
+                second_opinion.review_plan(self._plan())
+        self.assertIn("no backend is eligible for grounded review", str(cm.exception))
+        self.assertIn("--text-only", str(cm.exception))
+        self.assertIn("codex", str(cm.exception))
+
+    def test_text_only_forced_backend_bypasses_grounded_filter(self) -> None:
+        # The grounded filter only applies in grounded mode; a text-only
+        # single-name run proceeds even when containment is unavailable.
+        with (
+            patch.dict(os.environ, self.ENV),
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(
+                second_opinion.llm_backends, "containment_available", lambda: False
+            ),
+            patch.object(
+                second_opinion,
+                "BACKEND_RUNNERS",
+                {"codex": lambda p, model_index=None: "codex text critique"},
+            ),
+        ):
+            result = second_opinion.review_plan(
+                self._plan(backend="codex", text_only=True)
+            )
+        self.assertEqual(result.response_text, "codex text critique")
+
+    def test_detect_mode_grounded_flags_unavailable(self) -> None:
+        with (
+            patch.object(
+                second_opinion.llm_backends, "containment_available", lambda: False
+            ),
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+        ):
+            args = second_opinion.build_parser().parse_args(
+                ["detect", "--mode", "grounded"]
+            )
+            buf = io.StringIO()
+            with patch("sys.stdout", buf):
+                second_opinion.cmd_detect(args)
+        report = json.loads(buf.getvalue())
+        self.assertFalse(report["codex"]["eligible"])
+        self.assertIn("grounded", report["codex"]["reason"])
+
+
 class PoolSkipRotationTests(unittest.TestCase):
     """Skip-to-next-model pool rotation.
 
