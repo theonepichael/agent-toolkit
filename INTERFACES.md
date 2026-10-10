@@ -682,6 +682,7 @@ Regenerate the opencode leader-chord table in the parity doc from an opencode bi
   - `--check` — exit 1 if the committed table is stale, 2 if it cannot be checked
   - `--binary` — read this opencode binary instead of PATH's
   - `--fetch-pinned` — download the pinned release with npm pack and read that (what CI runs)
+  - `--fetch-latest` — with --check: compare against the newest release (npm latest of opencode-ai) instead of the pin
   - `--allow-unpinned` — with --check: compare against a binary that is not the pinned release
 - Filesystem constants:
   - `REPO_ROOT = Path(__file__).resolve().parent.parent`
@@ -694,6 +695,7 @@ Regenerate the opencode leader-chord table in the parity doc from an opencode bi
   - `pinned_version(package_json: Path) -> str` — The pinned opencode release: the ``@opencode-ai/plugin`` devDependency.
   - `opencode_version(binary: Path) -> str` — The binary's reported version; raises unless it ran and printed one.
   - `fetch_pinned_binary(version: str, dest: Path) -> Path` — Download the pinned release's binary for this platform into ``dest``.
+  - `latest_version() -> str` — The newest opencode release: the ``latest`` npm dist-tag of the CLI package.
   - `leader_chords(binary: Path) -> dict[str, list[str]]` — Map each leader-chord token to the keybind names that own it.
   - `render_block(chords: dict[str, list[str]]) -> str` — The markdown table body, without the surrounding anchors.
   - `current_block(text: str) -> str` — The block currently committed between the anchors.

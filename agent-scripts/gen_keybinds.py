@@ -17,6 +17,13 @@ Where the binary comes from:
 - ``--fetch-pinned`` downloads the pinned release's platform package with
   ``npm pack`` into a temporary directory. CI runs ``--check --fetch-pinned``: its
   runners have no opencode, so this is the only way CI can compare anything.
+- ``--fetch-latest`` (with ``--check`` only) downloads the newest release instead:
+  the ``latest`` npm dist-tag of ``opencode-ai``, the CLI package, packed as that
+  exact version of the platform package. A scheduled workflow runs it so drift in
+  a release nobody has pinned yet is reported before the pin is bumped. It
+  compares without ``--allow-unpinned`` and never writes. It compares whatever
+  ``latest`` names, even a release older than the pin: that is what a fresh
+  ``npm i -g opencode-ai`` installs.
 - ``--binary PATH`` uses that file.
 - Otherwise the ``opencode`` on ``PATH``.
 
@@ -98,6 +105,15 @@ IDENTITY_KEYS = frozenset({"app_exit", "session_new", "messages_copy"})
 VERSION_LINE_RE = re.compile(
     r"v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)"
 )
+# Strict SemVer 2.0 without build metadata: what npm's ``latest`` tag holds
+# (npm strips ``+build`` on publish). Anything else is refused rather than packed.
+_SEMVER_NUM = r"(?:0|[1-9]\d*)"
+_SEMVER_ID = r"(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)"
+SEMVER_RE = re.compile(
+    rf"({_SEMVER_NUM})\.({_SEMVER_NUM})\.({_SEMVER_NUM})"
+    rf"(?:-({_SEMVER_ID}(?:\.{_SEMVER_ID})*))?"
+)
+CLI_PACKAGE = "opencode-ai"
 NPM_OS = {"Linux": "linux", "Darwin": "darwin"}
 NPM_ARCH = {"x86_64": "x64", "amd64": "x64", "aarch64": "arm64", "arm64": "arm64"}
 PACKED_BINARY = "package/bin/opencode"
@@ -139,15 +155,21 @@ def opencode_version(binary: Path) -> str:
     return match.group(1)
 
 
-def fetch_pinned_binary(version: str, dest: Path) -> Path:
-    """Download the pinned release's binary for this platform into ``dest``."""
+def _npm_platform() -> tuple[str, str]:
+    """The npm platform/arch names for this machine; raises if unsupported."""
     npm_os = NPM_OS.get(platform.system())
     npm_arch = NPM_ARCH.get(platform.machine().lower())
     if npm_os is None or npm_arch is None:
         raise KeybindExtractionError(
-            f"--fetch-pinned: unsupported platform {platform.system()}/"
-            f"{platform.machine()}; pass --binary instead"
+            f"unsupported platform {platform.system()}/{platform.machine()}; "
+            f"pass --binary instead"
         )
+    return npm_os, npm_arch
+
+
+def fetch_pinned_binary(version: str, dest: Path) -> Path:
+    """Download the pinned release's binary for this platform into ``dest``."""
+    npm_os, npm_arch = _npm_platform()
     npm = shutil.which("npm")
     if npm is None:
         raise KeybindExtractionError("--fetch-pinned needs npm on PATH")
@@ -177,6 +199,44 @@ def fetch_pinned_binary(version: str, dest: Path) -> Path:
             ) from exc
         tar.extract(member, path=dest, filter="data")
     return dest / PACKED_BINARY
+
+
+def latest_version() -> str:
+    """The newest opencode release: the ``latest`` npm dist-tag of the CLI package.
+
+    Read from ``opencode-ai`` itself rather than a platform package, whose tag could
+    lag or be rolled back independently. Raises unless npm printed exactly one
+    strict version (a JSON string, or a one-element list).
+    """
+    npm = shutil.which("npm")
+    if npm is None:
+        raise KeybindExtractionError("--fetch-latest needs npm on PATH")
+    cmd = [npm, "view", CLI_PACKAGE, "dist-tags.latest", "--json"]
+    result = subprocess.run(
+        cmd, capture_output=True, text=True, timeout=120, check=False
+    )
+    if result.returncode != 0:
+        raise KeybindExtractionError(
+            f"npm view {CLI_PACKAGE} dist-tags.latest failed "
+            f"(exit {result.returncode}): {result.stderr.strip()}"
+        )
+    try:
+        value = json.loads(result.stdout)
+    except ValueError:
+        value = None
+    if isinstance(value, list) and len(value) == 1:
+        value = value[0]
+    if not isinstance(value, str):
+        raise KeybindExtractionError(
+            f"npm view {CLI_PACKAGE} dist-tags.latest printed "
+            f"{result.stdout.strip()!r}, not one version"
+        )
+    if SEMVER_RE.fullmatch(value) is None:
+        raise KeybindExtractionError(
+            f"npm view {CLI_PACKAGE} dist-tags.latest printed {value!r}, not a "
+            f"strict MAJOR.MINOR.PATCH[-PRERELEASE] version"
+        )
+    return value
 
 
 def _skip_string(data: bytes, index: int) -> int:
@@ -419,6 +479,43 @@ def _tokens(block: str) -> set[str]:
     }
 
 
+def _committed_chords(block: str) -> dict[str, list[str]]:
+    """The chord->owners map of a committed block, parsed from its markdown rows.
+
+    Strict: every ``<leader>`` row must parse as ``| `<leader>X` | `name`, ... |``,
+    a chord may not repeat, and every row must name at least one owner. A malformed
+    committed block is exit 2 (cannot compare), not a silently empty chord diff.
+    """
+    chords: dict[str, list[str]] = {}
+    rows = [
+        line.strip()
+        for line in block.splitlines()
+        if line.strip().startswith(f"| `{LEADER_PREFIX}")
+    ]
+    for line in rows:
+        match = re.fullmatch(
+            rf"\| `{re.escape(LEADER_PREFIX)}([^`]+)` \| (.+) \|", line
+        )
+        if match is None:
+            raise KeybindExtractionError(f"malformed committed chord row: {line!r}")
+        token = match.group(1).strip()
+        if token in chords:
+            raise KeybindExtractionError(
+                f"duplicate committed chord row for {LEADER_PREFIX}{token}"
+            )
+        names = [
+            name.strip().strip("`")
+            for name in match.group(2).split(",")
+            if name.strip()
+        ]
+        if not names:
+            raise KeybindExtractionError(
+                f"committed chord row names no keybind: {line!r}"
+            )
+        chords[token] = names
+    return chords
+
+
 def _resolve_binary(args: argparse.Namespace, pin: str, tmp: Path) -> tuple[Path, bool]:
     """The binary to read, and whether it was fetched for the pin."""
     if args.fetch_pinned:
@@ -436,13 +533,19 @@ def _resolve_binary(args: argparse.Namespace, pin: str, tmp: Path) -> tuple[Path
 
 def _run(args: argparse.Namespace, tmp: Path) -> int:
     pin = pinned_version(PACKAGE_JSON)
-    binary, fetched = _resolve_binary(args, pin, tmp)
+    expected = pin
+    if args.fetch_latest:
+        _npm_platform()  # unsupported platform is exit 2 before any npm call
+        expected = latest_version()
+        binary, fetched = fetch_pinned_binary(expected, tmp), True
+    else:
+        binary, fetched = _resolve_binary(args, pin, tmp)
     version = opencode_version(binary)
-    if version != pin:
-        if fetched:
-            raise KeybindExtractionError(
-                f"fetched opencode reports {version}, expected the pin {pin}"
-            )
+    if fetched and version != expected:
+        raise KeybindExtractionError(
+            f"fetched opencode reports {version}, expected {expected}"
+        )
+    if version != pin and not fetched:
         if not args.check:
             raise KeybindExtractionError(
                 f"refusing to write from opencode {version} ({binary}): the committed "
@@ -467,6 +570,51 @@ def _run(args: argparse.Namespace, tmp: Path) -> int:
                 f"({len(chords)} chords, {label})"
             )
             return 0
+        if args.fetch_latest:
+            committed_chords = _committed_chords(committed)
+            added = sorted(set(chords) - set(committed_chords))
+            removed = sorted(set(committed_chords) - set(chords))
+            changed = sorted(
+                token
+                for token in set(chords) & set(committed_chords)
+                if chords[token] != committed_chords[token]
+            )
+            lines = [
+                (
+                    f"gen_keybinds: opencode {version} (npm latest) changes the core "
+                    f"leader chords in the committed table (pin {pin})."
+                ),
+            ]
+            if added:
+                lines.append(f"  added:   {added}")
+            if removed:
+                lines.append(f"  removed: {removed}")
+            for token in changed:
+                lines.append(
+                    f"  changed: {LEADER_PREFIX}{token} "
+                    f"{committed_chords[token]} -> {chords[token]}"
+                )
+            if not (added or removed or changed):
+                lines.append(
+                    "  (the committed and latest tables render differently, but no "
+                    "chord was added, removed, or re-owned; the difference is "
+                    "formatting, not a chord change)"
+                )
+            lines.append(
+                f"Check now whether a harness chord is among the new entries: if one "
+                f"is, users on opencode {version} already hit that collision."
+            )
+            lines.append(
+                f"The committed table tracks the pin, so regenerate it if you move "
+                f"the pin to {version}: python3 agent-scripts/gen_keybinds.py "
+                f"--fetch-pinned"
+            )
+            lines.append(
+                "Then update CORE_LETTERS in test/test_opencode_trust_wiring.py to "
+                "match."
+            )
+            print("\n".join(lines), file=sys.stderr)
+            return 1
         print(
             f"gen_keybinds: leader-chord table is STALE against {label}.\n"
             f"  committed: {sorted(_tokens(committed))}\n"
@@ -501,6 +649,14 @@ def main(argv: list[str] | None = None) -> int:
         help="download the pinned release with npm pack and read that (what CI runs)",
     )
     parser.add_argument(
+        "--fetch-latest",
+        action="store_true",
+        help=(
+            "with --check: compare against the newest release (npm latest of "
+            "opencode-ai) instead of the pin"
+        ),
+    )
+    parser.add_argument(
         "--allow-unpinned",
         action="store_true",
         help="with --check: compare against a binary that is not the pinned release",
@@ -508,6 +664,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.binary and args.fetch_pinned:
         parser.error("--binary and --fetch-pinned are mutually exclusive")
+    if args.fetch_latest and (args.binary or args.fetch_pinned):
+        parser.error("--fetch-latest excludes --binary and --fetch-pinned")
+    if args.fetch_latest and not args.check:
+        parser.error("--fetch-latest only applies to --check")
     if args.allow_unpinned and not args.check:
         parser.error("--allow-unpinned only applies to --check")
 

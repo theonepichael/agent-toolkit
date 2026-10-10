@@ -1,0 +1,65 @@
+name: opencode-upstream-chords
+
+# Watches the NEWEST opencode release for core leader-chord changes. The
+# python-quality workflow checks the committed table against the pinned
+# release only, so a newer upstream release is invisible until someone bumps
+# the pin -- and a harness chord it now collides with would surface only then.
+#
+# This workflow reports; it never gates and never writes:
+# - No push/pull_request trigger, so upstream drift cannot fail a merge or a PR.
+# - contents: read only. No issue, commit, or PR step.
+# - Drift (exit 1) or could-not-check (exit 2) fails this run on purpose. A
+#   failed scheduled run is what GitHub notifies about (the workflow's creator,
+#   or whoever last changed the cron), and a green run with a warning would go
+#   unread. The red check lands on whatever main's HEAD is at run time.
+#
+# Weekly: drift in the latest release usually persists until the pin moves, so
+# a daily run would mostly repeat the same failure. Known gap: each run sees
+# only the release tagged latest that day, so a chord added and removed again
+# between two Mondays is never seen.
+on:
+  schedule:
+    - cron: "43 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  latest:
+    name: opencode-upstream-chords
+    runs-on: ubuntu-latest
+    # Above npm pack's own 600 s timeout, so the script times out first and the
+    # summary below still gets written.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      # gen_keybinds.py is stdlib-only; the runner's python3 and npm suffice.
+      # The report is captured first and the exit code re-raised after, so the
+      # default fail-fast shell cannot skip the summary. The annotation text is
+      # fixed and single-line; the multi-line diagnostic goes to the summary.
+      # The report lives under RUNNER_TEMP (never the checkout) and is never
+      # replayed to stdout: raw npm stderr can look like a workflow command and
+      # would become an unintended annotation.
+      - name: opencode leader-chord table vs latest release
+        run: |
+          report="$RUNNER_TEMP/report.txt"
+          if python3 agent-scripts/gen_keybinds.py --check --fetch-latest > "$report" 2>&1; then
+            code=0
+          else
+            code=$?
+          fi
+          {
+            echo "## opencode leader chords vs latest release (exit $code)"
+            echo
+            echo '```'
+            cat "$report"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          case "$code" in
+            0) ;;
+            1) echo "::error title=opencode leader chords drifted::The latest opencode release changes core leader chords; see the job summary." ;;
+            *) echo "::error title=opencode leader chords could not be checked::gen_keybinds.py could not compare against the latest opencode release; see the job summary." ;;
+          esac
+          exit "$code"

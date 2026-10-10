@@ -312,8 +312,13 @@ What checks it:
   --allow-unpinned` against the `opencode` on `PATH`, whatever its version, so
   a development build that diverges from the pinned table fails the suite on
   that machine.
-- **Not caught**: a newer upstream release that nobody has pinned or installed
-  yet, and chords registered by third-party plugins rather than core.
+- **Weekly**, the `opencode-upstream-chords` workflow runs `--check
+  --fetch-latest` against the newest release (npm `latest` of `opencode-ai`),
+  so a release nobody has pinned or installed yet is reported before the pin
+  is bumped. It only reports: a scheduled run fails (and GitHub notifies) on
+  drift or when that release cannot be read, but it has no push or PR trigger,
+  so it never gates main, and it never writes to the repo.
+- **Not caught**: chords registered by third-party plugins rather than core.
 
 `test/test_opencode_trust_wiring.py` derives the harness denylist from this
 table and pins the letter set separately, so a regenerated table fails the suite

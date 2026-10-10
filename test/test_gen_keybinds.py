@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import io
 import json
+import os
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -483,3 +485,338 @@ def test_ci_runs_the_pinned_check_and_cannot_skip_it() -> None:
     step = matching[0]
     assert "--check" in step and "--fetch-pinned" in step, step
     assert "continue-on-error" not in step, step
+
+
+# ── --fetch-latest: the newest upstream release, not the pin ─────────────────
+
+LATEST_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "opencode-upstream-chords.yml"
+
+
+def _fake_npm_view(stdout: str, calls: list[list[str]], code: int = 0) -> object:
+    def run(cmd: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, code, stdout, "boom" if code else "")
+
+    return run
+
+
+@pytest.mark.parametrize("stdout", ['"1.18.33"\n', '["1.18.33"]\n'])
+def test_latest_version_reads_the_cli_latest_dist_tag(
+    monkeypatch: pytest.MonkeyPatch, stdout: str
+) -> None:
+    monkeypatch.setattr(gk.shutil, "which", lambda name: f"/usr/bin/{name}")
+    calls: list[list[str]] = []
+    monkeypatch.setattr(gk.subprocess, "run", _fake_npm_view(stdout, calls))
+    assert gk.latest_version() == "1.18.33"
+    assert calls[0][:2] == ["/usr/bin/npm", "view"]
+    assert "opencode-ai" in calls[0]
+    assert "dist-tags.latest" in calls[0]
+    assert "--json" in calls[0]
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    [
+        "null",
+        "{}",
+        "[]",
+        '["1.18.33", "1.18.34"]',
+        '"garbage"',
+        '"1.18.33+build.5"',
+        '"01.18.33"',
+        '"1.18.33-rc..1"',
+        '"1.18.33-rc.01"',
+        "not json",
+        "",
+    ],
+)
+def test_latest_version_rejects_anything_but_one_strict_version(
+    monkeypatch: pytest.MonkeyPatch, stdout: str
+) -> None:
+    monkeypatch.setattr(gk.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(gk.subprocess, "run", _fake_npm_view(stdout, []))
+    with pytest.raises(gk.KeybindExtractionError):
+        gk.latest_version()
+
+
+def test_latest_version_npm_failure_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(gk.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(gk.subprocess, "run", _fake_npm_view("", [], code=1))
+    with pytest.raises(gk.KeybindExtractionError, match="npm view"):
+        gk.latest_version()
+
+
+def test_latest_version_without_npm_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(gk.shutil, "which", lambda _name: None)
+    with pytest.raises(gk.KeybindExtractionError, match="npm"):
+        gk.latest_version()
+
+
+def _latest(
+    monkeypatch: pytest.MonkeyPatch,
+    repo: Path,
+    latest: str,
+    body: str = "",
+    reports: str | None = None,
+) -> list[str]:
+    """Wire --fetch-latest to a synthetic release; returns the versions fetched."""
+    fetched = _binary(repo, body or _table("H"), "fetched-latest")
+    seen: list[str] = []
+
+    def fetch(version: str, _dest: Path) -> Path:
+        seen.append(version)
+        return fetched
+
+    monkeypatch.setattr(gk, "latest_version", lambda: latest)
+    monkeypatch.setattr(gk, "fetch_pinned_binary", fetch)
+    monkeypatch.setattr(gk, "opencode_version", lambda _b: reports or latest)
+    return seen
+
+
+def test_fetch_latest_newer_release_unchanged_exits_0(
+    monkeypatch: pytest.MonkeyPatch, repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    seen = _latest(monkeypatch, repo, "1.18.40")
+    assert gk.main(["--check", "--fetch-latest"]) == 0
+    assert seen == ["1.18.40"]
+    assert "1.18.40" in capsys.readouterr().out
+
+
+def test_fetch_latest_drift_exits_1_with_pin_move_advice(
+    monkeypatch: pytest.MonkeyPatch, repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    extra = 'new_thing:H("<leader>d","New")'
+    _latest(monkeypatch, repo, "1.18.40", _table("H", extra=extra))
+    before = (repo / "PARITY.md").read_text()
+    assert gk.main(["--check", "--fetch-latest"]) == 1
+    err = capsys.readouterr().err
+    assert "1.18.40" in err and PIN in err
+    assert "move the pin" in err
+    # A harness chord colliding with a new core entry already hurts users on the
+    # latest release, so the report must not say to wait for the pin.
+    assert "now" in err and "harness chord" in err
+    assert "Nothing to fix" not in err
+    assert (repo / "PARITY.md").read_text() == before
+
+
+def test_fetch_latest_reports_an_ownership_change(
+    monkeypatch: pytest.MonkeyPatch, repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A chord whose owner changes (same letter, new keybind) must still be
+    # named: a letters-only diff would show identical committed/latest lists
+    # even while the job is failing.
+    extra = 'copy_alt:H("<leader>y","Also copies")'
+    _latest(monkeypatch, repo, "1.18.40", _table("H", extra=extra))
+    assert gk.main(["--check", "--fetch-latest"]) == 1
+    err = capsys.readouterr().err
+    assert "changed:" in err
+    assert "<leader>y" in err
+    assert "copy_alt" in err
+
+
+def test_fetch_latest_reports_a_multi_owner_change(
+    monkeypatch: pytest.MonkeyPatch, repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The committed table's q row has two owners; changing that set must be
+    # reported in full, not folded into a letter-only diff that hides it.
+    extra = 'tips_alt:H("<leader>q","Also toggles tips")'
+    _latest(monkeypatch, repo, "1.18.40", _table("H", extra=extra))
+    assert gk.main(["--check", "--fetch-latest"]) == 1
+    err = capsys.readouterr().err
+    assert "changed:" in err and "<leader>q" in err
+    assert "tips_alt" in err and "app_exit" in err and "tips_toggle" in err
+
+
+def test_fetch_latest_equal_to_pin_is_a_pinned_comparison(
+    monkeypatch: pytest.MonkeyPatch, repo: Path
+) -> None:
+    seen = _latest(monkeypatch, repo, PIN)
+    assert gk.main(["--check", "--fetch-latest"]) == 0
+    assert seen == [PIN]
+
+
+@pytest.mark.parametrize("latest", ["1.18.31", f"{PIN}-rc.1"])
+def test_fetch_latest_older_than_pin_is_still_compared(
+    monkeypatch: pytest.MonkeyPatch, repo: Path, latest: str
+) -> None:
+    # Users installing opencode-ai@latest run this release even when the pin is
+    # ahead of it, and --check never reports success without comparing.
+    seen = _latest(monkeypatch, repo, latest)
+    assert gk.main(["--check", "--fetch-latest"]) == 0
+    assert seen == [latest]
+    extra = 'new_thing:H("<leader>d","New")'
+    _latest(monkeypatch, repo, latest, _table("H", extra=extra))
+    assert gk.main(["--check", "--fetch-latest"]) == 1
+
+
+def test_fetch_latest_version_mismatch_exits_2(
+    monkeypatch: pytest.MonkeyPatch, repo: Path
+) -> None:
+    _latest(monkeypatch, repo, "1.18.40", reports="1.18.39")
+    assert gk.main(["--check", "--fetch-latest"]) == 2
+
+
+def test_fetch_latest_resolution_failure_exits_2(
+    monkeypatch: pytest.MonkeyPatch, repo: Path
+) -> None:
+    def fail() -> str:
+        raise gk.KeybindExtractionError("npm view failed")
+
+    monkeypatch.setattr(gk, "latest_version", fail)
+    assert gk.main(["--check", "--fetch-latest"]) == 2
+
+
+def test_fetch_latest_unsupported_platform_exits_2_before_npm(
+    monkeypatch: pytest.MonkeyPatch, repo: Path
+) -> None:
+    # "Unsupported platform -> 2 before calling npm": the platform check has to
+    # run ahead of the npm view lookup, or an unsupported machine would burn a
+    # network round trip and only then fail.
+    monkeypatch.setattr(gk.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(gk.platform, "machine", lambda: "AMD64")
+    called: list[str] = []
+
+    def latest() -> str:
+        called.append("npm view")
+        return "1.18.40"
+
+    monkeypatch.setattr(gk, "latest_version", latest)
+    assert gk.main(["--check", "--fetch-latest"]) == 2
+    assert called == []
+
+
+def test_fetch_latest_unparseable_release_exits_2(
+    monkeypatch: pytest.MonkeyPatch, repo: Path
+) -> None:
+    # The newest release changed the table's shape: "could not check", not drift.
+    _latest(monkeypatch, repo, "1.18.40", "nothing to see here")
+    assert gk.main(["--check", "--fetch-latest"]) == 2
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--fetch-latest"],
+        ["--check", "--fetch-latest", "--fetch-pinned"],
+        ["--check", "--fetch-latest", "--binary", "x"],
+    ],
+)
+def test_fetch_latest_usage_errors_exit_2(repo: Path, argv: list[str]) -> None:
+    before = (repo / "PARITY.md").read_text()
+    with pytest.raises(SystemExit) as excinfo:
+        gk.main(argv)
+    assert excinfo.value.code == 2
+    assert (repo / "PARITY.md").read_text() == before
+
+
+def _top_level_block(text: str, key: str) -> str:
+    """The lines of one top-level YAML key's block (no YAML parser in stdlib)."""
+    lines = text.splitlines()
+    start = lines.index(f"{key}:")
+    block: list[str] = []
+    for line in lines[start + 1 :]:
+        if line and not line.startswith((" ", "#")):
+            break
+        block.append(line)
+    return "\n".join(block)
+
+
+def test_upstream_watch_workflow_reports_without_gating_or_writing() -> None:
+    """The latest-release watch must never gate main or write to the repo.
+
+    Only schedule/workflow_dispatch triggers (a push/pull_request trigger would
+    make upstream drift fail unrelated work), exactly read-only contents
+    permission, a real --check --fetch-latest run whose failure is not swallowed,
+    and a job summary so the failed run says why.
+    """
+    text = LATEST_WORKFLOW.read_text()
+    triggers = _top_level_block(text, "on")
+    assert "schedule:" in triggers and "cron:" in triggers, triggers
+    assert "workflow_dispatch:" in triggers, triggers
+    assert "push" not in triggers and "pull_request" not in triggers, triggers
+    permissions = [
+        line.strip()
+        for line in _top_level_block(text, "permissions").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    assert permissions == ["contents: read"], permissions
+    # No job-level block that could widen the top-level one.
+    assert text.count("permissions:") == 1, "only the top-level permissions block"
+    assert "gen_keybinds.py --check --fetch-latest" in text
+    assert "continue-on-error" not in text
+    assert "GITHUB_STEP_SUMMARY" in text
+    # The report lives under RUNNER_TEMP (never the checkout) and is read back
+    # exactly once, into the summary block, never replayed to stdout.
+    assert "$RUNNER_TEMP/report.txt" in text
+    assert text.count('cat "$report"') == 1
+    assert "timeout-minutes:" in text
+
+
+def _run_block() -> str:
+    """The de-indented body of the workflow's single ``run: |`` block."""
+    body = LATEST_WORKFLOW.read_text().split("run: |\n", 1)[1]
+    return "\n".join(
+        line[10:] if line.startswith(" " * 10) else line for line in body.splitlines()
+    )
+
+
+@pytest.mark.allow_real_subprocess
+@pytest.mark.parametrize("exit_code", [0, 1, 2])
+def test_upstream_watch_workflow_shell_reports_correctly(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, exit_code: int
+) -> None:
+    """Run the step's actual shell under the runner's options: the report goes to
+    RUNNER_TEMP (not the checkout), its raw text never reaches stdout or stderr
+    (so a fake workflow command inside it cannot become an unintended
+    annotation), the summary always gets the full text, and the exit code is
+    re-raised with the right one-liner."""
+    if shutil.which("bash") is None:
+        pytest.skip("bash not installed")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    # The step invokes `python3 agent-scripts/gen_keybinds.py --check
+    # --fetch-latest`; a stub that echoes its arguments and a diagnostic drives
+    # all three exit codes without npm or network, and proves the invocation.
+    fake_python = bin_dir / "python3"
+    fake_python.write_text(
+        "#!/usr/bin/env bash\n"
+        'echo "::error title=injected::must not reach the log"\n'
+        'echo "multi-line diagnostic (args: $*)"\n'
+        f"exit {exit_code}\n"
+    )
+    fake_python.chmod(0o755)
+    summary = tmp_path / "summary.md"
+    runner_temp = tmp_path / "runner-temp"
+    runner_temp.mkdir()
+    env = dict(os.environ)
+    env["GITHUB_STEP_SUMMARY"] = str(summary)
+    env["RUNNER_TEMP"] = str(runner_temp)
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
+    # The runner executes run: blocks with `bash --noprofile --norc -eo pipefail`.
+    result = subprocess.run(
+        ["bash", "-e", "-o", "pipefail", "-c", _run_block()],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    assert result.returncode == exit_code
+    # The raw report (which carries a fake workflow command) never reaches the
+    # step's stdout or stderr: only the fixed single-line annotation may.
+    assert "injected" not in result.stdout
+    assert "injected" not in result.stderr
+    assert "multi-line diagnostic" not in result.stdout
+    assert "multi-line diagnostic" not in result.stderr
+    # The full report (including the script's own invocation) lands in the
+    # summary, and the temp file is outside the checkout.
+    summary_text = summary.read_text()
+    assert "multi-line diagnostic" in summary_text
+    assert "agent-scripts/gen_keybinds.py --check --fetch-latest" in summary_text
+    report = runner_temp / "report.txt"
+    assert report.read_text().count("multi-line diagnostic") == 1
+    if exit_code == 0:
+        assert "::error" not in result.stdout
+    elif exit_code == 1:
+        assert "::error title=opencode leader chords drifted::" in result.stdout
+    else:
+        assert "::error title=opencode leader chords could not be checked::" in result.stdout
