@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -463,12 +464,15 @@ class TestCliWithBrokenId(unittest.TestCase):
     def setUp(self) -> None:
         self.home = Path(tempfile.mkdtemp())
         self.data = self.home / ".agent-toolkit" / "data" / "backlog"
-        self.env = dict(
-            os.environ,
+        self.env = test_bootstrap.cli_env(
             HOME=str(self.home),
             XDG_STATE_HOME=str(self.home / ".local" / "state"),
             PYTHONDONTWRITEBYTECODE="1",
             DEVSTATUS_AGENT="1",
+            # Keep any (pre-fix) detached child sleeping long enough for the
+            # regression test's scan to observe it, regardless of an inherited
+            # DEVSTATUS_RECAP_DEBOUNCE_SECONDS.
+            DEVSTATUS_RECAP_DEBOUNCE_SECONDS="3600",
         )
         self.env.pop("AGENT_TOOLKIT_HOME", None)
         self.env.pop("AGENT_TOOLKIT_TIMING", None)
@@ -559,6 +563,62 @@ class TestCliWithBrokenId(unittest.TestCase):
         self.assertEqual(r.returncode, 3, r.stderr)
         self.assertNotIn("Traceback", r.stderr)
         self.assertEqual(self.items_bytes(), before)
+
+    def _detached_regen_children(self) -> set[int]:
+        """PIDs of `_internal-regen` children whose environ carries this HOME."""
+        home_field = f"HOME={self.home}".encode()
+        impl_field = str((REPO / "agent-scripts" / "dev_status_impl.py").resolve()).encode()
+        found: set[int] = set()
+        for entry in Path("/proc").iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                cmdline = (entry / "cmdline").read_bytes()
+            except OSError:
+                continue
+            argv = cmdline.split(b"\0")
+            # The detached child's exact argv is [python,
+            # <repo>/agent-scripts/dev_status_impl.py, _internal-regen].
+            # Match argv elements precisely, not substrings, so a candidate is
+            # already this repo's child and not another worktree's or an
+            # unrelated process.
+            if impl_field not in argv or b"_internal-regen" not in argv:
+                continue
+            # Only a positively-confirmed child counts: its environ must be
+            # readable and carry this test's unique sandbox HOME. An
+            # unreadable environ (a process that exited between the reads, or
+            # one we cannot inspect) is skipped — never treated as this
+            # test's leak.
+            try:
+                environ = (entry / "environ").read_bytes()
+            except OSError:
+                continue
+            if home_field in environ.split(b"\0"):
+                found.add(int(entry.name))
+        return found
+
+    @pytest.mark.regression(
+        "detached-regen-child-outlives-cli-test",
+        "detached _internal-regen children outlived the CLI",
+    )
+    def test_no_detached_regen_child_outlives_cli(self) -> None:
+        if not Path("/proc").is_dir():
+            self.skipTest("Linux-only: /proc process scan")
+        # setUp already ran a successful real-CLI `add` (the one mutation in
+        # this class not refused by the broken machine id). A pre-fix CLI
+        # dispatches a fully-detached `_internal-regen` child inheriting
+        # HOME=<self.home>, which then sleeps RECAP_DEBOUNCE_SECONDS — so a
+        # short poll reliably observes it. With DEVSTATUS_RECAP_DISABLE=1 in
+        # self.env (set via test_bootstrap.cli_env), no child may exist.
+        leaked: set[int] = set()
+        for _ in range(4):
+            leaked |= self._detached_regen_children()
+            time.sleep(0.5)
+        self.assertEqual(
+            leaked,
+            set(),
+            f"detached _internal-regen children outlived the CLI: {sorted(leaked)}",
+        )
 
 
 if __name__ == "__main__":

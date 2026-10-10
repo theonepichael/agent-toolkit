@@ -613,6 +613,22 @@ def guards(**flags: bool) -> Iterator[None]:
         _ACTIVE.update(prev)
 
 
+def cli_env(**overrides: str) -> dict[str, str]:
+    """Env for a subprocess running the real dev_status CLI under test.
+
+    Sets ``DEVSTATUS_RECAP_DISABLE=1`` (a default a caller may override) so a
+    test-spawned CLI mutation cannot leave a detached ``_internal-regen`` child
+    alive past the harness — the conftest subprocess guard wraps ``Popen``
+    only in the test process, so it cannot see a detached grandchild the CLI
+    itself spawns. Callers pass their own overrides (e.g. ``HOME``,
+    ``DEVSTATUS_AGENT``) positionally-by-keyword.
+    """
+    env = dict(os.environ)
+    env["DEVSTATUS_RECAP_DISABLE"] = "1"
+    env.update(overrides)
+    return env
+
+
 def run_unittest_main(**kwargs: object) -> NoReturn:
     """The direct-entrypoint hook: ``python3 test_X.py`` ends with this.
 

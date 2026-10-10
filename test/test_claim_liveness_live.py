@@ -101,7 +101,7 @@ def _write_helper(workspace: Path, home: Path, item_id: str, harness: str) -> Pa
                 f"script = {str(scripts)!r}",
                 f"ready = {str(ready)!r}",
                 f"release = {str(release)!r}",
-                "env = dict(os.environ, HOME=home)",
+                "env = dict(os.environ, HOME=home, DEVSTATUS_RECAP_DISABLE='1')",
                 "result = subprocess.run(",
                 "    [sys.executable, script, 'start', '--allow-main',",
                 f"     '--claimed-by', {harness!r}, {item_id!r}],",
@@ -220,7 +220,7 @@ def test_live_harness_claim_survives_separate_show(harness: str, tmp_path: Path)
         _wait_for_ready(ready, proc)
         show = subprocess.run(
             [sys.executable, workspace / "agent-scripts" / "dev_status.py", "show", "harness-claim"],
-            env=dict(os.environ, HOME=str(home)),
+            env=dict(os.environ, HOME=str(home), DEVSTATUS_RECAP_DISABLE="1"),
             capture_output=True,
             text=True,
             check=False,
@@ -270,7 +270,7 @@ def test_live_harnesses_share_dashboard_and_safe_takeover(tmp_path: Path) -> Non
             _wait_for_ready(tmp_path / harness / "ready", procs[harness])
 
         assert scripts is not None
-        env = dict(os.environ, HOME=str(home))
+        env = dict(os.environ, HOME=str(home), DEVSTATUS_RECAP_DISABLE="1")
         dashboard = subprocess.run(
             [sys.executable, scripts, "render"],
             env=env,

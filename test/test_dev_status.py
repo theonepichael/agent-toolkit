@@ -6943,8 +6943,7 @@ class OwnerPidSubprocessTestCase(unittest.TestCase):
                 )
             )
             meta_file.write_text(json.dumps({"rev": 1}))
-            env = dict(os.environ)
-            env["HOME"] = str(home)
+            env = test_bootstrap.cli_env(HOME=str(home))
             env.pop("DEVSTATUS_HARNESS", None)
 
             # Invoke start from an ephemeral bash -lc subshell
