@@ -298,6 +298,8 @@
   ],
   "herdr_delegate.py": [
     "arg launch --cwd: \u2014 working directory (pi/copilot only)",
+    "arg launch --exclude: \u2014 slugs to skip in the prefix queue (with --swarm or --serial)",
+    "arg launch --items: \u2014 explicit slugs for the queue (with --swarm or --serial)",
     "arg launch --kind: \u2014 agent harness (agy/codex support --slug only; default: pi) (choices: pi, copilot, agy, codex; default: pi)",
     "arg launch --model: \u2014 model passed through to harness after a bare --",
     "arg launch --prefix: \u2014 queue scope, required with --swarm or --serial",

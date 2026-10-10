@@ -1922,6 +1922,7 @@ export class SwarmToolContext {
     runId: string;
     items?: string[];
     prefix?: string;
+    exclude?: string[];
     concurrency?: number;
     model?: string;
     pluginDir?: string;
@@ -1950,6 +1951,25 @@ export class SwarmToolContext {
         state.concurrency = params.concurrency;
       }
       if (params.pluginDir !== undefined) state.pluginDir = params.pluginDir;
+      // Run scope persists and is last-writer-wins: `items` and `exclude` are
+      // mutually exclusive, so supplying one clears the other rather than
+      // letting both filter at once (and so a resume that omits them inherits
+      // the persisted scope).
+      // `explicitItemsThisCall` records whether the caller is naming slugs on
+      // THIS spawn (params.items) or inheriting them from persisted state. The
+      // attempted/refused filter below applies only to the inherited case:
+      // naming a slug explicitly is a deliberate retry (see the test
+      // "naming an item explicitly still retries it"), while a refill that
+      // re-applies persisted scope must not re-select an already-attempted slug.
+      const explicitItemsThisCall = params.items !== undefined;
+      if (params.items !== undefined) {
+        state.items = params.items;
+        state.exclude = undefined;
+      }
+      if (params.exclude !== undefined) {
+        state.exclude = params.exclude;
+        state.items = undefined;
+      }
 
       const pruneLines = await this.pruneStaleWorkers(state);
 
@@ -1986,9 +2006,10 @@ export class SwarmToolContext {
         };
       }
 
+      const excludeSet = new Set(state.exclude ?? []);
       let candidates: ReadyItem[];
-      if (params.items) {
-        const explicitSlugs = params.items;
+      if (state.items !== undefined) {
+        const explicitSlugs = state.items;
         const readyResult = await this.exec("python3", buildReadyArgv(params.prefix).slice(1), {
           timeout: PROBE_TIMEOUT_MS,
         });
@@ -1999,11 +2020,23 @@ export class SwarmToolContext {
         }
         const parsed = parseReadyItems(readyResult.stdout);
         const byId = new Map(parsed.map((i) => [i.id, i]));
+        const attempted = new Set(state.attempted ?? []);
+        const refused = new Set((state.refused ?? []).map((entry) => entry.slug));
         // A slug missing from the ready set (mistyped, stale, or genuinely
         // not worker-safe) must NOT default to worker_safe: true -- leaving
         // it unset lets selectSchedulable's fail-closed refusal apply, same
         // as an automatically-selected candidate that failed this lookup.
+        // The attempted/refused filter matches the prefix branch, but only
+        // when the scope is inherited from persisted state: re-applying a
+        // persisted `items` list on every refill would otherwise re-select an
+        // already-attempted slug (a failed item still READY) or re-report a
+        // done/in-progress one as refused. An explicit `items` on this spawn
+        // is a deliberate retry and is exempt.
         candidates = explicitSlugs.map((id) => byId.get(id) ?? { id });
+        if (!explicitItemsThisCall) {
+          candidates = candidates.filter((c) => !attempted.has(c.id) && !refused.has(c.id));
+        }
+        candidates = candidates.filter((c) => !excludeSet.has(c.id));
       } else {
         const readyResult = await this.exec("python3", buildReadyArgv(params.prefix).slice(1), {
           timeout: PROBE_TIMEOUT_MS,
@@ -2016,7 +2049,9 @@ export class SwarmToolContext {
         candidates = parseReadyItems(readyResult.stdout);
         const attempted = new Set(state.attempted ?? []);
         const refused = new Set((state.refused ?? []).map((entry) => entry.slug));
-        candidates = candidates.filter((c) => !attempted.has(c.id) && !refused.has(c.id));
+        candidates = candidates
+          .filter((c) => !attempted.has(c.id) && !refused.has(c.id))
+          .filter((c) => !excludeSet.has(c.id));
       }
 
       const takenPaths: { path: string; holder: string }[] = [];

@@ -997,6 +997,60 @@ class MutationServiceTestCase(MutationFixture):
         self.assertEqual(self.read_rev(), rev_before)
         self.assertNotIn("integration_branch", self._item_by_id("item-1"))
 
+    def test_add_item_stores_no_worker_fields(self):
+        res = dev_status_mutation.add_item(
+            dev_status_mutation.NewItemRequest(
+                id="item-nw",
+                summary="No worker",
+                no_worker=True,
+                no_worker_reason="cross-repo",
+            )
+        )
+        self.assertIs(res.item["no_worker"], True)
+        self.assertEqual(res.item["no_worker_reason"], "cross-repo")
+
+    def test_add_item_rejects_non_bool_no_worker(self):
+        with self.assertRaises(dev_status_mutation.ValidationError):
+            dev_status_mutation.add_item(
+                dev_status_mutation.NewItemRequest(
+                    id="item-bad", summary="x", no_worker="yes"
+                )
+            )
+
+    def test_update_item_sets_and_clears_no_worker(self):
+        self.write_items([make_item("item-1")])
+        res = dev_status_mutation.update_item(
+            "item-1",
+            dev_status_mutation.ItemUpdateRequest(no_worker=True, no_worker_reason="r"),
+        )
+        self.assertIs(res.item["no_worker"], True)
+        self.assertEqual(res.item["no_worker_reason"], "r")
+        # Clearing the flag also clears the reason.
+        res = dev_status_mutation.update_item(
+            "item-1", dev_status_mutation.ItemUpdateRequest(no_worker=None)
+        )
+        self.assertNotIn("no_worker", self._item_by_id("item-1"))
+        self.assertNotIn("no_worker_reason", self._item_by_id("item-1"))
+
+    def test_update_item_rejects_non_bool_no_worker(self):
+        self.write_items([make_item("item-1")])
+        with self.assertRaises(dev_status_mutation.ValidationError):
+            dev_status_mutation.update_item(
+                "item-1", dev_status_mutation.ItemUpdateRequest(no_worker="yes")
+            )
+
+    def test_mutation_transaction_add_item_stores_no_worker(self):
+        with dev_status_mutation.mutation_transaction() as tx:
+            tx.add_item(
+                dev_status_mutation.NewItemRequest(
+                    id="batch-nw",
+                    summary="Batch",
+                    no_worker=True,
+                    no_worker_reason="r",
+                )
+            )
+        self.assertIs(self._item_by_id("batch-nw")["no_worker"], True)
+
     def test_start_and_done_item_success(self):
         self.write_items([make_item("item-1", status="open")])
         res_start = dev_status_mutation.start_item("item-1")

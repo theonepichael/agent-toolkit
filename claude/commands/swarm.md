@@ -92,6 +92,21 @@ python3 ~/.agent-toolkit/scripts/herdr_delegate.py launch --swarm <N> --prefix <
 
 `--swarm` starts **one** orchestrator (pi by default, or copilot when `--kind copilot` is passed) and hands it `/backlog-item --swarm=N --prefix <prefix>`; `swarm_spawn` owns the fan-out from there. Default `N` to 3 unless the user says otherwise.
 
+To run an explicit list of slugs instead of the whole prefix queue, or to skip
+specific slugs from it:
+
+```bash
+python3 ~/.agent-toolkit/scripts/herdr_delegate.py launch --swarm <N> --prefix <prefix> --items <slug>...
+python3 ~/.agent-toolkit/scripts/herdr_delegate.py launch --swarm <N> --prefix <prefix> --exclude <slug>...
+```
+
+`--items` hands the orchestrator an explicit slug list (`--prefix` still names
+the run); `--exclude` filters those slugs out of the prefix queue. They are
+mutually exclusive, each is invalid with `--slug`, and both ride in the run's
+persisted scope — set on the first spawn, inherited by every later spawn and by
+`restart`, and immutable for the life of the run (change scope with a fresh
+`launch`, not a `restart`).
+
 The same prefix queue, one isolated worker at a time:
 
 ```bash

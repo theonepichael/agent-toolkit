@@ -69,6 +69,7 @@ export default function registerSwarmTools(pi: ExtensionAPI): void {
       runId: Type.String(),
       items: Type.Optional(Type.Array(Type.String())),
       prefix: Type.Optional(Type.String()),
+      exclude: Type.Optional(Type.Array(Type.String())),
       concurrency: Type.Optional(Type.Number()),
       mode: Type.Optional(Type.Union([Type.Literal("concurrent"), Type.Literal("serial")])),
       model: Type.Optional(Type.String()),

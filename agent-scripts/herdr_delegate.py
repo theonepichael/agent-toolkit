@@ -93,6 +93,7 @@ from dev_status import (  # noqa: E402
     prefix_of,
 )
 from dev_status_impl import serial_safety  # noqa: E402
+from dev_status_mutation import validate_slug  # noqa: E402
 from dev_status_storage import BacklogItem  # noqa: E402
 from worktree import (  # noqa: E402
     WorktreeError,
@@ -190,6 +191,19 @@ def check_launchable(*, slug: str | None = None, prefix: str | None = None) -> N
     prefix -- so neither route can slip past.
     """
     target = prefix if prefix is not None else prefix_of(slug or "")
+    if slug is not None:
+        item = resolve_backlog_item(slug)
+        if item is not None and item.get("no_worker"):
+            reason = item.get("no_worker_reason")
+            detail = (
+                str(reason)
+                if isinstance(reason, str) and reason.strip()
+                else "item opted out of worker delegation"
+            )
+            raise RefusedError(
+                f"'{slug}' opts out of worker delegation (no_worker): {detail}. "
+                "Work it in a normal session instead."
+            )
     if not is_worker_safe(target):
         known = ", ".join(f"{p}-" for p in sorted(REPO_PREFIXES.values()))
         raise RefusedError(
@@ -320,9 +334,30 @@ def worker_prompt(slug: str, kind: str = "pi") -> str:
     return f"{invoke} --auto {slug}"
 
 
-def orchestrator_prompt(concurrency: int, prefix: str, kind: str = "pi") -> str:
+def _scope_prompt(
+    base: str, *, items: list[str] | None, exclude: list[str] | None
+) -> str:
+    """Append the optional --items/--exclude scope to an orchestrator prompt."""
+    if items:
+        return f"{base} --items {' '.join(items)}"
+    if exclude:
+        return f"{base} --exclude {' '.join(exclude)}"
+    return base
+
+
+def orchestrator_prompt(
+    concurrency: int,
+    prefix: str,
+    kind: str = "pi",
+    items: list[str] | None = None,
+    exclude: list[str] | None = None,
+) -> str:
     """One orchestrator; `swarm_spawn` owns the fan-out from here."""
-    return f"/backlog-item --swarm={concurrency} --prefix {prefix}"
+    return _scope_prompt(
+        f"/backlog-item --swarm={concurrency} --prefix {prefix}",
+        items=items,
+        exclude=exclude,
+    )
 
 
 def orchestrator_resume_prompt(
@@ -339,9 +374,17 @@ def orchestrator_resume_prompt(
     return f"/backlog-item --swarm={concurrency} resume {run_id} --prefix {prefix}"
 
 
-def serial_orchestrator_prompt(prefix: str) -> str:
+def serial_orchestrator_prompt(
+    prefix: str,
+    items: list[str] | None = None,
+    exclude: list[str] | None = None,
+) -> str:
     """One orchestrator running the shared scheduler with a single worker."""
-    return f"/backlog-item --serial --prefix {canonical_prefix(prefix)}"
+    return _scope_prompt(
+        f"/backlog-item --serial --prefix {canonical_prefix(prefix)}",
+        items=items,
+        exclude=exclude,
+    )
 
 
 def serial_orchestrator_resume_prompt(run_id: str, prefix: str) -> str:
@@ -857,12 +900,14 @@ def cmd_launch(args: argparse.Namespace) -> None:
     elif args.serial:
         prefix = check_serial_prefix(args.prefix)
         label = f"serial-{prefix}"
-        prompt = serial_orchestrator_prompt(prefix)
+        prompt = serial_orchestrator_prompt(prefix, args.items, args.exclude)
     else:
         prefix = canonical_prefix(args.prefix)
         check_launchable(prefix=prefix)
         label = f"swarm-{prefix}"
-        prompt = orchestrator_prompt(args.swarm, prefix, kind=kind)
+        prompt = orchestrator_prompt(
+            args.swarm, prefix, kind=kind, items=args.items, exclude=args.exclude
+        )
 
     if not args.slug:
         conflicts = live_queue_orchestrators(prefix)
@@ -1045,6 +1090,16 @@ def main() -> None:
         "--prefix", help="queue scope, required with --swarm or --serial"
     )
     launch.add_argument(
+        "--items",
+        nargs="+",
+        help="explicit slugs for the queue (with --swarm or --serial)",
+    )
+    launch.add_argument(
+        "--exclude",
+        nargs="+",
+        help="slugs to skip in the prefix queue (with --swarm or --serial)",
+    )
+    launch.add_argument(
         "--model", help="model passed through to harness after a bare --"
     )
     launch.add_argument("--cwd", help="working directory (pi/copilot only)")
@@ -1109,6 +1164,20 @@ def main() -> None:
             parser.error(
                 "--swarm and --serial require --prefix; an unscoped queue mixes projects"
             )
+        if args.items and args.exclude:
+            parser.error("--items and --exclude are mutually exclusive")
+        if (args.items or args.exclude) and args.slug:
+            parser.error(
+                "--items and --exclude are only valid with --swarm or --serial"
+            )
+        for slug in args.items or []:
+            err = validate_slug(slug, "--items")
+            if err:
+                parser.error(err)
+        for slug in args.exclude or []:
+            err = validate_slug(slug, "--exclude")
+            if err:
+                parser.error(err)
         if args.kind in ("agy", "codex"):
             if not args.slug:
                 parser.error(f"--kind {args.kind} supports single-item --slug only")

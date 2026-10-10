@@ -89,6 +89,8 @@ BACKLOG_MUTABLE_FIELDS: frozenset[str] = frozenset(
         "next_steps",
         "priority",
         "integration_branch",
+        "no_worker",
+        "no_worker_reason",
     }
 )
 """Fields a generic ``update`` patch may merge, and nothing else.
@@ -263,6 +265,8 @@ class NewItemRequest:
     related_files: tuple[Mapping[str, object], ...] = ()
     blocked_by: tuple[str, ...] = ()
     priority: str | None = None
+    no_worker: bool | None = None
+    no_worker_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -282,6 +286,8 @@ class ItemUpdateRequest:
     related_files: tuple[Mapping[str, object], ...] | _Unset = UNSET
     priority: str | _Unset | None = UNSET
     integration_branch: str | _Unset | None = UNSET
+    no_worker: bool | _Unset | None = UNSET
+    no_worker_reason: str | _Unset | None = UNSET
 
 
 @dataclass(frozen=True)
@@ -1455,6 +1461,13 @@ def add_item(
             f"{', '.join(sorted(VALID_PRIORITIES))}"
         )
 
+    if request.no_worker is not None and not isinstance(request.no_worker, bool):
+        raise ValidationError("[add] 'no_worker' must be a boolean")
+    if request.no_worker_reason is not None and not isinstance(
+        request.no_worker_reason, str
+    ):
+        raise ValidationError("[add] 'no_worker_reason' must be a string")
+
     paths = _storage_bundle(items_path)
     with dev_status_storage.backlog_lock(paths["data_dir"], paths["lock_file"]):
         items = dev_status_storage.load_items(paths["items_path"])
@@ -1490,6 +1503,10 @@ def add_item(
         }
         if request.priority is not None:
             item["priority"] = request.priority
+        if request.no_worker is not None:
+            item["no_worker"] = request.no_worker
+        if request.no_worker_reason is not None:
+            item["no_worker_reason"] = request.no_worker_reason
 
         items.append(item)
         new_rev = _bump_rev(paths["meta_path"])
@@ -1549,6 +1566,19 @@ def update_item(
                 f"[update] invalid integration_branch "
                 f"{request.integration_branch!r}: {why}"
             )
+
+    if (
+        request.no_worker is not UNSET
+        and request.no_worker is not None
+        and not isinstance(request.no_worker, bool)
+    ):
+        raise ValidationError("[update] 'no_worker' must be a boolean")
+    if (
+        request.no_worker_reason is not UNSET
+        and request.no_worker_reason is not None
+        and not isinstance(request.no_worker_reason, str)
+    ):
+        raise ValidationError("[update] 'no_worker_reason' must be a string")
 
     nulled = [
         f
@@ -1617,6 +1647,19 @@ def update_item(
                 item.pop("integration_branch", None)
             else:
                 item["integration_branch"] = cast(str, request.integration_branch)
+        if request.no_worker is not UNSET:
+            fields.append("no_worker")
+            if request.no_worker is None or request.no_worker is False:
+                item.pop("no_worker", None)
+                item.pop("no_worker_reason", None)
+            else:
+                item["no_worker"] = request.no_worker
+        if request.no_worker_reason is not UNSET:
+            fields.append("no_worker_reason")
+            if request.no_worker_reason is None:
+                item.pop("no_worker_reason", None)
+            else:
+                item["no_worker_reason"] = request.no_worker_reason
 
         item["updated"] = today()
         new_rev = _bump_rev(paths["meta_path"])
@@ -3044,6 +3087,13 @@ class _BacklogTransactionImpl:
                 f"{', '.join(sorted(VALID_PRIORITIES))}"
             )
 
+        if request.no_worker is not None and not isinstance(request.no_worker, bool):
+            raise ValidationError("[add] 'no_worker' must be a boolean")
+        if request.no_worker_reason is not None and not isinstance(
+            request.no_worker_reason, str
+        ):
+            raise ValidationError("[add] 'no_worker_reason' must be a string")
+
         if slug in self._index:
             raise DuplicateSlugError(f"[add] duplicate slug: {slug}")
         if any(p["id"] == slug for p in self._pending_items):
@@ -3066,6 +3116,10 @@ class _BacklogTransactionImpl:
         }
         if request.priority is not None:
             item["priority"] = request.priority
+        if request.no_worker is not None:
+            item["no_worker"] = request.no_worker
+        if request.no_worker_reason is not None:
+            item["no_worker_reason"] = request.no_worker_reason
 
         self._items.append(item)
         self._index[slug] = item

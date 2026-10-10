@@ -30,6 +30,12 @@ await joinSession({
             type: "string",
             description: "Slug prefix scoping automatic selection, e.g. 'atk-'.",
           },
+          exclude: {
+            type: "array",
+            items: { type: "string" },
+            description:
+              "Backlog item slugs to skip when selecting from the READY queue via prefix.",
+          },
           concurrency: {
             type: "number",
             description: "Max concurrent active workers. Default 3.",
