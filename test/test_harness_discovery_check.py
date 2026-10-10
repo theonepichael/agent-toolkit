@@ -1,19 +1,23 @@
 #!/usr/bin/env python3
 """Tests for harness_discovery_check.py. Run with: python3 test_harness_discovery_check.py
 
-Covers the stateless ``check`` tier (version-pin comparison) and the
-``probe`` tier (fixture-build + token extraction + retry logic).
+Covers the session-start ``check`` tier (per-machine probe records, the
+background probe launch, its lock and recursion guard) and the ``probe``
+tier (random-token fixture, confirmation runs, record writing).
 
 No real harness binaries are invoked — the subprocess layer is fully
-mocked. Tests that genuinely shell out carry
-``@pytest.mark.allow_real_subprocess`` per ``test/AGENTS.md``.
+mocked, and every test redirects ``XDG_STATE_HOME`` to a temp dir (the test
+bootstrap redirects ``HOME`` but not ``XDG_STATE_HOME``).
 """
 
+import fcntl
 import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -22,16 +26,26 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))
 import test_bootstrap  # noqa: E402
 import harness_discovery_check as hdc
-import harness_spec
+from pytest_shim import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# Which fixture files each fake harness "loads" — the measured behavior the
+# real probe expects (harness_spec.probe_expected_root).
+LOADS_OK: dict[str, list[str]] = {
+    "claude": ["CLAUDE.md"],
+    "opencode": ["AGENTS.md"],
+    "pi": ["AGENTS.md"],
+    "copilot": ["CLAUDE.md", "GEMINI.md", "AGENTS.md"],
+    "agy": [],
+    "codex": ["AGENTS.md"],
+}
 
 
 def _make_result(
     stdout: str = "",
     stderr: str = "",
     returncode: int = 0,
-    exc: Exception | None = None,
 ) -> object:
     """Return a fake subprocess.CompletedProcess-like object."""
 
@@ -40,39 +54,54 @@ def _make_result(
             self.stdout = stdout
             self.stderr = stderr
             self.returncode = returncode
-            self._exc = exc
 
     return _Result()
 
 
-def fake_run_factory(
-    versions: dict[str, str] | None = None,
-    probes: dict[str, str] | None = None,
-    fail_version: Sequence[str] = (),
+def fixture_run_factory(
+    loads: dict[str, object] | None = None,
+    *,
+    version: str = "1.0.0",
     fail_probe: Sequence[str] = (),
-    timeout_version: Sequence[str] = (),
     timeout_probe: Sequence[str] = (),
-) -> object:
-    """Return a fake ``subprocess.run`` callable."""
-    versions = versions or {}
-    probes = probes or {}
+    echo_prompt: Sequence[str] = (),
+    log: list[dict[str, object]] | None = None,
+) -> Callable[..., object]:
+    """Return a fake ``subprocess.run``.
+
+    A probe call answers with the token lines of the fixture files the fake
+    harness "loads" (read from the call's ``cwd``), so it can only report a
+    token that is really in the fixture. ``loads[name]`` may be a callable
+    returning the file list, for answers that change between calls.
+    """
+    loads = LOADS_OK if loads is None else loads
 
     def fake_run(cmd: Sequence[str], **kwargs: object) -> object:
-        binary = cmd[0]
-        name = Path(binary).name
-        # Version call
+        name = Path(cmd[0]).name
+        if name == "git":
+            return _make_result()
         if "--version" in cmd:
-            if name in timeout_version:
-                raise TimeoutError("timed out")
-            if name in fail_version:
-                return _make_result(stderr="error", returncode=1)
-            return _make_result(stdout=versions.get(name, "0.0.0") + "\n")
-        # Probe call
+            return _make_result(stdout=f"{version}\n")
+        if log is not None:
+            log.append(
+                {
+                    "name": name,
+                    "prompt": cmd[-1],
+                    "env": kwargs.get("env"),
+                    "cwd": kwargs.get("cwd"),
+                }
+            )
         if name in timeout_probe:
             raise TimeoutError("timed out")
         if name in fail_probe:
             return _make_result(stderr="auth failed", returncode=1)
-        return _make_result(stdout=probes.get(name, ""))
+        if name in echo_prompt:
+            return _make_result(stdout=str(cmd[-1]))
+        spec = loads.get(name, [])
+        files = spec() if callable(spec) else spec
+        cwd = Path(str(kwargs["cwd"]))
+        found = [(cwd / rel).read_text().strip() for rel in files]  # type: ignore[union-attr]
+        return _make_result(stdout=("Markers: " + ", ".join(found)) if found else "none")
 
     return fake_run
 
@@ -83,435 +112,549 @@ def fake_resolve_binary(name: str) -> Path | None:
     return Path(f"/fake/bin/{name}")
 
 
-class CheckTestCase(unittest.TestCase):
-    def setUp(self) -> None:
-        self._patches = [
-            patch.object(hdc, "resolve_binary", fake_resolve_binary),
-        ]
-        for p in self._patches:
-            p.start()
+class StateTestCase(unittest.TestCase):
+    """Real temp-dir binaries (stat-able) and a throwaway XDG_STATE_HOME."""
 
-    def tearDown(self) -> None:
-        for p in self._patches:
-            p.stop()
+    NOW = 1_800_000_000.0
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.bin_dir = self.root / "bin"
+        self.bin_dir.mkdir()
+        self.state_root = self.root / "state"
+        env = patch.dict(
+            os.environ,
+            {
+                "XDG_STATE_HOME": str(self.state_root),
+                "XDG_CACHE_HOME": str(self.root / "cache"),
+            },
+        )
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop(hdc.GUARD_ENV, None)
+        self.missing: set[str] = set()
+        resolve = patch.object(hdc, "resolve_binary", self._fake_binary)
+        resolve.start()
+        self.addCleanup(resolve.stop)
+        self.launches: list[tuple[str, tuple[str, int, int]]] = []
+        self.launch_result: str | None = None
+
+    def _fake_binary(self, name: str) -> Path | None:
+        if name in self.missing:
+            return None
+        path = self.bin_dir / name
+        if not path.exists():
+            path.write_text(f"#!/bin/sh\necho {name}\n")
+        return path
+
+    def identity(self, name: str) -> tuple[str, int, int]:
+        binary = self._fake_binary(name)
+        assert binary is not None
+        key = hdc._stat_key(binary)
+        assert key is not None
+        return key
+
+    def write(self, name: str, status: str, **overrides: object) -> None:
+        path, mtime_ns, size = self.identity(name)
+        record: dict[str, object] = {
+            "identity": {"path": path, "mtime_ns": mtime_ns, "size": size},
+            "version": "1.0.0",
+            "probe_schema": hdc.probe_schema(),
+            "status": status,
+            "detail": None if status == "HOLD" else f"{name} detail",
+            "checked_at": self.NOW - 60,
+            "error_count": 0,
+            "next_retry_at": None,
+        }
+        record.update(overrides)
+        hdc._record_path(name).parent.mkdir(parents=True, exist_ok=True)
+        hdc._record_path(name).write_text(json.dumps(record))
+
+    def hold_all(self) -> None:
+        for name in hdc._LOAD_BEARING:
+            self.write(name, "HOLD")
+
+    def fake_launch(self, name: str, identity: tuple[str, int, int]) -> str | None:
+        self.launches.append((name, identity))
+        return self.launch_result
 
     def run_check(
         self,
         *,
-        hook: bool = False,
+        hook: bool = True,
         strict: bool = False,
-        fake_run=None,
-        quiet: bool = False,
+        now: float | None = None,
     ) -> tuple[int, str]:
         out = io.StringIO()
         err = io.StringIO()
-        with patch("sys.stdout", out), patch("sys.stderr", err):
+
+        def no_subprocess(*_a: object, **_k: object) -> object:
+            raise AssertionError("check must not spawn a subprocess")
+
+        with (
+            patch("sys.stdout", out),
+            patch("sys.stderr", err),
+            patch.object(hdc.subprocess, "run", no_subprocess),
+        ):
             code = hdc.cmd_check(
-                hook=hook, strict=strict, quiet=quiet, run_command=fake_run
+                hook=hook,
+                strict=strict,
+                now=self.NOW if now is None else now,
+                launch=self.fake_launch,
             )
         return code, out.getvalue() + err.getvalue()
 
-    def test_matching_versions_exit_clean(self) -> None:
-        fake = fake_run_factory(
-            versions={
-                "claude": hdc.CLAUDE_CODE_PINNED_VERSION,
-                "opencode": hdc.pinned_version("opencode"),
-            }
-        )
-        code, output = self.run_check(fake_run=fake)
-        self.assertEqual(code, 0)
-        self.assertEqual(output.strip(), "")
 
-    def test_mismatch_prints_note(self) -> None:
-        fake = fake_run_factory(
-            versions={
-                "claude": "2.1.999",
-                "opencode": hdc.pinned_version("opencode"),
-            }
+class HookCheckTestCase(StateTestCase):
+    @pytest.mark.regression(
+        "harness-upgrade-nags-until-repo-repin",
+        "AttributeError: module 'harness_discovery_check' has no attribute 'GUARD_ENV'",
+    )
+    def test_unverified_binary_launches_probe_silently(self) -> None:
+        code, output = self.run_check()
+        self.assertEqual(code, 0)
+        self.assertEqual(output, "")
+        self.assertEqual(
+            [name for name, _ in self.launches], list(hdc._LOAD_BEARING)
         )
-        code, output = self.run_check(fake_run=fake)
+        self.assertEqual(self.launches[0][1], self.identity(hdc._LOAD_BEARING[0]))
+
+    def test_hold_record_is_silent_and_launches_nothing(self) -> None:
+        self.hold_all()
+        code, output = self.run_check()
+        self.assertEqual((code, output, self.launches), (0, "", []))
+
+    def test_broken_record_prints_note(self) -> None:
+        self.hold_all()
+        self.write("claude", "BROKEN", detail="missing ['FIXTURE_TOKEN_CLAUDE_ROOT']")
+        code, output = self.run_check()
         self.assertEqual(code, 0)
         self.assertIn("claude", output)
-        self.assertIn("2.1.999", output)
-        self.assertIn(hdc.CLAUDE_CODE_PINNED_VERSION, output)
+        self.assertIn("FIXTURE_TOKEN_CLAUDE_ROOT", output)
         self.assertIn("probe --harness claude", output)
+        self.assertEqual(self.launches, [])
 
-    def test_mismatch_strict_exits_2(self) -> None:
-        fake = fake_run_factory(
-            versions={
-                "claude": "2.1.999",
-                "opencode": hdc.pinned_version("opencode"),
-            }
+    def test_changed_identity_counts_as_missing(self) -> None:
+        self.hold_all()
+        (self.bin_dir / "claude").write_text("#!/bin/sh\necho upgraded build\n")
+        code, output = self.run_check()
+        self.assertEqual((code, output), (0, ""))
+        self.assertEqual([n for n, _ in self.launches], ["claude"])
+
+    def test_changed_probe_schema_counts_as_missing(self) -> None:
+        self.hold_all()
+        self.write("opencode", "HOLD", probe_schema="stale")
+        self.run_check()
+        self.assertEqual([n for n, _ in self.launches], ["opencode"])
+
+    def test_corrupt_record_triggers_reprobe(self) -> None:
+        self.hold_all()
+        hdc._record_path("claude").write_text("{not json")
+        code, output = self.run_check()
+        self.assertEqual((code, output), (0, ""))
+        self.assertEqual([n for n, _ in self.launches], ["claude"])
+
+    def test_error_record_waits_for_retry_time(self) -> None:
+        self.hold_all()
+        self.write("claude", "ERROR", error_count=1, next_retry_at=self.NOW + 10)
+        code, output = self.run_check()
+        self.assertEqual((code, output, self.launches), (0, "", []))
+        self.run_check(now=self.NOW + 11)
+        self.assertEqual([n for n, _ in self.launches], ["claude"])
+
+    def test_third_error_prints_could_not_verify(self) -> None:
+        self.hold_all()
+        self.write(
+            "claude",
+            "ERROR",
+            version="2.1.290",
+            detail="claude: probe exited nonzero: auth failed",
+            error_count=3,
+            next_retry_at=self.NOW + 100,
         )
-        code, _ = self.run_check(fake_run=fake, strict=True)
-        self.assertEqual(code, 2)
-
-    def test_missing_binary_unverifiable_exit_0(self) -> None:
-        fake = fake_run_factory(versions={})
-        with patch.object(hdc, "resolve_binary", lambda _name: None):
-            code, output = self.run_check(fake_run=fake)
+        code, output = self.run_check()
         self.assertEqual(code, 0)
-        self.assertEqual(output.strip(), "")
+        self.assertIn("could not verify claude 2.1.290", output)
+        self.assertIn("auth failed", output)
+        self.assertNotIn("changed", output)
 
-    def test_version_failure_is_error(self) -> None:
-        fake = fake_run_factory(
-            versions={"claude": "2.1.251"}, fail_version=("opencode",)
-        )
-        code, output = self.run_check(fake_run=fake)
-        self.assertEqual(code, 1)
+    def test_fourth_error_stops_automatic_retries(self) -> None:
+        self.hold_all()
+        self.write("claude", "ERROR", error_count=4, next_retry_at=None)
+        self.run_check(now=self.NOW + 10**8)
+        self.assertEqual(self.launches, [])
+
+    def test_missing_binary_is_silent(self) -> None:
+        self.missing = {"claude", "opencode"}
+        code, output = self.run_check(strict=True)
+        self.assertEqual((code, output, self.launches), (0, "", []))
+
+    def test_strict_exit_codes(self) -> None:
+        code, _ = self.run_check(strict=True)
+        self.assertEqual(code, 2, "pending")
+        self.hold_all()
+        code, _ = self.run_check(strict=True)
+        self.assertEqual(code, 0, "all HOLD")
+        for status in ("BROKEN", "ERROR"):
+            with self.subTest(status=status):
+                self.write("claude", status, next_retry_at=self.NOW + 100)
+                code, _ = self.run_check(strict=True)
+                self.assertEqual(code, 2)
+
+    def test_guard_env_makes_check_a_noop(self) -> None:
+        with patch.dict(os.environ, {hdc.GUARD_ENV: "1"}):
+            code, output = self.run_check(strict=True)
+        self.assertEqual((code, output, self.launches), (0, "", []))
+
+    def test_launch_failure_records_error_silently(self) -> None:
+        self.launch_result = "Popen failed: boom"
+        code, output = self.run_check()
+        self.assertEqual((code, output), (0, ""))
+        record = hdc.read_record("claude")
+        assert record is not None
+        self.assertEqual(record["status"], "ERROR")
+        self.assertEqual(record["error_count"], 1)
+        self.assertIn("boom", str(record["detail"]))
+        self.assertEqual(record["next_retry_at"], self.NOW + hdc._RETRY_DELAYS[0])
+
+    def test_launch_failure_without_writable_state_prints_one_line(self) -> None:
+        self.launch_result = "lock file not openable"
+        self.state_root.write_text("not a directory")
+        code, output = self.run_check()
+        self.assertEqual(code, 0)
+        self.assertIn("cannot verify claude", output)
+        self.assertEqual(len(output.strip().splitlines()), len(hdc._LOAD_BEARING))
+
+    def test_manual_check_reports_missing_and_pending(self) -> None:
+        self.missing = {"opencode"}
+        code, output = self.run_check(hook=False)
+        self.assertEqual(code, 0)
         self.assertIn("opencode", output)
-        self.assertIn("ERROR", output.upper())
-
-    def test_hook_mode_crash_note_on_error(self) -> None:
-        fake = fake_run_factory(fail_version=("claude",))
-        code, output = self.run_check(fake_run=fake, hook=True)
-        self.assertEqual(code, 1)
-        self.assertIn("checker failed", output)
-
-    def test_hook_mode_empty_on_clean(self) -> None:
-        fake = fake_run_factory(
-            versions={
-                "claude": hdc.CLAUDE_CODE_PINNED_VERSION,
-                "opencode": hdc.pinned_version("opencode"),
-            }
-        )
-        code, output = self.run_check(fake_run=fake, hook=True)
-        self.assertEqual(code, 0)
-        self.assertEqual(output.strip(), "")
-
-    def test_both_mismatch_notes_printed(self) -> None:
-        fake = fake_run_factory(versions={"claude": "2.1.999", "opencode": "1.19.0"})
-        code, output = self.run_check(fake_run=fake)
-        self.assertEqual(code, 0)
+        self.assertIn("not installed", output)
         self.assertIn("claude", output)
-        self.assertIn("opencode", output)
+        self.assertIn("not verified", output)
+        self.assertEqual(self.launches, [], "a manual check never launches")
 
-    def test_verbosity_flags_present(self) -> None:
-        for cmd in ("check", "probe"):
-            args = hdc.build_parser().parse_args([cmd, "-q"])
-            self.assertTrue(args.quiet)
-            self.assertFalse(getattr(args, "verbose", True))
+
+class LaunchTestCase(StateTestCase):
+    def test_launch_detaches_and_hands_over_the_lock(self) -> None:
+        seen: dict[str, object] = {}
+        identity = self.identity("claude")
+
+        def fake_popen(argv: Sequence[str], **kwargs: object) -> object:
+            seen["argv"] = list(argv)
+            seen["kwargs"] = kwargs
+            # While the probe is being started the lock must already be held.
+            with open(hdc._lock_path("claude"), "a") as handle:
+                with self.assertRaises(BlockingIOError):
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return object()
+
+        self.assertIsNone(hdc._launch_probe("claude", identity, popen=fake_popen))
+        argv = seen["argv"]
+        kwargs = seen["kwargs"]
+        assert isinstance(argv, list) and isinstance(kwargs, dict)
+        self.assertIn("probe", argv)
+        self.assertIn("--record", argv)
+        self.assertEqual(argv[argv.index("--harness") + 1], "claude")
+        self.assertEqual(
+            argv[argv.index("--expect-identity") + 1],
+            hdc._format_identity(identity),
+        )
+        lock_fd = int(argv[argv.index("--lock-fd") + 1])
+        self.assertTrue(kwargs["start_new_session"])
+        self.assertEqual(kwargs["pass_fds"], (lock_fd,))
+        for stream in ("stdin", "stdout", "stderr"):
+            self.assertIs(kwargs[stream], subprocess.DEVNULL)
+
+    def test_held_lock_blocks_a_second_launch(self) -> None:
+        calls: list[object] = []
+        path = hdc._lock_path("claude")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            result = hdc._launch_probe(
+                "claude", self.identity("claude"), popen=lambda *a, **k: calls.append(a)
+            )
+        self.assertIsNone(result)
+        self.assertEqual(calls, [])
+
+    def test_popen_failure_is_reported_and_releases_the_lock(self) -> None:
+        def failing_popen(*_a: object, **_k: object) -> object:
+            raise OSError("no exec")
+
+        result = hdc._launch_probe("claude", self.identity("claude"), popen=failing_popen)
+        self.assertIsNotNone(result)
+        self.assertIn("no exec", str(result))
+        with open(hdc._lock_path("claude"), "a") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+class RecordProbeTestCase(StateTestCase):
+    def run_probe(
+        self,
+        fake_run: Callable[..., object],
+        *,
+        harness: str = "claude",
+        record: bool = True,
+        expect_identity: str | None = None,
+        now: float | None = None,
+    ) -> tuple[int, str]:
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            code = hdc.cmd_probe(
+                harness=harness,
+                record=record,
+                expect_identity=expect_identity,
+                run_command=fake_run,
+                now=self.NOW if now is None else now,
+            )
+        return code, out.getvalue()
+
+    def test_hold_is_recorded_with_identity_schema_and_version(self) -> None:
+        code, _ = self.run_probe(fixture_run_factory(version="2.1.290 (Claude Code)"))
+        self.assertEqual(code, 0)
+        record = hdc.read_record("claude")
+        assert record is not None
+        self.assertEqual(record["status"], "HOLD")
+        self.assertEqual(record["version"], "2.1.290")
+        self.assertEqual(record["probe_schema"], hdc.probe_schema())
+        self.assertEqual(record["error_count"], 0)
+        path, mtime_ns, size = self.identity("claude")
+        self.assertEqual(
+            record["identity"], {"path": path, "mtime_ns": mtime_ns, "size": size}
+        )
+
+    def test_single_mismatch_then_hold_records_inconsistent_error(self) -> None:
+        answers = iter([["AGENTS.md"], ["CLAUDE.md"]])
+        fake = fixture_run_factory({"claude": lambda: next(answers)})
+        self.run_probe(fake)
+        record = hdc.read_record("claude")
+        assert record is not None
+        self.assertEqual(record["status"], "ERROR")
+        self.assertIn("inconsistent", str(record["detail"]))
+        self.assertEqual(record["error_count"], 1)
+
+    def test_two_mismatches_record_broken(self) -> None:
+        log: list[dict[str, object]] = []
+        fake = fixture_run_factory({"claude": ["AGENTS.md"]}, log=log)
+        code, output = self.run_probe(fake)
+        self.assertEqual(code, 1)
+        self.assertIn("BROKEN", output)
+        record = hdc.read_record("claude")
+        assert record is not None
+        self.assertEqual(record["status"], "BROKEN")
+        self.assertIn("FIXTURE_TOKEN_CLAUDE_ROOT", str(record["detail"]))
+        self.assertEqual(len(log), 2, "exactly one confirming re-run")
+        self.assertNotEqual(log[0]["cwd"], log[1]["cwd"], "fresh fixture per run")
+
+    def test_identity_change_mid_probe_records_nothing(self) -> None:
+        stale = hdc._format_identity(self.identity("claude"))
+        (self.bin_dir / "claude").write_text("#!/bin/sh\necho replaced\n")
+        self.run_probe(fixture_run_factory(), expect_identity=stale)
+        self.assertIsNone(hdc.read_record("claude"))
+
+    def test_error_count_and_retry_schedule(self) -> None:
+        fake = fixture_run_factory(fail_probe=("claude",))
+        with patch.object(hdc, "_PROBE_ATTEMPTS", 1):
+            expected_delays = list(hdc._RETRY_DELAYS) + [None]
+            for count, delay in enumerate(expected_delays, start=1):
+                with self.subTest(count=count):
+                    self.run_probe(fake)
+                    record = hdc.read_record("claude")
+                    assert record is not None
+                    self.assertEqual(record["error_count"], count)
+                    self.assertEqual(
+                        record["next_retry_at"],
+                        None if delay is None else self.NOW + delay,
+                    )
+                    self.assertIn("auth failed", str(record["detail"]))
+        self.run_probe(fixture_run_factory())
+        record = hdc.read_record("claude")
+        assert record is not None
+        self.assertEqual((record["status"], record["error_count"]), ("HOLD", 0))
+
+    def test_error_count_resets_on_new_identity(self) -> None:
+        self.write("claude", "ERROR", error_count=2)
+        (self.bin_dir / "claude").write_text("#!/bin/sh\necho new build\n")
+        with patch.object(hdc, "_PROBE_ATTEMPTS", 1):
+            self.run_probe(fixture_run_factory(fail_probe=("claude",)))
+        record = hdc.read_record("claude")
+        assert record is not None
+        self.assertEqual(record["error_count"], 1)
+
+    def test_plain_probe_writes_nothing(self) -> None:
+        self.run_probe(fixture_run_factory(), record=False)
+        self.assertIsNone(hdc.read_record("claude"))
+
+    def test_two_harnesses_keep_both_records(self) -> None:
+        self.run_probe(fixture_run_factory(), harness="claude")
+        self.run_probe(fixture_run_factory(), harness="opencode")
+        self.assertIsNotNone(hdc.read_record("claude"))
+        self.assertIsNotNone(hdc.read_record("opencode"))
+
+    def test_children_get_the_recursion_guard_and_pwd(self) -> None:
+        log: list[dict[str, object]] = []
+        self.run_probe(fixture_run_factory(log=log))
+        env = log[0]["env"]
+        assert isinstance(env, dict)
+        self.assertEqual(env.get(hdc.GUARD_ENV), "1")
+        self.assertEqual(env.get("PWD"), str(log[0]["cwd"]))
+
+    def test_manual_record_refuses_while_another_probe_holds_the_lock(self) -> None:
+        path = hdc._lock_path("claude")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            code, output = self.run_probe(fixture_run_factory())
+        self.assertEqual(code, 1)
+        self.assertIn("already running", output)
+        self.assertIsNone(hdc.read_record("claude"))
 
 
 class ProbeTestCase(unittest.TestCase):
     def setUp(self) -> None:
-        self._patches = [
-            patch.object(hdc, "resolve_binary", fake_resolve_binary),
-        ]
-        for p in self._patches:
-            p.start()
-
-    def tearDown(self) -> None:
-        for p in self._patches:
-            p.stop()
+        resolve = patch.object(hdc, "resolve_binary", fake_resolve_binary)
+        resolve.start()
+        self.addCleanup(resolve.stop)
 
     def run_probe(
         self,
         *,
         harness: str | None = None,
-        fake_run=None,
-        quiet: bool = False,
+        fake_run: Callable[..., object] | None = None,
     ) -> tuple[int, str]:
         out = io.StringIO()
         with patch("sys.stdout", out):
-            code = hdc.cmd_probe(harness=harness, quiet=quiet, run_command=fake_run)
+            code = hdc.cmd_probe(harness=harness, run_command=fake_run)
         return code, out.getvalue()
 
     def test_all_hold(self) -> None:
-        fake = fake_run_factory(
-            probes={
-                "claude": hdc._TOKEN_CLAUDE_ROOT,
-                "opencode": hdc._TOKEN_AGENTS_ROOT,
-                "pi": hdc._TOKEN_AGENTS_ROOT,
-                "copilot": f"{hdc._TOKEN_CLAUDE_ROOT}, {hdc._TOKEN_GEMINI_ROOT}, {hdc._TOKEN_AGENTS_ROOT}",
-                "agy": "none",
-                "codex": hdc._TOKEN_AGENTS_ROOT,
-            }
-        )
-        code, output = self.run_probe(fake_run=fake)
+        code, output = self.run_probe(fake_run=fixture_run_factory())
         self.assertEqual(code, 0)
         self.assertIn("HOLD", output)
         self.assertNotIn("BROKEN", output)
         self.assertNotIn("ERROR", output)
 
     def test_broken_row(self) -> None:
-        fake = fake_run_factory(
-            probes={
-                "claude": hdc._TOKEN_AGENTS_ROOT,  # wrong — should be CLAUDE only
-            }
-        )
+        fake = fixture_run_factory({"claude": ["AGENTS.md"]})
         code, output = self.run_probe(harness="claude", fake_run=fake)
         self.assertEqual(code, 1)
         self.assertIn("BROKEN", output)
         self.assertIn("unexpected", output)
         self.assertIn("missing", output)
-        self.assertIn("re-measure", output.lower())
+        self.assertIn("harness_spec.py", output)
 
     def test_error_on_timeout(self) -> None:
-        fake = fake_run_factory(timeout_probe=("opencode",))
+        fake = fixture_run_factory(timeout_probe=("opencode",))
         code, output = self.run_probe(harness="opencode", fake_run=fake)
         self.assertEqual(code, 1)
         self.assertIn("ERROR", output)
         self.assertIn("timed out", output)
 
     def test_error_on_nonzero_exit(self) -> None:
-        fake = fake_run_factory(fail_probe=("pi",))
+        fake = fixture_run_factory(fail_probe=("pi",))
         code, output = self.run_probe(harness="pi", fake_run=fake)
         self.assertEqual(code, 1)
-        self.assertIn("ERROR", output)
         self.assertIn("auth failed", output)
 
     def test_retry_on_empty_response(self) -> None:
-        """Empty responses should be retried before accepting ERROR."""
-        call_count = 0
-
-        def counting_run(cmd, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            if call_count < hdc._PROBE_ATTEMPTS:
-                return _make_result(stdout="some prose without tokens")
-            return _make_result(stdout=hdc._TOKEN_AGENTS_ROOT)
-
-        code, output = self.run_probe(harness="opencode", fake_run=counting_run)
+        answers = iter([[], ["AGENTS.md"]])
+        fake = fixture_run_factory({"opencode": lambda: next(answers)})
+        code, output = self.run_probe(harness="opencode", fake_run=fake)
         self.assertEqual(code, 0)
         self.assertIn("HOLD", output)
-        self.assertGreaterEqual(call_count, 2)
 
-    def test_retry_then_error(self) -> None:
-        """After _PROBE_ATTEMPTS empty/invalid responses, yield ERROR."""
-        fake = fake_run_factory(probes={"claude": "just prose no tokens"})
-        with patch.object(hdc, "_PROBE_ATTEMPTS", 2):
+    def test_echoing_the_prompt_yields_no_tokens(self) -> None:
+        """The prompt names no token, so an answer that merely repeats it
+        can never count as a loaded file."""
+        fake = fixture_run_factory(echo_prompt=("claude",))
+        with patch.object(hdc, "_PROBE_ATTEMPTS", 1):
             code, output = self.run_probe(harness="claude", fake_run=fake)
         self.assertEqual(code, 1)
         self.assertIn("ERROR", output)
+        self.assertNotIn("BROKEN", output)
 
-    def test_prose_wrapped_extraction(self) -> None:
-        """Tokens buried in markdown/prose must still be extracted."""
-        response = (
-            "Sure! Here are the tokens I found:\n\n"
-            f"- {hdc._TOKEN_CLAUDE_ROOT}\n"
-            "- some other text\n"
-        )
-        fake = fake_run_factory(probes={"claude": response})
-        code, output = self.run_probe(harness="claude", fake_run=fake)
-        self.assertEqual(code, 0)
-        self.assertIn("HOLD", output)
+    def test_tokens_are_random_per_run_and_absent_from_prompt(self) -> None:
+        log: list[dict[str, object]] = []
+        fake = fixture_run_factory({"claude": ["AGENTS.md"]}, log=log)
+        self.run_probe(harness="claude", fake_run=fake)
+        self.run_probe(harness="claude", fake_run=fake)
+        tokens = []
+        for entry in log:
+            fixture = Path(str(entry["cwd"]))
+            tokens.append((fixture / "AGENTS.md").read_text().strip()) if fixture.exists() else None
+        prompts = {str(entry["prompt"]) for entry in log}
+        self.assertEqual(len(prompts), 1, "the prompt is fixed; only the fixture changes")
+        prompt = prompts.pop()
+        for label in hdc._ALL_TOKENS:
+            self.assertNotIn(label, prompt)
 
-    def test_fixture_built(self) -> None:
-        """The temp fixture repo must contain all six token files."""
+    def test_fixture_tokens_differ_between_runs(self) -> None:
+        first = hdc._new_tokens()
+        second = hdc._new_tokens()
+        self.assertEqual(set(first), set(hdc._ALL_TOKENS))
+        self.assertTrue(set(first.values()).isdisjoint(second.values()))
         with tempfile.TemporaryDirectory() as tmpdir:
-            repo = Path(tmpdir) / "fixture"
-            repo.mkdir()
-            hdc._build_fixture(repo, run_command=lambda cmd, **kw: _make_result())
-            self.assertTrue((repo / "AGENTS.md").is_file())
-            self.assertTrue((repo / "CLAUDE.md").is_file())
-            self.assertTrue((repo / "GEMINI.md").is_file())
-            self.assertTrue((repo / "sub" / "AGENTS.md").is_file())
-            self.assertTrue((repo / "sub" / "CLAUDE.md").is_file())
-            self.assertTrue((repo / "sub" / "GEMINI.md").is_file())
-            self.assertIn(
-                hdc._TOKEN_AGENTS_ROOT,
-                (repo / "AGENTS.md").read_text(),
-            )
+            repo = Path(tmpdir)
+            hdc._build_fixture(repo, first, run_command=lambda cmd, **kw: _make_result())
+            self.assertIn(first[hdc._TOKEN_AGENTS_ROOT], (repo / "AGENTS.md").read_text())
+            self.assertIn(first[hdc._TOKEN_GEMINI_SUB], (repo / "sub" / "GEMINI.md").read_text())
+
+    def test_parse_tokens_maps_values_back_to_labels(self) -> None:
+        tokens = hdc._new_tokens()
+        text = f"I see {tokens[hdc._TOKEN_AGENTS_ROOT]} and also {hdc._TOKEN_CLAUDE_ROOT}."
+        self.assertEqual(hdc._parse_tokens(text, tokens), {hdc._TOKEN_AGENTS_ROOT})
+        self.assertEqual(hdc._parse_tokens("none", tokens), set())
 
     def test_single_harness_probe(self) -> None:
-        fake = fake_run_factory(probes={"pi": hdc._TOKEN_AGENTS_ROOT})
-        code, output = self.run_probe(harness="pi", fake_run=fake)
+        code, output = self.run_probe(harness="pi", fake_run=fixture_run_factory())
         self.assertEqual(code, 0)
         self.assertIn("pi", output)
         self.assertNotIn("claude", output)
 
-    def test_probe_env_pwd_matches_cwd(self) -> None:
-        """subprocess ``cwd=`` alone doesn't update the inherited ``PWD``
-        env var, and opencode resolves its project root from ``$PWD`` —
-        not the real working directory — so a probe left with a stale
-        ``PWD`` silently reads the caller's own repo instead of the
-        fixture, misreporting ERROR. ``env["PWD"]`` must track ``cwd``."""
-        seen_env: dict[str, object] = {}
+    def test_probe_runs_the_resolved_binary(self) -> None:
+        """The probe must run the file whose identity is recorded — also a
+        fallback-path binary that is not on ``PATH``."""
+        log: list[dict[str, object]] = []
+        seen: list[Sequence[str]] = []
+        inner = fixture_run_factory(log=log)
 
-        def recording_run(cmd, **kwargs):
-            seen_env["env"] = kwargs.get("env")
-            seen_env["cwd"] = kwargs.get("cwd")
-            return _make_result(stdout=hdc._TOKEN_AGENTS_ROOT)
+        def fake_run(cmd: Sequence[str], **kwargs: object) -> object:
+            seen.append(cmd)
+            return inner(cmd, **kwargs)
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            repo = Path(tmpdir) / "fixture"
-            repo.mkdir()
-            hdc._run_probe("opencode", repo, run_command=recording_run)
-
-        env = seen_env["env"]
-        self.assertIsNotNone(env, "run_command must be called with an env kwarg")
-        self.assertEqual(env.get("PWD"), str(seen_env["cwd"]))
+        self.run_probe(harness="opencode", fake_run=fake_run)
+        probe_calls = [cmd for cmd in seen if "--version" not in cmd and Path(cmd[0]).name != "git"]
+        self.assertEqual(probe_calls[0][0], "/fake/bin/opencode")
 
 
-def counting_run_factory(
-    versions: dict[str, str],
-    counter: dict[str, int],
-) -> Callable[..., object]:
-    """Return a fake ``subprocess.run`` that counts ``--version`` spawns."""
+class RemovedPinsTestCase(unittest.TestCase):
+    def test_no_version_pin_constants_remain(self) -> None:
+        for name in (
+            "CLAUDE_CODE_PINNED_VERSION",
+            "OPENCODE_PINNED_VERSION",
+            "PI_PINNED_VERSION",
+            "COPILOT_PINNED_VERSION",
+            "AGY_PINNED_VERSION",
+            "CODEX_PINNED_VERSION",
+            "pinned_version",
+        ):
+            with self.subTest(name=name):
+                self.assertFalse(hasattr(hdc, name))
 
-    def fake_run(cmd: Sequence[str], **kwargs: object) -> object:
-        if "--version" in cmd:
-            counter["version"] += 1
-            name = Path(cmd[0]).name
-            return _make_result(stdout=versions.get(name, "0.0.0") + "\n")
-        counter["other"] += 1
-        return _make_result()
+    def test_probe_schema_tracks_expectations(self) -> None:
+        import harness_spec
 
-    return fake_run
-
-
-class VersionCacheTestCase(unittest.TestCase):
-    """Regression tests for the version-probe cache.
-
-    The binaries are real temp-dir files (so mtime/size are stat-able and
-    changeable) and the cache file is redirected into a throwaway
-    ``XDG_CACHE_HOME`` — never the real ``~/.cache``.
-    """
-
-    DRIFTED_VERSIONS = {"claude": "2.1.999", "opencode": "1.19.999"}
-
-    def setUp(self) -> None:
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.bin_dir = Path(tmp.name) / "bin"
-        self.bin_dir.mkdir()
-        self.cache_dir = Path(tmp.name) / "cache"
-        self.cache_dir.mkdir()
-        env = patch.dict(os.environ, {"XDG_CACHE_HOME": str(self.cache_dir)})
-        env.start()
-        self.addCleanup(env.stop)
-        resolve = patch.object(hdc, "resolve_binary", self._fake_binary)
-        resolve.start()
-        self.addCleanup(resolve.stop)
-
-    def _fake_binary(self, name: str) -> Path:
-        path = self.bin_dir / name
-        if not path.exists():
-            path.write_text(f"#!/bin/sh\necho {name}-fake\n")
-        return path
-
-    def _cache_file(self) -> Path:
-        return hdc._cache_path()
-
-    def _run_check(
-        self,
-        counter: dict[str, int],
-        *,
-        hook: bool = False,
-        strict: bool = False,
-    ) -> tuple[int, str]:
-        fake = counting_run_factory(self.DRIFTED_VERSIONS, counter)
-        out = io.StringIO()
-        err = io.StringIO()
-        with patch("sys.stdout", out), patch("sys.stderr", err):
-            code = hdc.cmd_check(
-                hook=hook, strict=strict, quiet=False, run_command=fake
-            )
-        return code, out.getvalue() + err.getvalue()
-
-    def test_cache_hit_skips_subprocess_spawn(self) -> None:
-        """A warm cache must answer the pin comparison without spawning any
-        subprocess, and must still print the same mismatch notes."""
-        first: dict[str, int] = {"version": 0, "other": 0}
-        code1, out1 = self._run_check(first)
-        self.assertEqual(code1, 0)
-        self.assertEqual(first["version"], 2)
-        self.assertTrue(self._cache_file().exists())
-
-        second: dict[str, int] = {"version": 0, "other": 0}
-        code2, out2 = self._run_check(second)
-        self.assertEqual(code2, 0)
-        self.assertEqual(second["version"], 0)
-        self.assertEqual(out2, out1)
-
-    def test_cache_miss_spawns_and_writes_entry(self) -> None:
-        """A cold cache spawns as today and persists a per-harness entry
-        carrying the measured version and the binary key."""
-        counter: dict[str, int] = {"version": 0, "other": 0}
-        code, _ = self._run_check(counter)
-        self.assertEqual(code, 0)
-        self.assertEqual(counter["version"], 2)
-
-        data = json.loads(self._cache_file().read_text())
-        for name in ("claude", "opencode"):
-            entry = data[name]
-            binary = self.bin_dir / name
-            st = binary.stat()
-            self.assertEqual(entry["version"], self.DRIFTED_VERSIONS[name])
-            self.assertEqual(entry["path"], str(binary))
-            self.assertEqual(entry["mtime_ns"], st.st_mtime_ns)
-            self.assertEqual(entry["size"], st.st_size)
-
-    def test_changed_mtime_invalidates_and_respawns(self) -> None:
-        """A binary whose mtime moved must never be answered from cache."""
-        warm: dict[str, int] = {"version": 0, "other": 0}
-        self._run_check(warm)
-        self.assertEqual(warm["version"], 2)
-
-        later = self.bin_dir.joinpath("claude").stat().st_mtime_ns + 60_000_000_000
-        os.utime(self.bin_dir / "claude", ns=(later, later))
-
-        again: dict[str, int] = {"version": 0, "other": 0}
-        code, _ = self._run_check(again)
-        # Only the changed binary respawns; opencode is still a cache hit.
-        self.assertEqual(again["version"], 1)
-        self.assertEqual(code, 0)
-        data = json.loads(self._cache_file().read_text())
-        self.assertEqual(data["claude"]["mtime_ns"], later)
-
-    def test_changed_size_invalidates_and_respawns(self) -> None:
-        """A binary whose size changed (mtime restored to the cached value)
-        must never be answered from cache."""
-        warm: dict[str, int] = {"version": 0, "other": 0}
-        self._run_check(warm)
-        self.assertEqual(warm["version"], 2)
-
-        binary = self.bin_dir / "opencode"
-        st = binary.stat()
-        binary.write_text(binary.read_text() + "# size-only change\n")
-        os.utime(binary, ns=(st.st_mtime_ns, st.st_mtime_ns))
-
-        again: dict[str, int] = {"version": 0, "other": 0}
-        code, _ = self._run_check(again)
-        # Size moved while mtime stayed at the cached value: the size part
-        # of the key alone must force a fresh spawn (and only for that
-        # binary — claude is still a cache hit).
-        self.assertEqual(again["version"], 1)
-        self.assertEqual(code, 0)
-        data = json.loads(self._cache_file().read_text())
-        self.assertEqual(data["opencode"]["size"], binary.stat().st_size)
-
-    def test_corrupt_cache_file_degrades_safely(self) -> None:
-        """A corrupt/unreadable cache file must degrade to the uncached
-        behavior — spawn, note as usual, and rewrite a valid cache. Never
-        crash the hook."""
-        cases = ["{{{ not json", json.dumps(["wrong", "shape"]), ""]
-        for payload in cases:
-            with self.subTest(payload=payload):
-                cache_file = self._cache_file()
-                cache_file.parent.mkdir(parents=True, exist_ok=True)
-                cache_file.write_text(payload)
-                counter: dict[str, int] = {"version": 0, "other": 0}
-                code, _ = self._run_check(counter, hook=True)
-                self.assertEqual(code, 0)
-                self.assertEqual(counter["version"], 2)
-                data = json.loads(cache_file.read_text())
-                self.assertIn("claude", data)
-
-    def test_unwritable_cache_dir_degrades_safely(self) -> None:
-        """If the cache directory cannot be created or written, the check
-        must still run to completion with today's exact output contract."""
-        blocker = self.cache_dir.parent / "blocker"
-        blocker.write_text("not a directory\n")
-        env = patch.dict(os.environ, {"XDG_CACHE_HOME": str(blocker)})
-        env.start()
-        self.addCleanup(env.stop)
-        counter: dict[str, int] = {"version": 0, "other": 0}
-        code, output = self._run_check(counter, hook=True)
-        self.assertEqual(code, 0)
-        self.assertEqual(counter["version"], 2)
-        self.assertIn("claude", output)
+        before = hdc.probe_schema()
+        spec = harness_spec.HARNESSES["claude"]
+        altered = type(spec)(**{**spec.__dict__, "probe_expected_root": frozenset({"X"})})
+        with patch.dict(harness_spec.HARNESSES, {"claude": altered}):
+            self.assertNotEqual(hdc.probe_schema(), before)
+        with patch.object(hdc, "PROBE_LOGIC_VERSION", hdc.PROBE_LOGIC_VERSION + 1):
+            self.assertNotEqual(hdc.probe_schema(), before)
 
 
 class VersionExtractionTestCase(unittest.TestCase):
@@ -585,181 +728,28 @@ class ResolveBinaryTestCase(unittest.TestCase):
             self.assertTrue(p.exists())
 
 
-class ParseTokensTestCase(unittest.TestCase):
-    def test_exact(self) -> None:
-        self.assertEqual(
-            hdc._parse_tokens(hdc._TOKEN_CLAUDE_ROOT),
-            {hdc._TOKEN_CLAUDE_ROOT},
-        )
-
-    def test_prose_wrapped(self) -> None:
-        text = f"I see {hdc._TOKEN_AGENTS_ROOT} and {hdc._TOKEN_CLAUDE_ROOT}."
-        self.assertEqual(
-            hdc._parse_tokens(text),
-            {hdc._TOKEN_AGENTS_ROOT, hdc._TOKEN_CLAUDE_ROOT},
-        )
-
-    def test_none(self) -> None:
-        self.assertEqual(hdc._parse_tokens("none"), set())
-
-
 class IntegrationSanityTestCase(unittest.TestCase):
-    """Lightweight end-to-end tests that exercise the real parser and
-    fixture builder without invoking real harness binaries."""
-
     def test_parser_defaults_to_check(self) -> None:
         args = hdc.build_parser().parse_args([])
         self.assertIsNone(args.subcommand)
 
-    def test_parser_probe_harness(self) -> None:
-        args = hdc.build_parser().parse_args(["probe", "--harness", "pi"])
+    def test_parser_probe_record(self) -> None:
+        args = hdc.build_parser().parse_args(
+            ["probe", "--harness", "pi", "--record", "--expect-identity", "/x:1:2"]
+        )
         self.assertEqual(args.harness, "pi")
+        self.assertTrue(args.record)
+        self.assertEqual(args.expect_identity, "/x:1:2")
 
     def test_parser_check_strict(self) -> None:
         args = hdc.build_parser().parse_args(["check", "--strict"])
         self.assertTrue(args.strict)
 
-
-def _write_manifest(root: Path, payload: object) -> Path:
-    manifest = root / "opencode" / "package.json"
-    manifest.parent.mkdir(parents=True, exist_ok=True)
-    manifest.write_text(payload if isinstance(payload, str) else json.dumps(payload))
-    return manifest
-
-
-class ManifestPinTestCase(unittest.TestCase):
-    """The opencode pin has one source of truth: the exact
-    ``@opencode-ai/plugin`` devDependency in ``opencode/package.json``. A
-    second literal in this script drifted (1.18.25 vs the manifest's
-    1.18.32), so the SessionStart note named the wrong pin."""
-
-    def setUp(self) -> None:
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.root = Path(tmp.name)
-
-    def test_no_opencode_version_literal(self) -> None:
-        self.assertFalse(hasattr(hdc, "OPENCODE_PINNED_VERSION"))
-
-    def test_opencode_pin_is_the_manifest_pin(self) -> None:
-        data = json.loads((REPO_ROOT / "opencode" / "package.json").read_text())
-        self.assertEqual(
-            hdc.pinned_version("opencode"),
-            data["devDependencies"]["@opencode-ai/plugin"],
-        )
-
-    def test_manifest_change_moves_the_checked_pin(self) -> None:
-        _write_manifest(self.root, {"devDependencies": {"@opencode-ai/plugin": "9.9.9"}})
-        self.assertEqual(hdc.pinned_version("opencode", repo_root=self.root), "9.9.9")
-
-    def test_claude_pin_unchanged(self) -> None:
-        self.assertEqual(hdc.pinned_version("claude"), hdc.CLAUDE_CODE_PINNED_VERSION)
-
-    def test_malformed_manifests_raise(self) -> None:
-        bad: list[object] = [
-            "{not json",
-            ["a list"],
-            {"devDependencies": ["@opencode-ai/plugin"]},
-            {"devDependencies": {}},
-            {"devDependencies": {"@opencode-ai/plugin": "^1.18.32"}},
-            {"devDependencies": {"@opencode-ai/plugin": 1}},
-        ]
-        for payload in bad:
-            with self.subTest(payload=payload):
-                manifest = _write_manifest(self.root, payload)
-                with self.assertRaises(harness_spec.VersionPinError):
-                    harness_spec.read_manifest_pin(manifest, "@opencode-ai/plugin")
-                with self.assertRaises(hdc.HarnessCheckError):
-                    hdc.pinned_version("opencode", repo_root=self.root)
-
-    def test_missing_manifest_raises(self) -> None:
-        with self.assertRaises(harness_spec.VersionPinError):
-            harness_spec.manifest_pinned_version("opencode", repo_root=self.root)
-
-    def test_harness_without_manifest_raises(self) -> None:
-        with self.assertRaises(harness_spec.VersionPinError):
-            harness_spec.manifest_pinned_version("agy", repo_root=self.root)
-
-    def test_symlinked_install_resolves_the_real_repo(self) -> None:
-        """The hook runs ``~/.agent-toolkit/scripts/harness_spec.py``, a
-        symlink into the checkout; the manifest must resolve through it,
-        whatever the caller's cwd."""
-        import importlib.util
-
-        link = self.root / "scripts" / "harness_spec.py"
-        link.parent.mkdir()
-        link.symlink_to(REPO_ROOT / "agent-scripts" / "harness_spec.py")
-        cwd = os.getcwd()
-        os.chdir(self.root)
-        self.addCleanup(os.chdir, cwd)
-        spec = importlib.util.spec_from_file_location("harness_spec_linked", link)
-        assert spec is not None and spec.loader is not None
-        module = importlib.util.module_from_spec(spec)
-        # dataclasses resolve annotations through sys.modules.
-        with patch.dict(sys.modules, {"harness_spec_linked": module}):
-            spec.loader.exec_module(module)
-        self.assertEqual(module.REPO_ROOT, REPO_ROOT)
-        self.assertEqual(
-            module.manifest_pinned_version("opencode"),
-            hdc.pinned_version("opencode"),
-        )
-
-    def test_unreadable_pin_is_a_loud_checker_failure(self) -> None:
-        cache = tempfile.TemporaryDirectory()
-        self.addCleanup(cache.cleanup)
-        out = io.StringIO()
-        fake = fake_run_factory(
-            versions={"claude": hdc.CLAUDE_CODE_PINNED_VERSION, "opencode": "1.18.32"}
-        )
-        with (
-            patch.dict(os.environ, {"XDG_CACHE_HOME": cache.name}),
-            patch.object(hdc, "resolve_binary", fake_resolve_binary),
-            patch.object(harness_spec, "REPO_ROOT", self.root),
-            patch("sys.stdout", out),
-        ):
-            code = hdc.cmd_check(hook=True, run_command=fake)
-        self.assertEqual(code, 1)
-        self.assertIn("checker failed", out.getvalue())
-
-
-class LegacyCacheEntryTestCase(VersionCacheTestCase):
-    def test_pre_fix_cache_entry_is_remeasured(self) -> None:
-        """An entry the truncating parser wrote (no schema field) must not
-        keep answering ``0.0.0`` after the parser fix: it is a miss."""
-        entries: dict[str, object] = {}
-        for name in ("claude", "opencode"):
-            key = hdc._stat_key(self._fake_binary(name))
-            assert key is not None
-            entries[name] = {
-                "path": key[0],
-                "mtime_ns": key[1],
-                "size": key[2],
-                "version": "0.0.0",
-            }
-        self._cache_file().parent.mkdir(parents=True, exist_ok=True)
-        self._cache_file().write_text(json.dumps(entries))
-        counter: dict[str, int] = {"version": 0, "other": 0}
-        _code, output = self._run_check(counter)
-        self.assertEqual(counter["version"], 2)
-        self.assertNotIn("installed 0.0.0 ", output)
-        data = json.loads(self._cache_file().read_text())
-        self.assertEqual(data["opencode"]["version"], "1.19.999")
-
-
-class ProbeUsesResolvedBinaryTestCase(unittest.TestCase):
-    def test_probe_runs_the_resolved_binary(self) -> None:
-        """The probe must run the file whose version is reported — also a
-        fallback-path binary that is not on ``PATH``."""
-        seen: list[Sequence[str]] = []
-
-        def fake_run(cmd: Sequence[str], **kwargs: object) -> object:
-            seen.append(cmd)
-            return _make_result(stdout=hdc._TOKEN_AGENTS_ROOT)
-
-        with patch.object(hdc, "resolve_binary", fake_resolve_binary):
-            found, error = hdc._run_probe("opencode", Path("/tmp"), run_command=fake_run)
-        self.assertIsNone(error)
-        self.assertEqual(seen[0][0], "/fake/bin/opencode")
+    def test_verbosity_flags_present(self) -> None:
+        for cmd in ("check", "probe"):
+            args = hdc.build_parser().parse_args([cmd, "-q"])
+            self.assertTrue(args.quiet)
+            self.assertFalse(getattr(args, "verbose", True))
 
 
 if __name__ == "__main__":

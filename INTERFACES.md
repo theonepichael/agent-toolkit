@@ -55,7 +55,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`gen_skills_params.py`](#agentscriptsgenskillsparamspy) | gen_skills_params.py — per-(skill, harness) content tables for gen_skills.py. |
 | [`grill.py`](#agentscriptsgrillpy) | grill.py — grill-me session state CLI. All session mutations go through here. |
 | [`guard_rails.py`](#agentscriptsguardrailspy) | Pre-tool guard shared by every harness: refuse a write into a repository's main checkout while a backlog item for that repository is in progress, warn when the current worktree's base has fallen behind ``origin/main`` (or ``origin/<integration_branch>`` for an item that declares one), (Bash, Claude Code only) deny the git-native ways to defeat the no-commit-on-main git hook (``githooks/pre-commit`` / ``githooks-global/pre-commit``), and require an active backlog-item claim before a write that points at an in-progress item. |
-| [`harness_discovery_check.py`](#agentscriptsharnessdiscoverycheckpy) | SessionStart hook + CLI: detect when a harness's instruction-file discovery behavior may have drifted from the version-pinned facts in README.md. |
+| [`harness_discovery_check.py`](#agentscriptsharnessdiscoverycheckpy) | SessionStart hook + CLI: detect when a harness's instruction-file discovery behavior changes, without pinning harness versions in the repo. |
 | [`harness_spec.py`](#agentscriptsharnessspecpy) | Declarative harness specification registry. |
 | [`herdr_delegate.py`](#agentscriptsherdrdelegatepy) | Launch supported agents in herdr tabs to work backlog items. |
 | [`link_drift_check.py`](#agentscriptslinkdriftcheckpy) | SessionStart hook + CLI: flag when a managed symlink on this machine no longer points where links.toml says it should. |
@@ -964,27 +964,32 @@ Pre-tool guard shared by every harness: refuse a write into a repository's main 
 
 ### `agent-scripts/harness_discovery_check.py`
 
-SessionStart hook + CLI: detect when a harness's instruction-file discovery behavior may have drifted from the version-pinned facts in README.md.
+SessionStart hook + CLI: detect when a harness's instruction-file discovery behavior changes, without pinning harness versions in the repo.
 
 - Installed at: `~/.agent-toolkit/scripts/harness_discovery_check.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
-- CLI (`argparse`): Detect harness instruction-file discovery drift against README.md's version-pinned facts.
+- CLI (`argparse`): Detect harness instruction-file discovery changes by probing each installed harness once per binary.
   - `--quiet/-q`
   - `--verbose/-v`
 - Subcommands:
-  - `check [--hook] [--strict]` — stateless version-pin comparison for load-bearing harnesses (default)
-    - `--hook` — format output for SessionStart hook consumption
-    - `--strict` — exit 2 when a version mismatch is noted (default: exit 0)
-  - `probe [--harness {claude,opencode,pi,copilot,agy,codex}]` — on-demand live semantic verification (~10-15 API calls)
+  - `check [--hook] [--strict]` — compare installed harnesses against this machine's probe records (default)
+    - `--hook` — SessionStart mode: launch background probes, print only problems, exit 0
+    - `--strict` — exit 2 when an installed harness has no current HOLD record
+  - `probe [--harness {claude,opencode,pi,copilot,agy,codex}] [--record] [--expect-identity <EXPECT_IDENTITY>] [--lock-fd <LOCK_FD>]` — live semantic verification (~10-15 cheap API calls)
     - `--harness` — probe a single harness instead of all supported ones (choices: claude, opencode, pi, copilot, agy, codex)
-- Environment: `CODEX_PROBE_MODEL`, `OPENCODE_PROBE_MODEL`, `XDG_CACHE_HOME`
+    - `--record` — confirm any mismatch and write each verdict to this machine's record
+    - `--expect-identity` — (used by check --hook) path:mtime_ns:size the probe was launched for
+    - `--lock-fd` — (used by check --hook) inherited descriptor holding the probe lock
+- Environment: `CODEX_PROBE_MODEL`, `OPENCODE_PROBE_MODEL`
 - Depends on: `cli_common.py`, `harness_spec.py`
 - Exceptions:
   - `class HarnessCheckError(Exception)` — Raised when a harness check can't proceed (subprocess failure, not a missing binary).
 - Public functions:
   - `resolve_binary(name: str) -> Path | None` — Resolve a harness binary via ``shutil.which`` then ``Path.resolve()``.
-  - `pinned_version(name: str, repo_root: Path | None = None) -> str` — Return the pinned release ``check`` compares ``name`` against.
   - `run_version(name: str, binary: Path, run_command: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run) -> str` — Run ``<binary> --version`` and return the extracted version string.
+  - `probe_schema() -> str` — Hash of everything a recorded verdict depends on besides the binary: each harness's expected tokens, the fixture's token labels and layout, and :data:`PROBE_LOGIC_VERSION`.
+  - `read_record(name: str) -> dict[str, object] | None` — The record for ``name``, or ``None`` when absent, unreadable or not a JSON object (a corrupt record is treated as missing and re-probed).
+  - `write_record(name: str, record: dict[str, object]) -> bool` — Atomically replace ``name``'s record (temp file + rename).
   - `build_parser() -> argparse.ArgumentParser`
 - Subcommand handlers: `cmd_check`, `cmd_probe`
 - Tested by: `test/test_harness_discovery_check.py`, `test/test_harness_spec.py`
@@ -997,7 +1002,6 @@ Declarative harness specification registry.
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI: none (library module).
 - Filesystem constants:
-  - `REPO_ROOT = Path(__file__).resolve().parent.parent`
   - `LIFECYCLE_HOOKS = {'PreToolUse': {'claude': {'type': 'command', 'matcher': 'Write|Edit|MultiEdit|NotebookEdit|Bash', 'command': 'python3 ~/.agent-toolkit/scripts/guard_rails.py --harness claude'}, 'copilot': {'type': 'command', 'matcher': 'create|edit', 'bash': 'python3 ~/.agent-toolkit/scripts/guard_rails.py --harness copilot', 'timeoutSec': 10}, 'agy': {'block': 'worktree-guard', 'matcher': 'write_to_file|replace_file_content', 'command': 'python3 ~/.agent-toolkit/scripts/guard_rails.py --harness agy', 'timeout': 10, 'type': 'command'}}, 'PostToolUse': {'claude': {'type': 'command', 'matcher': 'Write|Edit', 'command': 'jq -r \'.tool_response.filePath // .tool_input.file_path // empty\' | { read -r f; [ -n "$f" ] || exit 0; case "$f" in *.py) ;; *) exit 0 ;; esac; d=$(dirname "$f"); while [ "$d" != "/" ] && [ ! -f "$d/pyproject.toml" ]; do d=$(dirname "$d"); done; [ -f "$d/pyproject.toml" ] || exit 0; ( cd "$d" && uv run ruff check --fix "$f" >/dev/null 2>&1; uv run ruff format "$f" >/dev/null 2>&1 ); } || true'}, 'copilot': {'type': 'command', 'matcher': 'create|edit', 'bash': 'jq -r \'.toolArgs | fromjson | .path // empty\' | { read -r f; [ -n "$f" ] || exit 0; case "$f" in *.py) ;; *) exit 0 ;; esac; d=$(dirname "$f"); while [ "$d" != "/" ] && [ ! -f "$d/pyproject.toml" ]; do d=$(dirname "$d"); done; [ -f "$d/pyproject.toml" ] || exit 0; ( cd "$d" && uv run ruff format "$f" >/dev/null 2>&1 && uv run ruff check --fix "$f" >/dev/null 2>&1 ); } || true', 'timeoutSec': 15}, 'agy': {'block': 'ruff-format-on-edit', 'matcher': 'write_to_file|replace_file_content', 'command': 'f=$(jq -r \'.toolCall.args.TargetFile // empty\'); case "$f" in *.py) d=$(dirname "$f"); while [ "$d" != "/" ] && [ ! -f "$d/pyproject.toml" ]; do d=$(dirname "$d"); done; if [ -f "$d/pyproject.toml" ]; then ( cd "$d" && uv run ruff format "$f" >/dev/null 2>&1 && uv run ruff check --fix "$f" >/dev/null 2>&1 ); fi ;; esac; echo \'{}\'', 'timeout': 15, 'type': 'command'}}, 'SessionStart': {'claude': [{'hooks': [{'type': 'command', 'command': 'python3 ~/.agent-toolkit/scripts/sessionstart_checks.py', 'timeout': 45}]}, {'matcher': '*', 'hooks': [{'type': 'command', 'command': '[ ! -f ~/.claude/hooks/herdr-agent-state.sh ] || bash ~/.claude/hooks/herdr-agent-state.sh session', 'timeout': 10}]}], 'claude-work': [{'hooks': [{'type': 'command', 'command': "python3 ~/.agent-toolkit/scripts/dev_status.py render 2>&1 || echo '[dev_status] render failed — run /dashboard to debug'"}, {'type': 'command', 'command': 'python3 ~/.agent-toolkit/scripts/grill.py pending-plan --consume'}, {'type': 'command', 'command': 'python3 ~/.agent-toolkit/scripts/bundle_drift_check.py 2>/dev/null'}, {'type': 'command', 'command': 'python3 ~/.agent-toolkit/scripts/settings_seed_drift_check.py 2>/dev/null'}]}], 'copilot': {'type': 'command', 'bash': 'python3 ~/.agent-toolkit/scripts/sessionstart_checks.py', 'timeoutSec': 45}}, 'PreInvocation': {'agy': {'block': 'herdr', 'command': '[ ! -f ~/.gemini/config/hooks/herdr-agent-state.sh ] || bash ~/.gemini/config/hooks/herdr-agent-state.sh session', 'timeout': 10, 'type': 'command'}}, 'Notification': {'claude': {'type': 'command', 'matcher': 'idle_prompt|permission_prompt', 'command': "python3 ~/.agent-toolkit/scripts/notify.py --harness 'Claude' --title 'Claude Code' --message 'Waiting for input' --type waiting_for_input"}}, 'Stop': {'claude': {'type': 'command', 'command': "python3 ~/.agent-toolkit/scripts/notify.py --harness 'Claude' --title 'Claude Code' --message 'Task completed' --type completed"}, 'copilot': {'type': 'command', 'bash': "python3 ~/.agent-toolkit/scripts/notify.py --harness 'Copilot' --title 'Copilot CLI' --message 'Agent finished' --type completed", 'timeoutSec': 10}, 'agy': {'block': 'notify-on-stop', 'command': "python3 ~/.agent-toolkit/scripts/notify.py --harness 'AGY' --title 'Antigravity' --message 'Run completed' --type completed >/dev/null 2>&1; echo '{}'", 'timeout': 10, 'type': 'command'}}}`
 - Exceptions:
   - `class VersionPinError(ValueError)` — A harness's version pin could not be read from its manifest.
@@ -1009,7 +1013,6 @@ Declarative harness specification registry.
   - `apply_toolkit_path_tokens(text: str) -> str` — Replace every `{{TOOLKIT_SCRIPTS}}` / `{{TOOLKIT_DATA}}` in ``text``.
   - `spec(name: str) -> HarnessSpec` — Return the HarnessSpec for the given harness name.
   - `read_manifest_pin(package_json: Path, package: str) -> str` — Return the exact ``devDependencies[package]`` version in ``package_json``.
-  - `manifest_pinned_version(name: str, repo_root: Path | None = None) -> str` — Return harness ``name``'s pinned release from its declared manifest.
   - `binary(name: str) -> str` — Return the CLI binary name for the given harness.
   - `install_hint(name: str) -> str` — Return the installation hint for the given harness.
   - `fallback_paths(name: str) -> tuple[str, ...]` — Return the fallback probe paths for the given harness.

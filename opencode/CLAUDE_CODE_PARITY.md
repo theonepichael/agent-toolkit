@@ -294,8 +294,8 @@ binary (184 keybinds, 26 leader chords). The two agree exactly. Last verified
 
 The block below is **generated** — edit
 `agent-scripts/gen_keybinds.py`, never the table. It tracks the **pinned**
-opencode release (the `@opencode-ai/plugin` version in `opencode/package.json`,
-which the repo treats as the CLI pin). Regenerate with
+opencode release (the `@opencode-ai/plugin` version in `opencode/package.json`;
+it pins the SDK and this check, not the CLI you have installed). Regenerate with
 `python3 agent-scripts/gen_keybinds.py --fetch-pinned`, which downloads that
 release's binary with `npm pack` and extracts the table from it; writing from
 any other build is refused. `opencode.ai/docs/keybinds` is the published
@@ -665,7 +665,7 @@ intentional and use a distinct command/slash for the overlay.
 - https://opencode.ai/docs/commands/
 - https://opencode.ai/docs/cli/
 - https://opencode.ai/docs/plugins/ — plugin file shape, global location; does **not** document `tool.execute.after`'s field-level schema or built-in tool arg shapes (`args` is untyped in its own examples)
-- `@opencode-ai/plugin` npm package, `dist/index.d.ts` (version pinned to the installed `opencode` CLI's own version, pulled straight from the registry tarball rather than trusted from docs prose) — ground truth for `tool.execute.after`'s exact signature (`input.tool`/`sessionID`/`callID`/`args`, `output.title`/`output`/`metadata`)
+- `@opencode-ai/plugin` npm package, `dist/index.d.ts` (the exact version pinned in `opencode/package.json`, pulled straight from the registry tarball rather than trusted from docs prose; it was the installed CLI's version when this was measured, and is no longer required to match it) — ground truth for `tool.execute.after`'s exact signature (`input.tool`/`sessionID`/`callID`/`args`, `output.title`/`output`/`metadata`)
 - Live probe (2026-08-13): a diagnostic `tool.execute.after` plugin dumping raw `input`/`output` to a file, wired at `~/.config/opencode/plugin/zz-probe.ts`, run against a real `opencode run --auto` edit and a real create → confirmed built-in tool names (`edit`, `write`) and their shared file-path arg key (`args.filePath`), none of which the SDK types or docs page publish
 
 ## Pre-tool guard (`tool.execute.before`)

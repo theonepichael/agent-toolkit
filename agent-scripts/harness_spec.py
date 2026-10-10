@@ -25,12 +25,6 @@ TOOLKIT_DATA = "none"
 # whole rendered file, so a token nested inside any other value resolves too.
 TOOLKIT_DISPLAY_ROOT = "~/.agent-toolkit"
 
-# The checkout this module lives in. Resolved through the symlink the
-# installer puts at ~/.agent-toolkit/scripts/harness_spec.py, so a harness's
-# repo-relative ``version_pin_manifest`` reads the real file whatever the
-# caller's cwd.
-REPO_ROOT = Path(__file__).resolve().parent.parent
-
 # An exact npm version: no range operators, optional prerelease.
 _EXACT_VERSION_RE = re.compile(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?")
 TOOLKIT_PATH_TOKENS: dict[str, str] = {
@@ -93,12 +87,10 @@ class HarnessSpec:
     display_name: str = ""
     app_id: str = ""
     icon: str = ""
-    # Where this harness's pinned release is recorded, when the repo builds
-    # against its SDK: a repo-relative package.json whose exact
-    # ``devDependencies[version_pin_package]`` IS the pin. Declaring it here
-    # keeps the manifest the one source of truth — no copy of the version
-    # literal anywhere else.
-    version_pin_manifest: str = ""
+    # The npm package whose exact devDependency pin in the harness's
+    # package.json names the release the repo builds and checks against
+    # (opencode: gen_keybinds.py's --fetch-pinned shortcut-table check). It
+    # pins the SDK the plugins type-check against, not the installed CLI.
     version_pin_package: str = ""
 
     def process_basename(self) -> str:
@@ -199,7 +191,6 @@ HARNESSES: dict[str, HarnessSpec] = {
         display_name="OpenCode",
         app_id="Agent.OpenCode",
         icon="opencode.png",
-        version_pin_manifest="opencode/package.json",
         version_pin_package="@opencode-ai/plugin",
     ),
     "agy": HarnessSpec(
@@ -318,22 +309,6 @@ def read_manifest_pin(package_json: Path, package: str) -> str:
             f"{package_json} has no exact {package} devDependency pin (got {pin!r})"
         )
     return pin
-
-
-def manifest_pinned_version(name: str, repo_root: Path | None = None) -> str:
-    """Return harness ``name``'s pinned release from its declared manifest.
-
-    ``repo_root`` defaults to :data:`REPO_ROOT`. Raise
-    :class:`VersionPinError` when the harness declares no manifest or the
-    manifest pin is unreadable.
-    """
-    harness = HARNESSES[name]
-    if not (harness.version_pin_manifest and harness.version_pin_package):
-        raise VersionPinError(f"{name} declares no version-pin manifest")
-    root = REPO_ROOT if repo_root is None else repo_root
-    return read_manifest_pin(
-        root / harness.version_pin_manifest, harness.version_pin_package
-    )
 
 
 def binary(name: str) -> str:

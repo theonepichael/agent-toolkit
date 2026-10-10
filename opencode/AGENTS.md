@@ -31,14 +31,14 @@ wrap lives in `agent-scripts/`.
   literal in `test/test_install.py`, then regenerate; `--check` fails
   pre-commit and CI on drift. `external_directory` is still hand-authored.
   Codex's rules are not generated and stay aligned by hand.
-- `package.json`'s exact @opencode-ai/plugin devDependency is the
-  toolkit's one opencode version pin: the TypeScript gate, `gen_keybinds.py`
-  and the SessionStart instruction-file discovery check
-  (`harness_discovery_check.py`) all read it — there is no copy to update.
-  Bumping it therefore also declares the new release's discovery row
-  verified, so run
-  `python3 agent-scripts/harness_discovery_check.py probe --harness opencode`
-  against the new release (first on `PATH`) before landing the bump.
+- `package.json`'s exact @opencode-ai/plugin devDependency pins the SDK
+  the plugins type-check against, and the release `gen_keybinds.py
+  --fetch-pinned` checks the shortcut table against in CI. It is not
+  compared with the installed opencode CLI: upgrading opencode locally needs
+  no pin bump. Bump it only to build against a newer plugin API, together
+  with `package-lock.json`. Instruction-file discovery is verified per
+  machine instead: `harness_discovery_check.py` probes a new opencode binary
+  in the background on the next Claude Code or Copilot session start.
 - Full porting/parity record (confirmed facts, open decisions, keybind
   conflicts, hooks-vs-plugin-system tradeoffs) lives in
   `opencode/CLAUDE_CODE_PARITY.md` — read it before changing how a skill or

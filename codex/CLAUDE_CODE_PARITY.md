@@ -89,7 +89,8 @@ skills cover both implicit and explicit triggering.
 `--enable/--disable <FEATURE>`, `--dangerously-bypass-hook-trust`.
 `codex --version` reports `codex-cli <version>`. This is the
 `harness_discovery_check.py` probe path (opt-in `probe --harness codex`
-only; `check` stays pin+metadata since codex is not load-bearing), with
+only; `check` covers only the load-bearing harnesses, Claude Code and
+opencode, so codex is never probed automatically), with
 `CODEX_PROBE_MODEL` as the model-override env var mirroring opencode's.
 
 ## 7. Config

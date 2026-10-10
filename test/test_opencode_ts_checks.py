@@ -24,10 +24,6 @@ MIN_TEST_TIMEOUT_MS = 30_000
 EXACT_SEMVER = re.compile(
     r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?"
 )
-VERSION_LINE = re.compile(
-    r"v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)"
-)
-DEV_BUILD_PATTERN = re.compile(r"^0\.0\.0-dev.*")
 
 
 def _read_object(path: Path) -> dict[str, object]:
@@ -82,44 +78,6 @@ def _run_stage(stage: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def _parse_version_output(output: str) -> str:
-    lines = [line.strip() for line in output.splitlines() if line.strip()]
-    assert lines, "opencode --version returned no output"
-    match = VERSION_LINE.fullmatch(lines[0])
-    assert match is not None, f"unrecognized opencode version line: {lines[0]!r}"
-    return match.group(1)
-
-
-def _check_opencode_cli_version(expected: str) -> None:
-    if shutil.which("opencode") is None:
-        pytest.skip("opencode CLI not installed; SDK version remains enforced")
-    try:
-        result = subprocess.run(
-            ["opencode", "--version"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as exc:
-        pytest.fail(f"opencode --version timed out after 10 seconds: {exc}")
-    assert result.returncode == 0, (
-        f"opencode --version failed (exit {result.returncode})\n"
-        f"--- stdout ---\n{result.stdout}\n"
-        f"--- stderr ---\n{result.stderr}"
-    )
-    actual = _parse_version_output(result.stdout)
-    if DEV_BUILD_PATTERN.fullmatch(actual):
-        pytest.skip(
-            f"opencode CLI is a development build ({actual}); "
-            f"SDK version {expected} is not enforced against dev builds"
-        )
-    assert actual == expected, (
-        f"opencode CLI {actual} does not match pinned SDK {expected}; "
-        "change the installed CLI or deliberately update the SDK pin and lockfile together"
-    )
-
-
 @pytest.mark.allow_real_subprocess
 @pytest.mark.parametrize("stage", STAGES)
 def test_opencode_ts_stage(stage: str) -> None:
@@ -142,11 +100,6 @@ def test_installed_opencode_matches_sdk_pin() -> None:
         f"installed plugin SDK {installed!r} does not match manifest pin {expected!r}; "
         "rerun npm install in opencode/"
     )
-
-
-@pytest.mark.allow_real_subprocess
-def test_installed_opencode_cli_matches_sdk_pin() -> None:
-    _check_opencode_cli_version(_manifest_sdk_version())
 
 
 def test_incomplete_node_modules_fails_instead_of_skipping(
@@ -230,86 +183,3 @@ def test_required_packages_and_binaries_cover_all_tools() -> None:
         "prettier",
     }
     assert REQUIRED_BINARIES == ("tsx", "tsc", "oxlint", "prettier")
-
-
-def test_version_check_skips_without_opencode_cli(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(shutil, "which", lambda _name: None)
-    with pytest.raises(pytest.skip.Exception):
-        _check_opencode_cli_version("1.18.32")
-
-
-def test_version_check_accepts_matching_output(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/opencode")
-    monkeypatch.setattr(
-        "test_opencode_ts_checks.subprocess.run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, "1.18.32\n", ""),
-    )
-    _check_opencode_cli_version("1.18.32")
-
-
-def test_version_check_rejects_mismatch(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/opencode")
-    monkeypatch.setattr(
-        "test_opencode_ts_checks.subprocess.run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, "1.18.33\n", ""),
-    )
-    with pytest.raises(AssertionError) as excinfo:
-        _check_opencode_cli_version("1.18.32")
-    assert "1.18.33" in str(excinfo.value)
-    assert "1.18.32" in str(excinfo.value)
-
-
-def test_version_check_rejects_malformed_output(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/opencode")
-    monkeypatch.setattr(
-        "test_opencode_ts_checks.subprocess.run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, "banner\n1.18.32\n", ""),
-    )
-    with pytest.raises(AssertionError):
-        _check_opencode_cli_version("1.18.32")
-
-
-def test_version_check_rejects_nonzero_exit(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/opencode")
-    monkeypatch.setattr(
-        "test_opencode_ts_checks.subprocess.run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 1, "", "broken"),
-    )
-    with pytest.raises(AssertionError) as excinfo:
-        _check_opencode_cli_version("1.18.32")
-    assert "broken" in str(excinfo.value)
-
-
-def test_version_check_rejects_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/opencode")
-
-    def timeout(*_args: object, **_kwargs: object) -> None:
-        raise subprocess.TimeoutExpired(["opencode", "--version"], 10)
-
-    monkeypatch.setattr("test_opencode_ts_checks.subprocess.run", timeout)
-    with pytest.raises(pytest.fail.Exception) as excinfo:
-        _check_opencode_cli_version("1.18.32")
-    assert "timed out" in str(excinfo.value)
-
-
-def test_version_check_skips_on_dev_build(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/opencode")
-    monkeypatch.setattr(
-        "test_opencode_ts_checks.subprocess.run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess(
-            [], 0, "0.0.0-dev-202609250015\n", ""
-        ),
-    )
-    with pytest.raises(pytest.skip.Exception) as excinfo:
-        _check_opencode_cli_version("1.18.32")
-    assert "development build" in str(excinfo.value)
-    assert "0.0.0-dev-202609250015" in str(excinfo.value)
-

@@ -1,77 +1,84 @@
 #!/usr/bin/env python3
 """SessionStart hook + CLI: detect when a harness's instruction-file discovery
-behavior may have drifted from the version-pinned facts in README.md.
+behavior changes, without pinning harness versions in the repo.
 
 Why this exists
 ---------------
-README.md records, version-pinned, which instruction filenames each of the
-five installed harnesses actually loads (measured live 2026-08-30). The
-``AGENTS.md`` + ``CLAUDE.md``-symlink convention rests on the opencode and
-Claude Code rows. These are external binaries on independent update schedules;
-the day one changes its discovery logic, instruction loading breaks silently —
-exactly how the opencode ``~/.claude/CLAUDE.md`` fallback defect sat
-undetected for months.
+The ``AGENTS.md`` + ``CLAUDE.md``-symlink convention rests on which
+instruction filenames Claude Code and opencode actually load. These are
+external binaries on independent update schedules; the day one changes its
+discovery logic, instruction loading breaks silently — exactly how the
+opencode ``~/.claude/CLAUDE.md`` fallback defect sat undetected for months.
 
-This script provides two tiers:
-
-* ``check`` — cheap, stateless version-pin comparison against the two
-  load-bearing harnesses (opencode, Claude Code). Runs as a SessionStart
-  hook. Zero API calls. Prints a drift note when the installed version
-  differs from the README pin, recommending a live probe.
-* ``probe`` — on-demand semantic verification. Rebuilds the audit fixture
-  (throwaway git repo with ``AGENTS.md``, ``CLAUDE.md``, ``GEMINI.md`` at
-  root and in a subdirectory, each holding a distinct token), drives each
-  harness non-interactively, and asserts the measured behavior against
-  README expectations. ~10–15 single-turn API calls on cheap/free models.
+The real verifier is ``probe``: it builds a throwaway fixture repo whose
+``AGENTS.md`` / ``CLAUDE.md`` / ``GEMINI.md`` files (at the root and in a
+subdirectory) each carry a fresh random token, drives the harness
+non-interactively, and checks which tokens it reports. The prompt names no
+token, so a model cannot echo one it never loaded.
 
 Mechanism
 ---------
-``check`` is *stateless version-pin comparison*: discovery behavior can only
-change when the binary changes, and the README table is version-pinned, so
-"installed version ≠ pinned version" is the exact, cheap signal that a row
-is no longer verified. ``probe`` is the semantic verifier: it rebuilds the
-fixture and asks each harness which tokens are in its context.
+Each machine keeps its own record of what it has verified, one file per
+load-bearing harness under ``$XDG_STATE_HOME/agent-toolkit/``
+(``harness-discovery-<name>.json``, default ``~/.local/state``). A record
+names the binary it was measured on (resolved path, mtime, size), its
+version, the probe schema (a hash of the expectations, the fixture layout
+and :data:`PROBE_LOGIC_VERSION`), and the result: HOLD, BROKEN or ERROR.
 
-The ``--version`` spawn is the hook's dominant cost, so the measurement is
-memoized in a small cache file under the XDG cache dir
-(``$XDG_CACHE_HOME`` or ``~/.cache``). Each entry is keyed on the harness
-name plus the binary's resolved path, mtime and size, so a binary that
-changed — the exact thing this check exists to catch — always invalidates
-its entry and forces a fresh spawn. On a hit no subprocess runs at all; the
-cached version is compared against the pin exactly as a fresh measurement
-would be. The cache is purely an optimization: it never suppresses or
-alters output, and any read/write problem degrades silently to the
-uncached behavior. The README pin itself remains the state; the drift note
-prints every run while a mismatch stands, cached or not.
+``check --hook`` runs at session start with zero API calls and no
+subprocess on its fast path. It only stats each binary and reads its record:
+
+* a matching HOLD record: silent;
+* no matching record (new install, upgrade, replaced build, changed probe
+  schema): it launches ``probe --record`` in the background, detached in
+  its own session so the hook's ``timeout`` cannot kill it, and prints
+  nothing;
+* a matching BROKEN record: one line naming the harness and what changed;
+* a matching ERROR record: a background retry once its retry time has
+  passed (24h, then 72h, then 7 days, then no more automatic retries), and
+  one line from the third consecutive error on, saying verification failed.
+
+A per-harness kernel lock (``flock`` on ``harness-discovery-<name>.lock``),
+taken by ``check`` and handed to the probe process, keeps two sessions from
+probing the same harness at once; the kernel releases it however the probe
+exits. The probe sets ``HARNESS_DISCOVERY_PROBE=1`` for the harnesses it
+drives, and ``check`` does nothing when that is set, so a probed harness's
+own SessionStart hook cannot start another probe.
+
+A recording probe confirms a token mismatch with a second run on a fresh
+fixture before recording BROKEN; one mismatch followed by a HOLD is recorded
+as an inconsistent-result ERROR. It records nothing if the binary changed
+while it ran.
+
+opencode has no SessionStart hook of its own: its upgrades are probed from
+the next Claude Code or Copilot session (both run this hook). A machine that
+only runs opencode verifies it with ``probe --record --harness opencode``.
 
 Subcommands
 -----------
-    check   resolve the load-bearing harness binaries, run ``--version``
-            (memoized in a binary-identity-keyed cache so an unchanged
-            binary is not re-spawned), and compare against the pinned
-            versions (Claude Code: a constant here; opencode: the exact
-            ``@opencode-ai/plugin`` pin in ``opencode/package.json``, an
-            unreadable pin being a checker failure). Silent when versions
-            match. Prints a one-line note
-            naming harness, installed version, pinned version, and the
-            affected row when they differ. The note prints every run while
-            the mismatch stands — deliberate nag, not one-shot suppression.
-    probe   rebuild the audit fixture in a temp directory, drive each
-            harness non-interactively, extract token names from the
-            response, and compare against expectation constants. Prints a
-            per-row table (HOLD / BROKEN / ERROR) with a suggested
-            remediation next to any BROKEN row.
+    check   stat each load-bearing harness and compare it against its
+            record. With ``--hook`` (the SessionStart hook): launch a
+            background probe for an unverified binary and print only BROKEN
+            or repeated-ERROR notes; it always exits 0. Without ``--hook``:
+            print every harness that is not installed or not verified, and
+            never launch anything.
+    probe   rebuild the fixture, drive each requested harness, and print a
+            per-row table (HOLD / BROKEN / ERROR) with a remediation next to
+            any BROKEN row. ``--record`` also writes each harness's result
+            to its record (this is what ``check --hook`` launches; run it by
+            hand to verify a harness immediately).
 
 Usage
 -----
     harness_discovery_check.py check [--hook] [--strict]
-    harness_discovery_check.py probe [--harness NAME]
+    harness_discovery_check.py probe [--harness NAME] [--record]
 
 Exits
 -----
-    check: 0 = clean or noted mismatch, 1 = internal error,
-           2 = attention needed under ``--strict``
-    probe: 0 = all rows HOLD, nonzero = any BROKEN or ERROR
+    check: 0 = clean or noted (always 0 with ``--hook`` unless ``--strict``),
+           2 = under ``--strict``, an installed harness has no current HOLD
+    probe: 0 = all rows HOLD, 1 = any BROKEN or ERROR, or ``--record`` while
+           another probe of the same harness is running
 
 Flags
   --quiet, -q    suppress non-essential output
@@ -82,14 +89,18 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import fcntl
+import hashlib
 import json
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
 import tempfile
-from collections.abc import Callable, Sequence
+import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import TextIO
 
@@ -99,21 +110,20 @@ import harness_spec
 # What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
 TOOLKIT_DATA = "none"
 
-# ── version pins ─────────────────────────────────────────────────────────────
-# The release each harness's discovery row was measured at. opencode has no
-# literal here: its pin is the toolkit's pinned opencode release, read from
-# the manifest harness_spec declares for it (opencode/package.json's
-# @opencode-ai/plugin devDependency), so it cannot drift from the SDK pin.
-# Bumping that pin re-pins this check too — probe the new release first.
-CLAUDE_CODE_PINNED_VERSION: str = "2.1.280"
-PI_PINNED_VERSION: str = "0.84.4"
-COPILOT_PINNED_VERSION: str = "1.0.80"
-AGY_PINNED_VERSION: str = "1.1.22"
-CODEX_PINNED_VERSION: str = "0.153.4"
+# Set in the environment of every harness the probe drives; ``check`` exits
+# immediately when it is set, so a probed harness's SessionStart hook cannot
+# launch a nested probe.
+GUARD_ENV: str = "HARNESS_DISCOVERY_PROBE"
+
+# Bump whenever the probe's logic changes in a way that could change its
+# verdict (prompt, parsing, fixture). It is part of probe_schema(), so every
+# recorded HOLD is re-verified after the change.
+PROBE_LOGIC_VERSION: int = 2
 
 # ── semantic expectations — which filenames each harness loads ──────────────
 # These encode the measured behavioral facts, not version-specific offsets.
-# See README.md "Harness instruction-file discovery" for provenance.
+# They are the probe's expectations; changing them changes probe_schema(),
+# which invalidates every recorded HOLD.
 CLAUDE_CODE_EXPECTED_FILENAMES: frozenset[str] = harness_spec.HARNESSES[
     "claude"
 ].expected_filenames
@@ -166,10 +176,21 @@ _ALL_TOKENS: tuple[str, ...] = (
 
 _PROBE_ATTEMPTS: int = 3
 
+# Automatic retry delays after the 1st, 2nd and 3rd consecutive ERROR on the
+# same binary; after the 4th there are no more automatic retries until the
+# binary or probe schema changes, or the user runs ``probe --record``.
+_RETRY_DELAYS: tuple[int, ...] = (24 * 3600, 72 * 3600, 7 * 24 * 3600)
+_MAX_AUTO_ERRORS: int = len(_RETRY_DELAYS) + 1
+# From this many consecutive errors on, session start prints a note.
+_NOTE_AFTER_ERRORS: int = 3
+
+_STATE_DIRNAME: str = "agent-toolkit"
+_DETAIL_MAX: int = 300
+
 
 class HarnessCheckError(Exception):
     """Raised when a harness check can't proceed (subprocess failure, not a
-    missing binary). Missing binaries degrade to UNVERIFIABLE."""
+    missing binary)."""
 
 
 def _vprint(msg: str, *, verbose: bool, file: TextIO | None = None) -> None:
@@ -224,22 +245,6 @@ def _extract_version(name: str, first_line: str) -> str:
     return m.group(1) if m else line
 
 
-def pinned_version(name: str, repo_root: Path | None = None) -> str:
-    """Return the pinned release ``check`` compares ``name`` against.
-
-    Claude Code's pin is :data:`CLAUDE_CODE_PINNED_VERSION`; opencode's is
-    read from its manifest via :func:`harness_spec.manifest_pinned_version`
-    (``repo_root`` overrides the checkout, for tests). Raise
-    :class:`HarnessCheckError` when the manifest pin cannot be read.
-    """
-    if name == "claude":
-        return CLAUDE_CODE_PINNED_VERSION
-    try:
-        return harness_spec.manifest_pinned_version(name, repo_root=repo_root)
-    except harness_spec.VersionPinError as exc:
-        raise HarnessCheckError(f"{name}: pinned version unavailable: {exc}") from exc
-
-
 def run_version(
     name: str,
     binary: Path,
@@ -266,28 +271,7 @@ def run_version(
     return _extract_version(name, first)
 
 
-# ── check (hook tier) ────────────────────────────────────────────────────────
-
-# The ``--version`` spawn dominates the hook's runtime, so measurements are
-# memoized under the XDG cache dir. Entries are keyed on the binary's
-# identity (resolved path + mtime + size): a changed binary — the exact
-# thing this check exists to catch — always invalidates its entry and
-# forces a fresh spawn. The cache is purely an optimization; every
-# read/write problem degrades silently to the uncached behavior.
-_CACHE_REPO_DIRNAME: str = "agent-toolkit"
-_CACHE_FILENAME: str = "harness-discovery-version-cache.json"
-# Bumped whenever the version *parser* changes: an entry is keyed on binary
-# identity only, so without it a value measured by an older parser (e.g. a
-# dev build truncated to "0.0.0") would be served until the binary changed.
-_CACHE_SCHEMA: int = 2
-
-
-def _cache_path() -> Path:
-    """Resolve the cache file path at call time — honoring
-    ``$XDG_CACHE_HOME`` (tests redirect it there), falling back to
-    ``~/.cache``, under this repo's own directory name."""
-    root = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
-    return Path(root) / _CACHE_REPO_DIRNAME / _CACHE_FILENAME
+# ── binary identity ──────────────────────────────────────────────────────────
 
 
 def _stat_key(binary: Path) -> tuple[str, int, int] | None:
@@ -300,39 +284,76 @@ def _stat_key(binary: Path) -> tuple[str, int, int] | None:
     return (str(binary), st.st_mtime_ns, st.st_size)
 
 
-def _parsed_entry(entry: object) -> tuple[tuple[str, int, int], str] | None:
-    """Parse one cache entry into ``(stat_key, version)``, or ``None`` when
-    malformed (treated as a cache miss)."""
-    if not isinstance(entry, dict) or entry.get("schema") != _CACHE_SCHEMA:
-        return None
-    path = entry.get("path")
-    mtime_ns = entry.get("mtime_ns")
-    size = entry.get("size")
-    version = entry.get("version")
-    if not (
-        isinstance(path, str)
-        and isinstance(mtime_ns, int)
-        and isinstance(size, int)
-        and isinstance(version, str)
-    ):
-        return None
-    return (path, mtime_ns, size), version
+# ── per-machine records ───────────────────────────────────────────────────────
 
 
-def _read_cache(path: Path) -> dict[str, object]:
-    """Load the cache file, or an empty dict on any read/parse problem —
-    a corrupt cache degrades to the uncached behavior, never a crash."""
+def _state_root() -> Path:
+    return cli_common.state_dir() / _STATE_DIRNAME
+
+
+def _record_path(name: str) -> Path:
+    """The record file for ``name``: one file per harness, so two harnesses
+    recording at once never overwrite each other."""
+    return _state_root() / f"harness-discovery-{name}.json"
+
+
+def _lock_path(name: str) -> Path:
+    return _state_root() / f"harness-discovery-{name}.lock"
+
+
+def probe_schema() -> str:
+    """Hash of everything a recorded verdict depends on besides the binary:
+    each harness's expected tokens, the fixture's token labels and layout,
+    and :data:`PROBE_LOGIC_VERSION`. A record with another schema is stale."""
+    payload = {
+        "logic": PROBE_LOGIC_VERSION,
+        "labels": list(_ALL_TOKENS),
+        "layout": [path for path, _label in _FIXTURE_FILES],
+        "expected": {
+            name: sorted(spec.probe_expected_root)
+            for name, spec in sorted(harness_spec.HARNESSES.items())
+        },
+    }
+    digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode())
+    return digest.hexdigest()[:16]
+
+
+def _identity_dict(identity: tuple[str, int, int]) -> dict[str, object]:
+    path, mtime_ns, size = identity
+    return {"path": path, "mtime_ns": mtime_ns, "size": size}
+
+
+def _format_identity(identity: tuple[str, int, int]) -> str:
+    """``path:mtime_ns:size`` — the ``--expect-identity`` argument form."""
+    path, mtime_ns, size = identity
+    return f"{path}:{mtime_ns}:{size}"
+
+
+def _parse_identity(text: str) -> tuple[str, int, int] | None:
+    path, sep1, rest = text.rpartition(":")
+    head, sep2, mtime = path.rpartition(":")
+    if not (sep1 and sep2):
+        return None
     try:
-        data = json.loads(path.read_text())
+        return (head, int(mtime), int(rest))
+    except ValueError:
+        return None
+
+
+def read_record(name: str) -> dict[str, object] | None:
+    """The record for ``name``, or ``None`` when absent, unreadable or not a
+    JSON object (a corrupt record is treated as missing and re-probed)."""
+    try:
+        data = json.loads(_record_path(name).read_text())
     except (OSError, ValueError):
-        return {}
-    return data if isinstance(data, dict) else {}
+        return None
+    return data if isinstance(data, dict) else None
 
 
-def _write_cache(path: Path, entries: dict[str, object]) -> None:
-    """Atomically replace the cache file (temp file + rename) so concurrent
-    session starts cannot corrupt it. Best-effort: any OSError is swallowed
-    — an unwritable cache must never break the check."""
+def write_record(name: str, record: dict[str, object]) -> bool:
+    """Atomically replace ``name``'s record (temp file + rename). Return
+    ``False`` instead of raising when the state dir is not writable."""
+    path = _record_path(name)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(
@@ -340,78 +361,202 @@ def _write_cache(path: Path, entries: dict[str, object]) -> None:
         )
         try:
             with os.fdopen(fd, "w") as handle:
-                json.dump(entries, handle)
+                json.dump(record, handle)
             os.replace(tmp, path)
         except BaseException:
             with contextlib.suppress(OSError):
                 os.unlink(tmp)
             raise
     except OSError:
-        pass
+        return False
+    return True
 
 
-def _check_one(
+def _record_matches(
+    record: dict[str, object] | None, identity: tuple[str, int, int]
+) -> bool:
+    return (
+        record is not None
+        and record.get("identity") == _identity_dict(identity)
+        and record.get("probe_schema") == probe_schema()
+    )
+
+
+def _truncate(detail: str | None) -> str | None:
+    if detail is None:
+        return None
+    detail = " ".join(detail.split())
+    return detail if len(detail) <= _DETAIL_MAX else detail[: _DETAIL_MAX - 1] + "…"
+
+
+def _build_record(
     name: str,
-    pinned: str,
-    quiet: bool = False,
-    verbose: bool = False,
-    run_command: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
-    cache: dict[str, object] | None = None,
+    identity: tuple[str, int, int],
+    version: str | None,
+    status: str,
+    detail: str | None,
+    now: float,
+) -> dict[str, object]:
+    """A new record for ``name``. ERROR counts on from a previous matching
+    ERROR record and schedules the next automatic retry; HOLD and BROKEN
+    reset the count."""
+    error_count = 0
+    next_retry_at: float | None = None
+    if status == "ERROR":
+        previous = read_record(name)
+        prior = 0
+        if _record_matches(previous, identity) and previous is not None:
+            if previous.get("status") == "ERROR" and isinstance(
+                previous.get("error_count"), int
+            ):
+                prior = int(previous["error_count"])  # type: ignore[arg-type]
+            if version is None and isinstance(previous.get("version"), str):
+                version = str(previous["version"])
+        error_count = prior + 1
+        if error_count <= len(_RETRY_DELAYS):
+            next_retry_at = now + _RETRY_DELAYS[error_count - 1]
+    return {
+        "identity": _identity_dict(identity),
+        "version": version,
+        "probe_schema": probe_schema(),
+        "status": status,
+        "detail": _truncate(detail),
+        "checked_at": now,
+        "error_count": error_count,
+        "next_retry_at": next_retry_at,
+    }
+
+
+# ── check (session-start tier) ───────────────────────────────────────────────
+
+_PROBE_HINT = "python3 ~/.agent-toolkit/scripts/harness_discovery_check.py probe"
+
+
+def _launch_probe(
+    name: str,
+    identity: tuple[str, int, int],
+    popen: Callable[..., object] = subprocess.Popen,
+) -> str | None:
+    """Launch ``probe --record`` for ``name`` in the background.
+
+    Takes the harness's lock with a non-blocking ``flock`` and hands the
+    locked descriptor to the child (``pass_fds``), so the lock stays held
+    without a gap until the probe process exits, however it exits. Returns
+    ``None`` when the probe was launched or another probe already holds the
+    lock, or a short reason when it could not be launched.
+    """
+    lock_path = _lock_path(name)
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError as exc:
+        return f"lock file not openable: {exc}"
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return None  # a probe of this harness is already running
+        except OSError as exc:
+            return f"lock not acquirable: {exc}"
+        argv = [
+            sys.executable,
+            str(Path(__file__).resolve()),
+            "probe",
+            "--record",
+            "--harness",
+            name,
+            "--expect-identity",
+            _format_identity(identity),
+            "--lock-fd",
+            str(fd),
+        ]
+        try:
+            popen(
+                argv,
+                start_new_session=True,
+                close_fds=True,
+                pass_fds=(fd,),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError as exc:
+            return f"probe launch failed: {exc}"
+        return None
+    finally:
+        os.close(fd)
+
+
+def _error_note(name: str, record: dict[str, object]) -> str:
+    version = record.get("version") or "?"
+    count = record.get("error_count")
+    detail = record.get("detail") or "no detail"
+    return (
+        f"[harness-discovery] could not verify {name} {version} "
+        f"({count} attempts: {detail}) — run `{_PROBE_HINT} --record --harness {name}`"
+    )
+
+
+def _broken_note(name: str, record: dict[str, object]) -> str:
+    version = record.get("version") or "?"
+    detail = record.get("detail") or "no detail"
+    return (
+        f"[harness-discovery] {name} {version} instruction-file discovery changed: "
+        f"{detail}. Confirm with `{_PROBE_HINT} --harness {name}`, then update "
+        f"harness_spec.py's expectations and the AGENTS.md/CLAUDE.md convention."
+    )
+
+
+def _hook_check_one(
+    name: str,
+    now: float,
+    launch: Callable[[str, tuple[str, int, int]], str | None],
 ) -> tuple[str | None, bool]:
-    """Check one harness. Return ``(note_or_none, is_error)``.
+    """Check one harness in hook mode. Return ``(note_or_none, verified)``.
 
-    ``note_or_none`` is a plain-language one-line note when the installed
-    version differs from the pin, or ``None`` when they match (or the binary
-    is missing). ``is_error`` is ``True`` only when ``--version`` itself
-    failed (not a mismatch).
-
-    ``cache``, when given, memoizes the ``--version`` measurement keyed on
-    the binary's stat identity: a hit answers the pin comparison without
-    spawning any subprocess, a miss spawns as today and refreshes the
-    entry. Cache failures degrade to the uncached spawn.
+    ``verified`` is True when the binary is absent (nothing to verify) or has
+    a current HOLD record; ``--strict`` keys off it.
     """
     binary = resolve_binary(name)
     if binary is None:
-        _vprint(f"{name}: binary not found — UNVERIFIABLE", verbose=verbose)
-        return None, False
-    key = _stat_key(binary)
-    cached_version: str | None = None
-    if key is not None and cache is not None:
-        parsed = _parsed_entry(cache.get(name))
-        if parsed is not None and parsed[0] == key:
-            cached_version = parsed[1]
-            _vprint(
-                f"{name}: version cache hit ({cached_version})",
-                verbose=verbose,
-            )
-    if cached_version is not None:
-        installed = cached_version
-    else:
-        try:
-            installed = run_version(name, binary, run_command=run_command)
-        except HarnessCheckError as exc:
-            return f"[{name}] {exc}", True
-        if key is not None and cache is not None:
-            cache[name] = {
-                "schema": _CACHE_SCHEMA,
-                "path": key[0],
-                "mtime_ns": key[1],
-                "size": key[2],
-                "version": installed,
-            }
-            _vprint(
-                f"{name}: version cache miss — measured {installed}",
-                verbose=verbose,
-            )
-    if installed == pinned:
-        _vprint(f"{name}: {installed} matches pinned {pinned}", verbose=verbose)
-        return None, False
-    note = (
-        f"[{name}] installed {installed} ≠ pinned {pinned} — "
-        f"instruction-file discovery row is unverified. "
-        f"Run `python3 ~/.agent-toolkit/scripts/harness_discovery_check.py probe --harness {name}`"
-    )
-    return note, False
+        return None, True
+    identity = _stat_key(binary)
+    if identity is None:
+        return None, True
+    record = read_record(name)
+    if _record_matches(record, identity) and record is not None:
+        status = record.get("status")
+        if status == "HOLD":
+            return None, True
+        if status == "BROKEN":
+            return _broken_note(name, record), False
+        count = record.get("error_count")
+        count = count if isinstance(count, int) else 0
+        retry_at = record.get("next_retry_at")
+        due = isinstance(retry_at, (int, float)) and now >= retry_at
+        note = _error_note(name, record) if count >= _NOTE_AFTER_ERRORS else None
+        if not due or count >= _MAX_AUTO_ERRORS:
+            return note, False
+        failure = launch(name, identity)
+        return (note or _launch_failure(name, identity, failure, now)), False
+    failure = launch(name, identity)
+    return _launch_failure(name, identity, failure, now), False
+
+
+def _launch_failure(
+    name: str,
+    identity: tuple[str, int, int],
+    failure: str | None,
+    now: float,
+) -> str | None:
+    """Turn a failed launch into an ERROR record, or a one-line note when
+    even that cannot be written."""
+    if failure is None:
+        return None
+    record = _build_record(name, identity, None, "ERROR", failure, now)
+    if write_record(name, record):
+        return None
+    return f"[harness-discovery] cannot verify {name}: {failure}"
 
 
 def cmd_check(
@@ -420,117 +565,55 @@ def cmd_check(
     strict: bool = False,
     quiet: bool = False,
     verbose: bool = False,
-    run_command: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    now: float | None = None,
+    launch: Callable[[str, tuple[str, int, int]], str | None] | None = None,
 ) -> int:
-    """Stateless version-pin comparison for the load-bearing harnesses.
+    """Compare each load-bearing harness's binary against its record.
 
-    Silent when versions match. Prints a note on mismatch. Returns 0 for
-    clean/noted, 1 for internal error, 2 for attention under ``--strict``.
-    The ``--version`` probes are memoized in the version cache (keyed on
-    binary identity) so an unchanged binary is not re-spawned.
+    Hook mode launches background probes and prints only BROKEN and
+    repeated-ERROR notes; manual mode prints every unverified or missing
+    harness and launches nothing. Returns 0, or 2 under ``--strict`` when an
+    installed harness has no current HOLD record.
     """
-    cache_path = _cache_path()
-    cache = _read_cache(cache_path)
-    fresh = dict(cache)
+    if os.environ.get(GUARD_ENV) == "1":
+        return 0
+    now = time.time() if now is None else now
+    launch = _launch_probe if launch is None else launch
     notes: list[str] = []
-    errors: list[str] = []
+    all_verified = True
     for name in _LOAD_BEARING:
-        try:
-            pinned = pinned_version(name)
-        except HarnessCheckError as exc:
-            errors.append(f"[{name}] {exc}")
-            continue
-        note, is_error = _check_one(
-            name,
-            pinned,
-            quiet=quiet,
-            verbose=verbose,
-            run_command=run_command,
-            cache=fresh,
-        )
-        if is_error:
-            errors.append(note or f"[{name}] internal error")
-        elif note:
-            notes.append(note)
-
-    if fresh != cache:
-        _write_cache(cache_path, fresh)
-
-    if errors:
-        # In --hook mode, print a crash note so a broken checker is
-        # distinguishable from a stale pin.
-        crash = "[harness-discovery] checker failed — run it manually"
         if hook:
-            print(crash)
+            note, verified = _hook_check_one(name, now, launch)
         else:
-            for e in errors:
-                _qprint(e, quiet=quiet, file=sys.stderr)
-            _qprint(crash, quiet=quiet, file=sys.stderr)
-        return 1
-
-    if notes:
-        for note in notes:
-            _qprint(note, quiet=quiet)
-        return 2 if strict else 0
-
-    return 0
+            note, verified = _manual_check_one(name)
+        all_verified = all_verified and verified
+        if note:
+            notes.append(note)
+    for note in notes:
+        _qprint(note, quiet=quiet)
+    _vprint(f"check: {len(notes)} note(s)", verbose=verbose)
+    return 2 if strict and not all_verified else 0
 
 
-# ── probe (live tier) ────────────────────────────────────────────────────────
-
-
-def _build_fixture(
-    repo: Path,
-    run_command: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
-) -> None:
-    """Create the audit fixture in ``repo`` (already a git repo or plain
-    directory). Writes the six token-bearing files and commits if git is
-    present."""
-    (repo / "AGENTS.md").write_text(f"{_TOKEN_AGENTS_ROOT}\n")
-    (repo / "CLAUDE.md").write_text(f"{_TOKEN_CLAUDE_ROOT}\n")
-    (repo / "GEMINI.md").write_text(f"{_TOKEN_GEMINI_ROOT}\n")
-
-    sub = repo / "sub"
-    sub.mkdir(exist_ok=True)
-    (sub / "AGENTS.md").write_text(f"{_TOKEN_AGENTS_SUB}\n")
-    (sub / "CLAUDE.md").write_text(f"{_TOKEN_CLAUDE_SUB}\n")
-    (sub / "GEMINI.md").write_text(f"{_TOKEN_GEMINI_SUB}\n")
-
-    # Initialise as a git repo so harnesses that use git root discovery
-    # (e.g. Copilot) see a real repository.
-    if not (repo / ".git").exists():
-        run_command(["git", "init", "-q"], cwd=repo, check=False)
-    run_command(["git", "add", "."], cwd=repo, check=False)
-    run_command(["git", "commit", "-q", "-m", "init"], cwd=repo, check=False)
-
-
-def _probe_prompt(tokens: Sequence[str]) -> str:
-    """Return the prompt shape used for every harness probe.
-
-    The model is instructed not to use tools and to list only the tokens it
-    recognises from its loaded instructions/context.
-    """
-    token_list = ", ".join(tokens)
-    return (
-        "You are being probed for instruction-file loading behavior. "
-        "Do NOT use any tools. Based ONLY on the instructions and context "
-        "you have been loaded with, which of these tokens appear in your "
-        f"context: {token_list}? "
-        "List only the matching tokens, separated by commas. If none, say 'none'."
-    )
-
-
-def _parse_tokens(response: str) -> set[str]:
-    """Extract fixture token names from a probe response.
-
-    Cheap models wrap answers in prose/markdown, so we search for each
-    known token name as a substring rather than expecting an exact match.
-    """
-    found: set[str] = set()
-    for token in _ALL_TOKENS:
-        if token in response:
-            found.add(token)
-    return found
+def _manual_check_one(name: str) -> tuple[str | None, bool]:
+    binary = resolve_binary(name)
+    if binary is None:
+        return f"[{name}] not installed", True
+    identity = _stat_key(binary)
+    if identity is None:
+        return f"[{name}] {binary} cannot be stat'ed", True
+    record = read_record(name)
+    if not (_record_matches(record, identity) and record is not None):
+        return (
+            f"[{name}] not verified on this machine yet — "
+            f"run `{_PROBE_HINT} --record --harness {name}`"
+        ), False
+    status = record.get("status")
+    if status == "HOLD":
+        return None, True
+    if status == "BROKEN":
+        return _broken_note(name, record), False
+    return _error_note(name, record), False
 
 
 def _harness_probe_command(name: str, prompt: str) -> list[str]:
@@ -565,31 +648,93 @@ def _harness_probe_command(name: str, prompt: str) -> list[str]:
     raise HarnessCheckError(f"unknown harness: {name}")
 
 
+# ── probe (live tier) ────────────────────────────────────────────────────────
+
+# (relative path, token label) for each fixture file.
+_FIXTURE_FILES: tuple[tuple[str, str], ...] = (
+    ("AGENTS.md", _TOKEN_AGENTS_ROOT),
+    ("CLAUDE.md", _TOKEN_CLAUDE_ROOT),
+    ("GEMINI.md", _TOKEN_GEMINI_ROOT),
+    ("sub/AGENTS.md", _TOKEN_AGENTS_SUB),
+    ("sub/CLAUDE.md", _TOKEN_CLAUDE_SUB),
+    ("sub/GEMINI.md", _TOKEN_GEMINI_SUB),
+)
+
+_MARKER_PREFIX: str = "MARKER-"
+
+
+def _new_tokens() -> dict[str, str]:
+    """A fresh random token per fixture label. Random and never named in the
+    prompt, so a model cannot report a token it did not load."""
+    return {
+        label: f"{_MARKER_PREFIX}{secrets.token_hex(8).upper()}"
+        for label in _ALL_TOKENS
+    }
+
+
+def _build_fixture(
+    repo: Path,
+    tokens: dict[str, str],
+    run_command: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> None:
+    """Create the audit fixture in ``repo``: six instruction files, each
+    holding its label's random token, committed to a git repo so harnesses
+    that use git root discovery (e.g. Copilot) see a real repository."""
+    for rel, label in _FIXTURE_FILES:
+        path = repo / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"{tokens[label]}\n")
+    if not (repo / ".git").exists():
+        run_command(["git", "init", "-q"], cwd=repo, check=False)
+    run_command(["git", "add", "."], cwd=repo, check=False)
+    run_command(["git", "commit", "-q", "-m", "init"], cwd=repo, check=False)
+
+
+def _probe_prompt() -> str:
+    """The prompt for every harness probe. It names the marker prefix but
+    no token, so only a loaded file can supply one."""
+    return (
+        "You are being probed for instruction-file loading behavior. "
+        "Do NOT use any tools. Your loaded instructions or context may contain "
+        f"marker lines starting with {_MARKER_PREFIX!r}. Repeat every such marker "
+        "exactly as written, separated by commas. If you were given none, say 'none'."
+    )
+
+
+def _parse_tokens(response: str, tokens: dict[str, str]) -> set[str]:
+    """Map the random tokens found in ``response`` back to their labels.
+
+    Cheap models wrap answers in prose/markdown, so each token is searched
+    as a substring rather than expecting an exact match."""
+    return {label for label, value in tokens.items() if value in response}
+
+
 def _run_probe(
     name: str,
     cwd: Path,
+    tokens: dict[str, str],
     run_command: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
 ) -> tuple[set[str], str | None]:
     """Run one probe attempt for ``name`` from ``cwd``.
 
-    Returns ``(tokens_found, error_or_none)``. ``error_or_none`` is set
+    Returns ``(labels_found, error_or_none)``. ``error_or_none`` is set
     when the harness invocation itself fails (transport, auth, timeout),
-    in which case ``tokens_found`` is empty.
+    in which case ``labels_found`` is empty.
     """
     binary = resolve_binary(name)
     if binary is None:
         return set(), f"{name}: binary not found"
-    prompt = _probe_prompt(_ALL_TOKENS)
     # Run the resolved file, not the bare command name: the probe must
-    # exercise the same binary ``check`` versions — including a fallback-path
-    # install that is not on PATH.
-    cmd = [str(binary), *_harness_probe_command(name, prompt)[1:]]
+    # exercise the same binary whose identity is recorded — including a
+    # fallback-path install that is not on PATH.
+    cmd = [str(binary), *_harness_probe_command(name, _probe_prompt())[1:]]
     # `cwd=` alone chdir()s the child but leaves the inherited `PWD` env var
     # stale at the caller's own directory. opencode resolves its project
     # root from `$PWD`, not the real working directory, so a stale PWD here
     # makes it silently probe the caller's own repo instead of the fixture.
     env = dict(os.environ)
     env["PWD"] = str(cwd)
+    env[GUARD_ENV] = "1"
     try:
         result = run_command(
             cmd,
@@ -606,24 +751,24 @@ def _run_probe(
         stdout = (result.stdout or "").strip()
         detail = stderr or stdout or f"exit {result.returncode}"
         return set(), f"{name}: probe exited nonzero: {detail}"
-    response = result.stdout or ""
-    return _parse_tokens(response), None
+    return _parse_tokens(result.stdout or "", tokens), None
 
 
 def _probe_harness(
     name: str,
     expected_tokens: set[str],
     cwd: Path,
+    tokens: dict[str, str],
     run_command: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
 ) -> tuple[str, str | None]:
-    """Probe a harness up to ``_PROBE_ATTEMPTS`` times.
+    """Probe a harness up to ``_PROBE_ATTEMPTS`` times against one fixture.
 
     Returns ``(status, detail)`` where ``status`` is one of
     ``"HOLD"``, ``"BROKEN"``, ``"ERROR"``, and ``detail`` is a
     human-readable explanation (nonempty for BROKEN and ERROR).
     """
     for attempt in range(1, _PROBE_ATTEMPTS + 1):
-        found, error = _run_probe(name, cwd, run_command=run_command)
+        found, error = _run_probe(name, cwd, tokens, run_command=run_command)
         if error:
             _vprint(f"{name}: attempt {attempt} ERROR: {error}", verbose=True)
             if attempt == _PROBE_ATTEMPTS:
@@ -635,8 +780,7 @@ def _probe_harness(
         if not found:
             if attempt < _PROBE_ATTEMPTS:
                 _vprint(
-                    f"{name}: attempt {attempt} found no tokens, retrying",
-                    verbose=True,
+                    f"{name}: attempt {attempt} found no tokens, retrying", verbose=True
                 )
                 continue
             if expected_tokens:
@@ -645,8 +789,6 @@ def _probe_harness(
                     f"{name}: no tokens extracted after {_PROBE_ATTEMPTS} attempts",
                 )
             return "HOLD", None
-        # Validate: every expected token must be present, and no unexpected
-        # token may be present (within the fixture set).
         missing = expected_tokens - found
         extra = found - expected_tokens
         if missing or extra:
@@ -657,8 +799,23 @@ def _probe_harness(
                 parts.append(f"unexpected {sorted(extra)}")
             return "BROKEN", "; ".join(parts)
         return "HOLD", None
-    # unreachable, but satisfies type checker
     return "ERROR", f"{name}: exhausted all attempts"
+
+
+def _probe_fresh(
+    name: str,
+    expected_tokens: set[str],
+    run_command: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> tuple[str, str | None]:
+    """Probe ``name`` once against a newly built fixture with new tokens."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        repo = Path(tmpdir) / "fixture"
+        repo.mkdir()
+        tokens = _new_tokens()
+        _build_fixture(repo, tokens, run_command=run_command)
+        return _probe_harness(
+            name, expected_tokens, repo, tokens, run_command=run_command
+        )
 
 
 def _remediation(name: str, status: str, detail: str | None) -> str:
@@ -666,59 +823,132 @@ def _remediation(name: str, status: str, detail: str | None) -> str:
     if status != "BROKEN" or not detail:
         return ""
     return (
-        f"  → {name} discovery behavior changed. Re-measure with the audit "
-        f"fixture, update README.md's version pin and expectation table, "
-        f"and adjust the convention if needed. Detail: {detail}"
+        f"  → {name} discovery behavior changed. Re-run the probe to confirm, "
+        f"then update the expectations in harness_spec.py and adjust the "
+        f"AGENTS.md/CLAUDE.md convention if needed. Detail: {detail}"
     )
+
+
+def _acquire_own_lock(name: str) -> int | None:
+    """Take ``name``'s probe lock for a manual ``probe --record``. Return the
+    descriptor, or ``None`` when another probe holds it."""
+    path = _lock_path(name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(fd)
+        return None
+    return fd
+
+
+def _record_probe(
+    name: str,
+    expected: set[str],
+    expect_identity: tuple[str, int, int] | None,
+    now: float,
+    run_command: Callable[..., subprocess.CompletedProcess[str]],
+) -> tuple[str, str | None]:
+    """Probe ``name`` with confirmation, and record the verdict."""
+    binary = resolve_binary(name)
+    if binary is None:
+        return "ERROR", f"{name}: binary not found"
+    identity = _stat_key(binary)
+    if identity is None:
+        return "ERROR", f"{name}: {binary} cannot be stat'ed"
+    if expect_identity is not None and identity != expect_identity:
+        return "ERROR", f"{name}: binary changed since the probe was launched"
+    try:
+        version: str | None = run_version(name, binary, run_command=run_command)
+    except HarnessCheckError as exc:
+        version = None
+        status, detail = "ERROR", str(exc)
+    else:
+        status, detail = _probe_fresh(name, expected, run_command=run_command)
+        if status == "BROKEN":
+            # Confirm on an independent fixture before recording BROKEN.
+            second, second_detail = _probe_fresh(
+                name, expected, run_command=run_command
+            )
+            if second == "HOLD":
+                status, detail = (
+                    "ERROR",
+                    f"{name}: inconsistent result (BROKEN then HOLD): {detail}",
+                )
+            elif second == "ERROR":
+                status, detail = "ERROR", second_detail
+    if _stat_key(binary) != identity:
+        _vprint(f"{name}: binary changed during the probe; not recorded", verbose=True)
+        return status, detail
+    write_record(name, _build_record(name, identity, version, status, detail, now))
+    return status, detail
 
 
 def cmd_probe(
     *,
     harness: str | None = None,
+    record: bool = False,
+    expect_identity: str | None = None,
+    lock_fd: int | None = None,
     quiet: bool = False,
     verbose: bool = False,
     run_command: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    now: float | None = None,
 ) -> int:
-    """On-demand live semantic verification.
+    """Live semantic verification.
 
-    Rebuilds the audit fixture, probes the requested harnesses, and prints
-    a per-row table. Exits nonzero if any row is BROKEN or ERROR.
+    Probes the requested harnesses against a fresh random-token fixture and
+    prints a per-row table. With ``record``, confirms any mismatch on a
+    second fixture and writes each harness's verdict to its record. Exits
+    nonzero if any row is BROKEN or ERROR.
     """
     targets: list[str] = [harness] if harness else list(DISCOVERY_TARGETS)
-
-    # Expected root tokens per harness (semantic fact, not version-specific).
+    now = time.time() if now is None else now
     expected_root: dict[str, set[str]] = {
         name: set(spec.probe_expected_root)
         for name, spec in harness_spec.HARNESSES.items()
     }
+    wanted_identity = _parse_identity(expect_identity) if expect_identity else None
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        repo = Path(tmpdir) / "fixture"
-        repo.mkdir()
-        _build_fixture(repo, run_command=run_command)
-        root_cwd = repo
-
-        rows: list[tuple[str, str, str | None]] = []
-        for name in targets:
-            _vprint(f"probing {name} ...", verbose=verbose)
-            status, detail = _probe_harness(
-                name, expected_root[name], root_cwd, run_command=run_command
+    rows: list[tuple[str, str, str | None]] = []
+    for name in targets:
+        _vprint(f"probing {name} ...", verbose=verbose)
+        if not record:
+            status, detail = _probe_fresh(
+                name, expected_root[name], run_command=run_command
             )
             rows.append((name, status, detail))
+            continue
+        own_fd: int | None = None
+        if lock_fd is None:
+            try:
+                own_fd = _acquire_own_lock(name)
+            except OSError as exc:
+                rows.append((name, "ERROR", f"{name}: lock not acquirable: {exc}"))
+                continue
+            if own_fd is None:
+                rows.append((name, "ERROR", f"{name}: a probe is already running"))
+                continue
+        try:
+            status, detail = _record_probe(
+                name, expected_root[name], wanted_identity, now, run_command
+            )
+        finally:
+            if own_fd is not None:
+                os.close(own_fd)
+        rows.append((name, status, detail))
 
-    # Print table
     _qprint("Harness | Status | Detail", quiet=quiet)
     _qprint("-" * 50, quiet=quiet)
     any_bad = False
     for name, status, detail in rows:
-        detail_str = detail or "-"
-        _qprint(f"{name:8} | {status:6} | {detail_str}", quiet=quiet)
+        _qprint(f"{name:8} | {status:6} | {detail or '-'}", quiet=quiet)
         if status in ("BROKEN", "ERROR"):
             any_bad = True
             rem = _remediation(name, status, detail)
             if rem:
                 _qprint(rem, quiet=quiet)
-
     return 1 if any_bad else 0
 
 
@@ -727,8 +957,8 @@ def cmd_probe(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Detect harness instruction-file discovery drift against "
-        "README.md's version-pinned facts."
+        description="Detect harness instruction-file discovery changes by "
+        "probing each installed harness once per binary."
     )
     verbosity_parent = argparse.ArgumentParser(add_help=False)
     cli_common.add_verbosity_args(verbosity_parent)
@@ -737,29 +967,43 @@ def build_parser() -> argparse.ArgumentParser:
 
     check_parser = subparsers.add_parser(
         "check",
-        help="stateless version-pin comparison for load-bearing harnesses (default)",
+        help="compare installed harnesses against this machine's probe records (default)",
         parents=[verbosity_parent],
     )
     check_parser.add_argument(
         "--hook",
         action="store_true",
-        help="format output for SessionStart hook consumption",
+        help="SessionStart mode: launch background probes, print only problems, exit 0",
     )
     check_parser.add_argument(
         "--strict",
         action="store_true",
-        help="exit 2 when a version mismatch is noted (default: exit 0)",
+        help="exit 2 when an installed harness has no current HOLD record",
     )
 
     probe_parser = subparsers.add_parser(
         "probe",
-        help="on-demand live semantic verification (~10-15 API calls)",
+        help="live semantic verification (~10-15 cheap API calls)",
         parents=[verbosity_parent],
     )
     probe_parser.add_argument(
         "--harness",
         choices=["claude", "opencode", "pi", "copilot", "agy", "codex"],
         help="probe a single harness instead of all supported ones",
+    )
+    probe_parser.add_argument(
+        "--record",
+        action="store_true",
+        help="confirm any mismatch and write each verdict to this machine's record",
+    )
+    probe_parser.add_argument(
+        "--expect-identity",
+        help="(used by check --hook) path:mtime_ns:size the probe was launched for",
+    )
+    probe_parser.add_argument(
+        "--lock-fd",
+        type=int,
+        help="(used by check --hook) inherited descriptor holding the probe lock",
     )
 
     return parser
@@ -774,10 +1018,23 @@ def main() -> None:
 
     if subcommand == "check":
         sys.exit(
-            cmd_check(hook=args.hook, strict=args.strict, quiet=quiet, verbose=verbose)
+            cmd_check(
+                hook=getattr(args, "hook", False),
+                strict=getattr(args, "strict", False),
+                quiet=quiet,
+                verbose=verbose,
+            )
         )
-    else:
-        sys.exit(cmd_probe(harness=args.harness, quiet=quiet, verbose=verbose))
+    sys.exit(
+        cmd_probe(
+            harness=args.harness,
+            record=args.record,
+            expect_identity=args.expect_identity,
+            lock_fd=args.lock_fd,
+            quiet=quiet,
+            verbose=verbose,
+        )
+    )
 
 
 if __name__ == "__main__":
