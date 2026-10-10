@@ -584,6 +584,13 @@ def bootstrap() -> None:
     """One call per test process: sandbox HOME + install guards (still off)."""
     install_sandbox_home()
     install_patches()
+    # Default the recap kill-switch ON for every test process so a
+    # test-spawned dev_status CLI mutation cannot leave a detached
+    # ``_internal-regen`` child alive past the harness. ``setdefault`` (not an
+    # assignment) preserves an explicit opt-out value (""/"0") a caller set
+    # before import, so a test that genuinely needs live recap regen can still
+    # opt out.
+    os.environ.setdefault("DEVSTATUS_RECAP_DISABLE", "1")
 
 
 def activate(*, subprocess: bool, paths: bool) -> None:  # noqa: A002
@@ -620,8 +627,10 @@ def cli_env(**overrides: str) -> dict[str, str]:
     test-spawned CLI mutation cannot leave a detached ``_internal-regen`` child
     alive past the harness — the conftest subprocess guard wraps ``Popen``
     only in the test process, so it cannot see a detached grandchild the CLI
-    itself spawns. Callers pass their own overrides (e.g. ``HOME``,
-    ``DEVSTATUS_AGENT``) positionally-by-keyword.
+    itself spawns. Redundant with the process-wide default ``bootstrap()`` now
+    sets, but kept explicit so this helper's contract stays self-contained.
+    Callers pass their own overrides (e.g. ``HOME``, ``DEVSTATUS_AGENT``)
+    positionally-by-keyword.
     """
     env = dict(os.environ)
     env["DEVSTATUS_RECAP_DISABLE"] = "1"
