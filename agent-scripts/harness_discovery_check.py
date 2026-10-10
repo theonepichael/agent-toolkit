@@ -105,7 +105,7 @@ TOOLKIT_DATA = "none"
 # the manifest harness_spec declares for it (opencode/package.json's
 # @opencode-ai/plugin devDependency), so it cannot drift from the SDK pin.
 # Bumping that pin re-pins this check too — probe the new release first.
-CLAUDE_CODE_PINNED_VERSION: str = "2.1.252"
+CLAUDE_CODE_PINNED_VERSION: str = "2.1.280"
 PI_PINNED_VERSION: str = "0.84.4"
 COPILOT_PINNED_VERSION: str = "1.0.80"
 AGY_PINNED_VERSION: str = "1.1.22"
