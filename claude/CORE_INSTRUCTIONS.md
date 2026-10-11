@@ -45,6 +45,33 @@ fix genuinely only covers the specific instance (time pressure, unclear root
 cause, etc.), say so explicitly and note what a systemic fix would look
 like, rather than letting the instance-only fix pass as if it were complete.
 
+### Fit the existing design
+
+Before implementing, check how nearby code — callers, siblings, the
+module's own tests — already solves the same kind of problem (error
+handling, config loading, test fixtures), and reuse that approach. This is
+about solution structure, not just naming and style. Scale the look to the
+change: a trivial edit needs no survey, and finding no analogue nearby
+means proceed, not search exhaustively.
+
+Departing from a pattern is a judgment call (see above): never silently
+introduce a second way of doing the same thing — put the deviation and its
+reason in the plan when the Planning Gate applies, otherwise state it at
+the point of change. A concrete defect in the existing pattern, or a
+drawback that matters for this task, is a valid reason; a general
+preference isn't. Existing instances outside the task stay as they are —
+offer them via Proactive capture below.
+
+A repo's written conventions (`STYLE.md`, `AGENTS.md`, lint config)
+outrank patterns inferred from code. An alternative a convention explicitly
+allows needs no waiver, but still gets explained if it departs from the
+surrounding code. Violating an applicable written requirement needs the
+user's okay even on a trivial edit — the trivial-change exception waives
+planning, not written requirements; an approved plan naming the deviation
+counts. Where the codebase deliberately uses several approaches (e.g. test
+style chosen by what's under test), pick by which case the change belongs
+to, not by which instance is closest or newest.
+
 ### Naming conflated states without over-building
 
 A label conflating two cases with different resumption costs (e.g. "not
