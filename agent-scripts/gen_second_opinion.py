@@ -102,8 +102,15 @@ CONTRACT_TOKENS = (
 # `{{FLAG:--flag[ argument]}}` marks a script flag the Pi tool also exposes.
 # Shell harnesses render the marker body verbatim in backticks; Pi renders
 # the tool's parameter name instead (see render_flag). The marker keeps the
-# literal flag in the template, so check_contract_shape still sees it.
-FLAG_MARKER = re.compile(r"\{\{FLAG:([^}\n]+)\}\}")
+# literal flag in the template, so check_contract_shape still sees it. The
+# body excludes braces: a flag argument is a name/path, never a nested marker.
+FLAG_MARKER = re.compile(r"\{\{FLAG:([^{}\n]+)\}\}")
+
+# A well-formed {{UPPER_SNAKE}} token (capturing its name), for the
+# template-side scan; and the two shapes the post-render backstop rejects.
+TOKEN_PLACEHOLDER = re.compile(r"\{\{([A-Z_]+)\}\}")
+POST_RENDER_FLAG = re.compile(r"\{\{FLAG:")
+POST_RENDER_TOKEN = re.compile(r"\{\{[A-Z_]+\}\}")
 
 # Script flag -> the `second_opinion` tool's parameter that emits it
 # (buildArgv in pi/extensions/second-opinion-tool.ts).
@@ -802,6 +809,10 @@ def render_flag(marker_body: str, params: HarnessParams) -> str:
     flag, _, argument = marker_body.partition(" ")
     if flag not in PI_TOOL_PARAMS:
         raise ValueError(f"{{{{FLAG:{marker_body}}}}}: unknown flag {flag!r}")
+    if flag in PI_BOOLEAN_FLAGS and argument:
+        raise ValueError(
+            f"{{{{FLAG:{marker_body}}}}}: boolean flag {flag!r} takes no argument"
+        )
     if not is_native_tool(params):
         return f"`{marker_body}`"
     param = PI_TOOL_PARAMS[flag]
@@ -880,6 +891,18 @@ def substitutions(params: HarnessParams) -> dict[str, str]:
             if is_native_tool(params)
             else "pass `--allow-extra-round`"
         ),
+        # The opencode diagnostic is not a second_opinion.py flag, but the
+        # shared sentence does not say who runs it, while the same doc says
+        # never to shell out to backends and opencode is off Pi's bash
+        # allowlist. The placeholder owns the whole verb phrase so the
+        # sentence stays grammatical either way.
+        "BACKEND_DIAG_REF": (
+            "ask the user to check with `opencode run --agent adversary --auto "
+            "--format json <text> 2>&1` from a shell outside Pi if that happens"
+            if is_native_tool(params)
+            else "check with `opencode run --agent adversary --auto --format "
+            "json <text> 2>&1` if that happens"
+        ),
         # Same io_entrypoint split: the tool never passes --quiet and returns
         # stderr alongside stdout, so Pi always sees the no-pool notice.
         "QUIET_NOTE": (
@@ -923,6 +946,70 @@ def apply_placeholders(text: str, values: dict[str, str]) -> str:
     for token, value in values.items():
         text = text.replace("{{" + token + "}}", value)
     return text
+
+
+def _known_tokens() -> frozenset[str]:
+    """Every token the template may use: substitutions() + path tokens."""
+    known: set[str] = set(harness_spec.TOOLKIT_PATH_TOKENS)
+    for params in HARNESS_TABLE.values():
+        known.update(substitutions(params))
+    return frozenset(known)
+
+
+def validate_template_markers(template_text: str) -> None:
+    """Raise ``ValueError`` for a malformed or unknown ``{{`` opener.
+
+    Runs on the raw template so it can name a line number. Every ``{{`` must
+    open either a well-formed ``{{FLAG:...}}`` marker whose flag is in
+    ``PI_TOOL_PARAMS`` (and is not a boolean flag carrying an argument), or a
+    known ``{{UPPER_SNAKE}}`` token. Frontmatter is rendered separately and
+    out of scope.
+    """
+    known = _known_tokens()
+    for lineno, line in enumerate(template_text.splitlines(), start=1):
+        pos = 0
+        while True:
+            start = line.find("{{", pos)
+            if start == -1:
+                break
+            flag_match = FLAG_MARKER.match(line, start)
+            if flag_match is not None:
+                marker_body = flag_match.group(1)
+                flag, _, argument = marker_body.partition(" ")
+                if flag not in PI_TOOL_PARAMS:
+                    raise ValueError(
+                        f"{TEMPLATE_PATH}:{lineno}: unknown flag {flag!r} in "
+                        f"{{{{FLAG:{marker_body}}}}}"
+                    )
+                if flag in PI_BOOLEAN_FLAGS and argument:
+                    raise ValueError(
+                        f"{TEMPLATE_PATH}:{lineno}: boolean flag {flag!r} takes "
+                        f"no argument in {{{{FLAG:{marker_body}}}}}"
+                    )
+                pos = flag_match.end()
+                continue
+            token_match = TOKEN_PLACEHOLDER.match(line, start)
+            if token_match is not None:
+                token = token_match.group(1)
+                if token not in known:
+                    raise ValueError(
+                        f"{TEMPLATE_PATH}:{lineno}: unknown token {{{{" + token + "}}"
+                    )
+                pos = token_match.end()
+                continue
+            raise ValueError(
+                f"{TEMPLATE_PATH}:{lineno}: malformed marker near "
+                f"{line[start : start + 24]!r}"
+            )
+
+
+def _check_no_surviving_markers(rendered: str) -> None:
+    """Raise if a flag marker or an unsubstituted token survived rendering."""
+    surviving = POST_RENDER_FLAG.search(rendered) or POST_RENDER_TOKEN.search(rendered)
+    if surviving is not None:
+        raise ValueError(
+            f"unresolved marker in rendered output: {surviving.group(0)!r}"
+        )
 
 
 def render_body(template_text: str, params: HarnessParams) -> str:
@@ -1009,7 +1096,9 @@ def render_body(template_text: str, params: HarnessParams) -> str:
             continue
         paragraph.append(line.strip())
     flush()
-    return "\n".join(out).rstrip("\n") + "\n"
+    result = "\n".join(out).rstrip("\n") + "\n"
+    _check_no_surviving_markers(result)
+    return result
 
 
 def render_file(template_text: str, relpath: str, params: HarnessParams) -> str:
@@ -1022,6 +1111,7 @@ def render_file(template_text: str, relpath: str, params: HarnessParams) -> str:
 def render_all(repo_root: Path) -> dict[str, str]:
     """Render every harness's file, keyed by its repo-relative output path."""
     template_text = (repo_root / TEMPLATE_PATH).read_text(encoding="utf-8")
+    validate_template_markers(template_text)
     return {
         relpath: render_file(template_text, relpath, params)
         for relpath, params in HARNESS_TABLE.items()
@@ -1138,7 +1228,11 @@ def main() -> None:
         )
         sys.exit(2)
 
-    rendered = render_all(repo_root)
+    try:
+        rendered = render_all(repo_root)
+    except ValueError as exc:
+        print(f"[gen_second_opinion] {exc}", file=sys.stderr)
+        sys.exit(1)
 
     if args.stdout:
         for relpath, text in rendered.items():

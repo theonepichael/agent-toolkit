@@ -755,6 +755,7 @@ gen_second_opinion.py — regenerate the second-opinion skill copies (one per ha
   - `render_flag(marker_body: str, params: HarnessParams) -> str` — Render one `{{FLAG:...}}` marker body for ``params``'s harness.
   - `substitutions(params: HarnessParams) -> dict[str, str]` — Map each `{{TOKEN}}` in the template to this harness's value.
   - `apply_placeholders(text: str, values: dict[str, str]) -> str` — Replace every `{{TOKEN}}` in ``text`` with its harness-specific value.
+  - `validate_template_markers(template_text: str) -> None` — Raise ``ValueError`` for a malformed or unknown ``{{`` opener.
   - `render_body(template_text: str, params: HarnessParams) -> str` — Render one harness's body: substitute placeholders, then reflow prose.
   - `render_file(template_text: str, relpath: str, params: HarnessParams) -> str` — Render one harness's complete file: frontmatter, marker, body.
   - `render_all(repo_root: Path) -> dict[str, str]` — Render every harness's file, keyed by its repo-relative output path.
