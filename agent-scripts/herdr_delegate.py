@@ -81,6 +81,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 import agent_toolkit_paths  # noqa: E402
+import agy_workspace_trust  # noqa: E402
 import cli_common  # noqa: E402
 from backlog_claim_lookup import (  # noqa: E402
     BacklogClaimLookup,
@@ -717,22 +718,23 @@ def spawn_in_new_tab(
                 )
             )
         except RefusedError as exc:
+            refusal = trust_prompt_refusal(pane=pane, kind=kind, exc=exc)
             # No agent is running in the freshly created tab, and herdr leaves
             # pane cleanup to the caller on this failure -- so if we do nothing,
             # the tab leaks as a contentless, unknown-status pane (seen after a
             # failed 2026-09-07 swarm launch). Close it best-effort and surface
-            # the original launch error either way.
+            # the (possibly upgraded) launch error either way.
             with contextlib.suppress(RefusedError):
                 herdr(["tab", "close", tab])
-            if exc.code != "timeout" or attempt == AGENT_START_TIMEOUT_RETRIES:
-                if exc.code == "timeout":
+            if refusal.code != "timeout" or attempt == AGENT_START_TIMEOUT_RETRIES:
+                if refusal.code == "timeout":
                     raise RefusedError(
                         f"gave up after {attempt + 1} attempt(s) waiting for "
                         f"agent startup across fresh tabs (name={name!r}); "
                         "check `herdr status`",
-                        code=exc.code,
-                    ) from exc
-                raise
+                        code=refusal.code,
+                    ) from refusal
+                raise refusal
             print(
                 f"[herdr_delegate] agent start timed out on attempt "
                 f"{attempt + 1}; retrying after backoff",
@@ -833,6 +835,61 @@ def read_pane_text(pane: str, *, source: str = "visible") -> str:
     return ""
 
 
+def trust_prompt_refusal(*, pane: str, kind: str, exc: RefusedError) -> RefusedError:
+    """Upgrade an agy ``agent_not_ready`` refusal to a trust-prompt message.
+
+    Reads the pane *before* the caller closes the tab (the pane still shows
+    agy's startup text at that point) and, if it carries the workspace-trust
+    dialog, returns a distinct refusal so a future agy change surfaces as
+    "trust prompt" rather than a generic blocked startup. Best-effort: a
+    failed pane read falls through to ``exc`` unchanged and never masks it.
+    """
+    if kind != "agy" or exc.code != "agent_not_ready":
+        return exc
+    try:
+        text = read_pane_text(pane)
+    except RefusedError:
+        return exc
+    if agy_workspace_trust.TRUST_PROMPT_TEXT in text:
+        return RefusedError(
+            "agy is blocked on its workspace-trust prompt "
+            f"({agy_workspace_trust.TRUST_PROMPT_TEXT!r}); auto-trust did not "
+            "take effect -- agy may have changed how it stores trust. Check "
+            "~/.gemini/antigravity-cli/settings.json trustedWorkspaces.",
+            code=exc.code,
+        )
+    return exc
+
+
+def trust_agy_dir(dir_path: str) -> None:
+    """Ensure agy's trustedWorkspaces lists ``dir_path`` before an agy launch.
+
+    Translates the trust module's own error into a :class:`RefusedError` so it
+    surfaces as the usual ``[herdr_delegate] ...`` refusal (``main`` only catches
+    ``RefusedError``), not a traceback.
+    """
+    try:
+        agy_workspace_trust.ensure_trusted(dir_path)
+    except agy_workspace_trust.TrustSettingsError as exc:
+        raise RefusedError(str(exc)) from exc
+
+
+def prune_agy_trust_entries() -> None:
+    """Best-effort prune of vanished agy trusted-workspace entries.
+
+    Runs before every agy launch/probe so entries for since-removed worktrees
+    and probe dirs don't accumulate. Never blocks the launch: a failure warns
+    on stderr and returns.
+    """
+    try:
+        agy_workspace_trust.prune_trusted()
+    except agy_workspace_trust.TrustSettingsError as exc:
+        print(
+            f"[herdr_delegate] warning: cannot prune agy trusted workspaces: {exc}",
+            file=sys.stderr,
+        )
+
+
 def confirm_prompt_receipt(
     *,
     pane: str,
@@ -922,7 +979,10 @@ def cmd_launch(args: argparse.Namespace) -> None:
     writable_roots: list[str] | None = None
     if kind in ("agy", "codex"):
         cwd = prepare_worker_worktree(args.slug)
-        if kind == "codex":
+        if kind == "agy":
+            prune_agy_trust_entries()
+            trust_agy_dir(cwd)
+        elif kind == "codex":
             writable_roots = codex_writable_roots()
 
     print(
@@ -1031,22 +1091,31 @@ def cmd_probe(args: argparse.Namespace) -> None:
 
     tab_id: str | None = None
     try:
+        if kind == "agy":
+            prune_agy_trust_entries()
+            agy_workspace_trust.ensure_trusted(cwd)
         created = herdr(build_tab_argv(cwd=cwd, label=label, kind=kind))
         result = created["result"]
         pane = result["root_pane"]["pane_id"]  # type: ignore[index]
         tab_id = result["tab"]["tab_id"]  # type: ignore[index]
 
-        herdr(
-            build_agent_start_argv(
-                name=name,
-                pane=pane,
-                model=args.model,
-                kind=kind,
-                session_id=session_id,
-                plugin_dir=plugin_dir,
-                writable_roots=writable_roots,
+        try:
+            herdr(
+                build_agent_start_argv(
+                    name=name,
+                    pane=pane,
+                    model=args.model,
+                    kind=kind,
+                    session_id=session_id,
+                    plugin_dir=plugin_dir,
+                    writable_roots=writable_roots,
+                )
             )
-        )
+        except RefusedError as exc:
+            # Same upgrade as spawn_in_new_tab: an agy startup blocked on the
+            # trust dialog surfaces as a distinct reason rather than a generic
+            # startup failure.
+            raise trust_prompt_refusal(pane=pane, kind=kind, exc=exc)
         herdr(["agent", "prompt", name, trivial_prompt])
         confirm_prompt_receipt(
             pane=pane,
@@ -1064,6 +1133,15 @@ def cmd_probe(args: argparse.Namespace) -> None:
                 herdr(["tab", "close", tab_id])
         if scratch_dir is not None:
             shutil.rmtree(scratch_dir, ignore_errors=True)
+            if kind == "agy":
+                try:
+                    agy_workspace_trust.remove_trusted(scratch_dir)
+                except Exception as exc:
+                    print(
+                        f"[herdr_delegate] warning: failed to untrust probe dir "
+                        f"{scratch_dir}: {exc}",
+                        file=sys.stderr,
+                    )
 
 
 def main() -> None:

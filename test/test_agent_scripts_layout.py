@@ -35,6 +35,7 @@ MANAGED_DIR_DEST = "~/.agent-toolkit/scripts"
 FROZEN_SCRIPT_DESTS = frozenset(
     f"{MANAGED_DIR_DEST}/{name}"
     for name in (
+        "agy_workspace_trust.py",
         "agent_toolkit_paths.py",
         "analyze_sessions.py",
         "cli_common.py",
@@ -138,7 +139,7 @@ def test_links_toml_srcs_live_in_agent_scripts() -> None:
         if isinstance(entry.get("src"), str)
         and str(entry.get("dest", "")).startswith(f"{MANAGED_DIR_DEST}/")
     ]
-    assert len(script_links) == 50, f"expected 50 script links, got {len(script_links)}"
+    assert len(script_links) == 51, f"expected 51 script links, got {len(script_links)}"
     bad = [
         entry["src"]
         for entry in script_links

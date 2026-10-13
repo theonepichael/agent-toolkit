@@ -188,6 +188,10 @@ src = "agent-scripts/herdr_delegate.py"
 dest = "~/.agent-toolkit/scripts/herdr_delegate.py"
 
 [[link]]
+src = "agent-scripts/agy_workspace_trust.py"
+dest = "~/.agent-toolkit/scripts/agy_workspace_trust.py"
+
+[[link]]
 src = "agent-scripts/cli_common.py"
 dest = "~/.agent-toolkit/scripts/cli_common.py"
 
