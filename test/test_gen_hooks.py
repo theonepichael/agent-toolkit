@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))
@@ -133,19 +134,33 @@ class CliEndToEndTests(unittest.TestCase):
 
     def test_check_flag_exits_1_on_stale_file(self) -> None:
         """python3 agent-scripts/gen_hooks.py --check exits 1 when a target file is stale."""
-        target = REPO_ROOT / "copilot/hooks/pre-tool-use.json"
-        original = target.read_text(encoding="utf-8")
-        try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_root = Path(tmpdir)
+            # Seed the temp root with freshly generated hooks
+            seed_res = subprocess.run(
+                [sys.executable, str(REPO_ROOT / "agent-scripts/gen_hooks.py"), "--repo-root", str(temp_root)],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(seed_res.returncode, 0, f"Seeding temp repo failed: {seed_res.stderr}")
+
+            # Verify that the cleanly seeded temp root passes --check
+            clean_check_res = subprocess.run(
+                [sys.executable, str(REPO_ROOT / "agent-scripts/gen_hooks.py"), "--check", "--repo-root", str(temp_root)],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(clean_check_res.returncode, 0, f"Clean check on temp root failed: {clean_check_res.stderr}")
+
+            target = temp_root / "copilot/hooks/pre-tool-use.json"
             target.write_text('{"stale": true}\n', encoding="utf-8")
             res = subprocess.run(
-                [sys.executable, str(REPO_ROOT / "agent-scripts/gen_hooks.py"), "--check", "--repo-root", str(REPO_ROOT)],
+                [sys.executable, str(REPO_ROOT / "agent-scripts/gen_hooks.py"), "--check", "--repo-root", str(temp_root)],
                 capture_output=True,
                 text=True,
             )
             self.assertEqual(res.returncode, 1)
             self.assertIn("copilot/hooks/pre-tool-use.json", res.stderr)
-        finally:
-            target.write_text(original, encoding="utf-8")
 
     def test_stdout_flag_emits_json(self) -> None:
         """python3 agent-scripts/gen_hooks.py --stdout prints compiled targets."""
