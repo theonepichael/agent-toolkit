@@ -34,6 +34,7 @@ House style for these interfaces is in `STYLE.md`.
 | Module | Purpose |
 | --- | --- |
 | [`agent_toolkit_paths.py`](#agentscriptsagenttoolkitpathspy) | Single source of truth for toolkit data paths. |
+| [`agy_workspace_trust.py`](#agentscriptsagyworkspacetrustpy) | Read-modify-write agy's ``trustedWorkspaces`` list safely. |
 | [`analyze_sessions.py`](#agentscriptsanalyzesessionspy) | analyze_sessions.py — multi-harness session analysis tool. |
 | [`backlog_claim_lookup.py`](#agentscriptsbacklogclaimlookuppy) | Read-only snapshot lookup over the backlog store for guard consumers. |
 | [`bundle_drift_check.py`](#agentscriptsbundledriftcheckpy) | SessionStart hook: flag when this repo has drifted from the last commit bundled over to a GitHub-blocked work machine. |
@@ -112,6 +113,34 @@ Single source of truth for toolkit data paths.
   - `write_pointer(home: Path, layout: Layout, *, toolkit_root: Path | None) -> None` — Atomically write the layout pointer.
   - `check_upgrade_required(home: Path | None = None) -> None` — Raise :class:`UpgradeRequiredError` if legacy state exists without a completed migration record.
 - Tested by: `agent-scripts/test_layouts.py`, `test/test_agent_toolkit_paths.py`, `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_dev_status_storage.py`, `test/test_gen_interfaces.py`, `test/test_grill.py`, `test/test_guard_rails.py`, `test/test_install.py`, `test/test_llm_backends.py`, `test/test_machine_id.py`, `test/test_migrate_path_transform.py`, `test/test_migrate_settings_rewrite.py`, `test/test_migrate_toolkit_home.py`, `test/test_migrate_toolkit_home_carry.py`, `test/test_migrate_toolkit_home_moves.py`, `test/test_migration_lock_adoption.py`, `test/test_move_layout_pointer.py`, `test/test_path_for_per_use.py`, `test/test_second_opinion.py`, `test/test_to_tickets_runner.py`
+
+### `agent-scripts/agy_workspace_trust.py`
+
+Read-modify-write agy's ``trustedWorkspaces`` list safely.
+
+- Installed at: `~/.agent-toolkit/scripts/agy_workspace_trust.py` (all harnesses)
+- Entrypoint: not executable, `#!/usr/bin/env python3`
+- CLI (`argparse`): Read-modify-write agy's ``trustedWorkspaces`` list safely.
+  - `--settings` — path to settings.json (default: ~/.gemini/antigravity-cli/settings.json)
+- Subcommands:
+  - `add <dir>` — trust a directory
+    - `dir` — directory path to trust
+  - `remove <dir>` — untrust a directory
+    - `dir` — directory path to untrust
+  - `prune` — remove entries whose path no longer exists
+  - `list` — print trusted workspace entries
+- Filesystem constants:
+  - `SETTINGS_DEFAULT = Path.home() / '.gemini' / 'antigravity-cli' / 'settings.json'`
+- Exceptions:
+  - `class TrustSettingsError(RuntimeError)` — A settings edit that must not proceed, with a reason fit to show the user.
+- Public functions:
+  - `settings_path() -> Path` — The default agy settings.json path (expanduser'd).
+  - `load_settings(path: object) -> dict[str, object]` — Parse ``path``; raises :class:`TrustSettingsError` on a missing file, invalid JSON, or a non-object root (the ``trustedWorkspaces`` shape is validated by :func:`trusted_entries`, not here).
+  - `trusted_entries(path: object) -> list[str]` — The ``trustedWorkspaces`` entries of ``path`` (missing key -> ``[]``).
+  - `ensure_trusted(dir_path: object, *, path: object = None) -> bool` — Add ``dir_path`` (resolved) to ``trustedWorkspaces`` if its exact spelling is not already present; True if changed.
+  - `remove_trusted(dir_path: object, *, path: object = None) -> bool` — Remove ``dir_path`` (resolved) from ``trustedWorkspaces`` if present; True if changed.
+  - `prune_trusted(*, path: object = None) -> list[str]` — Remove every entry whose path no longer exists; returns the removed entries.
+- Tested by: `test/test_agy_workspace_trust.py`
 
 ### `agent-scripts/analyze_sessions.py`
 
@@ -1059,7 +1088,7 @@ Launch supported agents in herdr tabs to work backlog items.
   - `DEV_STATUS = Path(__file__).parent / 'dev_status.py'`
   - `COPILOT_PLUGIN_DIR = str(Path(__file__).resolve().parent.parent / 'copilot' / 'extensions' / 'swarm')`
 - Explicit exit codes: `1`
-- Depends on: `agent_toolkit_paths.py`, `backlog_claim_lookup.py`, `cli_common.py`, `dev_status.py`, `dev_status_impl.py`, `dev_status_mutation.py`, `dev_status_storage.py`, `worktree.py`
+- Depends on: `agent_toolkit_paths.py`, `agy_workspace_trust.py`, `backlog_claim_lookup.py`, `cli_common.py`, `dev_status.py`, `dev_status_impl.py`, `dev_status_mutation.py`, `dev_status_storage.py`, `worktree.py`
 - Exceptions:
   - `class RefusedError(RuntimeError)` — A launch that must not proceed, with a reason fit to show the user.
 - Public functions:
@@ -1098,6 +1127,9 @@ Launch supported agents in herdr tabs to work backlog items.
   - `ready_slugs(claims: BacklogClaimLookup | None = None) -> list[str]` — Slugs currently in READY, sourced via select_ready().
   - `herdr(argv: list[str]) -> dict[str, object]` — Run a herdr command and return its parsed JSON result.
   - `read_pane_text(pane: str, *, source: str = 'visible') -> str` — Read a pane's terminal snapshot via `herdr pane read`.
+  - `trust_prompt_refusal(*, pane: str, kind: str, exc: RefusedError) -> RefusedError` — Upgrade an agy ``agent_not_ready`` refusal to a trust-prompt message.
+  - `trust_agy_dir(dir_path: str) -> None` — Ensure agy's trustedWorkspaces lists ``dir_path`` before an agy launch.
+  - `prune_agy_trust_entries() -> None` — Best-effort prune of vanished agy trusted-workspace entries.
   - `confirm_prompt_receipt(*, pane: str, tab: str, name: str, prompt: str, timeout_s: float = AGY_PROMPT_TIMEOUT_S, poll_interval_s: float = AGY_PROMPT_POLL_INTERVAL_S, max_resends: int = 1) -> None` — Poll pane for the echoed prompt line; resend if absent, fail loudly if still missing.
 - Subcommand handlers: `cmd_plan`, `cmd_launch`, `cmd_restart`, `cmd_probe`
 - Tested by: `test/test_herdr_delegate.py`
