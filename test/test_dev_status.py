@@ -5243,6 +5243,11 @@ class BacklogTestCase(BacklogFixture):
         self.assertTrue(dev_status.is_worker_safe("atk"))
         self.assertTrue(dev_status.is_worker_safe("iron-lb"))
 
+    def test_ws2_mvc2_prefix_maps_to_its_repo_and_is_worker_safe(self):
+        self.assertEqual(dev_status.REPO_PREFIXES["mvc2-cloud"], "mvc2")
+        self.assertEqual(dev_status.prefix_of("mvc2-m1-image-inventory"), "mvc2")
+        self.assertTrue(dev_status.is_worker_safe("mvc2"))
+
     def test_ws3_the_harness_prefix_is_not_worker_safe(self):
         harness = dev_status.REPO_PREFIXES[dev_status.HARNESS_REPO]
         self.assertFalse(dev_status.is_worker_safe(harness))
