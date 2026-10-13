@@ -114,35 +114,14 @@ rerun.
 # Audit symlinks against manifest:
 ./install.sh --check-links
 
-# Roll back all symlinks and mutations (refused while a toolkit-home
-# migration is committed but not finalized; use the narrow rollback below):
+# Roll back all symlinks and mutations:
 ./install.sh --rollback
-
-# Toolkit-home migration: moves the toolkit data out of its legacy home under ~/.claude.
-# Dry run: every preflight check, writes nothing:
-./install.sh --migrate-toolkit-home --harness=claude --dry-run
-# Real run: journal under ~/.local/state/agent-toolkit/migrations/<id>/,
-# data staged, promoted, layout flipped, originals kept beside the legacy
-# data in .toolkit-home-snapshot-<id>/, then validated in fresh processes;
-# a failed validation restores the legacy layout.
-# On a personal machine, run dev_status_sync.py status first, then:
-./install.sh --migrate-toolkit-home --harness=claude --skip-reconciliation
-# Undo one committed migration (refuses if anything was written since):
-./install.sh --rollback-toolkit-home-migration=<id>
-# After a commit, delete the snapshot, staging and retired legacy links
-# (an emptied legacy ~/.claude/{scripts,hooks,icons} goes too; the rollout
-# carries unclassified data such as plans/ and draft-issues/ as journalled
-# carry steps, undoable like any domain):
-./install.sh --finalize-toolkit-home-migration=<id>
-# The rollout gate: the residue audit must pass on both machines — it fails
-# on anything toolkit-owned left at a legacy location, other than the
-# layout pointer:
-./install.sh --check-links
-# Release 2, once finalized: move the layout pointer into the toolkit home
-# and remove the emptied legacy data directory (safe to re-run if
-# interrupted):
-./install.sh --move-layout-pointer
 ```
+
+Installing from a downstream fork of this repo? See
+[`docs/fork-machine-updates.md`](docs/fork-machine-updates.md) for the
+hand-merge procedure that keeps the fork's own changes across upstream
+releases.
 
 ### Shell Integration
 

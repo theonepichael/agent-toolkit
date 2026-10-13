@@ -20,7 +20,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))
 import test_bootstrap  # noqa: E402
 
-import agent_toolkit_paths  # noqa: E402
 import dev_status  # noqa: E402
 import dev_status_storage  # noqa: E402
 import test_layouts  # noqa: E402
@@ -98,9 +97,9 @@ class BacklogStorageExtractionTestCase(unittest.TestCase):
 
     def test_both_modules_resolve_the_same_store_per_call(self):
         with tempfile.TemporaryDirectory() as tmp:
-            home = test_layouts.SandboxHome(Path(tmp), agent_toolkit_paths.write_pointer)
+            home = test_layouts.SandboxHome(Path(tmp))
             with home.activated():
-                items_file = home.legacy_data / "backlog" / "items.json"
+                items_file = home.toolkit_home / "data" / "backlog" / "items.json"
                 items_file.parent.mkdir(parents=True)
                 items_file.write_text(
                     json.dumps(

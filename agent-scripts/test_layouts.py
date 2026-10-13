@@ -1,30 +1,25 @@
 #!/usr/bin/env python3
 """Test support: sandbox homes that hold the legacy and toolkit-home layouts.
 
-The toolkit-home cutover needs tests where one path resolver sees two
-layouts side by side, where the layout pointer flips inside one process
-lifetime, and where a second, independent home plays the reconciliation
-peer. Production modules resolve every data path at each use, so pointing
-``HOME`` at a sandbox home is all a store fixture needs.
+``check_not_stale`` still needs a home where the retired legacy layout
+(``.claude/data``) and the toolkit-home layout (``.agent-toolkit``) coexist,
+so a stale path under the legacy location can be refused. Production modules
+resolve every data path at each use, so pointing ``HOME`` at a sandbox home
+is all a store fixture needs.
 
 :func:`build_two_layout_homes` builds:
 
 - ``local``: one sandbox home holding BOTH the legacy layout under
   ``.claude/data`` and the toolkit-home layout under ``.agent-toolkit``.
-- ``peer``: a separate sandbox home with the legacy layout only. Its layout
-  pointer always says ``legacy``, so it never points at a layout it lacks.
+- ``peer``: a separate sandbox home with the legacy layout only.
 
-Entries are created empty. Store content is the caller's business.
-
-The layout pointer (``.claude/data/toolkit_state.json`` in release 0) is
-written only through a pluggable ``PointerWriter``. The path resolver owns
-the pointer's real format; :func:`provisional_pointer_writer` is a
-placeholder until the resolver supplies its own writer.
+Entries are created empty. Store content is the caller's business. The
+layout pointer is no longer written: post-cutover the resolver is always
+toolkit-home, so no pointer is needed for these fixtures.
 
 :func:`activate_sandbox_home` gives a unittest-style fixture one sandbox
-home for the length of a test. That consumers follow a flip in the same
-process is proved by test/test_path_for_per_use.py. Nothing in this module
-reads or patches a production path.
+home for the length of a test. Nothing in this module reads or patches a
+production path.
 
 ``activated()`` mutates ``os.environ``. That is safe across pytest-xdist
 workers (separate processes), not across threads in one process.
@@ -34,28 +29,13 @@ Standard library only; never imports pytest.
 
 from __future__ import annotations
 
-import json
 import os
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Protocol
 
 import agent_toolkit_paths
-
-Layout = agent_toolkit_paths.Layout
-
-
-class PointerWriter(Protocol):
-    """Writes the layout pointer: the legacy one under ``home`` when
-    ``toolkit_root`` is None, else ``<toolkit_root>/data/toolkit_state.json``.
-    """
-
-    def __call__(
-        self, home: Path, layout: Layout, *, toolkit_root: Path | None
-    ) -> None: ...
-
 
 LEGACY_DATA_DIRS: tuple[str, ...] = (
     "backlog",
@@ -76,7 +56,6 @@ POINTER_RELPATH = agent_toolkit_paths.POINTER_RELPATH
 @dataclass
 class SandboxHome:
     home: Path
-    pointer_writer: PointerWriter
 
     @property
     def legacy_data(self) -> Path:
@@ -85,14 +64,6 @@ class SandboxHome:
     @property
     def toolkit_home(self) -> Path:
         return self.home / ".agent-toolkit"
-
-    def flip(self, layout: Layout, *, toolkit_root: Path | None = None) -> None:
-        """Point this home at ``layout`` through the pointer writer.
-
-        ``toolkit_root=None`` writes the legacy-location pointer; a path
-        writes the toolkit-home pointer under that root instead.
-        """
-        self.pointer_writer(self.home, layout, toolkit_root=toolkit_root)
 
     @contextmanager
     def activated(self) -> Iterator[Path]:
@@ -120,8 +91,6 @@ class TwoLayoutHomes:
 def activate_sandbox_home(
     root: Path,
     add_cleanup: Callable[[Callable[[], object]], None],
-    *,
-    pointer_writer: PointerWriter = agent_toolkit_paths.write_pointer,
 ) -> SandboxHome:
     """Make ``root`` the ``HOME`` until cleanup; return it as a SandboxHome.
 
@@ -129,7 +98,7 @@ def activate_sandbox_home(
     ``request.addfinalizer``. Nothing is created under ``root``: the store
     code creates what it needs, exactly as on a fresh machine.
     """
-    home = SandboxHome(root, pointer_writer)
+    home = SandboxHome(root)
     context = home.activated()
     context.__enter__()
     add_cleanup(lambda: context.__exit__(None, None, None))
@@ -143,19 +112,12 @@ def _build_legacy(data: Path) -> None:
         (data / name).touch()
 
 
-def build_two_layout_homes(
-    root: Path,
-    *,
-    pointer_writer: PointerWriter = agent_toolkit_paths.write_pointer,
-    initial: Layout = "legacy",
-) -> TwoLayoutHomes:
+def build_two_layout_homes(root: Path) -> TwoLayoutHomes:
     """Build ``root/local`` (both layouts) and ``root/peer`` (legacy only)."""
-    local = SandboxHome(root / "local", pointer_writer)
-    peer = SandboxHome(root / "peer", pointer_writer)
+    local = SandboxHome(root / "local")
+    peer = SandboxHome(root / "peer")
     _build_legacy(local.legacy_data)
     for name in TOOLKIT_HOME_DIRS:
         (local.toolkit_home / name).mkdir(parents=True, exist_ok=True)
     _build_legacy(peer.legacy_data)
-    local.flip(initial)
-    peer.flip("legacy")
     return TwoLayoutHomes(local=local, peer=peer)
