@@ -35,6 +35,7 @@ MANAGED_DIR_DEST = "~/.agent-toolkit/scripts"
 FROZEN_SCRIPT_DESTS = frozenset(
     f"{MANAGED_DIR_DEST}/{name}"
     for name in (
+        "agy_workspace_trust.py",
         "agent_toolkit_paths.py",
         "analyze_sessions.py",
         "cli_common.py",
@@ -71,7 +72,6 @@ FROZEN_SCRIPT_DESTS = frozenset(
         "outlook_email.py",
         "permission_matrix.py",
         "refresh_guidance.py",
-        "retained_legacy_links.py",
         "second_opinion.py",
         "sessionstart_checks.py",
         "settings_seed.py",

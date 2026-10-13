@@ -4392,10 +4392,9 @@ def test_check_links_reports_unreadable_declared_dir(
     """A declared directory that cannot be read was not verified, so it fails."""
     if os.geteuid() == 0:
         pytest.skip("root can read a 000 directory, so the fault cannot occur")
-    # Pin the legacy layout so the toolkit-home residue audit stays out of it.
+    # Ensure the resolver is on the sandbox home with no override.
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.delenv("AGENT_TOOLKIT_HOME", raising=False)
-    agent_toolkit_paths.write_pointer(home, "legacy", toolkit_root=None)
     agent_toolkit_paths.DEFAULT_RESOLVER.invalidate()
 
     ctx = check_links_ctx(home, managed_repo, harnesses=("claude",))
@@ -4807,6 +4806,28 @@ def test_plain_install_auto_removes_orphaned_symlink_and_prints_it(
     (root / "foo.md").unlink()
     capsys.readouterr()
     install.run_install(ctx, [dir_true_spec()])
+
+    out = capsys.readouterr().out
+    assert not dest.exists()
+    assert kinds(ctx, "symlink-created") == []
+    assert "removed orphaned symlink" in out
+    assert ctx.display(dest) in out
+
+
+def test_plain_install_removes_an_orphaned_link_row(home, offline_install, capsys):
+    """A [[link]] whose links.toml row was deleted leaves a manifest-recorded
+    symlink that the next plain install removes as orphaned (e.g. a script
+    dropped from the repo -- the row and source disappear together)."""
+    spec = install.LinkSpec(
+        src="shell/agent-tools.zsh", dest="~/.agent-toolkit/scripts/removed-script.py"
+    )
+    ctx = make_ctx(home)
+    install.run_install(ctx, [spec])
+    dest = home / ".agent-toolkit" / "scripts" / "removed-script.py"
+    assert dest.is_symlink()
+
+    capsys.readouterr()
+    install.run_install(ctx, [])
 
     out = capsys.readouterr().out
     assert not dest.exists()

@@ -287,11 +287,11 @@ first) or updating an existing one.
 
 `second_opinion.py review` exits nonzero with a clear message when none of
 `codex`, `agy`, `opencode`, `pi`, or `copilot` is on `PATH`, or when the
-available backend(s) fail (e.g. the `adversary` agent errors out — check with
-`opencode run --agent adversary --auto --format json <text> 2>&1` if that
-happens). Relay that message and stop — don't fall back to critiquing the plan
-yourself. Two failures get exactly one retry of the same round first, and you
-say which one you made:
+available backend(s) fail (e.g. the `adversary` agent errors out — ask the user
+to check with `opencode run --agent adversary --auto --format json <text> 2>&1`
+from a shell outside Pi if that happens). Relay that message and stop — don't
+fall back to critiquing the plan yourself. Two failures get exactly one retry
+of the same round first, and you say which one you made:
 
 - **Timed out** (a `BackendTimeoutError`): if the message says "silent output
 stall", the backend produced no output and the runner already retried — raising

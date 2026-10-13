@@ -19,8 +19,74 @@ describe("assertFields", () => {
     );
   });
 
-  test("review requires planFile", () => {
+  test("review requires planFile when diff is absent", () => {
     expect(() => assertFields("review", { action: "review" })).toThrow(/requires: planFile/);
+  });
+
+  test("review accepts diff: true without planFile", () => {
+    expect(() => assertFields("review", { action: "review", diff: true })).not.toThrow();
+  });
+
+  test("review rejects both diff: true and planFile", () => {
+    expect(() =>
+      assertFields("review", { action: "review", diff: true, planFile: "/tmp/p.md" }),
+    ).toThrow(/diff reviews the staged diff; do not also pass planFile/);
+  });
+
+  test("review accepts diffPaths with diff: true", () => {
+    expect(() =>
+      assertFields("review", { action: "review", diff: true, diffPaths: ["src/", ":!test/"] }),
+    ).not.toThrow();
+  });
+
+  test("diffPaths requires diff: true", () => {
+    expect(() =>
+      assertFields("review", { action: "review", planFile: "/tmp/p.md", diffPaths: ["src/"] }),
+    ).toThrow(/diffPaths only applies with diff: true/);
+  });
+
+  test("diffPaths must be a non-empty array of non-empty strings", () => {
+    expect(() => assertFields("review", { action: "review", diff: true, diffPaths: [] })).toThrow(
+      /diffPaths must not be empty/,
+    );
+    expect(() =>
+      assertFields("review", { action: "review", diff: true, diffPaths: ["  "] }),
+    ).toThrow(/diffPaths pathspec must not be empty/);
+  });
+
+  test("review accepts excludeBackend with known backend(s)", () => {
+    expect(() =>
+      assertFields("review", { action: "review", diff: true, excludeBackend: "pi" }),
+    ).not.toThrow();
+    expect(() =>
+      assertFields("review", { action: "review", diff: true, excludeBackend: "pi, codex" }),
+    ).not.toThrow();
+  });
+
+  test("excludeBackend rejects unknown backend", () => {
+    expect(() =>
+      assertFields("review", { action: "review", diff: true, excludeBackend: "bogus" }),
+    ).toThrow(/known backends/);
+  });
+
+  test("excludeBackend rejects combination with backend", () => {
+    expect(() =>
+      assertFields("review", {
+        action: "review",
+        diff: true,
+        backend: "codex",
+        excludeBackend: "pi",
+      }),
+    ).toThrow(/excludeBackend cannot be combined with backend/);
+  });
+
+  test("review accepts promptOnly", () => {
+    expect(() =>
+      assertFields("review", { action: "review", diff: true, promptOnly: true }),
+    ).not.toThrow();
+    expect(() =>
+      assertFields("review", { action: "review", planFile: "/tmp/p.md", promptOnly: true }),
+    ).not.toThrow();
   });
 
   test("review accepts its optional fields", () => {
@@ -189,11 +255,45 @@ describe("buildArgv", () => {
     ).toEqual(["review", "/tmp/p.md", "--run-id", "loop-1"]);
   });
 
-  test("review omits --run-id when runId is absent", () => {
-    expect(buildArgv("review", { action: "review", planFile: "/tmp/p.md" })).toEqual([
-      "review",
-      "/tmp/p.md",
-    ]);
+  test("review with diff: true emits --diff instead of planFile", () => {
+    expect(
+      buildArgv("review", {
+        action: "review",
+        diff: true,
+        dir: "/workspace/project",
+        runId: "rd-1",
+      }),
+    ).toEqual(["review", "--diff", "--dir", "/workspace/project", "--run-id", "rd-1"]);
+  });
+
+  test("review with excludeBackend emits repeatable --exclude-backend", () => {
+    expect(
+      buildArgv("review", {
+        action: "review",
+        diff: true,
+        excludeBackend: "pi, codex",
+      }),
+    ).toEqual(["review", "--diff", "--exclude-backend", "pi", "--exclude-backend", "codex"]);
+  });
+
+  test("review with diffPaths emits repeatable --diff-path", () => {
+    expect(
+      buildArgv("review", {
+        action: "review",
+        diff: true,
+        diffPaths: [".", ":!*.tmpl"],
+      }),
+    ).toEqual(["review", "--diff", "--diff-path", ".", "--diff-path", ":!*.tmpl"]);
+  });
+
+  test("review with promptOnly: true emits --prompt-only", () => {
+    expect(
+      buildArgv("review", {
+        action: "review",
+        diff: true,
+        promptOnly: true,
+      }),
+    ).toEqual(["review", "--diff", "--prompt-only"]);
   });
 });
 

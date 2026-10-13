@@ -474,6 +474,13 @@ class DelegateTests(unittest.TestCase):
             return int(e.code or 0), out.getvalue(), err.getvalue()
         return 0, out.getvalue(), err.getvalue()
 
+    def mock_agy_trust(self) -> None:
+        """Patch ensure/remove/prune_trusted so agy launch/probe tests never touch settings.json."""
+        for name in ("prune_trusted", "ensure_trusted", "remove_trusted"):
+            patcher = mock.patch.object(herdr_delegate.agy_workspace_trust, name)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
 
 class SmokeTests(DelegateTests):
     def test_help_exits_zero_and_names_all_subcommands(self) -> None:
@@ -619,6 +626,16 @@ class LaunchTests(DelegateTests):
         prompts = self.fake.named("agent", "prompt")
         self.assertEqual(
             prompts[0][3], "/backlog-item --swarm=3 --prefix atk --items atk-a atk-b"
+        )
+
+    def test_swarm_launch_accepts_mvc2_prefix(self) -> None:
+        code, _, _ = self.run_main(
+            ["launch", "--swarm", "2", "--prefix", "mvc2", "--cwd", "/tmp"]
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            self.fake.named("agent", "prompt")[0][3],
+            "/backlog-item --swarm=2 --prefix mvc2",
         )
 
     def test_launch_slug_refuses_no_worker_item(self) -> None:
@@ -1160,6 +1177,10 @@ class CopilotKindTests(DelegateTests):
 class NewWorkerKindTests(DelegateTests):
     """Agy and Codex start as single-item workers with their own CLI setup."""
 
+    def setUp(self) -> None:
+        super().setUp()
+        self.mock_agy_trust()
+
     def test_new_kind_start_argv_and_prompt(self) -> None:
         agy = herdr_delegate.build_agent_start_argv(
             name="agy-worker", pane="w:p1", model="gemini-test", kind="agy"
@@ -1445,6 +1466,10 @@ class QueueFacadeTests(unittest.TestCase):
 class AgyPromptReceiptTests(DelegateTests):
     """Confirm prompt receipt after launch for agy workers."""
 
+    def setUp(self) -> None:
+        super().setUp()
+        self.mock_agy_trust()
+
     def test_agy_prompt_receipt_immediate(self) -> None:
         fake = FakeHerdr()
         with (
@@ -1550,6 +1575,10 @@ class AgyPromptReceiptTests(DelegateTests):
 class ProbeSubcommandTests(DelegateTests):
     """Subcommand `probe --kind <kind>` verifies agent readiness and closes the scratch tab."""
 
+    def setUp(self) -> None:
+        super().setUp()
+        self.mock_agy_trust()
+
     def test_probe_default_cwd_is_temp_dir_and_removed(self) -> None:
         fake = FakeHerdr()
         with (
@@ -1625,6 +1654,281 @@ class ProbeSubcommandTests(DelegateTests):
             # Tab is still closed on failure!
             self.assertEqual(len(fake.named("tab", "close")), 1)
             self.assertEqual(fake.named("tab", "close")[0][2], "w9:tN")
+
+
+class AgyTrustWiringTests(DelegateTests):
+    """The delegate auto-trusts the resolved worktree/scratch dir before agy starts."""
+
+    def test_launch_agy_trusts_resolved_worktree(self) -> None:
+        fake = FakeHerdr()
+        with (
+            mock.patch.object(herdr_delegate, "herdr", fake),
+            mock.patch.object(
+                herdr_delegate, "prepare_worker_worktree", return_value="/tmp/item worktree"
+            ),
+            mock.patch.object(herdr_delegate.agy_workspace_trust, "prune_trusted"),
+            mock.patch.object(
+                herdr_delegate.agy_workspace_trust, "ensure_trusted"
+            ) as ensure,
+            mock.patch.object(herdr_delegate.time, "sleep", lambda _s: None),
+            mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
+        ):
+            code, _, _ = self.run_main(
+                ["launch", "--slug", "iron-lb-example", "--kind", "agy"]
+            )
+            self.assertEqual(code, 0)
+            ensure.assert_called_once_with("/tmp/item worktree")
+
+    def test_probe_agy_trusts_then_removes_scratch_dir(self) -> None:
+        fake = FakeHerdr()
+        with (
+            mock.patch.object(herdr_delegate, "herdr", fake),
+            mock.patch.object(herdr_delegate.agy_workspace_trust, "prune_trusted"),
+            mock.patch.object(
+                herdr_delegate.agy_workspace_trust, "ensure_trusted"
+            ) as ensure,
+            mock.patch.object(
+                herdr_delegate.agy_workspace_trust, "remove_trusted"
+            ) as remove,
+            mock.patch.object(herdr_delegate.time, "sleep", lambda _s: None),
+            mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
+        ):
+            code, out, _ = self.run_main(["probe", "--kind", "agy"])
+            self.assertEqual(code, 0)
+            self.assertIn("probe agy: PASS", out)
+            ensure.assert_called_once()
+            remove.assert_called_once()
+            self.assertEqual(ensure.call_args.args[0], remove.call_args.args[0])
+
+    def test_launch_agy_trust_failure_is_a_refusal(self) -> None:
+        fake = FakeHerdr()
+        with (
+            mock.patch.object(herdr_delegate, "herdr", fake),
+            mock.patch.object(
+                herdr_delegate, "prepare_worker_worktree", return_value="/tmp/item worktree"
+            ),
+            mock.patch.object(herdr_delegate.agy_workspace_trust, "prune_trusted"),
+            mock.patch.object(
+                herdr_delegate.agy_workspace_trust,
+                "ensure_trusted",
+                side_effect=herdr_delegate.agy_workspace_trust.TrustSettingsError(
+                    "bad shape"
+                ),
+            ),
+            mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
+        ):
+            code, _, err = self.run_main(
+                ["launch", "--slug", "iron-lb-example", "--kind", "agy"]
+            )
+            self.assertEqual(code, 1)
+            self.assertIn("[herdr_delegate]", err)
+            self.assertIn("bad shape", err)
+            # Refused before any herdr call
+            self.assertEqual(fake.calls, [])
+
+    def test_probe_cleanup_failure_warns_without_masking_pass(self) -> None:
+        fake = FakeHerdr()
+        with (
+            mock.patch.object(herdr_delegate, "herdr", fake),
+            mock.patch.object(herdr_delegate.agy_workspace_trust, "prune_trusted"),
+            mock.patch.object(herdr_delegate.agy_workspace_trust, "ensure_trusted"),
+            mock.patch.object(
+                herdr_delegate.agy_workspace_trust,
+                "remove_trusted",
+                side_effect=herdr_delegate.agy_workspace_trust.TrustSettingsError(
+                    "disk gone"
+                ),
+            ),
+            mock.patch.object(herdr_delegate.time, "sleep", lambda _s: None),
+            mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
+        ):
+            code, out, err = self.run_main(["probe", "--kind", "agy"])
+            self.assertEqual(code, 0)
+            self.assertIn("probe agy: PASS", out)
+            self.assertIn("failed to untrust probe dir", err)
+
+    def test_launch_agy_prunes_vanished_entries(self) -> None:
+        """A launch prunes a vanished trusted entry and keeps live ones."""
+        fake = FakeHerdr()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            live = root / "live"
+            live.mkdir()
+            settings = root / "settings.json"
+            settings.write_text(
+                json.dumps(
+                    {"trustedWorkspaces": [str(root / "vanished"), str(live)]}
+                ),
+                encoding="utf-8",
+            )
+            with (
+                mock.patch.object(herdr_delegate, "herdr", fake),
+                mock.patch.object(
+                    herdr_delegate,
+                    "prepare_worker_worktree",
+                    return_value="/tmp/item worktree",
+                ),
+                mock.patch.object(
+                    herdr_delegate.agy_workspace_trust,
+                    "settings_path",
+                    return_value=settings,
+                ),
+                mock.patch.object(herdr_delegate.time, "sleep", lambda _s: None),
+                mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
+            ):
+                code, _, _ = self.run_main(
+                    ["launch", "--slug", "iron-lb-example", "--kind", "agy"]
+                )
+                self.assertEqual(code, 0)
+                data = json.loads(settings.read_text(encoding="utf-8"))
+                # The vanished entry is gone; the live one and the new worktree remain.
+                self.assertEqual(
+                    data["trustedWorkspaces"], [str(live), "/tmp/item worktree"]
+                )
+
+    def test_probe_agy_trust_failure_is_clean_failure(self) -> None:
+        """A TrustSettingsError during probe surfaces as a clean FAIL, never a traceback."""
+        fake = FakeHerdr()
+        with (
+            mock.patch.object(herdr_delegate, "herdr", fake),
+            mock.patch.object(herdr_delegate.agy_workspace_trust, "prune_trusted"),
+            mock.patch.object(
+                herdr_delegate.agy_workspace_trust,
+                "ensure_trusted",
+                side_effect=herdr_delegate.agy_workspace_trust.TrustSettingsError(
+                    "bad shape"
+                ),
+            ),
+            mock.patch.object(herdr_delegate.agy_workspace_trust, "remove_trusted"),
+            mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
+        ):
+            code, out, err = self.run_main(["probe", "--kind", "agy"])
+            self.assertEqual(code, 1)
+            self.assertIn("probe agy: FAIL", err)
+            self.assertIn("bad shape", err)
+            self.assertNotIn("Traceback", err)
+            # ensure_trusted failed before any tab was created
+            self.assertEqual(fake.calls, [])
+
+    def test_launch_surfaces_trust_prompt_as_distinct_refusal(self) -> None:
+        """The upgraded trust-prompt refusal actually reaches the CLI (integration)."""
+
+        def fake(argv: list[str]) -> dict[str, object]:
+            if argv[0] == "tab" and argv[1] == "create":
+                return {
+                    "result": {
+                        "root_pane": {"pane_id": "w9:pN"},
+                        "tab": {"tab_id": "w9:tN"},
+                    }
+                }
+            if argv[0] == "agent" and argv[1] == "start":
+                raise herdr_delegate.RefusedError(
+                    "blocked during startup", code="agent_not_ready"
+                )
+            if argv[0] == "pane" and argv[1] == "read":
+                return {
+                    "result": {
+                        "text": "Do you trust the contents of this project? (y/N)"
+                    }
+                }
+            return {"result": {}}
+
+        with (
+            mock.patch.object(herdr_delegate, "herdr", side_effect=fake),
+            mock.patch.object(
+                herdr_delegate,
+                "prepare_worker_worktree",
+                return_value="/tmp/item worktree",
+            ),
+            mock.patch.object(herdr_delegate.agy_workspace_trust, "prune_trusted"),
+            mock.patch.object(herdr_delegate.agy_workspace_trust, "ensure_trusted"),
+            mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
+        ):
+            code, _, err = self.run_main(
+                ["launch", "--slug", "iron-lb-example", "--kind", "agy"]
+            )
+            self.assertEqual(code, 1)
+            self.assertIn("workspace-trust prompt", err)
+            self.assertIn("Do you trust the contents of this project?", err)
+
+    def test_probe_surfaces_trust_prompt_as_distinct_failure(self) -> None:
+        """Probe's own agent-start path applies the same trust-prompt upgrade."""
+
+        def fake(argv: list[str]) -> dict[str, object]:
+            if argv[0] == "tab" and argv[1] == "create":
+                return {
+                    "result": {
+                        "root_pane": {"pane_id": "w9:pN"},
+                        "tab": {"tab_id": "w9:tN"},
+                    }
+                }
+            if argv[0] == "agent" and argv[1] == "start":
+                raise herdr_delegate.RefusedError(
+                    "blocked during startup", code="agent_not_ready"
+                )
+            if argv[0] == "pane" and argv[1] == "read":
+                return {
+                    "result": {
+                        "text": "Do you trust the contents of this project? (y/N)"
+                    }
+                }
+            return {"result": {}}
+
+        with (
+            mock.patch.object(herdr_delegate, "herdr", side_effect=fake),
+            mock.patch.object(herdr_delegate.agy_workspace_trust, "prune_trusted"),
+            mock.patch.object(herdr_delegate.agy_workspace_trust, "ensure_trusted"),
+            mock.patch.object(herdr_delegate.agy_workspace_trust, "remove_trusted"),
+            mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
+        ):
+            code, _, err = self.run_main(["probe", "--kind", "agy"])
+            self.assertEqual(code, 1)
+            self.assertIn("probe agy: FAIL", err)
+            self.assertIn("workspace-trust prompt", err)
+            self.assertIn("Do you trust the contents of this project?", err)
+
+
+class TrustPromptRefusalTests(unittest.TestCase):
+    """agent_not_ready + the trust dialog surfaces as a distinct refusal."""
+
+    def test_non_agent_not_ready_passes_through(self) -> None:
+        exc = herdr_delegate.RefusedError("blocked", code="timeout")
+        out = herdr_delegate.trust_prompt_refusal(pane="p", kind="agy", exc=exc)
+        self.assertIs(out, exc)
+
+    def test_non_agy_passes_through(self) -> None:
+        exc = herdr_delegate.RefusedError("blocked", code="agent_not_ready")
+        out = herdr_delegate.trust_prompt_refusal(pane="p", kind="pi", exc=exc)
+        self.assertIs(out, exc)
+
+    def test_trust_prompt_upgraded(self) -> None:
+        exc = herdr_delegate.RefusedError("blocked", code="agent_not_ready")
+        with mock.patch.object(
+            herdr_delegate,
+            "read_pane_text",
+            return_value="Do you trust the contents of this project? (y/n)",
+        ):
+            out = herdr_delegate.trust_prompt_refusal(pane="p", kind="agy", exc=exc)
+        self.assertIn("workspace-trust prompt", str(out))
+        self.assertEqual(out.code, "agent_not_ready")
+
+    def test_pane_without_prompt_passes_through(self) -> None:
+        exc = herdr_delegate.RefusedError("blocked", code="agent_not_ready")
+        with mock.patch.object(
+            herdr_delegate, "read_pane_text", return_value="some other startup error"
+        ):
+            out = herdr_delegate.trust_prompt_refusal(pane="p", kind="agy", exc=exc)
+        self.assertIs(out, exc)
+
+    def test_pane_read_failure_falls_through(self) -> None:
+        exc = herdr_delegate.RefusedError("blocked", code="agent_not_ready")
+        with mock.patch.object(
+            herdr_delegate,
+            "read_pane_text",
+            side_effect=herdr_delegate.RefusedError("pane read failed"),
+        ):
+            out = herdr_delegate.trust_prompt_refusal(pane="p", kind="agy", exc=exc)
+        self.assertIs(out, exc)
 
 
 if __name__ == "__main__":

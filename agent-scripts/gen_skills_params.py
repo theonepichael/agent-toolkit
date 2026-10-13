@@ -595,6 +595,15 @@ _REVIEW_DIFF_DESCRIPTION = (
     "diff', 'review my changes', 'review before commit', or when backlog-item "
     "delegates its review step."
 )
+_REVIEW_DIFF_PI_DESCRIPTION = (
+    "Review the staged git diff for bugs before committing: a non-Claude, "
+    "grounded reviewer (the second_opinion tool), then triage each "
+    "finding fix or reject-with-reason, fix, re-verify, max 2 rounds, and print "
+    "a triage table for the commit gate; falls back to a fresh same-model "
+    "subagent when no backend is available. Use when the user says 'review the "
+    "diff', 'review my changes', 'review before commit', or when backlog-item "
+    "delegates its review step."
+)
 _LAND_DESCRIPTION = (
     "Land finished work from a worktree: the commit approval gate (showing the "
     "review-diff triage table), the merge/push/cleanup gate, and, given a "
@@ -2153,7 +2162,13 @@ _BASE_HARNESS = {"pi-prompt": "pi", "opencode-skill": "opencode"}
 
 REVIEW_DIFF_PARAMS: dict[str, dict[str, str]] = {
     harness: {
-        "FRONTMATTER": _frontmatter(harness, "review-diff", _REVIEW_DIFF_DESCRIPTION),
+        "FRONTMATTER": _frontmatter(
+            harness,
+            "review-diff",
+            _REVIEW_DIFF_PI_DESCRIPTION
+            if harness in ("pi", "pi-prompt")
+            else _REVIEW_DIFF_DESCRIPTION,
+        ),
         "ARGS": _ARGS[harness],
         # Never let the harness that wrote the change review it.
         "EXCLUDE_SELF": (

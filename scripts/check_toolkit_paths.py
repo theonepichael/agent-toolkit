@@ -99,9 +99,6 @@ TOOLKIT_DATA_ENTRIES = frozenset(
         "backlog-history.json",
     }
 )
-# The toolkit-home migration's per-run snapshot of the legacy stores
-# (``.toolkit-home-snapshot-<id>``); finalize deletes it.
-TOOLKIT_DATA_PREFIXES = (".toolkit-home-snapshot-",)
 TOOLKIT_TOP = frozenset({"scripts", "hooks", "icons"})
 HARNESS_TOP = frozenset(
     {
@@ -419,8 +416,6 @@ def classify(segs: tuple[str, ...]) -> str | None:
         return "toolkit"
     if top == "data":
         if len(segs) == 1 or segs[1] in TOOLKIT_DATA_ENTRIES:
-            return "toolkit"
-        if segs[1].startswith(TOOLKIT_DATA_PREFIXES):
             return "toolkit"
         return None
     if top == "hooks" and len(segs) > 1 and segs[1] in FOREIGN_HOOKS:
@@ -896,14 +891,7 @@ LEGACY_PATH_EXEMPT: dict[str, str] = {
     # One tracked file per row, so each row's owner and staleness are exact.
     # Permanent: these name the legacy layout on purpose.
     "agent-scripts/agent_toolkit_paths.py": "resolves the legacy layout",
-    "docs/migration/fork-machine-cutover.md": (
-        "temporary fork cutover runbook; names the legacy layout on purpose; delete with the doc after Release 2"
-    ),
-    "migrate_toolkit_home.py": "migrates from the legacy layout",
     "scripts/check_toolkit_paths.py": "classifies legacy paths",
-    "scripts/rehearse-toolkit-home-migration.sh": (
-        "temporary migration rehearsal; reads the legacy layout on purpose; delete with the fork runbook after Release 2"
-    ),
 }
 
 

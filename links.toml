@@ -188,6 +188,10 @@ src = "agent-scripts/herdr_delegate.py"
 dest = "~/.agent-toolkit/scripts/herdr_delegate.py"
 
 [[link]]
+src = "agent-scripts/agy_workspace_trust.py"
+dest = "~/.agent-toolkit/scripts/agy_workspace_trust.py"
+
+[[link]]
 src = "agent-scripts/cli_common.py"
 dest = "~/.agent-toolkit/scripts/cli_common.py"
 
@@ -296,10 +300,6 @@ dest = "~/.agent-toolkit/scripts/link_drift_check.py"
 [[link]]
 src = "agent-scripts/link_inspect.py"
 dest = "~/.agent-toolkit/scripts/link_inspect.py"
-
-[[link]]
-src = "agent-scripts/retained_legacy_links.py"
-dest = "~/.agent-toolkit/scripts/retained_legacy_links.py"
 
 [[link]]
 src = "agent-scripts/refresh_guidance.py"

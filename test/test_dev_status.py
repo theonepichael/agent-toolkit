@@ -5243,6 +5243,11 @@ class BacklogTestCase(BacklogFixture):
         self.assertTrue(dev_status.is_worker_safe("atk"))
         self.assertTrue(dev_status.is_worker_safe("iron-lb"))
 
+    def test_ws2_mvc2_prefix_maps_to_its_repo_and_is_worker_safe(self):
+        self.assertEqual(dev_status.REPO_PREFIXES["mvc2-cloud"], "mvc2")
+        self.assertEqual(dev_status.prefix_of("mvc2-m1-image-inventory"), "mvc2")
+        self.assertTrue(dev_status.is_worker_safe("mvc2"))
+
     def test_ws3_the_harness_prefix_is_not_worker_safe(self):
         harness = dev_status.REPO_PREFIXES[dev_status.HARNESS_REPO]
         self.assertFalse(dev_status.is_worker_safe(harness))
@@ -6632,9 +6637,7 @@ class ThinLauncherTests(unittest.TestCase):
         # Scripts outside this repo read dev_status.DATA_DIR and friends.
         # They stay readable, and each read reflects the current HOME.
         with tempfile.TemporaryDirectory() as tmp:
-            with test_layouts.SandboxHome(
-                Path(tmp), agent_toolkit_paths.write_pointer
-            ).activated():
+            with test_layouts.SandboxHome(Path(tmp)).activated():
                 # A fresh home (no pointer, no legacy data) is toolkit-home.
                 self.assertEqual(
                     dev_status.ITEMS_FILE,
@@ -7019,7 +7022,7 @@ class OwnerPidSubprocessTestCase(unittest.TestCase):
         scripts = Path(__file__).resolve().parent.parent / "agent-scripts"
         with tempfile.TemporaryDirectory() as tmpdir:
             home = Path(tmpdir)
-            data_dir = home / ".claude" / "data" / "backlog"
+            data_dir = home / ".agent-toolkit" / "data" / "backlog"
             data_dir.mkdir(parents=True, exist_ok=True)
             items_file = data_dir / "items.json"
             meta_file = data_dir / "_meta.json"

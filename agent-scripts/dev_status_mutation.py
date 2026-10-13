@@ -164,6 +164,7 @@ REPO_PREFIXES: dict[str, str] = {
     "agent-toolkit": "atk",
     "dotfiles": "meta",
     "ai-job-hunter-pro": "ajhp",
+    "mvc2-cloud": "mvc2",
 }
 """Repo directory name -> the slug prefix items targeting it should carry.
 

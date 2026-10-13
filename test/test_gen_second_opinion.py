@@ -10,6 +10,7 @@ regeneration, a dropped flag, or an unnoted table edit fails the suite
 instead of drifting quietly.
 """
 
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -17,6 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))
 import test_bootstrap  # noqa: E402
 import gen_second_opinion as gso
+from pytest_shim import pytest  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -273,6 +275,125 @@ class PiToolParameterWordingTests(unittest.TestCase):
         self.assertEqual(gso.render_flag("--backend <name>", pi), "`backend = <name>`")
         with self.assertRaisesRegex(ValueError, "--nope"):
             gso.render_flag("--nope", pi)
+        with self.assertRaisesRegex(ValueError, "takes no argument"):
+            gso.render_flag("--text-only false", pi)
+        with self.assertRaisesRegex(ValueError, "takes no argument"):
+            gso.render_flag("--text-only false", shell)
+
+
+class MarkerValidationTests(unittest.TestCase):
+    """The template-side scan and the post-render backstop each raise on the
+    shapes they are responsible for, with a line number only where one exists."""
+
+    def test_template_scan_accepts_valid_markers_and_tokens(self) -> None:
+        gso.validate_template_markers(
+            "{{FLAG:--dir}} {{FLAG:--backend <name>}} {{BACKENDS_NEVER}} "
+            "{{TOOLKIT_DATA}} and {{FLAG:--text-only}}.\n"
+        )
+
+    def test_template_scan_rejects_malformed_marker_with_line(self) -> None:
+        with self.assertRaisesRegex(ValueError, r"second_opinion\.md\.tmpl:2:"):
+            gso.validate_template_markers("{{BACKENDS_NEVER}}\n{{FLAG --dir}}\n")
+
+    def test_template_scan_rejects_unknown_flag(self) -> None:
+        with self.assertRaisesRegex(ValueError, "unknown flag '--nope'"):
+            gso.validate_template_markers("{{FLAG:--nope}}\n")
+
+    def test_template_scan_rejects_boolean_flag_argument(self) -> None:
+        with self.assertRaisesRegex(ValueError, "takes no argument"):
+            gso.validate_template_markers("{{FLAG:--text-only false}}\n")
+
+    def test_template_scan_rejects_unknown_token(self) -> None:
+        with self.assertRaisesRegex(ValueError, "unknown token"):
+            gso.validate_template_markers("{{NOT_A_TOKEN}}\n")
+
+    def test_template_scan_rejects_newline_split_marker(self) -> None:
+        with self.assertRaisesRegex(ValueError, "malformed marker"):
+            gso.validate_template_markers("{{FLAG:\n--dir}}\n")
+
+    def test_template_scan_rejects_brace_in_flag_argument(self) -> None:
+        with self.assertRaisesRegex(ValueError, "malformed marker"):
+            gso.validate_template_markers("{{FLAG:--dir {{unknown}}}}\n")
+
+    def test_post_render_rejects_surviving_token(self) -> None:
+        with self.assertRaisesRegex(ValueError, "unresolved marker"):
+            gso.render_body("before {{SURVIVES}} after.\n", FIXTURE_PARAMS)
+
+
+class ToolSchemaCrossCheckTests(unittest.TestCase):
+    """Every PI_TOOL_PARAMS entry must match the real tool in all four places
+    that name it (schema property, Field union, review allowed-list, review
+    arm of buildArgv), so renaming or un-listing a field anywhere fails."""
+
+    TOOL_SOURCE = REPO_ROOT / "pi" / "extensions" / "second-opinion-tool.ts"
+
+    def test_four_way_cross_check(self) -> None:
+        source = self.TOOL_SOURCE.read_text(encoding="utf-8")
+
+        # Every property in the Type.Object({...}) schema is either a
+        # StringEnum(...) or a Type.Optional(...); nothing else in the file
+        # uses that shape, so the bare pattern scopes to the schema.
+        schema_params = set(
+            re.findall(r"(\w+):\s*(?:StringEnum|Type\.Optional)\(", source)
+        )
+
+        field = re.search(r"export type Field =\s*(.*?);", source, re.S)
+        field_union = set(re.findall(r'"(\w+)"', field.group(1))) if field else set()
+
+        allowed = re.search(r"review:\s*\{\s*allowed:\s*\[(.*?)\],", source, re.S)
+        review_allowed = (
+            set(re.findall(r'"(\w+)"', allowed.group(1))) if allowed else set()
+        )
+
+        review_arm = re.search(r'case "review":\s*return\s*\[(.*?)\];', source, re.S)
+        review_argv = (
+            dict(
+                re.findall(
+                    r'params\.(\w+)(?: !== undefined)? \? \["(--[a-z-]+)"',
+                    review_arm.group(1),
+                )
+            )
+            if review_arm
+            else {}
+        )
+
+        for flag, param in gso.PI_TOOL_PARAMS.items():
+            with self.subTest(flag=flag, param=param):
+                self.assertIn(param, schema_params, "missing from Type.Object schema")
+                self.assertIn(param, field_union, "missing from Field union")
+                self.assertIn(
+                    param, review_allowed, "missing from ACTION_FIELDS.review.allowed"
+                )
+                self.assertEqual(
+                    review_argv.get(param), flag, "review arm does not emit the flag"
+                )
+
+    @pytest.mark.allow_real_subprocess
+    def test_main_reports_one_line_error(self) -> None:
+        import subprocess
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpl_dir = Path(tmp) / "templates"
+            tmpl_dir.mkdir()
+            (tmpl_dir / "second_opinion.md.tmpl").write_text(
+                "{{FLAG --dir}}\n", encoding="utf-8"
+            )
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(REPO_ROOT / "agent-scripts" / "gen_second_opinion.py"),
+                    "--stdout",
+                    "--repo-root",
+                    tmp,
+                ],
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        self.assertNotIn("Traceback", proc.stderr)
+        self.assertIn("malformed marker", proc.stderr)
+        self.assertEqual(proc.stderr.count("\n"), 1, proc.stderr)
 
 
 if __name__ == "__main__":

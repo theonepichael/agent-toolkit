@@ -159,6 +159,7 @@ TEMPLATE_PATH_OVERRIDES: dict[tuple[str, str], str] = {
     ("spec", "pi"): "templates/spec_pi_native.md.tmpl",
     ("standup", "pi"): "templates/standup_pi_native.md.tmpl",
     ("to-tickets", "pi"): "templates/to_tickets_pi_native.md.tmpl",
+    ("review-diff", "pi"): "templates/review_diff_pi_native.md.tmpl",
     ("dashboard", "pi-prompt"): "templates/dashboard_pi_native.md.tmpl",
     ("recap", "pi-prompt"): "templates/recap_pi_native.md.tmpl",
     ("grill-me", "pi-prompt"): "templates/grill_me_pi_native.md.tmpl",
@@ -166,6 +167,7 @@ TEMPLATE_PATH_OVERRIDES: dict[tuple[str, str], str] = {
     ("spec", "pi-prompt"): "templates/spec_pi_native.md.tmpl",
     ("standup", "pi-prompt"): "templates/standup_pi_native.md.tmpl",
     ("to-tickets", "pi-prompt"): "templates/to_tickets_pi_native.md.tmpl",
+    ("review-diff", "pi-prompt"): "templates/review_diff_pi_native.md.tmpl",
 }
 
 

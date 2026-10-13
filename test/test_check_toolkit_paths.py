@@ -60,7 +60,6 @@ def test_sessionstart_claude_scripts_are_declared_foreign() -> None:
         (("scripts", "dev_status_sync.py"), "foreign"),
         (("data", "grill"), "toolkit"),
         (("data",), "toolkit"),
-        (("data", ".toolkit-home-snapshot-mig-20260923T120000Z-abcdef"), "toolkit"),
         (("hooks",), "toolkit"),
         (("hooks", "agy-elapsed.js"), "toolkit"),
         (("hooks", "herdr-agent-state.sh"), "foreign"),
