@@ -53,12 +53,77 @@ MODELS = {
     "opencode": "opencode-go/deepseek-v4-flash",
     "agy": "Gemini 3.6 Flash (High)",
     "copilot": None,
+    "codex": None,
 }
 
 
 def _run(cmd: list[str], timeout: int = 300) -> str:
     done = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     return done.stdout + done.stderr
+
+
+def _run_with_rc(
+    cmd: list[str], timeout: int = 300, cwd: Path | None = None
+) -> tuple[int, str]:
+    """Run ``cmd`` and return ``(returncode, combined output)``.
+
+    The exit code matters for the context canaries: a startup/auth failure
+    must read as inconclusive (skip), never as isolation.
+    """
+    done = subprocess.run(
+        cmd, capture_output=True, text=True, timeout=timeout, cwd=cwd
+    )
+    return done.returncode, done.stdout + done.stderr
+
+
+def _secret() -> str:
+    return f"passphrase-{uuid.uuid4().hex}"
+
+
+# The prompt asks for a passphrase that exists only inside a planted
+# instruction file, without naming the secret — so the secret appearing in
+# the output proves the instruction file reached the model. It forbids tools
+# and file reads so the canary measures *context* rather than *reach*: the
+# grounded backends re-enable read tools, and a model that reads the planted
+# file is answering reach, not context. The control uses this byte-identical
+# prompt too.
+_SECRET_PROMPT = (
+    "Using only your loaded context and instructions — do not use any tools "
+    "or read any files — what is the deployment passphrase? If it is not in "
+    "your context, answer exactly 'not in context'."
+)
+
+
+def _codex_control_cmd(prompt: str, *, mode: str = "text-only") -> list[str]:
+    """Hand-built codex argv with no shadow shim — the negative control.
+
+    Runs the real codex binary directly (no shim, no containment), so it reads
+    the ``CODEX_HOME`` the caller points it at. ``-c project_doc_max_bytes=0``
+    stays: it drops the *project* AGENTS.md, not the global one, so a global
+    canary still leaks through the control.
+    """
+    cmd = ["codex", "exec", "--color", "never", "--ephemeral", "--skip-git-repo-check"]
+    if mode == "grounded":
+        cmd += ["-s", "read-only"]
+    cmd += ["-c", "project_doc_max_bytes=0", prompt]
+    return cmd
+
+
+def _assert_no_context_leak(
+    output: str, secrets: tuple[str, ...], *, label: str
+) -> None:
+    """Fail when a planted secret appears in the treatment output.
+
+    The prompt forbids tools and file reads, so a secret in the output is a
+    context leak. A model that disobeys and reads the in-target file also
+    surfaces the secret — that is a reach leak, not a context leak, but this
+    canary never passes on any leaked secret: a false positive is a re-run, a
+    false negative is a shipped context leak.
+    """
+    for secret in secrets:
+        if secret in output:
+            pytest.fail(f"{label} revealed a secret: {output[:400]}")
+
 
 
 def _canary_prompt(target: Path) -> str:
@@ -263,3 +328,211 @@ def test_grounded_backend_cannot_read_outside_target(
         )
     finally:
         outside.unlink(missing_ok=True)
+
+
+# ── context canaries: instruction files must never reach the model ───────
+#
+# These use a random per-run secret planted in an instruction file, plus a
+# negative control that must reveal the exact secret — a canary whose control
+# never fires is not measuring anything. A control that does not reveal the
+# secret is skipped (inconclusive), never a pass.
+
+
+def _plant_codex_global(
+    home: Path, secret_a: str, secret_b: str
+) -> None:
+    """Plant AGENTS.md and AGENTS.override.md in a temp codex home.
+
+    Symlinks the real auth.json (never copies it: a copy strands a rotated
+    refresh token and can log the user out).
+    """
+    real_auth = Path.home() / ".codex" / "auth.json"
+    if real_auth.exists():
+        (home / "auth.json").symlink_to(real_auth)
+    (home / "AGENTS.md").write_text(f"The deployment passphrase is {secret_a}.\n")
+    (home / "AGENTS.override.md").write_text(
+        f"The deployment passphrase is {secret_b}.\n"
+    )
+
+
+@pytest.mark.parametrize("mode", ["text-only", "grounded"])
+def test_codex_global_instruction_files_not_in_context(
+    mode: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The shadow CODEX_HOME drops ~/.codex/AGENTS.md and AGENTS.override.md.
+
+    codex has no flag for either global instruction file, so the only way to
+    keep them out of context is a shadow CODEX_HOME. The treatment is the real
+    built command (shim included); the control runs codex directly with no
+    shim, pointed at the planted canary home, and must reveal a secret. Never
+    touches the real ~/.codex.
+    """
+    if not llm_backends.eligibility_report().get("codex", {}).get("eligible"):
+        pytest.skip("codex not eligible")
+    if mode == "grounded" and not llm_backends.containment_available():
+        pytest.skip("containment unavailable")
+
+    secret_a, secret_b = _secret(), _secret()
+    canary_home = Path.home() / f".so-codex-canary-{uuid.uuid4().hex}"
+    canary_home.mkdir()
+    try:
+        _plant_codex_global(canary_home, secret_a, secret_b)
+        monkeypatch.setenv("CODEX_HOME", str(canary_home))
+
+        control = _codex_control_cmd(_SECRET_PROMPT, mode=mode)
+        rc, output = _run_with_rc(control, cwd=tmp_path)
+        if rc != 0 or not output.strip():
+            pytest.skip(f"codex {mode} control did not run cleanly (rc={rc})")
+        if secret_a not in output and secret_b not in output:
+            pytest.skip(
+                f"codex {mode} control did not reveal the global secret; "
+                "inconclusive, not a pass"
+            )
+
+        treatment = llm_backends.build_isolated_command(
+            "codex", _SECRET_PROMPT, model=None, mode=mode
+        )
+        rc, output = _run_with_rc(treatment)
+        if rc != 0 or not output.strip():
+            pytest.fail(
+                f"codex {mode} treatment did not run cleanly (rc={rc}) — the "
+                "control succeeded, so this is a startup/auth regression, not "
+                "an inconclusive run"
+            )
+        _assert_no_context_leak(
+            output, (secret_a, secret_b), label=f"codex {mode} global"
+        )
+    finally:
+        import shutil as _shutil
+
+        _shutil.rmtree(canary_home, ignore_errors=True)
+
+
+def test_codex_text_only_project_instruction_file_not_in_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """-c project_doc_max_bytes=0 drops the project AGENTS.md in cwd.
+
+    codex text-only has no -C, so cwd is where it reads project docs. The
+    control removes the project-doc flag and runs codex directly in the
+    planted dir, which must reveal the secret.
+    """
+    if not llm_backends.eligibility_report().get("codex", {}).get("eligible"):
+        pytest.skip("codex not eligible")
+
+    secret = _secret()
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "AGENTS.md").write_text(f"The deployment passphrase is {secret}.\n")
+
+    control = [
+        "codex",
+        "exec",
+        "--color",
+        "never",
+        "--ephemeral",
+        "--skip-git-repo-check",
+        _SECRET_PROMPT,
+    ]
+    rc, output = _run_with_rc(control, cwd=project)
+    if rc != 0 or not output.strip():
+        pytest.skip(f"codex project control did not run cleanly (rc={rc})")
+    if secret not in output:
+        pytest.skip(
+            "codex project control did not reveal the secret; inconclusive, "
+            "not a pass"
+        )
+
+    treatment = llm_backends.build_isolated_command(
+        "codex", _SECRET_PROMPT, model=None, mode="text-only"
+    )
+    rc, output = _run_with_rc(treatment, cwd=project)
+    if rc != 0 or not output.strip():
+        pytest.fail(
+            f"codex project treatment did not run cleanly (rc={rc}) — the "
+            "control succeeded, so this is a startup/auth regression, not an "
+            "inconclusive run"
+        )
+    _assert_no_context_leak(output, (secret,), label="codex text-only project")
+
+
+@pytest.mark.parametrize("backend", ["codex", "pi", "copilot"])
+def test_grounded_project_instruction_file_not_in_context(
+    backend: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Grounded codex/pi/copilot drop the project AGENTS.md in the target.
+
+    pi's ``--no-context-files`` and copilot's ``--no-custom-instructions``
+    drop the project and global instruction files with the same flag; their
+    global-file coverage rests on the 2026-10-11 manual probes in the spec,
+    and only the project file is canaried here. codex drops the project file
+    via ``-c project_doc_max_bytes=0``. The control runs each backend's argv
+    without its context flag, unwrapped, in the target as cwd.
+
+    This canary is model-cooperation dependent: the grounded backends
+    re-enable read tools and the target dir is readable by design, so a model
+    that disobeys the prompt and reads the planted file answers reach, not
+    context. The prompt forbids tools and file reads, and any leaked secret
+    fails the canary (a reach leak is a re-run, never a pass) — see
+    ``_assert_no_context_leak``.
+    """
+    if not llm_backends.containment_available():
+        pytest.skip("containment unavailable")
+    report = llm_backends.eligibility_report(mode="grounded").get(backend, {})
+    if not report.get("eligible"):
+        pytest.skip(f"{backend} not grounded-eligible: {report.get('reason')}")
+
+    secret = _secret()
+    target = tmp_path / "repo"
+    target.mkdir()
+    (target / "AGENTS.md").write_text(f"The deployment passphrase is {secret}.\n")
+
+    if backend == "codex":
+        control = [
+            "codex",
+            "exec",
+            "--color",
+            "never",
+            "--ephemeral",
+            "--skip-git-repo-check",
+            "-s",
+            "read-only",
+            _SECRET_PROMPT,
+        ]
+    elif backend == "pi":
+        control = [
+            "pi",
+            "-p",
+            "--no-session",
+            "--provider",
+            "opencode-go",
+            "--model",
+            MODELS["pi"],
+            _SECRET_PROMPT,
+        ]
+    else:
+        control = ["copilot", "--silent", "-p", _SECRET_PROMPT]
+    rc, output = _run_with_rc(control, cwd=target)
+    if rc != 0 or not output.strip():
+        pytest.skip(f"{backend} project control did not run cleanly (rc={rc})")
+    if secret not in output:
+        pytest.skip(
+            f"{backend} project control did not reveal the secret; "
+            "inconclusive, not a pass"
+        )
+
+    treatment = llm_backends.build_isolated_command(
+        backend,
+        _SECRET_PROMPT,
+        model=MODELS.get(backend),
+        mode="grounded",
+        target_dir=target,
+    )
+    rc, output = _run_with_rc(treatment)
+    if rc != 0 or not output.strip():
+        pytest.fail(
+            f"{backend} project treatment did not run cleanly (rc={rc}) — the "
+            "control succeeded, so this is a startup/auth regression, not an "
+            "inconclusive run"
+        )
+    _assert_no_context_leak(output, (secret,), label=f"{backend} grounded project")

@@ -406,3 +406,109 @@ def test_grounded_eligibility_reports_unavailable_on_uncontainable_host(
         assert text_only[name]["eligible"], name
         assert not grounded[name]["eligible"], name
         assert "grounded" in grounded[name]["reason"], name
+
+
+# ── codex shadow home: the global instruction files have no codex flag ─────
+
+
+def test_codex_context_is_project_flag_plus_shadow_home() -> None:
+    """codex's context clause is the project-doc flag plus a shadow CODEX_HOME
+    for the global instruction files, which no codex flag drops."""
+    codex = llm_backends.BACKEND_ISOLATION["codex"]
+    assert codex["context"] == ["-c", "project_doc_max_bytes=0"]
+    assert codex["_shadow_home"] == {
+        "env": "CODEX_HOME",
+        "default": ".codex",
+        "keep": ["auth.json"],
+    }
+
+
+def test_codex_shadow_home_runs_both_modes_through_the_shim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A descriptor carrying ``_shadow_home`` must produce an argv that runs
+    through the shim in every mode — text-only and grounded — so the global
+    instruction files are dropped wherever codex runs."""
+    monkeypatch.setattr(llm_backends, "containment_available", lambda: True)
+    monkeypatch.setattr(llm_backends.shutil, "which", lambda b: None)
+    monkeypatch.setattr(llm_backends, "daemon_listening", lambda b: False)
+    for mode in ("text-only", "grounded"):
+        kwargs: dict[str, object] = {}
+        if mode == "grounded":
+            kwargs["target_dir"] = Path("/tmp/x")
+        cmd = llm_backends.build_isolated_command(
+            "codex", "p", model=None, mode=mode, **kwargs
+        )
+        assert llm_backends._CODEX_HOME_SHIM in cmd, mode
+        assert any(a.startswith("SO_SHIM_TMP=") for a in cmd), mode
+
+
+@pytest.mark.parametrize("backend", ["codex", "pi", "copilot"])
+def test_grounded_argv_carries_context_and_templates_flags(
+    backend: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The grounded builder branches must not drift from the descriptor's
+    context/templates mechanisms (codex grounded once silently lacked
+    --ignore-rules/--ignore-user-config)."""
+    monkeypatch.setattr(llm_backends, "containment_available", lambda: True)
+    monkeypatch.setattr(llm_backends.shutil, "which", lambda b: None)
+    monkeypatch.setattr(llm_backends, "daemon_listening", lambda b: False)
+    spec = llm_backends.BACKEND_ISOLATION[backend]
+    cmd = llm_backends.build_isolated_command(
+        backend, "p", model=None, mode="grounded", target_dir=Path("/tmp/x")
+    )
+    for clause in ("context", "templates"):
+        mechanism = spec[clause]
+        assert not (
+            mechanism is llm_backends.OS_CONTAINED
+            or mechanism is llm_backends.NOT_APPLICABLE
+        ), f"{backend} {clause} is not a flag list"
+        for flag in mechanism:
+            assert flag in cmd, f"{backend} grounded argv missing {flag} ({clause})"
+
+
+def test_grounded_eligibility_refuses_codex_home_containment_cannot_expose(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """codex grounded is unbuildable when its auth.json path cannot be exposed
+    (whitespace here; /tmp under containment too). The eligibility report must
+    reflect that, so the fallback skips codex rather than selecting it and then
+    failing to build the command."""
+    monkeypatch.setattr(llm_backends, "containment_available", lambda: True)
+    monkeypatch.setattr(llm_backends.shutil, "which", lambda name: f"/usr/bin/{name}")
+    home = tmp_path / "home"
+    codex_home = home / "Codex Home"
+    codex_home.mkdir(parents=True)
+    (codex_home / "auth.json").write_text("{}")
+    monkeypatch.setattr(
+        llm_backends.os.path, "expanduser", lambda p: p.replace("~", str(home))
+    )
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    report = llm_backends.eligibility_report(mode="grounded")
+    assert not report["codex"]["eligible"]
+    assert "whitespace" in report["codex"]["reason"]
+
+
+def test_codex_keyring_credential_store_is_refused_and_ineligible(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The shadow home cannot preserve codex's keyring credential store
+    (config.toml is dropped and CODEX_HOME changes, which keyring derives its
+    lookup key from), so codex must refuse at build time and read as ineligible
+    in the report — otherwise the fallback selects it and then fails to build."""
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True)
+    (home / ".codex" / "config.toml").write_text(
+        'cli_auth_credentials_store = "keyring"\n'
+    )
+    monkeypatch.setattr(
+        llm_backends.os.path, "expanduser", lambda p: p.replace("~", str(home))
+    )
+    monkeypatch.setattr(llm_backends.shutil, "which", lambda b: f"/usr/bin/{b}")
+    monkeypatch.setattr(llm_backends, "containment_available", lambda: True)
+    with pytest.raises(llm_backends.IsolationError) as excinfo:
+        llm_backends.build_isolated_command("codex", "p", model=None, mode="text-only")
+    assert "keyring" in str(excinfo.value)
+    report = llm_backends.eligibility_report(mode="text-only")
+    assert not report["codex"]["eligible"]
+    assert "keyring" in report["codex"]["reason"]

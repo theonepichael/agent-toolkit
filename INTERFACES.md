@@ -1173,6 +1173,7 @@ llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, open
 - Installed at: `~/.agent-toolkit/scripts/llm_backends.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI: none (library module).
+- Environment: `CODEX_HOME`
 - Depends on: `agent_toolkit_paths.py`, `cli_common.py`, `migration_lock.py`
 - Exceptions:
   - `class IsolationError(RuntimeError)` — A backend cannot be invoked because it does not meet the contract.

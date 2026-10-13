@@ -1520,6 +1520,12 @@ class GroundedContainmentExposureTests(unittest.TestCase):
         patcher = patch.object(llm_backends, "containment_available", lambda: True)
         patcher.start()
         self.addCleanup(patcher.stop)
+        # Isolate CODEX_HOME: these fixtures assume the default ~/.codex home,
+        # and an inherited CODEX_HOME from the developer's shell would point
+        # _codex_real_home() elsewhere.
+        env = patch.dict(os.environ, {"CODEX_HOME": ""})
+        env.start()
+        self.addCleanup(env.stop)
 
     def _fake_backend(
         self,
@@ -1548,9 +1554,10 @@ class GroundedContainmentExposureTests(unittest.TestCase):
     def test_grounded_codex_wraps_and_exposes_credential_and_install_root(
         self,
     ) -> None:
-        """Grounded codex re-exposes only the target, ~/.codex, and its own
-        package directory (narrow), never the whole ~/.npm-global prefix, and
-        invokes the resolved script path directly rather than the bare name."""
+        """Grounded codex re-exposes only the target, the ~/.codex/auth.json
+        file (narrow, so a symlinked credential does not drag its whole parent
+        dir in), and its own package directory, never the whole ~/.npm-global
+        prefix, and invokes the resolved script path directly."""
         with tempfile.TemporaryDirectory() as td:
             home = Path(td)
             link, script, pkg = self._fake_backend(
@@ -1561,6 +1568,8 @@ class GroundedContainmentExposureTests(unittest.TestCase):
             )
             target = home / "projects" / "repo"
             target.mkdir(parents=True)
+            (home / ".codex").mkdir(parents=True)
+            (home / ".codex" / "auth.json").write_text("{}")
             with (
                 patch.object(
                     llm_backends.os.path, "expanduser", return_value=str(home)
@@ -1576,7 +1585,8 @@ class GroundedContainmentExposureTests(unittest.TestCase):
                 )
         self.assertEqual(cmd[0], "unshare")
         argv = cmd
-        self.assertIn("SB_EXPOSE=.codex", argv)
+        self.assertIn("SB_EXPOSE_FILE=.codex/auth.json", argv)
+        self.assertNotIn("SB_EXPOSE=.codex", argv)
         self.assertIn(f"SB_EXPOSE_RO={pkg.relative_to(home)}", argv)
         self.assertNotIn("SB_EXPOSE_RO=.npm-global", argv)
         self.assertIn("SB_BIND_TARGET_REAL=1", argv)
@@ -1703,14 +1713,16 @@ class GroundedContainmentExposureTests(unittest.TestCase):
     def test_target_inside_exposed_dir_is_not_bound_at_real_path(self) -> None:
         """A target already inside a re-exposed dir is visible through that
         dir's full bind; re-binding would write into the real dir via its bind
-        mount. The overlap guard must suppress the real-path bind."""
+        mount. The overlap guard must suppress the real-path bind. (codex now
+        re-exposes only the auth.json *file*, so this uses pi, whose .pi dir is
+        a directory exposure.)"""
         home = os.path.expanduser("~")
         cmd = llm_backends.build_isolated_command(
-            "codex",
+            "pi",
             "p",
             model=None,
             mode="grounded",
-            target_dir=Path(f"{home}/.codex/scratch"),
+            target_dir=Path(f"{home}/.pi/scratch"),
         )
         self.assertNotIn("SB_BIND_TARGET_REAL=1", cmd)
 
@@ -1755,6 +1767,206 @@ class GroundedContainmentExposureTests(unittest.TestCase):
             target_dir=Path(home),
         )
         self.assertNotIn("SB_BIND_TARGET_REAL=1", cmd)
+
+
+class CodexShadowHomeTests(unittest.TestCase):
+    """codex runs through a shadow CODEX_HOME in both modes to drop the global
+    instruction files ($CODEX_HOME/AGENTS.md, AGENTS.override.md) that no codex
+    flag removes; the stale sweep reclaims SIGKILLed temp dirs."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        patcher = patch.object(llm_backends, "containment_available", lambda: True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        which = patch.object(llm_backends.shutil, "which", return_value=None)
+        which.start()
+        self.addCleanup(which.stop)
+        # Isolate CODEX_HOME: the default-home tests assume ~/.codex, and an
+        # inherited CODEX_HOME would point _codex_real_home() elsewhere. Tests
+        # that need a custom home patch it back over this.
+        env = patch.dict(os.environ, {"CODEX_HOME": ""})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def test_text_only_runs_through_shim_and_drops_project_docs(self) -> None:
+        cmd = llm_backends.build_isolated_command(
+            "codex", "my prompt", model=None, mode="text-only"
+        )
+        self.assertIn(llm_backends._CODEX_HOME_SHIM, cmd)
+        self.assertTrue(any(a.startswith("SO_SHIM_TMP=") for a in cmd))
+        self.assertIn("-c", cmd)
+        self.assertIn("project_doc_max_bytes=0", cmd)
+        self.assertEqual(cmd[-1], "my prompt")
+
+    def test_grounded_runs_through_shim_with_context_parity(self) -> None:
+        cmd = llm_backends.build_isolated_command(
+            "codex",
+            "my prompt",
+            model="o3",
+            mode="grounded",
+            target_dir=Path("/tmp/sample-repo"),
+        )
+        self.assertEqual(cmd[0], "unshare")
+        self.assertIn(llm_backends._CODEX_HOME_SHIM, cmd)
+        self.assertIn("--ignore-rules", cmd)
+        self.assertIn("--ignore-user-config", cmd)
+        self.assertIn("-c", cmd)
+        self.assertIn("project_doc_max_bytes=0", cmd)
+        self.assertTrue(any(a == "SO_SHIM_TMP=/tmp" for a in cmd))
+
+    def test_grounded_custom_codex_home_is_exposed_relative(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            custom = home / "elsewhere"
+            custom.mkdir()
+            (custom / "auth.json").write_text("{}")
+            with (
+                patch.dict(os.environ, {"CODEX_HOME": str(custom)}),
+                patch.object(
+                    llm_backends.os.path, "expanduser", return_value=str(home)
+                ),
+            ):
+                cmd = llm_backends.build_isolated_command(
+                    "codex",
+                    "p",
+                    model=None,
+                    mode="grounded",
+                    target_dir=home / "repo",
+                )
+            self.assertIn("SB_EXPOSE_FILE=elsewhere/auth.json", cmd)
+            self.assertIn(f"SO_AUTH_JSON={(custom / 'auth.json').resolve()}", cmd)
+
+    def test_grounded_symlinked_auth_json_exposes_resolved_target(self) -> None:
+        """A symlinked auth.json (config-managed) must resolve to its final
+        target: the shadow home links the resolved file, and containment
+        exposes that resolved file (not its parent dir, not the codex home) —
+        exposing only the codex home leaves the second hop dangling under the
+        $HOME tmpfs, while exposing the whole parent dir leaks its neighbours."""
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            real_file = home / "synced" / "codex" / "auth.json"
+            real_file.parent.mkdir(parents=True)
+            real_file.write_text("{}")
+            codex_home = home / ".codex"
+            codex_home.mkdir()
+            (codex_home / "auth.json").symlink_to(real_file)
+            with patch.object(
+                llm_backends.os.path, "expanduser", return_value=str(home)
+            ):
+                cmd = llm_backends.build_isolated_command(
+                    "codex",
+                    "p",
+                    model=None,
+                    mode="grounded",
+                    target_dir=home / "repo",
+                )
+            self.assertIn("SB_EXPOSE_FILE=synced/codex/auth.json", cmd)
+            self.assertIn(f"SO_AUTH_JSON={real_file.resolve()}", cmd)
+
+    def test_grounded_custom_home_symlinked_auth_exposes_real_codex_home(
+        self,
+    ) -> None:
+        """The live-canary fixture shape: CODEX_HOME points at a dir whose
+        auth.json is a symlink to ~/.codex/auth.json. The shim must link the
+        resolved ~/.codex/auth.json and containment must expose that file, not
+        the canary home."""
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            real_auth = home / ".codex" / "auth.json"
+            real_auth.parent.mkdir(parents=True)
+            real_auth.write_text("{}")
+            canary = home / ".so-codex-canary-test"
+            canary.mkdir()
+            (canary / "auth.json").symlink_to(real_auth)
+            with (
+                patch.dict(os.environ, {"CODEX_HOME": str(canary)}),
+                patch.object(
+                    llm_backends.os.path, "expanduser", return_value=str(home)
+                ),
+            ):
+                cmd = llm_backends.build_isolated_command(
+                    "codex",
+                    "p",
+                    model=None,
+                    mode="grounded",
+                    target_dir=home / "repo",
+                )
+            self.assertIn("SB_EXPOSE_FILE=.codex/auth.json", cmd)
+            self.assertIn(f"SO_AUTH_JSON={real_auth.resolve()}", cmd)
+
+    def test_codex_auth_exposure_returns_relative_for_home_file(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            auth = home / "elsewhere" / "auth.json"
+            auth.parent.mkdir()
+            with patch.object(
+                llm_backends.os.path, "expanduser", return_value=str(home)
+            ):
+                assert (
+                    llm_backends._codex_auth_exposure(auth)
+                    == "elsewhere/auth.json"
+                )
+
+    def test_codex_auth_exposure_refuses_whitespace_path(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            auth = home / "Codex Home" / "auth.json"
+            auth.parent.mkdir()
+            with patch.object(
+                llm_backends.os.path, "expanduser", return_value=str(home)
+            ):
+                with self.assertRaises(llm_backends.IsolationError):
+                    llm_backends._codex_auth_exposure(auth)
+
+    def test_codex_auth_exposure_refuses_tmp_file(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            real = Path("/tmp") / f"so-codex-real-{time.time_ns()}" / "auth.json"
+            with patch.object(
+                llm_backends.os.path, "expanduser", return_value=str(home)
+            ):
+                with self.assertRaises(llm_backends.IsolationError):
+                    llm_backends._codex_auth_exposure(real)
+
+    def test_codex_auth_exposure_none_outside_home_and_tmp(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            real = Path("/opt") / f"so-codex-real-{time.time_ns()}" / "auth.json"
+            with patch.object(
+                llm_backends.os.path, "expanduser", return_value=str(home)
+            ):
+                assert llm_backends._codex_auth_exposure(real) is None
+
+    def test_sweep_removes_only_owned_marker_dirs(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            stale = root / "so-codex-home.stale"
+            stale.mkdir()
+            (stale / ".so-codex-shim").write_text("")
+            os.utime(stale, (time.time() - 100000, time.time() - 100000))
+
+            fresh = root / "so-codex-home.fresh"
+            fresh.mkdir()
+            (fresh / ".so-codex-shim").write_text("")
+
+            nomarker = root / "so-codex-home.nomarker"
+            nomarker.mkdir()
+            os.utime(nomarker, (time.time() - 100000, time.time() - 100000))
+
+            realdir = root / "real"
+            realdir.mkdir()
+            link = root / "so-codex-home.link"
+            link.symlink_to(realdir)
+
+            with patch.object(llm_backends.tempfile, "gettempdir", return_value=td):
+                removed = llm_backends._sweep_stale_codex_homes()
+
+            assert removed == 1
+            assert not stale.exists()
+            assert fresh.exists()
+            assert nomarker.exists()
+            assert link.is_symlink()
 
 
 class _StallStream:

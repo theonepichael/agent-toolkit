@@ -15,8 +15,10 @@ import re
 import select
 import shutil
 import signal
+import stat
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
@@ -85,8 +87,14 @@ NOT_APPLICABLE = object()
 # Every mechanism below was verified by running it — see the plan artifact at
 # ~/.agent-toolkit/data/grill/2026-08-31-meta-second-opinion-backend-isol-plan.md.
 BACKEND_ISOLATION: dict[str, dict[str, object]] = {
-    # Verified: in text-only mode, --disable shell_tool disables shell tools;
-    # --ignore-rules and --ignore-user-config drop rulebooks and configs.
+    # Verified: --disable shell_tool disables shell tools (tools_execution,
+    # skills, mcp — there is no narrower codex flag). --ignore-user-config
+    # drops $CODEX_HOME/config.toml only (templates); it does NOT drop
+    # $CODEX_HOME/AGENTS.md — the global instruction file needs _shadow_home
+    # below. --ignore-rules drops rulebooks. -c project_doc_max_bytes=0 drops
+    # the project AGENTS.md codex reads from its working dir. _shadow_home
+    # drops every other global instruction/config file by pointing CODEX_HOME
+    # at a temp dir holding only a symlink to the real auth.json.
     # In grounded mode, -s read-only -C <dir> natively sandboxes execution.
     # --skip-git-repo-check (in _base and both builder branches) only lifts
     # codex's "working root must be inside a git repository" precondition,
@@ -99,16 +107,33 @@ BACKEND_ISOLATION: dict[str, dict[str, object]] = {
         "tools_reach": NOT_APPLICABLE,
         "skills": ["--disable", "shell_tool"],
         "mcp": ["--disable", "shell_tool"],
-        "context": ["--ignore-rules", "--ignore-user-config"],
+        "context": ["-c", "project_doc_max_bytes=0"],
         "templates": ["--ignore-user-config"],
         "session": ["--ephemeral"],
+        # The global instruction files ($CODEX_HOME/AGENTS.md and
+        # AGENTS.override.md) have no codex flag to drop them, so the builder
+        # runs codex through a shadow CODEX_HOME: a temp dir holding only a
+        # symlink to the real auth.json. _shadow_home declares that mechanism.
+        # This covers the default file auth.json store and API-key auth;
+        # codex's non-default keyring store
+        # (cli_auth_credentials_store="keyring") is not preserved — the
+        # shadow home drops config.toml and changes CODEX_HOME, which keyring
+        # derives its lookup key from.
+        "_shadow_home": {
+            "env": "CODEX_HOME",
+            "default": ".codex",
+            "keep": ["auth.json"],
+        },
         # Grounded mode turns the read tools back on (-s read-only -C <dir>),
         # so tools_reach is no longer NOT_APPLICABLE: there is read reach to
         # constrain, and OS containment is the only mechanism this repo has.
-        # _contain names what the $HOME tmpfs re-exposes: ~/.codex (auth) and,
-        # read-only, the binary's install tree (resolved at build time).
+        # _contain names what the $HOME tmpfs re-exposes: the resolved real
+        # auth.json (a single file, not the whole codex home, so a symlinked
+        # auth.json exposes only its final target) and, read-only, the
+        # binary's install tree (resolved at build time). The auth.json is
+        # computed at build time; see _codex_auth_exposure.
         "_grounded": {"tools_reach": OS_CONTAINED},
-        "_contain": {"expose": [".codex"], "shadow": {}},
+        "_contain": {"expose": [], "shadow": {}},
     },
     # Verified: --no-tools reports "no tools are available in this session";
     # -nc/-np leave no instruction text in context. Skills and MCP servers
@@ -357,9 +382,32 @@ def build_isolated_command(
         )
 
     if backend == "codex":
+        if _codex_uses_keyring(_codex_real_home()):
+            raise IsolationError(
+                "codex: the keyring credential store "
+                '(cli_auth_credentials_store="keyring") cannot be preserved — '
+                "the shadow home drops config.toml and changes CODEX_HOME, "
+                "which keyring derives its lookup key from; use file auth "
+                "(auth.json) or API-key auth"
+            )
+        _sweep_stale_codex_homes()
         if mode == "grounded":
+            # containment ∘ shim ∘ codex. The shadow CODEX_HOME drops the
+            # global instruction files codex has no flag for; resolve the
+            # codex executable, its install tree, and the real auth.json up
+            # front because the shim's cmd[0] is /bin/sh, not the backend, and
+            # a symlinked auth.json must resolve to its final target.
+            real_home = _codex_real_home()
+            auth_json = _codex_auth_json_realpath(real_home)
+            contain = dict(spec.get("_contain", {}))
+            exposure = (
+                _codex_auth_exposure(auth_json) if auth_json is not None else None
+            )
+            contain["expose"] = []
+            contain["expose_file"] = [exposure] if exposure is not None else []
+            invoke_path, install_ro = _backend_install_exposure("codex")
             cmd = [
-                "codex",
+                invoke_path or "codex",
                 "exec",
                 "--color",
                 "never",
@@ -367,6 +415,10 @@ def build_isolated_command(
                 "--skip-git-repo-check",
                 "-s",
                 "read-only",
+                "--ignore-rules",
+                "--ignore-user-config",
+                "-c",
+                "project_doc_max_bytes=0",
             ]
             if target_dir and not contained:
                 # -C sets codex's working dir; under containment the wrapper
@@ -377,13 +429,14 @@ def build_isolated_command(
             if model:
                 cmd += ["-m", model]
             cmd.append(prompt)
+            cmd = _wrap_codex_in_shim(cmd, auth_json=auth_json, tmp_root="/tmp")
             if contained:
                 cmd = _wrap_in_containment(
                     cmd,
-                    spec.get("_contain", {}),
+                    contain,
                     target_dir=target_dir,
                     mode=mode,
-                    backend=backend,
+                    expose_ro_extra=install_ro,
                 )
             return cmd
         cmd = [
@@ -397,11 +450,17 @@ def build_isolated_command(
             "--ignore-user-config",
             "--disable",
             "shell_tool",
+            "-c",
+            "project_doc_max_bytes=0",
         ]
         if model:
             cmd += ["-m", model]
         cmd.append(prompt)
-        return cmd
+        return _wrap_codex_in_shim(
+            cmd,
+            auth_json=_codex_auth_json_realpath(_codex_real_home()),
+            tmp_root=tempfile.gettempdir(),
+        )
 
     if backend == "pi" and mode == "grounded":
         cmd = [
@@ -504,7 +563,9 @@ def build_isolated_command(
     return cmd
 
 
-_CONTAINMENT_SCRIPT = r"""set -eu
+_CONTAINMENT_SCRIPT = r"""set -euf
+# -f (noglob): the exposure lists are literal paths — a glob character in a
+# credential path must not expand into unrelated files.
 H="$SB_HOME"
 STAGE="$(mktemp -d)"
 
@@ -527,6 +588,16 @@ for src in $SB_EXPOSE_RO; do
         mount --bind "$H/$src" "$STAGE/r$j"
     fi
     j=$((j + 1))
+done
+# Single-file exposures (codex's resolved auth.json): stage into a *file*
+# mount point so it can be re-bound into place after the $HOME tmpfs.
+k=0
+for src in $SB_EXPOSE_FILE; do
+    if [ -f "$H/$src" ]; then
+        touch "$STAGE/f$k"
+        mount --bind "$H/$src" "$STAGE/f$k"
+    fi
+    k=$((k + 1))
 done
 if [ -n "$SB_SHADOW_DIR" ] && [ -d "$H/$SB_SHADOW_DIR" ]; then
     mkdir -p "$STAGE/real"
@@ -559,6 +630,19 @@ for src in $SB_EXPOSE_RO; do
         mount -o remount,ro,bind "$H/$src"
     fi
     j=$((j + 1))
+done
+
+# Rebind single-file exposures: recreate the parent chain and bind the file
+# at its real path, so the shim's symlink to it resolves. Writable, so a codex
+# token refresh writes through to the real file (same inode).
+k=0
+for src in $SB_EXPOSE_FILE; do
+    if [ -e "$STAGE/f$k" ]; then
+        mkdir -p "$(dirname "$H/$src")"
+        touch "$H/$src"
+        mount --bind "$STAGE/f$k" "$H/$src"
+    fi
+    k=$((k + 1))
 done
 
 # Rebuild the shadowed directory entry by entry, omitting the named ones.
@@ -618,6 +702,34 @@ else
 fi
 
 exec "$@"
+"""
+
+# A POSIX sh script that runs codex with CODEX_HOME pointed at a fresh temp
+# dir holding only a symlink to the real auth.json. codex has no flag to drop
+# $CODEX_HOME/AGENTS.md, so the only way to keep the user's global instruction
+# files out of context is to give codex a home that does not contain them. The
+# inner command runs as a child (not exec) so the EXIT trap fires and the temp
+# dir is removed on every exit except SIGKILL, which the stale sweep covers.
+# Env contract: SO_AUTH_JSON (the fully-resolved real path of the auth.json to
+# symlink, set only when it exists) and SO_SHIM_TMP (the temp root for
+# mktemp), both set by the caller.
+_CODEX_HOME_SHIM = r"""set -eu
+SO_TMP="$(mktemp -d "$SO_SHIM_TMP/so-codex-home.XXXXXX")"
+on_exit() {
+    rc=$?
+    rm -rf "$SO_TMP"
+    exit "$rc"
+}
+trap on_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+chmod 700 "$SO_TMP"
+: > "$SO_TMP/.so-codex-shim"
+if [ -n "${SO_AUTH_JSON:-}" ] && [ -e "$SO_AUTH_JSON" ]; then
+    ln -s "$SO_AUTH_JSON" "$SO_TMP/auth.json"
+fi
+CODEX_HOME="$SO_TMP" "$@"
 """
 
 
@@ -713,6 +825,142 @@ def _backend_install_exposure(backend: str) -> tuple[str | None, list[str]]:
     return str(resolved), exposures
 
 
+def _codex_real_home() -> Path:
+    """The real codex config home, resolved to an absolute path.
+
+    ``$CODEX_HOME`` when the caller sets it (tilde-expanded and made
+    absolute), else ``~/.codex``. This is the directory whose ``auth.json``
+    the shadow home symlinks and whose instruction files the shadow home
+    drops.
+    """
+    raw = os.environ.get("CODEX_HOME")
+    if raw:
+        return Path(raw).expanduser().resolve()
+    return (Path(os.path.expanduser("~")) / ".codex").resolve()
+
+
+def _codex_auth_json_realpath(real_home: Path) -> Path | None:
+    """The fully-resolved real path of codex's auth.json, or ``None`` if absent.
+
+    Follows symlinks to the final target. An auth.json that is itself a
+    symlink (config-sync-managed, or a test fixture) must resolve to the final
+    file, so the shadow home's own symlink is a single hop whose target
+    containment can expose — otherwise the second hop out of the codex home
+    dangles when only the codex home is re-exposed.
+    """
+    auth = real_home / "auth.json"
+    if not auth.exists():
+        return None
+    return auth.resolve()
+
+
+def _codex_uses_keyring(real_home: Path) -> bool:
+    """Whether codex's config selects the keyring credential store.
+
+    The shadow home preserves only file auth.json (and inherited API-key
+    auth). Keyring auth derives its lookup key from CODEX_HOME — which the
+    shadow home changes every run — and its config lives in config.toml, which
+    the shadow home drops. Detect it so codex can refuse up front rather than
+    fail authentication.
+    """
+    try:
+        text = (real_home / "config.toml").read_text()
+    except OSError:
+        return False
+    uncommented = "\n".join(line.split("#", 1)[0] for line in text.splitlines())
+    return (
+        re.search(r'cli_auth_credentials_store\s*=\s*["\']keyring["\']', uncommented)
+        is not None
+    )
+
+
+def _codex_auth_exposure(auth_json: Path) -> str | None:
+    """The ``$HOME``-relative path of the resolved auth.json to re-expose.
+
+    Returns the file's relative path (e.g. ``".codex/auth.json"``) when the
+    resolved auth.json is under ``$HOME``; ``None`` when it is outside both
+    ``$HOME`` and ``/tmp`` (already visible under containment). Under ``/tmp``
+    but not ``$HOME``, or a path containing whitespace (which the containment
+    wrapper's whitespace-separated exposure list cannot represent), it is
+    refused rather than silently exposing the wrong thing.
+    """
+    home = Path(os.path.expanduser("~")).resolve()
+    real = auth_json.resolve()
+    try:
+        rel = real.relative_to(home)
+    except ValueError:
+        rel = None
+    if rel is not None:
+        if any(c.isspace() for c in str(rel)):
+            raise IsolationError(
+                f"codex: the auth.json path {str(rel)!r} contains whitespace, "
+                "which the containment wrapper cannot expose — point "
+                "CODEX_HOME at a path without spaces"
+            )
+        return str(rel)
+    if real.is_relative_to(Path("/tmp").resolve()):
+        raise IsolationError(
+            f"codex: grounded mode cannot expose the auth.json at {real} — "
+            "it is under /tmp, which containment blanks; move it under $HOME "
+            "or outside /tmp"
+        )
+    return None
+
+
+def _wrap_codex_in_shim(
+    cmd: list[str], *, auth_json: Path | None, tmp_root: str
+) -> list[str]:
+    """Wrap a codex argv in the shadow-CODEX_HOME shim.
+
+    ``SO_AUTH_JSON`` is the fully-resolved real path of the auth.json the shim
+    symlinks (following symlinks to the final target, so a single hop survives
+    containment); omitted when there is no auth.json. ``SO_SHIM_TMP`` is the
+    temp root the shim's ``mktemp`` uses (``tempfile.gettempdir()`` text-only,
+    ``/tmp`` grounded).
+    """
+    env = ["env", f"SO_SHIM_TMP={tmp_root}"]
+    if auth_json is not None:
+        env.append(f"SO_AUTH_JSON={auth_json}")
+    return [*env, "/bin/sh", "-c", _CODEX_HOME_SHIM, "sh", *cmd]
+
+
+def _sweep_stale_codex_homes(max_age_s: int = 86400) -> int:
+    """Remove stale ``so-codex-home.*`` dirs left by SIGKILLed shim runs.
+
+    Returns the number removed. Only touches entries that are a real directory
+    (lstat, never a symlink), owned by the current uid, carrying the shim's
+    ``.so-codex-shim`` marker, and older than ``max_age_s`` (24h default, far
+    past the 600s backend timeout, so a live run can never be swept). Grounded
+    runs create their dirs on the namespace's fresh ``/tmp`` tmpfs, which
+    vanishes with the namespace; this sweeps the host temp root, which is
+    where text-only dirs survive a SIGKILL.
+    """
+    root = Path(tempfile.gettempdir())
+    try:
+        entries = list(root.glob("so-codex-home.*"))
+    except OSError:
+        return 0
+    cutoff = time.time() - max_age_s
+    removed = 0
+    for entry in entries:
+        try:
+            st = entry.lstat()
+        except OSError:
+            continue
+        if not stat.S_ISDIR(st.st_mode):
+            continue
+        if st.st_uid != os.getuid():
+            continue
+        if not (entry / ".so-codex-shim").is_file():
+            continue
+        if st.st_mtime > cutoff:
+            continue
+        with suppress(OSError):
+            shutil.rmtree(entry)
+            removed += 1
+    return removed
+
+
 def _wrap_in_containment(
     cmd: list[str],
     contain: dict[str, object],
@@ -720,6 +968,7 @@ def _wrap_in_containment(
     target_dir: Path | None = None,
     mode: str = "text-only",
     backend: str | None = None,
+    expose_ro_extra: list[str] | None = None,
 ) -> list[str]:
     """Wrap ``cmd`` so it runs with the user's home blanked.
 
@@ -736,14 +985,25 @@ def _wrap_in_containment(
 
     ``expose_ro`` holds read-only re-exposures (the backend's install root and
     interpreter): bound back and remounted read-only so a compromised model
-    cannot modify its own binary. ``backend`` supplies the executable to
-    resolve — its resolved absolute path replaces ``cmd[0]`` (so the PATH-entry
-    symlink farm is not needed), and its narrow install root / interpreter are
-    added to ``expose_ro`` rather than any whole top-level dir.
+    cannot modify its own binary. ``expose_file`` holds writable single-file
+    re-exposures (codex's resolved auth.json): bound back so a symlinked
+    auth.json resolves to its final target without exposing its whole parent
+    directory, and kept writable so a token refresh writes through to the real
+    file. ``backend`` supplies the executable to resolve — its resolved
+    absolute path replaces ``cmd[0]`` (so the PATH-entry symlink farm is not
+    needed), and its narrow install root / interpreter are added to
+    ``expose_ro`` rather than any whole top-level dir. When ``cmd[0]`` is not
+    the backend (e.g. a shim wrapper), the caller resolves the backend itself
+    and passes its install root via ``expose_ro_extra``.
     """
     home = os.path.expanduser("~")
     expose = list(contain.get("expose", []))  # type: ignore[arg-type]
     expose_ro = list(contain.get("expose_ro", []))  # type: ignore[arg-type]
+    expose_file = list(contain.get("expose_file", []))  # type: ignore[arg-type]
+    if expose_ro_extra:
+        for entry in expose_ro_extra:
+            if entry and entry not in expose and entry not in expose_ro:
+                expose_ro.append(entry)
     if backend:
         invoke_path, ro = _backend_install_exposure(backend)
         if invoke_path and invoke_path != cmd[0]:
@@ -762,6 +1022,7 @@ def _wrap_in_containment(
         f"SB_HOME={home}",
         f"SB_EXPOSE={' '.join(expose)}",
         f"SB_EXPOSE_RO={' '.join(expose_ro)}",
+        f"SB_EXPOSE_FILE={' '.join(expose_file)}",
         f"SB_SHADOW_DIR={shadow_dir}",
         f"SB_SHADOW_OMIT={' '.join(omit)}",
     ]
@@ -835,6 +1096,26 @@ def eligibility_report(mode: str = "text-only") -> dict[str, dict[str, object]]:
             )
         else:
             reason = ""
+        # codex can be contract-eligible yet unbuildable: the keyring
+        # credential store is not preserved by the shadow home (both modes),
+        # and, grounded-only, an auth.json containment cannot expose (under
+        # /tmp but not $HOME, or a path with whitespace) is refused. Surface
+        # that here so the fallback skips codex instead of selecting it and
+        # then failing to build the command.
+        if not reason and name == "codex":
+            real_home = _codex_real_home()
+            if _codex_uses_keyring(real_home):
+                reason = (
+                    "codex: the keyring credential store "
+                    '(cli_auth_credentials_store="keyring") cannot be preserved'
+                )
+            elif mode == "grounded":
+                auth_json = _codex_auth_json_realpath(real_home)
+                if auth_json is not None:
+                    try:
+                        _codex_auth_exposure(auth_json)
+                    except IsolationError as exc:
+                        reason = str(exc)
         report[name] = {
             "present": present,
             "eligible": not reason,
@@ -1609,13 +1890,16 @@ def run_codex(
 ) -> str:
     """Run Codex CLI non-interactively and return its critique text.
 
-    In ``mode="grounded"``, codex runs under native read-only sandboxing
-    (``-s read-only -C <dir>``) AND inside this repo's OS containment wrapper
-    (``unshare`` + $HOME/tmpfs) — the native flag confines writes while the
-    wrapper confines reads to the target, since ``-s read-only`` alone does
-    not (measured 2026-09-30: a grounded codex read a canary outside ``-C``).
-    In ``mode="text-only"`` (default), shell_tool is disabled and ambient user
-    instructions/rules are stripped.
+    In both modes codex runs through a shadow ``CODEX_HOME`` (a temp dir
+    holding only a symlink to the real ``auth.json``), because codex has no
+    flag to drop ``$CODEX_HOME/AGENTS.md``. In ``mode="grounded"``, codex runs
+    under native read-only sandboxing (``-s read-only -C <dir>``) AND inside
+    this repo's OS containment wrapper (``unshare`` + $HOME/tmpfs) — the
+    native flag confines writes while the wrapper confines reads to the
+    target, since ``-s read-only`` alone does not (measured 2026-09-30: a
+    grounded codex read a canary outside ``-C``). In ``mode="text-only"``
+    (default), shell_tool is disabled and the project instruction file is
+    dropped via ``-c project_doc_max_bytes=0``.
 
     Raises:
         BackendError: If the process exits nonzero, fails to produce output,
