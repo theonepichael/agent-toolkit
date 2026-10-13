@@ -122,7 +122,7 @@ def run_case(
         home = Path(tmp).resolve()
         repo = _make_repo(home)
         if pointer is not None:
-            ptr = home / ".claude" / "data" / "toolkit_state.json"
+            ptr = home / ".agent-toolkit" / "data" / "toolkit_state.json"
             ptr.parent.mkdir(parents=True, exist_ok=True)
             ptr.write_text(pointer)
         if payload is None:

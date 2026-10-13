@@ -35,7 +35,7 @@ import fnmatch
 import json
 import os
 import tomllib
-from collections.abc import Callable, Collection, Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -572,13 +572,11 @@ class LinkFinding:
 class LinkAuditResult:
     """What one full link audit produced: typed findings plus the
     aggregates that are deliberately *not* findings (see
-    :func:`check_applicable_links` for ``foreign``; ``exempted`` holds the
-    orphaned destinations the caller's ``retained`` set excused)."""
+    :func:`check_applicable_links` for ``foreign``)."""
 
     findings: list[LinkFinding]
     foreign: dict[Path, int]
     dirs_audited: int
-    exempted: tuple[Path, ...] = ()
 
 
 def collect_link_findings(
@@ -595,7 +593,6 @@ def collect_link_findings(
     force_uninstalled: bool = False,
     specs: Sequence[LinkSpec] | None = None,
     managed_dirs: Sequence[ManagedDirSpec] | None = None,
-    retained: Collection[Path] = frozenset(),
 ) -> LinkAuditResult:
     """Run the full read-only link audit and return typed findings.
 
@@ -610,15 +607,11 @@ def collect_link_findings(
     fingerprints it) — the machine facts and ``manifest_file`` are always
     live inputs to applicability gating and the orphan/backup checks.
 
-    ``retained`` names destinations the caller expects to linger (legacy
-    links an unfinalized toolkit-home migration keeps); they are left out of
-    the orphaned bucket and listed in ``exempted`` instead.
-
     Returns:
-        The typed findings, the per-other-checkout link counts, how many
-        declared directories were audited, and the exempted orphans. Malformed links.toml
-        propagates the parsers' ``ValueError``/``TypeError`` so the caller
-        decides how loudly to fail.
+        The typed findings, the per-other-checkout link counts, and how many
+        declared directories were audited. Malformed links.toml propagates
+        the parsers' ``ValueError``/``TypeError`` so the caller decides how
+        loudly to fail.
     """
     links_toml = repo_root / "links.toml"
     if specs is None:
@@ -639,12 +632,7 @@ def collect_link_findings(
         specs=specs,
         force_uninstalled=force_uninstalled,
     )
-    exempted = tuple(
-        dest
-        for dest in find_orphaned_links(links, manifest_entries=entries)
-        if dest in retained
-    )
-    orphaned = check_orphaned_links(links, manifest_entries=entries, retained=retained)
+    orphaned = check_orphaned_links(links, manifest_entries=entries)
     unmanaged, dirs_audited = check_unmanaged_files(
         managed_dirs,
         links,
@@ -658,7 +646,6 @@ def collect_link_findings(
         findings=[*applicable, *orphaned, *unmanaged],
         foreign=foreign,
         dirs_audited=dirs_audited,
-        exempted=exempted,
     )
 
 
@@ -759,7 +746,6 @@ def audit_links(
     force_uninstalled: bool = False,
     specs: Sequence[LinkSpec] | None = None,
     managed_dirs: Sequence[ManagedDirSpec] | None = None,
-    retained: Collection[Path] = frozenset(),
 ) -> tuple[dict[str, list[str]], dict[Path, int], int]:
     """Run the full read-only link audit and return its findings as plain data.
 
@@ -786,8 +772,6 @@ def audit_links(
         specs, managed_dirs: Pre-parsed links.toml rows, for a caller that
             already parsed the table (the drift hook fingerprints it); parsed
             here when omitted.
-        retained: Destinations exempt from the orphaned bucket; see
-            :func:`collect_link_findings`.
 
     Returns:
         The findings by bucket, the per-other-checkout link counts (see
@@ -813,7 +797,6 @@ def audit_links(
         force_uninstalled=force_uninstalled,
         specs=specs,
         managed_dirs=managed_dirs,
-        retained=retained,
     )
     return (
         render_findings(result.findings, format_path, repo_root=repo_root),
@@ -1172,14 +1155,11 @@ def check_orphaned_links(
     links: Sequence[tuple[Path, Path, str, bool]],
     *,
     manifest_entries: Iterable[dict[str, object]],
-    retained: Collection[Path] = frozenset(),
 ) -> list[LinkFinding]:
     """Return typed findings for manifest-recorded symlinks that links.toml
-    no longer produces, skipping any destination in ``retained``."""
+    no longer produces."""
     findings: list[LinkFinding] = []
     for dest in find_orphaned_links(links, manifest_entries=manifest_entries):
-        if dest in retained:
-            continue
         if is_symlink(dest):
             finding = LinkFinding(
                 CHECK_BUCKET_ORPHANED,
