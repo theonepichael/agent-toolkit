@@ -621,6 +621,16 @@ class LaunchTests(DelegateTests):
             prompts[0][3], "/backlog-item --swarm=3 --prefix atk --items atk-a atk-b"
         )
 
+    def test_swarm_launch_accepts_mvc2_prefix(self) -> None:
+        code, _, _ = self.run_main(
+            ["launch", "--swarm", "2", "--prefix", "mvc2", "--cwd", "/tmp"]
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            self.fake.named("agent", "prompt")[0][3],
+            "/backlog-item --swarm=2 --prefix mvc2",
+        )
+
     def test_launch_slug_refuses_no_worker_item(self) -> None:
         with mock.patch.object(
             herdr_delegate,
