@@ -227,24 +227,32 @@ class CapabilityFixtureTests(unittest.TestCase):
             text = rendered[path]
             self.assertNotIn("{{", text, path)
             if skill == "review-diff":
-                self.assertIn("review --diff --dir <worktree>", text, path)
-                self.assertIn("--prompt-only", text, path)
                 self.assertIn("ruled out by payload size", text, path)
                 self.assertIn(
                     gs.CAPABILITY_TABLE[harness]["subagent_tool"], text, path
                 )
                 self.assertIn("Max 2 review rounds", text, path)
                 self.assertIn("diff --stat` must be empty", text, path)
-                self.assertIn("keeping any `--diff-path`", text, path)
                 self.assertIn("worktree path to read", text, path)
                 self.assertIn("no review ran: nothing staged", text, path)
                 self.assertIn("status --porcelain", text, path)
                 self.assertIn("keep one rendered copy per changed template", text, path)
                 own = harness.removesuffix("-prompt").removesuffix("-skill")
-                if harness == "claude":
-                    self.assertNotIn("--exclude-backend", text, path)
+                if harness in ("pi", "pi-prompt"):
+                    self.assertIn('action: "review"', text, path)
+                    self.assertIn("diff: true", text, path)
+                    self.assertIn('excludeBackend: "pi"', text, path)
+                    self.assertIn("promptOnly: true", text, path)
+                    self.assertIn("diffPaths", text, path)
+                    self.assertNotIn("second_opinion.py review", text, path)
                 else:
-                    self.assertIn(f"--exclude-backend {own}\n", text, path)
+                    self.assertIn("review --diff --dir <worktree>", text, path)
+                    self.assertIn("--prompt-only", text, path)
+                    self.assertIn("keeping any `--diff-path`", text, path)
+                    if harness == "claude":
+                        self.assertNotIn("--exclude-backend", text, path)
+                    else:
+                        self.assertIn(f"--exclude-backend {own}\n", text, path)
             else:
                 self.assertIn("No slug? Stop here", text, path)
                 self.assertIn("git -C <worktree>", text, path)

@@ -20,6 +20,10 @@ export type Action = (typeof ACTIONS)[number];
 
 export type Field =
   | "planFile"
+  | "diff"
+  | "diffPaths"
+  | "excludeBackend"
+  | "promptOnly"
   | "backend"
   | "focusFile"
   | "modelIndex"
@@ -39,6 +43,10 @@ const ACTION_FIELDS: Record<Action, ActionFields> = {
   review: {
     allowed: [
       "planFile",
+      "diff",
+      "diffPaths",
+      "excludeBackend",
+      "promptOnly",
       "backend",
       "focusFile",
       "modelIndex",
@@ -48,7 +56,7 @@ const ACTION_FIELDS: Record<Action, ActionFields> = {
       "timeoutSeconds",
       "runId",
     ],
-    required: ["planFile"],
+    required: [],
   },
   // Mirrors `second_opinion.py probe [--backend NAME[,NAME...]]`; `model` and
   // `timeoutSeconds` reach it through the same env vars review uses.
@@ -60,6 +68,10 @@ const ACTION_FIELDS: Record<Action, ActionFields> = {
 export interface SecondOpinionParams {
   action: Action;
   planFile?: string;
+  diff?: boolean;
+  diffPaths?: string[];
+  excludeBackend?: string;
+  promptOnly?: boolean;
   backend?: string;
   focusFile?: string;
   modelIndex?: number;
@@ -101,6 +113,48 @@ export function assertFields(action: Action, params: SecondOpinionParams): void 
   const extra = supplied.filter((field) => !allowedSet.has(field));
   if (extra.length > 0) {
     throw new Error(`action "${action}" does not accept: ${extra.join(", ")}`);
+  }
+
+  if (action === "review") {
+    if (params.diff) {
+      if (params.planFile !== undefined) {
+        throw new Error("diff reviews the staged diff; do not also pass planFile");
+      }
+    } else {
+      if (params.planFile === undefined) {
+        throw new Error('action "review" requires: planFile');
+      }
+      if (params.diffPaths !== undefined) {
+        throw new Error("diffPaths only applies with diff: true");
+      }
+    }
+
+    if (params.diffPaths !== undefined) {
+      if (!Array.isArray(params.diffPaths) || params.diffPaths.length === 0) {
+        throw new Error("diffPaths must not be empty");
+      }
+      for (const p of params.diffPaths) {
+        if (typeof p !== "string" || p.trim() === "") {
+          throw new Error("diffPaths pathspec must not be empty");
+        }
+      }
+    }
+
+    if (params.excludeBackend !== undefined) {
+      if (params.backend !== undefined) {
+        throw new Error("excludeBackend cannot be combined with backend");
+      }
+      const names = splitBackends(params.excludeBackend);
+      if (names.length === 0) {
+        throw new Error("excludeBackend must name at least one backend");
+      }
+      const unknown = unknownBackends(names);
+      if (unknown.length > 0) {
+        throw new Error(
+          `excludeBackend must name known backends (${KNOWN_BACKENDS.join(", ")}) — unknown: ${unknown.join(", ")}`,
+        );
+      }
+    }
   }
 
   if (params.planFile !== undefined && params.planFile.trim() === "") {
@@ -174,10 +228,15 @@ export function buildArgv(action: Action, params: SecondOpinionParams): string[]
     case "review":
       return [
         "review",
-        params.planFile!,
+        ...(params.diff ? ["--diff"] : [params.planFile!]),
         ...(params.backend ? ["--backend", params.backend] : []),
+        ...(params.excludeBackend
+          ? splitBackends(params.excludeBackend).flatMap((b) => ["--exclude-backend", b])
+          : []),
         ...(params.dir ? ["--dir", params.dir] : []),
         ...(params.textOnly ? ["--text-only"] : []),
+        ...(params.promptOnly ? ["--prompt-only"] : []),
+        ...(params.diffPaths ? params.diffPaths.flatMap((p) => ["--diff-path", p]) : []),
         ...(params.focusFile ? ["--focus-file", params.focusFile] : []),
         ...(params.runId ? ["--run-id", params.runId] : []),
         // Compared against undefined, not truthiness: index 0 is round 1 of
@@ -267,16 +326,17 @@ export default function (pi: ExtensionAPI) {
     name: "second_opinion",
     label: "Critique",
     description:
-      "Get one adversarial critique of a plan from a non-Claude backend, list which backends are available, probe each backend's model pool for per-model availability, or bind/check a plan's critique-notes companion against its content hash.",
-    promptSnippet: "Get an outside adversarial critique of a plan file",
+      "Get one adversarial critique of a plan or staged diff from a non-Claude backend, list which backends are available, probe each backend's model pool for per-model availability, or bind/check a plan's critique-notes companion against its content hash.",
+    promptSnippet: "Get an outside adversarial critique of a plan file or staged diff",
     promptGuidelines: [
       "Never invoke second_opinion.py via bash -- always use second_opinion instead.",
-      'second_opinion exposes every action and review parameter an agent should use: action "detect" lists available backends as JSON, action "review" returns one critique of the plan at planFile, action "probe" sends one trivial request to each model in the selected backend\'s pool (or its single override / default model) and returns a per-model availability report as JSON, action "bind-notes" stamps planFile\'s -critique-notes.md companion with planFile\'s content hash, and action "check-notes" prints that binding\'s status (current, stale, unbound, missing, or no-artifact). If you are about to compose a `python3 ~/.agent-toolkit/scripts/second_opinion.py ...` bash command, use second_opinion instead.',
+      'second_opinion exposes every action and review parameter an agent should use: action "detect" lists available backends as JSON, action "review" returns one critique of the plan at planFile (or of the staged diff when diff: true), action "probe" sends one trivial request to each model in the selected backend\'s pool (or its single override / default model) and returns a per-model availability report as JSON, action "bind-notes" stamps planFile\'s -critique-notes.md companion with planFile\'s content hash, and action "check-notes" prints that binding\'s status (current, stale, unbound, missing, or no-artifact). If you are about to compose a `python3 ~/.agent-toolkit/scripts/second_opinion.py ...` bash command, use second_opinion instead.',
       "Never shell out to codex, agy, pi, opencode, or copilot directly for a critique -- all backend I/O goes through this tool.",
       'Action "probe" calls every probed model once for real, so pass `backend` deliberately rather than probing every installed backend. An unavailable model is not a tool error: the JSON report comes back with a second line counting ok, unavailable, and not-installed entries. A report with 0 ok tested nothing. `model` (with one `backend`) pins the model probed only when that backend has no pool configured; a configured pool is probed instead.',
       "It is single-round: one call, one critique. The multi-round loop, the plan revision between rounds, and the convergence judgment are yours, not the tool's.",
-      "The script enforces a per-run cap (3 rounds by default): pass a stable `runId` for the whole loop (or rely on the plan-file path) and the 4th `review` call for that run is refused with a finalize-and-stop message.",
-      "Always pass planFile as a path. Never inline plan text -- write the plan to a file first.",
+      "The script enforces a per-run cap (3 rounds by default): pass a stable `runId` for the whole loop (or rely on the plan-file path) and the 4th `review` call for that run is refused with a finalize-and-stop message. For diff reviews (`diff: true`), always pass a stable `runId` across iterative review rounds so round counting is enforced.",
+      "Always pass planFile as a path when critiquing a plan. Never inline plan text -- write the plan to a file first.",
+      "For diff review, pass `diff: true` (omit planFile); limit the staged diff with `diffPaths` (array of pathspecs); skip a backend in priority-order fallback with `excludeBackend` (e.g. 'pi' to prevent self-review); pass `promptOnly: true` for the fallback prompt without calling a backend.",
       "modelIndex is 0-based: round 1 is 0, round 2 is 1. If a call fails with a pool configuration error naming --model-index, retry that same round once with modelIndex omitted. That is the valid fallback, not a skipped round.",
       "To pin a model for the critique, pass `model` together with `backend` (Pi sets SECOND_OPINION_<BACKEND>_MODEL for you) — never set that env var directly. To raise the timeout on a slow critique, pass `timeoutSeconds` (clamped to 600); do not hand-set SECOND_OPINION_TIMEOUT_SECONDS.",
     ],
@@ -286,6 +346,30 @@ export default function (pi: ExtensionAPI) {
         Type.String({
           description:
             "review: path to the plan file to critique, conventionally ~/.agent-toolkit/data/grill/<topic-slug>-plan.md. A path, never inline plan text. bind-notes/check-notes: the plan or spec whose -critique-notes.md companion to bind or check.",
+        }),
+      ),
+      diff: Type.Optional(
+        Type.Boolean({
+          description:
+            "review: review the staged diff (git diff --cached in dir) for bugs instead of critiquing a plan (default: false). When true, planFile must be omitted.",
+        }),
+      ),
+      diffPaths: Type.Optional(
+        Type.Array(Type.String(), {
+          description:
+            "review: with diff: true, limit the staged diff to these git pathspecs (e.g. ['.', ':!tests/']).",
+        }),
+      ),
+      excludeBackend: Type.Optional(
+        Type.String({
+          description:
+            "review: skip these backend(s) (comma-separated, e.g. 'pi') in priority-order selection; cannot be combined with backend.",
+        }),
+      ),
+      promptOnly: Type.Optional(
+        Type.Boolean({
+          description:
+            "review: print the prompt this review would send and exit, calling no backend and spending no round (for a caller's own reviewer fallback; default: false).",
         }),
       ),
       backend: Type.Optional(

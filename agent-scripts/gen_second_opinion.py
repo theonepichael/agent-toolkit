@@ -121,9 +121,11 @@ PI_TOOL_PARAMS = {
     "--focus-file": "focusFile",
     "--run-id": "runId",
     "--model-index": "modelIndex",
+    "--diff": "diff",
+    "--prompt-only": "promptOnly",
 }
 # Flags that take no argument; the tool exposes them as booleans.
-PI_BOOLEAN_FLAGS = frozenset({"--text-only"})
+PI_BOOLEAN_FLAGS = frozenset({"--text-only", "--diff", "--prompt-only"})
 
 NATIVE_TOOL_ENTRYPOINT = "the `second_opinion` tool"
 
