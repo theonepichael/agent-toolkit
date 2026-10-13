@@ -11,6 +11,7 @@ commands rather than the real CHECKS list — the real list mutates state
 (e.g. grill's --consume) and must never run under test.
 """
 
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -19,6 +20,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))
 import test_bootstrap  # noqa: E402
 from pytest_shim import pytest
+import harness_spec  # noqa: E402
 import sessionstart_checks  # noqa: E402
 
 pytestmark = pytest.mark.allow_real_subprocess  # real bash for echo/sleep/exit
@@ -139,6 +141,75 @@ class ForeignScriptTestCase(unittest.TestCase):
             ),
             "~/.claude/scripts/watchcommit_activity.py",
         )
+
+
+class EntryScriptGuardTestCase(unittest.TestCase):
+    """The SessionStart wrapper's own entry script can dangle or go missing,
+    exactly like the links it audits — the hook command's shell guard must
+    emit the one-line warning on stdout when the script does not resolve,
+    without mislabeling a present-but-failing script (whose own exit status
+    and stderr must stand). Drives the *guard* from harness_spec's manifest,
+    never the real wrapper, which consumes state (grill --consume, etc.)."""
+
+    WARNING = "agent-toolkit session-start hook missing, run install.py --check-links"
+
+    def setUp(self) -> None:
+        self.scripts = Path.home() / ".agent-toolkit" / "scripts"
+        self.scripts.mkdir(parents=True, exist_ok=True)
+        self.entry = self.scripts / "sessionstart_checks.py"
+
+    def tearDown(self) -> None:
+        self.entry.unlink(missing_ok=True)
+
+    def _guard_commands(self) -> list[str]:
+        manifest = harness_spec.LIFECYCLE_HOOKS["SessionStart"]
+        return [
+            manifest["claude"][0]["hooks"][0]["command"],
+            manifest["copilot"]["bash"],
+        ]
+
+    def _run(self, command: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(["bash", "-c", command], capture_output=True, text=True)
+
+    def test_absent_entry_emits_warning(self) -> None:
+        for command in self._guard_commands():
+            with self.subTest(harness_command=command):
+                res = self._run(command)
+                self.assertEqual(res.returncode, 0)
+                self.assertIn(self.WARNING, res.stdout)
+                self.assertNotIn(self.WARNING, res.stderr)
+
+    def test_dangling_entry_emits_warning(self) -> None:
+        self.entry.symlink_to(self.scripts / "gone_source_zz.py")
+        for command in self._guard_commands():
+            with self.subTest(harness_command=command):
+                res = self._run(command)
+                self.assertEqual(res.returncode, 0)
+                self.assertIn(self.WARNING, res.stdout)
+
+    def test_present_entry_runs_without_warning(self) -> None:
+        self.entry.write_text("print('wrapper ok')\n")
+        for command in self._guard_commands():
+            with self.subTest(harness_command=command):
+                res = self._run(command)
+                self.assertEqual(res.returncode, 0)
+                self.assertIn("wrapper ok", res.stdout)
+                self.assertNotIn(self.WARNING, res.stdout)
+
+    def test_present_entry_that_fails_is_not_mislabelled(self) -> None:
+        self.entry.write_text(
+            "import sys\nprint('partial')\nprint('boom', file=sys.stderr)\nsys.exit(3)\n"
+        )
+        for command in self._guard_commands():
+            with self.subTest(harness_command=command):
+                res = self._run(command)
+                # A present-but-broken wrapper keeps its own exit status and
+                # stderr — it is surfaced, not hidden behind a forced 0 or a
+                # false "missing" warning.
+                self.assertEqual(res.returncode, 3)
+                self.assertIn("partial", res.stdout)
+                self.assertIn("boom", res.stderr)
+                self.assertNotIn(self.WARNING, res.stdout)
 
 
 if __name__ == "__main__":

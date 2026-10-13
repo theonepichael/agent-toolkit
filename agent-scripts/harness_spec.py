@@ -447,6 +447,23 @@ def assert_feature_coverage(repo_root: Path | None = None) -> None:
 
 # ── Lifecycle hook definitions ──────────────────────────────────────────
 
+# Entry-script self-check for the SessionStart wrapper. The wrapper
+# (~/.agent-toolkit/scripts/sessionstart_checks.py) is itself installed
+# through links.toml, so it can dangle or go missing exactly like the links
+# it audits — and then the hook fails silently (a checker installed through
+# the links it audits cannot report its own breakage). The guard resolves the
+# entry path first: when it resolves, the wrapper runs and its own exit status
+# and stderr stand (a present-but-broken wrapper surfaces its failure rather
+# than being hidden behind a forced exit 0 — see test_hooks_config.py's
+# silent-success rule); when it does not resolve (missing or dangling), the
+# hook prints the one-line warning and exits 0. The warning names
+# `install.py --check-links` as the read-only diagnostic; the repair is a
+# separate `install.py` run. Rollout: copilot/hooks/session-start.json is
+# symlinked out of the checkout, so it re-deploys on checkout update;
+# claude/settings.json is copy-once, so a Claude machine with a working
+# wrapper sees the drift notice automatically while one whose wrapper already
+# dangles needs the manual --check-links → install.py path.
+
 LIFECYCLE_HOOKS: dict[str, dict[str, object]] = {
     "PreToolUse": {
         "claude": {
@@ -514,7 +531,12 @@ LIFECYCLE_HOOKS: dict[str, dict[str, object]] = {
                 "hooks": [
                     {
                         "type": "command",
-                        "command": "python3 ~/.agent-toolkit/scripts/sessionstart_checks.py",
+                        "command": (
+                            "if [ -e ~/.agent-toolkit/scripts/sessionstart_checks.py ]; then"
+                            " python3 ~/.agent-toolkit/scripts/sessionstart_checks.py; else echo"
+                            " 'agent-toolkit session-start hook missing, run install.py"
+                            " --check-links'; fi"
+                        ),
                         "timeout": 45,
                     }
                 ]
@@ -554,7 +576,12 @@ LIFECYCLE_HOOKS: dict[str, dict[str, object]] = {
         ],
         "copilot": {
             "type": "command",
-            "bash": "python3 ~/.agent-toolkit/scripts/sessionstart_checks.py",
+            "bash": (
+                "if [ -e ~/.agent-toolkit/scripts/sessionstart_checks.py ]; then"
+                " python3 ~/.agent-toolkit/scripts/sessionstart_checks.py; else echo"
+                " 'agent-toolkit session-start hook missing, run install.py"
+                " --check-links'; fi"
+            ),
             "timeoutSec": 45,
         },
     },

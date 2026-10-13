@@ -46,6 +46,19 @@ class HarnessSpecHookManifestTests(unittest.TestCase):
         self.assertIn("sessionstart_checks.py", copilot_ss["bash"])
         self.assertEqual(copilot_ss.get("timeoutSec"), 45)
 
+    def test_session_start_guard_in_both_harnesses(self) -> None:
+        """Both harnesses' SessionStart hook must carry the entry-script
+        self-check guard that warns when the wrapper is missing/dangling."""
+        manifest = harness_spec.LIFECYCLE_HOOKS["SessionStart"]
+        claude_cmd = manifest["claude"][0]["hooks"][0]["command"]
+        copilot_cmd = manifest["copilot"]["bash"]
+        warning = "agent-toolkit session-start hook missing, run install.py --check-links"
+        self.assertEqual(claude_cmd, copilot_cmd)
+        for cmd in (claude_cmd, copilot_cmd):
+            self.assertIn("sessionstart_checks.py", cmd)
+            self.assertIn("-e ~/.agent-toolkit/scripts/sessionstart_checks.py", cmd)
+            self.assertIn(warning, cmd)
+
 
 class CompileHooksTests(unittest.TestCase):
     def test_compile_hooks_returns_all_expected_targets(self) -> None:

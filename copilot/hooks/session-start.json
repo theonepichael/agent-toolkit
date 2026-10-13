@@ -4,7 +4,7 @@
     "sessionStart": [
       {
         "type": "command",
-        "bash": "python3 ~/.agent-toolkit/scripts/sessionstart_checks.py",
+        "bash": "if [ -e ~/.agent-toolkit/scripts/sessionstart_checks.py ]; then python3 ~/.agent-toolkit/scripts/sessionstart_checks.py; else echo 'agent-toolkit session-start hook missing, run install.py --check-links'; fi",
         "timeoutSec": 45
       }
     ]
