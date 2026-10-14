@@ -215,6 +215,58 @@ def test_a_backlog_write_holds_the_shared_lock_against_an_exclusive_probe(tmp_pa
     assert ask() == "free"
 
 
+@pytest.mark.allow_real_subprocess  # probes the lock from a second process
+def test_a_rename_transform_holds_the_exclusive_lock_against_a_probe(tmp_path):
+    """rename_transition.run_transforms rewrites stores inside exclusive()."""
+    # rename-transition: remove after the clean-break renames
+    import json
+
+    import rename_transition
+
+    probe = tmp_path / "probe.py"
+    probe.write_text(PROBE)
+    lock = str(migration_lock.lock_path())
+    seen: list[str] = []
+
+    def ask() -> str:
+        return subprocess.run(
+            [sys.executable, str(probe), lock], capture_output=True, text=True, timeout=30
+        ).stdout.strip()
+
+    class Adapter:
+        name = "probe"
+        current_version = 2
+        supported_versions = frozenset({1})
+
+        def discover(self, home):
+            return [home / "store.json"]
+
+        def version_of(self, data):
+            obj = json.loads(data)
+            return 1 if isinstance(obj, list) else obj["v"]
+
+        def load(self, data):
+            return json.loads(data)
+
+        def dump(self, obj, version):
+            return json.dumps({"v": version, "items": obj}).encode()
+
+    def during(items):
+        seen.append(ask())
+        return items
+
+    (tmp_path / "store.json").write_text("[1]")
+    rename_transition.run_transforms(
+        tmp_path,
+        dry_run=False,
+        adapters=(Adapter(),),
+        transforms=(rename_transition.Transform("probe", 1, 2, during, "probe"),),
+    )
+    assert seen == ["busy"]
+    assert ask() == "free"
+    assert_all_released()
+
+
 HOLD = textwrap.dedent(
     """
     import sys, time

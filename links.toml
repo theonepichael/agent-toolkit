@@ -301,6 +301,11 @@ dest = "~/.agent-toolkit/scripts/link_drift_check.py"
 src = "agent-scripts/link_inspect.py"
 dest = "~/.agent-toolkit/scripts/link_inspect.py"
 
+# rename-transition: remove after the clean-break renames
+[[link]]
+src = "agent-scripts/rename_transition.py"
+dest = "~/.agent-toolkit/scripts/rename_transition.py"
+
 [[link]]
 src = "agent-scripts/refresh_guidance.py"
 dest = "~/.agent-toolkit/scripts/refresh_guidance.py"

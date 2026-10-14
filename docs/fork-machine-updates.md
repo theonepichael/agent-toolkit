@@ -86,11 +86,13 @@ merge.
 ## 1. Pick the upstream commit
 
 Update the mirror with the sync script without `--apply`, then choose the
-target upstream commit for this release. Record what the fork changes on top
-of upstream, so step 3 can compare against it:
+target upstream commit for this release. Releases are annotated tags
+(`release-<n>`, listed in `CHANGELOG.md`); take the tag's commit, not the tag
+object. Record what the fork changes on top of upstream, so step 3 can compare
+against it:
 
 ```bash
-R=$(git -C "$UP" rev-parse origin/main)              # or the specific release commit
+R=$(git -C "$UP" rev-parse 'release-<n>^{commit}')   # the release you are taking
 git -C "$FORK" fetch -q "$UP" "$R"                    # the chosen commit must exist in the fork
 LAST=$(git -C "$FORK" merge-base pre-update-<release> "$R")   # last upstream commit already in the fork
 git -C "$UP" log --oneline "$LAST..$R"               # read every line
@@ -220,6 +222,15 @@ git -C "$FORK" reset --keep pre-update-<release>
 ```
 
 Keep the `pre-update-<release>` tag until the next upstream merge.
+
+**Releases that upgrade stored data cannot be rolled back this way.**
+<!-- rename-transition: remove after the clean-break renames -->
+A rename release whose `CHANGELOG.md` section lists a data upgrade rewrites
+stores during step 4's install, and `--rollback` does not undo that. Once the
+install has run, the old code's readers reject the new store version, so
+resetting to `pre-update-<release>` leaves a machine that cannot read its own
+data. Roll forward instead: fix the problem on top of the release and
+re-install. Before the install has run, the reset above is still safe.
 
 ## Clean up dead migration state (one-time)
 

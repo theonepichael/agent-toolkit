@@ -69,6 +69,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`outlook_email.py`](#agentscriptsoutlookemailpy) | outlook_email.py — CLI tool and agent interface for Windows Outlook via PowerShell COM. |
 | [`permission_matrix.py`](#agentscriptspermissionmatrixpy) | Declarative bash-permission matrix shared by every harness's global seed. |
 | [`refresh_guidance.py`](#agentscriptsrefreshguidancepy) | refresh_guidance.py — audit-by-inspection for hand-authored, agent-facing docs. |
+| [`rename_transition.py`](#agentscriptsrenametransitionpy) | Temporary machinery for the clean-break renames: env fallbacks and store transforms. |
 | [`second_opinion.py`](#agentscriptssecondopinionpy) | second_opinion.py — one-shot adversarial critique of a plan from a non-Claude backend. Single-round by design: the multi-round loop, plan revision, and convergence judgment all require LLM reasoning and live in prose instructions, not here. |
 | [`seed_hook_subset_guard.py`](#agentscriptsseedhooksubsetguardpy) | seed_hook_subset_guard.py — refuse a commit that drops a seed's SessionStart hook groups. |
 | [`sessionstart_checks.py`](#agentscriptssessionstartcheckspy) | sessionstart_checks.py — run the SessionStart context checks concurrently. |
@@ -1253,7 +1254,7 @@ Machine-wide migration lock: writers share it, the toolkit-home migrator owns it
   - `exclusive(site: str, *, blocking: bool = True) -> Iterator[None]` — Hold the lock exclusively (the migrator).
   - `build_parser() -> argparse.ArgumentParser`
 - Subcommand handlers: `cmd_status`, `cmd_hold`, `cmd_observations`
-- Tested by: `test/test_dev_status_validate.py`, `test/test_guard_rails_claim.py`, `test/test_migration_lock.py`, `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`
+- Tested by: `test/test_dev_status_validate.py`, `test/test_guard_rails_claim.py`, `test/test_install.py`, `test/test_migration_lock.py`, `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`, `test/test_rename_transition.py`
 
 ### `agent-scripts/notify.py`
 
@@ -1455,6 +1456,40 @@ refresh_guidance.py — audit-by-inspection for hand-authored, agent-facing docs
   - `build_parser() -> argparse.ArgumentParser`
 - Subcommand handlers: `cmd_check`, `cmd_mark_reviewed`, `cmd_scaffold`
 - Tested by: `test/test_refresh_guidance.py`
+
+### `agent-scripts/rename_transition.py`
+
+Temporary machinery for the clean-break renames: env fallbacks and store transforms.
+
+- Installed at: `~/.agent-toolkit/scripts/rename_transition.py` (all harnesses)
+- Entrypoint: not executable, `#!/usr/bin/env python3`
+- CLI (`argparse`): Clean-break rename transition helpers (temporary).
+- Subcommands:
+  - `report [--session]` — list legacy env vars still set
+  - `checklist <old> <new> --release <RELEASE> [--file <FILE>]` — print one rename's checklist
+    - `--release` (required)
+- Depends on: `agent_toolkit_paths.py`, `migration_lock.py`
+- Exceptions:
+  - `class StoreFormatError(ValueError)` — An adapter could not recognise a store file's shape or version.
+  - `class TransformError(RuntimeError)` — A store transform could not run; the message names the file.
+- Public classes:
+  - `class LegacyEnv` — One renamed environment variable: ``old`` is read only as a fallback.
+  - `class StoreAdapter(Protocol)` — How the framework reads, versions and writes one store's files.
+  - `class Transform` — Lift one store's data from ``from_version`` to ``to_version``.
+- Public functions:
+  - `family(old_template: str, new_template: str, members: Iterable[str], removed_after: str) -> tuple[LegacyEnv, ...]` — Expand a per-member variable family into explicit rows.
+  - `validate_legacy_env(rows: Sequence[LegacyEnv] | None = None) -> None` — Raise ``ValueError`` on a duplicate, a self-map or an ``A -> B -> C`` chain.
+  - `env(new: str, default: str | None = None, *, environ: Mapping[str, str] | None = None, rows: Sequence[LegacyEnv] | None = None) -> str | None` — Read ``new``, falling back to its old name with a once-per-process warning.
+  - `legacy_env_report(environ: Mapping[str, str], *, rows: Sequence[LegacyEnv] | None = None) -> list[tuple[str, str]]` — Every ``(old, new)`` pair whose old name is set, sorted.
+  - `report_main(*, session: bool, environ: Mapping[str, str] | None = None, rows: Sequence[LegacyEnv] | None = None) -> int` — Print the legacy-variable report; see the module docstring for modes.
+  - `store_path(domain: str) -> Path` — Resolve a toolkit data domain for an adapter's ``discover``.
+  - `validate_registry(adapters: Sequence[StoreAdapter] | None = None, transforms: Sequence[Transform] | None = None) -> None` — Raise ``ValueError`` unless every store has one contiguous chain to current.
+  - `pending_transforms(home: Path, *, adapters: Sequence[StoreAdapter] | None = None, transforms: Sequence[Transform] | None = None) -> list[str]` — Unlocked, read-only preview: one "would apply" line per pending file.
+  - `atomic_write_bytes(path: Path, data: bytes) -> None` — Replace ``path`` durably, keeping its mode.
+  - `run_transforms(home: Path, *, dry_run: bool, adapters: Sequence[StoreAdapter] | None = None, transforms: Sequence[Transform] | None = None) -> list[str]` — Bring every store file under ``home`` to its adapter's current version.
+  - `checklist(old: str, new: str, release: str, *, files: Sequence[Path] | None = None) -> str` — Markdown checklist for one rename: the ledger items plus manual-edit hits.
+  - `build_parser() -> argparse.ArgumentParser`
+- Tested by: `test/test_install.py`, `test/test_migration_lock_adoption.py`, `test/test_rename_transition.py`
 
 ### `agent-scripts/second_opinion.py`
 
@@ -2082,6 +2117,7 @@ install.py — agent-toolkit provisioner for macOS/Linux.
   - `--depart`
   - `--yes`
   - `--check-links`
+  - `--report-legacy-env`
   - `--report-uninstalled`
   - `--no-report-uninstalled`
   - `-h/--help`
@@ -2133,6 +2169,7 @@ install.py — agent-toolkit provisioner for macOS/Linux.
   - `do_rollback(ctx: Context) -> int` — Reverse every file mutation recorded across every past run.
   - `print_summary(ctx: Context, settings: tuple[str, str], opencode: tuple[str, str], vscode: Sequence[tuple[str, tuple[str, str]]] = (), pi_settings: tuple[str, str] = ('', '')) -> None` — Print the loud end-of-run summary: skips, drift, and next steps.
   - `do_check_links(ctx: Context) -> int` — Audit the live symlinks against ``links.toml`` and report, changing nothing.
+  - `run_data_transforms(ctx: Context) -> None` — Upgrade persisted store data for a clean-break rename release.
   - `run_install(ctx: Context, specs: Sequence[LinkSpec]) -> int` — Run every install step in order and return the process exit status.
 - Tested by: `test/test_dead_installers_stripped.py`, `test/test_harness_spec.py`, `test/test_install.py`, `test/test_link_inspect.py`, `test/test_settings_seed.py`
 

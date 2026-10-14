@@ -60,6 +60,14 @@ CHECKS: list[tuple[str, int]] = [
     ("python3 ~/.agent-toolkit/scripts/grill.py pending-plan --consume", 15),
     ("python3 ~/.agent-toolkit/scripts/bundle_drift_check.py 2>/dev/null", 15),
     ("python3 ~/.agent-toolkit/scripts/settings_seed_drift_check.py", 15),
+    # rename-transition: remove after the clean-break renames
+    (
+        (
+            "python3 ~/.agent-toolkit/scripts/rename_transition.py report --session"
+            " 2>/dev/null"
+        ),
+        15,
+    ),
     (
         (
             "timeout 5s python3 ~/.agent-toolkit/scripts/harness_discovery_check.py"

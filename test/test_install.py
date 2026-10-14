@@ -5253,3 +5253,163 @@ def test_summary_dry_run_omits_repo_layout_reminder(
     out = capsys.readouterr().out
 
     assert "shared source" not in out
+
+
+# ── rename-transition data upgrade ────────────────────────────────────────────
+# rename-transition: remove after the clean-break renames
+
+import json as _json  # noqa: E402
+
+import rename_transition  # noqa: E402
+
+
+class _ListAdapter:
+    """A one-file test store: a bare list is v1, {"v": 2, ...} is v2."""
+
+    name = "probe"
+    current_version = 2
+    supported_versions = frozenset({1})
+
+    def discover(self, home):
+        path = home / "probe-store.json"
+        return [path] if path.exists() else []
+
+    def version_of(self, data):
+        obj = _json.loads(data)
+        return 1 if isinstance(obj, list) else obj["v"]
+
+    def load(self, data):
+        obj = _json.loads(data)
+        return obj if isinstance(obj, list) else obj["items"]
+
+    def dump(self, obj, version):
+        return _json.dumps({"v": version, "items": obj}).encode()
+
+
+def _probe_registry(monkeypatch, apply=lambda items: [i * 2 for i in items]):
+    monkeypatch.setattr(rename_transition, "ADAPTERS", (_ListAdapter(),))
+    monkeypatch.setattr(
+        rename_transition,
+        "TRANSFORMS",
+        (rename_transition.Transform("probe", 1, 2, apply, "double"),),
+    )
+
+
+@pytest.fixture
+def _isolated_lock(tmp_path, monkeypatch):
+    import migration_lock
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg-state"))
+    migration_lock._reset_for_tests()
+    yield
+    migration_lock._reset_for_tests()
+
+
+def test_report_legacy_env_parses_alone():
+    opts = install.parse_args(["--report-legacy-env"])
+    assert opts.report_legacy_env
+
+
+@pytest.mark.parametrize(
+    "extra", [["--harness=claude"], ["--dry-run"], ["--check-links"]]
+)
+def test_report_legacy_env_refuses_other_flags(extra):
+    with pytest.raises(SystemExit) as exc:
+        install.parse_args(["--report-legacy-env", *extra])
+    assert exc.value.code == 2
+
+
+def test_data_transforms_noop_with_empty_registry(tmp_path, capsys):
+    ctx = make_ctx(tmp_path)
+    install.run_data_transforms(ctx)
+    assert capsys.readouterr().out == ""
+    assert not ctx.reporter.skipped
+
+
+def test_data_transforms_apply_when_link_audit_is_clean(
+    tmp_path, monkeypatch, capsys, _isolated_lock
+):
+    _probe_registry(monkeypatch)
+    store = tmp_path / "probe-store.json"
+    store.write_text("[1, 2]")
+    monkeypatch.setattr(install, "_transform_link_blockers", lambda ctx: [])
+    ctx = make_ctx(tmp_path)
+    install.run_data_transforms(ctx)
+    assert _json.loads(store.read_text()) == {"v": 2, "items": [2, 4]}
+    assert "restart any open agent sessions" in capsys.readouterr().out
+    assert not ctx.reporter.skipped
+
+
+def test_data_transforms_skipped_on_a_real_wrong_target_link(
+    tmp_path, monkeypatch, _isolated_lock
+):
+    _probe_registry(monkeypatch)
+    store = tmp_path / "probe-store.json"
+    store.write_text("[1, 2]")
+    planted = tmp_path / ".agent-toolkit" / "scripts" / "cli_common.py"
+    planted.parent.mkdir(parents=True)
+    planted.symlink_to(tmp_path / "old-checkout" / "agent-scripts" / "cli_common.py")
+    ctx = make_ctx(tmp_path)
+    install.run_data_transforms(ctx)
+    assert _json.loads(store.read_text()) == [1, 2]
+    assert any("data upgrade" in s and "link problem" in s for s in ctx.reporter.skipped)
+
+
+def test_data_transform_error_is_a_failed_step(tmp_path, monkeypatch, _isolated_lock):
+    def boom(items):
+        raise RuntimeError("bad data")
+
+    _probe_registry(monkeypatch, apply=boom)
+    store = tmp_path / "probe-store.json"
+    store.write_text("[1]")
+    monkeypatch.setattr(install, "_transform_link_blockers", lambda ctx: [])
+    ctx = make_ctx(tmp_path)
+    install.run_data_transforms(ctx)
+    assert _json.loads(store.read_text()) == [1]
+    assert any("bad data" in s for s in ctx.reporter.skipped)
+
+
+def test_data_transforms_dry_run_previews_only(tmp_path, monkeypatch, capsys, _isolated_lock):
+    _probe_registry(monkeypatch)
+    store = tmp_path / "probe-store.json"
+    store.write_text("[1]")
+    ctx = make_ctx(tmp_path, dry_run=True)
+    install.run_data_transforms(ctx)
+    assert _json.loads(store.read_text()) == [1]
+    assert "would apply probe v1->v2" in capsys.readouterr().out
+
+
+def test_data_transforms_skipped_when_a_script_link_is_a_regular_file(
+    tmp_path, monkeypatch, _isolated_lock
+):
+    """A stale real file where a link belongs is old code too."""
+    _probe_registry(monkeypatch)
+    store = tmp_path / "probe-store.json"
+    store.write_text("[1, 2]")
+    stale = tmp_path / ".agent-toolkit" / "scripts" / "cli_common.py"
+    stale.parent.mkdir(parents=True)
+    stale.write_text("# an old copy, not a link\n")
+    ctx = make_ctx(tmp_path)
+    install.run_data_transforms(ctx)
+    assert _json.loads(store.read_text()) == [1, 2]
+    assert any("data upgrade" in s for s in ctx.reporter.skipped)
+
+
+def test_data_transforms_skipped_when_links_point_into_another_checkout(
+    tmp_path, monkeypatch, _isolated_lock
+):
+    """A link left pointing into another checkout is code this install did not place."""
+    _probe_registry(monkeypatch)
+    store = tmp_path / "probe-store.json"
+    store.write_text("[1, 2]")
+    monkeypatch.setattr(
+        install.link_inspect,
+        "collect_link_findings",
+        lambda **kw: install.link_inspect.LinkAuditResult(
+            findings=[], foreign={tmp_path / "other-checkout": 3}, dirs_audited=0
+        ),
+    )
+    ctx = make_ctx(tmp_path)
+    install.run_data_transforms(ctx)
+    assert _json.loads(store.read_text()) == [1, 2]
+    assert any("another checkout" in s for s in ctx.reporter.skipped)

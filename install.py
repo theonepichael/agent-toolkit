@@ -112,6 +112,7 @@ USAGE = """\
 usage: ./install.sh --harness=<claude,copilot,opencode,agy,pi,codex>[,...] [--profile=personal|work] [--rollback] [--wipe] [--force] [--dry-run] [--reseed | --adopt] [--quiet | --verbose]
        ./install.sh --depart [--yes] [--dry-run] [--quiet | --verbose]
        ./install.sh --check-links [--harness=...] [--profile=personal|work] [--quiet | --verbose]
+       ./install.sh --report-legacy-env [--quiet | --verbose]
 
   --quiet, -q   suppress non-essential output
   --verbose, -v emit extra diagnostic messages to stderr
@@ -229,6 +230,11 @@ usage: ./install.sh --harness=<claude,copilot,opencode,agy,pi,codex>[,...] [--pr
               No other flag may be combined with --check-links.
               Exits 0 when nothing is wrong, 1 when any bucket finding is
               non-empty, 2 if links.toml itself cannot be read.
+  --report-legacy-env
+              list every environment variable still set under a name a
+              clean-break rename retired, as OLD -> NEW, and exit.
+              Read-only and used alone. Exits 0 when none are set, 1 when
+              any are. Temporary: removed with the rename transition.
 
 Examples:
   ./install.sh --harness=claude
@@ -240,6 +246,7 @@ Examples:
   ./install.sh --rollback --wipe        # full rollback to a blank slate
   ./install.sh --check-links            # read-only symlink audit
   ./install.sh --check-links --no-report-uninstalled  # skip never-installed links
+  ./install.sh --report-legacy-env      # renamed env vars still in your shell
 
 Exits 0 if every step ran, 1 if any step was skipped (see summary)."""
 
@@ -465,6 +472,8 @@ class Options:
     depart: bool = False
     yes: bool = False
     check_links: bool = False
+    # rename-transition: remove after the clean-break renames
+    report_legacy_env: bool = False
     report_uninstalled: bool = True
     force_uninstalled: bool = False
     quiet: bool = False
@@ -633,6 +642,10 @@ def parse_args(argv: Sequence[str]) -> Options:
     parser.add_argument("--depart", action="store_true")
     parser.add_argument("--yes", action="store_true")
     parser.add_argument("--check-links", dest="check_links", action="store_true")
+    # rename-transition: remove after the clean-break renames
+    parser.add_argument(
+        "--report-legacy-env", dest="report_legacy_env", action="store_true"
+    )
     parser.add_argument(
         "--report-uninstalled", dest="report_uninstalled", action="store_true"
     )
@@ -718,6 +731,25 @@ def parse_args(argv: Sequence[str]) -> Options:
     ):
         _fail("--check-links must be used alone, apart from --harness and --profile")
 
+    # rename-transition: remove after the clean-break renames
+    # --report-legacy-env only reads the environment; any other flag would be
+    # silently ignored, so it runs alone (apart from --quiet/--verbose).
+    if args.report_legacy_env and (
+        args.harness
+        or args.profile != DEFAULT_PROFILE
+        or args.rollback
+        or args.wipe
+        or args.force
+        or args.dry_run
+        or args.reseed
+        or args.adopt
+        or args.depart
+        or args.yes
+        or args.check_links
+        or args.force_harness
+    ):
+        _fail("--report-legacy-env must be used alone")
+
     if args.yes and not args.depart:
         _fail("--yes can only be used with --depart")
 
@@ -752,6 +784,7 @@ def parse_args(argv: Sequence[str]) -> Options:
         not args.rollback
         and not args.depart
         and not args.check_links
+        and not args.report_legacy_env
         and not harness_set
     ):
         _fail(
@@ -779,6 +812,7 @@ def parse_args(argv: Sequence[str]) -> Options:
         depart=args.depart,
         yes=args.yes,
         check_links=args.check_links,
+        report_legacy_env=args.report_legacy_env,
         report_uninstalled=not args.no_report_uninstalled,
         force_uninstalled=args.report_uninstalled,
         quiet=args.quiet,
@@ -2437,6 +2471,101 @@ def do_check_links(ctx: Context) -> int:
     return 1
 
 
+# ── rename-transition data upgrade ────────────────────────────────────────────
+# rename-transition: remove after the clean-break renames
+
+# Link problems that mean live code may not be this checkout's code: a link
+# into another (possibly stale) checkout path, one whose source is gone, or a
+# real file (an old copy) sitting where a link belongs.
+_TRANSFORM_BLOCKING_BUCKETS = frozenset(
+    {
+        link_inspect.CHECK_BUCKET_WRONG_TARGET,
+        link_inspect.CHECK_BUCKET_BROKEN_SOURCE,
+        link_inspect.CHECK_BUCKET_NOT_A_SYMLINK,
+    }
+)
+
+
+def _transform_link_blockers(ctx: Context) -> list[str]:
+    """Reasons it is unsafe to upgrade store data now; empty when it is safe.
+
+    Covers the audit's blocking findings and also its ``foreign`` links (into
+    another checkout of this repo), which ``--check-links`` treats as a note:
+    right after a relink every link should point at this checkout, so one
+    that does not is code this install failed to place.
+    """
+    result = link_inspect.collect_link_findings(
+        repo_root=ctx.repo_root,
+        home=ctx.home,
+        harnesses=ctx.opts.harnesses,
+        is_mac=ctx.is_mac,
+        is_linux=ctx.is_linux,
+        is_wsl=ctx.is_wsl,
+        profile=ctx.opts.profile,
+        manifest_file=ctx.manifest.path,
+        report_uninstalled=False,
+    )
+    reasons = [
+        f"{f.kind}: {ctx.display(f.path)}"
+        for f in result.findings
+        if f.kind in _TRANSFORM_BLOCKING_BUCKETS
+    ]
+    reasons += [
+        f"{count} link(s) still point into another checkout ({root})"
+        for root, count in sorted(result.foreign.items())
+    ]
+    return reasons
+
+
+def run_data_transforms(ctx: Context) -> None:
+    """Upgrade persisted store data for a clean-break rename release.
+
+    Runs after linking and only when the link audit is clean: installed
+    scripts are symlinks into the checkout, so the code already switched at
+    ``git pull``, and the real stale-code risk is a link into an old checkout
+    path or a dangling one. New readers accept both the old and the new
+    version for the transition release, so a skipped or failed upgrade
+    leaves a working machine; re-running install.sh finishes it. Store
+    rewrites are not recorded in the install history and ``--rollback``
+    does not undo them (roll forward instead). With empty registries this
+    prints nothing and changes nothing.
+    """
+    import rename_transition
+
+    try:
+        if ctx.opts.dry_run:
+            for line in rename_transition.run_transforms(ctx.home, dry_run=True):
+                print(PALETTE.dim(f"  [dry-run] {line}"))
+            return
+        if not rename_transition.pending_transforms(ctx.home):
+            return
+        blockers = _transform_link_blockers(ctx)
+        if blockers:
+            ctx.reporter.skip(
+                "data upgrade",
+                f"{len(blockers)} link problem(s) ({'; '.join(blockers)}) — fix "
+                "them (install.sh --check-links shows details) and re-run "
+                "install.sh",
+            )
+            return
+        applied = rename_transition.run_transforms(ctx.home, dry_run=False)
+    except rename_transition.TransformError as exc:
+        ctx.reporter.skip(
+            "data upgrade",
+            f"{exc} — files already upgraded stay upgraded; fix it and re-run "
+            "install.sh",
+        )
+        return
+    _header("==> Upgrading stored data", quiet=ctx.opts.quiet)
+    for line in applied:
+        print(PALETTE.ok(f"  {line}"))
+    print(
+        PALETTE.warn(
+            "  restart any open agent sessions so they stop running the old code"
+        )
+    )
+
+
 # ── entry point ───────────────────────────────────────────────────────────────
 
 
@@ -2478,6 +2607,7 @@ def run_install(ctx: Context, specs: Sequence[LinkSpec]) -> int:
 
     install_symlinks(ctx, links)
     _cleanup_orphaned_links(ctx, links)
+    run_data_transforms(ctx)
     sync_codex_skills(ctx)
     opencode_drift = seed_opencode_config(ctx)
     settings_drift = seed_claude_settings(ctx)
@@ -2511,6 +2641,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     cli_common.PALETTE.enabled = color_enabled(sys.stdout)
 
     opts = parse_args(sys.argv[1:] if argv is None else argv)
+
+    # rename-transition: remove after the clean-break renames
+    if opts.report_legacy_env:
+        import rename_transition
+
+        return rename_transition.report_main(session=False)
 
     ctx = build_context(opts)
 
