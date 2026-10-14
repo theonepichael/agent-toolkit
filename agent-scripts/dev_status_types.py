@@ -47,6 +47,53 @@ class Gate(TypedDict):
     set_at: NotRequired[str]
     passed_via: NotRequired[str]
     coverage: NotRequired[dict[str, dict[str, str]]]
+    verified_by: NotRequired[dict[str, str]]
+
+
+class ContractRef(TypedDict):
+    """One contract clause a criterion cites.
+
+    ``repo`` is the main checkout root — the realpath of the parent of
+    ``git rev-parse --git-common-dir`` — so a linked worker worktree, a
+    symlinked path and a subdirectory input all resolve to the same string.
+    ``path`` is POSIX and relative to that root.
+    """
+
+    repo: str
+    path: str
+    clause: str
+
+
+class AcceptanceCriterion(TypedDict):
+    """One acceptance criterion plus the contract clauses it cites.
+
+    ``refs`` may be empty, meaning "operator-stated, no contract clause".
+    Gate comparison uses ``text``; ``refs`` drives the contract-touch
+    callout and the step-5/6 contract-derivation rules.
+    """
+
+    text: str
+    refs: list[ContractRef]
+
+
+class Acceptance(TypedDict):
+    """Contract-derived acceptance criteria locked against worker weakening.
+
+    Set before any worker starts (status ``open`` and ``worked_by`` empty),
+    then frozen for the item's life: workers can only *append* gate
+    criteria, never drop or reword acceptance ones. When
+    ``independent_verifier`` is true, ``gate-pass`` requires a verifier
+    token file whose content hashes to ``verifier_token_sha256`` — only the
+    hash is stored on the item, never the token. ``history`` is in-item,
+    appended on every replacement after the first and never truncated.
+    """
+
+    criteria: list[AcceptanceCriterion]
+    independent_verifier: bool
+    set_at: str
+    set_by: dict[str, str]
+    verifier_token_sha256: NotRequired[str]
+    history: list[dict[str, object]]
 
 
 class RunRecord(TypedDict):
@@ -112,6 +159,8 @@ class BacklogItem(TypedDict):
     integration_branch: NotRequired[str]
     no_worker: NotRequired[bool]
     no_worker_reason: NotRequired[str]
+    acceptance: NotRequired[Acceptance]
+    worked_by: NotRequired[list[dict[str, str]]]
 
 
 class PendingItem(TypedDict):

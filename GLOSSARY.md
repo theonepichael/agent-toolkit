@@ -10,6 +10,21 @@ documented in `agent-scripts/dev_status_impl.py`'s docstrings and in
 one more place for that description to go stale. This file exists only
 for the terms where that single-sourcing doesn't hold.
 
+## `acceptance` vs. `gate`
+
+`acceptance` is contract-derived criteria set on an item **before any work**
+(`acceptance-set <id>`, or `add`'s `acceptance` field), then frozen for the
+item's life — a worker can only *append* gate criteria, never drop or reword
+an acceptance one. A `gate` is the verification checkpoint `gate-set`/
+`gate-pass` manage; on an acceptance-bearing item the gate is the acceptance
+plus the worker's extras, and `done`/`approve` refuse unless the passed gate
+covers every acceptance criterion. They are distinct fields: `acceptance` is
+the locked contract, `gate` is how it (plus any worker additions) is
+satisfied. An `acceptance.independent_verifier` item additionally needs a
+verifier token — a 0600 file whose *path* (never its content) is passed to
+`gate-pass --verifier-token-file` — so a non-worker session holds the verifier
+role.
+
 ## `dispatch`
 
 Three distinct senses share this word — know which one a given doc means:

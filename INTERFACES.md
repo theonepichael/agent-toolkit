@@ -102,7 +102,7 @@ Single source of truth for toolkit data paths.
 - Public functions:
   - `path_for(domain: str) -> Path` — Resolve ``domain`` using :data:`DEFAULT_RESOLVER`.
   - `toolkit_root() -> Path` — Return ``$AGENT_TOOLKIT_HOME``, or ``<home>/.agent-toolkit``.
-- Tested by: `test/test_agent_toolkit_paths.py`, `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_gen_interfaces.py`, `test/test_grill.py`, `test/test_guard_rails.py`, `test/test_install.py`, `test/test_llm_backends.py`, `test/test_machine_id.py`, `test/test_migration_lock_adoption.py`, `test/test_second_opinion.py`, `test/test_to_tickets_runner.py`
+- Tested by: `test/test_agent_toolkit_paths.py`, `test/test_dev_status.py`, `test/test_dev_status_acceptance.py`, `test/test_dev_status_mutation.py`, `test/test_gen_interfaces.py`, `test/test_grill.py`, `test/test_guard_rails.py`, `test/test_install.py`, `test/test_llm_backends.py`, `test/test_machine_id.py`, `test/test_migration_lock_adoption.py`, `test/test_second_opinion.py`, `test/test_to_tickets_runner.py`
 
 ### `agent-scripts/agy_workspace_trust.py`
 
@@ -318,9 +318,20 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
     - `--if-rev` — required when <id> is numeric; get the current value from render/list/show immediately before this call
   - `gate-set <slug|N> '{"required": true, "criteria": ["..."]}' [--if-rev <N>]` — classify an item's judgment-verification gate
     - `--if-rev` — required when <id> is numeric; get the current value from render/list/show immediately before this call
-  - `gate-pass <slug|N> ['{"coverage": {"1": "run:<run_id>" | "manual:<note>"}}'] [--if-rev <N>]` — record that an item's gate criteria are satisfied
+  - `gate-pass <slug|N> ['{"coverage": {"1": "run:<run_id>" | "manual:<note>"}}'] [--verifier-token-file PATH] [--if-rev <N>]` — record that an item's gate criteria are satisfied
     - `json` — per-criterion coverage: run evidence or a manual note per criterion (nargs: ?)
+    - `--verifier-token-file` — path to the verifier token file (required when the item's acceptance sets independent_verifier: true; falls back to DEVSTATUS_VERIFIER_TOKEN_FILE)
     - `--if-rev` — required when <id> is numeric; get the current value from render/list/show immediately before this call
+  - `acceptance-set <slug|N> '{"criteria": [{"text": "...", "refs": [{"repo": "...", "path": "...", "clause": "..."}]}], "independent_verifier": false}' [--if-rev <N>] [--operator-override] [--rotate-token]` — set or replace an item's contract-derived acceptance criteria
+    - `--if-rev` — required when <id> is numeric; get the current value from render/list/show immediately before this call
+    - `--operator-override` — lift the freeze on a worked item (records an override history entry and invalidates the gate); operator only
+    - `--rotate-token` — regenerate the verifier token for unchanged acceptance (recovers a lost token file); records a rotate history entry
+  - `verifier-check <slug|N> --verifier-token-file PATH` — exit 0 iff the token file holds this item's verifier token
+    - `--verifier-token-file` — path to the verifier token file (never the token value) (required)
+  - `contract-touch <slug|N> [--repo PATH] [--commit <rev>] [--range <base>..<head>]` — list acceptance contract refs touched by a diff, as JSON
+    - `--repo` — git repository to inspect (may name a subdirectory, worktree, or symlink)
+    - `--commit` — inspect one commit's diff instead of the staged diff
+    - `--range` — inspect every commit on the branch instead of the staged diff
   - `run <slug|N> [--if-rev <N>] [--timeout SECONDS] [--cwd PATH] -- <command...>` — execute a command and record it as run evidence for an item
     - `--if-rev` — required when <id> is numeric; get the current value from render/list/show immediately before this call
     - `--timeout` — kill the command after this many seconds (default: 1800) (default: 1800.0)
@@ -394,8 +405,8 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `confirm_resolution(cmd: str, arg: str | int, item: BacklogItem | PendingItem, summary_key: str = 'summary', *, quiet: bool = False) -> None` — Echo what a mutating command resolved to, so misresolution is visible.
   - `format_run_rows(runs: list[RunRecord]) -> list[str]` — One ``runs`` listing line per record, naming the commit and checkout.
   - `build_parser() -> argparse.ArgumentParser` — Build the full argument parser for every subcommand.
-- Subcommand handlers: `cmd_internal_regen`, `cmd_recap`, `cmd_worktree`, `cmd_integration_merge`, `cmd_render`, `cmd_ready`, `cmd_list`, `cmd_show`, `cmd_validate`, `cmd_add`, `cmd_update`, `cmd_start`, `cmd_done`, `cmd_reopen`, `cmd_review`, `cmd_approve`, `cmd_reject`, `cmd_gate_set`, `cmd_gate_pass`, `cmd_run`, `cmd_machine_id`, `cmd_runs`, `cmd_backfill_gate`, `cmd_rename`, `cmd_block`, `cmd_unblock`, `cmd_out_of_scope_add`, `cmd_out_of_scope_link`, `cmd_out_of_scope_unlink`, `cmd_out_of_scope_remove`, `cmd_out_of_scope_list`, `cmd_out_of_scope_show`, `cmd_pending_add`, `cmd_pending_update`, `cmd_pending_list`, `cmd_remove`, `cmd_prune`
-- Tested by: `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_dev_status_storage.py`, `test/test_dev_status_validate.py`, `test/test_path_for_per_use.py`, `test/test_sweep_dead_claims.py`, `test/test_to_tickets_runner.py`
+- Subcommand handlers: `cmd_internal_regen`, `cmd_recap`, `cmd_worktree`, `cmd_integration_merge`, `cmd_render`, `cmd_ready`, `cmd_list`, `cmd_show`, `cmd_validate`, `cmd_add`, `cmd_update`, `cmd_start`, `cmd_done`, `cmd_reopen`, `cmd_review`, `cmd_approve`, `cmd_reject`, `cmd_gate_set`, `cmd_gate_pass`, `cmd_acceptance_set`, `cmd_verifier_check`, `cmd_contract_touch`, `cmd_run`, `cmd_machine_id`, `cmd_runs`, `cmd_backfill_gate`, `cmd_rename`, `cmd_block`, `cmd_unblock`, `cmd_out_of_scope_add`, `cmd_out_of_scope_link`, `cmd_out_of_scope_unlink`, `cmd_out_of_scope_remove`, `cmd_out_of_scope_list`, `cmd_out_of_scope_show`, `cmd_pending_add`, `cmd_pending_update`, `cmd_pending_list`, `cmd_remove`, `cmd_prune`
+- Tested by: `test/test_dev_status.py`, `test/test_dev_status_acceptance.py`, `test/test_dev_status_mutation.py`, `test/test_dev_status_storage.py`, `test/test_dev_status_validate.py`, `test/test_path_for_per_use.py`, `test/test_sweep_dead_claims.py`, `test/test_to_tickets_runner.py`
 
 ### `agent-scripts/dev_status_formatting.py`
 
@@ -427,7 +438,7 @@ Typed mutation service and transaction manager for dev_status (Candidate 12).
 - Installed at: `~/.agent-toolkit/scripts/dev_status_mutation.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI: none (library module).
-- Environment: `AGY_SESSION`, `AI_AGENT`, `ANTHROPIC_CLI`, `ANTIGRAVITY`, `ANTIGRAVITY_AGENT`, `ANTIGRAVITY_CONVERSATION_ID`, `CLAUDE_CODE`, `COPILOT`, `DEVSTATUS_CLAIM_TTL_SECONDS`, `DEVSTATUS_HARNESS`, `GITHUB_COPILOT`, `OPENCODE`, `OPENCODE_GATEWAY`, `PI_CODING_AGENT`, `PI_SESSION`
+- Environment: `AGY_SESSION`, `AI_AGENT`, `ANTHROPIC_CLI`, `ANTIGRAVITY`, `ANTIGRAVITY_AGENT`, `ANTIGRAVITY_CONVERSATION_ID`, `CLAUDE_CODE`, `COPILOT`, `DEVSTATUS_CLAIM_TTL_SECONDS`, `DEVSTATUS_HARNESS`, `DEVSTATUS_VERIFIER_TOKEN_FILE`, `GITHUB_COPILOT`, `OPENCODE`, `OPENCODE_GATEWAY`, `PI_CODING_AGENT`, `PI_SESSION`
 - Depends on: `dev_status_formatting.py`, `dev_status_storage.py`, `harness_spec.py`, `worktree_provenance.py`
 - Exceptions:
   - `class BacklogMutationError(Exception)` — Base class for all typed mutation refusals.
@@ -446,6 +457,7 @@ Typed mutation service and transaction manager for dev_status (Candidate 12).
   - `class ItemUpdateRequest` — Content-field update; lifecycle fields are not requestable here.
   - `class GateSetRequest`
   - `class GatePassRequest`
+  - `class AcceptanceSetRequest`
   - `class PendingAddRequest`
   - `class PendingUpdateRequest`
   - `class BacklogTransaction(Protocol)` — Transaction interface providing single-lock fail-fast batch adds.
@@ -471,14 +483,17 @@ Typed mutation service and transaction manager for dev_status (Candidate 12).
   - `block_item(slug_or_id: str, blocker_slug_or_id: str, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Add a blocker to a backlog item.
   - `unblock_item(slug_or_id: str, blocker_slug_or_id: str, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Remove a blocker from a backlog item.
   - `set_gate(slug_or_id: str, request: GateSetRequest, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Classify an item's judgment-step verification gate.
-  - `pass_gate(slug_or_id: str, request: GatePassRequest, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Record that an item's gate criteria are satisfied.
+  - `set_acceptance(slug_or_id: str, request: AcceptanceSetRequest, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Set or replace an item's contract-derived acceptance record.
+  - `pass_gate(slug_or_id: str, request: GatePassRequest, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None, verifier_token_file: str | None = None) -> MutationResult` — Record that an item's gate criteria are satisfied.
+  - `verifier_check(slug_or_id: str, token_file: str, *, items_path: Path | None = None) -> str` — Return ``"valid"`` when ``token_file`` hashes to the item's stored token.
+  - `contract_touch(slug_or_id: str, *, repo: str | None = None, commit: str | None = None, range_spec: str | None = None, items_path: Path | None = None) -> list[dict[str, object]]` — List acceptance contract refs touched by a staged diff, commit, or range.
   - `rename_item(old_slug_or_id: str, new_slug: str, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Rename a slug and rewrite every reference to it across both pools.
   - `remove_item(slug_or_id: str, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Permanently delete one backlog item.
   - `run_item(slug_or_id: str, command: Sequence[str], *, if_rev: int | None = None, timeout: float | None = None, cwd: str | None = None, items_path: Path | None = None) -> RunResult` — Execute a command and record it as run evidence.
   - `add_pending_item(request: PendingAddRequest, *, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Track a new waiting-on-someone-else item.
   - `update_pending_item(slug_or_id: str, request: PendingUpdateRequest, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Merge an update request into a pending item.
   - `mutation_transaction(*, items_path: Path | None = None, verbose: bool = False) -> Iterator[BacklogTransaction]` — Hold backlog_lock once for batch operations; yields BacklogTransaction.
-- Tested by: `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_dev_status_run_cwd.py`, `test/test_harness_spec.py`, `test/test_machine_id.py`, `test/test_migration_lock_adoption.py`
+- Tested by: `test/test_dev_status.py`, `test/test_dev_status_acceptance.py`, `test/test_dev_status_mutation.py`, `test/test_dev_status_run_cwd.py`, `test/test_harness_spec.py`, `test/test_machine_id.py`, `test/test_migration_lock_adoption.py`
 
 ### `agent-scripts/dev_status_read.py`
 
@@ -523,6 +538,9 @@ Backlog persistence, lock coordination, and journal primitives.
   - `journal_file() -> Path`
   - `runs_file() -> Path`
   - `machine_id_file() -> Path`
+  - `verifier_dir() -> Path` — Directory holding per-item verifier-token plaintext files.
+  - `verifier_token_path(slug: str) -> Path` — The published token path for ``slug`` (``<slug>.token``).
+  - `verifier_token_new_path(slug: str) -> Path` — The in-flight publication path for ``slug`` (``<slug>.token.new``).
   - `recap_cache_file() -> Path`
   - `recap_regen_lock_file() -> Path`
   - `out_of_scope_dir() -> Path` — The out-of-scope concept store directory for the current layout.
@@ -555,7 +573,7 @@ Backlog persistence, lock coordination, and journal primitives.
   - `append_run_record(record: RunRecord, *, runs_file: Path | None = None, data_dir: Path | None = None) -> bool` — Append one run-evidence row to :func:`runs_file` (best-effort).
   - `load_recap_cache(path: Path | None = None) -> dict[str, object] | None` — Load ``recap-cache.json``, or ``None`` if missing/corrupt/malformed.
   - `save_recap_cache(backend: str, text: str, board_fingerprint: str, path: Path | None = None) -> None` — Atomically persist a recap result.
-- Tested by: `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_dev_status_read.py`, `test/test_dev_status_storage.py`, `test/test_guard_rails_claim.py`, `test/test_machine_id.py`, `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`
+- Tested by: `test/test_dev_status.py`, `test/test_dev_status_acceptance.py`, `test/test_dev_status_mutation.py`, `test/test_dev_status_read.py`, `test/test_dev_status_storage.py`, `test/test_guard_rails_claim.py`, `test/test_machine_id.py`, `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`
 
 ### `agent-scripts/dev_status_types.py`
 
@@ -566,6 +584,9 @@ Backlog data model — the on-disk shapes shared across the dev_status stack.
 - CLI: none (library module).
 - Public classes:
   - `class Gate(TypedDict)` — A judgment-step verification checkpoint on a backlog item.
+  - `class ContractRef(TypedDict)` — One contract clause a criterion cites.
+  - `class AcceptanceCriterion(TypedDict)` — One acceptance criterion plus the contract clauses it cites.
+  - `class Acceptance(TypedDict)` — Contract-derived acceptance criteria locked against worker weakening.
   - `class RunRecord(TypedDict)` — One recorded command execution — a row of the ``runs.jsonl`` sidecar.
   - `class BacklogItem(TypedDict)` — A single backlog item as stored in ``items.json`` (schema v2).
   - `class PendingItem(TypedDict)` — A single waiting-on-someone-else item as stored in ``pending_items.json``.

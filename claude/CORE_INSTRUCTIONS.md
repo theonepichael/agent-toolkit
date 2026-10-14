@@ -351,9 +351,23 @@ records an executed command; `"manual:<note>"` covers genuinely-manual
 checks) and retry. A bare `gate-pass` without coverage is refused.
 `gate` can't be set via a raw `update` patch — always `gate-set`/`gate-pass`.
 
+An item may also carry an `acceptance` record — contract-derived criteria
+set before any work via `acceptance-set <id>` (or `add`), frozen once work
+starts. On such an item `gate-set` must include every acceptance criterion
+verbatim (it refuses to drop or reword any — workers can only append), and
+`done`/`approve` refuse unless the passed gate covers them. When
+`acceptance.independent_verifier` is true, `gate-pass` additionally requires
+`--verifier-token-file <path>` (or `DEVSTATUS_VERIFIER_TOKEN_FILE`) whose
+content hashes to the item's stored token: the verifier role is holding that
+0600 token file, whose path `acceptance-set` prints (never the token). A
+session that did not itself work the item is the verifier; a worker never
+gate-passes its own acceptance. Keep the token path private;
+`verifier-check <id> --verifier-token-file <path>` exits 0 only for the
+matching token.
+
 Under `DEVSTATUS_AGENT=1`, mutating commands (`start`, `done`, `reopen`,
-`update`, `review`, `approve`, `reject`, `add`, `pending *`, `block`,
-`unblock`, `gate-*`, `rename`, `remove`) emit a single structured
+`update`, `review`, `approve`, `reject`, `add`, `acceptance-set`, `pending *`,
+`block`, `unblock`, `gate-*`, `rename`, `remove`) emit a single structured
 confirmation line on stdout: `[<cmd>] slug=<slug> status=<status> rev=<rev>
 [ref=<ref>] detail="<detail>"`. Because the harness tool runner displays
 stdout directly to the user, do not copy or narrate the confirmation back.

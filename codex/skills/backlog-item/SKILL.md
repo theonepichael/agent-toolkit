@@ -118,29 +118,42 @@ the existing doc instead of repeating this pass — check for it first.
 
 ### Gate classification
 
+**Acceptance-bearing items are always gated.** If `show` has an
+`acceptance` record (contract criteria set before any work), the gate is
+the acceptance criteria plus your additional criteria, never fewer — this
+overrides the "mechanical items leave the gate unset" rule below. Run
+`gate-set` with the acceptance texts verbatim (any order) plus any worker
+extras; it refuses anything that drops or rewords an acceptance criterion.
+
 Once the spec/plan is recorded (and after architecture capture, if it ran),
 classify its concrete implementation steps: **mechanical** (a rote,
 unambiguous transformation — no interpretation needed) or **judgment**
 (interprets a requirement, makes a design choice, or has ambiguous
 acceptance criteria). If any step is judgment, set the item's gate before
-continuing:
+continuing — derive each criterion from the repo's written contract docs
+(those named in AGENTS.md/README/related_files, e.g. PROJECT_PLAN.md or
+STYLE.md) and cite the clause each criterion covers; a criterion with no
+contract clause is labelled as your own, never as contract-derived:
 
 ```bash
 python3 ~/.agent-toolkit/scripts/dev_status.py gate-set <slug|N> '{"required": true, "criteria": ["<short imperative criterion per judgment step>", "..."]}'
 ```
 
-If every step is mechanical, leave the gate unset (inert by default) —
-don't call `gate-set` for a step breakdown with no judgment calls in it.
+If every step is mechanical and the item has no `acceptance`, leave the
+gate unset (inert by default) — don't call `gate-set` for a step breakdown
+with no judgment calls in it.
 
 ## 6. Critique
-If step 5 set a gate (judgment steps present), run the second-opinion
-skill against the resulting plan or spec file unconditionally, no ask,
-using the same suspend-and-return framing as step 5 (checkpoint marker,
-persisted return pointer, absolute-path re-read on return, restore of the
-item's original next_steps on return) — critique the
-plan before committing to an executor. If step 5 left the gate unset (all
-steps mechanical), skip this step; a critique adds nothing to a rote
-transformation.
+If step 5 set a gate (judgment steps present, or the item has an
+`acceptance` record), run the second-opinion skill against the resulting
+plan or spec file unconditionally, no ask, using the same suspend-and-return
+framing as step 5 (checkpoint marker, persisted return pointer,
+absolute-path re-read on return, restore of the item's original next_steps
+on return) — critique the plan before committing to an executor. When the
+item has `acceptance`, pass a focus file naming the cited contract files
+and ask whether the spec meets or weakens each cited clause. If step 5
+left the gate unset (all steps mechanical, no acceptance), skip this step;
+a critique adds nothing to a rote transformation.
 
 ## 7. Handoff
 Decide who implements the plan — ask if it isn't already obvious from the

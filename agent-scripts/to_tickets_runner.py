@@ -59,7 +59,7 @@ import sys
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from pathlib import Path
-from typing import TypedDict, cast
+from typing import NotRequired, TypedDict, cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import agent_toolkit_paths  # noqa: E402 — must follow the sys.path.insert above
@@ -100,6 +100,7 @@ class Ticket(TypedDict):
     next_steps: str
     related_files: list[dict[str, object]]
     blocked_by: list[str]
+    acceptance: NotRequired[dict[str, object]]
 
 
 class BatchError(Exception):
@@ -152,6 +153,20 @@ def _validate_batch_schema(data: object) -> list[Ticket]:
         if not isinstance(related_files, list):
             raise BatchError(f"ticket '{raw_id}' field 'related_files' must be a list")
 
+        acceptance = entry.get("acceptance")
+        if acceptance is not None:
+            if not isinstance(acceptance, dict):
+                raise BatchError(
+                    f"ticket '{raw_id}' field 'acceptance' must be an object"
+                )
+            problems = dev_status_mutation._validate_acceptance_shape(
+                cast(dict[str, object], acceptance)
+            )
+            if problems:
+                raise BatchError(
+                    f"ticket '{raw_id}' acceptance: " + "; ".join(problems)
+                )
+
         tickets.append(
             {
                 "id": raw_id,
@@ -163,6 +178,8 @@ def _validate_batch_schema(data: object) -> list[Ticket]:
                 "blocked_by": cast(list[str], blocked_by),
             }
         )
+        if acceptance is not None:
+            tickets[-1]["acceptance"] = cast(dict[str, object], acceptance)
     return tickets
 
 
@@ -361,6 +378,7 @@ def _run_batch_unlocked(
                 next_steps=ticket["next_steps"],
                 related_files=tuple(ticket["related_files"]),
                 blocked_by=tuple(ticket["blocked_by"]),
+                acceptance=ticket.get("acceptance"),
             )
             tx.add_item(req)
 

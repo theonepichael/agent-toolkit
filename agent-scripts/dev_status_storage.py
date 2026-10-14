@@ -30,8 +30,11 @@ import agent_toolkit_paths
 import cli_common
 import fault_checkpoint
 import migration_lock
+from dev_status_types import Acceptance as Acceptance
+from dev_status_types import AcceptanceCriterion as AcceptanceCriterion
 from dev_status_types import BacklogIndex as BacklogIndex
 from dev_status_types import BacklogItem, PendingItem, RunRecord
+from dev_status_types import ContractRef as ContractRef
 from dev_status_types import Gate as Gate
 
 # What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
@@ -76,6 +79,26 @@ def runs_file() -> Path:
 
 def machine_id_file() -> Path:
     return data_dir() / "_machine_id"
+
+
+def verifier_dir() -> Path:
+    """Directory holding per-item verifier-token plaintext files.
+
+    Tokens are 0600 files keyed by slug; only the sha256 is stored on the
+    item itself. Never read as a directory of values — each file is opened
+    by its exact slug-derived path only.
+    """
+    return data_dir() / "verifier"
+
+
+def verifier_token_path(slug: str) -> Path:
+    """The published token path for ``slug`` (``<slug>.token``)."""
+    return verifier_dir() / f"{slug}.token"
+
+
+def verifier_token_new_path(slug: str) -> Path:
+    """The in-flight publication path for ``slug`` (``<slug>.token.new``)."""
+    return verifier_dir() / f"{slug}.token.new"
 
 
 def recap_cache_file() -> Path:

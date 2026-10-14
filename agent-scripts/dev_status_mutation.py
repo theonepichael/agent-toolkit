@@ -34,6 +34,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 import time
@@ -60,6 +61,9 @@ PendingItem = dev_status_storage.PendingItem
 Gate = dev_status_storage.Gate
 RunRecord = dev_status_storage.RunRecord
 BacklogIndex = dev_status_storage.BacklogIndex
+Acceptance = dev_status_storage.Acceptance
+AcceptanceCriterion = dev_status_storage.AcceptanceCriterion
+ContractRef = dev_status_storage.ContractRef
 
 RenderOrder = tuple[
     list[BacklogItem],
@@ -128,6 +132,9 @@ SUBCOMMANDS: tuple[str, ...] = (
     "reject",
     "gate-set",
     "gate-pass",
+    "acceptance-set",
+    "verifier-check",
+    "contract-touch",
     "run",
     "runs",
     "backfill-gate",
@@ -268,6 +275,7 @@ class NewItemRequest:
     priority: str | None = None
     no_worker: bool | None = None
     no_worker_reason: str | None = None
+    acceptance: Mapping[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -300,6 +308,13 @@ class GateSetRequest:
 @dataclass(frozen=True)
 class GatePassRequest:
     coverage: Mapping[str, str] | None = None
+
+
+@dataclass(frozen=True)
+class AcceptanceSetRequest:
+    acceptance: Mapping[str, object]
+    operator_override: bool = False
+    rotate_token: bool = False
 
 
 @dataclass(frozen=True)
@@ -1438,6 +1453,545 @@ def _storage_bundle(items_path: Path | None) -> dict[str, Path | None]:
     }
 
 
+# ── Acceptance & verifier-token helpers ───────────────────────────────────────
+
+
+def _resolve_data_dir(data_dir: Path | None) -> Path:
+    return dev_status_storage.data_dir() if data_dir is None else data_dir
+
+
+def _verifier_token_path_for(data_dir: Path | None, slug: str) -> Path:
+    return _resolve_data_dir(data_dir) / "verifier" / f"{slug}.token"
+
+
+def _verifier_token_new_path_for(data_dir: Path | None, slug: str) -> Path:
+    return _resolve_data_dir(data_dir) / "verifier" / f"{slug}.token.new"
+
+
+def _token_sha256(token: str) -> str:
+    """The sha256 hex digest stored on the item for a verifier token."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _generate_verifier_token() -> str:
+    """A fresh 256-bit random token (64 hex chars)."""
+    return secrets.token_hex(32)
+
+
+def _write_token_new(path: Path, token: str) -> None:
+    """Write the in-flight publication file (0600), never the final path."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, token.encode("utf-8"))
+    finally:
+        os.close(fd)
+
+
+def _read_token_file(path: Path) -> str | None:
+    """Read a token file's content, stripped; None when missing/unreadable."""
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    return raw or None
+
+
+def _token_matches(item: Mapping[str, object], token: str) -> bool:
+    """True when ``token`` hashes to ``item``'s stored ``verifier_token_sha256``."""
+    acc = item.get("acceptance")
+    if not isinstance(acc, dict):
+        return False
+    want = acc.get("verifier_token_sha256")
+    return isinstance(want, str) and want == _token_sha256(token)
+
+
+def _recover_verifier_token(
+    item: Mapping[str, object], data_dir: Path | None, slug: str
+) -> None:
+    """Finalize or discard a leftover ``<slug>.token.new`` from a crashed publish.
+
+    A matching hash is renamed into place (the crash hit between the item
+    save and the publish rename); a non-matching one is deleted (the crash
+    hit before the item save, so the on-disk hash is the older token's).
+    """
+    new_path = _verifier_token_new_path_for(data_dir, slug)
+    if not new_path.exists():
+        return
+    token = _read_token_file(new_path)
+    if token is not None and _token_matches(item, token):
+        with contextlib.suppress(OSError):
+            os.replace(new_path, _verifier_token_path_for(data_dir, slug))
+    else:
+        with contextlib.suppress(OSError):
+            new_path.unlink()
+
+
+def _acceptance_texts(acc: Mapping[str, object] | None) -> list[str]:
+    """The acceptance criterion texts in order, from a stored acceptance."""
+    if not isinstance(acc, dict):
+        return []
+    criteria = acc.get("criteria")
+    if not isinstance(criteria, list):
+        return []
+    return [
+        c.get("text")
+        for c in criteria
+        if isinstance(c, dict) and isinstance(c.get("text"), str)
+    ]
+
+
+def _criteria_equal(a: list[dict[str, object]], b: list[object]) -> bool:
+    """Ordered structural equality over criteria (text + refs, all of repo/path/clause).
+
+    The acceptance no-op check must compare refs too: changing a criterion's
+    cited contract file while keeping its text is a real change, not a no-op,
+    otherwise ``contract-touch`` would keep pointing at the stale file.
+    """
+    if len(a) != len(b):
+        return False
+    for ca, cb in zip(a, b):
+        if not isinstance(cb, dict):
+            return False
+        if ca.get("text") != cb.get("text"):
+            return False
+        refs_a = ca.get("refs") or []
+        refs_b = cb.get("refs") or []
+        if len(refs_a) != len(refs_b):
+            return False
+        for ra, rb in zip(refs_a, refs_b):
+            if not isinstance(rb, dict):
+                return False
+            if (ra.get("repo"), ra.get("path"), ra.get("clause")) != (
+                rb.get("repo"),
+                rb.get("path"),
+                rb.get("clause"),
+            ):
+                return False
+    return True
+
+
+def _acceptance_refs(
+    acc: Mapping[str, object] | None,
+) -> list[tuple[str, str, str, str]]:
+    """(criterion_text, repo, path, clause) tuples across every criterion's refs."""
+    if not isinstance(acc, dict):
+        return []
+    criteria = acc.get("criteria")
+    if not isinstance(criteria, list):
+        return []
+    refs: list[tuple[str, str, str, str]] = []
+    for c in criteria:
+        if not isinstance(c, dict):
+            continue
+        text = c.get("text")
+        for r in c.get("refs") or []:
+            if not isinstance(r, dict):
+                continue
+            repo = r.get("repo")
+            path = r.get("path")
+            clause = r.get("clause")
+            if (
+                isinstance(text, str)
+                and isinstance(repo, str)
+                and isinstance(path, str)
+                and isinstance(clause, str)
+            ):
+                refs.append((text, repo, path, clause))
+    return refs
+
+
+def _acceptance_frozen(item: Mapping[str, object]) -> bool:
+    """True when acceptance can no longer be replaced without ``--operator-override``.
+
+    Freezing is permanent once any work has started: status left ``open``,
+    ``worked_by`` non-empty, or a claim still present (a malformed record
+    with a live claim at first set counts as worked).
+    """
+    if item.get("status") != "open":
+        return True
+    if item.get("worked_by"):
+        return True
+    return bool(isinstance(item.get("claimed_by"), dict))
+
+
+def _validate_acceptance_shape(acc: Mapping[str, object]) -> list[str]:
+    """One message per shape problem; empty list = valid."""
+    if not isinstance(acc, Mapping):
+        return ["'acceptance' must be an object"]
+    problems: list[str] = []
+    criteria = acc.get("criteria")
+    if not isinstance(criteria, list) or not criteria:
+        problems.append("'acceptance.criteria' must be a non-empty list")
+        return problems
+    for i, c in enumerate(criteria):
+        if not isinstance(c, dict):
+            problems.append(f"acceptance.criteria[{i}] must be an object")
+            continue
+        text = c.get("text")
+        if not isinstance(text, str) or not text.strip():
+            problems.append(f"acceptance.criteria[{i}].text must be a non-empty string")
+        refs = c.get("refs")
+        if refs is None:
+            continue
+        if not isinstance(refs, list):
+            problems.append(f"acceptance.criteria[{i}].refs must be a list")
+            continue
+        for j, ref in enumerate(refs):
+            if not isinstance(ref, dict):
+                problems.append(f"acceptance.criteria[{i}].refs[{j}] must be an object")
+                continue
+            for key in ("repo", "path", "clause"):
+                if not isinstance(ref.get(key), str):
+                    problems.append(
+                        f"acceptance.criteria[{i}].refs[{j}].{key} must be a string"
+                    )
+    if not isinstance(acc.get("independent_verifier"), bool):
+        problems.append("'acceptance.independent_verifier' must be a boolean")
+    return problems
+
+
+def _normalize_acceptance_criteria(
+    acc: Mapping[str, object],
+) -> list[dict[str, object]]:
+    """Coerce a validated acceptance payload's criteria to the stored shape."""
+    criteria: list[dict[str, object]] = []
+    for c in acc.get("criteria") or []:
+        if not isinstance(c, dict):
+            continue
+        criteria.append(
+            {
+                "text": str(c.get("text")),
+                "refs": [
+                    {
+                        "repo": str(r.get("repo", "")),
+                        "path": str(r.get("path", "")),
+                        "clause": str(r.get("clause", "")),
+                    }
+                    for r in c.get("refs") or []
+                    if isinstance(r, dict)
+                ],
+            }
+        )
+    return criteria
+
+
+def _apply_acceptance_to_gate(
+    item: dict[str, object], new_texts: list[str], old_texts: list[str]
+) -> None:
+    """Set the item's gate to the new acceptance plus surviving worker extras.
+
+    The gate becomes ``required: true`` with criteria = new acceptance
+    texts + the previous gate's criteria that were not among the *previous*
+    acceptance texts (deduped, order preserved), and any prior pass is
+    invalidated — obsolete acceptance text never lingers, and re-classifying
+    orphans older evidence via a refreshed ``set_at``.
+    """
+    old_text_set = set(old_texts)
+    extra: list[str] = []
+    gate = item.get("gate")
+    if isinstance(gate, dict):
+        extra = [c for c in (gate.get("criteria") or []) if c not in old_text_set]
+    seen: set[str] = set()
+    criteria: list[str] = []
+    for text in [*new_texts, *extra]:
+        if text not in seen:
+            seen.add(text)
+            criteria.append(text)
+    item["gate"] = {
+        "required": True,
+        "criteria": criteria,
+        "passed_at": None,
+        "set_at": datetime.now(UTC).isoformat(),
+    }
+
+
+def _invalidate_passed_gate(item: dict[str, object]) -> None:
+    """Clear a passed gate's evidence and refresh ``set_at`` (orphaning old runs).
+
+    Applied on any transition into in-progress for acceptance-bearing items;
+    a legacy item's passed gate is deliberately left untouched.
+    """
+    gate = item.get("gate")
+    if isinstance(gate, dict):
+        gate["passed_at"] = None
+        gate.pop("passed_via", None)
+        gate.pop("coverage", None)
+        gate.pop("verified_by", None)
+        gate["set_at"] = datetime.now(UTC).isoformat()
+
+
+def _has_acceptance(item: Mapping[str, object]) -> bool:
+    acc = item.get("acceptance")
+    return isinstance(acc, dict) and bool(acc.get("criteria"))
+
+
+def _store_acceptance(
+    item: dict[str, object],
+    *,
+    data_dir: Path | None,
+    slug: str,
+    new_criteria: list[dict[str, object]],
+    new_iv: bool,
+    existing_acc: Mapping[str, object] | None,
+    history_kind: str | None,
+    history: list[dict[str, object]],
+    previous: Mapping[str, object],
+) -> str | None:
+    """Set ``item['acceptance']`` (and the implied gate) from normalized inputs.
+
+    Returns the fresh token plaintext when ``independent_verifier`` is on (the
+    caller publishes it after the item save), else None. Appends a history
+    entry when ``history_kind`` is set (``replace``/``override``/``rotate``).
+    The ``.token.new`` file is written here (0600); publication is the
+    caller's job, after the item with the matching hash is persisted.
+    """
+    now = datetime.now(UTC).isoformat()
+    harness = _detect_harness(None)
+    new_history = list(history)
+    if history_kind is not None:
+        new_history.append(
+            {
+                "at": now,
+                "kind": history_kind,
+                "by": {"harness": harness},
+                "previous": {
+                    "criteria": list(previous.get("criteria", [])),
+                    "independent_verifier": bool(previous.get("independent_verifier")),
+                },
+            }
+        )
+    acc: dict[str, object] = {
+        "criteria": new_criteria,
+        "independent_verifier": new_iv,
+        "set_at": now,
+        "set_by": {"harness": harness},
+        "history": new_history,
+    }
+    token: str | None = None
+    if new_iv:
+        token = _generate_verifier_token()
+        acc["verifier_token_sha256"] = _token_sha256(token)
+        _write_token_new(_verifier_token_new_path_for(data_dir, slug), token)
+    # Turning the verifier off (or never on) deletes no token here: the old
+    # token must stay valid until the updated item is persisted. The caller
+    # removes the now-orphaned token file after the save.
+    item["acceptance"] = acc
+    old_texts = _acceptance_texts(existing_acc)
+    _apply_acceptance_to_gate(item, [str(c["text"]) for c in new_criteria], old_texts)
+    return token
+
+
+def _publish_verifier_token(data_dir: Path | None, slug: str) -> None:
+    """Rename the in-flight ``.token.new`` into place after the item save."""
+    new_path = _verifier_token_new_path_for(data_dir, slug)
+    if new_path.exists():
+        with contextlib.suppress(OSError):
+            os.replace(new_path, _verifier_token_path_for(data_dir, slug))
+
+
+def _gate_covers_acceptance(item: Mapping[str, object]) -> bool:
+    """True when the gate is required, passed, and a superset of acceptance texts."""
+    gate = item.get("gate")
+    if not isinstance(gate, dict) or not gate.get("required"):
+        return False
+    if gate.get("passed_at") is None:
+        return False
+    acc_texts = _acceptance_texts(item.get("acceptance"))
+    gate_criteria = set(gate.get("criteria") or [])
+    return all(t in gate_criteria for t in acc_texts)
+
+
+def _completion_acceptance_block(cmd: str, item: Mapping[str, object]) -> str | None:
+    """Refusal message when acceptance blocks a done-transition; None = allow."""
+    if not _has_acceptance(item):
+        return None
+    gate = item.get("gate")
+    if not isinstance(gate, dict) or not gate.get("required"):
+        return (
+            f"[{cmd}] {item.get('id', '?')} has acceptance criteria but no required "
+            "gate covering them -- run 'gate-set' with the acceptance texts plus "
+            "any worker extras, then 'gate-pass'."
+        )
+    if gate.get("passed_at") is None:
+        return (
+            f"[{cmd}] {item.get('id', '?')} has an unmet gate -- record evidence "
+            "and 'gate-pass' before completing."
+        )
+    acc_texts = _acceptance_texts(item.get("acceptance"))
+    gate_criteria = set(gate.get("criteria") or [])
+    missing = [t for t in acc_texts if t not in gate_criteria]
+    if missing:
+        return (
+            f"[{cmd}] {item.get('id', '?')} gate does not cover every acceptance "
+            f"criterion; missing: {missing}"
+        )
+    acc = item.get("acceptance")
+    if (
+        isinstance(acc, dict)
+        and acc.get("independent_verifier")
+        and not gate.get("verified_by")
+    ):
+        return (
+            f"[{cmd}] {item.get('id', '?')} requires an independent verifier -- "
+            "a verifier token must pass 'gate-pass' first."
+        )
+    return None
+
+
+def _git_show_toplevel(repo_dir: str) -> str | None:
+    try:
+        r = subprocess.run(
+            ["git", "-C", repo_dir, "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        if r.returncode != 0 or not r.stdout.strip():
+            return None
+        return str(Path(r.stdout.strip()).resolve())
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _main_checkout_root(repo_dir: str) -> str | None:
+    """The main checkout root: realpath of the parent of ``--git-common-dir``."""
+    try:
+        r = subprocess.run(
+            ["git", "-C", repo_dir, "rev-parse", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        if r.returncode != 0 or not r.stdout.strip():
+            return None
+        common = Path(r.stdout.strip())
+        if not common.is_absolute():
+            common = Path(repo_dir).resolve() / common
+        return str(common.resolve().parent)
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _parse_name_status(raw: bytes) -> list[tuple[str, str | None, str | None]]:
+    """Parse NUL-delimited ``--name-status -z`` output into (status, old, new)."""
+    tokens = raw.split(b"\0")
+    out: list[tuple[str, str | None, str | None]] = []
+    i = 0
+    while i < len(tokens):
+        if not tokens[i]:
+            i += 1
+            continue
+        status = tokens[i].decode("utf-8", "replace")
+        i += 1
+        if status[:1] in ("R", "C"):
+            old = tokens[i].decode("utf-8", "replace") if i < len(tokens) else None
+            new = (
+                tokens[i + 1].decode("utf-8", "replace")
+                if i + 1 < len(tokens)
+                else None
+            )
+            i += 2
+            out.append((status, old, new))
+        else:
+            path = tokens[i].decode("utf-8", "replace") if i < len(tokens) else None
+            i += 1
+            out.append((status, None, path))
+    return out
+
+
+def _run_git_name_status(
+    repo_dir: str, argv: list[str]
+) -> list[tuple[str, str | None, str | None]] | None:
+    """Run a name-status git command; ``None`` on failure, ``[]`` on empty diff.
+
+    The ``None``/``[]`` distinction is load-bearing: ``contract-touch`` must
+    report a failed inspection (bad revision, bad range, not a repository),
+    never silently answer "no contract changes" when git errored.
+    """
+    try:
+        r = subprocess.run(argv, capture_output=True, timeout=30, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    return _parse_name_status(r.stdout)
+
+
+def _git_name_status(
+    repo_dir: str, diff_args: list[str]
+) -> list[tuple[str, str | None, str | None]] | None:
+    """``(status, old_path, new_path)`` tuples from a NUL-delimited name-status diff.
+
+    ``old_path`` is set only for renames/copies; every other entry carries its
+    single path as ``new_path``.
+    """
+    return _run_git_name_status(
+        repo_dir,
+        ["git", "-C", repo_dir, "diff", *diff_args, "--name-status", "-z", "-M", "-C"],
+    )
+
+
+def _git_commit_name_status(
+    repo_dir: str, commit: str
+) -> list[tuple[str, str | None, str | None]] | None:
+    """One commit's name-status diff via ``git show`` (root commits included).
+
+    ``--first-parent`` makes merge commits report what they introduced into
+    the branch (the first-parent diff) rather than the combined diff, which
+    omits files that match one parent.
+    """
+    return _run_git_name_status(
+        repo_dir,
+        [
+            "git",
+            "-C",
+            repo_dir,
+            "show",
+            "--first-parent",
+            "--name-status",
+            "--format=",
+            "-z",
+            "-M",
+            "-C",
+            commit,
+        ],
+    )
+
+
+def _git_name_status_range(
+    repo_dir: str, range_spec: str
+) -> list[tuple[str, str | None, str | None]] | None:
+    """Union of per-commit name-status diffs across ``range_spec``.
+
+    A single ``git diff <base> <head>`` compares endpoint trees, so a contract
+    file changed in one commit and restored in a later one would be missed.
+    Enumerating every commit (via ``git show``, which handles root and merge
+    commits) catches the intermediate change. ``None`` on any git failure.
+    """
+    try:
+        r = subprocess.run(
+            ["git", "-C", repo_dir, "rev-list", range_spec],
+            capture_output=True,
+            timeout=60,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    commits = [c for c in r.stdout.decode("utf-8", "replace").split() if c]
+    out: list[tuple[str, str | None, str | None]] = []
+    for c in commits:
+        entries = _git_commit_name_status(repo_dir, c)
+        if entries is None:
+            return None
+        out.extend(entries)
+    return out
+
+
 # ── The 16 Service Mutations ──────────────────────────────────────────────────
 
 
@@ -1509,9 +2063,28 @@ def add_item(
         if request.no_worker_reason is not None:
             item["no_worker_reason"] = request.no_worker_reason
 
+        token_to_publish: str | None = None
+        if request.acceptance is not None:
+            problems = _validate_acceptance_shape(request.acceptance)
+            if problems:
+                raise ValidationError("[add] " + "; ".join(problems))
+            token_to_publish = _store_acceptance(
+                item,
+                data_dir=paths["data_dir"],
+                slug=slug,
+                new_criteria=_normalize_acceptance_criteria(request.acceptance),
+                new_iv=bool(request.acceptance.get("independent_verifier")),
+                existing_acc=None,
+                history_kind=None,
+                history=[],
+                previous={},
+            )
+
         items.append(item)
         new_rev = _bump_rev(paths["meta_path"])
         _save_items(items, paths["items_path"])
+        if token_to_publish is not None:
+            _publish_verifier_token(paths["data_dir"], slug)
         _append_journal_event(
             dev_status_storage.journal_entry(
                 "add", "backlog", new_rev, slug=slug, summary=item["summary"]
@@ -1748,6 +2321,21 @@ def start_item(
             data_dir=paths["data_dir"],
             machine_id_file=paths["machine_id_file"],
         )
+        # Work log: appended on every transition into in-progress (open,
+        # repeated start, takeover, start-from-done) and informational only;
+        # its presence also records "this item has been worked" for the
+        # acceptance freeze rule.
+        item.setdefault("worked_by", []).append(
+            {
+                "harness": _detect_harness(claimed_by),
+                "at": datetime.now(UTC).isoformat(),
+            }
+        )
+        # Acceptance-bearing items: any transition into in-progress
+        # invalidates a passed gate (older run evidence is orphaned via the
+        # refreshed set_at). Legacy items keep today's behaviour.
+        if _has_acceptance(item):
+            _invalidate_passed_gate(item)
         item["updated"] = today()
 
         new_rev = _bump_rev(paths["meta_path"])
@@ -1817,11 +2405,18 @@ def done_item(
         if gate_msg:
             raise GateUnmetError(gate_msg)
 
+        acc_block = _completion_acceptance_block("done", item)
+        if acc_block:
+            raise GateUnmetError(acc_block)
+
         _raise_on_prepass("done", slug, item, pre_verdict)
 
         old_status = item.get("status")
         _apply_status_transition(item, "done", "completed_at", "done")
         item["status"] = "done"
+        item.setdefault("worked_by", []).append(
+            {"harness": _detect_harness(None), "at": datetime.now(UTC).isoformat()}
+        )
         item["updated"] = today()
 
         new_rev = _bump_rev(paths["meta_path"])
@@ -1969,11 +2564,18 @@ def approve_item(
         if gate_msg:
             raise GateUnmetError(gate_msg)
 
+        acc_block = _completion_acceptance_block("approve", item)
+        if acc_block:
+            raise GateUnmetError(acc_block)
+
         _raise_on_prepass("approve", slug, item, pre_verdict)
 
         old_status = item.get("status")
         _apply_status_transition(item, "done", "completed_at", "done")
         item["status"] = "done"
+        item.setdefault("worked_by", []).append(
+            {"harness": _detect_harness(None), "at": datetime.now(UTC).isoformat()}
+        )
         item["updated"] = today()
 
         new_rev = _bump_rev(paths["meta_path"])
@@ -2055,6 +2657,11 @@ def reject_item(
         item["status"] = "in-progress"
         item["review_feedback"] = clean_fb
         item.pop("review_content_hash", None)
+        item.setdefault("worked_by", []).append(
+            {"harness": _detect_harness(None), "at": datetime.now(UTC).isoformat()}
+        )
+        if _has_acceptance(item):
+            _invalidate_passed_gate(item)
         item["updated"] = today()
 
         new_rev = _bump_rev(paths["meta_path"])
@@ -2173,6 +2780,7 @@ def reopen_item(
             gate["passed_at"] = None
             gate.pop("passed_via", None)
             gate.pop("coverage", None)
+            gate.pop("verified_by", None)
             gate["set_at"] = datetime.now(UTC).isoformat()
         item["updated"] = today()
 
@@ -2376,6 +2984,19 @@ def set_gate(
         if item is None:
             raise NotFoundError(f"[gate-set] not found: {slug}")
 
+        if _has_acceptance(item):
+            if not request.required:
+                raise ValidationError(
+                    "[gate-set] an item with acceptance cannot have an unrequired gate"
+                )
+            acc_texts = _acceptance_texts(item.get("acceptance"))
+            missing = [t for t in acc_texts if t not in request.criteria]
+            if missing:
+                raise ValidationError(
+                    "[gate-set] gate must include all acceptance criteria; "
+                    f"missing: {missing}"
+                )
+
         item["gate"] = {
             "required": request.required,
             "criteria": list(request.criteria),
@@ -2413,6 +3034,210 @@ def set_gate(
         )
 
 
+def set_acceptance(
+    slug_or_id: str,
+    request: AcceptanceSetRequest,
+    *,
+    if_rev: int | None = None,
+    verbose: bool = False,
+    items_path: Path | None = None,
+) -> MutationResult:
+    """Set or replace an item's contract-derived acceptance record.
+
+    Mutable only while the item is ``open`` and never worked; frozen (any
+    in-progress, including after ``reopen``) requires ``--operator-override``,
+    which appends an ``override`` history entry and invalidates the gate.
+    ``--rotate-token`` regenerates the verifier token for unchanged
+    acceptance. Setting acceptance implies a required gate covering it.
+    """
+    problems = _validate_acceptance_shape(request.acceptance)
+    if problems:
+        raise ValidationError("[acceptance-set] " + "; ".join(problems))
+
+    paths = _storage_bundle(items_path)
+    with dev_status_storage.backlog_lock(paths["data_dir"], paths["lock_file"]):
+        items = dev_status_storage.load_items(paths["items_path"])
+        pending_items = dev_status_storage.load_pending(paths["pending_path"])
+        current_rev = dev_status_storage.load_rev(paths["meta_path"])
+
+        # acceptance-set requires --if-rev even for slug ids: the rev check,
+        # freeze check, equality, token generation, history append and gate
+        # invalidation all run in one locked transaction, so an unrelated
+        # concurrent change forces a re-read rather than silently clobbering.
+        if if_rev is None or if_rev != current_rev:
+            raise RevisionConflictError(
+                f"[acceptance-set] --if-rev required (current rev is {current_rev}) — "
+                "re-read the store ('show'/'render') and retry with "
+                f"--if-rev {current_rev}.",
+                items=items,
+                pending_items=pending_items,
+                rev=current_rev,
+            )
+
+        kind, slug = resolve_id(slug_or_id, items, pending_items)
+        require_kind("acceptance-set", slug_or_id, kind, "backlog")
+
+        index = build_index(items)
+        item = index.get(slug)
+        if item is None:
+            raise NotFoundError(f"[acceptance-set] not found: {slug}")
+
+        existing = item.get("acceptance")
+        existing_acc = existing if isinstance(existing, dict) else None
+        new_criteria = _normalize_acceptance_criteria(request.acceptance)
+        new_iv = bool(request.acceptance.get("independent_verifier"))
+        old_iv = (
+            bool(existing_acc.get("independent_verifier"))
+            if existing_acc is not None
+            else False
+        )
+        content_identical = (
+            existing_acc is not None
+            and new_iv == old_iv
+            and _criteria_equal(new_criteria, list(existing_acc.get("criteria", [])))
+        )
+        now = datetime.now(UTC).isoformat()
+        harness = _detect_harness(None)
+        previous = {
+            "criteria": list(existing_acc.get("criteria", []))
+            if existing_acc is not None
+            else [],
+            "independent_verifier": old_iv,
+        }
+
+        if request.rotate_token:
+            if existing_acc is None or not existing_acc.get("independent_verifier"):
+                raise InvalidItemStateError(
+                    "[acceptance-set] --rotate-token requires existing acceptance "
+                    "with independent_verifier: true"
+                )
+            token = _generate_verifier_token()
+            _recover_verifier_token(item, paths["data_dir"], slug)
+            _write_token_new(
+                _verifier_token_new_path_for(paths["data_dir"], slug), token
+            )
+            new_acc: dict[str, object] = dict(existing_acc)
+            new_acc["verifier_token_sha256"] = _token_sha256(token)
+            new_acc["set_at"] = now
+            new_history = list(existing_acc.get("history") or [])
+            new_history.append(
+                {
+                    "at": now,
+                    "kind": "rotate",
+                    "by": {"harness": harness},
+                    "previous": previous,
+                }
+            )
+            new_acc["history"] = new_history
+            item["acceptance"] = new_acc
+            item["updated"] = today()
+            new_rev = _bump_rev(paths["meta_path"])
+            _save_items(items, paths["items_path"])
+            _publish_verifier_token(paths["data_dir"], slug)
+            _append_journal_event(
+                dev_status_storage.journal_entry(
+                    "acceptance-set",
+                    "backlog",
+                    new_rev,
+                    slug=slug,
+                    summary=cast(str, item.get("summary", "")),
+                    detail="rotated verifier token",
+                ),
+                journal_file=paths["journal_path"],
+                verbose=verbose,
+            )
+            return MutationResult(
+                cmd="acceptance-set",
+                slug=slug,
+                status=cast(str, item.get("status", "open")),
+                rev=new_rev,
+                ref=slug_or_id,
+                detail="verifier token rotated",
+                item=item,
+                items=items,
+                pending_items=pending_items,
+            )
+
+        frozen = _acceptance_frozen(item)
+        if frozen and not request.operator_override:
+            raise InvalidItemStateError(
+                "[acceptance-set] acceptance is frozen once work has started"
+            )
+
+        if (
+            content_identical
+            and existing_acc is not None
+            and not request.operator_override
+        ):
+            return MutationResult(
+                cmd="acceptance-set",
+                slug=slug,
+                status=cast(str, item.get("status", "open")),
+                rev=current_rev,
+                ref=slug_or_id,
+                detail="acceptance unchanged (no-op)",
+                item=item,
+                items=items,
+                pending_items=pending_items,
+            )
+
+        history_kind = "override" if request.operator_override else "replace"
+        token = _store_acceptance(
+            item,
+            data_dir=paths["data_dir"],
+            slug=slug,
+            new_criteria=new_criteria,
+            new_iv=new_iv,
+            existing_acc=existing_acc,
+            history_kind=(
+                history_kind
+                if (existing_acc is not None or request.operator_override)
+                else None
+            ),
+            history=(
+                list(existing_acc.get("history") or [])
+                if existing_acc is not None
+                else []
+            ),
+            previous=previous,
+        )
+        item["updated"] = today()
+        new_rev = _bump_rev(paths["meta_path"])
+        _save_items(items, paths["items_path"])
+        if token is not None:
+            _publish_verifier_token(paths["data_dir"], slug)
+        elif old_iv:
+            # Verifier turned off: the item is now persisted without a token
+            # hash, so the old token file is safe to remove.
+            with contextlib.suppress(OSError):
+                _verifier_token_path_for(paths["data_dir"], slug).unlink()
+            with contextlib.suppress(OSError):
+                _verifier_token_new_path_for(paths["data_dir"], slug).unlink()
+        _append_journal_event(
+            dev_status_storage.journal_entry(
+                "acceptance-set",
+                "backlog",
+                new_rev,
+                slug=slug,
+                summary=cast(str, item.get("summary", "")),
+                detail=f"acceptance {history_kind}",
+            ),
+            journal_file=paths["journal_path"],
+            verbose=verbose,
+        )
+        return MutationResult(
+            cmd="acceptance-set",
+            slug=slug,
+            status=cast(str, item.get("status", "open")),
+            rev=new_rev,
+            ref=slug_or_id,
+            detail=f"acceptance {history_kind}",
+            item=item,
+            items=items,
+            pending_items=pending_items,
+        )
+
+
 def pass_gate(
     slug_or_id: str,
     request: GatePassRequest,
@@ -2420,6 +3245,7 @@ def pass_gate(
     if_rev: int | None = None,
     verbose: bool = False,
     items_path: Path | None = None,
+    verifier_token_file: str | None = None,
 ) -> MutationResult:
     """Record that an item's gate criteria are satisfied."""
     paths = _storage_bundle(items_path)
@@ -2503,6 +3329,28 @@ def pass_gate(
         if problems:
             raise ValidationError(_gate_pass_refusal(slug, problems, runs))
 
+        # Independent verifier: a token file whose content hashes to the
+        # item's stored ``verifier_token_sha256`` is the verifier role. The
+        # token is read only from a path (flag or env var), never a value.
+        acceptance = item.get("acceptance")
+        need_verifier = isinstance(acceptance, dict) and bool(
+            acceptance.get("independent_verifier")
+        )
+        if need_verifier:
+            _recover_verifier_token(item, paths["data_dir"], slug)
+            token_path_str = verifier_token_file or os.environ.get(
+                "DEVSTATUS_VERIFIER_TOKEN_FILE"
+            )
+            token = (
+                _read_token_file(Path(token_path_str).expanduser())
+                if token_path_str
+                else None
+            )
+            if token is None or not _token_matches(item, token):
+                raise ValidationError(
+                    "[gate-pass] independent verifier required: no valid verifier token"
+                )
+
         kinds = {entry["kind"] for entry in covered.values()}
         gate["passed_at"] = today()
         gate["passed_via"] = (
@@ -2513,6 +3361,12 @@ def pass_gate(
             else "mixed"
         )
         gate["coverage"] = covered
+        if need_verifier:
+            gate["verified_by"] = {
+                "harness": _detect_harness(None),
+                "at": datetime.now(UTC).isoformat(),
+                "via": "token",
+            }
         item["updated"] = today()
 
         new_rev = _bump_rev(paths["meta_path"])
@@ -2541,6 +3395,129 @@ def pass_gate(
             items=items,
             pending_items=pending_items,
         )
+
+
+def verifier_check(
+    slug_or_id: str,
+    token_file: str,
+    *,
+    items_path: Path | None = None,
+) -> str:
+    """Return ``"valid"`` when ``token_file`` hashes to the item's stored token.
+
+    Read-only: no identity is required and nothing is written (except the
+    idempotent ``.token.new`` recovery, which never invents a token).
+    """
+    paths = _storage_bundle(items_path)
+    with dev_status_storage.backlog_lock(
+        paths["data_dir"], paths["lock_file"], require_identity=False
+    ):
+        items = dev_status_storage.load_items(paths["items_path"])
+        pending_items = dev_status_storage.load_pending(paths["pending_path"])
+        kind, slug = resolve_id(slug_or_id, items, pending_items)
+        require_kind("verifier-check", slug_or_id, kind, "backlog")
+        item = build_index(items).get(slug)
+        if item is None:
+            raise NotFoundError(f"[verifier-check] not found: {slug}")
+        _recover_verifier_token(item, paths["data_dir"], slug)
+        token = _read_token_file(Path(token_file).expanduser())
+        if token is not None and _token_matches(item, token):
+            return "valid"
+        return "invalid"
+
+
+def contract_touch(
+    slug_or_id: str,
+    *,
+    repo: str | None = None,
+    commit: str | None = None,
+    range_spec: str | None = None,
+    items_path: Path | None = None,
+) -> list[dict[str, object]]:
+    """List acceptance contract refs touched by a staged diff, commit, or range.
+
+    Computes touched paths with a NUL-delimited name-status diff (so unusual
+    filenames survive), including both sides of renames and copies, relative
+    to ``git rev-parse --show-toplevel`` even when ``repo`` names a
+    subdirectory. Matching is ``repo`` (main checkout root) plus ``path``
+    (git-tree-relative POSIX), so a linked worktree, symlinked path or
+    subdirectory input all resolve to the same canonical repo.
+    """
+    paths = _storage_bundle(items_path)
+    with dev_status_storage.backlog_lock(
+        paths["data_dir"], paths["lock_file"], require_identity=False
+    ):
+        items = dev_status_storage.load_items(paths["items_path"])
+        pending_items = dev_status_storage.load_pending(paths["pending_path"])
+        kind, slug = resolve_id(slug_or_id, items, pending_items)
+        require_kind("contract-touch", slug_or_id, kind, "backlog")
+        item = build_index(items).get(slug)
+        if item is None:
+            raise NotFoundError(f"[contract-touch] not found: {slug}")
+        refs = _acceptance_refs(item.get("acceptance"))
+
+    if not refs:
+        return []
+
+    inspect_dir = repo
+    if inspect_dir is None:
+        for rf in item.get("related_files") or []:
+            if isinstance(rf, dict) and isinstance(rf.get("path"), str):
+                candidate = _repo_root_for_path(str(rf["path"]))
+                if candidate is not None:
+                    inspect_dir = str(candidate)
+                    break
+    if inspect_dir is None:
+        inspect_dir = os.getcwd()
+
+    if range_spec:
+        touched = _git_name_status_range(inspect_dir, range_spec)
+    elif commit:
+        touched = _git_commit_name_status(inspect_dir, commit)
+    else:
+        touched = _git_name_status(inspect_dir, ["--cached"])
+
+    if touched is None:
+        raise ValidationError(
+            "[contract-touch] git inspection failed — check the repository "
+            "path, revision, or range"
+        )
+    main_root = _main_checkout_root(inspect_dir)
+    if main_root is None:
+        raise ValidationError(
+            f"[contract-touch] cannot resolve repository root for {inspect_dir}"
+        )
+
+    matches: list[dict[str, object]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for status, old_path, new_path in touched:
+        for candidate in (old_path, new_path):
+            if candidate is None:
+                continue
+            for text, ref_repo, ref_path, clause in refs:
+                try:
+                    same = Path(main_root).resolve() == Path(ref_repo).resolve()
+                except OSError:
+                    same = main_root == ref_repo
+                if not same:
+                    continue
+                if candidate != ref_path:
+                    continue
+                key = (text, ref_path, clause, status)
+                if key in seen:
+                    continue
+                seen.add(key)
+                entry: dict[str, object] = {
+                    "criterion": text,
+                    "clause": clause,
+                    "path": ref_path,
+                    "repo": ref_repo,
+                    "status": status,
+                }
+                if status[:1] in ("R", "C"):
+                    entry["renamed"] = True
+                matches.append(entry)
+    return matches
 
 
 def rename_item(
@@ -2646,6 +3623,20 @@ def rename_item(
         _save_items(items, paths["items_path"])
         _save_pending(pending_items, paths["pending_path"])
 
+        old_token = _verifier_token_path_for(paths["data_dir"], old_slug)
+        if old_token.exists():
+            with contextlib.suppress(OSError):
+                os.replace(
+                    old_token, _verifier_token_path_for(paths["data_dir"], new_slug)
+                )
+        old_new_token = _verifier_token_new_path_for(paths["data_dir"], old_slug)
+        if old_new_token.exists():
+            with contextlib.suppress(OSError):
+                os.replace(
+                    old_new_token,
+                    _verifier_token_new_path_for(paths["data_dir"], new_slug),
+                )
+
         runs = dev_status_storage.load_runs(runs_file=paths["runs_path"])
         renamed_runs = 0
         for run in runs:
@@ -2711,6 +3702,10 @@ def remove_item(
         new_rev = _bump_rev(paths["meta_path"])
         _save_items(remaining_items, paths["items_path"])
         _save_pending(pending_items, paths["pending_path"])
+        with contextlib.suppress(OSError):
+            _verifier_token_path_for(paths["data_dir"], slug).unlink()
+        with contextlib.suppress(OSError):
+            _verifier_token_new_path_for(paths["data_dir"], slug).unlink()
 
         _append_journal_event(
             dev_status_storage.journal_entry(
@@ -3122,11 +4117,30 @@ class _BacklogTransactionImpl:
         if request.no_worker_reason is not None:
             item["no_worker_reason"] = request.no_worker_reason
 
+        token_to_publish: str | None = None
+        if request.acceptance is not None:
+            problems = _validate_acceptance_shape(request.acceptance)
+            if problems:
+                raise ValidationError("[add] " + "; ".join(problems))
+            token_to_publish = _store_acceptance(
+                item,
+                data_dir=self._paths["data_dir"],
+                slug=slug,
+                new_criteria=_normalize_acceptance_criteria(request.acceptance),
+                new_iv=bool(request.acceptance.get("independent_verifier")),
+                existing_acc=None,
+                history_kind=None,
+                history=[],
+                previous={},
+            )
+
         self._items.append(item)
         self._index[slug] = item
 
         new_rev = _bump_rev(self._paths["meta_path"])
         _save_items(self._items, self._paths["items_path"])
+        if token_to_publish is not None:
+            _publish_verifier_token(self._paths["data_dir"], slug)
         _append_journal_event(
             dev_status_storage.journal_entry(
                 "add", "backlog", new_rev, slug=slug, summary=item["summary"]

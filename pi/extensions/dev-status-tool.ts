@@ -30,6 +30,9 @@ const ACTIONS = [
   "reject",
   "gate_set",
   "gate_pass",
+  "acceptance_set",
+  "verifier_check",
+  "contract_touch",
   "run",
   "runs",
   "backfill_gate",
@@ -78,7 +81,14 @@ export type Field =
   | "branch"
   | "base"
   | "repair"
-  | "push";
+  | "push"
+  | "if_rev"
+  | "operator_override"
+  | "rotate_token"
+  | "verifier_token_file"
+  | "acceptance"
+  | "commit"
+  | "range";
 
 interface ActionFields {
   readonly allowed: readonly Field[];
@@ -104,7 +114,19 @@ const ACTION_FIELDS: Record<Action, ActionFields> = {
   approve: { allowed: ["slug"], required: ["slug"] },
   reject: { allowed: ["slug", "feedback"], required: ["slug", "feedback"] },
   gate_set: { allowed: ["slug", "patch"], required: ["slug", "patch"] },
-  gate_pass: { allowed: ["slug", "patch"], required: ["slug"] },
+  gate_pass: {
+    allowed: ["slug", "patch", "verifier_token_file"],
+    required: ["slug"],
+  },
+  acceptance_set: {
+    allowed: ["slug", "acceptance", "if_rev", "operator_override", "rotate_token"],
+    required: ["slug", "acceptance", "if_rev"],
+  },
+  verifier_check: {
+    allowed: ["slug", "verifier_token_file"],
+    required: ["slug", "verifier_token_file"],
+  },
+  contract_touch: { allowed: ["slug", "repo", "commit", "range"], required: ["slug"] },
   run: { allowed: ["slug", "command", "timeout", "cwd"], required: ["slug", "command"] },
   runs: { allowed: ["slug"], required: ["slug"] },
   backfill_gate: { allowed: ["apply"], required: [] },
@@ -159,6 +181,7 @@ const MUTATING_ACTIONS: ReadonlySet<Action> = new Set([
   "reject",
   "gate_set",
   "gate_pass",
+  "acceptance_set",
   "run",
   "rename",
   "remove",
@@ -198,6 +221,13 @@ export interface DevStatusParams {
   base?: string;
   repair?: boolean;
   push?: boolean;
+  if_rev?: number;
+  operator_override?: boolean;
+  rotate_token?: boolean;
+  verifier_token_file?: string;
+  acceptance?: Record<string, unknown>;
+  commit?: string;
+  range?: string;
 }
 
 export function assertNotNumericIdentity(action: Action, params: DevStatusParams): void {
@@ -287,7 +317,34 @@ export function buildArgv(action: Action, params: DevStatusParams): string[] {
     case "gate_set":
       return ["gate-set", params.slug!, patchJson()];
     case "gate_pass":
-      return ["gate-pass", params.slug!, ...(params.patch ? [patchJson()] : [])];
+      return [
+        "gate-pass",
+        params.slug!,
+        ...(params.patch ? [patchJson()] : []),
+        ...(params.verifier_token_file
+          ? ["--verifier-token-file", params.verifier_token_file]
+          : []),
+      ];
+    case "acceptance_set":
+      return [
+        "acceptance-set",
+        params.slug!,
+        JSON.stringify(params.acceptance),
+        "--if-rev",
+        String(params.if_rev),
+        ...(params.operator_override ? ["--operator-override"] : []),
+        ...(params.rotate_token ? ["--rotate-token"] : []),
+      ];
+    case "verifier_check":
+      return ["verifier-check", params.slug!, "--verifier-token-file", params.verifier_token_file!];
+    case "contract_touch":
+      return [
+        "contract-touch",
+        params.slug!,
+        ...(params.repo ? ["--repo", params.repo] : []),
+        ...(params.commit ? ["--commit", params.commit] : []),
+        ...(params.range ? ["--range", params.range] : []),
+      ];
     case "run":
       return [
         "run",
@@ -373,7 +430,8 @@ export default function (pi: ExtensionAPI) {
     promptSnippet: "Read or mutate the personal backlog/pending store",
     promptGuidelines: [
       "Never invoke dev_status.py via bash, for any reason, including a plain read like listing pending items or checking status -- always use dev_status instead. This applies to every action, not just ones a slash command already told you to use dev_status for.",
-      "dev_status covers everything dev_status.py's CLI does: render, list, ready, show, add, update, validate, start, done, reopen, review, approve, reject, gate_set, gate_pass, run, runs, backfill_gate, rename, remove, block, unblock, prune, recap, worktree, machine_id, integration_merge, pending_add, pending_update, pending_list, and the out_of_scope_* actions. If you're about to compose a `python3 ~/.agent-toolkit/scripts/dev_status.py ...` bash command for any of these, use dev_status with the matching action instead.",
+      "dev_status covers everything dev_status.py's CLI does: render, list, ready, show, add, update, validate, start, done, reopen, review, approve, reject, gate_set, gate_pass, acceptance_set, verifier_check, contract_touch, run, runs, backfill_gate, rename, remove, block, unblock, prune, recap, worktree, machine_id, integration_merge, pending_add, pending_update, pending_list, and the out_of_scope_* actions. If you're about to compose a `python3 ~/.agent-toolkit/scripts/dev_status.py ...` bash command for any of these, use dev_status with the matching action instead.",
+      "verifier tokens are private: acceptance_set prints a token-file path (never the token); pass that path via verifier_token_file to gate_pass/verifier_check, never the file's contents. Keep the path out of item notes, feedback, and worker prompts.",
       "dev_status's patch field is a plain object, not a JSON string -- never hand-encode it.",
       'dev_status refuses a numeric slug on any mutating action -- call action: "show" first to resolve a numeric position to its real slug.',
       "start refuses to run from a main/master checkout (worktree guard) or when the item is actively claimed by another live session (claim collision) -- pass cwd to evaluate the guard and stamp the claim from a dedicated worktree, allowMain to bypass the guard, force to take over a live claim, or claimedBy to correct a wrong auto-detected harness name.",
@@ -468,6 +526,53 @@ export default function (pi: ExtensionAPI) {
       push: Type.Optional(
         Type.Boolean({
           description: "integration_merge: push to remote after merging.",
+        }),
+      ),
+      if_rev: Type.Optional(
+        Type.Number({
+          description:
+            "acceptance_set: the store rev from show/render, required even for slugs " +
+            "(get it from '# rev=N' immediately before the call).",
+        }),
+      ),
+      operator_override: Type.Optional(
+        Type.Boolean({
+          description:
+            "acceptance_set: lift the freeze on a worked item (operator only; records " +
+            "an override history entry and invalidates the gate).",
+        }),
+      ),
+      rotate_token: Type.Optional(
+        Type.Boolean({
+          description:
+            "acceptance_set: regenerate the verifier token for unchanged acceptance " +
+            "(recovers a lost token file).",
+        }),
+      ),
+      verifier_token_file: Type.Optional(
+        Type.String({
+          description:
+            "gate_pass/verifier_check: path to the verifier token file. Always a path, " +
+            "never the token value -- keep the path private.",
+        }),
+      ),
+      acceptance: Type.Optional(
+        Type.Record(Type.String(), Type.Unknown(), {
+          description:
+            "acceptance_set: the acceptance object {criteria: [{text, refs: [{repo, path, " +
+            "clause}]}], independent_verifier: bool}.",
+        }),
+      ),
+      commit: Type.Optional(
+        Type.String({
+          description: "contract_touch: inspect one commit's diff instead of the staged diff.",
+        }),
+      ),
+      range: Type.Optional(
+        Type.String({
+          description:
+            "contract_touch: inspect every commit on the branch (e.g. 'main..HEAD') " +
+            "instead of the staged diff.",
         }),
       ),
       refresh: Type.Optional(Type.Boolean({ description: "recap: bypass the freshness cache." })),

@@ -35,6 +35,17 @@ table) with the diff. `review-diff` did not run on this staged tree? Say so
 plainly at the gate — "review-diff did not run" — and do not run it
 silently from here.
 
+**Contract-touch callout.** If the item's `acceptance` criteria cite contract
+files (`refs[].path`), check whether this staged tree touches any of them:
+run `python3 ~/.agent-toolkit/scripts/dev_status.py contract-touch <slug> --repo <path>`
+(NUL-delimited `git diff --cached --name-status -z -M -C` under the hood, so
+unusual filenames and both sides of renames/copies survive; JSON output) or
+`--range <base>..<head>` for the whole branch. If it reports matches, call
+them out explicitly as contract changes needing the reviewer's attention. A
+rename whose *old* path matched means the acceptance refs now point at the
+old path — they need an operator `--operator-override` update, never a silent
+follow.
+
 ## 2. Gate: commit-then-land
 In a `--handoff` run (the invoking backlog-item was `/backlog-item --auto
 <slug> --handoff`), commit exactly as below (conventional format), then stop:
@@ -43,6 +54,16 @@ print the single line
 whose `<sha>` is the commit you just made, and do **not** merge, push, or
 clean up the worktree — the foreman lands. Never run Close below in a handoff
 run.
+
+**Independent-verifier handoff, before merge, workers only.** Token or not,
+a `--handoff` run always stops above. Otherwise, if the item has
+`acceptance.independent_verifier` and
+`python3 ~/.agent-toolkit/scripts/dev_status.py verifier-check <slug> --verifier-token-file <path>`
+does not succeed for this session's token path
+(`DEVSTATUS_VERIFIER_TOKEN_FILE`, or none), stop exactly as `--handoff` does —
+leave the branch unmerged and report a handoff record including a
+`contract-touch` result for the commit. A session holding the verifier
+token is the verifier and continues through merge and Close normally.
 
 On approval, commit (conventional format) — this gate is never bundled with
 what follows. Personal project (this repo, a personal side project — never
@@ -100,6 +121,11 @@ with the work merged, so pass `cwd` pointing at a checkout of it; `action:
 until each criterion cites a recorded run or a manual note) and retry
 `approve`. Display the full dashboard text these return; don't just
 narrate a one-line confirmation.
+
+A tokenless agent — one that does not hold the item's verifier token —
+never runs `gate_pass` on an `acceptance.independent_verifier` item; the
+verifier does, passing `verifier_token_file` (a path, never the token
+value).
 
 If the `dev_status` tool is genuinely unavailable at any of the steps
 above, fall back to the equivalent bash `dev_status.py` command named in

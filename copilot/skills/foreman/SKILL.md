@@ -52,6 +52,16 @@ go to `/swarm --serial`, never to the foreman. Launch one item per worker:
 python3 ~/.agent-toolkit/scripts/herdr_delegate.py launch --slug <slug> --kind pi [--model <model>] [--handoff]
 ```
 
+- **Set acceptance before launch** — before `launch --handoff`, set the
+  item's contract acceptance:
+  `python3 ~/.agent-toolkit/scripts/dev_status.py acceptance-set <slug> '{"criteria": [{"text": "...", "refs": [{"repo": "<main checkout root>", "path": "<repo-relative path>", "clause": "<clause>"}]}], "independent_verifier": true}' --if-rev <rev>`
+  — criteria drawn from the repo's written contract (AGENTS.md/README/
+  PROJECT_PLAN.md), each citing the clause it covers; `independent_verifier:
+  true` when a non-worker verifier must gate-pass. The command prints the
+  token-file path (`<data dir>/verifier/<slug>.token`). Keep that path
+  **private** — never put it in item notes, feedback files, or worker
+  prompts; a worker that holds it is the verifier and self-grades.
+
 - **When to prefer `/swarm`** — a hands-off run with concurrency and file-
   overlap headroom handled by `selectSchedulable` is `/swarm`'s job, not
   yours. The foreman only overrides overlap for read-only reference files, by
@@ -135,8 +145,15 @@ FOREMAN-HANDOFF slug=<slug> branch=<branch> commit=<sha> worktree=<path>
 The foreman lands, never re-entering `land`: rebase onto the **merge target**
 (the default branch, or the item's declared `integration_branch` when one is
 set — `release-1` work merges into `release-1`, never main), re-run the suite,
-fast-forward merge, push, remove the worktree, delete the branch, then record
-`dev_status.py run` evidence, `gate-pass`, `review`, and `approve`. Read the worker's digest offers from
+fast-forward merge, push, remove the worktree, delete the branch. Before
+gate-pass, run
+`python3 ~/.agent-toolkit/scripts/dev_status.py contract-touch <slug> --repo <path> --range <merge-base>..HEAD`
+after the rebase (and re-run it against the merge target) so any
+contract-file change in the branch — including earlier commits and anything
+the rebase introduces — is caught. Then record `dev_status.py run` evidence,
+`gate-pass <slug> '{"coverage": {...}}' --verifier-token-file <path>` (pass
+the token-file path, never the token value), `review`, and `approve`. Read the
+worker's digest offers from
 `~/.agent-toolkit/data/foreman/<slug>-digest.json`, relay them to the operator,
 and delete the file after relaying. Without `--handoff`, worker behaviour is
 unchanged.

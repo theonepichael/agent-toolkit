@@ -50,7 +50,7 @@ import sys
 import textwrap
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import NoReturn, TextIO, cast
@@ -66,6 +66,7 @@ from dev_status_mutation import (
     KNOWN_PROJECT_PREFIXES,
     REPO_PREFIXES,
     UNSET,
+    AcceptanceSetRequest,
     BacklogMutationError,
     GatePassRequest,
     GateSetRequest,
@@ -92,6 +93,7 @@ from dev_status_mutation import (
     approve_item,
     block_item,
     build_index,
+    contract_touch,
     done_item,
     effective_blockers,
     is_worker_safe,
@@ -105,6 +107,7 @@ from dev_status_mutation import (
     resolve_id,
     review_item,
     run_item,
+    set_acceptance,
     set_gate,
     start_item,
     today,
@@ -112,6 +115,7 @@ from dev_status_mutation import (
     update_item,
     update_pending_item,
     validate_slug,
+    verifier_check,
 )
 from dev_status_mutation import (
     HARNESS_REPO as HARNESS_REPO,
@@ -344,6 +348,9 @@ SUBCOMMANDS = (
     "reject",
     "gate-set",
     "gate-pass",
+    "acceptance-set",
+    "verifier-check",
+    "contract-touch",
     "run",
     "runs",
     "backfill-gate",
@@ -2890,6 +2897,11 @@ def cmd_add(args: argparse.Namespace) -> None:
             if "no_worker_reason" in patch
             else None
         ),
+        acceptance=(
+            cast(dict[str, object], patch["acceptance"])
+            if "acceptance" in patch
+            else None
+        ),
     )
     try:
         res = add_item(req, verbose=getattr(args, "verbose", False))
@@ -2954,6 +2966,23 @@ def cmd_update(args: argparse.Namespace) -> None:
             "manual patch equivalent: claims are minted by 'start' and "
             "released by 'reopen'/'done' (and the automatic dead-claim "
             "sweep on read paths).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if "acceptance" in patch:
+        print(
+            "[update] cannot modify 'acceptance' directly — use "
+            "'acceptance-set <id>' to set or replace it (frozen once work "
+            "starts).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if "worked_by" in patch:
+        print(
+            "[update] cannot modify 'worked_by' directly — it is the item's "
+            "informational work log, appended by 'start' and 'reject'.",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -3267,6 +3296,7 @@ def cmd_gate_pass(args: argparse.Namespace) -> None:
             req,
             if_rev=args.if_rev,
             verbose=getattr(args, "verbose", False),
+            verifier_token_file=getattr(args, "verifier_token_file", None),
         )
     except BacklogMutationError as exc:
         _handle_mutation_error("gate-pass", exc)
@@ -3278,6 +3308,80 @@ def cmd_gate_pass(args: argparse.Namespace) -> None:
         quiet=getattr(args, "quiet", False),
         compact=_is_compact(args),
     )
+
+
+def cmd_acceptance_set(args: argparse.Namespace) -> None:
+    """Handle ``acceptance-set``: set or replace an item's contract acceptance.
+
+    The payload must be a JSON object (``criteria`` + ``independent_verifier``).
+    Setting acceptance implies a required gate covering it; when
+    ``independent_verifier`` is true, a verifier token is generated, its sha256
+    stored on the item, and its 0600 plaintext written to
+    ``<data dir>/verifier/<slug>.token`` — only that path is printed, never the
+    token. Requires ``--if-rev`` even for slug ids.
+    """
+    patch = _parse_json_arg(args.json, "acceptance-set")
+    req = AcceptanceSetRequest(
+        acceptance=patch,
+        operator_override=bool(getattr(args, "operator_override", False)),
+        rotate_token=bool(getattr(args, "rotate_token", False)),
+    )
+    try:
+        res = set_acceptance(
+            args.id,
+            req,
+            if_rev=args.if_rev,
+            verbose=getattr(args, "verbose", False),
+        )
+    except BacklogMutationError as exc:
+        _handle_mutation_error("acceptance-set", exc)
+
+    _render_mutation_result(
+        res,
+        announce=True,
+        id_arg=args.id,
+        quiet=getattr(args, "quiet", False),
+        compact=_is_compact(args),
+    )
+    acc = res.item.get("acceptance")
+    if isinstance(acc, dict) and acc.get("verifier_token_sha256"):
+        print(
+            f"[acceptance-set] verifier token: "
+            f"{dev_status_storage.verifier_token_path(res.slug)}",
+            file=sys.stderr,
+        )
+
+
+def cmd_verifier_check(args: argparse.Namespace) -> None:
+    """Handle ``verifier-check``: exit 0 iff the token file holds this item's token.
+
+    Prints only ``valid`` or ``invalid`` — never the token content.
+    """
+    try:
+        result = verifier_check(args.id, args.verifier_token_file)
+    except BacklogMutationError as exc:
+        _handle_mutation_error("verifier-check", exc)
+    print(result)
+    if result != "valid":
+        sys.exit(1)
+
+
+def cmd_contract_touch(args: argparse.Namespace) -> None:
+    """Handle ``contract-touch``: list acceptance refs a diff touches, as JSON.
+
+    Inspects the staged diff by default, ``--commit <rev>`` for one commit,
+    or ``--range <base>..<head>`` for every commit on the branch.
+    """
+    try:
+        matches = contract_touch(
+            args.id,
+            repo=getattr(args, "repo", None),
+            commit=getattr(args, "commit", None),
+            range_spec=getattr(args, "range", None),
+        )
+    except BacklogMutationError as exc:
+        _handle_mutation_error("contract-touch", exc)
+    print(json.dumps(matches, indent=2))
 
 
 def cmd_run(args: argparse.Namespace) -> None:
@@ -4013,6 +4117,13 @@ def cmd_prune(args: argparse.Namespace) -> None:
             if pruned_slugs or pending_pruned_slugs:
                 save_items(keep)
                 save_pending(pending_keep)
+            for pruned_slug in pruned_slugs:
+                for token_path in (
+                    dev_status_storage.verifier_token_path(pruned_slug),
+                    dev_status_storage.verifier_token_new_path(pruned_slug),
+                ):
+                    with suppress(OSError):
+                        token_path.unlink()
             append_journal_event(
                 _journal_entry("prune", "backlog", new_rev, count=total_removed),
                 verbose=args.verbose,
@@ -4066,6 +4177,9 @@ dispatch: dict[str, Callable[[argparse.Namespace], None]] = {
     "reject": cmd_reject,
     "gate-set": cmd_gate_set,
     "gate-pass": cmd_gate_pass,
+    "acceptance-set": cmd_acceptance_set,
+    "verifier-check": cmd_verifier_check,
+    "contract-touch": cmd_contract_touch,
     "run": cmd_run,
     "runs": cmd_runs,
     "backfill-gate": cmd_backfill_gate,
@@ -4334,7 +4448,79 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="per-criterion coverage: run evidence or a manual note per criterion",
     )
+    p.add_argument(
+        "--verifier-token-file",
+        default=None,
+        metavar="PATH",
+        help="path to the verifier token file (required when the item's "
+        "acceptance sets independent_verifier: true; falls back to "
+        "DEVSTATUS_VERIFIER_TOKEN_FILE)",
+    )
     _add_if_rev_arg(p)
+
+    p = sub.add_parser(
+        "acceptance-set",
+        help="set or replace an item's contract-derived acceptance criteria",
+        parents=[verbosity_parent, compact_parent],
+    )
+    _add_id_arg(p)
+    p.add_argument(
+        "json",
+        metavar='\'{"criteria": [{"text": "...", "refs": [{"repo": "...", '
+        '"path": "...", "clause": "..."}]}], "independent_verifier": false}\'',
+    )
+    _add_if_rev_arg(p)
+    p.add_argument(
+        "--operator-override",
+        action="store_true",
+        help="lift the freeze on a worked item (records an override history entry "
+        "and invalidates the gate); operator only",
+    )
+    p.add_argument(
+        "--rotate-token",
+        action="store_true",
+        help="regenerate the verifier token for unchanged acceptance (recovers a "
+        "lost token file); records a rotate history entry",
+    )
+
+    p = sub.add_parser(
+        "verifier-check",
+        help="exit 0 iff the token file holds this item's verifier token",
+        parents=[verbosity_parent],
+    )
+    _add_id_arg(p)
+    p.add_argument(
+        "--verifier-token-file",
+        dest="verifier_token_file",
+        required=True,
+        metavar="PATH",
+        help="path to the verifier token file (never the token value)",
+    )
+
+    p = sub.add_parser(
+        "contract-touch",
+        help="list acceptance contract refs touched by a diff, as JSON",
+        parents=[verbosity_parent],
+    )
+    _add_id_arg(p)
+    p.add_argument(
+        "--repo",
+        default=None,
+        metavar="PATH",
+        help="git repository to inspect (may name a subdirectory, worktree, or symlink)",
+    )
+    p.add_argument(
+        "--commit",
+        default=None,
+        metavar="<rev>",
+        help="inspect one commit's diff instead of the staged diff",
+    )
+    p.add_argument(
+        "--range",
+        default=None,
+        metavar="<base>..<head>",
+        help="inspect every commit on the branch instead of the staged diff",
+    )
 
     p = sub.add_parser(
         "run",

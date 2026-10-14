@@ -142,6 +142,63 @@ describe("assertFields", () => {
       }),
     ).toThrow("does not accept: force");
   });
+
+  test("acceptance_set requires slug, acceptance, and if_rev", () => {
+    expect(() => assertFields("acceptance_set", { action: "acceptance_set", slug: "abc" })).toThrow(
+      "requires: acceptance, if_rev",
+    );
+    expect(() =>
+      assertFields("acceptance_set", {
+        action: "acceptance_set",
+        slug: "abc",
+        acceptance: {},
+        if_rev: 1,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertFields("acceptance_set", {
+        action: "acceptance_set",
+        slug: "abc",
+        acceptance: {},
+        if_rev: 1,
+        verifier_token_file: "/tmp/x",
+      }),
+    ).toThrow("does not accept: verifier_token_file");
+  });
+
+  test("verifier_check requires slug and verifier_token_file", () => {
+    expect(() => assertFields("verifier_check", { action: "verifier_check", slug: "abc" })).toThrow(
+      "requires: verifier_token_file",
+    );
+    expect(() =>
+      assertFields("verifier_check", {
+        action: "verifier_check",
+        slug: "abc",
+        verifier_token_file: "/tmp/x",
+      }),
+    ).not.toThrow();
+  });
+
+  test("contract_touch requires slug and accepts repo/commit/range", () => {
+    expect(() => assertFields("contract_touch", { action: "contract_touch" })).toThrow(
+      "requires: slug",
+    );
+    expect(() =>
+      assertFields("contract_touch", { action: "contract_touch", slug: "abc" }),
+    ).not.toThrow();
+    expect(() =>
+      assertFields("contract_touch", {
+        action: "contract_touch",
+        slug: "abc",
+        repo: "/r",
+        commit: "abc123",
+        range: "main..HEAD",
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertFields("contract_touch", { action: "contract_touch", slug: "abc", if_rev: 1 }),
+    ).toThrow("does not accept: if_rev");
+  });
 });
 
 describe("buildArgv", () => {
@@ -302,6 +359,75 @@ describe("buildArgv", () => {
       "feature-branch",
       "--push",
     ]);
+  });
+
+  test("gate_pass carries an optional verifier token file", () => {
+    expect(
+      buildArgv("gate_pass", {
+        action: "gate_pass",
+        slug: "abc",
+        patch: { coverage: {} },
+        verifier_token_file: "/tmp/abc.token",
+      }),
+    ).toEqual([
+      "gate-pass",
+      "abc",
+      JSON.stringify({ coverage: {} }),
+      "--verifier-token-file",
+      "/tmp/abc.token",
+    ]);
+  });
+
+  test("acceptance_set serializes acceptance and passes if_rev/flags", () => {
+    const acceptance = { criteria: [{ text: "t", refs: [] }], independent_verifier: true };
+    expect(
+      buildArgv("acceptance_set", {
+        action: "acceptance_set",
+        slug: "abc",
+        acceptance,
+        if_rev: 7,
+      }),
+    ).toEqual(["acceptance-set", "abc", JSON.stringify(acceptance), "--if-rev", "7"]);
+    expect(
+      buildArgv("acceptance_set", {
+        action: "acceptance_set",
+        slug: "abc",
+        acceptance,
+        if_rev: 7,
+        operator_override: true,
+        rotate_token: true,
+      }),
+    ).toEqual([
+      "acceptance-set",
+      "abc",
+      JSON.stringify(acceptance),
+      "--if-rev",
+      "7",
+      "--operator-override",
+      "--rotate-token",
+    ]);
+  });
+
+  test("verifier_check and contract_touch build argv", () => {
+    expect(
+      buildArgv("verifier_check", {
+        action: "verifier_check",
+        slug: "abc",
+        verifier_token_file: "/tmp/t",
+      }),
+    ).toEqual(["verifier-check", "abc", "--verifier-token-file", "/tmp/t"]);
+    expect(buildArgv("contract_touch", { action: "contract_touch", slug: "abc" })).toEqual([
+      "contract-touch",
+      "abc",
+    ]);
+    expect(
+      buildArgv("contract_touch", {
+        action: "contract_touch",
+        slug: "abc",
+        repo: "/repo",
+        range: "main..HEAD",
+      }),
+    ).toEqual(["contract-touch", "abc", "--repo", "/repo", "--range", "main..HEAD"]);
   });
 
   test("patch actions serialize the patch", () => {

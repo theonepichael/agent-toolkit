@@ -119,6 +119,27 @@ class ValidateBatchSchemaTests(unittest.TestCase):
         self.assertEqual(tickets[0]["blocked_by"], [])
         self.assertEqual(tickets[0]["related_files"], [])
 
+    def test_rejects_empty_acceptance(self):
+        with self.assertRaises(runner.BatchError):
+            runner._validate_batch_schema(
+                [{"id": "some-slug", "summary": "s", "acceptance": {}}]
+            )
+
+    def test_accepts_valid_acceptance(self):
+        tickets = runner._validate_batch_schema(
+            [
+                {
+                    "id": "some-slug",
+                    "summary": "s",
+                    "acceptance": {
+                        "criteria": [{"text": "c", "refs": []}],
+                        "independent_verifier": False,
+                    },
+                }
+            ]
+        )
+        self.assertEqual(tickets[0]["acceptance"]["criteria"][0]["text"], "c")
+
 
 # ── ordering / cycle detection ──────────────────────────────────────────────
 

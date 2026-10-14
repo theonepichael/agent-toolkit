@@ -769,10 +769,13 @@ missing (CLAUDE.md's "Plans and deliverables get a path on record"). If
 is already cited from the spec's Context field — don't also record it as a
 second, competing artifact.""",
         "STEP6_BODY": """\
-If step 5 set a gate (judgment steps present), run the `second-opinion`
-skill against the resulting plan or spec file unconditionally, no ask —
-critique the plan before committing to an executor. If step 5 left the gate
-unset (all steps mechanical), skip this step; a critique adds nothing to a
+If step 5 set a gate (judgment steps present, or the item has an
+`acceptance` record), run the `second-opinion` skill against the resulting
+plan or spec file unconditionally, no ask — critique the plan before
+committing to an executor. When the item has `acceptance`, pass a focus
+file naming the cited contract files and ask whether the spec meets or
+weakens each cited clause. If step 5 left the gate unset (all steps
+mechanical, no acceptance), skip this step; a critique adds nothing to a
 rote transformation.""",
         "STEP7_BODY": """\
 Decide who implements the plan — ask if it isn't already obvious from the
@@ -914,11 +917,14 @@ into `grill-me` along the way, that session's `plan_path` is already cited
 from the spec's Context field — don't also record it as a second, competing
 artifact.""",
         "STEP6_BODY": """\
-If step 5 set a gate (judgment steps present), run the `second-opinion`
-skill against the resulting plan or spec file unconditionally, no ask —
-critique it before committing to an executor. If step 5 left the gate
-unset (all steps mechanical), skip this step; a critique adds nothing to a
-rote transformation.""",
+If step 5 set a gate (judgment steps present, or the item has an
+`acceptance` record), run the `second-opinion` skill against the resulting
+plan or spec file unconditionally, no ask — critique it before committing
+to an executor. When the item has `acceptance`, pass a focus file naming
+the cited contract files and ask whether the spec meets or weakens each
+cited clause. If step 5 left the gate unset (all steps mechanical, no
+acceptance), skip this step; a critique adds nothing to a rote
+transformation.""",
         "STEP7_BODY": """\
 Decide who implements the plan — ask if it isn't already obvious from the
 conversation:
@@ -1222,11 +1228,14 @@ missing (CLAUDE.md's "Plans and deliverables get a path on record"). If
 is already cited from the spec's Context field — don't also record it as a
 second, competing artifact.""",
         "STEP6_BODY": """\
-If step 5 set a gate (judgment steps present), run the `second-opinion`
-skill (same skill tool, `skill({ name: "second-opinion" })`) against the
-resulting plan or spec file unconditionally, no ask — critique it before
-committing to an executor. If step 5 left the gate unset (all steps
-mechanical), skip this step; a critique adds nothing to a rote
+If step 5 set a gate (judgment steps present, or the item has an
+`acceptance` record), run the `second-opinion` skill (same skill tool,
+`skill({ name: "second-opinion" })`) against the resulting plan or spec
+file unconditionally, no ask — critique it before committing to an
+executor. When the item has `acceptance`, pass a focus file naming the
+cited contract files and ask whether the spec meets or weakens each cited
+clause. If step 5 left the gate unset (all steps mechanical, no
+acceptance), skip this step; a critique adds nothing to a rote
 transformation.""",
         "STEP7_BODY": """\
 Decide who implements the plan — ask if it isn't already obvious from the
@@ -1371,14 +1380,16 @@ on record"). If spec delegated into `grill-me` along the way, that
 session's `plan_path` is already cited from the spec's Context field —
 don't also record it as a second, competing artifact.""",
         "STEP6_BODY": """\
-If step 5 set a gate (judgment steps present), run the second-opinion
-skill against the resulting plan or spec file unconditionally, no ask,
-using the same suspend-and-return framing as step 5 (checkpoint marker,
-persisted return pointer, absolute-path re-read on return, restore of the
-item's original next_steps on return) — critique the
-plan before committing to an executor. If step 5 left the gate unset (all
-steps mechanical), skip this step; a critique adds nothing to a rote
-transformation.""",
+If step 5 set a gate (judgment steps present, or the item has an
+`acceptance` record), run the second-opinion skill against the resulting
+plan or spec file unconditionally, no ask, using the same suspend-and-return
+framing as step 5 (checkpoint marker, persisted return pointer,
+absolute-path re-read on return, restore of the item's original next_steps
+on return) — critique the plan before committing to an executor. When the
+item has `acceptance`, pass a focus file naming the cited contract files
+and ask whether the spec meets or weakens each cited clause. If step 5
+left the gate unset (all steps mechanical, no acceptance), skip this step;
+a critique adds nothing to a rote transformation.""",
         "STEP7_BODY": """\
 Decide who implements the plan — ask if it isn't already obvious from the
 conversation, in plain conversational text with a stated recommendation (agy
@@ -1547,14 +1558,16 @@ on record"). If spec delegated into `grill-me` along the way, that
 session's `plan_path` is already cited from the spec's Context field —
 don't also record it as a second, competing artifact.""",
         "STEP6_BODY": """\
-If step 5 set a gate (judgment steps present), run the second-opinion
-skill against the resulting plan or spec file unconditionally, no ask,
-using the same suspend-and-return framing as step 5 (checkpoint marker,
-persisted return pointer, absolute-path re-read on return, restore of the
-item's original next_steps on return) — critique the
-plan before committing to an executor. If step 5 left the gate unset (all
-steps mechanical), skip this step; a critique adds nothing to a rote
-transformation.""",
+If step 5 set a gate (judgment steps present, or the item has an
+`acceptance` record), run the second-opinion skill against the resulting
+plan or spec file unconditionally, no ask, using the same suspend-and-return
+framing as step 5 (checkpoint marker, persisted return pointer,
+absolute-path re-read on return, restore of the item's original next_steps
+on return) — critique the plan before committing to an executor. When the
+item has `acceptance`, pass a focus file naming the cited contract files
+and ask whether the spec meets or weakens each cited clause. If step 5
+left the gate unset (all steps mechanical, no acceptance), skip this step;
+a critique adds nothing to a rote transformation.""",
         "STEP7_BODY": """\
 Decide who implements the plan — ask if it isn't already obvious from the
 conversation, in plain conversational text with a stated recommendation (Codex
@@ -1841,6 +1854,17 @@ LAND_PARAMS: dict[str, dict[str, str]] = {
         ),
         "LAND_BODY": (
             """\
+**Independent-verifier handoff, before merge, workers only.** After the
+commit below and before any merge/push: an explicit `--handoff` run always
+stops here, token or not — leave the branch unmerged and report the
+`FOREMAN-HANDOFF` line; never merge, push, clean up, or run Close.
+Otherwise, if the item has `acceptance.independent_verifier` and
+`python3 {{TOOLKIT_SCRIPTS}}/dev_status.py verifier-check <slug> --verifier-token-file <path>`
+does not succeed for this session's token path
+(`DEVSTATUS_VERIFIER_TOKEN_FILE`, or none), stop exactly as `--handoff`
+does — leave the branch unmerged. A session holding the verifier token is
+the verifier and continues through merge and Close normally.
+
 On approval, commit (conventional format) — this gate is never bundled with
 what follows. Personal project (this repo, a personal side project — never
 a `work-`-prefixed item or a work repo): offer the follow-on sequence as one
@@ -1875,7 +1899,7 @@ the main checkout is on the merge target with the work merged, so pass
 and `gate-pass <slug> '{"coverage": {"<N>": "run:<run_id>" or
 "manual:<note>"}}'` refuses until each criterion cites a recorded run or a
 manual note. Then retry `approve`. Display the full dashboard stdout these
-print; don't just narrate a one-line confirmation."""
+print; don't just narrate a one-line confirmation.\nA tokenless agent — one that does not hold the item's verifier token —\nnever runs `gate-pass` on an `acceptance.independent_verifier` item; the\nverifier does, passing `--verifier-token-file <path>` (never the token\nvalue)."""
         ),
     },
     "copilot": {
@@ -1890,6 +1914,17 @@ external executor wrote (the shared instructions file)."""
         ),
         "LAND_BODY": (
             """\
+**Independent-verifier handoff, before merge, workers only.** After the
+commit below and before any merge/push: an explicit `--handoff` run always
+stops here, token or not — leave the branch unmerged and report the
+`FOREMAN-HANDOFF` line; never merge, push, clean up, or run Close.
+Otherwise, if the item has `acceptance.independent_verifier` and
+`python3 {{TOOLKIT_SCRIPTS}}/dev_status.py verifier-check <slug> --verifier-token-file <path>`
+does not succeed for this session's token path
+(`DEVSTATUS_VERIFIER_TOKEN_FILE`, or none), stop exactly as `--handoff`
+does — leave the branch unmerged. A session holding the verifier token is
+the verifier and continues through merge and Close normally.
+
 On approval, commit (conventional format) — this gate is never bundled
 with what follows. Personal project (this repo, a personal side project —
 never a `work-`-prefixed item or a work repo): offer the follow-on
@@ -1928,7 +1963,7 @@ the main checkout is on the merge target with the work merged, so pass
 and `gate-pass <slug> '{"coverage": {"<N>": "run:<run_id>" or
 "manual:<note>"}}'` refuses until each criterion cites a recorded run or a
 manual note. Then retry `approve`. Display the full dashboard stdout these
-print; don't just narrate a one-line confirmation."""
+print; don't just narrate a one-line confirmation.\nA tokenless agent — one that does not hold the item's verifier token —\nnever runs `gate-pass` on an `acceptance.independent_verifier` item; the\nverifier does, passing `--verifier-token-file <path>` (never the token\nvalue)."""
         ),
     },
     "opencode": {
@@ -1942,6 +1977,17 @@ print; don't just narrate a one-line confirmation."""
         ),
         "LAND_BODY": (
             """\
+**Independent-verifier handoff, before merge, workers only.** After the
+commit below and before any merge/push: an explicit `--handoff` run always
+stops here, token or not — leave the branch unmerged and report the
+`FOREMAN-HANDOFF` line; never merge, push, clean up, or run Close.
+Otherwise, if the item has `acceptance.independent_verifier` and
+`python3 {{TOOLKIT_SCRIPTS}}/dev_status.py verifier-check <slug> --verifier-token-file <path>`
+does not succeed for this session's token path
+(`DEVSTATUS_VERIFIER_TOKEN_FILE`, or none), stop exactly as `--handoff`
+does — leave the branch unmerged. A session holding the verifier token is
+the verifier and continues through merge and Close normally.
+
 On approval, commit (conventional format) — this gate is never bundled with
 what follows. Personal project (this repo, a personal side project — never
 a `work-`-prefixed item or a work repo): offer the follow-on sequence as one
@@ -1976,7 +2022,7 @@ the main checkout is on the merge target with the work merged, so pass
 and `gate-pass <slug> '{"coverage": {"<N>": "run:<run_id>" or
 "manual:<note>"}}'` refuses until each criterion cites a recorded run or a
 manual note. Then retry `approve`. Display the full dashboard stdout these
-print; don't just narrate a one-line confirmation."""
+print; don't just narrate a one-line confirmation.\nA tokenless agent — one that does not hold the item's verifier token —\nnever runs `gate-pass` on an `acceptance.independent_verifier` item; the\nverifier does, passing `--verifier-token-file <path>` (never the token\nvalue)."""
         ),
     },
     "agy": {
@@ -1993,6 +2039,17 @@ file)."""
         ),
         "LAND_BODY": (
             """\
+**Independent-verifier handoff, before merge, workers only.** After the
+commit below and before any merge/push: an explicit `--handoff` run always
+stops here, token or not — leave the branch unmerged and report the
+`FOREMAN-HANDOFF` line; never merge, push, clean up, or run Close.
+Otherwise, if the item has `acceptance.independent_verifier` and
+`python3 {{TOOLKIT_SCRIPTS}}/dev_status.py verifier-check <slug> --verifier-token-file <path>`
+does not succeed for this session's token path
+(`DEVSTATUS_VERIFIER_TOKEN_FILE`, or none), stop exactly as `--handoff`
+does — leave the branch unmerged. A session holding the verifier token is
+the verifier and continues through merge and Close normally.
+
 On approval, commit (conventional format) — this gate is never bundled with
 what follows. Personal project (this repo, a personal side project — never
 a `work-`-prefixed item or a work repo): offer the follow-on sequence as one
@@ -2027,7 +2084,7 @@ the main checkout is on the merge target with the work merged, so pass
 and `gate-pass <slug> '{"coverage": {"<N>": "run:<run_id>" or
 "manual:<note>"}}'` refuses until each criterion cites a recorded run or a
 manual note. Then retry `approve`. Display the full dashboard stdout these
-print; don't just narrate a one-line confirmation."""
+print; don't just narrate a one-line confirmation.\nA tokenless agent — one that does not hold the item's verifier token —\nnever runs `gate-pass` on an `acceptance.independent_verifier` item; the\nverifier does, passing `--verifier-token-file <path>` (never the token\nvalue)."""
         ),
     },
     "codex": {
@@ -2044,6 +2101,17 @@ file)."""
         ),
         "LAND_BODY": (
             """\
+**Independent-verifier handoff, before merge, workers only.** After the
+commit below and before any merge/push: an explicit `--handoff` run always
+stops here, token or not — leave the branch unmerged and report the
+`FOREMAN-HANDOFF` line; never merge, push, clean up, or run Close.
+Otherwise, if the item has `acceptance.independent_verifier` and
+`python3 {{TOOLKIT_SCRIPTS}}/dev_status.py verifier-check <slug> --verifier-token-file <path>`
+does not succeed for this session's token path
+(`DEVSTATUS_VERIFIER_TOKEN_FILE`, or none), stop exactly as `--handoff`
+does — leave the branch unmerged. A session holding the verifier token is
+the verifier and continues through merge and Close normally.
+
 On approval, commit (conventional format) — this gate is never bundled with
 what follows. Personal project (this repo, a personal side project — never
 a `work-`-prefixed item or a work repo): offer the follow-on sequence as one
@@ -2078,7 +2146,7 @@ the main checkout is on the merge target with the work merged, so pass
 and `gate-pass <slug> '{"coverage": {"<N>": "run:<run_id>" or
 "manual:<note>"}}'` refuses until each criterion cites a recorded run or a
 manual note. Then retry `approve`. Display the full dashboard stdout these
-print; don't just narrate a one-line confirmation."""
+print; don't just narrate a one-line confirmation.\nA tokenless agent — one that does not hold the item's verifier token —\nnever runs `gate-pass` on an `acceptance.independent_verifier` item; the\nverifier does, passing `--verifier-token-file <path>` (never the token\nvalue)."""
         ),
     },
     "pi": {
@@ -2109,6 +2177,16 @@ print the single line
 whose `<sha>` is the commit you just made, and do **not** merge, push, or
 clean up the worktree — the foreman lands. Never run Close below in a handoff
 run.
+
+**Independent-verifier handoff, before merge, workers only.** Token or not,
+a `--handoff` run always stops above. Otherwise, if the item has
+`acceptance.independent_verifier` and
+`python3 {{TOOLKIT_SCRIPTS}}/dev_status.py verifier-check <slug> --verifier-token-file <path>`
+does not succeed for this session's token path
+(`DEVSTATUS_VERIFIER_TOKEN_FILE`, or none), stop exactly as `--handoff` does —
+leave the branch unmerged and report a handoff record including a
+`contract-touch` result for the commit. A session holding the verifier
+token is the verifier and continues through merge and Close normally.
 
 On approval, commit (conventional format) — this gate is never bundled with
 what follows. Personal project (this repo, a personal side project — never
@@ -2149,6 +2227,11 @@ with the work merged, so pass `cwd` pointing at a checkout of it; `action:
 until each criterion cites a recorded run or a manual note) and retry
 `approve`. Display the full dashboard text these return; don't just
 narrate a one-line confirmation.
+
+A tokenless agent — one that does not hold the item's verifier token —
+never runs `gate_pass` on an `acceptance.independent_verifier` item; the
+verifier does, passing `verifier_token_file` (a path, never the token
+value).
 
 If the `dev_status` tool is genuinely unavailable at any of the steps
 above, fall back to the equivalent bash `dev_status.py` command named in
