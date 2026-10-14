@@ -293,9 +293,6 @@ def run_batch(
     the tickets and cleaning up after them.
     """
     with migration_lock.shared("ticket-batches"):
-        # A batch path captured before a layout flip must not write its
-        # state file into the retired store.
-        agent_toolkit_paths.check_not_stale(batch_path)
         return _run_batch_unlocked(batch_path, open_transaction)
 
 

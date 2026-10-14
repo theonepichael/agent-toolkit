@@ -359,13 +359,10 @@ def ensure_data_dir(data_dir: Path | None = None) -> None:
     read-only commands must still run while a migration holds the lock.
     """
     target = data_dir if data_dir is not None else _data_dir()
-    agent_toolkit_paths.check_not_stale(target)
     if target.is_dir():
         return
     with migration_lock.shared("grill"):
-        # Resolved again inside the scope: a flip may have happened since.
         target = data_dir if data_dir is not None else _data_dir()
-        agent_toolkit_paths.check_not_stale(target)
         target.mkdir(parents=True, exist_ok=True)
 
 

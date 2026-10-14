@@ -220,3 +220,24 @@ git -C "$FORK" reset --keep pre-update-<release>
 ```
 
 Keep the `pre-update-<release>` tag until the next upstream merge.
+
+## Clean up dead migration state (one-time)
+
+After the release that removes the last of the layout-cutover guards
+(the stale-layout refusal, the legacy layout knowledge, and the
+legacy-pointer aliasing check), the retired Release 0→1 migrator's per-machine
+journal is dead and can be deleted. Resolve the effective XDG state directory
+with the same rule `cli_common.state_dir()` uses — `$XDG_STATE_HOME` only when
+set to an absolute path, else `~/.local/state` — and delete only the journal:
+
+```bash
+STATE="$(python3 -c 'import os; from pathlib import Path; s = os.environ.get("XDG_STATE_HOME"); print(Path(s) if s and Path(s).is_absolute() else Path.home() / ".local/state")')"
+rm -rf -- "$STATE/agent-toolkit/migrations"
+```
+
+This deletion is **irreversible** — inspect the journal first (and back it up
+if its history is wanted). Do **not** remove anything else under the state
+directory: `migration.lock` and `migration-observations.jsonl` belong to the
+still-live migration lock, `baseline.json` and `baseline-snapshot-*.blob` are
+the live `--depart` install baseline, and `history.jsonl` / `timing.jsonl` /
+`harness-discovery-*.json` / `trust-sessions/` are live state.

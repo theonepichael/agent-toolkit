@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """Single source of truth for toolkit data paths.
 
-Domains (release 0 legacy paths under ``<home>/.claude/data/``):
+Every domain resolves under ``<toolkit-root>/data/<segment>``, where
+``<toolkit-root>`` is ``$AGENT_TOOLKIT_HOME`` if set, otherwise
+``<home>/.agent-toolkit``. ``AGENT_TOOLKIT_HOME`` must be absolute.
+
+Domains:
 
 ===================  ===========================================
-Domain               Resolved path
+Domain               Resolved path (under ``<toolkit-root>/data/``)
 ===================  ===========================================
 work-items           ``backlog/``
 out-of-scope         ``backlog-out-of-scope/``
@@ -18,32 +22,15 @@ backend-log          ``backend_calls.jsonl``
 Layout pointer
 --------------
 The pointer is a JSON object with ``schema`` set to ``1`` and ``layout`` set
-to ``"toolkit-home"``; the ``"legacy"`` value was retired with the Release
-0→1 cutover. It is read from one place:
-``<toolkit-root>/data/toolkit_state.json``. When it is absent the layout is
-``"toolkit-home"`` (a fresh install). A malformed or unreadable pointer — or
-one that still says ``"legacy"`` — raises :class:`LayoutError`, as does an
-``AGENT_TOOLKIT_HOME`` that points the pointer at ``~/.claude``.
-
-Toolkit-home root
------------------
-In ``"toolkit-home"`` layout, data lives under ``<toolkit-root>/data/``,
-where ``<toolkit-root>`` is ``$AGENT_TOOLKIT_HOME`` if set, otherwise
-``<home>/.agent-toolkit``. ``AGENT_TOOLKIT_HOME`` must be absolute.
-:func:`toolkit_root` returns that root on its own. Install locations under it
-(``scripts/``, ``hooks/``, ``icons/``) are never switched by layout.
-
-Stale paths
------------
-Callers resolve paths at each use, never at import. A path under the retired
-legacy layout (``~/.claude/data``) can still be reached through an explicit
-argument; :func:`check_not_stale` refuses such a path
-(:class:`StaleLayoutError`). A path under the toolkit-home layout or under
-neither layout passes.
+to ``"toolkit-home"`` (the ``"legacy"`` value was retired with the Release
+0→1 cutover). It is read from ``<toolkit-root>/data/toolkit_state.json``.
+When it is absent the layout is ``"toolkit-home"`` (a fresh install). A
+malformed or unreadable pointer — or one that still says ``"legacy"`` —
+raises :class:`LayoutError`, as does a relative ``AGENT_TOOLKIT_HOME``.
 
 Caching
 -------
-A :class:`Resolver` caches the parsed layout keyed by ``<home>``, the
+A :class:`Resolver` caches a validated pointer keyed by ``<home>``, the
 toolkit root, and the pointer's ``(st_ino, st_mtime_ns, st_size)`` (or a
 sentinel for "missing"). Every call re-``stat``s the pointer and re-reads
 when any part of the key changes.
@@ -56,12 +43,9 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Literal
 
 # What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
 TOOLKIT_DATA = "infrastructure"
-
-Layout = Literal["legacy", "toolkit-home"]
 
 DOMAINS: tuple[str, ...] = (
     "work-items",
@@ -72,12 +56,11 @@ DOMAINS: tuple[str, ...] = (
     "guard-rail-log",
     "backend-log",
 )
-POINTER_RELPATH = Path(".claude") / "data" / "toolkit_state.json"
 TOOLKIT_HOME_POINTER_RELPATH = Path("data") / "toolkit_state.json"
 POINTER_SCHEMA = 1
 ENV_HOME = "AGENT_TOOLKIT_HOME"
 
-_LEGACY_SEGMENTS: dict[str, str] = {
+DOMAIN_SEGMENTS: dict[str, str] = {
     "work-items": "backlog",
     "out-of-scope": "backlog-out-of-scope",
     "decisions": "grill",
@@ -93,10 +76,6 @@ _SELECT_ATTEMPTS = 3
 
 class LayoutError(Exception):
     """Raised when the layout pointer is malformed or the override is invalid."""
-
-
-class StaleLayoutError(LayoutError):
-    """Raised when a path belongs to the layout that is no longer current."""
 
 
 class UnknownDomainError(ValueError):
@@ -117,7 +96,7 @@ class Resolver:
     """Resolve toolkit data paths with per-process caching."""
 
     def __init__(self) -> None:
-        self._cache: dict[str, object] = {"key": None, "layout": "legacy"}
+        self._cache: dict[str, object] = {"key": None}
 
     def _home(self) -> Path:
         return Path.home()
@@ -131,7 +110,7 @@ class Resolver:
             return root
         return home / ".agent-toolkit"
 
-    def _read_pointer(self, pointer: Path) -> Layout:
+    def _read_pointer(self, pointer: Path) -> str:
         try:
             raw = pointer.read_text()
         except FileNotFoundError as exc:
@@ -174,7 +153,7 @@ class Resolver:
                 "fix or remove it"
             )
 
-        return layout  # type: ignore[return-value]
+        return "toolkit-home"
 
     def _signature(self, pointer: Path) -> object:
         try:
@@ -187,29 +166,18 @@ class Resolver:
 
     def _select(
         self,
-        legacy_path: Path,
         new: tuple[Path, object] | None,
         root_error: LayoutError | None,
-    ) -> Layout:
+    ) -> None:
         if new is not None:
             new_path, new_sig = new
-            # realpath, not samefile: the aliasing is a misconfiguration even
-            # when neither pointer exists yet.
-            if os.path.realpath(new_path) == os.path.realpath(legacy_path):
-                raise LayoutError(
-                    f"the toolkit-home pointer {new_path} and the legacy pointer "
-                    f"{legacy_path} are the same file; {ENV_HOME} must not "
-                    "point at ~/.claude"
-                )
             if new_sig is not _MISSING:
-                return self._read_pointer(new_path)
+                self._read_pointer(new_path)
         if root_error is not None:
             raise root_error
-        return "toolkit-home"
 
-    def _load(self) -> tuple[Path, Layout]:
+    def _load(self) -> Path:
         home = self._home()
-        legacy_path = home / POINTER_RELPATH
         root: Path | None
         try:
             root = self._toolkit_root(home)
@@ -221,71 +189,33 @@ class Resolver:
             new_sig = _MISSING if new_path is None else self._signature(new_path)
             key = (str(home), str(root), new_sig)
             if key == self._cache["key"]:
-                return home, self._cache["layout"]  # type: ignore[return-value]
+                return home
             new = None if new_path is None else (new_path, new_sig)
             try:
-                layout = self._select(legacy_path, new, root_error)
+                self._select(new, root_error)
             except _Vanished:
                 continue
-            self._cache = {"key": key, "layout": layout}
-            return home, layout
+            self._cache = {"key": key}
+            return home
         raise LayoutError(
             f"layout pointer kept changing while it was read ({new_path}); "
             "retry the command"
         )
 
     def invalidate(self) -> None:
-        """Drop the cached layout so the next call re-reads the pointer."""
-        self._cache = {"key": None, "layout": "legacy"}
+        """Drop the cached pointer validation so the next call re-reads it."""
+        self._cache = {"key": None}
 
-    def layout(self) -> Layout:
-        """Return the current layout, reading the pointer if necessary."""
-        return self._load()[1]
-
-    def _path_in(self, home: Path, domain: str, layout: Layout) -> Path:
-        if domain not in _LEGACY_SEGMENTS:
+    def _path_in(self, home: Path, domain: str) -> Path:
+        if domain not in DOMAIN_SEGMENTS:
             raise UnknownDomainError(domain)
-        segment = _LEGACY_SEGMENTS[domain]
-        if layout == "legacy":
-            return home / ".claude" / "data" / segment
+        segment = DOMAIN_SEGMENTS[domain]
         return self._toolkit_root(home) / "data" / segment
 
     def path_for(self, domain: str) -> Path:
-        """Resolve ``domain`` to a filesystem path for the current layout."""
-        home, layout = self._load()
-        return self._path_in(home, domain, layout)
-
-    def check_not_stale(self, path: Path) -> None:
-        """Raise :class:`StaleLayoutError` if ``path`` belongs to the other layout.
-
-        ``path`` is stale when it equals or sits under some domain's path for
-        the non-current layout and under no domain's path for the current
-        one. Paths are compared after ``os.path.abspath``; symlinks are not
-        followed. While ``legacy`` is current, an invalid
-        ``AGENT_TOOLKIT_HOME`` is ignored here, because legacy resolution
-        never reads it.
-        """
-        home, layout = self._load()
-        other: Layout = "toolkit-home" if layout == "legacy" else "legacy"
-        target = Path(os.path.abspath(path))
-        current = [
-            Path(os.path.abspath(self._path_in(home, d, layout))) for d in DOMAINS
-        ]
-        if any(target.is_relative_to(root) for root in current):
-            return
-        try:
-            stale = [self._path_in(home, d, other) for d in DOMAINS]
-        except LayoutError:
-            if layout == "legacy":
-                return
-            raise
-        for root in stale:
-            if target.is_relative_to(os.path.abspath(root)):
-                raise StaleLayoutError(
-                    f"{path} belongs to the {other!r} layout, but the current "
-                    f"layout is {layout!r}; it was resolved before a layout flip. "
-                    "Re-run the command so it resolves the current path."
-                )
+        """Resolve ``domain`` to a filesystem path under the toolkit root."""
+        home = self._load()
+        return self._path_in(home, domain)
 
 
 DEFAULT_RESOLVER: Resolver = Resolver()
@@ -299,13 +229,7 @@ def path_for(domain: str) -> Path:
 def toolkit_root() -> Path:
     """Return ``$AGENT_TOOLKIT_HOME``, or ``<home>/.agent-toolkit``.
 
-    Independent of layout: reads no pointer, so a malformed one cannot break a
-    lookup of an install location. Raises :class:`LayoutError` for a relative
-    override.
+    Reads no pointer, so a malformed one cannot break a lookup of an install
+    location. Raises :class:`LayoutError` for a relative override.
     """
     return Resolver()._toolkit_root(Path.home())
-
-
-def check_not_stale(path: Path) -> None:
-    """Refuse a path from the non-current layout using :data:`DEFAULT_RESOLVER`."""
-    DEFAULT_RESOLVER.check_not_stale(path)

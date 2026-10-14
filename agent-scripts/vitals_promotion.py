@@ -616,7 +616,6 @@ def _main() -> None:
             sys.exit(1)
         try:
             data_dir = args.data_dir if args.data_dir is not None else _data_dir()
-            agent_toolkit_paths.check_not_stale(data_dir)
             results = search_vitals(
                 data_dir / "vitals",
                 keywords,
@@ -644,10 +643,7 @@ def _main() -> None:
     with ExitStack() as scope:
         if args.apply:
             scope.enter_context(migration_lock.shared("vitals"))
-        # Resolved inside the scope, so a layout flip cannot fall between
-        # resolving the store and writing to it.
         data_dir = args.data_dir if args.data_dir is not None else _data_dir()
-        agent_toolkit_paths.check_not_stale(data_dir)
         slugs = grill.all_session_slugs(data_dir)
         sessions = grill.all_sessions(data_dir=data_dir)
         if len(sessions) != len(slugs):

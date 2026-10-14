@@ -91,19 +91,16 @@ Single source of truth for toolkit data paths.
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI: none (library module).
 - Filesystem constants:
-  - `POINTER_RELPATH = Path('.claude') / 'data' / 'toolkit_state.json'`
   - `TOOLKIT_HOME_POINTER_RELPATH = Path('data') / 'toolkit_state.json'`
 - Exceptions:
   - `class LayoutError(Exception)` — Raised when the layout pointer is malformed or the override is invalid.
-  - `class StaleLayoutError(LayoutError)` — Raised when a path belongs to the layout that is no longer current.
   - `class UnknownDomainError(ValueError)` — Raised when :func:`path_for` is asked for an unregistered domain.
 - Public classes:
   - `class Resolver` — Resolve toolkit data paths with per-process caching.
 - Public functions:
   - `path_for(domain: str) -> Path` — Resolve ``domain`` using :data:`DEFAULT_RESOLVER`.
   - `toolkit_root() -> Path` — Return ``$AGENT_TOOLKIT_HOME``, or ``<home>/.agent-toolkit``.
-  - `check_not_stale(path: Path) -> None` — Refuse a path from the non-current layout using :data:`DEFAULT_RESOLVER`.
-- Tested by: `agent-scripts/test_layouts.py`, `test/test_agent_toolkit_paths.py`, `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_gen_interfaces.py`, `test/test_grill.py`, `test/test_guard_rails.py`, `test/test_install.py`, `test/test_llm_backends.py`, `test/test_machine_id.py`, `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`, `test/test_second_opinion.py`, `test/test_to_tickets_runner.py`
+- Tested by: `test/test_agent_toolkit_paths.py`, `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_gen_interfaces.py`, `test/test_grill.py`, `test/test_guard_rails.py`, `test/test_install.py`, `test/test_llm_backends.py`, `test/test_machine_id.py`, `test/test_migration_lock_adoption.py`, `test/test_second_opinion.py`, `test/test_to_tickets_runner.py`
 
 ### `agent-scripts/agy_workspace_trust.py`
 
@@ -945,7 +942,7 @@ grill.py — grill-me session state CLI. All session mutations go through here.
   - `frontier_of(session: Session) -> DecisionList` — Service-API name for :func:`frontier` — every open decision whose dependencies are all resolved.
   - `render_markdown(session: Session) -> str` — Render a session's status as a Markdown document.
 - Subcommand handlers: `cmd_new`, `cmd_ask`, `cmd_decide`, `cmd_revise`, `cmd_rm`, `cmd_verdict`, `cmd_plan`, `cmd_mark_pending_execution`, `cmd_pending_plan`, `cmd_next`, `cmd_frontier`, `cmd_render`, `cmd_list`, `cmd_show`
-- Tested by: `test/test_grill.py`, `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`, `test/test_second_opinion.py`, `test/test_to_tickets_runner.py`
+- Tested by: `test/test_grill.py`, `test/test_migration_lock_adoption.py`, `test/test_second_opinion.py`, `test/test_to_tickets_runner.py`
 
 ### `agent-scripts/guard_rails.py`
 
@@ -1705,7 +1702,7 @@ to_tickets_runner.py — create a linked batch of dev_status.py backlog items fr
   - `run(batch_path: Path) -> list[str]` — Create every ticket in ``batch_path``'s batch, resuming if interrupted before.
   - `build_parser() -> argparse.ArgumentParser`
 - Subcommand handlers: `cmd_run`
-- Tested by: `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`, `test/test_to_tickets_runner.py`
+- Tested by: `test/test_migration_lock_adoption.py`, `test/test_to_tickets_runner.py`
 
 ### `agent-scripts/toolkit_checkout.py`
 
@@ -1759,7 +1756,7 @@ vitals-promotion.py — mechanical vitals-promotion pass over grill session data
   - `classify(sessions: list[Session], *, vitals_dir: Path) -> Report` — Run the whole pass read-only: report what it *would* promote and supersede.
   - `promote(sessions: list[Session], *, vitals_dir: Path) -> Report` — Run the pass and write every file it dirtied.
   - `print_report(report: Report, apply: bool, quiet: bool = False) -> None`
-- Tested by: `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`, `test/test_vitals_promotion.py`
+- Tested by: `test/test_migration_lock_adoption.py`, `test/test_vitals_promotion.py`
 
 ### `agent-scripts/worktree.py`
 

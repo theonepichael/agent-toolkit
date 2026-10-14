@@ -889,8 +889,8 @@ def generated_legacy_references(
 
 LEGACY_PATH_EXEMPT: dict[str, str] = {
     # One tracked file per row, so each row's owner and staleness are exact.
-    # Permanent: these name the legacy layout on purpose.
-    "agent-scripts/agent_toolkit_paths.py": "resolves the legacy layout",
+    # Permanent: this file names the legacy layout on purpose (it classifies
+    # the ``.claude`` references every other file must avoid).
     "scripts/check_toolkit_paths.py": "classifies legacy paths",
 }
 

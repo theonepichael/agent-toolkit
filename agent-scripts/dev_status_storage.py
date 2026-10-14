@@ -40,9 +40,9 @@ TOOLKIT_DATA = "writer"
 # ── store paths ──────────────────────────────────────────────────────────────
 #
 # Every path is resolved through agent_toolkit_paths at each call, never at
-# import: a long-lived process must follow a layout flip. A store operation
+# import: a long-lived process must follow the toolkit root. A store operation
 # resolves its default paths only after it has entered its migration scope,
-# so a flip cannot land between resolving a path and writing to it.
+# so the paths it writes are always the current ones.
 
 
 def data_dir() -> Path:
@@ -141,9 +141,6 @@ def __getattr__(name: str) -> Path:
     if accessor is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     return accessor()
-
-
-check_not_stale = agent_toolkit_paths.check_not_stale
 
 
 # ── machine id ───────────────────────────────────────────────────────────────
@@ -290,18 +287,14 @@ def machine_id(
     ctx = _OPERATION_IDENTITY.get()
     if ctx is not None and ctx[0] == mid_file:
         return ctx[1]
-    check_not_stale(mid_file)
     existing = _read_machine_id(mid_file)
     if existing is not None:
         return existing
     try:
         # Creating the id writes into the work-items domain, so it takes the
-        # migration scope (only here, never for a plain read). Paths are
-        # resolved again inside it: a flip may have happened since the read.
+        # migration scope (only here, never for a plain read).
         with migration_lock.shared("machine-id"):
             mid_file, d_dir = _machine_id_paths(explicit_file, explicit_dir)
-            check_not_stale(mid_file)
-            check_not_stale(d_dir)
             d_dir.mkdir(parents=True, exist_ok=True)
             mid_file.parent.mkdir(parents=True, exist_ok=True)
             with _machine_id_init_lock(mid_file):
@@ -365,8 +358,6 @@ def repair_machine_id(
         with ExitStack() as scope:
             scope.enter_context(migration_lock.shared("machine-id"))
             mid_file, d_dir = _machine_id_paths(machine_id_file, data_dir)
-            check_not_stale(mid_file)
-            check_not_stale(d_dir)
             d_dir.mkdir(parents=True, exist_ok=True)
             mid_file.parent.mkdir(parents=True, exist_ok=True)
             scope.enter_context(_machine_id_init_lock(mid_file))
@@ -432,7 +423,6 @@ def atomic_write_json(path: Path, payload: str, prefix: str) -> None:
     debris behind or corrupts the destination. Ensures the temp file is
     fsynced before rename and the containing directory is fsynced after.
     """
-    check_not_stale(path)
     directory = path.parent
     directory.mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(dir=directory, prefix=prefix)
@@ -464,7 +454,6 @@ _atomic_write_json = atomic_write_json
 
 def backup_before_bulk_delete(path: Path) -> None:
     """Snapshot a data file before a filter-based bulk deletion."""
-    check_not_stale(path)
     if not path.exists():
         return
     stamp = datetime.now().strftime("%Y%m%dT%H%M%S%f")
@@ -617,8 +606,8 @@ def backlog_lock(
         noted = False
         # The migration scope is entered first and closed last (after the
         # store unlock), so the migration lock is always outermost. Default
-        # paths are resolved inside it, so a layout flip can never fall
-        # between resolving the store and creating it.
+        # paths are resolved inside it, so a path is never resolved and then
+        # written against a stale root.
         migration = ExitStack()
         _backlog_lock_count += 1
         try:
@@ -638,8 +627,6 @@ def backlog_lock(
                     f"for {_backlog_lock_dir}"
                 )
             if outermost:
-                check_not_stale(d_dir)
-                check_not_stale(l_file)
                 d_dir.mkdir(parents=True, exist_ok=True)
                 acquired_fd = os.open(str(l_file), os.O_WRONLY | os.O_CREAT, 0o644)
                 wait_start = time.monotonic()
@@ -717,8 +704,6 @@ def out_of_scope_lock(
                 l_file = (
                     lock_file if lock_file is not None else _out_of_scope_lock_file()
                 )
-                check_not_stale(oos_dir)
-                check_not_stale(l_file)
                 oos_dir.mkdir(parents=True, exist_ok=True)
                 fd = os.open(str(l_file), os.O_WRONLY | os.O_CREAT, 0o644)
                 try:
@@ -841,8 +826,6 @@ def append_journal_event(
     """Append one event to the journal, best-effort."""
     j_file = journal_file or _journal_file()
     d_dir = data_dir or _data_dir()
-    check_not_stale(j_file)
-    check_not_stale(d_dir)
     line = json.dumps(entry, sort_keys=True)
     try:
         d_dir.mkdir(parents=True, exist_ok=True)
@@ -1023,8 +1006,6 @@ def append_run_record(
     """Append one run-evidence row to :func:`runs_file` (best-effort)."""
     r_file = runs_file or _runs_file()
     d_dir = data_dir or _data_dir()
-    check_not_stale(r_file)
-    check_not_stale(d_dir)
     line = json.dumps(record, sort_keys=True)
     try:
         d_dir.mkdir(parents=True, exist_ok=True)
