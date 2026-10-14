@@ -92,7 +92,7 @@ object. Record what the fork changes on top of upstream, so step 3 can compare
 against it:
 
 ```bash
-R=$(git -C "$UP" rev-parse 'release-<n>^{commit}')   # the release you are taking
+R=$(git -C "$UP" rev-parse 'refs/tags/release-<n>^{commit}')   # the release you are taking
 git -C "$FORK" fetch -q "$UP" "$R"                    # the chosen commit must exist in the fork
 LAST=$(git -C "$FORK" merge-base pre-update-<release> "$R")   # last upstream commit already in the fork
 git -C "$UP" log --oneline "$LAST..$R"               # read every line
