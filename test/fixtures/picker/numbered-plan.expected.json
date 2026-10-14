@@ -1,0 +1,54 @@
+{
+  "selectedIndex": 1,
+  "options": [
+    "Commit now (Recommended)",
+    "Stop here",
+    "Something else (type it)"
+  ],
+  "match": [
+    {
+      "answer": "no",
+      "expect": null
+    },
+    {
+      "answer": "No",
+      "expect": null
+    },
+    {
+      "answer": "Stop here",
+      "expect": "Stop here"
+    },
+    {
+      "answer": "stop",
+      "expect": "Stop here"
+    },
+    {
+      "answer": "commit now",
+      "expect": "Commit now (Recommended)"
+    },
+    {
+      "answer": "Something else (type it)",
+      "expect": null
+    },
+    {
+      "answer": "type it",
+      "expect": null
+    }
+  ],
+  "navigation": [
+    {
+      "from": 1,
+      "to": 2,
+      "arrows": [
+        "down"
+      ]
+    },
+    {
+      "from": 2,
+      "to": 1,
+      "arrows": [
+        "up"
+      ]
+    }
+  ]
+}

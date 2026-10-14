@@ -1,0 +1,36 @@
+{
+  "selectedIndex": 1,
+  "options": [
+    "Commit (Recommended)",
+    "Don't commit yet",
+    "Something else (type it)"
+  ],
+  "match": [
+    {
+      "answer": "commit",
+      "expect": null
+    },
+    {
+      "answer": "commit (recommended)",
+      "expect": "Commit (Recommended)"
+    },
+    {
+      "answer": "don't commit yet",
+      "expect": "Don't commit yet"
+    },
+    {
+      "answer": "type it",
+      "expect": null
+    }
+  ],
+  "navigation": [
+    {
+      "from": 1,
+      "to": 3,
+      "arrows": [
+        "down",
+        "down"
+      ]
+    }
+  ]
+}

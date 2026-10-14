@@ -1,0 +1,10 @@
+{
+  "options": [
+    "Yes, commit (Recommended)",
+    "No, don't commit",
+    "Something else (type it)"
+  ],
+  "markedIndex": 3,
+  "editorText": "",
+  "complete": true
+}

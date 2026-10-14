@@ -1,0 +1,50 @@
+{
+  "selectedIndex": 1,
+  "options": [
+    "Merge + push + cleanup (Recommended)",
+    "Merge and push only",
+    "Something else (type it)"
+  ],
+  "match": [
+    {
+      "answer": "merge + push + cleanup (recommended)",
+      "expect": "Merge + push + cleanup (Recommended)"
+    },
+    {
+      "answer": "Merge and push only",
+      "expect": "Merge and push only"
+    },
+    {
+      "answer": "Merge",
+      "expect": null
+    },
+    {
+      "answer": "Something else (type it)",
+      "expect": null
+    },
+    {
+      "answer": "no",
+      "expect": null
+    },
+    {
+      "answer": "in",
+      "expect": null
+    }
+  ],
+  "navigation": [
+    {
+      "from": 1,
+      "to": 2,
+      "arrows": [
+        "down"
+      ]
+    },
+    {
+      "from": 2,
+      "to": 1,
+      "arrows": [
+        "up"
+      ]
+    }
+  ]
+}

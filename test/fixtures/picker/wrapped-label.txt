@@ -1,0 +1,19 @@
+───────────────────────────────────────
+ Land
+ Merge these changes to main, push
+ the branch, and clean up the
+ worktree when the gate passes?
+
+> 1. Merge + push + cleanup
+  (Recommended)
+     merge locally, push to the
+     remote, remove the worktree
+  2. Merge and push only
+     merge and push but keep the
+     worktree in place
+  3. Something else (type it)
+     Answer in your own words instead.
+
+ ↑↓ navigate • Enter to select • Esc to
+ cancel
+───────────────────────────────────────

@@ -1,0 +1,19 @@
+────────────────────────────────────────────────────────────────────────────────
+ Land
+ Commit these changes?
+
+  1. Yes, commit (Recommended)
+     Commit the staged changes now.
+  2. No, don't commit
+     Leave them uncommitted.
+> 3. Something else (type it) ✎
+     Answer in your own words instead.
+
+ Your answer:
+ ──────────────────────────────────────────────────────────────────────────────
+ Foreman review: read the feedback file at the recorded path and act on it     
+ before retrying the send-back exactly as written.                             
+ ──────────────────────────────────────────────────────────────────────────────
+
+ Enter to submit • Esc to go back
+────────────────────────────────────────────────────────────────────────────────

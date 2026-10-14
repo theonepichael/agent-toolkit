@@ -1,0 +1,10 @@
+{
+  "options": [
+    "Yes, commit (Recommended)",
+    "No, don't commit",
+    "Something else (type it)"
+  ],
+  "markedIndex": 3,
+  "editorText": "Foreman review: read the feedback file at the recorded path and act on it before retrying the send-back exactly as written.",
+  "complete": true
+}

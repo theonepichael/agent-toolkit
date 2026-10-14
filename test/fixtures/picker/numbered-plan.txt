@@ -1,0 +1,20 @@
+ Here is the plan I intend to follow:
+
+ 1. Merge to main and push
+ 2. Remove the worktree
+ 3. Close the item
+
+─────────────────────────────────────────────────────────────────────────────────────
+ Commit
+ Commit these changes?
+
+> 1. Commit now (Recommended)
+     Commit the current changes right away.
+  2. Stop here
+     Leave the changes uncommitted and stop.
+  3. Something else (type it)
+     Answer in your own words instead.
+
+ ↑↓ navigate • Enter to select • Esc to cancel
+─────────────────────────────────────────────────────────────────────────────────────
+~/agent-toolkit (main)

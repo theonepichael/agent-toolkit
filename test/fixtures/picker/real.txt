@@ -1,0 +1,20 @@
+ question Reply OK to continue?
+
+
+ ⠧ Working...
+
+─────────────────────────────────────────────────────────────────────────────────────
+ Smoke test
+ Reply OK to continue?
+
+> 1. OK
+     Continue with whatever comes next in the session.
+  2. Cancel
+     Stop here without doing anything further.
+  3. Something else (type it)
+     Answer in your own words instead.
+
+ ↑↓ navigate • Enter to select • Esc to cancel
+─────────────────────────────────────────────────────────────────────────────────────
+~/agent-toolkit-meta-pi-swarm-orchestration (meta-pi-swarm-orchestration)
+↑16k ↓65 $0.001 1.6%/1.0M (auto)                                 glm-5.3-flash • high

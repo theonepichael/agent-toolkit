@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Launch supported agents in herdr tabs to work backlog items.
+r"""Launch supported agents in herdr tabs to work backlog items.
 
 Owns the launch recipe so no session has to re-derive it. It launches only:
 ``swarm_spawn``/``swarm_poll`` in ``pi/extensions/swarm-tool.ts`` keep owning
@@ -43,11 +43,18 @@ failure. Any other failure still fails on the first attempt, unchanged.
 Usage:
     herdr_delegate.py plan
     herdr_delegate.py launch --slug <slug> [--model <model>]
-                             [--kind {pi,copilot,agy,codex}]
+                             [--kind {pi,copilot,agy,codex}] [--handoff]
     herdr_delegate.py launch --swarm <N> --prefix <prefix> [--model <model>]
                              [--kind {pi,copilot}]
     herdr_delegate.py launch --serial --prefix <prefix> [--model <model>]
                              [--kind {pi,copilot}]
+    herdr_delegate.py watch <agent>... [--prefix <prefix>] --state <file>
+                             [--ack <name>=<seq>]... [--ack-gone <name>]...
+                             [--grace-s <n>] [--timeout-s <n>] [--poll-s <n>]
+                             [--strict]
+    herdr_delegate.py answer <agent> --expect-pane <pane>
+                             (--option <label> | --index <n> | --other --text <text>)
+                             [--settle-s <n>]
     herdr_delegate.py restart --swarm <N> --prefix <prefix> [--run-id <runId>]
                               [--model <model>] [--kind {pi,copilot}]
     herdr_delegate.py restart --serial --prefix <prefix> [--run-id <runId>]
@@ -60,6 +67,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import fcntl
 import json
 import os
 import re
@@ -69,6 +77,7 @@ import sys
 import tempfile
 import time
 import uuid
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 # Deliberately NOT .resolve()'d: dev_status.py and this script may live in
@@ -83,6 +92,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import agent_toolkit_paths  # noqa: E402
 import agy_workspace_trust  # noqa: E402
 import cli_common  # noqa: E402
+import herdr_picker  # noqa: E402
 from backlog_claim_lookup import (  # noqa: E402
     BacklogClaimLookup,
     LocalClaimLookup,
@@ -108,6 +118,21 @@ TOOLKIT_DATA_VIA = ("dev_status_storage",)
 
 UNATTENDED_ENV = "PI_AGENT_UNATTENDED=1"
 """Set on the tab so it is in pi's environment before pi starts."""
+
+
+def foreman_capture_file(slug: str) -> Path:
+    """The worker's digest-capture file for a handoff launch."""
+    return (
+        agent_toolkit_paths.path_for("work-items").parent
+        / "foreman"
+        / f"{slug}-digest.json"
+    )
+
+
+def foreman_capture_env(slug: str) -> str:
+    """The env pair that points a handoff worker at its capture file."""
+    return f"PI_SWARM_CAPTURE_FILE={foreman_capture_file(slug)}"
+
 
 # `prefix_of` and `is_worker_safe` are imported, never redefined. The whole
 # point of the prefix scheme is one source of truth for "may a worker take
@@ -248,11 +273,17 @@ def group_by_prefix(slugs: list[str]) -> list[dict[str, object]]:
     return rows
 
 
-def build_tab_argv(*, cwd: str, label: str, kind: str = "pi") -> list[str]:
-    """`herdr tab create` argv. For pi, the env pair is what makes the worker unattended."""
+def build_tab_argv(
+    *, cwd: str, label: str, kind: str = "pi", handoff_slug: str | None = None
+) -> list[str]:
+    """`herdr tab create` argv. For pi, the env pair is what makes the worker unattended;
+    a handoff launch also points the worker at its capture file via the same env-var
+    mechanism the swarm uses."""
     argv = ["tab", "create", "--cwd", cwd, "--label", label]
     if kind == "pi":
         argv += ["--env", UNATTENDED_ENV]
+        if handoff_slug:
+            argv += ["--env", foreman_capture_env(handoff_slug)]
     argv += ["--no-focus"]
     return argv
 
@@ -329,10 +360,13 @@ def build_agent_start_argv(
     return argv
 
 
-def worker_prompt(slug: str, kind: str = "pi") -> str:
-    """One worker, one item, unattended."""
+def worker_prompt(slug: str, kind: str = "pi", handoff: bool = False) -> str:
+    """One worker, one item, unattended. ``handoff`` makes the worker stop after
+    its commit gate and print the FOREMAN-HANDOFF line, leaving the landing to
+    the foreman."""
     invoke = "$backlog-item" if kind == "codex" else "/backlog-item"
-    return f"{invoke} --auto {slug}"
+    suffix = " --handoff" if handoff else ""
+    return f"{invoke} --auto {slug}{suffix}"
 
 
 def _scope_prompt(
@@ -583,6 +617,623 @@ def parse_agent_status(listing: dict[str, object], name: str) -> str | None:
     return None
 
 
+# ── foreman `watch` ─────────────────────────────────────────────────────────
+
+WATCH_ATTENTION_STATUSES = ("blocked", "done", "idle")
+WATCH_DEFAULT_GRACE_S = 60
+WATCH_DEFAULT_POLL_S = 15
+WATCH_TIMEOUT_EXIT = 124
+
+
+def parse_agent_listing_strict(
+    listing: dict[str, object],
+) -> list[dict[str, object]]:
+    """Agent records out of `herdr agent list`, strict; refuse a malformed envelope.
+
+    Unlike :func:`parse_agent_names` -- which returns ``[]`` on a malformed
+    envelope, silently reading garbage as "no agents" -- this raises
+    :class:`RefusedError` (exit 2) on anything that is not exactly
+    ``{"result": {"agents": [...]}}`` with well-formed records. Unnamed records
+    (foreign interactive agents) are skipped: they cannot be watched by name.
+    A named record missing a string ``agent_status`` or an integer
+    ``state_change_seq`` is malformed.
+    """
+    if not isinstance(listing, dict):
+        raise RefusedError("malformed agent listing: not a JSON object")
+    result = listing.get("result")
+    if not isinstance(result, dict):
+        raise RefusedError("malformed agent listing: missing 'result' object")
+    agents = result.get("agents")
+    if not isinstance(agents, list):
+        raise RefusedError("malformed agent listing: 'result.agents' is not a list")
+    records: list[dict[str, object]] = []
+    for raw in agents:
+        if not isinstance(raw, dict):
+            raise RefusedError("malformed agent listing: agent record is not an object")
+        name = raw.get("name")
+        if name is None:
+            continue  # unnamed/foreign agent: not watchable by name
+        status = raw.get("agent_status")
+        seq = raw.get("state_change_seq")
+        if (
+            not isinstance(name, str)
+            or not isinstance(status, str)
+            or not isinstance(seq, int)
+            or isinstance(seq, bool)
+        ):
+            raise RefusedError(
+                f"malformed agent listing: record {name!r} lacks a string name, "
+                "string agent_status, or integer state_change_seq"
+            )
+        records.append({"name": name, "status": status, "seq": seq})
+    return records
+
+
+def _empty_watch_state() -> dict[str, object]:
+    return {"agents": {}, "membership": [], "pending_gone": []}
+
+
+def _validate_watch_state(state: object) -> dict[str, object]:
+    """Type/key-check a parsed watch state; refuse anything that isn't the real shape."""
+    if not isinstance(state, dict):
+        raise RefusedError("corrupt watch state: not a JSON object")
+    agents = state.get("agents")
+    if not isinstance(agents, dict):
+        raise RefusedError("corrupt watch state: 'agents' is not an object")
+    for name, rec in agents.items():
+        if not isinstance(name, str) or not isinstance(rec, dict):
+            raise RefusedError("corrupt watch state: invalid agent entry")
+        acked = rec.get("acked_seq")
+        first = rec.get("first_seen_at")
+        ever = rec.get("ever_working")
+        if (
+            not isinstance(acked, int)
+            or isinstance(acked, bool)
+            or not isinstance(first, (int, float))
+            or isinstance(first, bool)
+            or not isinstance(ever, bool)
+        ):
+            raise RefusedError(
+                "corrupt watch state: agent entry missing acked_seq/"
+                "first_seen_at/ever_working"
+            )
+    membership = state.get("membership")
+    pending_gone = state.get("pending_gone")
+    if not isinstance(membership, list) or not all(
+        isinstance(m, str) for m in membership
+    ):
+        raise RefusedError("corrupt watch state: 'membership' is not a list of strings")
+    if not isinstance(pending_gone, list) or not all(
+        isinstance(m, str) for m in pending_gone
+    ):
+        raise RefusedError(
+            "corrupt watch state: 'pending_gone' is not a list of strings"
+        )
+    return {
+        "agents": agents,
+        "membership": list(membership),
+        "pending_gone": list(pending_gone),
+    }
+
+
+def _load_watch_state(path: Path) -> dict[str, object]:
+    if not path.exists():
+        return _empty_watch_state()
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise RefusedError(f"cannot read watch state {path}: {exc}") from exc
+    try:
+        state = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RefusedError(f"corrupt watch state {path}: not valid JSON") from exc
+    return _validate_watch_state(state)
+
+
+def _save_watch_state(path: Path, state: dict[str, object]) -> None:
+    """Atomic write: temp file + ``os.replace``, so an interrupted write cannot
+    leave a half-written state (the previous state survives)."""
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
+@contextlib.contextmanager
+def _watch_lock(state_path: Path) -> Iterator[None]:
+    """Hold an exclusive ``fcntl.flock`` for the watcher's lifetime.
+
+    The lock lives on a stable ``<state>.lock`` sibling (never ``os.replace``d,
+    unlike the state file), so a second watcher on the same state path fails
+    to acquire it and exits 2 immediately.
+    """
+    lock_path = state_path.with_name(state_path.name + ".lock")
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            raise RefusedError(
+                f"watch state {state_path} is locked by another watcher"
+            ) from exc
+        yield
+    finally:
+        os.close(fd)
+
+
+def _cmd_watch(args: argparse.Namespace) -> None:
+    require_herdr_env(os.environ)
+    state_path = Path(args.state)
+    prefix = canonical_prefix(args.prefix) if args.prefix else None
+    names = list(args.agents)
+    grace = args.grace_s
+    timeout = args.timeout_s
+    poll = args.poll_s
+
+    with _watch_lock(state_path):
+        state = _load_watch_state(state_path)
+        now = time.time()
+
+        # Acknowledgements are applied before any poll, so a crash after a
+        # report but before the foreman acts re-reports the same event.
+        for ack in args.ack or []:
+            name, sep, seq_s = ack.rpartition("=")
+            if not sep or not name or not seq_s.isdigit():
+                raise RefusedError(f"--ack {ack!r} is not NAME=SEQ")
+            rec = state["agents"].setdefault(
+                name, {"acked_seq": 0, "first_seen_at": now, "ever_working": False}
+            )
+            rec["acked_seq"] = int(seq_s)
+        for name in args.ack_gone or []:
+            state["pending_gone"] = [n for n in state["pending_gone"] if n != name]
+            state["membership"] = [n for n in state["membership"] if n != name]
+            state["agents"].pop(name, None)
+
+        strict_checked = False
+        deadline = time.monotonic() + timeout
+        while True:
+            listing = herdr(build_agent_list_argv())
+            records = parse_agent_listing_strict(listing)
+            by_name = {str(r["name"]): r for r in records}
+            present = set(by_name)
+            now = time.time()
+
+            if args.strict and not strict_checked:
+                strict_checked = True
+                missing = sorted(n for n in names if n not in present)
+                if missing:
+                    _save_watch_state(state_path, state)
+                    raise RefusedError(
+                        f"--strict: {' '.join(missing)} absent from the first listing"
+                    )
+
+            targets = set(names)
+            if prefix:
+                targets |= {n for n in present if n.startswith(f"{prefix}-")}
+
+            for name in sorted(present & targets):
+                if name not in state["membership"]:
+                    state["membership"].append(name)
+                rec = state["agents"].setdefault(
+                    name, {"acked_seq": 0, "first_seen_at": now, "ever_working": False}
+                )
+                if by_name[name]["status"] == "working":
+                    rec["ever_working"] = True
+
+            attention: dict[str, dict[str, object]] = {}
+            for name in sorted(present & targets):
+                rec = by_name[name]
+                agent = state["agents"][name]
+                if rec["status"] not in WATCH_ATTENTION_STATUSES:
+                    continue
+                if rec["seq"] == agent["acked_seq"]:
+                    continue
+                if rec["status"] == "idle" and (
+                    now - agent["first_seen_at"] < grace and not agent["ever_working"]
+                ):
+                    continue
+                attention[name] = {"status": rec["status"], "seq": rec["seq"]}
+
+            for name in state["membership"]:
+                if name in present:
+                    continue
+                is_target = name in names or (
+                    prefix is not None and name.startswith(f"{prefix}-")
+                )
+                if is_target and name not in state["pending_gone"]:
+                    state["pending_gone"].append(name)
+
+            gone = sorted(state["pending_gone"])
+            all_records = {
+                name: {"status": by_name[name]["status"], "seq": by_name[name]["seq"]}
+                for name in sorted(present & targets)
+            }
+
+            if attention or gone:
+                _save_watch_state(state_path, state)
+                print(
+                    json.dumps(
+                        {"attention": attention, "gone": gone, "all": all_records},
+                        indent=2,
+                    )
+                )
+                return
+
+            _save_watch_state(state_path, state)
+            if time.monotonic() >= deadline:
+                print(
+                    json.dumps(
+                        {
+                            "attention": {},
+                            "gone": gone,
+                            "all": all_records,
+                            "timeout": True,
+                        },
+                        indent=2,
+                    )
+                )
+                raise SystemExit(WATCH_TIMEOUT_EXIT)
+            time.sleep(poll)
+
+
+def cmd_watch(args: argparse.Namespace) -> None:
+    """Report the first watched agent that needs attention; exit 124 on timeout."""
+    try:
+        _cmd_watch(args)
+    except RefusedError as exc:
+        print(f"[herdr_delegate] {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+
+
+# ── foreman `answer` ────────────────────────────────────────────────────────
+
+ANSWER_TEXT_MAX = 120
+ANSWER_TEXT_PATTERN = re.compile(r"[!-~]+(?: [!-~]+)*")
+
+
+def build_agent_get_argv(name: str) -> list[str]:
+    """`herdr agent get` argv; the single-agent payload nests under result.agent."""
+    return ["agent", "get", name]
+
+
+def build_pane_send_keys_argv(pane: str, keys: list[str]) -> list[str]:
+    """`herdr pane send-keys` argv, one key per trailing element."""
+    return ["pane", "send-keys", pane, *keys]
+
+
+def build_pane_send_text_argv(pane: str, text: str) -> list[str]:
+    """`herdr pane send-text` argv."""
+    return ["pane", "send-text", pane, text]
+
+
+def parse_agent_get(listing: dict[str, object]) -> dict[str, str] | None:
+    """Status and pane out of a `herdr agent get` envelope; None if malformed."""
+    result = listing.get("result")
+    agent = result.get("agent") if isinstance(result, dict) else None
+    if not isinstance(agent, dict):
+        return None
+    status = agent.get("agent_status")
+    if not isinstance(status, str):
+        return None
+    pane = agent.get("pane_id")
+    return {"status": status, "pane": pane if isinstance(pane, str) else ""}
+
+
+def validate_answer_text(text: str) -> None:
+    """Refuse --text outside the accepted contract (printable ASCII, single
+    spaces, no leading/trailing space, at most 120 chars, not blank)."""
+    if len(text) > ANSWER_TEXT_MAX:
+        raise RefusedError(f"--text must be at most {ANSWER_TEXT_MAX} characters")
+    if not ANSWER_TEXT_PATTERN.fullmatch(text):
+        raise RefusedError(
+            "--text must be printable ASCII with single spaces only, no leading "
+            "or trailing space, and not blank"
+        )
+
+
+class AnswerOutcome(Exception):
+    """A needs_manual / submitted_unconfirmed outcome, carrying its exit code."""
+
+    def __init__(self, code: int, result: str, input_sent: str, reason: str) -> None:
+        super().__init__(reason)
+        self.code = code
+        self.result = result
+        self.input_sent = input_sent
+        self.reason = reason
+
+
+def _answer_outcome(code: int, result: str, input_sent: str, reason: str) -> None:
+    print(json.dumps({"result": result, "input_sent": input_sent, "reason": reason}))
+    raise SystemExit(code)
+
+
+def _verify_blocked(agent: str, pane: str, identity: list[str], input_sent: str) -> str:
+    """Re-check status/pane/picker identity before a mutation; return visible text.
+
+    ``input_sent`` is what this invocation has already delivered, so a failure
+    after navigation or text is reported as exit 4 (not safe to retry blindly),
+    not exit 3 (safe to retry).
+    """
+    listing = herdr(build_agent_get_argv(agent))
+    info = parse_agent_get(listing)
+    code = 4 if input_sent != "none" else 3
+    if info is None:
+        raise AnswerOutcome(
+            code,
+            "needs_manual",
+            input_sent,
+            f"agent get for {agent!r} returned no recognizable status",
+        )
+    if info["status"] != "blocked":
+        raise AnswerOutcome(
+            code,
+            "needs_manual",
+            input_sent,
+            f"agent {agent!r} is {info['status']!r}, not blocked",
+        )
+    if info["pane"] != pane:
+        raise AnswerOutcome(
+            code,
+            "needs_manual",
+            input_sent,
+            f"pane is {info['pane']!r}, expected {pane!r}",
+        )
+    content = read_pane_text(pane, source="visible")
+    parsed = herdr_picker.parse_picker(content)
+    if not parsed.options:
+        raise AnswerOutcome(
+            code,
+            "needs_manual",
+            input_sent,
+            "no question-tool picker in the visible pane",
+        )
+    if [o.label for o in parsed.options] != identity:
+        raise AnswerOutcome(
+            code,
+            "needs_manual",
+            input_sent,
+            "picker identity changed since the last read",
+        )
+    return content
+
+
+def _poll_until(
+    predicate: Callable[[], bool], timeout_s: float, poll_interval: float = 0.2
+) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(poll_interval)
+    return predicate()
+
+
+def _send(argv: list[str], input_sent: str) -> None:
+    """Run a mutation; a herdr failure after input was sent is exit 4, never 2."""
+    try:
+        herdr(argv)
+    except RefusedError as exc:
+        if input_sent != "none":
+            raise AnswerOutcome(4, "needs_manual", input_sent, str(exc)) from exc
+        raise
+
+
+def _visible_editor_text(pane: str) -> str:
+    parsed = herdr_picker.parse_edit_mode(read_pane_text(pane, source="visible"))
+    return "".join(parsed.editor_text_lines) if parsed else ""
+
+
+def _run_answer(args: argparse.Namespace) -> None:
+    require_herdr_env(os.environ)
+    agent = args.agent
+    pane = args.expect_pane
+    settle_s = args.settle_s
+
+    if args.other:
+        validate_answer_text(args.text)
+        text = args.text
+
+    input_sent = "none"
+
+    listing = herdr(build_agent_get_argv(agent))
+    info = parse_agent_get(listing)
+    if info is None:
+        raise RefusedError(f"agent get for {agent!r} returned no recognizable status")
+    if info["status"] != "blocked":
+        _answer_outcome(
+            3,
+            "needs_manual",
+            "none",
+            f"agent {agent!r} is {info['status']!r}, not blocked",
+        )
+    if info["pane"] != pane:
+        _answer_outcome(
+            3, "needs_manual", "none", f"pane is {info['pane']!r}, expected {pane!r}"
+        )
+
+    content = read_pane_text(pane, source="visible")
+    picker = herdr_picker.parse_picker(content)
+    edit = herdr_picker.parse_edit_mode(content)
+
+    # A previous answer attempt may have left the worker already in edit mode
+    # with text in the editor. Drive it directly rather than re-navigating.
+    if edit is not None:
+        if not args.other:
+            _answer_outcome(
+                3,
+                "needs_manual",
+                "none",
+                "worker is already in free-text edit mode; use --other --text, or "
+                "drive selection mode from a fresh picker",
+            )
+        identity = [o.label for o in edit.options]
+        if not edit.complete:
+            _answer_outcome(
+                4, "needs_manual", "none", "editor is scrolled or not fully visible"
+            )
+        _verify_blocked(agent, pane, identity, input_sent)
+        _send(build_pane_send_text_argv(pane, text), input_sent)
+        input_sent = "text"
+        text_settled = _poll_until(
+            lambda: (
+                re.sub(r"\s+", "", _visible_editor_text(pane))
+                == re.sub(r"\s+", "", text)
+            ),
+            settle_s,
+        )
+        if not text_settled:
+            _answer_outcome(
+                4, "needs_manual", "text", "editor text never matched --text"
+            )
+        _verify_blocked(agent, pane, identity, input_sent)
+        _send(build_pane_send_keys_argv(pane, ["enter"]), input_sent)
+        input_sent = "submitted"
+        _finish_answer(pane, input_sent, settle_s)
+        return
+
+    if not picker.options:
+        _answer_outcome(
+            3, "needs_manual", "none", "no question-tool picker in the visible pane"
+        )
+    identity = [o.label for o in picker.options]
+    selected = picker.selected_index
+    if selected is None:
+        _answer_outcome(3, "needs_manual", "none", "picker has no highlighted option")
+
+    if args.other:
+        target = next(
+            (o for o in picker.options if o.label == herdr_picker.OTHER_OPTION_LABEL),
+            None,
+        )
+        if target is None:
+            _answer_outcome(
+                3, "needs_manual", "none", "free-text escape option not present"
+            )
+    elif args.option is not None:
+        target = herdr_picker.match_option(args.option, picker.options)
+        if target is None:
+            _answer_outcome(
+                3,
+                "needs_manual",
+                "none",
+                f"--option {args.option!r} matched no listed option (or was ambiguous)",
+            )
+        if target.label == herdr_picker.OTHER_OPTION_LABEL:
+            _answer_outcome(
+                3, "needs_manual", "none", "select the free-text escape via --other"
+            )
+    else:
+        target = next((o for o in picker.options if o.index == args.index), None)
+        if target is None:
+            _answer_outcome(
+                3, "needs_manual", "none", f"--index {args.index} is out of range"
+            )
+        if target.label == herdr_picker.OTHER_OPTION_LABEL:
+            _answer_outcome(
+                3, "needs_manual", "none", "select the free-text escape via --other"
+            )
+
+    # Navigate to the target (arrows only, no Enter).
+    arrows = herdr_picker.navigation_keys(selected, target.index)
+    if arrows:
+        _verify_blocked(agent, pane, identity, input_sent)
+        _send(build_pane_send_keys_argv(pane, arrows), input_sent)
+        input_sent = "navigation"
+        settled = _poll_until(
+            lambda: (
+                herdr_picker.parse_picker(
+                    read_pane_text(pane, source="visible")
+                ).selected_index
+                == target.index
+            ),
+            settle_s,
+        )
+        if not settled:
+            _answer_outcome(
+                4, "needs_manual", "navigation", "highlight never settled on the target"
+            )
+
+    if args.other:
+        # Enter edit mode, then verify completeness before sending text.
+        _verify_blocked(agent, pane, identity, input_sent)
+        _send(build_pane_send_keys_argv(pane, ["enter"]), input_sent)
+        input_sent = "navigation"
+        in_edit = _poll_until(
+            lambda: (
+                herdr_picker.parse_edit_mode(read_pane_text(pane, source="visible"))
+                is not None
+            ),
+            settle_s,
+        )
+        if not in_edit:
+            _answer_outcome(
+                4, "needs_manual", "navigation", "picker never entered edit mode"
+            )
+        edit = herdr_picker.parse_edit_mode(read_pane_text(pane, source="visible"))
+        if edit is None or not edit.complete:
+            _answer_outcome(
+                4,
+                "needs_manual",
+                "navigation",
+                "editor is scrolled or not fully visible",
+            )
+        _verify_blocked(agent, pane, identity, input_sent)
+        _send(build_pane_send_text_argv(pane, text), input_sent)
+        input_sent = "text"
+        text_settled = _poll_until(
+            lambda: (
+                re.sub(r"\s+", "", _visible_editor_text(pane))
+                == re.sub(r"\s+", "", text)
+            ),
+            settle_s,
+        )
+        if not text_settled:
+            _answer_outcome(
+                4, "needs_manual", "text", "editor text never matched --text"
+            )
+        _verify_blocked(agent, pane, identity, input_sent)
+        _send(build_pane_send_keys_argv(pane, ["enter"]), input_sent)
+        input_sent = "submitted"
+    else:
+        _verify_blocked(agent, pane, identity, input_sent)
+        _send(build_pane_send_keys_argv(pane, ["enter"]), input_sent)
+        input_sent = "submitted"
+
+    _finish_answer(pane, input_sent, settle_s)
+
+
+def _finish_answer(pane: str, input_sent: str, settle_s: float) -> None:
+    """Post-submit check: the picker identity must be gone; then report ok."""
+    cleared = _poll_until(
+        lambda: (
+            not herdr_picker.parse_picker(
+                read_pane_text(pane, source="visible")
+            ).options
+        ),
+        settle_s,
+    )
+    if not cleared:
+        _answer_outcome(
+            5, "submitted_unconfirmed", "submitted", "picker still visible after submit"
+        )
+    _answer_outcome(0, "ok", input_sent, "submitted")
+
+
+def cmd_answer(args: argparse.Namespace) -> None:
+    """Drive a live worker's question-tool picker by option, or free text via --other."""
+    try:
+        _run_answer(args)
+    except AnswerOutcome as oc:
+        print(
+            json.dumps(
+                {"result": oc.result, "input_sent": oc.input_sent, "reason": oc.reason}
+            )
+        )
+        raise SystemExit(oc.code) from oc
+    except RefusedError as exc:
+        print(f"[herdr_delegate] {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+
+
 RESTART_DEREGISTER_POLLS = 20
 RESTART_DEREGISTER_INTERVAL_S = 0.25
 
@@ -684,6 +1335,7 @@ def spawn_in_new_tab(
     allow_all_tools: bool = True,
     plugin_dir: str | None = None,
     writable_roots: list[str] | None = None,
+    handoff_slug: str | None = None,
 ) -> dict[str, object]:
     """Create a tab, start an agent in it, and hand it its prompt.
 
@@ -699,7 +1351,9 @@ def spawn_in_new_tab(
     """
     name = agent_name_for(label)
     for attempt in range(AGENT_START_TIMEOUT_RETRIES + 1):
-        created = herdr(build_tab_argv(cwd=cwd, label=label, kind=kind))
+        created = herdr(
+            build_tab_argv(cwd=cwd, label=label, kind=kind, handoff_slug=handoff_slug)
+        )
         result = created["result"]
         pane = result["root_pane"]["pane_id"]  # type: ignore[index]
         tab = result["tab"]["tab_id"]  # type: ignore[index]
@@ -818,6 +1472,15 @@ def herdr(argv: list[str]) -> dict[str, object]:
         )
     if len(argv) >= 2 and argv[0] == "pane" and argv[1] == "read":
         return {"result": {"text": result.stdout}}
+    if (
+        len(argv) >= 2
+        and argv[0] == "pane"
+        and argv[1] in ("send-keys", "send-text")
+        and not result.stdout.strip()
+    ):
+        # These commands print nothing on success (herdr 0.x); an empty stdout
+        # with exit 0 is success, never an unparseable-output failure.
+        return {"result": {}}
     try:
         return json.loads(result.stdout)
     except json.JSONDecodeError as exc:
@@ -951,9 +1614,13 @@ def cmd_launch(args: argparse.Namespace) -> None:
     # (see copilot/skills/swarm/SKILL.md's "key invariants") so this launch
     # is nameable for a later --resume=<id>, the same as a swarm_spawn worker.
     session_id = str(uuid.uuid4()) if kind == "copilot" else None
+    handoff_slug = args.slug if args.handoff else None
     if args.slug:
         check_launchable(slug=args.slug)
-        label, prompt = args.slug, worker_prompt(args.slug, kind=kind)
+        label, prompt = (
+            args.slug,
+            worker_prompt(args.slug, kind=kind, handoff=args.handoff),
+        )
     elif args.serial:
         prefix = check_serial_prefix(args.prefix)
         label = f"serial-{prefix}"
@@ -996,6 +1663,7 @@ def cmd_launch(args: argparse.Namespace) -> None:
                 session_id=session_id,
                 plugin_dir=plugin_dir,
                 writable_roots=writable_roots,
+                handoff_slug=handoff_slug,
             )
         )
     )
@@ -1187,7 +1855,80 @@ def main() -> None:
         default="pi",
         help="agent harness (agy/codex support --slug only; default: pi)",
     )
+    launch.add_argument(
+        "--handoff",
+        action="store_true",
+        help="worker stops after its commit gate and prints the FOREMAN-HANDOFF "
+        "line, leaving the landing to the foreman (--slug --kind pi only)",
+    )
     launch.set_defaults(func=cmd_launch)
+
+    watch = sub.add_parser(
+        "watch", help="report the first of N agents that needs attention"
+    )
+    watch.add_argument("agents", nargs="+", help="agent names to watch")
+    watch.add_argument(
+        "--prefix", help="also watch agents whose name has this slug-head prefix"
+    )
+    watch.add_argument("--state", required=True, help="watch state file")
+    watch.add_argument(
+        "--ack",
+        action="append",
+        metavar="NAME=SEQ",
+        help="acknowledge NAME at SEQ before polling (repeatable)",
+    )
+    watch.add_argument(
+        "--ack-gone",
+        action="append",
+        metavar="NAME",
+        help="acknowledge a gone agent before polling (repeatable)",
+    )
+    watch.add_argument(
+        "--grace-s",
+        type=float,
+        default=WATCH_DEFAULT_GRACE_S,
+        help="suppress idle reports for this long after first sight (default 60)",
+    )
+    watch.add_argument(
+        "--timeout-s",
+        type=float,
+        required=True,
+        help="exit 124 after this long with nothing to report",
+    )
+    watch.add_argument(
+        "--poll-s",
+        type=float,
+        default=WATCH_DEFAULT_POLL_S,
+        help="seconds between polls (default 15)",
+    )
+    watch.add_argument(
+        "--strict",
+        action="store_true",
+        help="reject positional names absent from the first listing",
+    )
+    watch.set_defaults(func=cmd_watch)
+
+    answer = sub.add_parser(
+        "answer",
+        help="drive a live worker's question-tool picker by option, or free text via --other",
+    )
+    answer.add_argument("agent", help="the worker's herdr agent name")
+    answer.add_argument(
+        "--expect-pane", required=True, help="the pane this worker is parked in"
+    )
+    answer.add_argument("--option", help="match an option by label")
+    answer.add_argument("--index", type=int, help="select by 1-based option index")
+    answer.add_argument(
+        "--other", action="store_true", help="select the free-text escape option"
+    )
+    answer.add_argument("--text", help="free-text to send (only with --other)")
+    answer.add_argument(
+        "--settle-s",
+        type=float,
+        default=5.0,
+        help="seconds to wait for the highlight/editor to settle (default 5)",
+    )
+    answer.set_defaults(func=cmd_answer)
 
     restart = sub.add_parser(
         "restart",
@@ -1261,6 +2002,23 @@ def main() -> None:
                 parser.error(f"--kind {args.kind} supports single-item --slug only")
             if args.cwd is not None:
                 parser.error(f"--kind {args.kind} resolves the worktree; omit --cwd")
+        if args.handoff:
+            if not args.slug:
+                parser.error("--handoff requires a single --slug target")
+            if args.kind != "pi":
+                parser.error(
+                    "--handoff is pi-only (other kinds do not run the pi FOREMAN-HANDOFF path)"
+                )
+    if args.command == "answer":
+        selectors = (
+            int(args.option is not None) + int(args.index is not None) + int(args.other)
+        )
+        if selectors != 1:
+            parser.error("pass exactly one of --option, --index, or --other")
+        if args.other and not args.text:
+            parser.error("--other requires --text")
+        if args.text and not args.other:
+            parser.error("--text is only valid with --other")
     if args.command == "restart":
         selectors = int(args.swarm is not None) + int(args.serial)
         if selectors != 1:

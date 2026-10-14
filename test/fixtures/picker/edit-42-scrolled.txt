@@ -1,0 +1,29 @@
+──────────────────────────────────────────
+ Land
+ Commit these changes?
+
+  1. Yes, commit (Recommended)
+     Commit the staged changes now.
+  2. No, don't commit
+     Leave them uncommitted.
+> 3. Something else (type it) ✎
+     Answer in your own words instead.
+
+ Your answer:
+ ─── ↑ 4 more ───────────────────────────
+ zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz 
+ zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz 
+ zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz 
+ zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz 
+ zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz 
+ zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz 
+ zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz 
+ zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz 
+ zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz 
+ zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz 
+ zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz 
+ zzzzzzzzzzzzzzz                         
+ ────────────────────────────────────────
+
+ Enter to submit • Esc to go back
+──────────────────────────────────────────

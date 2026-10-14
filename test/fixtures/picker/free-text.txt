@@ -1,0 +1,16 @@
+──────────────────────────────────────────
+ Land (1/1)
+ Commit these changes?
+
+  1. Yes, commit (Recommended)
+     Commit the staged changes now.
+> 2. Something else (type it) ✎
+     Answer in your own words instead.
+
+ Your answer:
+ ────────────────────────────────────────
+ Read /x and act on it
+ ────────────────────────────────────────
+
+ Enter to submit • Esc to go back
+──────────────────────────────────────────

@@ -108,6 +108,12 @@ src = "claude/commands/swarm.md"
 dest = "~/.claude/commands/swarm.md"
 harness = "claude"
 
+# Generated from templates/foreman.md.tmpl (gen_skills.py FOREMAN_PARAMS).
+[[link]]
+src = "claude/commands/foreman.md"
+dest = "~/.claude/commands/foreman.md"
+harness = "claude"
+
 [[link]]
 src = "claude/output-styles/ConciseSTE.md"
 dest = "~/.claude/output-styles/ConciseSTE.md"
@@ -186,6 +192,10 @@ dest = "~/.agent-toolkit/scripts/seed_hook_subset_guard.py"
 [[link]]
 src = "agent-scripts/herdr_delegate.py"
 dest = "~/.agent-toolkit/scripts/herdr_delegate.py"
+
+[[link]]
+src = "agent-scripts/herdr_picker.py"
+dest = "~/.agent-toolkit/scripts/herdr_picker.py"
 
 [[link]]
 src = "agent-scripts/agy_workspace_trust.py"
@@ -456,6 +466,11 @@ harness = "copilot"
 [[link]]
 src = "copilot/skills/land/SKILL.md"
 dest = "~/.copilot/skills/land/SKILL.md"
+harness = "copilot"
+
+[[link]]
+src = "copilot/skills/foreman/SKILL.md"
+dest = "~/.copilot/skills/foreman/SKILL.md"
 harness = "copilot"
 
 [[link]]

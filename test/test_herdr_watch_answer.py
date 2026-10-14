@@ -1,0 +1,653 @@
+#!/usr/bin/env python3
+"""Tests for herdr_delegate.py's foreman `watch` and `answer` subcommands and
+the `launch --handoff` flag.
+
+Everything runs in process: herdr is faked at the module's herdr() boundary and
+`time.sleep` is patched out, so nothing reaches a real herdr socket or mutates
+a real worktree. The watch/answer paths exercise scripted pane sequences, never
+a live worker.
+"""
+
+import io
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import unittest
+from collections.abc import Callable
+from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
+from unittest import mock
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))
+import test_bootstrap  # noqa: E402
+import herdr_delegate  # noqa: E402
+
+
+PICKER_DIR = Path(__file__).resolve().parent / "fixtures" / "picker"
+
+
+def _picker_screen(name: str) -> str:
+    return (PICKER_DIR / f"{name}.txt").read_text(encoding="utf-8")
+
+
+def _edit_screen(name: str) -> str:
+    return (PICKER_DIR / f"{name}.txt").read_text(encoding="utf-8")
+
+
+class WatchFakeHerdr:
+    """Fake herdr for `watch`: scripted `agent list` responses, last one repeats."""
+
+    def __init__(self, list_script: list[list[dict[str, object]]]) -> None:
+        self.list_script = list(list_script)
+        self.last: list[dict[str, object]] = []
+        self.calls: list[list[str]] = []
+
+    def __call__(self, argv: list[str]) -> dict[str, object]:
+        self.calls.append(list(argv))
+        if argv[0] == "agent" and argv[1] == "list":
+            if self.list_script:
+                self.last = self.list_script.pop(0)
+            return {"result": {"agents": list(self.last)}}
+        return {"result": {}}
+
+
+def _agent(name: str, status: str, seq: int) -> dict[str, object]:
+    return {"name": name, "agent_status": status, "state_change_seq": seq}
+
+
+class WatchTests(unittest.TestCase):
+    def run_watch(self, argv: list[str], fake: Callable) -> tuple[int, str, str]:
+        with (
+            mock.patch.object(herdr_delegate, "herdr", fake),
+            mock.patch.object(herdr_delegate.time, "sleep", lambda _s: None),
+            mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
+        ):
+            sys.argv = ["herdr_delegate.py", *argv]
+            out, err = io.StringIO(), io.StringIO()
+            try:
+                with redirect_stdout(out), redirect_stderr(err):
+                    herdr_delegate.main()
+            except SystemExit as e:
+                return int(e.code or 0), out.getvalue(), err.getvalue()
+            return 0, out.getvalue(), err.getvalue()
+
+    def test_reports_an_already_blocked_worker_and_reruns_until_acked(self) -> None:
+        state = Path(tempfile.mkdtemp()) / "watch.json"
+        blocked = [_agent("atk-w1", "blocked", 5)]
+        code, out, _ = self.run_watch(
+            ["watch", "atk-w1", "--state", str(state), "--timeout-s", "1"], WatchFakeHerdr([blocked])
+        )
+        self.assertEqual(code, 0)
+        payload = json.loads(out)
+        self.assertEqual(payload["attention"]["atk-w1"], {"status": "blocked", "seq": 5})
+
+        # Rerun without acking: reports again.
+        code, out, _ = self.run_watch(
+            ["watch", "atk-w1", "--state", str(state), "--timeout-s", "1"], WatchFakeHerdr([blocked])
+        )
+        self.assertEqual(code, 0)
+        self.assertIn("atk-w1", json.loads(out)["attention"])
+
+    def test_acked_agent_is_not_rereported(self) -> None:
+        state = Path(tempfile.mkdtemp()) / "watch.json"
+        code, out, _ = self.run_watch(
+            ["watch", "atk-w1", "--state", str(state), "--timeout-s", "1",
+             "--ack", "atk-w1=5"],
+            WatchFakeHerdr([[_agent("atk-w1", "blocked", 5)]]),
+        )
+        self.assertEqual(code, 124)  # acked, nothing to report -> timeout
+        self.assertEqual(json.loads(out)["attention"], {})
+
+    def test_gone_is_reported_until_ack_gone(self) -> None:
+        state = Path(tempfile.mkdtemp()) / "watch.json"
+        # First run: the agent is present.
+        self.run_watch(
+            ["watch", "atk-w1", "--state", str(state), "--timeout-s", "1"],
+            WatchFakeHerdr([[_agent("atk-w1", "working", 3)]]),
+        )
+        # Second run: gone.
+        code, out, _ = self.run_watch(
+            ["watch", "atk-w1", "--state", str(state), "--timeout-s", "1"],
+            WatchFakeHerdr([[]]),
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["gone"], ["atk-w1"])
+
+        # Ack-gone stops the report.
+        code, out, _ = self.run_watch(
+            ["watch", "atk-w1", "--state", str(state), "--timeout-s", "1",
+             "--ack-gone", "atk-w1"],
+            WatchFakeHerdr([[]]),
+        )
+        self.assertEqual(code, 124)
+        self.assertEqual(json.loads(out)["gone"], [])
+
+    def test_second_concurrent_watcher_exits_2(self) -> None:
+        state = Path(tempfile.mkdtemp()) / "watch.json"
+        with herdr_delegate._watch_lock(state):
+            code, _, err = self.run_watch(
+                ["watch", "atk-w1", "--state", str(state), "--timeout-s", "1"],
+                WatchFakeHerdr([[]]),
+            )
+        self.assertEqual(code, 2)
+        self.assertIn("locked", err)
+
+    def test_malformed_agent_record_exits_2_without_mutating_state(self) -> None:
+        state = Path(tempfile.mkdtemp()) / "watch.json"
+        state.write_text('{"agents": {}, "membership": [], "pending_gone": []}')
+        code, _, err = self.run_watch(
+            ["watch", "atk-w1", "--state", str(state), "--timeout-s", "1"],
+            WatchFakeHerdr([[{"name": "atk-w1", "agent_status": "blocked"}]]),
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("state_change_seq", err)
+        # State untouched.
+        self.assertEqual(
+            state.read_text(), '{"agents": {}, "membership": [], "pending_gone": []}'
+        )
+
+    def test_corrupt_state_exits_2(self) -> None:
+        state = Path(tempfile.mkdtemp()) / "watch.json"
+        state.write_text("{not json")
+        code, _, err = self.run_watch(
+            ["watch", "atk-w1", "--state", str(state), "--timeout-s", "1"],
+            WatchFakeHerdr([[]]),
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("corrupt", err)
+
+    def test_malformed_envelope_exits_2(self) -> None:
+        state = Path(tempfile.mkdtemp()) / "watch.json"
+
+        def fake(argv: list[str]) -> dict[str, object]:
+            return {"result": {"no_agents_here": []}}
+
+        code, _, err = self.run_watch(
+            ["watch", "atk-w1", "--state", str(state), "--timeout-s", "1"], fake
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("malformed", err)
+
+    def test_strict_rejects_unknown_names(self) -> None:
+        state = Path(tempfile.mkdtemp()) / "watch.json"
+        code, _, err = self.run_watch(
+            ["watch", "atk-w1", "--state", str(state), "--timeout-s", "1", "--strict"],
+            WatchFakeHerdr([[]]),
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("atk-w1", err)
+
+    def test_grace_window_is_not_reset_by_reruns(self) -> None:
+        state = Path(tempfile.mkdtemp()) / "watch.json"
+        # First run: an idle agent within grace -> suppressed, but first_seen_at persisted.
+        code, _, _ = self.run_watch(
+            ["watch", "atk-w1", "--state", str(state), "--timeout-s", "1", "--grace-s", "60"],
+            WatchFakeHerdr([[_agent("atk-w1", "idle", 3)]]),
+        )
+        self.assertEqual(code, 124)
+        persisted = json.loads(state.read_text())
+        first_seen = persisted["agents"]["atk-w1"]["first_seen_at"]
+        self.assertGreater(first_seen, 0)
+
+    def test_work_then_block_between_polls_is_surfaced(self) -> None:
+        state = Path(tempfile.mkdtemp()) / "watch.json"
+        code, out, _ = self.run_watch(
+            ["watch", "atk-w1", "--state", str(state), "--timeout-s", "1"],
+            WatchFakeHerdr([
+                [_agent("atk-w1", "working", 3)],
+                [_agent("atk-w1", "blocked", 4)],
+            ]),
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["attention"]["atk-w1"], {"status": "blocked", "seq": 4})
+
+    def test_atomic_write_leaves_previous_state_on_interrupted_write(self) -> None:
+        state = Path(tempfile.mkdtemp()) / "watch.json"
+        good = {"agents": {}, "membership": [], "pending_gone": []}
+        state.write_text(json.dumps(good))
+        # A stray temp file (as an interrupted write would leave) must not be read.
+        state.with_name("watch.json.tmp").write_text("{corrupt")
+        herdr_delegate._load_watch_state(state)  # reads the real file, not the tmp
+        self.assertEqual(json.loads(state.read_text()), good)
+
+    def test_prefix_matched_late_arrival_is_surfaced(self) -> None:
+        state = Path(tempfile.mkdtemp()) / "watch.json"
+        code, out, _ = self.run_watch(
+            ["watch", "atk-w1", "--prefix", "atk", "--state", str(state), "--timeout-s", "1"],
+            WatchFakeHerdr([
+                [_agent("atk-w1", "working", 1)],
+                [_agent("atk-w1", "working", 1), _agent("atk-late", "blocked", 2)],
+            ]),
+        )
+        self.assertEqual(code, 0)
+        self.assertIn("atk-late", json.loads(out)["attention"])
+
+
+def _rehighlight(screen: str, to_idx: int) -> str:
+    """Move the picker's `>` marker to the option at ``to_idx`` (1-based)."""
+    out: list[str] = []
+    for line in screen.split("\n"):
+        m = re.match(r"^(> |  )(\d+)\. ", line)
+        if m:
+            marker = "> " if int(m.group(2)) == to_idx else "  "
+            out.append(marker + m.group(2) + ". " + line[m.end() :])
+        else:
+            out.append(line)
+    return "\n".join(out)
+
+
+def _edit_mode_screen(
+    options: list[str], marked: int, text: str, width: int = 42
+) -> str:
+    """Build an edit-mode picker screen for a given option set."""
+    rule = "─" * width
+    erule = " " + "─" * (width - 2)
+    lines = [rule, " Commit", " Commit these changes?", ""]
+    for i, label in enumerate(options, 1):
+        marker = "> " if i == marked else "  "
+        suffix = " ✎" if i == marked else ""
+        lines.append(f"{marker}{i}. {label}{suffix}")
+        lines.append("     " + "desc")
+    lines += ["", " Your answer:", erule]
+    lines += [" " + t for t in (text.split("\n") if text else [""])]
+    lines += [erule, "", " Enter to submit • Esc to go back", rule]
+    return "\n".join(lines) + "\n"
+
+
+class AnswerFakeHerdr:
+    """Stateful fake: simulates arrow navigation, edit mode, text, and submit."""
+
+    def __init__(
+        self,
+        options: list[str],
+        selected: int = 1,
+        pane: str = "w:p1",
+        status: str = "blocked",
+    ) -> None:
+        self.options = options
+        self.selected = selected
+        self.pane = pane
+        self.status = status
+        self.edit_mode = False
+        self.editor_text = ""
+        self.cleared = False
+        self.calls: list[list[str]] = []
+
+    def __call__(self, argv: list[str]) -> dict[str, object]:
+        self.calls.append(list(argv))
+        if argv[0] == "agent" and argv[1] == "get":
+            return {"result": {"agent": {"agent_status": self.status, "pane_id": self.pane}}}
+        if argv[0] == "pane" and argv[1] == "read":
+            return {"result": {"text": self._screen()}}
+        if argv[0] == "pane" and argv[1] == "send-keys":
+            for key in argv[3:]:
+                self._key(key)
+            return {"result": {}}
+        if argv[0] == "pane" and argv[1] == "send-text":
+            self.editor_text = argv[3]
+            return {"result": {}}
+        return {"result": {}}
+
+    def _key(self, key: str) -> None:
+        if key == "down":
+            self.selected = min(len(self.options), self.selected + 1)
+        elif key == "up":
+            self.selected = max(1, self.selected - 1)
+        elif key == "enter":
+            if self.edit_mode:
+                self.cleared = True
+            elif self.options[self.selected - 1] == herdr_delegate.herdr_picker.OTHER_OPTION_LABEL:
+                self.edit_mode = True
+            else:
+                self.cleared = True
+
+    def _screen(self) -> str:
+        if self.cleared:
+            return ""
+        if self.edit_mode:
+            return _edit_mode_screen(
+                self.options, self.selected, self.editor_text
+            )
+        return _rehighlight(_base_selection(self.options), self.selected)
+
+    def sent_keys(self) -> list[list[str]]:
+        return [c for c in self.calls if c[0] == "pane" and c[1] == "send-keys"]
+
+    def sent_text(self) -> list[list[str]]:
+        return [c for c in self.calls if c[0] == "pane" and c[1] == "send-text"]
+
+
+def _base_selection(options: list[str]) -> str:
+    """A selection-mode picker screen for the given options (selected=1)."""
+    width = 42
+    rule = "─" * width
+    lines = [rule, " Commit", " Commit these changes?", ""]
+    for i, label in enumerate(options, 1):
+        marker = "> " if i == 1 else "  "
+        lines.append(f"{marker}{i}. {label}")
+        lines.append("     " + "desc")
+    lines += ["", " ↑↓ navigate • Enter to select • Esc to cancel", rule]
+    return "\n".join(lines) + "\n"
+
+
+def _blocked_agent(pane: str) -> dict[str, object]:
+    return {"agent_status": "blocked", "pane_id": pane}
+
+
+class AnswerTests(unittest.TestCase):
+    OPTIONS = ["Commit now (Recommended)", "Stop here", "Something else (type it)"]
+
+    def run_answer(self, argv: list[str], fake: Callable) -> tuple[int, str, str]:
+        with (
+            mock.patch.object(herdr_delegate, "herdr", fake),
+            mock.patch.object(herdr_delegate.time, "sleep", lambda _s: None),
+            mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
+        ):
+            sys.argv = ["herdr_delegate.py", *argv]
+            out, err = io.StringIO(), io.StringIO()
+            try:
+                with redirect_stdout(out), redirect_stderr(err):
+                    herdr_delegate.main()
+            except SystemExit as e:
+                return int(e.code or 0), out.getvalue(), err.getvalue()
+            return 0, out.getvalue(), err.getvalue()
+
+    def test_option_selection_navigates_and_submits(self) -> None:
+        fake = AnswerFakeHerdr(self.OPTIONS, selected=1)
+        code, out, _ = self.run_answer(
+            ["answer", "atk-w1", "--expect-pane", "w:p1", "--option", "Stop here", "--settle-s", "0"],
+            fake,
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["result"], "ok")
+        self.assertEqual(fake.sent_keys(), [
+            ["pane", "send-keys", "w:p1", "down"],
+            ["pane", "send-keys", "w:p1", "enter"],
+        ])
+
+    def test_refuses_on_non_blocked_status(self) -> None:
+        fake = AnswerFakeHerdr(self.OPTIONS, status="working")
+        code, out, _ = self.run_answer(
+            ["answer", "atk-w1", "--expect-pane", "w:p1", "--option", "Stop here"], fake
+        )
+        self.assertEqual(code, 3)
+        self.assertEqual(json.loads(out)["input_sent"], "none")
+
+    def test_refuses_on_pane_mismatch(self) -> None:
+        fake = AnswerFakeHerdr(self.OPTIONS, pane="w:p9")
+        code, out, _ = self.run_answer(
+            ["answer", "atk-w1", "--expect-pane", "w:p1", "--option", "Stop here"], fake
+        )
+        self.assertEqual(code, 3)
+        self.assertIn("pane", json.loads(out)["reason"])
+
+    def test_refuses_on_ambiguous_match(self) -> None:
+        opts = ["Merge now", "Merge later", "Something else (type it)"]
+        fake = AnswerFakeHerdr(opts)
+        code, out, _ = self.run_answer(
+            ["answer", "atk-w1", "--expect-pane", "w:p1", "--option", "Merge"], fake
+        )
+        self.assertEqual(code, 3)
+        self.assertIn("ambiguous", json.loads(out)["reason"])
+
+    def test_refuses_on_out_of_range_index(self) -> None:
+        fake = AnswerFakeHerdr(self.OPTIONS)
+        code, out, _ = self.run_answer(
+            ["answer", "atk-w1", "--expect-pane", "w:p1", "--index", "99"], fake
+        )
+        self.assertEqual(code, 3)
+        self.assertIn("out of range", json.loads(out)["reason"])
+
+    def test_refuses_on_scrollback_only_picker(self) -> None:
+        def fake(argv: list[str]) -> dict[str, object]:
+            if argv[0] == "agent" and argv[1] == "get":
+                return {"result": {"agent": {"agent_status": "blocked", "pane_id": "w:p1"}}}
+            if argv[0] == "pane" and argv[1] == "read":
+                return {"result": {"text": "no picker here"}}
+            return {"result": {}}
+
+        code, out, _ = self.run_answer(
+            ["answer", "atk-w1", "--expect-pane", "w:p1", "--option", "Stop here"], fake
+        )
+        self.assertEqual(code, 3)
+
+    def test_other_text_lands_the_text(self) -> None:
+        fake = AnswerFakeHerdr(self.OPTIONS, selected=1)
+        code, out, _ = self.run_answer(
+            [
+                "answer", "atk-w1", "--expect-pane", "w:p1", "--other",
+                "--text", "Foreman review: read /x and act on it", "--settle-s", "0",
+            ],
+            fake,
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["result"], "ok")
+        self.assertEqual(
+            fake.sent_text(),
+            [["pane", "send-text", "w:p1", "Foreman review: read /x and act on it"]],
+        )
+        keys = fake.sent_keys()
+        self.assertIn(["pane", "send-keys", "w:p1", "down", "down"], keys)
+        self.assertTrue(any(c[-1] == "enter" for c in keys))
+
+    def test_rejects_text_outside_contract(self) -> None:
+        fake = AnswerFakeHerdr(self.OPTIONS)
+        code, _, err = self.run_answer(
+            ["answer", "atk-w1", "--expect-pane", "w:p1", "--other", "--text", "bad  double  spaces"],
+            fake,
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("single spaces", err)
+
+    def test_rejects_text_with_leading_space(self) -> None:
+        fake = AnswerFakeHerdr(self.OPTIONS)
+        code, _, _ = self.run_answer(
+            ["answer", "atk-w1", "--expect-pane", "w:p1", "--other", "--text", " leading"],
+            fake,
+        )
+        self.assertEqual(code, 2)
+
+    def test_reports_submitted_unconfirmed_when_picker_persists(self) -> None:
+        fake = AnswerFakeHerdr(self.OPTIONS, selected=1)
+
+        def never_clear(argv: list[str]) -> dict[str, object]:
+            fake.calls.append(list(argv))
+            if argv[0] == "agent" and argv[1] == "get":
+                return {"result": {"agent": {"agent_status": "blocked", "pane_id": "w:p1"}}}
+            if argv[0] == "pane" and argv[1] == "read":
+                return {"result": {"text": _rehighlight(_base_selection(self.OPTIONS), 2)}}
+            if argv[0] == "pane" and argv[1] == "send-keys":
+                return {"result": {}}
+            return {"result": {}}
+
+        code, out, _ = self.run_answer(
+            ["answer", "atk-w1", "--expect-pane", "w:p1", "--option", "Stop here", "--settle-s", "0"],
+            never_clear,
+        )
+        self.assertEqual(code, 5)
+        self.assertEqual(json.loads(out)["result"], "submitted_unconfirmed")
+
+    def test_other_already_in_edit_mode_sends_text_without_renavigating(self) -> None:
+        # A previous attempt left the worker in edit mode; answer must send the
+        # new text directly rather than re-entering edit mode and submitting old
+        # editor text.
+        fake = AnswerFakeHerdr(self.OPTIONS, selected=3)
+        fake.edit_mode = True
+        code, out, _ = self.run_answer(
+            [
+                "answer", "atk-w1", "--expect-pane", "w:p1", "--other",
+                "--text", "Foreman review: read /x and act on it", "--settle-s", "0",
+            ],
+            fake,
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["result"], "ok")
+        self.assertEqual(
+            fake.sent_text(),
+            [["pane", "send-text", "w:p1", "Foreman review: read /x and act on it"]],
+        )
+        # No down/up navigation: it was already parked on the OTHER option.
+        self.assertFalse(any(c[-1] in ("down", "up") for c in fake.sent_keys()))
+
+    def test_verification_failure_after_navigation_reports_input_sent(self) -> None:
+        # The worker resumes (leaves blocked) after the arrows are sent: the
+        # failure must be exit 4 with input_sent "navigation", not exit 3/none.
+        opts = self.OPTIONS
+        gets = {"n": 0}
+        reads = {"n": 0}
+
+        def fake(argv: list[str]) -> dict[str, object]:
+            if argv[0] == "agent" and argv[1] == "get":
+                gets["n"] += 1
+                status = "blocked" if gets["n"] < 3 else "working"
+                return {"result": {"agent": {"agent_status": status, "pane_id": "w:p1"}}}
+            if argv[0] == "pane" and argv[1] == "read":
+                reads["n"] += 1
+                text = (
+                    _rehighlight(_base_selection(opts), 2)
+                    if reads["n"] == 3
+                    else _base_selection(opts)
+                )
+                return {"result": {"text": text}}
+            if argv[0] == "pane" and argv[1] == "send-keys":
+                return {"result": {}}
+            return {"result": {}}
+
+        code, out, _ = self.run_answer(
+            ["answer", "atk-w1", "--expect-pane", "w:p1", "--option", "Stop here", "--settle-s", "0"],
+            fake,
+        )
+        self.assertEqual(code, 4)
+        self.assertEqual(json.loads(out)["input_sent"], "navigation")
+
+    def test_herdr_failure_after_input_is_exit_4_not_2(self) -> None:
+        # A herdr failure on the submit Enter, after navigation was already
+        # sent, must be exit 4 with input_sent "navigation" -- never exit 2.
+        opts = self.OPTIONS
+        reads = {"n": 0}
+
+        def fake(argv: list[str]) -> dict[str, object]:
+            if argv[0] == "agent" and argv[1] == "get":
+                return {"result": {"agent": {"agent_status": "blocked", "pane_id": "w:p1"}}}
+            if argv[0] == "pane" and argv[1] == "read":
+                reads["n"] += 1
+                text = (
+                    _rehighlight(_base_selection(opts), 2)
+                    if reads["n"] >= 3
+                    else _base_selection(opts)
+                )
+                return {"result": {"text": text}}
+            if argv[0] == "pane" and argv[1] == "send-keys" and "enter" in argv:
+                raise herdr_delegate.RefusedError("send-keys refused")
+            if argv[0] == "pane" and argv[1] == "send-keys":
+                return {"result": {}}
+            return {"result": {}}
+
+        code, out, _ = self.run_answer(
+            ["answer", "atk-w1", "--expect-pane", "w:p1", "--option", "Stop here", "--settle-s", "0"],
+            fake,
+        )
+        self.assertEqual(code, 4)
+        self.assertEqual(json.loads(out)["input_sent"], "navigation")
+
+
+class HerdrEmptyStdoutTests(unittest.TestCase):
+    """The real herdr() treats empty stdout + exit 0 on pane send-* as success."""
+
+    def test_pane_send_keys_empty_stdout_is_success(self) -> None:
+        completed = subprocess.CompletedProcess(
+            args=["herdr", "pane", "send-keys", "w:p1", "down"],
+            returncode=0,
+            stdout="",
+            stderr="",
+        )
+        with mock.patch.object(herdr_delegate.subprocess, "run", return_value=completed):
+            result = herdr_delegate.herdr(["pane", "send-keys", "w:p1", "down"])
+        self.assertEqual(result, {"result": {}})
+
+    def test_pane_send_text_empty_stdout_is_success(self) -> None:
+        completed = subprocess.CompletedProcess(
+            args=["herdr", "pane", "send-text", "w:p1", "x"],
+            returncode=0,
+            stdout="",
+            stderr="",
+        )
+        with mock.patch.object(herdr_delegate.subprocess, "run", return_value=completed):
+            result = herdr_delegate.herdr(["pane", "send-text", "w:p1", "x"])
+        self.assertEqual(result, {"result": {}})
+
+
+class HandoffTests(unittest.TestCase):
+    def run_main(self, argv: list[str]) -> tuple[int, str, str]:
+        sys.argv = ["herdr_delegate.py", *argv]
+        out, err = io.StringIO(), io.StringIO()
+        try:
+            with redirect_stdout(out), redirect_stderr(err):
+                herdr_delegate.main()
+        except SystemExit as e:
+            return int(e.code or 0), out.getvalue(), err.getvalue()
+        return 0, out.getvalue(), err.getvalue()
+
+    def test_handoff_rejects_swarm(self) -> None:
+        code, _, err = self.run_main(
+            ["launch", "--swarm", "3", "--prefix", "atk", "--handoff"]
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("--slug", err)
+
+    def test_handoff_rejects_non_pi_kind(self) -> None:
+        code, _, err = self.run_main(
+            ["launch", "--slug", "atk-example", "--kind", "copilot", "--handoff"]
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("pi-only", err)
+
+    def test_handoff_prompt_and_env(self) -> None:
+        fake = AnswerFakeHerdr([], [])
+
+        def fake_launch(argv: list[str]) -> dict[str, object]:
+            if argv[0] == "tab" and argv[1] == "create":
+                fake.calls.append(list(argv))
+                return {"result": {"root_pane": {"pane_id": "w:pN"}, "tab": {"tab_id": "w:tN"}}}
+            if argv[0] == "agent" and argv[1] == "start":
+                return {"result": {}}
+            if argv[0] == "agent" and argv[1] == "prompt":
+                fake.calls.append(list(argv))
+                return {"result": {}}
+            return {"result": {}}
+
+        with (
+            mock.patch.object(herdr_delegate, "herdr", fake_launch),
+            mock.patch.object(herdr_delegate.time, "sleep", lambda _s: None),
+            mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
+        ):
+            code, out, _ = self.run_main(
+                ["launch", "--slug", "atk-example", "--cwd", "/tmp", "--handoff"]
+            )
+        self.assertEqual(code, 0)
+        create = next(c for c in fake.calls if c[0] == "tab" and c[1] == "create")
+        self.assertIn("PI_AGENT_UNATTENDED=1", create)
+        self.assertTrue(any(arg.startswith("PI_SWARM_CAPTURE_FILE=") for arg in create))
+        prompt = next(c for c in fake.calls if c[0] == "agent" and c[1] == "prompt")
+        self.assertEqual(prompt[3], "/backlog-item --auto atk-example --handoff")
+
+    def test_handoff_without_flag_omits_capture_env(self) -> None:
+        argv = herdr_delegate.build_tab_argv(cwd="/tmp", label="x", kind="pi")
+        self.assertNotIn("PI_SWARM_CAPTURE_FILE", " ".join(argv))
+
+    def test_worker_prompt_handoff(self) -> None:
+        self.assertEqual(
+            herdr_delegate.worker_prompt("atk-example", handoff=True),
+            "/backlog-item --auto atk-example --handoff",
+        )
+        self.assertEqual(
+            herdr_delegate.worker_prompt("atk-example"),
+            "/backlog-item --auto atk-example",
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

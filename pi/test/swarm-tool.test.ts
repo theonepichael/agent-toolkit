@@ -1,4 +1,12 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "./helpers/tap";
@@ -371,6 +379,51 @@ describe("parsePicker", () => {
       options: [],
     });
   });
+});
+
+// The shared fixtures both picker ports iterate: test/fixtures/picker/*.txt
+// (excluding the generated edit-*.txt set, which only the Python port reads
+// via parse_edit_mode). A fixture without an expected file fails here and in
+// test/test_herdr_picker.py; the two ports must agree on every one.
+describe("shared picker fixtures", () => {
+  const fixtureDir = join(import.meta.dirname, "../../test/fixtures/picker");
+  const names = readdirSync(fixtureDir)
+    .filter((n) => n.endsWith(".txt") && !n.startsWith("edit-"))
+    .map((n) => n.replace(/\.txt$/, ""))
+    .sort();
+
+  test("every shared fixture has an expected file and vice versa", () => {
+    const expected = new Set(
+      readdirSync(fixtureDir)
+        .filter((n) => n.endsWith(".expected.json") && !n.startsWith("edit-"))
+        .map((n) => n.replace(/\.expected\.json$/, "")),
+    );
+    const txts = new Set(names);
+    for (const n of txts) expect(expected.has(n)).toBe(true);
+    for (const n of expected) expect(txts.has(n)).toBe(true);
+  });
+
+  for (const name of names) {
+    test(`agrees with the Python port for ${name}`, () => {
+      const content = readFileSync(join(fixtureDir, `${name}.txt`), "utf-8");
+      const spec = JSON.parse(readFileSync(join(fixtureDir, `${name}.expected.json`), "utf-8")) as {
+        selectedIndex: number | null;
+        options: string[];
+        match: { answer: string; expect: string | null }[];
+        navigation: { from: number; to: number; arrows: string[] }[];
+      };
+      const parsed = parsePicker(content);
+      expect(parsed.selectedIndex).toBe(spec.selectedIndex);
+      expect(parsed.options.map((o) => o.label)).toEqual(spec.options);
+      for (const { answer, expect: expectedLabel } of spec.match) {
+        expect(matchOption(answer, parsed.options)?.label ?? null).toBe(expectedLabel);
+      }
+      for (const { from, to, arrows } of spec.navigation) {
+        // The TS navigationKeys appends "enter"; parity is on the arrow prefix.
+        expect(navigationKeys(from, to).slice(0, -1)).toEqual(arrows);
+      }
+    });
+  }
 });
 
 // Scrollback above a live picker, holding a numbered list that is not an
@@ -4526,6 +4579,17 @@ describe("classifyBlock", () => {
     // classifyBlock must not soften that into a false `answerable`, which
     // would send arrow keys computed from a fabricated index.
     expect(classifyBlock(PICKER_BELOW_A_NUMBERED_PLAN)).toBe("answerable");
+  });
+
+  test("an edit-mode (free-text) picker needs a human, not arrow-key relay", () => {
+    // In edit mode arrows go to the free-text editor, not the option list, so
+    // resolvePiBlocked's navigation would submit the editor's text instead of
+    // the requested option. classify needs_human so the orchestrator relays it.
+    const editMode = REAL_PICKER_OUTPUT.replace(
+      "↑↓ navigate • Enter to select • Esc to cancel",
+      "Enter to submit • Esc to go back",
+    );
+    expect(classifyBlock(editMode)).toBe("needs_human");
   });
 
   test("an unread or empty pane needs a human rather than defaulting to answerable", () => {

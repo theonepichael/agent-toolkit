@@ -197,6 +197,11 @@ and `swarm_amend` live in `pi/extensions/swarm-tool.ts` (for pi) and
 `pi/prompts/backlog-item.md`'s or Copilot's `/backlog-item` queue-runner section
 — read those files rather than restating it here. A second copy is a second thing to drift.
 
+For a **manual** scheduler — one interactive session that launches single-item
+workers, reviews and sends back, and lands work itself — see the `foreman`
+skill (`/foreman`), which is that mode said honestly, built on
+`herdr_delegate.py watch`/`answer` instead of this file's hands-off fan-out.
+
 ## Why the recipe is a script
 
 Key invariants must be exactly right:

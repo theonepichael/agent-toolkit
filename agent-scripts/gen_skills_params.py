@@ -2102,6 +2102,14 @@ remember to emit anything. The consequence worth knowing: a session started
 with `-ne`/`--no-extensions` has no bridge and no herdr integration, so
 nothing it does will ever report `blocked`.""",
         "LAND_BODY": """\
+In a `--handoff` run (the invoking backlog-item was `/backlog-item --auto
+<slug> --handoff`), commit exactly as below (conventional format), then stop:
+print the single line
+`FOREMAN-HANDOFF slug=<slug> branch=<branch> commit=<sha> worktree=<path>`
+whose `<sha>` is the commit you just made, and do **not** merge, push, or
+clean up the worktree — the foreman lands. Never run Close below in a handoff
+run.
+
 On approval, commit (conventional format) — this gate is never bundled with
 what follows. Personal project (this repo, a personal side project — never
 a `work-`-prefixed item or a work repo): offer the follow-on sequence as one
@@ -3299,6 +3307,24 @@ silently — the user asked for a queue, not for a guess about which project."""
     },
 }
 
+FOREMAN_PARAMS: dict[str, dict[str, str]] = {
+    "claude": {
+        "FRONTMATTER": """\
+---
+name: foreman
+description: "Manually schedule single-item pi workers in herdr tabs, review their work, send it back via the answer tool, and land it yourself. Use when the user wants one interactive session to act as scheduler and reviewer instead of the hands-off /swarm orchestrator, or says 'foreman', 'run this like a foreman', 'review and send back'."
+---""",
+    },
+    "copilot": {
+        "FRONTMATTER": """\
+---
+name: foreman
+description: "Manually schedule single-item pi workers in herdr tabs, review their work, send it back via the answer tool, and land it yourself. Use when the user wants one interactive session to act as scheduler and reviewer instead of the hands-off /swarm orchestrator, or says 'foreman', 'run this like a foreman', 'review and send back'."
+allowed-tools: shell
+---""",
+    },
+}
+
 _ANALYZE_SESSIONS_DESCRIPTION = (
     "Analyze coding-agent sessions across pi, Claude Code, opencode, Copilot CLI, "
     "and agy: calculate token/USD cost rollups, list user prompts, or search message "
@@ -3485,6 +3511,7 @@ SKILL_PARAMS: dict[str, dict[str, dict[str, str]]] = {
     "standup": STANDUP_PARAMS,
     "to-tickets": TO_TICKETS_PARAMS,
     "swarm": SWARM_PARAMS,
+    "foreman": FOREMAN_PARAMS,
     "analyze-sessions": ANALYZE_SESSIONS_PARAMS,
     "refresh-guidance": REFRESH_GUIDANCE_PARAMS,
     "review-diff": REVIEW_DIFF_PARAMS,

@@ -1,0 +1,17 @@
+{
+  "selectedIndex": 2,
+  "options": [
+    "Yes, commit (Recommended)",
+    "Something else (type it)"
+  ],
+  "match": [
+    {"answer": "yes, commit", "expect": "Yes, commit (Recommended)"},
+    {"answer": "commit", "expect": "Yes, commit (Recommended)"},
+    {"answer": "something else", "expect": null},
+    {"answer": "type it", "expect": null}
+  ],
+  "navigation": [
+    {"from": 2, "to": 1, "arrows": ["up"]},
+    {"from": 1, "to": 2, "arrows": ["down"]}
+  ]
+}

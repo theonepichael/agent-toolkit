@@ -63,6 +63,7 @@ FROZEN_SCRIPT_DESTS = frozenset(
         "harness_discovery_check.py",
         "harness_spec.py",
         "herdr_delegate.py",
+        "herdr_picker.py",
         "link_drift_check.py",
         "link_inspect.py",
         "llm_backends.py",
@@ -139,7 +140,7 @@ def test_links_toml_srcs_live_in_agent_scripts() -> None:
         if isinstance(entry.get("src"), str)
         and str(entry.get("dest", "")).startswith(f"{MANAGED_DIR_DEST}/")
     ]
-    assert len(script_links) == 51, f"expected 51 script links, got {len(script_links)}"
+    assert len(script_links) == 52, f"expected 52 script links, got {len(script_links)}"
     bad = [
         entry["src"]
         for entry in script_links

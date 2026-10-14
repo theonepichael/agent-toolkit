@@ -45,6 +45,10 @@ export type BlockClass = "answerable" | "needs_human";
  */
 export function classifyBlock(rawPrompt: string | undefined): BlockClass {
   if (!rawPrompt) return "needs_human";
+  // An edit-mode picker is not answerable by the arrow-key relay: arrows go to
+  // the free-text editor there, not the option list. classify needs_human so
+  // the orchestrator relays it instead of submitting the editor's text.
+  if (EDIT_FOOTER.test(rawPrompt)) return "needs_human";
   return parsePicker(rawPrompt).options.length > 0 ? "answerable" : "needs_human";
 }
 
@@ -170,6 +174,56 @@ const PICKER_FOOTER = /↑↓ navigate|Enter to submit/;
 
 const PICKER_RULE = /^─{3,}\s*$/;
 
+/** The edit-mode editor block: its borders are a leading space + dashes (unlike
+ * the full-width picker rule), and it follows the ``Your answer:`` label. */
+const EDITOR_LABEL = "Your answer:";
+const EDITOR_BORDER = /^ ─/;
+
+/** question-tool.ts appends this to the OTHER option's label in edit mode. */
+const MARKER = "✎";
+
+/** The edit-mode footer; unique to free-text entry (selection/multi-select footers
+ * say "Enter to select" / "Enter to confirm"). */
+const EDIT_FOOTER = /Enter to submit/;
+
+function stripMarker(label: string): string {
+  const stripped = label.trim();
+  return stripped.endsWith(MARKER) ? stripped.slice(0, -MARKER.length).trimEnd() : stripped;
+}
+
+/** Locate the edit-mode editor block within (opening, footer); undefined when absent. */
+function editorBlock(
+  lines: string[],
+  opening: number,
+  footer: number,
+): { label: number; top: number; bottom: number } | undefined {
+  let label = -1;
+  for (let i = opening + 1; i < footer; i++) {
+    if (lines[i]!.includes(EDITOR_LABEL)) {
+      label = i;
+      break;
+    }
+  }
+  if (label === -1) return undefined;
+  let top = -1;
+  for (let j = label + 1; j < footer; j++) {
+    if (EDITOR_BORDER.test(lines[j]!)) {
+      top = j;
+      break;
+    }
+  }
+  if (top === -1) return undefined;
+  let bottom = -1;
+  for (let j = top + 1; j < footer; j++) {
+    if (EDITOR_BORDER.test(lines[j]!)) {
+      bottom = j;
+      break;
+    }
+  }
+  if (bottom === -1) return undefined;
+  return { label, top, bottom };
+}
+
 /**
  * Parse question-tool.ts's rendered picker (plain `recent-unwrapped` text, no
  * ANSI) into its option list and current selection.
@@ -210,7 +264,12 @@ export function parsePicker(content: string): ParsedPicker {
   // Visible column of the active option's number -- 2 for both "  1. X" and "> 1. X"; see
   // DESCRIPTION_COLUMN_OFFSET's comment for why it is measured per option line.
   let baseline = 0;
-  for (const line of lines.slice(opening + 1, footer)) {
+  const editor = editorBlock(lines, opening, footer);
+  const skipLo = editor ? editor.label : footer + 1;
+  const skipHi = editor ? editor.bottom : footer;
+  for (let lineIdx = opening + 1; lineIdx < footer; lineIdx++) {
+    if (lineIdx >= skipLo && lineIdx <= skipHi) continue;
+    const line = lines[lineIdx]!;
     const m = OPTION_LINE.exec(line);
     if (m) {
       options.push({ index: Number(m[2]), label: m[3]! });
@@ -238,7 +297,10 @@ export function parsePicker(content: string): ParsedPicker {
   const contiguous = options.length > 0 && options.every((option, i) => option.index === i + 1);
   if (!contiguous) return { selectedIndex: null, options: [] };
 
-  return { selectedIndex: selected.length === 1 ? selected[0]! : null, options };
+  return {
+    selectedIndex: selected.length === 1 ? selected[0]! : null,
+    options: options.map((o) => ({ index: o.index, label: stripMarker(o.label) })),
+  };
 }
 
 /** Shortest answer allowed to match as a fragment; below this, only an exact label will do. */

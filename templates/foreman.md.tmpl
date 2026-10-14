@@ -1,0 +1,156 @@
+The foreman is a **manual-scheduling mode, said honestly**: one interactive
+session replaces the pi orchestrator's spawn/poll/relay loop with its own
+judgment, launching single-item workers, reviewing their work, sending it
+back, and landing it itself. It uses the toolkit's supported surfaces
+(`herdr_delegate.py watch` / `answer`, `dev_status.py`) instead of ad hoc
+scripts and raw `send-keys`. When you want the hands-off scheduler instead,
+use `/swarm` — the two are deliberately separate, and this skill points at
+`/swarm` rather than re-deriving its decisions.
+
+## 1. Preflight
+
+```bash
+test "${HERDR_ENV:-}" = 1
+```
+
+Fails? Say you are not running inside herdr and stop. Do not fall back to
+anything, and never drive the UI-focused pane.
+
+### Known limitation: Claude Code's own auto-mode classifier
+
+When **this session itself** is a Claude Code session running in Auto Mode,
+every `herdr agent start` invocation can be denied by Claude Code's own
+auto-mode classifier — a second, undocumented gate that runs *after*
+`permissions.allow`, which does **not** bypass it. The denial observed on
+2026-10-14 was not an `agent start` but a `git merge --ff-only` plus
+`git push origin main` in the foreman session, which went through only after
+the operator granted it in-session. On any denial, ask the operator once, then
+retry the identical command; never route around it (for example by having a
+worker merge instead — the foreman lands, never the worker). Pi has no
+equivalent classifier, only its allowlist-based `permission-gate.ts`.
+
+## 2. Scheduling by hand
+
+Eligibility comes from `dev_status.py`, never from this skill's guesswork:
+
+```bash
+python3 {{TOOLKIT_SCRIPTS}}/dev_status.py ready --prefix <prefix>
+```
+
+Only `worker_safe: true` items are eligible, because `launch --slug`
+enforces a worker-safe prefix (`check_launchable`). `serial_safe`-only items
+go to `/swarm --serial`, never to the foreman. Launch one item per worker:
+
+```bash
+python3 {{TOOLKIT_SCRIPTS}}/herdr_delegate.py launch --slug <slug> --kind pi [--model <model>] [--handoff]
+```
+
+- **When to prefer `/swarm`** — a hands-off run with concurrency and file-
+  overlap headroom handled by `selectSchedulable` is `/swarm`'s job, not
+  yours. The foreman only overrides overlap for read-only reference files, by
+  editing the item's `related_files` (which the scheduler also reads).
+- **Unblocking and splitting blockers** — keep slots full. Unblock a
+  dependent by completing its blocker, then launch it. Split a blocker that
+  is really several independent items into new backlog items (`dev_status.py
+  add`), with rationale recorded.
+- **De-overlapping `related_files`** — two items naming the same file are
+  never spawned together (each worker gets its own worktree, the second merge
+  would conflict). For read-only reference files, edit the item's
+  `related_files` so the scheduler no longer defers the pair.
+- **Preinstalling sudo-only deps** — pi's `guard-rails.ts` blocks `rm -rf`
+  and `sudo` outright; a worker that genuinely needs them is stuck. Preinstall
+  any such dependency yourself before launching the worker.
+- **Per-worker exclusive resources** — assign ports (e.g. GDB/emulator ports)
+  or GPU ids per worker so concurrent workers never collide.
+
+## 3. Watching
+
+Do not poll by hand. Run this in the background and let the settle wake you:
+
+```bash
+python3 {{TOOLKIT_SCRIPTS}}/herdr_delegate.py watch <agent>... [--prefix <prefix>] --state <state-file> --timeout-s <n> [--grace-s 60] [--poll-s 15] [--strict]
+```
+
+It is **level-triggered** with explicit acknowledgement: it reports an agent
+whose status is `blocked`/`done`/`idle` and whose `state_change_seq` differs
+from its acked seq, plus any member that has gone from the listing, and exits
+0. Reporting never acknowledges — pass `--ack <name>=<seq>` / `--ack-gone
+<name>` only *after* you have acted on a report, so a crash before acting
+re-reports the same event. Exit 124 means timeout with nothing to report. The
+limitation to know: it reports current state only, so a transient block that
+resolved before a poll is not reported — for a settle you cannot afford to
+miss, lower `--poll-s`.
+
+## 4. Review checklist
+
+Before landing or sending back, check every claim against the repo's written
+contract (its AGENTS.md / STYLE.md / acceptance criteria) and raw run outputs:
+
+- **Criteria vs contract** — each gate criterion the worker claims is covered
+  by a clause in the written contract, not a weaker self-written one.
+- **Claims vs raw output** — a "verified"/"passing" claim is checked against
+  the actual command output, not the worker's summary.
+- **Negative control present and non-circular** — a check that can only pass
+  if the defect is real, not a tautology.
+- **Numbers copied from real output** — counts, timings, and hashes come from
+  the run's own stdout, not re-derived.
+- **No slugs in tracked files, no `/tmp` provenance** — a backlog slug must
+  not leak into a committed file, and ad hoc scripts live outside `/tmp`.
+- **Re-run the tests yourself** — run the suite (or the relevant subset)
+  again rather than trusting the worker's report.
+
+## 5. Send-back
+
+Write the feedback to a file outside any repo
+(`{{TOOLKIT_DATA}}/foreman/<slug>-feedback-<n>.md`), then drive the worker's
+picker to the free-text entry:
+
+```bash
+python3 {{TOOLKIT_SCRIPTS}}/herdr_delegate.py answer <agent> --expect-pane <pane> --other --text "Foreman review: read <path> and act on it"
+```
+
+`--text` is a short pointer, not the payload (≤120 chars, printable ASCII,
+single spaces). Exit code handling: 0 ok; 3 means needs_manual with nothing
+sent (safe to retry); 4 means needs_manual *after* navigation or text was
+sent — inspect the pane before acting; 5 means submitted but the picker
+persisted (unconfirmed).
+
+## 6. Landing
+
+Launch with `--handoff` (see step 2): the worker runs `land` through its
+commit step, then stops **before** the merge/push/cleanup gate and prints a
+single line:
+
+```
+FOREMAN-HANDOFF slug=<slug> branch=<branch> commit=<sha> worktree=<path>
+```
+
+The foreman lands, never re-entering `land`: rebase onto the **merge target**
+(the default branch, or the item's declared `integration_branch` when one is
+set — `release-1` work merges into `release-1`, never main), re-run the suite,
+fast-forward merge, push, remove the worktree, delete the branch, then record
+`dev_status.py run` evidence, `gate-pass`, `review`, and `approve`. Read the worker's digest offers from
+`{{TOOLKIT_DATA}}/foreman/<slug>-digest.json`, relay them to the operator,
+and delete the file after relaying. Without `--handoff`, worker behaviour is
+unchanged.
+
+## 7. When to ask the operator
+
+Ask, never decide alone: public or outward actions, taste gates, spend
+increases, destructive actions, and any auto-mode classifier denial (see
+step 1). Commit and merge/push approvals belong to the operator **unless the
+operator has explicitly delegated them to the foreman for this run**; in that
+delegated mode the foreman owns the review-and-landing approvals itself. A
+foreman run that was not given that delegation must stop and ask.
+
+## 8. Relationship to `/swarm` and the pi orchestrator
+
+The foreman is a **mode, not a second scheduler**. It does not re-implement
+the pi orchestrator's decisions in prose: eligibility comes from
+`dev_status.py ready`, launch from `herdr_delegate.py launch --slug`, and the
+hands-off run from `/swarm`. `swarm_spawn`/`swarm_poll`/`swarm_resolve_blocked`
+(`pi/extensions/swarm-tool.ts`) keep owning spawn, poll, blocked-relay and
+amend for pi; the foreman drives a worker's picker with `answer` instead. See
+the `backlog-item` skill for the per-item procedure the worker runs, `land`
+for the gates the foreman's handoff takes over, and `swarm` for the hands-off
+alternative.

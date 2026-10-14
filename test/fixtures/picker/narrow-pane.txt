@@ -1,0 +1,27 @@
+ herdr-agent-state.ts exception)?
+
+
+ ⎇ Working...
+
+───────────────────────────────────────
+ Commit
+ Commit these changes (docs +
+ regression test pinning the
+ herdr-agent-state.ts exception)?
+
+> 1. Commit (Recommended)
+     Commit the doc + regression test
+     in the worktree as docs(pi):
+     document herdr-agent-state.ts as
+     the managed_dir standing exception
+  2. Don't commit yet
+     Leave the changes uncommitted in
+     the worktree; the item stays in
+     progress
+  3. Something else (type it)
+     Answer in your own words instead.
+
+ ↑↓ navigate • Enter to select • Esc to
+ cancel
+───────────────────────────────────────
+~/agent-toolkit (main)

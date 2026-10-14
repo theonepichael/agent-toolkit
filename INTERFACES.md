@@ -59,6 +59,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`harness_discovery_check.py`](#agentscriptsharnessdiscoverycheckpy) | SessionStart hook + CLI: detect when a harness's instruction-file discovery behavior changes, without pinning harness versions in the repo. |
 | [`harness_spec.py`](#agentscriptsharnessspecpy) | Declarative harness specification registry. |
 | [`herdr_delegate.py`](#agentscriptsherdrdelegatepy) | Launch supported agents in herdr tabs to work backlog items. |
+| [`herdr_picker.py`](#agentscriptsherdrpickerpy) | Behavioral twin of ``pi/extensions/swarm-lib/swarm-picker.ts``. |
 | [`link_drift_check.py`](#agentscriptslinkdriftcheckpy) | SessionStart hook + CLI: flag when a managed symlink on this machine no longer points where links.toml says it should. |
 | [`link_inspect.py`](#agentscriptslinkinspectpy) | link_inspect.py — link inspection, path classification, drift finding, and the self-contained audit assembly for install.py's ``--check-links`` audit and link_drift_check.py's SessionStart hook. |
 | [`llm_backends.py`](#agentscriptsllmbackendspy) | llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, opencode, pi, copilot). Extracted from second_opinion.py so dev_status.py's recap generation can reuse the same process-lifecycle handling (timeouts, process-group kills, opencode JSON-event parsing) with its own timeout and model choices, without duplicating it. |
@@ -1050,7 +1051,7 @@ Launch supported agents in herdr tabs to work backlog items.
 - CLI (`argparse`): Launch supported agents in herdr tabs to work backlog items.
 - Subcommands:
   - `plan` — READY queue grouped by prefix, as JSON
-  - `launch [--slug <SLUG>] [--swarm <SWARM>] [--serial] [--prefix <PREFIX>] [--items <ITEMS>] [--exclude <EXCLUDE>] [--model <MODEL>] [--cwd <CWD>] [--kind {pi,copilot,agy,codex}]` — start a worker, or a pi/copilot queue orchestrator
+  - `launch [--slug <SLUG>] [--swarm <SWARM>] [--serial] [--prefix <PREFIX>] [--items <ITEMS>] [--exclude <EXCLUDE>] [--model <MODEL>] [--cwd <CWD>] [--kind {pi,copilot,agy,codex}] [--handoff]` — start a worker, or a pi/copilot queue orchestrator
     - `--slug` — single item for one unattended worker
     - `--swarm` — fan out across N workers
     - `--serial` — run a prefix queue one worker at a time
@@ -1060,6 +1061,25 @@ Launch supported agents in herdr tabs to work backlog items.
     - `--model` — model passed through to harness after a bare --
     - `--cwd` — working directory (pi/copilot only)
     - `--kind` — agent harness (agy/codex support --slug only; default: pi) (choices: pi, copilot, agy, codex; default: pi)
+    - `--handoff` — worker stops after its commit gate and prints the FOREMAN-HANDOFF line, leaving the landing to the foreman (--slug --kind pi only)
+  - `watch <agents> [--prefix <PREFIX>] --state <STATE> [--ack NAME=SEQ] [--ack-gone NAME] [--grace-s <GRACE_S>] --timeout-s <TIMEOUT_S> [--poll-s <POLL_S>] [--strict]` — report the first of N agents that needs attention
+    - `agents` — agent names to watch (nargs: +)
+    - `--prefix` — also watch agents whose name has this slug-head prefix
+    - `--state` — watch state file (required)
+    - `--ack` — acknowledge NAME at SEQ before polling (repeatable)
+    - `--ack-gone` — acknowledge a gone agent before polling (repeatable)
+    - `--grace-s` — suppress idle reports for this long after first sight (default 60)
+    - `--timeout-s` — exit 124 after this long with nothing to report (required)
+    - `--poll-s` — seconds between polls (default 15)
+    - `--strict` — reject positional names absent from the first listing
+  - `answer <agent> --expect-pane <EXPECT_PANE> [--option <OPTION>] [--index <INDEX>] [--other] [--text <TEXT>] [--settle-s <SETTLE_S>]` — drive a live worker's question-tool picker by option, or free text via --other
+    - `agent` — the worker's herdr agent name
+    - `--expect-pane` — the pane this worker is parked in (required)
+    - `--option` — match an option by label
+    - `--index` — select by 1-based option index
+    - `--other` — select the free-text escape option
+    - `--text` — free-text to send (only with --other)
+    - `--settle-s` — seconds to wait for the highlight/editor to settle (default 5) (default: 5.0)
   - `restart [--swarm <SWARM>] [--serial] [--prefix <PREFIX>] [--run-id <RUN_ID>] [--model <MODEL>] [--cwd <CWD>] [--kind {pi,copilot}]` — close a live swarm orchestrator's tab, relaunch it, resume the same run
     - `--swarm` — fan out across N workers
     - `--serial` — resume a one-worker serial queue
@@ -1076,23 +1096,26 @@ Launch supported agents in herdr tabs to work backlog items.
 - Filesystem constants:
   - `DEV_STATUS = Path(__file__).parent / 'dev_status.py'`
   - `COPILOT_PLUGIN_DIR = str(Path(__file__).resolve().parent.parent / 'copilot' / 'extensions' / 'swarm')`
-- Explicit exit codes: `1`
-- Depends on: `agent_toolkit_paths.py`, `agy_workspace_trust.py`, `backlog_claim_lookup.py`, `cli_common.py`, `dev_status.py`, `dev_status_impl.py`, `dev_status_mutation.py`, `dev_status_storage.py`, `worktree.py`
+- Explicit exit codes: `1`, `2`
+- Depends on: `agent_toolkit_paths.py`, `agy_workspace_trust.py`, `backlog_claim_lookup.py`, `cli_common.py`, `dev_status.py`, `dev_status_impl.py`, `dev_status_mutation.py`, `dev_status_storage.py`, `herdr_picker.py`, `worktree.py`
 - Exceptions:
   - `class RefusedError(RuntimeError)` — A launch that must not proceed, with a reason fit to show the user.
+  - `class AnswerOutcome(Exception)` — A needs_manual / submitted_unconfirmed outcome, carrying its exit code.
 - Public functions:
+  - `foreman_capture_file(slug: str) -> Path` — The worker's digest-capture file for a handoff launch.
+  - `foreman_capture_env(slug: str) -> str` — The env pair that points a handoff worker at its capture file.
   - `is_inside_git_repo(path: Path) -> bool` — Check whether a path is inside any git repository.
   - `require_herdr_env(env: dict[str, str] | os._Environ[str]) -> None` — Refuse unless this process is inside a herdr-managed pane.
   - `check_launchable(*, slug: str | None = None, prefix: str | None = None) -> None` — Refuse a launch that targets the harness's own repo.
   - `canonical_prefix(prefix: str) -> str` — Slug-head form used in prompts, labels, state and comparisons.
   - `check_serial_prefix(prefix: str) -> str` — Return a known canonical prefix; item-level serial safety is separate.
   - `group_by_prefix(slugs: list[str]) -> list[dict[str, object]]` — Group slugs by prefix, worker-safe prefixes first, then largest first.
-  - `build_tab_argv(*, cwd: str, label: str, kind: str = 'pi') -> list[str]` — `herdr tab create` argv.
+  - `build_tab_argv(*, cwd: str, label: str, kind: str = 'pi', handoff_slug: str | None = None) -> list[str]` — `herdr tab create` argv.
   - `agent_name_for(label: str) -> str` — The herdr agent name derived from a tab label.
   - `build_tab_list_argv() -> list[str]` — `herdr tab list` argv.
   - `build_agent_list_argv() -> list[str]` — `herdr agent list` argv.
   - `build_agent_start_argv(*, name: str, pane: str, model: str | None, kind: str = 'pi', session_id: str | None = None, allow_all_tools: bool = True, plugin_dir: str | None = None, writable_roots: list[str] | None = None) -> list[str]` — `herdr agent start` argv, with flags passed through after a bare ``--``.
-  - `worker_prompt(slug: str, kind: str = 'pi') -> str` — One worker, one item, unattended.
+  - `worker_prompt(slug: str, kind: str = 'pi', handoff: bool = False) -> str` — One worker, one item, unattended.
   - `orchestrator_prompt(concurrency: int, prefix: str, kind: str = 'pi', items: list[str] | None = None, exclude: list[str] | None = None) -> str` — One orchestrator; `swarm_spawn` owns the fan-out from here.
   - `orchestrator_resume_prompt(concurrency: int, run_id: str, prefix: str, kind: str = 'pi') -> str` — One orchestrator, resuming an interrupted run.
   - `serial_orchestrator_prompt(prefix: str, items: list[str] | None = None, exclude: list[str] | None = None) -> str` — One orchestrator running the shared scheduler with a single worker.
@@ -1107,10 +1130,16 @@ Launch supported agents in herdr tabs to work backlog items.
   - `live_queue_orchestrators(prefix: str) -> list[tuple[str, str]]` — Live serial or concurrent orchestrator tabs for one canonical prefix.
   - `parse_agent_names(listing: dict[str, object]) -> list[str]` — Agent names out of a `herdr agent list` envelope; [] on anything unexpected.
   - `parse_agent_status(listing: dict[str, object], name: str) -> str | None` — Agent status for ``name`` out of a `herdr agent list` envelope; None if absent.
+  - `parse_agent_listing_strict(listing: dict[str, object]) -> list[dict[str, object]]` — Agent records out of `herdr agent list`, strict; refuse a malformed envelope.
+  - `build_agent_get_argv(name: str) -> list[str]` — `herdr agent get` argv; the single-agent payload nests under result.agent.
+  - `build_pane_send_keys_argv(pane: str, keys: list[str]) -> list[str]` — `herdr pane send-keys` argv, one key per trailing element.
+  - `build_pane_send_text_argv(pane: str, text: str) -> list[str]` — `herdr pane send-text` argv.
+  - `parse_agent_get(listing: dict[str, object]) -> dict[str, str] | None` — Status and pane out of a `herdr agent get` envelope; None if malformed.
+  - `validate_answer_text(text: str) -> None` — Refuse --text outside the accepted contract (printable ASCII, single spaces, no leading/trailing space, at most 120 chars, not blank).
   - `wait_agent_deregistered(name: str, *, retry_advice: str = 'Retry `restart` (it relaunches once the name frees)') -> None` — Poll until no live agent carries ``name``, bounded; refuse if it persists.
   - `prepare_worker_worktree(slug: str) -> str` — Validate one item and bootstrap its exact worktree before agent startup.
   - `codex_writable_roots() -> list[str]` — Runtime paths a backlog worker writes outside its worktree.
-  - `spawn_in_new_tab(*, cwd: str, label: str, prompt: str, model: str | None, kind: str = 'pi', session_id: str | None = None, allow_all_tools: bool = True, plugin_dir: str | None = None, writable_roots: list[str] | None = None) -> dict[str, object]` — Create a tab, start an agent in it, and hand it its prompt.
+  - `spawn_in_new_tab(*, cwd: str, label: str, prompt: str, model: str | None, kind: str = 'pi', session_id: str | None = None, allow_all_tools: bool = True, plugin_dir: str | None = None, writable_roots: list[str] | None = None, handoff_slug: str | None = None) -> dict[str, object]` — Create a tab, start an agent in it, and hand it its prompt.
   - `select_ready(prefix: str | None = None, claims: BacklogClaimLookup | None = None) -> list[BacklogItem]` — Select open backlog items matching an optional prefix using claims lookup.
   - `build_launch_plan(items: list[BacklogItem], *, kind: str = 'pi', cwd: str = '.') -> list[list[str]]` — Construct herdr tab-creation argvs for a list of backlog items.
   - `ready_slugs(claims: BacklogClaimLookup | None = None) -> list[str]` — Slugs currently in READY, sourced via select_ready().
@@ -1120,8 +1149,26 @@ Launch supported agents in herdr tabs to work backlog items.
   - `trust_agy_dir(dir_path: str) -> None` — Ensure agy's trustedWorkspaces lists ``dir_path`` before an agy launch.
   - `prune_agy_trust_entries() -> None` — Best-effort prune of vanished agy trusted-workspace entries.
   - `confirm_prompt_receipt(*, pane: str, tab: str, name: str, prompt: str, timeout_s: float = AGY_PROMPT_TIMEOUT_S, poll_interval_s: float = AGY_PROMPT_POLL_INTERVAL_S, max_resends: int = 1) -> None` — Poll pane for the echoed prompt line; resend if absent, fail loudly if still missing.
-- Subcommand handlers: `cmd_plan`, `cmd_launch`, `cmd_restart`, `cmd_probe`
-- Tested by: `test/test_herdr_delegate.py`
+- Subcommand handlers: `cmd_watch`, `cmd_answer`, `cmd_plan`, `cmd_launch`, `cmd_restart`, `cmd_probe`
+- Tested by: `test/test_herdr_delegate.py`, `test/test_herdr_watch_answer.py`
+
+### `agent-scripts/herdr_picker.py`
+
+Behavioral twin of ``pi/extensions/swarm-lib/swarm-picker.ts``.
+
+- Installed at: `~/.agent-toolkit/scripts/herdr_picker.py` (all harnesses)
+- Entrypoint: not executable, `#!/usr/bin/env python3`
+- CLI: none (library module).
+- Public classes:
+  - `class RenderedOption` — One option line: its 1-based index and its reassembled label.
+  - `class ParsedPicker` — A selection-mode picker: options and the currently highlighted index.
+  - `class EditMode` — An edit-mode picker: options, the OTHER option's index, editor text.
+- Public functions:
+  - `parse_picker(content: str) -> ParsedPicker` — Parse question-tool.ts's rendered picker (plain text, no ANSI).
+  - `match_option(answer: str, options: Sequence[RenderedOption]) -> RenderedOption | None` — Match a free-text answer to a listed option.
+  - `navigation_keys(from_index: int, to_index: int) -> list[str]` — Arrow-key presses to move from one option to another (no trailing enter).
+  - `parse_edit_mode(content: str) -> EditMode | None` — Parse question-tool.ts's edit-mode picker (free-text entry).
+- Tested by: `test/test_herdr_picker.py`
 
 ### `agent-scripts/link_drift_check.py`
 
@@ -1868,6 +1915,7 @@ the workflow's template plus its generator's capability/parameter tables.
 | `/backlog-item` | template | yes | yes | yes | yes | yes | yes |
 | `/dashboard` | template | yes | yes | yes | yes | yes | yes |
 | `/draft-voice` | hand-authored | yes | — | — | — | — | — |
+| `/foreman` | template | yes | yes | — | — | — | — |
 | `/grill-me` | template | yes | yes | yes | yes | yes | yes |
 | `/land` | template | yes | yes | yes | yes | yes | yes |
 | `/make-skill` | template | yes | yes | yes | yes | yes | yes |
@@ -1897,6 +1945,10 @@ the workflow's template plus its generator's capability/parameter tables.
 - **`/draft-voice`** — Apply the user's own voice and formatting rules when drafting an outgoing informal peer message on their behalf — a Teams reply, a Slack-style ping, a PR comment to a teammate. Use when asked to 'draft a reply', 'write a Teams message', 'draft a Slack message to my teammate', 'write a PR comment', 'respond to this PR comment', 'draft a message to my coworker', or similar. Do not use for formal drafts (email to a director, a written PR description, a public README) — ask before applying these rules there.
   - Source: `claude/commands/draft-voice.md` (hand-authored)
   - Installed at: `~/.claude/commands/draft-voice.md` (claude)
+- **`/foreman`** — Manually schedule single-item pi workers in herdr tabs, review their work, send it back via the answer tool, and land it yourself. Use when the user wants one interactive session to act as scheduler and reviewer instead of the hands-off /swarm orchestrator, or says 'foreman', 'run this like a foreman', 'review and send back'.
+  - Generated from: `templates/foreman.md.tmpl` by `gen_skills.py`
+  - `claude/commands/{name}.md` is the rendered Claude Code port — edit the template or generator, then regenerate.
+  - Installed at: `~/.claude/commands/foreman.md` (claude)
 - **`/grill-me`** — Interview the user relentlessly about a plan or design until reaching shared understanding, resolving each branch of the decision tree. Use when user wants to stress-test a plan, get grilled on their design, or mentions "grill me".
   - Generated from: `templates/grill_me.md.tmpl` by `gen_skills.py`
   - `claude/commands/{name}.md` is the rendered Claude Code port — edit the template or generator, then regenerate.
@@ -2074,6 +2126,7 @@ are copy-once seeds for exactly that reason.
 | `pi/test/permission-gate.test.ts` | not symlinked by `links.toml` |
 | `pi/test/philosophy-header.test.ts` | not symlinked by `links.toml` |
 | `pi/test/question-tool.test.ts` | not symlinked by `links.toml` |
+| `pi/test/render-picker-fixtures.ts` | not symlinked by `links.toml` |
 | `pi/test/ruff-format-on-edit.test.ts` | not symlinked by `links.toml` |
 | `pi/test/second-opinion-tool.test.ts` | not symlinked by `links.toml` |
 | `pi/test/standup-tool.test.ts` | not symlinked by `links.toml` |
@@ -2322,6 +2375,7 @@ named doc, not regenerating this file.
 | `agy/skills/to-tickets/SKILL.md` | OK |
 | `claude/commands/backlog-item.md` | OK |
 | `claude/commands/dashboard.md` | OK |
+| `claude/commands/foreman.md` | OK |
 | `claude/commands/land.md` | OK |
 | `claude/commands/recap.md` | OK |
 | `claude/commands/second-opinion.md` | OK |
@@ -2337,6 +2391,7 @@ named doc, not regenerating this file.
 | `codex/skills/to-tickets/SKILL.md` | OK |
 | `copilot/skills/backlog-item/SKILL.md` | OK |
 | `copilot/skills/dashboard/SKILL.md` | OK |
+| `copilot/skills/foreman/SKILL.md` | OK |
 | `copilot/skills/land/SKILL.md` | OK |
 | `copilot/skills/recap/SKILL.md` | OK |
 | `copilot/skills/second-opinion/SKILL.md` | OK |
@@ -2414,8 +2469,10 @@ named doc, not regenerating this file.
 
 | Doc | Status |
 | --- | --- |
+| `claude/commands/foreman.md` | OK |
 | `claude/commands/swarm.md` | OK |
 | `copilot/skills/backlog-item/SKILL.md` | OK |
+| `copilot/skills/foreman/SKILL.md` | OK |
 | `copilot/skills/swarm/SKILL.md` | OK |
 | `pi/skills/backlog-item/SKILL.md` | OK |
 
@@ -2517,9 +2574,10 @@ new one, `--check` catches it the same as any other stale content.
 | Skill | Mentions |
 | --- | --- |
 | `/analyze-sessions` | — |
-| `/backlog-item` | `dashboard`, `grill-me`, `land`, `review-diff`, `second-opinion`, `spec` |
+| `/backlog-item` | `dashboard`, `foreman`, `grill-me`, `land`, `review-diff`, `second-opinion`, `spec` |
 | `/dashboard` | `recap` |
 | `/draft-voice` | — |
+| `/foreman` | `backlog-item`, `land`, `swarm` |
 | `/grill-me` | `second-opinion`, `spec` |
 | `/land` | `backlog-item`, `dashboard`, `review-diff` |
 | `/make-skill` | `grill-me` |
@@ -2531,5 +2589,5 @@ new one, `--check` catches it the same as any other stale content.
 | `/skill-map` | — |
 | `/spec` | `backlog-item`, `grill-me`, `second-opinion` |
 | `/standup` | `dashboard`, `land` |
-| `/swarm` | `backlog-item` |
+| `/swarm` | `backlog-item`, `foreman` |
 | `/to-tickets` | `grill-me`, `second-opinion`, `spec` |

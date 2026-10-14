@@ -58,9 +58,10 @@ maintained across all six harnesses (`_ACTIVE_TIER = HARNESSES`).
   `SKILL_HARNESSES` except `swarm` covers all six harnesses; capability
   facts (`CAPABILITY_TABLE` in `agent-scripts/gen_skills.py`, and its
   `gen_second_opinion.py` analog) get kept current for all six.
-- **Exceptions** — `swarm` remains intentionally restricted to `("claude", "copilot")`
-  because Pi owns its own native TypeScript orchestration layer (`swarm-tool.ts`,
-  `--swarm[=N]`) and other harnesses do not have swarm runner infrastructure.
+- **Exceptions** — `swarm` and `foreman` remain intentionally restricted to
+  `("claude", "copilot")` because Pi owns its own native TypeScript orchestration
+  layer (`swarm-tool.ts`, `--swarm[=N]`) and other harnesses do not have swarm
+  runner infrastructure; the foreman is the manual-scheduling sibling of `swarm`.
 
 ## Directory instructions — read before working in these
 

@@ -1,0 +1,61 @@
+{
+  "selectedIndex": 1,
+  "options": [
+    "OK",
+    "Cancel",
+    "Something else (type it)"
+  ],
+  "match": [
+    {
+      "answer": "ok",
+      "expect": "OK"
+    },
+    {
+      "answer": "Cancel",
+      "expect": "Cancel"
+    },
+    {
+      "answer": "cancel",
+      "expect": "Cancel"
+    },
+    {
+      "answer": "something else",
+      "expect": null
+    },
+    {
+      "answer": "type it",
+      "expect": null
+    },
+    {
+      "answer": "nothing like these",
+      "expect": null
+    },
+    {
+      "answer": "   ",
+      "expect": null
+    }
+  ],
+  "navigation": [
+    {
+      "from": 1,
+      "to": 3,
+      "arrows": [
+        "down",
+        "down"
+      ]
+    },
+    {
+      "from": 3,
+      "to": 1,
+      "arrows": [
+        "up",
+        "up"
+      ]
+    },
+    {
+      "from": 2,
+      "to": 2,
+      "arrows": []
+    }
+  ]
+}

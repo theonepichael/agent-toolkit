@@ -1,0 +1,33 @@
+{
+  "selectedIndex": 1,
+  "options": [
+    "Commit (Recommended )",
+    "Stop here"
+  ],
+  "match": [
+    {
+      "answer": "Commit (Recommended)",
+      "expect": "Commit (Recommended )"
+    },
+    {
+      "answer": "stop",
+      "expect": "Stop here"
+    }
+  ],
+  "navigation": [
+    {
+      "from": 1,
+      "to": 2,
+      "arrows": [
+        "down"
+      ]
+    },
+    {
+      "from": 2,
+      "to": 1,
+      "arrows": [
+        "up"
+      ]
+    }
+  ]
+}

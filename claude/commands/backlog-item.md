@@ -166,6 +166,21 @@ Delegate to the `review-diff` skill (Skill tool) with this item's worktree path 
 ## 11. Land
 Delegate to the `land` skill (Skill tool) with this item's worktree path and slug. It owns the commit gate (showing step 10's report), the merge/push/cleanup gate, and the close (`review` then `approve`, with `gate-pass` evidence when the item has a gate). Each of its gates stops for the user. Don't commit, merge, or close the item outside it.
 
+## `--handoff`
+
+Valid only as `/backlog-item --auto <slug> --handoff`: one named item, with no
+batch, `--swarm`, or `--serial` — every other combination is a usage error.
+It makes the worker stop for the foreman: run `land` through its commit step
+(step 11's commit gate) only, then stop **before** the merge/push/cleanup gate
+and never run Close. The worker's last line must be exactly:
+
+```
+FOREMAN-HANDOFF slug=<slug> branch=<branch> commit=<sha> worktree=<path>
+```
+
+Leave the branch unmerged for the foreman to land (rebase, merge, push,
+close). Without `--handoff`, behaviour is unchanged.
+
 ---
 
 ## `--auto` mode

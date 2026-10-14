@@ -36,6 +36,14 @@ plainly at the gate — "review-diff did not run" — and do not run it
 silently from here.
 
 ## 2. Gate: commit-then-land
+In a `--handoff` run (the invoking backlog-item was `/backlog-item --auto
+<slug> --handoff`), commit exactly as below (conventional format), then stop:
+print the single line
+`FOREMAN-HANDOFF slug=<slug> branch=<branch> commit=<sha> worktree=<path>`
+whose `<sha>` is the commit you just made, and do **not** merge, push, or
+clean up the worktree — the foreman lands. Never run Close below in a handoff
+run.
+
 On approval, commit (conventional format) — this gate is never bundled with
 what follows. Personal project (this repo, a personal side project — never
 a `work-`-prefixed item or a work repo): offer the follow-on sequence as one

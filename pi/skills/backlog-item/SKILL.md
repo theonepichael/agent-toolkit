@@ -226,6 +226,21 @@ and the close (`review` then `approve` through the `dev_status` tool, with
 the `question` tool, so it registers as herdr `blocked`. Don't commit,
 merge, or close the item outside it.
 
+## `--handoff`
+
+Valid only as `/backlog-item --auto <slug> --handoff`: one named item, with no
+batch, `--swarm`, or `--serial` — every other combination is a usage error.
+It makes the worker stop for the foreman: run `land` through its commit step
+(step 11's commit gate) only, then stop **before** the merge/push/cleanup gate
+and never run Close. The worker's last line must be exactly:
+
+```
+FOREMAN-HANDOFF slug=<slug> branch=<branch> commit=<sha> worktree=<path>
+```
+
+Leave the branch unmerged for the foreman to land (rebase, merge, push,
+close). Without `--handoff`, behaviour is unchanged.
+
 ---
 
 ## `--auto` mode

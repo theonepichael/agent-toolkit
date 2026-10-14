@@ -1,0 +1,15 @@
+──────────────────────────────────────
+ Land
+ Commit these changes right now?
+
+> 1. Commit
+  (Recommended
+  )
+     Commit the current changes
+     right away.
+  2. Stop here
+     Leave uncommitted
+
+ ↑↓ navigate • Enter to select • Esc
+ cancel
+──────────────────────────────────────
