@@ -189,6 +189,7 @@ analyze_sessions.py — multi-harness session analysis tool.
   - `class SkippedRecord` — A tolerated load failure, surfaced as a diagnostic instead of a raise.
   - `class CostSummary` — Aggregated cost/token rollup over a record list (pure builder output).
   - `class SessionQueryResult`
+  - `class PiCost` — A pi cost measurement: pi's own price-table estimate, not provider billing.
 - Public functions:
   - `normalize_timestamp(ts: object) -> tuple[str, datetime | None]` — Convert string ISO timestamp or int/float epoch ms/s into ISO 8601 string and datetime.
   - `parse_date_boundary(val: str | None, *, is_until: bool = False) -> datetime | None`
@@ -197,6 +198,8 @@ analyze_sessions.py — multi-harness session analysis tool.
   - `aggregate_cost(records: Sequence[SessionRecord]) -> CostSummary` — Pure builder: aggregate + cost-origin classification over a record list.
   - `query_sessions(query: SessionQuery, *, roots: Mapping[str, Path | None] | None = None) -> SessionQueryResult` — Read-only query/report service over harness session stores.
   - `load_pi_records(base_dir: Path | None = None, since_dt: datetime | None = None, until_dt: datetime | None = None) -> tuple[list[SessionRecord], list[SkippedRecord]]`
+  - `pi_session_cost(path: Path) -> PiCost` — Total pi-estimated cost of one session file; never raises.
+  - `pi_cost_since(since: datetime, base_dir: Path | None = None) -> PiCost` — Total pi-estimated cost of every pi session since ``since``; never raises.
   - `load_claude_records(base_dir: Path | None = None, since_dt: datetime | None = None, until_dt: datetime | None = None) -> tuple[list[SessionRecord], list[SkippedRecord]]`
   - `load_opencode_records(db_path: Path | None = None, since_dt: datetime | None = None, until_dt: datetime | None = None, cwd_filter: str | None = None, session_filter: str | None = None) -> tuple[list[SessionRecord], list[SkippedRecord]]`
   - `load_copilot_records(db_path: Path | None = None, since_dt: datetime | None = None, until_dt: datetime | None = None, cwd_filter: str | None = None, session_filter: str | None = None) -> tuple[list[SessionRecord], list[SkippedRecord]]`
@@ -1083,7 +1086,7 @@ Launch supported agents in herdr tabs to work backlog items.
     - `--cwd` — working directory (pi/copilot only)
     - `--kind` — agent harness (agy/codex support --slug only; default: pi) (choices: pi, copilot, agy, codex; default: pi)
     - `--handoff` — worker stops after its commit gate and prints the FOREMAN-HANDOFF line, leaving the landing to the foreman (--slug --kind pi only)
-  - `watch <agents> [--prefix <PREFIX>] --state <STATE> [--ack NAME=SEQ] [--ack-gone NAME] [--grace-s <GRACE_S>] --timeout-s <TIMEOUT_S> [--poll-s <POLL_S>] [--strict]` — report the first of N agents that needs attention
+  - `watch <agents> [--prefix <PREFIX>] --state <STATE> [--ack NAME=SEQ] [--ack-gone NAME] [--grace-s <GRACE_S>] --timeout-s <TIMEOUT_S> [--poll-s <POLL_S>] [--strict] [--cost-cap-agent USD] [--cost-cap-total USD] [--cost-step USD] [--cost-remind-s N] [--ack-cost TOKEN]` — report the first of N agents that needs attention
     - `agents` — agent names to watch (nargs: +)
     - `--prefix` — also watch agents whose name has this slug-head prefix
     - `--state` — watch state file (required)
@@ -1093,6 +1096,11 @@ Launch supported agents in herdr tabs to work backlog items.
     - `--timeout-s` — exit 124 after this long with nothing to report (required)
     - `--poll-s` — seconds between polls (default 15)
     - `--strict` — reject positional names absent from the first listing
+    - `--cost-cap-agent` — alert when a watched pi agent's session cost reaches USD (pi's price-table estimate, not provider billing)
+    - `--cost-cap-total` — alert when every pi session's cost since local midnight reaches USD
+    - `--cost-step` — an acked cost alert re-fires after this much more spend (default 1.0)
+    - `--cost-remind-s` — an acked alert whose spend is not observable (unmeasured, incomplete, overflow) re-fires after N seconds (default 900)
+    - `--ack-cost` — acknowledge a cost alert by the 'ack' token its report printed (repeatable; needs the cap that produced it)
   - `answer <agent> --expect-pane <EXPECT_PANE> [--option <OPTION>] [--index <INDEX>] [--other] [--text <TEXT>] [--settle-s <SETTLE_S>]` — drive a live worker's question-tool picker by option, or free text via --other
     - `agent` — the worker's herdr agent name
     - `--expect-pane` — the pane this worker is parked in (required)
@@ -1122,7 +1130,7 @@ Launch supported agents in herdr tabs to work backlog items.
   - `DEV_STATUS = Path(__file__).parent / 'dev_status.py'`
   - `COPILOT_PLUGIN_DIR = str(Path(__file__).resolve().parent.parent / 'copilot' / 'extensions' / 'swarm')`
 - Explicit exit codes: `1`, `2`
-- Depends on: `agent_toolkit_paths.py`, `agy_workspace_trust.py`, `backlog_claim_lookup.py`, `cli_common.py`, `dev_status.py`, `dev_status_impl.py`, `dev_status_mutation.py`, `dev_status_storage.py`, `herdr_picker.py`, `worktree.py`
+- Depends on: `agent_toolkit_paths.py`, `agy_workspace_trust.py`, `analyze_sessions.py`, `backlog_claim_lookup.py`, `cli_common.py`, `dev_status.py`, `dev_status_impl.py`, `dev_status_mutation.py`, `dev_status_storage.py`, `herdr_picker.py`, `worktree.py`
 - Exceptions:
   - `class RefusedError(RuntimeError)` — A launch that must not proceed, with a reason fit to show the user.
   - `class AnswerOutcome(Exception)` — A needs_manual / submitted_unconfirmed outcome, carrying its exit code.

@@ -12,11 +12,14 @@ import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import time
 import tempfile
 import unittest
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
@@ -899,6 +902,385 @@ class CloseTests(unittest.TestCase):
             {"result": {"agent": {"agent_status": "blocked", "pane_id": "w:p1"}}}
         )
         self.assertEqual(parsed, {"status": "blocked", "pane": "w:p1", "tab": ""})
+
+
+# A fixed "now": 2026-10-15 15:00 local; UTC keeps the day boundary simple.
+COST_NOW = datetime(2026, 10, 15, 15, 0, tzinfo=UTC)
+
+
+def _pi_agent(
+    name: str, status: str, seq: int, session: str | None
+) -> dict[str, object]:
+    rec = _agent(name, status, seq)
+    if session is not None:
+        rec["agent_session"] = {"agent": "pi", "kind": "path", "value": session}
+    return rec
+
+
+def _assistant(cost: object, ts: str = "2026-10-15T12:00:00Z") -> str:
+    return json.dumps(
+        {
+            "type": "message",
+            "timestamp": ts,
+            "message": {"role": "assistant", "usage": {"cost": {"total": cost}}},
+        }
+    )
+
+
+class WatchCostTests(unittest.TestCase):
+    """`watch --cost-cap-*`: pi cost alerts with snapshot-bound acks."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.state = self.tmp / "watch.json"
+        self.sessions = Path.home() / ".pi" / "agent" / "sessions"
+        self.now = COST_NOW
+        env = mock.patch.dict(os.environ, {"TZ": "UTC"})
+        env.start()
+        time.tzset()
+        self.addCleanup(env.stop)
+        self.addCleanup(time.tzset)
+        self.addCleanup(shutil.rmtree, self.sessions, True)
+
+    def session(self, name: str, costs: list[float], *, tail: str = "\n") -> str:
+        path = self.sessions / "--proj--" / f"{name}.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n".join(_assistant(c) for c in costs) + tail)
+        stamp = self.now.timestamp()
+        os.utime(path, (stamp, stamp))
+        return str(path)
+
+    def run_watch(
+        self, argv: list[str], agents: list[dict[str, object]]
+    ) -> tuple[int, dict[str, object], str]:
+        fake = WatchFakeHerdr([agents])
+        with (
+            mock.patch.object(herdr_delegate, "herdr", fake),
+            mock.patch.object(herdr_delegate.time, "sleep", lambda _s: None),
+            mock.patch.object(herdr_delegate, "_watch_now", lambda: self.now),
+            mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
+        ):
+            sys.argv = [
+                "herdr_delegate.py",
+                "watch",
+                *argv,
+                "--state",
+                str(self.state),
+                "--timeout-s",
+                "0",
+            ]
+            out, err = io.StringIO(), io.StringIO()
+            code = 0
+            try:
+                with redirect_stdout(out), redirect_stderr(err):
+                    herdr_delegate.main()
+            except SystemExit as e:
+                code = int(e.code or 0)
+        text = out.getvalue()
+        return code, (json.loads(text) if text.strip() else {}), err.getvalue()
+
+    # ── per-agent caps ──────────────────────────────────────────────────────
+
+    def test_agent_over_cap_alerts_and_ack_snoozes_one_step(self) -> None:
+        s = self.session("w1", [2.0, 2.5])
+        agents = [_pi_agent("atk-w1", "working", 3, s)]
+        code, out, _ = self.run_watch(["atk-w1", "--cost-cap-agent", "4"], agents)
+        self.assertEqual(code, 0)
+        self.assertEqual(out["attention"], {})
+        alert = out["cost"]["alerts"]["agent:atk-w1"]
+        self.assertEqual((alert["reason"], alert["usd"]), ("over_cap", 4.5))
+        self.assertEqual(out["cost"]["agents"]["atk-w1"]["usd"], 4.5)
+        self.assertIn("not provider billing", out["cost"]["estimate"])
+
+        # Level-triggered: still reported until acked.
+        code, out2, _ = self.run_watch(["atk-w1", "--cost-cap-agent", "4"], agents)
+        self.assertEqual(out2["cost"]["alerts"]["agent:atk-w1"]["ack"], alert["ack"])
+
+        # Acked: quiet while spend stays below 4.5 + step.
+        code, out, _ = self.run_watch(
+            ["atk-w1", "--cost-cap-agent", "4", "--ack-cost", alert["ack"]], agents
+        )
+        self.assertEqual(code, 124)
+        self.assertEqual(out["cost"]["alerts"], {})
+
+        self.session("w1", [2.0, 2.5, 0.9])
+        code, out, _ = self.run_watch(["atk-w1", "--cost-cap-agent", "4"], agents)
+        self.assertEqual(code, 124)
+
+        self.session("w1", [2.0, 2.5, 1.0])
+        code, out, _ = self.run_watch(["atk-w1", "--cost-cap-agent", "4"], agents)
+        self.assertEqual(code, 0)
+        self.assertEqual(out["cost"]["alerts"]["agent:atk-w1"]["usd"], 5.5)
+
+    def test_stale_ack_cannot_swallow_later_spend(self) -> None:
+        s = self.session("w1", [4.0])
+        agents = [_pi_agent("atk-w1", "working", 3, s)]
+        _, out, _ = self.run_watch(["atk-w1", "--cost-cap-agent", "4"], agents)
+        token = out["cost"]["alerts"]["agent:atk-w1"]["ack"]
+        # Spend rose past token usd + step before the foreman acked.
+        self.session("w1", [4.0, 1.5])
+        code, out, _ = self.run_watch(
+            ["atk-w1", "--cost-cap-agent", "4", "--ack-cost", token], agents
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(out["cost"]["alerts"]["agent:atk-w1"]["usd"], 5.5)
+
+    def test_new_session_under_same_name_re_alerts(self) -> None:
+        s1 = self.session("w1", [5.0])
+        _, out, _ = self.run_watch(
+            ["atk-w1", "--cost-cap-agent", "4"], [_pi_agent("atk-w1", "working", 3, s1)]
+        )
+        token = out["cost"]["alerts"]["agent:atk-w1"]["ack"]
+        s2 = self.session("w1-restart", [5.0])
+        code, out, _ = self.run_watch(
+            ["atk-w1", "--cost-cap-agent", "4", "--ack-cost", token],
+            [_pi_agent("atk-w1", "working", 4, s2)],
+        )
+        self.assertEqual(code, 0)
+        self.assertIn("agent:atk-w1", out["cost"]["alerts"])
+
+    def test_cost_exactly_at_cap_counts(self) -> None:
+        s = self.session("w1", [4.0])
+        code, out, _ = self.run_watch(
+            ["atk-w1", "--cost-cap-agent", "4"], [_pi_agent("atk-w1", "working", 3, s)]
+        )
+        self.assertEqual(out["cost"]["alerts"]["agent:atk-w1"]["reason"], "over_cap")
+
+    # ── fail closed ─────────────────────────────────────────────────────────
+
+    def test_agent_without_session_path_is_unmeasured(self) -> None:
+        code, out, _ = self.run_watch(
+            ["atk-w1", "--cost-cap-agent", "4"], [_agent("atk-w1", "working", 3)]
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            out["cost"]["alerts"]["agent:atk-w1"]["reason"], "unmeasured"
+        )
+        self.assertIsNone(out["cost"]["agents"]["atk-w1"]["session"])
+
+    def test_interior_corruption_is_unmeasured_but_torn_tail_is_not(self) -> None:
+        torn = self.session("torn", [1.0], tail='\n{"type": "mess')
+        code, out, _ = self.run_watch(
+            ["atk-w1", "--cost-cap-agent", "4"], [_pi_agent("atk-w1", "working", 3, torn)]
+        )
+        self.assertEqual(code, 124)
+        self.assertTrue(out["cost"]["agents"]["atk-w1"]["complete"])
+
+        bad = self.sessions / "--proj--" / "bad.jsonl"
+        bad.write_text("garbage\n" + _assistant(1.0) + "\n")
+        code, out, _ = self.run_watch(
+            ["atk-w1", "--cost-cap-agent", "4"],
+            [_pi_agent("atk-w1", "working", 3, str(bad))],
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            out["cost"]["alerts"]["agent:atk-w1"]["reason"], "unmeasured"
+        )
+
+    def test_known_overspend_beats_incompleteness(self) -> None:
+        bad = self.sessions / "--proj--" / "bad.jsonl"
+        bad.parent.mkdir(parents=True, exist_ok=True)
+        bad.write_text("garbage\n" + _assistant(9.0) + "\n")
+        _, out, _ = self.run_watch(
+            ["atk-w1", "--cost-cap-agent", "4"],
+            [_pi_agent("atk-w1", "working", 3, str(bad))],
+        )
+        alert = out["cost"]["alerts"]["agent:atk-w1"]
+        self.assertEqual((alert["reason"], alert["usd"]), ("over_cap", 9.0))
+
+    def test_acked_incomplete_over_cap_still_gets_reminders(self) -> None:
+        bad = self.sessions / "--proj--" / "bad.jsonl"
+        bad.parent.mkdir(parents=True, exist_ok=True)
+        bad.write_text("garbage\n" + _assistant(9.0) + "\n")
+        agents = [_pi_agent("atk-w1", "working", 3, str(bad))]
+        argv = ["atk-w1", "--cost-cap-agent", "4", "--cost-remind-s", "600"]
+        _, out, _ = self.run_watch(argv, agents)
+        token = out["cost"]["alerts"]["agent:atk-w1"]["ack"]
+        self.assertEqual(self.run_watch([*argv, "--ack-cost", token], agents)[0], 124)
+        self.now = COST_NOW + timedelta(seconds=600)
+        code, out, _ = self.run_watch(argv, agents)
+        self.assertEqual(code, 0)
+        self.assertEqual(out["cost"]["alerts"]["agent:atk-w1"]["reason"], "over_cap")
+
+    def test_acked_unmeasured_re_alerts_after_remind_or_on_spend(self) -> None:
+        bad = self.sessions / "--proj--" / "bad.jsonl"
+        bad.parent.mkdir(parents=True, exist_ok=True)
+        bad.write_text("garbage\n" + _assistant(0.5) + "\n")
+        agents = [_pi_agent("atk-w1", "working", 3, str(bad))]
+        argv = ["atk-w1", "--cost-cap-agent", "4", "--cost-remind-s", "600"]
+        _, out, _ = self.run_watch(argv, agents)
+        token = out["cost"]["alerts"]["agent:atk-w1"]["ack"]
+        code, out, _ = self.run_watch([*argv, "--ack-cost", token], agents)
+        self.assertEqual(code, 124)
+
+        # Unobservable spend: the measurement never moves, the reminder fires.
+        self.now = COST_NOW + timedelta(seconds=599)
+        self.assertEqual(self.run_watch(argv, agents)[0], 124)
+        self.now = COST_NOW + timedelta(seconds=600)
+        code, out, _ = self.run_watch(argv, agents)
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            out["cost"]["alerts"]["agent:atk-w1"]["reason"], "unmeasured"
+        )
+
+        # Acking unmeasured never suppresses a later over_cap.
+        self.now = COST_NOW
+        bad.write_text("garbage\n" + _assistant(4.0) + "\n")
+        _, out, _ = self.run_watch(argv, agents)
+        self.assertEqual(out["cost"]["alerts"]["agent:atk-w1"]["reason"], "over_cap")
+
+    def test_overflow_is_json_safe_and_ackable_by_reminder(self) -> None:
+        s = self.session("w1", [1.7e308, 1.7e308])
+        agents = [_pi_agent("atk-w1", "working", 3, s)]
+        argv = ["atk-w1", "--cost-cap-agent", "4", "--cost-remind-s", "600"]
+        code, out, _ = self.run_watch(argv, agents)  # json.loads would choke on Infinity
+        alert = out["cost"]["alerts"]["agent:atk-w1"]
+        self.assertEqual((alert["reason"], alert["usd"]), ("over_cap", None))
+        code, out, _ = self.run_watch([*argv, "--ack-cost", alert["ack"]], agents)
+        self.assertEqual(code, 124)
+        self.now = COST_NOW + timedelta(seconds=600)
+        self.assertEqual(self.run_watch(argv, agents)[0], 0)
+
+    # ── daily total ─────────────────────────────────────────────────────────
+
+    def test_total_counts_unwatched_sessions_and_rearms_next_day(self) -> None:
+        mine = self.session("w1", [1.0])
+        self.session("someone-else", [3.0])
+        agents = [_pi_agent("atk-w1", "working", 3, mine)]
+        code, out, _ = self.run_watch(["atk-w1", "--cost-cap-total", "4"], agents)
+        self.assertEqual(code, 0)
+        self.assertEqual(out["cost"]["total"]["usd"], 4.0)
+        self.assertEqual(out["cost"]["agents"], {})  # no agent cap set
+        alert = out["cost"]["alerts"]["total"]
+        code, out, _ = self.run_watch(
+            ["atk-w1", "--cost-cap-total", "4", "--ack-cost", alert["ack"]], agents
+        )
+        self.assertEqual(code, 124)
+
+        # Next day: yesterday's messages fall out of the window entirely.
+        self.now = COST_NOW + timedelta(days=1)
+        code, out, _ = self.run_watch(["atk-w1", "--cost-cap-total", "4"], agents)
+        self.assertEqual(code, 124)
+        self.assertEqual(out["cost"]["day"], "2026-10-16")
+        self.assertEqual(out["cost"]["total"]["usd"], 0.0)
+
+    def test_total_ack_does_not_carry_into_a_new_day(self) -> None:
+        self.session("a", [5.0])
+        agents = [_agent("atk-w1", "working", 3)]
+        _, out, _ = self.run_watch(["atk-w1", "--cost-cap-total", "4"], agents)
+        token = out["cost"]["alerts"]["total"]["ack"]
+        self.run_watch(["atk-w1", "--cost-cap-total", "4", "--ack-cost", token], agents)
+        self.now = COST_NOW + timedelta(days=1)
+        path = self.sessions / "--proj--" / "a.jsonl"
+        path.write_text(_assistant(5.0, ts="2026-10-16T12:00:00Z") + "\n")
+        os.utime(path, (self.now.timestamp(), self.now.timestamp()))
+        code, out, _ = self.run_watch(["atk-w1", "--cost-cap-total", "4"], agents)
+        self.assertEqual(code, 0)
+        self.assertEqual(out["cost"]["alerts"]["total"]["reason"], "over_cap")
+
+    def test_incomplete_total_alerts(self) -> None:
+        path = self.sessions / "--proj--" / "x.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("garbage\n")
+        code, out, _ = self.run_watch(
+            ["atk-w1", "--cost-cap-total", "4"], [_agent("atk-w1", "working", 3)]
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(out["cost"]["alerts"]["total"]["reason"], "incomplete")
+        self.assertFalse(out["cost"]["total"]["complete"])
+
+    def test_agent_named_total_does_not_collide(self) -> None:
+        s = self.session("w1", [5.0])
+        _, out, _ = self.run_watch(
+            ["total", "--cost-cap-total", "4", "--cost-cap-agent", "4"],
+            [_pi_agent("total", "working", 3, s)],
+        )
+        self.assertEqual(set(out["cost"]["alerts"]), {"total", "agent:total"})
+        token = out["cost"]["alerts"]["agent:total"]["ack"]
+        code, out, _ = self.run_watch(
+            ["total", "--cost-cap-total", "4", "--cost-cap-agent", "4",
+             "--ack-cost", token],
+            [_pi_agent("total", "working", 3, s)],
+        )
+        self.assertEqual(set(out["cost"]["alerts"]), {"total"})
+
+    def test_local_midnight_across_dst_transitions(self) -> None:
+        with mock.patch.dict(os.environ, {"TZ": "America/New_York"}):
+            time.tzset()
+            try:
+                spring = herdr_delegate._local_midnight(
+                    datetime(2026, 3, 8, 12, 0, tzinfo=UTC).astimezone()
+                )
+                fall = herdr_delegate._local_midnight(
+                    datetime(2026, 11, 1, 18, 0, tzinfo=UTC).astimezone()
+                )
+            finally:
+                os.environ["TZ"] = "UTC"
+                time.tzset()
+        # Midnight before each switch is still on the old offset.
+        self.assertEqual(spring.astimezone(UTC), datetime(2026, 3, 8, 5, 0, tzinfo=UTC))
+        self.assertEqual(fall.astimezone(UTC), datetime(2026, 11, 1, 4, 0, tzinfo=UTC))
+
+    # ── compatibility and input validation ──────────────────────────────────
+
+    def test_no_cap_flags_means_no_cost_key_and_no_new_state(self) -> None:
+        s = self.session("w1", [50.0])
+        code, out, _ = self.run_watch(["atk-w1"], [_pi_agent("atk-w1", "working", 3, s)])
+        self.assertEqual(code, 124)
+        self.assertNotIn("cost", out)
+        self.assertNotIn("cost_acks", json.loads(self.state.read_text()))
+
+    def test_settle_and_cost_alert_share_one_report(self) -> None:
+        s = self.session("w1", [5.0])
+        code, out, _ = self.run_watch(
+            ["atk-w1", "--cost-cap-agent", "4"], [_pi_agent("atk-w1", "blocked", 7, s)]
+        )
+        self.assertEqual(out["attention"]["atk-w1"]["seq"], 7)
+        self.assertIn("agent:atk-w1", out["cost"]["alerts"])
+
+    def test_cost_acks_round_trip_and_old_state_loads(self) -> None:
+        self.state.write_text('{"agents": {}, "membership": [], "pending_gone": []}')
+        s = self.session("w1", [5.0])
+        agents = [_pi_agent("atk-w1", "working", 3, s)]
+        _, out, _ = self.run_watch(["atk-w1", "--cost-cap-agent", "4"], agents)
+        token = out["cost"]["alerts"]["agent:atk-w1"]["ack"]
+        self.run_watch(["atk-w1", "--cost-cap-agent", "4", "--ack-cost", token], agents)
+        saved = json.loads(self.state.read_text())
+        self.assertIn("agent:atk-w1", saved["cost_acks"])
+        loaded = herdr_delegate._load_watch_state(self.state)
+        self.assertEqual(loaded["cost_acks"], saved["cost_acks"])
+        # The ack persists across runs.
+        self.assertEqual(self.run_watch(["atk-w1", "--cost-cap-agent", "4"], agents)[0], 124)
+
+    def test_corrupt_cost_acks_state_is_refused(self) -> None:
+        self.state.write_text(
+            '{"agents": {}, "membership": [], "pending_gone": [], "cost_acks": []}'
+        )
+        code, _, err = self.run_watch(
+            ["atk-w1", "--cost-cap-agent", "4"], [_agent("atk-w1", "working", 3)]
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("cost_acks", err)
+
+    def test_bad_cli_values_are_refused(self) -> None:
+        cases = [
+            ["--cost-cap-agent", "nan"],
+            ["--cost-cap-agent", "inf"],
+            ["--cost-cap-total", "0"],
+            ["--cost-cap-total", "-1"],
+            ["--cost-cap-agent", "4", "--cost-step", "0"],
+            ["--cost-cap-agent", "4", "--cost-remind-s", "nan"],
+            ["--ack-cost", "cost:total:over_cap:5.0:-:-:2026-10-15"],
+            ["--cost-cap-total", "4", "--ack-cost", "cost:agent:x:over_cap:5.0:-:-:d"],
+            ["--cost-cap-total", "4", "--ack-cost", "nonsense"],
+            ["--cost-cap-total", "4", "--ack-cost", "cost:total:bogus:5.0:-:-:d"],
+        ]
+        for extra in cases:
+            with self.subTest(extra=extra):
+                code, _, _ = self.run_watch(
+                    ["atk-w1", *extra], [_agent("atk-w1", "working", 3)]
+                )
+                self.assertEqual(code, 2)
 
 
 if __name__ == "__main__":

@@ -47,6 +47,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
+import os
 import re
 import sqlite3
 import sys
@@ -755,6 +757,155 @@ def load_pi_records(
                     )
                 )
     return records, skipped
+
+
+# ── pi cost measurement for spend caps ──────────────────────────────────────
+#
+# Stricter than load_pi_records on purpose: a spend cap must fail closed, so
+# anything that could hide a charge is reported as a problem instead of being
+# skipped or coerced. load_pi_records keeps its tolerant reporting semantics.
+
+
+@dataclass(frozen=True)
+class PiCost:
+    """A pi cost measurement: pi's own price-table estimate, not provider billing.
+
+    ``usd`` is None when the sum overflowed. ``complete`` is True only when the
+    source was fully readable and every charge-bearing record yielded a cost.
+    """
+
+    usd: float | None
+    complete: bool
+    problems: tuple[str, ...]
+
+
+def _pi_usage_cost(usage: object) -> float | None:
+    """Strict pi ``usage`` cost: a finite, non-negative number, or ``cost.total``."""
+    if not isinstance(usage, dict):
+        return None
+    cost = usage.get("cost")
+    if isinstance(cost, dict):
+        cost = cost.get("total")
+    if isinstance(cost, bool) or not isinstance(cost, (int, float)):
+        return None
+    try:
+        value = float(cost)
+    except OverflowError:
+        return None
+    if not math.isfinite(value) or value < 0:
+        return None
+    return value
+
+
+def _scan_pi_file(path: Path, since: datetime | None) -> PiCost:
+    """Sum assistant costs in one pi session file; never raises.
+
+    An unterminated final line is an in-progress write and is dropped. With
+    ``since``, only assistant messages timestamped at or after it count, and a
+    cost-bearing message without a parseable timestamp is a problem.
+    """
+    problems: list[str] = []
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        return PiCost(0.0, False, (f"unreadable: {exc}",))
+    lines = data.split(b"\n")
+    if not data.endswith(b"\n"):
+        lines = lines[:-1]
+    total = 0.0
+    for lineno, raw in enumerate(lines, 1):
+        if not raw.strip():
+            continue
+        try:
+            obj = json.loads(raw)
+            if not isinstance(obj, dict):
+                problems.append(f"line {lineno}: not a JSON object")
+                continue
+            if obj.get("type") != "message":
+                continue
+            msg = obj.get("message")
+            if not isinstance(msg, dict):
+                problems.append(f"line {lineno}: message is not an object")
+                continue
+            if msg.get("role") != "assistant":
+                continue
+            dt: datetime | None = None
+            if since is not None:
+                # Window first: an out-of-window record cannot spoil today's total.
+                _, dt = normalize_timestamp(
+                    obj.get("timestamp") or msg.get("timestamp")
+                )
+                if dt is not None and dt < since:
+                    continue
+            cost = _pi_usage_cost(msg.get("usage", obj.get("usage")))
+            if cost is None:
+                problems.append(f"line {lineno}: assistant message without a cost")
+                continue
+            if since is not None and dt is None:
+                problems.append(f"line {lineno}: cost without a timestamp")
+                continue
+            total += cost
+        except Exception as exc:  # noqa: BLE001 — a cap must never crash the watcher
+            problems.append(f"line {lineno}: {type(exc).__name__}")
+    if not math.isfinite(total):
+        problems.append("overflow")
+        return PiCost(None, False, tuple(problems))
+    return PiCost(total, not problems, tuple(problems))
+
+
+def pi_session_cost(path: Path) -> PiCost:
+    """Total pi-estimated cost of one session file; never raises."""
+    return _scan_pi_file(path, None)
+
+
+def pi_cost_since(since: datetime, base_dir: Path | None = None) -> PiCost:
+    """Total pi-estimated cost of every pi session since ``since``; never raises.
+
+    Files whose mtime predates ``since`` are not opened (a file restored with an
+    older mtime than its newest message is undercounted). Subagent sessions are
+    included. Problems are prefixed with the file name.
+    """
+    if base_dir is None:
+        base_dir = Path.home() / ".pi" / "agent" / "sessions"
+    try:
+        base_dir.stat()
+    except FileNotFoundError:
+        return PiCost(0.0, True, ())
+    except OSError as exc:
+        return PiCost(0.0, False, (f"sessions dir: {exc}",))
+    problems: list[str] = []
+
+    def onerror(exc: OSError) -> None:
+        if not isinstance(exc, FileNotFoundError):
+            problems.append(f"walk: {exc}")
+
+    total = 0.0
+    overflow = False
+    cutoff = since.timestamp()
+    for dirpath, _dirs, files in os.walk(base_dir, onerror=onerror):
+        for name in sorted(files):
+            if not name.endswith(".jsonl"):
+                continue
+            path = Path(dirpath) / name
+            try:
+                if path.stat().st_mtime < cutoff:
+                    continue
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                problems.append(f"{name}: {exc}")
+                continue
+            got = _scan_pi_file(path, since)
+            problems.extend(f"{name}: {p}" for p in got.problems)
+            if got.usd is None:
+                overflow = True
+            else:
+                total += got.usd
+    if overflow or not math.isfinite(total):
+        if "overflow" not in problems:
+            problems.append("overflow")
+        return PiCost(None, False, tuple(problems))
+    return PiCost(total, not problems, tuple(problems))
 
 
 def load_claude_records(

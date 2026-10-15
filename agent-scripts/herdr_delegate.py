@@ -40,6 +40,15 @@ it a bounded number of times -- each attempt against a brand new tab/pane,
 never the one the timeout gave up on -- before treating it as a hard
 failure. Any other failure still fails on the first attempt, unchanged.
 
+``watch --cost-cap-agent``/``--cost-cap-total`` add spend caps measured from
+pi's session JSONL -- pi's own price-table estimate, never provider billing.
+With a cap set every report carries a ``cost`` object, and a report can fire
+(exit 0) with empty ``attention`` and ``gone`` purely for a cost alert:
+``over_cap``, or ``unmeasured``/``incomplete`` when a cost cannot be fully
+read (fail closed). ``--ack-cost`` takes the alert's printed ``ack`` token,
+which pins the reported snapshot; an ack snoozes one more ``--cost-step`` of
+spend, or ``--cost-remind-s`` when the spend is not observable.
+
 Usage:
     herdr_delegate.py plan
     herdr_delegate.py launch --slug <slug> [--model <model>]
@@ -52,6 +61,9 @@ Usage:
                              [--ack <name>=<seq>]... [--ack-gone <name>]...
                              [--grace-s <n>] [--timeout-s <n>] [--poll-s <n>]
                              [--strict]
+                             [--cost-cap-agent <usd>] [--cost-cap-total <usd>]
+                             [--cost-step <usd>] [--cost-remind-s <n>]
+                             [--ack-cost <token>]...
     herdr_delegate.py answer <agent> --expect-pane <pane>
                              (--option <label> | --index <n> | --other --text <text>)
                              [--settle-s <n>]
@@ -68,7 +80,9 @@ from __future__ import annotations
 import argparse
 import contextlib
 import fcntl
+import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -78,6 +92,8 @@ import tempfile
 import time
 import uuid
 from collections.abc import Callable, Iterator
+from datetime import datetime
+from datetime import time as dt_time
 from pathlib import Path
 
 # Deliberately NOT .resolve()'d: dev_status.py and this script may live in
@@ -91,6 +107,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import agent_toolkit_paths  # noqa: E402
 import agy_workspace_trust  # noqa: E402
+import analyze_sessions  # noqa: E402
 import cli_common  # noqa: E402
 import herdr_picker  # noqa: E402
 from backlog_claim_lookup import (  # noqa: E402
@@ -665,8 +682,31 @@ def parse_agent_listing_strict(
                 f"malformed agent listing: record {name!r} lacks a string name, "
                 "string agent_status, or integer state_change_seq"
             )
-        records.append({"name": name, "status": status, "seq": seq})
+        records.append(
+            {
+                "name": name,
+                "status": status,
+                "seq": seq,
+                "session_path": _pi_session_path(raw.get("agent_session")),
+            }
+        )
     return records
+
+
+def _pi_session_path(session: object) -> str | None:
+    """A pi agent's session-file path from its ``agent_session``; else None.
+
+    Anything other than ``{"agent": "pi", "kind": "path", "value": <str>}`` is
+    not a pi session file -- never a malformed listing.
+    """
+    if (
+        isinstance(session, dict)
+        and session.get("agent") == "pi"
+        and session.get("kind") == "path"
+        and isinstance(session.get("value"), str)
+    ):
+        return str(session["value"])
+    return None
 
 
 def _empty_watch_state() -> dict[str, object]:
@@ -709,11 +749,43 @@ def _validate_watch_state(state: object) -> dict[str, object]:
         raise RefusedError(
             "corrupt watch state: 'pending_gone' is not a list of strings"
         )
-    return {
+    validated: dict[str, object] = {
         "agents": agents,
         "membership": list(membership),
         "pending_gone": list(pending_gone),
     }
+    if "cost_acks" in state:
+        validated["cost_acks"] = _validate_cost_acks(state["cost_acks"])
+    return validated
+
+
+def _validate_cost_acks(acks: object) -> dict[str, dict[str, object]]:
+    """Type-check the optional ``cost_acks`` map (absent in older state files)."""
+    if not isinstance(acks, dict):
+        raise RefusedError("corrupt watch state: 'cost_acks' is not an object")
+    for subject, ack in acks.items():
+        ok = (
+            isinstance(subject, str)
+            and isinstance(ack, dict)
+            and ack.get("reason") in COST_REASONS
+            and _is_number_or_none(ack.get("usd"))
+            and isinstance(ack.get("session_hash"), str)
+            and isinstance(ack.get("problems_hash"), str)
+            and isinstance(ack.get("day"), str)
+            and _is_number_or_none(ack.get("acked_at"))
+            and ack.get("acked_at") is not None
+        )
+        if not ok:
+            raise RefusedError(
+                f"corrupt watch state: invalid cost_acks entry {subject!r}"
+            )
+    return acks
+
+
+def _is_number_or_none(value: object) -> bool:
+    return value is None or (
+        isinstance(value, (int, float)) and not isinstance(value, bool)
+    )
 
 
 def _load_watch_state(path: Path) -> dict[str, object]:
@@ -760,6 +832,245 @@ def _watch_lock(state_path: Path) -> Iterator[None]:
         os.close(fd)
 
 
+# ── foreman `watch` cost caps ───────────────────────────────────────────────
+#
+# Spend is pi's own price-table estimate read from its session JSONL (never the
+# pane status line). Every alert is a *condition* on a *subject* (`agent:<name>`
+# or `total`); an ack stores the snapshot the report printed, so a late ack can
+# never swallow spend that happened after the report. An ack snoozes at most one
+# more `--cost-step` of measured spend, or `--cost-remind-s` when the spend is
+# not observable (an incomplete measurement or an overflow).
+
+COST_REASONS = ("over_cap", "unmeasured", "incomplete")
+COST_DEFAULT_STEP = 1.0
+COST_DEFAULT_REMIND_S = 900.0
+COST_ESTIMATE_NOTE = "pi native cost from its price table, not provider billing"
+COST_PROBLEMS_SHOWN = 20
+COST_TOTAL_SUBJECT = "total"
+
+
+def _watch_now() -> datetime:
+    """The local-aware current time (patched in tests)."""
+    return datetime.now().astimezone()
+
+
+def _local_midnight(now: datetime) -> datetime:
+    """Local midnight of ``now``'s date, using the zone's rules for that date.
+
+    Truncating ``now`` would keep *today's* UTC offset, which is wrong on a DST
+    transition day; a naive midnight resolved by ``astimezone`` is not.
+    """
+    return datetime.combine(now.astimezone().date(), dt_time()).astimezone()
+
+
+def _positive_finite(raw: str) -> float:
+    """argparse type: a finite number > 0 (NaN, infinity and <= 0 refused)."""
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"{raw!r} is not a number") from exc
+    if not math.isfinite(value) or value <= 0:
+        raise argparse.ArgumentTypeError(f"{raw!r} must be finite and > 0")
+    return value
+
+
+def _short_hash(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def _session_hash(session: str | None) -> str:
+    return "-" if session is None else _short_hash(session)
+
+
+def _problems_hash(problems: tuple[str, ...]) -> str:
+    return "-" if not problems else _short_hash("\n".join(sorted(problems)))
+
+
+def _cost_token(subject: str, snap: dict[str, object], day: str) -> str:
+    usd = snap["usd"]
+    usd_s = "overflow" if usd is None else repr(usd)
+    return ":".join(
+        [
+            "cost",
+            subject,
+            str(snap["reason"]),
+            usd_s,
+            str(snap["session_hash"]),
+            str(snap["problems_hash"]),
+            day,
+        ]
+    )
+
+
+def _parse_cost_token(token: str) -> tuple[str, dict[str, object]]:
+    """Decode an ``--ack-cost`` token into (subject, stored snapshot); refuse junk."""
+    head, sep, rest = token.partition(":")
+    parts = rest.rsplit(":", 5) if sep else []
+    if head != "cost" or len(parts) != 6:
+        raise RefusedError(f"--ack-cost {token!r} is not a cost alert token")
+    subject, reason, usd_s, session_hash, problems_hash, day = parts
+    if not (subject == COST_TOTAL_SUBJECT or subject.startswith("agent:")):
+        raise RefusedError(f"--ack-cost {token!r}: unknown subject {subject!r}")
+    if reason not in COST_REASONS:
+        raise RefusedError(f"--ack-cost {token!r}: unknown reason {reason!r}")
+    usd: float | None = None
+    if usd_s != "overflow":
+        try:
+            usd = float(usd_s)
+        except ValueError as exc:
+            raise RefusedError(f"--ack-cost {token!r}: bad usd {usd_s!r}") from exc
+        if not math.isfinite(usd):
+            raise RefusedError(f"--ack-cost {token!r}: bad usd {usd_s!r}")
+    return subject, {
+        "reason": reason,
+        "usd": usd,
+        "session_hash": session_hash,
+        "problems_hash": problems_hash,
+        "day": day,
+    }
+
+
+def _cost_condition(
+    measured: analyze_sessions.PiCost, cap: float, incomplete_reason: str
+) -> str | None:
+    """``over_cap`` first (a known overspend is never hidden), then incompleteness."""
+    if measured.usd is None or measured.usd >= cap:
+        return "over_cap"
+    if not measured.complete:
+        return incomplete_reason
+    return None
+
+
+def _cost_ack_silences(
+    ack: dict[str, object] | None,
+    snap: dict[str, object],
+    *,
+    subject: str,
+    day: str,
+    step: float,
+    remind_s: float,
+    now_ts: float,
+) -> bool:
+    """True while a stored ack still covers this snapshot (see the section rule)."""
+    if not ack:
+        return False
+    if (
+        ack["reason"] != snap["reason"]
+        or ack["session_hash"] != snap["session_hash"]
+        or ack["problems_hash"] != snap["problems_hash"]
+        or (subject == COST_TOTAL_SUBJECT and ack["day"] != day)
+    ):
+        return False
+    usd, acked_usd = snap["usd"], ack["usd"]
+    if (
+        isinstance(usd, float)
+        and isinstance(acked_usd, (int, float))
+        and usd >= float(acked_usd) + step
+    ):
+        return False
+    # Spend is observable only on a complete measurement (no problems) without
+    # overflow; anything else is snoozed by time, never indefinitely.
+    observable = (
+        snap["reason"] == "over_cap"
+        and usd is not None
+        and acked_usd is not None
+        and snap["problems_hash"] == "-"
+    )
+    return observable or now_ts - float(ack["acked_at"]) < remind_s
+
+
+def _measure_costs(
+    args: argparse.Namespace,
+    agents: dict[str, str | None],
+    acks: dict[str, dict[str, object]],
+) -> dict[str, object]:
+    """Measure the capped subjects and evaluate their alerts against ``acks``."""
+    now = _watch_now()
+    day = now.date().isoformat()
+    now_ts = now.timestamp()
+    snaps: dict[str, tuple[analyze_sessions.PiCost, str | None, str | None]] = {}
+    agents_out: dict[str, object] = {}
+    total_out: dict[str, object] | None = None
+
+    if args.cost_cap_agent is not None:
+        for name, session in sorted(agents.items()):
+            if session is None:
+                measured = analyze_sessions.PiCost(0.0, False, ("no pi session path",))
+            else:
+                measured = analyze_sessions.pi_session_cost(Path(session))
+            reason = _cost_condition(measured, args.cost_cap_agent, "unmeasured")
+            snaps[f"agent:{name}"] = (measured, session, reason)
+            agents_out[name] = {"session": session, **_cost_json(measured)}
+    if args.cost_cap_total is not None:
+        measured = analyze_sessions.pi_cost_since(_local_midnight(now))
+        reason = _cost_condition(measured, args.cost_cap_total, "incomplete")
+        snaps[COST_TOTAL_SUBJECT] = (measured, None, reason)
+        total_out = _cost_json(measured)
+
+    alerts: dict[str, object] = {}
+    for subject, (measured, session, reason) in snaps.items():
+        if reason is None:
+            continue
+        snap: dict[str, object] = {
+            "reason": reason,
+            "usd": measured.usd,
+            "session_hash": _session_hash(session),
+            "problems_hash": _problems_hash(measured.problems),
+        }
+        if _cost_ack_silences(
+            acks.get(subject),
+            snap,
+            subject=subject,
+            day=day,
+            step=args.cost_step,
+            remind_s=args.cost_remind_s,
+            now_ts=now_ts,
+        ):
+            continue
+        alerts[subject] = {
+            "reason": reason,
+            "usd": measured.usd,
+            "ack": _cost_token(subject, snap, day),
+        }
+    return {
+        "day": day,
+        "estimate": COST_ESTIMATE_NOTE,
+        "cap_agent": args.cost_cap_agent,
+        "cap_total": args.cost_cap_total,
+        "step": args.cost_step,
+        "total": total_out,
+        "agents": agents_out,
+        "alerts": alerts,
+    }
+
+
+def _cost_json(measured: analyze_sessions.PiCost) -> dict[str, object]:
+    problems = list(measured.problems[:COST_PROBLEMS_SHOWN])
+    hidden = len(measured.problems) - len(problems)
+    if hidden > 0:
+        problems.append(f"... {hidden} more")
+    return {"usd": measured.usd, "complete": measured.complete, "problems": problems}
+
+
+def _apply_cost_acks(args: argparse.Namespace, state: dict[str, object]) -> None:
+    """Store each ``--ack-cost`` token's reported snapshot.
+
+    A token whose cap is not set is refused, so an ack is never recorded
+    against a cap nobody is watching.
+    """
+    if not args.ack_cost:
+        return
+    acks = state.setdefault("cost_acks", {})
+    now_ts = _watch_now().timestamp()
+    for token in args.ack_cost:
+        subject, snap = _parse_cost_token(token)
+        if subject == COST_TOTAL_SUBJECT and args.cost_cap_total is None:
+            raise RefusedError(f"--ack-cost {token!r} needs --cost-cap-total")
+        if subject != COST_TOTAL_SUBJECT and args.cost_cap_agent is None:
+            raise RefusedError(f"--ack-cost {token!r} needs --cost-cap-agent")
+        acks[subject] = {**snap, "acked_at": now_ts}
+
+
 def _cmd_watch(args: argparse.Namespace) -> None:
     require_herdr_env(os.environ)
     state_path = Path(args.state)
@@ -787,6 +1098,8 @@ def _cmd_watch(args: argparse.Namespace) -> None:
             state["pending_gone"] = [n for n in state["pending_gone"] if n != name]
             state["membership"] = [n for n in state["membership"] if n != name]
             state["agents"].pop(name, None)
+        _apply_cost_acks(args, state)
+        capped = args.cost_cap_agent is not None or args.cost_cap_total is not None
 
         strict_checked = False
         deadline = time.monotonic() + timeout
@@ -847,30 +1160,26 @@ def _cmd_watch(args: argparse.Namespace) -> None:
                 name: {"status": by_name[name]["status"], "seq": by_name[name]["seq"]}
                 for name in sorted(present & targets)
             }
-
-            if attention or gone:
-                _save_watch_state(state_path, state)
-                print(
-                    json.dumps(
-                        {"attention": attention, "gone": gone, "all": all_records},
-                        indent=2,
-                    )
+            report: dict[str, object] = {
+                "attention": attention,
+                "gone": gone,
+                "all": all_records,
+            }
+            if capped:
+                report["cost"] = _measure_costs(
+                    args,
+                    {n: by_name[n]["session_path"] for n in sorted(present & targets)},
+                    state.get("cost_acks", {}),
                 )
+
+            if attention or gone or (capped and report["cost"]["alerts"]):
+                _save_watch_state(state_path, state)
+                print(json.dumps(report, indent=2))
                 return
 
             _save_watch_state(state_path, state)
             if time.monotonic() >= deadline:
-                print(
-                    json.dumps(
-                        {
-                            "attention": {},
-                            "gone": gone,
-                            "all": all_records,
-                            "timeout": True,
-                        },
-                        indent=2,
-                    )
-                )
+                print(json.dumps({**report, "timeout": True}, indent=2))
                 raise SystemExit(WATCH_TIMEOUT_EXIT)
             time.sleep(poll)
 
@@ -2056,6 +2365,41 @@ def main() -> None:
         "--strict",
         action="store_true",
         help="reject positional names absent from the first listing",
+    )
+    watch.add_argument(
+        "--cost-cap-agent",
+        type=_positive_finite,
+        metavar="USD",
+        help="alert when a watched pi agent's session cost reaches USD "
+        "(pi's price-table estimate, not provider billing)",
+    )
+    watch.add_argument(
+        "--cost-cap-total",
+        type=_positive_finite,
+        metavar="USD",
+        help="alert when every pi session's cost since local midnight reaches USD",
+    )
+    watch.add_argument(
+        "--cost-step",
+        type=_positive_finite,
+        default=COST_DEFAULT_STEP,
+        metavar="USD",
+        help="an acked cost alert re-fires after this much more spend (default 1.0)",
+    )
+    watch.add_argument(
+        "--cost-remind-s",
+        type=_positive_finite,
+        default=COST_DEFAULT_REMIND_S,
+        metavar="N",
+        help="an acked alert whose spend is not observable (unmeasured, "
+        "incomplete, overflow) re-fires after N seconds (default 900)",
+    )
+    watch.add_argument(
+        "--ack-cost",
+        action="append",
+        metavar="TOKEN",
+        help="acknowledge a cost alert by the 'ack' token its report printed "
+        "(repeatable; needs the cap that produced it)",
     )
     watch.set_defaults(func=cmd_watch)
 

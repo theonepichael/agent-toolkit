@@ -78,7 +78,7 @@ python3 {{TOOLKIT_SCRIPTS}}/herdr_delegate.py launch --slug <slug> --kind pi [--
 Do not poll by hand. Run this in the background and let the settle wake you:
 
 ```bash
-python3 {{TOOLKIT_SCRIPTS}}/herdr_delegate.py watch <agent>... [--prefix <prefix>] --state <state-file> --timeout-s <n> [--grace-s 60] [--poll-s 15] [--strict]
+python3 {{TOOLKIT_SCRIPTS}}/herdr_delegate.py watch <agent>... [--prefix <prefix>] --state <state-file> --timeout-s <n> [--grace-s 60] [--poll-s 15] [--strict] [--cost-cap-agent <usd>] [--cost-cap-total <usd>] [--ack-cost <token>]...
 ```
 
 It is **level-triggered** with explicit acknowledgement: it reports an agent
@@ -90,6 +90,28 @@ re-reports the same event. Exit 124 means timeout with nothing to report. The
 limitation to know: it reports current state only, so a transient block that
 resolved before a poll is not reported — for a settle you cannot afford to
 miss, lower `--poll-s`.
+
+### Spend caps
+
+When the operator has set a spend cap, have the watcher enforce it rather than
+relying on each worker's own status line. Add `--cost-cap-agent <usd>` (each
+watched pi worker's session cost), `--cost-cap-total <usd>` (every pi session
+since local midnight, watched or not), or both. The figure is pi's own
+price-table estimate read from its session logs, not provider billing — say
+so when you report spend. With a cap set, every report carries a `cost`
+object, and a report can fire with empty `attention` and `gone` purely
+because of a cost alert:
+
+- `over_cap`: the cap is reached. Stop the worker, or ask the operator before
+  letting it continue.
+- `unmeasured` (an agent) or `incomplete` (the total): the cost cannot be
+  fully read. Treat it as fail-closed and find out why before more paid work.
+
+Acknowledge a cost alert only after acting on it, with `--ack-cost <token>`,
+passing the alert's `ack` token verbatim. An ack snoozes the alert for one
+more `--cost-step` of spend (default $1), or for `--cost-remind-s` (default
+900 s) when the spend is not observable. A new session, a changed problem
+set, or (for the total) a new day re-alerts at once.
 
 ## 4. Review checklist
 

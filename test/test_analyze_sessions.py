@@ -1468,5 +1468,268 @@ class TestCliRootResolution(unittest.TestCase):
         self.assertIsNone(analyze_sessions._resolve_cli_roots())
 
 
+
+
+def _pi_msg(role: str, ts: str | None, cost: object = None, **extra: object) -> dict:
+    message: dict[str, object] = {"role": role, "content": []}
+    if cost is not None:
+        message["usage"] = {"input": 1, "output": 1, "cost": cost}
+    rec: dict[str, object] = {"type": "message", "message": message, **extra}
+    if ts is not None:
+        rec["timestamp"] = ts
+    return rec
+
+
+def _write_jsonl(path: Path, records: list[object], tail: str = "\n") -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    body = "\n".join(r if isinstance(r, str) else json.dumps(r) for r in records)
+    path.write_text(body + tail if records else "", encoding="utf-8")
+    return path
+
+
+class TestPiUsageCost(unittest.TestCase):
+    def test_accepts_number_and_total_dict(self) -> None:
+        self.assertEqual(analyze_sessions._pi_usage_cost({"cost": 0.25}), 0.25)
+        self.assertEqual(analyze_sessions._pi_usage_cost({"cost": {"total": 2}}), 2.0)
+        self.assertEqual(analyze_sessions._pi_usage_cost({"cost": 0}), 0.0)
+
+    def test_rejects_everything_else(self) -> None:
+        for usage in (
+            None,
+            [],
+            {},
+            {"cost": "0.5"},
+            {"cost": True},
+            {"cost": {"total": False}},
+            {"cost": -0.1},
+            {"cost": {"total": -1}},
+            {"cost": float("nan")},
+            {"cost": float("inf")},
+            {"cost": {"total": "1"}},
+            {"cost": 10**400},
+        ):
+            with self.subTest(usage=usage):
+                self.assertIsNone(analyze_sessions._pi_usage_cost(usage))
+
+
+class TestPiSessionCost(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def test_sums_assistant_costs_and_ignores_other_records(self) -> None:
+        p = _write_jsonl(
+            self.root / "s.jsonl",
+            [
+                {"type": "session", "id": "x"},
+                {"type": "model_change", "modelId": "m"},
+                _pi_msg("user", "2026-10-15T10:00:00Z"),
+                _pi_msg("toolResult", "2026-10-15T10:00:01Z"),
+                _pi_msg("assistant", "2026-10-15T10:00:02Z", {"total": 0.5}),
+                _pi_msg("assistant", "2026-10-15T10:00:03Z", 0.25),
+            ],
+        )
+        got = analyze_sessions.pi_session_cost(p)
+        self.assertEqual(got, analyze_sessions.PiCost(0.75, True, ()))
+
+    def test_torn_unterminated_tail_is_not_a_problem(self) -> None:
+        p = _write_jsonl(
+            self.root / "s.jsonl",
+            [_pi_msg("assistant", "2026-10-15T10:00:02Z", 1.0), '{"type": "mess'],
+            tail="",
+        )
+        self.assertEqual(
+            analyze_sessions.pi_session_cost(p), analyze_sessions.PiCost(1.0, True, ())
+        )
+
+    def test_interior_corrupt_line_is_a_problem(self) -> None:
+        p = _write_jsonl(
+            self.root / "s.jsonl",
+            ['{"type": "mess', _pi_msg("assistant", "2026-10-15T10:00:02Z", 1.0)],
+        )
+        got = analyze_sessions.pi_session_cost(p)
+        self.assertFalse(got.complete)
+        self.assertEqual(got.usd, 1.0)
+        self.assertEqual(len(got.problems), 1)
+
+    def test_assistant_without_cost_and_non_dict_usage_are_problems(self) -> None:
+        bad_usage = _pi_msg("assistant", "2026-10-15T10:00:02Z")
+        bad_usage["message"]["usage"] = "nope"
+        p = _write_jsonl(
+            self.root / "s.jsonl",
+            [
+                _pi_msg("assistant", "2026-10-15T10:00:01Z"),
+                bad_usage,
+                {"type": "message", "message": "not-a-dict"},
+                _pi_msg("assistant", "2026-10-15T10:00:03Z", -1),
+                _pi_msg("assistant", "2026-10-15T10:00:04Z", True),
+            ],
+        )
+        got = analyze_sessions.pi_session_cost(p)
+        self.assertFalse(got.complete)
+        self.assertEqual(len(got.problems), 5)
+        self.assertEqual(got.usd, 0.0)
+
+    def test_non_object_json_line_is_a_problem(self) -> None:
+        p = _write_jsonl(self.root / "s.jsonl", ["[1, 2]"])
+        self.assertFalse(analyze_sessions.pi_session_cost(p).complete)
+
+    def test_unreadable_file_is_incomplete_and_never_raises(self) -> None:
+        got = analyze_sessions.pi_session_cost(self.root / "missing.jsonl")
+        self.assertFalse(got.complete)
+        self.assertEqual(got.usd, 0.0)
+        self.assertTrue(got.problems)
+
+    def test_overflowing_sum_is_json_safe(self) -> None:
+        p = _write_jsonl(
+            self.root / "s.jsonl",
+            [
+                _pi_msg("assistant", "2026-10-15T10:00:01Z", 1.7e308),
+                _pi_msg("assistant", "2026-10-15T10:00:02Z", 1.7e308),
+            ],
+        )
+        got = analyze_sessions.pi_session_cost(p)
+        self.assertIsNone(got.usd)
+        self.assertFalse(got.complete)
+        self.assertIn("overflow", got.problems)
+
+
+class TestPiCostSince(unittest.TestCase):
+    SINCE = datetime(2026, 10, 15, 4, 0, tzinfo=UTC)
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self.tmp.name) / "sessions"
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def _touch(self, p: Path, when: datetime) -> None:
+        os.utime(p, (when.timestamp(), when.timestamp()))
+
+    def test_missing_base_dir_is_complete_zero(self) -> None:
+        self.assertEqual(
+            analyze_sessions.pi_cost_since(self.SINCE, self.base),
+            analyze_sessions.PiCost(0.0, True, ()),
+        )
+
+    def test_window_counts_only_in_window_assistant_messages(self) -> None:
+        a = _write_jsonl(
+            self.base / "proj-a" / "a.jsonl",
+            [
+                _pi_msg("assistant", "2026-10-15T03:59:59Z", 5.0),
+                _pi_msg("assistant", "2026-10-15T04:00:00Z", 1.0),
+            ],
+        )
+        b = _write_jsonl(
+            self.base / "proj-b" / "subagent" / "b.jsonl",
+            [_pi_msg("assistant", "2026-10-15T09:00:00+00:00", 0.5)],
+        )
+        for p in (a, b):
+            self._touch(p, datetime(2026, 10, 15, 12, 0, tzinfo=UTC))
+        got = analyze_sessions.pi_cost_since(self.SINCE, self.base)
+        self.assertEqual(got, analyze_sessions.PiCost(1.5, True, ()))
+
+    def test_file_older_than_window_is_not_opened(self) -> None:
+        old = _write_jsonl(
+            self.base / "p" / "old.jsonl",
+            [_pi_msg("assistant", "2026-10-15T09:00:00Z", 9.0)],
+        )
+        self._touch(old, datetime(2026, 10, 14, 12, 0, tzinfo=UTC))
+        with mock.patch.object(
+            analyze_sessions, "_scan_pi_file", wraps=analyze_sessions._scan_pi_file
+        ) as spy:
+            got = analyze_sessions.pi_cost_since(self.SINCE, self.base)
+        spy.assert_not_called()
+        self.assertEqual(got, analyze_sessions.PiCost(0.0, True, ()))
+
+    def test_undated_cost_bearing_message_is_a_problem_not_counted(self) -> None:
+        p = _write_jsonl(
+            self.base / "p" / "u.jsonl",
+            [
+                _pi_msg("assistant", None, 3.0),
+                _pi_msg("assistant", "garbage", 3.0),
+                _pi_msg("assistant", 10**30, 3.0),
+                _pi_msg("assistant", "2026-10-15T09:00:00Z", 1.0),
+            ],
+        )
+        self._touch(p, datetime(2026, 10, 15, 12, 0, tzinfo=UTC))
+        got = analyze_sessions.pi_cost_since(self.SINCE, self.base)
+        self.assertEqual(got.usd, 1.0)
+        self.assertFalse(got.complete)
+        self.assertEqual(len(got.problems), 3)
+        self.assertTrue(all(pr.startswith("u.jsonl") for pr in got.problems))
+
+    def test_unreadable_subdirectory_is_a_problem(self) -> None:
+        good = _write_jsonl(
+            self.base / "ok" / "g.jsonl",
+            [_pi_msg("assistant", "2026-10-15T09:00:00Z", 1.0)],
+        )
+        self._touch(good, datetime(2026, 10, 15, 12, 0, tzinfo=UTC))
+        locked = self.base / "locked"
+        locked.mkdir()
+
+        real_walk = os.walk
+
+        def walk(top: object, onerror: object = None, **kw: object) -> object:
+            for item in real_walk(top, onerror=onerror, **kw):
+                yield item
+            onerror(PermissionError(13, "Permission denied", str(locked)))
+
+        with mock.patch.object(analyze_sessions.os, "walk", walk):
+            got = analyze_sessions.pi_cost_since(self.SINCE, self.base)
+        self.assertEqual(got.usd, 1.0)
+        self.assertFalse(got.complete)
+        self.assertEqual(len(got.problems), 1)
+
+    def test_vanished_entry_is_silently_skipped(self) -> None:
+        p = _write_jsonl(
+            self.base / "p" / "v.jsonl",
+            [_pi_msg("assistant", "2026-10-15T09:00:00Z", 1.0)],
+        )
+        self._touch(p, datetime(2026, 10, 15, 12, 0, tzinfo=UTC))
+        real_walk = os.walk
+
+        def walk(top: object, onerror: object = None, **kw: object) -> object:
+            for dirpath, dirs, files in real_walk(top, onerror=onerror, **kw):
+                yield dirpath, dirs, [*files, "gone.jsonl"]
+            onerror(FileNotFoundError(2, "No such file", "x"))
+
+        with mock.patch.object(analyze_sessions.os, "walk", walk):
+            got = analyze_sessions.pi_cost_since(self.SINCE, self.base)
+        self.assertEqual(got, analyze_sessions.PiCost(1.0, True, ()))
+
+
+class TestPiCostSinceWindowFirst(unittest.TestCase):
+    def test_out_of_window_message_without_cost_is_not_a_problem(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "sessions"
+            p = _write_jsonl(
+                base / "p" / "resumed.jsonl",
+                [
+                    _pi_msg("assistant", "2026-10-14T12:00:00Z"),
+                    _pi_msg("assistant", "2026-10-15T09:00:00Z", 1.0),
+                ],
+            )
+            stamp = datetime(2026, 10, 15, 12, 0, tzinfo=UTC).timestamp()
+            os.utime(p, (stamp, stamp))
+            got = analyze_sessions.pi_cost_since(TestPiCostSince.SINCE, base)
+        self.assertEqual(got, analyze_sessions.PiCost(1.0, True, ()))
+
+
+class TestPiCostSinceBaseDirErrors(unittest.TestCase):
+    def test_untraversable_base_dir_is_incomplete_not_a_crash(self) -> None:
+        base = Path(tempfile.mkdtemp()) / "sessions"
+        with mock.patch.object(
+            Path, "stat", side_effect=PermissionError(13, "Permission denied")
+        ):
+            got = analyze_sessions.pi_cost_since(TestPiCostSince.SINCE, base)
+        self.assertFalse(got.complete)
+        self.assertEqual(got.usd, 0.0)
+
+
 if __name__ == "__main__":
     test_bootstrap.run_unittest_main()
