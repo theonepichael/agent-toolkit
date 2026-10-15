@@ -203,15 +203,26 @@ allowed-tools: [Read, Write, AskUserQuestion, "Bash(python3 {{TOOLKIT_SCRIPTS}}/
         # usage block stays a runnable command block, 2026-08-30
         usage_block="""\
 ```
-second_opinion.py detect                        # which backends are present (JSON)
+second_opinion.py detect --mode grounded        # which backends can run a
+                                                  # grounded review (JSON); plain
+                                                  # `detect` reports the text-only
+                                                  # contract, for --text-only runs
+second_opinion.py probe [--backend NAME]        # one cheap call per pool model:
+                                                  # per-model availability (JSON)
 second_opinion.py review <plan-file-or-text> \\
     [--dir <path>] \\
     [--text-only] \\
     [--focus-file <path>] \\
-    [--model-index N]                            # one critique from the
+    [--model-index N] \\
+    --run-id <run_id>                            # one critique from the
                                                   # priority-selected backend,
                                                   # optionally scoped with
-                                                  # plan-specific risk hints
+                                                  # plan-specific risk hints; the
+                                                  # round cap counts per run-id
+second_opinion.py bind-notes <artifact>         # stamp the critique notes with
+                                                  # the artifact's content hash
+second_opinion.py check-notes <artifact>        # current, stale, unbound,
+                                                  # missing or no-artifact
 ```\
 """,
         # the loop's per-round call, matching the bash usage block above,
@@ -276,15 +287,26 @@ description: "Send a plan to a non-Claude model for adversarial critique, then i
         # usage block stays a runnable command block, 2026-08-30
         usage_block="""\
 ```
-second_opinion.py detect                        # which backends are present (JSON)
+second_opinion.py detect --mode grounded        # which backends can run a
+                                                  # grounded review (JSON); plain
+                                                  # `detect` reports the text-only
+                                                  # contract, for --text-only runs
+second_opinion.py probe [--backend NAME]        # one cheap call per pool model:
+                                                  # per-model availability (JSON)
 second_opinion.py review <plan-file-or-text> \\
     [--dir <path>] \\
     [--text-only] \\
     [--focus-file <path>] \\
-    [--model-index N]                            # one critique from the
+    [--model-index N] \\
+    --run-id <run_id>                            # one critique from the
                                                   # priority-selected backend,
                                                   # optionally scoped with
-                                                  # plan-specific risk hints
+                                                  # plan-specific risk hints; the
+                                                  # round cap counts per run-id
+second_opinion.py bind-notes <artifact>         # stamp the critique notes with
+                                                  # the artifact's content hash
+second_opinion.py check-notes <artifact>        # current, stale, unbound,
+                                                  # missing or no-artifact
 ```\
 """,
         # the loop's per-round call, matching the bash usage block above,
@@ -349,15 +371,26 @@ description: Send a plan to a non-Claude model for adversarial critique, then it
         # usage block stays a runnable command block, 2026-08-30
         usage_block="""\
 ```
-second_opinion.py detect                        # which backends are present (JSON)
+second_opinion.py detect --mode grounded        # which backends can run a
+                                                  # grounded review (JSON); plain
+                                                  # `detect` reports the text-only
+                                                  # contract, for --text-only runs
+second_opinion.py probe [--backend NAME]        # one cheap call per pool model:
+                                                  # per-model availability (JSON)
 second_opinion.py review <plan-file-or-text> \\
     [--dir <path>] \\
     [--text-only] \\
     [--focus-file <path>] \\
-    [--model-index N]                            # one critique from the
+    [--model-index N] \\
+    --run-id <run_id>                            # one critique from the
                                                   # priority-selected backend,
                                                   # optionally scoped with
-                                                  # plan-specific risk hints
+                                                  # plan-specific risk hints; the
+                                                  # round cap counts per run-id
+second_opinion.py bind-notes <artifact>         # stamp the critique notes with
+                                                  # the artifact's content hash
+second_opinion.py check-notes <artifact>        # current, stale, unbound,
+                                                  # missing or no-artifact
 ```\
 """,
         # the loop's per-round call, matching the bash usage block above,
@@ -430,15 +463,26 @@ allowed-tools: shell
         # usage block stays a runnable command block, 2026-08-30
         usage_block="""\
 ```
-second_opinion.py detect                        # which backends are present (JSON)
+second_opinion.py detect --mode grounded        # which backends can run a
+                                                  # grounded review (JSON); plain
+                                                  # `detect` reports the text-only
+                                                  # contract, for --text-only runs
+second_opinion.py probe [--backend NAME]        # one cheap call per pool model:
+                                                  # per-model availability (JSON)
 second_opinion.py review <plan-file-or-text> \\
     [--dir <path>] \\
     [--text-only] \\
     [--focus-file <path>] \\
-    [--model-index N]                            # one critique from the
+    [--model-index N] \\
+    --run-id <run_id>                            # one critique from the
                                                   # priority-selected backend,
                                                   # optionally scoped with
-                                                  # plan-specific risk hints
+                                                  # plan-specific risk hints; the
+                                                  # round cap counts per run-id
+second_opinion.py bind-notes <artifact>         # stamp the critique notes with
+                                                  # the artifact's content hash
+second_opinion.py check-notes <artifact>        # current, stale, unbound,
+                                                  # missing or no-artifact
 ```\
 """,
         # the loop's per-round call, matching the bash usage block above,
@@ -505,15 +549,26 @@ description: Send a plan to a non-Claude model for adversarial critique, then it
         # usage block stays a runnable command block, 2026-08-30
         usage_block="""\
 ```
-second_opinion.py detect                        # which backends are present (JSON)
+second_opinion.py detect --mode grounded        # which backends can run a
+                                                  # grounded review (JSON); plain
+                                                  # `detect` reports the text-only
+                                                  # contract, for --text-only runs
+second_opinion.py probe [--backend NAME]        # one cheap call per pool model:
+                                                  # per-model availability (JSON)
 second_opinion.py review <plan-file-or-text> \\
     [--dir <path>] \\
     [--text-only] \\
     [--focus-file <path>] \\
-    [--model-index N]                            # one critique from the
+    [--model-index N] \\
+    --run-id <run_id>                            # one critique from the
                                                   # priority-selected backend,
                                                   # optionally scoped with
-                                                  # plan-specific risk hints
+                                                  # plan-specific risk hints; the
+                                                  # round cap counts per run-id
+second_opinion.py bind-notes <artifact>         # stamp the critique notes with
+                                                  # the artifact's content hash
+second_opinion.py check-notes <artifact>        # current, stale, unbound,
+                                                  # missing or no-artifact
 ```\
 """,
         # the loop's per-round call, matching the bash usage block above,
@@ -763,15 +818,26 @@ description: Send a plan to a non-Claude model for adversarial critique, then it
         # usage block stays a runnable command block, 2026-09-11
         usage_block="""\
 ```
-second_opinion.py detect                        # which backends are present (JSON)
+second_opinion.py detect --mode grounded        # which backends can run a
+                                                  # grounded review (JSON); plain
+                                                  # `detect` reports the text-only
+                                                  # contract, for --text-only runs
+second_opinion.py probe [--backend NAME]        # one cheap call per pool model:
+                                                  # per-model availability (JSON)
 second_opinion.py review <plan-file-or-text> \\
     [--dir <path>] \\
     [--text-only] \\
     [--focus-file <path>] \\
-    [--model-index N]                            # one critique from the
+    [--model-index N] \\
+    --run-id <run_id>                            # one critique from the
                                                   # priority-selected backend,
                                                   # optionally scoped with
-                                                  # plan-specific risk hints
+                                                  # plan-specific risk hints; the
+                                                  # round cap counts per run-id
+second_opinion.py bind-notes <artifact>         # stamp the critique notes with
+                                                  # the artifact's content hash
+second_opinion.py check-notes <artifact>        # current, stale, unbound,
+                                                  # missing or no-artifact
 ```\
 """,
         # the loop's per-round call, matching the bash usage block above,

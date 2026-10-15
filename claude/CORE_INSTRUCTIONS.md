@@ -325,7 +325,9 @@ shown to the user anyway. The script refuses (no write) if `--if-rev` is
 missing or stale on a numeric call, so this is guidance for the fast path,
 not the safety net — a numeric call that omits it fails loudly with a fresh
 render printed for retry, it never silently mutates the wrong item.
-Slug-based calls are exempt and need nothing extra.
+Slug-based calls are exempt and need nothing extra — except
+`acceptance-set`, which requires `--if-rev` even for a slug (`show` prints
+its `# rev=N` line on stderr, so capture `2>&1` when reading it).
 
 When work is ready, submit it with `review`; once a reviewer approves it (or
 you're working solo and are confident it's ready), use `approve` to mark it

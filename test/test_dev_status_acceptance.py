@@ -849,3 +849,27 @@ class GitNameStatusTestCase(unittest.TestCase):
         self.assertIsNotNone(entries)
         paths = {p for (_s, old, new) in entries for p in (old, new) if p}
         self.assertIn("contract.md", paths)
+
+
+class AcceptanceSetIfRevHelpTest(unittest.TestCase):
+    """acceptance-set refuses a slug call without --if-rev, so its help says so."""
+
+    def _subparser_help(self, name: str) -> str:
+        import argparse
+
+        import dev_status_impl
+
+        parser = dev_status_impl.build_parser()
+        sub = next(
+            a for a in parser._actions if isinstance(a, argparse._SubParsersAction)
+        )
+        return " ".join(sub.choices[name].format_help().split())
+
+    def test_acceptance_set_help_requires_if_rev_for_slugs(self):
+        text = self._subparser_help("acceptance-set")
+        self.assertIn("required even for a slug", text)
+        self.assertNotIn("required when <id> is numeric", text)
+
+    def test_other_commands_keep_numeric_only_wording(self):
+        text = self._subparser_help("start")
+        self.assertIn("is numeric", text)

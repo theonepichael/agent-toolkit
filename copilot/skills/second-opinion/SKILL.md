@@ -23,15 +23,26 @@ reviews are grounded in the target codebase (`--dir` or current working
 directory) with read-only tools enabled; use `--text-only` to opt out.
 
 ```
-second_opinion.py detect                        # which backends are present (JSON)
+second_opinion.py detect --mode grounded        # which backends can run a
+                                                  # grounded review (JSON); plain
+                                                  # `detect` reports the text-only
+                                                  # contract, for --text-only runs
+second_opinion.py probe [--backend NAME]        # one cheap call per pool model:
+                                                  # per-model availability (JSON)
 second_opinion.py review <plan-file-or-text> \
     [--dir <path>] \
     [--text-only] \
     [--focus-file <path>] \
-    [--model-index N]                            # one critique from the
+    [--model-index N] \
+    --run-id <run_id>                            # one critique from the
                                                   # priority-selected backend,
                                                   # optionally scoped with
-                                                  # plan-specific risk hints
+                                                  # plan-specific risk hints; the
+                                                  # round cap counts per run-id
+second_opinion.py bind-notes <artifact>         # stamp the critique notes with
+                                                  # the artifact's content hash
+second_opinion.py check-notes <artifact>        # current, stale, unbound,
+                                                  # missing or no-artifact
 ```
 
 `--model-index` is a 0-based index into a per-machine model pool

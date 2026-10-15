@@ -4162,6 +4162,22 @@ def _add_if_rev_arg(parser: argparse.ArgumentParser, id_name: str = "id") -> Non
     )
 
 
+def _add_if_rev_arg_any_id(parser: argparse.ArgumentParser) -> None:
+    """Add ``--if-rev`` for a command that requires it for slug ids as well.
+
+    ``acceptance-set`` refuses a slug call without it, so its help must not
+    repeat the numeric-only wording of :func:`_add_if_rev_arg`.
+    """
+    parser.add_argument(
+        "--if-rev",
+        type=int,
+        default=None,
+        metavar="<N>",
+        help="required even for a slug id; get the current value from "
+        "render/list/show immediately before this call",
+    )
+
+
 dispatch: dict[str, Callable[[argparse.Namespace], None]] = {
     "render": cmd_render,
     "list": cmd_list,
@@ -4469,7 +4485,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar='\'{"criteria": [{"text": "...", "refs": [{"repo": "...", '
         '"path": "...", "clause": "..."}]}], "independent_verifier": false}\'',
     )
-    _add_if_rev_arg(p)
+    _add_if_rev_arg_any_id(p)
     p.add_argument(
         "--operator-override",
         action="store_true",

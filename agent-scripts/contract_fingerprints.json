@@ -56,7 +56,7 @@
     "arg (top-level) --full/--no-compact: \u2014 force full dashboard render even under DEVSTATUS_AGENT=1 (default: False)",
     "arg (top-level) --quiet/-q: ",
     "arg (top-level) --verbose/-v: ",
-    "arg acceptance-set --if-rev: \u2014 required when <id> is numeric; get the current value from render/list/show immediately before this call",
+    "arg acceptance-set --if-rev: \u2014 required even for a slug id; get the current value from render/list/show immediately before this call",
     "arg acceptance-set --operator-override: \u2014 lift the freeze on a worked item (records an override history entry and invalidates the gate); operator only",
     "arg acceptance-set --rotate-token: \u2014 regenerate the verifier token for unchanged acceptance (recovers a lost token file); records a rotate history entry",
     "arg acceptance-set id: ",

@@ -89,6 +89,22 @@ FOCUS_FILE_MARKERS = {
 }
 DEFAULT_FOCUS_FILE_MARKERS = ("--focus-file",)
 
+# The bash usage block is the quick reference agents copy commands from, so it
+# lists every subcommand and the flags the loop depends on. `detect` defaults
+# to the text-only contract while reviews are grounded by default, so the
+# copies point at `detect --mode grounded`. Pi's copies drive the native tool,
+# whose actions are described in prose and whose detect takes no mode.
+USAGE_MARKERS = {
+    "pi/prompts/second-opinion.md": (),
+    "pi/skills/second-opinion/SKILL.md": (),
+}
+DEFAULT_USAGE_MARKERS = (
+    "second_opinion.py detect --mode grounded",
+    "second_opinion.py probe",
+    "--run-id <run_id>",
+    "second_opinion.py check-notes",
+)
+
 COPIES = (
     "claude/commands/second-opinion.md",
     "opencode/command/second-opinion.md",
@@ -117,6 +133,7 @@ def missing_markers(rel_path: str, text: str) -> list[str]:
     grill_markers = GRILL_LOOKUP_MARKERS.get(rel_path, DEFAULT_GRILL_LOOKUP_MARKERS)
     bind_markers = BIND_NOTES_MARKERS.get(rel_path, DEFAULT_BIND_NOTES_MARKERS)
     focus_markers = FOCUS_FILE_MARKERS.get(rel_path, DEFAULT_FOCUS_FILE_MARKERS)
+    usage_markers = USAGE_MARKERS.get(rel_path, DEFAULT_USAGE_MARKERS)
     flat_text = " ".join(text.split())
     return [
         m
@@ -126,6 +143,7 @@ def missing_markers(rel_path: str, text: str) -> list[str]:
             *grill_markers,
             *bind_markers,
             *focus_markers,
+            *usage_markers,
         )
         if " ".join(m.split()) not in flat_text
     ]

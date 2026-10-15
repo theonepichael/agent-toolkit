@@ -323,7 +323,7 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
     - `--verifier-token-file` — path to the verifier token file (required when the item's acceptance sets independent_verifier: true; falls back to DEVSTATUS_VERIFIER_TOKEN_FILE)
     - `--if-rev` — required when <id> is numeric; get the current value from render/list/show immediately before this call
   - `acceptance-set <slug|N> '{"criteria": [{"text": "...", "refs": [{"repo": "...", "path": "...", "clause": "..."}]}], "independent_verifier": false}' [--if-rev <N>] [--operator-override] [--rotate-token]` — set or replace an item's contract-derived acceptance criteria
-    - `--if-rev` — required when <id> is numeric; get the current value from render/list/show immediately before this call
+    - `--if-rev` — required even for a slug id; get the current value from render/list/show immediately before this call
     - `--operator-override` — lift the freeze on a worked item (records an override history entry and invalidates the gate); operator only
     - `--rotate-token` — regenerate the verifier token for unchanged acceptance (recovers a lost token file); records a rotate history entry
   - `verifier-check <slug|N> --verifier-token-file PATH` — exit 0 iff the token file holds this item's verifier token
@@ -1951,7 +1951,7 @@ the workflow's template plus its generator's capability/parameter tables.
 | `/swarm` | template | yes | yes | — | — | — | — |
 | `/to-tickets` | template | yes | yes | yes | yes | yes | yes |
 
-- **`/analyze-sessions`** — Analyze coding-agent sessions across pi, Claude Code, opencode, Copilot CLI, and agy: calculate token/USD cost rollups, list user prompts, or search message transcripts. Use when the user asks about session costs, token usage, previous prompts, or wants to search past coding session transcripts across harnesses.
+- **`/analyze-sessions`** — Analyze coding-agent sessions across pi, Claude Code, opencode, Copilot CLI, agy, and Codex: calculate token/USD cost rollups, list user prompts, or search message transcripts. Use when the user asks about session costs, token usage, previous prompts, or wants to search past coding session transcripts across harnesses.
   - Generated from: `templates/analyze_sessions.md.tmpl` by `gen_skills.py`
   - `claude/commands/{name}.md` is the rendered Claude Code port — edit the template or generator, then regenerate.
   - Installed at: `~/.claude/commands/analyze-sessions.md` (claude)

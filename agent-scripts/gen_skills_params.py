@@ -3410,7 +3410,7 @@ allowed-tools: shell
 
 _ANALYZE_SESSIONS_DESCRIPTION = (
     "Analyze coding-agent sessions across pi, Claude Code, opencode, Copilot CLI, "
-    "and agy: calculate token/USD cost rollups, list user prompts, or search message "
+    "agy, and Codex: calculate token/USD cost rollups, list user prompts, or search message "
     "transcripts. Use when the user asks about session costs, token usage, previous "
     "prompts, or wants to search past coding session transcripts across harnesses."
 )

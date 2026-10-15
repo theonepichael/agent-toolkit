@@ -243,7 +243,9 @@ the queue.
 9. **Step 11 (Land)** — its commit and merge/push gates are unchanged:
    always live, per item. Its close (`review`/`approve`/`gate-pass`) is
    agent-performed self-verification against stored gate criteria, not a
-   user-facing ask.
+   user-facing ask — except on an `acceptance.independent_verifier` item
+   whose token this session does not hold: there `land` stops at its
+   verifier handoff, leaves the branch unmerged, and the verifier closes it.
 
 **End of run.** When the queue is exhausted (or the single item completes),
 show a dashboard-style summary of every item processed — done, skipped
