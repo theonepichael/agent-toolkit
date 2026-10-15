@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Pre-tool guard shared by every harness: refuse a write into a repository's
-main checkout while a backlog item for that repository is in progress, warn
+main checkout while a backlog item for that repository is in progress (except
+a write under a repo-declared, gitignored provenance root -- see
+``.guard-rails.json`` and the module's ``_declared_provenance_roots``), warn
 when the current worktree's base has fallen behind ``origin/main`` (or
 ``origin/<integration_branch>`` for an item that declares one), (Bash,
 Claude Code only) deny the git-native ways to defeat the no-commit-on-main
@@ -322,6 +324,10 @@ TOOLKIT_DATA = "writer"
 PROTECTED_BRANCHES = {"main", "master"}
 GIT_TIMEOUT = 2.0
 
+# Repo-root marker a repository uses to declare its gitignored provenance
+# roots (see _declared_provenance_roots).
+_GUARD_MARKER = ".guard-rails.json"
+
 # Shell control operators a value-token scan must stop at -- past one of
 # these, whatever follows belongs to a different command, not an argument to
 # the git-config invocation being scanned (e.g. `git config core.hooksPath ||
@@ -456,6 +462,28 @@ def repo_info(directory: str) -> RepoInfo | None:
     )
 
 
+def _repo_info_at_or_above(directory: str) -> RepoInfo | None:
+    """Classify the repo containing ``directory`` by walking up the lexical
+    path (``os.path.dirname``, never following symlinks) until git can answer.
+
+    ``repo_info`` fails on a not-yet-created directory (``git -C`` cannot
+    enter it) and on a symlink out of the repo (``git -C`` follows it and
+    finds no repo) alike. Both must keep climbing to a real ancestor inside
+    the repo rather than fall through to evaluate's fail-open allow, or a
+    provenance write into a new subdir -- or an escape symlink -- would never
+    reach the main-checkout check at all."""
+    current = directory
+    while current:
+        info = repo_info(current)
+        if info is not None:
+            return info
+        parent = os.path.dirname(current)
+        if parent == current:
+            return None
+        current = parent
+    return None
+
+
 def _item_directories(item: dict) -> list[str]:
     """Deduplicated parent directories of an item's related_files. An item
     routinely lists several files in one repo; without dedup each one costs
@@ -476,6 +504,94 @@ def _busy_item(common_dir: str, items: list[dict]) -> str | None:
             if common_dir_of(directory) == common_dir:
                 return str(item.get("id") or "?")
     return None
+
+
+def _declared_provenance_roots(info: RepoInfo) -> list[str]:
+    """Absolute realpaths of the provenance roots a repository declares in its
+    ``.guard-rails.json`` marker, or [] when it declares none. Fail closed: a
+    missing, symlinked, unreadable or malformed marker, or a root that is
+    empty, absolute, the repo root, escapes via ``..``, or resolves outside
+    the repo toplevel, is dropped -- no declaration means no allowlist."""
+    if not info.toplevel:
+        return []
+    marker = Path(info.toplevel) / _GUARD_MARKER
+    if marker.is_symlink() or not marker.is_file():
+        return []
+    try:
+        data = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(data, dict):
+        return []
+    roots = data.get("provenance_roots")
+    if not isinstance(roots, list):
+        return []
+    toplevel_real = os.path.realpath(info.toplevel)
+    top_path = Path(toplevel_real)
+    resolved: list[str] = []
+    for raw in roots:
+        if not isinstance(raw, str) or not raw:
+            continue
+        if os.path.isabs(raw):
+            continue
+        norm = os.path.normpath(raw)
+        if norm in (".", "..") or norm.startswith(".." + os.sep):
+            continue
+        try:
+            root_real = os.path.realpath(os.path.join(info.toplevel, raw))
+        except (OSError, ValueError):
+            continue
+        root_path = Path(root_real)
+        # A root that resolves to the repo root (e.g. ".", or an in-repo
+        # symlink pointing at ".") would widen the exception to every ignored
+        # path; a root that escapes the repo (symlink out) is untrustworthy.
+        if root_path == top_path or top_path not in root_path.parents:
+            continue
+        resolved.append(root_real)
+    return resolved
+
+
+def _git_ignored(path: str, toplevel: str) -> bool:
+    """Whether git's exclude machinery ignores ``path`` (so it is untracked
+    and not to be committed). ``check-ignore`` exits 0 for an ignored path and
+    never reports a tracked file, so this doubles as the tracked-stays-refused
+    check. Bounded and fail-closed (False on error)."""
+    if not path or not toplevel:
+        return False
+    try:
+        result = subprocess.run(
+            ["git", "-C", toplevel, "check-ignore", "-q", "--", path],
+            capture_output=True,
+            text=True,
+            timeout=GIT_TIMEOUT,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+def _is_declared_provenance(path: str, info: RepoInfo) -> bool:
+    """Whether ``path`` is a write the provenance allowlist permits in a busy
+    main checkout: under a repo-declared provenance root (component-aware, on
+    the symlink-resolved path -- the same resolution _pointed_at uses) AND
+    ignored by git on that same resolved path, so a write through an ignored
+    symlink cannot land on a tracked target inside the root."""
+    if not path:
+        return False
+    roots = _declared_provenance_roots(info)
+    if not roots:
+        return False
+    target_real = Path(os.path.realpath(path))
+    for root in roots:
+        root_path = Path(root)
+        if target_real != root_path and root_path not in target_real.parents:
+            continue
+        # Check gitignore on the RESOLVED path: a write lands where the
+        # symlinks point, so an ignored symlink to a tracked file must not
+        # read as an ignored destination.
+        if _git_ignored(str(target_real), info.toplevel):
+            return True
+    return False
 
 
 def _related_paths(item: dict) -> list[str]:
@@ -1366,7 +1482,7 @@ def evaluate(req: Request, claims: BacklogClaimLookup) -> Verdict:
         return Verdict("allow")
 
     directory = os.path.dirname(req.path) or req.cwd
-    info = repo_info(directory)
+    info = _repo_info_at_or_above(directory)
     if info is None or info.is_bare:
         return Verdict("allow")
 
@@ -1381,7 +1497,7 @@ def evaluate(req: Request, claims: BacklogClaimLookup) -> Verdict:
 
     if not info.is_worktree and info.branch in PROTECTED_BRANCHES and items:
         slug = _busy_item(info.common_dir, items)
-        if slug is not None:
+        if slug is not None and not _is_declared_provenance(req.path, info):
             return Verdict(
                 "deny",
                 f"Refusing to write into the main checkout of "
