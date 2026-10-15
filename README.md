@@ -17,12 +17,14 @@ A modular, multi-harness platform for AI agent workflows and paired development 
 
 ## Features & Capabilities
 
-- **Unified Core Workflows**: Standardized slash commands and skills across harnesses (`/grill-me` for design alignment, `/second-opinion` for architectural critique, `/spec` for structured specifications, `/backlog-item` for gated TDD lifecycle, `/standup` for daily progress synthesis, `/dashboard` for work tracking).
-- **Automated Guard Rails**: Pre-tool hooks and git pre-commit hooks that prevent committing directly to `main` and protect active task checkouts (see [Git hooks](#git-hooks)).
+- **Unified Core Workflows**: Standardized slash commands and skills across harnesses (`/grill-me` for design alignment, `/second-opinion` for architectural critique, `/spec` for structured specifications, `/backlog-item` for gated TDD lifecycle, `/review-diff` for a cross-model review of the staged diff, `/land` for the commit and merge gates, `/to-tickets` for splitting a plan into linked backlog items, `/standup` for daily progress synthesis, `/dashboard` and `/recap` for work tracking, `/analyze-sessions` for cost and transcript search, `/refresh-guidance` for doc staleness, `/make-skill` for authoring skills). `INTERFACES.md` lists which harnesses carry each one.
+- **Contract-Gated Backlog**: `dev_status.py` items can carry `acceptance` criteria cited from a repo's own contract docs, frozen once work starts; `done`/`approve` refuse until a passed gate covers them, and an `independent_verifier` item can only be gate-passed by a session holding its private verifier token file.
+- **Worker Delegation in herdr**: `herdr_delegate.py` launches backlog items into herdr tabs — pi or copilot queue runs (`/swarm`), or one item to a pi, copilot, agy or codex worker — and `/foreman` lets one interactive session schedule pi workers, review their work (`watch`, `answer`), and land it (`--handoff`, pi only).
+- **Automated Guard Rails**: Pre-tool hooks and git pre-commit hooks that prevent committing directly to `main` and protect active task checkouts (see [Git hooks](#git-hooks)). A repo can let gitignored provenance folders through that main-checkout protection by listing them in a .guard-rails.json file at its root (`{"provenance_roots": ["reports/local"]}`).
 - **Seed Rewrite Guard**: A pre-commit check refuses a commit whose staged seed would lose SessionStart hook groups relative to HEAD — the lossy-rewrite race that once committed a seed without its matcher-`*` herdr group. Intentional drops use `SEED_HOOK_ALLOW_DROP=1`, never `--no-verify`.
 - **Auto-Formatting on Tool Use**: Automatic Ruff formatting/lint fixing on Python edits.
 - **Shell Completions & Environment Helpers**: Portable `shell/agent-tools.zsh` providing completions, PATH setup, and harness aliases.
-- **Cross-Harness Code Generation**: Generators keep documentation (`INTERFACES.md`) and prompt templates (`templates/*.tmpl`) in sync across all 6 harnesses.
+- **Cross-Harness Code Generation**: Generators keep documentation (`INTERFACES.md`) and prompt templates (`templates/*.tmpl`) in sync across all 6 harnesses, compile one bash permission matrix (`permission_matrix.py`) into the Claude, opencode and Pi permission seeds (`gen_permissions.py`), and compile lifecycle hooks for Claude, Copilot and agy from one manifest (`gen_hooks.py`).
 - **Architectural Overview & Progressive Disclosure**: System diagrams, component maps, and lifecycle flows are detailed in [docs/architecture/overview.md](docs/architecture/overview.md), complemented by the [progressive disclosure rubric](docs/architecture/progressive-disclosure-rubric.md).
 
 ---
@@ -105,7 +107,7 @@ rerun.
 # Provision specific harnesses only:
 ./install.sh --harness=claude,pi
 
-# Work profile (skips personal sync endpoints):
+# Work profile (skips personal sync endpoints; opencode is refused outright):
 ./install.sh --profile=work --harness=claude
 
 # Dry run (preview symlinks and config without mutating filesystem):
@@ -177,7 +179,8 @@ models, these are the contract:
 | `SECOND_OPINION_PI_MODEL` / `_PI_MODEL_POOL` | Same contract for the pi backend | pi's own default for the `opencode-go` provider |
 | `SECOND_OPINION_OPENCODE_MODEL` / `_OPENCODE_MODEL_POOL` | Same contract for the opencode backend | opencode's live config |
 | `SECOND_OPINION_COPILOT_MODEL` / `_COPILOT_MODEL_POOL` | Same contract for the copilot backend | copilot's implicit default routing |
-| `SECOND_OPINION_TIMEOUT_SECONDS` (+ per-backend `_<BACKEND>_TIMEOUT_SECONDS`) | Per-call timeout budget in seconds | 120 (hard ceiling 600) |
+| `SECOND_OPINION_CODEX_MODEL` / `_CODEX_MODEL_POOL` | Same contract for the codex backend | Codex CLI's own default model |
+| `SECOND_OPINION_TIMEOUT_SECONDS` (+ per-backend `_<BACKEND>_TIMEOUT_SECONDS`) | Per-call timeout budget in whole seconds, capped at 600 | Global 120. Without a per-backend override, opencode waits at least 450, codex 180, and agy/copilot grounded reviews 600 (the larger of that and the global wins); a positive per-backend override replaces this and may go lower |
 
 Two things worth knowing before you copy someone else's pool values:
 
@@ -251,7 +254,21 @@ non-zero and prints a diff if its generated copies are stale — omitting
 python3 agent-scripts/gen_interfaces.py --check
 python3 agent-scripts/gen_skills.py --check
 python3 agent-scripts/gen_second_opinion.py --check
+python3 agent-scripts/gen_permissions.py --check
+python3 agent-scripts/gen_hooks.py --check
 ```
+
+`gen_keybinds.py --check` compares the opencode leader-chord table against
+the pinned opencode release. It uses the `opencode` on `PATH` (or
+`--binary <path>`), and exits 2 ("cannot check") when that is not the pinned
+release, unless `--allow-unpinned`; `--fetch-pinned` downloads the pinned
+release instead, which is what CI does.
+
+`pi/` and `opencode/` each carry their own TypeScript toolchain
+(`npm --prefix pi test`, `npm --prefix opencode test`). The pytest suite runs
+their test/typecheck/lint gates too: it skips them only when `npm` itself is
+missing, and fails when a `node_modules` tree is (run
+`scripts/bootstrap-worktree.sh`).
 
 
 ## Measuring skill latency
@@ -285,5 +302,7 @@ shared backend runner can emit standalone attempt spans.
 
 Compare a script span with its enclosing session tool-call interval to locate
 waits outside the script. Approval time, shell startup, output transport and
-agent scheduling are not measured by these records. The log does not rotate;
-remove or archive it when finished. New log files are created with mode 0600.
+agent scheduling are not measured by these records. Once the log grows past
+20 MiB, the next record first moves it to `timing.jsonl.1` (one old
+generation is kept; the previous `.1` is replaced). Remove or archive both
+files when finished. New log files are created with mode 0600.

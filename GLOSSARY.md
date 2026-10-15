@@ -25,6 +25,23 @@ verifier token — a 0600 file whose *path* (never its content) is passed to
 `gate-pass --verifier-token-file` — so a non-worker session holds the verifier
 role.
 
+## `contract`
+
+Three unrelated things are called a contract here:
+
+- **Acceptance contract** — the repo's own written rules (its AGENTS.md,
+  README, PROJECT_PLAN.md, ...) that an item's `acceptance` criteria cite
+  clause by clause. `dev_status.py contract-touch` lists which of those cited
+  files a diff changes.
+- **CLI contract** — a script's real flags, subcommands, exit codes and env
+  vars, fingerprinted in `agent-scripts/contract_fingerprints.json`.
+  `gen_interfaces.py --check` exits 3 when a script's contract changed
+  without its docs being re-read.
+- **Isolation contract** — what a `second_opinion.py` review backend must
+  satisfy to be eligible (nothing of yours in write reach, none of your own
+  instruction files handed to the reviewer; see `llm_backends.py`);
+  `second_opinion.py detect` reports it per backend.
+
 ## `dispatch`
 
 Three distinct senses share this word — know which one a given doc means:
@@ -36,8 +53,24 @@ Three distinct senses share this word — know which one a given doc means:
   backend..."), dispatch means picking which harness/backend a request
   runs against — the `second_opinion.py`/`herdr_delegate.py` sense.
 - **Swarm fan-out.** Related to but not synonymous with the swarm skill's
-  fan-out mechanism (see `fan-out` below) — a swarm worker is one thing a
-  dispatch can send work to, not the definition of dispatch itself.
+  fan-out (one orchestrator spreading a queue across N workers) — a swarm
+  worker is one thing a dispatch can send work to, not the definition of
+  dispatch itself.
+
+## `handoff`
+
+Three distinct steps carry this name:
+
+- **Foreman handoff** — `herdr_delegate.py launch --handoff` (pi, single
+  `--slug` only): the worker stops after its commit gate and prints a
+  `FOREMAN-HANDOFF slug=... branch=... commit=... worktree=...` line, and
+  the foreman session does the merge, push and close.
+- **backlog-item step 7, "Handoff"** — the decision of *who implements* a
+  settled plan: this session, a fresh cheaper session, or an external
+  executor.
+- **Clear-and-go** — the cheaper-session branch of that step:
+  `grill.py mark-pending-execution` flags the plan, and the next session's
+  SessionStart `pending-plan` hook points it back at `/backlog-item <slug>`.
 
 ## `prefix`
 
@@ -58,14 +91,19 @@ Sound related, aren't:
 - **Seed / seed content** — settings.json (or similar config) content that
   gets installed or retained at install time. See `seed_hook_subset_guard.py`
   and README's "Seed Rewrite Guard".
-- **Composed instructions** — a downstream personal-policy overlay layered
-  on top of `CORE_INSTRUCTIONS.md`, outside this repo, before the result is
-  symlinked out to each harness's global instructions file. See AGENTS.md's
-  opening paragraph.
+- **Composed instructions** — a global instructions file that a downstream
+  repo builds by layering its own personal-policy overlay on top of
+  `CORE_INSTRUCTIONS.md` (e.g. a global-instructions.md built from
+  `CORE_INSTRUCTIONS.md` plus a personal-overlay.md) and links to the harnesses
+  itself. This repo never composes anything: it links `CORE_INSTRUCTIONS.md`
+  out unmodified (AGENTS.md's opening paragraph), and `install.py` only
+  skips linking over a composed file when that downstream checkout is
+  present (`_personal_overlay_unwrapped`; see also the comment above `links.toml`'s
+  Claude Code entries).
 
-Seeding happens at install time to a harness's own config; composing
-happens downstream before that config ever reaches this repo or a harness.
-Neither implies the other.
+Seeding is about a harness's *config* (settings.json and the like) and
+happens in this repo's installer; composing is about *instructions* and
+happens in a downstream repo. Neither implies the other.
 
 ## workflow / adapter / invocation
 

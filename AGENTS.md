@@ -25,8 +25,9 @@ this repo.
   ergonomics, config/secrets, logging, testing tiers, formatting/linting) —
   `STYLE.md`.
 - **Terms used in more than one sense, or that sound related without being
-  the same thing** (`dispatch`, `prefix`, `seed` vs. `composed
-  instructions`, skill/command/slash-command) — `GLOSSARY.md`. Most domain
+  the same thing** (`acceptance` vs. `gate`, `contract`, `dispatch`,
+  `handoff`, `prefix`, `seed` vs. `composed instructions`,
+  workflow/adapter/invocation) — `GLOSSARY.md`. Most domain
   terms don't need an entry there; it only covers where drift is real or
   plausible.
 - **Harness script interface inventory** — `INTERFACES.md`, generated from
@@ -55,7 +56,7 @@ maintained across all six harnesses (`_ACTIVE_TIER = HARNESSES`).
 
 - **Actively maintained parity** — Claude Code, Copilot, opencode, agy, Pi,
   and Codex CLI. Every generated skill in `agent-scripts/gen_skills.py`'s
-  `SKILL_HARNESSES` except `swarm` covers all six harnesses; capability
+  `SKILL_HARNESSES` except `swarm` and `foreman` covers all six harnesses; capability
   facts (`CAPABILITY_TABLE` in `agent-scripts/gen_skills.py`, and its
   `gen_second_opinion.py` analog) get kept current for all six.
 - **Exceptions** — `swarm` and `foreman` remain intentionally restricted to
@@ -74,7 +75,7 @@ not the rules themselves; the mechanics stay in the directory file.
 - **`agent-scripts/`** — standard library only, and the module docstrings
   are generated source, not commentary. See `agent-scripts/AGENTS.md`.
 - **`pi/`** — a new extension is invisible until `links.toml` names it, and
-  this is the only tree with its own TypeScript toolchain. See
+  it has its own TypeScript toolchain (as does `opencode/`). See
   `pi/AGENTS.md`.
 - **`copilot/`** — `copilot/skills/` is generated output, and
   `aliases.zsh`'s `--allow-tool` wildcard only matches single-word command
