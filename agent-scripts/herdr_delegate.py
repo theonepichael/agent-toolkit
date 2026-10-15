@@ -906,7 +906,11 @@ def build_pane_send_text_argv(pane: str, text: str) -> list[str]:
 
 
 def parse_agent_get(listing: dict[str, object]) -> dict[str, str] | None:
-    """Status and pane out of a `herdr agent get` envelope; None if malformed."""
+    """Status, pane and tab out of a `herdr agent get` envelope; None if malformed.
+
+    ``tab`` is additive: a missing or non-string ``tab_id`` reads as ``""`` and
+    never makes the parse fail, so `answer`'s status/pane checks are unchanged.
+    """
     result = listing.get("result")
     agent = result.get("agent") if isinstance(result, dict) else None
     if not isinstance(agent, dict):
@@ -915,7 +919,12 @@ def parse_agent_get(listing: dict[str, object]) -> dict[str, str] | None:
     if not isinstance(status, str):
         return None
     pane = agent.get("pane_id")
-    return {"status": status, "pane": pane if isinstance(pane, str) else ""}
+    tab = agent.get("tab_id")
+    return {
+        "status": status,
+        "pane": pane if isinstance(pane, str) else "",
+        "tab": tab if isinstance(tab, str) else "",
+    }
 
 
 def validate_answer_text(text: str) -> None:
@@ -1232,6 +1241,148 @@ def cmd_answer(args: argparse.Namespace) -> None:
     except RefusedError as exc:
         print(f"[herdr_delegate] {exc}", file=sys.stderr)
         raise SystemExit(2) from exc
+
+
+CLOSABLE_AGENT_STATUSES = frozenset({"idle", "done"})
+
+
+def load_backlog_items() -> list[dict[str, object]]:
+    """Every backlog item, read fresh from the store (the test seam for `close`)."""
+    import dev_status_storage
+
+    return [dict(item) for item in dev_status_storage.load_items()]
+
+
+def _items_for_agent(agent: str) -> list[dict[str, object]]:
+    """Every backlog item whose launched agent name would be ``agent``.
+
+    A full scan, not an id lookup: `agent_name_for` truncates to 32 characters,
+    so a long slug's agent name is not its id, and two long slugs can collide.
+    """
+    return [
+        item
+        for item in load_backlog_items()
+        if isinstance(item.get("id"), str) and agent_name_for(str(item["id"])) == agent
+    ]
+
+
+def parse_tab_get(listing: dict[str, object]) -> dict[str, object] | None:
+    """Label and pane count out of a `herdr tab get` envelope; None if malformed."""
+    result = listing.get("result")
+    tab = result.get("tab") if isinstance(result, dict) else None
+    if not isinstance(tab, dict):
+        return None
+    label = tab.get("label")
+    pane_count = tab.get("pane_count")
+    if not isinstance(label, str) or not isinstance(pane_count, int):
+        return None
+    return {"label": label, "pane_count": pane_count}
+
+
+def _close_snapshot(
+    agent: str, expect_pane: str, *, force: bool
+) -> tuple[dict[str, str], dict[str, object], dict[str, object] | None]:
+    """One read of everything `close` checks; refuses on the first failed check.
+
+    Returns the agent record, the tab record and the resolved item (``None``
+    only under ``--force`` when no single item matches the agent name).
+    """
+    try:
+        info = parse_agent_get(herdr(build_agent_get_argv(agent)))
+    except RefusedError as exc:
+        raise RefusedError(f"no live agent {agent!r} ({exc}); nothing closed") from exc
+    if info is None:
+        raise RefusedError(f"agent get for {agent!r} returned no recognizable status")
+    if not info["pane"] or info["pane"] != expect_pane:
+        raise RefusedError(
+            f"agent {agent!r} is in pane {info['pane']!r}, expected {expect_pane!r}; "
+            "nothing closed"
+        )
+    if not info["tab"]:
+        raise RefusedError(f"agent {agent!r} reports no tab id; nothing closed")
+
+    matches = _items_for_agent(agent)
+    item = matches[0] if len(matches) == 1 else None
+    if item is None and not force:
+        what = "no backlog item" if not matches else f"{len(matches)} backlog items"
+        raise RefusedError(
+            f"{what} map to agent {agent!r}; refusing to guess (pass --force to "
+            "close anyway)"
+        )
+    if not force:
+        status = item.get("status") if item else None
+        if status != "done":
+            raise RefusedError(
+                f"item {item['id']!r} is {status!r}, not done -- land and approve it "  # type: ignore[index]
+                "before closing its worker"
+            )
+        if info["status"] not in CLOSABLE_AGENT_STATUSES:
+            raise RefusedError(
+                f"agent {agent!r} is {info['status']!r}; only an idle or done "
+                "worker's tab is closed"
+            )
+
+    try:
+        tab = parse_tab_get(herdr(["tab", "get", info["tab"]]))
+    except RefusedError as exc:
+        raise RefusedError(
+            f"tab {info['tab']!r} is gone ({exc}); nothing closed"
+        ) from exc
+    if tab is None:
+        raise RefusedError(f"tab get for {info['tab']!r} returned no recognizable tab")
+    if tab["pane_count"] != 1:
+        raise RefusedError(
+            f"tab {info['tab']!r} holds {tab['pane_count']} panes; closing it would "
+            "take another pane with it"
+        )
+    if item is not None and tab["label"] != item["id"]:
+        raise RefusedError(
+            f"tab {info['tab']!r} is labelled {tab['label']!r}, not {item['id']!r}; "
+            "it is not this worker's tab"
+        )
+    return info, tab, item
+
+
+def cmd_close(args: argparse.Namespace) -> None:
+    """Close a finished worker's tab: its item done, the agent idle or done.
+
+    Everything is read twice and must agree before the one mutation, which
+    closes exactly the tab the first read verified. herdr has no conditional
+    close, and the item re-read takes no backlog lock, so a change landing
+    between the second read and the close is a residual race; the foreman's
+    landing order (close only after ``approve``) is what keeps it theoretical.
+    """
+    require_herdr_env(os.environ)
+    first = _close_snapshot(args.agent, args.expect_pane, force=args.force)
+    second = _close_snapshot(args.agent, args.expect_pane, force=args.force)
+    info, tab, item = first
+    again_info, again_tab, again_item = second
+    item_id = item.get("id") if item else None
+    again_id = again_item.get("id") if again_item else None
+    identity_changed = again_info["tab"] != info["tab"] or again_tab != tab
+    # --force waives the item and status checks, so it waives their
+    # revalidation too; pane, tab and exclusivity are never waived.
+    state_changed = not args.force and (
+        again_info["status"] != info["status"]
+        or again_id != item_id
+        or (again_item or {}).get("status") != (item or {}).get("status")
+    )
+    if identity_changed or state_changed:
+        raise RefusedError(
+            f"agent {args.agent!r} changed between checks; nothing closed"
+        )
+    herdr(["tab", "close", info["tab"]])
+    print(
+        json.dumps(
+            {
+                "agent": args.agent,
+                "closed_tab": info["tab"],
+                "item": item_id,
+                "item_status": item.get("status") if item else None,
+                "forced": bool(args.force),
+            }
+        )
+    )
 
 
 RESTART_DEREGISTER_POLLS = 20
@@ -1929,6 +2080,22 @@ def main() -> None:
         help="seconds to wait for the highlight/editor to settle (default 5)",
     )
     answer.set_defaults(func=cmd_answer)
+
+    close = sub.add_parser(
+        "close",
+        help="close a finished worker's tab (its item done, the agent idle or done)",
+    )
+    close.add_argument("agent", help="the worker's herdr agent name")
+    close.add_argument(
+        "--expect-pane", required=True, help="the pane this worker runs in"
+    )
+    close.add_argument(
+        "--force",
+        action="store_true",
+        help="operator override: skip the item-done and agent-status checks "
+        "(never the pane, tab or exclusivity checks)",
+    )
+    close.set_defaults(func=cmd_close)
 
     restart = sub.add_parser(
         "restart",

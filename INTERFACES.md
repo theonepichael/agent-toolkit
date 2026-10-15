@@ -1101,6 +1101,10 @@ Launch supported agents in herdr tabs to work backlog items.
     - `--other` — select the free-text escape option
     - `--text` — free-text to send (only with --other)
     - `--settle-s` — seconds to wait for the highlight/editor to settle (default 5) (default: 5.0)
+  - `close <agent> --expect-pane <EXPECT_PANE> [--force]` — close a finished worker's tab (its item done, the agent idle or done)
+    - `agent` — the worker's herdr agent name
+    - `--expect-pane` — the pane this worker runs in (required)
+    - `--force` — operator override: skip the item-done and agent-status checks (never the pane, tab or exclusivity checks)
   - `restart [--swarm <SWARM>] [--serial] [--prefix <PREFIX>] [--run-id <RUN_ID>] [--model <MODEL>] [--cwd <CWD>] [--kind {pi,copilot}]` — close a live swarm orchestrator's tab, relaunch it, resume the same run
     - `--swarm` — fan out across N workers
     - `--serial` — resume a one-worker serial queue
@@ -1155,8 +1159,10 @@ Launch supported agents in herdr tabs to work backlog items.
   - `build_agent_get_argv(name: str) -> list[str]` — `herdr agent get` argv; the single-agent payload nests under result.agent.
   - `build_pane_send_keys_argv(pane: str, keys: list[str]) -> list[str]` — `herdr pane send-keys` argv, one key per trailing element.
   - `build_pane_send_text_argv(pane: str, text: str) -> list[str]` — `herdr pane send-text` argv.
-  - `parse_agent_get(listing: dict[str, object]) -> dict[str, str] | None` — Status and pane out of a `herdr agent get` envelope; None if malformed.
+  - `parse_agent_get(listing: dict[str, object]) -> dict[str, str] | None` — Status, pane and tab out of a `herdr agent get` envelope; None if malformed.
   - `validate_answer_text(text: str) -> None` — Refuse --text outside the accepted contract (printable ASCII, single spaces, no leading/trailing space, at most 120 chars, not blank).
+  - `load_backlog_items() -> list[dict[str, object]]` — Every backlog item, read fresh from the store (the test seam for `close`).
+  - `parse_tab_get(listing: dict[str, object]) -> dict[str, object] | None` — Label and pane count out of a `herdr tab get` envelope; None if malformed.
   - `wait_agent_deregistered(name: str, *, retry_advice: str = 'Retry `restart` (it relaunches once the name frees)') -> None` — Poll until no live agent carries ``name``, bounded; refuse if it persists.
   - `prepare_worker_worktree(slug: str) -> str` — Validate one item and bootstrap its exact worktree before agent startup.
   - `codex_writable_roots() -> list[str]` — Runtime paths a backlog worker writes outside its worktree.
@@ -1170,7 +1176,7 @@ Launch supported agents in herdr tabs to work backlog items.
   - `trust_agy_dir(dir_path: str) -> None` — Ensure agy's trustedWorkspaces lists ``dir_path`` before an agy launch.
   - `prune_agy_trust_entries() -> None` — Best-effort prune of vanished agy trusted-workspace entries.
   - `confirm_prompt_receipt(*, pane: str, tab: str, name: str, prompt: str, timeout_s: float = AGY_PROMPT_TIMEOUT_S, poll_interval_s: float = AGY_PROMPT_POLL_INTERVAL_S, max_resends: int = 1) -> None` — Poll pane for the echoed prompt line; resend if absent, fail loudly if still missing.
-- Subcommand handlers: `cmd_watch`, `cmd_answer`, `cmd_plan`, `cmd_launch`, `cmd_restart`, `cmd_probe`
+- Subcommand handlers: `cmd_watch`, `cmd_answer`, `cmd_close`, `cmd_plan`, `cmd_launch`, `cmd_restart`, `cmd_probe`
 - Tested by: `test/test_herdr_delegate.py`, `test/test_herdr_watch_answer.py`
 
 ### `agent-scripts/herdr_picker.py`

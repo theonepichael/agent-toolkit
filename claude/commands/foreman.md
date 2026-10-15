@@ -154,8 +154,19 @@ the rebase introduces — is caught. Then record `dev_status.py run` evidence,
 the token-file path, never the token value), `review`, and `approve`. Read the
 worker's digest offers from
 `~/.agent-toolkit/data/foreman/<slug>-digest.json`, relay them to the operator,
-and delete the file after relaying. Without `--handoff`, worker behaviour is
-unchanged.
+and delete the file after relaying. Last, once `approve` has marked the item
+done, close the worker's tab — every time, unprompted:
+
+```bash
+python3 ~/.agent-toolkit/scripts/herdr_delegate.py close <agent> --expect-pane <pane>
+```
+
+`<pane>` is the pane from the launch JSON. It refuses, closing nothing,
+unless the item is done, the agent is idle or done, and the tab holds only
+that worker's pane. Never close at the FOREMAN-HANDOFF line: a send-back
+still needs the live worker. A classifier denial goes to the operator once
+(step 1); `--force` waives only the item and status checks and is the
+operator's call. Without `--handoff`, worker behaviour is unchanged.
 
 ## 7. When to ask the operator
 

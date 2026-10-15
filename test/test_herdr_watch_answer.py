@@ -649,5 +649,257 @@ class HandoffTests(unittest.TestCase):
         )
 
 
+class CloseFakeHerdr:
+    """Fake herdr for `close`: scripted `agent get` / `tab get` reads (the last
+    one repeats), and every `tab close` recorded instead of performed."""
+
+    def __init__(
+        self,
+        agents: list[dict[str, object] | None],
+        tabs: list[dict[str, object] | None],
+    ) -> None:
+        self.agents = list(agents)
+        self.tabs = list(tabs)
+        self.calls: list[list[str]] = []
+
+    @staticmethod
+    def _next(script: list[dict[str, object] | None]) -> dict[str, object] | None:
+        return script.pop(0) if len(script) > 1 else script[0]
+
+    def __call__(self, argv: list[str]) -> dict[str, object]:
+        self.calls.append(list(argv))
+        if argv[:2] == ["agent", "get"]:
+            agent = self._next(self.agents)
+            if agent is None:
+                raise herdr_delegate.RefusedError(
+                    "herdr agent get failed: agent_not_found", code="agent_not_found"
+                )
+            return {"result": {"agent": agent}}
+        if argv[:2] == ["tab", "get"]:
+            tab = self._next(self.tabs)
+            if tab is None:
+                raise herdr_delegate.RefusedError(
+                    "herdr tab get failed: tab_not_found", code="tab_not_found"
+                )
+            return {"result": {"tab": tab}, "type": "tab_info"}
+        return {"result": {}}
+
+    def closes(self) -> list[list[str]]:
+        return [c for c in self.calls if c[:2] == ["tab", "close"]]
+
+
+def _close_agent(
+    status: str = "done", pane: str = "w:p7", tab: str | None = "w:t7"
+) -> dict[str, object]:
+    agent: dict[str, object] = {"agent_status": status, "pane_id": pane}
+    if tab is not None:
+        agent["tab_id"] = tab
+    return agent
+
+
+def _close_tab(label: str, pane_count: int = 1, tab: str = "w:t7") -> dict[str, object]:
+    return {"tab_id": tab, "label": label, "pane_count": pane_count}
+
+
+class CloseTests(unittest.TestCase):
+    SLUG = "mvc2-m3-runtime-structs"
+
+    def run_close(
+        self,
+        argv: list[str],
+        fake: Callable,
+        items: list[dict[str, object]] | list[list[dict[str, object]]],
+    ) -> tuple[int, str, str]:
+        """``items`` is one store snapshot, or a list of snapshots read in turn
+        (the last repeats) so a test can change the item between reads."""
+        snapshots = items if items and isinstance(items[0], list) else [items]
+        reads = list(snapshots)
+
+        def load() -> list[dict[str, object]]:
+            return reads.pop(0) if len(reads) > 1 else reads[0]  # type: ignore[return-value]
+
+        with (
+            mock.patch.object(herdr_delegate, "herdr", fake),
+            mock.patch.object(herdr_delegate, "load_backlog_items", load),
+            mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
+        ):
+            sys.argv = ["herdr_delegate.py", *argv]
+            out, err = io.StringIO(), io.StringIO()
+            try:
+                with redirect_stdout(out), redirect_stderr(err):
+                    herdr_delegate.main()
+            except SystemExit as e:
+                return int(e.code or 0), out.getvalue(), err.getvalue()
+            return 0, out.getvalue(), err.getvalue()
+
+    def done_items(self, slug: str | None = None) -> list[dict[str, object]]:
+        return [{"id": slug or self.SLUG, "status": "done"}]
+
+    def test_closes_a_done_workers_exclusive_tab(self) -> None:
+        fake = CloseFakeHerdr([_close_agent()], [_close_tab(self.SLUG)])
+        code, out, err = self.run_close(
+            ["close", self.SLUG, "--expect-pane", "w:p7"], fake, self.done_items()
+        )
+        self.assertEqual(code, 0, err)
+        self.assertEqual(fake.closes(), [["tab", "close", "w:t7"]])
+        payload = json.loads(out)
+        self.assertEqual(payload["closed_tab"], "w:t7")
+        self.assertEqual(payload["item"], self.SLUG)
+        self.assertEqual(payload["item_status"], "done")
+        self.assertFalse(payload["forced"])
+
+    def test_idle_agent_is_closable(self) -> None:
+        fake = CloseFakeHerdr([_close_agent("idle")], [_close_tab(self.SLUG)])
+        code, _, err = self.run_close(
+            ["close", self.SLUG, "--expect-pane", "w:p7"], fake, self.done_items()
+        )
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(fake.closes()), 1)
+
+    def test_long_slug_matches_truncated_agent_name_and_full_label(self) -> None:
+        slug = "atk-a-really-long-backlog-item-slug-past-32-chars"
+        agent = herdr_delegate.agent_name_for(slug)
+        self.assertNotEqual(agent, slug)
+        fake = CloseFakeHerdr([_close_agent()], [_close_tab(slug)])
+        code, out, err = self.run_close(
+            ["close", agent, "--expect-pane", "w:p7"], fake, self.done_items(slug)
+        )
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)["item"], slug)
+
+    def assert_refused(
+        self,
+        fake: CloseFakeHerdr,
+        items: list[dict[str, object]] | list[list[dict[str, object]]],
+        argv: list[str] | None = None,
+    ) -> str:
+        code, _, err = self.run_close(
+            argv or ["close", self.SLUG, "--expect-pane", "w:p7"], fake, items
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(fake.closes(), [])
+        return err
+
+    def test_refuses_item_not_done(self) -> None:
+        fake = CloseFakeHerdr([_close_agent()], [_close_tab(self.SLUG)])
+        err = self.assert_refused(fake, [{"id": self.SLUG, "status": "in-review"}])
+        self.assertIn("in-review", err)
+
+    def test_refuses_working_blocked_and_unknown_status(self) -> None:
+        for status in ("working", "blocked", "", "mystery"):
+            with self.subTest(status=status):
+                fake = CloseFakeHerdr([_close_agent(status)], [_close_tab(self.SLUG)])
+                self.assert_refused(fake, self.done_items())
+
+    def test_refuses_pane_mismatch_and_empty_expected_pane(self) -> None:
+        fake = CloseFakeHerdr([_close_agent(pane="w:p9")], [_close_tab(self.SLUG)])
+        self.assert_refused(fake, self.done_items())
+        fake = CloseFakeHerdr([_close_agent(pane="")], [_close_tab(self.SLUG)])
+        self.assert_refused(
+            fake, self.done_items(), ["close", self.SLUG, "--expect-pane", ""]
+        )
+
+    def test_refuses_missing_agent_and_missing_tab_id(self) -> None:
+        self.assert_refused(CloseFakeHerdr([None], [_close_tab(self.SLUG)]), self.done_items())
+        self.assert_refused(
+            CloseFakeHerdr([_close_agent(tab=None)], [_close_tab(self.SLUG)]),
+            self.done_items(),
+        )
+
+    def test_refuses_no_match_and_truncation_collision(self) -> None:
+        fake = CloseFakeHerdr([_close_agent()], [_close_tab(self.SLUG)])
+        self.assert_refused(fake, [{"id": "mvc2-something-else", "status": "done"}])
+        a = "atk-a-really-long-backlog-item-slug-AAA"
+        b = "atk-a-really-long-backlog-item-slug-BBB"
+        agent = herdr_delegate.agent_name_for(a)
+        self.assertEqual(agent, herdr_delegate.agent_name_for(b))
+        fake = CloseFakeHerdr([_close_agent()], [_close_tab(a)])
+        self.assert_refused(
+            fake,
+            [{"id": a, "status": "done"}, {"id": b, "status": "done"}],
+            ["close", agent, "--expect-pane", "w:p7"],
+        )
+
+    def test_refuses_shared_tab_or_foreign_label(self) -> None:
+        self.assert_refused(
+            CloseFakeHerdr([_close_agent()], [_close_tab(self.SLUG, pane_count=2)]),
+            self.done_items(),
+        )
+        self.assert_refused(
+            CloseFakeHerdr([_close_agent()], [_close_tab("swarm-mvc2")]),
+            self.done_items(),
+        )
+
+    def test_revalidation_refuses_any_change_between_reads(self) -> None:
+        cases = {
+            "status": ([_close_agent(), _close_agent("working")], [_close_tab(self.SLUG)]),
+            "tab id": ([_close_agent(), _close_agent(tab="w:t8")], [_close_tab(self.SLUG)]),
+            "agent gone": ([_close_agent(), None], [_close_tab(self.SLUG)]),
+            "pane count": ([_close_agent()], [_close_tab(self.SLUG), _close_tab(self.SLUG, 2)]),
+            "label": ([_close_agent()], [_close_tab(self.SLUG), _close_tab("other")]),
+            "tab gone": ([_close_agent()], [_close_tab(self.SLUG), None]),
+        }
+        for name, (agents, tabs) in cases.items():
+            with self.subTest(change=name):
+                self.assert_refused(CloseFakeHerdr(agents, tabs), self.done_items())
+        with self.subTest(change="item reopened"):
+            self.assert_refused(
+                CloseFakeHerdr([_close_agent()], [_close_tab(self.SLUG)]),
+                [self.done_items(), [{"id": self.SLUG, "status": "open"}]],
+            )
+
+    def test_force_bypasses_item_and_status_but_not_identity(self) -> None:
+        fake = CloseFakeHerdr([_close_agent("working")], [_close_tab(self.SLUG)])
+        code, out, err = self.run_close(
+            ["close", self.SLUG, "--expect-pane", "w:p7", "--force"],
+            fake,
+            [{"id": self.SLUG, "status": "open"}],
+        )
+        self.assertEqual(code, 0, err)
+        self.assertTrue(json.loads(out)["forced"])
+        self.assertEqual(json.loads(out)["item_status"], "open")
+        # No resolvable item: item is null, label not checked, still closes.
+        fake = CloseFakeHerdr([_close_agent()], [_close_tab("anything")])
+        code, out, err = self.run_close(
+            ["close", self.SLUG, "--expect-pane", "w:p7", "--force"], fake, []
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIsNone(json.loads(out)["item"])
+        # A status change between reads is waived under --force; a tab change is not.
+        fake = CloseFakeHerdr(
+            [_close_agent("idle"), _close_agent("working")], [_close_tab(self.SLUG)]
+        )
+        code, _, err = self.run_close(
+            ["close", self.SLUG, "--expect-pane", "w:p7", "--force"],
+            fake,
+            self.done_items(),
+        )
+        self.assertEqual(code, 0, err)
+        self.assert_refused(
+            CloseFakeHerdr(
+                [_close_agent(), _close_agent(tab="w:t8")], [_close_tab(self.SLUG)]
+            ),
+            self.done_items(),
+            ["close", self.SLUG, "--expect-pane", "w:p7", "--force"],
+        )
+        # Identity and exclusivity still hold under --force.
+        self.assert_refused(
+            CloseFakeHerdr([_close_agent(pane="w:p9")], [_close_tab(self.SLUG)]),
+            self.done_items(),
+            ["close", self.SLUG, "--expect-pane", "w:p7", "--force"],
+        )
+        self.assert_refused(
+            CloseFakeHerdr([_close_agent()], [_close_tab(self.SLUG, pane_count=2)]),
+            self.done_items(),
+            ["close", self.SLUG, "--expect-pane", "w:p7", "--force"],
+        )
+
+    def test_parse_agent_get_without_tab_id_still_parses_for_answer(self) -> None:
+        parsed = herdr_delegate.parse_agent_get(
+            {"result": {"agent": {"agent_status": "blocked", "pane_id": "w:p1"}}}
+        )
+        self.assertEqual(parsed, {"status": "blocked", "pane": "w:p1", "tab": ""})
+
+
 if __name__ == "__main__":
     unittest.main()
