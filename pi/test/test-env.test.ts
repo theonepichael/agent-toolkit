@@ -12,4 +12,5 @@ import { expect, test } from "./helpers/tap";
 // If this test fails, the preload is not being loaded: check package.json scripts.test.
 test("the suite runs attended by default, regardless of the ambient environment", () => {
   expect(process.env.PI_AGENT_UNATTENDED).toBeUndefined();
+  expect(process.env.PI_AGENT_UNATTENDED_RESTORED).toBeUndefined();
 });

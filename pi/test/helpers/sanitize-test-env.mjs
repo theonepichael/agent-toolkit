@@ -21,5 +21,10 @@
  * being registered first buys nothing and adds a load-order constraint.
  * (`.js` is not an option either — pi/package.json declares no "type" field,
  * so a `.js` there would be CommonJS.) test-env.test.ts pins this invariant.
+ *
+ * PI_AGENT_UNATTENDED_RESTORED goes too: a worker that permission-gate
+ * restored after a herdr relaunch carries it, and its pid stamp would steer
+ * the restore tests' ownership branch.
  */
 delete process.env.PI_AGENT_UNATTENDED;
+delete process.env.PI_AGENT_UNATTENDED_RESTORED;

@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, test } from "./helpers/tap";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { isUnattended } from "../extensions/guard-rails";
 import permissionGate, {
   agentUnattendedByEnv,
   ALLOW_PATTERNS,
@@ -10,7 +14,13 @@ import permissionGate, {
   initialGateEnabled,
   isDenyOnly,
   isPermissionGateEnabled,
+  onSessionStart,
+  paneMatches,
   patternToRegExp,
+  RESTORED_ENV,
+  shouldRestoreUnattended,
+  UNATTENDED_MARKER_TYPE,
+  unattendedMarker,
 } from "../extensions/permission-gate";
 
 describe("patternToRegExp", () => {
@@ -480,5 +490,348 @@ describe("unattended deny-only state", () => {
     expect(isDenyOnly()).toBe(false);
     await commands["permission-gate"]!.handler("on", { ui: { notify: () => {} } });
     expect(isPermissionGateEnabled()).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Restoring unattended state after herdr relaunches a worker.
+//
+// herdr persists a pane's agent session but not its environment, so a worker
+// it relaunches after a host restart comes back without PI_AGENT_UNATTENDED
+// and the gate arms itself in a tab nobody is watching (observed 2026-10-23:
+// both restored workers stalled on "Run bash command?"). The gate records a
+// pane-bound marker in the session while unattended, and puts the variable
+// back on a fresh start in that same herdr pane and tab.
+// ---------------------------------------------------------------------------
+
+const PID = "4242";
+const HERE = { HERDR_ENV: "1", HERDR_PANE_ID: "w2:pA", HERDR_TAB_ID: "w2:tA" };
+
+function marker(pane: string | null, tab: string | null) {
+  return { type: "custom", customType: UNATTENDED_MARKER_TYPE, data: { pane, tab } };
+}
+
+function recorder() {
+  const appended: unknown[] = [];
+  const gate: string[] = [];
+  const notes: string[] = [];
+  return {
+    appended,
+    gate,
+    notes,
+    deps: {
+      appendMarker: (data: { pane: string | null; tab: string | null }) => appended.push(data),
+      setGate: (state: "armed" | "deny-only") => gate.push(state),
+      notify: (message: string) => notes.push(message),
+    },
+  };
+}
+
+describe("unattendedMarker / paneMatches", () => {
+  test("the last well-formed marker wins and malformed entries are ignored", () => {
+    const entries = [
+      marker("w2:pOld", "w2:tOld"),
+      { type: "custom", customType: UNATTENDED_MARKER_TYPE, data: { pane: 7, tab: "x" } },
+      { type: "custom", customType: "other", data: { pane: "w2:pA", tab: "w2:tA" } },
+      marker("w2:pA", "w2:tA"),
+      { type: "custom", customType: UNATTENDED_MARKER_TYPE },
+    ];
+    expect(unattendedMarker(entries)).toEqual({ pane: "w2:pA", tab: "w2:tA" });
+    expect(unattendedMarker([])).toBe(undefined);
+  });
+
+  test("a match needs herdr, both ids, and exact equality", () => {
+    const m = { pane: "w2:pA", tab: "w2:tA" };
+    expect(paneMatches(HERE, m)).toBe(true);
+    expect(paneMatches({ ...HERE, HERDR_ENV: undefined }, m)).toBe(false);
+    expect(paneMatches({ ...HERE, HERDR_PANE_ID: "" }, m)).toBe(false);
+    expect(paneMatches({ ...HERE, HERDR_TAB_ID: undefined }, m)).toBe(false);
+    expect(paneMatches({ ...HERE, HERDR_PANE_ID: "w2:pB" }, m)).toBe(false);
+    expect(paneMatches(HERE, { pane: null, tab: "w2:tA" })).toBe(false);
+    expect(paneMatches(HERE, undefined)).toBe(false);
+  });
+});
+
+describe("onSessionStart: restore after a herdr relaunch", () => {
+  test("a fresh start in the marked pane and tab restores deny-only", () => {
+    const env: Record<string, string | undefined> = { ...HERE };
+    const r = recorder();
+    onSessionStart(env, PID, "startup", () => [marker("w2:pA", "w2:tA")], r.deps);
+    expect(env.PI_AGENT_UNATTENDED).toBe("1");
+    expect(env[RESTORED_ENV]).toBe(PID);
+    expect(r.gate).toEqual(["deny-only"]);
+    expect(r.appended).toEqual([]);
+    expect(r.notes.length).toBe(1);
+    expect(r.notes[0]).toContain("w2:pA");
+  });
+
+  test("every non-owning near-miss stays armed and leaves env untouched", () => {
+    const m = () => [marker("w2:pA", "w2:tA")];
+    const cases: [string, Record<string, string | undefined>, string, () => unknown[]][] = [
+      ["no marker", { ...HERE }, "startup", () => []],
+      ["other pane", { ...HERE, HERDR_PANE_ID: "w2:pB" }, "startup", m],
+      ["other tab", { ...HERE, HERDR_TAB_ID: "w2:tB" }, "startup", m],
+      ["no pane id", { ...HERE, HERDR_PANE_ID: undefined }, "startup", m],
+      ["no tab id", { ...HERE, HERDR_TAB_ID: undefined }, "startup", m],
+      ["not in herdr", { ...HERE, HERDR_ENV: undefined }, "startup", m],
+      ["null marker field", { ...HERE }, "startup", () => [marker("w2:pA", null)]],
+      [
+        "malformed marker",
+        { ...HERE },
+        "startup",
+        () => [{ type: "custom", customType: UNATTENDED_MARKER_TYPE, data: "w2:pA" }],
+      ],
+      ['explicit "0"', { ...HERE, PI_AGENT_UNATTENDED: "0" }, "startup", m],
+      ['explicit "true"', { ...HERE, PI_AGENT_UNATTENDED: "true" }, "startup", m],
+      ["resume", { ...HERE }, "resume", m],
+      ["new", { ...HERE }, "new", m],
+      ["fork", { ...HERE }, "fork", m],
+      ["reload", { ...HERE }, "reload", m],
+      [
+        "throwing reader",
+        { ...HERE },
+        "startup",
+        () => {
+          throw new Error("no session");
+        },
+      ],
+    ];
+    for (const [name, env, reason, entries] of cases) {
+      const before = { ...env };
+      const r = recorder();
+      onSessionStart(env, PID, reason, entries, r.deps);
+      expect([name, env]).toEqual([name, before]);
+      expect([name, r.gate, r.appended]).toEqual([name, [], []]);
+    }
+  });
+
+  test("shouldRestoreUnattended agrees with the restore branch", () => {
+    const m = [marker("w2:pA", "w2:tA")];
+    expect(shouldRestoreUnattended({ ...HERE }, "startup", m)).toBe(true);
+    expect(shouldRestoreUnattended({ ...HERE }, "resume", m)).toBe(false);
+    expect(shouldRestoreUnattended({ ...HERE, PI_AGENT_UNATTENDED: "" }, "startup", m)).toBe(false);
+  });
+
+  test("a notify failure does not undo the restore", () => {
+    const env: Record<string, string | undefined> = { ...HERE };
+    const r = recorder();
+    onSessionStart(env, PID, "startup", () => [marker("w2:pA", "w2:tA")], {
+      ...r.deps,
+      notify: () => {
+        throw new Error("no UI");
+      },
+    });
+    expect(env.PI_AGENT_UNATTENDED).toBe("1");
+    expect(r.gate).toEqual(["deny-only"]);
+  });
+});
+
+describe("onSessionStart: launch-provided unattended records the marker", () => {
+  test("appends one pane-bound marker and no duplicate once it matches", () => {
+    const env: Record<string, string | undefined> = { ...HERE, PI_AGENT_UNATTENDED: "1" };
+    const r = recorder();
+    onSessionStart(env, PID, "startup", () => [], r.deps);
+    expect(r.appended).toEqual([{ pane: "w2:pA", tab: "w2:tA" }]);
+    onSessionStart(env, PID, "resume", () => [marker("w2:pA", "w2:tA")], r.deps);
+    expect(r.appended.length).toBe(1);
+    expect(r.gate).toEqual([]);
+    expect(env.PI_AGENT_UNATTENDED).toBe("1");
+  });
+
+  test("a relaunch in a new pane appends a marker for the new pane", () => {
+    const env: Record<string, string | undefined> = { ...HERE, PI_AGENT_UNATTENDED: "1" };
+    const r = recorder();
+    onSessionStart(env, PID, "startup", () => [marker("w2:pOld", "w2:tOld")], r.deps);
+    expect(r.appended).toEqual([{ pane: "w2:pA", tab: "w2:tA" }]);
+  });
+
+  test("outside herdr the marker is recorded with null ids and never restores", () => {
+    const env: Record<string, string | undefined> = { PI_AGENT_UNATTENDED: "1" };
+    const r = recorder();
+    onSessionStart(env, PID, "startup", () => [], r.deps);
+    expect(r.appended).toEqual([{ pane: null, tab: null }]);
+    expect(shouldRestoreUnattended({}, "startup", [marker(null, null)])).toBe(false);
+  });
+
+  test("a nested pi drops an inherited restore stamp and stays deny-only", () => {
+    for (const entries of [() => [], () => [marker("w2:pA", "w2:tA")]]) {
+      const env: Record<string, string | undefined> = {
+        ...HERE,
+        PI_AGENT_UNATTENDED: "1",
+        [RESTORED_ENV]: "1111",
+      };
+      const r = recorder();
+      onSessionStart(env, PID, "startup", entries, r.deps);
+      expect(env[RESTORED_ENV]).toBe(undefined);
+      expect(env.PI_AGENT_UNATTENDED).toBe("1");
+      expect(r.gate).toEqual([]);
+      expect(r.appended.length).toBe(entries().length === 0 ? 1 : 0);
+    }
+  });
+});
+
+describe("onSessionStart: a process that restored itself re-checks every switch", () => {
+  function restored(): Record<string, string | undefined> {
+    return { ...HERE, PI_AGENT_UNATTENDED: "1", [RESTORED_ENV]: PID };
+  }
+
+  test("switching to an unmarked session revokes and appends nothing", () => {
+    const env = restored();
+    const r = recorder();
+    onSessionStart(env, PID, "new", () => [], r.deps);
+    expect(env.PI_AGENT_UNATTENDED).toBe(undefined);
+    expect(env[RESTORED_ENV]).toBe(undefined);
+    expect(r.gate).toEqual(["armed"]);
+    expect(r.appended).toEqual([]);
+  });
+
+  test("the same marked session, or a fork carrying the marker, keeps the gate as it is", () => {
+    for (const reason of ["resume", "fork", "reload"]) {
+      const env = restored();
+      const r = recorder();
+      onSessionStart(env, PID, reason, () => [marker("w2:pA", "w2:tA")], r.deps);
+      expect([reason, env.PI_AGENT_UNATTENDED, r.gate]).toEqual([reason, "1", []]);
+    }
+  });
+
+  test("a fork from before the marker, a changed value, or empty ids revoke", () => {
+    const revokes: [string, Record<string, string | undefined>, () => unknown[]][] = [
+      ["pre-marker fork", restored(), () => []],
+      [
+        "value changed",
+        { ...restored(), PI_AGENT_UNATTENDED: "0" },
+        () => [marker("w2:pA", "w2:tA")],
+      ],
+      ["empty pane id", { ...restored(), HERDR_PANE_ID: "" }, () => [marker("", "w2:tA")]],
+      [
+        "throwing reader",
+        restored(),
+        () => {
+          throw new Error("gone");
+        },
+      ],
+    ];
+    for (const [name, env, entries] of revokes) {
+      const r = recorder();
+      onSessionStart(env, PID, "fork", entries, r.deps);
+      expect([name, env.PI_AGENT_UNATTENDED, env[RESTORED_ENV], r.gate]).toEqual([
+        name,
+        undefined,
+        undefined,
+        ["armed"],
+      ]);
+    }
+  });
+});
+
+describe("session_start wiring", () => {
+  const saved = {
+    unattended: process.env.PI_AGENT_UNATTENDED,
+    restored: process.env[RESTORED_ENV],
+    herdr: process.env.HERDR_ENV,
+    pane: process.env.HERDR_PANE_ID,
+    tab: process.env.HERDR_TAB_ID,
+  };
+  function put(name: string, value: string | undefined) {
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
+
+  afterEach(async () => {
+    put("PI_AGENT_UNATTENDED", saved.unattended);
+    put(RESTORED_ENV, saved.restored);
+    put("HERDR_ENV", saved.herdr);
+    put("HERDR_PANE_ID", saved.pane);
+    put("HERDR_TAB_ID", saved.tab);
+    const commands: Record<string, { handler: Handler }> = {};
+    permissionGate({
+      on: () => {},
+      registerCommand: (name: string, opts: { handler: Handler }) => {
+        commands[name] = opts;
+      },
+      events: { on: () => () => {}, emit: () => {} },
+    } as never);
+    await commands["permission-gate"]!.handler("on", { ui: { notify: () => {} } });
+  });
+
+  test("a restored worker ends deny-only and guard-rails sees it unattended", async () => {
+    put("PI_AGENT_UNATTENDED", undefined);
+    put(RESTORED_ENV, undefined);
+    put("HERDR_ENV", "1");
+    put("HERDR_PANE_ID", "w2:pA");
+    put("HERDR_TAB_ID", "w2:tA");
+    const handlers: Record<string, (event: unknown, ctx: unknown) => unknown> = {};
+    const appended: unknown[] = [];
+    permissionGate({
+      on: (name: string, fn: (event: unknown, ctx: unknown) => unknown) => {
+        handlers[name] = fn;
+      },
+      registerCommand: () => {},
+      appendEntry: (type: string, data: unknown) => appended.push([type, data]),
+      events: { on: () => () => {}, emit: () => {} },
+    } as never);
+    expect(isPermissionGateEnabled()).toBe(true);
+    expect(isUnattended()).toBe(false);
+
+    await handlers["session_start"]!(
+      { type: "session_start", reason: "startup" },
+      {
+        sessionManager: { getEntries: () => [marker("w2:pA", "w2:tA")] },
+        ui: { notify: () => {} },
+      },
+    );
+
+    expect(isPermissionGateEnabled()).toBe(false);
+    expect(isDenyOnly()).toBe(true);
+    expect(process.env.PI_AGENT_UNATTENDED).toBe("1");
+    expect(isUnattended()).toBe(true);
+    expect(appended).toEqual([]);
+  });
+
+  test("a launch-unattended worker writes the marker through pi.appendEntry", async () => {
+    put("PI_AGENT_UNATTENDED", "1");
+    put(RESTORED_ENV, undefined);
+    put("HERDR_ENV", "1");
+    put("HERDR_PANE_ID", "w2:pA");
+    put("HERDR_TAB_ID", "w2:tA");
+    const handlers: Record<string, (event: unknown, ctx: unknown) => unknown> = {};
+    const appended: unknown[] = [];
+    permissionGate({
+      on: (name: string, fn: (event: unknown, ctx: unknown) => unknown) => {
+        handlers[name] = fn;
+      },
+      registerCommand: () => {},
+      appendEntry: (type: string, data: unknown) => appended.push([type, data]),
+      events: { on: () => () => {}, emit: () => {} },
+    } as never);
+    await handlers["session_start"]!(
+      { type: "session_start", reason: "startup" },
+      { sessionManager: { getEntries: () => [] }, ui: { notify: () => {} } },
+    );
+    expect(appended).toEqual([[UNATTENDED_MARKER_TYPE, { pane: "w2:pA", tab: "w2:tA" }]]);
+  });
+});
+
+describe("the marker survives in a real session file", () => {
+  test("appended after an assistant message, it is read back on reopen", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pg-marker-"));
+    try {
+      const sm = SessionManager.create(dir, dir);
+      sm.appendMessage({ role: "user", content: "hi", timestamp: Date.now() } as never);
+      sm.appendMessage({
+        role: "assistant",
+        content: [{ type: "text", text: "ok" }],
+        stopReason: "stop",
+        timestamp: Date.now(),
+      } as never);
+      sm.appendCustomEntry(UNATTENDED_MARKER_TYPE, { pane: "w2:pA", tab: "w2:tA" });
+      const file = sm.getSessionFile();
+      expect(typeof file).toBe("string");
+      const reopened = SessionManager.open(file as string, dir);
+      expect(unattendedMarker(reopened.getEntries())).toEqual({ pane: "w2:pA", tab: "w2:tA" });
+      expect(shouldRestoreUnattended({ ...HERE }, "startup", reopened.getEntries())).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

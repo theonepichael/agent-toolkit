@@ -396,6 +396,150 @@ export function isDenyOnly(): boolean {
   return !enabled && denyOnly;
 }
 
+/**
+ * Restoring unattended state after herdr relaunches a worker.
+ *
+ * herdr persists each pane's agent session (agent name, kind, session file)
+ * but not the tab environment it was created with. After a host restart it
+ * relaunches pi on the saved session with HERDR_ENV, HERDR_PANE_ID and
+ * HERDR_TAB_ID, and without PI_AGENT_UNATTENDED -- so this gate armed itself
+ * in a tab nobody was watching, and both restored workers stalled on "Run bash
+ * command?" (observed 2026-10-23). guard-rails would have asked about rm -rf
+ * and sudo instead of blocking, and fatal-error-exit would never have exited
+ * a crashed worker: all three read the same variable.
+ *
+ * So while a session is unattended, the gate records a custom entry naming the
+ * herdr pane and tab it runs in. On a fresh process start (reason "startup",
+ * which is what a herdr relaunch produces) with the variable absent, in that
+ * same pane and tab, it puts PI_AGENT_UNATTENDED back in process.env -- which
+ * the other two extensions read per call -- and drops this gate to deny-only.
+ * RESTORED_ENV carries the restoring process's pid, so a later session switch
+ * in this process can tell its own restore from a launch-provided value, and
+ * a child process that inherited both variables can tell it is not the owner.
+ *
+ * It fails closed: an explicit value of any kind, a non-startup reason, a
+ * missing herdr pane or tab, a mismatched or malformed marker, or a throw
+ * while reading the session all leave the gate as it would be today. A human
+ * resuming a worker's session in their own terminal has no matching pane and
+ * stays armed. herdr pane and tab id reuse across server lifetimes is not
+ * verified; requiring both ids to match narrows that window, it does not
+ * close it.
+ */
+export const UNATTENDED_MARKER_TYPE = "permission-gate-unattended";
+export const RESTORED_ENV = "PI_AGENT_UNATTENDED_RESTORED";
+
+export interface UnattendedMarker {
+  pane: string | null;
+  tab: string | null;
+}
+
+type Env = Record<string, string | undefined>;
+
+const isIdField = (v: unknown): v is string | null => v === null || typeof v === "string";
+
+/** The last well-formed marker in the session, or undefined. */
+export function unattendedMarker(entries: readonly unknown[]): UnattendedMarker | undefined {
+  let found: UnattendedMarker | undefined;
+  for (const entry of entries) {
+    const e = entry as { type?: unknown; customType?: unknown; data?: unknown } | null;
+    if (!e || e.type !== "custom" || e.customType !== UNATTENDED_MARKER_TYPE) continue;
+    const data = e.data as { pane?: unknown; tab?: unknown } | null | undefined;
+    if (data && typeof data === "object" && isIdField(data.pane) && isIdField(data.tab)) {
+      found = { pane: data.pane, tab: data.tab };
+    }
+  }
+  return found;
+}
+
+/** Whether a marker names the herdr pane and tab this process runs in. */
+export function paneMatches(env: Env, marker: UnattendedMarker | undefined): boolean {
+  const pane = env.HERDR_PANE_ID;
+  const tab = env.HERDR_TAB_ID;
+  if (env.HERDR_ENV !== "1" || !pane || !tab || !marker) return false;
+  return marker.pane === pane && marker.tab === tab;
+}
+
+/** Whether a fresh start should put the launch-time unattended state back. */
+export function shouldRestoreUnattended(
+  env: Env,
+  reason: string,
+  entries: readonly unknown[],
+): boolean {
+  return (
+    reason === "startup" &&
+    env.PI_AGENT_UNATTENDED === undefined &&
+    paneMatches(env, unattendedMarker(entries))
+  );
+}
+
+export interface SessionStartDeps {
+  appendMarker: (data: UnattendedMarker) => void;
+  setGate: (state: "armed" | "deny-only") => void;
+  notify: (message: string) => void;
+}
+
+/**
+ * The session_start decision, separated from pi so every branch is testable.
+ *
+ * Module state may arrive re-initialised from process.env (/reload clears
+ * pi's extension cache) or carried over (a same-cwd session switch reuses the
+ * cached factory), so no branch relies on either.
+ */
+export function onSessionStart(
+  env: Env,
+  pid: string,
+  reason: string,
+  getEntries: () => readonly unknown[],
+  deps: SessionStartDeps,
+): void {
+  if (env[RESTORED_ENV] === pid) {
+    // This process restored the grant itself: it stands only while the
+    // session in front of it still carries a matching marker. On success the
+    // gate is left as it is, so an explicit /permission-gate on survives a
+    // switch exactly as it does for a launch-unattended worker; anything
+    // else, including a throw, revokes.
+    let stands = false;
+    try {
+      stands = env.PI_AGENT_UNATTENDED === "1" && paneMatches(env, unattendedMarker(getEntries()));
+    } catch {
+      stands = false;
+    }
+    if (!stands) {
+      delete env.PI_AGENT_UNATTENDED;
+      delete env[RESTORED_ENV];
+      deps.setGate("armed");
+    }
+    return;
+  }
+
+  let restore = false;
+  try {
+    const entries = getEntries();
+    if (env.PI_AGENT_UNATTENDED === "1") {
+      // Launch-provided, or inherited from a parent worker: a restore stamp
+      // with another pid is not ours to honour.
+      delete env[RESTORED_ENV];
+      if (!paneMatches(env, unattendedMarker(entries))) {
+        deps.appendMarker({ pane: env.HERDR_PANE_ID || null, tab: env.HERDR_TAB_ID || null });
+      }
+      return;
+    }
+    restore = shouldRestoreUnattended(env, reason, entries);
+  } catch {
+    return;
+  }
+  if (!restore) return;
+
+  env.PI_AGENT_UNATTENDED = "1";
+  env[RESTORED_ENV] = pid;
+  deps.setGate("deny-only");
+  try {
+    deps.notify(`Unattended state restored for herdr pane ${env.HERDR_PANE_ID}`);
+  } catch {
+    // The restored state is the intended one; a missing notice is cosmetic.
+  }
+}
+
 // No exported setter on purpose. One used to live here ("Exported so
 // trust-session.ts can flip this gate") -- but pi evaluates every extension
 // in its own jiti registry, so trust-session's imported setter ran against a
@@ -415,6 +559,23 @@ export default function (pi: ExtensionAPI) {
       enabled = !trusted;
       denyOnly = false;
     }
+  });
+
+  pi.on("session_start", (event, ctx) => {
+    onSessionStart(
+      process.env,
+      String(process.pid),
+      event.reason,
+      () => ctx.sessionManager.getEntries(),
+      {
+        appendMarker: (data) => pi.appendEntry(UNATTENDED_MARKER_TYPE, data),
+        setGate: (state) => {
+          enabled = state === "armed";
+          denyOnly = state === "deny-only";
+        },
+        notify: (message) => ctx.ui.notify(message, "warning"),
+      },
+    );
   });
 
   pi.on("tool_call", async (event, ctx) => {

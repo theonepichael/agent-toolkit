@@ -120,6 +120,26 @@ more `--cost-step` of spend (default $1), or for `--cost-remind-s` (default
 900 s) when the spend is not observable. A new session, a changed problem
 set, or (for the total) a new day re-alerts at once.
 
+### Host restart
+
+herdr restores worker panes after a host restart and resumes each pi
+session, but the workers stop where they were. Before re-arming the
+watcher:
+
+1. `herdr agent list`: confirm each worker came back under its name, and
+   note its pane.
+2. `dev_status` sweeps release claims held by dead processes, so each item is
+   `open` again. Tell each worker to run `start <slug>` from its own
+   worktree, and to re-run its tests there.
+3. Treat any long run in flight (an emulator, a build) as interrupted. Its
+   output may be partial. Whether it counts against the worker's launch
+   budget is your call: write it in the note you send.
+4. A pi worker resumed in its own herdr pane and tab puts its unattended
+   state back by itself: permission-gate records the pane in the session and
+   restores deny-only on a fresh start there. A session started before that
+   marker existed comes back armed and stalls on "Run bash command?". Sending
+   it `/permission-gate off` is the operator's call (step 7).
+
 ## 4. Review checklist
 
 Before landing or sending back, check every claim against the repo's written

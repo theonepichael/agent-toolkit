@@ -209,7 +209,10 @@ file; edit the matrix and regenerate, never the region. Deny wins, then
 ask, then allow, default ask. `<dir>` in `git -C <dir> …` matches one
 argument exactly here, which is why Pi alone keeps those allows.
 Unattended (`PI_AGENT_UNATTENDED=1`) sessions start deny-only: allow and
-ask pass through, a deny still blocks. `opencode.jsonc`'s separate
+ask pass through, a deny still blocks. herdr does not keep a tab's
+environment when it restores a pane after a host restart, so the gate also
+records the herdr pane and tab in the session, and puts the unattended state
+back on a fresh start in that same pane and tab. `opencode.jsonc`'s separate
 `external_directory` permission type has no direct Pi analog and is out of
 scope.
 - **Toggle command**: `/permission-gate [on|off|status]` for session-scoped override.
