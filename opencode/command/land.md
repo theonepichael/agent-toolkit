@@ -13,8 +13,9 @@ commit in that worktree (`git -C <worktree> ...`), never in whatever
 checkout you happen to be in.
 
 ## 1. Gate: commit
-Show the full staged diff with `git diff --cached`. Stop — use the `question` tool for explicit commit approval. No exceptions for being mid-pipeline, and no exception for code an external executor wrote (the shared instructions file). The proposed commit is the staged tree: review
-`git status` and `git diff --cached`, not only an unstaged `git diff`, before
+Show the staged diff with `git diff --cached` (`--stat` plus the files that need review when it runs past ~50 lines; a full diff is re-sent on every later call). Stop — use the `question` tool for explicit commit approval. No exceptions for being mid-pipeline, and no exception for code an external executor wrote (the shared instructions file). The proposed commit is the staged tree: review
+`git status` and `git diff --cached` (`--stat` first when it runs past ~50
+lines), not only an unstaged `git diff`, before
 requesting approval. Show the `review-diff` report (reviewer line and triage
 table) with the diff. `review-diff` did not run on this staged tree? Say so
 plainly at the gate — "review-diff did not run" — and do not run it

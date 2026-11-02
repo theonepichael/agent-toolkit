@@ -96,6 +96,30 @@ class CapabilityFixtureTests(unittest.TestCase):
             self.assertIn("git diff --cached", gate, path)
             self.assertIn("review-diff did not run", gate, path)
 
+    def test_worker_skills_keep_command_output_out_of_context(self) -> None:
+        # Every tool result is re-sent on every later call, so a worker that
+        # pastes a full multi-file diff or test log pays for it on every call
+        # for the rest of the run. Measured on an 88-file change: 84% of a
+        # worker's spend was re-reading its own growing context.
+        rendered = gs.render_all(REPO_ROOT, SKILL_PARAMS)
+        for (skill, _harness), path in gs.OUTPUT_PATHS.items():
+            text = rendered[path]
+            if skill == "backlog-item":
+                rule = text.split("## 1. Resolve", 1)[0]
+                self.assertIn("Command output stays out of context", rule, path)
+                # A literal per-item log path: shell variables don't survive
+                # between tool calls, and parallel workers must not collide.
+                self.assertIn("/tmp/<slug>-<step>.log", rule, path)
+                # A trailing `; rc=$?` makes the tool report success for
+                # every run and adds a permission-gate segment.
+                self.assertNotIn("rc=$?`)", rule, path)
+                step9 = text.split("## 9. Verify", 1)[1].split("## 10.", 1)[0]
+                self.assertIn("git diff --cached --stat", step9, path)
+            elif skill == "land":
+                gate = text.split("## 1. Gate: commit", 1)[1].split("## 2.", 1)[0]
+                self.assertNotIn("Show the full", gate, path)
+                self.assertIn("--stat", gate, path)
+
     def test_backlog_item_delegates_review_then_land(self) -> None:
         rendered = gs.render_all(REPO_ROOT, SKILL_PARAMS)
         for (skill, harness), path in gs.OUTPUT_PATHS.items():

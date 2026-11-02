@@ -21,6 +21,20 @@ gates into one approval. Distinct from those: the item's own `gate` field in
 not a user-approval stop — same word, different mechanism, don't conflate
 them.
 
+**Command output stays out of context.** Every tool result is re-sent on
+every later call, so a long output pasted once is paid for on every call for the
+rest of the run; on a wide change this dominates the cost. Redirect any command
+whose output may run past ~50 lines (test suites, builds, `git diff`, `rg -n`
+across many files) to a log named for this item, outside the repo so it can
+never get staged: `cmd > /tmp/<slug>-<step>.log 2>&1` as one plain command, so
+the tool reports the command's own exit status. No shell variables (they don't
+survive between tool calls) and no trailing `; rc=$?` (it makes every run
+report success). Then read only what you need from the log: `tail`, `rg` on
+it, a line range. Try the compact form first: `git diff --stat` or
+`--name-only` before a full diff, `rg -c` or `rg -l` before `rg -n`, the test
+runner's summary lines before its full log. Open one file's diff when you need
+to inspect it; never paste a whole multi-file diff into context.
+
 ## 1. Resolve
 `python3 ~/.agent-toolkit/scripts/dev_status.py show <slug|N>`. Read the full
 record — never start from the dashboard's one-line summary (the shared
@@ -203,7 +217,8 @@ conversation:
     `HEAD`) as the reset target. Unchanged → proceed to step 9 as normal;
     proceed to step 9, where intended files must be staged and the
     worktree/index delta must be empty before verification; review the staged
-    tree with `git diff --cached`, not only an unstaged diff. The log isn't
+    tree with `git diff --cached` (`--stat` first when it runs past ~50 lines),
+    not only an unstaged diff. The log isn't
     needed on a clean run.
 
   Step 9 rejection/rework path — if review finds the diff unacceptable
@@ -226,10 +241,12 @@ minimal implementation.
 Stage every intended deliverable, without staging unrelated worktree changes,
 then ensure the worktree matches the staged index before checking it. Run the
 target repository's full suite and its own lint/type/format checks against
-that staged tree. Review `git status` and `git diff --cached` afterward; if
+that staged tree. Review `git status` and `git diff --cached --stat` afterward,
+opening a single file's staged diff only where you need to check it; if
 the intended content changes or a retry edits files, stage those intended
 changes again, re-establish the clean worktree/index delta, and rerun the
-checks. Show the output — "should work" is not verification
+checks. Show each check's result lines from its log (pass/fail counts, any
+failure's message), not the full stream — "should work" is not verification
 (the shared instructions file).
 
 ## 10. Review

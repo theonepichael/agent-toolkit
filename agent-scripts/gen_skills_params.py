@@ -982,7 +982,8 @@ conversation:
     `HEAD`) as the reset target. Unchanged → proceed to step 9 as normal;
     proceed to step 9, where intended files must be staged and the
     worktree/index delta must be empty before verification; review the staged
-    tree with `git diff --cached`, not only an unstaged diff. The log isn't
+    tree with `git diff --cached` (`--stat` first when it runs past ~50 lines),
+    not only an unstaged diff. The log isn't
     needed on a clean run.
 
   Step 9 rejection/rework path — if review finds the diff unacceptable
@@ -1848,7 +1849,7 @@ LAND_PARAMS: dict[str, dict[str, str]] = {
         "FRONTMATTER": _land_frontmatter("claude"),
         "ARGS": _ARGS["claude"],
         "COMMIT_GATE_BODY": (
-            "Show the full staged diff with `git diff --cached`. Stop — AskUserQuestion for explicit commit "
+            "Show the staged diff with `git diff --cached` (`--stat` plus the files that need review when it runs past ~50 lines; a full diff is re-sent on every later call). Stop — AskUserQuestion for explicit commit "
             "approval. No exceptions for being mid-pipeline, and no exception for "
             "code an external executor wrote (CLAUDE.md)."
         ),
@@ -1907,7 +1908,7 @@ print; don't just narrate a one-line confirmation.\nA tokenless agent — one th
         "ARGS": _ARGS["copilot"],
         "COMMIT_GATE_BODY": (
             """\
-Show the full diff (read from the worktree, not root). Stop — ask in
+Show the staged diff (read from the worktree, not root) (`--stat` plus the files that need review when it runs past ~50 lines; a full diff is re-sent on every later call). Stop — ask in
 plain text for explicit commit approval, stating your recommendation
 first. No exceptions for being mid-pipeline, and no exception for code an
 external executor wrote (the shared instructions file)."""
@@ -1970,7 +1971,7 @@ print; don't just narrate a one-line confirmation.\nA tokenless agent — one th
         "FRONTMATTER": _land_frontmatter("opencode"),
         "ARGS": _ARGS["opencode"],
         "COMMIT_GATE_BODY": (
-            "Show the full staged diff with `git diff --cached`. Stop — use the `question` tool for explicit "
+            "Show the staged diff with `git diff --cached` (`--stat` plus the files that need review when it runs past ~50 lines; a full diff is re-sent on every later call). Stop — use the `question` tool for explicit "
             "commit approval. No exceptions for being mid-pipeline, and no "
             "exception for code an external executor wrote (the shared "
             "instructions file)."
@@ -2030,7 +2031,7 @@ print; don't just narrate a one-line confirmation.\nA tokenless agent — one th
         "ARGS": _ARGS["agy"],
         "COMMIT_GATE_BODY": (
             """\
-Show the full staged diff with `git diff --cached`. Ask for explicit commit approval, then stop and yield
+Show the staged diff with `git diff --cached` (`--stat` plus the files that need review when it runs past ~50 lines; a full diff is re-sent on every later call). Ask for explicit commit approval, then stop and yield
 the turn. Do not run `git commit` under any circumstances until the user's
 next message contains an explicit yes — stating the question is not the
 same as getting an answer. No exceptions for being mid-pipeline, and no
@@ -2092,7 +2093,7 @@ print; don't just narrate a one-line confirmation.\nA tokenless agent — one th
         "ARGS": _ARGS["codex"],
         "COMMIT_GATE_BODY": (
             """\
-Show the full staged diff with `git diff --cached`. Ask for explicit commit approval, then stop and yield
+Show the staged diff with `git diff --cached` (`--stat` plus the files that need review when it runs past ~50 lines; a full diff is re-sent on every later call). Ask for explicit commit approval, then stop and yield
 the turn. Do not run `git commit` under any circumstances until the user's
 next message contains an explicit yes — stating the question is not the
 same as getting an answer. No exceptions for being mid-pipeline, and no
@@ -2153,7 +2154,7 @@ print; don't just narrate a one-line confirmation.\nA tokenless agent — one th
         "FRONTMATTER": _land_frontmatter("pi"),
         "ARGS": _ARGS["pi"],
         "COMMIT_GATE_BODY": """\
-Show the full staged diff with `git diff --cached`. Stop — use the `question` tool for explicit commit
+Show the staged diff with `git diff --cached` (`--stat` plus the files that need review when it runs past ~50 lines; a full diff is re-sent on every later call). Stop — use the `question` tool for explicit commit
 approval, recommended option first (e.g. "Yes, commit (Recommended)" / "No,
 don't commit"), per CLAUDE.md's judgment-call convention. No exceptions for
 being mid-pipeline, and no exception for code an external executor wrote
