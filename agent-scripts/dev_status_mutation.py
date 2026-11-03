@@ -3181,7 +3181,18 @@ def set_acceptance(
                 pending_items=pending_items,
             )
 
-        history_kind = "override" if request.operator_override else "replace"
+        if request.operator_override:
+            history_kind: str | None = "override"
+            detail_label = "override"
+        elif existing_acc is not None:
+            history_kind = "replace"
+            detail_label = "replace"
+        else:
+            # A first set appends no history entry (nothing was replaced);
+            # its journal and result detail must say so instead of claiming
+            # a replace.
+            history_kind = None
+            detail_label = "set"
         token = _store_acceptance(
             item,
             data_dir=paths["data_dir"],
@@ -3189,11 +3200,7 @@ def set_acceptance(
             new_criteria=new_criteria,
             new_iv=new_iv,
             existing_acc=existing_acc,
-            history_kind=(
-                history_kind
-                if (existing_acc is not None or request.operator_override)
-                else None
-            ),
+            history_kind=history_kind,
             history=(
                 list(existing_acc.get("history") or [])
                 if existing_acc is not None
@@ -3220,7 +3227,7 @@ def set_acceptance(
                 new_rev,
                 slug=slug,
                 summary=cast(str, item.get("summary", "")),
-                detail=f"acceptance {history_kind}",
+                detail=f"acceptance {detail_label}",
             ),
             journal_file=paths["journal_path"],
             verbose=verbose,
@@ -3231,7 +3238,7 @@ def set_acceptance(
             status=cast(str, item.get("status", "open")),
             rev=new_rev,
             ref=slug_or_id,
-            detail=f"acceptance {history_kind}",
+            detail=f"acceptance {detail_label}",
             item=item,
             items=items,
             pending_items=pending_items,

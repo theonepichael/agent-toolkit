@@ -276,6 +276,130 @@ class AcceptanceSetTestCase(AcceptanceFixture):
         self.assertEqual(res.rev, rev)
         self.assertEqual(res.item["acceptance"]["history"], [])
 
+    # ── acceptance detail labels ────────────────────────────────────────
+
+    def _journal_entries(self):
+        if not self.journal_file.exists():
+            return []
+        return [
+            json.loads(line)
+            for line in self.journal_file.read_text().splitlines()
+            if line.strip()
+        ]
+
+    @pytest.mark.regression(
+        "first-acceptance-set-labeled-as-replace",
+        "AssertionError: 'acceptance replace' != 'acceptance set'",
+    )
+    def test_first_set_reports_acceptance_set_detail(self):
+        self.write_items([make_item("atk-a")])
+        res = self._service_acceptance_set(
+            "atk-a", acceptance_payload(), if_rev=self.read_rev()
+        )
+        self.assertEqual(res.detail, "acceptance set")
+        entry = self._journal_entries()[-1]
+        self.assertEqual(entry["detail"], "acceptance set")
+        self.assertEqual(entry["cmd"], "acceptance-set")
+        self.assertEqual(entry["kind"], "backlog")
+        self.assertEqual(res.item["acceptance"]["history"], [])
+
+    def test_replace_keeps_detail_label_and_history_shape(self):
+        self.write_items([make_item("atk-r")])
+        self._service_acceptance_set(
+            "atk-r", acceptance_payload(), if_rev=self.read_rev()
+        )
+        self._service_acceptance_set(
+            "atk-r",
+            acceptance_payload(criteria=[{"text": "second", "refs": []}]),
+            if_rev=self.read_rev(),
+        )
+        prefix = self.item("atk-r")["acceptance"]["history"]
+        prior_criteria = self.item("atk-r")["acceptance"]["criteria"]
+        res = self._service_acceptance_set(
+            "atk-r",
+            acceptance_payload(criteria=[{"text": "third", "refs": []}]),
+            if_rev=self.read_rev(),
+        )
+        self.assertEqual(res.detail, "acceptance replace")
+        self.assertEqual(self._journal_entries()[-1]["detail"], "acceptance replace")
+        history = res.item["acceptance"]["history"]
+        self.assertEqual(history[: len(prefix)], prefix)
+        self.assertEqual(len(history), len(prefix) + 1)
+        self.assertEqual(history[-1]["kind"], "replace")
+        self.assertEqual(history[-1]["previous"]["criteria"], prior_criteria)
+        self.assertIs(history[-1]["previous"]["independent_verifier"], False)
+
+    def test_override_keeps_detail_label_and_history_shape(self):
+        self.write_items([make_item("atk-o")])
+        self._service_acceptance_set(
+            "atk-o", acceptance_payload(), if_rev=self.read_rev()
+        )
+        self._service_acceptance_set(
+            "atk-o",
+            acceptance_payload(criteria=[{"text": "second", "refs": []}]),
+            if_rev=self.read_rev(),
+        )
+        prefix = self.item("atk-o")["acceptance"]["history"]
+        prior_criteria = self.item("atk-o")["acceptance"]["criteria"]
+        res = self._service_acceptance_set(
+            "atk-o",
+            acceptance_payload(criteria=[{"text": "third", "refs": []}]),
+            if_rev=self.read_rev(),
+            operator_override=True,
+        )
+        self.assertEqual(res.detail, "acceptance override")
+        self.assertEqual(self._journal_entries()[-1]["detail"], "acceptance override")
+        history = res.item["acceptance"]["history"]
+        self.assertEqual(history[: len(prefix)], prefix)
+        self.assertEqual(len(history), len(prefix) + 1)
+        self.assertEqual(history[-1]["kind"], "override")
+        self.assertEqual(history[-1]["previous"]["criteria"], prior_criteria)
+        self.assertIs(history[-1]["previous"]["independent_verifier"], False)
+
+    def test_override_on_first_set_keeps_override_label(self):
+        self.write_items([make_item("atk-f")])
+        res = self._service_acceptance_set(
+            "atk-f",
+            acceptance_payload(),
+            if_rev=self.read_rev(),
+            operator_override=True,
+        )
+        self.assertEqual(res.detail, "acceptance override")
+        self.assertEqual(self._journal_entries()[-1]["detail"], "acceptance override")
+        history = res.item["acceptance"]["history"]
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]["kind"], "override")
+        self.assertEqual(
+            history[0]["previous"], {"criteria": [], "independent_verifier": False}
+        )
+
+    def test_rotate_and_noop_detail_wording_preserved(self):
+        self.write_items([make_item("atk-t"), make_item("atk-n")])
+        self._service_acceptance_set(
+            "atk-t",
+            acceptance_payload(independent_verifier=True),
+            if_rev=self.read_rev(),
+        )
+        res = self._service_acceptance_set(
+            "atk-t",
+            acceptance_payload(independent_verifier=True),
+            if_rev=self.read_rev(),
+            rotate_token=True,
+        )
+        with self.subTest(case="rotate"):
+            self.assertEqual(res.detail, "verifier token rotated")
+            self.assertEqual(
+                self._journal_entries()[-1]["detail"], "rotated verifier token"
+            )
+
+        payload = acceptance_payload()
+        self._service_acceptance_set("atk-n", payload, if_rev=self.read_rev())
+        journal_before = self.journal_file.read_bytes()
+        res = self._service_acceptance_set("atk-n", payload, if_rev=self.read_rev())
+        with self.subTest(case="no-op"):
+            self.assertEqual(res.detail, "acceptance unchanged (no-op)")
+            self.assertEqual(self.journal_file.read_bytes(), journal_before)
+
     def test_ref_change_is_not_noop(self):
         self.write_items([make_item("atk-a")])
         p1 = acceptance_payload(refs=[{"repo": "/r", "path": "old.md", "clause": "s1"}])
