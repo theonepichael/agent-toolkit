@@ -1352,7 +1352,7 @@ llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, open
   - `run_copilot(prompt: str, *, model: str | None, timeout: float, mode: str = 'text-only', target_dir: Path | None = None, images: list[str] | None = None) -> str` — Run the ``copilot`` backend and return its text output.
   - `run_pi(prompt: str, *, model: str | None, timeout: float, mode: str = 'text-only', target_dir: Path | None = None, images: list[str] | None = None) -> str` — Run Pi's headless mode and return its text output.
   - `run_opencode(prompt: str, *, model: str | None, timeout: float, mode: str = 'text-only', target_dir: Path | None = None) -> str` — Run opencode's default agent (no ``--agent`` override) and return its text output.
-- Tested by: `test/test_backend_isolation.py`, `test/test_backend_isolation_live.py`, `test/test_dev_status.py`, `test/test_gen_interfaces.py`, `test/test_llm_backends.py`, `test/test_migration_lock_adoption.py`, `test/test_second_opinion.py`, `test/test_timing.py`
+- Tested by: `test/test_backend_isolation.py`, `test/test_backend_isolation_live.py`, `test/test_dev_status.py`, `test/test_gen_interfaces.py`, `test/test_llm_backends.py`, `test/test_migration_lock_adoption.py`, `test/test_second_opinion.py`, `test/test_second_opinion_panel.py`, `test/test_timing.py`
 
 ### `agent-scripts/migration_lock.py`
 
@@ -1650,9 +1650,24 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
     - `--prompt-only` — print the prompt this review would send and exit, calling no backend and spending no round (for a caller's own reviewer) (default: False)
     - `--run-id` — stable id for one iterative critique session; the per-round cap is enforced by counting reviews per run-id (or per plan file when omitted). The second-opinion skill passes one for the whole loop.
     - `--allow-extra-round` — permit review calls beyond the per-run cap (for a user who deliberately wants another round) (default: False)
+  - `panel [<plan-file-or-text>] --backends NAME[,NAME...] [--transcript PATH] [--dir <DIR>] [--text-only] [--focus-file <FOCUS_FILE>] [--run-id ID] [--allow-extra-round]` — run a multi-model panel discussion (round 1 parallel, one cross-round, synthesis)
+    - `plan` (nargs: ?)
+    - `--backends` (required)
+    - `--transcript` — transcript file (append-only, never truncated); default a unique timestamped file under the data dir. Printed at start.
+    - `--dir` — root directory of the codebase to inspect in the grounded round 1 (defaults to current working directory)
+    - `--text-only` — disable codebase exploration for round 1 (round 2 is always text-only) (default: False)
+    - `--focus-file` — path to a file of plan-specific risk hints, appended to the round-1 brief
+    - `--run-id` — stable id for the per-run round cap (one panel consumes one round, keyed by --run-id or the plan-file path)
+    - `--allow-extra-round` — permit panel runs beyond the per-run cap (default: False)
+  - `panel-worker --backend NAME --prompt-file PATH [--dir <DIR>] [--text-only]`
+    - `--backend` (required)
+    - `--prompt-file` (required)
+    - `--text-only` (default: False)
   - `bind-notes <artifact>` — stamp <artifact>'s critique-notes companion with the artifact's content hash
   - `check-notes <artifact>` — print whether <artifact>'s critique-notes binding is current, stale, unbound, missing, or no-artifact (always exit 0)
 - Environment: `SECOND_OPINION_AGY_MODEL`, `SECOND_OPINION_AGY_MODEL_POOL`, `SECOND_OPINION_AGY_TIMEOUT_SECONDS`, `SECOND_OPINION_CODEX_MODEL`, `SECOND_OPINION_CODEX_MODEL_POOL`, `SECOND_OPINION_CODEX_TIMEOUT_SECONDS`, `SECOND_OPINION_COPILOT_MODEL`, `SECOND_OPINION_COPILOT_MODEL_POOL`, `SECOND_OPINION_COPILOT_TIMEOUT_SECONDS`, `SECOND_OPINION_OPENCODE_MODEL`, `SECOND_OPINION_OPENCODE_MODEL_POOL`, `SECOND_OPINION_OPENCODE_TIMEOUT_SECONDS`, `SECOND_OPINION_PI_MODEL`, `SECOND_OPINION_PI_MODEL_POOL`, `SECOND_OPINION_PI_TIMEOUT_SECONDS`, `SECOND_OPINION_TIMEOUT_SECONDS`
+- Filesystem constants:
+  - `_PANEL_SCRIPT = str(Path(__file__).resolve())`
 - Explicit exit codes: `1`
 - Depends on: `agent_toolkit_paths.py`, `cli_common.py`, `llm_backends.py`, `migration_lock.py`
 - Exceptions:
@@ -1663,6 +1678,7 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
   - `class ImageInputError(ReviewError)` — An image request failed validation (bad path, count, size, or format).
   - `class ImageSupportError(ReviewError)` — A forced backend cannot accept image input (no headless image flag).
   - `class AllBackendsFailedError(BackendError)` — Every candidate backend was tried and failed (or was size-ruled-out).
+  - `class PanelError(ReviewError)` — Panel-level failure: fewer than 2 usable backends, or no synthesis.
 - Public classes:
   - `class ReviewRequest` — One review request for :func:`review_plan`.
   - `class ReviewResult` — A successful critique: the backend used, its response, and diagnostics.
@@ -1682,14 +1698,15 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
   - `run_pi(prompt: str, *, model_index: int | None = None, mode: str | None = None, target_dir: Path | None = None, images: list[str] | None = None) -> str` — Run the ``pi`` backend and return its critique text.
   - `backend_label(backend: str, *, model_index: int | None = None, model: object = _UNSET) -> str` — Return ``backend``'s display label, appending the resolved model if any.
   - `review_plan(request: ReviewRequest, *, verbose: bool = False, quiet: bool = False) -> ReviewResult` — Run one adversarial review of ``request.plan_text`` and return the result.
+  - `run_panel(plan_text: str, backends: list[str], *, focus_hints: str | None, transcript_path: Path, target_dir: Path, text_only: bool) -> tuple[str, list[str]]` — Run the panel and return ``(summary_text, failure_lines)``.
   - `build_parser() -> argparse.ArgumentParser` — Build the full argument parser for every subcommand.
   - `critique_notes_path(artifact: Path) -> Path` — Return the ``<artifact without suffix>-critique-notes.md`` companion.
   - `artifact_digest(artifact: Path) -> str` — Return the SHA-256 hex digest of the artifact's raw bytes.
   - `bind_notes(artifact: Path) -> Path` — Stamp the artifact's digest as the notes file's first line.
   - `notes_status(artifact: Path) -> str` — Classify the artifact's critique-notes binding (see check-notes).
   - `ensure_data_dir() -> None` — Create the shared artifact directory if it is missing.
-- Subcommand handlers: `cmd_detect`, `cmd_probe`, `cmd_review`, `cmd_bind_notes`, `cmd_check_notes`
-- Tested by: `test/test_migration_lock_adoption.py`, `test/test_second_opinion.py`, `test/test_second_opinion_concurrency.py`, `test/test_timing.py`
+- Subcommand handlers: `cmd_detect`, `cmd_probe`, `cmd_review`, `cmd_panel`, `cmd_panel_worker`, `cmd_bind_notes`, `cmd_check_notes`
+- Tested by: `test/test_migration_lock_adoption.py`, `test/test_second_opinion.py`, `test/test_second_opinion_concurrency.py`, `test/test_second_opinion_panel.py`, `test/test_timing.py`
 
 ### `agent-scripts/seed_hook_subset_guard.py`
 

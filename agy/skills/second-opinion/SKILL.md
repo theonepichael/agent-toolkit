@@ -19,7 +19,12 @@ rotation, and remember it calls the real models once each, so pass `--backend`
 deliberately. It is single-round: one call, one critique. The multi-round loop
 and plan revision are your job, not the script's. By default, reviews are
 grounded in the target codebase (`--dir` or current working directory) with
-read-only tools enabled; use `--text-only` to opt out.
+read-only tools enabled; use `--text-only` to opt out. A fourth subcommand,
+`panel`, runs a multi-model panel discussion — one brief to N chosen backends
+in parallel (round 1), then one anonymised cross-round in which a designated
+backend synthesizes an agreed/disputed/open summary from the round-1 positions
+while the rest cross-examine, every reply appended to a transcript file as it
+lands — a separate workflow from this single-round critique loop.
 
 ```
 second_opinion.py detect --mode grounded        # which backends can run a

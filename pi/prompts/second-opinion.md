@@ -19,7 +19,12 @@ the `backend` parameter deliberately. It is single-round: one call, one
 critique. The multi-round loop and plan revision are your job, not the
 script's. By default, reviews are grounded in the target codebase (`dir` or
 current working directory) with read-only tools enabled; use `textOnly = true`
-to opt out.
+to opt out. A fourth subcommand, `panel`, runs a multi-model panel discussion —
+one brief to N chosen backends in parallel (round 1), then one anonymised
+cross-round in which a designated backend synthesizes an agreed/disputed/open
+summary from the round-1 positions while the rest cross-examine, every reply
+appended to a transcript file as it lands — a separate workflow from this
+single-round critique loop.
 
 Call the `second_opinion` tool. Action `detect` with `mode` `grounded` lists
 which backends can run a grounded review as JSON (plain `detect` reports the

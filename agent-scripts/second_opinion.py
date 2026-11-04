@@ -35,6 +35,14 @@ Subcommands
   probe   run one trivial text-only health request per pool model and print a
            per-model availability report as JSON (exit 1 when any probed model
            is unavailable; tests must mock the runners, never probe for real)
+  panel <plan-file-or-text>
+           multi-model panel discussion: round 1 sends the brief to N chosen
+           backends in parallel, round 2 (the single cross-round) gives each
+           survivor the others' round-1 answers anonymised (Reviewer A/B/…) —
+           the first survivor synthesizes a final Agreed/Disputed/Open summary
+           while the rest cross-examine. Every reply is appended to the
+           --transcript file as it lands (path printed at start). Fewer than 2
+           successful backends is an error, never a silent single-model review.
   bind-notes <artifact>
            stamp <artifact without suffix>-critique-notes.md with the
            artifact's SHA-256 as its first line
@@ -207,6 +215,7 @@ Requires Python 3.12+.
 """
 
 import argparse
+import contextlib
 import fcntl
 import hashlib
 import json
@@ -219,7 +228,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import FrameType
@@ -1797,6 +1806,45 @@ def cmd_probe(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def _run_backend_once(
+    backend: str,
+    prompt: str,
+    *,
+    model_index: int | None,
+    mode: str,
+    target_dir: Path,
+    images: list[str] | None = None,
+) -> str:
+    """Run one backend's critique once and return its text, or raise.
+
+    The single place a "run one backend" happens: the ``BACKEND_RUNNERS``
+    dispatch plus the empty-output rejection. ``review_plan``'s serial
+    candidate loop and the ``panel`` subcommand's parallel rounds both call
+    this, so the panel reuses the existing runner path rather than adding a
+    second one. ``model_index`` is preserved (``review_plan`` passes the pool
+    index; the panel always passes ``None``).
+
+    Raises:
+        llm_backends.BackendError: on empty output, or any backend failure the
+            runner wrapper raises (timeout, nonzero exit, tool use, etc.).
+    """
+    runner = BACKEND_RUNNERS[backend]
+    runner_kwargs = _filter_runner_kwargs(
+        runner,
+        model_index=model_index,
+        mode=mode,
+        target_dir=target_dir,
+        images=images,
+    )
+    critique = runner(prompt, **runner_kwargs)
+    if not critique.strip():
+        prompt_bytes = len(prompt.encode("utf-8"))
+        raise llm_backends.BackendError(
+            f"empty output ({prompt_bytes}-byte prompt, no usable text)"
+        )
+    return critique
+
+
 def review_plan(
     request: ReviewRequest, *, verbose: bool = False, quiet: bool = False
 ) -> ReviewResult:
@@ -2028,24 +2076,13 @@ def review_plan(
                 with cli_common.timing_span(
                     "backend", backend=backend, candidate=candidate_index
                 ):
-                    runner = BACKEND_RUNNERS[backend]
-                    runner_kwargs = _filter_runner_kwargs(
-                        runner,
+                    critique = _run_backend_once(
+                        backend,
+                        prompt,
                         model_index=model_index,
                         mode=mode,
                         target_dir=target_dir,
                         images=list(resolved_images) if resolved_images else None,
-                    )
-                    critique = runner(prompt, **runner_kwargs)
-                if not critique.strip():
-                    # Empty output is a failed candidate, not a critique: a
-                    # backend that exits 0 with nothing usable (agy headless
-                    # auto-denying a tool's command permission, a mocked
-                    # runner returning "") would otherwise have its silence
-                    # returned as the critique. Recorded like any other
-                    # runtime failure so rotation continues.
-                    raise llm_backends.BackendError(
-                        f"empty output ({prompt_bytes}-byte prompt, no usable text)"
                     )
             except BackendError as exc:
                 # A timeout is a budget problem, not an outage: name the env
@@ -2405,6 +2442,528 @@ def cmd_review(args: argparse.Namespace) -> None:
         _trim_foreign_tail(output_lock)
 
 
+# ── panel mode ────────────────────────────────────────────────────────────
+
+# Each panel backend runs in its own child process (see _spawn_worker): the
+# child re-invokes this script's ``panel-worker`` subcommand, so every backend
+# call goes through the same single-threaded runner llm_backends was built for
+# — the panel never calls the runners from concurrent threads in one process.
+_PANEL_SCRIPT = str(Path(__file__).resolve())
+
+_PANEL_GROUNDED_TOOLS = (
+    "You have read-only access to the codebase. Use your read/grep/find tools "
+    "to inspect cited files and verify assumptions against real code before "
+    "you answer. Never attempt to write or edit files."
+)
+
+_PANEL_TEXT_ONLY_TOOLS = (
+    "Respond in plain prose only: you have no tools, so never emit tool-call "
+    "markup (XML like <tool_calls>, JSON tool-call blocks, or fenced tool "
+    "invocations) — if you could not check something, say so."
+)
+
+PANEL_ROUND1_PROMPT = """\
+You are one of {n} independent reviewers on a panel. Each of you receives the
+same brief and answers independently before anyone sees the others' answers.
+
+{tools}
+
+Take a clear, specific position on the brief's questions, with reasoning. Say
+"I don't know" where you don't. Do not restate the brief. Keep it under 600
+words.
+{focus_section}
+---
+{brief}
+"""
+
+PANEL_CROSS_PROMPT = """\
+You are {me} on a panel. Below is your own round-1 position, then the other
+reviewers' independent positions, anonymised (Reviewer A/B/…). You have not
+seen their names, and they have not seen yours.
+
+Respond in plain prose only: you have no tools. For each point where another
+reviewer's position differs from or refines your own, say whether you agree,
+disagree, or would refine it, and why. Where you now concede or hold, say so
+explicitly. Do not restate the brief.
+---
+{brief}
+
+{own}
+
+{others}
+"""
+
+PANEL_SUMMARY_PROMPT = """\
+You are the synthesizer of a panel of {n} reviewers. Below are the brief and
+every reviewer's independent round-1 position, anonymised (Reviewer A/B/…).
+
+Respond in plain prose only: you have no tools. Produce a final summary with
+exactly three sections, headed **Agreed**, **Disputed**, and **Open**:
+
+- **Agreed** — points the reviewers converge on.
+- **Disputed** — points where they diverge, and who holds which position.
+- **Open** — points left unresolved or uncertain.
+
+Do not restate the brief.
+---
+{brief}
+
+{answers}
+"""
+
+_BACKEND_NAME_WORDS = ("codex", "agy", "pi", "opencode", "copilot")
+_BACKEND_NAME_RE = re.compile(
+    r"\b(" + "|".join(_BACKEND_NAME_WORDS) + r")\b", re.IGNORECASE
+)
+
+
+def _redact_backend_identity(text: str) -> str:
+    """Redact backend names (word-boundary, case-insensitive) from ``text``.
+
+    Round-2 prompts embed round-1 answers; a backend that signs its answer
+    "— Codex CLI" or quotes another backend by name must not have that
+    identity forwarded to a different backend. Word-boundary replacement
+    avoids corrupting ordinary words that merely contain the substring
+    ("pipeline", "spigot").
+    """
+    return _BACKEND_NAME_RE.sub("[redacted]", text)
+
+
+def _panel_letter(index: int) -> str:
+    """Return the Reviewer letter for a panelist at ``index`` (A, B, C, …)."""
+    return chr(ord("A") + index)
+
+
+def _panel_round1_prompt(
+    brief: str, focus_hints: str | None, *, grounded: bool, n: int
+) -> str:
+    tools = _PANEL_GROUNDED_TOOLS if grounded else _PANEL_TEXT_ONLY_TOOLS
+    focus_section = (
+        FOCUS_SECTION.format(hints=focus_hints.strip()) if focus_hints else ""
+    )
+    return PANEL_ROUND1_PROMPT.format(
+        n=n, tools=tools, focus_section=focus_section, brief=brief
+    )
+
+
+def _panel_cross_prompt(brief: str, own: str, others: str, me: str) -> str:
+    return PANEL_CROSS_PROMPT.format(brief=brief, own=own, others=others, me=me)
+
+
+def _panel_summary_prompt(brief: str, answers: str, n: int) -> str:
+    return PANEL_SUMMARY_PROMPT.format(brief=brief, answers=answers, n=n)
+
+
+def _answers_block(answers: Mapping[str, str], *, exclude: str | None = None) -> str:
+    """Render anonymised round-1 answers as ``Reviewer A/B/…`` blocks.
+
+    Each answer's backend-name occurrences are redacted so no backend identity
+    leaks into the round-2 prompt.
+    """
+    parts: list[str] = []
+    for letter, text in answers.items():
+        if exclude is not None and letter == exclude:
+            continue
+        parts.append(f"### Reviewer {letter}\n\n{_redact_backend_identity(text)}\n")
+    return "\n".join(parts)
+
+
+def _open_transcript(path: Path) -> tuple[TextIO, int]:
+    """Open ``path`` in append mode and lock it; die if the lock fails.
+
+    The transcript contract is append-only with an exclusive lock taken before
+    anything is written — a concurrent panel must never interleave into the
+    same file, and a filesystem that cannot lock is a hard error, not a silent
+    unlocked append.
+    """
+    try:
+        stream = path.open("a", encoding="utf-8")
+    except OSError as exc:
+        die(f"cannot open transcript {path}: {exc}")
+    fd = _lock_output_file(stream)
+    if fd is None:
+        stream.close()
+        die(f"cannot lock transcript {path}: not a regular file or flock unavailable")
+    return stream, fd
+
+
+def _append_transcript(stream: TextIO, text: str) -> None:
+    """Append one block to the transcript and flush, so ``tail -f`` sees it."""
+    stream.write(text)
+    stream.write("\n")
+    stream.flush()
+
+
+class PanelError(ReviewError):
+    """Panel-level failure: fewer than 2 usable backends, or no synthesis."""
+
+
+def _spawn_worker(
+    backend: str,
+    prompt: str,
+    *,
+    text_only: bool,
+    target_dir: Path,
+    prompt_dir: Path,
+) -> subprocess.Popen[str]:
+    """Write ``prompt`` to a temp file and spawn a ``panel-worker`` child.
+
+    Each backend call runs as its own child process re-invoking this script's
+    ``panel-worker`` subcommand, so llm_backends' single-threaded process
+    tracking is never shared across concurrent calls. The child is started in
+    its own session (process group) so the panel can kill it on interrupt.
+    """
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".md", dir=prompt_dir, delete=False, encoding="utf-8"
+    ) as handle:
+        handle.write(prompt)
+        prompt_file = Path(handle.name)
+    cmd = [
+        sys.executable,
+        _PANEL_SCRIPT,
+        "panel-worker",
+        "--backend",
+        backend,
+        "--prompt-file",
+        str(prompt_file),
+    ]
+    if text_only:
+        cmd.append("--text-only")
+    if target_dir is not None:
+        cmd.extend(["--dir", str(target_dir)])
+    return subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+
+
+def _collect_children(
+    pending: dict,
+) -> Iterator[tuple[object, object, str, str]]:
+    """Drain ``pending`` children, yielding ``(proc, meta, stdout, stderr)`` in
+    completion order.
+
+    Reads each child's pipes incrementally so a verbose child never blocks on a
+    full pipe (the panel answers are small, but a backend can ignore the word
+    cap). ``pending`` maps ``Popen`` -> caller metadata (backend, role).
+    """
+    import select
+
+    bufs = {proc: [bytearray(), bytearray()] for proc in pending}
+    remaining = {proc: 2 for proc in pending}
+    fdmap: dict[int, tuple[object, int]] = {}
+    for proc in pending:
+        fdmap[proc.stdout.fileno()] = (proc, 0)
+        fdmap[proc.stderr.fileno()] = (proc, 1)
+    while fdmap:
+        ready, _, _ = select.select(list(fdmap), [], [])
+        for fd in ready:
+            proc, idx = fdmap[fd]
+            chunk = os.read(fd, 65536)
+            if chunk:
+                bufs[proc][idx].extend(chunk)
+                continue
+            del fdmap[fd]
+            remaining[proc] -= 1
+            if remaining[proc] == 0:
+                proc.wait()
+                out = bytes(bufs[proc][0]).decode("utf-8", "replace")
+                err = bytes(bufs[proc][1]).decode("utf-8", "replace")
+                yield proc, pending.pop(proc), out, err
+
+
+def run_panel(
+    plan_text: str,
+    backends: list[str],
+    *,
+    focus_hints: str | None,
+    transcript_path: Path,
+    target_dir: Path,
+    text_only: bool,
+) -> tuple[str, list[str]]:
+    """Run the panel and return ``(summary_text, failure_lines)``.
+
+    Round 1 runs every backend in parallel on the same brief; round 2 (the
+    single cross-round) gives each survivor the others' round-1 answers
+    anonymised — the first survivor (the synthesizer) produces the final
+    Agreed/Disputed/Open summary, the rest cross-examine. Every reply is
+    appended to ``transcript_path`` as it lands. ``failure_lines`` holds the
+    deterministic "backend — round N (role): reason" records.
+
+    Raises :class:`PanelError` on a fatal panel shape — fewer than 2 usable
+    backends, or the synthesizer produced nothing — never a silent
+    single-model review.
+    """
+    mode = "text-only" if text_only else "grounded"
+
+    report = llm_backends.eligibility_report(
+        mode=mode, target_dir=target_dir if mode == "grounded" else None
+    )
+    eligible: list[str] = []
+    failures: list[str] = []
+    for b in backends:
+        entry = report.get(b, {})
+        if entry.get("present") and entry.get("eligible"):
+            eligible.append(b)
+        else:
+            failures.append(
+                f"{b} — round 1 (position): not eligible — "
+                f"{entry.get('reason', 'unknown')}"
+            )
+    if len(eligible) < 2:
+        raise PanelError(
+            "panel needs at least 2 usable backends — " + "; ".join(failures)
+        )
+
+    brief, _bytes_saved = sanitize_plan_text(plan_text)
+    round1_prompt = _panel_round1_prompt(
+        brief, focus_hints, grounded=(mode == "grounded"), n=len(eligible)
+    )
+    letters = {b: _panel_letter(i) for i, b in enumerate(eligible)}
+
+    stream, _fd = _open_transcript(transcript_path)
+    prompt_dir = Path(tempfile.mkdtemp(prefix="panel-prompts-"))
+    children: list[subprocess.Popen[str]] = []
+
+    def _terminate(signum: int, frame: FrameType | None) -> NoReturn:
+        for proc in children:
+            with contextlib.suppress(ProcessLookupError, OSError):
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        sys.exit(128 + signum)
+
+    old_int = signal.signal(signal.SIGINT, _terminate)
+    old_term = signal.signal(signal.SIGTERM, _terminate)
+    try:
+        _append_transcript(
+            stream,
+            "# Panel transcript\n\nPanelists: "
+            + ", ".join(f"{letters[b]} = {b}" for b in eligible)
+            + "\n",
+        )
+        _append_transcript(stream, "## Round 1: independent positions\n")
+
+        round1: dict[str, str] = {}
+        pending: dict = {}
+        for b in eligible:
+            proc = _spawn_worker(
+                b,
+                round1_prompt,
+                text_only=text_only,
+                target_dir=target_dir,
+                prompt_dir=prompt_dir,
+            )
+            children.append(proc)
+            pending[proc] = (b, "position")
+        for proc, (b, role), out, err in _collect_children(pending):
+            if proc.returncode == 0 and out.strip():
+                round1[b] = out.strip()
+                _append_transcript(
+                    stream, f"### Panelist {letters[b]}\n\n{out.strip()}\n"
+                )
+            else:
+                reason = err.strip() or f"exited {proc.returncode} with no output"
+                failures.append(f"{b} — round 1 ({role}): {reason}")
+                _append_transcript(
+                    stream, f"### Panelist {letters[b]}\n\n[failed] {reason}\n"
+                )
+
+        survivors = [b for b in eligible if b in round1]
+        if len(survivors) < 2:
+            raise PanelError(
+                "fewer than 2 backends produced a round-1 position — "
+                + "; ".join(failures)
+            )
+
+        _append_transcript(stream, "## Round 2: cross-examination\n")
+        synthesizer = survivors[0]
+        cross = survivors[1:]
+
+        def _size_ok(backend: str, prompt: str) -> bool:
+            limit = (
+                llm_backends.PI_MAX_PROMPT_BYTES
+                if backend == "pi"
+                else llm_backends.GLOBAL_MAX_PROMPT_BYTES
+            )
+            return len(prompt.encode("utf-8")) <= limit
+
+        syn_prompt = _panel_summary_prompt(
+            brief,
+            _answers_block({letters[b]: round1[b] for b in survivors}),
+            n=len(survivors),
+        )
+        if not _size_ok(synthesizer, syn_prompt):
+            failures.append(
+                f"{synthesizer} — round 2 (synthesis): prompt exceeds payload limit"
+            )
+            raise PanelError("synthesizer prompt exceeds payload limit")
+
+        round2_tasks: list[tuple[str, str, str]] = [
+            (synthesizer, syn_prompt, "synthesis")
+        ]
+        for b in cross:
+            own = (
+                f"### Your round-1 position (Reviewer {letters[b]})\n\n"
+                f"{_redact_backend_identity(round1[b])}\n"
+            )
+            others = _answers_block(
+                {letters[x]: round1[x] for x in survivors}, exclude=letters[b]
+            )
+            prompt = _panel_cross_prompt(brief, own, others, f"Reviewer {letters[b]}")
+            if not _size_ok(b, prompt):
+                failures.append(
+                    f"{b} — round 2 (cross-examination): prompt exceeds payload limit"
+                )
+                continue
+            round2_tasks.append((b, prompt, "cross-examination"))
+
+        summary: str | None = None
+        pending = {}
+        for b, prompt, role in round2_tasks:
+            proc = _spawn_worker(
+                b,
+                prompt,
+                text_only=True,
+                target_dir=target_dir,
+                prompt_dir=prompt_dir,
+            )
+            children.append(proc)
+            pending[proc] = (b, role)
+        for proc, (b, role), out, err in _collect_children(pending):
+            if proc.returncode == 0 and out.strip():
+                if role == "synthesis":
+                    summary = out.strip()
+                    _append_transcript(stream, f"### Final summary\n\n{out.strip()}\n")
+                else:
+                    _append_transcript(
+                        stream,
+                        f"### Panelist {letters[b]}, round 2\n\n{out.strip()}\n",
+                    )
+            else:
+                reason = err.strip() or f"exited {proc.returncode} with no output"
+                failures.append(f"{b} — round 2 ({role}): {reason}")
+                _append_transcript(
+                    stream,
+                    f"### Panelist {letters[b]}, round 2\n\n[failed] {reason}\n",
+                )
+
+        if summary is None:
+            failures.append(f"{synthesizer} — round 2 (synthesis): no summary produced")
+            raise PanelError("no synthesis produced")
+
+        if failures:
+            _append_transcript(
+                stream,
+                "<!-- second_opinion.panel (tool-written) -->\n## Failures\n"
+                + "".join(f"- {line}\n" for line in failures)
+                + "<!-- /second_opinion.panel (tool-written) -->\n",
+            )
+        return summary, failures
+    finally:
+        signal.signal(signal.SIGINT, old_int)
+        signal.signal(signal.SIGTERM, old_term)
+        # An exception mid-spawn or mid-collect can leave a child running (and
+        # billing a backend call) after the panel exits; terminate and reap any
+        # child that never completed. Already-collected children report
+        # poll() != None and are skipped.
+        for proc in children:
+            if proc.poll() is None:
+                with contextlib.suppress(ProcessLookupError, OSError):
+                    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                with contextlib.suppress(Exception):
+                    proc.wait()
+        stream.close()
+        shutil.rmtree(prompt_dir, ignore_errors=True)
+
+
+def cmd_panel(args: argparse.Namespace) -> None:
+    """Handle ``panel``: thin argv adapter over :func:`run_panel`."""
+    plan_arg = getattr(args, "plan", None)
+    if plan_arg is None:
+        die("panel needs a <plan-file-or-text> argument")
+    backends = list(getattr(args, "backends", None) or [])
+    seen: set[str] = set()
+    unique: list[str] = []
+    for b in backends:
+        if b not in seen:
+            seen.add(b)
+            unique.append(b)
+    unknown = [b for b in unique if b not in BACKEND_PRIORITY]
+    if unknown:
+        die(
+            f"--backends: unknown backend {', '.join(unknown)} "
+            f"(known: {', '.join(BACKEND_PRIORITY)})"
+        )
+    if len(unique) < 2:
+        die("panel needs at least 2 distinct backends (--backends codex,agy ...)")
+    plan_text = resolve_plan_text(plan_arg)
+    focus_hints = None
+    if getattr(args, "focus_file", None):
+        focus_path = Path(args.focus_file).expanduser()
+        if not focus_path.is_file():
+            die(f"--focus-file not found: {focus_path}")
+        focus_hints = focus_path.read_text(encoding="utf-8")
+    target_dir = (getattr(args, "dir", None) or Path.cwd()).resolve()
+    transcript_arg = getattr(args, "transcript", None)
+    if transcript_arg:
+        transcript_path = Path(transcript_arg).expanduser()
+    else:
+        transcript_path = _data_dir() / (
+            "panel-" + time.strftime("%Y%m%d-%H%M%S") + f"-{os.getpid()}.md"
+        )
+    key = _compute_round_key(args)
+    allow_extra = getattr(args, "allow_extra_round", False)
+    if key is not None and not allow_extra:
+        _refuse_if_cap_reached(key)
+    print(f"transcript: {transcript_path}")
+    try:
+        summary, failures = run_panel(
+            plan_text,
+            unique,
+            focus_hints=focus_hints,
+            transcript_path=transcript_path,
+            target_dir=target_dir,
+            text_only=getattr(args, "text_only", False),
+        )
+    except PanelError as exc:
+        die(str(exc))
+    if key is not None and not allow_extra:
+        _record_successful_review(key)
+    print(summary)
+    if failures:
+        print("\nFailures:")
+        for line in failures:
+            print(f"- {line}")
+    for line in failures:
+        print(f"[second_opinion] {line}", file=sys.stderr)
+
+
+def cmd_panel_worker(args: argparse.Namespace) -> None:
+    """Internal: run one backend on one prompt; print the answer, exit 0/1.
+
+    Spawned by :func:`run_panel` so each backend call runs in its own process
+    (the same single-threaded runner every ``review`` call uses). Not for
+    direct human use. Prints only the backend's answer on stdout, so the parent
+    reads it verbatim; failures go to stderr and exit 1.
+    """
+    prompt = Path(args.prompt_file).read_text(encoding="utf-8")
+    mode = "text-only" if getattr(args, "text_only", False) else "grounded"
+    target_dir = (getattr(args, "dir", None) or Path.cwd()).resolve()
+    try:
+        answer = _run_backend_once(
+            args.backend,
+            prompt,
+            model_index=None,
+            mode=mode,
+            target_dir=target_dir,
+        )
+    except Exception as exc:  # noqa: BLE001 — the parent records the failure
+        print(str(exc), file=sys.stderr)
+        sys.exit(1)
+    sys.stdout.write(answer)
+
+
 def _non_negative_int(value: str) -> int:
     """argparse ``type=`` for ``--model-index``: reject negatives with a clean error.
 
@@ -2436,7 +2995,7 @@ def build_parser() -> argparse.ArgumentParser:
     verbosity_parent = argparse.ArgumentParser(add_help=False)
     cli_common.add_verbosity_args(verbosity_parent)
     sub = parser.add_subparsers(
-        dest="cmd", metavar="{detect,review,probe,bind-notes,check-notes}"
+        dest="cmd", metavar="{detect,review,probe,panel,bind-notes,check-notes}"
     )
 
     detect_parser = sub.add_parser(
@@ -2577,6 +3136,71 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     p = sub.add_parser(
+        "panel",
+        help="run a multi-model panel discussion (round 1 parallel, one "
+        "cross-round, synthesis)",
+        parents=[verbosity_parent],
+    )
+    p.add_argument("plan", metavar="<plan-file-or-text>", nargs="?", default=None)
+    p.add_argument(
+        "--backends",
+        type=_backend_list_arg,
+        required=True,
+        metavar="NAME[,NAME...]",
+        help="the panelists (comma-separated, at least 2 distinct), each a "
+        "backend name in " + ", ".join(BACKEND_PRIORITY),
+    )
+    p.add_argument(
+        "--transcript",
+        default=None,
+        metavar="PATH",
+        help="transcript file (append-only, never truncated); default a "
+        "unique timestamped file under the data dir. Printed at start.",
+    )
+    p.add_argument(
+        "--dir",
+        type=Path,
+        default=None,
+        help="root directory of the codebase to inspect in the grounded "
+        "round 1 (defaults to current working directory)",
+    )
+    p.add_argument(
+        "--text-only",
+        action="store_true",
+        default=False,
+        help="disable codebase exploration for round 1 (round 2 is always text-only)",
+    )
+    p.add_argument(
+        "--focus-file",
+        default=None,
+        help="path to a file of plan-specific risk hints, appended to the "
+        "round-1 brief",
+    )
+    p.add_argument(
+        "--run-id",
+        default=None,
+        metavar="ID",
+        help="stable id for the per-run round cap (one panel consumes one "
+        "round, keyed by --run-id or the plan-file path)",
+    )
+    p.add_argument(
+        "--allow-extra-round",
+        action="store_true",
+        default=False,
+        help="permit panel runs beyond the per-run cap",
+    )
+
+    p = sub.add_parser(
+        "panel-worker",
+        help=argparse.SUPPRESS,
+        parents=[verbosity_parent],
+    )
+    p.add_argument("--backend", required=True, metavar="NAME")
+    p.add_argument("--prompt-file", required=True, metavar="PATH")
+    p.add_argument("--dir", type=Path, default=None)
+    p.add_argument("--text-only", action="store_true", default=False)
+
+    p = sub.add_parser(
         "bind-notes",
         help="stamp <artifact>'s critique-notes companion with the artifact's "
         "content hash",
@@ -2703,7 +3327,13 @@ def main() -> None:
     signal.signal(signal.SIGTERM, _handle_termination)
     signal.signal(signal.SIGINT, _handle_termination)
 
-    dispatch = {"detect": cmd_detect, "review": cmd_review, "probe": cmd_probe}
+    dispatch = {
+        "detect": cmd_detect,
+        "review": cmd_review,
+        "probe": cmd_probe,
+        "panel": cmd_panel,
+        "panel-worker": cmd_panel_worker,
+    }
     if args.cmd in dispatch:
         with cli_common.timing_span(
             "command", script="second_opinion", command=args.cmd
