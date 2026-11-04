@@ -14,6 +14,14 @@ scripts and raw `send-keys`. When you want the hands-off scheduler instead,
 use `/swarm` — the two are deliberately separate, and this skill points at
 `/swarm` rather than re-deriving its decisions.
 
+**File naming.** Every file the foreman creates for an item is named
+`<slug>-<purpose>.<ext>` or lives under a `<slug>/` subdirectory of
+`~/.agent-toolkit/data/foreman/` — feedback rounds (`<slug>-feedback-<n>.md`),
+watch-state files, acceptance/coverage JSON, and one-off scripts — so
+ownership is recoverable afterward. A watch-state file covering more than one
+item is named for the run, not left anonymous; since it carries no item list
+itself, record which items the run covers alongside it.
+
 ## 1. Preflight
 
 ```bash
@@ -312,8 +320,17 @@ the rebase introduces — is caught. Then record `dev_status.py run` evidence,
 the token-file path, never the token value), `review`, and `approve`. Read the
 worker's digest offers from
 `~/.agent-toolkit/data/foreman/<slug>-digest.json`, relay them to the operator,
-and delete the file after relaying. Last, once `approve` has marked the item
-done, close the worker's tab — every time, unprompted:
+and delete the file after relaying. After `approve` marks the item done,
+delete the item's own files under `~/.agent-toolkit/data/foreman/` — its exact
+`<slug>-<purpose>` files and `<slug>/` subdirectory, `.lock` siblings
+included; match exact names, never a `<slug>-*` glob (longer slugs share the
+prefix), and never a file of an item not done. A run-named watch-state file
+and its `.lock` stay until every item it covers is done and its watcher has
+exited. Before deleting a watch-state file, copy its agent-to-session links
+into `~/.agent-toolkit/data/launch_log.jsonl` — that log holds no pi or agy
+session id, so the watch state is the only copy — matching workers by pane,
+not the truncated agent name; keep the file if a link is unrecoverable. Last,
+close the worker's tab — every time, unprompted:
 
 ```bash
 python3 ~/.agent-toolkit/scripts/herdr_delegate.py close <agent> --expect-pane <pane>
