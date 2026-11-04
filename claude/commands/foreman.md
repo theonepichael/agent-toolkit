@@ -48,7 +48,7 @@ enforces a worker-safe prefix (`check_launchable`). `serial_safe`-only items
 go to `/swarm --serial`, never to the foreman. Launch one item per worker:
 
 ```bash
-python3 ~/.agent-toolkit/scripts/herdr_delegate.py launch --slug <slug> --kind pi [--model <model>] [--handoff]
+python3 ~/.agent-toolkit/scripts/herdr_delegate.py launch --slug <slug> --kind {pi,agy} [--model <model>] [--handoff]
 ```
 
 - **Set acceptance before launch** — before `launch --handoff`, set the
@@ -84,7 +84,7 @@ python3 ~/.agent-toolkit/scripts/herdr_delegate.py launch --slug <slug> --kind p
 Do not poll by hand. Run this in the background and let the settle wake you:
 
 ```bash
-python3 ~/.agent-toolkit/scripts/herdr_delegate.py watch <agent>... [--prefix <prefix>] --state <state-file> --timeout-s <n> [--grace-s 60] [--poll-s 15] [--strict] [--cost-cap-agent <usd>] [--cost-cap-total <usd>] [--ack-cost <token>]...
+python3 ~/.agent-toolkit/scripts/herdr_delegate.py watch <agent>... [--prefix <prefix>] --state <state-file> --timeout-s <n> [--grace-s 60] [--poll-s 15] [--strict] [--cost-cap-agent <usd>] [--cost-cap-total <usd>] [--call-cap-agent <calls>] [--call-cap-total <calls>] [--elapsed-cap-agent <seconds>] [--elapsed-cap-total <seconds>] [--ack-cost <token>]...
 ```
 
 It is **level-triggered** with explicit acknowledgement: it reports an agent
@@ -97,25 +97,34 @@ limitation to know: it reports current state only, so a transient block that
 resolved before a poll is not reported — for a settle you cannot afford to
 miss, lower `--poll-s`.
 
-### Spend caps
+### Spend and call caps
 
-When the operator has set a spend cap, have the watcher enforce it rather than
-relying on each worker's own status line. Add `--cost-cap-agent <usd>` (each
-watched pi worker's session cost), `--cost-cap-total <usd>` (every pi session
-since local midnight, watched or not), or both. The figure is pi's own
-price-table estimate read from its session logs, not provider billing — say
-so when you report spend. With a cap set, every report carries a `cost`
-object, and a report can fire with empty `attention` and `gone` purely
-because of a cost alert:
+When the operator has set a spend or call cap, have the watcher enforce it rather than
+relying on each worker's own status line.
+
+- **Pi workers**: Add `--cost-cap-agent <usd>` (each watched pi worker's session cost),
+  `--cost-cap-total <usd>` (every pi session since local midnight, watched or not),
+  or both. The figure is pi's own price-table estimate read from its session logs, not
+  provider billing — say so when you report spend. With a cap set, every report
+  carries a `cost` object.
+- **AgY workers**: Add `--call-cap-agent <calls>` (each watched agy worker's distinct
+  model calls), `--call-cap-total <calls>` (aggregate distinct calls across watched agy
+  sessions in this invocation), or both. Counts come from distinct validated request
+  IDs in the conversation SQLite database. For unreadable databases only, optional
+  `--elapsed-cap-agent <seconds>` and `--elapsed-cap-total <seconds>` enforce a wall-clock
+  fallback (never reported as calls). With caps set, reports carry a `calls` or `elapsed`
+  object.
+
+A report can fire with empty `attention` and `gone` purely because of a cap alert:
 
 - `over_cap`: the cap is reached. Stop the worker, or ask the operator before
   letting it continue.
-- `unmeasured` (an agent) or `incomplete` (the total): the cost cannot be
+- `unmeasured` (an agent) or `incomplete` (the total): the cost/calls cannot be
   fully read. Treat it as fail-closed and find out why before more paid work.
 
-Acknowledge a cost alert only after acting on it, with `--ack-cost <token>`,
+Acknowledge a cost/call/elapsed alert only after acting on it, with `--ack-cost <token>`,
 passing the alert's `ack` token verbatim. An ack snoozes the alert for one
-more `--cost-step` of spend (default $1), or for `--cost-remind-s` (default
+more `--cost-step` of spend (default $1) or 1 call, or for `--cost-remind-s` (default
 900 s) when the spend is not observable. A new session, a changed problem
 set, or (for the total) a new day re-alerts at once.
 
@@ -160,18 +169,30 @@ contract (its AGENTS.md / STYLE.md / acceptance criteria) and raw run outputs:
 ## 5. Send-back
 
 Write the feedback to a file outside any repo
-(`~/.agent-toolkit/data/foreman/<slug>-feedback-<n>.md`), then drive the worker's
-picker to the free-text entry:
+(`~/.agent-toolkit/data/foreman/<slug>-feedback-<n>.md`).
 
-```bash
-python3 ~/.agent-toolkit/scripts/herdr_delegate.py answer <agent> --expect-pane <pane> --other --text "Foreman review: read <path> and act on it"
-```
+Send-back depends on the worker's current state:
 
-`--text` is a short pointer, not the payload (≤120 chars, printable ASCII,
-single spaces). Exit code handling: 0 ok; 3 means needs_manual with nothing
-sent (safe to retry); 4 means needs_manual *after* navigation or text was
-sent — inspect the pane before acting; 5 means submitted but the picker
-persisted (unconfirmed).
+- **Blocked worker** (waiting on a question-tool picker): drive the worker's
+  picker to the free-text entry using `answer`:
+
+  ```bash
+  python3 ~/.agent-toolkit/scripts/herdr_delegate.py answer <agent> --expect-pane <pane> --other --text "Foreman review: read <path> and act on it"
+  ```
+
+  `--text` is a short pointer, not the payload (≤120 chars, printable ASCII,
+  single spaces). Exit code handling: 0 ok; 3 means needs_manual with nothing
+  sent (safe to retry); 4 means needs_manual *after* navigation or text was
+  sent — inspect the pane before acting; 5 means submitted but the picker
+  persisted (unconfirmed).
+
+- **Finished or idle worker** (parked at the interactive prompt after printing
+  `FOREMAN-HANDOFF` or completing without an active picker, including AgY workers):
+  send feedback directly via `herdr agent prompt`:
+
+  ```bash
+  herdr agent prompt <agent> "Foreman review: read <path> and act on it"
+  ```
 
 ## 6. Landing
 

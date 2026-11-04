@@ -61,8 +61,8 @@ Three distinct senses share this word — know which one a given doc means:
 
 Three distinct steps carry this name:
 
-- **Foreman handoff** — `herdr_delegate.py launch --handoff` (pi, single
-  `--slug` only): the worker stops after its commit gate and prints a
+- **Foreman handoff** — `herdr_delegate.py launch --handoff` (pi or agy,
+  single `--slug` only): the worker stops after its commit gate and prints a
   `FOREMAN-HANDOFF slug=... branch=... commit=... worktree=...` line, and
   the foreman session does the merge, push and close.
 - **backlog-item step 7, "Handoff"** — the decision of *who implements* a

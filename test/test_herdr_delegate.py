@@ -19,6 +19,7 @@ prompt-contract exact-match.
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -463,6 +464,16 @@ def _named(argvs: list[list[str]], command: str, subcommand: str) -> list[list[s
 
 
 class DelegateTests(unittest.TestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        agy_dir = Path.home() / ".gemini" / "antigravity-cli"
+        agy_dir.mkdir(parents=True, exist_ok=True)
+        token_path = agy_dir / "antigravity-oauth-token"
+        if not token_path.exists():
+            token_path.write_text(
+                json.dumps({"token": "fake-test-token"}), encoding="utf-8"
+            )
+
     def run_main(self, argv: list[str]) -> tuple[int, str, str]:
         """Run main() with the given argv, returning (exit_code, stdout, stderr)."""
         sys.argv = ["herdr_delegate.py", *argv]
@@ -2011,6 +2022,59 @@ class TrustPromptRefusalTests(unittest.TestCase):
         ):
             out = herdr_delegate.trust_prompt_refusal(pane="p", kind="agy", exc=exc)
         self.assertIs(out, exc)
+
+
+class AgyLoginCheckTests(unittest.TestCase):
+    """check_agy_login enforces valid auth and catches logged-out cli.log state."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def test_missing_token_file_raises_refusal(self) -> None:
+        with self.assertRaises(herdr_delegate.RefusedError) as ctx:
+            herdr_delegate.check_agy_login(config_dir=self.tmp)
+        self.assertIn("agy is not logged in", str(ctx.exception))
+        self.assertIn("antigravity-oauth-token missing", str(ctx.exception))
+
+    def test_empty_token_file_raises_refusal(self) -> None:
+        token_file = self.tmp / "antigravity-oauth-token"
+        token_file.write_text("{}", encoding="utf-8")
+        with self.assertRaises(herdr_delegate.RefusedError) as ctx:
+            herdr_delegate.check_agy_login(config_dir=self.tmp)
+        self.assertIn("empty or invalid", str(ctx.exception))
+
+    def test_malformed_json_token_file_raises_refusal(self) -> None:
+        token_file = self.tmp / "antigravity-oauth-token"
+        token_file.write_text("not json", encoding="utf-8")
+        with self.assertRaises(herdr_delegate.RefusedError) as ctx:
+            herdr_delegate.check_agy_login(config_dir=self.tmp)
+        self.assertIn("cannot read agy token file", str(ctx.exception))
+
+    def test_cli_log_unresolved_not_logged_in_raises_refusal(self) -> None:
+        token_file = self.tmp / "antigravity-oauth-token"
+        token_file.write_text(json.dumps({"token": "xyz"}), encoding="utf-8")
+        log_file = self.tmp / "cli.log"
+        log_file.write_text("Error: You are not logged into Antigravity\n", encoding="utf-8")
+        with self.assertRaises(herdr_delegate.RefusedError) as ctx:
+            herdr_delegate.check_agy_login(config_dir=self.tmp)
+        self.assertIn("authentication failure", str(ctx.exception))
+
+    def test_cli_log_resolved_after_not_logged_in_passes(self) -> None:
+        token_file = self.tmp / "antigravity-oauth-token"
+        token_file.write_text(json.dumps({"token": "xyz"}), encoding="utf-8")
+        log_file = self.tmp / "cli.log"
+        log_file.write_text(
+            "Error: You are not logged into Antigravity\n"
+            "OAuth authenticated successfully\n",
+            encoding="utf-8",
+        )
+        herdr_delegate.check_agy_login(config_dir=self.tmp)
+
+    def test_valid_token_and_no_errors_passes(self) -> None:
+        token_file = self.tmp / "antigravity-oauth-token"
+        token_file.write_text(json.dumps({"token": "xyz"}), encoding="utf-8")
+        herdr_delegate.check_agy_login(config_dir=self.tmp)
 
 
 if __name__ == "__main__":

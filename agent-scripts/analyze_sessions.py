@@ -70,7 +70,7 @@ import re
 import sqlite3
 import sys
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal, TextIO
@@ -933,6 +933,213 @@ def pi_cost_since(since: datetime, base_dir: Path | None = None) -> PiCost:
             problems.append("overflow")
         return PiCost(None, False, tuple(problems))
     return PiCost(total, not problems, tuple(problems))
+
+
+# ── agy call count measurement for spend caps ──────────────────────────────
+#
+# AgY conversations store request metadata in SQLite at
+# ~/.gemini/antigravity-cli/conversations/<id>.db. The gen_metadata table holds
+# protobuf blobs with request IDs at path 1/4/11. We count distinct validated
+# request IDs. Any missing, corrupt, or uncountable row makes the measurement
+# incomplete so caps fail closed.
+
+AGY_CONVERSATIONS_DIR: Path | None = None
+
+
+def _agy_conversations_dir() -> Path:
+    return AGY_CONVERSATIONS_DIR or (
+        Path.home() / ".gemini" / "antigravity-cli" / "conversations"
+    )
+
+
+@dataclass(frozen=True)
+class AgyCalls:
+    """An AgY call-count measurement: distinct request IDs from gen_metadata.
+
+    ``calls`` is None when unreadable. ``complete`` is True only when the
+    source was fully readable and every metadata row yielded a valid distinct
+    request ID candidate.
+    """
+
+    calls: int | None
+    complete: bool
+    unreadable: bool
+    problems: tuple[str, ...]
+    request_ids: frozenset[str] = field(default_factory=frozenset, repr=False)
+
+
+def _parse_proto_varint(data: bytes, pos: int) -> tuple[int, int]:
+    val = 0
+    shift = 0
+    while pos < len(data):
+        byte = data[pos]
+        pos += 1
+        val |= (byte & 0x7F) << shift
+        shift += 7
+        if not (byte & 0x80):
+            return val, pos
+    raise ValueError("truncated varint")
+
+
+def _get_proto_field_bytes(data: bytes, target_field: int) -> list[bytes]:
+    pos = 0
+    res = []
+    while pos < len(data):
+        wt, pos = _parse_proto_varint(data, pos)
+        fn = wt >> 3
+        wire = wt & 7
+        if wire == 0:
+            _, pos = _parse_proto_varint(data, pos)
+        elif wire == 1:
+            if pos + 8 > len(data):
+                raise ValueError("truncated 64-bit field")
+            pos += 8
+        elif wire == 2:
+            length, pos = _parse_proto_varint(data, pos)
+            if pos + length > len(data):
+                raise ValueError("truncated length-delimited field")
+            val = data[pos : pos + length]
+            pos += length
+            if fn == target_field:
+                res.append(val)
+        elif wire == 5:
+            if pos + 4 > len(data):
+                raise ValueError("truncated 32-bit field")
+            pos += 4
+        else:
+            raise ValueError(f"unsupported wire type {wire}")
+    return res
+
+
+def extract_agy_request_id(data: bytes) -> tuple[str | None, str | None]:
+    """Extract candidate request ID from gen_metadata protobuf data at path 1/4/11.
+
+    Returns (request_id, error_reason). Validates that exactly one field exists
+    at each level and is non-empty UTF-8.
+    """
+    try:
+        f1_list = _get_proto_field_bytes(data, 1)
+    except Exception as exc:
+        return None, f"corrupt protobuf root: {exc}"
+    if len(f1_list) != 1:
+        return None, f"expected 1 field 1, found {len(f1_list)}"
+
+    try:
+        f4_list = _get_proto_field_bytes(f1_list[0], 4)
+    except Exception as exc:
+        return None, f"corrupt protobuf at 1/4: {exc}"
+    if len(f4_list) != 1:
+        return None, f"expected 1 field 4, found {len(f4_list)}"
+
+    try:
+        f11_list = _get_proto_field_bytes(f4_list[0], 11)
+    except Exception as exc:
+        return None, f"corrupt protobuf at 1/4/11: {exc}"
+    if len(f11_list) != 1:
+        return None, f"expected 1 field 11, found {len(f11_list)}"
+
+    try:
+        req_id = f11_list[0].decode("utf-8")
+    except Exception as exc:
+        return None, f"non-utf8 request id: {exc}"
+    if not req_id:
+        return None, "empty request id"
+    return req_id, None
+
+
+def read_agy_session_calls(db_path: Path) -> AgyCalls:
+    """Count distinct request IDs in one AgY conversation SQLite database.
+
+    Never raises. Returns complete=False and unreadable=True if the database
+    cannot be opened. Returns complete=False if any row cannot be counted or if
+    no metadata rows exist yet.
+    """
+    if not db_path.exists():
+        return AgyCalls(
+            calls=None,
+            complete=False,
+            unreadable=True,
+            problems=(f"database not found: {db_path}",),
+        )
+    conn = None
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    except sqlite3.Error:
+        try:
+            conn = sqlite3.connect(str(db_path))
+        except sqlite3.Error as exc:
+            return AgyCalls(
+                calls=None,
+                complete=False,
+                unreadable=True,
+                problems=(f"cannot open database: {exc}",),
+            )
+
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='gen_metadata'"
+        )
+        if cur.fetchone()[0] == 0:
+            return AgyCalls(
+                calls=None,
+                complete=False,
+                unreadable=False,
+                problems=("gen_metadata table missing",),
+            )
+
+        cur.execute("SELECT idx, data FROM gen_metadata ORDER BY idx ASC")
+        rows = cur.fetchall()
+        if not rows:
+            return AgyCalls(
+                calls=0,
+                complete=False,
+                unreadable=False,
+                problems=("no metadata rows yet",),
+            )
+
+        req_ids: set[str] = set()
+        problems: list[str] = []
+        for idx, blob in rows:
+            if not isinstance(blob, (bytes, bytearray)):
+                problems.append(f"row {idx}: data is not bytes")
+                continue
+            req_id, err = extract_agy_request_id(bytes(blob))
+            if err:
+                problems.append(f"row {idx}: {err}")
+            elif req_id is not None:
+                req_ids.add(req_id)
+
+        if problems:
+            return AgyCalls(
+                calls=len(req_ids),
+                complete=False,
+                unreadable=False,
+                problems=tuple(problems),
+                request_ids=frozenset(req_ids),
+            )
+        return AgyCalls(
+            calls=len(req_ids),
+            complete=True,
+            unreadable=False,
+            problems=(),
+            request_ids=frozenset(req_ids),
+        )
+    except (sqlite3.Error, OSError) as exc:
+        return AgyCalls(
+            calls=None,
+            complete=False,
+            unreadable=True,
+            problems=(f"database query error: {exc}",),
+        )
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def agy_session_calls(path: Path) -> AgyCalls:
+    """Total distinct request IDs of one AgY conversation SQLite database; never raises."""
+    return read_agy_session_calls(path)
 
 
 def load_claude_records(

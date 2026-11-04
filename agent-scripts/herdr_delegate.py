@@ -42,12 +42,14 @@ failure. Any other failure still fails on the first attempt, unchanged.
 
 ``watch --cost-cap-agent``/``--cost-cap-total`` add spend caps measured from
 pi's session JSONL -- pi's own price-table estimate, never provider billing.
-With a cap set every report carries a ``cost`` object, and a report can fire
-(exit 0) with empty ``attention`` and ``gone`` purely for a cost alert:
-``over_cap``, or ``unmeasured``/``incomplete`` when a cost cannot be fully
-read (fail closed). ``--ack-cost`` takes the alert's printed ``ack`` token,
-which pins the reported snapshot; an ack snoozes one more ``--cost-step`` of
-spend, or ``--cost-remind-s`` when the spend is not observable.
+``watch --call-cap-agent``/``--call-cap-total`` add call-count caps for agy
+workers measured from distinct request IDs in gen_metadata SQLite tables.
+``watch --elapsed-cap-agent``/``--elapsed-cap-total`` provide elapsed-time
+caps used strictly as fallback when an agy session database is unreadable.
+With caps set, reports carry corresponding ``cost``, ``calls``, or
+``elapsed`` objects, alerting on ``over_cap``, ``unmeasured``, or
+``incomplete`` (fail closed). ``--ack-cost`` takes the alert's printed ``ack``
+token.
 
 Usage:
     herdr_delegate.py plan
@@ -63,6 +65,8 @@ Usage:
                              [--strict]
                              [--cost-cap-agent <usd>] [--cost-cap-total <usd>]
                              [--cost-step <usd>] [--cost-remind-s <n>]
+                             [--call-cap-agent <calls>] [--call-cap-total <calls>]
+                             [--elapsed-cap-agent <seconds>] [--elapsed-cap-total <seconds>]
                              [--ack-cost <token>]...
     herdr_delegate.py answer <agent> --expect-pane <pane>
                              (--option <label> | --index <n> | --other --text <text>)
@@ -361,8 +365,8 @@ def build_tab_argv(
     argv = ["tab", "create", "--cwd", cwd, "--label", label]
     if kind == "pi":
         argv += ["--env", UNATTENDED_ENV]
-        if handoff_slug:
-            argv += ["--env", foreman_capture_env(handoff_slug)]
+    if handoff_slug:
+        argv += ["--env", foreman_capture_env(handoff_slug)]
     argv += ["--no-focus"]
     return argv
 
@@ -751,11 +755,63 @@ def parse_agent_listing_strict(
                 "seq": seq,
                 "session_path": _pi_session_path(raw.get("agent_session")),
                 "agent_session": raw.get("agent_session"),
+                "raw_agent": raw,
                 "pane_id": raw.get("pane_id"),
                 "terminal_id": raw.get("terminal_id"),
             }
         )
     return records
+
+
+def _is_agy_agent(raw: dict[str, object]) -> bool:
+    """Return True if Herdr metadata identifies this agent as agy."""
+    session = raw.get("agent_session")
+    if isinstance(session, dict) and (
+        session.get("agent") == "agy"
+        or session.get("source") == "herdr:antigravity_cli"
+    ):
+        return True
+    return raw.get("agent") == "agy" or raw.get("display_agent") == "agy"
+
+
+def _agy_session_db(session: object) -> Path | None:
+    """Resolve an agy agent's conversation SQLite database from its agent_session; else None."""
+    if isinstance(session, str) and session:
+        p = Path(session)
+        if p.suffix == ".db":
+            return p
+        return analyze_sessions._agy_conversations_dir() / f"{session}.db"
+
+    if not isinstance(session, dict):
+        return None
+
+    agent = session.get("agent")
+    source = session.get("source")
+    if agent != "agy" and source != "herdr:antigravity_cli":
+        return None
+
+    val = session.get("value") or session.get("agent_session_id")
+    if isinstance(val, str) and val:
+        p = Path(val)
+        if p.suffix == ".db":
+            return p
+        return analyze_sessions._agy_conversations_dir() / f"{val}.db"
+
+    path_val = session.get("agent_session_path")
+    if isinstance(path_val, str) and path_val:
+        p = Path(path_val)
+        if p.suffix == ".db":
+            return p
+        if "brain" in p.parts:
+            try:
+                idx = p.parts.index("brain")
+                if idx + 1 < len(p.parts):
+                    conv_id = p.parts[idx + 1]
+                    return analyze_sessions._agy_conversations_dir() / f"{conv_id}.db"
+            except ValueError:
+                pass
+
+    return None
 
 
 def _pi_session_path(session: object) -> str | None:
@@ -939,6 +995,17 @@ def _positive_finite(raw: str) -> float:
     return value
 
 
+def _positive_int(raw: str) -> int:
+    """argparse type: an integer > 0."""
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"{raw!r} is not an integer") from exc
+    if value <= 0:
+        raise argparse.ArgumentTypeError(f"{raw!r} must be > 0")
+    return value
+
+
 def _short_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
@@ -967,28 +1034,63 @@ def _cost_token(subject: str, snap: dict[str, object], day: str) -> str:
     )
 
 
+def _call_token(subject: str, snap: dict[str, object], day: str) -> str:
+    calls = snap.get("calls")
+    calls_s = "unmeasured" if calls is None else str(calls)
+    return ":".join(
+        [
+            "call",
+            subject,
+            str(snap["reason"]),
+            calls_s,
+            str(snap["session_hash"]),
+            str(snap["problems_hash"]),
+            day,
+        ]
+    )
+
+
+def _elapsed_token(subject: str, snap: dict[str, object], day: str) -> str:
+    seconds = snap.get("seconds")
+    seconds_s = "unmeasured" if seconds is None else repr(round(float(seconds), 2))
+    return ":".join(
+        [
+            "elapsed",
+            subject,
+            str(snap["reason"]),
+            seconds_s,
+            str(snap["session_hash"]),
+            str(snap["problems_hash"]),
+            day,
+        ]
+    )
+
+
 def _parse_cost_token(token: str) -> tuple[str, dict[str, object]]:
     """Decode an ``--ack-cost`` token into (subject, stored snapshot); refuse junk."""
     head, sep, rest = token.partition(":")
     parts = rest.rsplit(":", 5) if sep else []
-    if head != "cost" or len(parts) != 6:
-        raise RefusedError(f"--ack-cost {token!r} is not a cost alert token")
-    subject, reason, usd_s, session_hash, problems_hash, day = parts
+    if head not in ("cost", "call", "elapsed") or len(parts) != 6:
+        raise RefusedError(f"--ack-cost {token!r} is not a valid alert token")
+    subject, reason, val_s, session_hash, problems_hash, day = parts
     if not (subject == COST_TOTAL_SUBJECT or subject.startswith("agent:")):
         raise RefusedError(f"--ack-cost {token!r}: unknown subject {subject!r}")
     if reason not in COST_REASONS:
         raise RefusedError(f"--ack-cost {token!r}: unknown reason {reason!r}")
-    usd: float | None = None
-    if usd_s != "overflow":
+    val: float | None = None
+    if val_s not in ("overflow", "unmeasured"):
         try:
-            usd = float(usd_s)
+            val = float(val_s)
         except ValueError as exc:
-            raise RefusedError(f"--ack-cost {token!r}: bad usd {usd_s!r}") from exc
-        if not math.isfinite(usd):
-            raise RefusedError(f"--ack-cost {token!r}: bad usd {usd_s!r}")
+            raise RefusedError(f"--ack-cost {token!r}: bad value {val_s!r}") from exc
+        if not math.isfinite(val):
+            raise RefusedError(f"--ack-cost {token!r}: bad value {val_s!r}")
     return subject, {
+        "kind": head,
         "reason": reason,
-        "usd": usd,
+        "usd": val if head == "cost" else None,
+        "calls": int(val) if head == "call" and val is not None else None,
+        "seconds": float(val) if head == "elapsed" and val is not None else None,
         "session_hash": session_hash,
         "problems_hash": problems_hash,
         "day": day,
@@ -1017,7 +1119,7 @@ def _cost_ack_silences(
     now_ts: float,
 ) -> bool:
     """True while a stored ack still covers this snapshot (see the section rule)."""
-    if not ack:
+    if not ack or ack.get("kind", "cost") != "cost":
         return False
     if (
         ack["reason"] != snap["reason"]
@@ -1039,6 +1141,74 @@ def _cost_ack_silences(
         snap["reason"] == "over_cap"
         and usd is not None
         and acked_usd is not None
+        and snap["problems_hash"] == "-"
+    )
+    return observable or now_ts - float(ack["acked_at"]) < remind_s
+
+
+def _call_ack_silences(
+    ack: dict[str, object] | None,
+    snap: dict[str, object],
+    *,
+    subject: str,
+    day: str,
+    remind_s: float,
+    now_ts: float,
+) -> bool:
+    if not ack or ack.get("kind") != "call":
+        return False
+    if (
+        ack["reason"] != snap["reason"]
+        or ack["session_hash"] != snap["session_hash"]
+        or ack["problems_hash"] != snap["problems_hash"]
+        or (subject == COST_TOTAL_SUBJECT and ack["day"] != day)
+    ):
+        return False
+    calls, acked_calls = snap.get("calls"), ack.get("calls")
+    if (
+        isinstance(calls, int)
+        and isinstance(acked_calls, int)
+        and calls >= acked_calls + 1
+    ):
+        return False
+    observable = (
+        snap["reason"] == "over_cap"
+        and calls is not None
+        and acked_calls is not None
+        and snap["problems_hash"] == "-"
+    )
+    return observable or now_ts - float(ack["acked_at"]) < remind_s
+
+
+def _elapsed_ack_silences(
+    ack: dict[str, object] | None,
+    snap: dict[str, object],
+    *,
+    subject: str,
+    day: str,
+    remind_s: float,
+    now_ts: float,
+) -> bool:
+    if not ack or ack.get("kind") != "elapsed":
+        return False
+    if (
+        ack["reason"] != snap["reason"]
+        or ack["session_hash"] != snap["session_hash"]
+        or ack["problems_hash"] != snap["problems_hash"]
+        or (subject == COST_TOTAL_SUBJECT and ack["day"] != day)
+    ):
+        return False
+    sec, acked_sec = snap.get("seconds"), ack.get("seconds")
+    if (
+        isinstance(sec, (int, float))
+        and isinstance(acked_sec, (int, float))
+        and sec >= acked_sec + 60.0
+    ):
+        return False
+    observable = (
+        snap["reason"] == "over_cap"
+        and sec is not None
+        and acked_sec is not None
         and snap["problems_hash"] == "-"
     )
     return observable or now_ts - float(ack["acked_at"]) < remind_s
@@ -1117,6 +1287,271 @@ def _cost_json(measured: analyze_sessions.PiCost) -> dict[str, object]:
     return {"usd": measured.usd, "complete": measured.complete, "problems": problems}
 
 
+def _measure_agy_caps(
+    args: argparse.Namespace,
+    agents: dict[str, tuple[Path | None, float]],
+    acks: dict[str, dict[str, object]],
+    state: dict[str, object],
+) -> tuple[dict[str, object] | None, dict[str, object] | None]:
+    now = _watch_now()
+    day = now.date().isoformat()
+    now_ts = now.timestamp()
+
+    agy_sessions = state.setdefault("agy_sessions", {})
+
+    agent_call_snaps: dict[
+        str, tuple[analyze_sessions.AgyCalls, Path | None, str | None]
+    ] = {}
+    agent_elapsed_snaps: dict[str, tuple[float, Path | None, str | None]] = {}
+    agents_calls_out: dict[str, object] = {}
+    agents_elapsed_out: dict[str, object] = {}
+
+    for name, (db_path, first_seen_at) in sorted(agents.items()):
+        if db_path is None:
+            measured = analyze_sessions.AgyCalls(
+                calls=None,
+                complete=False,
+                unreadable=True,
+                problems=("no agy session database",),
+            )
+            sess_key = f"unknown:{name}"
+        else:
+            measured = analyze_sessions.read_agy_session_calls(db_path)
+            sess_key = str(db_path)
+
+        agy_sessions[sess_key] = {
+            "calls": measured.calls,
+            "complete": measured.complete,
+            "unreadable": measured.unreadable,
+            "problems": list(measured.problems),
+            "request_ids": list(measured.request_ids),
+        }
+
+        if args.call_cap_agent is not None:
+            if measured.unreadable:
+                call_reason = "unmeasured"
+            elif measured.calls is not None and measured.calls >= args.call_cap_agent:
+                call_reason = "over_cap"
+            elif not measured.complete:
+                call_reason = "incomplete"
+            else:
+                call_reason = None
+            agent_call_snaps[f"agent:{name}"] = (measured, db_path, call_reason)
+            problems_shown = list(measured.problems[:COST_PROBLEMS_SHOWN])
+            if len(measured.problems) > len(problems_shown):
+                problems_shown.append(
+                    f"... {len(measured.problems) - len(problems_shown)} more"
+                )
+            agents_calls_out[name] = {
+                "unit": "calls",
+                "session": str(db_path) if db_path else None,
+                "calls": measured.calls,
+                "complete": measured.complete,
+                "problems": problems_shown,
+            }
+
+        if args.elapsed_cap_agent is not None and measured.unreadable:
+            elapsed_s = max(0.0, time.time() - first_seen_at)
+            elapsed_reason = "over_cap" if elapsed_s >= args.elapsed_cap_agent else None
+            agent_elapsed_snaps[f"agent:{name}"] = (
+                elapsed_s,
+                db_path,
+                elapsed_reason,
+            )
+            agents_elapsed_out[name] = {
+                "unit": "seconds",
+                "session": str(db_path) if db_path else None,
+                "seconds": round(elapsed_s, 2),
+                "complete": True,
+                "problems": [],
+            }
+
+    total_calls_out: dict[str, object] | None = None
+    total_call_reason: str | None = None
+    all_distinct_ids: set[str] = set()
+    agg_complete = True
+    agg_has_unreadable = False
+    agg_problems: list[str] = []
+
+    for s_info in agy_sessions.values():
+        if s_info.get("unreadable"):
+            agg_complete = False
+            agg_has_unreadable = True
+            agg_problems.extend(s_info.get("problems", []))
+        elif not s_info.get("complete"):
+            agg_complete = False
+            agg_problems.extend(s_info.get("problems", []))
+            all_distinct_ids.update(s_info.get("request_ids", []))
+        else:
+            all_distinct_ids.update(s_info.get("request_ids", []))
+
+    total_distinct_calls = len(all_distinct_ids)
+    if args.call_cap_total is not None:
+        if total_distinct_calls >= args.call_cap_total:
+            total_call_reason = "over_cap"
+        elif not agg_complete:
+            total_call_reason = "incomplete"
+        else:
+            total_call_reason = None
+        probs = list(agg_problems[:COST_PROBLEMS_SHOWN])
+        if len(agg_problems) > len(probs):
+            probs.append(f"... {len(agg_problems) - len(probs)} more")
+        total_calls_out = {
+            "unit": "calls",
+            "calls": total_distinct_calls,
+            "complete": agg_complete,
+            "problems": probs,
+        }
+
+    total_elapsed_out: dict[str, object] | None = None
+    total_elapsed_reason: str | None = None
+    tot_elapsed = 0.0
+    if args.elapsed_cap_total is not None and agg_has_unreadable:
+        tot_elapsed = sum(
+            max(0.0, time.time() - first_seen_at)
+            for name, (db_path, first_seen_at) in agents.items()
+            if db_path is None
+            or (agy_sessions.get(str(db_path)) or {}).get("unreadable")
+        )
+        total_elapsed_reason = (
+            "over_cap" if tot_elapsed >= args.elapsed_cap_total else None
+        )
+        total_elapsed_out = {
+            "unit": "seconds",
+            "seconds": round(tot_elapsed, 2),
+            "complete": True,
+            "problems": [],
+        }
+
+    calls_alerts: dict[str, object] = {}
+    if args.call_cap_agent is not None:
+        for subject, (measured, db_path, reason) in agent_call_snaps.items():
+            if reason is None:
+                continue
+            sess_str = str(db_path) if db_path else None
+            snap = {
+                "reason": reason,
+                "calls": measured.calls,
+                "session_hash": _session_hash(sess_str),
+                "problems_hash": _problems_hash(measured.problems),
+            }
+            ack = acks.get(f"call:{subject}") or acks.get(subject)
+            if _call_ack_silences(
+                ack,
+                snap,
+                subject=subject,
+                day=day,
+                remind_s=args.cost_remind_s,
+                now_ts=now_ts,
+            ):
+                continue
+            calls_alerts[subject] = {
+                "unit": "calls",
+                "reason": reason,
+                "calls": measured.calls,
+                "ack": _call_token(subject, snap, day),
+            }
+
+    if args.call_cap_total is not None and total_call_reason is not None:
+        snap = {
+            "reason": total_call_reason,
+            "calls": total_distinct_calls,
+            "session_hash": "-",
+            "problems_hash": _problems_hash(tuple(agg_problems)),
+        }
+        ack = acks.get(f"call:{COST_TOTAL_SUBJECT}") or acks.get(COST_TOTAL_SUBJECT)
+        if not _call_ack_silences(
+            ack,
+            snap,
+            subject=COST_TOTAL_SUBJECT,
+            day=day,
+            remind_s=args.cost_remind_s,
+            now_ts=now_ts,
+        ):
+            calls_alerts[COST_TOTAL_SUBJECT] = {
+                "unit": "calls",
+                "reason": total_call_reason,
+                "calls": total_distinct_calls,
+                "ack": _call_token(COST_TOTAL_SUBJECT, snap, day),
+            }
+
+    elapsed_alerts: dict[str, object] = {}
+    if args.elapsed_cap_agent is not None:
+        for subject, (elapsed_s, db_path, reason) in agent_elapsed_snaps.items():
+            if reason is None:
+                continue
+            sess_str = str(db_path) if db_path else None
+            snap = {
+                "reason": reason,
+                "seconds": elapsed_s,
+                "session_hash": _session_hash(sess_str),
+                "problems_hash": "-",
+            }
+            ack = acks.get(f"elapsed:{subject}") or acks.get(subject)
+            if _elapsed_ack_silences(
+                ack,
+                snap,
+                subject=subject,
+                day=day,
+                remind_s=args.cost_remind_s,
+                now_ts=now_ts,
+            ):
+                continue
+            elapsed_alerts[subject] = {
+                "unit": "seconds",
+                "reason": reason,
+                "seconds": round(elapsed_s, 2),
+                "ack": _elapsed_token(subject, snap, day),
+            }
+
+    if args.elapsed_cap_total is not None and total_elapsed_reason is not None:
+        snap = {
+            "reason": total_elapsed_reason,
+            "seconds": tot_elapsed,
+            "session_hash": "-",
+            "problems_hash": "-",
+        }
+        ack = acks.get(f"elapsed:{COST_TOTAL_SUBJECT}") or acks.get(COST_TOTAL_SUBJECT)
+        if not _elapsed_ack_silences(
+            ack,
+            snap,
+            subject=COST_TOTAL_SUBJECT,
+            day=day,
+            remind_s=args.cost_remind_s,
+            now_ts=now_ts,
+        ):
+            elapsed_alerts[COST_TOTAL_SUBJECT] = {
+                "unit": "seconds",
+                "reason": total_elapsed_reason,
+                "seconds": round(tot_elapsed, 2),
+                "ack": _elapsed_token(COST_TOTAL_SUBJECT, snap, day),
+            }
+
+    calls_report: dict[str, object] | None = None
+    if args.call_cap_agent is not None or args.call_cap_total is not None:
+        calls_report = {
+            "unit": "calls",
+            "cap_agent": args.call_cap_agent,
+            "cap_total": args.call_cap_total,
+            "total": total_calls_out,
+            "agents": agents_calls_out,
+            "alerts": calls_alerts,
+        }
+
+    elapsed_report: dict[str, object] | None = None
+    if args.elapsed_cap_agent is not None or args.elapsed_cap_total is not None:
+        elapsed_report = {
+            "unit": "seconds",
+            "cap_agent": args.elapsed_cap_agent,
+            "cap_total": args.elapsed_cap_total,
+            "total": total_elapsed_out,
+            "agents": agents_elapsed_out,
+            "alerts": elapsed_alerts,
+        }
+
+    return calls_report, elapsed_report
+
+
 def _apply_cost_acks(args: argparse.Namespace, state: dict[str, object]) -> None:
     """Store each ``--ack-cost`` token's reported snapshot.
 
@@ -1129,11 +1564,24 @@ def _apply_cost_acks(args: argparse.Namespace, state: dict[str, object]) -> None
     now_ts = _watch_now().timestamp()
     for token in args.ack_cost:
         subject, snap = _parse_cost_token(token)
-        if subject == COST_TOTAL_SUBJECT and args.cost_cap_total is None:
-            raise RefusedError(f"--ack-cost {token!r} needs --cost-cap-total")
-        if subject != COST_TOTAL_SUBJECT and args.cost_cap_agent is None:
-            raise RefusedError(f"--ack-cost {token!r} needs --cost-cap-agent")
+        kind = snap.get("kind", "cost")
+        if kind == "cost":
+            if subject == COST_TOTAL_SUBJECT and args.cost_cap_total is None:
+                raise RefusedError(f"--ack-cost {token!r} needs --cost-cap-total")
+            if subject != COST_TOTAL_SUBJECT and args.cost_cap_agent is None:
+                raise RefusedError(f"--ack-cost {token!r} needs --cost-cap-agent")
+        elif kind == "call":
+            if subject == COST_TOTAL_SUBJECT and args.call_cap_total is None:
+                raise RefusedError(f"--ack-cost {token!r} needs --call-cap-total")
+            if subject != COST_TOTAL_SUBJECT and args.call_cap_agent is None:
+                raise RefusedError(f"--ack-cost {token!r} needs --call-cap-agent")
+        elif kind == "elapsed":
+            if subject == COST_TOTAL_SUBJECT and args.elapsed_cap_total is None:
+                raise RefusedError(f"--ack-cost {token!r} needs --elapsed-cap-total")
+            if subject != COST_TOTAL_SUBJECT and args.elapsed_cap_agent is None:
+                raise RefusedError(f"--ack-cost {token!r} needs --elapsed-cap-agent")
         acks[subject] = {**snap, "acked_at": now_ts}
+        acks[f"{kind}:{subject}"] = {**snap, "acked_at": now_ts}
 
 
 def _is_session_change(rec: dict[str, object], cur: dict[str, object]) -> bool:
@@ -1195,6 +1643,12 @@ def _cmd_watch(args: argparse.Namespace) -> None:
             state["agents"].pop(name, None)
         _apply_cost_acks(args, state)
         capped = args.cost_cap_agent is not None or args.cost_cap_total is not None
+        capped_calls = (
+            args.call_cap_agent is not None or args.call_cap_total is not None
+        )
+        capped_elapsed = (
+            args.elapsed_cap_agent is not None or args.elapsed_cap_total is not None
+        )
 
         strict_checked = False
         deadline = time.monotonic() + timeout
@@ -1284,8 +1738,33 @@ def _cmd_watch(args: argparse.Namespace) -> None:
                     {n: by_name[n]["session_path"] for n in sorted(present & targets)},
                     state.get("cost_acks", {}),
                 )
+            if capped_calls or capped_elapsed:
+                calls_rep, elapsed_rep = _measure_agy_caps(
+                    args,
+                    {
+                        n: (
+                            _agy_session_db(
+                                by_name[n]["raw_agent"].get("agent_session")
+                            ),
+                            state["agents"][n]["first_seen_at"],
+                        )
+                        for n in sorted(present & targets)
+                    },
+                    state.get("cost_acks", {}),
+                    state,
+                )
+                if calls_rep is not None:
+                    report["calls"] = calls_rep
+                if elapsed_rep is not None:
+                    report["elapsed"] = elapsed_rep
 
-            if attention or gone or (capped and report["cost"]["alerts"]):
+            cost_alerts = bool(capped and report.get("cost", {}).get("alerts"))
+            calls_alerts = bool(capped_calls and report.get("calls", {}).get("alerts"))
+            elapsed_alerts = bool(
+                capped_elapsed and report.get("elapsed", {}).get("alerts")
+            )
+
+            if attention or gone or cost_alerts or calls_alerts or elapsed_alerts:
                 _save_watch_state(state_path, state)
                 print(json.dumps(report, indent=2))
                 return
@@ -2109,6 +2588,49 @@ def trust_prompt_refusal(*, pane: str, kind: str, exc: RefusedError) -> RefusedE
     return exc
 
 
+AGY_CONFIG_DIR = Path.home() / ".gemini" / "antigravity-cli"
+
+
+def check_agy_login(config_dir: Path | None = None) -> None:
+    """Refuse launch if agy is not logged in."""
+    base = config_dir or AGY_CONFIG_DIR
+    token_file = base / "antigravity-oauth-token"
+    if not token_file.exists():
+        raise RefusedError(
+            f"agy is not logged in ({token_file} missing); run agy to authenticate"
+        )
+    try:
+        data = json.loads(token_file.read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or not data.get("token"):
+            raise RefusedError(
+                f"agy token file {token_file} is empty or invalid; run agy to authenticate"
+            )
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RefusedError(
+            f"cannot read agy token file {token_file}: {exc}; run agy to authenticate"
+        ) from exc
+    log_file = base / "cli.log"
+    if log_file.exists():
+        try:
+            tail = log_file.read_text(encoding="utf-8", errors="replace")[-4096:]
+            if "You are not logged into Antigravity" in tail:
+                last_err = tail.rfind("You are not logged into Antigravity")
+                subsequent = tail[last_err:]
+                if not any(
+                    marker in subsequent
+                    for marker in (
+                        "OAuth authenticated successfully",
+                        "streamGenerateContent",
+                        "loadCodeAssist",
+                    )
+                ):
+                    raise RefusedError(
+                        "agy log indicates authentication failure ('You are not logged into Antigravity'); run agy to re-authenticate"
+                    )
+        except OSError:
+            pass
+
+
 def trust_agy_dir(dir_path: str) -> None:
     """Ensure agy's trustedWorkspaces lists ``dir_path`` before an agy launch.
 
@@ -2232,6 +2754,7 @@ def cmd_launch(args: argparse.Namespace) -> None:
     if kind in ("agy", "codex"):
         cwd = prepare_worker_worktree(args.slug)
         if kind == "agy":
+            check_agy_login()
             prune_agy_trust_entries()
             trust_agy_dir(cwd)
         elif kind == "codex":
@@ -2348,6 +2871,7 @@ def cmd_probe(args: argparse.Namespace) -> None:
     tab_id: str | None = None
     try:
         if kind == "agy":
+            check_agy_login()
             prune_agy_trust_entries()
             agy_workspace_trust.ensure_trusted(cwd)
         created = herdr(build_tab_argv(cwd=cwd, label=label, kind=kind))
@@ -2447,7 +2971,7 @@ def main() -> None:
         "--handoff",
         action="store_true",
         help="worker stops after its commit gate and prints the FOREMAN-HANDOFF "
-        "line, leaving the landing to the foreman (--slug --kind pi only)",
+        "line, leaving the landing to the foreman (--slug --kind pi|agy only)",
     )
     launch.set_defaults(func=cmd_launch)
 
@@ -2523,10 +3047,34 @@ def main() -> None:
         "incomplete, overflow) re-fires after N seconds (default 900)",
     )
     watch.add_argument(
+        "--call-cap-agent",
+        type=_positive_int,
+        metavar="CALLS",
+        help="alert when a watched agy agent's call count reaches CALLS",
+    )
+    watch.add_argument(
+        "--call-cap-total",
+        type=_positive_int,
+        metavar="CALLS",
+        help="alert when the aggregate calls across watched agy agents reaches CALLS",
+    )
+    watch.add_argument(
+        "--elapsed-cap-agent",
+        type=_positive_finite,
+        metavar="SECONDS",
+        help="elapsed-time cap (seconds) fallback for a watched agy agent with an unreadable database",
+    )
+    watch.add_argument(
+        "--elapsed-cap-total",
+        type=_positive_finite,
+        metavar="SECONDS",
+        help="aggregate elapsed-time cap (seconds) fallback for watched agy agents with unreadable databases",
+    )
+    watch.add_argument(
         "--ack-cost",
         action="append",
         metavar="TOKEN",
-        help="acknowledge a cost alert by the 'ack' token its report printed "
+        help="acknowledge a cost/call/elapsed alert by the 'ack' token its report printed "
         "(repeatable; needs the cap that produced it)",
     )
     watch.set_defaults(func=cmd_watch)
@@ -2644,9 +3192,9 @@ def main() -> None:
         if args.handoff:
             if not args.slug:
                 parser.error("--handoff requires a single --slug target")
-            if args.kind != "pi":
+            if args.kind not in ("pi", "agy"):
                 parser.error(
-                    "--handoff is pi-only (other kinds do not run the pi FOREMAN-HANDOFF path)"
+                    "--handoff is pi-only (or agy); other kinds do not run the FOREMAN-HANDOFF path"
                 )
     if args.command == "answer":
         selectors = (

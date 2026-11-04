@@ -201,6 +201,7 @@ analyze_sessions.py — multi-harness session analysis tool.
   - `class CostSummary` — Aggregated cost/token rollup over a record list (pure builder output).
   - `class SessionQueryResult`
   - `class PiCost` — A pi cost measurement: pi's own price-table estimate, not provider billing.
+  - `class AgyCalls` — An AgY call-count measurement: distinct request IDs from gen_metadata.
   - `class SessionMilestone` — Time and spend from session start to the first in-repo file write.
 - Public functions:
   - `normalize_timestamp(ts: object) -> tuple[str, datetime | None]` — Convert string ISO timestamp or int/float epoch ms/s into ISO 8601 string and datetime.
@@ -212,6 +213,9 @@ analyze_sessions.py — multi-harness session analysis tool.
   - `load_pi_records(base_dir: Path | None = None, since_dt: datetime | None = None, until_dt: datetime | None = None) -> tuple[list[SessionRecord], list[SkippedRecord]]`
   - `pi_session_cost(path: Path) -> PiCost` — Total pi-estimated cost of one session file; never raises.
   - `pi_cost_since(since: datetime, base_dir: Path | None = None) -> PiCost` — Total pi-estimated cost of every pi session since ``since``; never raises.
+  - `extract_agy_request_id(data: bytes) -> tuple[str | None, str | None]` — Extract candidate request ID from gen_metadata protobuf data at path 1/4/11.
+  - `read_agy_session_calls(db_path: Path) -> AgyCalls` — Count distinct request IDs in one AgY conversation SQLite database.
+  - `agy_session_calls(path: Path) -> AgyCalls` — Total distinct request IDs of one AgY conversation SQLite database; never raises.
   - `load_claude_records(base_dir: Path | None = None, since_dt: datetime | None = None, until_dt: datetime | None = None) -> tuple[list[SessionRecord], list[SkippedRecord]]`
   - `load_opencode_records(db_path: Path | None = None, since_dt: datetime | None = None, until_dt: datetime | None = None, cwd_filter: str | None = None, session_filter: str | None = None) -> tuple[list[SessionRecord], list[SkippedRecord]]`
   - `load_copilot_records(db_path: Path | None = None, since_dt: datetime | None = None, until_dt: datetime | None = None, cwd_filter: str | None = None, session_filter: str | None = None) -> tuple[list[SessionRecord], list[SkippedRecord]]`
@@ -1108,8 +1112,8 @@ Launch supported agents in herdr tabs to work backlog items.
     - `--model` — model passed through to harness after a bare --
     - `--cwd` — working directory (pi/copilot only)
     - `--kind` — agent harness (agy/codex support --slug only; default: pi) (choices: pi, copilot, agy, codex; default: pi)
-    - `--handoff` — worker stops after its commit gate and prints the FOREMAN-HANDOFF line, leaving the landing to the foreman (--slug --kind pi only)
-  - `watch <agents> [--prefix <PREFIX>] --state <STATE> [--ack NAME=SEQ] [--ack-gone NAME] [--grace-s <GRACE_S>] --timeout-s <TIMEOUT_S> [--poll-s <POLL_S>] [--strict] [--cost-cap-agent USD] [--cost-cap-total USD] [--cost-step USD] [--cost-remind-s N] [--ack-cost TOKEN]` — report the first of N agents that needs attention
+    - `--handoff` — worker stops after its commit gate and prints the FOREMAN-HANDOFF line, leaving the landing to the foreman (--slug --kind pi|agy only)
+  - `watch <agents> [--prefix <PREFIX>] --state <STATE> [--ack NAME=SEQ] [--ack-gone NAME] [--grace-s <GRACE_S>] --timeout-s <TIMEOUT_S> [--poll-s <POLL_S>] [--strict] [--cost-cap-agent USD] [--cost-cap-total USD] [--cost-step USD] [--cost-remind-s N] [--call-cap-agent CALLS] [--call-cap-total CALLS] [--elapsed-cap-agent SECONDS] [--elapsed-cap-total SECONDS] [--ack-cost TOKEN]` — report the first of N agents that needs attention
     - `agents` — agent names to watch (nargs: +)
     - `--prefix` — also watch agents whose name has this slug-head prefix
     - `--state` — watch state file (required)
@@ -1123,7 +1127,11 @@ Launch supported agents in herdr tabs to work backlog items.
     - `--cost-cap-total` — alert when every pi session's cost since local midnight reaches USD
     - `--cost-step` — an acked cost alert re-fires after this much more spend (default 1.0)
     - `--cost-remind-s` — an acked alert whose spend is not observable (unmeasured, incomplete, overflow) re-fires after N seconds (default 900)
-    - `--ack-cost` — acknowledge a cost alert by the 'ack' token its report printed (repeatable; needs the cap that produced it)
+    - `--call-cap-agent` — alert when a watched agy agent's call count reaches CALLS
+    - `--call-cap-total` — alert when the aggregate calls across watched agy agents reaches CALLS
+    - `--elapsed-cap-agent` — elapsed-time cap (seconds) fallback for a watched agy agent with an unreadable database
+    - `--elapsed-cap-total` — aggregate elapsed-time cap (seconds) fallback for watched agy agents with unreadable databases
+    - `--ack-cost` — acknowledge a cost/call/elapsed alert by the 'ack' token its report printed (repeatable; needs the cap that produced it)
   - `answer <agent> --expect-pane <EXPECT_PANE> [--option <OPTION>] [--index <INDEX>] [--other] [--text <TEXT>] [--settle-s <SETTLE_S>]` — drive a live worker's question-tool picker by option, or free text via --other
     - `agent` — the worker's herdr agent name
     - `--expect-pane` — the pane this worker is parked in (required)
@@ -1152,6 +1160,7 @@ Launch supported agents in herdr tabs to work backlog items.
 - Filesystem constants:
   - `DEV_STATUS = Path(__file__).parent / 'dev_status.py'`
   - `COPILOT_PLUGIN_DIR = str(Path(__file__).resolve().parent.parent / 'copilot' / 'extensions' / 'swarm')`
+  - `AGY_CONFIG_DIR = Path.home() / '.gemini' / 'antigravity-cli'`
 - Explicit exit codes: `1`, `2`
 - Depends on: `agent_toolkit_paths.py`, `agy_workspace_trust.py`, `analyze_sessions.py`, `backlog_claim_lookup.py`, `cli_common.py`, `dev_status.py`, `dev_status_impl.py`, `dev_status_mutation.py`, `dev_status_storage.py`, `herdr_picker.py`, `migration_lock.py`, `worktree.py`
 - Exceptions:
@@ -1205,6 +1214,7 @@ Launch supported agents in herdr tabs to work backlog items.
   - `herdr(argv: list[str]) -> dict[str, object]` — Run a herdr command and return its parsed JSON result.
   - `read_pane_text(pane: str, *, source: str = 'visible') -> str` — Read a pane's terminal snapshot via `herdr pane read`.
   - `trust_prompt_refusal(*, pane: str, kind: str, exc: RefusedError) -> RefusedError` — Upgrade an agy ``agent_not_ready`` refusal to a trust-prompt message.
+  - `check_agy_login(config_dir: Path | None = None) -> None` — Refuse launch if agy is not logged in.
   - `trust_agy_dir(dir_path: str) -> None` — Ensure agy's trustedWorkspaces lists ``dir_path`` before an agy launch.
   - `prune_agy_trust_entries() -> None` — Best-effort prune of vanished agy trusted-workspace entries.
   - `confirm_prompt_receipt(*, pane: str, tab: str, name: str, prompt: str, timeout_s: float = AGY_PROMPT_TIMEOUT_S, poll_interval_s: float = AGY_PROMPT_POLL_INTERVAL_S, max_resends: int = 1) -> None` — Poll pane for the echoed prompt line; resend if absent, fail loudly if still missing.

@@ -13,6 +13,7 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 import time
@@ -807,6 +808,11 @@ class HandoffTests(unittest.TestCase):
             if argv[0] == "agent" and argv[1] == "prompt":
                 fake.calls.append(list(argv))
                 return {"result": {}}
+            if argv[0] == "pane" and argv[1] == "read":
+                prompts = [
+                    c[3] for c in fake.calls if c[0] == "agent" and c[1] == "prompt"
+                ]
+                return {"result": {"text": "\n".join(prompts)}}
             return {"result": {}}
 
         with (
@@ -821,6 +827,57 @@ class HandoffTests(unittest.TestCase):
         create = next(c for c in fake.calls if c[0] == "tab" and c[1] == "create")
         self.assertIn("PI_AGENT_UNATTENDED=1", create)
         self.assertTrue(any(arg.startswith("PI_SWARM_CAPTURE_FILE=") for arg in create))
+        prompt = next(c for c in fake.calls if c[0] == "agent" and c[1] == "prompt")
+        self.assertEqual(prompt[3], "/backlog-item --auto atk-example --handoff")
+
+    def test_handoff_accepts_agy_kind(self) -> None:
+        fake = AnswerFakeHerdr([], [])
+
+        def fake_launch(argv: list[str]) -> dict[str, object]:
+            if argv[0] == "tab" and argv[1] == "create":
+                fake.calls.append(list(argv))
+                return {
+                    "result": {
+                        "root_pane": {"pane_id": "w:pN"},
+                        "tab": {"tab_id": "w:tN"},
+                    }
+                }
+            if argv[0] == "agent" and argv[1] == "start":
+                return {"result": {}}
+            if argv[0] == "agent" and argv[1] == "prompt":
+                fake.calls.append(list(argv))
+                return {"result": {}}
+            if argv[0] == "pane" and argv[1] == "read":
+                prompts = [
+                    c[3] for c in fake.calls if c[0] == "agent" and c[1] == "prompt"
+                ]
+                return {"result": {"text": "\n".join(prompts)}}
+            return {"result": {}}
+
+        agy_dir = Path.home() / ".gemini" / "antigravity-cli"
+        agy_dir.mkdir(parents=True, exist_ok=True)
+        (agy_dir / "antigravity-oauth-token").write_text(
+            json.dumps({"token": "fake"}), encoding="utf-8"
+        )
+
+        with (
+            mock.patch.object(herdr_delegate, "herdr", fake_launch),
+            mock.patch.object(
+                herdr_delegate, "prepare_worker_worktree", return_value="/tmp/item"
+            ),
+            mock.patch.object(herdr_delegate.agy_workspace_trust, "prune_trusted"),
+            mock.patch.object(herdr_delegate.agy_workspace_trust, "ensure_trusted"),
+            mock.patch.object(herdr_delegate.time, "sleep", lambda _s: None),
+            mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
+        ):
+            code, out, _ = self.run_main(
+                ["launch", "--slug", "atk-example", "--kind", "agy", "--handoff"]
+            )
+        self.assertEqual(code, 0)
+        create = next(c for c in fake.calls if c[0] == "tab" and c[1] == "create")
+        self.assertTrue(
+            any(arg.startswith("PI_SWARM_CAPTURE_FILE=") for arg in create)
+        )
         prompt = next(c for c in fake.calls if c[0] == "agent" and c[1] == "prompt")
         self.assertEqual(prompt[3], "/backlog-item --auto atk-example --handoff")
 
@@ -1144,6 +1201,9 @@ class WatchCostTests(unittest.TestCase):
         with (
             mock.patch.object(herdr_delegate, "herdr", fake),
             mock.patch.object(herdr_delegate.time, "sleep", lambda _s: None),
+            mock.patch.object(
+                herdr_delegate.time, "time", lambda: self.now.timestamp()
+            ),
             mock.patch.object(herdr_delegate, "_watch_now", lambda: self.now),
             mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
         ):
@@ -1466,6 +1526,213 @@ class WatchCostTests(unittest.TestCase):
             with self.subTest(extra=extra):
                 code, _, _ = self.run_watch(
                     ["atk-w1", *extra], [_agent("atk-w1", "working", 3)]
+                )
+                self.assertEqual(code, 2)
+
+
+def _agy_agent(
+    name: str, status: str, seq: int, db_path: Path | str | None
+) -> dict[str, object]:
+    rec = _agent(name, status, seq)
+    rec["agent"] = "agy"
+    if db_path is not None:
+        rec["agent_session"] = {
+            "agent": "agy",
+            "source": "herdr:antigravity_cli",
+            "value": str(db_path),
+        }
+    return rec
+
+
+def _make_req_proto(req_id: str) -> bytes:
+    val = req_id.encode("utf-8")
+    f11 = bytes([(11 << 3) | 2, len(val)]) + val
+    f4 = bytes([(4 << 3) | 2, len(f11)]) + f11
+    f1 = bytes([(1 << 3) | 2, len(f4)]) + f4
+    return f1
+
+
+class WatchAgyCallsTests(unittest.TestCase):
+    """`watch --call-cap-*` and `--elapsed-cap-*`: agy call count and fallback elapsed caps."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.state = self.tmp / "watch.json"
+        self.dbs = self.tmp / "dbs"
+        self.dbs.mkdir(parents=True, exist_ok=True)
+        self.now = COST_NOW
+        env = mock.patch.dict(os.environ, {"TZ": "UTC"})
+        env.start()
+        time.tzset()
+        self.addCleanup(env.stop)
+        self.addCleanup(time.tzset)
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def db(self, name: str, req_ids: list[str | bytes]) -> Path:
+        path = self.dbs / f"{name}.db"
+        con = sqlite3.connect(path)
+        cur = con.cursor()
+        cur.execute(
+            "CREATE TABLE IF NOT EXISTS gen_metadata (idx integer primary key, data blob)"
+        )
+        cur.execute("DELETE FROM gen_metadata")
+        for idx, item in enumerate(req_ids, 1):
+            blob = item if isinstance(item, bytes) else _make_req_proto(item)
+            cur.execute(
+                "INSERT INTO gen_metadata (idx, data) VALUES (?, ?)", (idx, blob)
+            )
+        con.commit()
+        con.close()
+        return path
+
+    def run_watch(
+        self, argv: list[str], agents: list[dict[str, object]]
+    ) -> tuple[int, dict[str, object], str]:
+        fake = WatchFakeHerdr([agents])
+        with (
+            mock.patch.object(herdr_delegate, "herdr", fake),
+            mock.patch.object(herdr_delegate.time, "sleep", lambda _s: None),
+            mock.patch.object(
+                herdr_delegate.time, "time", lambda: self.now.timestamp()
+            ),
+            mock.patch.object(herdr_delegate, "_watch_now", lambda: self.now),
+            mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
+        ):
+            sys.argv = [
+                "herdr_delegate.py",
+                "watch",
+                *argv,
+                "--state",
+                str(self.state),
+                "--timeout-s",
+                "0",
+            ]
+            out, err = io.StringIO(), io.StringIO()
+            code = 0
+            try:
+                with redirect_stdout(out), redirect_stderr(err):
+                    herdr_delegate.main()
+            except SystemExit as e:
+                code = int(e.code or 0)
+        text = out.getvalue()
+        return code, (json.loads(text) if text.strip() else {}), err.getvalue()
+
+    def test_agent_over_call_cap_alerts_and_ack_snoozes(self) -> None:
+        db_path = self.db("w1", ["req-1", "req-2", "req-3", "req-4", "req-5"])
+        agents = [_agy_agent("atk-w1", "working", 3, db_path)]
+        code, out, _ = self.run_watch(["atk-w1", "--call-cap-agent", "4"], agents)
+        self.assertEqual(code, 0)
+        alert = out["calls"]["alerts"]["agent:atk-w1"]
+        self.assertEqual(
+            (alert["reason"], alert["calls"], alert["unit"]),
+            ("over_cap", 5, "calls"),
+        )
+        token = alert["ack"]
+        self.assertTrue(token.startswith("call:agent:atk-w1:over_cap:5:"))
+
+        # Level-triggered: still reported until acked
+        code, out2, _ = self.run_watch(["atk-w1", "--call-cap-agent", "4"], agents)
+        self.assertEqual(out2["calls"]["alerts"]["agent:atk-w1"]["ack"], token)
+
+        # Acked: quiet while call count stays at 5
+        code, out, _ = self.run_watch(
+            ["atk-w1", "--call-cap-agent", "4", "--ack-cost", token], agents
+        )
+        self.assertEqual(code, 124)
+        self.assertEqual(out["calls"]["alerts"], {})
+
+        # New call added (total 6): re-alerts!
+        self.db("w1", ["req-1", "req-2", "req-3", "req-4", "req-5", "req-6"])
+        code, out, _ = self.run_watch(
+            ["atk-w1", "--call-cap-agent", "4", "--ack-cost", token], agents
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(out["calls"]["alerts"]["agent:atk-w1"]["calls"], 6)
+
+    def test_agent_unmeasured_when_db_missing(self) -> None:
+        missing_db = self.dbs / "missing.db"
+        agents = [_agy_agent("atk-w1", "working", 3, missing_db)]
+        code, out, _ = self.run_watch(["atk-w1", "--call-cap-agent", "4"], agents)
+        self.assertEqual(code, 0)
+        alert = out["calls"]["alerts"]["agent:atk-w1"]
+        self.assertEqual((alert["reason"], alert["unit"]), ("unmeasured", "calls"))
+
+    def test_agent_incomplete_when_db_corrupt_row(self) -> None:
+        db_path = self.db("w1", ["req-1", b"not-a-proto"])
+        agents = [_agy_agent("atk-w1", "working", 3, db_path)]
+        code, out, _ = self.run_watch(["atk-w1", "--call-cap-agent", "4"], agents)
+        self.assertEqual(code, 0)
+        alert = out["calls"]["alerts"]["agent:atk-w1"]
+        self.assertEqual((alert["reason"], alert["calls"]), ("incomplete", 1))
+
+    def test_elapsed_cap_fallback_only_on_unreadable_db(self) -> None:
+        missing_db = self.dbs / "missing.db"
+        agents = [_agy_agent("atk-w1", "working", 3, missing_db)]
+
+        # First run records first_seen_at in state
+        self.run_watch(
+            ["atk-w1", "--call-cap-agent", "4", "--elapsed-cap-agent", "10"], agents
+        )
+
+        # Advance time by 15 seconds
+        self.now = self.now + timedelta(seconds=15)
+        code, out, _ = self.run_watch(
+            ["atk-w1", "--call-cap-agent", "4", "--elapsed-cap-agent", "10"], agents
+        )
+        self.assertEqual(code, 0)
+        self.assertIn("elapsed", out)
+        elapsed_alert = out["elapsed"]["alerts"]["agent:atk-w1"]
+        self.assertEqual(
+            (elapsed_alert["reason"], elapsed_alert["unit"]),
+            ("over_cap", "seconds"),
+        )
+        self.assertGreaterEqual(elapsed_alert["seconds"], 10.0)
+
+        # If DB is readable but incomplete, elapsed cap does NOT fire as fallback
+        db_path = self.db("w2", ["req-1", b"corrupt"])
+        agents2 = [_agy_agent("atk-w2", "working", 3, db_path)]
+        self.run_watch(
+            ["atk-w2", "--call-cap-agent", "4", "--elapsed-cap-agent", "10"], agents2
+        )
+        self.now = self.now + timedelta(seconds=15)
+        code, out, _ = self.run_watch(
+            ["atk-w2", "--call-cap-agent", "4", "--elapsed-cap-agent", "10"], agents2
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            out["calls"]["alerts"]["agent:atk-w2"]["reason"], "incomplete"
+        )
+        self.assertEqual(out.get("elapsed", {}).get("alerts", {}), {})
+
+    def test_total_call_cap_deduplicates_and_alerts(self) -> None:
+        db1 = self.db("w1", ["req-1", "req-2"])
+        db2 = self.db("w2", ["req-2", "req-3"])
+        agents = [
+            _agy_agent("atk-w1", "working", 3, db1),
+            _agy_agent("atk-w2", "working", 3, db2),
+        ]
+        code, out, _ = self.run_watch(
+            ["atk-w1", "atk-w2", "--call-cap-total", "3"], agents
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(out["calls"]["total"]["calls"], 3)
+        self.assertIn("total", out["calls"]["alerts"])
+        self.assertEqual(out["calls"]["alerts"]["total"]["reason"], "over_cap")
+
+    def test_invalid_cli_arguments_refused(self) -> None:
+        cases = [
+            ["--call-cap-agent", "0"],
+            ["--call-cap-agent", "-1"],
+            ["--call-cap-agent", "abc"],
+            ["--call-cap-total", "0"],
+            ["--elapsed-cap-agent", "0"],
+            ["--elapsed-cap-agent", "-5"],
+            ["--elapsed-cap-total", "inf"],
+        ]
+        for extra in cases:
+            with self.subTest(extra=extra):
+                code, _, _ = self.run_watch(
+                    ["atk-w1", *extra], [_agy_agent("atk-w1", "working", 3, None)]
                 )
                 self.assertEqual(code, 2)
 

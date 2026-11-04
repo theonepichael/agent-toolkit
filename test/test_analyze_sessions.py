@@ -2386,5 +2386,163 @@ class TestMilestonesOutput(unittest.TestCase):
         self.assertEqual(rows[0]["status"], "unsupported")
 
 
+class TestAgySessionCalls(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp_dir.name)
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    @staticmethod
+    def _make_req_proto(req_id: str) -> bytes:
+        val = req_id.encode("utf-8")
+        f11 = bytes([(11 << 3) | 2, len(val)]) + val
+        f4 = bytes([(4 << 3) | 2, len(f11)]) + f11
+        f1 = bytes([(1 << 3) | 2, len(f4)]) + f4
+        return f1
+
+    def test_extract_agy_request_id_valid(self) -> None:
+        proto = self._make_req_proto("req-abc-123")
+        req_id, err = analyze_sessions.extract_agy_request_id(proto)
+        self.assertEqual(req_id, "req-abc-123")
+        self.assertIsNone(err)
+
+    def test_extract_agy_request_id_with_surrounding_fields(self) -> None:
+        # Field 2 wire-type 0 (varint): tag = (2 << 3) | 0 = 0x10, val = 42
+        prefix = bytes([0x10, 42])
+        # Field 3 wire-type 2 (length-delimited): tag = (3 << 3) | 2 = 0x1A, len = 3, val = "xyz"
+        suffix = bytes([0x1A, 3]) + b"xyz"
+        proto = prefix + self._make_req_proto("req-xyz-789") + suffix
+        req_id, err = analyze_sessions.extract_agy_request_id(proto)
+        self.assertEqual(req_id, "req-xyz-789")
+        self.assertIsNone(err)
+
+    def test_extract_agy_request_id_malformed(self) -> None:
+        req_id, err = analyze_sessions.extract_agy_request_id(b"")
+        self.assertIsNone(req_id)
+        self.assertIn("expected 1 field 1", err or "")
+
+        req_id, err = analyze_sessions.extract_agy_request_id(b"\x0a\x05incomplete")
+        self.assertIsNone(req_id)
+        self.assertIn("corrupt", err or "")
+
+        # Varint overflow (high bit never cleared)
+        req_id, err = analyze_sessions.extract_agy_request_id(b"\x80\x80\x80\x80\x80\x80\x80\x80\x80\x80\x80")
+        self.assertIsNone(req_id)
+        self.assertIn("corrupt", err or "")
+
+        # Invalid utf-8 in field 11
+        val = b"\xff\xfe\xfd"
+        f11 = bytes([(11 << 3) | 2, len(val)]) + val
+        f4 = bytes([(4 << 3) | 2, len(f11)]) + f11
+        f1 = bytes([(1 << 3) | 2, len(f4)]) + f4
+        req_id, err = analyze_sessions.extract_agy_request_id(f1)
+        self.assertIsNone(req_id)
+        self.assertIn("non-utf8", err or "")
+
+    def test_extract_agy_request_id_missing_subfields(self) -> None:
+        # Field 1 exists, but submessage has no field 4
+        f1_empty = bytes([(1 << 3) | 2, 2, 0x10, 42])
+        req_id, err = analyze_sessions.extract_agy_request_id(f1_empty)
+        self.assertIsNone(req_id)
+        self.assertIn("field 4", err or "")
+
+        # Field 1 and field 4 exist, but field 4 has no field 11
+        f4_no_f11 = bytes([(4 << 3) | 2, 2, 0x10, 42])
+        f1_with_f4 = bytes([(1 << 3) | 2, len(f4_no_f11)]) + f4_no_f11
+        req_id, err = analyze_sessions.extract_agy_request_id(f1_with_f4)
+        self.assertIsNone(req_id)
+        self.assertIn("field 11", err or "")
+
+    def test_read_agy_session_calls_valid(self) -> None:
+        db_path = self.root / "valid.db"
+        con = sqlite3.connect(db_path)
+        cur = con.cursor()
+        cur.execute("CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, data BLOB)")
+        p1 = self._make_req_proto("req-1")
+        p2 = self._make_req_proto("req-2")
+        cur.execute("INSERT INTO gen_metadata (idx, data) VALUES (?, ?)", (1, p1))
+        cur.execute("INSERT INTO gen_metadata (idx, data) VALUES (?, ?)", (2, p2))
+        cur.execute("INSERT INTO gen_metadata (idx, data) VALUES (?, ?)", (3, p1))
+        con.commit()
+        con.close()
+
+        calls = analyze_sessions.read_agy_session_calls(db_path)
+        self.assertEqual(calls.calls, 2)
+        self.assertTrue(calls.complete)
+        self.assertFalse(calls.unreadable)
+        self.assertEqual(calls.request_ids, frozenset({"req-1", "req-2"}))
+        self.assertEqual(calls.problems, ())
+
+    def test_read_agy_session_calls_missing_table(self) -> None:
+        db_path = self.root / "no_table.db"
+        con = sqlite3.connect(db_path)
+        cur = con.cursor()
+        cur.execute("CREATE TABLE other_table (idx INTEGER PRIMARY KEY)")
+        con.commit()
+        con.close()
+
+        calls = analyze_sessions.read_agy_session_calls(db_path)
+        self.assertIsNone(calls.calls)
+        self.assertFalse(calls.complete)
+        self.assertFalse(calls.unreadable)
+        self.assertIn("gen_metadata table missing", calls.problems[0])
+
+    def test_read_agy_session_calls_empty_table(self) -> None:
+        db_path = self.root / "empty.db"
+        con = sqlite3.connect(db_path)
+        cur = con.cursor()
+        cur.execute("CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, data BLOB)")
+        con.commit()
+        con.close()
+
+        calls = analyze_sessions.read_agy_session_calls(db_path)
+        self.assertEqual(calls.calls, 0)
+        self.assertFalse(calls.complete)
+        self.assertFalse(calls.unreadable)
+        self.assertIn("no metadata rows yet", calls.problems[0])
+
+    def test_read_agy_session_calls_unparseable_rows(self) -> None:
+        db_path = self.root / "corrupt.db"
+        con = sqlite3.connect(db_path)
+        cur = con.cursor()
+        cur.execute("CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, data BLOB)")
+        p1 = self._make_req_proto("req-1")
+        cur.execute("INSERT INTO gen_metadata (idx, data) VALUES (?, ?)", (1, p1))
+        cur.execute("INSERT INTO gen_metadata (idx, data) VALUES (?, ?)", (2, b"not a valid proto"))
+        cur.execute("INSERT INTO gen_metadata (idx, data) VALUES (?, ?)", (3, b"\x00\x01\x02"))
+        con.commit()
+        con.close()
+
+        calls = analyze_sessions.read_agy_session_calls(db_path)
+        self.assertEqual(calls.calls, 1)
+        self.assertFalse(calls.complete)
+        self.assertFalse(calls.unreadable)
+        self.assertEqual(len(calls.problems), 2)
+        self.assertIn("row 2:", calls.problems[0])
+
+    def test_read_agy_session_calls_unreadable(self) -> None:
+        missing = self.root / "does_not_exist.db"
+        calls = analyze_sessions.read_agy_session_calls(missing)
+        self.assertIsNone(calls.calls)
+        self.assertFalse(calls.complete)
+        self.assertTrue(calls.unreadable)
+
+    def test_agy_session_calls_wrapper(self) -> None:
+        db_path = self.root / "wrap.db"
+        con = sqlite3.connect(db_path)
+        cur = con.cursor()
+        cur.execute("CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, data BLOB)")
+        cur.execute("INSERT INTO gen_metadata (idx, data) VALUES (?, ?)", (1, self._make_req_proto("req-w")))
+        con.commit()
+        con.close()
+
+        calls = analyze_sessions.agy_session_calls(db_path)
+        self.assertEqual(calls.calls, 1)
+        self.assertTrue(calls.complete)
+
+
+
 if __name__ == "__main__":
     test_bootstrap.run_unittest_main()
