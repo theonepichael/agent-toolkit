@@ -693,6 +693,31 @@ class LandSlugGuardTests(unittest.TestCase):
         self.assertGreater(seen, 0)
 
 
+class ForemanSendBackTests(unittest.TestCase):
+    """Every foreman copy documents both send-back paths.
+
+    A worker blocked on a picker takes `answer`; a finished or idle worker has
+    no picker, so `answer` cannot reach it and `herdr agent prompt` must be
+    documented for that case (agy workers always land there).
+    """
+
+    def test_blocked_and_finished_send_back_paths_in_every_foreman_output(
+        self,
+    ) -> None:
+        rendered = gs.render_all(REPO_ROOT, SKILL_PARAMS)
+        seen = 0
+        for (skill, _harness), path in gs.OUTPUT_PATHS.items():
+            if skill != "foreman":
+                continue
+            seen += 1
+            text = " ".join(rendered[path].split())
+            self.assertIn("**Blocked worker**", text, path)
+            self.assertIn("herdr_delegate.py answer <agent>", text, path)
+            self.assertIn("**Finished or idle worker**", text, path)
+            self.assertIn('herdr agent prompt <agent> "', text, path)
+        self.assertGreater(seen, 0)
+
+
 class EndToEndTests(unittest.TestCase):
     """Assert the real templates + params render to exactly what's committed."""
 
