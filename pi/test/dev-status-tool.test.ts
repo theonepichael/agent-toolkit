@@ -199,6 +199,22 @@ describe("assertFields", () => {
       assertFields("contract_touch", { action: "contract_touch", slug: "abc", if_rev: 1 }),
     ).toThrow("does not accept: if_rev");
   });
+
+  test("slug_check requires repo and accepts slug/allow", () => {
+    expect(() => assertFields("slug_check", { action: "slug_check" })).toThrow("requires: repo");
+    expect(() => assertFields("slug_check", { action: "slug_check", repo: "/r" })).not.toThrow();
+    expect(() =>
+      assertFields("slug_check", {
+        action: "slug_check",
+        slug: "abc",
+        repo: "/r",
+        allow: { "f.md:1:abc": "genuine non-slug string" },
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertFields("slug_check", { action: "slug_check", repo: "/r", feedback: "x" }),
+    ).toThrow("does not accept: feedback");
+  });
 });
 
 describe("buildArgv", () => {
@@ -428,6 +444,34 @@ describe("buildArgv", () => {
         range: "main..HEAD",
       }),
     ).toEqual(["contract-touch", "abc", "--repo", "/repo", "--range", "main..HEAD"]);
+  });
+
+  test("slug_check builds argv with per-finding allows", () => {
+    expect(buildArgv("slug_check", { action: "slug_check", repo: "/r" })).toEqual([
+      "slug-check",
+      "--repo",
+      "/r",
+    ]);
+    expect(
+      buildArgv("slug_check", {
+        action: "slug_check",
+        slug: "abc",
+        repo: "/r",
+        allow: { "f.md:1:abc": "why", "g.md:2:xyz": "also why" },
+      }),
+    ).toEqual([
+      "slug-check",
+      "--slug",
+      "abc",
+      "--repo",
+      "/r",
+      "--allow",
+      "f.md:1:abc",
+      "why",
+      "--allow",
+      "g.md:2:xyz",
+      "also why",
+    ]);
   });
 
   test("patch actions serialize the patch", () => {

@@ -102,7 +102,7 @@ Single source of truth for toolkit data paths.
 - Public functions:
   - `path_for(domain: str) -> Path` — Resolve ``domain`` using :data:`DEFAULT_RESOLVER`.
   - `toolkit_root() -> Path` — Return ``$AGENT_TOOLKIT_HOME``, or ``<home>/.agent-toolkit``.
-- Tested by: `test/test_agent_toolkit_paths.py`, `test/test_dev_status.py`, `test/test_dev_status_acceptance.py`, `test/test_dev_status_mutation.py`, `test/test_gen_interfaces.py`, `test/test_grill.py`, `test/test_guard_rails.py`, `test/test_install.py`, `test/test_llm_backends.py`, `test/test_machine_id.py`, `test/test_migration_lock_adoption.py`, `test/test_second_opinion.py`, `test/test_to_tickets_runner.py`
+- Tested by: `test/test_agent_toolkit_paths.py`, `test/test_dev_status.py`, `test/test_dev_status_acceptance.py`, `test/test_dev_status_mutation.py`, `test/test_gen_interfaces.py`, `test/test_grill.py`, `test/test_guard_rails.py`, `test/test_install.py`, `test/test_llm_backends.py`, `test/test_machine_id.py`, `test/test_migration_lock_adoption.py`, `test/test_second_opinion.py`, `test/test_slug_check.py`, `test/test_to_tickets_runner.py`
 
 ### `agent-scripts/agy_workspace_trust.py`
 
@@ -335,6 +335,10 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
     - `--repo` — git repository to inspect (may name a subdirectory, worktree, or symlink)
     - `--commit` — inspect one commit's diff instead of the staged diff
     - `--range` — inspect every commit on the branch instead of the staged diff
+  - `slug-check [--slug <slug|N>] --repo PATH [--allow <ALLOW>]` — refuse a staged diff that adds a backlog slug (commit-gate guard)
+    - `--slug` — the landing item; its resolved slug joins the scan universe
+    - `--repo` — git repository to scan (normalized to the worktree root) (required)
+    - `--allow` — override exactly one finding with a recorded reason (repeatable; no blanket bypass)
   - `run <slug|N> [--if-rev <N>] [--timeout SECONDS] [--cwd PATH] -- <command...>` — execute a command and record it as run evidence for an item
     - `--if-rev` — required when <id> is numeric; get the current value from render/list/show immediately before this call
     - `--timeout` — kill the command after this many seconds (default: 1800) (default: 1800.0)
@@ -408,8 +412,8 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `confirm_resolution(cmd: str, arg: str | int, item: BacklogItem | PendingItem, summary_key: str = 'summary', *, quiet: bool = False) -> None` — Echo what a mutating command resolved to, so misresolution is visible.
   - `format_run_rows(runs: list[RunRecord]) -> list[str]` — One ``runs`` listing line per record, naming the commit and checkout.
   - `build_parser() -> argparse.ArgumentParser` — Build the full argument parser for every subcommand.
-- Subcommand handlers: `cmd_internal_regen`, `cmd_recap`, `cmd_worktree`, `cmd_integration_merge`, `cmd_render`, `cmd_ready`, `cmd_list`, `cmd_show`, `cmd_validate`, `cmd_add`, `cmd_update`, `cmd_start`, `cmd_done`, `cmd_reopen`, `cmd_review`, `cmd_approve`, `cmd_reject`, `cmd_gate_set`, `cmd_gate_pass`, `cmd_acceptance_set`, `cmd_verifier_check`, `cmd_contract_touch`, `cmd_run`, `cmd_machine_id`, `cmd_runs`, `cmd_backfill_gate`, `cmd_rename`, `cmd_block`, `cmd_unblock`, `cmd_out_of_scope_add`, `cmd_out_of_scope_link`, `cmd_out_of_scope_unlink`, `cmd_out_of_scope_remove`, `cmd_out_of_scope_list`, `cmd_out_of_scope_show`, `cmd_pending_add`, `cmd_pending_update`, `cmd_pending_list`, `cmd_remove`, `cmd_prune`
-- Tested by: `test/test_dev_status.py`, `test/test_dev_status_acceptance.py`, `test/test_dev_status_mutation.py`, `test/test_dev_status_storage.py`, `test/test_dev_status_validate.py`, `test/test_path_for_per_use.py`, `test/test_sweep_dead_claims.py`, `test/test_to_tickets_runner.py`
+- Subcommand handlers: `cmd_internal_regen`, `cmd_recap`, `cmd_worktree`, `cmd_integration_merge`, `cmd_render`, `cmd_ready`, `cmd_list`, `cmd_show`, `cmd_validate`, `cmd_add`, `cmd_update`, `cmd_start`, `cmd_done`, `cmd_reopen`, `cmd_review`, `cmd_approve`, `cmd_reject`, `cmd_gate_set`, `cmd_gate_pass`, `cmd_acceptance_set`, `cmd_verifier_check`, `cmd_contract_touch`, `cmd_slug_check`, `cmd_run`, `cmd_machine_id`, `cmd_runs`, `cmd_backfill_gate`, `cmd_rename`, `cmd_block`, `cmd_unblock`, `cmd_out_of_scope_add`, `cmd_out_of_scope_link`, `cmd_out_of_scope_unlink`, `cmd_out_of_scope_remove`, `cmd_out_of_scope_list`, `cmd_out_of_scope_show`, `cmd_pending_add`, `cmd_pending_update`, `cmd_pending_list`, `cmd_remove`, `cmd_prune`
+- Tested by: `test/test_dev_status.py`, `test/test_dev_status_acceptance.py`, `test/test_dev_status_mutation.py`, `test/test_dev_status_storage.py`, `test/test_dev_status_validate.py`, `test/test_path_for_per_use.py`, `test/test_slug_check.py`, `test/test_sweep_dead_claims.py`, `test/test_to_tickets_runner.py`
 
 ### `agent-scripts/dev_status_formatting.py`
 
@@ -463,6 +467,8 @@ Typed mutation service and transaction manager for dev_status (Candidate 12).
   - `class AcceptanceSetRequest`
   - `class PendingAddRequest`
   - `class PendingUpdateRequest`
+  - `class SlugFinding` — One staged added line (or staged blob line) containing a backlog id.
+  - `class SlugCheckResult` — Outcome of :func:`slug_check`: findings, applied overrides, diff hash.
   - `class BacklogTransaction(Protocol)` — Transaction interface providing single-lock fail-fast batch adds.
 - Public functions:
   - `today() -> str` — Return today's date as an ISO-8601 string (``YYYY-MM-DD``).
@@ -490,6 +496,7 @@ Typed mutation service and transaction manager for dev_status (Candidate 12).
   - `pass_gate(slug_or_id: str, request: GatePassRequest, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None, verifier_token_file: str | None = None) -> MutationResult` — Record that an item's gate criteria are satisfied.
   - `verifier_check(slug_or_id: str, token_file: str, *, items_path: Path | None = None) -> str` — Return ``"valid"`` when ``token_file`` hashes to the item's stored token.
   - `contract_touch(slug_or_id: str, *, repo: str | None = None, commit: str | None = None, range_spec: str | None = None, items_path: Path | None = None) -> list[dict[str, object]]` — List acceptance contract refs touched by a staged diff, commit, or range.
+  - `slug_check(slug_or_id: str | None = None, *, repo: str, overrides: Sequence[tuple[str, str]] | None = None, items_path: Path | None = None) -> SlugCheckResult` — Scan a staged diff for added lines containing a backlog-store id.
   - `rename_item(old_slug_or_id: str, new_slug: str, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Rename a slug and rewrite every reference to it across both pools.
   - `remove_item(slug_or_id: str, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Permanently delete one backlog item.
   - `run_item(slug_or_id: str, command: Sequence[str], *, if_rev: int | None = None, timeout: float | None = None, cwd: str | None = None, items_path: Path | None = None) -> RunResult` — Execute a command and record it as run evidence.
@@ -540,6 +547,7 @@ Backlog persistence, lock coordination, and journal primitives.
   - `lock_file() -> Path`
   - `journal_file() -> Path`
   - `runs_file() -> Path`
+  - `slug_overrides_file() -> Path` — Sidecar recording every slug-check override with its reason.
   - `machine_id_file() -> Path`
   - `verifier_dir() -> Path` — Directory holding per-item verifier-token plaintext files.
   - `verifier_token_path(slug: str) -> Path` — The published token path for ``slug`` (``<slug>.token``).

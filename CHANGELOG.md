@@ -14,6 +14,19 @@ the warning. Run `./install.sh --report-legacy-env` to see any still set.
 
 ## Unreleased
 
+- `land`'s commit gate now refuses a staged diff that adds any backlog-store
+  id string to files that ship in git history (the no-slugs rule, enforced):
+  run `dev_status.py slug-check --repo <worktree> [--slug <slug>]` before the
+  approval ask — it prints `<file>:<line>: <id>` per finding and the scanned
+  staged-diff hash. A genuine non-slug coincidence is overridden per finding
+  with `--allow <path>:<line>:<id> <reason>`, each reason recorded to a
+  `slug_overrides.jsonl` sidecar (fail-closed: an unrecorded override is
+  refused); there is no blanket bypass. Exit codes gate the commit: 0 clean
+  or all overridden, 1 findings remain (refused), 2 any error (never read as
+  clean). The guard lives in the shared `land` template ahead of the
+  approval ask across all six harnesses, and the pi `dev_status` tool gains
+  a matching `slug_check` action.
+
 - Backlog items can now carry a contract-derived `acceptance` record (via
   `dev_status.py acceptance-set <slug>` or `add`'s `acceptance` field),
   frozen once work starts so a worker can only append gate criteria, never

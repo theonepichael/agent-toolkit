@@ -466,6 +466,7 @@ CONTRACT_TEST_FILES = [
     "test_second_opinion.py",
     "test_sessionstart_checks.py",
     "test_settings_seed_drift_check.py",
+    "test_slug_check.py",
     "test_standup.py",
     "test_statusline.py",
     "test_sweep_dead_claims.py",

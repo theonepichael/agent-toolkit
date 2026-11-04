@@ -77,6 +77,16 @@ def runs_file() -> Path:
     return data_dir() / "runs.jsonl"
 
 
+def slug_overrides_file() -> Path:
+    """Sidecar recording every slug-check override with its reason.
+
+    One JSON row per overridden finding. Unlike ``runs.jsonl`` (best-effort
+    evidence), a failed append here invalidates the override it would have
+    recorded — an unrecorded override is not an override.
+    """
+    return data_dir() / "slug_overrides.jsonl"
+
+
 def machine_id_file() -> Path:
     return data_dir() / "_machine_id"
 
@@ -131,6 +141,7 @@ _meta_file = meta_file
 _lock_file = lock_file
 _journal_file = journal_file
 _runs_file = runs_file
+_slug_overrides_file = slug_overrides_file
 _machine_id_file = machine_id_file
 _recap_cache_file = recap_cache_file
 _recap_regen_lock_file = recap_regen_lock_file

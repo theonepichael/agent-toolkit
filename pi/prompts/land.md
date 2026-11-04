@@ -13,6 +13,19 @@ commit in that worktree (`git -C <worktree> ...`), never in whatever
 checkout you happen to be in.
 
 ## 1. Gate: commit
+**Slug-guard callout.** Before requesting commit approval, run
+`python3 ~/.agent-toolkit/scripts/dev_status.py slug-check --repo <worktree> --slug <slug>`
+(omit `--slug` on an ad-hoc commit with no backlog item) — the no-slugs
+rule in enforced form: it scans the staged diff's added lines for the
+item's resolved slug and any other backlog-store id. Any nonzero exit
+blocks approval. Exit 1 prints `<file>:<line>: <id>` findings and the
+commit is refused: fix the diff, or — only for a genuine non-slug string —
+re-run with `--allow <file>:<line>:<id> <reason>` (one per finding; the
+reason is recorded), and surface each override with its reason in the
+approval prompt. Exit 2 (store, git, or parse errors) also blocks
+approval — never treat an error as clean. The check must be the last
+thing run before `git commit`: if anything is staged after it, re-run it.
+
 Show the staged diff with `git diff --cached` (`--stat` plus the files that need review when it runs past ~50 lines; a full diff is re-sent on every later call). Stop — use the `question` tool for explicit commit
 approval, recommended option first (e.g. "Yes, commit (Recommended)" / "No,
 don't commit"), per CLAUDE.md's judgment-call convention. No exceptions for

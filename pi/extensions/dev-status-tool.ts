@@ -33,6 +33,7 @@ const ACTIONS = [
   "acceptance_set",
   "verifier_check",
   "contract_touch",
+  "slug_check",
   "run",
   "runs",
   "backfill_gate",
@@ -88,7 +89,8 @@ export type Field =
   | "verifier_token_file"
   | "acceptance"
   | "commit"
-  | "range";
+  | "range"
+  | "allow";
 
 interface ActionFields {
   readonly allowed: readonly Field[];
@@ -127,6 +129,7 @@ const ACTION_FIELDS: Record<Action, ActionFields> = {
     required: ["slug", "verifier_token_file"],
   },
   contract_touch: { allowed: ["slug", "repo", "commit", "range"], required: ["slug"] },
+  slug_check: { allowed: ["slug", "repo", "allow"], required: ["repo"] },
   run: { allowed: ["slug", "command", "timeout", "cwd"], required: ["slug", "command"] },
   runs: { allowed: ["slug"], required: ["slug"] },
   backfill_gate: { allowed: ["apply"], required: [] },
@@ -228,6 +231,7 @@ export interface DevStatusParams {
   acceptance?: Record<string, unknown>;
   commit?: string;
   range?: string;
+  allow?: Record<string, string>;
 }
 
 export function assertNotNumericIdentity(action: Action, params: DevStatusParams): void {
@@ -345,6 +349,18 @@ export function buildArgv(action: Action, params: DevStatusParams): string[] {
         ...(params.commit ? ["--commit", params.commit] : []),
         ...(params.range ? ["--range", params.range] : []),
       ];
+    case "slug_check":
+      return [
+        "slug-check",
+        ...(params.slug ? ["--slug", params.slug] : []),
+        "--repo",
+        params.repo!,
+        ...Object.entries(params.allow ?? {}).flatMap(([finding, reason]) => [
+          "--allow",
+          finding,
+          reason,
+        ]),
+      ];
     case "run":
       return [
         "run",
@@ -430,7 +446,7 @@ export default function (pi: ExtensionAPI) {
     promptSnippet: "Read or mutate the personal backlog/pending store",
     promptGuidelines: [
       "Never invoke dev_status.py via bash, for any reason, including a plain read like listing pending items or checking status -- always use dev_status instead. This applies to every action, not just ones a slash command already told you to use dev_status for.",
-      "dev_status covers everything dev_status.py's CLI does: render, list, ready, show, add, update, validate, start, done, reopen, review, approve, reject, gate_set, gate_pass, acceptance_set, verifier_check, contract_touch, run, runs, backfill_gate, rename, remove, block, unblock, prune, recap, worktree, machine_id, integration_merge, pending_add, pending_update, pending_list, and the out_of_scope_* actions. If you're about to compose a `python3 ~/.agent-toolkit/scripts/dev_status.py ...` bash command for any of these, use dev_status with the matching action instead.",
+      "dev_status covers everything dev_status.py's CLI does: render, list, ready, show, add, update, validate, start, done, reopen, review, approve, reject, gate_set, gate_pass, acceptance_set, verifier_check, contract_touch, slug_check, run, runs, backfill_gate, rename, remove, block, unblock, prune, recap, worktree, machine_id, integration_merge, pending_add, pending_update, pending_list, and the out_of_scope_* actions. If you're about to compose a `python3 ~/.agent-toolkit/scripts/dev_status.py ...` bash command for any of these, use dev_status with the matching action instead.",
       "verifier tokens are private: acceptance_set prints a token-file path (never the token); pass that path via verifier_token_file to gate_pass/verifier_check, never the file's contents. Keep the path out of item notes, feedback, and worker prompts.",
       "dev_status's patch field is a plain object, not a JSON string -- never hand-encode it.",
       'dev_status refuses a numeric slug on any mutating action -- call action: "show" first to resolve a numeric position to its real slug.',
@@ -508,7 +524,8 @@ export default function (pi: ExtensionAPI) {
       repo: Type.Optional(
         Type.String({
           description:
-            "worktree/integration_merge: path to git repository (when not resolving from backlog item).",
+            "slug_check/worktree/integration_merge: path to git repository (when not " +
+            "resolving from backlog item). slug_check normalizes it to the worktree root.",
         }),
       ),
       branch: Type.Optional(
@@ -573,6 +590,13 @@ export default function (pi: ExtensionAPI) {
           description:
             "contract_touch: inspect every commit on the branch (e.g. 'main..HEAD') " +
             "instead of the staged diff.",
+        }),
+      ),
+      allow: Type.Optional(
+        Type.Record(Type.String(), Type.String(), {
+          description:
+            "slug_check: map of <path>:<line>:<id> findings to their recorded " +
+            "override reasons -- per finding, never a blanket bypass.",
         }),
       ),
       refresh: Type.Optional(Type.Boolean({ description: "recap: bypass the freshness cache." })),

@@ -669,6 +669,30 @@ class CapabilityFixtureTests(unittest.TestCase):
         self.assertIn("refresh_guidance.py", text)
 
 
+class LandSlugGuardTests(unittest.TestCase):
+    """Every generated land copy must run the slug guard before the approval ask.
+
+    Presence alone would accept "ask approval, then check" — the ordering is
+    the contract: the guard is what stops a leak-bearing diff from ever
+    reaching the approval prompt.
+    """
+
+    def test_slug_guard_precedes_approval_ask_in_every_land_output(self) -> None:
+        rendered = gs.render_all(REPO_ROOT, SKILL_PARAMS)
+        seen = 0
+        for (skill, harness), path in gs.OUTPUT_PATHS.items():
+            if skill != "land":
+                continue
+            seen += 1
+            text = " ".join(rendered[path].split())
+            self.assertIn("Slug-guard callout", text, path)
+            self.assertIn("slug-check", text, path)
+            guard_at = text.index("Slug-guard callout")
+            ask_at = text.index("explicit commit approval")
+            self.assertLess(guard_at, ask_at, (path, harness))
+        self.assertGreater(seen, 0)
+
+
 class EndToEndTests(unittest.TestCase):
     """Assert the real templates + params render to exactly what's committed."""
 

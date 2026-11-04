@@ -3527,6 +3527,567 @@ def contract_touch(
     return matches
 
 
+# ── slug-check ────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class SlugFinding:
+    """One staged added line (or staged blob line) containing a backlog id."""
+
+    path: str
+    line: int
+    item_id: str
+    text: str
+
+
+@dataclass(frozen=True)
+class SlugCheckResult:
+    """Outcome of :func:`slug_check`: findings, applied overrides, diff hash.
+
+    ``override_reasons`` parallels ``overridden`` positionally.
+    """
+
+    findings: tuple[SlugFinding, ...]
+    overridden: tuple[SlugFinding, ...]
+    override_reasons: tuple[str, ...]
+    diff_sha256: str
+
+    @property
+    def remaining(self) -> tuple[SlugFinding, ...]:
+        return tuple(f for f in self.findings if f not in self.overridden)
+
+
+def _load_universe(items_path: Path | None) -> list[dict[str, object]]:
+    """Backlog items validated strictly — the fail-closed universe loader.
+
+    ``dev_status_storage.load_items`` answers ``[]`` for a missing file and
+    ``sys.exit(1)`` on decode errors; either would let ``slug-check`` pass
+    clean over a broken store, so this boundary validates the parsed
+    structure itself: schema_version 2, an ``items`` list, and a string
+    ``id`` on every entry. A well-formed empty store is legitimately clean;
+    anything else is an error, never an empty universe.
+    """
+    target = items_path or dev_status_storage.items_file()
+    if not target.exists():
+        raise ValidationError(f"[slug-check] backlog store not found: {target}")
+    try:
+        data = json.loads(target.read_text())
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as e:
+        raise ValidationError(
+            f"[slug-check] backlog store unreadable at {target}: {e}"
+        ) from e
+    if not isinstance(data, dict) or data.get("schema_version") != 2:
+        raise ValidationError(
+            f"[slug-check] backlog store at {target} is not schema_version 2"
+        )
+    items = data.get("items")
+    if not isinstance(items, list):
+        raise ValidationError(
+            f"[slug-check] backlog store at {target} has no items list"
+        )
+    for entry in items:
+        if not isinstance(entry, dict) or not isinstance(entry.get("id"), str):
+            raise ValidationError(
+                f"[slug-check] backlog store at {target} has an entry "
+                "without a string id"
+            )
+    return items
+
+
+def _load_pending_safe(pending_path: Path | None) -> list[dict[str, object]]:
+    """Pending items for id resolution; decode failures become typed errors."""
+    try:
+        return list(dev_status_storage.load_pending(pending_path))
+    except SystemExit as exc:
+        raise ValidationError("[slug-check] pending-items store unreadable") from exc
+
+
+def _git_slug_check_patch(repo_dir: str) -> bytes | None:
+    """The staged patch slug-check scans: one invocation, raw bytes kept.
+
+    The flags pin what is scanned — no external diff, no textconv, forced
+    ``a/``/``b/`` prefixes, no color, zero context — so repository config
+    cannot alter the scan. ``None`` on failure (never "clean").
+    """
+    try:
+        r = subprocess.run(
+            [
+                "git",
+                "-C",
+                repo_dir,
+                "-c",
+                "core.quotePath=false",
+                "diff",
+                "--cached",
+                "--unified=0",
+                "--no-color",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--src-prefix=a/",
+                "--dst-prefix=b/",
+                "--submodule=short",
+            ],
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    return r.stdout
+
+
+def _git_cat_file_blob(repo_dir: str, oid: str) -> bytes | None:
+    """One immutable blob by object id; ``None`` on failure."""
+    try:
+        r = subprocess.run(
+            ["git", "-C", repo_dir, "cat-file", "blob", oid],
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    return r.stdout
+
+
+def _unquote_diff_path(raw: str) -> str | None:
+    """Decode a diff-header path (git C-quotes names with special chars).
+
+    Unquoted names never contain a tab (git C-quotes those), so the caller
+    truncates at the first tab; quoted names end at the closing quote, with
+    at most a trailing tab beyond it. ``None`` when the form is unparseable
+    — the caller turns that into a hard error, never a skip.
+    """
+    if not raw.startswith('"'):
+        return raw
+    escapes = {
+        "n": "\n",
+        "t": "\t",
+        "r": "\r",
+        "a": "\a",
+        "b": "\b",
+        "f": "\f",
+        "v": "\v",
+        '"': '"',
+        "\\": "\\",
+    }
+    out: list[str] = []
+    i = 1
+    while i < len(raw):
+        ch = raw[i]
+        if ch == '"':
+            rest = raw[i + 1 :]
+            if rest not in ("", "\t"):
+                return None
+            return "".join(out)
+        if ch != "\\":
+            out.append(ch)
+            i += 1
+            continue
+        i += 1
+        if i >= len(raw):
+            return None
+        nxt = raw[i]
+        if nxt in escapes:
+            out.append(escapes[nxt])
+            i += 1
+        elif nxt in "01234567":
+            digits = ""
+            while i < len(raw) and nxt in "01234567" and len(digits) < 3:
+                digits += nxt
+                i += 1
+                nxt = raw[i] if i < len(raw) else ""
+            try:
+                out.append(chr(int(digits, 8)))
+            except ValueError:
+                return None
+        else:
+            return None
+    return None
+
+
+def _diff_header_new_path(rest: str | None) -> str | None:
+    """New-side path from a ``diff --git a/X b/X`` header when determinable.
+
+    Non-rename sections have equal sides: the unquoted form decomposes
+    uniquely by length, the quoted form at its boundary quote sequence —
+    so a path containing ``" b/"`` cannot be mis-split. Rename sections
+    resolve via their ``rename to`` line instead. ``None`` when the header
+    does not decompose; callers fail closed on that.
+    """
+    if rest is None:
+        return None
+    if not rest.startswith('"'):
+        if not rest.startswith("a/"):
+            return None
+        n, rem = divmod(len(rest) - 5, 2)
+        if rem or n < 0:
+            return None
+        left, sep, right = rest[2 : 2 + n], rest[2 + n : 5 + n], rest[5 + n :]
+        if sep != " b/" or left != right:
+            return None
+        return left
+    found: list[str] = []
+    start = 0
+    while True:
+        idx = rest.find('" "b/', start)
+        if idx == -1:
+            break
+        old = _unquote_diff_path(rest[: idx + 1])
+        new = _unquote_diff_path(rest[idx + 2 :])
+        if (
+            old is not None
+            and new is not None
+            and old.startswith("a/")
+            and new.startswith("b/")
+            and old[2:] == new[2:]
+        ):
+            found.append(new[2:])
+        start = idx + 1
+    return found[0] if len(found) == 1 else None
+
+
+def _parse_staged_patch(
+    patch: bytes,
+) -> tuple[list[SlugFinding], list[tuple[str, str]]]:
+    """Parse the captured patch into added lines and binary fallback candidates.
+
+    Returns ``(added, binary_candidates)`` where ``added`` carries
+    ``item_id=""`` (matched later) and each binary candidate is a
+    ``(path, new_blob_oid)`` pair whose OID comes from this captured patch —
+    never the live index, so the fallback scan cannot race the hashed bytes.
+
+    Raises :class:`ValidationError` on any structure the parser cannot
+    account for: a silently skipped file would be a silent-pass leak path.
+    """
+    added: list[SlugFinding] = []
+    binary_candidates: list[tuple[str, str]] = []
+    text = patch.decode("utf-8", "surrogateescape")
+
+    path: str | None = None
+    index_new_oid: str | None = None
+    saw_binary = False
+    section_has_added = False
+    header_rest: str | None = None
+    rename_to: str | None = None
+    hunk_old_remaining = 0
+    hunk_new_remaining = 0
+    new_ln = 0
+
+    def flush_section() -> None:
+        nonlocal path, index_new_oid, saw_binary, section_has_added
+        nonlocal header_rest, rename_to
+        if (
+            saw_binary
+            and index_new_oid is not None
+            and set(index_new_oid) != {"0"}
+            and not section_has_added
+        ):
+            cand = (
+                rename_to
+                if rename_to is not None
+                else _diff_header_new_path(header_rest)
+            )
+            if cand is None:
+                raise ValidationError(
+                    "[slug-check] cannot resolve binary patch path from "
+                    f"{header_rest!r} — refusing to pass clean"
+                )
+            binary_candidates.append((cand, index_new_oid))
+        path = None
+        index_new_oid = None
+        saw_binary = False
+        section_has_added = False
+        header_rest = None
+        rename_to = None
+
+    # Split on "\n" only: str.splitlines() would treat content bytes like
+    # form feed as patch line boundaries, letting a fragment after one be
+    # misread as a header and hide a slug from the scan.
+    for raw_line in text.split("\n"):
+        if raw_line.startswith("diff --git "):
+            flush_section()
+            header_rest = raw_line[len("diff --git ") :]
+            hunk_old_remaining = 0
+            hunk_new_remaining = 0
+            continue
+        if hunk_old_remaining > 0 or hunk_new_remaining > 0:
+            if raw_line.startswith("+"):
+                if hunk_new_remaining <= 0:
+                    raise ValidationError(
+                        f"[slug-check] added line past hunk count: {raw_line[:80]!r}"
+                    )
+                added.append(SlugFinding(path or "", new_ln, "", raw_line[1:]))
+                section_has_added = True
+                new_ln += 1
+                hunk_new_remaining -= 1
+            elif raw_line.startswith("-"):
+                if hunk_old_remaining <= 0:
+                    raise ValidationError(
+                        f"[slug-check] removed line past hunk count: {raw_line[:80]!r}"
+                    )
+                hunk_old_remaining -= 1
+            elif raw_line.startswith(" "):
+                new_ln += 1
+                hunk_old_remaining -= 1
+                hunk_new_remaining -= 1
+            elif raw_line.startswith("\\"):
+                pass
+            else:
+                raise ValidationError(
+                    f"[slug-check] unexpected patch line inside hunk: {raw_line[:80]!r}"
+                )
+            continue
+        if raw_line.startswith("\\"):
+            # e.g. "\ No newline at end of file" after a completed hunk
+            continue
+        if raw_line.startswith("+++ "):
+            rest = raw_line[4:]
+            if rest == "/dev/null":
+                path = None
+                continue
+            if rest.startswith('"'):
+                decoded = _unquote_diff_path(rest)
+                if decoded is None or not decoded.startswith("b/"):
+                    raise ValidationError(
+                        f"[slug-check] cannot decode patch header: {raw_line[:80]!r}"
+                    )
+                path = decoded[2:]
+            else:
+                path = rest.split("\t", 1)[0]
+                if not path.startswith("b/"):
+                    raise ValidationError(
+                        f"[slug-check] unexpected patch header: {raw_line[:80]!r}"
+                    )
+                path = path[2:]
+            continue
+        if raw_line.startswith("@@ "):
+            m = re.match(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", raw_line)
+            if m is None:
+                raise ValidationError(
+                    f"[slug-check] cannot decode hunk header: {raw_line[:80]!r}"
+                )
+            hunk_old_remaining = int(m.group(2) or "1")
+            new_ln = int(m.group(3))
+            hunk_new_remaining = int(m.group(4) or "1")
+            continue
+        if raw_line.startswith("index "):
+            m = re.match(r"^index [0-9a-f]+\.\.([0-9a-f]+)", raw_line)
+            if m is not None:
+                index_new_oid = m.group(1)
+            continue
+        if raw_line.startswith("Binary files ") and raw_line.endswith(" differ"):
+            saw_binary = True
+            continue
+        if raw_line.startswith("rename to "):
+            rename_to = _unquote_diff_path(raw_line[len("rename to ") :])
+            if rename_to is None:
+                raise ValidationError(
+                    f"[slug-check] cannot decode rename header: {raw_line[:80]!r}"
+                )
+            continue
+        if raw_line == "" or raw_line.startswith(
+            (
+                "--- ",
+                "old mode ",
+                "new mode ",
+                "deleted file mode ",
+                "new file mode ",
+                "similarity index ",
+                "rename from ",
+                "copy from ",
+                "copy to ",
+            )
+        ):
+            continue
+        raise ValidationError(
+            f"[slug-check] unexpected patch structure: {raw_line[:80]!r}"
+        )
+    flush_section()
+    return added, binary_candidates
+
+
+def _match_ids(
+    lines: list[tuple[str, int, str]], universe: set[str]
+) -> list[SlugFinding]:
+    """Findings for (path, line, text) rows: plain substring, one per id."""
+    findings: list[SlugFinding] = []
+    for path, line, text in lines:
+        for item_id in sorted(universe):
+            if item_id in text:
+                findings.append(SlugFinding(path, line, item_id, text))
+    return findings
+
+
+def _parse_finding_key(spec: str) -> tuple[str, int, str] | None:
+    """ "<path>:<line>:<id>" — split from the right so paths may contain ':'"""
+    parts = spec.rsplit(":", 2)
+    if len(parts) != 3:
+        return None
+    path, line_s, item_id = parts
+    if not path or not item_id or not line_s.isdigit():
+        return None
+    return path, int(line_s), item_id
+
+
+def _append_override_rows(rows: list[dict[str, object]], overrides_path: Path) -> None:
+    """Record overrides fail-closed: a short or failed write invalidates them.
+
+    Unlike the best-effort ``runs.jsonl`` appender, an unrecorded override is
+    refused — "recorded with a reason" is a precondition of the override.
+    """
+    payload = "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows).encode(
+        "utf-8"
+    )
+    try:
+        fd = os.open(overrides_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        try:
+            written = os.write(fd, payload)
+            if written != len(payload):
+                raise ValidationError(
+                    "[slug-check] override record write was short — override refused"
+                )
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except ValidationError:
+        raise
+    except OSError as e:
+        raise ValidationError(
+            f"[slug-check] override record unwritable at {overrides_path}: {e}"
+        ) from e
+
+
+def slug_check(
+    slug_or_id: str | None = None,
+    *,
+    repo: str,
+    overrides: Sequence[tuple[str, str]] | None = None,
+    items_path: Path | None = None,
+) -> SlugCheckResult:
+    """Scan a staged diff for added lines containing a backlog-store id.
+
+    Match universe: every backlog item id in the store (all statuses) plus
+    the resolved ``slug_or_id`` — a numeric position resolves first and
+    never enters the universe as digits. Deleted and context lines are not
+    scanned; a changed file with a content change but no text added lines
+    (binary classification, incl. ``.gitattributes`` ``-diff``) has its
+    staged blob scanned line-by-line via the OID pinned in the captured
+    patch instead of silently passing.
+
+    ``overrides`` are ``("<path>:<line>:<id>", "<reason>")`` pairs, each
+    covering exactly one finding present in this run's scan (no blanket
+    bypass, no persistent allowlist) and recorded to the
+    ``slug_overrides.jsonl`` sidecar fail-closed.
+    """
+    paths = _storage_bundle(items_path)
+    items = _load_universe(paths["items_path"])
+    pending_items = _load_pending_safe(paths["pending_path"])
+
+    universe: set[str] = {str(i["id"]) for i in items}
+    resolved: str | None = None
+    if slug_or_id is not None:
+        kind, slug = resolve_id(slug_or_id, items, pending_items)
+        require_kind("slug-check", slug_or_id, kind, "backlog")
+        resolved = slug
+        universe.add(slug)
+
+    toplevel = _git_show_toplevel(repo)
+    if toplevel is None:
+        raise ValidationError(
+            f"[slug-check] not a git repository (or unreadable): {repo}"
+        )
+    patch = _git_slug_check_patch(toplevel)
+    if patch is None:
+        raise ValidationError(
+            f"[slug-check] git diff failed in {toplevel} — refusing to pass clean"
+        )
+    diff_sha256 = hashlib.sha256(patch).hexdigest()
+
+    added, binary_candidates = _parse_staged_patch(patch)
+    rows: list[tuple[str, int, str]] = [(f.path, f.line, f.text) for f in added]
+    for path, oid in binary_candidates:
+        blob = _git_cat_file_blob(toplevel, oid)
+        if blob is None:
+            raise ValidationError(
+                f"[slug-check] cannot read staged blob {oid} for {path} — "
+                "refusing to pass clean"
+            )
+        for n, raw in enumerate(blob.split(b"\n"), start=1):
+            rows.append((path, n, raw.decode("utf-8", "surrogateescape")))
+
+    findings = sorted(
+        _match_ids(rows, universe), key=lambda f: (f.path, f.line, f.item_id)
+    )
+
+    overridden: list[SlugFinding] = []
+    override_reasons: list[str] = []
+    for spec, reason in overrides or []:
+        key = _parse_finding_key(spec)
+        if key is None:
+            raise ValidationError(
+                f"[slug-check] --allow {spec!r} is not <path>:<line>:<id>"
+            )
+        if not reason.strip():
+            raise ValidationError(
+                f"[slug-check] --allow {spec!r} has an empty reason — "
+                "an override must be recorded with a reason"
+            )
+        match = next(
+            (
+                f
+                for f in findings
+                if (f.path, f.line, f.item_id) == key and f not in overridden
+            ),
+            None,
+        )
+        if match is None:
+            raise ValidationError(
+                f"[slug-check] --allow {spec!r} matches no un-overridden finding"
+            )
+        overridden.append(match)
+        override_reasons.append(reason)
+
+    if overridden:
+        now = datetime.now(UTC).isoformat()
+        record_rows: list[dict[str, object]] = []
+        reason_by_key = {
+            _parse_finding_key(spec): reason for spec, reason in (overrides or [])
+        }
+        for f in overridden:
+            record_rows.append(
+                {
+                    "ts": now,
+                    "slug": resolved,
+                    "repo": toplevel,
+                    "path": f.path,
+                    "line": f.line,
+                    "id": f.item_id,
+                    "text_sha256": hashlib.sha256(
+                        f.text.encode("utf-8", "surrogateescape")
+                    ).hexdigest(),
+                    "reason": reason_by_key[(f.path, f.line, f.item_id)],
+                }
+            )
+        overrides_path = (
+            paths["data_dir"] / "slug_overrides.jsonl"
+            if paths["data_dir"] is not None
+            else dev_status_storage.slug_overrides_file()
+        )
+        _append_override_rows(record_rows, overrides_path)
+
+    return SlugCheckResult(
+        findings=tuple(findings),
+        overridden=tuple(overridden),
+        override_reasons=tuple(override_reasons),
+        diff_sha256=diff_sha256,
+    )
+
+
 def rename_item(
     old_slug_or_id: str,
     new_slug: str,

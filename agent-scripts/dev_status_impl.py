@@ -109,6 +109,7 @@ from dev_status_mutation import (
     run_item,
     set_acceptance,
     set_gate,
+    slug_check,
     start_item,
     today,
     unblock_item,
@@ -351,6 +352,7 @@ SUBCOMMANDS = (
     "acceptance-set",
     "verifier-check",
     "contract-touch",
+    "slug-check",
     "run",
     "runs",
     "backfill-gate",
@@ -3384,6 +3386,53 @@ def cmd_contract_touch(args: argparse.Namespace) -> None:
     print(json.dumps(matches, indent=2))
 
 
+def cmd_slug_check(args: argparse.Namespace) -> None:
+    """Handle ``slug-check``: refuse a staged diff that adds a backlog slug.
+
+    The commit gate's mechanical guard. Scans the staged diff's added lines
+    for the item's resolved slug and every other backlog-store id, printing
+    ``<file>:<line>: <id>: <text>`` per finding. ``--allow
+    <path>:<line>:<id> <reason>`` overrides exactly one finding present in
+    this run's scan (recorded to the ``slug_overrides.jsonl`` sidecar
+    fail-closed); there is no blanket bypass and no persistent allowlist.
+    Exit codes are the gate contract: ``0`` clean or all findings
+    overridden, ``1`` un-overridden findings remain (the commit is refused),
+    ``2`` any error (store, git, parse, or record failure — never readable
+    as clean). The scanned bytes' sha256 is printed last so the gate can tie
+    its verdict to the exact diff the scan examined.
+    """
+    overrides = [(spec, reason) for spec, reason in (args.allow or [])]
+    try:
+        res = slug_check(
+            args.slug,
+            repo=args.repo,
+            overrides=overrides,
+        )
+    except BacklogMutationError as exc:
+        print(f"[slug-check] {exc.message}", file=sys.stderr)
+        sys.exit(2)
+    for finding, reason in zip(res.overridden, res.override_reasons):
+        print(
+            f"overridden: {finding.path}:{finding.line}:{finding.item_id} "
+            f'reason="{reason}"'
+        )
+    for finding in res.remaining:
+        print(f"{finding.path}:{finding.line}: {finding.item_id}: {finding.text}")
+    if res.remaining:
+        print(
+            f"slug-check: {len(res.remaining)} finding(s) remain; "
+            f"staged-diff sha256={res.diff_sha256}"
+        )
+        sys.exit(1)
+    if res.overridden:
+        print(
+            f"slug-check: {len(res.overridden)} finding(s) overridden; "
+            f"staged-diff sha256={res.diff_sha256}"
+        )
+        return
+    print(f"slug-check: clean; staged-diff sha256={res.diff_sha256}")
+
+
 def cmd_run(args: argparse.Namespace) -> None:
     """Handle ``run``: execute a command and record it as run evidence.
 
@@ -4196,6 +4245,7 @@ dispatch: dict[str, Callable[[argparse.Namespace], None]] = {
     "acceptance-set": cmd_acceptance_set,
     "verifier-check": cmd_verifier_check,
     "contract-touch": cmd_contract_touch,
+    "slug-check": cmd_slug_check,
     "run": cmd_run,
     "runs": cmd_runs,
     "backfill-gate": cmd_backfill_gate,
@@ -4536,6 +4586,35 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="<base>..<head>",
         help="inspect every commit on the branch instead of the staged diff",
+    )
+
+    p = sub.add_parser(
+        "slug-check",
+        help="refuse a staged diff that adds a backlog slug (commit-gate guard)",
+        parents=[verbosity_parent],
+    )
+    p.add_argument(
+        "--slug",
+        default=None,
+        metavar="<slug|N>",
+        help="the landing item; its resolved slug joins the scan universe",
+    )
+    p.add_argument(
+        "--repo",
+        required=True,
+        metavar="PATH",
+        help="git repository to scan (normalized to the worktree root)",
+    )
+    p.add_argument(
+        "--allow",
+        nargs=2,
+        action="append",
+        default=[],
+        metavar=("<path>:<line>:<id>", "<reason>"),
+        help=(
+            "override exactly one finding with a recorded reason "
+            "(repeatable; no blanket bypass)"
+        ),
     )
 
     p = sub.add_parser(
