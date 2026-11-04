@@ -1247,6 +1247,8 @@ link_inspect.py — link inspection, path classification, drift finding, and the
   - `same_path(left: Path, right: Path) -> bool` — Compare two paths that may or may not exist, ignoring symlinked parents.
   - `implied_repo_root(target: Path, relative_src: str) -> Path | None` — Return the repo root ``target`` implies, if it ends with ``relative_src``.
   - `is_repo_checkout(root: Path) -> bool` — Return whether ``root`` looks like a checkout of this repo family — the standalone agent-toolkit checkout or the dotfiles repo checkout it ships inside.
+  - `is_agent_toolkit_checkout(root: Path) -> bool` — Return whether ``root`` is an agent-toolkit checkout specifically.
+  - `same_file_in_moved_checkout(live: Path, recorded: Path) -> bool` — Whether ``live`` is ``recorded``'s file after this repo's checkout moved.
   - `is_main_checkout(root: Path) -> bool` — Return whether ``root`` is the repo's primary checkout, not a worktree.
   - `load_links(path: Path) -> list[LinkSpec]` — Parse ``links.toml`` into an ordered list of link specs.
   - `load_managed_dirs(path: Path) -> list[ManagedDirSpec]` — Parse the ``[[managed_dir]]`` rows declaring directories we own exclusively.
@@ -1265,10 +1267,11 @@ link_inspect.py — link inspection, path classification, drift finding, and the
   - `scan_importers(import_dir: Path, module_name: str) -> list[str]` — Return the installed modules in ``import_dir`` that import ``module_name``.
   - `check_applicable_links(links: Sequence[tuple[Path, Path, str, bool]], *, repo_root: Path, manifest_entries: Iterable[dict[str, object]] = (), report_uninstalled: bool = False, home: Path | None = None, specs: Sequence[LinkSpec] | None = None, force_uninstalled: bool = False) -> tuple[list[LinkFinding], dict[Path, int]]` — Report inconsistencies on destinations in scope for this machine.
   - `find_orphaned_links(links: Sequence[tuple[Path, Path, str, bool]], *, manifest_entries: Iterable[dict[str, object]]) -> list[Path]` — Return manifest-recorded symlink destinations no current entry produces.
+  - `is_orphan_owned(dest: Path, recorded_src: str) -> bool` — Whether an orphaned ``dest`` is still agent-toolkit's to remove.
   - `check_orphaned_links(links: Sequence[tuple[Path, Path, str, bool]], *, manifest_entries: Iterable[dict[str, object]]) -> list[LinkFinding]` — Return typed findings for manifest-recorded symlinks that links.toml no longer produces.
   - `live_backup_paths(manifest_entries: Iterable[dict[str, object]]) -> set[Path]` — Return manifest-recorded backups that are still live ``--rollback`` payload.
   - `check_unmanaged_files(managed_dirs: Sequence[ManagedDirSpec], links: Sequence[tuple[Path, Path, str, bool]], *, home: Path, dir_applies: Callable[[ManagedDirSpec], bool], manifest_entries: Iterable[dict[str, object]] = ()) -> tuple[list[LinkFinding], int]` — Report foreign entries in directories ``links.toml`` owns exclusively.
-- Tested by: `test/test_check_toolkit_paths.py`, `test/test_harness_spec.py`, `test/test_install.py`, `test/test_link_drift_check.py`, `test/test_link_inspect.py`
+- Tested by: `test/test_check_toolkit_paths.py`, `test/test_harness_spec.py`, `test/test_install.py`, `test/test_link_drift_check.py`, `test/test_link_inspect.py`, `test/test_orphan_moved_checkout.py`
 
 ### `agent-scripts/llm_backends.py`
 
@@ -2259,7 +2262,7 @@ install.py — agent-toolkit provisioner for macOS/Linux.
   - `do_check_links(ctx: Context) -> int` — Audit the live symlinks against ``links.toml`` and report, changing nothing.
   - `run_data_transforms(ctx: Context) -> None` — Upgrade persisted store data for a clean-break rename release.
   - `run_install(ctx: Context, specs: Sequence[LinkSpec]) -> int` — Run every install step in order and return the process exit status.
-- Tested by: `test/test_dead_installers_stripped.py`, `test/test_harness_spec.py`, `test/test_install.py`, `test/test_link_inspect.py`, `test/test_settings_seed.py`
+- Tested by: `test/test_dead_installers_stripped.py`, `test/test_harness_spec.py`, `test/test_install.py`, `test/test_link_inspect.py`, `test/test_orphan_moved_checkout.py`, `test/test_settings_seed.py`
 
 ### `depart.py`
 

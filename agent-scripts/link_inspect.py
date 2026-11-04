@@ -159,6 +159,86 @@ def is_repo_checkout(root: Path) -> bool:
     return (root / "links.toml").is_file() and (root / "install.py").is_file()
 
 
+def is_agent_toolkit_checkout(root: Path) -> bool:
+    """Return whether ``root`` is an agent-toolkit checkout specifically.
+
+    :func:`is_repo_checkout` also matches the sibling repo this one ships
+    inside, which shares its two markers; ``agent-scripts/link_inspect.py``
+    (this module) exists only in agent-toolkit.
+    """
+    return (
+        is_repo_checkout(root)
+        and (root / "agent-scripts" / "link_inspect.py").is_file()
+    )
+
+
+def _resolved_live_target(live: Path) -> Path | None:
+    """``live`` with ``..`` and symlinks resolved, or None if it cannot be.
+
+    An existing target resolves in full, so a final-component symlink is
+    judged on where it really points. A dangling target (the usual orphan:
+    its source was deleted) resolves through its parent, which must exist.
+    """
+    if os.path.lexists(live):
+        return Path(os.path.realpath(live, strict=True))
+    parent = live.parent
+    if not parent.is_dir():
+        return None
+    return Path(os.path.realpath(parent, strict=True)) / live.name
+
+
+def _resolved_lexical(path: Path) -> Path:
+    """``path`` with its longest existing prefix resolved through symlinks."""
+    path = Path(os.path.normpath(path))
+    existing = path
+    missing: list[str] = []
+    while not os.path.lexists(existing) and existing != existing.parent:
+        missing.append(existing.name)
+        existing = existing.parent
+    return Path(os.path.realpath(existing), *reversed(missing))
+
+
+def same_file_in_moved_checkout(live: Path, recorded: Path) -> bool:
+    """Whether ``live`` is ``recorded``'s file after this repo's checkout moved.
+
+    The install history keeps a link's source as it was when the link was
+    created. After the checkout moves (the flat ``~/Workspace/agent-toolkit``
+    to the nested ``~/Workspace/agent-toolkit/agent-toolkit``), reinstalls
+    point the live link into the new checkout while the history still names
+    the old path, so an exact comparison wrongly treats agent-toolkit's own
+    link as claimed by someone else.
+
+    True only when the resolved live target sits in an agent-toolkit
+    checkout (the nearest repo checkout above it, with no fallback to an
+    outer one), its path inside that checkout has at least two components,
+    ``recorded`` ends with that same path, and the recorded root is not
+    inside any existing agent-toolkit checkout. Any filesystem error fails
+    closed (False), so the link is kept.
+    """
+    try:
+        resolved = _resolved_live_target(live)
+        if resolved is None:
+            return False
+        checkout = next(
+            (anc for anc in resolved.parents if is_repo_checkout(anc)), None
+        )
+        if checkout is None or not is_agent_toolkit_checkout(checkout):
+            return False
+        tail = resolved.relative_to(checkout).parts
+        recorded_parts = Path(os.path.normpath(recorded)).parts
+        if len(tail) < 2 or recorded_parts[-len(tail) :] != tail:
+            return False
+        recorded_root = _resolved_lexical(Path(*recorded_parts[: -len(tail)]))
+        inside_a_checkout = any(
+            os.path.isdir(anc) and is_agent_toolkit_checkout(anc)
+            for anc in recorded_root.parents
+        )
+    except (OSError, ValueError, RuntimeError):
+        return False
+    else:
+        return not inside_a_checkout
+
+
 def is_main_checkout(root: Path) -> bool:
     """Return whether ``root`` is the repo's primary checkout, not a worktree.
 
@@ -1129,6 +1209,13 @@ def find_orphaned_links(
     install-with-agent-toolkit.sh run, because this check didn't exist —
     _rollback_symlink already guards the equivalent case before removing
     anything; this mirrors that same guard here.
+
+    One exception to that guard: a live target that is the recorded file
+    inside a *moved* checkout of this repo (see
+    :func:`same_file_in_moved_checkout`) is still ours. An installer can only
+    point a destination into its own checkout (``links.toml`` sources are
+    repo-relative), so a target inside an agent-toolkit checkout is
+    agent-toolkit's. A destination that cannot be read is skipped.
     """
     known = {dest for _src, dest, _rel, _applicable in links}
     orphans: list[Path] = []
@@ -1139,16 +1226,38 @@ def find_orphaned_links(
         dest = Path(str(entry.get("dest", "")))
         if dest in known or dest in seen:
             continue
-        seen.add(dest)
         # A dest that no longer exists needs no report: a past --rollback,
         # or the user, already cleaned it up.
         if not is_symlink(dest) and not path_exists(dest):
+            seen.add(dest)
             continue
-        recorded_src = str(entry.get("src", ""))
-        if is_symlink(dest) and recorded_src and os.readlink(dest) != recorded_src:
+        if not is_orphan_owned(dest, str(entry.get("src", ""))):
             continue
+        seen.add(dest)
         orphans.append(dest)
     return orphans
+
+
+def is_orphan_owned(dest: Path, recorded_src: str) -> bool:
+    """Whether an orphaned ``dest`` is still agent-toolkit's to remove.
+
+    A non-symlink destination, or one with no recorded source, keeps today's
+    behaviour (owned). A symlink is owned when it still points at the
+    recorded source, or at that file in a moved checkout of this repo. An
+    unreadable link is not owned, so it is never removed.
+    """
+    if not is_symlink(dest):
+        return True
+    try:
+        target = os.readlink(dest)
+    except OSError:
+        return False
+    if not recorded_src or target == recorded_src:
+        return True
+    live = Path(target)
+    if not live.is_absolute():
+        live = dest.parent / live
+    return same_file_in_moved_checkout(live, Path(recorded_src))
 
 
 def check_orphaned_links(
@@ -1161,10 +1270,14 @@ def check_orphaned_links(
     findings: list[LinkFinding] = []
     for dest in find_orphaned_links(links, manifest_entries=manifest_entries):
         if is_symlink(dest):
+            try:
+                target_path = link_target(dest)
+            except OSError:
+                continue
             finding = LinkFinding(
                 CHECK_BUCKET_ORPHANED,
                 dest,
-                symlink_target_path=link_target(dest),
+                symlink_target_path=target_path,
             )
         else:
             finding = LinkFinding(

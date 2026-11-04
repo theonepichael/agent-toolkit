@@ -2343,8 +2343,21 @@ def _cleanup_orphaned_links(
             )
         return
 
+    # Re-check ownership immediately before each unlink: another installer
+    # may have repointed the destination since detection. A race in the
+    # instant between this check and the unlink remains; it predates the
+    # moved-checkout rule and is accepted.
+    recorded_srcs: dict[Path, list[str]] = {}
+    for e in ctx.manifest.entries():
+        if e.get("kind") == "symlink-created":
+            recorded_srcs.setdefault(Path(str(e.get("dest", ""))), []).append(
+                str(e.get("src", ""))
+            )
     removed: list[Path] = []
     for dest in orphans:
+        srcs = recorded_srcs.get(dest) or [""]
+        if not any(link_inspect.is_orphan_owned(dest, s) for s in srcs):
+            continue
         try:
             dest.unlink()
         except OSError:
