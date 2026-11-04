@@ -2222,7 +2222,7 @@ def run_pi(
         raise BackendPayloadSizeError(
             f"prompt size ({prompt_bytes} bytes) exceeds pi limit "
             f"({PI_MAX_PROMPT_BYTES} bytes); pi's opencode-go gateway "
-            f"deterministically stalls on larger payloads"
+            f"has stalled on larger payloads (intermittently, as of 2026-11)"
         )
     kwargs: dict[str, object] = {}
     if mode != "text-only":

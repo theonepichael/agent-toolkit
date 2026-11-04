@@ -1854,7 +1854,7 @@ def review_plan(
             exc = llm_backends.BackendPayloadSizeError(
                 f"prompt size ({prompt_bytes} bytes) exceeds pi limit "
                 f"({llm_backends.PI_MAX_PROMPT_BYTES} bytes); pi's opencode-go gateway "
-                f"deterministically stalls on larger payloads"
+                f"has stalled on larger payloads (intermittently, as of 2026-11)"
             )
             size_rule_outs.append(exc)
             caught.append(exc)
