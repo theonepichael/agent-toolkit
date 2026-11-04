@@ -3398,8 +3398,8 @@ def cmd_slug_check(args: argparse.Namespace) -> None:
     Exit codes are the gate contract: ``0`` clean or all findings
     overridden, ``1`` un-overridden findings remain (the commit is refused),
     ``2`` any error (store, git, parse, or record failure — never readable
-    as clean). The scanned bytes' sha256 is printed last so the gate can tie
-    its verdict to the exact diff the scan examined.
+    as clean). The staged snapshot's sha256 is printed last so the gate can
+    tie its verdict to the exact staged state the scan examined.
     """
     overrides = [(spec, reason) for spec, reason in (args.allow or [])]
     try:

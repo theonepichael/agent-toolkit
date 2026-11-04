@@ -28,6 +28,7 @@ from pytest_shim import pytest  # noqa: E402
 import test_layouts  # noqa: E402
 import agent_toolkit_paths  # noqa: E402
 import dev_status  # noqa: E402  (path insert above)
+import dev_status_mutation  # noqa: E402  (path insert above)
 
 
 class SlugCheckFixture(unittest.TestCase):
@@ -423,6 +424,148 @@ class PatchParserEdgeCaseTestCase(SlugCheckFixture):
         )
         code, out, _ = self.slug_check()
         self.assertEqual(code, 0)
+
+
+@pytest.mark.allow_real_subprocess
+class SnapshotBehaviorTestCase(SlugCheckFixture):
+    """Behavior of the --raw/--numstat snapshot scan (no C-quoted parsing)."""
+
+    def test_diff_suppressed_modified_file_still_scanned(self):
+        # A *modified* text file marked -diff is opaque to git, so its whole
+        # blob is scanned (not just added lines) -- a pathname-based
+        # attribute a path-free blob diff would lose.
+        self.write_items("atk-diffmod")
+        self.stage("tracked.txt", "line one\nunchanged atk-diffmod line\n")
+        self._git("commit", "-q", "-m", "seed")
+        self.stage(".gitattributes", "tracked.txt -diff\n")
+        self.stage(
+            "tracked.txt",
+            "line one\nunchanged atk-diffmod line\nnew clean line\n",
+        )
+        code, out, _ = self.slug_check()
+        self.assertEqual(code, 1)
+        self.assertIn("tracked.txt:2: atk-diffmod", out)
+
+    def test_pure_rename_treated_as_add(self):
+        # --no-renames turns a rename into delete+add, so the new path is
+        # scanned as a new file (conservative: a pre-existing id is flagged,
+        # overridable via --allow, never silently passed).
+        self.write_items("atk-renamed")
+        self.stage("oldname.md", "mentions atk-renamed\n")
+        self._git("commit", "-q", "-m", "seed")
+        self._git("mv", "oldname.md", "newname.md")
+        code, out, _ = self.slug_check()
+        self.assertEqual(code, 1)
+        self.assertIn("newname.md:1: atk-renamed", out)
+
+    def test_mode_only_change_to_binary_file_not_flagged(self):
+        # old_oid == new_oid (identical content) is skipped before binary
+        # classification, so a chmod of a binary file with an existing id is
+        # not flagged.
+        self.write_items("atk-binmode")
+        self.stage_bytes("tool.bin", b"\x00atk-binmode\n")
+        self._git("commit", "-q", "-m", "seed")
+        (self.repo / "tool.bin").chmod(0o755)
+        self._git("add", "tool.bin")
+        code, out, _ = self.slug_check()
+        self.assertEqual(code, 0)
+
+    def test_new_empty_file_clean(self):
+        self.write_items("atk-empty")
+        self.stage_bytes("empty.bin", b"")
+        code, out, _ = self.slug_check()
+        self.assertEqual(code, 0)
+
+    def test_hash_repeatable(self):
+        self.write_items("atk-rep")
+        self.stage("a.md", "same content\n")
+        code1, out1, _ = self.slug_check()
+        code2, out2, _ = self.slug_check()
+        self.assertEqual((code1, code2), (0, 0))
+        self.assertEqual(
+            out1.split("sha256=", 1)[1].strip(),
+            out2.split("sha256=", 1)[1].strip(),
+        )
+
+    def test_gitlink_replaced_by_file_scanned(self):
+        # A tracked submodule replaced by a text file is a typechange whose
+        # old side is a commit OID; the new file's content must be scanned
+        # rather than failing to diff a commit against a blob.
+        self.write_items("atk-gitlink")
+        self._git(
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            "160000,0123456789012345678901234567890123456789,vendor",
+        )
+        self._git("commit", "-q", "-m", "seed")
+        self.stage("vendor", "mentions atk-gitlink\n")
+        code, out, _ = self.slug_check()
+        self.assertEqual(code, 1)
+        self.assertIn("vendor:1: atk-gitlink", out)
+
+
+class SnapshotParserUnitTestCase(unittest.TestCase):
+    """Fail-closed parsing of the combined --raw --numstat snapshot."""
+
+    _ZERO = b"0" * 40
+    _HEX = b"a" * 40
+
+    def test_snapshot_parses_raw_and_numstat(self):
+        output = (
+            b":100644 100644 " + self._ZERO + b" " + self._HEX + b" A\0f.txt\0"
+            b"1\t0\tf.txt\0"
+        )
+        entries, binary = dev_status_mutation._parse_slug_check_snapshot(output)
+        self.assertEqual(
+            entries,
+            [("100644", "100644", self._ZERO.decode(), self._HEX.decode(), "A", "f.txt")],
+        )
+        self.assertEqual(binary, {"f.txt": False})
+
+    def test_snapshot_truncated_raw_raises(self):
+        with self.assertRaises(dev_status_mutation.ValidationError):
+            dev_status_mutation._parse_slug_check_snapshot(b":100644 100644 00000000")
+
+    def test_snapshot_missing_path_raises(self):
+        raw = b":100644 100644 " + self._ZERO + b" " + self._HEX + b" A\0"
+        with self.assertRaises(dev_status_mutation.ValidationError):
+            dev_status_mutation._parse_slug_check_snapshot(raw)
+
+    def test_snapshot_numstat_binary(self):
+        output = (
+            b":000000 100644 " + self._ZERO + b" " + self._HEX + b" A\0f.bin\0"
+            b"-\t-\tf.bin\0"
+        )
+        _, binary = dev_status_mutation._parse_slug_check_snapshot(output)
+        self.assertEqual(binary, {"f.bin": True})
+
+    def test_snapshot_numstat_malformed_raises(self):
+        with self.assertRaises(dev_status_mutation.ValidationError):
+            dev_status_mutation._parse_slug_check_snapshot(b"1\tf.txt\0")
+
+    def test_snapshot_numstat_duplicate_path_raises(self):
+        with self.assertRaises(dev_status_mutation.ValidationError):
+            dev_status_mutation._parse_slug_check_snapshot(b"1\t0\tf.txt\0" * 2)
+
+    def test_blob_text_diff_added_lines(self):
+        diff = (
+            b"diff --git a/x b/x\nindex 0..1 100644\n--- a/x\n+++ b/x\n"
+            b"@@ -1 +1,2 @@\n a\n+b\n"
+        )
+        self.assertEqual(dev_status_mutation._parse_blob_text_diff(diff), [(2, "b")])
+
+    def test_blob_text_diff_binary_marker_returns_none(self):
+        diff = (
+            b"diff --git a/x b/x\nindex 0..1 100644\n"
+            b"Binary files a/x and b/x differ\n"
+        )
+        self.assertIsNone(dev_status_mutation._parse_blob_text_diff(diff))
+
+    def test_blob_text_diff_incomplete_hunk_raises(self):
+        diff = b"diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1,3 +1,3 @@\n a\n"
+        with self.assertRaises(dev_status_mutation.ValidationError):
+            dev_status_mutation._parse_blob_text_diff(diff)
 
 
 if __name__ == "__main__":

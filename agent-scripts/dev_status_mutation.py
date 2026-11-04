@@ -3602,33 +3602,18 @@ def _load_pending_safe(pending_path: Path | None) -> list[dict[str, object]]:
         raise ValidationError("[slug-check] pending-items store unreadable") from exc
 
 
-def _git_slug_check_patch(repo_dir: str) -> bytes | None:
-    """The staged patch slug-check scans: one invocation, raw bytes kept.
+def _is_zero_oid(oid: str) -> bool:
+    """True for the all-zero OID — git's "no such object" sentinel, any length."""
+    return bool(oid) and set(oid) == {"0"}
 
-    The flags pin what is scanned — no external diff, no textconv, forced
-    ``a/``/``b/`` prefixes, no color, zero context — so repository config
-    cannot alter the scan. ``None`` on failure (never "clean").
-    """
+
+def _git_run(repo_dir: str, argv: list[str], *, timeout: int = 30) -> bytes | None:
+    """Run ``git -C repo_dir argv``; stdout bytes on success, ``None`` on failure."""
     try:
         r = subprocess.run(
-            [
-                "git",
-                "-C",
-                repo_dir,
-                "-c",
-                "core.quotePath=false",
-                "diff",
-                "--cached",
-                "--unified=0",
-                "--no-color",
-                "--no-ext-diff",
-                "--no-textconv",
-                "--src-prefix=a/",
-                "--dst-prefix=b/",
-                "--submodule=short",
-            ],
+            ["git", "-C", repo_dir, *argv],
             capture_output=True,
-            timeout=30,
+            timeout=timeout,
             check=False,
         )
     except (OSError, subprocess.SubprocessError):
@@ -3640,275 +3625,195 @@ def _git_slug_check_patch(repo_dir: str) -> bytes | None:
 
 def _git_cat_file_blob(repo_dir: str, oid: str) -> bytes | None:
     """One immutable blob by object id; ``None`` on failure."""
-    try:
-        r = subprocess.run(
-            ["git", "-C", repo_dir, "cat-file", "blob", oid],
-            capture_output=True,
-            timeout=30,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if r.returncode != 0:
-        return None
-    return r.stdout
+    return _git_run(repo_dir, ["cat-file", "blob", oid])
 
 
-def _unquote_diff_path(raw: str) -> str | None:
-    """Decode a diff-header path (git C-quotes names with special chars).
+def _git_blob_diff(repo_dir: str, old_oid: str, new_oid: str) -> bytes | None:
+    """Text diff of two immutable blobs by object id; ``None`` on failure.
 
-    Unquoted names never contain a tab (git C-quotes those), so the caller
-    truncates at the first tab; quoted names end at the closing quote, with
-    at most a trailing tab beyond it. ``None`` when the form is unparseable
-    — the caller turns that into a hard error, never a skip.
+    Path-free, so pathname-based attributes (``-diff``, textconv drivers)
+    are not consulted — the caller decides binary-vs-text from the numstat
+    snapshot and calls this only for files numstat classified as text.
     """
-    if not raw.startswith('"'):
-        return raw
-    escapes = {
-        "n": "\n",
-        "t": "\t",
-        "r": "\r",
-        "a": "\a",
-        "b": "\b",
-        "f": "\f",
-        "v": "\v",
-        '"': '"',
-        "\\": "\\",
-    }
-    out: list[str] = []
-    i = 1
-    while i < len(raw):
-        ch = raw[i]
-        if ch == '"':
-            rest = raw[i + 1 :]
-            if rest not in ("", "\t"):
-                return None
-            return "".join(out)
-        if ch != "\\":
-            out.append(ch)
-            i += 1
-            continue
+    return _git_run(
+        repo_dir,
+        [
+            "diff",
+            "--unified=0",
+            "--no-color",
+            "--no-ext-diff",
+            "--no-textconv",
+            old_oid,
+            new_oid,
+        ],
+    )
+
+
+def _git_slug_check_snapshot(repo_dir: str) -> bytes | None:
+    """One ``git diff --cached -z --raw --numstat`` invocation.
+
+    Paths, OIDs, and binary classification in a single atomic capture:
+    ``git diff --cached`` compares the index against HEAD (and against the
+    empty tree on an unborn HEAD), and each staged blob is later read back
+    by its immutable ``--raw`` OID, so nothing re-reads the live index per
+    file. ``None`` on any git failure (never "clean").
+    """
+    return _git_run(
+        repo_dir,
+        [
+            "diff",
+            "--cached",
+            "-z",
+            "--raw",
+            "--numstat",
+            "--no-abbrev",
+            "--no-renames",
+            "--no-ext-diff",
+            "--no-textconv",
+        ],
+    )
+
+
+def _parse_slug_check_snapshot(
+    output: bytes,
+) -> tuple[list[tuple[str, str, str, str, str, str]], dict[str, bool]]:
+    """Parse combined ``--raw --numstat -z`` output into ``(entries, binary)``.
+
+    ``--raw`` records come first (``:mode mode old new status\0path\0``),
+    then ``--numstat`` records (``added\tremoved\tpath\0``). Raises
+    :class:`ValidationError` on any malformed record, missing path, or
+    duplicate path — a malformed snapshot must never pass silently.
+    """
+    tokens = output.split(b"\0")
+    entries: list[tuple[str, str, str, str, str, str]] = []
+    binary: dict[str, bool] = {}
+    i = 0
+    n = len(tokens)
+    # raw phase: each entry is <meta>\0<path>\0
+    while i < n and tokens[i].startswith(b":"):
+        meta = tokens[i]
         i += 1
-        if i >= len(raw):
-            return None
-        nxt = raw[i]
-        if nxt in escapes:
-            out.append(escapes[nxt])
-            i += 1
-        elif nxt in "01234567":
-            digits = ""
-            while i < len(raw) and nxt in "01234567" and len(digits) < 3:
-                digits += nxt
-                i += 1
-                nxt = raw[i] if i < len(raw) else ""
-            try:
-                out.append(chr(int(digits, 8)))
-            except ValueError:
-                return None
-        else:
-            return None
-    return None
-
-
-def _diff_header_new_path(rest: str | None) -> str | None:
-    """New-side path from a ``diff --git a/X b/X`` header when determinable.
-
-    Non-rename sections have equal sides: the unquoted form decomposes
-    uniquely by length, the quoted form at its boundary quote sequence —
-    so a path containing ``" b/"`` cannot be mis-split. Rename sections
-    resolve via their ``rename to`` line instead. ``None`` when the header
-    does not decompose; callers fail closed on that.
-    """
-    if rest is None:
-        return None
-    if not rest.startswith('"'):
-        if not rest.startswith("a/"):
-            return None
-        n, rem = divmod(len(rest) - 5, 2)
-        if rem or n < 0:
-            return None
-        left, sep, right = rest[2 : 2 + n], rest[2 + n : 5 + n], rest[5 + n :]
-        if sep != " b/" or left != right:
-            return None
-        return left
-    found: list[str] = []
-    start = 0
-    while True:
-        idx = rest.find('" "b/', start)
-        if idx == -1:
-            break
-        old = _unquote_diff_path(rest[: idx + 1])
-        new = _unquote_diff_path(rest[idx + 2 :])
-        if (
-            old is not None
-            and new is not None
-            and old.startswith("a/")
-            and new.startswith("b/")
-            and old[2:] == new[2:]
-        ):
-            found.append(new[2:])
-        start = idx + 1
-    return found[0] if len(found) == 1 else None
-
-
-def _parse_staged_patch(
-    patch: bytes,
-) -> tuple[list[SlugFinding], list[tuple[str, str]]]:
-    """Parse the captured patch into added lines and binary fallback candidates.
-
-    Returns ``(added, binary_candidates)`` where ``added`` carries
-    ``item_id=""`` (matched later) and each binary candidate is a
-    ``(path, new_blob_oid)`` pair whose OID comes from this captured patch —
-    never the live index, so the fallback scan cannot race the hashed bytes.
-
-    Raises :class:`ValidationError` on any structure the parser cannot
-    account for: a silently skipped file would be a silent-pass leak path.
-    """
-    added: list[SlugFinding] = []
-    binary_candidates: list[tuple[str, str]] = []
-    text = patch.decode("utf-8", "surrogateescape")
-
-    path: str | None = None
-    index_new_oid: str | None = None
-    saw_binary = False
-    section_has_added = False
-    header_rest: str | None = None
-    rename_to: str | None = None
-    hunk_old_remaining = 0
-    hunk_new_remaining = 0
-    new_ln = 0
-
-    def flush_section() -> None:
-        nonlocal path, index_new_oid, saw_binary, section_has_added
-        nonlocal header_rest, rename_to
-        if (
-            saw_binary
-            and index_new_oid is not None
-            and set(index_new_oid) != {"0"}
-            and not section_has_added
-        ):
-            cand = (
-                rename_to
-                if rename_to is not None
-                else _diff_header_new_path(header_rest)
+        parts = meta.decode("ascii", "replace").split()
+        if len(parts) != 5:
+            raise ValidationError(
+                f"[slug-check] malformed raw diff entry: {meta[:80]!r}"
             )
-            if cand is None:
-                raise ValidationError(
-                    "[slug-check] cannot resolve binary patch path from "
-                    f"{header_rest!r} — refusing to pass clean"
-                )
-            binary_candidates.append((cand, index_new_oid))
-        path = None
-        index_new_oid = None
-        saw_binary = False
-        section_has_added = False
-        header_rest = None
-        rename_to = None
+        old_mode = parts[0][1:]
+        new_mode = parts[1]
+        old_oid = parts[2]
+        new_oid = parts[3]
+        status = parts[4]
+        if i >= n or not tokens[i]:
+            raise ValidationError(
+                f"[slug-check] raw diff entry missing its path: {meta[:80]!r}"
+            )
+        path = tokens[i].decode("utf-8", "surrogateescape")
+        i += 1
+        entries.append((old_mode, new_mode, old_oid, new_oid, status, path))
+    # numstat phase: the remaining records
+    for rec in tokens[i:]:
+        if not rec:
+            continue
+        added, sep, rest = rec.partition(b"\t")
+        removed, sep2, path_b = rest.partition(b"\t")
+        if not sep or not sep2 or not path_b:
+            raise ValidationError(
+                f"[slug-check] malformed numstat record: {rec[:80]!r}"
+            )
+        path = path_b.decode("utf-8", "surrogateescape")
+        if path in binary:
+            raise ValidationError(f"[slug-check] duplicate path in numstat: {path!r}")
+        binary[path] = added == b"-" or removed == b"-"
+    return entries, binary
 
-    # Split on "\n" only: str.splitlines() would treat content bytes like
-    # form feed as patch line boundaries, letting a fragment after one be
-    # misread as a header and hide a slug from the scan.
+
+def _parse_blob_text_diff(diff: bytes) -> list[tuple[int, str]] | None:
+    """Parse a blob-to-blob text diff into ``(new_line_no, text)`` added lines.
+
+    Returns ``None`` when the diff is the ``Binary files … differ`` marker (a
+    legitimate branch — the caller falls back to a full-blob scan); raises
+    :class:`ValidationError` on any line or hunk structure it cannot account
+    for, including a hunk that ends before its declared counts are consumed.
+    """
+    added: list[tuple[int, str]] = []
+    text = diff.decode("utf-8", "surrogateescape")
+    in_hunk = False
+    new_ln = 0
+    old_remaining = 0
+    new_remaining = 0
     for raw_line in text.split("\n"):
-        if raw_line.startswith("diff --git "):
-            flush_section()
-            header_rest = raw_line[len("diff --git ") :]
-            hunk_old_remaining = 0
-            hunk_new_remaining = 0
-            continue
-        if hunk_old_remaining > 0 or hunk_new_remaining > 0:
-            if raw_line.startswith("+"):
-                if hunk_new_remaining <= 0:
-                    raise ValidationError(
-                        f"[slug-check] added line past hunk count: {raw_line[:80]!r}"
-                    )
-                added.append(SlugFinding(path or "", new_ln, "", raw_line[1:]))
-                section_has_added = True
-                new_ln += 1
-                hunk_new_remaining -= 1
-            elif raw_line.startswith("-"):
-                if hunk_old_remaining <= 0:
-                    raise ValidationError(
-                        f"[slug-check] removed line past hunk count: {raw_line[:80]!r}"
-                    )
-                hunk_old_remaining -= 1
-            elif raw_line.startswith(" "):
-                new_ln += 1
-                hunk_old_remaining -= 1
-                hunk_new_remaining -= 1
-            elif raw_line.startswith("\\"):
-                pass
-            else:
-                raise ValidationError(
-                    f"[slug-check] unexpected patch line inside hunk: {raw_line[:80]!r}"
-                )
-            continue
-        if raw_line.startswith("\\"):
-            # e.g. "\ No newline at end of file" after a completed hunk
-            continue
-        if raw_line.startswith("+++ "):
-            rest = raw_line[4:]
-            if rest == "/dev/null":
-                path = None
-                continue
-            if rest.startswith('"'):
-                decoded = _unquote_diff_path(rest)
-                if decoded is None or not decoded.startswith("b/"):
-                    raise ValidationError(
-                        f"[slug-check] cannot decode patch header: {raw_line[:80]!r}"
-                    )
-                path = decoded[2:]
-            else:
-                path = rest.split("\t", 1)[0]
-                if not path.startswith("b/"):
-                    raise ValidationError(
-                        f"[slug-check] unexpected patch header: {raw_line[:80]!r}"
-                    )
-                path = path[2:]
-            continue
         if raw_line.startswith("@@ "):
             m = re.match(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", raw_line)
             if m is None:
                 raise ValidationError(
                     f"[slug-check] cannot decode hunk header: {raw_line[:80]!r}"
                 )
-            hunk_old_remaining = int(m.group(2) or "1")
+            old_remaining = int(m.group(2) or "1")
             new_ln = int(m.group(3))
-            hunk_new_remaining = int(m.group(4) or "1")
+            new_remaining = int(m.group(4) or "1")
+            in_hunk = True
             continue
-        if raw_line.startswith("index "):
-            m = re.match(r"^index [0-9a-f]+\.\.([0-9a-f]+)", raw_line)
-            if m is not None:
-                index_new_oid = m.group(1)
-            continue
-        if raw_line.startswith("Binary files ") and raw_line.endswith(" differ"):
-            saw_binary = True
-            continue
-        if raw_line.startswith("rename to "):
-            rename_to = _unquote_diff_path(raw_line[len("rename to ") :])
-            if rename_to is None:
+        if in_hunk:
+            if raw_line.startswith("+"):
+                if new_remaining <= 0:
+                    raise ValidationError(
+                        f"[slug-check] added line past hunk count: {raw_line[:80]!r}"
+                    )
+                added.append((new_ln, raw_line[1:]))
+                new_ln += 1
+                new_remaining -= 1
+            elif raw_line.startswith("-"):
+                if old_remaining <= 0:
+                    raise ValidationError(
+                        f"[slug-check] removed line past hunk count: {raw_line[:80]!r}"
+                    )
+                old_remaining -= 1
+            elif raw_line.startswith(" "):
+                new_ln += 1
+                old_remaining -= 1
+                new_remaining -= 1
+            elif raw_line.startswith("\\"):
+                pass  # "\ No newline at end of file"
+            elif raw_line == "":
+                # a hunk is never followed by a blank line, so this is the
+                # trailing newline of the diff
+                if old_remaining or new_remaining:
+                    raise ValidationError(
+                        "[slug-check] truncated diff: hunk ended early"
+                    )
+                in_hunk = False
+            else:
                 raise ValidationError(
-                    f"[slug-check] cannot decode rename header: {raw_line[:80]!r}"
+                    f"[slug-check] unexpected line inside hunk: {raw_line[:80]!r}"
                 )
             continue
-        if raw_line == "" or raw_line.startswith(
-            (
-                "--- ",
-                "old mode ",
-                "new mode ",
-                "deleted file mode ",
-                "new file mode ",
-                "similarity index ",
-                "rename from ",
-                "copy from ",
-                "copy to ",
-            )
-        ):
+        if raw_line == "":
+            continue
+        if raw_line.startswith("Binary files ") and raw_line.endswith(" differ"):
+            return None
+        if raw_line.startswith(("diff --git ", "index ", "--- ", "+++ ")):
             continue
         raise ValidationError(
-            f"[slug-check] unexpected patch structure: {raw_line[:80]!r}"
+            f"[slug-check] unexpected diff structure: {raw_line[:80]!r}"
         )
-    flush_section()
-    return added, binary_candidates
+    if in_hunk and (old_remaining or new_remaining):
+        raise ValidationError("[slug-check] truncated diff: hunk ended early")
+    return added
+
+
+def _scan_blob(path: str, blob: bytes) -> list[tuple[str, int, str]]:
+    """Every line of a blob as ``(path, line_no, text)``, split on ``\n`` only.
+
+    ``str.splitlines`` would treat a form feed inside content as a line
+    boundary and could hide a slug behind the fragment; splitting on ``\n``
+    alone keeps content bytes intact. An empty blob yields no rows.
+    """
+    if not blob:
+        return []
+    return [
+        (path, n, raw.decode("utf-8", "surrogateescape"))
+        for n, raw in enumerate(blob.split(b"\n"), start=1)
+    ]
 
 
 def _match_ids(
@@ -3976,8 +3881,8 @@ def slug_check(
     never enters the universe as digits. Deleted and context lines are not
     scanned; a changed file with a content change but no text added lines
     (binary classification, incl. ``.gitattributes`` ``-diff``) has its
-    staged blob scanned line-by-line via the OID pinned in the captured
-    patch instead of silently passing.
+    staged blob scanned line-by-line via the OID pinned in the
+    ``git diff --cached`` snapshot instead of silently passing.
 
     ``overrides`` are ``("<path>:<line>:<id>", "<reason>")`` pairs, each
     covering exactly one finding present in this run's scan (no blanket
@@ -4001,24 +3906,64 @@ def slug_check(
         raise ValidationError(
             f"[slug-check] not a git repository (or unreadable): {repo}"
         )
-    patch = _git_slug_check_patch(toplevel)
-    if patch is None:
+    snapshot = _git_slug_check_snapshot(toplevel)
+    if snapshot is None:
         raise ValidationError(
             f"[slug-check] git diff failed in {toplevel} — refusing to pass clean"
         )
-    diff_sha256 = hashlib.sha256(patch).hexdigest()
+    diff_sha256 = hashlib.sha256(snapshot).hexdigest()
 
-    added, binary_candidates = _parse_staged_patch(patch)
-    rows: list[tuple[str, int, str]] = [(f.path, f.line, f.text) for f in added]
-    for path, oid in binary_candidates:
-        blob = _git_cat_file_blob(toplevel, oid)
-        if blob is None:
+    entries, binary = _parse_slug_check_snapshot(snapshot)
+
+    rows: list[tuple[str, int, str]] = []
+    for old_mode, new_mode, old_oid, new_oid, status, path in entries:
+        if status == "D" or new_mode == "160000":
+            continue
+        if old_oid == new_oid:
+            # identical content (e.g. a mode-only change): nothing added
+            continue
+        if path not in binary:
             raise ValidationError(
-                f"[slug-check] cannot read staged blob {oid} for {path} — "
-                "refusing to pass clean"
+                f"[slug-check] numstat missing {path!r} — refusing to pass clean"
             )
-        for n, raw in enumerate(blob.split(b"\n"), start=1):
-            rows.append((path, n, raw.decode("utf-8", "surrogateescape")))
+        if _is_zero_oid(old_oid) or old_mode == "160000":
+            # new file (zero OID), or a gitlink replaced by a real file
+            # (commit OID on the old side): there is no text blob to diff
+            # against, so scan the new blob wholesale.
+            blob = _git_cat_file_blob(toplevel, new_oid)
+            if blob is None:
+                raise ValidationError(
+                    f"[slug-check] cannot read staged blob {new_oid} for {path} — "
+                    "refusing to pass clean"
+                )
+            rows.extend(_scan_blob(path, blob))
+        elif binary[path]:
+            blob = _git_cat_file_blob(toplevel, new_oid)
+            if blob is None:
+                raise ValidationError(
+                    f"[slug-check] cannot read staged blob {new_oid} for {path} — "
+                    "refusing to pass clean"
+                )
+            rows.extend(_scan_blob(path, blob))
+        else:
+            diff = _git_blob_diff(toplevel, old_oid, new_oid)
+            if diff is None:
+                raise ValidationError(
+                    f"[slug-check] git diff failed for {path} — refusing to pass clean"
+                )
+            added = _parse_blob_text_diff(diff)
+            if added is None:
+                # blob diff says binary despite numstat saying text — scan the
+                # whole blob rather than fail open
+                blob = _git_cat_file_blob(toplevel, new_oid)
+                if blob is None:
+                    raise ValidationError(
+                        f"[slug-check] cannot read staged blob {new_oid} for {path} — "
+                        "refusing to pass clean"
+                    )
+                rows.extend(_scan_blob(path, blob))
+            else:
+                rows.extend((path, ln, txt) for ln, txt in added)
 
     findings = sorted(
         _match_ids(rows, universe), key=lambda f: (f.path, f.line, f.item_id)
