@@ -253,7 +253,8 @@ failure's message), not the full stream — "should work" is not verification (C
 Load `/skill:review-diff` with this item's worktree path — every item, no
 ask, `--auto` included. It reviews step 9's staged tree with a non-Claude
 reviewer (same-model subagent fallback), triages each finding fix or
-reject-with-reason, fixes and re-verifies, max 2 rounds. Keep the reviewer
+reject-with-reason, records simplifications report-only, fixes and
+re-verifies, max 2 rounds. Keep the reviewer
 line and triage table it prints: step 11's commit gate shows them. Don't
 commit here.
 

@@ -55,7 +55,14 @@ Read the cited lines, then decide each finding: **fix**, or **reject** with a
 one-line reason grounded in the code ("already handled at file:line", "this
 input cannot reach here"). A real issue outside this change is a reject that
 also gets a backlog offer ({{INSTRUCTIONS_REF}} proactive-capture rule).
-"No findings." → go to step 5.
+Add each item under the reviewer's "Simplifications:" to the table with
+severity **simplify** and decision **would-apply** or **keep**, plus a
+one-line reason. Do not make these changes. **would-apply** needs the
+reason to name what the code serves (a contract or invariant, or
+"nothing") and why the smaller change still serves it. If unsure, use
+**keep**. When a **fix** finding exists only because of this diff's own
+approach, fix it as usual, and add "approach-alt: <the smaller approach
+that would avoid it>" to that row's reason. No **fix** rows → go to step 5.
 
 ## 4. Fix and re-review
 Max 2 review rounds in total. On round 2 there is no round 3: after fixing, go

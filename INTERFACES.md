@@ -2074,7 +2074,7 @@ the workflow's template plus its generator's capability/parameter tables.
   - Generated from: `templates/refresh_guidance.md.tmpl` by `gen_skills.py`
   - `claude/commands/{name}.md` is the rendered Claude Code port — edit the template or generator, then regenerate.
   - Installed at: `~/.claude/commands/refresh-guidance.md` (claude)
-- **`/review-diff`** — Review the staged git diff for bugs before committing: a non-Claude, grounded reviewer (second_opinion.py review --diff), then triage each finding fix or reject-with-reason, fix, re-verify, max 2 rounds, and print a triage table for the commit gate; falls back to a fresh same-model subagent when no backend is available. Use when the user says 'review the diff', 'review my changes', 'review before commit', or when backlog-item delegates its review step.
+- **`/review-diff`** — Review the staged git diff for bugs before committing: a non-Claude, grounded reviewer (second_opinion.py review --diff), then triage each finding fix or reject-with-reason, record simplifications report-only, fix, re-verify, max 2 rounds, and print a triage table for the commit gate; falls back to a fresh same-model subagent when no backend is available. Use when the user says 'review the diff', 'review my changes', 'review before commit', or when backlog-item delegates its review step.
   - Generated from: `templates/review_diff.md.tmpl` by `gen_skills.py`
   - `claude/commands/{name}.md` is the rendered Claude Code port — edit the template or generator, then regenerate.
   - Installed at: `~/.claude/commands/review-diff.md` (claude)

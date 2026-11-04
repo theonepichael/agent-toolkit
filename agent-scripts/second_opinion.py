@@ -66,9 +66,11 @@ Flags
   --diff           (review only) review the staged diff (`git diff --cached` in
                    --dir) instead of a plan: the prompt hunts for correctness
                    bugs, regressions, missed callers, test gaps and doc drift,
-                   and answers "No findings." when there are none. Mutually
-                   exclusive with <plan-file-or-text>; an empty staged diff or
-                   a git failure is an error (exit 1), never a silent pass.
+                   lists removable or over-built code in a "Simplifications:"
+                   section, and answers "No findings." on the first line when
+                   there are no defects. Mutually exclusive with
+                   <plan-file-or-text>; an empty staged diff or a git failure
+                   is an error (exit 1), never a silent pass.
                    The round cap applies only with --run-id (a diff has no
                    stable file path to key on).
   --exclude-backend NAME  (review only) skip NAME in priority-order backend
@@ -990,8 +992,17 @@ Report numbered findings. Each finding gives: file:line, what breaks, a
 concrete failing scenario (input or state -> wrong result), and a severity
 (high, medium, low). Do not report style, naming or formatting nits. Do not
 emit replacement code listings.
+
+After the findings, add a section headed "Simplifications:". It lists code
+this diff adds that could be removed, or replaced by a smaller change,
+without dropping any required behavior: stated contracts, invariants,
+safety and data-integrity properties, or evidence checks, whether tested or
+not. Look especially for code that only handles side effects of the diff's
+own approach. Give file:line, what would replace it, and which contract or
+invariant the code serves, if any. These are suggestions, not defects. If
+there are none, write "Simplifications: none."
 {focus_section}
-If you find nothing real, answer exactly "No findings." and stop. Skip preamble.
+If you find no defects, answer "No findings." on the first line, then give the Simplifications section. Skip preamble.
 
 ---
 {plan_text}

@@ -4082,6 +4082,21 @@ class DiffReviewTests(unittest.TestCase):
         self.assertIn("+x = 1", prompt)
         self.assertNotIn("reviewing a plan", prompt)
 
+    def test_build_prompt_diff_includes_simplifications_instruction(self) -> None:
+        prompt = second_opinion.build_prompt("+x = 1\n", None, diff=True)
+        self.assertIn('headed "Simplifications:"', prompt)
+        self.assertIn("then give the Simplifications section", prompt)
+        self.assertNotIn('answer exactly "No findings." and stop', prompt)
+        self.assertNotIn("If you find nothing real", prompt)
+
+    def test_build_prompt_diff_simplifications_present_with_focus_hints(
+        self,
+    ) -> None:
+        prompt = second_opinion.build_prompt("+x\n", "- the lock", diff=True)
+        self.assertIn('headed "Simplifications:"', prompt)
+        self.assertIn("then give the Simplifications section", prompt)
+        self.assertIn("- the lock", prompt)
+
     def test_build_prompt_diff_text_only_says_no_tools(self) -> None:
         prompt = second_opinion.build_prompt(
             "+x = 1\n", None, grounded=False, diff=True
