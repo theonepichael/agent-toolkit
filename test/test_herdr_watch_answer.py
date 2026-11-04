@@ -195,6 +195,158 @@ class WatchTests(unittest.TestCase):
         first_seen = persisted["agents"]["atk-w1"]["first_seen_at"]
         self.assertGreater(first_seen, 0)
 
+    def test_relaunch_under_same_name_resets_grace_and_ever_working(self) -> None:
+        state = Path(tempfile.mkdtemp()) / "watch.json"
+        # Old session: working, seq=5, pane="w1:p1", first_seen_at=1000.0 (past grace window).
+        old_time = 1000.0
+        state.write_text(
+            json.dumps({
+                "agents": {
+                    "atk-w1": {
+                        "acked_seq": 5,
+                        "first_seen_at": old_time,
+                        "ever_working": True,
+                        "last_seq": 5,
+                        "pane_id": "w1:p1",
+                        "agent_session": {"agent": "pi", "kind": "path", "value": "/path/s1.jsonl"},
+                    }
+                },
+                "membership": ["atk-w1"],
+                "pending_gone": [],
+            })
+        )
+        # Relaunch under same name: new pane, new session, seq=1, status="idle" (startup flicker).
+        new_agent = {
+            "name": "atk-w1",
+            "agent_status": "idle",
+            "state_change_seq": 1,
+            "pane_id": "w1:p2",
+            "agent_session": {"agent": "pi", "kind": "path", "value": "/path/s2.jsonl"},
+        }
+        with mock.patch("time.time", return_value=1200.0):
+            code, out, _ = self.run_watch(
+                ["watch", "atk-w1", "--state", str(state), "--timeout-s", "1", "--grace-s", "60"],
+                WatchFakeHerdr([[new_agent]]),
+            )
+        # Startup idle must be suppressed by grace (timeout 124, attention empty)
+        self.assertEqual(code, 124)
+        payload = json.loads(out)
+        self.assertEqual(payload["attention"], {})
+        # State must be reset: first_seen_at updated to now (1200.0), ever_working False, acked_seq 0
+        persisted = json.loads(state.read_text())
+        agent_state = persisted["agents"]["atk-w1"]
+        self.assertEqual(agent_state["first_seen_at"], 1200.0)
+        self.assertFalse(agent_state["ever_working"])
+        self.assertEqual(agent_state["acked_seq"], 0)
+        self.assertEqual(agent_state["pane_id"], "w1:p2")
+        self.assertEqual(agent_state["agent_session"]["value"], "/path/s2.jsonl")
+        self.assertEqual(agent_state["last_seq"], 1)
+
+    def test_relaunch_detected_by_seq_lower_than_persisted(self) -> None:
+        state = Path(tempfile.mkdtemp()) / "watch.json"
+        state.write_text(
+            json.dumps({
+                "agents": {
+                    "atk-w1": {
+                        "acked_seq": 5,
+                        "first_seen_at": 1000.0,
+                        "ever_working": True,
+                        "last_seq": 5,
+                    }
+                },
+                "membership": ["atk-w1"],
+                "pending_gone": [],
+            })
+        )
+        # Only seq is lower (1 < 5); pane_id and agent_session absent
+        new_agent = _agent("atk-w1", "idle", 1)
+        with mock.patch("time.time", return_value=1200.0):
+            code, out, _ = self.run_watch(
+                ["watch", "atk-w1", "--state", str(state), "--timeout-s", "1", "--grace-s", "60"],
+                WatchFakeHerdr([[new_agent]]),
+            )
+        self.assertEqual(code, 124)
+        persisted = json.loads(state.read_text())
+        agent_state = persisted["agents"]["atk-w1"]
+        self.assertEqual(agent_state["first_seen_at"], 1200.0)
+        self.assertFalse(agent_state["ever_working"])
+        self.assertEqual(agent_state["acked_seq"], 0)
+
+    def test_relaunch_detected_by_terminal_id_change(self) -> None:
+        state = Path(tempfile.mkdtemp()) / "watch.json"
+        state.write_text(
+            json.dumps({
+                "agents": {
+                    "atk-w1": {
+                        "acked_seq": 0,
+                        "first_seen_at": 1000.0,
+                        "ever_working": True,
+                        "last_seq": 5,
+                        "terminal_id": "term-1",
+                    }
+                },
+                "membership": ["atk-w1"],
+                "pending_gone": [],
+            })
+        )
+        new_agent = {
+            "name": "atk-w1",
+            "agent_status": "idle",
+            "state_change_seq": 5,
+            "terminal_id": "term-2",
+        }
+        with mock.patch("time.time", return_value=1200.0):
+            code, out, _ = self.run_watch(
+                ["watch", "atk-w1", "--state", str(state), "--timeout-s", "1", "--grace-s", "60"],
+                WatchFakeHerdr([[new_agent]]),
+            )
+        self.assertEqual(code, 124)
+        persisted = json.loads(state.read_text())
+        agent_state = persisted["agents"]["atk-w1"]
+        self.assertEqual(agent_state["first_seen_at"], 1200.0)
+        self.assertFalse(agent_state["ever_working"])
+        self.assertEqual(agent_state["terminal_id"], "term-2")
+
+    def test_unchanged_session_never_resets_state(self) -> None:
+        state = Path(tempfile.mkdtemp()) / "watch.json"
+        original_time = 1000.0
+        state.write_text(
+            json.dumps({
+                "agents": {
+                    "atk-w1": {
+                        "acked_seq": 3,
+                        "first_seen_at": original_time,
+                        "ever_working": True,
+                        "last_seq": 4,
+                        "pane_id": "w1:p1",
+                        "terminal_id": "term-1",
+                        "agent_session": {"agent": "pi", "kind": "path", "value": "/path/s1.jsonl"},
+                    }
+                },
+                "membership": ["atk-w1"],
+                "pending_gone": [],
+            })
+        )
+        same_agent = {
+            "name": "atk-w1",
+            "agent_status": "working",
+            "state_change_seq": 4,
+            "pane_id": "w1:p1",
+            "terminal_id": "term-1",
+            "agent_session": {"agent": "pi", "kind": "path", "value": "/path/s1.jsonl"},
+        }
+        with mock.patch("time.time", return_value=1200.0):
+            code, out, _ = self.run_watch(
+                ["watch", "atk-w1", "--state", str(state), "--timeout-s", "1", "--grace-s", "60"],
+                WatchFakeHerdr([[same_agent]]),
+            )
+        self.assertEqual(code, 124)
+        persisted = json.loads(state.read_text())
+        agent_state = persisted["agents"]["atk-w1"]
+        self.assertEqual(agent_state["first_seen_at"], original_time)
+        self.assertTrue(agent_state["ever_working"])
+        self.assertEqual(agent_state["acked_seq"], 3)
+
     def test_work_then_block_between_polls_is_surfaced(self) -> None:
         state = Path(tempfile.mkdtemp()) / "watch.json"
         code, out, _ = self.run_watch(

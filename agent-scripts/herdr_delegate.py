@@ -750,6 +750,9 @@ def parse_agent_listing_strict(
                 "status": status,
                 "seq": seq,
                 "session_path": _pi_session_path(raw.get("agent_session")),
+                "agent_session": raw.get("agent_session"),
+                "pane_id": raw.get("pane_id"),
+                "terminal_id": raw.get("terminal_id"),
             }
         )
     return records
@@ -1133,6 +1136,36 @@ def _apply_cost_acks(args: argparse.Namespace, state: dict[str, object]) -> None
         acks[subject] = {**snap, "acked_at": now_ts}
 
 
+def _is_session_change(rec: dict[str, object], cur: dict[str, object]) -> bool:
+    """Return True if cur represents a new agent session behind an existing name."""
+    prev_session = rec.get("agent_session")
+    cur_session = cur.get("agent_session")
+    if (
+        prev_session is not None
+        and cur_session is not None
+        and cur_session != prev_session
+    ):
+        return True
+
+    prev_pane = rec.get("pane_id")
+    cur_pane = cur.get("pane_id")
+    if prev_pane is not None and cur_pane is not None and cur_pane != prev_pane:
+        return True
+
+    prev_term = rec.get("terminal_id")
+    cur_term = cur.get("terminal_id")
+    if prev_term is not None and cur_term is not None and cur_term != prev_term:
+        return True
+
+    cur_seq = cur["seq"]
+    prev_seq = rec.get("last_seq")
+    if prev_seq is not None and cur_seq < prev_seq:
+        return True
+
+    acked_seq = rec.get("acked_seq")
+    return bool(acked_seq and cur_seq < acked_seq)
+
+
 def _cmd_watch(args: argparse.Namespace) -> None:
     require_herdr_env(os.environ)
     state_path = Path(args.state)
@@ -1188,11 +1221,29 @@ def _cmd_watch(args: argparse.Namespace) -> None:
             for name in sorted(present & targets):
                 if name not in state["membership"]:
                     state["membership"].append(name)
-                rec = state["agents"].setdefault(
-                    name, {"acked_seq": 0, "first_seen_at": now, "ever_working": False}
-                )
-                if by_name[name]["status"] == "working":
-                    rec["ever_working"] = True
+                cur = by_name[name]
+                if name not in state["agents"]:
+                    state["agents"][name] = {
+                        "acked_seq": 0,
+                        "first_seen_at": now,
+                        "ever_working": cur["status"] == "working",
+                        "last_seq": cur["seq"],
+                        "agent_session": cur.get("agent_session"),
+                        "pane_id": cur.get("pane_id"),
+                        "terminal_id": cur.get("terminal_id"),
+                    }
+                else:
+                    rec = state["agents"][name]
+                    if _is_session_change(rec, cur):
+                        rec["first_seen_at"] = now
+                        rec["ever_working"] = cur["status"] == "working"
+                        rec["acked_seq"] = 0
+                    elif cur["status"] == "working":
+                        rec["ever_working"] = True
+                    rec["last_seq"] = cur["seq"]
+                    rec["agent_session"] = cur.get("agent_session")
+                    rec["pane_id"] = cur.get("pane_id")
+                    rec["terminal_id"] = cur.get("terminal_id")
 
             attention: dict[str, dict[str, object]] = {}
             for name in sorted(present & targets):
