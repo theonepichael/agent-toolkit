@@ -44,6 +44,41 @@ call cap, send-back, approve and close — as a pi worker does (drill of
   and resumes its session is unknown. Treat an agy worker as lost after a
   restart: check its worktree and relaunch.
 
+### Takeover from a closed pi orchestrator
+
+When this foreman session takes over from a pi orchestrator that was closed
+before it could relay its workers' capture offers, those offers are stranded
+on disk and still owed. Do this once, before scheduling, and only after
+confirming quiescence — `herdr agent list` shows no live orchestrator or
+worker for those runs. If you cannot establish that, or anything live still
+owns the files, leave them alone.
+
+```bash
+ls ~/.pi/agent/state/swarm-*-capture-*.json 2>/dev/null
+```
+
+(`PI_SWARM_STATE_DIR`, if the closed orchestrator set it, overrides
+`~/.pi/agent/state`.) For each file:
+
+1. Read it as JSON. A capture file carries a well-formed `offers` array
+   (`{"offers": [{"kind": "<backlog|pending|out-of-scope>", "id": "<slug>", "summary": "<one line>"}]}`).
+   A file with no well-formed `offers` array — a sidecar the glob over-matched,
+   or a damaged capture — is left on disk untouched and mentioned to the
+   operator; never delete it.
+2. For each offer, drop it if its `id` is already taken:
+   `python3 {{TOOLKIT_SCRIPTS}}/dev_status.py show <id>` (resolves pending then
+   backlog) or, for an `out-of-scope` offer,
+   `python3 {{TOOLKIT_SCRIPTS}}/dev_status.py out-of-scope show <id>`. A lookup
+   that fails for any reason other than "not found" is not "not tracked" —
+   report it and leave the file.
+3. Relay every remaining offer to the operator, one per offer, using the
+   protocol its `kind` names (`backlog` → `dev_status.py add`, `pending` →
+   `dev_status.py pending add`, `out-of-scope` → `dev_status.py out-of-scope
+   add`), asking before each and never adding silently.
+4. Delete the file only after every offer in it has been relayed or dropped as
+   already taken — the same read-relay-delete discipline as step 6's per-slug
+   digest files, so a crash mid-relay re-offers rather than losing the offer.
+
 ## 2. Scheduling by hand
 
 Eligibility comes from `dev_status.py`, never from this skill's guesswork:

@@ -736,6 +736,32 @@ class ForemanSendBackTests(unittest.TestCase):
         self.assertGreater(seen, 0)
 
 
+class ForemanTakeoverTests(unittest.TestCase):
+    """Every foreman copy documents the stranded-capture takeover step.
+
+    When a foreman takes over from a pi orchestrator that was closed before
+    it could relay its workers' capture offers, those offers are still owed.
+    The step must list the stranded capture files, relay each offer
+    deduplicated against the backlog, and delete each file only after
+    relaying -- the same read-relay-delete discipline as step 6's per-slug
+    digest files.
+    """
+
+    def test_takeover_step_in_every_foreman_output(self) -> None:
+        rendered = gs.render_all(REPO_ROOT, SKILL_PARAMS)
+        seen = 0
+        for (skill, _harness), path in gs.OUTPUT_PATHS.items():
+            if skill != "foreman":
+                continue
+            seen += 1
+            text = " ".join(rendered[path].split())
+            self.assertIn("swarm-*-capture-*.json", text, path)
+            self.assertIn("well-formed", text, path)
+            self.assertIn("already taken", text, path)
+            self.assertIn("Delete the file only after", text, path)
+        self.assertGreater(seen, 0)
+
+
 class EndToEndTests(unittest.TestCase):
     """Assert the real templates + params render to exactly what's committed."""
 
