@@ -1970,7 +1970,7 @@ worktree.py — automated worktree creation and dependency bootstrapping.
   - `class WorktreeResult` — Outcome of a worktree creation or reuse operation.
 - Public functions:
   - `result_payload(result: WorktreeResult) -> dict[str, object]` — JSON payload for a worktree result, shared by both CLIs.
-  - `find_repo_for_path(path: Path) -> Path | None` — Find the enclosing git repository root for a given path.
+  - `find_repo_for_path(path: Path) -> Path | None` — Find the enclosing git repository's main checkout for a given path.
   - `resolve_backlog_item(slug_or_id: str, items_path: Path | None = None) -> dict[str, object] | None` — Look up a backlog item by slug or numeric position using dev_status_storage.
   - `resolve_item_repos(item: Mapping[str, object]) -> set[Path]` — Distinct git repositories named by an item's ``related_files``.
   - `resolve_worktree_config(slug_or_id: str | None = None, *, repo: Path | str | None = None, branch: str | None = None, dest: Path | str | None = None, base: str | None = None, skip_bootstrap: bool = False, force: bool = False, quiet: bool = False, items_path: Path | None = None) -> WorktreeConfig` — Resolve worktree target repository, branch name, and destination path.

@@ -562,6 +562,57 @@ class TestWorktree:
         assert res.returncode == 2
         assert "either a backlog item slug/id or --repo must be provided" in res.stderr
 
+    @pytest.mark.regression(
+        "worktree-resolve-main-checkout",
+        "AssertionError: assert 'repo-wt' == 'repo'",
+    )
+    def test_linked_worktree_resolves_to_main_checkout(self, tmp_path: Path) -> None:
+        """A related_file inside a linked worktree resolves to the main checkout,
+        and two worktrees of one repository count as one repository."""
+        repo = _init_repo(tmp_path / "repo")
+        wt = tmp_path / "repo-wt"
+        subprocess.run(
+            ["git", "-C", str(repo), "worktree", "add", "-b", "wt-branch", str(wt)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        main = repo.resolve()
+
+        # The linked worktree's own path resolves to the main checkout, not
+        # itself (this is the assertion that fails red pre-fix).
+        assert worktree.find_repo_for_path(wt).name == main.name
+
+        # A file inside the linked worktree resolves to the main checkout too.
+        assert worktree.find_repo_for_path(wt / "README.md") == main
+
+        # Two worktrees of one repository count as one repository.
+        repos = worktree.resolve_item_repos(
+            {
+                "related_files": [
+                    {"path": str(repo / "README.md")},
+                    {"path": str(wt / "README.md")},
+                ],
+            }
+        )
+        assert repos == {main}
+
+        # Preservation: a subdirectory of the main checkout still resolves to it.
+        subdir = repo / "subdir"
+        subdir.mkdir()
+        assert worktree.find_repo_for_path(subdir) == main
+
+    def test_bare_repo_resolves_to_none(self, tmp_path: Path) -> None:
+        """A bare repository path still resolves to None (no work tree)."""
+        bare = tmp_path / "bare.git"
+        subprocess.run(
+            ["git", "init", "--bare", str(bare)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        assert worktree.find_repo_for_path(bare) is None
+
 
 
 def _git(repo: Path, *args: str) -> str:
