@@ -307,6 +307,41 @@ class WatchTests(unittest.TestCase):
         self.assertFalse(agent_state["ever_working"])
         self.assertEqual(agent_state["terminal_id"], "term-2")
 
+    def test_relaunch_detected_by_pane_id_change(self) -> None:
+        state = Path(tempfile.mkdtemp()) / "watch.json"
+        state.write_text(
+            json.dumps({
+                "agents": {
+                    "atk-w1": {
+                        "acked_seq": 0,
+                        "first_seen_at": 1000.0,
+                        "ever_working": True,
+                        "last_seq": 5,
+                        "pane_id": "w1:p1",
+                    }
+                },
+                "membership": ["atk-w1"],
+                "pending_gone": [],
+            })
+        )
+        new_agent = {
+            "name": "atk-w1",
+            "agent_status": "idle",
+            "state_change_seq": 5,
+            "pane_id": "w1:p2",
+        }
+        with mock.patch("time.time", return_value=1200.0):
+            code, out, _ = self.run_watch(
+                ["watch", "atk-w1", "--state", str(state), "--timeout-s", "1", "--grace-s", "60"],
+                WatchFakeHerdr([[new_agent]]),
+            )
+        self.assertEqual(code, 124)
+        persisted = json.loads(state.read_text())
+        agent_state = persisted["agents"]["atk-w1"]
+        self.assertEqual(agent_state["first_seen_at"], 1200.0)
+        self.assertFalse(agent_state["ever_working"])
+        self.assertEqual(agent_state["pane_id"], "w1:p2")
+
     def test_unchanged_session_never_resets_state(self) -> None:
         state = Path(tempfile.mkdtemp()) / "watch.json"
         original_time = 1000.0
