@@ -10,9 +10,15 @@ python3 {{TOOLKIT_SCRIPTS}}/analyze_sessions.py <subcommand> [flags]
 
 - **Cost and token analysis**:
   ```bash
-  python3 {{TOOLKIT_SCRIPTS}}/analyze_sessions.py cost [--by total|day|project|harness|model|session] [--since <date>] [--until <date>] [--cwd <path>] [--model <name>] [--session <id>] [--grep <pattern>] [--limit N] [--harness all|pi|claude|opencode|copilot|agy|codex] [--no-subagents] [--json]
+  python3 {{TOOLKIT_SCRIPTS}}/analyze_sessions.py cost [--by total|day|project|harness|model|session|item] [--since <date>] [--until <date>] [--cwd <path>] [--model <name>] [--session <id>] [--grep <pattern>] [--limit N] [--harness all|pi|claude|opencode|copilot|agy|codex] [--no-subagents] [--json]
   ```
-  Calculates token breakdowns (input, output, cache read, cache write, total) and USD costs (native for pi/opencode, derived for Claude Code and Codex). Every rollup displays its cost origin. Subagents are included by default; pass `--no-subagents` to exclude them.
+  Calculates token breakdowns (input, output, cache read, cache write, total) and USD costs (native for pi/opencode, derived for Claude Code and Codex). Every rollup displays its cost origin. Subagents are included by default; pass `--no-subagents` to exclude them. Pass `--by item` to group by the backlog item slug parsed from each session's launch prompt (`/backlog-item ... <slug>`), summing across relaunches; sessions without one group as `unattributed`.
+
+- **First-write milestones**:
+  ```bash
+  python3 {{TOOLKIT_SCRIPTS}}/analyze_sessions.py milestones [--repo <path>] [--since <date>] [--until <date>] [--cwd <path>] [--model <name>] [--session <id>] [--grep <pattern>] [--limit N] [--harness all|pi|claude|opencode|copilot|agy|codex] [--json]
+  ```
+  Reports elapsed time and spend from session start to the first file write (write/edit tool call) into the repo given by `--repo` (default: each session's own cwd). Measurable on harnesses whose logs carry explicit write tool calls with paths (pi, Claude Code, opencode); codex, copilot, and agy are reported as `unsupported`, never as zero. No launch-time claim is made without a real launch signal.
 
 - **List prompts**:
   ```bash

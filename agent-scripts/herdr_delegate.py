@@ -92,7 +92,7 @@ import tempfile
 import time
 import uuid
 from collections.abc import Callable, Iterator
-from datetime import datetime
+from datetime import UTC, datetime
 from datetime import time as dt_time
 from pathlib import Path
 
@@ -110,6 +110,7 @@ import agy_workspace_trust  # noqa: E402
 import analyze_sessions  # noqa: E402
 import cli_common  # noqa: E402
 import herdr_picker  # noqa: E402
+import migration_lock  # noqa: E402
 from backlog_claim_lookup import (  # noqa: E402
     BacklogClaimLookup,
     LocalClaimLookup,
@@ -130,7 +131,9 @@ from worktree import (  # noqa: E402
 )
 
 # What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
-TOOLKIT_DATA = "reader"
+# Reader for the backlog store (via dev_status_storage); writer of its own
+# append-only launch ledger (see _append_launch_record).
+TOOLKIT_DATA = "writer"
 TOOLKIT_DATA_VIA = ("dev_status_storage",)
 
 UNATTENDED_ENV = "PI_AGENT_UNATTENDED=1"
@@ -149,6 +152,65 @@ def foreman_capture_file(slug: str) -> Path:
 def foreman_capture_env(slug: str) -> str:
     """The env pair that points a handoff worker at its capture file."""
     return f"PI_SWARM_CAPTURE_FILE={foreman_capture_file(slug)}"
+
+
+def launch_log_file() -> Path:
+    """The launch ledger: one JSONL record per completed launch."""
+    return agent_toolkit_paths.path_for("launch-log")
+
+
+def _launch_identity() -> tuple[str | None, str | None]:
+    """The launching session's (harness, id) from env, if known."""
+    for env_var, harness in (
+        ("PI_SESSION_ID", "pi"),
+        ("CLAUDE_SESSION_ID", "claude"),
+    ):
+        value = os.environ.get(env_var)
+        if value:
+            return harness, value
+    return None, None
+
+
+def _append_launch_record(
+    *,
+    kind: str,
+    slug: str | None,
+    model: str | None,
+    agent: str,
+    pane: str,
+    tab: str,
+    worker_session: str | None = None,
+) -> None:
+    """Append one record to the launch ledger; never raises.
+
+    Identifiers and timestamps only — never prompt or message content. The
+    append is telemetry: it runs under the migration scope and is skipped,
+    not failed, when that scope refuses (same contract as guard_rails' audit
+    log), and any other error is noted on stderr and dropped. The launch
+    itself is never affected either way.
+    """
+    launcher_harness, launcher_session = _launch_identity()
+    record: dict[str, object] = {
+        "ts": datetime.now(UTC).isoformat(),
+        "launcher_harness": launcher_harness,
+        "launcher_session": launcher_session,
+        "kind": kind,
+        "agent": agent,
+        "pane": pane,
+        "tab": tab,
+        "slug": slug,
+        "model": model,
+        "worker_session": worker_session,
+    }
+    try:
+        with migration_lock.shared("launch-log", quiet=True):
+            cli_common.append_jsonl(launch_log_file(), record)
+    except agent_toolkit_paths.LayoutError:
+        return
+    except migration_lock.MigrationLockBusy as exc:
+        migration_lock.observe("launch-log", "refused-telemetry", str(exc), quiet=True)
+    except Exception as exc:
+        print(f"[launch-log] append failed (non-fatal): {exc}", file=sys.stderr)
 
 
 # `prefix_of` and `is_worker_safe` are imported, never redefined. The whole
@@ -1796,6 +1858,8 @@ def spawn_in_new_tab(
     plugin_dir: str | None = None,
     writable_roots: list[str] | None = None,
     handoff_slug: str | None = None,
+    launch_slug: str | None = None,
+    launch_kind: str = "worker",
 ) -> dict[str, object]:
     """Create a tab, start an agent in it, and hand it its prompt.
 
@@ -1873,6 +1937,16 @@ def spawn_in_new_tab(
         }
         if session_id:
             summary["session_id"] = session_id
+        with contextlib.suppress(Exception):
+            _append_launch_record(
+                kind=launch_kind,
+                slug=launch_slug,
+                model=model,
+                agent=name,
+                pane=pane,
+                tab=tab,
+                worker_session=session_id,
+            )
         return summary
     raise AssertionError("unreachable: loop always returns or raises")
 
@@ -2124,6 +2198,8 @@ def cmd_launch(args: argparse.Namespace) -> None:
                 plugin_dir=plugin_dir,
                 writable_roots=writable_roots,
                 handoff_slug=handoff_slug,
+                launch_slug=args.slug,
+                launch_kind="worker" if args.slug else "orchestrator",
             )
         )
     )
@@ -2188,6 +2264,7 @@ def cmd_restart(args: argparse.Namespace) -> None:
         kind=kind,
         session_id=session_id,
         plugin_dir=plugin_dir,
+        launch_kind="orchestrator",
     )
     summary["closed_tab"] = closed_tab
     summary["resumed"] = run_id

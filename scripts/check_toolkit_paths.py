@@ -87,6 +87,7 @@ TOOLKIT_DATA_ENTRIES = frozenset(
         "standup",
         "guard_rails_audit.jsonl",
         "backend_calls.jsonl",
+        "launch_log.jsonl",
         "toolkit_state.json",
         "toolkit_sync.json",
         # unclassified data the rollout carries to the toolkit home

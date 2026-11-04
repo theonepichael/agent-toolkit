@@ -17,6 +17,7 @@ ticket-batches       ``to-tickets/``
 standups             ``standup/``
 guard-rail-log       ``guard_rails_audit.jsonl``
 backend-log          ``backend_calls.jsonl``
+launch-log           ``launch_log.jsonl``
 ===================  ===========================================
 
 Layout pointer
@@ -55,6 +56,7 @@ DOMAINS: tuple[str, ...] = (
     "standups",
     "guard-rail-log",
     "backend-log",
+    "launch-log",
 )
 TOOLKIT_HOME_POINTER_RELPATH = Path("data") / "toolkit_state.json"
 POINTER_SCHEMA = 1
@@ -68,6 +70,7 @@ DOMAIN_SEGMENTS: dict[str, str] = {
     "standups": "standup",
     "guard-rail-log": "guard_rails_audit.jsonl",
     "backend-log": "backend_calls.jsonl",
+    "launch-log": "launch_log.jsonl",
 }
 
 _MISSING = object()

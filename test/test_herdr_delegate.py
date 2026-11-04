@@ -1007,6 +1007,88 @@ class RestartTests(DelegateTests):
         self.assertEqual(start[sep:], ["--", "--model", "opencode-go/glm-5.2"])
 
 
+class LaunchLogTests(DelegateTests):
+    """The launch ledger: one well-formed record per completed launch."""
+
+    def setUp(self) -> None:
+        self.fake = FakeHerdr()
+        patcher = mock.patch.object(herdr_delegate, "herdr", self.fake)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        sleep_patcher = mock.patch.object(herdr_delegate.time, "sleep", lambda _s: None)
+        sleep_patcher.start()
+        self.addCleanup(sleep_patcher.stop)
+        env_patcher = mock.patch.dict(
+            os.environ,
+            {"HERDR_ENV": "1", "PI_SESSION_ID": "launcher-42"},
+        )
+        env_patcher.start()
+        self.addCleanup(env_patcher.stop)
+        path = herdr_delegate.launch_log_file()
+        if path.exists():
+            path.unlink()
+        self.addCleanup(lambda: path.unlink(missing_ok=True))
+
+    def _log_lines(self) -> list[str]:
+        path = herdr_delegate.launch_log_file()
+        if not path.exists():
+            return []
+        return [line for line in path.read_text().splitlines() if line.strip()]
+
+    def test_launch_appends_exactly_one_well_formed_record(self) -> None:
+        code, _out, _err = self.run_main(
+            ["launch", "--slug", "atk-foo", "--cwd", "/tmp", "--model", "mimo-test"]
+        )
+        self.assertEqual(code, 0)
+        lines = self._log_lines()
+        self.assertEqual(len(lines), 1)
+        record = json.loads(lines[0])
+        self.assertEqual(record["slug"], "atk-foo")
+        self.assertEqual(record["kind"], "worker")
+        self.assertEqual(record["model"], "mimo-test")
+        self.assertEqual(record["launcher_harness"], "pi")
+        self.assertEqual(record["launcher_session"], "launcher-42")
+        self.assertEqual(record["pane"], "w9:pN")
+        self.assertEqual(record["tab"], "w9:tN")
+        self.assertEqual(record["agent"], herdr_delegate.agent_name_for("atk-foo"))
+        self.assertIsNone(record["worker_session"])
+        self.assertTrue(record["ts"])
+        # Identifiers and timestamps only — never prompt or message content.
+        self.assertNotIn("backlog-item", lines[0])
+        self.assertNotIn("prompt", record)
+
+    def test_worker_session_is_recorded_when_session_id_provided(self) -> None:
+        code, _out, _err = self.run_main(
+            ["launch", "--slug", "atk-foo", "--cwd", "/tmp", "--kind", "copilot"]
+        )
+        self.assertEqual(code, 0)
+        record = json.loads(self._log_lines()[0])
+        self.assertIsNotNone(record["worker_session"])
+
+    def test_orchestrator_launch_logs_kind_and_no_slug(self) -> None:
+        code, _out, _err = self.run_main(
+            ["launch", "--swarm", "3", "--prefix", "atk", "--cwd", "/tmp"]
+        )
+        self.assertEqual(code, 0)
+        record = json.loads(self._log_lines()[0])
+        self.assertEqual(record["kind"], "orchestrator")
+        self.assertIsNone(record["slug"])
+
+    def test_launch_log_write_failure_never_fails_the_launch(self) -> None:
+        with mock.patch.object(
+            herdr_delegate.cli_common,
+            "append_jsonl",
+            side_effect=RuntimeError("disk on fire"),
+        ):
+            code, out, _err = self.run_main(
+                ["launch", "--slug", "atk-foo", "--cwd", "/tmp"]
+            )
+        self.assertEqual(code, 0)
+        summary = json.loads(out)
+        self.assertEqual(summary["agent"], herdr_delegate.agent_name_for("atk-foo"))
+        self.assertEqual(self._log_lines(), [])
+
+
 class CopilotKindTests(DelegateTests):
     """Specific unit tests covering `--kind copilot` behavior."""
 

@@ -1731,5 +1731,660 @@ class TestPiCostSinceBaseDirErrors(unittest.TestCase):
         self.assertEqual(got.usd, 0.0)
 
 
+# ── launch-prompt slug extraction (cost --by item) ───────────────────────────
+
+
+def _expanded_template(template_name: str, invocation: str) -> str:
+    """Expand the repo's real backlog-item template with $ARGUMENTS.
+
+    Built from the real template so an anchor change breaks these tests
+    loudly instead of silently mis-attributing every worker session.
+    """
+    template = (
+        Path(__file__).resolve().parent.parent / "templates" / template_name
+    )
+    return template.read_text(encoding="utf-8").replace("$ARGUMENTS", invocation)
+
+
+def _generated_skill(relpath: str) -> str:
+    """A real generated skill copy (the expansion a claude-style harness logs)."""
+    return (Path(__file__).resolve().parent.parent / relpath).read_text(
+        encoding="utf-8"
+    )
+
+
+class TestLaunchSlugFromPrompt(unittest.TestCase):
+    def test_raw_invocation_with_auto_and_handoff(self) -> None:
+        self.assertEqual(
+            analyze_sessions.launch_slug_from_prompt(
+                "/backlog-item --auto atk-foo --handoff"
+            ),
+            "atk-foo",
+        )
+
+    def test_raw_invocation_plain(self) -> None:
+        self.assertEqual(
+            analyze_sessions.launch_slug_from_prompt("/backlog-item atk-foo"),
+            "atk-foo",
+        )
+
+    def test_codex_dollar_form(self) -> None:
+        self.assertEqual(
+            analyze_sessions.launch_slug_from_prompt(
+                "$backlog-item --auto atk-foo --handoff"
+            ),
+            "atk-foo",
+        )
+
+    def test_expanded_pi_template(self) -> None:
+        text = _expanded_template(
+            "backlog_item_pi_native.md.tmpl", "--auto atk-foo --handoff"
+        )
+        self.assertEqual(analyze_sessions.launch_slug_from_prompt(text), "atk-foo")
+
+    def test_claude_style_expansion_is_inert(self) -> None:
+        # The claude/copilot-style skill embeds no invocation and only
+        # backticked placeholder examples; without a typed line in the
+        # message there is nothing to attribute.
+        text = _generated_skill("copilot/skills/backlog-item/SKILL.md")
+        self.assertIsNone(analyze_sessions.launch_slug_from_prompt(text))
+
+    def test_claude_style_expansion_with_appended_typed_line(self) -> None:
+        # Harnesses that log the typed line alongside the expansion.
+        text = (
+            _generated_skill("copilot/skills/backlog-item/SKILL.md")
+            + "\n/backlog-item --auto atk-foo --handoff"
+        )
+        self.assertEqual(analyze_sessions.launch_slug_from_prompt(text), "atk-foo")
+
+    def test_expanded_template_with_numeric_target(self) -> None:
+        text = _expanded_template("backlog_item_pi_native.md.tmpl", "--auto 4")
+        self.assertEqual(analyze_sessions.launch_slug_from_prompt(text), "4")
+
+    def test_template_placeholder_mentions_are_never_parsed(self) -> None:
+        text = "running `/backlog-item --auto <slug>` and `/backlog-item <slug|N>`"
+        self.assertIsNone(analyze_sessions.launch_slug_from_prompt(text))
+
+    def test_queue_invocations_have_no_item_target(self) -> None:
+        for invocation in (
+            "/backlog-item --swarm=3 --prefix atk",
+            "/backlog-item --swarm --prefix atk",
+            "/backlog-item --serial --prefix atk",
+        ):
+            with self.subTest(invocation=invocation):
+                self.assertIsNone(
+                    analyze_sessions.launch_slug_from_prompt(invocation)
+                )
+
+    def test_resume_tail_does_not_replace_the_target(self) -> None:
+        self.assertEqual(
+            analyze_sessions.launch_slug_from_prompt(
+                "/backlog-item --auto atk-foo --handoff resume run-1 --prefix atk"
+            ),
+            "atk-foo",
+        )
+
+    def test_no_invocation_yields_none(self) -> None:
+        self.assertIsNone(
+            analyze_sessions.launch_slug_from_prompt("just a normal prompt")
+        )
+
+    def test_expanded_template_without_target_is_unattributed(self) -> None:
+        text = _expanded_template("backlog_item_pi_native.md.tmpl", "")
+        self.assertIsNone(analyze_sessions.launch_slug_from_prompt(text))
+
+
+class TestLoadLaunchSlugs(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp_dir.name)
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def _write_pi_session(self, name: str, prompt: str | None) -> None:
+        d = self.root / "pi"
+        d.mkdir(parents=True, exist_ok=True)
+        lines: list[dict[str, object]] = [
+            {"type": "session", "id": name, "cwd": "/repo", "timestamp": "2026-11-03T12:00:00Z"}
+        ]
+        if prompt is not None:
+            lines.append(
+                {
+                    "type": "message",
+                    "timestamp": "2026-11-03T12:00:01Z",
+                    "message": {"role": "user", "content": prompt},
+                }
+            )
+        lines.append(
+            {
+                "type": "message",
+                "timestamp": "2026-11-03T12:00:02Z",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "ok"}],
+                    "usage": {"input": 1, "output": 1, "cost": {"total": 0.5}},
+                },
+            }
+        )
+        with (d / f"{name}.jsonl").open("w", encoding="utf-8") as f:
+            for line in lines:
+                f.write(json.dumps(line) + "\n")
+
+    def test_pi_sessions_map_to_their_slugs(self) -> None:
+        self._write_pi_session(
+            "s1", _expanded_template("backlog_item_pi_native.md.tmpl", "--auto atk-foo --handoff")
+        )
+        self._write_pi_session("s2", "hello there")
+        got = analyze_sessions.load_launch_slugs({"pi": self.root / "pi"})
+        self.assertEqual(got, {("pi", "s1"): "atk-foo"})
+
+    def test_first_user_message_is_the_launch_prompt(self) -> None:
+        # A later /backlog-item invocation must not re-attribute the session.
+        d = self.root / "pi"
+        d.mkdir(parents=True, exist_ok=True)
+        lines = [
+            {"type": "session", "id": "s1", "cwd": "/repo", "timestamp": "2026-11-03T12:00:00Z"},
+            {"type": "message", "timestamp": "2026-11-03T12:00:01Z",
+             "message": {"role": "user", "content": "fix the bug"}},
+            {"type": "message", "timestamp": "2026-11-03T12:05:00Z",
+             "message": {"role": "user", "content": "/backlog-item atk-late"}},
+        ]
+        with (d / "s1.jsonl").open("w", encoding="utf-8") as f:
+            for line in lines:
+                f.write(json.dumps(line) + "\n")
+        got = analyze_sessions.load_launch_slugs({"pi": self.root / "pi"})
+        self.assertEqual(got, {})
+
+    def test_claude_opencode_copilot_agy_codex_attribution(self) -> None:
+        # claude: expansion with the typed invocation line appended
+        cd = self.root / "claude" / "proj"
+        cd.mkdir(parents=True)
+        lines = [
+            {"type": "user", "sessionId": "c1", "cwd": "/repo",
+             "timestamp": "2026-11-03T12:00:00Z", "isSidechain": False,
+             "message": {"role": "user",
+                         "content": _generated_skill("copilot/skills/backlog-item/SKILL.md")
+                                    + "\n/backlog-item --auto atk-foo"}},
+        ]
+        with (cd / "c1.jsonl").open("w", encoding="utf-8") as f:
+            for line in lines:
+                f.write(json.dumps(line) + "\n")
+        # opencode: first user message parts
+        db_path = self.root / "opencode.db"
+        conn = sqlite3.connect(str(db_path))
+        cur = conn.cursor()
+        cur.execute("CREATE TABLE session (id TEXT PRIMARY KEY, parent_id TEXT, directory TEXT, time_created INTEGER, time_updated INTEGER)")
+        cur.execute("CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT)")
+        cur.execute("CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, time_created INTEGER, data TEXT)")
+        cur.execute("INSERT INTO session VALUES ('o1', NULL, '/repo', 1, 2)")
+        cur.execute("INSERT INTO message VALUES ('m1', 'o1', 1, ?)", (json.dumps({"role": "user"}),))
+        cur.execute("INSERT INTO part VALUES ('p1', 'm1', 'o1', 1, ?)",
+                    (json.dumps({"type": "text", "text": "/backlog-item --auto atk-foo"}),))
+        conn.commit()
+        conn.close()
+        # copilot: first turn's user_message
+        cp_path = self.root / "session-store.db"
+        conn = sqlite3.connect(str(cp_path))
+        cur = conn.cursor()
+        cur.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY, cwd TEXT, repository TEXT, branch TEXT, created_at TEXT, updated_at TEXT)")
+        cur.execute("CREATE TABLE turns (id INTEGER PRIMARY KEY, session_id TEXT, turn_index INTEGER, user_message TEXT, assistant_response TEXT, timestamp TEXT)")
+        cur.execute("INSERT INTO sessions VALUES ('cp1', '/repo', 'r', 'main', '2026-11-03 12:00:00', '2026-11-03 12:05:00')")
+        cur.execute("INSERT INTO turns VALUES (1, 'cp1', 1, '/backlog-item --auto atk-foo', 'ok', '2026-11-03 12:00:05')")
+        conn.commit()
+        conn.close()
+        # agy: first USER_INPUT content
+        ad = self.root / "agy" / "sess-a" / ".system_generated" / "logs"
+        ad.mkdir(parents=True)
+        with (ad / "transcript_full.jsonl").open("w", encoding="utf-8") as f:
+            f.write(json.dumps({"type": "USER_INPUT", "content": "/backlog-item --auto atk-foo", "created_at": "2026-11-03T12:00:00Z"}) + "\n")
+        # codex: first user response_item
+        cdx = self.root / "codex"
+        cdx.mkdir(parents=True)
+        with (cdx / "rollout-1.jsonl").open("w", encoding="utf-8") as f:
+            f.write(json.dumps({"timestamp": "2026-11-03T12:00:00Z", "type": "session_meta",
+                                "payload": {"id": "x1", "cwd": "/repo"}}) + "\n")
+            f.write(json.dumps({"timestamp": "2026-11-03T12:00:01Z", "type": "response_item",
+                                "payload": {"type": "message", "role": "user",
+                                            "content": [{"type": "input_text", "text": "$backlog-item --auto atk-foo"}]}}) + "\n")
+
+        got = analyze_sessions.load_launch_slugs(
+            {
+                "claude": self.root / "claude",
+                "opencode": db_path,
+                "copilot": cp_path,
+                "agy": self.root / "agy",
+                "codex": cdx,
+            }
+        )
+        self.assertEqual(got[("claude", "c1")], "atk-foo")
+        self.assertEqual(got[("opencode", "o1")], "atk-foo")
+        self.assertEqual(got[("copilot", "cp1")], "atk-foo")
+        self.assertEqual(got[("agy", "sess-a")], "atk-foo")
+        self.assertEqual(got[("codex", "x1")], "atk-foo")
+
+
+class TestCostByItem(unittest.TestCase):
+    def _rec(self, harness: str, sid: str, cost: float, ts: str) -> analyze_sessions.SessionRecord:
+        return analyze_sessions.SessionRecord(
+            harness=harness,
+            session_id=sid,
+            cwd="/repo",
+            timestamp=ts,
+            role="assistant",
+            text="work",
+            cost_usd=cost,
+            cost_origin="native",
+        )
+
+    def test_groups_by_slug_and_sums_across_relaunches(self) -> None:
+        records = [
+            self._rec("pi", "r1", 0.10, "2026-11-03T12:00:00Z"),
+            self._rec("pi", "r2", 0.20, "2026-11-03T13:00:00Z"),
+            self._rec("pi", "other", 0.05, "2026-11-03T14:00:00Z"),
+        ]
+        slugs = {("pi", "r1"): "atk-foo", ("pi", "r2"): "atk-foo"}
+        args = type("Args", (), {"by": "item", "json": True, "quiet": False, "no_subagents": False})()
+        buf = io.StringIO()
+        rc = analyze_sessions.cmd_cost(args, records, launch_slugs=slugs, file=buf)
+        self.assertEqual(rc, 0)
+        rows = json.loads(buf.getvalue())
+        by_group = {r["group"]: r for r in rows}
+        self.assertAlmostEqual(by_group["atk-foo"]["cost_usd"], 0.3, places=4)
+        self.assertEqual(by_group["atk-foo"]["sessions"], 2)
+        self.assertAlmostEqual(by_group["unattributed"]["cost_usd"], 0.05, places=4)
+
+    def test_no_map_means_everything_unattributed(self) -> None:
+        records = [self._rec("pi", "r1", 0.10, "2026-11-03T12:00:00Z")]
+        args = type("Args", (), {"by": "item", "json": True, "quiet": False, "no_subagents": False})()
+        buf = io.StringIO()
+        analyze_sessions.cmd_cost(args, records, launch_slugs=None, file=buf)
+        rows = json.loads(buf.getvalue())
+        self.assertEqual(rows[0]["group"], "unattributed")
+
+
+# ── milestones (time and spend to first file write) ───────────────────────
+
+
+class TestMilestonesPi(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp_dir.name)
+        self.repo = self.root / "repo"
+        self.repo.mkdir()
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def _write_pi_session(
+        self, name: str, events: list[dict[str, object]], cwd: str | None = None
+    ) -> None:
+        d = self.root / "pi"
+        d.mkdir(parents=True, exist_ok=True)
+        head: list[dict[str, object]] = [
+            {
+                "type": "session",
+                "id": name,
+                "timestamp": "2026-11-03T12:00:00Z",
+                **({"cwd": cwd} if cwd is not None else {}),
+            }
+        ]
+        with (d / f"{name}.jsonl").open("w", encoding="utf-8") as f:
+            for line in head + events:
+                f.write(json.dumps(line) + "\n")
+
+    @staticmethod
+    def _msg(
+        ts: str,
+        *,
+        cost: float | None = 0.0,
+        tool: tuple[str, str] | None = None,
+        tokens: bool = True,
+    ) -> dict[str, object]:
+        content: list[dict[str, object]] = [{"type": "text", "text": "doing"}]
+        if tool is not None:
+            name, path = tool
+            content.append(
+                {"type": "toolCall", "name": name, "arguments": {"path": path}}
+            )
+        usage: dict[str, object] = {}
+        if tokens:
+            usage = {"input": 10, "output": 5}
+        if cost is not None:
+            usage["cost"] = {"total": cost}
+        msg: dict[str, object] = {"role": "assistant", "content": content}
+        if usage:
+            msg["usage"] = usage
+        return {"type": "message", "timestamp": ts, "message": msg}
+
+    def test_first_write_time_spend_and_totals(self) -> None:
+        self._write_pi_session(
+            "s1",
+            [
+                self._msg("2026-11-03T12:05:00Z", cost=0.10),
+                self._msg("2026-11-03T12:10:00Z", cost=0.07, tool=("write", "src/a.py")),
+                self._msg("2026-11-03T12:20:00Z", cost=0.05, tool=("edit", "src/b.py")),
+            ],
+            cwd=str(self.repo),
+        )
+        rows, _skipped = analyze_sessions.session_milestones(
+            "pi", self.root / "pi", repo=str(self.repo)
+        )
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row.status, "ok")
+        self.assertAlmostEqual(row.minutes_to_first_write or -1, 10.0, places=3)
+        self.assertAlmostEqual(row.spend_to_first_write or -1, 0.17, places=4)
+        self.assertAlmostEqual(row.total_spend or -1, 0.22, places=4)
+        self.assertAlmostEqual(row.total_minutes or -1, 20.0, places=3)
+        self.assertEqual(row.first_write_path, "src/a.py")
+        self.assertEqual(row.first_write_cost_origin, "native")
+        self.assertEqual(row.total_cost_origin, "native")
+
+    def test_reads_never_count_as_writes(self) -> None:
+        self._write_pi_session(
+            "s1",
+            [self._msg("2026-11-03T12:05:00Z", tool=("read", "src/a.py"))],
+            cwd=str(self.repo),
+        )
+        rows, _ = analyze_sessions.session_milestones(
+            "pi", self.root / "pi", repo=str(self.repo)
+        )
+        self.assertEqual(rows[0].status, "no-write")
+        self.assertIsNone(rows[0].minutes_to_first_write)
+        self.assertIsNotNone(rows[0].total_spend)
+        self.assertAlmostEqual(rows[0].total_spend, 0.0, places=4)
+
+    def test_writes_outside_the_repo_do_not_count(self) -> None:
+        self._write_pi_session(
+            "s1",
+            [self._msg("2026-11-03T12:05:00Z", tool=("write", "/elsewhere/x.py"))],
+            cwd=str(self.repo),
+        )
+        rows, _ = analyze_sessions.session_milestones(
+            "pi", self.root / "pi", repo=str(self.repo)
+        )
+        self.assertEqual(rows[0].status, "no-write")
+
+    def test_relative_paths_resolve_against_the_session_cwd(self) -> None:
+        self._write_pi_session(
+            "s1",
+            [
+                self._msg("2026-11-03T12:05:00Z", tool=("write", "../sibling/x.py")),
+                self._msg("2026-11-03T12:06:00Z", tool=("write", "src/in.py")),
+            ],
+            cwd=str(self.repo),
+        )
+        rows, _ = analyze_sessions.session_milestones(
+            "pi", self.root / "pi", repo=str(self.repo)
+        )
+        # ../sibling/x.py escapes the repo; src/in.py is the first in-repo write.
+        self.assertAlmostEqual(rows[0].minutes_to_first_write or -1, 6.0, places=3)
+        self.assertEqual(rows[0].first_write_path, "src/in.py")
+
+    def test_sibling_prefix_is_not_inside_the_repo(self) -> None:
+        self._write_pi_session(
+            "s1",
+            [self._msg("2026-11-03T12:05:00Z", tool=("write", str(self.root / "repo-other" / "x.py")))],
+            cwd=str(self.repo),
+        )
+        rows, _ = analyze_sessions.session_milestones(
+            "pi", self.root / "pi", repo=str(self.repo)
+        )
+        self.assertEqual(rows[0].status, "no-write")
+
+    def test_no_containment_root_is_unmeasurable_never_zero(self) -> None:
+        self._write_pi_session(
+            "s1",
+            [self._msg("2026-11-03T12:05:00Z", tool=("write", "anywhere.py"))],
+            cwd=None,
+        )
+        rows, _ = analyze_sessions.session_milestones("pi", self.root / "pi")
+        self.assertEqual(rows[0].status, "no-root")
+        self.assertIsNone(rows[0].minutes_to_first_write)
+        self.assertIsNone(rows[0].spend_to_first_write)
+
+    def test_session_cwd_is_the_fallback_root(self) -> None:
+        self._write_pi_session(
+            "s1",
+            [self._msg("2026-11-03T12:05:00Z", tool=("write", "src/a.py"))],
+            cwd=str(self.repo),
+        )
+        rows, _ = analyze_sessions.session_milestones("pi", self.root / "pi")
+        self.assertEqual(rows[0].status, "ok")
+
+    def test_model_filters_on_the_starting_model(self) -> None:
+        self._write_pi_session(
+            "s1",
+            [
+                {"type": "model_change", "timestamp": "2026-11-03T12:00:01Z", "modelId": "mimo-1"},
+                self._msg("2026-11-03T12:05:00Z"),
+                {"type": "model_change", "timestamp": "2026-11-03T12:06:00Z", "modelId": "mimo-2"},
+                self._msg("2026-11-03T12:07:00Z", tool=("write", "src/a.py")),
+            ],
+            cwd=str(self.repo),
+        )
+        rows, _ = analyze_sessions.session_milestones(
+            "pi", self.root / "pi", repo=str(self.repo)
+        )
+        self.assertEqual(rows[0].model, "mimo-1")
+        rows, _ = analyze_sessions.session_milestones(
+            "pi", self.root / "pi", repo=str(self.repo), model="mimo-2"
+        )
+        self.assertEqual(rows, [])
+        rows, _ = analyze_sessions.session_milestones(
+            "pi", self.root / "pi", repo=str(self.repo), model="mimo-1"
+        )
+        self.assertEqual(len(rows), 1)
+
+    def test_missing_costs_are_marked_not_hidden(self) -> None:
+        self._write_pi_session(
+            "s1",
+            [
+                self._msg("2026-11-03T12:05:00Z", cost=0.10),
+                self._msg("2026-11-03T12:06:00Z", cost=None),  # charge-bearing, no cost
+                self._msg("2026-11-03T12:10:00Z", cost=None, tool=("write", "src/a.py")),
+            ],
+            cwd=str(self.repo),
+        )
+        rows, _ = analyze_sessions.session_milestones(
+            "pi", self.root / "pi", repo=str(self.repo)
+        )
+        row = rows[0]
+        self.assertEqual(row.first_write_cost_origin, "partial")
+        self.assertEqual(row.total_cost_origin, "partial")
+        self.assertAlmostEqual(row.spend_to_first_write or -1, 0.10, places=4)
+
+    def test_unavailable_cost_window_is_blank_not_zero(self) -> None:
+        self._write_pi_session(
+            "s1",
+            [self._msg("2026-11-03T12:10:00Z", cost=None, tool=("write", "src/a.py"))],
+            cwd=str(self.repo),
+        )
+        rows, _ = analyze_sessions.session_milestones(
+            "pi", self.root / "pi", repo=str(self.repo)
+        )
+        self.assertEqual(rows[0].spend_to_first_write, None)
+        self.assertEqual(rows[0].first_write_cost_origin, "unavailable")
+
+    def test_since_and_until_select_whole_sessions(self) -> None:
+        self._write_pi_session(
+            "early",
+            [self._msg("2026-11-03T12:10:00Z", tool=("write", "src/a.py"))],
+            cwd=str(self.repo),
+        )
+        since = datetime(2026, 11, 3, 13, 0, tzinfo=UTC)
+        rows, _ = analyze_sessions.session_milestones(
+            "pi", self.root / "pi", repo=str(self.repo), since=since
+        )
+        self.assertEqual(rows, [])
+
+
+class TestMilestonesClaudeAndOpencode(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp_dir.name)
+        self.repo = self.root / "repo"
+        self.repo.mkdir()
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def test_claude_tool_use_write_counts_and_model_comes_from_first_model_bearing_record(self) -> None:
+        d = self.root / "claude" / "proj"
+        d.mkdir(parents=True)
+        lines = [
+            {"type": "user", "sessionId": "c1", "cwd": str(self.repo),
+             "timestamp": "2026-11-03T12:00:00Z", "isSidechain": False,
+             "message": {"role": "user", "content": "go"}},
+            {"type": "assistant", "sessionId": "c1", "cwd": str(self.repo),
+             "timestamp": "2026-11-03T12:02:00Z", "isSidechain": False,
+             "message": {"role": "assistant", "model": "claude-sonnet-5",
+                         "content": [{"type": "tool_use", "name": "Write",
+                                     "input": {"file_path": str(self.repo / "src" / "b.py")}}],
+                         "usage": {"input_tokens": 1000, "output_tokens": 100,
+                                   "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}}},
+        ]
+        with (d / "c1.jsonl").open("w", encoding="utf-8") as f:
+            for line in lines:
+                f.write(json.dumps(line) + "\n")
+        rows, _ = analyze_sessions.session_milestones(
+            "claude", self.root / "claude", repo=str(self.repo)
+        )
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row.status, "ok")
+        self.assertEqual(row.model, "claude-sonnet-5")
+        self.assertAlmostEqual(row.minutes_to_first_write or -1, 2.0, places=3)
+        self.assertAlmostEqual(row.spend_to_first_write or -1, 0.003, places=4)
+        self.assertEqual(row.first_write_cost_origin, "derived")
+
+    def test_claude_sidechain_writes_never_mark_the_parent(self) -> None:
+        d = self.root / "claude" / "proj"
+        d.mkdir(parents=True)
+        lines = [
+            {"type": "assistant", "sessionId": "c1", "cwd": str(self.repo),
+             "timestamp": "2026-11-03T12:02:00Z", "isSidechain": True,
+             "message": {"role": "assistant", "model": "claude-sonnet-5",
+                         "content": [{"type": "tool_use", "name": "Edit",
+                                     "input": {"file_path": str(self.repo / "src" / "b.py")}}],
+                         "usage": {"input_tokens": 100, "output_tokens": 10}}},
+        ]
+        with (d / "c1.jsonl").open("w", encoding="utf-8") as f:
+            for line in lines:
+                f.write(json.dumps(line) + "\n")
+        rows, _ = analyze_sessions.session_milestones(
+            "claude", self.root / "claude", repo=str(self.repo)
+        )
+        self.assertEqual(rows[0].status, "no-write")
+
+    def test_unknown_model_when_no_record_carries_one(self) -> None:
+        d = self.root / "claude" / "proj"
+        d.mkdir(parents=True)
+        lines = [
+            {"type": "user", "sessionId": "c1", "cwd": str(self.repo),
+             "timestamp": "2026-11-03T12:00:00Z", "isSidechain": False,
+             "message": {"role": "user", "content": "go"}},
+        ]
+        with (d / "c1.jsonl").open("w", encoding="utf-8") as f:
+            for line in lines:
+                f.write(json.dumps(line) + "\n")
+        rows, _ = analyze_sessions.session_milestones(
+            "claude", self.root / "claude", repo=str(self.repo)
+        )
+        self.assertEqual(rows[0].model, "unknown")
+
+    def test_opencode_tool_part_edit_counts(self) -> None:
+        db_path = self.root / "opencode.db"
+        conn = sqlite3.connect(str(db_path))
+        cur = conn.cursor()
+        cur.execute("CREATE TABLE session (id TEXT PRIMARY KEY, parent_id TEXT, directory TEXT, time_created INTEGER, time_updated INTEGER)")
+        cur.execute("CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT)")
+        cur.execute("CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, time_created INTEGER, data TEXT)")
+        cur.execute("INSERT INTO session VALUES ('o1', NULL, ?, 1784831400000, 1784831450000)", (str(self.repo),))
+        cur.execute("INSERT INTO message VALUES ('m1', 'o1', 1784831401000, ?)", (json.dumps({"role": "user"}),))
+        cur.execute("INSERT INTO part VALUES ('p1', 'm1', 'o1', 1784831401000, ?)",
+                    (json.dumps({"type": "text", "text": "go"}),))
+        cur.execute("INSERT INTO message VALUES ('m2', 'o1', 1784831460000, ?)",
+                    (json.dumps({"role": "assistant", "modelID": "glm-5.2", "cost": 0.01,
+                                 "tokens": {"input": 10, "output": 5}}),))
+        cur.execute("INSERT INTO part VALUES ('p2', 'm2', 'o1', 1784831460000, ?)",
+                    (json.dumps({"type": "tool", "tool": "edit",
+                                 "state": {"input": {"filePath": str(self.repo / "src" / "c.py")}}}),))
+        conn.commit()
+        conn.close()
+        rows, _ = analyze_sessions.session_milestones(
+            "opencode", db_path, repo=str(self.repo)
+        )
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row.status, "ok")
+        self.assertAlmostEqual(row.minutes_to_first_write or -1, 1.0, places=3)
+        self.assertAlmostEqual(row.spend_to_first_write or -1, 0.01, places=4)
+        self.assertEqual(row.model, "glm-5.2")
+
+
+class TestMilestonesOutput(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp_dir.name)
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def _args(self, **overrides: object) -> object:
+        base: dict[str, object] = {
+            "harness": "all",
+            "since": None,
+            "until": None,
+            "cwd": None,
+            "model": None,
+            "session": None,
+            "repo": None,
+            "json": True,
+            "quiet": False,
+        }
+        base.update(overrides)
+        return type("Args", (), base)()
+
+    def test_unsupported_harnesses_report_unsupported_never_zero(self) -> None:
+        empty = self.root / "empty"
+        empty.mkdir()
+        args = self._args()
+        buf = io.StringIO()
+        rc = analyze_sessions.cmd_milestones(
+            args,
+            roots={
+                "pi": empty,
+                "claude": empty,
+                "opencode": empty / "o.db",
+                "copilot": empty / "c.db",
+                "codex": empty,
+            },
+            file=buf,
+        )
+        self.assertEqual(rc, 0)
+        rows = json.loads(buf.getvalue())
+        unsupported = {r["harness"] for r in rows if r.get("status") == "unsupported"}
+        self.assertEqual(unsupported, {"codex", "copilot"})
+        for r in rows:
+            if r.get("status") == "unsupported":
+                self.assertIsNone(r.get("minutes_to_first_write"))
+                self.assertIsNone(r.get("spend_to_first_write"))
+
+    def test_unsupported_row_when_only_that_harness_is_selected(self) -> None:
+        empty = self.root / "empty"
+        empty.mkdir()
+        buf = io.StringIO()
+        analyze_sessions.cmd_milestones(
+            self._args(harness="codex"),
+            roots={"codex": empty},
+            file=buf,
+        )
+        rows = json.loads(buf.getvalue())
+        self.assertEqual(rows[0]["harness"], "codex")
+        self.assertEqual(rows[0]["status"], "unsupported")
+
+
 if __name__ == "__main__":
     test_bootstrap.run_unittest_main()

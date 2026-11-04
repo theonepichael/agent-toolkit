@@ -142,7 +142,7 @@ analyze_sessions.py — multi-harness session analysis tool.
   - `--quiet/-q`
   - `--verbose/-v`
 - Subcommands:
-  - `cost [--harness {all,pi,claude,opencode,copilot,agy,codex}] [--since <SINCE>] [--until <UNTIL>] [--cwd <CWD>] [--model <MODEL>] [--session <SESSION>] [--limit <LIMIT>] [--grep <GREP>] [--json] [--quiet] [--verbose] [--by {total,day,project,harness,model,session}] [--no-subagents]` — token and USD cost analysis and rollups
+  - `cost [--harness {all,pi,claude,opencode,copilot,agy,codex}] [--since <SINCE>] [--until <UNTIL>] [--cwd <CWD>] [--model <MODEL>] [--session <SESSION>] [--limit <LIMIT>] [--grep <GREP>] [--json] [--quiet] [--verbose] [--by {total,day,project,harness,model,session,item}] [--no-subagents]` — token and USD cost analysis and rollups
     - `--harness` — harness to analyze: all, pi, claude, opencode, copilot, agy, codex (default: all; note: agy is opt-in and excluded from 'all') (choices: all, pi, claude, opencode, copilot, agy, codex; default: all)
     - `--since` — filter sessions on/after date/time (ISO 8601 YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS, or relative e.g. 7d, today)
     - `--until` — filter sessions on/before date/time (ISO 8601 YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS)
@@ -152,8 +152,19 @@ analyze_sessions.py — multi-harness session analysis tool.
     - `--limit` — limit number of results
     - `--grep/-g` — filter message text by substring or regex
     - `--json` — emit output as JSON
-    - `--by` — rollup grouping: total, day, project, harness, model, session (default: total) (choices: total, day, project, harness, model, session; default: total)
+    - `--by` — rollup grouping: total, day, project, harness, model, session, item (default: total; item = backlog slug from each session's launch prompt, unattributed otherwise) (choices: total, day, project, harness, model, session, item; default: total)
     - `--no-subagents` — exclude subagent / child sessions (included by default)
+  - `milestones [--harness {all,pi,claude,opencode,copilot,agy,codex}] [--since <SINCE>] [--until <UNTIL>] [--cwd <CWD>] [--model <MODEL>] [--session <SESSION>] [--limit <LIMIT>] [--grep <GREP>] [--json] [--quiet] [--verbose] [--repo <REPO>]` — per-session time and spend from session start to the first file write
+    - `--harness` — harness to analyze: all, pi, claude, opencode, copilot, agy, codex (default: all; note: agy is opt-in and excluded from 'all') (choices: all, pi, claude, opencode, copilot, agy, codex; default: all)
+    - `--since` — filter sessions on/after date/time (ISO 8601 YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS, or relative e.g. 7d, today)
+    - `--until` — filter sessions on/before date/time (ISO 8601 YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS)
+    - `--cwd` — filter by working directory substring
+    - `--model` — filter by model name substring
+    - `--session` — filter by session ID substring
+    - `--limit` — limit number of results
+    - `--grep/-g` — filter message text by substring or regex
+    - `--json` — emit output as JSON
+    - `--repo` — repo root whose file writes count (default: each session's own cwd; sessions with neither root report no-root, never a number)
   - `prompts [--harness {all,pi,claude,opencode,copilot,agy,codex}] [--since <SINCE>] [--until <UNTIL>] [--cwd <CWD>] [--model <MODEL>] [--session <SESSION>] [--limit <LIMIT>] [--grep <GREP>] [--json] [--quiet] [--verbose] [--format {markdown,jsonl}] [--include-subagents]` — list user prompts
     - `--harness` — harness to analyze: all, pi, claude, opencode, copilot, agy, codex (default: all; note: agy is opt-in and excluded from 'all') (choices: all, pi, claude, opencode, copilot, agy, codex; default: all)
     - `--since` — filter sessions on/after date/time (ISO 8601 YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS, or relative e.g. 7d, today)
@@ -190,6 +201,7 @@ analyze_sessions.py — multi-harness session analysis tool.
   - `class CostSummary` — Aggregated cost/token rollup over a record list (pure builder output).
   - `class SessionQueryResult`
   - `class PiCost` — A pi cost measurement: pi's own price-table estimate, not provider billing.
+  - `class SessionMilestone` — Time and spend from session start to the first in-repo file write.
 - Public functions:
   - `normalize_timestamp(ts: object) -> tuple[str, datetime | None]` — Convert string ISO timestamp or int/float epoch ms/s into ISO 8601 string and datetime.
   - `parse_date_boundary(val: str | None, *, is_until: bool = False) -> datetime | None`
@@ -206,8 +218,11 @@ analyze_sessions.py — multi-harness session analysis tool.
   - `load_agy_records(base_dir: Path | None = None, since_dt: datetime | None = None, until_dt: datetime | None = None, session_filter: str | None = None) -> tuple[list[SessionRecord], list[SkippedRecord]]`
   - `load_codex_records(base_dir: Path | None = None, since_dt: datetime | None = None, until_dt: datetime | None = None, session_filter: str | None = None, cwd_filter: str | None = None) -> tuple[list[SessionRecord], list[SkippedRecord]]`
   - `load_all_records(harness: str = 'all', since_dt: datetime | None = None, until_dt: datetime | None = None, cwd_filter: str | None = None, model_filter: str | None = None, session_filter: str | None = None, *, include_subagents: bool = True, pi_dir: Path | None = None, claude_dir: Path | None = None, opencode_db: Path | None = None, copilot_db: Path | None = None, agy_dir: Path | None = None, codex_dir: Path | None = None) -> list[SessionRecord]` — Legacy shim: same positional contract and bare-list return as always.
+  - `launch_slug_from_prompt(text: str) -> str | None` — The backlog slug named by a session's launch prompt, else None.
+  - `load_launch_slugs(roots: Mapping[str, Path | None] | None = None) -> dict[tuple[str, str], str]` — Map ``(harness, session_id)`` to the slug named by its launch prompt.
+  - `session_milestones(harness: str, base_dir: Path | None = None, *, repo: str | None = None, since: datetime | None = None, until: datetime | None = None, model: str | None = None, session: str | None = None, cwd: str | None = None) -> tuple[list[SessionMilestone], list[SkippedRecord]]` — Per-session first-file-write milestones for one measurable harness.
   - `build_parser() -> argparse.ArgumentParser`
-- Subcommand handlers: `cmd_cost`, `cmd_prompts`, `cmd_search`
+- Subcommand handlers: `cmd_cost`, `cmd_milestones`, `cmd_prompts`, `cmd_search`
 - Tested by: `test/test_analyze_sessions.py`
 
 ### `agent-scripts/backlog_claim_lookup.py`
@@ -1138,13 +1153,14 @@ Launch supported agents in herdr tabs to work backlog items.
   - `DEV_STATUS = Path(__file__).parent / 'dev_status.py'`
   - `COPILOT_PLUGIN_DIR = str(Path(__file__).resolve().parent.parent / 'copilot' / 'extensions' / 'swarm')`
 - Explicit exit codes: `1`, `2`
-- Depends on: `agent_toolkit_paths.py`, `agy_workspace_trust.py`, `analyze_sessions.py`, `backlog_claim_lookup.py`, `cli_common.py`, `dev_status.py`, `dev_status_impl.py`, `dev_status_mutation.py`, `dev_status_storage.py`, `herdr_picker.py`, `worktree.py`
+- Depends on: `agent_toolkit_paths.py`, `agy_workspace_trust.py`, `analyze_sessions.py`, `backlog_claim_lookup.py`, `cli_common.py`, `dev_status.py`, `dev_status_impl.py`, `dev_status_mutation.py`, `dev_status_storage.py`, `herdr_picker.py`, `migration_lock.py`, `worktree.py`
 - Exceptions:
   - `class RefusedError(RuntimeError)` — A launch that must not proceed, with a reason fit to show the user.
   - `class AnswerOutcome(Exception)` — A needs_manual / submitted_unconfirmed outcome, carrying its exit code.
 - Public functions:
   - `foreman_capture_file(slug: str) -> Path` — The worker's digest-capture file for a handoff launch.
   - `foreman_capture_env(slug: str) -> str` — The env pair that points a handoff worker at its capture file.
+  - `launch_log_file() -> Path` — The launch ledger: one JSONL record per completed launch.
   - `is_inside_git_repo(path: Path) -> bool` — Check whether a path is inside any git repository.
   - `require_herdr_env(env: dict[str, str] | os._Environ[str]) -> None` — Refuse unless this process is inside a herdr-managed pane.
   - `check_launchable(*, slug: str | None = None, prefix: str | None = None) -> None` — Refuse a launch that targets the harness's own repo.
@@ -1182,7 +1198,7 @@ Launch supported agents in herdr tabs to work backlog items.
   - `wait_agent_deregistered(name: str, *, retry_advice: str = 'Retry `restart` (it relaunches once the name frees)') -> None` — Poll until no live agent carries ``name``, bounded; refuse if it persists.
   - `prepare_worker_worktree(slug: str) -> str` — Validate one item and bootstrap its exact worktree before agent startup.
   - `codex_writable_roots() -> list[str]` — Runtime paths a backlog worker writes outside its worktree.
-  - `spawn_in_new_tab(*, cwd: str, label: str, prompt: str, model: str | None, kind: str = 'pi', session_id: str | None = None, allow_all_tools: bool = True, plugin_dir: str | None = None, writable_roots: list[str] | None = None, handoff_slug: str | None = None) -> dict[str, object]` — Create a tab, start an agent in it, and hand it its prompt.
+  - `spawn_in_new_tab(*, cwd: str, label: str, prompt: str, model: str | None, kind: str = 'pi', session_id: str | None = None, allow_all_tools: bool = True, plugin_dir: str | None = None, writable_roots: list[str] | None = None, handoff_slug: str | None = None, launch_slug: str | None = None, launch_kind: str = 'worker') -> dict[str, object]` — Create a tab, start an agent in it, and hand it its prompt.
   - `select_ready(prefix: str | None = None, claims: BacklogClaimLookup | None = None) -> list[BacklogItem]` — Select open backlog items matching an optional prefix using claims lookup.
   - `build_launch_plan(items: list[BacklogItem], *, kind: str = 'pi', cwd: str = '.') -> list[list[str]]` — Construct herdr tab-creation argvs for a list of backlog items.
   - `ready_slugs(claims: BacklogClaimLookup | None = None) -> list[str]` — Slugs currently in READY, sourced via select_ready().
@@ -1193,7 +1209,7 @@ Launch supported agents in herdr tabs to work backlog items.
   - `prune_agy_trust_entries() -> None` — Best-effort prune of vanished agy trusted-workspace entries.
   - `confirm_prompt_receipt(*, pane: str, tab: str, name: str, prompt: str, timeout_s: float = AGY_PROMPT_TIMEOUT_S, poll_interval_s: float = AGY_PROMPT_POLL_INTERVAL_S, max_resends: int = 1) -> None` — Poll pane for the echoed prompt line; resend if absent, fail loudly if still missing.
 - Subcommand handlers: `cmd_watch`, `cmd_answer`, `cmd_close`, `cmd_plan`, `cmd_launch`, `cmd_restart`, `cmd_probe`
-- Tested by: `test/test_herdr_delegate.py`, `test/test_herdr_watch_answer.py`
+- Tested by: `test/test_herdr_delegate.py`, `test/test_herdr_watch_answer.py`, `test/test_migration_lock_adoption.py`
 
 ### `agent-scripts/herdr_picker.py`
 
@@ -1977,7 +1993,7 @@ the workflow's template plus its generator's capability/parameter tables.
 | `/swarm` | template | yes | yes | — | — | — | — |
 | `/to-tickets` | template | yes | yes | yes | yes | yes | yes |
 
-- **`/analyze-sessions`** — Analyze coding-agent sessions across pi, Claude Code, opencode, Copilot CLI, agy, and Codex: calculate token/USD cost rollups, list user prompts, or search message transcripts. Use when the user asks about session costs, token usage, previous prompts, or wants to search past coding session transcripts across harnesses.
+- **`/analyze-sessions`** — Analyze coding-agent sessions across pi, Claude Code, opencode, Copilot CLI, agy, and Codex: calculate token/USD cost rollups, report first-write milestones, list user prompts, or search message transcripts. Use when the user asks about session costs, token usage, previous prompts, time to first write, or wants to search past coding session transcripts across harnesses.
   - Generated from: `templates/analyze_sessions.md.tmpl` by `gen_skills.py`
   - `claude/commands/{name}.md` is the rendered Claude Code port — edit the template or generator, then regenerate.
   - Installed at: `~/.claude/commands/analyze-sessions.md` (claude)
@@ -2620,7 +2636,7 @@ new one, `--check` catches it the same as any other stale content.
 
 | Skill | Mentions |
 | --- | --- |
-| `/analyze-sessions` | — |
+| `/analyze-sessions` | `backlog-item` |
 | `/backlog-item` | `dashboard`, `foreman`, `grill-me`, `land`, `review-diff`, `second-opinion`, `spec` |
 | `/dashboard` | `recap` |
 | `/draft-voice` | — |

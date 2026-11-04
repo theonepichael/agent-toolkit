@@ -2,11 +2,13 @@
 """analyze_sessions.py — multi-harness session analysis tool.
 
 Analyzes coding-agent sessions across pi, Claude Code, opencode, Copilot CLI,
-agy, and Codex harnesses. Exposes subcommands for calculating token/USD costs, listing
+agy, and Codex harnesses. Exposes subcommands for calculating token/USD costs,
+reporting per-session time/spend to the first file write (milestones), listing
 user prompts, and searching message transcripts.
 
 Usage:
-    python3 ~/.agent-toolkit/scripts/analyze_sessions.py cost [--by total|day|project|harness|model|session] [filters]
+    python3 ~/.agent-toolkit/scripts/analyze_sessions.py cost [--by total|day|project|harness|model|session|item] [filters]
+    python3 ~/.agent-toolkit/scripts/analyze_sessions.py milestones [--repo PATH] [filters]
     python3 ~/.agent-toolkit/scripts/analyze_sessions.py prompts [--format markdown|jsonl] [filters]
     python3 ~/.agent-toolkit/scripts/analyze_sessions.py search <query> [--regex] [--context N] [filters]
 
@@ -18,6 +20,14 @@ Flags:
   --until          filter sessions on/before date/time (ISO 8601 YYYY-MM-DD or
                    YYYY-MM-DDTHH:MM:SS)
   --cwd            filter by working directory substring
+  --repo           (milestones only) repo root whose file writes count;
+                   defaults to each session's own cwd. Sessions with neither
+                   root report status no-root, never a number. First-write
+                   detection needs an explicit write/edit tool call carrying
+                   a path (pi/claude/opencode logs); codex, copilot and agy
+                   logs carry no such call and are reported as unsupported,
+                   never as zero. No launch-time column exists: session logs
+                   hold no real launch signal.
   --model          filter by model name substring
   --session        filter by session ID substring
   --limit          maximum number of records or results to return
@@ -30,6 +40,12 @@ Flags:
   --context, -C    (search only) number of context lines/messages around matches
   --quiet, -q      suppress non-essential output
   --verbose, -v    emit extra diagnostic messages to stderr
+
+Notes:
+  cost --by item groups sessions by the backlog slug parsed from each
+  session's launch prompt (/backlog-item ... <slug>); sessions without a
+  recognizable launch prompt group as 'unattributed' and an item's cost sums
+  across relaunches.
 
 Env vars: none.
 Files read:
@@ -46,6 +62,7 @@ Exit codes: 0 success; 1 operational error; 2 bad usage.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import math
 import os
@@ -375,6 +392,27 @@ class SessionQueryResult:
     # Timestamp-ascending, tie-broken by (harness, session_id).
     skipped_records: list[SkippedRecord]
     # Load diagnostics; never raised.
+
+
+def _content_text(content: object) -> str:
+    """Join the text blocks of a message ``content`` value into one string.
+
+    Accepts a plain string or a list of blocks (dicts carrying a ``text``
+    string — pi ``text`` blocks, claude ``text`` blocks, codex
+    ``input_text``/``output_text`` blocks — or bare strings). Tool-call
+    blocks carry no ``text`` key and contribute nothing.
+    """
+    text_parts: list[str] = []
+    if isinstance(content, str):
+        text_parts.append(content)
+    elif isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict):
+                if isinstance(block.get("text"), str):
+                    text_parts.append(block["text"])
+            elif isinstance(block, str):
+                text_parts.append(block)
+    return "\n".join(text_parts).strip()
 
 
 def _iter_jsonl(
@@ -707,18 +745,7 @@ def load_pi_records(
                 if msg_model:
                     current_model = msg_model
 
-                content = msg.get("content")
-                text_parts: list[str] = []
-                if isinstance(content, str):
-                    text_parts.append(content)
-                elif isinstance(content, list):
-                    for block in content:
-                        if isinstance(block, dict):
-                            if block.get("type") == "text" and "text" in block:
-                                text_parts.append(str(block["text"]))
-                        elif isinstance(block, str):
-                            text_parts.append(block)
-                text = "\n".join(text_parts).strip()
+                text = _content_text(msg.get("content"))
 
                 usage = obj.get("usage") or msg.get("usage") or {}
                 in_tok = int(usage.get("input", 0) or 0)
@@ -949,20 +976,9 @@ def load_claude_records(
             if isinstance(msg, dict) and msg.get("role"):
                 role = msg.get("role")
 
-            text_parts: list[str] = []
-            content = (
+            text = _content_text(
                 msg.get("content") if isinstance(msg, dict) else obj.get("content")
             )
-            if isinstance(content, str):
-                text_parts.append(content)
-            elif isinstance(content, list):
-                for block in content:
-                    if isinstance(block, dict):
-                        if block.get("type") == "text" and "text" in block:
-                            text_parts.append(str(block["text"]))
-                    elif isinstance(block, str):
-                        text_parts.append(block)
-            text = "\n".join(text_parts).strip()
 
             model: str | None = None
             in_tok, out_tok, cr_tok, cw_tok = 0, 0, 0, 0
@@ -1510,23 +1526,7 @@ def load_codex_records(
                     continue
 
                 content = payload.get("content")
-                text_parts: list[str] = []
-                if isinstance(content, str):
-                    text_parts.append(content)
-                elif isinstance(content, list):
-                    for block in content:
-                        if isinstance(block, dict):
-                            if "text" in block and isinstance(block["text"], str):
-                                text_parts.append(block["text"])
-                            elif (
-                                block.get("type")
-                                in ("input_text", "output_text", "text")
-                                and "text" in block
-                            ):
-                                text_parts.append(str(block["text"]))
-                        elif isinstance(block, str):
-                            text_parts.append(block)
-                text = "\n".join(text_parts).strip()
+                text = _content_text(content)
 
                 in_tok, out_tok, cr_tok, cw_tok = 0, 0, 0, 0
                 cost_usd: float | None = None
@@ -1686,10 +1686,694 @@ def load_all_records(
 # ── Subcommand Handlers ───────────────────────────────────────────────────
 
 
+# ── launch-prompt attribution (cost --by item) ───────────────────────────
+#
+# A worker session's backlog slug is parsed from its launch prompt: the raw
+# `/backlog-item --auto <slug> [--handoff]` invocation a worker launch sends
+# (or the `$backlog-item` form on codex), or the expanded skill prompt pi /
+# Claude Code record in its place (``The invocation (or `<args>`)`` anchor,
+# ``slug: "<args>"`` fallback). Template doc mentions of `/backlog-item
+# <slug>` are placeholders and never parse as a target.
+
+_RAW_INVOCATION = re.compile(r"^`?(?:/|\$)backlog-item\b(.*)$", re.DOTALL)
+_RAW_LINE = re.compile(r"^(?:/|\$)backlog-item\b(.*)$", re.MULTILINE)
+_EXPANDED_ANCHOR = re.compile(r"The invocation \(or\s*`([^`]*)`", re.DOTALL)
+_SLUG_FALLBACK = re.compile(r'slug: "([^"]*)"')
+
+
+def _invocation_target(invocation: str) -> str | None:
+    """The item slug or position named by a ``/backlog-item`` invocation.
+
+    Follows the documented grammar: boolean flags first, then the target; a
+    ``resume <runId>`` tail is stepped over; queue invocations
+    (``--swarm``/``--serial``) name no item; unresolved ``<...>``
+    placeholders are rejected. Returns None when no target is named.
+    """
+    tokens = invocation.split()
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok in ("--auto", "--handoff"):
+            i += 1
+            continue
+        if tok == "--swarm" or tok.startswith("--swarm=") or tok == "--serial":
+            return None
+        if tok == "resume":
+            i += 2
+            continue
+        if tok.startswith("-"):
+            return None
+        if "<" in tok or ">" in tok:
+            return None
+        return tok
+    return None
+
+
+def launch_slug_from_prompt(text: str) -> str | None:
+    """The backlog slug named by a session's launch prompt, else None.
+
+    Recognizes the raw invocation starting the message (herdr worker
+    prompts, codex's `$backlog-item` form), the expanded pi-template anchor
+    (``The invocation (or `<args>`)``), a ``slug: "<args>"`` instruction
+    fallback, and — last — a raw invocation on its own line, for harnesses
+    that log the typed line alongside an expansion that never embeds it.
+    Placeholder tokens (``<slug>`` and friends) never parse as a target, so
+    the templates' own backticked doc examples are inert.
+    """
+    raw = _RAW_INVOCATION.match(text.lstrip())
+    if raw:
+        return _invocation_target(raw.group(1))
+    anchor = _EXPANDED_ANCHOR.search(text)
+    if anchor:
+        target = _invocation_target(anchor.group(1))
+        if target:
+            return target
+    for m in _SLUG_FALLBACK.finditer(text):
+        target = _invocation_target(m.group(1))
+        if target:
+            return target
+    for m in _RAW_LINE.finditer(text):
+        target = _invocation_target(m.group(1))
+        if target:
+            return target
+    return None
+
+
+_ATTRIBUTION_DEFAULT_ROOTS: dict[str, tuple[str, ...]] = {
+    "pi": (".pi", "agent", "sessions"),
+    "claude": (".claude", "projects"),
+    "opencode": (".local", "share", "opencode", "opencode.db"),
+    "copilot": (".copilot", "session-store.db"),
+    "agy": (".gemini", "antigravity-cli", "brain"),
+    "codex": (".codex", "sessions"),
+}
+
+
+def load_launch_slugs(
+    roots: Mapping[str, Path | None] | None = None,
+) -> dict[tuple[str, str], str]:
+    """Map ``(harness, session_id)`` to the slug named by its launch prompt.
+
+    Derived from each session's FIRST user message before any date
+    filtering, so ``cost --by item`` attribution survives the same filters
+    that drop old records. Sessions without a recognizable launch prompt
+    (including subagent/child sessions) are simply absent and group as
+    ``unattributed`` at the call site. Scans only the harnesses named in
+    ``roots`` (all of them when it is None). Best-effort: a store that
+    cannot be read contributes nothing.
+    """
+    out: dict[tuple[str, str], str] = {}
+
+    def _record(harness: str, session_id: str, text: object) -> None:
+        if isinstance(text, str):
+            slug = launch_slug_from_prompt(text)
+            if slug:
+                out.setdefault((harness, session_id), slug)
+
+    def _root(harness: str) -> Path:
+        if roots is not None and roots.get(harness) is not None:
+            return roots[harness]  # type: ignore[return-value]
+        return Path.home().joinpath(*_ATTRIBUTION_DEFAULT_ROOTS[harness])
+
+    wanted = tuple(roots) if roots is not None else tuple(_ATTRIBUTION_DEFAULT_ROOTS)
+
+    if "pi" in wanted and _root("pi").exists():
+        for p in sorted(_root("pi").rglob("*.jsonl")):
+            sid = p.stem
+            for item in _iter_jsonl(p, "pi"):
+                if isinstance(item, SkippedRecord):
+                    continue
+                if item.get("type") == "session":
+                    sid = str(item.get("id") or sid)
+                elif item.get("type") == "message":
+                    msg = item.get("message") or {}
+                    if msg.get("role") == "user":
+                        _record("pi", sid, _content_text(msg.get("content")))
+                        break
+
+    if "claude" in wanted and _root("claude").exists():
+        for p in sorted(_root("claude").rglob("*.jsonl")):
+            sid = p.stem
+            for item in _iter_jsonl(p, "claude"):
+                if isinstance(item, SkippedRecord):
+                    continue
+                if "sessionId" in item:
+                    sid = str(item["sessionId"])
+                if item.get("type") == "user" and not item.get("isSidechain"):
+                    msg = item.get("message")
+                    c = (
+                        msg.get("content")
+                        if isinstance(msg, dict)
+                        else item.get("content")
+                    )
+                    _record("claude", sid, _content_text(c))
+                    break
+
+    if "opencode" in wanted:
+        conn = _open_sqlite_ro(_root("opencode"))
+        if conn is not None:
+            try:
+                cur = conn.cursor()
+                cur.execute(
+                    "SELECT m.session_id, p.data FROM part p "
+                    "JOIN message m ON p.message_id = m.id "
+                    "JOIN session s ON m.session_id = s.id "
+                    "WHERE json_extract(m.data, '$.role') = 'user' "
+                    "ORDER BY m.time_created ASC, p.time_created ASC"
+                )
+                for sess_id, p_data in cur.fetchall():
+                    if ("opencode", sess_id) not in out:
+                        with contextlib.suppress(json.JSONDecodeError):
+                            _record(
+                                "opencode",
+                                sess_id,
+                                _content_text([json.loads(p_data)]),
+                            )
+            except sqlite3.Error:
+                pass
+            finally:
+                conn.close()
+
+    if "copilot" in wanted:
+        conn = _open_sqlite_ro(_root("copilot"))
+        if conn is not None:
+            try:
+                cur = conn.cursor()
+                cur.execute(
+                    "SELECT t.session_id, t.user_message FROM turns t "
+                    "JOIN sessions s ON t.session_id = s.id "
+                    "ORDER BY t.session_id, t.turn_index ASC"
+                )
+                for sess_id, user_message in cur.fetchall():
+                    _record("copilot", sess_id, user_message)
+            except sqlite3.Error:
+                pass
+            finally:
+                conn.close()
+
+    if "agy" in wanted and _root("agy").exists():
+        for sess_dir in sorted(p for p in _root("agy").iterdir() if p.is_dir()):
+            log_dir = sess_dir / ".system_generated" / "logs"
+            for tname in ("transcript_full.jsonl", "transcript.jsonl"):
+                tp = log_dir / tname
+                if tp.exists():
+                    for item in _iter_jsonl(tp, "agy"):
+                        if (
+                            not isinstance(item, SkippedRecord)
+                            and item.get("type") == "USER_INPUT"
+                        ):
+                            _record("agy", sess_dir.name, item.get("content"))
+                            break
+                    break
+
+    if "codex" in wanted and _root("codex").exists():
+        base = _root("codex")
+        sdir = base / "sessions" if (base / "sessions").is_dir() else base
+        for p in sorted(sdir.rglob("*.jsonl")):
+            if p.name in ("session_index.jsonl", "history.jsonl"):
+                continue
+            sid = p.stem
+            for item in _iter_jsonl(p, "codex"):
+                if isinstance(item, SkippedRecord):
+                    continue
+                pl = item.get("payload") or {}
+                if isinstance(pl, dict):
+                    if item.get("type") == "session_meta":
+                        sid = str(pl.get("id") or pl.get("session_id") or sid)
+                    elif (
+                        item.get("type") == "response_item"
+                        and pl.get("type") == "message"
+                        and pl.get("role") == "user"
+                    ):
+                        _record("codex", sid, _content_text(pl.get("content")))
+                        break
+
+    return out
+
+
+def _open_sqlite_ro(db_path: Path) -> sqlite3.Connection | None:
+    """Open a sqlite store read-only, falling back to a plain open; else None."""
+    if not db_path.exists():
+        return None
+    try:
+        return sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    except sqlite3.Error:
+        try:
+            return sqlite3.connect(str(db_path))
+        except sqlite3.Error:
+            return None
+
+
+# ── milestones (time and spend to the first file write) ──────────────────
+#
+# First-write detection needs an explicit write/edit tool call carrying a
+# file path — the only non-heuristic write signal session logs offer. It is
+# measured where the logs have it: pi (toolCall write/edit +
+# arguments.path), claude (tool_use Write/Edit/MultiEdit/NotebookEdit +
+# input.file_path), opencode (tool part edit/write/patch +
+# state.input.filePath). codex, copilot and agy logs carry no such call
+# (writes hide in exec shell text or prose), so those harnesses are
+# reported as unsupported — never as a fabricated zero.
+
+_MILESTONE_WRITE_TOOLS: dict[str, frozenset[str]] = {
+    "pi": frozenset({"write", "edit"}),
+    "claude": frozenset({"Write", "Edit", "MultiEdit", "NotebookEdit"}),
+    "opencode": frozenset({"edit", "write", "patch"}),
+}
+
+MILESTONE_HARNESSES: tuple[str, ...] = ("pi", "claude", "opencode")
+
+UNSUPPORTED_MILESTONE_HARNESSES: dict[str, str] = {
+    "codex": "no explicit write tool call in codex logs (writes hide in exec shell text)",
+    "copilot": "no explicit write tool call in copilot's session store (prose turns)",
+    "agy": "no explicit write tool call in agy transcripts (prose renderings)",
+}
+
+
+@dataclass(frozen=True)
+class SessionMilestone:
+    """Time and spend from session start to the first in-repo file write."""
+
+    harness: str
+    session_id: str
+    cwd: str | None
+    model: str | None
+    # Starting model: the earliest model-bearing record's model, else None
+    # (rendered as "unknown"). A later model change never redefines it.
+    start: datetime | None
+    minutes_to_first_write: float | None
+    spend_to_first_write: float | None
+    first_write_cost_origin: str
+    # "native" / "derived" / "partial" (amount is a floor) / "unavailable".
+    first_write_path: str | None
+    total_minutes: float | None
+    total_spend: float | None
+    total_cost_origin: str
+    status: str
+    # "ok" / "no-write" / "no-root" (no containment root: unmeasurable).
+
+
+@dataclass(frozen=True)
+class _WriteEvent:
+    """One message's contribution to a session's milestone timeline."""
+
+    ts: datetime | None
+    charge: bool
+    # The message carries tokens or cost (the records a spend sum counts).
+    cost: float | None
+    write_path: str | None
+
+
+def _milestone_finish(
+    *,
+    harness: str,
+    session_id: str,
+    cwd: str | None,
+    model: str | None,
+    start: datetime | None,
+    events: list[_WriteEvent],
+    repo: str | None,
+) -> SessionMilestone:
+    """Fold one session's events into its milestone row."""
+    base_origin = "derived" if harness == "claude" else "native"
+    root = repo or cwd
+
+    total_minutes: float | None = None
+    if start is not None and events:
+        last_ts = next((e.ts for e in reversed(events) if e.ts is not None), None)
+        if last_ts is not None:
+            total_minutes = (last_ts - start).total_seconds() / 60.0
+
+    def _window(end: _WriteEvent | None) -> tuple[float | None, str]:
+        charges = [
+            e
+            for e in events
+            if e.charge and (end is None or (e.ts is not None and e.ts <= end.ts))
+        ]
+        have = [e.cost for e in charges if e.cost is not None]
+        if not have:
+            return None, "unavailable"
+        return sum(have), ("partial" if len(have) < len(charges) else base_origin)
+
+    first_write: _WriteEvent | None = None
+    if root is not None:
+        root_path = Path(os.path.normpath(root))
+        for ev in events:
+            if not ev.write_path:
+                continue
+            p = Path(ev.write_path)
+            if not p.is_absolute():
+                if cwd is None:
+                    continue
+                p = Path(cwd) / p
+            if Path(os.path.normpath(str(p))).is_relative_to(root_path):
+                first_write = ev
+                break
+
+    status = "no-root" if root is None else ("ok" if first_write else "no-write")
+    minutes = (
+        (first_write.ts - start).total_seconds() / 60.0
+        if first_write and start and first_write.ts
+        else None
+    )
+    first_spend, first_origin = (
+        _window(first_write) if first_write else (None, "unavailable")
+    )
+    total_spend, total_origin = _window(None)
+
+    return SessionMilestone(
+        harness=harness,
+        session_id=session_id,
+        cwd=cwd,
+        model=model or "unknown",
+        start=start,
+        minutes_to_first_write=minutes,
+        spend_to_first_write=first_spend,
+        first_write_cost_origin=first_origin,
+        first_write_path=first_write.write_path if first_write else None,
+        total_minutes=total_minutes,
+        total_spend=total_spend,
+        total_cost_origin=total_origin,
+        status=status,
+    )
+
+
+def _milestone_rows_pi(
+    base_dir: Path, repo: str | None
+) -> tuple[list[SessionMilestone], list[SkippedRecord]]:
+    rows: list[SessionMilestone] = []
+    skipped: list[SkippedRecord] = []
+    if not base_dir.exists():
+        return rows, skipped
+    for p in sorted(base_dir.rglob("*.jsonl")):
+        if "subagent" in str(p).lower():
+            continue
+        session_id = p.stem
+        session_cwd: str | None = None
+        model: str | None = None
+        start: datetime | None = None
+        events: list[_WriteEvent] = []
+        for item in _iter_jsonl(p, "pi"):
+            if isinstance(item, SkippedRecord):
+                skipped.append(item)
+                continue
+            obj = item
+            t = obj.get("type")
+            ts_val = obj.get("timestamp")
+            msg: dict[str, object] = {}
+            if t == "message":
+                raw_msg = obj.get("message") or {}
+                msg = raw_msg if isinstance(raw_msg, dict) else {}
+                ts_val = ts_val or msg.get("timestamp")
+            _, dt = normalize_timestamp(ts_val)
+            if start is None and dt is not None:
+                start = dt
+            if t == "session":
+                session_id = str(obj.get("id") or session_id)
+                if obj.get("cwd"):
+                    session_cwd = str(obj["cwd"])
+                continue
+            if t == "model_change":
+                if model is None and obj.get("modelId"):
+                    model = str(obj["modelId"])
+                continue
+            if t != "message" or msg.get("role") != "assistant":
+                continue
+            if model is None:
+                m_model = obj.get("model") or msg.get("model")
+                if m_model:
+                    model = str(m_model)
+            usage = obj.get("usage") or msg.get("usage") or {}
+            cost = _pi_usage_cost(usage) if isinstance(usage, dict) else None
+            charge = bool(
+                cost is not None
+                or isinstance(usage, dict)
+                and any(
+                    usage.get(k) for k in ("input", "output", "cacheRead", "cacheWrite")
+                )
+            )
+            write_path: str | None = None
+            content = msg.get("content")
+            if isinstance(content, list):
+                for block in content:
+                    if (
+                        isinstance(block, dict)
+                        and block.get("type") == "toolCall"
+                        and block.get("name") in _MILESTONE_WRITE_TOOLS["pi"]
+                    ):
+                        args = block.get("arguments") or {}
+                        if isinstance(args, dict) and args.get("path"):
+                            write_path = str(args["path"])
+                            break
+            events.append(_WriteEvent(dt, charge, cost, write_path))
+        rows.append(
+            _milestone_finish(
+                harness="pi",
+                session_id=session_id,
+                cwd=session_cwd,
+                model=model,
+                start=start,
+                events=events,
+                repo=repo,
+            )
+        )
+    return rows, skipped
+
+
+def _milestone_rows_claude(
+    base_dir: Path, repo: str | None
+) -> tuple[list[SessionMilestone], list[SkippedRecord]]:
+    rows: list[SessionMilestone] = []
+    skipped: list[SkippedRecord] = []
+    if not base_dir.exists():
+        return rows, skipped
+    for p in sorted(base_dir.rglob("*.jsonl")):
+        session_id = p.stem
+        session_cwd: str | None = None
+        model: str | None = None
+        start: datetime | None = None
+        events: list[_WriteEvent] = []
+        for item in _iter_jsonl(p, "claude"):
+            if isinstance(item, SkippedRecord):
+                skipped.append(item)
+                continue
+            obj = item
+            if "sessionId" in obj:
+                session_id = str(obj["sessionId"])
+            if "cwd" in obj and session_cwd is None:
+                session_cwd = str(obj["cwd"])
+            _, dt = normalize_timestamp(obj.get("timestamp"))
+            if start is None and dt is not None:
+                start = dt
+            t = obj.get("type")
+            if t not in ("user", "assistant") or obj.get("isSidechain"):
+                continue
+            msg = obj.get("message", {})
+            msg = msg if isinstance(msg, dict) else {}
+            if t != "assistant":
+                continue
+            if model is None and msg.get("model"):
+                model = str(msg["model"])
+            usage = msg.get("usage", {})
+            usage = usage if isinstance(usage, dict) else {}
+            in_tok = int(usage.get("input_tokens", 0) or 0)
+            out_tok = int(usage.get("output_tokens", 0) or 0)
+            cr_tok = int(usage.get("cache_read_input_tokens", 0) or 0)
+            cw_tok = int(usage.get("cache_creation_input_tokens", 0) or 0)
+            cost: float | None = None
+            charge = bool(in_tok or out_tok or cr_tok or cw_tok)
+            if charge:
+                cost, _origin = calculate_claude_cost(
+                    msg.get("model"), in_tok, out_tok, cr_tok, cw_tok
+                )
+            write_path: str | None = None
+            content = msg.get("content")
+            if isinstance(content, list):
+                for block in content:
+                    if (
+                        isinstance(block, dict)
+                        and block.get("type") == "tool_use"
+                        and block.get("name") in _MILESTONE_WRITE_TOOLS["claude"]
+                    ):
+                        inp = block.get("input") or {}
+                        if isinstance(inp, dict) and inp.get("file_path"):
+                            write_path = str(inp["file_path"])
+                            break
+            events.append(_WriteEvent(dt, charge, cost, write_path))
+        rows.append(
+            _milestone_finish(
+                harness="claude",
+                session_id=session_id,
+                cwd=session_cwd,
+                model=model,
+                start=start,
+                events=events,
+                repo=repo,
+            )
+        )
+    return rows, skipped
+
+
+def _milestone_rows_opencode(
+    base_dir: Path, repo: str | None
+) -> tuple[list[SessionMilestone], list[SkippedRecord]]:
+    rows: list[SessionMilestone] = []
+    skipped: list[SkippedRecord] = []
+    conn = _open_sqlite_ro(base_dir)
+    if conn is None:
+        return rows, skipped
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, parent_id, directory, time_created FROM session "
+            "ORDER BY time_created ASC"
+        )
+        sessions = {
+            sid: (parent, directory, created)
+            for sid, parent, directory, created in cur.fetchall()
+            if not parent
+        }
+        cur.execute("SELECT message_id, data FROM part ORDER BY time_created ASC")
+        write_paths: dict[str, str] = {}
+        for m_id, p_data in cur.fetchall():
+            if m_id in write_paths:
+                continue
+            try:
+                part = json.loads(p_data)
+            except json.JSONDecodeError:
+                continue
+            if (
+                isinstance(part, dict)
+                and part.get("type") == "tool"
+                and part.get("tool") in _MILESTONE_WRITE_TOOLS["opencode"]
+            ):
+                state = part.get("state") or {}
+                inp = state.get("input") if isinstance(state, dict) else {}
+                if isinstance(inp, dict) and inp.get("filePath"):
+                    write_paths[m_id] = str(inp["filePath"])
+
+        cur.execute(
+            "SELECT id, session_id, time_created, data FROM message "
+            "ORDER BY time_created ASC"
+        )
+        events_by_sess: dict[str, list[_WriteEvent]] = {}
+        model_by_sess: dict[str, str] = {}
+        for m_id, sess_id, ts_ms, m_data in cur.fetchall():
+            if sess_id not in sessions:
+                continue
+            try:
+                data = json.loads(m_data)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(data, dict) or data.get("role") != "assistant":
+                continue
+            _, dt = normalize_timestamp(ts_ms)
+            if sess_id not in model_by_sess and data.get("modelID"):
+                model_by_sess[sess_id] = str(data["modelID"])
+            raw_cost = data.get("cost")
+            cost = (
+                float(raw_cost)
+                if isinstance(raw_cost, (int, float)) and not isinstance(raw_cost, bool)
+                else None
+            )
+            tokens = data.get("tokens") if isinstance(data.get("tokens"), dict) else {}
+            cache = tokens.get("cache") if isinstance(tokens.get("cache"), dict) else {}
+            charge = bool(
+                cost is not None
+                or any(
+                    tokens.get(k) or cache.get(k2)
+                    for k, k2 in (("input", "read"), ("output", "write"))
+                )
+            )
+            events_by_sess.setdefault(sess_id, []).append(
+                _WriteEvent(dt, charge, cost, write_paths.get(m_id))
+            )
+        for sess_id, (_, directory, created) in sessions.items():
+            _, start_dt = normalize_timestamp(created)
+            rows.append(
+                _milestone_finish(
+                    harness="opencode",
+                    session_id=sess_id,
+                    cwd=str(directory) if directory else None,
+                    model=model_by_sess.get(sess_id),
+                    start=start_dt,
+                    events=events_by_sess.get(sess_id, []),
+                    repo=repo,
+                )
+            )
+    except sqlite3.Error as exc:
+        skipped.append(
+            SkippedRecord(
+                path=base_dir,
+                harness="opencode",
+                kind="db",
+                reason=f"corrupt db: {exc}",
+            )
+        )
+    finally:
+        conn.close()
+    return rows, skipped
+
+
+_MILESTONE_SCANNERS = {
+    "pi": _milestone_rows_pi,
+    "claude": _milestone_rows_claude,
+    "opencode": _milestone_rows_opencode,
+}
+
+_MILESTONE_DEFAULT_ROOTS: dict[str, tuple[str, ...]] = {
+    "pi": (".pi", "agent", "sessions"),
+    "claude": (".claude", "projects"),
+    "opencode": (".local", "share", "opencode", "opencode.db"),
+}
+
+
+def session_milestones(
+    harness: str,
+    base_dir: Path | None = None,
+    *,
+    repo: str | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    model: str | None = None,
+    session: str | None = None,
+    cwd: str | None = None,
+) -> tuple[list[SessionMilestone], list[SkippedRecord]]:
+    """Per-session first-file-write milestones for one measurable harness.
+
+    Whole-session scans: filters select or drop a session as a unit (since/
+    until by session START time, model by the session's starting model), so
+    a filter can never turn a later write into "first write" or undercount
+    spend. ``repo`` is the containment root for writes (default: each
+    session's own cwd; neither root means the session is unmeasurable).
+    """
+    scanner = _MILESTONE_SCANNERS.get(harness)
+    if scanner is None:
+        raise ValueError(f"harness does not support milestones: {harness!r}")
+    if base_dir is None:
+        base_dir = Path.home().joinpath(*_MILESTONE_DEFAULT_ROOTS[harness])
+    rows, skipped = scanner(base_dir, repo)
+    out: list[SessionMilestone] = []
+    for r in rows:
+        if since is not None and (r.start is None or r.start < since):
+            continue
+        if until is not None and (r.start is None or r.start > until):
+            continue
+        if model is not None and model.lower() not in (r.model or "unknown").lower():
+            continue
+        if session is not None and session not in r.session_id:
+            continue
+        if cwd is not None and cwd not in (r.cwd or ""):
+            continue
+        out.append(r)
+    return out, skipped
+
+
 def cmd_cost(
     args: argparse.Namespace,
     records: list[SessionRecord],
     *,
+    launch_slugs: Mapping[tuple[str, str], str] | None = None,
     file: TextIO | None = None,
 ) -> int:
     group_by = args.by
@@ -1708,6 +2392,8 @@ def cmd_cost(
             key = r.model or "unknown"
         elif group_by == "session":
             key = f"{r.harness}:{r.session_id}"
+        elif group_by == "item":
+            key = (launch_slugs or {}).get((r.harness, r.session_id)) or "unattributed"
         else:
             key = "total"
         groups.setdefault(key, []).append(r)
@@ -1837,6 +2523,158 @@ def cmd_cost(
         )
         cli_common.qprint(tot_line, quiet=args.quiet, file=file)
 
+    return 0
+
+
+def _milestone_row(m: SessionMilestone) -> dict[str, object]:
+    """One milestones JSON row from a session milestone."""
+    return {
+        "harness": m.harness,
+        "session_id": m.session_id,
+        "model": m.model,
+        "cwd": m.cwd,
+        "start": m.start.strftime("%Y-%m-%dT%H:%M:%SZ") if m.start else None,
+        "minutes_to_first_write": (
+            round(m.minutes_to_first_write, 2)
+            if m.minutes_to_first_write is not None
+            else None
+        ),
+        "spend_to_first_write": (
+            round(m.spend_to_first_write, 6)
+            if m.spend_to_first_write is not None
+            else None
+        ),
+        "first_write_cost_origin": m.first_write_cost_origin,
+        "first_write_path": m.first_write_path,
+        "total_minutes": (
+            round(m.total_minutes, 2) if m.total_minutes is not None else None
+        ),
+        "total_spend": (round(m.total_spend, 6) if m.total_spend is not None else None),
+        "total_cost_origin": m.total_cost_origin,
+        "status": m.status,
+    }
+
+
+def cmd_milestones(
+    args: argparse.Namespace,
+    *,
+    roots: Mapping[str, Path | None] | None = None,
+    file: TextIO | None = None,
+) -> int:
+    """Report per-session time and spend from start to the first file write.
+
+    Session-level selection: --since/--until filter on session start,
+    --model on the session's starting model, --session/--cwd on substrings.
+    Harnesses whose logs carry no explicit write tool call are reported as
+    one 'unsupported' row each — never as a zero measurement. No launch-time
+    column exists: session logs hold no real launch signal.
+    """
+    since_dt = parse_date_boundary(args.since, is_until=False)
+    until_dt = parse_date_boundary(args.until, is_until=True)
+    if args.harness == "all":
+        requested: tuple[str, ...] = (*MILESTONE_HARNESSES, "codex", "copilot")
+    else:
+        requested = (args.harness,)
+
+    rows: list[dict[str, object]] = []
+    for harness in requested:
+        if harness in UNSUPPORTED_MILESTONE_HARNESSES:
+            rows.append(
+                {
+                    "harness": harness,
+                    "session_id": None,
+                    "model": None,
+                    "cwd": None,
+                    "start": None,
+                    "minutes_to_first_write": None,
+                    "spend_to_first_write": None,
+                    "first_write_cost_origin": "unavailable",
+                    "first_write_path": None,
+                    "total_minutes": None,
+                    "total_spend": None,
+                    "total_cost_origin": "unavailable",
+                    "status": "unsupported",
+                    "reason": UNSUPPORTED_MILESTONE_HARNESSES[harness],
+                }
+            )
+            continue
+        root = roots.get(harness) if roots is not None else None
+        milestones, skipped = session_milestones(
+            harness,
+            root,
+            repo=args.repo,
+            since=since_dt,
+            until=until_dt,
+            model=args.model,
+            session=args.session,
+            cwd=args.cwd,
+        )
+        _report_skips(skipped, verbose=bool(getattr(args, "verbose", False)))
+        rows.extend(_milestone_row(m) for m in milestones)
+
+    if args.json:
+        print(json.dumps(rows, indent=2), file=file or sys.stdout)
+        return 0
+
+    if not rows:
+        cli_common.qprint(
+            "No session records found matching filters.", quiet=args.quiet, file=file
+        )
+        return 0
+
+    headers = [
+        "Harness",
+        "Session",
+        "Model",
+        "Start",
+        "FirstWrite",
+        "FirstSpend",
+        "Path",
+        "Total",
+        "TotalSpend",
+        "Origin",
+        "Status",
+    ]
+
+    def _fmt_min(v: object) -> str:
+        return f"{float(v):.0f}m" if isinstance(v, (int, float)) else "-"
+
+    def _fmt_usd(v: object) -> str:
+        return f"${float(v):.4f}" if isinstance(v, (int, float)) else "-"
+
+    table: list[list[str]] = []
+    for r in rows:
+        if r.get("status") == "unsupported":
+            table.append([str(r["harness"])] + ["-"] * 9 + ["unsupported"])
+            continue
+        table.append(
+            [
+                str(r["harness"]),
+                str(r["session_id"]),
+                str(r["model"]),
+                str(r["start"] or "-")[:16],
+                _fmt_min(r["minutes_to_first_write"]),
+                _fmt_usd(r["spend_to_first_write"]),
+                str(r["first_write_path"] or "-"),
+                _fmt_min(r["total_minutes"]),
+                _fmt_usd(r["total_spend"]),
+                f"{r['first_write_cost_origin']}/{r['total_cost_origin']}",
+                str(r["status"]),
+            ]
+        )
+
+    left_align = {0, 1, 2, 3, 6, 9, 10}
+    widths = [
+        max(len(h), *(len(row[i]) for row in table)) for i, h in enumerate(headers)
+    ]
+    fmt = lambda row: "  ".join(  # noqa: E731
+        f"{row[i]:<{widths[i]}}" if i in left_align else f"{row[i]:>{widths[i]}}"
+        for i in range(len(row))
+    )
+    cli_common.qprint(fmt(headers), quiet=args.quiet, file=file)
+    cli_common.qprint("  ".join("-" * w for w in widths), quiet=args.quiet, file=file)
+    for row in table:
+        cli_common.qprint(fmt(row), quiet=args.quiet, file=file)
     return 0
 
 
@@ -2000,14 +2838,26 @@ def build_parser() -> argparse.ArgumentParser:
     cli_common.add_verbosity_args(p_cost)
     p_cost.add_argument(
         "--by",
-        choices=["total", "day", "project", "harness", "model", "session"],
+        choices=["total", "day", "project", "harness", "model", "session", "item"],
         default="total",
-        help="rollup grouping: total, day, project, harness, model, session (default: total)",
+        help="rollup grouping: total, day, project, harness, model, session, item (default: total; item = backlog slug from each session's launch prompt, unattributed otherwise)",
     )
     p_cost.add_argument(
         "--no-subagents",
         action="store_true",
         help="exclude subagent / child sessions (included by default)",
+    )
+
+    # milestones subcommand
+    p_milestones = subparsers.add_parser(
+        "milestones",
+        help="per-session time and spend from session start to the first file write",
+    )
+    add_common_filters(p_milestones)
+    cli_common.add_verbosity_args(p_milestones)
+    p_milestones.add_argument(
+        "--repo",
+        help="repo root whose file writes count (default: each session's own cwd; sessions with neither root report no-root, never a number)",
     )
 
     # prompts subcommand
@@ -2060,6 +2910,9 @@ def main(argv: list[str] | None = None) -> int:
     since_dt = parse_date_boundary(args.since, is_until=False)
     until_dt = parse_date_boundary(args.until, is_until=True)
 
+    if args.subcommand == "milestones":
+        return cmd_milestones(args, roots=_resolve_cli_roots())
+
     include_subagents = True
     if args.subcommand == "cost":
         include_subagents = not args.no_subagents
@@ -2111,7 +2964,10 @@ def main(argv: list[str] | None = None) -> int:
     _report_skips(result.skipped_records, verbose=bool(args.verbose))
 
     if args.subcommand == "cost":
-        return cmd_cost(args, result.records)
+        launch_slugs = None
+        if args.by == "item":
+            launch_slugs = load_launch_slugs(_resolve_cli_roots())
+        return cmd_cost(args, result.records, launch_slugs=launch_slugs)
     if args.subcommand == "prompts":
         return cmd_prompts(args, result.records)
     if args.subcommand == "search":

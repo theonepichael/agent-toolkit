@@ -425,6 +425,7 @@ def test_enforce_telemetry_skips_and_observes_without_breaking_callers(
 ):
     import cli_common
     import guard_rails
+    import herdr_delegate
     import llm_backends
 
     audit = agent_toolkit_paths.path_for("guard-rail-log")
@@ -437,9 +438,21 @@ def test_enforce_telemetry_skips_and_observes_without_breaking_callers(
     assert not backend.exists()
 
     cli_common._append_timing_record({"x": 1})
+
+    herdr_delegate._append_launch_record(
+        kind="worker",
+        slug="atk-test",
+        model=None,
+        agent="atk-test",
+        pane="p",
+        tab="t",
+    )
+    assert not herdr_delegate.launch_log_file().exists()
+
     assert ("guard-rail-log", "refused-telemetry") in outcomes()
     assert ("backend-log", "refused-telemetry") in outcomes()
     assert ("timing-log", "refused-telemetry") in outcomes()
+    assert ("launch-log", "refused-telemetry") in outcomes()
     assert capsys.readouterr().err == ""
 
 
