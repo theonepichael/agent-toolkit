@@ -1355,7 +1355,7 @@ Cross-platform agent notification dispatcher.
   - `--urgency/-u` — urgency level (default: normal) (choices: low, normal, critical; default: normal)
   - `--type` — notification event type (default: completed) (choices: completed, waiting_for_input, error; default: completed)
   - `--codex-payload` — explicit Codex JSON event payload from agent-turn-complete hook
-- Environment: `TMUX`, `WSL_DISTRO_NAME`, `WSL_INTEROP`
+- Environment: `TMUX`, `USER`, `WSL_DISTRO_NAME`, `WSL_INTEROP`
 - Filesystem constants:
   - `ICONS_DIR = Path(__file__).resolve().parent.parent / 'claude' / 'icons'`
 - Depends on: `agent_toolkit_paths.py`, `cli_common.py`, `harness_spec.py`
@@ -1368,7 +1368,7 @@ Cross-platform agent notification dispatcher.
   - `send_linux_notification(title: str, message: str, icon_path: Path | None = None, urgency: str = 'normal', verbose: bool = False) -> bool` — Send a desktop notification on native Linux via notify-send.
   - `send_terminal_osc(title: str, message: str, verbose: bool = False) -> bool` — Emit OSC 777 and OSC 9 escape sequences to the controlling TTY.
   - `dispatch_notification(title: str, message: str, harness: str | None = None, icon: str | None = None, urgency: str = 'normal', event_type: str = 'completed', verbose: bool = False) -> None` — Route notification to terminal OSC and appropriate OS bridge with icon.
-  - `parse_codex_payload(raw_payload: str) -> str` — Extract a human-readable notification message from a Codex JSON event payload.
+  - `parse_codex_payload(raw_payload: str, max_length: int = 200) -> str` — Extract a human-readable notification message from a Codex JSON event payload.
   - `build_parser() -> argparse.ArgumentParser`
 - Tested by: `test/test_harness_feature_coverage.py`, `test/test_notify.py`
 

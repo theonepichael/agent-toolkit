@@ -171,5 +171,52 @@ class NotifyTestCase(unittest.TestCase):
         self.assertTrue(mock_wsl_toast.called)
 
 
+    @patch("shutil.which", return_value="/usr/bin/powershell.exe")
+    @patch("subprocess.run")
+    def test_send_wsl_toast_nonzero_exit_code(self, mock_run: MagicMock, mock_which: MagicMock) -> None:
+        mock_run.return_value = MagicMock(returncode=1, stderr="Error: Toast failed")
+        success = notify.send_wsl_toast("Test Title", "Test Message")
+        self.assertFalse(success)
+
+    def test_clean_osc_text(self) -> None:
+        raw = "Hello;\033[31mworld\007!\nHow are\ryou?"
+        cleaned = notify._clean_osc_text(raw)
+        self.assertEqual(cleaned, "Hello [31mworld! How are you?")
+
+    def test_parse_codex_payload_truncation(self) -> None:
+        import json
+        payload = json.dumps({
+            "type": "agent-turn-complete",
+            "last-assistant-message": "Line 1\n\nLine 2 with " + "word " * 50,
+        })
+        msg = notify.parse_codex_payload(payload, max_length=60)
+        self.assertTrue(msg.endswith("…"))
+        self.assertLessEqual(len(msg), 60)
+        self.assertNotIn("\n", msg)
+
+    @patch("notify.is_wsl", return_value=True)
+    @patch("notify.send_terminal_osc")
+    @patch("notify.send_wsl_toast")
+    def test_dispatch_notification_agy_no_stutter(
+        self,
+        mock_wsl_toast: MagicMock,
+        mock_osc: MagicMock,
+        mock_is_wsl: MagicMock,
+    ) -> None:
+        notify.dispatch_notification(
+            title="Antigravity",
+            message="Run completed",
+            harness="AGY",
+        )
+        mock_osc.assert_called_once_with("Antigravity", "Run completed", verbose=False)
+        mock_wsl_toast.assert_called_once_with(
+            title="Antigravity",
+            message="Run completed",
+            harness="AGY",
+            icon_path=mock_wsl_toast.call_args[1]["icon_path"],
+            verbose=False,
+        )
+
+
 if __name__ == "__main__":
     test_bootstrap.run_unittest_main()

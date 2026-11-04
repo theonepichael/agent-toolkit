@@ -29,6 +29,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from xml.sax.saxutils import escape as sax_escape
 
 import agent_toolkit_paths
 import cli_common
@@ -97,7 +98,17 @@ def _get_windows_icons_cache() -> tuple[Path, str] | None:
     if not users_dir.exists():
         return None
 
-    for user_entry in users_dir.iterdir():
+    current_user = os.environ.get("USER")
+    candidates: list[Path] = []
+    if current_user:
+        candidates.append(users_dir / current_user)
+    candidates.extend(users_dir.iterdir())
+
+    seen: set[Path] = set()
+    for user_entry in candidates:
+        if user_entry in seen:
+            continue
+        seen.add(user_entry)
         if user_entry.is_dir() and user_entry.name not in (
             "Default",
             "Default User",
@@ -133,13 +144,7 @@ def sync_icons_to_windows() -> tuple[Path, str] | None:
 
 def _escape_xml(s: str) -> str:
     """Escape special XML characters."""
-    return (
-        s.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace('"', "&quot;")
-        .replace("'", "&apos;")
-    )
+    return sax_escape(s, entities={'"': "&quot;", "'": "&apos;"})
 
 
 def _escape_powershell_string(s: str) -> str:
@@ -225,7 +230,7 @@ def send_wsl_toast(
     )
 
     try:
-        subprocess.run(
+        res = subprocess.run(
             [
                 powershell,
                 "-NoProfile",
@@ -235,9 +240,8 @@ def send_wsl_toast(
                 "-Command",
                 ps_script,
             ],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
             timeout=5,
             check=False,
         )
@@ -246,18 +250,26 @@ def send_wsl_toast(
             sys.stderr.write(f"notify: WSL toast delivery failed: {e}\n")
         return False
     else:
+        if res.returncode != 0:
+            if verbose:
+                err_msg = (
+                    res.stderr.strip() if res.stderr else f"exit code {res.returncode}"
+                )
+                sys.stderr.write(f"notify: WSL toast delivery failed: {err_msg}\n")
+            return False
         return True
 
 
 def send_macos_notification(title: str, message: str, verbose: bool = False) -> bool:
     """Send a macOS desktop notification via osascript."""
-    safe_title = title.replace('"', '\\"')
-    safe_msg = message.replace('"', '\\"')
+    safe_title = title.replace("\\", "\\\\").replace('"', '\\"')
+    safe_msg = message.replace("\\", "\\\\").replace('"', '\\"')
     script = f'display notification "{safe_msg}" with title "{safe_title}"'
     try:
-        subprocess.run(
+        res = subprocess.run(
             ["osascript", "-e", script],
             capture_output=True,
+            text=True,
             timeout=3,
             check=False,
         )
@@ -266,6 +278,13 @@ def send_macos_notification(title: str, message: str, verbose: bool = False) -> 
             sys.stderr.write(f"notify: macOS notification failed: {e}\n")
         return False
     else:
+        if res.returncode != 0:
+            if verbose:
+                err_msg = (
+                    res.stderr.strip() if res.stderr else f"exit code {res.returncode}"
+                )
+                sys.stderr.write(f"notify: macOS notification failed: {err_msg}\n")
+            return False
         return True
 
 
@@ -302,10 +321,16 @@ def send_linux_notification(
         return res.returncode == 0
 
 
+def _clean_osc_text(s: str) -> str:
+    """Sanitize text for terminal OSC sequences by stripping control chars and semicolons."""
+    s = s.replace(";", " ").replace("\007", "").replace("\033", "")
+    return " ".join(s.split())
+
+
 def send_terminal_osc(title: str, message: str, verbose: bool = False) -> bool:
     """Emit OSC 777 and OSC 9 escape sequences to the controlling TTY."""
-    clean_title = title.replace(";", " ")
-    clean_msg = message.replace(";", " ")
+    clean_title = _clean_osc_text(title)
+    clean_msg = _clean_osc_text(message)
     osc777 = f"\033]777;notify;{clean_title};{clean_msg}\007"
     osc9 = f"\033]9;{clean_title}: {clean_msg}\007"
 
@@ -346,7 +371,13 @@ def dispatch_notification(
 ) -> None:
     """Route notification to terminal OSC and appropriate OS bridge with icon."""
     effective_title = title
-    if harness and harness.lower() not in title.lower():
+    h_lower = (harness or "").lower()
+    t_lower = title.lower()
+    is_same_harness = h_lower in t_lower or (
+        h_lower in {"agy", "antigravity", "gemini"}
+        and any(k in t_lower for k in ("agy", "antigravity", "gemini"))
+    )
+    if harness and not is_same_harness:
         effective_title = f"{harness} · {title}"
 
     icon_path = get_harness_icon(harness, custom_icon=icon)
@@ -373,7 +404,7 @@ def dispatch_notification(
         )
 
 
-def parse_codex_payload(raw_payload: str) -> str:
+def parse_codex_payload(raw_payload: str, max_length: int = 200) -> str:
     """Extract a human-readable notification message from a Codex JSON event payload."""
     if not raw_payload:
         return "Task completed"
@@ -382,7 +413,12 @@ def parse_codex_payload(raw_payload: str) -> str:
         if isinstance(data, dict):
             msg = data.get("last-assistant-message")
             if isinstance(msg, str) and msg.strip():
-                return msg.strip()
+                clean_msg = " ".join(
+                    part.strip() for part in msg.strip().splitlines() if part.strip()
+                )
+                if len(clean_msg) > max_length:
+                    return clean_msg[: max_length - 1].rstrip() + "…"
+                return clean_msg
     except (json.JSONDecodeError, ValueError):
         pass
     return "Task completed"

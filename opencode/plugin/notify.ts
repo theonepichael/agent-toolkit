@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process"
+import { execFile } from "node:child_process"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import type { Plugin } from "@opencode-ai/plugin"
@@ -10,7 +10,7 @@ export const NotifyPlugin: Plugin = async () => {
     event: async ({ event }) => {
       if (event.type === "session.idle") {
         try {
-          execFileSync(
+          execFile(
             "python3",
             [
               NOTIFY_SCRIPT,
@@ -25,7 +25,10 @@ export const NotifyPlugin: Plugin = async () => {
             ],
             {
               timeout: 5000,
-              stdio: "ignore",
+              windowsHide: true,
+            },
+            () => {
+              // Best-effort -- never block the session on notification failure.
             },
           )
         } catch {
