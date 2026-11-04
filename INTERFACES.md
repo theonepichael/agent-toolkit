@@ -2548,6 +2548,13 @@ named doc, not regenerating this file.
 | `pi/skills/spec/SKILL.md` | OK |
 | `pi/skills/to-tickets/SKILL.md` | OK |
 
+### `guard_rails.py`
+
+| Doc | Status |
+| --- | --- |
+| `claude/commands/foreman.md` | OK |
+| `copilot/skills/foreman/SKILL.md` | OK |
+
 ### `herdr_delegate.py`
 
 | Doc | Status |

@@ -333,6 +333,17 @@
     "subcommand show: print session (or one decision) as JSON",
     "subcommand verdict: record a verification verdict"
   ],
+  "guard_rails.py": [
+    "arg (top-level) --command: \u2014 shell command, for the neutral bash-family form",
+    "arg (top-level) --cwd: \u2014 session working directory, for the neutral form",
+    "arg (top-level) --harness: \u2014 read this harness's payload on stdin and answer in its shape (choices: claude, agy, copilot)",
+    "arg (top-level) --path: \u2014 target file path, for the neutral write-family form",
+    "arg (top-level) --quiet/-q: ",
+    "arg (top-level) --tool: \u2014 tool name, for the neutral form",
+    "arg (top-level) --verbose/-v: ",
+    "exit codes: 0",
+    "module docstring: Pre-tool guard shared by every harness: refuse a write into a repository's main checkout while a backlog item for that repository is in progress (except a write under a repo-declared, gitignored provenance root -- see ``.guard-rails.json`` and the module's ``_declared_provenance_roots``), warn when the current worktree's base has fallen behind ``origin/main`` (or ``origin/<integration_branch>`` for an item that declares one), (Bash, Claude Code only) deny the git-native ways to defeat the no-commit-on-main git hook (``githooks/pre-commit`` / ``githooks-global/pre-commit``), and require an active backlog-item claim before a write that points at an in-progress item."
+  ],
   "herdr_delegate.py": [
     "arg answer --expect-pane: \u2014 the pane this worker is parked in (required)",
     "arg answer --index: \u2014 select by 1-based option index",

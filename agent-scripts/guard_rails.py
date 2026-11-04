@@ -44,8 +44,14 @@ be checked against its TTL. Nothing here mutates the backlog store; a dead
 claim is recovered by re-running ``start``, which takes it over.
 
 Accepted gaps: Bash-family calls can route a file mutation past the claim
-check entirely (same bypassability as the commit check -- git-hook territory);
-a harness running inside a container/other PID namespace sees every claim as
+check entirely (same bypassability as the commit check -- git-hook territory).
+This is deliberate: a shell read cannot be told apart from a shell write by
+parsing the command, and a parsing-based deny of Bash calls into a claimed
+worktree also blocks another session's read-only inspection and its landing
+of that worktree's branch. A git-side check (refuse a commit unless the
+committing session holds the claim) is the fallback if a real collision ever
+shows up, since it sees resolved state and leaves reads alone. Also, a harness
+running inside a container/other PID namespace sees every claim as
 foreign and is denied (kill-based liveness, as in dev_status.py itself, also
 tolerates PID reuse).
 

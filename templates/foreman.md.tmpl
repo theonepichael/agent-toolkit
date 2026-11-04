@@ -290,6 +290,16 @@ still needs the live worker. A classifier denial goes to the operator once
 (step 1); `--force` waives only the item and status checks and is the
 operator's call. Without `--handoff`, worker behaviour is unchanged.
 
+**Writing into a worker's worktree.** The worker's claim stops the
+foreman's file-edit tools there, but not its shell: Bash writes are not
+claim-checked (see `guard_rails.py`'s "Accepted gaps"). So it is on you.
+Reading a worker's worktree is always fine. Landing after `FOREMAN-HANDOFF`
+(rebase, re-run, fast-forward) is the one sanctioned write, because the
+worker has stopped. Any other write, Bash included, waits until the worker
+is idle and the claim is taken over with `dev_status.py start <slug>
+--force` from that worktree, and that takeover is the operator's call (step
+7). Otherwise send the change back to the worker.
+
 ## 7. When to ask the operator
 
 Ask, never decide alone: public or outward actions, taste gates, spend
