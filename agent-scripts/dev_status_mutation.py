@@ -95,6 +95,7 @@ BACKLOG_MUTABLE_FIELDS: frozenset[str] = frozenset(
         "integration_branch",
         "no_worker",
         "no_worker_reason",
+        "resource_tags",
     }
 )
 """Fields a generic ``update`` patch may merge, and nothing else.
@@ -275,6 +276,11 @@ class NewItemRequest:
     priority: str | None = None
     no_worker: bool | None = None
     no_worker_reason: str | None = None
+    # `tuple[object, ...]` deliberately, not `tuple[str, ...]`: the CLI layer
+    # passes `_list_field` elements uncoerced so a non-string entry reaches
+    # `_normalize_resource_tags` and is refused, rather than being silently
+    # stringified the way `blocked_by`'s `str(...)` wrapper would.
+    resource_tags: tuple[object, ...] = ()
     acceptance: Mapping[str, object] | None = None
 
 
@@ -297,6 +303,7 @@ class ItemUpdateRequest:
     integration_branch: str | _Unset | None = UNSET
     no_worker: bool | _Unset | None = UNSET
     no_worker_reason: str | _Unset | None = UNSET
+    resource_tags: tuple[object, ...] | _Unset = UNSET
 
 
 @dataclass(frozen=True)
@@ -1995,6 +2002,54 @@ def _git_name_status_range(
 # ── The 16 Service Mutations ──────────────────────────────────────────────────
 
 
+# What a valid resource tag looks like: a short identifier, first char
+# alphanumeric, the rest alphanumeric/`.`/`_`/`-`. The positive pattern is
+# load-bearing rather than a denylist: it excludes the strings that would
+# make a tag pseudo-path degenerate (`""`, `"/"`, `"."`, `".."`, control
+# chars), any of which could become a claim over the whole `@resource/`
+# namespace once folded into `selectSchedulable`'s collision check.
+_RESOURCE_TAG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+def _resource_tag_problems(tags: Sequence[object]) -> list[str]:
+    """Return human-readable problems for any invalid resource tag entry."""
+    problems: list[str] = []
+    for tag in tags:
+        if not isinstance(tag, str):
+            problems.append(f"resource tag {tag!r} must be a string")
+        elif not _RESOURCE_TAG_RE.fullmatch(tag):
+            problems.append(
+                f"resource tag {tag!r} must match the identifier pattern "
+                "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ (1-64 chars, first "
+                "alphanumeric, then alphanumeric/./_/-)"
+            )
+    return problems
+
+
+def _normalize_resource_tags(tags: Sequence[object], cmd: str) -> list[str]:
+    """Validate and de-duplicate resource tags, or raise ``ValidationError``.
+
+    Returns the cleaned list in first-seen order (duplicates dropped). Raises
+    on any invalid entry with a message naming the offending value, so a
+    non-string or degenerate tag is refused rather than silently coerced or
+    stored as a wildcard pseudo-path.
+    """
+    problems = _resource_tag_problems(tags)
+    if problems:
+        raise ValidationError(f"[{cmd}] " + "; ".join(problems))
+    seen: set[str] = set()
+    cleaned: list[str] = []
+    for tag in tags:
+        assert isinstance(
+            tag, str
+        )  # _resource_tag_problems already refused non-strings
+        if tag in seen:
+            continue
+        seen.add(tag)
+        cleaned.append(tag)
+    return cleaned
+
+
 def add_item(
     request: NewItemRequest,
     *,
@@ -2062,6 +2117,10 @@ def add_item(
             item["no_worker"] = request.no_worker
         if request.no_worker_reason is not None:
             item["no_worker_reason"] = request.no_worker_reason
+        if request.resource_tags:
+            item["resource_tags"] = _normalize_resource_tags(
+                request.resource_tags, "add"
+            )
 
         token_to_publish: str | None = None
         if request.acceptance is not None:
@@ -2162,6 +2221,7 @@ def update_item(
             ("related_files", request.related_files),
             ("context", request.context),
             ("next_steps", request.next_steps),
+            ("resource_tags", request.resource_tags),
         )
         if val is None
     ]
@@ -2234,6 +2294,13 @@ def update_item(
                 item.pop("no_worker_reason", None)
             else:
                 item["no_worker_reason"] = request.no_worker_reason
+        if request.resource_tags is not UNSET:
+            fields.append("resource_tags")
+            tags = _normalize_resource_tags(request.resource_tags, "update")
+            if tags:
+                item["resource_tags"] = tags
+            else:
+                item.pop("resource_tags", None)
 
         item["updated"] = today()
         new_rev = _bump_rev(paths["meta_path"])
@@ -4629,6 +4696,10 @@ class _BacklogTransactionImpl:
             item["no_worker"] = request.no_worker
         if request.no_worker_reason is not None:
             item["no_worker_reason"] = request.no_worker_reason
+        if request.resource_tags:
+            item["resource_tags"] = _normalize_resource_tags(
+                request.resource_tags, "add"
+            )
 
         token_to_publish: str | None = None
         if request.acceptance is not None:

@@ -47,6 +47,8 @@ import registerSwarmTools, {
   providerCrashMatch,
   findTabByLabel,
   itemPaths,
+  claimPaths,
+  itemTags,
   parseReadyItems,
   buildShowArgv,
   parseShownItem,
@@ -3979,6 +3981,116 @@ describe("selectSchedulable", () => {
     );
     expect(result.slugs).toEqual([]);
     expect(result.refused[0]?.reason).toContain("cross-repo");
+  });
+});
+
+describe("resource tags", () => {
+  const tagged = (id: string, tag: string) => ({
+    id,
+    worker_safe: true,
+    related_files: [],
+    resource_tags: [tag],
+  });
+
+  test("itemTags maps valid tags to pseudo-paths and drops degenerate entries", () => {
+    expect(
+      itemTags({ id: "a", resource_tags: ["gpu", "", "/", ".", "..", "ok", 123, "gpu"] }),
+    ).toEqual(["@resource/gpu", "@resource/ok"]);
+  });
+
+  test("a non-array resource_tags container is dropped, never crashed on", () => {
+    // Untrusted JSON (a hand-edited items.json) can carry a scalar here even
+    // though the type says array; itemTags must not throw on it.
+    expect(itemTags({ id: "a", resource_tags: "gpu" as unknown as string[] })).toEqual([]);
+    const res = selectSchedulable(
+      [
+        {
+          id: "a",
+          worker_safe: true,
+          related_files: [],
+          resource_tags: "gpu" as unknown as string[],
+        },
+        { id: "b", worker_safe: true, related_files: [] },
+      ],
+      [],
+      3,
+    );
+    expect(res.slugs).toEqual(["a", "b"]);
+    expect(res.deferred).toEqual([]);
+  });
+
+  test("claimPaths is related_files paths plus tag pseudo-paths", () => {
+    expect(
+      claimPaths({ id: "a", related_files: [{ path: "/r/x.ts" }], resource_tags: ["gpu"] }),
+    ).toEqual(["/r/x.ts", "@resource/gpu"]);
+  });
+
+  test("two items sharing a resource tag do not go into one wave", () => {
+    const res = selectSchedulable(
+      [tagged("a", "gpu"), tagged("b", "gpu"), tagged("c", "cpu")],
+      [],
+      3,
+    );
+    expect(res.slugs).toEqual(["a", "c"]);
+    expect(res.deferred.map((d) => d.slug)).toEqual(["b"]);
+    expect(res.deferred[0]?.reason).toContain("resource tag in use");
+    expect(res.deferred[0]?.reason).toContain("gpu");
+  });
+
+  test("an item whose tag a running worker holds is deferred, naming tag and holder", () => {
+    const res = selectSchedulable(
+      [tagged("b", "gpu")],
+      [{ path: "@resource/gpu", holder: "worker run1-w1 (gpu-item, active)" }],
+      3,
+    );
+    expect(res.slugs).toEqual([]);
+    expect(res.deferred.map((d) => d.slug)).toEqual(["b"]);
+    expect(res.deferred[0]?.reason).toContain("resource tag in use");
+    expect(res.deferred[0]?.reason).toContain("gpu");
+    expect(res.deferred[0]?.reason).toContain("worker run1-w1 (gpu-item, active)");
+  });
+
+  test("a tag is freed when its holder finishes", () => {
+    const held = selectSchedulable(
+      [tagged("b", "gpu")],
+      [{ path: "@resource/gpu", holder: "worker run1-w1 (gpu-item, active)" }],
+      1,
+    );
+    expect(held.deferred.map((d) => d.slug)).toEqual(["b"]);
+    const freed = selectSchedulable([tagged("b", "gpu")], [], 1);
+    expect(freed.slugs).toEqual(["b"]);
+  });
+
+  test("an item with no resource tags behaves exactly as before", () => {
+    const res = selectSchedulable(
+      [
+        { id: "a", worker_safe: true, related_files: [] },
+        { id: "b", worker_safe: true, related_files: [] },
+      ],
+      [],
+      3,
+    );
+    expect(res.slugs).toEqual(["a", "b"]);
+    expect(res.deferred).toEqual([]);
+    expect(itemTags({ id: "a" })).toEqual([]);
+    expect(itemTags({ id: "a", resource_tags: [] })).toEqual([]);
+  });
+
+  test("distinct tags never collide, even when one is a substring of the other", () => {
+    const res = selectSchedulable([tagged("a", "gpu"), tagged("b", "gpu2")], [], 3);
+    expect(res.slugs).toEqual(["a", "b"]);
+    expect(res.deferred).toEqual([]);
+  });
+
+  test("a tag never collides with a real file path", () => {
+    const withFile = {
+      id: "a",
+      worker_safe: true,
+      related_files: [{ path: "/r/gpu.ts" }],
+    };
+    const res = selectSchedulable([withFile, tagged("b", "gpu")], [], 3);
+    expect(res.slugs).toEqual(["a", "b"]);
+    expect(res.deferred).toEqual([]);
   });
 });
 

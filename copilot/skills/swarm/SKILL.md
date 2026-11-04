@@ -239,6 +239,10 @@ Key invariants must be exactly right:
 - Concurrent workers never take a harness-repo item. Serial workers may take
   one only when `dev_status.py ready` explicitly marks that single-repository
   item `serial_safe: true`.
+- Two items declaring the same `resource_tags` value (an exclusive-resource
+  claim, e.g. one GPU) are never spawned into the same wave: the scheduler
+  treats each tag as a claim through its existing file-overlap collision
+  check, deferring the second item until the first worker finishes.
 
 For pi, that env var disarms **only** the bash permission ask. `guard-rails.ts` stays
 armed for protected-path writes and the git-commit-on-main worktree policy, and

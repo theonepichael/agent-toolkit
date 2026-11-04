@@ -2899,6 +2899,7 @@ def cmd_add(args: argparse.Namespace) -> None:
             if "no_worker_reason" in patch
             else None
         ),
+        resource_tags=tuple(_list_field(patch, "resource_tags")),
         acceptance=(
             cast(dict[str, object], patch["acceptance"])
             if "acceptance" in patch
@@ -3010,7 +3011,14 @@ def cmd_update(args: argparse.Namespace) -> None:
     _reject_null_fields(
         "update",
         patch,
-        ("summary", "category", "related_files", "context", "next_steps"),
+        (
+            "summary",
+            "category",
+            "related_files",
+            "context",
+            "next_steps",
+            "resource_tags",
+        ),
     )
 
     unset_priority = "priority" in patch and patch["priority"] is None
@@ -3050,6 +3058,11 @@ def cmd_update(args: argparse.Namespace) -> None:
         no_worker_reason=(
             cast(str | None, patch["no_worker_reason"])
             if "no_worker_reason" in patch
+            else UNSET
+        ),
+        resource_tags=(
+            tuple(_list_field(patch, "resource_tags"))
+            if "resource_tags" in patch
             else UNSET
         ),
     )

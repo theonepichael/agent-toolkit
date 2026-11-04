@@ -317,13 +317,15 @@ export interface WorkerRecord {
    */
   tabId?: string;
   /**
-   * The files this worker's item declared it would touch (`related_files`).
+   * Everything this worker's item claims: its `related_files` paths plus its
+   * resource-tag pseudo-paths (`@resource/<tag>`, via `claimPaths`).
    *
    * Held on the record so a later wave can tell whether a candidate would
-   * edit the same file as something already running, without re-querying
-   * dev_status for items that have since left READY. Optional for records
-   * written before scheduling existed: such a worker simply constrains
-   * nothing, which is the pre-existing behaviour.
+   * edit the same file — or need the same exclusive resource — as something
+   * already running, without re-querying dev_status for items that have
+   * since left READY. Optional for records written before scheduling (or
+   * resource tags) existed: such a worker simply constrains nothing, which is
+   * the pre-existing behaviour.
    */
   paths?: string[];
   /**
@@ -603,6 +605,8 @@ export interface ReadyItem {
   /** Stable classifier explanation for a concurrent refusal (e.g. `no_worker`). */
   worker_safety_reason?: unknown;
   related_files?: { path?: unknown }[];
+  /** Exclusive resource claims, each a short identifier string (see `itemTags`). */
+  resource_tags?: unknown[];
 }
 
 export function parseReadyItems(stdout: string): ReadyItem[] {
@@ -878,6 +882,48 @@ export function itemPaths(item: ReadyItem): string[] {
   return [...new Set(paths)];
 }
 
+/** The pseudo-path namespace a resource tag claim lives in. */
+export const RESOURCE_TAG_PREFIX = "@resource/";
+
+/**
+ * What a valid resource tag looks like: a short identifier, first char
+ * alphanumeric, the rest alphanumeric/`.`/`_`/`-`. Mirrors
+ * `dev_status_mutation._RESOURCE_TAG_RE`. Enforced here as well because this
+ * module consumes untrusted JSON (`dev_status.py ready` output, or a
+ * hand-edited items.json) -- a degenerate tag (`""`, `"/"`, `"."`, `".."`)
+ * would become `@resource/` (or `@resource//`, etc.) and, through
+ * `pathsCollide`'s trailing-slash strip, a claim over every tag.
+ */
+const RESOURCE_TAG_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+export function resourceTagPath(tag: string): string {
+  return `${RESOURCE_TAG_PREFIX}${tag}`;
+}
+
+/**
+ * The item's resource tags as pseudo-paths, deduped and restricted to the
+ * valid identifier shape. Invalid entries (non-strings, degenerate strings)
+ * contribute nothing, and a non-array container is treated as empty rather
+ * than crashed on — the module consumes untrusted JSON (``ready`` output or
+ * a hand-edited items.json), where ``resource_tags`` may be a scalar.
+ */
+export function itemTags(item: ReadyItem): string[] {
+  const raw = item.resource_tags;
+  const tags = (Array.isArray(raw) ? raw : []).filter(
+    (t): t is string => typeof t === "string" && RESOURCE_TAG_RE.test(t),
+  );
+  return [...new Set(tags)].map(resourceTagPath);
+}
+
+/**
+ * Everything a worker's item claims: its related_files paths plus its
+ * resource-tag pseudo-paths. This is the full claim set fed through the
+ * collision check and stored on `WorkerRecord.paths`.
+ */
+export function claimPaths(item: ReadyItem): string[] {
+  return [...itemPaths(item), ...itemTags(item)];
+}
+
 /**
  * True when two declared paths refer to overlapping work.
  *
@@ -985,7 +1031,7 @@ export function selectSchedulable(
       skipped.push(candidate.id);
       continue;
     }
-    const paths = itemPaths(candidate);
+    const paths = claimPaths(candidate);
     let clashPath: string | undefined;
     let clashHolder: string | undefined;
     for (const p of paths) {
@@ -999,7 +1045,9 @@ export function selectSchedulable(
     if (clashPath !== undefined) {
       deferred.push({
         slug: candidate.id,
-        reason: `file overlap with ${clashHolder}: ${clashPath}`,
+        reason: clashPath.startsWith(RESOURCE_TAG_PREFIX)
+          ? `resource tag in use by ${clashHolder}: ${clashPath.slice(RESOURCE_TAG_PREFIX.length)}`
+          : `file overlap with ${clashHolder}: ${clashPath}`,
       });
       continue;
     }

@@ -139,6 +139,12 @@ class BacklogItem(TypedDict):
     both ``worker_safe`` and ``serial_safe`` false regardless of prefix.
     ``no_worker_reason`` is an optional human-readable explanation surfaced
     in refusal messages, only meaningful while ``no_worker`` is truthy.
+    ``resource_tags`` is absent unless the item declares exclusive resource
+    claims for the swarm scheduler (see ``swarm-scheduling.ts``): a list of
+    short identifier strings, each matching ``^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$``,
+    validated and de-duplicated on write by ``dev_status_mutation`` and
+    emitted verbatim in ``ready`` output so ``selectSchedulable`` can hold two
+    items sharing a tag apart.
     """
 
     id: str
@@ -159,6 +165,7 @@ class BacklogItem(TypedDict):
     integration_branch: NotRequired[str]
     no_worker: NotRequired[bool]
     no_worker_reason: NotRequired[str]
+    resource_tags: NotRequired[list[str]]
     acceptance: NotRequired[Acceptance]
     worked_by: NotRequired[list[dict[str, str]]]
 

@@ -24,7 +24,7 @@ import {
   classifyOutcomeDraft,
   fatalErrorExitMatch,
   isSuspiciousFinish,
-  itemPaths,
+  claimPaths,
   nextAgentId,
   openPaneCount,
   openPaneSoftCap,
@@ -2118,7 +2118,7 @@ export class SwarmToolContext {
       const startResults = await Promise.allSettled(
         tabs.map(async (t): Promise<SpawnOutcome> => {
           const candidateItem = candidates.find((c) => c.id === t.slug);
-          const paths = candidateItem ? itemPaths(candidateItem) : [];
+          const paths = candidateItem ? claimPaths(candidateItem) : [];
           const agentId = nextAgentId(state.runId, state.nextCounter++, t.slug);
           const { paneId, tabId } = t.created;
           try {
@@ -2172,7 +2172,7 @@ export class SwarmToolContext {
         `Spawned ${spawned.length} worker(s)`,
         `${failed.length} failed to spawn`,
         `${skipped.length} skipped (cap)`,
-        `${deferred.length} deferred (file overlap)`,
+        `${deferred.length} deferred (overlap)`,
         `${refused.length} refused (not ${state.mode === "serial" ? "serial-safe" : "worker-safe"})`,
       ];
       const lines = [`${parts.join(", ")}.`];

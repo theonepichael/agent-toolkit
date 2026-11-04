@@ -204,6 +204,21 @@ function itemPaths(item) {
   const paths = (item.related_files ?? []).map((f) => f?.path).filter((p) => typeof p === "string" && p.length > 0);
   return [...new Set(paths)];
 }
+var RESOURCE_TAG_PREFIX = "@resource/";
+var RESOURCE_TAG_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+function resourceTagPath(tag) {
+  return `${RESOURCE_TAG_PREFIX}${tag}`;
+}
+function itemTags(item) {
+  const raw = item.resource_tags;
+  const tags = (Array.isArray(raw) ? raw : []).filter(
+    (t) => typeof t === "string" && RESOURCE_TAG_RE.test(t)
+  );
+  return [...new Set(tags)].map(resourceTagPath);
+}
+function claimPaths(item) {
+  return [...itemPaths(item), ...itemTags(item)];
+}
 function pathsCollide(a, b) {
   const x = a.replace(/\/+$/, "");
   const y = b.replace(/\/+$/, "");
@@ -232,7 +247,7 @@ function selectSchedulable(candidates, takenPaths, headroom, mode = "concurrent"
       skipped.push(candidate.id);
       continue;
     }
-    const paths = itemPaths(candidate);
+    const paths = claimPaths(candidate);
     let clashPath;
     let clashHolder;
     for (const p of paths) {
@@ -246,7 +261,7 @@ function selectSchedulable(candidates, takenPaths, headroom, mode = "concurrent"
     if (clashPath !== void 0) {
       deferred.push({
         slug: candidate.id,
-        reason: `file overlap with ${clashHolder}: ${clashPath}`
+        reason: clashPath.startsWith(RESOURCE_TAG_PREFIX) ? `resource tag in use by ${clashHolder}: ${clashPath.slice(RESOURCE_TAG_PREFIX.length)}` : `file overlap with ${clashHolder}: ${clashPath}`
       });
       continue;
     }
@@ -2101,7 +2116,7 @@ ${capture}` } };
       const startResults = await Promise.allSettled(
         tabs.map(async (t) => {
           const candidateItem = candidates.find((c) => c.id === t.slug);
-          const paths = candidateItem ? itemPaths(candidateItem) : [];
+          const paths = candidateItem ? claimPaths(candidateItem) : [];
           const agentId = nextAgentId(state.runId, state.nextCounter++, t.slug);
           const { paneId, tabId } = t.created;
           try {
@@ -2146,7 +2161,7 @@ ${capture}` } };
         `Spawned ${spawned.length} worker(s)`,
         `${failed.length} failed to spawn`,
         `${skipped.length} skipped (cap)`,
-        `${deferred.length} deferred (file overlap)`,
+        `${deferred.length} deferred (overlap)`,
         `${refused.length} refused (not ${state.mode === "serial" ? "serial-safe" : "worker-safe"})`
       ];
       const lines = [`${parts.join(", ")}.`];

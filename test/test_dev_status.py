@@ -5386,6 +5386,66 @@ class BacklogTestCase(BacklogFixture):
         self.assertIs(safe, False)
         self.assertIn("target repository", reason or "")
 
+    @pytest.mark.regression("resource-tags-ready-roundtrip", "KeyError: 'resource_tags'")
+    def test_resource_tags_roundtrip_through_add_and_ready(self):
+        args = _args(
+            json=json.dumps(
+                {
+                    "id": "atk-gpu",
+                    "summary": "gpu item",
+                    "resource_tags": ["gpu", "gpu", "cpu"],
+                }
+            )
+        )
+        dev_status.cmd_add(args)
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            dev_status.cmd_ready(_args(prefix=None))
+        by_id = {i["id"]: i for i in json.loads(out.getvalue())}
+        self.assertEqual(by_id["atk-gpu"]["resource_tags"], ["gpu", "cpu"])
+
+    @pytest.mark.regression(
+        "resource-tags-validation-refused", "AssertionError: SystemExit not raised"
+    )
+    def test_resource_tags_validation_refuses_bad_entries(self):
+        for bad in ("bad tag", "has/slash", "", ".", "..", "x" * 65, "-lead"):
+            args = _args(
+                json=json.dumps(
+                    {"id": "atk-bad", "summary": "x", "resource_tags": [bad]}
+                )
+            )
+            err = io.StringIO()
+            with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+                dev_status.cmd_add(args)
+            self.assertEqual(cm.exception.code, 1, f"tag {bad!r} should be refused")
+            self.assertIn("resource tag", err.getvalue())
+
+        # A non-string element is refused, not coerced.
+        args = _args(
+            json=json.dumps(
+                {"id": "atk-bad", "summary": "x", "resource_tags": [123]}
+            )
+        )
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+            dev_status.cmd_add(args)
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("resource tag", err.getvalue())
+
+    def test_resource_tags_update_set_and_clear(self):
+        dev_status.cmd_add(
+            _args(json='{"id": "atk-tag", "summary": "tag item"}')
+        )
+        dev_status.cmd_update(
+            _args(id="atk-tag", patch='{"resource_tags": ["gpu"]}')
+        )
+        self.assertEqual(self._item_by_id("atk-tag")["resource_tags"], ["gpu"])
+        # An empty list clears the field rather than persisting `[]`.
+        dev_status.cmd_update(
+            _args(id="atk-tag", patch='{"resource_tags": []}')
+        )
+        self.assertNotIn("resource_tags", self._item_by_id("atk-tag"))
+
     def test_ws10_serial_path_resolution_handles_future_leaves_and_symlink_escape(
         self,
     ):

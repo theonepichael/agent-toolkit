@@ -1113,9 +1113,12 @@ a crash/restart, crash recovery, and concurrency-cap accounting.
    first turn that you are resuming `<runId>` rather than starting fresh.
 
    **Deferred is not skipped.** Two items whose `related_files` name the same
-   file are never spawned into the same wave: each worker gets its own
-   worktree, so the second to merge would conflict. A deferred item is still
-   owed and becomes schedulable once the worker it collided with finishes; a
+   file — or that declare the same `resource_tags` value, which the scheduler
+   treats as an exclusive-resource claim through the same collision check —
+   are never spawned into the same wave: each worker gets its own worktree,
+   so the second to merge would conflict, and two items needing the same
+   exclusive resource would contend for it. A deferred item is still owed
+   and becomes schedulable once the worker it collided with finishes; a
    skipped one was only held back by the concurrency cap and is coming next
    wave regardless. Both are named in the tool's result text.
 

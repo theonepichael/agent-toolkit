@@ -188,6 +188,21 @@ function itemPaths(item) {
   const paths = (item.related_files ?? []).map((f) => f?.path).filter((p) => typeof p === "string" && p.length > 0);
   return [...new Set(paths)];
 }
+var RESOURCE_TAG_PREFIX = "@resource/";
+var RESOURCE_TAG_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+function resourceTagPath(tag) {
+  return `${RESOURCE_TAG_PREFIX}${tag}`;
+}
+function itemTags(item) {
+  const raw = item.resource_tags;
+  const tags = (Array.isArray(raw) ? raw : []).filter(
+    (t) => typeof t === "string" && RESOURCE_TAG_RE.test(t)
+  );
+  return [...new Set(tags)].map(resourceTagPath);
+}
+function claimPaths(item) {
+  return [...itemPaths(item), ...itemTags(item)];
+}
 function pathsCollide(a, b) {
   const x = a.replace(/\/+$/, "");
   const y = b.replace(/\/+$/, "");
@@ -216,7 +231,7 @@ function selectSchedulable(candidates, takenPaths, headroom, mode = "concurrent"
       skipped.push(candidate.id);
       continue;
     }
-    const paths = itemPaths(candidate);
+    const paths = claimPaths(candidate);
     let clashPath;
     let clashHolder;
     for (const p of paths) {
@@ -230,7 +245,7 @@ function selectSchedulable(candidates, takenPaths, headroom, mode = "concurrent"
     if (clashPath !== void 0) {
       deferred.push({
         slug: candidate.id,
-        reason: `file overlap with ${clashHolder}: ${clashPath}`
+        reason: clashPath.startsWith(RESOURCE_TAG_PREFIX) ? `resource tag in use by ${clashHolder}: ${clashPath.slice(RESOURCE_TAG_PREFIX.length)}` : `file overlap with ${clashHolder}: ${clashPath}`
       });
       continue;
     }
@@ -280,17 +295,20 @@ export {
   PROVIDER_CRASH_MAX_GAP,
   PROVIDER_CRASH_SCAN_LINES,
   RECONCILE_MIN_AGE_MS,
+  RESOURCE_TAG_PREFIX,
   SIDECAR_VERSION,
   TERMINAL_AGENT_STATUSES,
   activeWorkerCount,
   appendOutcome,
   canOpenNewPane,
   canSpawnNew,
+  claimPaths,
   classifyOutcomeDraft,
   fatalErrorExitMatch,
   isSuspiciousFinish,
   isTerminalAgentStatus,
   itemPaths,
+  itemTags,
   nextAgentId,
   openPaneCount,
   openPaneSoftCap,
@@ -301,6 +319,7 @@ export {
   pendingAmendWorkers,
   priorOutcome,
   providerCrashMatch,
+  resourceTagPath,
   selectSchedulable,
   spawnBudget,
   staleWorkerRecords,
