@@ -178,8 +178,12 @@ herdr restores worker panes after a host restart and resumes each pi
 session, but the workers stop where they were. Before re-arming the
 watcher:
 
-1. `herdr agent list`: confirm each worker came back under its name, and
-   note its pane.
+1. `herdr agent list`: note each worker's pane. Do not assume each worker
+   came back under its name — herdr may restore worker panes under the
+   generic agent name `pi`, dropping the launch-time names. Rename each pane
+   back with `herdr agent rename <pane> <agent>`, taking the pane and agent
+   name from the launch JSON (its `pane` and `agent` fields), so `watch`
+   matches workers by name again.
 2. `dev_status` sweeps release claims held by dead processes, so each item is
    `open` again. Tell each worker to run `start <slug>` from its own
    worktree, and to re-run its tests there.
@@ -191,6 +195,17 @@ watcher:
    restores deny-only on a fresh start there. A session started before that
    marker existed comes back armed and stalls on "Run bash command?". Sending
    it `/permission-gate off` is the operator's call (step 7).
+5. A restart can also leave a damaged line (zero-filled or truncated) in a pi
+   worker's session log, which makes `watch` raise an `unmeasured`/`incomplete`
+   cost alert. Inspect the reported problems, and ack only when every problem
+   the alert's `ack` token covers is restart damage — the token hashes the
+   whole problem set, and `watch` prints at most 20 problems plus a
+   `... N more` entry, so a truncated list is not acked without inspecting the
+   omitted problems too. A known restart-damage alert that keeps re-firing can
+   be acked with `--ack-cost <token>`; raising `--cost-remind-s` / `--cost-step`
+   snoozes it longer, but both are invocation-wide and weaken monitoring for
+   other subjects, so raise them deliberately. Anything not identified as
+   restart damage stays fail-closed: find out why before more paid work.
 
 ## 4. Review checklist
 
