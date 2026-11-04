@@ -1766,49 +1766,48 @@ def review_plan(
             )
 
     notices: list[str] = []
-    # Grounded mode constrains read reach, so candidate selection must filter
-    # by the per-mode eligibility view, not just presence. A backend whose
-    # grounded branch is containment-dependent (codex/pi/copilot re-enable read
-    # tools there) is ineligible on a host without user namespaces, and its
-    # build_isolated_command would raise IsolationError — a capability failure,
-    # not a BackendError, so the attempt loop below would let it escape rather
-    # than fall through (measured 2026-09-30). Filter here, before dispatch.
+    target_dir = (request.target_dir or Path.cwd()).resolve()
+    # Filter candidates against the per-mode eligibility view before dispatch.
+    # Grounded mode can re-enable reach that text-only vendor flags remove;
+    # either mode can depend on OS containment whose required binds may fail.
+    # build_isolated_command raises IsolationError for unavailable containment,
+    # a capability failure rather than a BackendError, so the attempt loop
+    # below would let it escape instead of falling through.
     #
-    # Only *installed but grounded-ineligible* backends are dropped: a
-    # not-installed entry is left in place so the loop's lazy skip still emits
-    # its "not found on PATH" notice (a comma list skips a missing install, a
-    # grounded-ineligible one is skipped here).
-    if mode == "grounded":
-        report = llm_backends.eligibility_report(mode="grounded")
-        pre_filter = list(candidates)
-        dropped = [
-            b
-            for b in candidates
-            if report.get(b, {}).get("present") is True
-            and report.get(b, {}).get("eligible") is False
-        ]
-        candidates = [b for b in candidates if b not in dropped]
-        if request.backend and len(pre_filter) == 1 and not candidates:
-            # Strict single-name contract: a forced backend that cannot meet
-            # grounded reach fails with the reason, never a silent fallback.
-            reason = report.get(pre_filter[0], {}).get("reason", "unknown")
-            raise ReviewError(
-                f"{pre_filter[0]} is not eligible for grounded review — {reason}"
+    # Keep missing installs in the list so the loop emits its existing
+    # "not found on PATH" notice; only installed but ineligible backends drop.
+    report = llm_backends.eligibility_report(
+        mode=mode, target_dir=target_dir if mode == "grounded" else None
+    )
+    pre_filter = list(candidates)
+    dropped = [
+        b
+        for b in candidates
+        if report.get(b, {}).get("present") is True
+        and report.get(b, {}).get("eligible") is False
+    ]
+    candidates = [b for b in candidates if b not in dropped]
+    if request.backend and len(pre_filter) == 1 and not candidates:
+        # Strict single-name contract: a forced backend that cannot meet the
+        # selected mode's isolation requirements fails with the reason.
+        reason = report.get(pre_filter[0], {}).get("reason", "unknown")
+        raise ReviewError(
+            f"{pre_filter[0]} is not eligible for {mode} review — {reason}"
+        )
+    if not candidates:
+        retry = " — retry with --text-only" if mode == "grounded" else ""
+        raise NoBackendAvailableError(
+            f"no backend is eligible for {mode} review — "
+            + "; ".join(
+                f"{b}: {report.get(b, {}).get('reason', 'unknown')}" for b in pre_filter
             )
-        if not candidates:
-            raise NoBackendAvailableError(
-                "no backend is eligible for grounded review — "
-                + "; ".join(
-                    f"{b}: {report.get(b, {}).get('reason', 'unknown')}"
-                    for b in pre_filter
-                )
-                + " — retry with --text-only"
-            )
-        for b in dropped:
-            notices.append(
-                f"[second_opinion] {b} not eligible for grounded review "
-                f"({report.get(b, {}).get('reason', 'unknown')}) — skipped"
-            )
+            + retry
+        )
+    for b in dropped:
+        notices.append(
+            f"[second_opinion] {b} not eligible for {mode} review "
+            f"({report.get(b, {}).get('reason', 'unknown')}) — skipped"
+        )
 
     # A diff is code, not a plan: its context lines can look like the
     # review-debris headings sanitize_plan_text strips, so leave it whole.
@@ -1820,7 +1819,6 @@ def review_plan(
         notices.append(
             f"[second_opinion] stripped inline review debris from plan ({bytes_saved} bytes saved)"
         )
-    target_dir = (request.target_dir or Path.cwd()).resolve()
     prompt = build_prompt(
         plan_text,
         request.focus_hints,

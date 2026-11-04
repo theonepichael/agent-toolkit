@@ -53,6 +53,7 @@ EXPECTED_MODEL_ENV_VARS = [
 
 
 _containment_patcher = None
+_bind_preflight_patcher = None
 _daemon_patcher = None
 
 
@@ -64,13 +65,12 @@ def setUpModule() -> None:
     setUpModule shadows the first, which silently restores exactly the host
     pool leakage the first half exists to prevent.
 
-    The containment stub is needed because build_isolated_command consults
-    containment_available() for any backend whose descriptor requires OS
-    containment, and that probe shells out to `unshare` — blocked by the
-    repo-root conftest, and otherwise making these tests depend on the host
-    kernel rather than on the behaviour under test.
+    The containment stubs are needed because the generic and per-backend
+    probes shell out to `unshare` and `mount` — blocked by the repo-root
+    conftest, and otherwise making these tests depend on the host kernel rather
+    than on the behaviour under test.
     """
-    global _containment_patcher
+    global _containment_patcher, _bind_preflight_patcher
     import llm_backends
 
     for var in EXPECTED_MODEL_ENV_VARS:
@@ -79,6 +79,12 @@ def setUpModule() -> None:
         llm_backends, "containment_available", lambda: True
     )
     _containment_patcher.start()
+    _bind_preflight_patcher = patch.object(
+        llm_backends,
+        "containment_preflight",
+        lambda backend, mode="text-only", target_dir=None: None,
+    )
+    _bind_preflight_patcher.start()
     # daemon_listening shells out to `ss` on every build; stubbed for the same
     # reason as the containment probe.
     global _daemon_patcher
@@ -89,6 +95,8 @@ def setUpModule() -> None:
 def tearDownModule() -> None:
     if _containment_patcher is not None:
         _containment_patcher.stop()
+    if _bind_preflight_patcher is not None:
+        _bind_preflight_patcher.stop()
     if _daemon_patcher is not None:
         _daemon_patcher.stop()
 
@@ -919,6 +927,193 @@ class CmdDetectTests(unittest.TestCase):
         self.assertIn("containment", report["agy"]["reason"])
         # pi isolates by flags alone, so it stays eligible on the same host.
         self.assertTrue(report["pi"]["eligible"])
+
+    def test_detect_marks_backend_ineligible_when_a_required_bind_fails(self) -> None:
+        out = io.StringIO()
+        with (
+            patch(
+                "shutil.which",
+                side_effect=lambda b: "/usr/bin/agy" if b == "agy" else None,
+            ),
+            patch.object(
+                second_opinion.llm_backends, "containment_available", lambda: True
+            ),
+            patch.object(
+                second_opinion.llm_backends,
+                "containment_preflight",
+                lambda backend, mode="text-only", target_dir=None: (
+                    "bind preflight failed: source=/home/user/.local"
+                    if backend == "agy"
+                    else None
+                ),
+            ),
+            patch("sys.stdout", out),
+        ):
+            second_opinion.cmd_detect(ns(mode="grounded"))
+        report = json.loads(out.getvalue())
+        self.assertFalse(report["agy"]["eligible"])
+        self.assertIn("source=/home/user/.local", report["agy"]["reason"])
+
+    def test_grounded_dispatch_skips_only_the_backend_with_a_failed_bind(self) -> None:
+        calls: list[str] = []
+
+        def run_agy(prompt: str, *, model_index: int | None = None) -> str:
+            calls.append("agy")
+            return "safe fallback critique"
+
+        with (
+            patch.dict(
+                os.environ,
+                {"SECOND_OPINION_AGY_MODEL": "Gemini 3.7 Flash (High)"},
+            ),
+            patch(
+                "shutil.which",
+                side_effect=lambda b: f"/usr/bin/{b}" if b in {"codex", "agy"} else None,
+            ),
+            patch.object(
+                second_opinion.llm_backends, "containment_available", lambda: True
+            ),
+            patch.object(
+                second_opinion.llm_backends,
+                "containment_preflight",
+                lambda backend, mode="text-only", target_dir=None: (
+                    "bind preflight failed: source=/home/user/.local"
+                    if backend == "codex"
+                    else None
+                ),
+            ),
+            patch.object(second_opinion, "BACKEND_RUNNERS", {"agy": run_agy}),
+        ):
+            result = second_opinion.review_plan(
+                second_opinion.ReviewRequest(plan_text="my plan")
+            )
+
+        self.assertEqual(result.response_text, "safe fallback critique")
+        self.assertEqual(calls, ["agy"])
+
+    @pytest.mark.regression(
+        "grounded-dispatch-preflights-target-bind",
+        "AssertionError: ReviewError not raised",
+    )
+    def test_grounded_dispatch_preflights_target_bind(self) -> None:
+        target = Path("/sandbox/worktree").resolve()
+        calls: list[str] = []
+
+        def run_agy(prompt: str, *, model_index: int | None = None) -> str:
+            calls.append("agy")
+            return "should not run"
+
+        with (
+            patch("shutil.which", side_effect=lambda backend: f"/usr/bin/{backend}"),
+            patch.object(
+                second_opinion.llm_backends, "containment_available", lambda: True
+            ),
+            patch.object(
+                second_opinion.llm_backends,
+                "containment_preflight",
+                lambda backend, mode="text-only", target_dir=None: (
+                    f"bind preflight failed: source={target_dir}"
+                    if target_dir == target
+                    else None
+                ),
+            ),
+            patch.object(second_opinion, "BACKEND_RUNNERS", {"agy": run_agy}),
+            self.assertRaises(second_opinion.ReviewError) as raised,
+        ):
+            second_opinion.review_plan(
+                second_opinion.ReviewRequest(
+                    plan_text="my plan", backend="agy", target_dir=target
+                )
+            )
+
+        self.assertIn(str(target), str(raised.exception))
+        self.assertEqual(calls, [])
+
+    @pytest.mark.regression(
+        "text-only-dispatch-skips-backend-with-failed-bind",
+        "AssertionError: 'agy critique' != 'safe fallback critique'",
+    )
+    def test_text_only_dispatch_skips_backend_with_a_failed_bind(self) -> None:
+        calls: list[str] = []
+
+        def run_agy(prompt: str, *, model_index: int | None = None) -> str:
+            calls.append("agy")
+            return "agy critique"
+
+        def run_opencode(prompt: str, *, model_index: int | None = None) -> str:
+            calls.append("opencode")
+            return "safe fallback critique"
+
+        with (
+            patch.object(
+                second_opinion,
+                "available_backends",
+                return_value=["agy", "opencode"],
+            ),
+            patch(
+                "shutil.which",
+                side_effect=lambda backend: f"/usr/bin/{backend}"
+                if backend in {"agy", "opencode"}
+                else None,
+            ),
+            patch.object(
+                second_opinion.llm_backends, "containment_available", lambda: True
+            ),
+            patch.object(
+                second_opinion.llm_backends,
+                "containment_preflight",
+                lambda backend, mode="text-only", target_dir=None: (
+                    "bind preflight failed: source=/home/user/.local"
+                    if backend == "agy"
+                    else None
+                ),
+            ),
+            patch.object(
+                second_opinion,
+                "BACKEND_RUNNERS",
+                {"agy": run_agy, "opencode": run_opencode},
+            ),
+        ):
+            result = second_opinion.review_plan(
+                second_opinion.ReviewRequest(plan_text="my plan", text_only=True)
+            )
+
+        self.assertEqual(result.response_text, "safe fallback critique")
+        self.assertEqual(calls, ["opencode"])
+
+    def test_text_only_dispatch_runs_when_containment_preflight_succeeds(self) -> None:
+        calls: list[str] = []
+        preflight_modes: list[str] = []
+
+        def run_agy(prompt: str, *, model_index: int | None = None) -> str:
+            calls.append("agy")
+            return "agy critique"
+
+        def preflight(
+            backend: str, mode: str = "text-only", target_dir: Path | None = None
+        ) -> str | None:
+            preflight_modes.append(mode)
+            return None
+
+        with (
+            patch.object(second_opinion, "available_backends", return_value=["agy"]),
+            patch("shutil.which", return_value="/usr/bin/agy"),
+            patch.object(
+                second_opinion.llm_backends, "containment_available", lambda: True
+            ),
+            patch.object(
+                second_opinion.llm_backends, "containment_preflight", preflight
+            ),
+            patch.object(second_opinion, "BACKEND_RUNNERS", {"agy": run_agy}),
+        ):
+            result = second_opinion.review_plan(
+                second_opinion.ReviewRequest(plan_text="my plan", text_only=True)
+            )
+
+        self.assertEqual(result.response_text, "agy critique")
+        self.assertEqual(calls, ["agy"])
+        self.assertTrue(preflight_modes)
+        self.assertEqual(set(preflight_modes), {"text-only"})
 
 
 class CmdReviewTests(unittest.TestCase):

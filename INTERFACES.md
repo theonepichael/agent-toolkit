@@ -1292,9 +1292,10 @@ llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, open
   - `class BackendToolPermissionDeniedError(BackendError)` — A backend's tool use was auto-denied, so it produced no output.
 - Public functions:
   - `containment_available() -> bool` — Whether OS containment can actually be established on this host.
+  - `containment_preflight(backend: str, mode: str = 'text-only', target_dir: Path | None = None) -> str | None` — Run the real containment wrapper with ``true`` before backend dispatch.
   - `daemon_listening(backend: str) -> bool` — Whether a daemon belonging to ``backend`` currently holds a listening socket.
   - `build_isolated_command(backend: str, prompt: str, *, model: str | None = None, mode: str = 'text-only', target_dir: Path | None = None) -> list[str]` — Build the only command any caller may run for ``backend``.
-  - `eligibility_report(mode: str = 'text-only') -> dict[str, dict[str, object]]` — Per-backend presence and contract eligibility, with a reason when not.
+  - `eligibility_report(mode: str = 'text-only', target_dir: Path | None = None) -> dict[str, dict[str, object]]` — Per-backend presence and contract eligibility, with a reason when not.
   - `check_prompt_size(prompt: str, max_bytes: int = GLOBAL_MAX_PROMPT_BYTES) -> None` — Raise :class:`BackendPayloadSizeError` if ``prompt`` exceeds ``max_bytes``.
   - `available_backends() -> list[str]` — Return the backends in :data:`BACKEND_PRIORITY` that are on ``PATH``.
   - `eligible_backends(mode: str = 'text-only') -> list[str]` — Backends that are installed AND meet the isolation contract, in priority order.

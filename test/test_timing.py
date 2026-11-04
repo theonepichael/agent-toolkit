@@ -151,6 +151,11 @@ class TimingTests(unittest.TestCase):
             # availability; stub it so the real unshare probe (which would hit
             # the mocked Popen below) is never run.
             patch.object(llm_backends, "containment_available", lambda: True),
+            patch.object(
+                llm_backends,
+                "containment_preflight",
+                lambda backend, mode="text-only", target_dir=None: None,
+            ),
             patch.object(llm_backends.subprocess, "Popen", return_value=proc),
             patch.object(llm_backends.select, "select", fake_select),
             patch.object(llm_backends.os, "read", fake_read),

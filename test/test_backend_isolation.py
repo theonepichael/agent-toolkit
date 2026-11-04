@@ -251,6 +251,11 @@ def test_eligibility_reports_reason_for_each_ineligible_backend(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(llm_backends, "containment_available", lambda: False)
+    monkeypatch.setattr(
+        llm_backends,
+        "containment_preflight",
+        lambda backend, mode="text-only", target_dir=None: None,
+    )
 
     report = llm_backends.eligibility_report()
 
@@ -337,6 +342,11 @@ def test_no_eligible_backend_is_an_isolation_error_not_a_backend_error(
     # eligibility_report() is consulted to build the reason string, and it
     # probes containment with a real subprocess the conftest guard blocks.
     monkeypatch.setattr(llm_backends, "containment_available", lambda: False)
+    monkeypatch.setattr(
+        llm_backends,
+        "containment_preflight",
+        lambda backend, mode="text-only", target_dir=None: None,
+    )
 
     with pytest.raises(llm_backends.IsolationError):
         llm_backends.run_with_fallback(lambda b: "unreachable")
@@ -399,6 +409,11 @@ def test_grounded_eligibility_reports_unavailable_on_uncontainable_host(
     stay eligible for text-only but report as ineligible for grounded mode,
     with a reason naming the mode."""
     monkeypatch.setattr(llm_backends, "containment_available", lambda: False)
+    monkeypatch.setattr(
+        llm_backends,
+        "containment_preflight",
+        lambda backend, mode="text-only", target_dir=None: None,
+    )
     monkeypatch.setattr(llm_backends.shutil, "which", lambda name: f"/usr/bin/{name}")
     grounded = llm_backends.eligibility_report(mode="grounded")
     text_only = llm_backends.eligibility_report(mode="text-only")
@@ -475,6 +490,11 @@ def test_grounded_eligibility_refuses_codex_home_containment_cannot_expose(
     reflect that, so the fallback skips codex rather than selecting it and then
     failing to build the command."""
     monkeypatch.setattr(llm_backends, "containment_available", lambda: True)
+    monkeypatch.setattr(
+        llm_backends,
+        "containment_preflight",
+        lambda backend, mode="text-only", target_dir=None: None,
+    )
     monkeypatch.setattr(llm_backends.shutil, "which", lambda name: f"/usr/bin/{name}")
     home = tmp_path / "home"
     codex_home = home / "Codex Home"
@@ -506,6 +526,11 @@ def test_codex_keyring_credential_store_is_refused_and_ineligible(
     )
     monkeypatch.setattr(llm_backends.shutil, "which", lambda b: f"/usr/bin/{b}")
     monkeypatch.setattr(llm_backends, "containment_available", lambda: True)
+    monkeypatch.setattr(
+        llm_backends,
+        "containment_preflight",
+        lambda backend, mode="text-only", target_dir=None: None,
+    )
     with pytest.raises(llm_backends.IsolationError) as excinfo:
         llm_backends.build_isolated_command("codex", "p", model=None, mode="text-only")
     assert "keyring" in str(excinfo.value)

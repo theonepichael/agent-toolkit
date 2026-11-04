@@ -246,13 +246,13 @@ def containment_available() -> bool:
     """Whether OS containment can actually be established on this host.
 
     Checked by doing it, not by inspecting the platform: `unshare` exists on
-    a host whose kernel may still refuse unprivileged user namespaces, and a
-    containment path that silently no-ops is worse than no containment path.
+    a host whose kernel may still refuse unprivileged user namespaces. The
+    full bind preflight uses the backend's real containment wrapper.
 
     Cached: the answer cannot change within a process, and probing on every
     backend call would put a subprocess spawn in front of every critique.
     """
-    if shutil.which("unshare") is None:
+    if shutil.which("unshare") is None or shutil.which("mount") is None:
         return False
     try:
         probe = subprocess.run(
@@ -264,6 +264,66 @@ def containment_available() -> bool:
     except (OSError, subprocess.SubprocessError):
         return False
     return probe.returncode == 0
+
+
+def containment_preflight(
+    backend: str, mode: str = "text-only", target_dir: Path | None = None
+) -> str | None:
+    """Run the real containment wrapper with ``true`` before backend dispatch."""
+    target = str(target_dir.resolve()) if target_dir is not None else None
+    return _cached_containment_preflight(backend, mode, target)
+
+
+@functools.cache
+def _cached_containment_preflight(
+    backend: str, mode: str, target: str | None
+) -> str | None:
+    spec = BACKEND_ISOLATION.get(backend)
+    if spec is None:
+        return "no isolation descriptor"
+    effective = _effective_spec(spec, mode)
+    if not any(effective[c] is OS_CONTAINED for c in ISOLATION_CLAUSES):
+        return None
+    contain = effective.get("_contain", {})
+    if not isinstance(contain, dict):
+        contain = {}
+    contain = dict(contain)
+    # Build the containment wrapper directly around `true`: using
+    # build_isolated_command would also resolve the backend command and build
+    # codex's credential shim. Only wrapper configuration is replicated here; the
+    # bind operations themselves always come from _CONTAINMENT_SCRIPT.
+    wrapper_backend = backend if backend in {"pi", "copilot"} else None
+    expose_ro_extra: list[str] | None = None
+    if backend == "codex" and mode == "grounded":
+        auth_json = _codex_auth_json_realpath(_codex_real_home())
+        try:
+            exposure = (
+                _codex_auth_exposure(auth_json) if auth_json is not None else None
+            )
+        except IsolationError as exc:
+            return str(exc)
+        contain["expose"] = []
+        contain["expose_file"] = [exposure] if exposure is not None else []
+        _, expose_ro_extra = _backend_install_exposure(backend)
+    cmd = _wrap_in_containment(
+        ["true"],
+        contain,
+        target_dir=Path(target) if target is not None else None,
+        mode=mode,
+        backend=wrapper_backend,
+        expose_ro_extra=expose_ro_extra,
+        preflight=True,
+    )
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=10, check=False
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"containment preflight could not run: {exc}"
+    if result.returncode == 0:
+        return None
+    detail = result.stderr.strip() or result.stdout.strip()
+    return detail or f"containment preflight exited {result.returncode}"
 
 
 # A vendor daemon already listening holds session state that neither a CLI
@@ -377,8 +437,7 @@ def build_isolated_command(
     if contained and not containment_available():
         raise IsolationError(
             f"{backend}: clause(s) {', '.join(contained)} can only be satisfied "
-            "by OS containment, which is unavailable on this host (no unshare, "
-            "or unprivileged user namespaces are disabled)"
+            "by OS containment, which is unavailable on this host"
         )
 
     if backend == "codex":
@@ -569,6 +628,73 @@ _CONTAINMENT_SCRIPT = r"""set -euf
 H="$SB_HOME"
 STAGE="$(mktemp -d)"
 
+bind_mount() {
+    if ! mount --rbind "$1" "$2"; then
+        printf 'containment preflight failed: bind source=%s destination=%s\n' "$1" "$2" >&2
+        exit 70
+    fi
+}
+# The observed util-linux 2.39.3 remount path applies ro=recursive only to the
+# top mount. Use mount_setattr with AT_RECURSIVE for the full mount tree.
+# SB_PYTHON is resolved by the wrapper, and each call happens before $HOME or
+# /tmp is replaced so the interpreter and staged source remain reachable.
+remount_readonly() {
+    if ! "$SB_PYTHON" - "$1" <<'PY'
+import ctypes
+import os
+import platform
+import sys
+
+syscall_number = {
+    "x86_64": 442,
+    "amd64": 442,
+    "aarch64": 442,
+    "arm64": 442,
+    "riscv64": 442,
+    "ppc64": 442,
+    "ppc64le": 442,
+    "s390x": 442,
+}.get(platform.machine().lower())
+if syscall_number is None:
+    print(f"mount_setattr unsupported on {platform.machine()}", file=sys.stderr)
+    raise SystemExit(1)
+
+class MountAttr(ctypes.Structure):
+    _fields_ = [
+        ("attr_set", ctypes.c_uint64),
+        ("attr_clr", ctypes.c_uint64),
+        ("propagation", ctypes.c_uint64),
+        ("userns_fd", ctypes.c_uint64),
+    ]
+
+attr = MountAttr(1, 0, 0, 0)  # MOUNT_ATTR_RDONLY
+libc = ctypes.CDLL(None, use_errno=True)
+libc.syscall.restype = ctypes.c_long
+result = libc.syscall(
+    syscall_number,
+    ctypes.c_int(-100),  # AT_FDCWD
+    ctypes.c_char_p(os.fsencode(sys.argv[1])),
+    ctypes.c_uint(0x8000),  # AT_RECURSIVE
+    ctypes.byref(attr),
+    ctypes.c_size_t(ctypes.sizeof(attr)),
+)
+if result != 0:
+    err = ctypes.get_errno()
+    print(f"mount_setattr failed: {os.strerror(err)}", file=sys.stderr)
+    raise SystemExit(1)
+PY
+    then
+        printf 'containment preflight failed: read-only remount path=%s\n' "$1" >&2
+        exit 70
+    fi
+}
+mount_tmpfs() {
+    if ! mount -t tmpfs tmpfs "$1"; then
+        printf 'containment preflight failed: tmpfs mount path=%s\n' "$1" >&2
+        exit 70
+    fi
+}
+
 # Stage every bind source BEFORE the tmpfs goes over $HOME. Mount order is
 # load-bearing: a tmpfs mounted first hides the very directories the later
 # binds read from, which presents as the backend binary vanishing rather
@@ -577,7 +703,7 @@ i=0
 for src in $SB_EXPOSE; do
     if [ -e "$H/$src" ]; then
         mkdir -p "$STAGE/e$i"
-        mount --bind "$H/$src" "$STAGE/e$i"
+        bind_mount "$H/$src" "$STAGE/e$i"
     fi
     i=$((i + 1))
 done
@@ -585,7 +711,8 @@ j=0
 for src in $SB_EXPOSE_RO; do
     if [ -e "$H/$src" ]; then
         mkdir -p "$STAGE/r$j"
-        mount --bind "$H/$src" "$STAGE/r$j"
+        bind_mount "$H/$src" "$STAGE/r$j"
+        remount_readonly "$STAGE/r$j"
     fi
     j=$((j + 1))
 done
@@ -595,39 +722,49 @@ k=0
 for src in $SB_EXPOSE_FILE; do
     if [ -f "$H/$src" ]; then
         touch "$STAGE/f$k"
-        mount --bind "$H/$src" "$STAGE/f$k"
+        bind_mount "$H/$src" "$STAGE/f$k"
     fi
     k=$((k + 1))
 done
 if [ -n "$SB_SHADOW_DIR" ] && [ -d "$H/$SB_SHADOW_DIR" ]; then
     mkdir -p "$STAGE/real"
-    mount --bind "$H/$SB_SHADOW_DIR" "$STAGE/real"
+    bind_mount "$H/$SB_SHADOW_DIR" "$STAGE/real"
 fi
 if [ -n "${SB_TARGET_DIR:-}" ] && [ -d "$SB_TARGET_DIR" ]; then
     mkdir -p "$STAGE/target"
-    mount --bind "$SB_TARGET_DIR" "$STAGE/target"
+    bind_mount "$SB_TARGET_DIR" "$STAGE/target"
+    remount_readonly "$STAGE/target"
 fi
 
-mount -t tmpfs tmpfs "$H"
+if [ "${SB_PREFLIGHT:-0}" = 1 ]; then
+    mkdir -p "$STAGE/probe-source/nested" "$STAGE/probe-expose"
+    mount_tmpfs "$STAGE/probe-source/nested"
+    bind_mount "$STAGE/probe-source" "$STAGE/probe-expose"
+    remount_readonly "$STAGE/probe-expose"
+    if touch "$STAGE/probe-expose/nested/write-probe" 2>/dev/null; then
+        printf 'containment preflight failed: recursive read-only attribute left nested mount writable path=%s\n' "$STAGE/probe-expose" >&2
+        exit 70
+    fi
+fi
+
+mount_tmpfs "$H"
 
 i=0
 for src in $SB_EXPOSE; do
     if [ -e "$STAGE/e$i" ]; then
         mkdir -p "$H/$src"
-        mount --bind "$STAGE/e$i" "$H/$src"
+        bind_mount "$STAGE/e$i" "$H/$src"
     fi
     i=$((i + 1))
 done
 
-# Read-only exposures (the backend's install tree): bind them back, then
-# remount read-only so a compromised model cannot modify its own binary even
-# though the directory is inside the sandbox.
+# Read-only exposures were marked recursively read-only while staged, before
+# $HOME is replaced. Recursive bind preserves those attributes here.
 j=0
 for src in $SB_EXPOSE_RO; do
     if [ -e "$STAGE/r$j" ]; then
         mkdir -p "$H/$src"
-        mount --bind "$STAGE/r$j" "$H/$src"
-        mount -o remount,ro,bind "$H/$src"
+        bind_mount "$STAGE/r$j" "$H/$src"
     fi
     j=$((j + 1))
 done
@@ -640,7 +777,7 @@ for src in $SB_EXPOSE_FILE; do
     if [ -e "$STAGE/f$k" ]; then
         mkdir -p "$(dirname "$H/$src")"
         touch "$H/$src"
-        mount --bind "$STAGE/f$k" "$H/$src"
+        bind_mount "$STAGE/f$k" "$H/$src"
     fi
     k=$((k + 1))
 done
@@ -662,14 +799,13 @@ if [ -d "$STAGE/real" ]; then
         else
             : > "$H/$SB_SHADOW_DIR/$entry"
         fi
-        mount --bind "$STAGE/real/$entry" "$H/$SB_SHADOW_DIR/$entry"
+        bind_mount "$STAGE/real/$entry" "$H/$SB_SHADOW_DIR/$entry"
     done
 fi
 
 if [ -d "$STAGE/target" ]; then
     mkdir -p "$H/.so-workspace"
-    mount --bind "$STAGE/target" "$H/.so-workspace"
-    mount -o remount,ro,bind "$H/.so-workspace"
+    bind_mount "$STAGE/target" "$H/.so-workspace"
 fi
 
 # Bind the target at its real absolute path too (for targets under $HOME), so
@@ -684,8 +820,7 @@ if [ -d "$STAGE/target" ] && [ -n "${SB_TARGET_DIR:-}" ] && [ -n "${SB_BIND_TARG
     case "$SB_TARGET_DIR" in
         "$H"/*)
             mkdir -p "$SB_TARGET_DIR"
-            mount --bind "$STAGE/target" "$SB_TARGET_DIR"
-            mount -o remount,ro,bind "$SB_TARGET_DIR"
+            bind_mount "$STAGE/target" "$SB_TARGET_DIR"
             ;;
     esac
 fi
@@ -693,7 +828,7 @@ fi
 # Blank /tmp and land in the target directory (or empty cwd). $HOME alone is not
 # the user's data: scratch files, worktrees and anything the caller happens to
 # be sitting in are all reachable otherwise.
-mount -t tmpfs tmpfs /tmp
+mount_tmpfs /tmp
 if [ -d "$H/.so-workspace" ]; then
     cd "$H/.so-workspace"
 else
@@ -969,6 +1104,7 @@ def _wrap_in_containment(
     mode: str = "text-only",
     backend: str | None = None,
     expose_ro_extra: list[str] | None = None,
+    preflight: bool = False,
 ) -> list[str]:
     """Wrap ``cmd`` so it runs with the user's home blanked.
 
@@ -1006,7 +1142,7 @@ def _wrap_in_containment(
                 expose_ro.append(entry)
     if backend:
         invoke_path, ro = _backend_install_exposure(backend)
-        if invoke_path and invoke_path != cmd[0]:
+        if invoke_path and invoke_path != cmd[0] and not preflight:
             # Run the resolved absolute path directly, so the PATH-entry
             # symlink farm is not needed and only the install root (below) is
             # exposed.
@@ -1020,6 +1156,7 @@ def _wrap_in_containment(
 
     env_vars = [
         f"SB_HOME={home}",
+        f"SB_PYTHON={Path(sys.executable).resolve()}",
         f"SB_EXPOSE={' '.join(expose)}",
         f"SB_EXPOSE_RO={' '.join(expose_ro)}",
         f"SB_EXPOSE_FILE={' '.join(expose_file)}",
@@ -1042,6 +1179,8 @@ def _wrap_in_containment(
         reserved = set(expose) | set(expose_ro) | {".so-workspace"}
         if rel is not None and rel.parts and rel.parts[0] not in reserved:
             env_vars.append("SB_BIND_TARGET_REAL=1")
+    if preflight:
+        env_vars.append("SB_PREFLIGHT=1")
 
     return [
         "unshare",
@@ -1057,7 +1196,9 @@ def _wrap_in_containment(
     ]
 
 
-def eligibility_report(mode: str = "text-only") -> dict[str, dict[str, object]]:
+def eligibility_report(
+    mode: str = "text-only", target_dir: Path | None = None
+) -> dict[str, dict[str, object]]:
     """Per-backend presence and contract eligibility, with a reason when not.
 
     Surfaces an ineligible or unavailable backend before a critique is needed
@@ -1065,7 +1206,8 @@ def eligibility_report(mode: str = "text-only") -> dict[str, dict[str, object]]:
     view: ``"text-only"`` (default) checks the static descriptor, ``"grounded"``
     checks the per-mode reach override too — a backend whose read tools come
     back on in grounded mode can be containment-dependent there while staying
-    eligible for text-only (the default callers rely on).
+    eligible for text-only. When supplied, ``target_dir`` is preflighted as a
+    read-only bind source for grounded dispatch.
     """
     can_contain = containment_available()
     report: dict[str, dict[str, object]] = {}
@@ -1085,15 +1227,18 @@ def eligibility_report(mode: str = "text-only") -> dict[str, dict[str, object]]:
             reason = f"descriptor does not cover {', '.join(uncovered)}"
         elif not present:
             reason = "not installed"
-        elif (
-            any(effective[c] is OS_CONTAINED for c in ISOLATION_CLAUSES)
-            and not can_contain
-        ):
-            reason = (
-                "requires OS containment, unavailable on this host"
-                if mode == "text-only"
-                else "requires OS containment for grounded mode, unavailable on this host"
-            )
+        elif any(effective[c] is OS_CONTAINED for c in ISOLATION_CLAUSES):
+            bind_failure = containment_preflight(name, mode=mode, target_dir=target_dir)
+            if bind_failure:
+                reason = f"requires OS containment; {bind_failure}"
+            elif not can_contain:
+                reason = (
+                    "requires OS containment, unavailable on this host"
+                    if mode == "text-only"
+                    else "requires OS containment for grounded mode, unavailable on this host"
+                )
+            else:
+                reason = ""
         else:
             reason = ""
         # codex can be contract-eligible yet unbuildable: the keyring
@@ -1861,7 +2006,7 @@ def _track_backend_call(backend: str, model: str | None, prompt: str) -> Iterato
         # Read the parked prior-attempt outcome AFTER the yield, not before:
         # `_run_command` performs an internal stall-retry inside this try block
         # and only parks "stall" once it has actually stalled and decided to
-        # retry, so an entry-time snapshot would never see it. run_with_fallback
+        # retry, so an entry-time copy would never see it. run_with_fallback
         # sets _pending_fallback_reason before each candidate's runner (which
         # enters a fresh _track_backend_call), so a post-yield read still
         # captures cross-backend fallbacks correctly. Reset it after consuming

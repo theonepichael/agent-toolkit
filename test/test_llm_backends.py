@@ -137,6 +137,11 @@ class AvailableBackendsTests(unittest.TestCase):
         with (
             patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
             patch.object(llm_backends, "containment_available", lambda: True),
+            patch.object(
+                llm_backends,
+                "containment_preflight",
+                lambda backend, mode="text-only", target_dir=None: None,
+            ),
         ):
             self.assertEqual(llm_backends.resolve_backend(), "codex")
 
@@ -150,6 +155,11 @@ class AvailableBackendsTests(unittest.TestCase):
                 side_effect=lambda b: f"/usr/bin/{b}" if b != "codex" else None,
             ),
             patch.object(llm_backends, "containment_available", lambda: False),
+            patch.object(
+                llm_backends,
+                "containment_preflight",
+                lambda backend, mode="text-only", target_dir=None: None,
+            ),
         ):
             self.assertEqual(llm_backends.resolve_backend(), "pi")
 
@@ -159,6 +169,51 @@ class AvailableBackendsTests(unittest.TestCase):
             patch.object(llm_backends, "containment_available", lambda: False),
         ):
             self.assertIsNone(llm_backends.resolve_backend())
+
+
+class ContainmentPreflightTests(unittest.TestCase):
+    def test_grounded_target_is_probed_as_readonly_bind_source(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            home = root / "home"
+            home.mkdir()
+            target = root / "target"
+            target.mkdir()
+            with (
+                patch.object(
+                    llm_backends,
+                    "_wrap_in_containment",
+                    return_value=["unshare", "true"],
+                ) as wrap,
+                patch.object(
+                    llm_backends.subprocess,
+                    "run",
+                    return_value=subprocess.CompletedProcess(
+                        ["unshare", "true"], 0, "", ""
+                    ),
+                ) as run,
+            ):
+                self.assertIsNone(
+                    llm_backends.containment_preflight(
+                        "agy", mode="grounded", target_dir=target
+                    )
+                )
+                self.assertIsNone(
+                    llm_backends.containment_preflight(
+                        "agy", mode="grounded", target_dir=target
+                    )
+                )
+
+        wrap.assert_called_once_with(
+            ["true"],
+            llm_backends.BACKEND_ISOLATION["agy"]["_contain"],
+            target_dir=target.resolve(),
+            mode="grounded",
+            backend=None,
+            expose_ro_extra=None,
+            preflight=True,
+        )
+        run.assert_called_once()
 
 
 class RunCommandRealSubprocessTests(unittest.TestCase):
@@ -432,9 +487,9 @@ OPENCODE_ISOLATED = [
 class _ContainmentStubbed(unittest.TestCase):
     """Base for suites whose backends consult containment_available().
 
-    That probe shells out to `unshare`, which the repo-root conftest blocks
-    and which would make these command-shape assertions depend on the host
-    kernel. Stubbed True so the assertions stay about argv.
+    That probe shells out to `unshare` and `mount`, which the repo-root
+    conftest blocks and which would make these command-shape assertions depend
+    on the host kernel. Stubbed True so the assertions stay about argv.
     """
 
     def setUp(self) -> None:
@@ -481,13 +536,13 @@ class RunAgyTests(_ContainmentStubbed):
         ) as mock_run:
             llm_backends.run_agy("p", model="m", timeout=60)
         script = " ".join(mock_run.call_args[0][0])
-        self.assertIn('mount -t tmpfs tmpfs "$H"', script)
-        self.assertIn("mount -t tmpfs tmpfs /tmp", script)
+        self.assertIn('mount_tmpfs "$H"', script)
+        self.assertIn("mount_tmpfs /tmp", script)
         self.assertIn("SB_SHADOW_OMIT=GEMINI.md", script)
 
     def test_33c_containment_stages_target_dir_in_grounded_mode(self) -> None:
-        """In grounded mode, containment must stage SB_TARGET_DIR into $STAGE/target
-        before $HOME tmpfs is mounted and bind it into $H/.so-workspace read-only."""
+        """In grounded mode, containment stages the target before tmpfs and
+        binds it read-only at the workspace path."""
         with patch.object(
             llm_backends, "run_backend_command", return_value="t"
         ) as mock_run:
@@ -501,13 +556,89 @@ class RunAgyTests(_ContainmentStubbed):
         argv = mock_run.call_args[0][0]
         script = " ".join(argv)
         self.assertIn("SB_TARGET_DIR=/test/repo", argv)
-        self.assertIn('mount --bind "$SB_TARGET_DIR" "$STAGE/target"', script)
-        self.assertIn('mount --bind "$STAGE/target" "$H/.so-workspace"', script)
-        self.assertIn('mount -o remount,ro,bind "$H/.so-workspace"', script)
-        stage_idx = script.index('mount --bind "$SB_TARGET_DIR" "$STAGE/target"')
-        tmpfs_h_idx = script.index('mount -t tmpfs tmpfs "$H"')
-        self.assertLess(stage_idx, tmpfs_h_idx)
+        self.assertIn('bind_mount "$SB_TARGET_DIR" "$STAGE/target"', script)
+        self.assertIn('remount_readonly "$STAGE/target"', script)
+        self.assertIn('bind_mount "$STAGE/target" "$H/.so-workspace"', script)
+        self.assertIn('ctypes.c_uint(0x8000)', script)
+        self.assertIn("containment preflight failed: bind source=%s", script)
+        stage_idx = script.index('bind_mount "$SB_TARGET_DIR" "$STAGE/target"')
+        remount_idx = script.index('remount_readonly "$STAGE/target"')
+        tmpfs_h_idx = script.index('mount_tmpfs "$H"')
+        self.assertLess(stage_idx, remount_idx)
+        self.assertLess(remount_idx, tmpfs_h_idx)
 
+
+class RecursiveReadonlyExposeTests(unittest.TestCase):
+    @pytest.mark.allow_real_subprocess  # exercises the wrapper in a disposable user namespace
+    @pytest.mark.regression(
+        "grounded-wrapper-readonly-exposure-covers-nested-mounts",
+        "AssertionError: 23 != 0 : grounded wrapper left nested exposure writable",
+    )
+    def test_real_grounded_wrapper_reaches_command_after_readonly_expose(self) -> None:
+        if llm_backends.shutil.which("unshare") is None:
+            self.skipTest("unshare is not installed")
+        availability = subprocess.run(
+            ["unshare", "-Urm", "--map-root-user", "true"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        if availability.returncode != 0:
+            self.skipTest(
+                f"user/mount namespaces unavailable: {availability.stderr.strip()}"
+            )
+
+        # Keep the synthetic HOME outside /tmp because the wrapper masks /tmp.
+        with tempfile.TemporaryDirectory(dir="/dev/shm") as temp_dir:
+            root = Path(temp_dir)
+            home = root / "home"
+            home.mkdir()
+            expose_ro = home / "backend-install"
+            nested = expose_ro / "nested"
+            nested.mkdir(parents=True)
+            target = root / "target"
+            target.mkdir()
+            expose_rel = str(expose_ro.relative_to(home))
+            with patch.dict(os.environ, {"HOME": str(home)}):
+                command = llm_backends._wrap_in_containment(
+                    [
+                        "/bin/sh",
+                        "-c",
+                        'if [ ! -d "$SB_HOME/$1/nested" ]; then exit 24; fi; '
+                        'if touch "$SB_HOME/$1/nested/write-probe" 2>/dev/null; '
+                        "then exit 23; fi; printf WRAPPER_REACHED",
+                        "sh",
+                        expose_rel,
+                    ],
+                    {"expose_ro": [expose_rel]},
+                    mode="grounded",
+                    target_dir=target,
+                )
+                result = subprocess.run(
+                    [
+                        "unshare",
+                        "-Urm",
+                        "--map-root-user",
+                        "/bin/sh",
+                        "-c",
+                        'set -eu; mount -t tmpfs tmpfs "$1"; shift; exec "$@"',
+                        "sh",
+                        str(nested),
+                        *command,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    check=False,
+                )
+
+        self.assertEqual(
+            result.returncode,
+            0,
+            "grounded wrapper left nested exposure writable",
+        )
+        self.assertIn("WRAPPER_REACHED", result.stdout)
 
 class RunCopilotTests(unittest.TestCase):
     # copilot's -p/--prompt takes the next argument as its prompt VALUE, so
