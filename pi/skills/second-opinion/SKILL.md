@@ -21,14 +21,15 @@ script's. By default, reviews are grounded in the target codebase (`dir` or
 current working directory) with read-only tools enabled; use `textOnly = true`
 to opt out.
 
-Call the `second_opinion` tool. Action `detect` lists the available backends as
-JSON. Action `review` returns one critique of the plan at `planFile`,
-optionally scoped with `backend`, `model`, `timeoutSeconds`, `focusFile`,
-`modelIndex`, `dir`, and `textOnly`. Action `probe` reports per-model
-availability as JSON, optionally scoped with `backend`, `model`, and
-`timeoutSeconds`; an unavailable model comes back in that report, followed by
-an ok/unavailable/not-installed count line, rather than as a tool error. Never
-run `second_opinion.py` via bash.
+Call the `second_opinion` tool. Action `detect` with `mode` `grounded` lists
+which backends can run a grounded review as JSON (plain `detect` reports the
+text-only contract, for `textOnly` runs). Action `review` returns one critique
+of the plan at `planFile`, optionally scoped with `backend`, `model`,
+`timeoutSeconds`, `focusFile`, `modelIndex`, `dir`, and `textOnly`. Action
+`probe` reports per-model availability as JSON, optionally scoped with
+`backend`, `model`, and `timeoutSeconds`; an unavailable model comes back in
+that report, followed by an ok/unavailable/not-installed count line, rather
+than as a tool error. Never run `second_opinion.py` via bash.
 
 `modelIndex` is a 0-based index into a per-machine model pool
 (`SECOND_OPINION_CODEX_MODEL_POOL` / `_AGY_MODEL_POOL` / `_PI_MODEL_POOL` /

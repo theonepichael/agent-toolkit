@@ -93,10 +93,10 @@ DEFAULT_FOCUS_FILE_MARKERS = ("--focus-file",)
 # lists every subcommand and the flags the loop depends on. `detect` defaults
 # to the text-only contract while reviews are grounded by default, so the
 # copies point at `detect --mode grounded`. Pi's copies drive the native tool,
-# whose actions are described in prose and whose detect takes no mode.
+# whose actions are described in prose and whose detect takes mode grounded.
 USAGE_MARKERS = {
-    "pi/prompts/second-opinion.md": (),
-    "pi/skills/second-opinion/SKILL.md": (),
+    "pi/prompts/second-opinion.md": ("`detect` with `mode` `grounded`",),
+    "pi/skills/second-opinion/SKILL.md": ("`detect` with `mode` `grounded`",),
 }
 DEFAULT_USAGE_MARKERS = (
     "second_opinion.py detect --mode grounded",

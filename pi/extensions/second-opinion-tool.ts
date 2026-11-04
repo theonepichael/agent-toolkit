@@ -31,7 +31,8 @@ export type Field =
   | "textOnly"
   | "model"
   | "timeoutSeconds"
-  | "runId";
+  | "runId"
+  | "mode";
 
 interface ActionFields {
   readonly allowed: readonly Field[];
@@ -39,7 +40,7 @@ interface ActionFields {
 }
 
 const ACTION_FIELDS: Record<Action, ActionFields> = {
-  detect: { allowed: [], required: [] },
+  detect: { allowed: ["mode"], required: [] },
   review: {
     allowed: [
       "planFile",
@@ -80,6 +81,7 @@ export interface SecondOpinionParams {
   model?: string;
   timeoutSeconds?: number;
   runId?: string;
+  mode?: "text-only" | "grounded";
 }
 
 const KNOWN_BACKENDS = ["codex", "agy", "opencode", "pi", "copilot"] as const;
@@ -214,12 +216,23 @@ export function assertFields(action: Action, params: SecondOpinionParams): void 
   if (params.runId !== undefined && params.runId.trim() === "") {
     throw new Error("runId must not be empty");
   }
+
+  if (params.mode !== undefined) {
+    if (params.mode !== "text-only" && params.mode !== "grounded") {
+      throw new Error('mode must be "text-only" or "grounded"');
+    }
+  }
 }
 
 export function buildArgv(action: Action, params: SecondOpinionParams): string[] {
   switch (action) {
-    case "detect":
-      return ["detect"];
+    case "detect": {
+      const args = ["detect"];
+      if (params.mode) {
+        args.push("--mode", params.mode);
+      }
+      return args;
+    }
     case "probe":
       return ["probe", ...(params.backend ? ["--backend", params.backend] : [])];
     case "bind-notes":
@@ -330,7 +343,7 @@ export default function (pi: ExtensionAPI) {
     promptSnippet: "Get an outside adversarial critique of a plan file or staged diff",
     promptGuidelines: [
       "Never invoke second_opinion.py via bash -- always use second_opinion instead.",
-      'second_opinion exposes every action and review parameter an agent should use: action "detect" lists available backends as JSON, action "review" returns one critique of the plan at planFile (or of the staged diff when diff: true), action "probe" sends one trivial request to each model in the selected backend\'s pool (or its single override / default model) and returns a per-model availability report as JSON, action "bind-notes" stamps planFile\'s -critique-notes.md companion with planFile\'s content hash, and action "check-notes" prints that binding\'s status (current, stale, unbound, missing, or no-artifact). If you are about to compose a `python3 ~/.agent-toolkit/scripts/second_opinion.py ...` bash command, use second_opinion instead.',
+      'second_opinion exposes every action and review parameter an agent should use: action "detect" lists available backends as JSON (pass mode: "grounded" to check grounded-review eligibility), action "review" returns one critique of the plan at planFile (or of the staged diff when diff: true), action "probe" sends one trivial request to each model in the selected backend\'s pool (or its single override / default model) and returns a per-model availability report as JSON, action "bind-notes" stamps planFile\'s -critique-notes.md companion with planFile\'s content hash, and action "check-notes" prints that binding\'s status (current, stale, unbound, missing, or no-artifact). If you are about to compose a `python3 ~/.agent-toolkit/scripts/second_opinion.py ...` bash command, use second_opinion instead.',
       "Never shell out to codex, agy, pi, opencode, or copilot directly for a critique -- all backend I/O goes through this tool.",
       'Action "probe" calls every probed model once for real, so pass `backend` deliberately rather than probing every installed backend. An unavailable model is not a tool error: the JSON report comes back with a second line counting ok, unavailable, and not-installed entries. A report with 0 ok tested nothing. `model` (with one `backend`) pins the model probed only when that backend has no pool configured; a configured pool is probed instead.',
       "It is single-round: one call, one critique. The multi-round loop, the plan revision between rounds, and the convergence judgment are yours, not the tool's.",
@@ -429,6 +442,12 @@ export default function (pi: ExtensionAPI) {
             "script's per-run round cap to this loop (the second-opinion skill " +
             "passes one for the whole loop). When omitted, the script keys the " +
             "cap by the resolved plan-file path instead.",
+        }),
+      ),
+      mode: Type.Optional(
+        StringEnum(["text-only", "grounded"] as const, {
+          description:
+            'detect: contract view to report ("text-only" or "grounded", default: "text-only"). Grounded checks the per-mode read-reach override so containment-dependent backends report accurately.',
         }),
       ),
     }),

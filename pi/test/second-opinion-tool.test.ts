@@ -10,6 +10,43 @@ describe("assertFields", () => {
     expect(() => assertFields("detect", { action: "detect" })).not.toThrow();
   });
 
+  test("detect accepts optional mode: text-only or grounded", () => {
+    expect(() => assertFields("detect", { action: "detect", mode: "grounded" })).not.toThrow();
+    expect(() => assertFields("detect", { action: "detect", mode: "text-only" })).not.toThrow();
+  });
+
+  test("detect rejects unknown mode", () => {
+    expect(() => assertFields("detect", { action: "detect", mode: "invalid" as any })).toThrow(
+      /mode must be "text-only" or "grounded"/,
+    );
+    expect(() => assertFields("detect", { action: "detect", mode: "" as any })).toThrow(
+      /mode must be "text-only" or "grounded"/,
+    );
+  });
+
+  test("other actions reject mode", () => {
+    expect(() =>
+      assertFields("review", { action: "review", planFile: "/tmp/p.md", mode: "grounded" as any }),
+    ).toThrow(/does not accept: mode/);
+    expect(() => assertFields("probe", { action: "probe", mode: "grounded" as any })).toThrow(
+      /does not accept: mode/,
+    );
+    expect(() =>
+      assertFields("bind-notes", {
+        action: "bind-notes",
+        planFile: "/tmp/p.md",
+        mode: "grounded" as any,
+      }),
+    ).toThrow(/does not accept: mode/);
+    expect(() =>
+      assertFields("check-notes", {
+        action: "check-notes",
+        planFile: "/tmp/p.md",
+        mode: "grounded" as any,
+      }),
+    ).toThrow(/does not accept: mode/);
+  });
+
   test("detect refuses review's fields", () => {
     expect(() => assertFields("detect", { action: "detect", planFile: "/tmp/p.md" })).toThrow(
       /does not accept: planFile/,
@@ -206,6 +243,19 @@ describe("assertFields", () => {
 describe("buildArgv", () => {
   test("detect", () => {
     expect(buildArgv("detect", { action: "detect" })).toEqual(["detect"]);
+  });
+
+  test("detect passes optional mode flag", () => {
+    expect(buildArgv("detect", { action: "detect", mode: "grounded" })).toEqual([
+      "detect",
+      "--mode",
+      "grounded",
+    ]);
+    expect(buildArgv("detect", { action: "detect", mode: "text-only" })).toEqual([
+      "detect",
+      "--mode",
+      "text-only",
+    ]);
   });
 
   test("review with only a plan file", () => {
@@ -514,6 +564,37 @@ describe("secondOpinionExtension execute", () => {
     } as any;
     await toolDef.execute("call-4", { action: "detect" }, undefined, undefined, mockCtx);
     expect(capturedCmd).toBe("python3");
+  });
+
+  test("detect passes mode flag to second_opinion.py via pi.exec", async () => {
+    let capturedCmd: string | undefined;
+    let capturedArgs: string[] | undefined;
+    let toolDef: any;
+    const mockPi = {
+      registerTool: (_def: any) => {
+        toolDef = _def;
+      },
+      exec: async (cmd: string, argv: string[]) => {
+        capturedCmd = cmd;
+        capturedArgs = argv;
+        return { code: 0, stdout: '{"backends": []}', stderr: "" };
+      },
+    } as any;
+    secondOpinionExtension(mockPi);
+
+    await toolDef.execute(
+      "call-detect-mode",
+      { action: "detect", mode: "grounded" },
+      undefined,
+      undefined,
+      { cwd: "/tmp" },
+    );
+
+    expect(capturedCmd).toBe("python3");
+    expect(capturedArgs).toContain("detect");
+    const modeIdx = capturedArgs!.indexOf("--mode");
+    expect(modeIdx).toBeGreaterThan(-1);
+    expect(capturedArgs![modeIdx + 1]).toBe("grounded");
   });
 });
 
