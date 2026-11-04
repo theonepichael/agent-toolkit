@@ -5940,16 +5940,17 @@ class RunEvidenceTestCase(BacklogFixture):
 
     def test_gate_set_stamps_set_at(self):
         self.write_items([make_item("gt-item")])
-        before = datetime.now(UTC)
-        dev_status.cmd_gate_set(
-            _args(id="gt-item", json='{"required": true, "criteria": ["c"]}')
-        )
+        _FakeDatetime._fixed_now = datetime.now(UTC)
+        with patch.object(dev_status_mutation, "datetime", _FakeDatetime):
+            dev_status.cmd_gate_set(
+                _args(id="gt-item", json='{"required": true, "criteria": ["c"]}')
+            )
         gate = self._item_by_id("gt-item")["gate"]
         self.assertIsNone(gate["passed_at"])
         set_at = datetime.fromisoformat(gate["set_at"])
         if set_at.tzinfo is None:
             set_at = set_at.replace(tzinfo=UTC)
-        self.assertGreaterEqual(set_at, before.replace(microsecond=0))
+        self.assertEqual(set_at, _FakeDatetime._fixed_now)
 
     # ── gate-pass: refusals ─────────────────────────────────────────────
 
