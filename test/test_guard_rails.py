@@ -73,6 +73,7 @@ class NormalizeToolTests(unittest.TestCase):
     def test_bash_spelling_covers_both_cases(self) -> None:
         self.assertEqual(guard_rails.tool_family("Bash"), "bash")
         self.assertEqual(guard_rails.tool_family("bash"), "bash")
+        self.assertEqual(guard_rails.tool_family("run_command"), "bash")
 
     def test_write_tools_are_not_bash_family(self) -> None:
         self.assertNotEqual(guard_rails.tool_family("Edit"), "bash")
@@ -154,15 +155,14 @@ class PayloadParsingTests(unittest.TestCase):
         self.assertEqual(req.command, "git commit --no-verify -m x")
         self.assertEqual(req.cwd, "/repo")
 
-    def test_agy_and_copilot_get_no_bash_family_wiring(self) -> None:
-        """Best-effort tier: even a harness whose own tool name happens to
-        be literally "bash" must not get the companion check -- only
-        claude is wired for bash-family."""
-        self.assertIsNone(
-            guard_rails.parse_payload(
-                "agy", {"toolCall": {"name": "bash", "args": {"command": "ls"}}}
-            )
+    def test_agy_gets_bash_wiring_copilot_does_not(self) -> None:
+        """agy's run_command is bash-family now; Copilot still gets none,
+        whatever its own tool names happen to be."""
+        req = guard_rails.parse_payload(
+            "agy",
+            {"toolCall": {"name": "run_command", "args": {"CommandLine": "ls"}}},
         )
+        self.assertEqual(req.tool, "bash")
         self.assertIsNone(
             guard_rails.parse_payload(
                 "copilot",

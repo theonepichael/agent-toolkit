@@ -222,7 +222,14 @@ without confirming against the actual installed binary's
 
 `agy/hooks.json` gains a `worktree-guard` hook set calling
 `agent-scripts/guard_rails.py --harness agy`, matching
-`write_to_file|replace_file_content`.
+`write_to_file|replace_file_content|run_command`. agy's shell tool is
+`run_command` (command arg `CommandLine`, cwd arg `Cwd`), so shell commands
+now get the same hook-defeat checks Claude Code's Bash tool gets
+(`evaluate_bash_override`: `--no-verify`, `core.hooksPath` override/
+mutation, direct `.git/config` writes) plus agy-only `sudo` and `rm -rf`
+denies mirroring pi's guard-rails.ts. A shell write into another session's
+claimed worktree is still **not** refused — that Bash claim check is
+write-family only.
 
 **Verified live 2026-09-01**: the write was denied and agy surfaced the
 reason to the model verbatim — it quoted the full text back, including the

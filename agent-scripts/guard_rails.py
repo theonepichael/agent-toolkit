@@ -5,7 +5,7 @@ a write under a repo-declared, gitignored provenance root -- see
 ``.guard-rails.json`` and the module's ``_declared_provenance_roots``), warn
 when the current worktree's base has fallen behind ``origin/main`` (or
 ``origin/<integration_branch>`` for an item that declares one), (Bash,
-Claude Code only) deny the git-native ways to defeat the no-commit-on-main
+Claude Code and agy) deny the git-native ways to defeat the no-commit-on-main
 git hook (``githooks/pre-commit`` / ``githooks-global/pre-commit``), and
 require an active backlog-item claim before a write that points at an
 in-progress item.
@@ -22,8 +22,13 @@ which sees the fully shell-resolved state. What Bash *is* checked for is the
 git-native ways to defeat that hook on a protected branch: ``--no-verify``,
 overriding or redirecting ``core.hooksPath`` (``-c``, ``GIT_CONFIG_*`` env
 vars, a plain ``git config`` mutation), and a direct write to
-``.git/config``. agy and Copilot get no bash-family wiring (best-effort
-tier); their Bash calls fall through unrecognized, same as before.
+``.git/config``. agy now gets the same hook-defeat checks as Claude's Bash
+tool, plus agy-only ``sudo`` and ``rm -rf`` deny (mirroring pi's
+guard-rails.ts, whose interactive confirm agy's ``--mode accept-edits``
+workers cannot answer). Copilot still gets no bash-family wiring; its Bash
+calls fall through unrecognized. The Bash claim check -- a shell write into
+another session's claimed worktree -- is write-family only and does not apply
+to any harness's Bash calls.
 
 R4, the claim check: a write "points at" an in-progress backlog item when it
 targets exactly one of the item's ``related_files`` paths, or lands in a
@@ -97,6 +102,7 @@ never reaches this script.
 import io
 import json
 import os
+import re
 import sys
 
 WRITE_TOOLS = {
@@ -120,7 +126,7 @@ def tool_family(name: object) -> str:
     lowered = name.strip().lower()
     if lowered in WRITE_TOOLS:
         return "write"
-    if lowered == "bash":
+    if lowered in ("bash", "run_command"):
         return "bash"
     return ""
 
@@ -215,6 +221,39 @@ def bash_trigger_free(command: str) -> bool:
     return not any(trigger in squashed for trigger in _BASH_TRIGGERS)
 
 
+# ``sudo`` is denied for agy's shell tool, matching pi's guard-rails.ts
+# ``/\bsudo\b/i`` (word-boundary, case-insensitive).
+_SUDO_RE = re.compile(r"\bsudo\b", re.IGNORECASE)
+# An ``rm`` invocation and its argument run, up to a shell control operator or
+# a newline -- the same boundary pi's guard-rails.ts uses, plus the newline so
+# a line-separated second ``rm -rf`` is not swallowed behind the first line's
+# ``--`` filename marker (whatever follows a newline belongs to a new command).
+_DANGEROUS_RM_RE = re.compile(r"\brm\s+([^;&|`$()\n]+)", re.IGNORECASE)
+
+
+def _is_dangerous_rm(command: str) -> bool:
+    """Whether ``command`` carries an ``rm`` run with both a recursive and a
+    force flag, mirroring pi's guard-rails.ts ``isDangerousRm`` (case-
+    insensitive throughout). The flag section ends at whitespace-``--``-
+    whitespace, so ``rm -- -rf`` -- where ``-rf`` is a filename, not a flag --
+    has no flags and is not dangerous. A backslash-newline is a shell line
+    continuation, collapsed to a space first so ``rm -r \\`` + newline +
+    ``-f /x`` (``rm -r -f /x``) is still caught."""
+    command = re.sub(r"\\\n", " ", command)
+    for match in _DANGEROUS_RM_RE.finditer(command):
+        args = match.group(1) or ""
+        flag_section = re.split(r"\s--\s", f" {args}", maxsplit=1)[0]
+        has_r = bool(
+            re.search(r"(?:^|\s)-[a-zA-Z]*r", flag_section, re.IGNORECASE)
+        ) or bool(re.search(r"(?:^|\s)--recursive\b", flag_section, re.IGNORECASE))
+        has_f = bool(
+            re.search(r"(?:^|\s)-[a-zA-Z]*f", flag_section, re.IGNORECASE)
+        ) or bool(re.search(r"(?:^|\s)--force\b", flag_section, re.IGNORECASE))
+        if has_r and has_f:
+            return True
+    return False
+
+
 def _fast_decide(
     argv: list[str], raw: str | None
 ) -> tuple[str, dict[str, object]] | None:
@@ -252,17 +291,28 @@ def _fast_decide(
             call = payload.get("toolCall") or {}
             if not isinstance(call, dict):
                 return None
+            args = call.get("args") or {}
+            if not isinstance(args, dict):
+                return None
             family = tool_family(call.get("name"))
         else:
             family = tool_family(payload.get("toolName"))
         if family == "write":
             return None
         out = _HARNESS_ALLOW[harness]
-        if family == "bash" and harness == "claude":
-            raw_command = args.get("command")
+        if family == "bash" and harness in ("claude", "agy"):
+            raw_command = (
+                args.get("CommandLine") if harness == "agy" else args.get("command")
+            )
             if raw_command is not None and not isinstance(raw_command, str):
                 return None
             command = raw_command or ""
+            if (
+                harness == "agy"
+                and not off
+                and (_SUDO_RE.search(command) or _is_dangerous_rm(command))
+            ):
+                return None
             if not bash_trigger_free(command):
                 return None
             tool, target = "bash", command
@@ -311,7 +361,6 @@ if __name__ == "__main__" and _fast_path(sys.argv[1:]):
 # The imports below run only when the fast path fell through (or on import),
 # which is the point: see the fast path comment above.
 import argparse
-import re
 import shlex
 import subprocess
 from dataclasses import dataclass
@@ -1473,6 +1522,27 @@ def evaluate_bash_override(command: str, cwd: str) -> Verdict:
     return Verdict("allow")
 
 
+def evaluate_bash_destructive(command: str) -> Verdict:
+    """Deny ``sudo`` and ``rm -rf`` for agy's shell tool, mirroring pi's
+    guard-rails.ts. Scoped to agy -- the one harness with no layer between
+    the hook and the shell that can ask -- so pi's TypeScript confirm and
+    Claude Code's native permission flow are untouched. Fails open (allow)
+    on anything it does not recognise, same posture as every other check."""
+    if _SUDO_RE.search(command):
+        return Verdict(
+            "deny",
+            "sudo blocked: no human is watching this session to confirm it",
+            rule="sudo",
+        )
+    if _is_dangerous_rm(command):
+        return Verdict(
+            "deny",
+            "rm -rf blocked: no human is watching this session to confirm it",
+            rule="rm-rf",
+        )
+    return Verdict("allow")
+
+
 def evaluate(req: Request, claims: BacklogClaimLookup) -> Verdict:
     """Apply R2 then R3 to write-family calls, and R4's claim check to any
     checkout they land in, plus the bash-family override check to Bash
@@ -1538,6 +1608,7 @@ def parse_payload(harness: str, payload: object) -> Request | None:
     the existing empty-string default."""
     if not isinstance(payload, dict):
         return None
+    raw_command = None
     try:
         if harness == "claude":
             args = payload.get("tool_input") or {}
@@ -1545,12 +1616,15 @@ def parse_payload(harness: str, payload: object) -> Request | None:
             path = args.get("file_path") or args.get("path") or ""
             raw_command = args.get("command")
             command = raw_command or ""
+            raw_cwd = payload.get("cwd")
         elif harness == "agy":
             call = payload.get("toolCall") or {}
             args = call.get("args") or {}
             name = call.get("name")
             path = args.get("TargetFile") or args.get("path") or ""
-            command = ""
+            raw_command = args.get("CommandLine")
+            command = raw_command or ""
+            raw_cwd = args.get("Cwd") or payload.get("cwd")
         elif harness == "copilot":
             name = payload.get("toolName")
             raw = payload.get("toolArgs")
@@ -1558,27 +1632,28 @@ def parse_payload(harness: str, payload: object) -> Request | None:
             args = json.loads(raw) if isinstance(raw, str) else (raw or {})
             path = args.get("path") or args.get("file_path") or ""
             command = ""
+            raw_cwd = payload.get("cwd")
         else:
             return None
     except (AttributeError, ValueError):
         return None
-    raw_cwd = payload.get("cwd")
     if raw_cwd is not None and not isinstance(raw_cwd, str):
         return None
-    if (
-        harness == "claude"
-        and raw_command is not None
-        and not isinstance(raw_command, str)
-    ):
+    if raw_command is not None and not isinstance(raw_command, str):
         return None
     cwd = raw_cwd or ""
+    if harness == "agy":
+        # agy's run_command carries the session cwd in args.Cwd; a protojson
+        # transcript serialises it with literal surrounding quotes, so strip
+        # them defensively (a real path never starts *and* ends with a quote).
+        cwd = cwd.strip("\"'")
     if not isinstance(args, dict) or not isinstance(path, str):
         return None
     family = tool_family(name)
-    # Bash-family wiring is Claude Code only (best-effort tier: agy and
-    # Copilot get none, regardless of what their own tool names happen to
-    # be) -- see the module docstring.
-    if family == "bash" and harness != "claude":
+    # Bash-family wiring is Claude Code and agy only; Copilot gets none,
+    # regardless of what its own tool names happen to be -- see the module
+    # docstring.
+    if family == "bash" and harness == "copilot":
         family = ""
     if not family:
         return None
@@ -1665,8 +1740,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    off = os.environ.get("GUARD_RAILS_OFF") == "1"
 
-    if os.environ.get("GUARD_RAILS_OFF") == "1":
+    if off:
         # Bypass every rule, including layout errors, exactly as before.
         claims = LocalClaimLookup()
     else:
@@ -1707,6 +1783,13 @@ def main(argv: list[str] | None = None) -> int:
             print(out)
             _audit_verdict(args.harness, None, Verdict("allow"))
             return code
+        if not off and args.harness == "agy" and req.tool == "bash":
+            destructive = evaluate_bash_destructive(req.command)
+            if destructive.decision == "deny":
+                out, code = render(args.harness, destructive)
+                print(out)
+                _audit_verdict(args.harness, req, destructive)
+                return code
         verdict = evaluate(req, claims)
         cli_common.vprint(
             f"[guard-rails] {verdict.decision}: {verdict.reason}",

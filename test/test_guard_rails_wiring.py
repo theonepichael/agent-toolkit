@@ -40,6 +40,7 @@ def test_agy_declares_a_pretooluse_guard() -> None:
     # agy names its write tools differently from every other harness.
     matchers = " ".join(g.get("matcher", "") for g in groups)
     assert "write_to_file" in matchers and "replace_file_content" in matchers
+    assert "run_command" in matchers
 
 
 def test_copilot_declares_a_pretooluse_guard() -> None:

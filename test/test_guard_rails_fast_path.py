@@ -147,7 +147,7 @@ FAST_CASES = {
     "claude-nonstr-name",
     "claude-empty-stdin",
     "agy-view",
-    "agy-bash",
+    "agy-run-command-ls",
     "copilot-view",
     "copilot-bad-args",
     "neutral-bash-ls",

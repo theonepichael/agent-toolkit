@@ -479,7 +479,7 @@ LIFECYCLE_HOOKS: dict[str, dict[str, object]] = {
         },
         "agy": {
             "block": "worktree-guard",
-            "matcher": "write_to_file|replace_file_content",
+            "matcher": "write_to_file|replace_file_content|run_command",
             "command": "python3 ~/.agent-toolkit/scripts/guard_rails.py --harness agy",
             "timeout": 10,
             "type": "command",

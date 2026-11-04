@@ -1,17 +1,4 @@
 {
-  "agy-bash": {
-    "audit": [
-      {
-        "decision": "allow",
-        "harness": "agy",
-        "rule": "default-allow",
-        "target": "",
-        "tool": ""
-      }
-    ],
-    "exit": 0,
-    "stdout": "{\"decision\": \"allow\"}\n"
-  },
   "agy-nondict-call": {
     "audit": [
       {
@@ -24,6 +11,45 @@
     ],
     "exit": 0,
     "stdout": "{\"decision\": \"allow\"}\n"
+  },
+  "agy-run-command-ls": {
+    "audit": [
+      {
+        "decision": "allow",
+        "harness": "agy",
+        "rule": "default-allow",
+        "target": "ls",
+        "tool": "bash"
+      }
+    ],
+    "exit": 0,
+    "stdout": "{\"decision\": \"allow\"}\n"
+  },
+  "agy-run-command-rmrf": {
+    "audit": [
+      {
+        "decision": "deny",
+        "harness": "agy",
+        "rule": "rm-rf",
+        "target": "rm -rf /tmp/x",
+        "tool": "bash"
+      }
+    ],
+    "exit": 0,
+    "stdout": "{\"decision\": \"deny\", \"reason\": \"rm -rf blocked: no human is watching this session to confirm it\"}\n"
+  },
+  "agy-run-command-sudo": {
+    "audit": [
+      {
+        "decision": "deny",
+        "harness": "agy",
+        "rule": "sudo",
+        "target": "sudo ls",
+        "tool": "bash"
+      }
+    ],
+    "exit": 0,
+    "stdout": "{\"decision\": \"deny\", \"reason\": \"sudo blocked: no human is watching this session to confirm it\"}\n"
   },
   "agy-view": {
     "audit": [

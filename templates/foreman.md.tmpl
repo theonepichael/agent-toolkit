@@ -35,11 +35,12 @@ A `--kind agy` worker runs the whole loop — launch, claim, handoff, watch,
 call cap, send-back, approve and close — as a pi worker does (drill of
 2026-11-04), with two gaps:
 
-- **Shell commands are unguarded.** agy runs with `--mode accept-edits`, and
-  its `PreToolUse` guard covers only the file-writing tools. A shell command
-  is not checked: there is no equivalent of pi's `sudo`/`rm -rf` blocks, and
-  a shell write into another session's claimed worktree is not refused. Only
-  give agy items whose work you would accept without that guard.
+- **Shell commands are guarded; a shell write into another session's claimed
+  worktree is still not refused.** agy's shell tool (`run_command`) now gets
+  the no-commit-on-main hook-defeat checks (as Claude Code's Bash tool does)
+  plus `sudo`/`rm -rf` denies matching pi's guard-rails.ts. The claim guard
+  stays write-family only, so a shell command writing into a worktree another
+  live session claims is not caught.
 - **Host-restart recovery is untested.** Whether herdr restores an agy pane
   and resumes its session is unknown. Treat an agy worker as lost after a
   restart: check its worktree and relaunch.
