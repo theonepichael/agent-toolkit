@@ -266,8 +266,21 @@ FOREMAN-HANDOFF slug=<slug> branch=<branch> commit=<sha> worktree=<path>
 
 The foreman lands, never re-entering `land`: rebase onto the **merge target**
 (the default branch, or the item's declared `integration_branch` when one is
-set — `release-1` work merges into `release-1`, never main), re-run the suite,
-fast-forward merge, push, remove the worktree, delete the branch. Before
+set — `release-1` work merges into `release-1`, never main), then, before the
+fast-forward, re-run the suite **and** every verification command the worker's
+report or `dev_status.py show <slug>` cites, checking each command's real
+output against the claim — a claim backed only by the worker's summary is not
+landed. Also run at least one negative or mutant case the change's own check
+must reject with a non-zero exit; a check that passes on that case, or fails
+for an unrelated reason, sends the item back. Only then fast-forward merge
+and push.
+
+Before removing the worktree, run `git -C <worktree> status --ignored --short`.
+If any ignored file sits under a provenance root the repo declares in
+`.guard-rails.json`, confirm a byte-identical copy exists in the main checkout
+(`cmp -s <worktree>/<file> <main>/<file>`) — or stop and ask before removing,
+so cited evidence is not deleted with the worktree. Then remove the worktree
+and delete the branch. Before
 gate-pass, run
 `python3 {{TOOLKIT_SCRIPTS}}/dev_status.py contract-touch <slug> --repo <path> --range <merge-base>..HEAD`
 after the rebase (and re-run it against the merge target) so any

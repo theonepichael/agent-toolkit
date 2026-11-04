@@ -69,6 +69,14 @@ old path — they need an operator `--operator-override` update, never a silent
 follow.
 
 ## 2. Gate: commit-then-land
+
+Before removing the worktree, run `git -C <worktree> status --ignored --short`.
+If any ignored file sits under a provenance root the repo declares in
+`.guard-rails.json`, confirm a byte-identical copy exists in the main checkout
+(`cmp -s <worktree>/<file> <main>/<file>`) — or stop and ask before removing,
+so cited evidence is not deleted with the worktree. Run the same check before
+the recovery `rm -rf` below.
+
 In a `--handoff` run (the invoking backlog-item was `/backlog-item --auto
 <slug> --handoff`), commit exactly as below (conventional format), then stop:
 print the single line
