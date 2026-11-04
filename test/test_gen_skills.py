@@ -282,6 +282,24 @@ class CapabilityFixtureTests(unittest.TestCase):
                 self.assertIn("git -C <worktree>", text, path)
                 self.assertNotIn("$ARGUMENTS [--push]", text, path)
 
+    def test_review_diff_round2_fix_rule_identical_across_harnesses(self) -> None:
+        rendered = gs.render_all(REPO_ROOT, SKILL_PARAMS)
+        outputs = [
+            path
+            for (skill, _harness), path in gs.OUTPUT_PATHS.items()
+            if skill == "review-diff"
+        ]
+        self.assertEqual(len(outputs), len(gs.SKILL_HARNESSES["review-diff"]))
+        step4_bodies: list[str] = []
+        for path in outputs:
+            step4 = rendered[path].split(
+                "## 4. Fix and re-review", 1
+            )[1].split("## 5. Report", 1)[0]
+            self.assertIn("**fixed-unreviewed**", step4, path)
+            step4_bodies.append(" ".join(step4.split()))
+        # both templates render the same step-4 rule, so no harness copy diverges
+        self.assertEqual(len(set(step4_bodies)), 1)
+
     # -- dashboard --------------------------------------------------------
 
     def test_dashboard_claude(self) -> None:

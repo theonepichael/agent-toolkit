@@ -59,10 +59,15 @@ also gets a backlog offer (the shared instructions file's proactive-capture rule
 "No findings." → go to step 5.
 
 ## 4. Fix and re-review
-Fix every **fix** finding — for a bug, a failing regression test first. Re-run
-the repo's full suite and its lint/format checks, re-stage, and go back to
-step 2. Max 2 review rounds in total. After round 2, stop looping: a finding
-still unresolved goes into the table as **open**.
+Max 2 review rounds in total. On round 2 there is no round 3: after fixing, go
+to step 5 without re-reviewing. On round 1, after fixing, go back to step 2.
+Fixing means: for a bug, write a failing regression test first; then fix every
+**fix** finding, and once all are done, re-run the repo's full suite and its
+lint/format checks on the final staged tree, re-stage, and confirm the index
+matches. On round 2, record each fixed finding in the table as
+**fixed-unreviewed** — applied and suite-verified on that final tree, never
+re-reviewed. Any fix whose checks still fail, or any finding you cannot fix,
+stays **open**, with the reason in the table.
 
 ## 5. Report
 Print this block. It is the output contract: the caller's commit gate
