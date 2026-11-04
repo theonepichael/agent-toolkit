@@ -82,6 +82,20 @@ Work that lands on an integration branch rather than the default branch (e.g. `r
 Run that repo's test suite (or the most relevant targeted subset) in the fresh worktree before touching anything (the shared instructions file's "Baseline tests before starting code work").
 
 ## 5. Spec or plan
+Append this request to the context/next_steps you pass to spec as its task
+below. For a bug or regression item, open the spec's Context with two lines
+before any design. **Root cause:** one sentence naming the mechanism, plus
+the smallest experiment that confirmed it (the command and what it showed),
+or the file:line for a plain logic error. Run that experiment before saving
+the spec. If it cannot be run, write **Root cause (hypothesis):** instead,
+and name the experiment tried and why it failed, or the missing
+prerequisite. **Simplest fix:** the smallest change that removes that cause,
+and, if the spec chooses something larger, what the smaller fix fails to
+do. For a feature, give only the second line, as the simplest approach.
+Before designing new code, list the analogous functions or modules found in
+the repo, what is reused, and a one-line reason for anything rebuilt (a
+disclosure, not a mandate).
+
 Load the `spec` skill via opencode's native skill tool
 (`skill({ name: "spec" })`) with the item's context/next_steps as the task
 and the item's slug as its topic slug, so it saves

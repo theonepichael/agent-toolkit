@@ -174,6 +174,32 @@ class CapabilityFixtureTests(unittest.TestCase):
                 auto = " ".join(text.split("## `--auto` mode", 1)[1].split())
                 self.assertNotIn("inline spec-drafting", auto, path)
 
+    def test_backlog_item_step5_carries_root_cause_and_reuse_paragraph(self) -> None:
+        # Both templates carry the identical spec-step paragraph, and every
+        # rendered backlog-item copy carries it before the delegation text.
+        # Compare the templates to each other — not a duplicated constant — so
+        # rewording the paragraph never has to be mirrored into this test.
+        def paragraph(name: str) -> str:
+            text = (REPO_ROOT / name).read_text(encoding="utf-8")
+            return " ".join(
+                text.split("## 5. Spec or plan", 1)[1].strip().split("\n\n", 1)[0].split()
+            )
+
+        self.assertEqual(
+            paragraph("templates/backlog_item.md.tmpl"),
+            paragraph("templates/backlog_item_pi_native.md.tmpl"),
+        )
+        rendered = gs.render_all(REPO_ROOT, SKILL_PARAMS)
+        for (skill, _harness), path in gs.OUTPUT_PATHS.items():
+            if skill != "backlog-item":
+                continue
+            step5 = " ".join(
+                rendered[path].split("## 5. Spec or plan", 1)[1].split("### ", 1)[0].split()
+            )
+            for marker in ("**Root cause:**", "list the analogous functions"):
+                self.assertIn(marker, step5, path)
+                self.assertLess(step5.index(marker), step5.index("topic slug"), path)
+
     @pytest.mark.regression(
         "backlog-item-resume-skips-gated-critique",
         "AssertionError: 'are already done — skip to step 8' unexpectedly found in",
