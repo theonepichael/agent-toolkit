@@ -26,6 +26,14 @@ reason is recorded), and surface each override with its reason in the
 approval prompt. Exit 2 (store, git, or parse errors) also blocks
 approval — never treat an error as clean. The check must be the last
 thing run before `git commit`: if anything is staged after it, re-run it.
+If a `--allow` override was applied and the subsequent `git commit` is then
+refused by a pre-commit hook that re-runs slug-check without per-finding
+overrides (the `githooks-global` hook), commit with `git commit --no-verify`
+— the override is already recorded by this gate's `--allow` run. `--no-verify`
+also skips the repo's other pre-commit checks (generated-doc staleness, the
+seed guard), so only use it after confirming those are satisfied, and surface
+the override and the bypass in the approval prompt. Do not use `--no-verify`
+when no hook refuses the commit.
 
 Show the staged diff (read from the worktree, not root) (`--stat` plus the files that need review when it runs past ~50 lines; a full diff is re-sent on every later call). Stop — ask in
 plain text for explicit commit approval, stating your recommendation

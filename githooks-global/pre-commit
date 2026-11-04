@@ -8,5 +8,7 @@
 set -uo pipefail
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib/no-commit-on-main.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/lib/slug-check.sh"
 
-refuse_if_protected_branch
+refuse_if_protected_branch || exit $?
+refuse_slug_leak || exit $?

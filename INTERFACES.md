@@ -102,7 +102,7 @@ Single source of truth for toolkit data paths.
 - Public functions:
   - `path_for(domain: str) -> Path` — Resolve ``domain`` using :data:`DEFAULT_RESOLVER`.
   - `toolkit_root() -> Path` — Return ``$AGENT_TOOLKIT_HOME``, or ``<home>/.agent-toolkit``.
-- Tested by: `test/test_agent_toolkit_paths.py`, `test/test_dev_status.py`, `test/test_dev_status_acceptance.py`, `test/test_dev_status_mutation.py`, `test/test_gen_interfaces.py`, `test/test_grill.py`, `test/test_guard_rails.py`, `test/test_install.py`, `test/test_llm_backends.py`, `test/test_machine_id.py`, `test/test_migration_lock_adoption.py`, `test/test_second_opinion.py`, `test/test_slug_check.py`, `test/test_to_tickets_runner.py`
+- Tested by: `test/test_agent_toolkit_paths.py`, `test/test_dev_status.py`, `test/test_dev_status_acceptance.py`, `test/test_dev_status_mutation.py`, `test/test_gen_interfaces.py`, `test/test_grill.py`, `test/test_guard_rails.py`, `test/test_guard_rails_topology.py`, `test/test_install.py`, `test/test_llm_backends.py`, `test/test_machine_id.py`, `test/test_migration_lock_adoption.py`, `test/test_second_opinion.py`, `test/test_slug_check.py`, `test/test_to_tickets_runner.py`
 
 ### `agent-scripts/agy_workspace_trust.py`
 

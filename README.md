@@ -49,11 +49,21 @@ System tools:
 
 ### Git hooks
 
-The repo ships `githooks/pre-commit` (no-commit-on-main, a seed SessionStart-subset guard, and the generated-doc checks), but git reads the hook path from config, which cannot be a committed file — wire it once per clone (worktrees of the clone inherit it):
+The repo ships `githooks/pre-commit` (no-commit-on-main, a slug-check scan,
+a seed SessionStart-subset guard, and the generated-doc checks), but git reads the hook path from config, which cannot be a committed file — wire it once per clone (worktrees of the clone inherit it):
 
 ```bash
 git config core.hooksPath githooks
 ```
+
+`install.sh` also points git's *global* `core.hooksPath` at
+`githooks-global/pre-commit` (personal profile only), which runs the same
+no-commit-on-main guard plus a `dev_status.py slug-check` scan: any staged
+added line containing a backlog-store slug refuses the commit, so a direct
+`git commit` made outside `land` is still checked. The hook never prompts,
+and fails closed on a missing or unreadable backlog store. Its bypass is
+git's own `git commit --no-verify`, which skips these checks entirely — use
+it only when you know the commit is clean.
 
 To commit an intentional SessionStart hook-group drop without disabling the rest of the hook:
 

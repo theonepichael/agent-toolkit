@@ -9,6 +9,7 @@ thing failed. ``test/AGENTS.md`` names test_pi_ts_checks.py as the precedent
 for reaching for the marker when the real thing is the point.
 """
 
+import json
 import os
 import subprocess
 import sys
@@ -19,6 +20,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "agent-scripts"))
 
+import agent_toolkit_paths  # noqa: E402
 import guard_rails  # noqa: E402
 
 pytestmark = pytest.mark.allow_real_subprocess
@@ -580,6 +582,16 @@ def test_live_checkout_rule_probe_cases(
 def _install_global_hook(repo: Path) -> None:
     hooks_global = REPO_ROOT / "githooks-global"
     _git("config", "--local", "core.hooksPath", str(hooks_global), cwd=repo)
+    # The global hook now runs a fail-closed slug-check, which reads the
+    # backlog store under the (process-wide) sandbox HOME. Seed a well-formed
+    # empty store so the branch-behaviour tests below -- whose subject is the
+    # branch guard, not the slug scan -- keep committing clean. A missing
+    # store would make slug-check refuse every "must succeed" commit.
+    store_dir = agent_toolkit_paths.path_for("work-items")
+    store_dir.mkdir(parents=True, exist_ok=True)
+    (store_dir / "items.json").write_text(
+        json.dumps({"schema_version": 2, "items": []}, indent=2)
+    )
 
 
 def test_hook_allows_the_very_first_commit_on_unborn_main(tmp_path: Path) -> None:
