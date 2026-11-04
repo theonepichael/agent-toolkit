@@ -4282,3 +4282,184 @@ class DiffReviewTests(unittest.TestCase):
         with redirect_stderr(io.StringIO()) as err, self.assertRaises(SystemExit):
             second_opinion.cmd_review(args)
         self.assertIn("unknown backend", err.getvalue())
+
+
+class ImageReviewFacadeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmpdir.name)
+        self.addCleanup(self._tmpdir.cleanup)
+        patcher = patch.object(second_opinion.llm_backends, "containment_available", lambda: True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _png(self, name: str = "a.png") -> Path:
+        p = self.tmp / name
+        p.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 20)
+        return p
+
+    def test_forced_agy_with_images_raises_image_support_error(self) -> None:
+        png = str(self._png())
+        with self.assertRaises(second_opinion.ImageSupportError) as raised:
+            second_opinion.review_plan(
+                second_opinion.ReviewRequest(
+                    plan_text="rubric", backend="agy", images=(png,)
+                )
+            )
+        self.assertIn("agy", str(raised.exception))
+        self.assertIn("no headless image flag", str(raised.exception))
+
+    def test_priority_selection_only_agy_raises_explicit(self) -> None:
+        png = str(self._png())
+        with (
+            patch.object(second_opinion, "available_backends", return_value=["agy"]),
+            patch("shutil.which", side_effect=lambda b: "/usr/bin/agy" if b == "agy" else None),
+        ):
+            with self.assertRaises(second_opinion.NoBackendAvailableError) as raised:
+                second_opinion.review_plan(
+                    second_opinion.ReviewRequest(plan_text="rubric", images=(png,))
+                )
+        self.assertIn("agy", str(raised.exception))
+        self.assertIn("no headless image flag", str(raised.exception))
+
+    def test_validation_error_translated_to_image_input_error(self) -> None:
+        with self.assertRaises(second_opinion.ImageInputError):
+            second_opinion.review_plan(
+                second_opinion.ReviewRequest(
+                    plan_text="rubric", images=("/nonexistent/x.png",)
+                )
+            )
+
+    def test_images_threaded_to_runner(self) -> None:
+        png = str(self._png())
+        captured: dict[str, object] = {}
+
+        def fake_runner(
+            prompt,
+            *,
+            model_index=None,
+            mode=None,
+            target_dir=None,
+            images=None,
+        ):
+            captured["images"] = images
+            return "critique"
+
+        with (
+            patch.object(second_opinion, "available_backends", return_value=["codex"]),
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(second_opinion, "BACKEND_RUNNERS", {"codex": fake_runner}),
+        ):
+            result = second_opinion.review_plan(
+                second_opinion.ReviewRequest(plan_text="rubric", images=(png,))
+            )
+        self.assertEqual(result.response_text, "critique")
+        self.assertEqual(captured["images"], [png])
+
+    def test_forced_list_filters_non_capable_with_notice(self) -> None:
+        png = str(self._png())
+        captured: dict[str, object] = {}
+
+        def fake_runner(
+            prompt,
+            *,
+            model_index=None,
+            mode=None,
+            target_dir=None,
+            images=None,
+        ):
+            captured["images"] = images
+            return "critique"
+
+        with (
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}" if b == "codex" else None),
+            patch.object(second_opinion, "BACKEND_RUNNERS", {"codex": fake_runner}),
+        ):
+            result = second_opinion.review_plan(
+                second_opinion.ReviewRequest(
+                    plan_text="rubric", backend="agy,codex", images=(png,)
+                )
+            )
+        self.assertEqual(result.response_text, "critique")
+        self.assertEqual(captured["images"], [png])
+
+    def test_image_prompt_is_used(self) -> None:
+        prompt = second_opinion.build_prompt("rubric", None, images=("a.png", "b.png"))
+        self.assertIn("2 attached image(s)", prompt)
+        self.assertIn("rubric", prompt)
+
+    def test_diff_and_images_are_rejected(self) -> None:
+        png = str(self._png())
+        with self.assertRaises(second_opinion.ReviewError) as raised:
+            second_opinion.review_plan(
+                second_opinion.ReviewRequest(
+                    plan_text="staged diff text", diff=True, images=(png,)
+                )
+            )
+        self.assertIn("mutually exclusive", str(raised.exception))
+
+    def test_prompt_only_diff_image_conflict_rejected(self) -> None:
+        parser = second_opinion.build_parser()
+        args = parser.parse_args(
+            ["review", "--diff", "--image", "a.png", "--prompt-only"]
+        )
+        with (
+            patch.object(
+                second_opinion, "read_staged_diff", return_value="fake diff"
+            ),
+            redirect_stderr(io.StringIO()) as err,
+            self.assertRaises(SystemExit),
+        ):
+            second_opinion.cmd_review(args)
+        self.assertIn("do not combine", err.getvalue())
+
+    def test_opencode_staging_failure_is_a_backend_error(self) -> None:
+        with patch.object(
+            second_opinion.llm_backends,
+            "stage_images",
+            side_effect=PermissionError("read-only home"),
+        ):
+            with self.assertRaises(second_opinion.BackendError) as raised:
+                second_opinion.run_opencode("rubric", images=["a.png"])
+        self.assertIn("staging failed", str(raised.exception))
+
+    def test_staging_failure_falls_through_to_next_backend(self) -> None:
+        png = str(self._png())
+        calls: list[str] = []
+
+        def run_copilot(
+            prompt,
+            *,
+            model_index=None,
+            mode=None,
+            target_dir=None,
+            images=None,
+        ):
+            calls.append("copilot")
+            return "copilot critique"
+
+        with (
+            patch.object(
+                second_opinion.llm_backends,
+                "stage_images",
+                side_effect=PermissionError("read-only home"),
+            ),
+            patch.object(
+                second_opinion.llm_backends, "containment_preflight", lambda *a, **k: None
+            ),
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(
+                second_opinion,
+                "BACKEND_RUNNERS",
+                {"opencode": second_opinion.run_opencode, "copilot": run_copilot},
+            ),
+        ):
+            result = second_opinion.review_plan(
+                second_opinion.ReviewRequest(
+                    plan_text="rubric", backend="opencode,copilot", images=(png,)
+                )
+            )
+        self.assertEqual(result.response_text, "copilot critique")
+        self.assertEqual(calls, ["copilot"])
+

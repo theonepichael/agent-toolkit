@@ -2453,6 +2453,154 @@ class StallRetryTelemetryTests(_LogPathRedirected):
         self.assertEqual(records[0]["fallback_reason"], "stall")
 
 
+def _write_image(tmpdir: Path, name: str, size: int = 20) -> Path:
+    """Write a small regular file with an image suffix."""
+    path = tmpdir / name
+    path.write_bytes(b"0" * size)
+    return path
+
+
+class ImageCapabilityTableTests(unittest.TestCase):
+    def test_capable_backends_in_priority_order(self) -> None:
+        self.assertEqual(
+            llm_backends.image_capable_backends(),
+            ["codex", "pi", "opencode", "copilot"],
+        )
+
+    def test_agy_has_no_image_input(self) -> None:
+        self.assertIsNone(llm_backends.BACKEND_IMAGE_INPUT["agy"])
+
+    def test_image_argv_flag_kind(self) -> None:
+        self.assertEqual(
+            llm_backends.image_argv("codex", ["a.png", "b.png"]),
+            ["-i", "a.png", "-i", "b.png"],
+        )
+        self.assertEqual(
+            llm_backends.image_argv("copilot", ["a.png"]),
+            ["--attachment", "a.png"],
+        )
+        self.assertEqual(
+            llm_backends.image_argv("opencode", ["a.png"]),
+            ["--file", "a.png"],
+        )
+
+    def test_image_argv_at_file_kind(self) -> None:
+        self.assertEqual(
+            llm_backends.image_argv("pi", ["a.png", "b.png"]),
+            ["@a.png", "@b.png"],
+        )
+
+    def test_image_argv_agy_raises(self) -> None:
+        with self.assertRaises(llm_backends.IsolationError):
+            llm_backends.image_argv("agy", ["a.png"])
+
+
+class ValidateImagesTests(unittest.TestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmpdir.name)
+        self.addCleanup(self._tmpdir.cleanup)
+
+    def test_valid_png_passes(self) -> None:
+        p = _write_image(self.tmp, "a.png")
+        llm_backends.validate_images([str(p)])
+
+    def test_nonexistent_path_rejected(self) -> None:
+        with self.assertRaises(llm_backends.ImageValidationError):
+            llm_backends.validate_images([str(self.tmp / "missing.png")])
+
+    def test_directory_rejected(self) -> None:
+        d = self.tmp / "adir.png"
+        d.mkdir()
+        with self.assertRaises(llm_backends.ImageValidationError):
+            llm_backends.validate_images([str(d)])
+
+    def test_unsupported_suffix_rejected(self) -> None:
+        p = _write_image(self.tmp, "a.txt")
+        with self.assertRaises(llm_backends.ImageValidationError):
+            llm_backends.validate_images([str(p)])
+
+    def test_count_limit(self) -> None:
+        paths = [
+            str(_write_image(self.tmp, f"a{i}.png"))
+            for i in range(llm_backends.MAX_IMAGE_COUNT + 1)
+        ]
+        with self.assertRaises(llm_backends.ImageValidationError):
+            llm_backends.validate_images(paths)
+
+    def test_per_image_size_limit(self) -> None:
+        p = _write_image(self.tmp, "big.png", size=200)
+        with patch.object(llm_backends, "MAX_IMAGE_BYTES", 8):
+            with self.assertRaises(llm_backends.ImageValidationError):
+                llm_backends.validate_images([str(p)])
+
+
+class StageImagesTests(unittest.TestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmpdir.name)
+        self.addCleanup(self._tmpdir.cleanup)
+
+    def test_stages_indexed_under_home_and_cleans_up(self) -> None:
+        src = _write_image(self.tmp, "sprite draft.png")
+        staged = llm_backends.stage_images([str(src)])
+        try:
+            self.assertEqual(len(staged.paths), 1)
+            self.assertEqual(staged.paths[0].name, "0.png")
+            self.assertTrue(staged.paths[0].is_file())
+            self.assertEqual(staged.staging_dir.parent, Path.home())
+            self.assertEqual(staged.expose_rel, staged.staging_dir.name)
+        finally:
+            staged.cleanup()
+        self.assertFalse(staged.staging_dir.exists())
+
+
+class ImageArgvBuildTests(_ContainmentStubbed):
+    def test_codex_text_only_image_before_prompt(self) -> None:
+        cmd = llm_backends.build_isolated_command(
+            "codex", "rubric", images=["a.png", "b.png"]
+        )
+        self.assertIn("-i", cmd)
+        self.assertEqual(cmd[cmd.index("-i") : cmd.index("-i") + 2], ["-i", "a.png"])
+        self.assertEqual(cmd[-1], "rubric")
+
+    def test_pi_at_file_before_prompt(self) -> None:
+        cmd = llm_backends.build_isolated_command("pi", "rubric", images=["a.png"])
+        self.assertIn("@a.png", cmd)
+        self.assertLess(cmd.index("@a.png"), cmd.index("rubric"))
+
+    def test_copilot_attachment_after_prompt(self) -> None:
+        cmd = llm_backends.build_isolated_command(
+            "copilot", "rubric", images=["a.png"]
+        )
+        self.assertIn("--attachment", cmd)
+        self.assertLess(cmd.index("rubric"), cmd.index("--attachment"))
+
+    def test_opencode_file_flag_after_prompt_and_readonly_expose(self) -> None:
+        cmd = llm_backends.build_isolated_command(
+            "opencode", "rubric", images=["/home/u/img.png"], expose_ro_extra=["so-images-x"]
+        )
+        self.assertIn("--file", cmd)
+        # --file is an array option that would greedily consume a following
+        # prompt, so it must trail the prompt, not precede it.
+        self.assertLess(cmd.index("rubric"), cmd.index("--file"))
+        self.assertEqual(cmd[cmd.index("--file") + 1], "/home/u/img.png")
+        self.assertIn("SB_EXPOSE_RO=so-images-x", " ".join(cmd))
+
+    def test_agy_images_raises(self) -> None:
+        with self.assertRaises(llm_backends.IsolationError):
+            llm_backends.build_isolated_command("agy", "rubric", images=["a.png"])
+
+    def test_grounded_images_rejected(self) -> None:
+        with self.assertRaises(llm_backends.IsolationError):
+            llm_backends.build_isolated_command(
+                "codex", "rubric", mode="grounded", images=["a.png"]
+            )
+
+
+
 def _run_unittest() -> None:
     test_bootstrap.run_unittest_main(verbosity=1)
 

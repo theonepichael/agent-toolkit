@@ -84,6 +84,18 @@ the model as the `model` parameter (paired with `backend`) and raise the
 timeout with `timeoutSeconds` (clamped to 600) — never set the env var
 directly.
 
+Image review: for art-heavy work (sprites, mockups, screenshots), pass the
+`images` parameter (an array of image paths) to `review` to send image files
+plus a rubric (the plan/prompt text) to a vision-capable backend. The review
+then runs text-only (the input is images plus a rubric, not a codebase to read)
+and is mutually exclusive with `diff = true`. Images are limited (8 files, 5 MB
+each; `.png`/`.jpg`/`.jpeg`/`.gif`/`.webp`/`.bmp`), and a backend without a
+headless image flag — agy — is skipped in priority/list selection or fails
+explicitly when forced, never a silent text-only fallback. Backend image
+support (surveyed from each CLI's real flags: codex `-i`, pi `@file`, copilot
+`--attachment`, opencode `--file`) is encoded in
+`llm_backends.BACKEND_IMAGE_INPUT`.
+
 ## Resolving the target plan
 
 If the user named a specific file path or pasted plan text, treat that as the

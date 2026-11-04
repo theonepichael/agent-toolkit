@@ -98,6 +98,17 @@ user asked for. Where the call goes through a shell, prefix it with the
 variable; where it goes through a native tool with no model parameter, ask the
 user to set the variable in the environment the harness was launched from.
 
+Image review: for art-heavy work (sprites, mockups, screenshots), pass `--image
+<path>` (repeatable) to `review` to send image files plus a rubric (the
+plan/prompt text) to a vision-capable backend. The review then runs text-only
+(the input is images plus a rubric, not a codebase to read) and is mutually
+exclusive with `--diff`. Images are limited (8 files, 5 MB each;
+`.png`/`.jpg`/`.jpeg`/`.gif`/`.webp`/`.bmp`), and a backend without a headless
+image flag — agy — is skipped in priority/list selection or fails explicitly
+when forced, never a silent text-only fallback. Backend image support (surveyed
+from each CLI's real flags: codex `-i`, pi `@file`, copilot `--attachment`,
+opencode `--file`) is encoded in `llm_backends.BACKEND_IMAGE_INPUT`.
+
 ## Resolving the target plan
 
 If `$ARGUMENTS` is non-empty, treat it as an explicit file path or inline plan

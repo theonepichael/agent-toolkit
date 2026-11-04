@@ -73,6 +73,19 @@ Flags
                    pathspec P; repeatable, and ':!<glob>' excludes. Splits a
                    diff too large for one prompt (see the payload-size limit)
                    into reviewable parts. Without --diff it is an error.
+  --image PATH     (review only) attach an image file to the review
+                   (repeatable): the images plus the rubric (the plan/prompt
+                   text) go to a vision-capable backend. The review then runs
+                   text-only (no codebase read tools), and is mutually
+                   exclusive with --diff. Images are limited to
+                   MAX_IMAGE_COUNT=8 files, MAX_IMAGE_BYTES=5000000 each, and
+                   the suffixes .png/.jpg/.jpeg/.gif/.webp/.bmp. A backend
+                   without a headless image flag (agy) is skipped in
+                   priority/list selection or fails explicitly when forced —
+                   never a silent text-only review. Backend image support is
+                   recorded in llm_backends.BACKEND_IMAGE_INPUT (surveyed from
+                   each CLI's real flags: codex -i, pi @file, copilot
+                   --attachment, opencode --file).
   --prompt-only    (review only) print the exact prompt the review would send
                    (plan or --diff, grounded or --text-only) and exit 0,
                    calling no backend and spending no round — for a caller
@@ -278,6 +291,7 @@ class ReviewRequest:
     target_dir: Path | None = None
     diff: bool = False
     exclude_backends: tuple[str, ...] = ()
+    images: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -318,6 +332,18 @@ class ModelIndexConfigError(ReviewError):
     index. Raised on the first offending candidate, before any runner runs, so
     automatic selection never silently skips to another backend.
     """
+
+
+class ImageInputError(ReviewError):
+    """An image request failed validation (bad path, count, size, or format).
+
+    Wraps an ``llm_backends.ImageValidationError``; raised from
+    :func:`review_plan` before any backend runs.
+    """
+
+
+class ImageSupportError(ReviewError):
+    """A forced backend cannot accept image input (no headless image flag)."""
 
 
 _UNSET = object()
@@ -909,6 +935,27 @@ scrutinize them closely, but don't let them limit the rest of your review:
 {hints}
 """
 
+IMAGE_CRITIQUE_PROMPT = """\
+You are an independent visual reviewer evaluating {count} attached image(s)
+against a rubric written by another AI assistant.
+
+Respond in plain prose only: you have no tools, so never emit tool-call
+markup (XML like <tool_calls>, JSON tool-call blocks, or fenced tool
+invocations) — if you could not check something, say so in the review.
+
+Evaluate the attached images against the rubric below, concretely and
+specifically:
+- What is wrong, inconsistent, or below the rubric's bar?
+- What did the rubric miss or assume without justification?
+- Where do you disagree, and why?
+
+Keep the review focused and concise. If the images genuinely satisfy the
+rubric, say so briefly — don't pad agreement with praise. Skip preamble.
+{focus_section}
+---
+{plan_text}
+"""
+
 DIFF_TOOLS_GROUNDED = """You have read-only access to the codebase. Use your read/grep/find tools to read
 the changed files in full, find callers of changed functions, and check the
 tests, before you report a finding. Never attempt to write or edit files."""
@@ -954,6 +1001,7 @@ def build_prompt(
     *,
     grounded: bool = True,
     diff: bool = False,
+    images: tuple[str, ...] = (),
 ) -> str:
     """Build the critique prompt, optionally inserting plan-specific focus hints.
 
@@ -966,11 +1014,18 @@ def build_prompt(
             are available.
         diff: When True, use the bug-hunting diff-review prompt instead of the
             plan-critique prompt.
+        images: When non-empty, use the image-review prompt (the images are
+            attached out-of-band by the backend; ``plan_text`` is the rubric).
 
     Returns:
         The fully-formatted critique prompt.
     """
     hints = focus_hints.strip() if focus_hints else ""
+    if images:
+        focus_section = FOCUS_SECTION.format(hints=hints) if hints else ""
+        return IMAGE_CRITIQUE_PROMPT.format(
+            count=len(images), focus_section=focus_section, plan_text=plan_text
+        )
     if diff:
         return DIFF_REVIEW_PROMPT.format(
             tools_section=DIFF_TOOLS_GROUNDED if grounded else DIFF_TOOLS_TEXT_ONLY,
@@ -1384,6 +1439,7 @@ def run_codex(
     model_index: int | None = None,
     mode: str | None = None,
     target_dir: Path | None = None,
+    images: list[str] | None = None,
 ) -> str:
     """Run the ``codex`` backend and return its critique text."""
     model = _resolve_pooled_model(
@@ -1392,7 +1448,7 @@ def run_codex(
         model_index,
     )
     extra = _filter_runner_kwargs(
-        llm_backends.run_codex, mode=mode, target_dir=target_dir
+        llm_backends.run_codex, mode=mode, target_dir=target_dir, images=images
     )
     return llm_backends.run_codex(
         prompt,
@@ -1444,6 +1500,7 @@ def run_opencode(
     model_index: int | None = None,
     mode: str | None = None,
     target_dir: Path | None = None,
+    images: list[str] | None = None,
 ) -> str:
     """Run the ``opencode`` backend's adversary agent and return its critique text.
 
@@ -1465,6 +1522,10 @@ def run_opencode(
     production-length retries (450s cap) succeeding 0 of 6. A successful
     stall-retry is recorded in ``backend_calls.jsonl`` with
     ``fallback_reason="stall"``.
+
+    opencode is always OS-contained, so ``images`` are staged into a unique
+    read-only dir exposed via ``SB_EXPOSE_RO`` and removed after the run (see
+    :func:`llm_backends.stage_images`).
     """
     model = _resolve_pooled_model(
         "SECOND_OPINION_OPENCODE_MODEL_POOL",
@@ -1475,33 +1536,51 @@ def run_opencode(
     extra = _filter_runner_kwargs(
         llm_backends.build_isolated_command, mode=mode, target_dir=target_dir
     )
-    cmd = llm_backends.build_isolated_command("opencode", prompt, model=model, **extra)
-    _, stdout, stderr = _run_command(
-        cmd,
-        timeout=_resolve_timeout(
-            "SECOND_OPINION_OPENCODE_TIMEOUT_SECONDS",
-            default=max(BACKEND_TIMEOUT_SECONDS, _OPENCODE_TIMEOUT_SECONDS),
-        ),
-        retries=1,
-        # Stall, don't blind-retry: stream the child's stdout and kill it the
-        # moment no byte arrives for ~90s (a silent gateway stall), then retry
-        # once. The 2026-09 efficiency analysis measured production-length
-        # retries (450s cap) succeeding 0 of 6 — waiting the full timeout only
-        # fails slower. A slow-but-progressing run is left to the overall
-        # timeout without a retry.
-        stall_seconds=90,
-    )
-    events = _opencode_json_events(stdout)
-    allowed = {"read", "grep", "glob"} if mode == "grounded" else None
-    _raise_on_tool_use(events, context="adversary agent", allowed_tools=allowed)
-    chunks = _opencode_text_chunks(events)
-    if chunks:
-        return _finalize_text_response(chunks, context="adversary agent")
-    for e in events:
-        if e.get("type") == "error":
-            message = _safe_get(e, "error", "data", "message")
-            raise BackendError(f"adversary agent error: {message or e.get('error')}")
-    raise _backend_failure("no text output", stderr=stderr, stdout=stdout)
+    try:
+        staged = llm_backends.stage_images(images) if images else None
+    except OSError as exc:
+        # A staging failure (unwritable HOME, copy error) is a backend
+        # failure, not a crash: the candidate loop catches BackendError and
+        # falls through to the next backend, which may not need staging.
+        raise BackendError(f"opencode: image staging failed: {exc}") from exc
+    try:
+        if staged is not None:
+            extra["images"] = [str(p) for p in staged.paths]
+            extra["expose_ro_extra"] = [staged.expose_rel]
+        cmd = llm_backends.build_isolated_command(
+            "opencode", prompt, model=model, **extra
+        )
+        _, stdout, stderr = _run_command(
+            cmd,
+            timeout=_resolve_timeout(
+                "SECOND_OPINION_OPENCODE_TIMEOUT_SECONDS",
+                default=max(BACKEND_TIMEOUT_SECONDS, _OPENCODE_TIMEOUT_SECONDS),
+            ),
+            retries=1,
+            # Stall, don't blind-retry: stream the child's stdout and kill it
+            # the moment no byte arrives for ~90s (a silent gateway stall), then
+            # retry once. The 2026-09 efficiency analysis measured
+            # production-length retries (450s cap) succeeding 0 of 6 — waiting
+            # the full timeout only fails slower. A slow-but-progressing run is
+            # left to the overall timeout without a retry.
+            stall_seconds=90,
+        )
+        events = _opencode_json_events(stdout)
+        allowed = {"read", "grep", "glob"} if mode == "grounded" else None
+        _raise_on_tool_use(events, context="adversary agent", allowed_tools=allowed)
+        chunks = _opencode_text_chunks(events)
+        if chunks:
+            return _finalize_text_response(chunks, context="adversary agent")
+        for e in events:
+            if e.get("type") == "error":
+                message = _safe_get(e, "error", "data", "message")
+                raise BackendError(
+                    f"adversary agent error: {message or e.get('error')}"
+                )
+        raise _backend_failure("no text output", stderr=stderr, stdout=stdout)
+    finally:
+        if staged is not None:
+            staged.cleanup()
 
 
 def run_copilot(
@@ -1510,6 +1589,7 @@ def run_copilot(
     model_index: int | None = None,
     mode: str | None = None,
     target_dir: Path | None = None,
+    images: list[str] | None = None,
 ) -> str:
     """Run the ``copilot`` backend and return its critique text.
 
@@ -1520,7 +1600,7 @@ def run_copilot(
     :func:`llm_backends.run_copilot` for why that's the safe default).
     """
     extra = _filter_runner_kwargs(
-        llm_backends.run_copilot, mode=mode, target_dir=target_dir
+        llm_backends.run_copilot, mode=mode, target_dir=target_dir, images=images
     )
     return llm_backends.run_copilot(
         prompt,
@@ -1543,6 +1623,7 @@ def run_pi(
     model_index: int | None = None,
     mode: str | None = None,
     target_dir: Path | None = None,
+    images: list[str] | None = None,
 ) -> str:
     """Run the ``pi`` backend and return its critique text.
 
@@ -1552,7 +1633,9 @@ def run_pi(
     that's set; otherwise ``None`` (Pi's own default model choice for the
     ``opencode-go`` provider — see :func:`llm_backends.run_pi`).
     """
-    extra = _filter_runner_kwargs(llm_backends.run_pi, mode=mode, target_dir=target_dir)
+    extra = _filter_runner_kwargs(
+        llm_backends.run_pi, mode=mode, target_dir=target_dir, images=images
+    )
     return llm_backends.run_pi(
         prompt,
         model=_resolve_pooled_model(
@@ -1738,9 +1821,32 @@ def review_plan(
             original exceptions on ``errors`` and the pre-exhaustion
             diagnostics on ``notices``.
     """
-    mode = "text-only" if request.text_only else "grounded"
+    images = request.images
+    if images and request.diff:
+        raise ReviewError(
+            "images and --diff are mutually exclusive: image review is "
+            "text-only, a diff review is grounded code review"
+        )
+    mode = "text-only" if (request.text_only or images) else "grounded"
+
+    resolved_images: tuple[str, ...] = ()
+    if images:
+        resolved_images = tuple(str(Path(p).expanduser().resolve()) for p in images)
+        try:
+            llm_backends.validate_images(list(resolved_images))
+        except llm_backends.ImageValidationError as exc:
+            raise ImageInputError(str(exc)) from exc
+
+    image_capable = set(llm_backends.image_capable_backends()) if images else None
+
     if request.backend:
         candidates = _split_backend_list(request.backend)
+        if images and len(candidates) == 1 and candidates[0] not in image_capable:
+            # A forced single backend with no headless image flag is a static
+            # capability fact, reported before (and regardless of) PATH state.
+            raise ImageSupportError(
+                f"{candidates[0]} cannot accept image input: no headless image flag"
+            )
         if len(candidates) == 1 and not shutil.which(candidates[0]):
             # Single-name run: exactly today's contract — a strict pre-check,
             # no fallback. A multi-entry list skips a missing install lazily
@@ -1767,6 +1873,26 @@ def review_plan(
 
     notices: list[str] = []
     target_dir = (request.target_dir or Path.cwd()).resolve()
+
+    # Image-capability filter (before the isolation-eligibility filter, so a
+    # forced single-name capability error already fired above and a list/
+    # priority selection drops non-capable entries with a recorded reason).
+    image_dropped: list[str] = []
+    if images:
+        pre_image = list(candidates)
+        candidates = [b for b in candidates if b in image_capable]
+        image_dropped = [b for b in pre_image if b not in image_capable]
+        if not candidates:
+            raise NoBackendAvailableError(
+                "no image-capable backend available — "
+                + "; ".join(f"{b}: no headless image flag" for b in image_dropped)
+                + " (not falling back to text-only)"
+            )
+        for b in image_dropped:
+            notices.append(
+                f"[second_opinion] {b} cannot accept image input "
+                "(no headless image flag) — skipped"
+            )
     # Filter candidates against the per-mode eligibility view before dispatch.
     # Grounded mode can re-enable reach that text-only vendor flags remove;
     # either mode can depend on OS containment whose required binds may fail.
@@ -1796,12 +1922,11 @@ def review_plan(
         )
     if not candidates:
         retry = " — retry with --text-only" if mode == "grounded" else ""
+        reasons = [
+            f"{b}: {report.get(b, {}).get('reason', 'unknown')}" for b in pre_filter
+        ] + [f"{b}: no headless image flag" for b in image_dropped]
         raise NoBackendAvailableError(
-            f"no backend is eligible for {mode} review — "
-            + "; ".join(
-                f"{b}: {report.get(b, {}).get('reason', 'unknown')}" for b in pre_filter
-            )
-            + retry
+            f"no backend is eligible for {mode} review — " + "; ".join(reasons) + retry
         )
     for b in dropped:
         notices.append(
@@ -1824,6 +1949,7 @@ def review_plan(
         request.focus_hints,
         grounded=(mode == "grounded"),
         diff=request.diff,
+        images=resolved_images,
     )
     prompt_bytes = len(prompt.encode("utf-8"))
     failures: list[str] = []
@@ -1908,6 +2034,7 @@ def review_plan(
                         model_index=model_index,
                         mode=mode,
                         target_dir=target_dir,
+                        images=list(resolved_images) if resolved_images else None,
                     )
                     critique = runner(prompt, **runner_kwargs)
                 if not critique.strip():
@@ -2166,6 +2293,7 @@ def cmd_review(args: argparse.Namespace) -> None:
     """
     output_lock = _lock_output_file(sys.stdout)
     diff = getattr(args, "diff", False)
+    images = tuple(getattr(args, "image", None) or ())
     plan_arg = getattr(args, "plan", None)
     if diff and plan_arg is not None:
         die("--diff reviews the staged diff; do not also pass a plan")
@@ -2215,6 +2343,10 @@ def cmd_review(args: argparse.Namespace) -> None:
     if getattr(args, "prompt_only", False):
         # Same prompt review_plan would send, for a caller's own reviewer
         # (e.g. a same-model subagent fallback). No backend, no round spent.
+        # The facade's own diff+images check never runs on this path, so the
+        # mutual exclusion is re-asserted here.
+        if images and diff:
+            die("--image is a text-only visual review; do not combine it with --diff")
         if not diff:
             plan_text, _ = sanitize_plan_text(plan_text)
         print(
@@ -2223,6 +2355,7 @@ def cmd_review(args: argparse.Namespace) -> None:
                 focus_hints,
                 grounded=not getattr(args, "text_only", False),
                 diff=diff,
+                images=images,
             ),
             end="",
         )
@@ -2238,6 +2371,7 @@ def cmd_review(args: argparse.Namespace) -> None:
         target_dir=getattr(args, "dir", None),
         diff=diff,
         exclude_backends=exclude,
+        images=images,
     )
     # Round-cap enforcement: the (MAX_ROUNDS+1)-th *successful* review for this
     # run is refused. Keyed by --run-id or the resolved plan-file path; the
@@ -2345,6 +2479,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=False,
         help="review the staged diff (git diff --cached in --dir) for bugs "
         "instead of critiquing a plan; do not also pass a plan",
+    )
+    p.add_argument(
+        "--image",
+        action="append",
+        default=None,
+        metavar="PATH",
+        help="attach an image file to the review (repeatable), sending the "
+        "images plus the rubric to a vision-capable backend; the review then "
+        "runs text-only, and is mutually exclusive with --diff. Images are "
+        "size/count/format limited, and a backend without a headless image "
+        "flag (agy) is skipped or fails explicitly, never a silent text-only "
+        "fallback",
     )
     p.add_argument(
         "--backend",

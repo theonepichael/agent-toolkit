@@ -1324,22 +1324,29 @@ llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, open
   - `class BackendToolUseError(BackendError)` — A backend answered with a tool-use transcript instead of a critique.
   - `class BackendModelPolicyError(BackendError)` — A backend rejected a model because the ACCOUNT cannot select models through the model flag -- an entitlement failure, not a bad model id.
   - `class BackendToolPermissionDeniedError(BackendError)` — A backend's tool use was auto-denied, so it produced no output.
+  - `class ImageValidationError(ValueError)` — An image request failed validation (path, count, size, or format).
+- Public classes:
+  - `class StagedImages` — Images copied into a unique per-invocation HOME-relative staging dir.
 - Public functions:
   - `containment_available() -> bool` — Whether OS containment can actually be established on this host.
   - `containment_preflight(backend: str, mode: str = 'text-only', target_dir: Path | None = None) -> str | None` — Run the real containment wrapper with ``true`` before backend dispatch.
   - `daemon_listening(backend: str) -> bool` — Whether a daemon belonging to ``backend`` currently holds a listening socket.
-  - `build_isolated_command(backend: str, prompt: str, *, model: str | None = None, mode: str = 'text-only', target_dir: Path | None = None) -> list[str]` — Build the only command any caller may run for ``backend``.
+  - `build_isolated_command(backend: str, prompt: str, *, model: str | None = None, mode: str = 'text-only', target_dir: Path | None = None, images: list[str] | None = None, expose_ro_extra: list[str] | None = None) -> list[str]` — Build the only command any caller may run for ``backend``.
   - `eligibility_report(mode: str = 'text-only', target_dir: Path | None = None) -> dict[str, dict[str, object]]` — Per-backend presence and contract eligibility, with a reason when not.
+  - `image_capable_backends() -> list[str]` — Backends in priority order that accept headless image input.
+  - `validate_images(paths: list[str]) -> None` — Validate image paths before any backend runs.
+  - `stage_images(paths: list[str]) -> StagedImages` — Copy ``paths`` into a unique HOME-relative staging dir for containment.
+  - `image_argv(backend: str, paths: list[str]) -> list[str]` — The per-backend argv fragment attaching ``paths`` as images.
   - `check_prompt_size(prompt: str, max_bytes: int = GLOBAL_MAX_PROMPT_BYTES) -> None` — Raise :class:`BackendPayloadSizeError` if ``prompt`` exceeds ``max_bytes``.
   - `available_backends() -> list[str]` — Return the backends in :data:`BACKEND_PRIORITY` that are on ``PATH``.
   - `eligible_backends(mode: str = 'text-only') -> list[str]` — Backends that are installed AND meet the isolation contract, in priority order.
   - `resolve_backend(mode: str = 'text-only') -> str | None` — Return the highest-priority eligible backend, or ``None`` if none is.
   - `run_with_fallback(runner: 'Callable[[str], str]', *, backends: list[str] | None = None) -> tuple[str, str]` — Try each eligible backend in turn; return ``(backend, output)``.
   - `run_backend_command(cmd: list[str], timeout: float) -> str` — Run a backend CLI command and return its critique/prose text.
-  - `run_codex(prompt: str, *, model: str | None = None, timeout: float = 120, mode: str = 'text-only', target_dir: Path | None = None) -> str` — Run Codex CLI non-interactively and return its critique text.
+  - `run_codex(prompt: str, *, model: str | None = None, timeout: float = 120, mode: str = 'text-only', target_dir: Path | None = None, images: list[str] | None = None) -> str` — Run Codex CLI non-interactively and return its critique text.
   - `run_agy(prompt: str, *, model: str, timeout: float, mode: str = 'text-only', target_dir: Path | None = None) -> str` — Run the ``agy`` backend with the given model and return its text output.
-  - `run_copilot(prompt: str, *, model: str | None, timeout: float, mode: str = 'text-only', target_dir: Path | None = None) -> str` — Run the ``copilot`` backend and return its text output.
-  - `run_pi(prompt: str, *, model: str | None, timeout: float, mode: str = 'text-only', target_dir: Path | None = None) -> str` — Run Pi's headless mode and return its text output.
+  - `run_copilot(prompt: str, *, model: str | None, timeout: float, mode: str = 'text-only', target_dir: Path | None = None, images: list[str] | None = None) -> str` — Run the ``copilot`` backend and return its text output.
+  - `run_pi(prompt: str, *, model: str | None, timeout: float, mode: str = 'text-only', target_dir: Path | None = None, images: list[str] | None = None) -> str` — Run Pi's headless mode and return its text output.
   - `run_opencode(prompt: str, *, model: str | None, timeout: float, mode: str = 'text-only', target_dir: Path | None = None) -> str` — Run opencode's default agent (no ``--agent`` override) and return its text output.
 - Tested by: `test/test_backend_isolation.py`, `test/test_backend_isolation_live.py`, `test/test_dev_status.py`, `test/test_gen_interfaces.py`, `test/test_llm_backends.py`, `test/test_migration_lock_adoption.py`, `test/test_second_opinion.py`, `test/test_timing.py`
 
@@ -1625,9 +1632,10 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
     - `--mode` — contract view to report: text-only (default) or grounded (checks the per-mode read-reach override, so a containment-dependent backend reports as unavailable for grounded mode when containment is unavailable) (choices: text-only, grounded; default: text-only)
   - `probe [--backend NAME[,NAME...]]` — probe each backend's model pool and report per-model availability as JSON
     - `--backend` — probe only these backend(s) (comma-separated list allowed) instead of every installed backend in priority order; an entry not installed is reported as not_installed, not an error
-  - `review [<plan-file-or-text>] [--diff] [--backend NAME[,NAME...]] [--dir <DIR>] [--text-only] [--focus-file <FOCUS_FILE>] [--model-index N] [--exclude-backend NAME] [--diff-path PATHSPEC] [--prompt-only] [--run-id ID] [--allow-extra-round]` — get one critique from the priority-selected backend
+  - `review [<plan-file-or-text>] [--diff] [--image PATH] [--backend NAME[,NAME...]] [--dir <DIR>] [--text-only] [--focus-file <FOCUS_FILE>] [--model-index N] [--exclude-backend NAME] [--diff-path PATHSPEC] [--prompt-only] [--run-id ID] [--allow-extra-round]` — get one critique from the priority-selected backend
     - `plan` (nargs: ?)
     - `--diff` — review the staged diff (git diff --cached in --dir) for bugs instead of critiquing a plan; do not also pass a plan (default: False)
+    - `--image` — attach an image file to the review (repeatable), sending the images plus the rubric to a vision-capable backend; the review then runs text-only, and is mutually exclusive with --diff. Images are size/count/format limited, and a backend without a headless image flag (agy) is skipped or fails explicitly, never a silent text-only fallback
     - `--backend` — force backend(s) in order, first success wins (comma-separated list allowed) instead of priority-order fallback; a single name keeps the strict one-backend-only contract, while a list skips an entry that is not installed with a notice
     - `--dir` — root directory of the codebase to inspect in grounded review (defaults to current working directory)
     - `--text-only` — disable codebase exploration and run ungrounded text-only critique (default: False)
@@ -1648,12 +1656,14 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
   - `class NoBackendAvailableError(ReviewError)` — No backend is installed/on PATH and no ``--backend`` was forced.
   - `class UnknownBackendError(ReviewError)` — The forced ``--backend`` is not present on PATH.
   - `class ModelIndexConfigError(ReviewError)` — ``--model-index`` names a pool that is unset/empty or an out-of-range index.
+  - `class ImageInputError(ReviewError)` — An image request failed validation (bad path, count, size, or format).
+  - `class ImageSupportError(ReviewError)` — A forced backend cannot accept image input (no headless image flag).
   - `class AllBackendsFailedError(BackendError)` — Every candidate backend was tried and failed (or was size-ruled-out).
 - Public classes:
   - `class ReviewRequest` — One review request for :func:`review_plan`.
   - `class ReviewResult` — A successful critique: the backend used, its response, and diagnostics.
 - Public functions:
-  - `build_prompt(plan_text: str, focus_hints: str | None, *, grounded: bool = True, diff: bool = False) -> str` — Build the critique prompt, optionally inserting plan-specific focus hints.
+  - `build_prompt(plan_text: str, focus_hints: str | None, *, grounded: bool = True, diff: bool = False, images: tuple[str, ...] = ()) -> str` — Build the critique prompt, optionally inserting plan-specific focus hints.
   - `die(msg: str) -> NoReturn` — Print an error to stderr, prefixed for this script, and exit with status 1.
   - `sanitize_plan_text(plan_text: str) -> tuple[str, int]` — Strip ephemeral review debris headers/sections from a plan.
   - `read_staged_diff(target_dir: Path, pathspecs: list[str] | None = None) -> str` — Return the staged diff (``git diff --cached``) of the repo at ``target_dir``.
@@ -1661,11 +1671,11 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
   - `round_count_for(state: dict[str, object]) -> int` — The number of reviews already recorded for a run's state dict.
   - `would_exceed_cap(count: int) -> bool` — True when ``count`` already reaches the cap (the call must be refused).
   - `record_review(state: dict[str, object]) -> dict[str, object]` — Return a copy of ``state`` with the review count incremented and the ``updated`` timestamp refreshed.
-  - `run_codex(prompt: str, *, model_index: int | None = None, mode: str | None = None, target_dir: Path | None = None) -> str` — Run the ``codex`` backend and return its critique text.
+  - `run_codex(prompt: str, *, model_index: int | None = None, mode: str | None = None, target_dir: Path | None = None, images: list[str] | None = None) -> str` — Run the ``codex`` backend and return its critique text.
   - `run_agy(prompt: str, *, model_index: int | None = None, mode: str | None = None, target_dir: Path | None = None) -> str` — Run the ``agy`` backend and return its critique text.
-  - `run_opencode(prompt: str, *, model_index: int | None = None, mode: str | None = None, target_dir: Path | None = None) -> str` — Run the ``opencode`` backend's adversary agent and return its critique text.
-  - `run_copilot(prompt: str, *, model_index: int | None = None, mode: str | None = None, target_dir: Path | None = None) -> str` — Run the ``copilot`` backend and return its critique text.
-  - `run_pi(prompt: str, *, model_index: int | None = None, mode: str | None = None, target_dir: Path | None = None) -> str` — Run the ``pi`` backend and return its critique text.
+  - `run_opencode(prompt: str, *, model_index: int | None = None, mode: str | None = None, target_dir: Path | None = None, images: list[str] | None = None) -> str` — Run the ``opencode`` backend's adversary agent and return its critique text.
+  - `run_copilot(prompt: str, *, model_index: int | None = None, mode: str | None = None, target_dir: Path | None = None, images: list[str] | None = None) -> str` — Run the ``copilot`` backend and return its critique text.
+  - `run_pi(prompt: str, *, model_index: int | None = None, mode: str | None = None, target_dir: Path | None = None, images: list[str] | None = None) -> str` — Run the ``pi`` backend and return its critique text.
   - `backend_label(backend: str, *, model_index: int | None = None, model: object = _UNSET) -> str` — Return ``backend``'s display label, appending the resolved model if any.
   - `review_plan(request: ReviewRequest, *, verbose: bool = False, quiet: bool = False) -> ReviewResult` — Run one adversarial review of ``request.plan_text`` and return the result.
   - `build_parser() -> argparse.ArgumentParser` — Build the full argument parser for every subcommand.

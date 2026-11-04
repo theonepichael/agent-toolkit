@@ -395,6 +395,8 @@ def build_isolated_command(
     model: str | None = None,
     mode: str = "text-only",
     target_dir: Path | None = None,
+    images: list[str] | None = None,
+    expose_ro_extra: list[str] | None = None,
 ) -> list[str]:
     """Build the only command any caller may run for ``backend``.
 
@@ -439,6 +441,23 @@ def build_isolated_command(
             f"{backend}: clause(s) {', '.join(contained)} can only be satisfied "
             "by OS containment, which is unavailable on this host"
         )
+
+    img_argv: list[str] = []
+    if images:
+        if mode != "text-only":
+            raise IsolationError(
+                f"{backend}: image input is text-only; grounded mode cannot "
+                "attach images"
+            )
+        spec_img = BACKEND_IMAGE_INPUT.get(backend)
+        if spec_img is None:
+            raise IsolationError(
+                f"{backend}: cannot accept image input — no headless image flag"
+            )
+        img_argv = image_argv(backend, images)
+        img_before_prompt = bool(spec_img["before_prompt"])
+    else:
+        img_before_prompt = False
 
     if backend == "codex":
         if _codex_uses_keyring(_codex_real_home()):
@@ -514,6 +533,8 @@ def build_isolated_command(
         ]
         if model:
             cmd += ["-m", model]
+        if img_argv:
+            cmd += img_argv
         cmd.append(prompt)
         return _wrap_codex_in_shim(
             cmd,
@@ -611,6 +632,15 @@ def build_isolated_command(
         cmd += [str(spec.get("_model_flag", "--model")), model]
     if not spec.get("_prompt_follows_base"):
         cmd.append(prompt)
+    # Image argv insertion. pi's @file is a positional and must precede the
+    # prompt; copilot's --attachment and opencode's --file are flags that bind
+    # or greedily consume the following argument, so they go after the prompt.
+    if img_argv:
+        if img_before_prompt:
+            prompt_idx = cmd.index(prompt)
+            cmd[prompt_idx:prompt_idx] = img_argv
+        else:
+            cmd += img_argv
 
     if contained:
         cmd = _wrap_in_containment(
@@ -618,6 +648,7 @@ def build_isolated_command(
             spec.get("_contain", {}),
             target_dir=target_dir,
             mode=mode,  # type: ignore[arg-type]
+            expose_ro_extra=expose_ro_extra,
         )
     return cmd
 
@@ -1466,6 +1497,135 @@ PI_MAX_PROMPT_BYTES = 14000
 GLOBAL_MAX_PROMPT_BYTES = 100_000
 
 
+# --- image input support ----------------------------------------------------
+#
+# Which backends accept headless image input, and how. Surveyed 2026-11-04
+# against each CLI's real --help output:
+#   codex   : codex exec -i/--image <FILE>... (image(s) attached to initial prompt)
+#   agy     : no image/attachment flag; -i is --prompt-interactive, --add-dir
+#             adds workspace dirs (not image attachments) — no headless image input
+#   pi      : positional @<file> reference (pi -p @img.png "rubric")
+#   copilot : --attachment <path> (image or native document, non-interactive
+#             only, repeatable)
+#   opencode: opencode run -f/--file <file(s)> (attached to message)
+# The table records input-syntax capability — whether the CLI has a headless
+# image-attach mechanism — not per-model vision quality. ``before_prompt`` is
+# load-bearing: copilot's _base ends in ``-p``, which binds the next argument
+# as its prompt, and opencode's ``--file`` is an array option that greedily
+# consumes the following non-flag argument — so both must follow the prompt,
+# never precede it. pi's ``@file`` is a positional and must precede the
+# prompt; codex's ``-i`` is a repeating single-value flag and precedes it.
+BACKEND_IMAGE_INPUT: dict[str, object] = {
+    "codex": {"kind": "flag", "flag": "-i", "before_prompt": True},
+    "agy": None,
+    "pi": {"kind": "at_file", "before_prompt": True},
+    "copilot": {"kind": "flag", "flag": "--attachment", "before_prompt": False},
+    "opencode": {"kind": "flag", "flag": "--file", "before_prompt": False},
+}
+
+MAX_IMAGE_COUNT = 8
+MAX_IMAGE_BYTES = 5_000_000
+SUPPORTED_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+
+
+class ImageValidationError(ValueError):
+    """An image request failed validation (path, count, size, or format)."""
+
+
+class StagedImages:
+    """Images copied into a unique per-invocation HOME-relative staging dir.
+
+    For contained backends (opencode) whose ``$HOME`` is a tmpfs inside the
+    namespace: the staging dir is exposed read-only via the existing
+    ``SB_EXPOSE_RO`` directory mechanism, so ``paths`` (index-named staged
+    copies) resolve at the same absolute path under ``$H``. ``cleanup``
+    removes the staging dir; the runner owns the call.
+    """
+
+    def __init__(self, paths: list[Path], staging_dir: Path) -> None:
+        self.paths = paths
+        self.staging_dir = staging_dir
+
+    @property
+    def expose_rel(self) -> str:
+        """The staging dir's HOME-relative name for ``SB_EXPOSE_RO``."""
+        return self.staging_dir.name
+
+    def cleanup(self) -> None:
+        shutil.rmtree(self.staging_dir, ignore_errors=True)
+
+
+def image_capable_backends() -> list[str]:
+    """Backends in priority order that accept headless image input."""
+    return [b for b in BACKEND_PRIORITY if BACKEND_IMAGE_INPUT.get(b) is not None]
+
+
+def validate_images(paths: list[str]) -> None:
+    """Validate image paths before any backend runs.
+
+    Raises :class:`ImageValidationError` on the first problem: too many
+    images, a path that is not a regular file, an unsupported suffix, or a
+    per-image size over the limit. An unreadable file fails loudly at
+    copy/read time in the runner; the suffix check (plus the backend's own
+    rejection) is the format gate.
+    """
+    if len(paths) > MAX_IMAGE_COUNT:
+        raise ImageValidationError(
+            f"{len(paths)} images exceeds the limit of {MAX_IMAGE_COUNT}"
+        )
+    for raw in paths:
+        path = Path(raw)
+        if not path.is_file():
+            raise ImageValidationError(f"image not found or not a regular file: {path}")
+        if path.suffix.lower() not in SUPPORTED_IMAGE_SUFFIXES:
+            raise ImageValidationError(
+                f"unsupported image format {path.suffix or '(none)'!r} for {path}; "
+                f"supported: {', '.join(sorted(SUPPORTED_IMAGE_SUFFIXES))}"
+            )
+        size = path.stat().st_size
+        if size > MAX_IMAGE_BYTES:
+            raise ImageValidationError(
+                f"image {path} is {size} bytes, over the per-image limit of "
+                f"{MAX_IMAGE_BYTES}"
+            )
+
+
+def stage_images(paths: list[str]) -> StagedImages:
+    """Copy ``paths`` into a unique HOME-relative staging dir for containment.
+
+    Files are named by index with the original suffix preserved (``0.png``,
+    ``1.png``, …), so an original filename containing spaces/newlines never
+    enters a shell string. Raises on copy failure after removing the partial
+    staging dir.
+    """
+    staging_dir = Path(tempfile.mkdtemp(prefix="so-images-", dir=Path.home()))
+    staged: list[Path] = []
+    try:
+        for i, raw in enumerate(paths):
+            src = Path(raw)
+            dest = staging_dir / f"{i}{src.suffix.lower() or ''}"
+            shutil.copy2(src, dest)
+            staged.append(dest)
+    except Exception:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        raise
+    return StagedImages(paths=staged, staging_dir=staging_dir)
+
+
+def image_argv(backend: str, paths: list[str]) -> list[str]:
+    """The per-backend argv fragment attaching ``paths`` as images."""
+    spec = BACKEND_IMAGE_INPUT.get(backend)
+    if spec is None:
+        raise IsolationError(f"{backend}: cannot accept image input")
+    if spec["kind"] == "at_file":
+        return [f"@{p}" for p in paths]
+    flag = str(spec["flag"])
+    out: list[str] = []
+    for p in paths:
+        out += [flag, p]
+    return out
+
+
 def check_prompt_size(prompt: str, max_bytes: int = GLOBAL_MAX_PROMPT_BYTES) -> None:
     """Raise :class:`BackendPayloadSizeError` if ``prompt`` exceeds ``max_bytes``."""
     prompt_bytes = len(prompt.encode())
@@ -2032,6 +2192,7 @@ def run_codex(
     timeout: float = 120,
     mode: str = "text-only",
     target_dir: Path | None = None,
+    images: list[str] | None = None,
 ) -> str:
     """Run Codex CLI non-interactively and return its critique text.
 
@@ -2056,6 +2217,8 @@ def run_codex(
         kwargs["mode"] = mode
     if target_dir is not None:
         kwargs["target_dir"] = target_dir
+    if images is not None:
+        kwargs["images"] = images
     cmd = build_isolated_command("codex", prompt, model=model, **kwargs)
     with _track_backend_call("codex", model, prompt):
         returncode, stdout, stderr = _run_command(cmd, timeout)
@@ -2122,6 +2285,7 @@ def run_copilot(
     timeout: float,
     mode: str = "text-only",
     target_dir: Path | None = None,
+    images: list[str] | None = None,
 ) -> str:
     """Run the ``copilot`` backend and return its text output.
 
@@ -2152,6 +2316,8 @@ def run_copilot(
         kwargs["mode"] = mode
     if target_dir is not None:
         kwargs["target_dir"] = target_dir
+    if images is not None:
+        kwargs["images"] = images
     cmd = build_isolated_command("copilot", prompt, model=model, **kwargs)
     with _track_backend_call("copilot", model, prompt):
         try:
@@ -2181,6 +2347,7 @@ def run_pi(
     timeout: float,
     mode: str = "text-only",
     target_dir: Path | None = None,
+    images: list[str] | None = None,
 ) -> str:
     """Run Pi's headless mode and return its text output.
 
@@ -2229,6 +2396,8 @@ def run_pi(
         kwargs["mode"] = mode
     if target_dir is not None:
         kwargs["target_dir"] = target_dir
+    if images is not None:
+        kwargs["images"] = images
     cmd = build_isolated_command("pi", prompt, model=model, **kwargs)
     with _track_backend_call("pi", model, prompt):
         text = run_backend_command(cmd, timeout)

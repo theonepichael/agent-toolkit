@@ -6,6 +6,8 @@ All backend I/O goes through {{IO_ENTRYPOINT}} — never shell out to {{BACKENDS
 
 Pinning a model the user names: when the user asks for a specific backend and model for the critique, target the backend with {{FLAG:--backend <name>}} and set its single-model override (`SECOND_OPINION_<BACKEND>_MODEL`, the model's id or display name as that backend lists it — confirm it exists first, e.g. `agy models`) for every round, and omit {{FLAG:--model-index}} — an explicit index selects the pool over the override, so passing it would silently replace the model the user asked for. {{PIN_MODEL_INSTRUCTION}}
 
+Image review: for art-heavy work (sprites, mockups, screenshots), pass {{IMAGE_REF}} to `review` to send image files plus a rubric (the plan/prompt text) to a vision-capable backend. The review then runs text-only (the input is images plus a rubric, not a codebase to read) and is mutually exclusive with {{FLAG:--diff}}. Images are limited (8 files, 5 MB each; `.png`/`.jpg`/`.jpeg`/`.gif`/`.webp`/`.bmp`), and a backend without a headless image flag — agy — is skipped in priority/list selection or fails explicitly when forced, never a silent text-only fallback. Backend image support (surveyed from each CLI's real flags: codex `-i`, pi `@file`, copilot `--attachment`, opencode `--file`) is encoded in `llm_backends.BACKEND_IMAGE_INPUT`.
+
 ## Resolving the target plan
 
 {{TARGET_SOURCE_OPENING}} Otherwise infer it: prefer {{GRILL_PLAN_LOOKUP}} if one exists, otherwise the plan or proposal visible in the current conversation. If neither exists, ask the user what to review.

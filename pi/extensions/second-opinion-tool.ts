@@ -32,6 +32,7 @@ export type Field =
   | "model"
   | "timeoutSeconds"
   | "runId"
+  | "images"
   | "mode";
 
 interface ActionFields {
@@ -56,6 +57,7 @@ const ACTION_FIELDS: Record<Action, ActionFields> = {
       "model",
       "timeoutSeconds",
       "runId",
+      "images",
     ],
     required: [],
   },
@@ -81,6 +83,7 @@ export interface SecondOpinionParams {
   model?: string;
   timeoutSeconds?: number;
   runId?: string;
+  images?: string[];
   mode?: "text-only" | "grounded";
 }
 
@@ -121,6 +124,9 @@ export function assertFields(action: Action, params: SecondOpinionParams): void 
     if (params.diff) {
       if (params.planFile !== undefined) {
         throw new Error("diff reviews the staged diff; do not also pass planFile");
+      }
+      if (params.images !== undefined) {
+        throw new Error("images is a text-only visual review; do not combine it with diff");
       }
     } else {
       if (params.planFile === undefined) {
@@ -252,6 +258,7 @@ export function buildArgv(action: Action, params: SecondOpinionParams): string[]
         ...(params.diffPaths ? params.diffPaths.flatMap((p) => ["--diff-path", p]) : []),
         ...(params.focusFile ? ["--focus-file", params.focusFile] : []),
         ...(params.runId ? ["--run-id", params.runId] : []),
+        ...(params.images ? params.images.flatMap((p) => ["--image", p]) : []),
         // Compared against undefined, not truthiness: index 0 is round 1 of
         // the rotation, and dropping it would silently fall back to the
         // single-model override instead of the pool.
@@ -442,6 +449,12 @@ export default function (pi: ExtensionAPI) {
             "script's per-run round cap to this loop (the second-opinion skill " +
             "passes one for the whole loop). When omitted, the script keys the " +
             "cap by the resolved plan-file path instead.",
+        }),
+      ),
+      images: Type.Optional(
+        Type.Array(Type.String(), {
+          description:
+            "review: attach image files to the review (sends the images plus the rubric to a vision-capable backend). The review then runs text-only and is mutually exclusive with diff. Images are size/count/format limited, and a backend without a headless image flag (agy) is skipped or fails explicitly, never a silent text-only fallback.",
         }),
       ),
       mode: Type.Optional(

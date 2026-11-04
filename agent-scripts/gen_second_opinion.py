@@ -983,6 +983,14 @@ def substitutions(params: HarnessParams) -> dict[str, str]:
             if is_native_tool(params)
             else "(suppressed by `--quiet`)"
         ),
+        # Same io_entrypoint split: image review is the script's repeatable
+        # `--image <path>` flag for shell harnesses, but Pi reaches it through
+        # the native tool's `images` parameter (an array of paths).
+        "IMAGE_REF": (
+            "the `images` parameter (an array of image paths)"
+            if is_native_tool(params)
+            else "`--image <path>` (repeatable)"
+        ),
         # Same io_entrypoint split: a shell harness can redirect review
         # output into a file, and parallel agents that share one scratch
         # directory once redirected into the same fixed name and read each
