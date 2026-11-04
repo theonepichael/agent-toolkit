@@ -51,7 +51,7 @@ CONTEXT_CANARY = "Planning Gate"
 MODELS = {
     "pi": "deepseek-v4-flash",
     "opencode": "opencode-go/deepseek-v4-flash",
-    "agy": "Gemini 3.6 Flash (High)",
+    "agy": "Gemini 3.8 Flash (High)",
     "copilot": None,
     "codex": None,
 }

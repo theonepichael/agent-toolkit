@@ -6633,6 +6633,12 @@ class ThinLauncherTests(unittest.TestCase):
         with patch.object(dev_status, "RECAP_TTL_SECONDS", 7):
             self.assertEqual(dev_status_impl.RECAP_TTL_SECONDS, 7)
 
+    def test_recap_agy_model_default(self):
+        import dev_status_impl
+
+        expected = os.environ.get("DEVSTATUS_RECAP_AGY_MODEL", "Gemini 3.8 Flash (High)")
+        self.assertEqual(dev_status_impl.RECAP_AGY_MODEL, expected)
+
     def test_old_store_path_names_resolve_per_read(self):
         # Scripts outside this repo read dev_status.DATA_DIR and friends.
         # They stay readable, and each read reflects the current HOME.

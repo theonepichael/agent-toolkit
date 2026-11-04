@@ -174,7 +174,7 @@ models, these are the contract:
 
 | Variable | Purpose | Unset behavior |
 | :--- | :--- | :--- |
-| `SECOND_OPINION_AGY_MODEL` | Force the agy backend's model | Built-in default (`Gemini 3.7 Flash (High)`) |
+| `SECOND_OPINION_AGY_MODEL` | Force the agy backend's model | Built-in default (`Gemini 3.8 Flash (High)`) |
 | `SECOND_OPINION_AGY_MODEL_POOL` | Comma-separated agy pool for `--model-index` rotation | agy falls back to the single override or its built-in default |
 | `SECOND_OPINION_PI_MODEL` / `_PI_MODEL_POOL` | Same contract for the pi backend | pi's own default for the `opencode-go` provider |
 | `SECOND_OPINION_OPENCODE_MODEL` / `_OPENCODE_MODEL_POOL` | Same contract for the opencode backend | opencode's live config |
@@ -201,7 +201,7 @@ Example pool configuration (in `~/.zshrc`, or a sourced secrets file such
 as `~/.secrets`):
 
 ```zsh
-export SECOND_OPINION_AGY_MODEL_POOL="Gemini 3.7 Flash (High),Gemini 3.7 Pro (High)"
+export SECOND_OPINION_AGY_MODEL_POOL="Gemini 3.8 Flash (High),Gemini 4 Argon (High)"
 export SECOND_OPINION_PI_MODEL_POOL="opencode-go/glm-5.2,opencode-go/glm-5.3-flash"
 ```
 

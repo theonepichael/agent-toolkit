@@ -233,7 +233,7 @@ RECAP_MAX_CHARS = 400
 # worse failure than a mid-sentence cut -- fall back to the hard cut instead).
 RECAP_MIN_KEEP = RECAP_MAX_CHARS // 2
 RECAP_TIMEOUT_SECONDS = float(os.environ.get("DEVSTATUS_RECAP_TIMEOUT_SECONDS", "60"))
-RECAP_AGY_MODEL = os.environ.get("DEVSTATUS_RECAP_AGY_MODEL", "Gemini 3.6 Flash (High)")
+RECAP_AGY_MODEL = os.environ.get("DEVSTATUS_RECAP_AGY_MODEL", "Gemini 3.8 Flash (High)")
 # Trailing-edge debounce for background recap regeneration: a burst of board
 # mutations each spawns a detached ``_internal-regen`` child, but a child sleeps
 # this long *before* taking the regen lock and then bails out (without a backend

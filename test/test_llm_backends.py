@@ -516,7 +516,7 @@ class RunAgyTests(_ContainmentStubbed):
             llm_backends, "run_backend_command", return_value="text"
         ) as mock_run:
             result = llm_backends.run_agy(
-                "my prompt", model="Gemini 3.6 Flash (High)", timeout=60
+                "my prompt", model="Gemini 3.8 Flash (High)", timeout=60
             )
         self.assertEqual(result, "text")
         argv, timeout = mock_run.call_args[0]
@@ -525,7 +525,7 @@ class RunAgyTests(_ContainmentStubbed):
         self.assertIn("agy", argv)
         # --print takes the next argument as its prompt value.
         self.assertEqual(argv[argv.index("--print") + 1], "my prompt")
-        self.assertEqual(argv[argv.index("--model") + 1], "Gemini 3.6 Flash (High)")
+        self.assertEqual(argv[argv.index("--model") + 1], "Gemini 3.8 Flash (High)")
 
     def test_33b_agy_containment_hides_home_and_tmp(self) -> None:
         """The wrapper must actually blank things. A namespace that mounts

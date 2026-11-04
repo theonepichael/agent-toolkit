@@ -98,7 +98,7 @@ Env vars
                                     set without --model-index, wins outright
                                     over the pool; an explicit --model-index
                                     selects the pool regardless.
-  SECOND_OPINION_AGY_MODEL          force the agy model (default "Gemini 3.7 Flash (High)")
+  SECOND_OPINION_AGY_MODEL          force the agy model (default "Gemini 3.8 Flash (High)")
   SECOND_OPINION_AGY_MODEL_POOL     comma-separated agy model pool for
                                     --model-index rotation (default: unset,
                                     no rotation). SECOND_OPINION_AGY_MODEL, if
@@ -592,7 +592,7 @@ def _resolve_pooled_model(
 # like, it doesn't recommend specific ids.
 _EXAMPLE_POOL_VALUES = {
     "codex": "gpt-5.6-luna,o3",
-    "agy": "Gemini 3.7 Flash (High),Gemini 3.7 Pro (High)",
+    "agy": "Gemini 3.8 Flash (High),Gemini 4 Argon (High)",
     "pi": "opencode-go/glm-5.2,opencode-go/glm-5.3-flash",
     "opencode": "opencode-go/glm-5.2,opencode-go/glm-5.3-flash",
     "copilot": "claude-sonnet-4.5,gpt-5",
@@ -1375,7 +1375,7 @@ def _filter_runner_kwargs(func: object, **kwargs: object) -> dict[str, object]:
         return {k: v for k, v in kwargs.items() if v is not None}
 
 
-DEFAULT_AGY_MODEL = "Gemini 3.7 Flash (High)"
+DEFAULT_AGY_MODEL = "Gemini 3.8 Flash (High)"
 
 
 def run_codex(

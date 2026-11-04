@@ -284,6 +284,13 @@ class RunAgyWrapperTests(unittest.TestCase):
             "my prompt", model="Gemini 3.5 Flash (Medium)", timeout=300
         )
 
+    def test_03c_default_agy_model_value(self) -> None:
+        self.assertEqual(second_opinion.DEFAULT_AGY_MODEL, "Gemini 3.8 Flash (High)")
+        self.assertEqual(
+            second_opinion._EXAMPLE_POOL_VALUES["agy"],
+            "Gemini 3.8 Flash (High),Gemini 4 Argon (High)",
+        )
+
 
 class RunCopilotWrapperTests(unittest.TestCase):
     def test_04_forwards_env_var_model(self) -> None:
@@ -964,7 +971,7 @@ class CmdDetectTests(unittest.TestCase):
         with (
             patch.dict(
                 os.environ,
-                {"SECOND_OPINION_AGY_MODEL": "Gemini 3.7 Flash (High)"},
+                {"SECOND_OPINION_AGY_MODEL": "Gemini 3.8 Flash (High)"},
             ),
             patch(
                 "shutil.which",
@@ -1436,7 +1443,7 @@ class ReviewPlanTests(unittest.TestCase):
     def test_review_plan_success_returns_result_fields(self) -> None:
         captured: list[str] = []
         with (
-            patch.dict(os.environ, {"SECOND_OPINION_AGY_MODEL": "Gemini 3.7 Flash (High)"}),
+            patch.dict(os.environ, {"SECOND_OPINION_AGY_MODEL": "Gemini 3.8 Flash (High)"}),
             patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
             patch.object(
                 second_opinion,
@@ -1453,7 +1460,7 @@ class ReviewPlanTests(unittest.TestCase):
             )
         self.assertIsInstance(result, second_opinion.ReviewResult)
         self.assertEqual(result.response_text, "the critique")
-        self.assertEqual(result.backend_label, "agy (Gemini 3.7 Flash (High))")
+        self.assertEqual(result.backend_label, "agy (Gemini 3.8 Flash (High))")
         self.assertEqual(result.bytes_saved, 0)
         self.assertEqual(result.notices, ())
         self.assertEqual(captured, [second_opinion.build_prompt("my plan", None)])
@@ -1463,7 +1470,7 @@ class ReviewPlanTests(unittest.TestCase):
             patch.dict(
                 os.environ,
                 {
-                    "SECOND_OPINION_AGY_MODEL": "Gemini 3.7 Flash (High)",
+                    "SECOND_OPINION_AGY_MODEL": "Gemini 3.8 Flash (High)",
                     "SECOND_OPINION_PI_MODEL": "pi-model",
                 },
             ),
@@ -1565,7 +1572,7 @@ class ReviewPlanTests(unittest.TestCase):
 
     def test_review_plan_collects_debris_notice(self) -> None:
         with (
-            patch.dict(os.environ, {"SECOND_OPINION_AGY_MODEL": "Gemini 3.7 Flash (High)"}),
+            patch.dict(os.environ, {"SECOND_OPINION_AGY_MODEL": "Gemini 3.8 Flash (High)"}),
             patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
             patch.object(
                 second_opinion,
@@ -1778,7 +1785,7 @@ class DefaultFallbackNoticeTests(unittest.TestCase):
 
     def test_49b_configured_pool_is_silent(self) -> None:
         _, err = self._run_review(
-            "agy", {"SECOND_OPINION_AGY_MODEL_POOL": "Gemini 3.7 Flash (High)"}
+            "agy", {"SECOND_OPINION_AGY_MODEL_POOL": "Gemini 3.8 Flash (High)"}
         )
         self.assertNotIn("no model pool configured", err)
 
@@ -3288,7 +3295,7 @@ class BackendListFallbackTests(unittest.TestCase):
     """
 
     ENV = {
-        "SECOND_OPINION_AGY_MODEL": "Gemini 3.7 Flash (High)",
+        "SECOND_OPINION_AGY_MODEL": "Gemini 3.8 Flash (High)",
         "SECOND_OPINION_OPENCODE_MODEL_POOL": "model-a,model-b",
     }
 
@@ -3530,7 +3537,7 @@ class GroundedEligibilityFilterTests(unittest.TestCase):
     """
 
     ENV = {
-        "SECOND_OPINION_AGY_MODEL": "Gemini 3.7 Flash (High)",
+        "SECOND_OPINION_AGY_MODEL": "Gemini 3.8 Flash (High)",
         "SECOND_OPINION_OPENCODE_MODEL_POOL": "model-a,model-b",
     }
 
@@ -4013,7 +4020,7 @@ class CmdProbeTests(unittest.TestCase):
             patch.dict(
                 os.environ,
                 {
-                    "SECOND_OPINION_AGY_MODEL": "Gemini 3.7 Flash (High)",
+                    "SECOND_OPINION_AGY_MODEL": "Gemini 3.8 Flash (High)",
                     **self.ENV,
                 },
             ),
