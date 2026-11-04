@@ -1737,5 +1737,272 @@ class WatchAgyCallsTests(unittest.TestCase):
                 self.assertEqual(code, 2)
 
 
+class WatchPlanningTests(unittest.TestCase):
+    """`watch --planning-note-usd`: report-only planning checkpoint notes."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.state = self.tmp / "watch.json"
+        self.sessions = Path.home() / ".pi" / "agent" / "sessions"
+        self.now = COST_NOW
+        env = mock.patch.dict(os.environ, {"TZ": "UTC"})
+        env.start()
+        time.tzset()
+        self.addCleanup(env.stop)
+        self.addCleanup(time.tzset)
+        self.addCleanup(shutil.rmtree, self.sessions, True)
+
+    @staticmethod
+    def _msg(cost: object, write: str | None = None) -> str:
+        content: list[dict[str, object]] = [{"type": "text", "text": "doing"}]
+        if write is not None:
+            content.append(
+                {"type": "toolCall", "name": "write", "arguments": {"path": write}}
+            )
+        return json.dumps(
+            {
+                "type": "message",
+                "timestamp": "2026-10-15T12:00:00Z",
+                "message": {
+                    "role": "assistant",
+                    "content": content,
+                    "usage": {"cost": {"total": cost}},
+                },
+            }
+        )
+
+    def session(self, name: str, events: list[tuple[float, str | None]]) -> str:
+        path = self.sessions / "--proj--" / f"{name}.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n".join(self._msg(c, w) for c, w in events) + "\n")
+        stamp = self.now.timestamp()
+        os.utime(path, (stamp, stamp))
+        return str(path)
+
+    def run_watch(
+        self, argv: list[str], agents: list[dict[str, object]]
+    ) -> tuple[int, dict[str, object], str]:
+        fake = WatchFakeHerdr([agents])
+        with (
+            mock.patch.object(herdr_delegate, "herdr", fake),
+            mock.patch.object(herdr_delegate.time, "sleep", lambda _s: None),
+            mock.patch.object(
+                herdr_delegate.time, "time", lambda: self.now.timestamp()
+            ),
+            mock.patch.object(herdr_delegate, "_watch_now", lambda: self.now),
+            mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
+        ):
+            sys.argv = [
+                "herdr_delegate.py",
+                "watch",
+                *argv,
+                "--state",
+                str(self.state),
+                "--timeout-s",
+                "0",
+            ]
+            out, err = io.StringIO(), io.StringIO()
+            code = 0
+            try:
+                with redirect_stdout(out), redirect_stderr(err):
+                    herdr_delegate.main()
+            except SystemExit as e:
+                code = int(e.code or 0)
+        text = out.getvalue()
+        return code, (json.loads(text) if text.strip() else {}), err.getvalue()
+
+    def test_note_fires_past_threshold_with_no_write(self) -> None:
+        s = self.session("w1", [(2.0, None), (2.5, None)])
+        agents = [_pi_agent("atk-w1", "working", 3, s)]
+        code, out, _ = self.run_watch(["atk-w1", "--planning-note-usd", "4"], agents)
+        self.assertEqual(code, 0)
+        alert = out["planning"]["alerts"]["agent:atk-w1"]
+        self.assertEqual(alert["usd"], 4.5)
+        self.assertTrue(alert["ack"].startswith("planning:agent:atk-w1:no-write:"))
+        self.assertEqual(out["planning"]["agents"]["atk-w1"]["first_write"], None)
+        self.assertEqual(out["planning"]["threshold"], 4.0)
+
+    def test_no_note_once_a_file_is_written(self) -> None:
+        s = self.session("w1", [(2.0, None), (2.5, "src/a.py")])
+        agents = [_pi_agent("atk-w1", "working", 3, s)]
+        code, out, _ = self.run_watch(["atk-w1", "--planning-note-usd", "4"], agents)
+        self.assertEqual(code, 124)
+        self.assertEqual(out["planning"]["alerts"], {})
+        self.assertEqual(out["planning"]["agents"]["atk-w1"]["first_write"], "src/a.py")
+
+    def test_no_note_under_threshold(self) -> None:
+        s = self.session("w1", [(0.2, None)])
+        agents = [_pi_agent("atk-w1", "working", 3, s)]
+        code, out, _ = self.run_watch(["atk-w1", "--planning-note-usd", "4"], agents)
+        self.assertEqual(code, 124)
+        self.assertEqual(out["planning"]["alerts"], {})
+
+    def test_level_triggered_until_acked_then_fires_once(self) -> None:
+        s = self.session("w1", [(2.0, None), (2.5, None)])
+        agents = [_pi_agent("atk-w1", "working", 3, s)]
+        _, out, _ = self.run_watch(["atk-w1", "--planning-note-usd", "4"], agents)
+        token = out["planning"]["alerts"]["agent:atk-w1"]["ack"]
+
+        # Unacknowledged: re-fires on every poll.
+        code, out2, _ = self.run_watch(["atk-w1", "--planning-note-usd", "4"], agents)
+        self.assertEqual(code, 0)
+        self.assertEqual(out2["planning"]["alerts"]["agent:atk-w1"]["ack"], token)
+
+        # Acked: quiet for the same session.
+        code, out, _ = self.run_watch(
+            ["atk-w1", "--planning-note-usd", "4", "--ack-cost", token], agents
+        )
+        self.assertEqual(code, 124)
+        self.assertEqual(out["planning"]["alerts"], {})
+
+    def test_acked_spend_growth_does_not_refire(self) -> None:
+        s = self.session("w1", [(2.0, None), (2.5, None)])
+        agents = [_pi_agent("atk-w1", "working", 3, s)]
+        _, out, _ = self.run_watch(["atk-w1", "--planning-note-usd", "4"], agents)
+        token = out["planning"]["alerts"]["agent:atk-w1"]["ack"]
+        self.run_watch(
+            ["atk-w1", "--planning-note-usd", "4", "--ack-cost", token], agents
+        )
+        # Spend rises past any cost-style step; the note stays acked.
+        self.session("w1", [(2.0, None), (2.5, None), (10.0, None)])
+        code, out, _ = self.run_watch(["atk-w1", "--planning-note-usd", "4"], agents)
+        self.assertEqual(code, 124)
+        self.assertEqual(out["planning"]["alerts"], {})
+
+    def test_new_session_under_same_name_refires(self) -> None:
+        s1 = self.session("w1", [(2.0, None), (2.5, None)])
+        _, out, _ = self.run_watch(
+            ["atk-w1", "--planning-note-usd", "4"], [_pi_agent("atk-w1", "working", 3, s1)]
+        )
+        token = out["planning"]["alerts"]["agent:atk-w1"]["ack"]
+        s2 = self.session("w1-restart", [(2.0, None), (2.5, None)])
+        code, out, _ = self.run_watch(
+            ["atk-w1", "--planning-note-usd", "4", "--ack-cost", token],
+            [_pi_agent("atk-w1", "working", 4, s2)],
+        )
+        self.assertEqual(code, 0)
+        self.assertIn("agent:atk-w1", out["planning"]["alerts"])
+
+    def test_planning_ack_does_not_revive_cost_alert(self) -> None:
+        s = self.session("w1", [(2.0, None), (2.5, None)])
+        agents = [_pi_agent("atk-w1", "working", 3, s)]
+        _, out, _ = self.run_watch(
+            ["atk-w1", "--cost-cap-agent", "4", "--planning-note-usd", "4"], agents
+        )
+        cost_token = out["cost"]["alerts"]["agent:atk-w1"]["ack"]
+        plan_token = out["planning"]["alerts"]["agent:atk-w1"]["ack"]
+        # Ack the planning note; the cost alert must remain independent.
+        code, out, _ = self.run_watch(
+            ["atk-w1", "--cost-cap-agent", "4", "--planning-note-usd", "4",
+             "--ack-cost", plan_token],
+            agents,
+        )
+        self.assertEqual(code, 0)  # cost alert still fires (unacked)
+        self.assertEqual(out["cost"]["alerts"]["agent:atk-w1"]["ack"], cost_token)
+        self.assertEqual(out["planning"]["alerts"], {})
+
+    def test_cost_ack_does_not_clobber_planning_note(self) -> None:
+        s = self.session("w1", [(2.0, None), (2.5, None)])
+        agents = [_pi_agent("atk-w1", "working", 3, s)]
+        _, out, _ = self.run_watch(
+            ["atk-w1", "--cost-cap-agent", "4", "--planning-note-usd", "4"], agents
+        )
+        cost_token = out["cost"]["alerts"]["agent:atk-w1"]["ack"]
+        plan_token = out["planning"]["alerts"]["agent:atk-w1"]["ack"]
+        # Ack the cost alert; the planning note must remain independent.
+        code, out, _ = self.run_watch(
+            ["atk-w1", "--cost-cap-agent", "4", "--planning-note-usd", "4",
+             "--ack-cost", cost_token],
+            agents,
+        )
+        self.assertEqual(code, 0)  # planning note still fires (unacked)
+        self.assertEqual(out["planning"]["alerts"]["agent:atk-w1"]["ack"], plan_token)
+        self.assertEqual(out["cost"]["alerts"], {})
+
+    def test_no_planning_key_without_flag(self) -> None:
+        s = self.session("w1", [(2.0, None), (2.5, None)])
+        agents = [_pi_agent("atk-w1", "working", 3, s)]
+        code, out, _ = self.run_watch(["atk-w1"], agents)
+        self.assertEqual(code, 124)
+        self.assertNotIn("planning", out)
+
+    def test_non_pi_agent_never_fires(self) -> None:
+        agents = [_agent("atk-w1", "working", 3)]
+        code, out, _ = self.run_watch(["atk-w1", "--planning-note-usd", "4"], agents)
+        self.assertEqual(code, 124)
+        self.assertEqual(out["planning"]["alerts"], {})
+        self.assertIsNone(out["planning"]["agents"]["atk-w1"]["usd"])
+
+    def test_malformed_write_bearing_record_still_fires(self) -> None:
+        path = self.sessions / "--proj--" / "w1.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            self._msg(4.5)
+            + "\n"
+            + '{"type": "message", "message": {"role": "assistant", "content": [{"type": "toolCall", "name": "write", "arguments": {"path": "src/a.py"}}]',
+        )  # torn tail would have been the first write; it is unreadable
+        stamp = self.now.timestamp()
+        os.utime(path, (stamp, stamp))
+        agents = [_pi_agent("atk-w1", "working", 3, str(path))]
+        code, out, _ = self.run_watch(["atk-w1", "--planning-note-usd", "4"], agents)
+        self.assertEqual(code, 0)  # no write observed -> note fires
+        self.assertIn("agent:atk-w1", out["planning"]["alerts"])
+
+    def test_valid_unterminated_final_write_is_seen(self) -> None:
+        path = self.sessions / "--proj--" / "w1.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # A valid but unterminated final line (no trailing newline) is parsed.
+        path.write_bytes(
+            (
+                self._msg(4.5, "src/a.py") + "\n" + self._msg(0.1, "src/b.py")
+            ).encode()
+        )
+        stamp = self.now.timestamp()
+        os.utime(path, (stamp, stamp))
+        agents = [_pi_agent("atk-w1", "working", 3, str(path))]
+        code, out, _ = self.run_watch(["atk-w1", "--planning-note-usd", "4"], agents)
+        self.assertEqual(code, 124)  # a write was observed
+        self.assertEqual(
+            out["planning"]["agents"]["atk-w1"]["first_write"], "src/a.py"
+        )
+
+    def test_no_write_reason_refused_for_cost_token(self) -> None:
+        s = self.session("w1", [(5.0, None)])
+        agents = [_pi_agent("atk-w1", "working", 3, s)]
+        code, _, err = self.run_watch(
+            ["atk-w1", "--planning-note-usd", "4",
+             "--ack-cost", "cost:agent:atk-w1:no-write:5.0:-:-:2026-10-15"],
+            agents,
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("unknown reason", err)
+
+    def test_planning_ack_requires_flag(self) -> None:
+        s = self.session("w1", [(5.0, None)])
+        agents = [_pi_agent("atk-w1", "working", 3, s)]
+        code, _, err = self.run_watch(
+            ["atk-w1", "--ack-cost", "planning:agent:atk-w1:no-write:5.0:-:-:2026-10-15"],
+            agents,
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("needs --planning-note-usd", err)
+
+    def test_planning_ack_round_trips_through_state(self) -> None:
+        s = self.session("w1", [(2.0, None), (2.5, None)])
+        agents = [_pi_agent("atk-w1", "working", 3, s)]
+        _, out, _ = self.run_watch(["atk-w1", "--planning-note-usd", "4"], agents)
+        token = out["planning"]["alerts"]["agent:atk-w1"]["ack"]
+        self.run_watch(
+            ["atk-w1", "--planning-note-usd", "4", "--ack-cost", token], agents
+        )
+        saved = json.loads(self.state.read_text())
+        self.assertIn("planning:agent:atk-w1", saved["cost_acks"])
+        self.assertNotIn("agent:atk-w1", saved["cost_acks"])
+        # Reload the state and confirm the ack still silences.
+        code, out, _ = self.run_watch(["atk-w1", "--planning-note-usd", "4"], agents)
+        self.assertEqual(code, 124)
+        self.assertEqual(out["planning"]["alerts"], {})
+
+
 if __name__ == "__main__":
     unittest.main()

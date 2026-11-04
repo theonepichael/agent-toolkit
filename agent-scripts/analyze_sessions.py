@@ -2265,25 +2265,31 @@ def _milestone_finish(
     )
 
 
-def _milestone_rows_pi(
-    base_dir: Path, repo: str | None
-) -> tuple[list[SessionMilestone], list[SkippedRecord]]:
-    rows: list[SessionMilestone] = []
+def _scan_pi_milestone(
+    path: Path,
+) -> tuple[
+    str, str | None, str | None, datetime | None, list[_WriteEvent], list[SkippedRecord]
+]:
+    """Parse one pi session file into milestone inputs; never raises.
+
+    Extracted from ``_milestone_rows_pi`` so a single-session caller (watch's
+    planning note) reuses the same parser instead of writing a second one.
+    Decode/io failures are reported as ``SkippedRecord`` by ``_iter_jsonl``;
+    a decoded-but-unprocessable record (e.g. an out-of-range epoch timestamp)
+    is reported as a skip and the scan continues, so one bad record never
+    erases a valid write seen earlier in the same session.
+    """
+    session_id = path.stem
+    session_cwd: str | None = None
+    model: str | None = None
+    start: datetime | None = None
+    events: list[_WriteEvent] = []
     skipped: list[SkippedRecord] = []
-    if not base_dir.exists():
-        return rows, skipped
-    for p in sorted(base_dir.rglob("*.jsonl")):
-        if "subagent" in str(p).lower():
+    for item in _iter_jsonl(path, "pi"):
+        if isinstance(item, SkippedRecord):
+            skipped.append(item)
             continue
-        session_id = p.stem
-        session_cwd: str | None = None
-        model: str | None = None
-        start: datetime | None = None
-        events: list[_WriteEvent] = []
-        for item in _iter_jsonl(p, "pi"):
-            if isinstance(item, SkippedRecord):
-                skipped.append(item)
-                continue
+        try:
             obj = item
             t = obj.get("type")
             ts_val = obj.get("timestamp")
@@ -2333,6 +2339,32 @@ def _milestone_rows_pi(
                             write_path = str(args["path"])
                             break
             events.append(_WriteEvent(dt, charge, cost, write_path))
+        except Exception as exc:  # noqa: BLE001 — a bad record must not abort the scan
+            skipped.append(
+                SkippedRecord(
+                    path=path,
+                    harness="pi",
+                    kind="decode",
+                    reason=f"unprocessable record: {exc}",
+                )
+            )
+    return session_id, session_cwd, model, start, events, skipped
+
+
+def _milestone_rows_pi(
+    base_dir: Path, repo: str | None
+) -> tuple[list[SessionMilestone], list[SkippedRecord]]:
+    rows: list[SessionMilestone] = []
+    skipped: list[SkippedRecord] = []
+    if not base_dir.exists():
+        return rows, skipped
+    for p in sorted(base_dir.rglob("*.jsonl")):
+        if "subagent" in str(p).lower():
+            continue
+        session_id, session_cwd, model, start, events, file_skipped = (
+            _scan_pi_milestone(p)
+        )
+        skipped.extend(file_skipped)
         rows.append(
             _milestone_finish(
                 harness="pi",
@@ -2345,6 +2377,25 @@ def _milestone_rows_pi(
             )
         )
     return rows, skipped
+
+
+def pi_session_first_write(path: Path) -> str | None:
+    """Path of the first file write observed in one pi session, or None.
+
+    Reuses ``_scan_pi_milestone`` (the milestones parser), then reads the first
+    event carrying a ``write_path`` with no containment: any explicit
+    ``write``/``edit`` tool call carrying a path counts, regardless of the
+    session's cwd. A defensive wrapper guarantees this never raises, so watch's
+    polling path cannot crash on a malformed session file.
+    """
+    try:
+        _sid, _cwd, _model, _start, events, _skipped = _scan_pi_milestone(path)
+    except Exception:  # noqa: BLE001 — watch must never crash on a bad log
+        return None
+    for ev in events:
+        if ev.write_path:
+            return ev.write_path
+    return None
 
 
 def _milestone_rows_claude(

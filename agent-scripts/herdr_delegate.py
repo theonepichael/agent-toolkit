@@ -49,7 +49,12 @@ caps used strictly as fallback when an agy session database is unreadable.
 With caps set, reports carry corresponding ``cost``, ``calls``, or
 ``elapsed`` objects, alerting on ``over_cap``, ``unmeasured``, or
 ``incomplete`` (fail closed). ``--ack-cost`` takes the alert's printed ``ack``
-token.
+token. ``watch --planning-note-usd`` adds a report-only planning note for a
+watched pi worker whose session spend reaches the threshold with no file
+written yet (reusing ``analyze_sessions``' first-write detection); the note is
+level-triggered and acked like a cost alert via the same ``--ack-cost``, so it
+fires once per worker per session and never stops, prompts, or messages the
+worker.
 
 For a ``launch --slug`` with no ``--cwd``, the worker tab starts in the item's
 repository main checkout, resolved from the item's ``related_files`` the same
@@ -76,6 +81,7 @@ Usage:
                              [--cost-step <usd>] [--cost-remind-s <n>]
                              [--call-cap-agent <calls>] [--call-cap-total <calls>]
                              [--elapsed-cap-agent <seconds>] [--elapsed-cap-total <seconds>]
+                             [--planning-note-usd <usd>]
                              [--ack-cost <token>]...
     herdr_delegate.py answer <agent> --expect-pane <pane>
                              (--option <label> | --index <n> | --other --text <text>)
@@ -898,7 +904,13 @@ def _validate_cost_acks(acks: object) -> dict[str, dict[str, object]]:
         ok = (
             isinstance(subject, str)
             and isinstance(ack, dict)
-            and ack.get("reason") in COST_REASONS
+            and (
+                ack.get("reason") in COST_REASONS
+                or (
+                    ack.get("kind") == "planning"
+                    and ack.get("reason") == PLANNING_REASON
+                )
+            )
             and _is_number_or_none(ack.get("usd"))
             and isinstance(ack.get("session_hash"), str)
             and isinstance(ack.get("problems_hash"), str)
@@ -978,6 +990,8 @@ COST_DEFAULT_REMIND_S = 900.0
 COST_ESTIMATE_NOTE = "pi native cost from its price table, not provider billing"
 COST_PROBLEMS_SHOWN = 20
 COST_TOTAL_SUBJECT = "total"
+PLANNING_REASON = "no-write"
+PLANNING_NOTE_TEXT = "pi worker reached the spend threshold with no file written yet"
 
 
 def _watch_now() -> datetime:
@@ -1076,16 +1090,54 @@ def _elapsed_token(subject: str, snap: dict[str, object], day: str) -> str:
     )
 
 
+def _planning_token(subject: str, snap: dict[str, object], day: str) -> str:
+    usd = snap["usd"]
+    usd_s = "unmeasured" if usd is None else repr(usd)
+    return ":".join(
+        [
+            "planning",
+            subject,
+            str(snap["reason"]),
+            usd_s,
+            str(snap["session_hash"]),
+            str(snap["problems_hash"]),
+            day,
+        ]
+    )
+
+
+def _planning_ack_silences(
+    ack: dict[str, object] | None, snap: dict[str, object]
+) -> bool:
+    """True while a stored planning ack still covers this session.
+
+    Session-bound, not spend-bound: a planning note fires once per worker per
+    session, so spend growth, ``day`` and reminder expiry never re-arm it — only
+    a session change (a different ``session_hash``) does.
+    """
+    if not ack or ack.get("kind") != "planning":
+        return False
+    return (
+        ack["reason"] == snap["reason"] and ack["session_hash"] == snap["session_hash"]
+    )
+
+
 def _parse_cost_token(token: str) -> tuple[str, dict[str, object]]:
     """Decode an ``--ack-cost`` token into (subject, stored snapshot); refuse junk."""
     head, sep, rest = token.partition(":")
     parts = rest.rsplit(":", 5) if sep else []
-    if head not in ("cost", "call", "elapsed") or len(parts) != 6:
+    if head not in ("cost", "call", "elapsed", "planning") or len(parts) != 6:
         raise RefusedError(f"--ack-cost {token!r} is not a valid alert token")
     subject, reason, val_s, session_hash, problems_hash, day = parts
     if not (subject == COST_TOTAL_SUBJECT or subject.startswith("agent:")):
         raise RefusedError(f"--ack-cost {token!r}: unknown subject {subject!r}")
-    if reason not in COST_REASONS:
+    # ``no-write`` is a planning-only reason; it is never added to COST_REASONS,
+    # so ``cost:…:no-write:…`` / ``call:…:no-write:…`` / ``elapsed:…:no-write:…``
+    # are refused rather than silently accepted.
+    if head == "planning":
+        if reason != PLANNING_REASON:
+            raise RefusedError(f"--ack-cost {token!r}: unknown reason {reason!r}")
+    elif reason not in COST_REASONS:
         raise RefusedError(f"--ack-cost {token!r}: unknown reason {reason!r}")
     val: float | None = None
     if val_s not in ("overflow", "unmeasured"):
@@ -1098,7 +1150,7 @@ def _parse_cost_token(token: str) -> tuple[str, dict[str, object]]:
     return subject, {
         "kind": head,
         "reason": reason,
-        "usd": val if head == "cost" else None,
+        "usd": val if head in ("cost", "planning") else None,
         "calls": int(val) if head == "call" and val is not None else None,
         "seconds": float(val) if head == "elapsed" and val is not None else None,
         "session_hash": session_hash,
@@ -1295,6 +1347,53 @@ def _cost_json(measured: analyze_sessions.PiCost) -> dict[str, object]:
     if hidden > 0:
         problems.append(f"... {hidden} more")
     return {"usd": measured.usd, "complete": measured.complete, "problems": problems}
+
+
+def _measure_planning(
+    args: argparse.Namespace,
+    agents: dict[str, str | None],
+    acks: dict[str, dict[str, object]],
+) -> dict[str, object]:
+    """Planning-checkpoint notes for watched pi agents; report-only, acked once.
+
+    An agent whose session spend passed ``--planning-note-usd`` with no write
+    tool call *observed* yet produces a note. The note is advisory, never a
+    stop: it only rides in the report and re-fires per session unless acked.
+    """
+    now = _watch_now()
+    day = now.date().isoformat()
+    agents_out: dict[str, object] = {}
+    alerts: dict[str, object] = {}
+    for name, session in sorted(agents.items()):
+        if session is None:
+            agents_out[name] = {"session": None, "usd": None, "first_write": None}
+            continue
+        measured = analyze_sessions.pi_session_cost(Path(session))
+        first_write = analyze_sessions.pi_session_first_write(Path(session))
+        usd = measured.usd
+        agents_out[name] = {
+            "session": session,
+            "usd": usd,
+            "first_write": first_write,
+        }
+        if usd is None or usd < args.planning_note_usd or first_write is not None:
+            continue
+        subject = f"agent:{name}"
+        snap: dict[str, object] = {
+            "reason": PLANNING_REASON,
+            "usd": usd,
+            "session_hash": _session_hash(session),
+            "problems_hash": _problems_hash(measured.problems),
+        }
+        if _planning_ack_silences(acks.get(f"planning:{subject}"), snap):
+            continue
+        alerts[subject] = {"usd": usd, "ack": _planning_token(subject, snap, day)}
+    return {
+        "threshold": args.planning_note_usd,
+        "note": PLANNING_NOTE_TEXT,
+        "agents": agents_out,
+        "alerts": alerts,
+    }
 
 
 def _measure_agy_caps(
@@ -1590,8 +1689,20 @@ def _apply_cost_acks(args: argparse.Namespace, state: dict[str, object]) -> None
                 raise RefusedError(f"--ack-cost {token!r} needs --elapsed-cap-total")
             if subject != COST_TOTAL_SUBJECT and args.elapsed_cap_agent is None:
                 raise RefusedError(f"--ack-cost {token!r} needs --elapsed-cap-agent")
-        acks[subject] = {**snap, "acked_at": now_ts}
-        acks[f"{kind}:{subject}"] = {**snap, "acked_at": now_ts}
+        elif kind == "planning":
+            if subject == COST_TOTAL_SUBJECT:
+                raise RefusedError(
+                    f"--ack-cost {token!r}: planning notes are per-agent"
+                )
+            if args.planning_note_usd is None:
+                raise RefusedError(f"--ack-cost {token!r} needs --planning-note-usd")
+        if kind == "planning":
+            # Kind-scoped only: the bare <subject> key is cost's lookup, and a
+            # planning ack must never overwrite (or be read by) a cost ack.
+            acks[f"{kind}:{subject}"] = {**snap, "acked_at": now_ts}
+        else:
+            acks[subject] = {**snap, "acked_at": now_ts}
+            acks[f"{kind}:{subject}"] = {**snap, "acked_at": now_ts}
 
 
 def _is_session_change(rec: dict[str, object], cur: dict[str, object]) -> bool:
@@ -1659,6 +1770,7 @@ def _cmd_watch(args: argparse.Namespace) -> None:
         capped_elapsed = (
             args.elapsed_cap_agent is not None or args.elapsed_cap_total is not None
         )
+        capped_planning = args.planning_note_usd is not None
 
         strict_checked = False
         deadline = time.monotonic() + timeout
@@ -1767,14 +1879,30 @@ def _cmd_watch(args: argparse.Namespace) -> None:
                     report["calls"] = calls_rep
                 if elapsed_rep is not None:
                     report["elapsed"] = elapsed_rep
+            if capped_planning:
+                report["planning"] = _measure_planning(
+                    args,
+                    {n: by_name[n]["session_path"] for n in sorted(present & targets)},
+                    state.get("cost_acks", {}),
+                )
 
             cost_alerts = bool(capped and report.get("cost", {}).get("alerts"))
             calls_alerts = bool(capped_calls and report.get("calls", {}).get("alerts"))
             elapsed_alerts = bool(
                 capped_elapsed and report.get("elapsed", {}).get("alerts")
             )
+            planning_alerts = bool(
+                capped_planning and report.get("planning", {}).get("alerts")
+            )
 
-            if attention or gone or cost_alerts or calls_alerts or elapsed_alerts:
+            if (
+                attention
+                or gone
+                or cost_alerts
+                or calls_alerts
+                or elapsed_alerts
+                or planning_alerts
+            ):
                 _save_watch_state(state_path, state)
                 print(json.dumps(report, indent=2))
                 return
@@ -3108,11 +3236,18 @@ def main() -> None:
         help="aggregate elapsed-time cap (seconds) fallback for watched agy agents with unreadable databases",
     )
     watch.add_argument(
+        "--planning-note-usd",
+        type=_positive_finite,
+        metavar="USD",
+        help="report a one-line planning note for a watched pi worker whose session "
+        "spend reaches USD with no file written yet (report-only, acked via --ack-cost)",
+    )
+    watch.add_argument(
         "--ack-cost",
         action="append",
         metavar="TOKEN",
-        help="acknowledge a cost/call/elapsed alert by the 'ack' token its report printed "
-        "(repeatable; needs the cap that produced it)",
+        help="acknowledge a cost/call/elapsed/planning alert by the 'ack' token its "
+        "report printed (repeatable; needs the cap or flag that produced it)",
     )
     watch.set_defaults(func=cmd_watch)
 

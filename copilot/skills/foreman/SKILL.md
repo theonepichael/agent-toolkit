@@ -136,7 +136,7 @@ python3 ~/.agent-toolkit/scripts/herdr_delegate.py launch --slug <slug> --kind {
 Do not poll by hand. Run this in the background and let the settle wake you:
 
 ```bash
-python3 ~/.agent-toolkit/scripts/herdr_delegate.py watch <agent>... [--prefix <prefix>] --state <state-file> --timeout-s <n> [--grace-s 60] [--poll-s 15] [--strict] [--cost-cap-agent <usd>] [--cost-cap-total <usd>] [--call-cap-agent <calls>] [--call-cap-total <calls>] [--elapsed-cap-agent <seconds>] [--elapsed-cap-total <seconds>] [--ack-cost <token>]...
+python3 ~/.agent-toolkit/scripts/herdr_delegate.py watch <agent>... [--prefix <prefix>] --state <state-file> --timeout-s <n> [--grace-s 60] [--poll-s 15] [--strict] [--cost-cap-agent <usd>] [--cost-cap-total <usd>] [--call-cap-agent <calls>] [--call-cap-total <calls>] [--elapsed-cap-agent <seconds>] [--elapsed-cap-total <seconds>] [--planning-note-usd <usd>] [--ack-cost <token>]...
 ```
 
 It is **level-triggered** with explicit acknowledgement: it reports an agent
@@ -179,6 +179,21 @@ passing the alert's `ack` token verbatim. An ack snoozes the alert for one
 more `--cost-step` of spend (default $1) or 1 call, or for `--cost-remind-s` (default
 900 s) when the spend is not observable. A new session, a changed problem
 set, or (for the total) a new day re-alerts at once.
+
+### Planning checkpoint note
+
+`--planning-note-usd <usd>` adds a **report-only** planning note for a watched pi
+worker whose session spend reaches the threshold with no file written yet — the
+signal for a worker stuck in planning. It never stops, prompts, or messages the
+worker, and without the flag watch behaves exactly as before. First-write
+detection reuses `analyze_sessions`' milestone logic — an explicit `write`/`edit`
+tool call carrying a path, read from the session log by `watch` itself rather
+than a worker-side rule — so a worker cannot satisfy the checkpoint with a
+self-reported stub. The note is
+level-triggered and acked like a cost alert — `--ack-cost <token>` with the
+note's `ack` token — but unlike a cost ack it is session-bound, not spend-bound:
+it fires once per worker per session and re-fires only when a new session
+starts under the same name, regardless of further spend or elapsed time.
 
 ### Host restart
 

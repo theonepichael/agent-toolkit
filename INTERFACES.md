@@ -224,6 +224,7 @@ analyze_sessions.py — multi-harness session analysis tool.
   - `load_all_records(harness: str = 'all', since_dt: datetime | None = None, until_dt: datetime | None = None, cwd_filter: str | None = None, model_filter: str | None = None, session_filter: str | None = None, *, include_subagents: bool = True, pi_dir: Path | None = None, claude_dir: Path | None = None, opencode_db: Path | None = None, copilot_db: Path | None = None, agy_dir: Path | None = None, codex_dir: Path | None = None) -> list[SessionRecord]` — Legacy shim: same positional contract and bare-list return as always.
   - `launch_slug_from_prompt(text: str) -> str | None` — The backlog slug named by a session's launch prompt, else None.
   - `load_launch_slugs(roots: Mapping[str, Path | None] | None = None) -> dict[tuple[str, str], str]` — Map ``(harness, session_id)`` to the slug named by its launch prompt.
+  - `pi_session_first_write(path: Path) -> str | None` — Path of the first file write observed in one pi session, or None.
   - `session_milestones(harness: str, base_dir: Path | None = None, *, repo: str | None = None, since: datetime | None = None, until: datetime | None = None, model: str | None = None, session: str | None = None, cwd: str | None = None) -> tuple[list[SessionMilestone], list[SkippedRecord]]` — Per-session first-file-write milestones for one measurable harness.
   - `build_parser() -> argparse.ArgumentParser`
 - Subcommand handlers: `cmd_cost`, `cmd_milestones`, `cmd_prompts`, `cmd_search`
@@ -1114,7 +1115,7 @@ Launch supported agents in herdr tabs to work backlog items.
     - `--cwd` — working directory for pi/copilot (--slug launches default to the item's repository main checkout)
     - `--kind` — agent harness (agy/codex support --slug only; default: pi) (choices: pi, copilot, agy, codex; default: pi)
     - `--handoff` — worker stops after its commit gate and prints the FOREMAN-HANDOFF line, leaving the landing to the foreman (--slug --kind pi|agy only)
-  - `watch <agents> [--prefix <PREFIX>] --state <STATE> [--ack NAME=SEQ] [--ack-gone NAME] [--grace-s <GRACE_S>] --timeout-s <TIMEOUT_S> [--poll-s <POLL_S>] [--strict] [--cost-cap-agent USD] [--cost-cap-total USD] [--cost-step USD] [--cost-remind-s N] [--call-cap-agent CALLS] [--call-cap-total CALLS] [--elapsed-cap-agent SECONDS] [--elapsed-cap-total SECONDS] [--ack-cost TOKEN]` — report the first of N agents that needs attention
+  - `watch <agents> [--prefix <PREFIX>] --state <STATE> [--ack NAME=SEQ] [--ack-gone NAME] [--grace-s <GRACE_S>] --timeout-s <TIMEOUT_S> [--poll-s <POLL_S>] [--strict] [--cost-cap-agent USD] [--cost-cap-total USD] [--cost-step USD] [--cost-remind-s N] [--call-cap-agent CALLS] [--call-cap-total CALLS] [--elapsed-cap-agent SECONDS] [--elapsed-cap-total SECONDS] [--planning-note-usd USD] [--ack-cost TOKEN]` — report the first of N agents that needs attention
     - `agents` — agent names to watch (nargs: +)
     - `--prefix` — also watch agents whose name has this slug-head prefix
     - `--state` — watch state file (required)
@@ -1132,7 +1133,8 @@ Launch supported agents in herdr tabs to work backlog items.
     - `--call-cap-total` — alert when the aggregate calls across watched agy agents reaches CALLS
     - `--elapsed-cap-agent` — elapsed-time cap (seconds) fallback for a watched agy agent with an unreadable database
     - `--elapsed-cap-total` — aggregate elapsed-time cap (seconds) fallback for watched agy agents with unreadable databases
-    - `--ack-cost` — acknowledge a cost/call/elapsed alert by the 'ack' token its report printed (repeatable; needs the cap that produced it)
+    - `--planning-note-usd` — report a one-line planning note for a watched pi worker whose session spend reaches USD with no file written yet (report-only, acked via --ack-cost)
+    - `--ack-cost` — acknowledge a cost/call/elapsed/planning alert by the 'ack' token its report printed (repeatable; needs the cap or flag that produced it)
   - `answer <agent> --expect-pane <EXPECT_PANE> [--option <OPTION>] [--index <INDEX>] [--other] [--text <TEXT>] [--settle-s <SETTLE_S>]` — drive a live worker's question-tool picker by option, or free text via --other
     - `agent` — the worker's herdr agent name
     - `--expect-pane` — the pane this worker is parked in (required)

@@ -2219,6 +2219,108 @@ class TestMilestonesPi(unittest.TestCase):
         )
         self.assertEqual(rows, [])
 
+    # ── single-session first-write helper (watch's planning note reuses it) ─
+
+    def _sess_path(self, name: str) -> Path:
+        return self.root / "pi" / f"{name}.jsonl"
+
+    def test_pi_session_first_write_returns_first_raw_write_path(self) -> None:
+        self._write_pi_session(
+            "s1",
+            [
+                self._msg("2026-11-03T12:05:00Z", cost=0.10),
+                self._msg("2026-11-03T12:10:00Z", cost=0.07, tool=("write", "src/a.py")),
+                self._msg("2026-11-03T12:20:00Z", cost=0.05, tool=("edit", "src/b.py")),
+            ],
+            cwd=str(self.repo),
+        )
+        self.assertEqual(
+            analyze_sessions.pi_session_first_write(self._sess_path("s1")), "src/a.py"
+        )
+
+    def test_pi_session_first_write_no_write_returns_none(self) -> None:
+        self._write_pi_session("s1", [self._msg("2026-11-03T12:05:00Z", cost=0.10)])
+        self.assertIsNone(
+            analyze_sessions.pi_session_first_write(self._sess_path("s1"))
+        )
+
+    def test_pi_session_first_write_counts_writes_outside_cwd(self) -> None:
+        self._write_pi_session(
+            "s1",
+            [self._msg("2026-11-03T12:10:00Z", tool=("write", "/tmp/scratch.md"))],
+            cwd=str(self.repo),
+        )
+        # Watch's note counts any write; the milestone CLI (containment) does not.
+        self.assertEqual(
+            analyze_sessions.pi_session_first_write(self._sess_path("s1")),
+            "/tmp/scratch.md",
+        )
+        rows, _ = analyze_sessions.session_milestones(
+            "pi", self.root / "pi", repo=str(self.repo)
+        )
+        self.assertEqual(rows[0].status, "no-write")
+
+    def test_pi_session_first_write_without_cwd_still_returns_path(self) -> None:
+        self._write_pi_session(
+            "s1", [self._msg("2026-11-03T12:10:00Z", tool=("write", "src/a.py"))]
+        )
+        self.assertEqual(
+            analyze_sessions.pi_session_first_write(self._sess_path("s1")), "src/a.py"
+        )
+
+    def test_pi_session_first_write_never_raises_on_torn_or_bad_fields(self) -> None:
+        d = self.root / "pi"
+        d.mkdir(parents=True)
+        # Torn, unterminated, malformed final line after a valid cost line.
+        (d / "torn.jsonl").write_text(
+            json.dumps(
+                {
+                    "type": "message",
+                    "timestamp": "2026-11-03T12:00:00Z",
+                    "message": {"role": "assistant", "usage": {"cost": {"total": 0.5}}},
+                }
+            )
+            + "\n"
+            + '{"type": "mess',
+            encoding="utf-8",
+        )
+        self.assertIsNone(analyze_sessions.pi_session_first_write(d / "torn.jsonl"))
+        # Decoded-but-malformed field: out-of-range epoch timestamp.
+        (d / "badts.jsonl").write_text(
+            json.dumps(
+                {
+                    "type": "message",
+                    "timestamp": 1e300,
+                    "message": {"role": "assistant", "usage": "nope"},
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        self.assertIsNone(analyze_sessions.pi_session_first_write(d / "badts.jsonl"))
+
+    def test_pi_session_first_write_sees_earlier_write_after_bad_record(self) -> None:
+        self._write_pi_session(
+            "s1",
+            [self._msg("2026-11-03T12:05:00Z", tool=("write", "src/a.py"))],
+            cwd=str(self.repo),
+        )
+        # A decoded-but-malformed record after the write must not erase it.
+        with (self.root / "pi" / "s1.jsonl").open("a", encoding="utf-8") as f:
+            f.write(
+                json.dumps(
+                    {
+                        "type": "message",
+                        "timestamp": 1e300,
+                        "message": {"role": "assistant", "usage": "nope"},
+                    }
+                )
+                + "\n"
+            )
+        self.assertEqual(
+            analyze_sessions.pi_session_first_write(self._sess_path("s1")), "src/a.py"
+        )
+
 
 class TestMilestonesClaudeAndOpencode(unittest.TestCase):
     def setUp(self) -> None:
