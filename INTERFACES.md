@@ -55,7 +55,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`gen_skills.py`](#agentscriptsgenskillspy) | gen_skills.py — regenerate the generated skill copies (every skill in `SKILLS`) from one template per skill, plus a shared per-harness capability table. Each skill covers the harnesses listed for it in `SKILL_HARNESSES`: most cover every harness in `harness_spec.ALL_NAMES`; swarm covers only claude/copilot (user-directed; pi already owns the orchestration surface) — see AGENTS.md's "Harness maintenance tiers" section. |
 | [`gen_skills_params.py`](#agentscriptsgenskillsparamspy) | gen_skills_params.py — per-(skill, harness) content tables for gen_skills.py. |
 | [`grill.py`](#agentscriptsgrillpy) | grill.py — grill-me session state CLI. All session mutations go through here. |
-| [`guard_rails.py`](#agentscriptsguardrailspy) | Pre-tool guard shared by every harness: refuse a write into a repository's main checkout while a backlog item for that repository is in progress (except a write under a repo-declared, gitignored provenance root -- see ``.guard-rails.json`` and the module's ``_declared_provenance_roots``), warn when the current worktree's base has fallen behind ``origin/main`` (or ``origin/<integration_branch>`` for an item that declares one), (Bash, Claude Code only) deny the git-native ways to defeat the no-commit-on-main git hook (``githooks/pre-commit`` / ``githooks-global/pre-commit``), and require an active backlog-item claim before a write that points at an in-progress item. |
+| [`guard_rails.py`](#agentscriptsguardrailspy) | Pre-tool guard shared by every harness: refuse a write into a repository's main checkout while a backlog item for that repository is in progress (except a write under a repo-declared, gitignored provenance root -- see ``.guard-rails.json`` and the module's ``_declared_provenance_roots``), warn when the current worktree's base has fallen behind ``origin/main`` (or ``origin/<integration_branch>`` for an item that declares one), (Bash, Claude Code and the neutral Pi/opencode form) deny the git-native ways to defeat the no-commit-on-main git hook (``githooks/pre-commit`` / ``githooks-global/pre-commit``), best-effort deny a Bash call whose session cwd or a literal absolute path points into a worktree another live session claims, and require an active backlog-item claim before a write that points at an in-progress item. |
 | [`harness_discovery_check.py`](#agentscriptsharnessdiscoverycheckpy) | SessionStart hook + CLI: detect when a harness's instruction-file discovery behavior changes, without pinning harness versions in the repo. |
 | [`harness_spec.py`](#agentscriptsharnessspecpy) | Declarative harness specification registry. |
 | [`herdr_delegate.py`](#agentscriptsherdrdelegatepy) | Launch supported agents in herdr tabs to work backlog items. |
@@ -245,7 +245,7 @@ Read-only snapshot lookup over the backlog store for guard consumers.
 - Public functions:
   - `layout_error() -> agent_toolkit_paths.LayoutError | None` — The layout error that stops the backlog store resolving now, if any.
   - `backlog_items_path() -> Path` — Where the backlog store lives.
-- Tested by: `test/test_backlog_claim_lookup.py`, `test/test_dev_status_read.py`, `test/test_guard_rails.py`, `test/test_guard_rails_claim.py`, `test/test_guard_rails_stale_base.py`
+- Tested by: `test/test_backlog_claim_lookup.py`, `test/test_dev_status_read.py`, `test/test_guard_rails.py`, `test/test_guard_rails_bash_claim.py`, `test/test_guard_rails_claim.py`, `test/test_guard_rails_stale_base.py`
 
 ### `agent-scripts/bundle_drift_check.py`
 
@@ -603,7 +603,7 @@ Backlog persistence, lock coordination, and journal primitives.
   - `append_run_record(record: RunRecord, *, runs_file: Path | None = None, data_dir: Path | None = None) -> bool` — Append one run-evidence row to :func:`runs_file` (best-effort).
   - `load_recap_cache(path: Path | None = None) -> dict[str, object] | None` — Load ``recap-cache.json``, or ``None`` if missing/corrupt/malformed.
   - `save_recap_cache(backend: str, text: str, board_fingerprint: str, path: Path | None = None) -> None` — Atomically persist a recap result.
-- Tested by: `test/test_dev_status.py`, `test/test_dev_status_acceptance.py`, `test/test_dev_status_mutation.py`, `test/test_dev_status_read.py`, `test/test_dev_status_storage.py`, `test/test_guard_rails_claim.py`, `test/test_machine_id.py`, `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`
+- Tested by: `test/test_dev_status.py`, `test/test_dev_status_acceptance.py`, `test/test_dev_status_mutation.py`, `test/test_dev_status_read.py`, `test/test_dev_status_storage.py`, `test/test_guard_rails_bash_claim.py`, `test/test_guard_rails_claim.py`, `test/test_machine_id.py`, `test/test_migration_lock_adoption.py`, `test/test_path_for_per_use.py`
 
 ### `agent-scripts/dev_status_types.py`
 
@@ -999,7 +999,7 @@ grill.py — grill-me session state CLI. All session mutations go through here.
 
 ### `agent-scripts/guard_rails.py`
 
-Pre-tool guard shared by every harness: refuse a write into a repository's main checkout while a backlog item for that repository is in progress (except a write under a repo-declared, gitignored provenance root -- see ``.guard-rails.json`` and the module's ``_declared_provenance_roots``), warn when the current worktree's base has fallen behind ``origin/main`` (or ``origin/<integration_branch>`` for an item that declares one), (Bash, Claude Code only) deny the git-native ways to defeat the no-commit-on-main git hook (``githooks/pre-commit`` / ``githooks-global/pre-commit``), and require an active backlog-item claim before a write that points at an in-progress item.
+Pre-tool guard shared by every harness: refuse a write into a repository's main checkout while a backlog item for that repository is in progress (except a write under a repo-declared, gitignored provenance root -- see ``.guard-rails.json`` and the module's ``_declared_provenance_roots``), warn when the current worktree's base has fallen behind ``origin/main`` (or ``origin/<integration_branch>`` for an item that declares one), (Bash, Claude Code and the neutral Pi/opencode form) deny the git-native ways to defeat the no-commit-on-main git hook (``githooks/pre-commit`` / ``githooks-global/pre-commit``), best-effort deny a Bash call whose session cwd or a literal absolute path points into a worktree another live session claims, and require an active backlog-item claim before a write that points at an in-progress item.
 
 - Installed at: `~/.agent-toolkit/scripts/guard_rails.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
@@ -1027,11 +1027,12 @@ Pre-tool guard shared by every harness: refuse a write into a repository's main 
   - `live_install_repo(home: Path | None = None) -> Path | None` — Return the repository root of the live install source, or None if unknown.
   - `is_live_install_source(info: RepoInfo) -> bool` — Whether this repository is the live install source where harness scripts are symlinked from.
   - `evaluate_bash_override(command: str, cwd: str) -> Verdict` — Deny the git-native ways to defeat the no-commit-on-main git hook, on a protected branch only -- see the module docstring.
-  - `evaluate(req: Request, claims: BacklogClaimLookup) -> Verdict` — Apply R2 then R3 to write-family calls, and R4's claim check to any checkout they land in, plus the bash-family override check to Bash calls.
+  - `evaluate_bash_claim(command: str, cwd: str, claims: BacklogClaimLookup) -> Verdict` — Best-effort R4 for Bash: deny a call whose session cwd, or a literal absolute path in the command, resolves into a linked worktree attributed to an in-progress item a *different live session* actively claims.
+  - `evaluate(req: Request, claims: BacklogClaimLookup) -> Verdict` — Apply R2 then R3 to write-family calls, and R4's claim check to any checkout they land in, plus the bash-family override check and the best-effort Bash claim check to Bash calls.
   - `parse_payload(harness: str, payload: object) -> Request | None` — Normalize a harness's native hook payload.
   - `render(harness: str | None, verdict: Verdict) -> tuple[str, int]` — Shape a verdict into the harness's own reply.
   - `build_parser() -> argparse.ArgumentParser`
-- Tested by: `test/test_guard_rails.py`, `test/test_guard_rails_claim.py`, `test/test_guard_rails_fast_path.py`, `test/test_guard_rails_provenance.py`, `test/test_guard_rails_stale_base.py`, `test/test_guard_rails_topology.py`, `test/test_migration_lock_adoption.py`
+- Tested by: `test/test_guard_rails.py`, `test/test_guard_rails_bash_claim.py`, `test/test_guard_rails_claim.py`, `test/test_guard_rails_fast_path.py`, `test/test_guard_rails_provenance.py`, `test/test_guard_rails_stale_base.py`, `test/test_guard_rails_topology.py`, `test/test_migration_lock_adoption.py`
 
 ### `agent-scripts/harness_discovery_check.py`
 

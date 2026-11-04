@@ -67,7 +67,7 @@
   "broken-claude-bash-ls": {
     "audit": [],
     "exit": 0,
-    "stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\", \"permissionDecision\": \"deny\", \"permissionDecisionReason\": \"malformed layout pointer <HOME>/.agent-toolkit/data/toolkit_state.json: expected schema 1, got 999; fix or remove it\"}}\n"
+    "stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\"}}\n"
   },
   "broken-copilot-view": {
     "audit": [],
@@ -77,7 +77,7 @@
   "broken-neutral-bash-ls": {
     "audit": [],
     "exit": 0,
-    "stdout": "{\"decision\": \"deny\", \"reason\": \"malformed layout pointer <HOME>/.agent-toolkit/data/toolkit_state.json: expected schema 1, got 999; fix or remove it\"}\n"
+    "stdout": "{\"decision\": \"allow\", \"reason\": \"\"}\n"
   },
   "claude-bash-config-read": {
     "audit": [
