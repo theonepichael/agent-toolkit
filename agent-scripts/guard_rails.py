@@ -4,36 +4,26 @@ main checkout while a backlog item for that repository is in progress (except
 a write under a repo-declared, gitignored provenance root -- see
 ``.guard-rails.json`` and the module's ``_declared_provenance_roots``), warn
 when the current worktree's base has fallen behind ``origin/main`` (or
-``origin/<integration_branch>`` for an item that declares one), (Bash, Claude
-Code and the neutral Pi/opencode form) deny the git-native ways to defeat the
-no-commit-on-main git hook (``githooks/pre-commit`` /
-``githooks-global/pre-commit``), best-effort deny a Bash call whose session
-cwd or a literal absolute path points into a worktree another live session
-claims, and require an active backlog-item claim before a write that points
-at an in-progress item.
+``origin/<integration_branch>`` for an item that declares one), (Bash,
+Claude Code only) deny the git-native ways to defeat the no-commit-on-main
+git hook (``githooks/pre-commit`` / ``githooks-global/pre-commit``), and
+require an active backlog-item claim before a write that points at an
+in-progress item.
 
 Claude Code, agy and Copilot pipe their native hook payload in on stdin and
 get their native verdict back on stdout. Pi and opencode already hold the
 parsed values, so they pass them as flags and read a neutral JSON verdict.
 
-Write-family tool calls get the full R2/R3 check above. Bash calls get two
-checks. The first is the git-native ways to defeat the no-commit-on-main git
-hook on a protected branch: ``--no-verify``, overriding or redirecting
-``core.hooksPath`` (``-c``, ``GIT_CONFIG_*`` env vars, a plain ``git config``
-mutation), and a direct write to ``.git/config``. Blocking ``git commit``
-itself by parsing a shell string was shown to be bypassable (``bash -c``, a
-heredoc fed to ``sh``, a mid-word backslash) and is not attempted here --
-that job belongs to the git hook, which sees the fully shell-resolved state.
-The second is a best-effort claim check (R4): a Bash call is denied when its
-session cwd, or a literal absolute path in the command, resolves into a
-linked worktree attributed to an in-progress item that a *different live
-session* actively claims. It is narrower than the write-family check -- the
-"in-progress but unclaimed" case is allowed so ``dev_status.py start <slug>``
-(the dead-claim recovery) stays runnable from inside the worktree -- and it
-scans the unstripped command (heredoc bodies included) so a ``python3 <<EOF``
-body's ``open('/x','w')`` path is seen. agy and Copilot get no bash-family
-wiring (best-effort tier); their Bash calls fall through unrecognized, same
-as before.
+Write-family tool calls get the full R2/R3 check above. Bash calls get a
+narrower check: blocking ``git commit`` itself by parsing a shell string was
+shown to be bypassable (``bash -c``, a heredoc fed to ``sh``, a mid-word
+backslash) and is not attempted here -- that job now belongs to the git hook,
+which sees the fully shell-resolved state. What Bash *is* checked for is the
+git-native ways to defeat that hook on a protected branch: ``--no-verify``,
+overriding or redirecting ``core.hooksPath`` (``-c``, ``GIT_CONFIG_*`` env
+vars, a plain ``git config`` mutation), and a direct write to
+``.git/config``. agy and Copilot get no bash-family wiring (best-effort
+tier); their Bash calls fall through unrecognized, same as before.
 
 R4, the claim check: a write "points at" an in-progress backlog item when it
 targets exactly one of the item's ``related_files`` paths, or lands in a
@@ -53,12 +43,10 @@ claim is, and a dead one is not. A claim from a different machine can only
 be checked against its TTL. Nothing here mutates the backlog store; a dead
 claim is recovered by re-running ``start``, which takes it over.
 
-Accepted gaps: a Bash file mutation can still route past the claim check
-(shell variables, ``$(...)``, a relative ``cd``, an absolute path embedded
-mid-token in a ``-c "code"`` argument, or a path the shell never resolves) --
-the same bypassability as the commit check, git-hook territory; a harness
-running inside a container/other PID namespace sees every claim as foreign
-and is denied (kill-based liveness, as in dev_status.py itself, also
+Accepted gaps: Bash-family calls can route a file mutation past the claim
+check entirely (same bypassability as the commit check -- git-hook territory);
+a harness running inside a container/other PID namespace sees every claim as
+foreign and is denied (kill-based liveness, as in dev_status.py itself, also
 tolerates PID reuse).
 
 Usage:
@@ -221,18 +209,6 @@ def bash_trigger_free(command: str) -> bool:
     return not any(trigger in squashed for trigger in _BASH_TRIGGERS)
 
 
-def _bash_claim_check_could_deny(cwd: str, command: str) -> bool:
-    """Cheap superset: whether the best-effort Bash claim check might deny
-    this call, so the fast path must not answer it. The claim check denies
-    when the session cwd or a literal absolute path in the command resolves
-    into a linked worktree claimed by another live session; neither can be
-    ruled out without the backlog store and git, so any non-empty cwd -- or,
-    with an empty cwd, any '/' in the command (a trivial superset of an
-    absolute path) -- forces the full path. Over-approximation is deliberate:
-    a false "could deny" only costs the fast path's speed, never a verdict."""
-    return bool(cwd) or "/" in command
-
-
 def _fast_decide(
     argv: list[str], raw: str | None
 ) -> tuple[str, dict[str, object]] | None:
@@ -244,8 +220,6 @@ def _fast_decide(
         if cwd.startswith("-") or command.startswith("-"):
             return None
         if not bash_trigger_free(command):
-            return None
-        if not off and _bash_claim_check_could_deny(cwd, command):
             return None
         harness, tool, target, out = "", "bash", command, _NEUTRAL_ALLOW
         rule = "GUARD_RAILS_OFF" if off else "default-allow"
@@ -284,8 +258,6 @@ def _fast_decide(
                 return None
             command = raw_command or ""
             if not bash_trigger_free(command):
-                return None
-            if not off and _bash_claim_check_could_deny(cwd, command):
                 return None
             tool, target = "bash", command
             rule = "GUARD_RAILS_OFF" if off else "default-allow"
@@ -675,13 +647,10 @@ def _claim_is_active(
 
 def _claim_holder_alive(claim: ClaimInfo | None, current_machine: str) -> bool:
     """Whether some live process plausibly still stands behind the claim --
-    used to phrase the deny reason (a foreign live claim vs a dead or expired
-    one) and, in the best-effort Bash claim check, to narrow the denial to
-    the "actively claimed by another live session" case. It never grants a
-    write: a write-family or Bash deny is still keyed on
-    :func:`_claim_is_active`. Cross-machine claims are liveness-uncheckable,
-    so their TTL stands in for liveness, mirroring dev_status's collision
-    semantics."""
+    used only to phrase the deny reason (a foreign live claim vs a dead or
+    expired one), never to grant a write. Cross-machine claims are liveness-
+    uncheckable, so their TTL stands in for liveness, mirroring
+    dev_status's collision semantics."""
     if claim is None:
         return False
     import dev_status_impl
@@ -1498,136 +1467,17 @@ def evaluate_bash_override(command: str, cwd: str) -> Verdict:
     return Verdict("allow")
 
 
-def _bash_candidate_paths(command: str, cwd: str) -> list[str]:
-    """Deduplicated, realpath-resolved candidate paths a Bash call could
-    touch: the session cwd plus every absolute-path token in the *unstripped*
-    command (heredoc bodies are kept, so a ``python3 <<EOF`` body's
-    ``open('/x','w')`` path is seen). Dedup bounds the git work per call."""
-    raw: list[str] = [cwd] if cwd else []
-    # shlex glues trailing argument-separator punctuation (a Python comma, a
-    # closing bracket) onto the preceding token; trim it so the candidate is
-    # the path, not the path-plus-separator -- else a worktree *root* passed
-    # as ``rmtree('/wt', ...)`` is walked past.
-    raw.extend(
-        token.rstrip(",)]}")
-        for token in _shell_tokens(command)
-        if token.startswith("/")
-    )
-    return list(dict.fromkeys(os.path.realpath(p) for p in raw))
-
-
-def evaluate_bash_claim(command: str, cwd: str, claims: BacklogClaimLookup) -> Verdict:
-    """Best-effort R4 for Bash: deny a call whose session cwd, or a literal
-    absolute path in the command, resolves into a linked worktree attributed
-    to an in-progress item a *different live session* actively claims.
-
-    Deliberately narrower than the write-family claim check: only the
-    "actively claimed by another live session" case is denied; the
-    "in-progress but unclaimed" case is allowed, so ``dev_status.py start
-    <slug>`` (the dead-claim recovery) stays runnable from inside the
-    worktree. Bypassable by construction (shell variables, ``$(...)``, a
-    relative ``cd``, an absolute path embedded mid-token in a ``-c "code"``
-    argument); it catches the accidental literal-path write, not a determined
-    obfuscation. Fails open on a broken store layout (unlike the write-family
-    check), so the shell that repairs the layout stays usable. See the module
-    docstring.
-    """
-    try:
-        items = claims.in_progress_items()
-    except agent_toolkit_paths.LayoutError:
-        # Fail open: a broken store layout must not deny the very shell that
-        # repairs it. The write-family check stays fail-closed; Bash is
-        # best-effort and lets the repair command through.
-        return Verdict("allow")
-    if not items:
-        return Verdict("allow")
-
-    in_progress_ids = {str(item.get("id") or "") for item in items}
-    # Session identity is resolved lazily, only once a candidate genuinely
-    # points at an in-progress worktree: a broken machine id must not deny an
-    # unrelated Bash call (and must not block ``dev_status.py machine-id
-    # --repair``).
-    identity: tuple[str, int, list[int]] | None = None
-
-    for candidate in _bash_candidate_paths(command, cwd):
-        info = _repo_info_at_or_above(candidate)
-        if info is None or info.is_bare or not info.is_worktree:
-            continue
-        pointed: list[dict] = []
-        for item in items:
-            slug = str(item.get("id") or "")
-            if worktree_points_at_item(
-                marker_slug=info.marker_slug,
-                is_linked_worktree=info.is_worktree,
-                branch=info.branch,
-                item_id=slug,
-                in_progress_ids=in_progress_ids,
-            ):
-                pointed.append(item)
-        if not pointed:
-            continue
-        # Only a pointed item with a recorded claim can be "actively claimed
-        # by another live session"; an unclaimed worktree allows without
-        # resolving session identity, so a broken machine id can't deny it
-        # (and block the very `dev_status.py machine-id --repair` that fixes
-        # the id).
-        claimed = [
-            (item, claims.claim_info(str(item.get("id") or ""))) for item in pointed
-        ]
-        claimed = [(item, claim) for item, claim in claimed if claim is not None]
-        if not claimed:
-            continue
-        if identity is None:
-            import dev_status_storage  # lazy, like _evaluate_claim
-
-            try:
-                identity = _session_identity()
-            except (
-                dev_status_storage.MachineIdError,
-                migration_lock.MigrationLockBusy,
-            ):
-                # Fail open: without a resolvable machine id (or while a
-                # migration holds the lock) the check cannot tell this session
-                # from a foreign one, and denying would lock out the
-                # `dev_status.py machine-id --repair` command that fixes the
-                # id. The write-family check stays fail-closed; Bash is
-                # best-effort.
-                return Verdict("allow")
-        current_machine, owner_pid, chain = identity
-        foreign = [
-            item
-            for item, claim in claimed
-            if _claim_holder_alive(claim, current_machine)
-            and not _claim_is_active(claim, current_machine, owner_pid, chain)
-        ]
-        if not foreign:
-            continue
-        slugs = ", ".join(str(item.get("id") or "?") for item in foreign)
-        return Verdict(
-            "deny",
-            f"Refusing to run Bash in '{candidate}': backlog item(s) {slugs} "
-            "actively claimed by another session. Taking over needs a human "
-            "decision, not this tool call.",
-            rule="claim-held-elsewhere",
-        )
-    return Verdict("allow")
-
-
 def evaluate(req: Request, claims: BacklogClaimLookup) -> Verdict:
     """Apply R2 then R3 to write-family calls, and R4's claim check to any
-    checkout they land in, plus the bash-family override check and the
-    best-effort Bash claim check to Bash calls. Fails open on anything it
-    cannot answer.
+    checkout they land in, plus the bash-family override check to Bash
+    calls. Fails open on anything it cannot answer.
 
     ``claims`` is a read-only ``BacklogClaimLookup``; it is the only path to
     the backlog store here and must not be mutated."""
     if os.environ.get("GUARD_RAILS_OFF") == "1":
         return Verdict("allow", rule="GUARD_RAILS_OFF")
     if req.tool == "bash":
-        verdict = evaluate_bash_override(req.command, req.cwd)
-        if verdict.decision == "deny":
-            return verdict
-        return evaluate_bash_claim(req.command, req.cwd, claims)
+        return evaluate_bash_override(req.command, req.cwd)
     if req.tool != "write":
         return Verdict("allow")
 
@@ -1809,48 +1659,43 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    off = os.environ.get("GUARD_RAILS_OFF") == "1"
 
-    # Resolve the request -- and thus the tool family -- before the up-front
-    # layout check: a Bash call must fail open on a broken layout (the shell
-    # is what repairs it), so that check skips Bash. Reading the harness
-    # payload here is safe; the fast path already restored stdin when it fell
-    # through.
-    req: Request | None
+    if os.environ.get("GUARD_RAILS_OFF") == "1":
+        # Bypass every rule, including layout errors, exactly as before.
+        claims = LocalClaimLookup()
+    else:
+        layout_reason = _layout_error_reason()
+        if layout_reason is not None:
+            verdict = Verdict(
+                "deny",
+                layout_reason,
+                rule="layout-error",
+            )
+            if args.harness:
+                out, code = render(args.harness, verdict)
+                if args.harness == "copilot" and verdict.reason:
+                    print(verdict.reason, file=sys.stderr)
+                print(out)
+                _audit_verdict(args.harness, None, verdict)
+                return code
+            req = Request(
+                tool=tool_family(args.tool),
+                cwd=args.cwd or "",
+                path=args.path or "",
+                command=args.command or "",
+            )
+            out, code = render(None, verdict)
+            print(out)
+            _audit_verdict("", req, verdict)
+            return code
+        claims = LocalClaimLookup()
+
     if args.harness:
         try:
             payload = json.loads(sys.stdin.read() or "{}")
         except ValueError:
             payload = None
         req = parse_payload(args.harness, payload) if payload is not None else None
-    else:
-        req = Request(
-            tool=tool_family(args.tool),
-            cwd=args.cwd or "",
-            path=args.path or "",
-            command=args.command or "",
-        )
-
-    if off:
-        # Bypass every rule, including layout errors, exactly as before.
-        claims = LocalClaimLookup()
-    else:
-        layout_reason = _layout_error_reason()
-        if layout_reason is not None and not (req is not None and req.tool == "bash"):
-            verdict = Verdict(
-                "deny",
-                layout_reason,
-                rule="layout-error",
-            )
-            out, code = render(args.harness, verdict)
-            if args.harness == "copilot" and verdict.reason:
-                print(verdict.reason, file=sys.stderr)
-            print(out)
-            _audit_verdict(args.harness or "", req, verdict)
-            return code
-        claims = LocalClaimLookup()
-
-    if args.harness:
         if req is None:
             out, code = render(args.harness, Verdict("allow"))
             print(out)
@@ -1868,6 +1713,12 @@ def main(argv: list[str] | None = None) -> int:
         _audit_verdict(args.harness, req, verdict)
         return code
 
+    req = Request(
+        tool=tool_family(args.tool),
+        cwd=args.cwd or "",
+        path=args.path or "",
+        command=args.command or "",
+    )
     verdict = evaluate(req, claims)
     out, code = render(None, verdict)
     print(out)

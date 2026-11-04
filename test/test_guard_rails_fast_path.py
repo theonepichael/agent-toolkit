@@ -40,19 +40,6 @@ def test_ordinary_commands_are_trigger_free(command: str) -> None:
     assert guard_rails.bash_trigger_free(command)
 
 
-@pytest.mark.parametrize(
-    ("cwd", "command", "expected"),
-    [
-        ("", "ls", False),
-        ("/repo", "ls", True),
-        ("", "touch /tmp/x", True),
-        ("", "curl https://example.com/", True),  # any '/' is a safe superset
-    ],
-)
-def test_bash_claim_check_could_deny(cwd: str, command: str, expected: bool) -> None:
-    assert guard_rails._bash_claim_check_could_deny(cwd, command) is expected
-
-
 # One command per deny branch of evaluate_bash_override, each with the quote-
 # and escape-splicing variants a shell would still resolve to the same thing.
 DENY_BRANCH_EXAMPLES = {
@@ -150,6 +137,11 @@ def test_baseline_covers_every_case() -> None:
 # ── which calls the fast path actually claims ──────────────────────────────
 
 FAST_CASES = {
+    "claude-bash-ls",
+    "claude-bash-padded-name",
+    "claude-bash-lower-name",
+    "claude-bash-secret",
+    "claude-bash-empty-command",
     "claude-read",
     "claude-glob",
     "claude-nonstr-name",
@@ -158,6 +150,8 @@ FAST_CASES = {
     "agy-bash",
     "copilot-view",
     "copilot-bad-args",
+    "neutral-bash-ls",
+    "neutral-bash-empty",
     "off-claude-bash-ls",
     "off-claude-read",
     "off-copilot-view",
@@ -202,7 +196,7 @@ def test_fast_path_claims_exactly_the_expected_calls(case: tuple) -> None:
 
 # ── fall-through only before output, always with stdin restored ────────────
 
-_PAYLOAD = json.dumps({"tool_name": "Bash", "tool_input": {"command": "ls"}, "cwd": ""})
+_PAYLOAD = json.dumps({"tool_name": "Bash", "tool_input": {"command": "ls"}, "cwd": "/"})
 
 
 def _run_fast(argv: list[str], stdin_text: str) -> tuple[bool, str, str]:

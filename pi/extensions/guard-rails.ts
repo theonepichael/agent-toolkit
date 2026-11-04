@@ -191,11 +191,10 @@ async function sharedGuard(
 }
 
 // Bash-family companion check (core.hooksPath override/redirect, --no-verify,
-// direct .git/config writes, plus the best-effort worktree claim check) --
-// see agent-scripts/guard_rails.py's module docstring for the full rule. The
-// hook-defeat rules only fire on a protected branch; the claim check fires
-// on a worktree regardless of branch. Both are independent of the git-commit
-// blocking logic above.
+// direct .git/config writes) -- see agent-scripts/guard_rails.py's module
+// docstring for the full rule. Only fires on a protected branch; everywhere
+// else guard_rails.py itself allows without even needing the git-commit
+// blocking logic above, since the two checks are independent.
 async function sharedBashGuard(
   pi: ExtensionAPI,
   cwd: string,
