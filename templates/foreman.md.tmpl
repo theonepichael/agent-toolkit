@@ -29,6 +29,21 @@ retry the identical command; never route around it (for example by having a
 worker merge instead — the foreman lands, never the worker). Pi has no
 equivalent classifier, only its allowlist-based `permission-gate.ts`.
 
+### Known limitations: agy workers
+
+A `--kind agy` worker runs the whole loop — launch, claim, handoff, watch,
+call cap, send-back, approve and close — as a pi worker does (drill of
+2026-11-04), with two gaps:
+
+- **Shell commands are unguarded.** agy runs with `--mode accept-edits`, and
+  its `PreToolUse` guard covers only the file-writing tools. A shell command
+  is not checked: there is no equivalent of pi's `sudo`/`rm -rf` blocks, and
+  a shell write into another session's claimed worktree is not refused. Only
+  give agy items whose work you would accept without that guard.
+- **Host-restart recovery is untested.** Whether herdr restores an agy pane
+  and resumes its session is unknown. Treat an agy worker as lost after a
+  restart: check its worktree and relaunch.
+
 ## 2. Scheduling by hand
 
 Eligibility comes from `dev_status.py`, never from this skill's guesswork:
