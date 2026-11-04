@@ -37,7 +37,7 @@ import json
 import shutil
 import subprocess
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -165,6 +165,26 @@ def resolve_backlog_item(
     return None
 
 
+def resolve_item_repos(item: Mapping[str, object]) -> set[Path]:
+    """Distinct git repositories named by an item's ``related_files``.
+
+    The per-path resolution is :func:`find_repo_for_path`, the same primitive
+    :func:`resolve_worktree_config` uses. Extracted so a caller that must NOT
+    fall back to the current working directory (``herdr_delegate``'s launch)
+    can apply this resolution with a stricter policy -- refuse on a non-single
+    result -- instead of inheriting ``resolve_worktree_config``'s zero-repo
+    fallback to ``Path.cwd()``, which is correct for interactive
+    ``dev_status worktree`` but wrong for a launch.
+    """
+    repos: set[Path] = set()
+    for rf in item.get("related_files", []):
+        if isinstance(rf, dict) and "path" in rf:
+            r = find_repo_for_path(Path(str(rf["path"])))
+            if r is not None:
+                repos.add(r)
+    return repos
+
+
 def resolve_worktree_config(
     slug_or_id: str | None = None,
     *,
@@ -210,12 +230,7 @@ def resolve_worktree_config(
         if matched_item is not None:
             slug = item_slug or str(matched_item["id"])
             branch_name = branch or slug
-            repos: set[Path] = set()
-            for rf in matched_item.get("related_files", []):
-                if isinstance(rf, dict) and "path" in rf:
-                    r = find_repo_for_path(Path(str(rf["path"])))
-                    if r is not None:
-                        repos.add(r)
+            repos = resolve_item_repos(matched_item)
             if len(repos) == 1:
                 repo_root = next(iter(repos))
             elif len(repos) > 1:

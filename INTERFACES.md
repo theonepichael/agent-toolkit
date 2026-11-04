@@ -1110,7 +1110,7 @@ Launch supported agents in herdr tabs to work backlog items.
     - `--items` — explicit slugs for the queue (with --swarm or --serial)
     - `--exclude` — slugs to skip in the prefix queue (with --swarm or --serial)
     - `--model` — model passed through to harness after a bare --
-    - `--cwd` — working directory (pi/copilot only)
+    - `--cwd` — working directory for pi/copilot (--slug launches default to the item's repository main checkout)
     - `--kind` — agent harness (agy/codex support --slug only; default: pi) (choices: pi, copilot, agy, codex; default: pi)
     - `--handoff` — worker stops after its commit gate and prints the FOREMAN-HANDOFF line, leaving the landing to the foreman (--slug --kind pi|agy only)
   - `watch <agents> [--prefix <PREFIX>] --state <STATE> [--ack NAME=SEQ] [--ack-gone NAME] [--grace-s <GRACE_S>] --timeout-s <TIMEOUT_S> [--poll-s <POLL_S>] [--strict] [--cost-cap-agent USD] [--cost-cap-total USD] [--cost-step USD] [--cost-remind-s N] [--call-cap-agent CALLS] [--call-cap-total CALLS] [--elapsed-cap-agent SECONDS] [--elapsed-cap-total SECONDS] [--ack-cost TOKEN]` — report the first of N agents that needs attention
@@ -1205,6 +1205,7 @@ Launch supported agents in herdr tabs to work backlog items.
   - `load_backlog_items() -> list[dict[str, object]]` — Every backlog item, read fresh from the store (the test seam for `close`).
   - `parse_tab_get(listing: dict[str, object]) -> dict[str, object] | None` — Label and pane count out of a `herdr tab get` envelope; None if malformed.
   - `wait_agent_deregistered(name: str, *, retry_advice: str = 'Retry `restart` (it relaunches once the name frees)') -> None` — Poll until no live agent carries ``name``, bounded; refuse if it persists.
+  - `resolve_worker_cwd(slug: str) -> str` — The item's repository main checkout, as a worker tab's starting cwd.
   - `prepare_worker_worktree(slug: str) -> str` — Validate one item and bootstrap its exact worktree before agent startup.
   - `codex_writable_roots() -> list[str]` — Runtime paths a backlog worker writes outside its worktree.
   - `spawn_in_new_tab(*, cwd: str, label: str, prompt: str, model: str | None, kind: str = 'pi', session_id: str | None = None, allow_all_tools: bool = True, plugin_dir: str | None = None, writable_roots: list[str] | None = None, handoff_slug: str | None = None, launch_slug: str | None = None, launch_kind: str = 'worker') -> dict[str, object]` — Create a tab, start an agent in it, and hand it its prompt.
@@ -1951,6 +1952,7 @@ worktree.py — automated worktree creation and dependency bootstrapping.
   - `result_payload(result: WorktreeResult) -> dict[str, object]` — JSON payload for a worktree result, shared by both CLIs.
   - `find_repo_for_path(path: Path) -> Path | None` — Find the enclosing git repository root for a given path.
   - `resolve_backlog_item(slug_or_id: str, items_path: Path | None = None) -> dict[str, object] | None` — Look up a backlog item by slug or numeric position using dev_status_storage.
+  - `resolve_item_repos(item: Mapping[str, object]) -> set[Path]` — Distinct git repositories named by an item's ``related_files``.
   - `resolve_worktree_config(slug_or_id: str | None = None, *, repo: Path | str | None = None, branch: str | None = None, dest: Path | str | None = None, base: str | None = None, skip_bootstrap: bool = False, force: bool = False, quiet: bool = False, items_path: Path | None = None) -> WorktreeConfig` — Resolve worktree target repository, branch name, and destination path.
   - `bootstrap_worktree(worktree_path: Path, *, quiet: bool = False) -> tuple[bool, list[str] | None, list[str]]` — Execute dependency bootstrapping for the target worktree.
   - `create_and_bootstrap_worktree(config: WorktreeConfig) -> WorktreeResult` — Create or reuse a git worktree and bootstrap dependencies.

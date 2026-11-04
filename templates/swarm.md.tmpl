@@ -63,6 +63,13 @@ One item:
 python3 {{TOOLKIT_SCRIPTS}}/herdr_delegate.py launch --slug <slug> [--model <model>] [--kind {pi,copilot,agy,codex}]
 ```
 
+For pi or copilot, the delegate starts the worker in the item's repository main
+checkout, resolved from the item's `related_files` -- never the caller's cwd --
+so a worker launched from a throwaway directory (e.g. a session scratchpad) can
+still resume after a host restart. Pass `--cwd` to override; if the item's
+repository cannot be resolved to exactly one repository, the launch refuses
+rather than falling back to the caller's cwd.
+
 For agy or codex, the delegate validates and bootstraps the item's worktree
 before starting the agent there. These kinds support one item only. Agy starts
 in `accept-edits` mode and receives `/backlog-item --auto <slug>`; Codex uses

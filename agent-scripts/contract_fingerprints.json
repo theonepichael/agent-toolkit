@@ -355,7 +355,7 @@
     "arg close --expect-pane: \u2014 the pane this worker runs in (required)",
     "arg close --force: \u2014 operator override: skip the item-done and agent-status checks (never the pane, tab or exclusivity checks)",
     "arg close agent: \u2014 the worker's herdr agent name",
-    "arg launch --cwd: \u2014 working directory (pi/copilot only)",
+    "arg launch --cwd: \u2014 working directory for pi/copilot (--slug launches default to the item's repository main checkout)",
     "arg launch --exclude: \u2014 slugs to skip in the prefix queue (with --swarm or --serial)",
     "arg launch --handoff: \u2014 worker stops after its commit gate and prints the FOREMAN-HANDOFF line, leaving the landing to the foreman (--slug --kind pi|agy only)",
     "arg launch --items: \u2014 explicit slugs for the queue (with --swarm or --serial)",

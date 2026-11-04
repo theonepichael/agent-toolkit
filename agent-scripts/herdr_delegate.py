@@ -51,6 +51,15 @@ With caps set, reports carry corresponding ``cost``, ``calls``, or
 ``incomplete`` (fail closed). ``--ack-cost`` takes the alert's printed ``ack``
 token.
 
+For a ``launch --slug`` with no ``--cwd``, the worker tab starts in the item's
+repository main checkout, resolved from the item's ``related_files`` the same
+way ``prepare_worker_worktree`` resolves it -- never the caller's
+``os.getcwd()``: a worker launched from a throwaway directory (e.g. a session
+scratchpad) records that directory as its cwd, and it is gone after a host
+restart, stalling pi's resume on a missing cwd. An explicit ``--cwd`` still
+wins; if the item's repository cannot be resolved to exactly one repository,
+launch refuses rather than falling back to the caller's cwd.
+
 Usage:
     herdr_delegate.py plan
     herdr_delegate.py launch --slug <slug> [--model <model>]
@@ -131,6 +140,7 @@ from dev_status_storage import BacklogItem  # noqa: E402
 from worktree import (  # noqa: E402
     WorktreeError,
     resolve_backlog_item,
+    resolve_item_repos,
     resolve_worktree_config,
 )
 
@@ -2327,6 +2337,27 @@ AGENT_START_TIMEOUT_RETRIES can never desync from a fixed-length backoff
 list and index out of range."""
 
 
+def resolve_worker_cwd(slug: str) -> str:
+    """The item's repository main checkout, as a worker tab's starting cwd.
+
+    Same resolution ``prepare_worker_worktree`` uses for an item's repository
+    (``resolve_item_repos`` over the item's ``related_files``), but refuses
+    instead of inheriting ``resolve_worktree_config``'s fallback to the
+    caller's cwd: a worker tab must start somewhere stable that survives a
+    host restart, and the caller's cwd is exactly what this fixes.
+    """
+    item = resolve_backlog_item(slug)
+    if item is None:
+        raise RefusedError(f"no backlog item matches {slug!r}")
+    repos = resolve_item_repos(item)
+    if len(repos) != 1:
+        raise RefusedError(
+            f"could not resolve a single repository for {slug!r} from "
+            f"related_files ({len(repos)} found); pass --cwd explicitly"
+        )
+    return str(next(iter(repos)))
+
+
 def prepare_worker_worktree(slug: str) -> str:
     """Validate one item and bootstrap its exact worktree before agent startup."""
     item = resolve_backlog_item(slug)
@@ -2759,6 +2790,8 @@ def cmd_launch(args: argparse.Namespace) -> None:
             trust_agy_dir(cwd)
         elif kind == "codex":
             writable_roots = codex_writable_roots()
+    elif args.slug and args.cwd is None:
+        cwd = resolve_worker_cwd(args.slug)
 
     print(
         json.dumps(
@@ -2960,7 +2993,11 @@ def main() -> None:
     launch.add_argument(
         "--model", help="model passed through to harness after a bare --"
     )
-    launch.add_argument("--cwd", help="working directory (pi/copilot only)")
+    launch.add_argument(
+        "--cwd",
+        help="working directory for pi/copilot (--slug launches default to "
+        "the item's repository main checkout)",
+    )
     launch.add_argument(
         "--kind",
         choices=["pi", "copilot", "agy", "codex"],

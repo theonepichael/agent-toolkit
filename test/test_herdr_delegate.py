@@ -33,6 +33,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))
 import test_bootstrap  # noqa: E402
 import herdr_delegate
+from pytest_shim import pytest  # noqa: E402
 
 
 class FakeHerdr:
@@ -664,6 +665,103 @@ class LaunchTests(DelegateTests):
             )
         self.assertEqual(code, 1)
         self.assertIn("cross-repo", err)
+
+    def _launch_slug_expects_cwd(self, *, kind: str | None, expect_cwd: Path) -> None:
+        item = {
+            "id": "atk-example",
+            "related_files": [{"path": str(expect_cwd / "f.py")}],
+        }
+        with (
+            mock.patch.object(herdr_delegate, "resolve_backlog_item", return_value=item),
+            mock.patch.object(
+                herdr_delegate,
+                "resolve_item_repos",
+                return_value={expect_cwd},
+                create=True,
+            ),
+        ):
+            argv = ["launch", "--slug", "atk-example"]
+            if kind:
+                argv += ["--kind", kind]
+            code, _, err = self.run_main(argv)
+        self.assertEqual(code, 0, err)
+        create = self.fake.named("tab", "create")[-1]
+        self.assertEqual(create[create.index("--cwd") + 1], str(expect_cwd))
+
+    @pytest.mark.regression(
+        "launch-slug-cwd-falls-back-to-caller-cwd",
+        "AssertionError: '/tmp' != '/tmp/launch-cwd-repo'",
+    )
+    def test_launch_slug_without_cwd_starts_in_item_repo(self) -> None:
+        repo_root = Path(tempfile.gettempdir()) / "launch-cwd-repo"
+        original_cwd = os.getcwd()
+        os.chdir(Path(tempfile.gettempdir()))
+        self.addCleanup(os.chdir, original_cwd)
+        self._launch_slug_expects_cwd(kind=None, expect_cwd=repo_root)
+
+    def test_launch_slug_without_cwd_copilot_starts_in_item_repo(self) -> None:
+        repo_root = Path(tempfile.gettempdir()) / "launch-cwd-repo"
+        self._launch_slug_expects_cwd(kind="copilot", expect_cwd=repo_root)
+
+    def test_launch_slug_without_cwd_refuses_when_item_missing(self) -> None:
+        with mock.patch.object(
+            herdr_delegate, "resolve_backlog_item", return_value=None
+        ):
+            code, _, err = self.run_main(["launch", "--slug", "atk-example"])
+        self.assertEqual(code, 1)
+        self.assertIn("no backlog item matches", err)
+        self.assertEqual(self.fake.named("tab", "create"), [])
+
+    def test_launch_slug_without_cwd_refuses_when_no_repo(self) -> None:
+        item = {"id": "atk-example", "related_files": []}
+        with (
+            mock.patch.object(herdr_delegate, "resolve_backlog_item", return_value=item),
+            mock.patch.object(
+                herdr_delegate, "resolve_item_repos", return_value=set(), create=True
+            ),
+        ):
+            code, _, err = self.run_main(["launch", "--slug", "atk-example"])
+        self.assertEqual(code, 1)
+        self.assertIn("could not resolve a single repository", err)
+        self.assertEqual(self.fake.named("tab", "create"), [])
+
+    def test_launch_slug_without_cwd_refuses_when_multiple_repos(self) -> None:
+        item = {
+            "id": "atk-example",
+            "related_files": [{"path": "/a/f.py"}, {"path": "/b/g.py"}],
+        }
+        with (
+            mock.patch.object(herdr_delegate, "resolve_backlog_item", return_value=item),
+            mock.patch.object(
+                herdr_delegate,
+                "resolve_item_repos",
+                return_value={Path("/repo-a"), Path("/repo-b")},
+                create=True,
+            ),
+        ):
+            code, _, err = self.run_main(["launch", "--slug", "atk-example"])
+        self.assertEqual(code, 1)
+        self.assertIn("could not resolve a single repository", err)
+        self.assertEqual(self.fake.named("tab", "create"), [])
+
+    def test_launch_slug_with_explicit_cwd_skips_repo_discovery(self) -> None:
+        item = {"id": "atk-example", "related_files": []}
+        with mock.patch.object(
+            herdr_delegate, "resolve_backlog_item", return_value=item
+        ):
+            with mock.patch.object(
+                herdr_delegate,
+                "resolve_item_repos",
+                return_value=set(),
+                create=True,
+            ) as resolve_mock:
+                code, _, err = self.run_main(
+                    ["launch", "--slug", "atk-example", "--cwd", "/tmp"]
+                )
+        self.assertEqual(code, 0, err)
+        resolve_mock.assert_not_called()
+        create = self.fake.named("tab", "create")[-1]
+        self.assertEqual(create[create.index("--cwd") + 1], "/tmp")
 
     def test_serial_launch_allows_meta_and_uses_distinct_label(self) -> None:
         code, out, _ = self.run_main(
