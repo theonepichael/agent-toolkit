@@ -325,10 +325,13 @@ delete the item's own files under `~/.agent-toolkit/data/foreman/` — its exact
 included; match exact names, never a `<slug>-*` glob (longer slugs share the
 prefix), and never a file of an item not done. A run-named watch-state file
 and its `.lock` stay until every item it covers is done and its watcher has
-exited. Before deleting a watch-state file, copy its agent-to-session links
-into `~/.agent-toolkit/data/launch_log.jsonl` — that log holds no pi or agy
-session id, so the watch state is the only copy — matching workers by pane,
-not the truncated agent name; keep the file if a link is unrecoverable. Last,
+exited. Before deleting a watch-state file, confirm each worker's
+agent-to-session link is already recorded in
+`~/.agent-toolkit/data/launch_log.jsonl` — `herdr_delegate watch` backfills every
+worker's session id there on first sight, keyed by pane, not the truncated
+agent name; keep the file if a link is unrecoverable (the worker's most
+recent launch-log entry for its pane is missing, still null, or carries a
+different session id than the watch state). Last,
 close the worker's tab — every time, unprompted:
 
 ```bash

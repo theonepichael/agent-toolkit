@@ -28,6 +28,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))
 import test_bootstrap  # noqa: E402
 import herdr_delegate  # noqa: E402
+from pytest_shim import pytest  # noqa: E402
 
 
 PICKER_DIR = Path(__file__).resolve().parent / "fixtures" / "picker"
@@ -2002,6 +2003,155 @@ class WatchPlanningTests(unittest.TestCase):
         code, out, _ = self.run_watch(["atk-w1", "--planning-note-usd", "4"], agents)
         self.assertEqual(code, 124)
         self.assertEqual(out["planning"]["alerts"], {})
+
+
+class LaunchLogBackfillWatchTests(WatchTests):
+    """`watch` backfills each worker's session id into the launch ledger."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        path = herdr_delegate.launch_log_file()
+        if path.exists():
+            path.unlink()
+        self.addCleanup(lambda: path.unlink(missing_ok=True))
+
+    def _seed_launch(self, pane: str, worker_session: str | None = None) -> None:
+        herdr_delegate._append_launch_record(
+            kind="worker",
+            slug="atk-x",
+            model=None,
+            agent="atk-x-worker",
+            pane=pane,
+            tab="w1:t1",
+            worker_session=worker_session,
+        )
+
+    def _records(self) -> list[dict[str, object]]:
+        path = herdr_delegate.launch_log_file()
+        if not path.exists():
+            return []
+        return [
+            json.loads(line)
+            for line in path.read_text().splitlines()
+            if line.strip()
+        ]
+
+    def _agent_with_session(self, pane: str, session: object) -> dict[str, object]:
+        agent = _agent("atk-x-worker", "working", 1)
+        agent["pane_id"] = pane
+        agent["agent_session"] = session
+        return agent
+
+    def test_worker_session_id_pi_path(self) -> None:
+        self.assertEqual(
+            herdr_delegate._worker_session_id(
+                {"agent": "pi", "kind": "path", "value": "/sessions/pi-1.jsonl"}
+            ),
+            "/sessions/pi-1.jsonl",
+        )
+
+    def test_worker_session_id_agy_value(self) -> None:
+        self.assertEqual(
+            herdr_delegate._worker_session_id(
+                {"agent": "agy", "source": "herdr:antigravity_cli", "value": "conv-9"}
+            ),
+            "conv-9",
+        )
+
+    def test_worker_session_id_rejects_empty_and_unknown(self) -> None:
+        self.assertEqual(herdr_delegate._worker_session_id("conv-2"), "conv-2")
+        self.assertIsNone(herdr_delegate._worker_session_id(""))
+        self.assertIsNone(herdr_delegate._worker_session_id("   "))
+        self.assertIsNone(
+            herdr_delegate._worker_session_id({"agent": "other", "value": "x"})
+        )
+        self.assertIsNone(
+            herdr_delegate._worker_session_id(
+                {"agent": "pi", "kind": "path", "value": ""}
+            )
+        )
+
+    @pytest.mark.regression(
+        "watch-backfills-pi-worker-session-id",
+        "AssertionError: None != '/sessions/pi-1.jsonl'",
+    )
+    def test_watch_backfills_pi_worker_session_id(self) -> None:
+        self._seed_launch("w1:p1")
+        state = Path(tempfile.mkdtemp()) / "watch.json"
+        self.run_watch(
+            ["watch", "atk-x-worker", "--state", str(state), "--timeout-s", "1"],
+            WatchFakeHerdr(
+                [[
+                    self._agent_with_session(
+                        "w1:p1",
+                        {"agent": "pi", "kind": "path", "value": "/sessions/pi-1.jsonl"},
+                    )
+                ]]
+            ),
+        )
+        records = self._records()
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["worker_session"], "/sessions/pi-1.jsonl")
+
+    @pytest.mark.regression(
+        "watch-backfills-agy-worker-session-id",
+        "AssertionError: None != 'conv-9'",
+    )
+    def test_watch_backfills_agy_worker_session_id(self) -> None:
+        self._seed_launch("w1:p1")
+        state = Path(tempfile.mkdtemp()) / "watch.json"
+        self.run_watch(
+            ["watch", "atk-x-worker", "--state", str(state), "--timeout-s", "1"],
+            WatchFakeHerdr(
+                [[
+                    self._agent_with_session(
+                        "w1:p1",
+                        {"agent": "agy", "source": "herdr:antigravity_cli", "value": "conv-9"},
+                    )
+                ]]
+            ),
+        )
+        records = self._records()
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["worker_session"], "conv-9")
+
+    @pytest.mark.regression(
+        "launch-log-backfill-updates-not-duplicates",
+        "AttributeError: module 'herdr_delegate' has no attribute '_record_worker_session'",
+    )
+    def test_record_worker_session_updates_most_recent_null_only(self) -> None:
+        self._seed_launch("w1:p1", worker_session="old-session")
+        self._seed_launch("w1:p1")
+        recorded = herdr_delegate._record_worker_session(
+            pane="w1:p1",
+            session={"agent": "pi", "kind": "path", "value": "/sessions/new.jsonl"},
+        )
+        self.assertTrue(recorded)
+        records = self._records()
+        self.assertEqual(len(records), 2)  # updated, never duplicated
+        self.assertEqual(records[0]["worker_session"], "old-session")  # untouched
+        self.assertEqual(records[1]["worker_session"], "/sessions/new.jsonl")
+
+    def test_record_worker_session_returns_false_without_matching_record(self) -> None:
+        self._seed_launch("w1:p9")  # a different pane
+        recorded = herdr_delegate._record_worker_session(
+            pane="w1:p1",
+            session={"agent": "pi", "kind": "path", "value": "/sessions/new.jsonl"},
+        )
+        self.assertFalse(recorded)
+
+    @pytest.mark.regression(
+        "launch-log-backfill-distinguishes-recorded-session",
+        "AssertionError: True is not false",
+    )
+    def test_record_worker_session_does_not_claim_different_session(self) -> None:
+        self._seed_launch("w1:p1", worker_session="old-session")
+        recorded = herdr_delegate._record_worker_session(
+            pane="w1:p1",
+            session={"agent": "pi", "kind": "path", "value": "/sessions/new.jsonl"},
+        )
+        self.assertFalse(recorded)  # a different session is not yet recorded
+        self.assertEqual(self._records()[0]["worker_session"], "old-session")
 
 
 if __name__ == "__main__":

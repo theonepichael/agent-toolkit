@@ -56,6 +56,11 @@ level-triggered and acked like a cost alert via the same ``--ack-cost``, so it
 fires once per worker per session and never stops, prompts, or messages the
 worker.
 
+``watch`` also backfills each watched worker's session id into the launch
+ledger the first time it observes the worker's session (keyed by pane, never
+the truncated agent name; see ``_record_worker_session``), so the foreman no
+longer copies agent-to-session links by hand.
+
 For a ``launch --slug`` with no ``--cwd``, the worker tab starts in the item's
 repository main checkout, resolved from the item's ``related_files`` the same
 way ``prepare_worker_worktree`` resolves it -- never the caller's
@@ -152,7 +157,7 @@ from worktree import (  # noqa: E402
 
 # What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
 # Reader for the backlog store (via dev_status_storage); writer of its own
-# append-only launch ledger (see _append_launch_record).
+# launch ledger (see _append_launch_record, _record_worker_session).
 TOOLKIT_DATA = "writer"
 TOOLKIT_DATA_VIA = ("dev_status_storage",)
 
@@ -223,7 +228,7 @@ def _append_launch_record(
         "worker_session": worker_session,
     }
     try:
-        with migration_lock.shared("launch-log", quiet=True):
+        with migration_lock.shared("launch-log", quiet=True), _launch_log_lock():
             cli_common.append_jsonl(launch_log_file(), record)
     except agent_toolkit_paths.LayoutError:
         return
@@ -231,6 +236,119 @@ def _append_launch_record(
         migration_lock.observe("launch-log", "refused-telemetry", str(exc), quiet=True)
     except Exception as exc:
         print(f"[launch-log] append failed (non-fatal): {exc}", file=sys.stderr)
+
+
+@contextlib.contextmanager
+def _launch_log_lock() -> Iterator[None]:
+    """Serialize launch-log writers (appends and rewrites) against each other.
+
+    A blocking exclusive ``fcntl.flock`` on a stable ``<launch-log>.lock``
+    sibling (never ``os.replace``d). ``migration_lock.shared`` only excludes
+    the layout migrator (LOCK_SH), so two writers still overlap; this lock is
+    what stops a ``watch`` rewrite from unlinking an inode a concurrent
+    ``launch`` append just wrote to. Blocking (no LOCK_NB): the critical
+    sections are a one-line append or a small read-modify-write.
+    """
+    path = launch_log_file()
+    lock_path = path.with_name(path.name + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
+def _worker_session_id(session: object) -> str | None:
+    """A worker's session-id string from its ``agent_session``; else None.
+
+    pi's is the session-file path; agy's is the raw conversation id (or db
+    path) string, or a bare string. Anything empty, whitespace-only, or not a
+    known session shape is None -- never a malformed listing.
+    """
+    if isinstance(session, str):
+        return session.strip() or None
+    if not isinstance(session, dict):
+        return None
+    if session.get("agent") == "pi":
+        val = _pi_session_path(session)
+        return val if val and val.strip() else None
+    if (
+        session.get("agent") == "agy"
+        or session.get("source") == "herdr:antigravity_cli"
+    ):
+        for key in ("value", "agent_session_id", "agent_session_path"):
+            val = session.get(key)
+            if isinstance(val, str) and val.strip():
+                return val
+    return None
+
+
+def _update_launch_record_session(path: Path, pane: str, session_id: str) -> bool:
+    """Set ``worker_session`` on the most recent record for ``pane``; True if this session is recorded.
+
+    Returns True when the most recent well-formed record whose ``pane`` equals
+    ``pane`` ends up carrying this ``session_id`` (we set a null record, or it
+    already had this id); False when there is no such record, or the most
+    recent record carries a *different* session id (this worker's launch record
+    has not been appended yet, so the caller retries on a later poll). Never
+    appends a new line and never overwrites a non-null ``worker_session``.
+    Malformed or non-object lines are preserved verbatim and skipped.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return False
+    lines = text.splitlines()
+    for idx in range(len(lines) - 1, -1, -1):
+        line = lines[idx]
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(record, dict) or record.get("pane") != pane:
+            continue
+        if record.get("worker_session") == session_id:
+            return True
+        if record.get("worker_session"):
+            return False  # a different, already-recorded session: not this one yet
+        record["worker_session"] = session_id
+        lines[idx] = json.dumps(record)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+        return True
+    return False
+
+
+def _record_worker_session(*, pane: str | None, session: object) -> bool:
+    """Backfill a launch-log entry's ``worker_session`` from a worker's session.
+
+    Returns True when this worker's session id is recorded in the launch ledger
+    for its pane (recorded now, or already carrying this exact id); False when
+    there is nothing to record (no id, no pane, no matching record, a different
+    already-recorded session, or the write was skipped). Never raises -- same
+    telemetry contract as ``_append_launch_record``.
+    """
+    if not isinstance(pane, str) or not pane.strip():
+        return False
+    session_id = _worker_session_id(session)
+    if not session_id:
+        return False
+    try:
+        with migration_lock.shared("launch-log", quiet=True), _launch_log_lock():
+            return _update_launch_record_session(launch_log_file(), pane, session_id)
+    except agent_toolkit_paths.LayoutError:
+        return False
+    except migration_lock.MigrationLockBusy as exc:
+        migration_lock.observe("launch-log", "refused-telemetry", str(exc), quiet=True)
+        return False
+    except Exception as exc:
+        print(f"[launch-log] backfill failed (non-fatal): {exc}", file=sys.stderr)
+        return False
 
 
 # `prefix_of` and `is_worker_safe` are imported, never redefined. The whole
@@ -1798,7 +1916,12 @@ def _cmd_watch(args: argparse.Namespace) -> None:
                 if name not in state["membership"]:
                     state["membership"].append(name)
                 cur = by_name[name]
-                if name not in state["agents"]:
+                prev = state["agents"].get(name)
+                # Snapshot the retry marker BEFORE mutating: the record is
+                # mutated in place below, so `prev` and the stored dict are
+                # the same object.
+                prev_logged = prev.get("logged_session") if prev is not None else None
+                if prev is None:
                     state["agents"][name] = {
                         "acked_seq": 0,
                         "first_seen_at": now,
@@ -1809,17 +1932,34 @@ def _cmd_watch(args: argparse.Namespace) -> None:
                         "terminal_id": cur.get("terminal_id"),
                     }
                 else:
-                    rec = state["agents"][name]
+                    rec = prev
                     if _is_session_change(rec, cur):
                         rec["first_seen_at"] = now
                         rec["ever_working"] = cur["status"] == "working"
                         rec["acked_seq"] = 0
+                        # A reused name in a new pane/session starts clean.
+                        rec.pop("logged_session", None)
+                        prev_logged = None
                     elif cur["status"] == "working":
                         rec["ever_working"] = True
                     rec["last_seq"] = cur["seq"]
                     rec["agent_session"] = cur.get("agent_session")
                     rec["pane_id"] = cur.get("pane_id")
                     rec["terminal_id"] = cur.get("terminal_id")
+
+                # Backfill the launch ledger once the worker's session is known,
+                # retrying on a later poll if this one was skipped (lock busy /
+                # record not yet appended). No launch-log I/O once logged_session
+                # matches.
+                cur_session_id = _worker_session_id(cur.get("agent_session"))
+                if (
+                    cur_session_id
+                    and prev_logged != cur_session_id
+                    and _record_worker_session(
+                        pane=cur.get("pane_id"), session=cur.get("agent_session")
+                    )
+                ):
+                    state["agents"][name]["logged_session"] = cur_session_id
 
             attention: dict[str, dict[str, object]] = {}
             for name in sorted(present & targets):
