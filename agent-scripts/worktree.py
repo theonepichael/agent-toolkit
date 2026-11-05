@@ -115,11 +115,9 @@ def result_payload(result: WorktreeResult) -> dict[str, object]:
 def find_repo_for_path(path: Path) -> Path | None:
     """Find the enclosing git repository's main checkout for a given path.
 
-    A path inside a linked worktree resolves to the repository's main checkout
-    (the parent of the shared common git dir) rather than the removable
-    worktree, so two worktrees of one repository count as one. A path in the
-    main checkout, or in a repository without linked worktrees (a submodule, a
-    separate git dir), still resolves to its own ``--show-toplevel``.
+    A linked-worktree path resolves to the main checkout only when the common
+    git dir is that checkout's own ``.git``; otherwise (``--separate-git-dir``
+    or bare) to its own ``--show-toplevel``.
     """
     p = path.resolve() if path.is_absolute() else (Path.cwd() / path).resolve()
     while not p.exists() and p != p.parent:
@@ -134,24 +132,14 @@ def find_repo_for_path(path: Path) -> Path | None:
         return None
     if git_dir is None or common is None:
         return None
-    if git_dir != common:
-        # Linked worktree: the main checkout is the common git dir's parent.
+    # Linked worktree of a normal repo: main checkout is the common dir's parent.
+    if (
+        git_dir != common
+        and _git_dir(common.parent) == common
+        and _show_toplevel(common.parent) == common.parent
+    ):
         return common.parent
-    # Main checkout (or a repository with no linked worktrees): keep the
-    # existing --show-toplevel resolution, which already returns None for a
-    # bare repository.
-    try:
-        res = subprocess.run(
-            ["git", "-C", str(dir_to_check), "rev-parse", "--show-toplevel"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if res.returncode == 0 and res.stdout.strip():
-            return Path(res.stdout.strip()).resolve()
-    except Exception:
-        pass
-    return None
+    return _show_toplevel(dir_to_check)
 
 
 def resolve_backlog_item(
@@ -435,6 +423,25 @@ def _git_dir(target_dir: Path) -> Path | None:
     """Resolve git dir for target_dir as an absolute Path."""
     res = subprocess.run(
         ["git", "-C", str(target_dir), "rev-parse", "--git-dir"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if res.returncode != 0:
+        return None
+    raw = res.stdout.strip()
+    if not raw:
+        return None
+    p = Path(raw)
+    if not p.is_absolute():
+        p = target_dir / p
+    return p.resolve()
+
+
+def _show_toplevel(target_dir: Path) -> Path | None:
+    """Resolve git's --show-toplevel for target_dir as an absolute Path."""
+    res = subprocess.run(
+        ["git", "-C", str(target_dir), "rev-parse", "--show-toplevel"],
         capture_output=True,
         text=True,
         check=False,

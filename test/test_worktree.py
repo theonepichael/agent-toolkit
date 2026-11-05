@@ -19,10 +19,19 @@ sys.path.insert(0, str(REPO_ROOT / "agent-scripts"))
 import worktree  # noqa: E402 — must follow sys.path.insert above
 
 
-def _init_repo(path: Path) -> Path:
-    """Initialize a git repository in path with an initial commit."""
-    path.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["git", "init", "-b", "main", str(path)], check=True, capture_output=True)
+def _init_repo(path: Path, *, init: bool = True) -> Path:
+    """Initialize a git repository in path with an initial commit.
+
+    With ``init=False``, skip ``git init`` and directory creation and only
+    configure the repository and commit an initial README -- for a worktree
+    added to an existing repository (a bare repo, or a --separate-git-dir
+    checkout).
+    """
+    if init:
+        path.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["git", "init", "-b", "main", str(path)], check=True, capture_output=True
+        )
     subprocess.run(["git", "-C", str(path), "config", "user.name", "Test User"], check=True)
     subprocess.run(["git", "-C", str(path), "config", "user.email", "test@example.com"], check=True)
     # Disable git's background maintenance -- it can create/remove a
@@ -601,6 +610,79 @@ class TestWorktree:
         subdir = repo / "subdir"
         subdir.mkdir()
         assert worktree.find_repo_for_path(subdir) == main
+
+    @pytest.mark.regression(
+        "worktree-resolve-separate-git-dir",
+        "AssertionError: assert PosixPath('/tmp/pytest-of-yanil/pytest-13/test_separate_git_dir_linked_w0/work') == PosixPath('/tmp/pytest-of-yanil/pytest-13/test_separate_git_dir_linked_w0/work/main-wt')",
+    )
+    def test_separate_git_dir_linked_worktree_resolves_to_worktree(
+        self, tmp_path: Path
+    ) -> None:
+        """A linked worktree of a --separate-git-dir repository resolves to its
+        own work tree, not the common git dir's parent."""
+        base = tmp_path / "work"
+        gitdir = base / "gitdir"
+        main = base / "main"
+        subprocess.run(
+            [
+                "git",
+                "init",
+                "-q",
+                "-b",
+                "main",
+                f"--separate-git-dir={gitdir}",
+                str(main),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        _init_repo(main, init=False)
+        wt = base / "main-wt"
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(main),
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "wt-branch",
+                str(wt),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        assert worktree.find_repo_for_path(wt) == wt.resolve()
+
+    @pytest.mark.regression(
+        "worktree-resolve-bare-worktree",
+        "AssertionError: assert PosixPath('/tmp/pytest-of-yanil/pytest-13/test_bare_repo_linked_worktree0/work') == PosixPath('/tmp/pytest-of-yanil/pytest-13/test_bare_repo_linked_worktree0/work/bare-wt')",
+    )
+    def test_bare_repo_linked_worktree_resolves_to_worktree(
+        self, tmp_path: Path
+    ) -> None:
+        """A linked worktree of a bare repository resolves to its own work
+        tree, not the bare repo's parent."""
+        base = tmp_path / "work"
+        bare = base / "bare.git"
+        subprocess.run(
+            ["git", "init", "-q", "--bare", str(bare)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        wt = base / "bare-wt"
+        subprocess.run(
+            ["git", "-C", str(bare), "worktree", "add", "-q", str(wt)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        _init_repo(wt, init=False)
+        assert worktree.find_repo_for_path(wt) == wt.resolve()
 
     def test_bare_repo_resolves_to_none(self, tmp_path: Path) -> None:
         """A bare repository path still resolves to None (no work tree)."""
