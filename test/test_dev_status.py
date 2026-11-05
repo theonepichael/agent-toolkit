@@ -5446,6 +5446,74 @@ class BacklogTestCase(BacklogFixture):
         )
         self.assertNotIn("resource_tags", self._item_by_id("atk-tag"))
 
+    @pytest.mark.regression(
+        "resource-tags-frozen-while-claimed",
+        "AssertionError: SystemExit not raised",
+    )
+    def test_resource_tags_frozen_while_claimed(self):
+        # An in-progress item with tags, and an in-review sibling (the
+        # review->update->reject bypass), plus an open item for the
+        # pass-through case. The refusal keys on status, not the claim.
+        tagged = make_item("atk-tag", status="in-progress")
+        tagged["resource_tags"] = ["gpu"]
+        self.write_items(
+            [
+                tagged,
+                make_item("atk-rev", status="in-review"),
+                make_item("atk-open"),
+            ]
+        )
+
+        # Any resource_tags patch on an in-progress item refuses: changed,
+        # identical, and empty-list all freeze the field.
+        for tag_patch in (
+            '{"resource_tags": ["cpu"]}',
+            '{"resource_tags": ["gpu"]}',
+            '{"resource_tags": []}',
+        ):
+            err = io.StringIO()
+            with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+                dev_status.cmd_update(_args(id="atk-tag", patch=tag_patch))
+            self.assertEqual(cm.exception.code, 1, tag_patch)
+            msg = err.getvalue()
+            self.assertIn("resource_tags", msg)
+            self.assertIn("reopen", msg)
+
+        # Nothing was written: tags (and rev) are unchanged.
+        self.assertEqual(self._item_by_id("atk-tag")["resource_tags"], ["gpu"])
+
+        # A mixed patch is rejected whole -- the editable field stays put too.
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+            dev_status.cmd_update(
+                _args(
+                    id="atk-tag",
+                    patch='{"summary": "changed", "resource_tags": ["cpu"]}',
+                )
+            )
+        self.assertEqual(cm.exception.code, 1)
+        self.assertEqual(self._item_by_id("atk-tag")["summary"], "Summary of atk-tag")
+
+        # related_files stays editable on an in-progress item.
+        dev_status.cmd_update(
+            _args(id="atk-tag", patch='{"related_files": [{"path": "/x", "note": "n"}]}')
+        )
+        self.assertEqual(
+            self._item_by_id("atk-tag")["related_files"],
+            [{"path": "/x", "note": "n"}],
+        )
+
+        # in-review is also claimed: the review->update->reject bypass is closed.
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+            dev_status.cmd_update(_args(id="atk-rev", patch='{"resource_tags": ["gpu"]}'))
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("resource_tags", err.getvalue())
+
+        # An open item's tags stay editable.
+        dev_status.cmd_update(_args(id="atk-open", patch='{"resource_tags": ["gpu"]}'))
+        self.assertEqual(self._item_by_id("atk-open")["resource_tags"], ["gpu"])
+
     def test_ws10_serial_path_resolution_handles_future_leaves_and_symlink_escape(
         self,
     ):

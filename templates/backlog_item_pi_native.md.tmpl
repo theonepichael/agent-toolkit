@@ -441,7 +441,9 @@ concurrency-cap accounting.
    exclusive resource would contend for it. A deferred item is still owed
    and becomes schedulable once the worker it collided with finishes; a
    skipped one was only held back by the concurrency cap and is coming next
-   wave regardless. Both are named in the tool's result text. Each worker's tab is created with `PI_AGENT_UNATTENDED=1` in its
+   wave regardless. Both are named in the tool's result text. `resource_tags`
+   are fixed once an item is in progress; change them by reopening the item
+   first. Each worker's tab is created with `PI_AGENT_UNATTENDED=1` in its
    environment, so both gate extensions settle themselves at pi's module
    load, before the worker can be handed anything. Nothing is negotiated
    over the wire and there is no acknowledgement to wait for.

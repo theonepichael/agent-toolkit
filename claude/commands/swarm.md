@@ -242,6 +242,8 @@ Key invariants must be exactly right:
   claim, e.g. one GPU) are never spawned into the same wave: the scheduler
   treats each tag as a claim through its existing file-overlap collision
   check, deferring the second item until the first worker finishes.
+  `resource_tags` are fixed once an item is in progress; change them by
+  reopening the item first.
 
 For pi, that env var disarms **only** the bash permission ask. `guard-rails.ts` stays
 armed for protected-path writes and the git-commit-on-main worktree policy, and

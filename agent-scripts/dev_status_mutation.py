@@ -2177,7 +2177,11 @@ def update_item(
 
     Content fields only: ``status`` and ``claimed_by`` cannot be requested
     here (see :class:`ItemUpdateRequest`); lifecycle transitions go through
-    the validating command for the edge.
+    the validating command for the edge. ``resource_tags`` are frozen while
+    an item is in-progress or in-review -- a mid-flight tag change would
+    leave the swarm scheduler's snapshot stale -- so such a patch is refused
+    here until the item is reopened (an in-review item must be rejected back
+    to in-progress first).
     """
     # Pre-lock defensive validations
     if (
@@ -2295,6 +2299,19 @@ def update_item(
             else:
                 item["no_worker_reason"] = request.no_worker_reason
         if request.resource_tags is not UNSET:
+            if item.get("status") in ("in-progress", "in-review"):
+                status = item.get("status")
+                reopen_hint = (
+                    "reopen the item first ('reopen <id>')"
+                    if status == "in-progress"
+                    else "reject it back to in-progress, then reopen "
+                    "('reject <id> <feedback>' then 'reopen <id>')"
+                )
+                raise InvalidItemStateError(
+                    f"[update] {slug} is {status} -- resource_tags are fixed "
+                    f"once an item is in progress; {reopen_hint} to change "
+                    "them."
+                )
             fields.append("resource_tags")
             tags = _normalize_resource_tags(request.resource_tags, "update")
             if tags:

@@ -1120,7 +1120,9 @@ a crash/restart, crash recovery, and concurrency-cap accounting.
    exclusive resource would contend for it. A deferred item is still owed
    and becomes schedulable once the worker it collided with finishes; a
    skipped one was only held back by the concurrency cap and is coming next
-   wave regardless. Both are named in the tool's result text.
+   wave regardless. Both are named in the tool's result text. `resource_tags`
+   are fixed once an item is in progress; change them by reopening the item
+   first.
 
    Each worker's agent is started with `--allow-all-tools`, which auto-approves
    every tool call -- unlike pi, Copilot CLI has no separate unattended-mode
