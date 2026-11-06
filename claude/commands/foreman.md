@@ -47,7 +47,7 @@ equivalent classifier, only its allowlist-based `permission-gate.ts`.
 
 A `--kind agy` worker runs the whole loop — launch, claim, handoff, watch,
 call cap, send-back, approve and close — as a pi worker does (drill of
-2026-11-04), with two gaps:
+2026-11-04), with operational gaps to know:
 
 - **Shell commands are guarded; a shell write into another session's claimed
   worktree is still not refused.** agy's shell tool (`run_command`) now gets
@@ -58,6 +58,15 @@ call cap, send-back, approve and close — as a pi worker does (drill of
 - **Host-restart recovery is untested.** Whether herdr restores an agy pane
   and resumes its session is unknown. Treat an agy worker as lost after a
   restart: check its worktree and relaunch.
+- **Premature done state on turn end.** herdr reports an agy worker `done`
+  whenever a turn ends, including while a background command it started (pytest,
+  a second_opinion review) is still running. Read the pane before treating a
+  `done` as a settle.
+- **Permission prompts take send-keys, not answer.** `answer` drives only
+  question-tool pickers, not agy's own "Run this command?" permission prompt.
+  Approving one takes a single `herdr agent send-keys <pane> enter` with option 1
+  highlighted, and only for commands the operator has authorized; never pick an
+  "always allow" option.
 
 ### Takeover from a closed pi orchestrator
 
@@ -119,6 +128,11 @@ python3 ~/.agent-toolkit/scripts/herdr_delegate.py launch --slug <slug> --kind {
   token-file path (`<data dir>/verifier/<slug>.token`). Keep that path
   **private** — never put it in item notes, feedback files, or worker
   prompts; a worker that holds it is the verifier and self-grades.
+
+- **Check data-egress limits** — before choosing a non-Claude worker model,
+  check the target repo's written contract for data-egress limits (e.g. banning
+  sending code or frames to non-Claude providers) and write any into the
+  item's acceptance criteria before launch.
 
 - **When to prefer `/swarm`** — a hands-off run with concurrency and file-
   overlap headroom handled by `selectSchedulable` is `/swarm`'s job, not
@@ -237,6 +251,19 @@ watcher:
    other subjects, so raise them deliberately. Anything not identified as
    restart damage stays fail-closed: find out why before more paid work.
 
+### Adding a worker mid-run
+
+To add a worker to an existing watcher, stop that watcher and re-arm it on the
+same state file with the extended member list and the same cap flags.
+
+### Gotchas
+
+- **Reading a blocked agent**: `herdr agent read <agent>` on a blocked agent
+  needs `--source visible` to show the active prompt or question picker.
+- **Stopping a watcher**: never use `pkill` to stop a watcher — `pkill` can
+  match and kill its own calling shell. Stop the recorded watcher PID directly
+  (`kill <pid>`) or use foreground Ctrl-C.
+
 ## 4. Review checklist
 
 Before landing or sending back, check every claim against the repo's written
@@ -254,6 +281,18 @@ contract (its AGENTS.md / STYLE.md / acceptance criteria) and raw run outputs:
   not leak into a committed file, and ad hoc scripts live outside `/tmp`.
 - **Re-run the tests yourself** — run the suite (or the relevant subset)
   again rather than trusting the worker's report.
+
+### Commit-gate review
+
+When a worker blocks on its commit picker: review `git diff --cached` in the
+worker's worktree against the repo contract and the minimal-code bar. When
+commit authority is delegated (step 7), approve by answering `--index 1`:
+
+```bash
+python3 ~/.agent-toolkit/scripts/herdr_delegate.py answer <agent> --expect-pane <pane> --index 1
+```
+
+Otherwise ask the operator (step 7), or send the change back via step 5.
 
 ## 5. Send-back
 
@@ -273,7 +312,7 @@ Send-back depends on the worker's current state:
   single spaces). Exit code handling: 0 ok; 3 means needs_manual with nothing
   sent (safe to retry); 4 means needs_manual *after* navigation or text was
   sent — inspect the pane before acting; 5 means submitted but the picker
-  persisted (unconfirmed).
+  persisted (unconfirmed) — it can also mean a multi-question picker advanced.
 
 - **Finished or idle worker** (parked at the interactive prompt after printing
   `FOREMAN-HANDOFF` or completing without an active picker, including AgY workers):
@@ -364,7 +403,27 @@ operator has explicitly delegated them to the foreman for this run**; in that
 delegated mode the foreman owns the review-and-landing approvals itself. A
 foreman run that was not given that delegation must stop and ask.
 
-## 8. Relationship to `/swarm` and the pi orchestrator
+## 8. Handoff and resume
+
+When ending or handing off a foreman session, save run state to a fixed path
+under the foreman data directory: `~/.agent-toolkit/data/foreman/<run>-handoff.md`.
+Required contents:
+- **Operator decisions and caps**: delegated authorities, active spend/call caps.
+- **Open items**: each in-flight item's slug, worker agent name, pane, worktree,
+  and current state.
+- **Watch command**: the exact `herdr_delegate.py watch` command line and state file.
+- **Not-for-workers list**: backlog items not eligible for worker launch.
+
+Resume the run in a new session with:
+
+```
+/foreman resume ~/.agent-toolkit/data/foreman/<run>-handoff.md
+```
+
+On resume, reconcile recorded worker panes and states against live herdr state
+before acting.
+
+## 9. Relationship to `/swarm` and the pi orchestrator
 
 The foreman is a **mode, not a second scheduler**. It does not re-implement
 the pi orchestrator's decisions in prose: eligibility comes from

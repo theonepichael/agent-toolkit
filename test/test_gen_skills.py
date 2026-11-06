@@ -788,6 +788,40 @@ class ForemanTakeoverTests(unittest.TestCase):
         self.assertGreater(seen, 0)
 
 
+class ForemanOperationalLessonsTests(unittest.TestCase):
+    """Every foreman copy documents operational lessons from runs:
+    commit-gate review, handoff/resume, mid-run worker addition, gotchas,
+    and data-egress check before worker launch.
+    """
+
+    def test_operational_lessons_in_every_foreman_output(self) -> None:
+        rendered = gs.render_all(REPO_ROOT, SKILL_PARAMS)
+        seen = 0
+        for (skill, _harness), path in gs.OUTPUT_PATHS.items():
+            if skill != "foreman":
+                continue
+            seen += 1
+            text = " ".join(rendered[path].split())
+            # Commit-gate review step
+            self.assertIn("git diff --cached", text, path)
+            self.assertIn("--index 1", text, path)
+            # Handoff / resume
+            self.assertIn("-handoff.md", text, path)
+            self.assertIn("/foreman resume", text, path)
+            # Mid-run worker addition
+            self.assertIn("mid-run", text, path)
+            # Gotchas & exit code handling
+            self.assertIn("--source visible", text, path)
+            self.assertIn("multi-question picker", text, path)
+            self.assertIn("pkill", text, path)
+            # Data-egress limits in step 2
+            self.assertIn("data-egress", text, path)
+            # Agy worker operational gaps in step 1
+            self.assertIn("Premature done state on turn end", text, path)
+            self.assertIn("Permission prompts take send-keys", text, path)
+        self.assertGreater(seen, 0)
+
+
 class EndToEndTests(unittest.TestCase):
     """Assert the real templates + params render to exactly what's committed."""
 
