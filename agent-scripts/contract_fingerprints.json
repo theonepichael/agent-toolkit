@@ -339,7 +339,7 @@
   "guard_rails.py": [
     "arg (top-level) --command: \u2014 shell command, for the neutral bash-family form",
     "arg (top-level) --cwd: \u2014 session working directory, for the neutral form",
-    "arg (top-level) --harness: \u2014 read this harness's payload on stdin and answer in its shape (choices: claude, agy, copilot)",
+    "arg (top-level) --harness: \u2014 name the calling harness: claude/agy/copilot read that harness's payload on stdin and answer in its shape; pi uses the neutral flag form and only labels the audit trail (choices: claude, agy, copilot, pi)",
     "arg (top-level) --path: \u2014 target file path, for the neutral write-family form",
     "arg (top-level) --quiet/-q: ",
     "arg (top-level) --tool: \u2014 tool name, for the neutral form",

@@ -348,6 +348,17 @@ describe("write handler delegates to the shared guard", () => {
     expect(execCalls[0]!.argv).toContain("/repo/reports/local/x.py");
   });
 
+  test("passes --harness pi so the shared guard labels pi's audit rows", async () => {
+    const { handler, execCalls } = loadWriteHandler();
+    const event = { toolName: "write", input: { path: "/repo/reports/local/x.py" } };
+    await handler(event, { hasUI: false, cwd: "/repo" });
+    expect(execCalls.length).toBe(1);
+    const argv = execCalls[0]!.argv;
+    const harnessIdx = argv.indexOf("--harness");
+    expect(harnessIdx).toBeGreaterThanOrEqual(0);
+    expect(argv[harnessIdx + 1]).toBe("pi");
+  });
+
   test("does not block a write when the shared guard allows", async () => {
     const { handler, execCalls } = loadWriteHandler();
     const event = { toolName: "write", input: { path: "/repo/reports/local/x.py" } };
@@ -365,5 +376,51 @@ describe("write handler delegates to the shared guard", () => {
       reason: 'Path "/repo/.env" is protected by guard-rails',
     });
     expect(execCalls.length).toBe(0);
+  });
+});
+
+describe("bash handler delegates to the shared guard", () => {
+  function loadBashHandler() {
+    const listeners = new Map<string, ((...args: any[]) => any)[]>();
+    const execCalls: { cmd: string; argv: string[] }[] = [];
+    let execResponse = { code: 0, stdout: JSON.stringify({ decision: "allow" }), stderr: "" };
+    const mockPi = {
+      events: { on: () => () => {}, emit: () => {} },
+      on: (event: string, handler: (...args: any[]) => any) => {
+        const list = listeners.get(event) ?? [];
+        list.push(handler);
+        listeners.set(event, list);
+      },
+      registerCommand: () => {},
+      exec: async (cmd: string, argv: string[]) => {
+        execCalls.push({ cmd, argv });
+        return execResponse;
+      },
+    } as unknown as ExtensionAPI;
+    guardRailsExtension(mockPi);
+    const handler = listeners.get("tool_call")?.[0];
+    if (!handler) throw new Error("bash handler not registered");
+    return {
+      handler,
+      execCalls,
+      setResponse: (r: { code: number; stdout: string; stderr: string }) => {
+        execResponse = r;
+      },
+    };
+  }
+
+  test("passes --harness pi so the shared guard labels pi's audit rows", async () => {
+    const { handler, execCalls } = loadBashHandler();
+    const event = { toolName: "bash", input: { command: "ls" } };
+    const result = await handler(event, { hasUI: false, cwd: "/repo" });
+    expect(result).toBeUndefined();
+    expect(execCalls.length).toBe(1);
+    const argv = execCalls[0]!.argv;
+    const harnessIdx = argv.indexOf("--harness");
+    expect(harnessIdx).toBeGreaterThanOrEqual(0);
+    expect(argv[harnessIdx + 1]).toBe("pi");
+    expect(argv).toContain("--tool");
+    expect(argv).toContain("bash");
+    expect(argv).toContain("ls");
   });
 });

@@ -705,6 +705,41 @@ class AuditLogTests(unittest.TestCase):
         self.assertEqual(record["tool"], "bash")
         self.assertEqual(record["target"], "ls")
 
+    def test_pi_neutral_mode_records_pi_harness(self) -> None:
+        with mock.patch.object(
+            guard_rails, "evaluate", return_value=guard_rails.Verdict("allow")
+        ):
+            self._run(
+                ["--harness", "pi", "--tool", "bash", "--cwd", "/repo", "--command", "ls"]
+            )
+        (record,) = self._records()
+        self.assertEqual(record["harness"], "pi")
+        self.assertEqual(record["tool"], "bash")
+        self.assertEqual(record["target"], "ls")
+
+    def test_pi_neutral_mode_denial_records_pi_harness(self) -> None:
+        with mock.patch.object(
+            guard_rails,
+            "evaluate",
+            return_value=guard_rails.Verdict("deny", "no", rule="no-verify"),
+        ):
+            self._run(
+                [
+                    "--harness",
+                    "pi",
+                    "--tool",
+                    "bash",
+                    "--cwd",
+                    "/repo",
+                    "--command",
+                    "git commit --no-verify",
+                ]
+            )
+        (record,) = self._records()
+        self.assertEqual(record["harness"], "pi")
+        self.assertEqual(record["decision"], "deny")
+        self.assertEqual(record["rule"], "no-verify")
+
     def test_each_invocation_appends_exactly_one_line(self) -> None:
         payload = json.dumps(
             {

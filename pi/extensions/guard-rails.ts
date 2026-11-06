@@ -173,6 +173,8 @@ async function sharedGuard(
       "python3",
       [
         `${process.env.HOME}/.agent-toolkit/scripts/guard_rails.py`,
+        "--harness",
+        "pi",
         "--tool",
         tool,
         "--cwd",
@@ -205,6 +207,8 @@ async function sharedBashGuard(
       "python3",
       [
         `${process.env.HOME}/.agent-toolkit/scripts/guard_rails.py`,
+        "--harness",
+        "pi",
         "--tool",
         "bash",
         "--cwd",

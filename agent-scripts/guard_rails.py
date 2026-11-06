@@ -13,6 +13,8 @@ in-progress item.
 Claude Code, agy and Copilot pipe their native hook payload in on stdin and
 get their native verdict back on stdout. Pi and opencode already hold the
 parsed values, so they pass them as flags and read a neutral JSON verdict.
+Pi additionally passes ``--harness pi`` so its audit rows are attributable;
+opencode uses the unlabelled neutral form.
 
 Write-family tool calls get the full R2/R3 check above. Bash calls get a
 narrower check: blocking ``git commit`` itself by parsing a shell string was
@@ -62,11 +64,17 @@ tolerates PID reuse).
 
 Usage:
     guard_rails.py --harness claude|agy|copilot        read stdin, write that harness's verdict
-    guard_rails.py --tool T --cwd D --path P           neutral write-family form for Pi/opencode
-    guard_rails.py --tool bash --cwd D --command C     neutral bash-family form for Pi/opencode
+    guard_rails.py --harness pi --tool T --cwd D --path P
+                                                       pi's write-family form, audit-labelled
+    guard_rails.py --harness pi --tool bash --cwd D --command C
+                                                       pi's bash-family form, audit-labelled
+    guard_rails.py --tool T --cwd D --path P           neutral write-family form (opencode)
+    guard_rails.py --tool bash --cwd D --command C     neutral bash-family form (opencode)
 
 Flags
-  --harness NAME  read the named harness's payload on stdin and answer in its shape
+  --harness NAME  name the calling harness: claude/agy/copilot read that
+                  harness's payload on stdin and answer in its shape; pi uses
+                  the neutral flag form and only labels the audit trail
   --tool NAME     tool name, for the neutral form
   --cwd DIR       session working directory, for the neutral form
   --path PATH     target file path, for the neutral write-family form
@@ -211,6 +219,11 @@ _HARNESS_ALLOW = {
     "agy": json.dumps({"decision": "allow"}),
     "copilot": json.dumps({"decision": "allow"}),
 }
+# Harnesses that call the neutral flag form but still want the audit trail
+# attributed to them by name. They never read stdin (they already hold the
+# parsed values); --harness here only labels the audit record, it does not
+# switch them to the stdin payload form.
+_NEUTRAL_HARNESSES = frozenset({"pi"})
 
 
 def bash_trigger_free(command: str) -> bool:
@@ -261,12 +274,15 @@ def _fast_decide(
     answer, or None to fall through. Writes nothing."""
     off = os.environ.get("GUARD_RAILS_OFF") == "1"
     if raw is None:  # neutral bash form, already shape-checked by the caller
-        cwd, command = argv[3], argv[5]
+        if argv[0] == "--harness":  # --harness pi --tool bash --cwd D --command C
+            harness, cwd, command = argv[1], argv[5], argv[7]
+        else:
+            harness, cwd, command = "", argv[3], argv[5]
         if cwd.startswith("-") or command.startswith("-"):
             return None
         if not bash_trigger_free(command):
             return None
-        harness, tool, target, out = "", "bash", command, _NEUTRAL_ALLOW
+        tool, target, out = "bash", command, _NEUTRAL_ALLOW
         rule = "GUARD_RAILS_OFF" if off else "default-allow"
     else:
         harness = argv[1]
@@ -337,7 +353,14 @@ def _fast_path(argv: list[str]) -> bool:
         and argv[0::2] == ["--tool", "--cwd", "--command"]
         and argv[1] == "bash"
     )
-    if not (harness_form or neutral_form):
+    labelled_neutral_form = (
+        len(argv) == 8
+        and argv[0] == "--harness"
+        and argv[1] in _NEUTRAL_HARNESSES
+        and argv[2::2] == ["--tool", "--cwd", "--command"]
+        and argv[3] == "bash"
+    )
+    if not (harness_form or neutral_form or labelled_neutral_form):
         return False
     raw = sys.stdin.read() if harness_form else None
     try:
@@ -1723,8 +1746,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--harness",
-        choices=["claude", "agy", "copilot"],
-        help="read this harness's payload on stdin and answer in its shape",
+        choices=["claude", "agy", "copilot", "pi"],
+        help=(
+            "name the calling harness: claude/agy/copilot read that "
+            "harness's payload on stdin and answer in its shape; pi uses "
+            "the neutral flag form and only labels the audit trail"
+        ),
     )
     parser.add_argument("--tool", help="tool name, for the neutral form")
     parser.add_argument("--cwd", help="session working directory, for the neutral form")
@@ -1742,6 +1769,18 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     off = os.environ.get("GUARD_RAILS_OFF") == "1"
 
+    # pi passes --harness pi but is still the neutral flag form (no stdin);
+    # the label only tags the audit trail. claude/agy/copilot read a native
+    # payload on stdin and get a native-shaped verdict back.
+    stdin_harness = (
+        args.harness
+        if args.harness and args.harness not in _NEUTRAL_HARNESSES
+        else None
+    )
+    neutral_harness = (
+        args.harness if args.harness and args.harness in _NEUTRAL_HARNESSES else ""
+    )
+
     if off:
         # Bypass every rule, including layout errors, exactly as before.
         claims = LocalClaimLookup()
@@ -1753,12 +1792,12 @@ def main(argv: list[str] | None = None) -> int:
                 layout_reason,
                 rule="layout-error",
             )
-            if args.harness:
-                out, code = render(args.harness, verdict)
-                if args.harness == "copilot" and verdict.reason:
+            if stdin_harness:
+                out, code = render(stdin_harness, verdict)
+                if stdin_harness == "copilot" and verdict.reason:
                     print(verdict.reason, file=sys.stderr)
                 print(out)
-                _audit_verdict(args.harness, None, verdict)
+                _audit_verdict(stdin_harness, None, verdict)
                 return code
             req = Request(
                 tool=tool_family(args.tool),
@@ -1768,38 +1807,38 @@ def main(argv: list[str] | None = None) -> int:
             )
             out, code = render(None, verdict)
             print(out)
-            _audit_verdict("", req, verdict)
+            _audit_verdict(neutral_harness, req, verdict)
             return code
         claims = LocalClaimLookup()
 
-    if args.harness:
+    if stdin_harness:
         try:
             payload = json.loads(sys.stdin.read() or "{}")
         except ValueError:
             payload = None
-        req = parse_payload(args.harness, payload) if payload is not None else None
+        req = parse_payload(stdin_harness, payload) if payload is not None else None
         if req is None:
-            out, code = render(args.harness, Verdict("allow"))
+            out, code = render(stdin_harness, Verdict("allow"))
             print(out)
-            _audit_verdict(args.harness, None, Verdict("allow"))
+            _audit_verdict(stdin_harness, None, Verdict("allow"))
             return code
-        if not off and args.harness == "agy" and req.tool == "bash":
+        if not off and stdin_harness == "agy" and req.tool == "bash":
             destructive = evaluate_bash_destructive(req.command)
             if destructive.decision == "deny":
-                out, code = render(args.harness, destructive)
+                out, code = render(stdin_harness, destructive)
                 print(out)
-                _audit_verdict(args.harness, req, destructive)
+                _audit_verdict(stdin_harness, req, destructive)
                 return code
         verdict = evaluate(req, claims)
         cli_common.vprint(
             f"[guard-rails] {verdict.decision}: {verdict.reason}",
             verbose=args.verbose,
         )
-        out, code = render(args.harness, verdict)
-        if args.harness == "copilot" and verdict.reason:
+        out, code = render(stdin_harness, verdict)
+        if stdin_harness == "copilot" and verdict.reason:
             print(verdict.reason, file=sys.stderr)
         print(out)
-        _audit_verdict(args.harness, req, verdict)
+        _audit_verdict(stdin_harness, req, verdict)
         return code
 
     req = Request(
@@ -1811,7 +1850,7 @@ def main(argv: list[str] | None = None) -> int:
     verdict = evaluate(req, claims)
     out, code = render(None, verdict)
     print(out)
-    _audit_verdict("", req, verdict)
+    _audit_verdict(neutral_harness, req, verdict)
     return code
 
 

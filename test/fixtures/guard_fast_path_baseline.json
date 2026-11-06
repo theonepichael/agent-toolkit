@@ -105,6 +105,11 @@
     "exit": 0,
     "stdout": "{\"decision\": \"deny\", \"reason\": \"malformed layout pointer <HOME>/.agent-toolkit/data/toolkit_state.json: expected schema 1, got 999; fix or remove it\"}\n"
   },
+  "broken-pi-bash-ls": {
+    "audit": [],
+    "exit": 0,
+    "stdout": "{\"decision\": \"deny\", \"reason\": \"malformed layout pointer <HOME>/.agent-toolkit/data/toolkit_state.json: expected schema 1, got 999; fix or remove it\"}\n"
+  },
   "claude-bash-config-read": {
     "audit": [
       {
@@ -583,6 +588,58 @@
         "rule": "GUARD_RAILS_OFF",
         "target": "ls",
         "tool": "bash"
+      }
+    ],
+    "exit": 0,
+    "stdout": "{\"decision\": \"allow\", \"reason\": \"\"}\n"
+  },
+  "off-pi-bash-ls": {
+    "audit": [
+      {
+        "decision": "allow",
+        "harness": "pi",
+        "rule": "GUARD_RAILS_OFF",
+        "target": "ls",
+        "tool": "bash"
+      }
+    ],
+    "exit": 0,
+    "stdout": "{\"decision\": \"allow\", \"reason\": \"\"}\n"
+  },
+  "pi-bash-ls": {
+    "audit": [
+      {
+        "decision": "allow",
+        "harness": "pi",
+        "rule": "default-allow",
+        "target": "ls",
+        "tool": "bash"
+      }
+    ],
+    "exit": 0,
+    "stdout": "{\"decision\": \"allow\", \"reason\": \"\"}\n"
+  },
+  "pi-bash-no-verify": {
+    "audit": [
+      {
+        "decision": "deny",
+        "harness": "pi",
+        "rule": "no-verify",
+        "target": "git commit --no-verify",
+        "tool": "bash"
+      }
+    ],
+    "exit": 0,
+    "stdout": "{\"decision\": \"deny\", \"reason\": \"git --no-verify is blocked on a protected branch -- it would skip the no-commit-on-main hook entirely.\"}\n"
+  },
+  "pi-write": {
+    "audit": [
+      {
+        "decision": "allow",
+        "harness": "pi",
+        "rule": "default-allow",
+        "target": "<REPO>/README.md",
+        "tool": "write"
       }
     ],
     "exit": 0,

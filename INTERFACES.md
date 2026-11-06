@@ -1008,7 +1008,7 @@ Pre-tool guard shared by every harness: refuse a write into a repository's main 
 - Installed at: `~/.agent-toolkit/scripts/guard_rails.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): pre-tool guard shared by every harness
-  - `--harness` — read this harness's payload on stdin and answer in its shape (choices: claude, agy, copilot)
+  - `--harness` — name the calling harness: claude/agy/copilot read that harness's payload on stdin and answer in its shape; pi uses the neutral flag form and only labels the audit trail (choices: claude, agy, copilot, pi)
   - `--tool` — tool name, for the neutral form
   - `--cwd` — session working directory, for the neutral form
   - `--path` — target file path, for the neutral write-family form

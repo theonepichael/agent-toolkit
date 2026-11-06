@@ -152,10 +152,12 @@ FAST_CASES = {
     "copilot-bad-args",
     "neutral-bash-ls",
     "neutral-bash-empty",
+    "pi-bash-ls",
     "off-claude-bash-ls",
     "off-claude-read",
     "off-copilot-view",
     "off-neutral-bash-ls",
+    "off-pi-bash-ls",
     "off-broken-claude-bash-ls",
 }
 
@@ -163,12 +165,11 @@ FAST_CASES = {
 def _decide(case: tuple) -> object:
     _, argv, payload, env_over, pointer = case
     argv = matrix._subst(argv, "/repo")
-    if argv[0] == "--harness":
+    raw = None
+    if payload is not None:
         raw = payload if isinstance(payload, str) else json.dumps(
             matrix._subst(payload, "/repo")
         )
-    else:
-        raw = None
     layout = mock.patch.object(
         guard_rails,
         "_layout_error_reason",
@@ -183,8 +184,19 @@ def _decide(case: tuple) -> object:
 
 def _claimable(case: tuple) -> bool:
     argv = case[1]
-    return (len(argv) == 2 and argv[0] == "--harness") or (
-        len(argv) == 6 and argv[0::2] == ["--tool", "--cwd", "--command"]
+    return (
+        len(argv) == 2
+        and argv[0] == "--harness"
+        and argv[1] in guard_rails._HARNESS_ALLOW
+    ) or (
+        len(argv) == 6
+        and argv[0::2] == ["--tool", "--cwd", "--command"]
+        and argv[1] == "bash"
+    ) or (
+        len(argv) == 8
+        and argv[0:2] == ["--harness", "pi"]
+        and argv[2::2] == ["--tool", "--cwd", "--command"]
+        and argv[3] == "bash"
     )
 
 
@@ -266,9 +278,52 @@ def test_the_kill_switch_skips_the_fast_path_without_reading_stdin() -> None:
         ["--tool", "bash", "--cwd", "/", "--command", "ls", "-v"],
         ["--cwd", "/", "--tool", "bash", "--command", "ls"],
         ["--tool", "edit", "--cwd", "/", "--command", "ls"],
+        ["--harness", "pi", "--tool", "write", "--cwd", "/", "--path", "/x"],
         [],
     ],
 )
 def test_other_argv_shapes_are_never_claimed(argv: list[str]) -> None:
     handled, out, rest = _run_fast(argv, _PAYLOAD)
     assert (handled, out, rest) == (False, "", _PAYLOAD)
+
+
+def test_fast_decide_pi_neutral_bash_records_pi_harness() -> None:
+    with mock.patch.object(guard_rails, "_layout_error_reason", return_value=None):
+        decided = guard_rails._fast_decide(
+            ["--harness", "pi", "--tool", "bash", "--cwd", "/repo", "--command", "ls"],
+            None,
+        )
+    assert decided is not None
+    out, record = decided
+    assert out == json.dumps({"decision": "allow", "reason": ""})
+    assert record["harness"] == "pi"
+    assert record["tool"] == "bash"
+    assert record["target"] == "ls"
+
+
+def test_pi_neutral_bash_fast_path_claims_without_reading_stdin() -> None:
+    """--harness pi prefixes the neutral bash form: the fast path must claim
+    it (staying on the fast path) and never read stdin, which pi never sends."""
+
+    class ExplodingStdin:
+        def read(self) -> str:
+            raise AssertionError("pi's neutral form must not read stdin")
+
+    argv = ["--harness", "pi", "--tool", "bash", "--cwd", "/repo", "--command", "ls"]
+    out = io.StringIO()
+    records: list[dict[str, object]] = []
+    with (
+        mock.patch.object(sys, "stdin", ExplodingStdin()),
+        mock.patch.object(sys, "stdout", out),
+        mock.patch.object(guard_rails, "_layout_error_reason", return_value=None),
+        mock.patch.object(
+            guard_rails, "_append_audit_record", side_effect=records.append
+        ),
+    ):
+        handled = guard_rails._fast_path(argv)
+    assert handled
+    assert out.getvalue() == json.dumps({"decision": "allow", "reason": ""}) + "\n"
+    (record,) = records
+    assert record["harness"] == "pi"
+    assert record["tool"] == "bash"
+    assert record["target"] == "ls"
