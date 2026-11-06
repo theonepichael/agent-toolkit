@@ -385,6 +385,7 @@
     "arg watch --call-cap-total: \u2014 alert when the aggregate calls across watched agy agents reaches CALLS",
     "arg watch --cost-cap-agent: \u2014 alert when a watched pi agent's session cost reaches USD (pi's price-table estimate, not provider billing)",
     "arg watch --cost-cap-total: \u2014 alert when every pi session's cost since local midnight reaches USD",
+    "arg watch --cost-cap-watched: \u2014 alert when the summed pi session cost of the watched agents reaches USD (pi's price-table estimate; pi sessions only, never summed across harnesses)",
     "arg watch --cost-remind-s: \u2014 an acked alert whose spend is not observable (unmeasured, incomplete, overflow) re-fires after N seconds (default 900)",
     "arg watch --cost-step: \u2014 an acked cost alert re-fires after this much more spend (default 1.0)",
     "arg watch --elapsed-cap-agent: \u2014 elapsed-time cap (seconds) fallback for a watched agy agent with an unreadable database",

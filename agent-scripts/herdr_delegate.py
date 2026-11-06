@@ -40,8 +40,10 @@ it a bounded number of times -- each attempt against a brand new tab/pane,
 never the one the timeout gave up on -- before treating it as a hard
 failure. Any other failure still fails on the first attempt, unchanged.
 
-``watch --cost-cap-agent``/``--cost-cap-total`` add spend caps measured from
-pi's session JSONL -- pi's own price-table estimate, never provider billing.
+``watch --cost-cap-agent``/``--cost-cap-total``/``--cost-cap-watched`` add spend
+caps measured from pi's session JSONL -- pi's own price-table estimate, never
+provider billing. ``--cost-cap-watched`` caps the summed cost of the watched
+agents' sessions only, while ``--cost-cap-total`` keeps its day-wide meaning.
 ``watch --call-cap-agent``/``--call-cap-total`` add call-count caps for agy
 workers measured from distinct request IDs in gen_metadata SQLite tables.
 ``watch --elapsed-cap-agent``/``--elapsed-cap-total`` provide elapsed-time
@@ -83,6 +85,7 @@ Usage:
                              [--grace-s <n>] [--timeout-s <n>] [--poll-s <n>]
                              [--strict]
                              [--cost-cap-agent <usd>] [--cost-cap-total <usd>]
+                             [--cost-cap-watched <usd>]
                              [--cost-step <usd>] [--cost-remind-s <n>]
                              [--call-cap-agent <calls>] [--call-cap-total <calls>]
                              [--elapsed-cap-agent <seconds>] [--elapsed-cap-total <seconds>]
@@ -908,6 +911,14 @@ def _is_agy_agent(raw: dict[str, object]) -> bool:
     return raw.get("agent") == "agy" or raw.get("display_agent") == "agy"
 
 
+def _is_pi_agent(raw: dict[str, object]) -> bool:
+    """Return True if Herdr metadata identifies this agent as pi."""
+    session = raw.get("agent_session")
+    if isinstance(session, dict) and session.get("agent") == "pi":
+        return True
+    return raw.get("agent") == "pi" or raw.get("display_agent") == "pi"
+
+
 def _agy_session_db(session: object) -> Path | None:
     """Resolve an agy agent's conversation SQLite database from its agent_session; else None."""
     if isinstance(session, str) and session:
@@ -1096,11 +1107,11 @@ def _watch_lock(state_path: Path) -> Iterator[None]:
 # ── foreman `watch` cost caps ───────────────────────────────────────────────
 #
 # Spend is pi's own price-table estimate read from its session JSONL (never the
-# pane status line). Every alert is a *condition* on a *subject* (`agent:<name>`
-# or `total`); an ack stores the snapshot the report printed, so a late ack can
-# never swallow spend that happened after the report. An ack snoozes at most one
-# more `--cost-step` of measured spend, or `--cost-remind-s` when the spend is
-# not observable (an incomplete measurement or an overflow).
+# pane status line). Every alert is a *condition* on a *subject* (`agent:<name>`,
+# `watched`, or `total`); an ack stores the snapshot the report printed, so a
+# late ack can never swallow spend that happened after the report. An ack
+# snoozes at most one more `--cost-step` of measured spend, or `--cost-remind-s`
+# when the spend is not observable (an incomplete measurement or an overflow).
 
 COST_REASONS = ("over_cap", "unmeasured", "incomplete")
 COST_DEFAULT_STEP = 1.0
@@ -1108,6 +1119,7 @@ COST_DEFAULT_REMIND_S = 900.0
 COST_ESTIMATE_NOTE = "pi native cost from its price table, not provider billing"
 COST_PROBLEMS_SHOWN = 20
 COST_TOTAL_SUBJECT = "total"
+COST_WATCHED_SUBJECT = "watched"
 PLANNING_REASON = "no-write"
 PLANNING_NOTE_TEXT = "pi worker reached the spend threshold with no file written yet"
 
@@ -1247,7 +1259,10 @@ def _parse_cost_token(token: str) -> tuple[str, dict[str, object]]:
     if head not in ("cost", "call", "elapsed", "planning") or len(parts) != 6:
         raise RefusedError(f"--ack-cost {token!r} is not a valid alert token")
     subject, reason, val_s, session_hash, problems_hash, day = parts
-    if not (subject == COST_TOTAL_SUBJECT or subject.startswith("agent:")):
+    fixed_ok = subject == COST_TOTAL_SUBJECT or (
+        head == "cost" and subject == COST_WATCHED_SUBJECT
+    )
+    if not (fixed_ok or subject.startswith("agent:")):
         raise RefusedError(f"--ack-cost {token!r}: unknown subject {subject!r}")
     # ``no-write`` is a planning-only reason; it is never added to COST_REASONS,
     # so ``cost:…:no-write:…`` / ``call:…:no-write:…`` / ``elapsed:…:no-write:…``
@@ -1394,10 +1409,56 @@ def _elapsed_ack_silences(
     return observable or now_ts - float(ack["acked_at"]) < remind_s
 
 
+def _watched_cost(
+    agents: dict[str, str | None], pi_workers: set[str]
+) -> analyze_sessions.PiCost:
+    """Sum pi cost across the watched agents' resolved pi sessions only.
+
+    A watched *pi* agent with no resolvable session path fails the aggregate
+    closed (``incomplete``) — its spend is unobservable, not zero. A watched
+    non-pi agent is excluded: this is a pi USD cap, so agy/copilot spend is out
+    of scope. Duplicate session paths are counted once. Problems are prefixed
+    with the agent name; overflow or an unreadable session fails closed too.
+    """
+    by_path: dict[str, str] = {}
+    problems: list[str] = []
+    complete = True
+    for name, session in sorted(agents.items()):
+        if session is not None:
+            if session not in by_path:
+                by_path[session] = name
+        elif name in pi_workers:
+            problems.append(f"{name}: no pi session path")
+            complete = False
+    usd: float | None = 0.0
+    for path, name in sorted(by_path.items()):
+        measured = analyze_sessions.pi_session_cost(Path(path))
+        problems.extend(f"{name}: {p}" for p in measured.problems)
+        if measured.usd is None:
+            usd = None
+        elif usd is not None:
+            usd += measured.usd
+        if not measured.complete:
+            complete = False
+    if usd is not None and not math.isfinite(usd):
+        problems.append("overflow")
+        usd = None
+        complete = False
+    return analyze_sessions.PiCost(usd, complete, tuple(problems))
+
+
+def _watched_session_key(agents: dict[str, str | None]) -> str:
+    """Order-independent identity of the watched set, for ack re-arming."""
+    return "\x00".join(
+        f"{name}={session or ''}" for name, session in sorted(agents.items())
+    )
+
+
 def _measure_costs(
     args: argparse.Namespace,
     agents: dict[str, str | None],
     acks: dict[str, dict[str, object]],
+    pi_workers: set[str],
 ) -> dict[str, object]:
     """Measure the capped subjects and evaluate their alerts against ``acks``."""
     now = _watch_now()
@@ -1406,6 +1467,7 @@ def _measure_costs(
     snaps: dict[str, tuple[analyze_sessions.PiCost, str | None, str | None]] = {}
     agents_out: dict[str, object] = {}
     total_out: dict[str, object] | None = None
+    watched_out: dict[str, object] | None = None
 
     if args.cost_cap_agent is not None:
         for name, session in sorted(agents.items()):
@@ -1421,6 +1483,11 @@ def _measure_costs(
         reason = _cost_condition(measured, args.cost_cap_total, "incomplete")
         snaps[COST_TOTAL_SUBJECT] = (measured, None, reason)
         total_out = _cost_json(measured)
+    if args.cost_cap_watched is not None:
+        measured = _watched_cost(agents, pi_workers)
+        reason = _cost_condition(measured, args.cost_cap_watched, "incomplete")
+        snaps[COST_WATCHED_SUBJECT] = (measured, _watched_session_key(agents), reason)
+        watched_out = _cost_json(measured)
 
     alerts: dict[str, object] = {}
     for subject, (measured, session, reason) in snaps.items():
@@ -1452,8 +1519,10 @@ def _measure_costs(
         "estimate": COST_ESTIMATE_NOTE,
         "cap_agent": args.cost_cap_agent,
         "cap_total": args.cost_cap_total,
+        "cap_watched": args.cost_cap_watched,
         "step": args.cost_step,
         "total": total_out,
+        "watched": watched_out,
         "agents": agents_out,
         "alerts": alerts,
     }
@@ -1793,9 +1862,13 @@ def _apply_cost_acks(args: argparse.Namespace, state: dict[str, object]) -> None
         subject, snap = _parse_cost_token(token)
         kind = snap.get("kind", "cost")
         if kind == "cost":
-            if subject == COST_TOTAL_SUBJECT and args.cost_cap_total is None:
-                raise RefusedError(f"--ack-cost {token!r} needs --cost-cap-total")
-            if subject != COST_TOTAL_SUBJECT and args.cost_cap_agent is None:
+            if subject == COST_TOTAL_SUBJECT:
+                if args.cost_cap_total is None:
+                    raise RefusedError(f"--ack-cost {token!r} needs --cost-cap-total")
+            elif subject == COST_WATCHED_SUBJECT:
+                if args.cost_cap_watched is None:
+                    raise RefusedError(f"--ack-cost {token!r} needs --cost-cap-watched")
+            elif args.cost_cap_agent is None:
                 raise RefusedError(f"--ack-cost {token!r} needs --cost-cap-agent")
         elif kind == "call":
             if subject == COST_TOTAL_SUBJECT and args.call_cap_total is None:
@@ -1881,7 +1954,11 @@ def _cmd_watch(args: argparse.Namespace) -> None:
             state["membership"] = [n for n in state["membership"] if n != name]
             state["agents"].pop(name, None)
         _apply_cost_acks(args, state)
-        capped = args.cost_cap_agent is not None or args.cost_cap_total is not None
+        capped = (
+            args.cost_cap_agent is not None
+            or args.cost_cap_total is not None
+            or args.cost_cap_watched is not None
+        )
         capped_calls = (
             args.call_cap_agent is not None or args.call_cap_total is not None
         )
@@ -1995,10 +2072,14 @@ def _cmd_watch(args: argparse.Namespace) -> None:
                 "all": all_records,
             }
             if capped:
+                cost_agents = {
+                    n: by_name[n]["session_path"] for n in sorted(present & targets)
+                }
                 report["cost"] = _measure_costs(
                     args,
-                    {n: by_name[n]["session_path"] for n in sorted(present & targets)},
+                    cost_agents,
                     state.get("cost_acks", {}),
+                    {n for n in cost_agents if _is_pi_agent(by_name[n]["raw_agent"])},
                 )
             if capped_calls or capped_elapsed:
                 calls_rep, elapsed_rep = _measure_agy_caps(
@@ -3335,6 +3416,13 @@ def main() -> None:
         type=_positive_finite,
         metavar="USD",
         help="alert when every pi session's cost since local midnight reaches USD",
+    )
+    watch.add_argument(
+        "--cost-cap-watched",
+        type=_positive_finite,
+        metavar="USD",
+        help="alert when the summed pi session cost of the watched agents reaches USD "
+        "(pi's price-table estimate; pi sessions only, never summed across harnesses)",
     )
     watch.add_argument(
         "--cost-step",

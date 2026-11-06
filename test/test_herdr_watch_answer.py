@@ -1157,6 +1157,7 @@ def _pi_agent(
     name: str, status: str, seq: int, session: str | None
 ) -> dict[str, object]:
     rec = _agent(name, status, seq)
+    rec["agent"] = "pi"
     if session is not None:
         rec["agent_session"] = {"agent": "pi", "kind": "path", "value": session}
     return rec
@@ -1468,6 +1469,190 @@ class WatchCostTests(unittest.TestCase):
         # Midnight before each switch is still on the old offset.
         self.assertEqual(spring.astimezone(UTC), datetime(2026, 3, 8, 5, 0, tzinfo=UTC))
         self.assertEqual(fall.astimezone(UTC), datetime(2026, 11, 1, 4, 0, tzinfo=UTC))
+
+    # ── watched aggregate ────────────────────────────────────────────────────
+
+    def test_watched_counts_only_watched_sessions(self) -> None:
+        mine = self.session("w1", [3.0, 1.5])
+        self.session("someone-else", [3.0])  # unwatched: must not count
+        agents = [_pi_agent("atk-w1", "working", 3, mine)]
+        code, out, _ = self.run_watch(["atk-w1", "--cost-cap-watched", "4"], agents)
+        self.assertEqual(code, 0)
+        self.assertEqual(out["cost"]["watched"]["usd"], 4.5)
+        self.assertEqual(out["cost"]["cap_watched"], 4.0)
+        self.assertEqual(out["cost"]["alerts"]["watched"]["reason"], "over_cap")
+        # --cost-cap-total, by contrast, still sums every session since midnight.
+        code, out, _ = self.run_watch(["atk-w1", "--cost-cap-total", "4"], agents)
+        self.assertEqual(out["cost"]["total"]["usd"], 7.5)
+
+    def test_watched_agy_watcher_does_not_contribute_usd(self) -> None:
+        s = self.session("w1", [1.0])
+        agents = [
+            _pi_agent("atk-w1", "working", 3, s),
+            _agy_agent("atk-agy", "working", 3, "conv-1"),
+        ]
+        code, out, _ = self.run_watch(
+            ["atk-w1", "atk-agy", "--cost-cap-watched", "4"], agents
+        )
+        self.assertEqual(code, 124)
+        self.assertEqual(out["cost"]["watched"]["usd"], 1.0)
+        self.assertTrue(out["cost"]["watched"]["complete"])
+
+    def test_watched_non_pi_watcher_is_excluded_not_incomplete(self) -> None:
+        s = self.session("w1", [1.0])
+        agents = [
+            _pi_agent("atk-w1", "working", 3, s),
+            _agent("atk-other", "working", 3),
+        ]
+        code, out, _ = self.run_watch(
+            ["atk-w1", "atk-other", "--cost-cap-watched", "4"], agents
+        )
+        self.assertEqual(code, 124)
+        self.assertEqual(out["cost"]["watched"]["usd"], 1.0)
+        self.assertTrue(out["cost"]["watched"]["complete"])
+
+    def test_watched_unresolved_pi_worker_is_incomplete(self) -> None:
+        agents = [
+            _pi_agent("atk-w1", "working", 3, None),
+            _pi_agent("atk-w2", "working", 3, None),
+        ]
+        code, out, _ = self.run_watch(
+            ["atk-w1", "atk-w2", "--cost-cap-watched", "4"], agents
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(out["cost"]["alerts"]["watched"]["reason"], "incomplete")
+        self.assertFalse(out["cost"]["watched"]["complete"])
+
+    def test_watched_mixed_resolved_and_unresolved_pi_is_incomplete(self) -> None:
+        s = self.session("w1", [1.0])
+        agents = [
+            _pi_agent("atk-w1", "working", 3, s),
+            _pi_agent("atk-w2", "working", 3, None),
+        ]
+        code, out, _ = self.run_watch(
+            ["atk-w1", "atk-w2", "--cost-cap-watched", "4"], agents
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(out["cost"]["watched"]["usd"], 1.0)
+        self.assertEqual(out["cost"]["alerts"]["watched"]["reason"], "incomplete")
+        self.assertFalse(out["cost"]["watched"]["complete"])
+
+    def test_watched_no_pi_workers_is_zero_complete(self) -> None:
+        agents = [_agy_agent("atk-agy", "working", 3, "conv-1")]
+        code, out, _ = self.run_watch(
+            ["atk-agy", "--cost-cap-watched", "4"], agents
+        )
+        self.assertEqual(code, 124)
+        self.assertEqual(out["cost"]["watched"]["usd"], 0.0)
+        self.assertTrue(out["cost"]["watched"]["complete"])
+
+    def test_watched_ack_rearms_on_membership_change(self) -> None:
+        s1 = self.session("w1", [4.0])
+        agents = [_pi_agent("atk-w1", "working", 3, s1)]
+        code, out, _ = self.run_watch(["atk-w1", "--cost-cap-watched", "4"], agents)
+        self.assertEqual(code, 0)
+        token = out["cost"]["alerts"]["watched"]["ack"]
+        # Acked: quiet while the watched set is unchanged.
+        code, out, _ = self.run_watch(
+            ["atk-w1", "--cost-cap-watched", "4", "--ack-cost", token], agents
+        )
+        self.assertEqual(code, 124)
+        # A new watched session changes the set -> re-alert at once.
+        s2 = self.session("w2", [0.5])
+        agents2 = [
+            _pi_agent("atk-w1", "working", 3, s1),
+            _pi_agent("atk-w2", "working", 3, s2),
+        ]
+        code, out, _ = self.run_watch(
+            ["atk-w1", "atk-w2", "--cost-cap-watched", "4", "--ack-cost", token],
+            agents2,
+        )
+        self.assertEqual(code, 0)
+        self.assertIn("watched", out["cost"]["alerts"])
+
+    def test_watched_ack_not_day_windowed(self) -> None:
+        s = self.session("w1", [4.0])
+        agents = [_pi_agent("atk-w1", "working", 3, s)]
+        code, out, _ = self.run_watch(["atk-w1", "--cost-cap-watched", "4"], agents)
+        token = out["cost"]["alerts"]["watched"]["ack"]
+        self.run_watch(
+            ["atk-w1", "--cost-cap-watched", "4", "--ack-cost", token], agents
+        )
+        # Next day, same watched set: the ack still holds (not day-windowed).
+        self.now = COST_NOW + timedelta(days=1)
+        code, out, _ = self.run_watch(
+            ["atk-w1", "--cost-cap-watched", "4", "--ack-cost", token], agents
+        )
+        self.assertEqual(code, 124)
+
+    def test_watched_ack_needs_the_flag(self) -> None:
+        agents = [_agent("atk-w1", "working", 3)]
+        code, _, err = self.run_watch(
+            ["atk-w1", "--ack-cost", "cost:watched:over_cap:4.0:-:-:2026-10-15"],
+            agents,
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("cost-cap-watched", err)
+
+    def test_watched_non_cost_tokens_refused(self) -> None:
+        agents = [_agent("atk-w1", "working", 3)]
+        code, _, _ = self.run_watch(
+            [
+                "atk-w1",
+                "--cost-cap-watched",
+                "4",
+                "--ack-cost",
+                "call:watched:over_cap:4.0:-:-:2026-10-15",
+            ],
+            agents,
+        )
+        self.assertEqual(code, 2)
+
+    def test_watched_duplicate_paths_count_once(self) -> None:
+        s = self.session("w1", [4.0])
+        agents = [
+            _pi_agent("atk-w1", "working", 3, s),
+            _pi_agent("atk-w2", "working", 3, s),
+        ]
+        code, out, _ = self.run_watch(
+            ["atk-w1", "atk-w2", "--cost-cap-watched", "4"], agents
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(out["cost"]["watched"]["usd"], 4.0)
+
+    def test_watched_overflow_reports_over_cap(self) -> None:
+        s = self.session("w1", [1.7e308, 1.7e308])
+        agents = [_pi_agent("atk-w1", "working", 3, s)]
+        code, out, _ = self.run_watch(["atk-w1", "--cost-cap-watched", "4"], agents)
+        self.assertEqual(code, 0)
+        self.assertEqual(out["cost"]["alerts"]["watched"]["reason"], "over_cap")
+        self.assertIsNone(out["cost"]["watched"]["usd"])
+
+    def test_watched_cross_session_overflow_is_json_safe(self) -> None:
+        s1 = self.session("w1", [1.7e308])
+        s2 = self.session("w2", [1.7e308])
+        agents = [
+            _pi_agent("atk-w1", "working", 3, s1),
+            _pi_agent("atk-w2", "working", 3, s2),
+        ]
+        code, out, _ = self.run_watch(
+            ["atk-w1", "atk-w2", "--cost-cap-watched", "4"], agents
+        )
+        self.assertEqual(code, 0)
+        alert = out["cost"]["alerts"]["watched"]
+        self.assertEqual(alert["reason"], "over_cap")
+        self.assertIsNone(alert["usd"])  # not Infinity
+        self.assertFalse(out["cost"]["watched"]["complete"])
+
+    def test_watched_unreadable_session_is_incomplete(self) -> None:
+        bad = self.sessions / "--proj--" / "bad.jsonl"
+        bad.parent.mkdir(parents=True, exist_ok=True)
+        bad.write_text("garbage\n" + _assistant(1.0) + "\n")
+        agents = [_pi_agent("atk-w1", "working", 3, str(bad))]
+        code, out, _ = self.run_watch(["atk-w1", "--cost-cap-watched", "4"], agents)
+        self.assertEqual(code, 0)
+        self.assertEqual(out["cost"]["alerts"]["watched"]["reason"], "incomplete")
+        self.assertFalse(out["cost"]["watched"]["complete"])
 
     # ── compatibility and input validation ──────────────────────────────────
 

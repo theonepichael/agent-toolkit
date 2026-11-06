@@ -1118,7 +1118,7 @@ Launch supported agents in herdr tabs to work backlog items.
     - `--cwd` — working directory for pi/copilot (--slug launches default to the item's repository main checkout)
     - `--kind` — agent harness (agy/codex support --slug only; default: pi) (choices: pi, copilot, agy, codex; default: pi)
     - `--handoff` — worker stops after its commit gate and prints the FOREMAN-HANDOFF line, leaving the landing to the foreman (--slug --kind pi|agy only)
-  - `watch <agents> [--prefix <PREFIX>] --state <STATE> [--ack NAME=SEQ] [--ack-gone NAME] [--grace-s <GRACE_S>] --timeout-s <TIMEOUT_S> [--poll-s <POLL_S>] [--strict] [--cost-cap-agent USD] [--cost-cap-total USD] [--cost-step USD] [--cost-remind-s N] [--call-cap-agent CALLS] [--call-cap-total CALLS] [--elapsed-cap-agent SECONDS] [--elapsed-cap-total SECONDS] [--planning-note-usd USD] [--ack-cost TOKEN]` — report the first of N agents that needs attention
+  - `watch <agents> [--prefix <PREFIX>] --state <STATE> [--ack NAME=SEQ] [--ack-gone NAME] [--grace-s <GRACE_S>] --timeout-s <TIMEOUT_S> [--poll-s <POLL_S>] [--strict] [--cost-cap-agent USD] [--cost-cap-total USD] [--cost-cap-watched USD] [--cost-step USD] [--cost-remind-s N] [--call-cap-agent CALLS] [--call-cap-total CALLS] [--elapsed-cap-agent SECONDS] [--elapsed-cap-total SECONDS] [--planning-note-usd USD] [--ack-cost TOKEN]` — report the first of N agents that needs attention
     - `agents` — agent names to watch (nargs: +)
     - `--prefix` — also watch agents whose name has this slug-head prefix
     - `--state` — watch state file (required)
@@ -1130,6 +1130,7 @@ Launch supported agents in herdr tabs to work backlog items.
     - `--strict` — reject positional names absent from the first listing
     - `--cost-cap-agent` — alert when a watched pi agent's session cost reaches USD (pi's price-table estimate, not provider billing)
     - `--cost-cap-total` — alert when every pi session's cost since local midnight reaches USD
+    - `--cost-cap-watched` — alert when the summed pi session cost of the watched agents reaches USD (pi's price-table estimate; pi sessions only, never summed across harnesses)
     - `--cost-step` — an acked cost alert re-fires after this much more spend (default 1.0)
     - `--cost-remind-s` — an acked alert whose spend is not observable (unmeasured, incomplete, overflow) re-fires after N seconds (default 900)
     - `--call-cap-agent` — alert when a watched agy agent's call count reaches CALLS

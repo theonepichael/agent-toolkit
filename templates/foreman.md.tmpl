@@ -151,7 +151,7 @@ python3 {{TOOLKIT_SCRIPTS}}/herdr_delegate.py launch --slug <slug> --kind {pi,ag
 Do not poll by hand. Run this in the background and let the settle wake you:
 
 ```bash
-python3 {{TOOLKIT_SCRIPTS}}/herdr_delegate.py watch <agent>... [--prefix <prefix>] --state <state-file> --timeout-s <n> [--grace-s 60] [--poll-s 15] [--strict] [--cost-cap-agent <usd>] [--cost-cap-total <usd>] [--call-cap-agent <calls>] [--call-cap-total <calls>] [--elapsed-cap-agent <seconds>] [--elapsed-cap-total <seconds>] [--planning-note-usd <usd>] [--ack-cost <token>]...
+python3 {{TOOLKIT_SCRIPTS}}/herdr_delegate.py watch <agent>... [--prefix <prefix>] --state <state-file> --timeout-s <n> [--grace-s 60] [--poll-s 15] [--strict] [--cost-cap-agent <usd>] [--cost-cap-total <usd>] [--cost-cap-watched <usd>] [--call-cap-agent <calls>] [--call-cap-total <calls>] [--elapsed-cap-agent <seconds>] [--elapsed-cap-total <seconds>] [--planning-note-usd <usd>] [--ack-cost <token>]...
 ```
 
 It is **level-triggered** with explicit acknowledgement: it reports an agent
@@ -170,10 +170,14 @@ When the operator has set a spend or call cap, have the watcher enforce it rathe
 relying on each worker's own status line.
 
 - **Pi workers**: Add `--cost-cap-agent <usd>` (each watched pi worker's session cost),
-  `--cost-cap-total <usd>` (every pi session since local midnight, watched or not),
-  or both. The figure is pi's own price-table estimate read from its session logs, not
-  provider billing — say so when you report spend. With a cap set, every report
-  carries a `cost` object.
+  `--cost-cap-watched <usd>` (the summed pi cost of the watched workers' sessions only —
+  the per-run/per-experiment budget), `--cost-cap-total <usd>` (every pi session since
+  local midnight, watched or not), or any combination. The figure is pi's own
+  price-table estimate read from its session logs, not provider billing — say so when
+  you report spend. With a cap set, every report carries a `cost` object. Spend is
+  never summed across harnesses: pi is USD, agy is model calls, and Copilot's AI
+  Credits (AIC) are not measurable today — treat Copilot spend as *unmeasured*, never 0
+  and never USD.
 - **AgY workers**: Add `--call-cap-agent <calls>` (each watched agy worker's distinct
   model calls), `--call-cap-total <calls>` (aggregate distinct calls across watched agy
   sessions in this invocation), or both. Counts come from distinct validated request
@@ -193,7 +197,7 @@ Acknowledge a cost/call/elapsed alert only after acting on it, with `--ack-cost 
 passing the alert's `ack` token verbatim. An ack snoozes the alert for one
 more `--cost-step` of spend (default $1) or 1 call, or for `--cost-remind-s` (default
 900 s) when the spend is not observable. A new session, a changed problem
-set, or (for the total) a new day re-alerts at once.
+set, or (for the day-wide pi total) a new day re-alerts at once.
 
 ### Planning checkpoint note
 
@@ -285,6 +289,9 @@ commit authority is delegated (step 7), approve by answering `--index 1`:
 ```bash
 python3 {{TOOLKIT_SCRIPTS}}/herdr_delegate.py answer <agent> --expect-pane <pane> --index 1
 ```
+
+AgY has no commit picker, so approve an agy worker's commit with
+`herdr agent prompt <agent>` followed by the approval text.
 
 Otherwise ask the operator (step 7), or send the change back via step 5.
 
