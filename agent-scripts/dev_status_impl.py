@@ -23,7 +23,8 @@ characters; an existing id may be any single token of 1-64 letters, digits,
 by a throwaway value. If it cannot be read, is
 invalid, or cannot be created, a mutating command exits 3 with a one-line
 message naming the file and the repair command, and nothing is written.
-Read commands (``render``, ``list``, ``show``, ``ready``, ``runs``) keep
+Read commands (``render``, ``list``, ``show``, ``ready``, ``runs``,
+``cited-by``) keep
 working: they skip the dead-claim sweep and print a warning (on stdout for
 ``render``, on stderr for the others). ``machine-id`` prints the id;
 ``machine-id --repair`` replaces an invalid id file (after backing it up),
@@ -353,6 +354,7 @@ SUBCOMMANDS = (
     "verifier-check",
     "contract-touch",
     "slug-check",
+    "cited-by",
     "run",
     "runs",
     "backfill-gate",
@@ -3446,6 +3448,90 @@ def cmd_slug_check(args: argparse.Namespace) -> None:
     print(f"slug-check: clean; staged-diff sha256={res.diff_sha256}")
 
 
+def _lex_path(path: str) -> str:
+    """Normalize lexically: absolute, ``~`` expanded, ``.``/``..`` resolved.
+
+    Symlinks are NOT resolved, so a citation reached *through* a symlink
+    inside a candidate directory still names a location beneath it.
+    """
+    return os.path.normpath(os.path.abspath(os.path.expanduser(path)))
+
+
+def _path_cites(candidate: str, cited: str) -> bool:
+    """True when deleting ``candidate`` would break the ``cited`` path.
+
+    Matches lexically (symlinks preserved, so a citation reached through a
+    symlink inside the candidate still counts) or canonically (symlinks
+    resolved, so a candidate that is itself a symlink still matches), each
+    under a component-wise ancestor-or-equal comparison.
+    """
+    for cand, ctd in (
+        (_lex_path(candidate), _lex_path(cited)),
+        (
+            os.path.realpath(os.path.expanduser(candidate)),
+            os.path.realpath(os.path.expanduser(cited)),
+        ),
+    ):
+        if ctd == cand or os.path.commonpath([ctd, cand]) == cand:
+            return True
+    return False
+
+
+def cmd_cited_by(args: argparse.Namespace) -> None:
+    """Handle ``cited-by``: report items whose related_files cites each path.
+
+    Pure read: prints, for each candidate path in order, every backlog item
+    whose ``related_files`` cites that path (or a file beneath it, for a
+    directory candidate), one ``<slug> <status>`` line per citation under the
+    candidate's header, with a ``-> <path>`` suffix when a directory candidate
+    is cited via a descendant. Done items are reported too, because a caller
+    decides retention by *which* citations are not-done.
+
+    Exit codes: ``0`` no not-done item cites any candidate (safe to delete
+    all); ``1`` at least one not-done item does (stdout names the candidates
+    to keep); ``2`` the store cannot be loaded -- delete nothing. No machine
+    id is required and nothing is written.
+    """
+    candidates = [str(p) for p in getattr(args, "paths", None) or []]
+    if not candidates:
+        print(
+            "[cited-by] no paths given -- usage: dev_status cited-by <path>...",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    try:
+        with backlog_lock(require_identity=False):
+            items = load_items()
+    except SystemExit:
+        print("[cited-by] store unreadable; delete nothing.", file=sys.stderr)
+        sys.exit(2)
+    except Exception as exc:
+        print(f"[cited-by] {exc}; delete nothing.", file=sys.stderr)
+        sys.exit(2)
+
+    not_done_cited = False
+    for candidate in candidates:
+        rows: list[tuple[str, str, str]] = []
+        for item in items:
+            slug = str(item.get("id", "?"))
+            status = item.get("status", "")
+            for rf in item.get("related_files") or []:
+                cited = rf.get("path")
+                if isinstance(cited, str) and cited and _path_cites(candidate, cited):
+                    rows.append((slug, status, cited))
+                    if status != "done":
+                        not_done_cited = True
+        if rows:
+            print(candidate)
+            for slug, status, cited in rows:
+                if _lex_path(cited) == _lex_path(candidate):
+                    print(f"  {slug} {status}")
+                else:
+                    print(f"  {slug} {status} -> {cited}")
+    if not_done_cited:
+        sys.exit(1)
+
+
 def cmd_run(args: argparse.Namespace) -> None:
     """Handle ``run``: execute a command and record it as run evidence.
 
@@ -4259,6 +4345,7 @@ dispatch: dict[str, Callable[[argparse.Namespace], None]] = {
     "verifier-check": cmd_verifier_check,
     "contract-touch": cmd_contract_touch,
     "slug-check": cmd_slug_check,
+    "cited-by": cmd_cited_by,
     "run": cmd_run,
     "runs": cmd_runs,
     "backfill-gate": cmd_backfill_gate,
@@ -4628,6 +4715,18 @@ def build_parser() -> argparse.ArgumentParser:
             "override exactly one finding with a recorded reason "
             "(repeatable; no blanket bypass)"
         ),
+    )
+
+    p = sub.add_parser(
+        "cited-by",
+        help="report items whose related_files cites each path (read-only; exit 0/1/2)",
+        parents=[verbosity_parent],
+    )
+    p.add_argument(
+        "paths",
+        nargs="+",
+        metavar="<path>",
+        help="candidate path(s) to check for citations (files or directories)",
     )
 
     p = sub.add_parser(

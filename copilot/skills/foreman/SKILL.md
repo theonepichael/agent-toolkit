@@ -358,12 +358,16 @@ the rebase introduces — is caught. Then record `dev_status.py run` evidence,
 `gate-pass <slug> '{"coverage": {...}}' --verifier-token-file <path>` (pass
 the token-file path, never the token value), `review`, and `approve`. Read the
 worker's digest offers from
-`~/.agent-toolkit/data/foreman/<slug>-digest.json`, relay them to the operator,
-and delete the file after relaying. After `approve` marks the item done,
+`~/.agent-toolkit/data/foreman/<slug>-digest.json` and relay them to the operator.
+After `approve` marks the item done,
 delete the item's own files under `~/.agent-toolkit/data/foreman/` — its exact
-`<slug>-<purpose>` files and `<slug>/` subdirectory, `.lock` siblings
-included; match exact names, never a `<slug>-*` glob (longer slugs share the
-prefix), and never a file of an item not done. A run-named watch-state file
+`<slug>-<purpose>` files and `<slug>/` subdirectory, `.lock` siblings and the
+digest included; match exact names, never a `<slug>-*` glob (longer slugs
+share the prefix), and never a file of an item not done. Before deleting,
+collect the exact candidate names and run
+`python3 ~/.agent-toolkit/scripts/dev_status.py cited-by <candidates...>`: delete
+them all on exit 0; keep and mention any candidate a not-done item cites on
+exit 1; delete nothing and report on any other exit. A run-named watch-state file
 and its `.lock` stay until every item it covers is done and its watcher has
 exited. Before deleting a watch-state file, confirm each worker's
 agent-to-session link is already recorded in

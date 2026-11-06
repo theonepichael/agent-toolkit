@@ -215,6 +215,16 @@ describe("assertFields", () => {
       assertFields("slug_check", { action: "slug_check", repo: "/r", feedback: "x" }),
     ).toThrow("does not accept: feedback");
   });
+
+  test("cited_by requires paths and rejects unrelated fields", () => {
+    expect(() => assertFields("cited_by", { action: "cited_by" })).toThrow("requires: paths");
+    expect(() =>
+      assertFields("cited_by", { action: "cited_by", paths: ["/a", "/b"] }),
+    ).not.toThrow();
+    expect(() =>
+      assertFields("cited_by", { action: "cited_by", paths: ["/a"], slug: "x" }),
+    ).toThrow("does not accept: slug");
+  });
 });
 
 describe("buildArgv", () => {
@@ -222,6 +232,14 @@ describe("buildArgv", () => {
     expect(buildArgv("render", { action: "render" })).toEqual(["render"]);
     expect(buildArgv("pending_list", { action: "pending_list" })).toEqual(["pending", "list"]);
     expect(buildArgv("prune", { action: "prune", force: true })).toEqual(["prune", "--force"]);
+  });
+
+  test("cited_by passes the candidate paths positionally", () => {
+    expect(buildArgv("cited_by", { action: "cited_by", paths: ["/a", "/b"] })).toEqual([
+      "cited-by",
+      "/a",
+      "/b",
+    ]);
   });
 
   test("reopen carries --force only when asked", () => {
@@ -616,5 +634,30 @@ describe("devStatusExtension execute", () => {
 
     await toolDef.execute("call-2", { action: "render" }, undefined, undefined, mockCtx);
     expect(capturedOptions.cwd).toBe("/launch/dir");
+  });
+
+  test("cited_by returns the report on a non-zero exit instead of throwing", async () => {
+    let toolDef: any;
+    const mockPi = {
+      registerTool: (_def: any) => {
+        toolDef = _def;
+      },
+      exec: async () => ({
+        code: 1,
+        stdout: "/evidence/a.txt\n  open-item open\n",
+        stderr: "",
+      }),
+    } as any;
+    devStatusExtension(mockPi);
+
+    const result = await toolDef.execute(
+      "call-3",
+      { action: "cited_by", paths: ["/evidence/a.txt"] },
+      undefined,
+      undefined,
+      undefined,
+    );
+    expect(result.content[0].text).toContain("/evidence/a.txt");
+    expect(result.content[0].text).toContain("open-item open");
   });
 });

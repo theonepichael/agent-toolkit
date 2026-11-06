@@ -7516,5 +7516,62 @@ class CompactMutationOutputTestCase(BacklogFixture):
         self.assertIn("┌─", val)
 
 
+class CitedByTestCase(BacklogFixture):
+    """Tests for the read-only `cited-by` subcommand."""
+
+    def _run(self, *paths):
+        out, err = io.StringIO(), io.StringIO()
+        code = 0  # normal return == exit 0
+        with patch("sys.stdout", out), patch("sys.stderr", err):
+            try:
+                dev_status.cmd_cited_by(_args(paths=list(paths)))
+            except SystemExit as exc:
+                code = exc.code if isinstance(exc.code, int) else 1
+        return out.getvalue(), err.getvalue(), code
+
+    def test_open_item_cited_reported_nonzero(self):
+        p = str(Path(self.tmpdir) / "foreman" / "baseline.txt")
+        self.write_items(
+            [make_item("open-item", status="open", related_files=[{"path": p, "note": ""}])]
+        )
+        out, err, code = self._run(p)
+        self.assertEqual(code, 1)
+        self.assertIn("open-item", out)
+        self.assertIn("open", out)
+
+    def test_done_only_cited_zero(self):
+        p = str(Path(self.tmpdir) / "foreman" / "old.txt")
+        self.write_items(
+            [make_item("done-item", status="done", related_files=[{"path": p, "note": ""}])]
+        )
+        out, err, code = self._run(p)
+        self.assertEqual(code, 0)
+        self.assertIn("done-item", out)
+        self.assertIn("done", out)
+
+    def test_uncited_zero(self):
+        p = str(Path(self.tmpdir) / "foreman" / "none.txt")
+        self.write_items([make_item("other", status="open", related_files=[])])
+        out, err, code = self._run(p)
+        self.assertEqual(code, 0)
+        self.assertEqual(out, "")
+
+    def test_directory_descendant_reported(self):
+        d = str(Path(self.tmpdir) / "foreman" / "sub")
+        cited = str(Path(d) / "evidence.txt")
+        self.write_items(
+            [make_item("open-item", status="open", related_files=[{"path": cited, "note": ""}])]
+        )
+        out, err, code = self._run(d)
+        self.assertEqual(code, 1)
+        self.assertIn("open-item", out)
+        self.assertIn("evidence.txt", out)
+
+    def test_corrupt_store_exit2(self):
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.items_file.write_text("{ not json")
+        out, err, code = self._run(str(Path(self.tmpdir) / "foreman" / "x.txt"))
+        self.assertEqual(code, 2)
+
 if __name__ == "__main__":
     test_bootstrap.run_unittest_main(verbosity=2)

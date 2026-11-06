@@ -136,6 +136,7 @@ SUBCOMMANDS: tuple[str, ...] = (
     "acceptance-set",
     "verifier-check",
     "contract-touch",
+    "cited-by",
     "run",
     "runs",
     "backfill-gate",
