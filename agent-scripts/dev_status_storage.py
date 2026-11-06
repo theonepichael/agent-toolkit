@@ -860,21 +860,34 @@ def append_journal_event(
     data_dir: Path | None = None,
     verbose: bool = False,
 ) -> bool:
-    """Append one event to the journal.
+    """Append one event to the journal, durably.
 
-    Returns ``True`` when the line was written and ``False`` when the append
-    failed (an ``OSError``, reported to stderr when ``verbose``). The return
-    value lets a caller that needs a *durable* record (``sendback``) treat a
-    failed append as an error; callers that journal best-effort simply ignore
-    it.
+    Returns ``True`` when the line was written, flushed, and fsynced, and
+    ``False`` when the append failed (an ``OSError``, reported to stderr when
+    ``verbose``). The return value lets a caller that needs a *durable*
+    record (``sendback``) treat a failed append as an error; callers that
+    journal best-effort simply ignore it.
+
+    An unterminated (torn) tail line left by an interrupted prior append is
+    repaired with a leading newline so the next entry is never concatenated
+    onto it; a concurrent repair at worst leaves a blank line, which the
+    reader skips.
     """
     j_file = journal_file or _journal_file()
     d_dir = data_dir or _data_dir()
     line = json.dumps(entry, sort_keys=True)
+    payload = (line + "\n").encode("utf-8")
     try:
         d_dir.mkdir(parents=True, exist_ok=True)
-        with open(j_file, "a") as f:
-            f.write(line + "\n")
+        with open(j_file, "a+b") as f:
+            if f.tell() > 0:
+                f.seek(-1, os.SEEK_END)
+                if f.read(1) != b"\n":
+                    f.write(b"\n")
+            f.write(payload)
+            f.flush()
+            os.fsync(f.fileno())
+        _fsync_dir(j_file.parent)
     except OSError as e:
         cli_common.vprint(
             f"[journal] append failed (non-fatal): {e}",
@@ -916,7 +929,11 @@ def read_journal_entries(
     except OSError:
         return []
 
-    non_blank = [line for line in raw_lines if line.strip()]
+    non_blank = [
+        (phys_no, line)
+        for phys_no, line in enumerate(raw_lines, start=1)
+        if line.strip()
+    ]
     cutoff = (
         datetime.now(UTC) - timedelta(hours=within_hours)
         if within_hours is not None
@@ -925,13 +942,13 @@ def read_journal_entries(
 
     entries: list[dict[str, object]] = []
     last_index = len(non_blank) - 1
-    for i, line in enumerate(non_blank):
+    for i, (phys_no, line) in enumerate(non_blank):
         try:
             entry = json.loads(line)
         except json.JSONDecodeError:
             if i != last_index:
                 cli_common.vprint(
-                    f"[journal] corrupt line {i + 1} in {j_file}",
+                    f"[journal] corrupt line {phys_no} in {j_file}",
                     verbose=verbose,
                     file=sys.stderr,
                 )

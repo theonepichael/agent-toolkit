@@ -16,9 +16,11 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))
 import test_bootstrap  # noqa: E402
+from pytest_shim import pytest
 
 import dev_status  # noqa: E402
 import dev_status_storage  # noqa: E402
@@ -137,6 +139,79 @@ class BacklogStorageExtractionTestCase(unittest.TestCase):
                 data_dir=tmp_path, lock_file=lock_file
             ):
                 pass
+
+
+class JournalCrashSafetyTestCase(unittest.TestCase):
+    """Torn-tail tolerance and durable (flush + fsync) journal appends."""
+
+    @pytest.mark.regression(
+        "journal-append-after-torn-tail",
+        "AssertionError: 'c' not found in ['a']",
+    )
+    def test_append_after_torn_tail_is_readable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            jf = tmp_path / "journal.jsonl"
+            jf.write_text(
+                '{"ts":"2026-01-01T00:00:00+00:00","cmd":"a","rev":1}\n'
+                '{"ts":"2026-01-01T00:00:01+00:00","cmd":"b",'
+            )
+            ok = dev_status_storage.append_journal_event(
+                {"cmd": "c"}, journal_file=jf, data_dir=tmp_path
+            )
+            self.assertTrue(ok)
+            cmds = [
+                e["cmd"]
+                for e in dev_status_storage.read_journal_entries(journal_file=jf)
+            ]
+            self.assertIn("c", cmds)
+            self.assertNotIn("b", cmds)
+
+    def test_read_tolerates_torn_tail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            jf = Path(tmp) / "journal.jsonl"
+            jf.write_text(
+                '{"ts":"2026-01-01T00:00:00+00:00","cmd":"a","rev":1}\n'
+                '{"ts":"2026-01-01T00:00:01+00:00","cmd":"b",'
+            )
+            entries = dev_status_storage.read_journal_entries(journal_file=jf)
+            self.assertEqual([e["cmd"] for e in entries], ["a"])
+
+    @pytest.mark.regression(
+        "journal-append-fsync-failure-nonfatal",
+        "AssertionError: True is not false",
+    )
+    def test_append_fsync_failure_returns_false(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            jf = tmp_path / "journal.jsonl"
+            with patch.object(
+                dev_status_storage.os, "fsync", side_effect=OSError("disk failure")
+            ):
+                ok = dev_status_storage.append_journal_event(
+                    {"cmd": "x"}, journal_file=jf, data_dir=tmp_path
+                )
+            self.assertFalse(ok)
+
+    @pytest.mark.regression(
+        "journal-append-fsyncs-journal-parent",
+        "AssertionError: False is not true",
+    )
+    def test_append_fsyncs_journal_parent_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sub = Path(tmp) / "custom"
+            sub.mkdir()
+            jf = sub / "journal.jsonl"
+            called_dirs = []
+            with patch.object(
+                dev_status_storage, "_fsync_dir", side_effect=called_dirs.append
+            ):
+                ok = dev_status_storage.append_journal_event(
+                    {"cmd": "x"}, journal_file=jf
+                )
+            self.assertTrue(ok)
+            self.assertEqual(len(called_dirs), 1)
+            self.assertTrue(called_dirs[0] == jf.parent)
 
 
 if __name__ == "__main__":

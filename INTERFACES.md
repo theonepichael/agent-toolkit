@@ -614,7 +614,7 @@ Backlog persistence, lock coordination, and journal primitives.
   - `save_out_of_scope_index(index: dict[str, dict[str, object]], path: Path | None = None) -> None` — Atomically persist the out-of-scope concept index.
   - `out_of_scope_md_path(slug: str, out_of_scope_dir: Path | None = None) -> Path` — Path to a concept's freeform-reason markdown file.
   - `journal_entry(cmd: str, kind: str, rev: int, *, slug: str | None = None, summary: str | None = None, from_status: str | None = None, to_status: str | None = None, fields: list[str] | None = None, feedback: str | None = None, count: int | None = None, wait_seconds: float | None = None, detail: str | None = None, diagnostic: bool | None = None, round: int | None = None) -> dict[str, object]` — Build one journal entry: a fixed envelope plus structured optionals.
-  - `append_journal_event(entry: dict[str, object], *, journal_file: Path | None = None, data_dir: Path | None = None, verbose: bool = False) -> bool` — Append one event to the journal.
+  - `append_journal_event(entry: dict[str, object], *, journal_file: Path | None = None, data_dir: Path | None = None, verbose: bool = False) -> bool` — Append one event to the journal, durably.
   - `parse_journal_ts(raw: object) -> datetime | None` — Parse a journal entry's ``ts`` field into an aware UTC ``datetime``.
   - `read_journal_entries(within_hours: float | None = None, *, journal_file: Path | None = None, verbose: bool = False) -> list[dict[str, object]]` — Read journal entries, optionally filtered to the last ``within_hours``.
   - `journal_last_entry_within(hours: float, *, journal_file: Path | None = None) -> bool` — Cheap pre-spawn check: does the journal's last entry fall within ``hours``?
