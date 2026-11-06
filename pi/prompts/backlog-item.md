@@ -112,6 +112,15 @@ targets it. Confirm the base the action reports (`Created branch '<slug>'
 from '<base>'`); its `base` parameter overrides it for one call. A branch
 that already exists is attached as-is, never re-based.
 
+From here on, work only through the worktree path the action reported. pi's
+session cwd stays the main checkout — creating the worktree does not move it —
+so a cwd-relative path, a path you read earlier, or an entry in `show`'s
+`related_files` still points at the main checkout. Run bash as
+`cd <worktree> && …`, give `read`/`write`/`edit` the worktree's absolute
+path, and map any main-checkout path by swapping the checkout prefix for the
+worktree prefix (on a cross-repo item, that repo's worktree). The guard
+refuses main-checkout writes while the item is in progress.
+
 ## 4. Baseline
 Run that repo's test suite (or the most relevant targeted subset) in the
 fresh worktree before touching anything (CLAUDE.md's "Baseline tests before

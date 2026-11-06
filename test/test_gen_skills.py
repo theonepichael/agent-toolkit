@@ -201,6 +201,25 @@ class CapabilityFixtureTests(unittest.TestCase):
                 self.assertLess(step5.index(marker), step5.index("topic slug"), path)
 
     @pytest.mark.regression(
+        "pi-worker-writes-aimed-at-main-checkout",
+        "AssertionError: 'session cwd stays the main checkout' not found in",
+    )
+    def test_pi_backlog_item_step3_routes_paths_through_the_worktree(self) -> None:
+        # pi cannot change its session cwd, so after step 3 a worker that
+        # keeps using cwd-relative or related_files paths aims its edits at
+        # the main checkout, where the guard refuses them.
+        rendered = gs.render_all(REPO_ROOT, SKILL_PARAMS)
+        for (skill, harness), path in gs.OUTPUT_PATHS.items():
+            if skill != "backlog-item" or harness not in ("pi", "pi-prompt"):
+                continue
+            step3 = " ".join(
+                rendered[path].split("## 3. Branch", 1)[1].split("## 4.", 1)[0].split()
+            )
+            self.assertIn("session cwd stays the main checkout", step3, path)
+            self.assertIn("cd <worktree> &&", step3, path)
+            self.assertIn("related_files", step3, path)
+
+    @pytest.mark.regression(
         "backlog-item-resume-skips-gated-critique",
         "AssertionError: 'are already done — skip to step 8' unexpectedly found in",
     )
