@@ -3422,6 +3422,35 @@ class BacklogTestCase(BacklogFixture):
             spec.loader.exec_module(fresh)
             self.assertEqual(fresh.RECAP_TIMEOUT_SECONDS, 90.0)
 
+    @pytest.mark.regression("recap-agy-timeout-floor-180", "AssertionError: 120.0 != 180.0")
+    def test_recap_agy_dispatch_uses_180_floor(self):
+        # The behavioral red case: before the floor, the agy branch passed the
+        # shared RECAP_TIMEOUT_SECONDS (120), so the dispatched timeout is 120.
+        self._seed_recent_journal()
+        mock = MagicMock(return_value="Great work.")
+        with (
+            patch.object(llm_backends, "available_backends", return_value=["agy"]),
+            patch.object(llm_backends, "run_agy", mock),
+        ):
+            dev_status._run_recap_regen()
+        self.assertEqual(mock.call_args.kwargs["timeout"], 180.0)
+
+    def test_recap_other_backends_keep_shared_timeout(self):
+        # opencode/pi/copilot branches are unchanged: they still pass the
+        # shared RECAP_TIMEOUT_SECONDS (120), not agy's floor.
+        self._seed_recent_journal()
+        for backend in ("opencode", "pi", "copilot"):
+            with self.subTest(backend=backend):
+                mock = MagicMock(return_value="Great work.")
+                with (
+                    patch.object(
+                        llm_backends, "available_backends", return_value=[backend]
+                    ),
+                    patch.object(llm_backends, f"run_{backend}", mock),
+                ):
+                    dev_status._run_recap_regen()
+                self.assertEqual(mock.call_args.kwargs["timeout"], 120.0)
+
     # ── journal appends per mutation path ──────────────────────────────────
 
     def test_r01_done_journals_status_transition(self):

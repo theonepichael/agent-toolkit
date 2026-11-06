@@ -246,6 +246,10 @@ RECAP_MIN_KEEP = RECAP_MAX_CHARS // 2
 # budget + a full fresh budget on the retry) — see
 # llm_backends.run_opencode's docstring.
 RECAP_TIMEOUT_SECONDS = float(os.environ.get("DEVSTATUS_RECAP_TIMEOUT_SECONDS", "120"))
+# agy recap-call timeout floor. agy's recap latency tail runs to ~119s, so it
+# outruns the shared budget; floor it above RECAP_TIMEOUT_SECONDS without
+# lifting opencode/pi/copilot. A raised shared override still applies (max).
+RECAP_AGY_TIMEOUT_SECONDS = max(RECAP_TIMEOUT_SECONDS, 180.0)
 RECAP_AGY_MODEL = os.environ.get("DEVSTATUS_RECAP_AGY_MODEL", "Gemini 3.8 Flash (High)")
 # Trailing-edge debounce for background recap regeneration: a burst of board
 # mutations each spawns a detached ``_internal-regen`` child, but a child sleeps
@@ -1981,7 +1985,7 @@ def _run_recap_regen(
         try:
             if backend == "agy":
                 raw = llm_backends.run_agy(
-                    prompt, model=RECAP_AGY_MODEL, timeout=RECAP_TIMEOUT_SECONDS
+                    prompt, model=RECAP_AGY_MODEL, timeout=RECAP_AGY_TIMEOUT_SECONDS
                 )
             elif backend == "opencode":
                 raw = llm_backends.run_opencode(
