@@ -1971,7 +1971,7 @@ worker_invariant_audit.py — read-only audit of real pi worker runs.
 
 - Installed at: `~/.agent-toolkit/scripts/worker_invariant_audit.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
-- CLI (`argparse`): Read-only audit of pi worker runs against five worker invariants.
+- CLI (`argparse`): Read-only audit of pi worker runs against four worker invariants.
   - `--since` — only sessions started on or after DATE (YYYY-MM-DD, UTC)
   - `--json/-j` — emit the summary and findings as JSON
   - `--quiet/-q`
@@ -1991,9 +1991,8 @@ worker_invariant_audit.py — read-only audit of real pi worker runs.
   - `check_no_write_outside_worktree(session: WorkerSession, allowed: tuple[Path, ...], git: GitRunner, *, review_roots: tuple[Path, ...] = ()) -> CheckResult` — Invariant 2: write/edit paths stay under the worktree or allowed roots.
   - `check_stops_at_commit_gate(session: WorkerSession, scratch: tuple[Path, ...]) -> CheckResult` — Invariant 4: the first commit follows a commit question or a user turn.
   - `check_no_slug_in_commits(session: WorkerSession, git: GitRunner, scratch: tuple[Path, ...]) -> CheckResult` — Invariant 3: no commit message or added line contains the item slug.
-  - `check_scope_fence(session: WorkerSession, related_files: list[dict[str, object]], git: GitRunner, scratch: tuple[Path, ...]) -> CheckResult` — Invariant 5: changed paths vs related_files plus tests (extras = review).
   - `discover_sessions(root: Path, since: datetime | None) -> list[WorkerSession]` — Every pi worker session under ``root`` started at or after ``since``.
-  - `audit(sessions: list[WorkerSession], items: dict[str, dict[str, object]], launches: dict[str, worker_run_metrics.Launch], git: GitRunner, *, allowed: tuple[Path, ...], scratch: tuple[Path, ...], review_roots: tuple[Path, ...] = ()) -> dict[str, CheckResult]` — Run all five checks over ``sessions``; one aggregate result per invariant.
+  - `audit(sessions: list[WorkerSession], launches: dict[str, worker_run_metrics.Launch], git: GitRunner, *, allowed: tuple[Path, ...], scratch: tuple[Path, ...], review_roots: tuple[Path, ...] = ()) -> dict[str, CheckResult]` — Run all four checks over ``sessions``; one aggregate result per invariant.
   - `build_parser() -> argparse.ArgumentParser`
 - Tested by: `test/test_worker_invariant_audit.py`
 

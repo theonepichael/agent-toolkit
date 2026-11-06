@@ -2,7 +2,7 @@
 """worker_invariant_audit.py — read-only audit of real pi worker runs.
 
 Scans pi session logs for backlog-item worker runs and checks each against
-five worker invariants, from the logs plus read-only git queries:
+four worker invariants, from the logs plus read-only git queries:
 
   handoff-never-lands        a --handoff run never pushes, merges, or moves
                              the default branch (branch -f, checkout -B,
@@ -17,10 +17,6 @@ five worker invariants, from the logs plus read-only git queries:
                              a quiet commit with no sha is unchecked)
   stops-at-commit-gate       the first git commit is preceded by a question
                              tool call naming the commit, or by a user turn
-  scope-fence                a worker commit's changed paths stay within the
-                             item's related_files plus test files (extras are
-                             flagged review, not violation: related_files is
-                             advisory)
 
 Worker sessions are found by content -- the first user turn is the generated
 backlog_item_pi_native prompt -- so runs older than the launch log are covered.
@@ -39,7 +35,6 @@ Env vars: AGENT_TOOLKIT_HOME (toolkit root override; must be absolute).
 Files read:
   ~/.pi/agent/sessions/**/*.jsonl
   <toolkit-root>/data/launch_log.jsonl
-  <toolkit-root>/data/backlog/items.json
 Files written: none.
 Exit codes: 0 no violations; 1 at least one violation; 2 bad usage.
 """
@@ -73,7 +68,6 @@ INVARIANTS: tuple[tuple[str, str], ...] = (
     ("no-write-outside-worktree", "writes"),
     ("no-slug-in-commits", "commits"),
     ("stops-at-commit-gate", "commits"),
-    ("scope-fence", "commits"),
 )
 DEFAULT_BRANCH_REFS = frozenset(
     {"main", "master", "refs/heads/main", "refs/heads/master"}
@@ -90,7 +84,6 @@ _SHELL_KEYWORDS = frozenset(
     {"if", "then", "else", "elif", "do", "while", "until", "!", "time", "{", "}"}
 )
 _OPERATORS = frozenset({"&&", "||", ";", "|", "&", "(", ")", ";;"})
-_TEST_NAME_RE = re.compile(r"(^test_.*|.*_test\.\w+|.*\.(test|spec)\.\w+)$")
 
 GitRunner = Callable[[Path, list[str]], "str | None"]
 
@@ -579,56 +572,6 @@ def check_no_slug_in_commits(
     return result
 
 
-def _is_test_path(rel: str) -> bool:
-    parts = Path(rel).parts
-    return bool({"test", "tests"} & set(parts[:-1])) or bool(
-        _TEST_NAME_RE.match(parts[-1])
-    )
-
-
-def check_scope_fence(
-    session: WorkerSession,
-    related_files: list[dict[str, object]],
-    git: GitRunner,
-    scratch: tuple[Path, ...],
-) -> CheckResult:
-    """Invariant 5: changed paths vs related_files plus tests (extras = review)."""
-    result = CheckResult()
-    roots = _repo_dirs(session, [session_worktree(session), session.cwd])
-    fence: set[str] = set()
-    for entry in related_files:
-        raw = entry.get("path") if isinstance(entry, dict) else None
-        if not isinstance(raw, str):
-            continue
-        target = _resolve(session.cwd, raw)
-        fence.update(
-            str(target.relative_to(r)) for r in roots if target.is_relative_to(r)
-        )
-    shas, result.unchecked = _commit_shas(session, scratch)
-    for sha, dirs in shas.items():
-        names = _git_in(git, dirs, ["show", "--name-only", "--format=", sha])
-        if names is None:
-            continue
-        result.checked += 1
-        extras = [
-            rel
-            for rel in (ln.strip() for ln in names.splitlines())
-            if rel
-            and not _is_test_path(rel)
-            and not any(rel == f or rel.startswith(f + "/") for f in fence)
-        ]
-        if extras:
-            result.findings.append(
-                _finding(
-                    session,
-                    "scope-fence",
-                    "review",
-                    f"{sha}: outside related_files: {', '.join(extras)}",
-                )
-            )
-    return result
-
-
 def _run_git(cwd: Path, args: list[str]) -> str | None:
     """Run a read-only git query; None on any failure (missing dir, bad sha)."""
     if not cwd.is_dir():
@@ -665,7 +608,6 @@ def discover_sessions(root: Path, since: datetime | None) -> list[WorkerSession]
 
 def audit(
     sessions: list[WorkerSession],
-    items: dict[str, dict[str, object]],
     launches: dict[str, worker_run_metrics.Launch],
     git: GitRunner,
     *,
@@ -673,11 +615,9 @@ def audit(
     scratch: tuple[Path, ...],
     review_roots: tuple[Path, ...] = (),
 ) -> dict[str, CheckResult]:
-    """Run all five checks over ``sessions``; one aggregate result per invariant."""
+    """Run all four checks over ``sessions``; one aggregate result per invariant."""
     totals = {name: CheckResult() for name, _unit in INVARIANTS}
     for s in sessions:
-        related = items.get(s.slug or "", {}).get("related_files")
-        related = related if isinstance(related, list) else []
         per = {
             "handoff-never-lands": check_handoff_never_lands(s, scratch),
             "no-write-outside-worktree": check_no_write_outside_worktree(
@@ -685,7 +625,6 @@ def audit(
             ),
             "no-slug-in-commits": check_no_slug_in_commits(s, git, scratch),
             "stops-at-commit-gate": check_stops_at_commit_gate(s, scratch),
-            "scope-fence": check_scope_fence(s, related, git, scratch),
         }
         launch = launches.get(str(s.path))
         for name, res in per.items():
@@ -749,7 +688,7 @@ def _render_text(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="worker_invariant_audit",
-        description="Read-only audit of pi worker runs against five worker invariants.",
+        description="Read-only audit of pi worker runs against four worker invariants.",
     )
     parser.add_argument(
         "--since",
@@ -779,8 +718,6 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(f"--since: expected YYYY-MM-DD, got {args.since!r}")
 
     sessions = discover_sessions(Path.home() / ".pi" / "agent" / "sessions", since)
-    work = agent_toolkit_paths.path_for("work-items")
-    items = worker_run_metrics._read_items(work / "items.json")
     try:
         records = worker_run_metrics._read_jsonl(
             agent_toolkit_paths.path_for("launch-log")
@@ -806,7 +743,6 @@ def main(argv: list[str] | None = None) -> int:
     )
     totals = audit(
         sessions,
-        items,
         launches,
         _run_git,
         allowed=allowed,

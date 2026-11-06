@@ -392,8 +392,6 @@ class NoSlugInCommitsTests(unittest.TestCase):
         s = _session([_show(), _bash("git commit -qm demo")])
         result = audit.check_no_slug_in_commits(s, _fake_git({}), SCRATCH)
         self.assertEqual((result.checked, result.unchecked), (0, 1))
-        fence = audit.check_scope_fence(s, [], _fake_git({}), SCRATCH)
-        self.assertEqual((fence.checked, fence.unchecked), (0, 1))
 
     def test_commit_in_shell_variable_dir_is_content_unchecked(self) -> None:
         s = _session([_show(), _bash('git -C "$REPO" commit -qm x')])
@@ -419,19 +417,6 @@ class NoSlugInCommitsTests(unittest.TestCase):
         )
         git = _fake_git({"--format=%B": "clean message\n"})
         self.assertEqual(audit.check_no_slug_in_commits(s, git, SCRATCH).checked, 1)
-
-
-class ScopeFenceTests(unittest.TestCase):
-    def test_extra_path_is_review_not_violation(self) -> None:
-        git = _fake_git({"--name-only": "src/a.py\ntest/test_a.py\nsrc/other.py\n"})
-        related = [{"path": f"{MAIN}/src/a.py"}]
-        f = audit.check_scope_fence(_committed(), related, git, SCRATCH).findings
-        self.assertEqual([(x.kind, "src/other.py" in x.detail) for x in f], [("review", True)])
-
-    def test_related_directory_covers_its_files(self) -> None:
-        git = _fake_git({"--name-only": "src/a.py\nsrc/b.py\n"})
-        related = [{"path": f"{WORKTREE}/src"}]
-        self.assertEqual(audit.check_scope_fence(_committed(), related, git, SCRATCH).findings, [])
 
 
 class MainTests(unittest.TestCase):
@@ -472,6 +457,15 @@ class MainTests(unittest.TestCase):
         self.assertEqual(data["sessions"], 1)
         kinds = {f["invariant"] for f in data["findings"] if f["kind"] == "violation"}
         self.assertEqual(kinds, {"stops-at-commit-gate"})
+        self.assertEqual(
+            [r["invariant"] for r in data["invariants"]],
+            [
+                "handoff-never-lands",
+                "no-write-outside-worktree",
+                "no-slug-in-commits",
+                "stops-at-commit-gate",
+            ],
+        )
 
 
 if __name__ == "__main__":
