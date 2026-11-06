@@ -7604,5 +7604,102 @@ class CitedByTestCase(BacklogFixture):
         out, err, code = self._run(str(Path(self.tmpdir) / "foreman" / "x.txt"))
         self.assertEqual(code, 2)
 
+class BackendHealthWarningTestCase(BacklogFixture):
+    """Per-backend success-rate warning lines in the dashboard render.
+
+    The helper is pure and read-only; these tests drive it directly and via
+    ``render``, writing the fixture log through ``path_for("backend-log")``
+    under the sandbox HOME so nothing touches real ``~/.agent-toolkit/data/``.
+    """
+
+    def _log_path(self) -> Path:
+        return agent_toolkit_paths.path_for("backend-log")
+
+    def _append(self, backend: str, outcome: str, snippet: str | None = None) -> None:
+        path = self._log_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        record = {
+            "ts": "2026-01-01T00:00:00+00:00",
+            "backend": backend,
+            "model": "m",
+            "outcome": outcome,
+            "wall_seconds": 1.0,
+            "prompt_bytes": 10,
+            "error_snippet": snippet,
+            "fallback_reason": None,
+        }
+        with path.open("a") as fh:
+            fh.write(json.dumps(record) + "\n")
+
+    def _warnings(self) -> list[str]:
+        return dev_status._backend_health_warnings(False)
+
+    def test_failing_backend_warned_with_rate_count_and_top_snippet(self):
+        # pi: 2 success + 18 error (12 dominant snippet) -> 10% success, warned
+        for _ in range(2):
+            self._append("pi", "success")
+        for _ in range(12):
+            self._append("pi", "error", "Connection timed out after 120s")
+        for _ in range(6):
+            self._append("pi", "error", "HTTP 502 Bad Gateway")
+        # codex: 15 success + 5 error -> 75%, healthy
+        for _ in range(15):
+            self._append("codex", "success")
+        for _ in range(5):
+            self._append("codex", "error", "boom")
+
+        warnings = self._warnings()
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("pi", warnings[0])
+        self.assertIn("10% success", warnings[0])
+        self.assertIn("(2/20 calls)", warnings[0])
+        self.assertIn("Connection timed out after 120s", warnings[0])
+        self.assertNotIn("codex", warnings[0])
+
+    def test_healthy_backend_not_warned(self):
+        for _ in range(20):
+            self._append("agy", "success")
+        self.assertEqual(self._warnings(), [])
+
+    def test_missing_log_no_warning(self):
+        self.assertEqual(self._warnings(), [])
+
+    def test_malformed_line_skipped_without_crash(self):
+        self._append("pi", "error", "pi-down")
+        with self._log_path().open("a") as fh:
+            fh.write("{ not json\n")
+        self._append("agy", "error", "agy-down")
+        warnings = self._warnings()
+        self.assertEqual(len(warnings), 2)
+        self.assertIn("pi", warnings[0])
+        self.assertIn("agy", warnings[1])
+
+    def test_last_n_window_counts_only_recent_attempts(self):
+        # 20 older failures would read 0% if not windowed; they fall outside
+        for _ in range(20):
+            self._append("pi", "error", "old failure")
+        # the last 20 attempts are all successes
+        for _ in range(20):
+            self._append("pi", "success")
+        self.assertEqual(self._warnings(), [])
+
+    def test_skipped_records_excluded(self):
+        for _ in range(20):
+            self._append("pi", "error", "down")
+        for _ in range(10):
+            self._append("pi", "skipped")
+        warnings = self._warnings()
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("(0/20 calls)", warnings[0])
+
+    def test_render_prints_warning_to_stdout_not_stderr(self):
+        for _ in range(20):
+            self._append("pi", "error", "boom")
+        out, err = io.StringIO(), io.StringIO()
+        dev_status.render([], [], out=out, err=err)
+        self.assertIn("second-opinion", out.getvalue())
+        self.assertNotIn("second-opinion", err.getvalue())
+
+
 if __name__ == "__main__":
     test_bootstrap.run_unittest_main(verbosity=2)

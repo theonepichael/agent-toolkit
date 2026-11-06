@@ -50,6 +50,7 @@ import subprocess
 import sys
 import textwrap
 import time
+from collections import Counter
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
 from datetime import UTC, date, datetime
@@ -1155,6 +1156,112 @@ def _in_progress_suffix(item: dict[str, object], color: bool) -> str:
     return res
 
 
+# ── second-opinion backend health ──────────────────────────────────────────
+#
+# The render surfaces, per backend, a warning when a backend's success rate
+# over its last _HEALTH_WINDOW logged attempts in backend_calls.jsonl falls
+# below _HEALTH_FAILURE_RATE. Read-only over the telemetry log; no new data,
+# no daemon, no stored state. The read is a bounded tail (never the whole
+# file), and the helper never raises — a missing/unreadable/malformed log
+# degrades to "no warning", never a render crash.
+
+_HEALTH_TAIL_BYTES = 256 * 1024
+_HEALTH_WINDOW = 20
+_HEALTH_FAILURE_RATE = 0.5
+
+
+def _read_backend_log_tail(path: Path) -> bytes:
+    """Read at most the last :data:`_HEALTH_TAIL_BYTES` of ``path``.
+
+    Bounded (``read(n)``, never to EOF) so an appended log cannot make the
+    render path grow without bound. A read that starts mid-record drops the
+    partial first line.
+    """
+    with path.open("rb") as fh:
+        fh.seek(0, os.SEEK_END)
+        size = fh.tell()
+        offset = max(0, size - _HEALTH_TAIL_BYTES)
+        fh.seek(offset)
+        data = fh.read(_HEALTH_TAIL_BYTES)
+    if offset > 0:
+        nl = data.find(b"\n")
+        if nl != -1:
+            data = data[nl + 1 :]
+    return data
+
+
+def _clean_snippet(text: str) -> str:
+    """Collapse whitespace and drop non-printable characters from a snippet."""
+    return "".join(c for c in " ".join(text.split()) if c.isprintable())
+
+
+def _top_error_snippet(window: list[tuple[str, str | None]]) -> str | None:
+    """Most common non-empty snippet among ``window``'s failing attempts."""
+    snippets = [s for outcome, s in window if outcome in ("timeout", "error") and s]
+    if not snippets:
+        return None
+    [(top, _)] = Counter(snippets).most_common(1)
+    return _ellipsize(top, 50)
+
+
+def _backend_health_warnings(color: bool) -> list[str]:
+    """Per-backend success-rate warning lines from ``backend_calls.jsonl``.
+
+    Read-only; never raises, never writes. Returns one short line per backend
+    whose success rate over its last :data:`_HEALTH_WINDOW` attempts is below
+    :data:`_HEALTH_FAILURE_RATE`, naming the rate, the ``(successes/attempts)``
+    count, and its most common error snippet; empty when every backend is
+    healthy or the log is missing/unreadable. ``"skipped"`` records are
+    excluded — they are decision markers, not call attempts.
+    """
+    try:
+        path = agent_toolkit_paths.path_for("backend-log")
+        raw = _read_backend_log_tail(path)
+    except Exception:  # noqa: BLE001 — health check must never raise
+        return []
+
+    attempts: dict[str, list[tuple[str, str | None]]] = {}
+    for line in raw.decode("utf-8", errors="replace").splitlines():
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except Exception:  # noqa: BLE001 — per-line parse boundary
+            continue
+        if not isinstance(record, dict):
+            continue
+        backend = record.get("backend")
+        outcome = record.get("outcome")
+        if not isinstance(backend, str) or not isinstance(outcome, str):
+            continue
+        if outcome not in ("success", "timeout", "error"):
+            continue
+        snippet = record.get("error_snippet")
+        if isinstance(snippet, str) and snippet:
+            snippet = _clean_snippet(snippet) or None
+        else:
+            snippet = None
+        attempts.setdefault(backend, []).append((outcome, snippet))
+
+    lines: list[str] = []
+    for backend, records in attempts.items():
+        window = records[-_HEALTH_WINDOW:]
+        total = len(window)
+        successes = sum(1 for outcome, _ in window if outcome == "success")
+        if total == 0 or successes / total >= _HEALTH_FAILURE_RATE:
+            continue
+        percent = round(successes / total * 100)
+        line = (
+            f"{_colorize('⚠️ ', _COLORS['warn'], color)}"
+            f"second-opinion: {backend} {percent}% success ({successes}/{total} calls)"
+        )
+        top_snippet = _top_error_snippet(window)
+        if top_snippet is not None:
+            line += f' — "{top_snippet}"'
+        lines.append(line)
+    return lines
+
+
 def render(
     items: list[BacklogItem] | None = None,
     pending_items: list[PendingItem] | None = None,
@@ -1207,9 +1314,13 @@ def render(
     pending_ordered = _pending_render_order(pending_items)
     ordered: list[BacklogItem | PendingItem] = _concat_order(pending_ordered, buckets)
 
+    color = _use_color(out)
+    for line in _backend_health_warnings(color):
+        print(line, file=out)
+
     if not ordered:
         print("(backlog is empty)", file=out)
-        for line in _recap_section_lines(_use_color(out), current_fingerprint) or []:
+        for line in _recap_section_lines(color, current_fingerprint) or []:
             print(line, file=out)
         if not _agent_quiet():
             print(f"item-map: rev={rev}", file=err)
@@ -1217,7 +1328,6 @@ def render(
             _maybe_dispatch_recap_regen(current_fingerprint)
         return
 
-    color = _use_color(out)
     pending_id_set = {p["id"] for p in pending_items}
 
     # Pre-assign all numbers so blocked-by annotations can reference any item
