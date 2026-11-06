@@ -1047,12 +1047,20 @@ def extract_agy_request_id(data: bytes) -> tuple[str | None, str | None]:
     return req_id, None
 
 
-def read_agy_session_calls(db_path: Path) -> AgyCalls:
+def read_agy_session_calls(
+    db_path: Path, *, strict_read_only: bool = False
+) -> AgyCalls:
     """Count distinct request IDs in one AgY conversation SQLite database.
 
     Never raises. Returns complete=False and unreadable=True if the database
     cannot be opened. Returns complete=False if any row cannot be counted or if
     no metadata rows exist yet.
+
+    ``strict_read_only`` (default False) never falls back to a read-write
+    connection when the ``mode=ro`` open fails; it returns an unreadable result
+    instead. A read-only report must pass it so it can never create or modify
+    the database. The default preserves the historical fallback for callers
+    that predate the parameter.
     """
     if not db_path.exists():
         return AgyCalls(
@@ -1064,7 +1072,14 @@ def read_agy_session_calls(db_path: Path) -> AgyCalls:
     conn = None
     try:
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        if strict_read_only:
+            return AgyCalls(
+                calls=None,
+                complete=False,
+                unreadable=True,
+                problems=(f"cannot open database read-only: {exc}",),
+            )
         try:
             conn = sqlite3.connect(str(db_path))
         except sqlite3.Error as exc:

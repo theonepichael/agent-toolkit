@@ -82,6 +82,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`to_tickets_runner.py`](#agentscriptstoticketsrunnerpy) | to_tickets_runner.py — create a linked batch of dev_status.py backlog items from a confirmed vertical-slice/tracer-bullet ticket breakdown. |
 | [`toolkit_checkout.py`](#agentscriptstoolkitcheckoutpy) | Locate the agent-toolkit source checkout. |
 | [`vitals_promotion.py`](#agentscriptsvitalspromotionpy) | vitals-promotion.py — mechanical vitals-promotion pass over grill session data. |
+| [`worker_run_metrics.py`](#agentscriptsworkerrunmetricspy) | worker_run_metrics.py — read-only worker-run metrics report. |
 | [`worktree.py`](#agentscriptsworktreepy) | worktree.py — automated worktree creation and dependency bootstrapping. |
 | [`worktree_provenance.py`](#agentscriptsworktreeprovenancepy) | Per-worktree backlog provenance: one explicit marker, shared predicates. |
 
@@ -214,7 +215,7 @@ analyze_sessions.py — multi-harness session analysis tool.
   - `pi_session_cost(path: Path) -> PiCost` — Total pi-estimated cost of one session file; never raises.
   - `pi_cost_since(since: datetime, base_dir: Path | None = None) -> PiCost` — Total pi-estimated cost of every pi session since ``since``; never raises.
   - `extract_agy_request_id(data: bytes) -> tuple[str | None, str | None]` — Extract candidate request ID from gen_metadata protobuf data at path 1/4/11.
-  - `read_agy_session_calls(db_path: Path) -> AgyCalls` — Count distinct request IDs in one AgY conversation SQLite database.
+  - `read_agy_session_calls(db_path: Path, *, strict_read_only: bool = False) -> AgyCalls` — Count distinct request IDs in one AgY conversation SQLite database.
   - `agy_session_calls(path: Path) -> AgyCalls` — Total distinct request IDs of one AgY conversation SQLite database; never raises.
   - `load_claude_records(base_dir: Path | None = None, since_dt: datetime | None = None, until_dt: datetime | None = None) -> tuple[list[SessionRecord], list[SkippedRecord]]`
   - `load_opencode_records(db_path: Path | None = None, since_dt: datetime | None = None, until_dt: datetime | None = None, cwd_filter: str | None = None, session_filter: str | None = None) -> tuple[list[SessionRecord], list[SkippedRecord]]`
@@ -228,7 +229,7 @@ analyze_sessions.py — multi-harness session analysis tool.
   - `session_milestones(harness: str, base_dir: Path | None = None, *, repo: str | None = None, since: datetime | None = None, until: datetime | None = None, model: str | None = None, session: str | None = None, cwd: str | None = None) -> tuple[list[SessionMilestone], list[SkippedRecord]]` — Per-session first-file-write milestones for one measurable harness.
   - `build_parser() -> argparse.ArgumentParser`
 - Subcommand handlers: `cmd_cost`, `cmd_milestones`, `cmd_prompts`, `cmd_search`
-- Tested by: `test/test_analyze_sessions.py`
+- Tested by: `test/test_analyze_sessions.py`, `test/test_worker_run_metrics.py`
 
 ### `agent-scripts/backlog_claim_lookup.py`
 
@@ -1945,6 +1946,26 @@ vitals-promotion.py — mechanical vitals-promotion pass over grill session data
   - `promote(sessions: list[Session], *, vitals_dir: Path) -> Report` — Run the pass and write every file it dirtied.
   - `print_report(report: Report, apply: bool, quiet: bool = False) -> None`
 - Tested by: `test/test_migration_lock_adoption.py`, `test/test_vitals_promotion.py`
+
+### `agent-scripts/worker_run_metrics.py`
+
+worker_run_metrics.py — read-only worker-run metrics report.
+
+- Installed at: `~/.agent-toolkit/scripts/worker_run_metrics.py` (all harnesses)
+- Entrypoint: not executable, `#!/usr/bin/env python3`
+- CLI (`argparse`): Read-only per-model/harness worker-run metrics report.
+  - `--json/-j` — emit output as JSON (a list of row objects)
+  - `--quiet/-q`
+  - `--verbose/-v`
+- Depends on: `agent_toolkit_paths.py`, `analyze_sessions.py`, `cli_common.py`
+- Public classes:
+  - `class Launch` — One resolved launch-log worker record.
+  - `class SessionInfo` — Measured data for one joined worker session.
+  - `class Row` — Aggregate metrics for one (model, harness) group.
+- Public functions:
+  - `compute_report(launch_records: list[dict[str, object]], items: dict[str, dict[str, object]], done_ts: dict[str, str]) -> list[dict[str, object]]` — Pure aggregation: launch records + store data -> per-(model, harness) rows.
+  - `build_parser() -> argparse.ArgumentParser`
+- Tested by: `test/test_worker_run_metrics.py`
 
 ### `agent-scripts/worktree.py`
 

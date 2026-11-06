@@ -333,6 +333,10 @@ src = "agent-scripts/analyze_sessions.py"
 dest = "~/.agent-toolkit/scripts/analyze_sessions.py"
 
 [[link]]
+src = "agent-scripts/worker_run_metrics.py"
+dest = "~/.agent-toolkit/scripts/worker_run_metrics.py"
+
+[[link]]
 src = "agent-scripts/guard_rails.py"
 dest = "~/.agent-toolkit/scripts/guard_rails.py"
 
