@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -556,6 +557,7 @@ class LifecycleInvalidationTestCase(AcceptanceFixture):
         self.write_items([make_item("atk-a")])
         self._service_acceptance_set("atk-a", acceptance_payload(), if_rev=self.read_rev())
         rev = self.read_rev()
+        set_at = self.item("atk-a")["gate"]["set_at"]
         self._pass_gate("atk-a", rev)
         rev = self.read_rev()
         mut.start_item("atk-a", if_rev=rev, items_path=self.items_file)
@@ -568,6 +570,9 @@ class LifecycleInvalidationTestCase(AcceptanceFixture):
         res = mut.reject_item("atk-a", "nope", if_rev=rev, items_path=self.items_file)
         self.assertIsNone(res.item["gate"]["passed_at"])
         self.assertNotIn("verified_by", res.item["gate"])
+        # reject is a genuine rework transition: it still re-stamps set_at
+        # (the helper's default refresh), orphaning prior run evidence.
+        self.assertNotEqual(res.item["gate"]["set_at"], set_at)
 
     def test_reopen_clears_verified_by(self):
         self.write_items([make_item("atk-a")])
@@ -615,6 +620,147 @@ class LifecycleInvalidationTestCase(AcceptanceFixture):
         rev = self.read_rev()
         with self.assertRaises(mut.InvalidItemStateError):
             self._service_acceptance_set("atk-a", acceptance_payload(), if_rev=rev)
+
+
+class _FakeDatetime(datetime):
+    """datetime whose ``now`` returns a controllable fixed value."""
+
+    _fixed_now = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+
+    @classmethod
+    def now(cls, tz=None):
+        return cls._fixed_now
+
+
+class StartReclaimGateTestCase(LifecycleInvalidationTestCase):
+    """``start`` must not re-stamp ``set_at`` unless criteria change."""
+
+    RUN_ID = "aaaa1111aaaa1111aaaa1111aaaa1111"
+
+    def _seed_run(self, item="atk-a", started_at=None):
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        row = {
+            "run_id": self.RUN_ID,
+            "item": item,
+            "command": "pytest -q",
+            "exit_code": 0,
+            "timed_out": False,
+            "started_at": started_at or datetime.now(UTC).isoformat(),
+            "duration_s": 1.5,
+            "cwd": "/tmp",
+        }
+        with open(self.runs_file, "a") as f:
+            f.write(json.dumps(row) + "\n")
+
+    def _write_dead_claim(self):
+        """Overwrite the claim with a dead PID, as a host reboot would leave it."""
+        item = self.item("atk-a")
+        claim = item["claimed_by"]
+        item["claimed_by"] = {
+            "harness": claim["harness"],
+            "machine_id": claim["machine_id"],
+            "pid": 999999,
+            "claimed_at": claim["claimed_at"],
+            "last_active": claim["last_active"],
+        }
+        self.write_items([item])
+
+    @pytest.mark.regression(
+        "start-reclaim-restamps-gate-set-at",
+        "criterion 1: cited run aaaa1111aaaa1111aaaa1111aaaa1111 is stale "
+        "(started_at 2026-01-01T12:00:10+00:00 pre-dates gate set_at "
+        "2026-01-01T13:00:00+00:00)",
+    )
+    def test_start_reclaim_keeps_gate_set_at_and_run_citable(self):
+        self.write_items([make_item("atk-a")])
+        t0 = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+        _FakeDatetime._fixed_now = t0
+        with patch.object(mut, "datetime", _FakeDatetime):
+            self._service_acceptance_set(
+                "atk-a", acceptance_payload(), if_rev=self.read_rev()
+            )
+            rev = self.read_rev()
+            set_at = self.item("atk-a")["gate"]["set_at"]
+            # First start claims the item (clock advances, but no criteria
+            # change, so set_at must not move).
+            _FakeDatetime._fixed_now = t0 + timedelta(seconds=5)
+            mut.start_item("atk-a", if_rev=rev, items_path=self.items_file)
+            rev = self.read_rev()
+            # A run recorded during the work.
+            self._seed_run(started_at=(t0 + timedelta(seconds=10)).isoformat())
+            # The claim is released (host reboot), then reclaimed an hour later.
+            self._write_dead_claim()
+            _FakeDatetime._fixed_now = t0 + timedelta(hours=1)
+            with patch.object(mut, "_is_pid_alive", return_value=False):
+                mut.start_item("atk-a", if_rev=rev, items_path=self.items_file)
+            rev = self.read_rev()
+            # The earlier run is still citable: gate-pass succeeds (pre-fix,
+            # the reclaim's re-stamp orphans it and this raises a stale refusal).
+            res = mut.pass_gate(
+                "atk-a",
+                mut.GatePassRequest(
+                    coverage={"1": "run:" + self.RUN_ID, "2": "run:" + self.RUN_ID}
+                ),
+                if_rev=rev,
+                items_path=self.items_file,
+            )
+            self.assertIsNotNone(res.item["gate"]["passed_at"])
+            # and the reclaim never re-stamped set_at
+            self.assertEqual(self.item("atk-a")["gate"]["set_at"], set_at)
+
+    def test_criteria_change_restamps_set_at_and_run_stays_stale(self):
+        self.write_items([make_item("atk-a")])
+        self._service_acceptance_set("atk-a", acceptance_payload(), if_rev=self.read_rev())
+        rev = self.read_rev()
+        set_at = self.item("atk-a")["gate"]["set_at"]
+        # A run recorded against the original criteria.
+        self._seed_run(started_at=datetime.now(UTC).isoformat())
+        # A worker adds a criterion: the criteria change re-stamps set_at.
+        res = mut.set_gate(
+            "atk-a",
+            mut.GateSetRequest(
+                required=True,
+                criteria=(
+                    "acceptance criterion one",
+                    "acceptance criterion two",
+                    "worker extra criterion",
+                ),
+            ),
+            if_rev=rev,
+            items_path=self.items_file,
+        )
+        self.assertIsNone(res.item["gate"]["passed_at"])
+        self.assertNotEqual(res.item["gate"]["set_at"], set_at)
+        rev = self.read_rev()
+        # start after the change must not un-orphan the pre-change run.
+        mut.start_item("atk-a", if_rev=rev, items_path=self.items_file)
+        rev = self.read_rev()
+        with self.assertRaises(mut.ValidationError) as ctx:
+            mut.pass_gate(
+                "atk-a",
+                mut.GatePassRequest(
+                    coverage={
+                        "1": "run:" + self.RUN_ID,
+                        "2": "run:" + self.RUN_ID,
+                        "3": "run:" + self.RUN_ID,
+                    }
+                ),
+                if_rev=rev,
+                items_path=self.items_file,
+            )
+        self.assertIn("stale", str(ctx.exception))
+
+    def test_start_from_done_restamps_set_at(self):
+        # start from done undoes a completion: it clears the pass AND refreshes
+        # set_at (orphaning prior evidence), exactly as reopen does -- unlike a
+        # plain reclaim, which keeps set_at so recorded runs stay citable.
+        rev = self._acceptance_item_with_passed_gate()
+        set_at = self.item("atk-a")["gate"]["set_at"]
+        mut.done_item("atk-a", if_rev=rev, items_path=self.items_file)
+        rev = self.read_rev()
+        res = mut.start_item("atk-a", if_rev=rev, items_path=self.items_file)
+        self.assertNotEqual(res.item["gate"]["set_at"], set_at)
+        self.assertIsNone(res.item["gate"]["passed_at"])
 
 
 # ── verifier token lifecycle ──────────────────────────────────────────────────

@@ -1714,11 +1714,18 @@ def _apply_acceptance_to_gate(
     }
 
 
-def _invalidate_passed_gate(item: dict[str, object]) -> None:
-    """Clear a passed gate's evidence and refresh ``set_at`` (orphaning old runs).
+def _invalidate_passed_gate(
+    item: dict[str, object], *, refresh_set_at: bool = True
+) -> None:
+    """Clear a passed gate's evidence, refreshing ``set_at`` only when asked.
 
     Applied on any transition into in-progress for acceptance-bearing items;
-    a legacy item's passed gate is deliberately left untouched.
+    a legacy item's passed gate is deliberately left untouched. Refreshing
+    ``set_at`` orphans run evidence recorded before the transition: it belongs
+    on transitions that undo a completion or rework (``reject``, and ``start``
+    from ``done``), not on a plain reclaim (``start`` from ``open`` or
+    ``in-progress``), where the criteria are unchanged and previously recorded
+    runs stay citable.
     """
     gate = item.get("gate")
     if isinstance(gate, dict):
@@ -1726,7 +1733,8 @@ def _invalidate_passed_gate(item: dict[str, object]) -> None:
         gate.pop("passed_via", None)
         gate.pop("coverage", None)
         gate.pop("verified_by", None)
-        gate["set_at"] = datetime.now(UTC).isoformat()
+        if refresh_set_at:
+            gate["set_at"] = datetime.now(UTC).isoformat()
 
 
 def _has_acceptance(item: Mapping[str, object]) -> bool:
@@ -2417,10 +2425,13 @@ def start_item(
             }
         )
         # Acceptance-bearing items: any transition into in-progress
-        # invalidates a passed gate (older run evidence is orphaned via the
-        # refreshed set_at). Legacy items keep today's behaviour.
+        # invalidates a passed gate. A reclaim (start from open or
+        # in-progress) clears the pass but keeps set_at -- the criteria are
+        # unchanged, so previously recorded runs stay citable. start from done
+        # undoes a completion, so it refreshes set_at to orphan prior evidence
+        # (as reopen does). Legacy items keep today's behaviour.
         if _has_acceptance(item):
-            _invalidate_passed_gate(item)
+            _invalidate_passed_gate(item, refresh_set_at=(old_status == "done"))
         item["updated"] = today()
 
         new_rev = _bump_rev(paths["meta_path"])
