@@ -83,6 +83,8 @@ CASES: list[tuple[str, list[str], object, dict[str, str], str | None]] = [
     ("pi-write", ["--harness", "pi", "--tool", "write", "--cwd", "<REPO>", "--path", "<REPO>/README.md"], None, {}, None),
     ("off-pi-bash-ls", ["--harness", "pi", "--tool", "bash", "--cwd", "<REPO>", "--command", "ls"], None, {"GUARD_RAILS_OFF": "1"}, None),
     ("broken-pi-bash-ls", ["--harness", "pi", "--tool", "bash", "--cwd", "<REPO>", "--command", "ls"], None, {}, _BROKEN_POINTER),
+    ("opencode-bash-ls", ["--harness", "opencode", "--tool", "bash", "--cwd", "<REPO>", "--command", "ls"], None, {}, None),
+    ("off-opencode-bash-ls", ["--harness", "opencode", "--tool", "bash", "--cwd", "<REPO>", "--command", "ls"], None, {"GUARD_RAILS_OFF": "1"}, None),
     ("claude-bash-ls-quiet", ["--harness", "claude", "-q"], _claude("Bash", {"command": "ls"}), {}, None),
     ("off-claude-bash-ls", ["--harness", "claude"], _claude("Bash", {"command": "ls"}), {"GUARD_RAILS_OFF": "1"}, None),
     ("off-claude-bash-no-verify", ["--harness", "claude"], _claude("Bash", {"command": "git commit --no-verify"}), {"GUARD_RAILS_OFF": "1"}, None),

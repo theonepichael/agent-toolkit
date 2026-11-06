@@ -705,17 +705,28 @@ class AuditLogTests(unittest.TestCase):
         self.assertEqual(record["tool"], "bash")
         self.assertEqual(record["target"], "ls")
 
-    def test_pi_neutral_mode_records_pi_harness(self) -> None:
-        with mock.patch.object(
-            guard_rails, "evaluate", return_value=guard_rails.Verdict("allow")
-        ):
-            self._run(
-                ["--harness", "pi", "--tool", "bash", "--cwd", "/repo", "--command", "ls"]
-            )
-        (record,) = self._records()
-        self.assertEqual(record["harness"], "pi")
-        self.assertEqual(record["tool"], "bash")
-        self.assertEqual(record["target"], "ls")
+    def test_neutral_mode_records_harness(self) -> None:
+        for harness in ("pi", "opencode"):
+            with self.subTest(harness=harness):
+                with mock.patch.object(
+                    guard_rails, "evaluate", return_value=guard_rails.Verdict("allow")
+                ):
+                    self._run(
+                        [
+                            "--harness",
+                            harness,
+                            "--tool",
+                            "bash",
+                            "--cwd",
+                            "/repo",
+                            "--command",
+                            "ls",
+                        ]
+                    )
+                record = self._records()[-1]
+                self.assertEqual(record["harness"], harness)
+                self.assertEqual(record["tool"], "bash")
+                self.assertEqual(record["target"], "ls")
 
     def test_pi_neutral_mode_denial_records_pi_harness(self) -> None:
         with mock.patch.object(

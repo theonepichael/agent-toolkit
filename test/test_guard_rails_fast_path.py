@@ -153,11 +153,13 @@ FAST_CASES = {
     "neutral-bash-ls",
     "neutral-bash-empty",
     "pi-bash-ls",
+    "opencode-bash-ls",
     "off-claude-bash-ls",
     "off-claude-read",
     "off-copilot-view",
     "off-neutral-bash-ls",
     "off-pi-bash-ls",
+    "off-opencode-bash-ls",
     "off-broken-claude-bash-ls",
 }
 
@@ -194,7 +196,8 @@ def _claimable(case: tuple) -> bool:
         and argv[1] == "bash"
     ) or (
         len(argv) == 8
-        and argv[0:2] == ["--harness", "pi"]
+        and argv[0] == "--harness"
+        and argv[1] in guard_rails._NEUTRAL_HARNESSES
         and argv[2::2] == ["--tool", "--cwd", "--command"]
         and argv[3] == "bash"
     )
@@ -287,29 +290,32 @@ def test_other_argv_shapes_are_never_claimed(argv: list[str]) -> None:
     assert (handled, out, rest) == (False, "", _PAYLOAD)
 
 
-def test_fast_decide_pi_neutral_bash_records_pi_harness() -> None:
+@pytest.mark.parametrize("harness", ["pi", "opencode"])
+def test_fast_decide_neutral_bash_records_harness(harness: str) -> None:
     with mock.patch.object(guard_rails, "_layout_error_reason", return_value=None):
         decided = guard_rails._fast_decide(
-            ["--harness", "pi", "--tool", "bash", "--cwd", "/repo", "--command", "ls"],
+            ["--harness", harness, "--tool", "bash", "--cwd", "/repo", "--command", "ls"],
             None,
         )
     assert decided is not None
     out, record = decided
     assert out == json.dumps({"decision": "allow", "reason": ""})
-    assert record["harness"] == "pi"
+    assert record["harness"] == harness
     assert record["tool"] == "bash"
     assert record["target"] == "ls"
 
 
-def test_pi_neutral_bash_fast_path_claims_without_reading_stdin() -> None:
-    """--harness pi prefixes the neutral bash form: the fast path must claim
-    it (staying on the fast path) and never read stdin, which pi never sends."""
+@pytest.mark.parametrize("harness", ["pi", "opencode"])
+def test_neutral_bash_fast_path_claims_without_reading_stdin(harness: str) -> None:
+    """--harness <neutral-harness> prefixes the neutral bash form: the fast
+    path must claim it (staying on the fast path) and never read stdin, which
+    pi/opencode never send."""
 
     class ExplodingStdin:
         def read(self) -> str:
-            raise AssertionError("pi's neutral form must not read stdin")
+            raise AssertionError("the neutral form must not read stdin")
 
-    argv = ["--harness", "pi", "--tool", "bash", "--cwd", "/repo", "--command", "ls"]
+    argv = ["--harness", harness, "--tool", "bash", "--cwd", "/repo", "--command", "ls"]
     out = io.StringIO()
     records: list[dict[str, object]] = []
     with (
@@ -324,6 +330,6 @@ def test_pi_neutral_bash_fast_path_claims_without_reading_stdin() -> None:
     assert handled
     assert out.getvalue() == json.dumps({"decision": "allow", "reason": ""}) + "\n"
     (record,) = records
-    assert record["harness"] == "pi"
+    assert record["harness"] == harness
     assert record["tool"] == "bash"
     assert record["target"] == "ls"

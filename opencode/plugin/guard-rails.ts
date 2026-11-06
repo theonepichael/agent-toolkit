@@ -37,6 +37,8 @@ export const GuardRails: Plugin = async () => {
             "python3",
             [
               `${process.env.HOME}/.agent-toolkit/scripts/guard_rails.py`,
+              "--harness",
+              "opencode",
               "--tool",
               "bash",
               "--cwd",
@@ -68,6 +70,8 @@ export const GuardRails: Plugin = async () => {
           "python3",
           [
             `${process.env.HOME}/.agent-toolkit/scripts/guard_rails.py`,
+            "--harness",
+            "opencode",
             "--tool",
             tool,
             "--cwd",

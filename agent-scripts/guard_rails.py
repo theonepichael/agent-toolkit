@@ -13,8 +13,8 @@ in-progress item.
 Claude Code, agy and Copilot pipe their native hook payload in on stdin and
 get their native verdict back on stdout. Pi and opencode already hold the
 parsed values, so they pass them as flags and read a neutral JSON verdict.
-Pi additionally passes ``--harness pi`` so its audit rows are attributable;
-opencode uses the unlabelled neutral form.
+Pi and opencode additionally pass ``--harness pi`` and ``--harness opencode``
+respectively so their audit rows are attributable.
 
 Write-family tool calls get the full R2/R3 check above. Bash calls get a
 narrower check: blocking ``git commit`` itself by parsing a shell string was
@@ -68,13 +68,18 @@ Usage:
                                                        pi's write-family form, audit-labelled
     guard_rails.py --harness pi --tool bash --cwd D --command C
                                                        pi's bash-family form, audit-labelled
-    guard_rails.py --tool T --cwd D --path P           neutral write-family form (opencode)
-    guard_rails.py --tool bash --cwd D --command C     neutral bash-family form (opencode)
+    guard_rails.py --harness opencode --tool T --cwd D --path P
+                                                       opencode's write-family form, audit-labelled
+    guard_rails.py --harness opencode --tool bash --cwd D --command C
+                                                       opencode's bash-family form, audit-labelled
+    guard_rails.py --tool T --cwd D --path P           neutral write-family form
+    guard_rails.py --tool bash --cwd D --command C     neutral bash-family form
 
 Flags
   --harness NAME  name the calling harness: claude/agy/copilot read that
-                  harness's payload on stdin and answer in its shape; pi uses
-                  the neutral flag form and only labels the audit trail
+                  harness's payload on stdin and answer in its shape; pi and
+                  opencode use the neutral flag form and only label the audit
+                  trail
   --tool NAME     tool name, for the neutral form
   --cwd DIR       session working directory, for the neutral form
   --path PATH     target file path, for the neutral write-family form
@@ -223,7 +228,7 @@ _HARNESS_ALLOW = {
 # attributed to them by name. They never read stdin (they already hold the
 # parsed values); --harness here only labels the audit record, it does not
 # switch them to the stdin payload form.
-_NEUTRAL_HARNESSES = frozenset({"pi"})
+_NEUTRAL_HARNESSES = frozenset({"pi", "opencode"})
 
 
 def bash_trigger_free(command: str) -> bool:
@@ -1746,11 +1751,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--harness",
-        choices=["claude", "agy", "copilot", "pi"],
+        choices=["claude", "agy", "copilot", "pi", "opencode"],
         help=(
             "name the calling harness: claude/agy/copilot read that "
-            "harness's payload on stdin and answer in its shape; pi uses "
-            "the neutral flag form and only labels the audit trail"
+            "harness's payload on stdin and answer in its shape; pi and "
+            "opencode use the neutral flag form and only label the audit trail"
         ),
     )
     parser.add_argument("--tool", help="tool name, for the neutral form")

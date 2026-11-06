@@ -593,12 +593,38 @@
     "exit": 0,
     "stdout": "{\"decision\": \"allow\", \"reason\": \"\"}\n"
   },
+  "off-opencode-bash-ls": {
+    "audit": [
+      {
+        "decision": "allow",
+        "harness": "opencode",
+        "rule": "GUARD_RAILS_OFF",
+        "target": "ls",
+        "tool": "bash"
+      }
+    ],
+    "exit": 0,
+    "stdout": "{\"decision\": \"allow\", \"reason\": \"\"}\n"
+  },
   "off-pi-bash-ls": {
     "audit": [
       {
         "decision": "allow",
         "harness": "pi",
         "rule": "GUARD_RAILS_OFF",
+        "target": "ls",
+        "tool": "bash"
+      }
+    ],
+    "exit": 0,
+    "stdout": "{\"decision\": \"allow\", \"reason\": \"\"}\n"
+  },
+  "opencode-bash-ls": {
+    "audit": [
+      {
+        "decision": "allow",
+        "harness": "opencode",
+        "rule": "default-allow",
         "target": "ls",
         "tool": "bash"
       }

@@ -1025,7 +1025,7 @@ Pre-tool guard shared by every harness: refuse a write into a repository's main 
 - Installed at: `~/.agent-toolkit/scripts/guard_rails.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): pre-tool guard shared by every harness
-  - `--harness` — name the calling harness: claude/agy/copilot read that harness's payload on stdin and answer in its shape; pi uses the neutral flag form and only labels the audit trail (choices: claude, agy, copilot, pi)
+  - `--harness` — name the calling harness: claude/agy/copilot read that harness's payload on stdin and answer in its shape; pi and opencode use the neutral flag form and only label the audit trail (choices: claude, agy, copilot, pi, opencode)
   - `--tool` — tool name, for the neutral form
   - `--cwd` — session working directory, for the neutral form
   - `--path` — target file path, for the neutral write-family form
@@ -2226,6 +2226,7 @@ are copy-once seeds for exactly that reason.
 | `opencode/plugin/notify.ts` | `~/.config/opencode/plugin/notify.ts` (opencode) |
 | `opencode/plugin/ruff-format-on-edit.ts` | `~/.config/opencode/plugin/ruff-format-on-edit.ts` (opencode) |
 | `opencode/plugins/trust-session.ts` | `~/.config/opencode/plugins/trust-session.ts` (opencode) |
+| `opencode/test/guard-rails.test.ts` | not symlinked by `links.toml` |
 | `opencode/test/model-picker.test.ts` | not symlinked by `links.toml` |
 | `opencode/test/plugins.test.ts` | not symlinked by `links.toml` |
 | `opencode/test/trust-state.test.ts` | not symlinked by `links.toml` |
