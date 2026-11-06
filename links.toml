@@ -341,6 +341,10 @@ src = "agent-scripts/worker_run_metrics.py"
 dest = "~/.agent-toolkit/scripts/worker_run_metrics.py"
 
 [[link]]
+src = "agent-scripts/worker_invariant_audit.py"
+dest = "~/.agent-toolkit/scripts/worker_invariant_audit.py"
+
+[[link]]
 src = "agent-scripts/guard_rails.py"
 dest = "~/.agent-toolkit/scripts/guard_rails.py"
 

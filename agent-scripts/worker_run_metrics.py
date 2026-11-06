@@ -81,6 +81,7 @@ class Launch:
     session_id: str | None
     launch_model: str | None
     agy_db: str | None = None
+    pane: str | None = None
 
 
 @dataclass
@@ -368,13 +369,8 @@ class Row:
     first_write_spend_complete: bool = True
 
 
-def compute_report(
-    launch_records: list[dict[str, object]],
-    items: dict[str, dict[str, object]],
-    done_ts: dict[str, str],
-    sendbacks: list[tuple[str, str]] | None = None,
-) -> list[dict[str, object]]:
-    """Pure aggregation: launch records + store data -> per-(model, harness) rows."""
+def parse_launches(launch_records: list[dict[str, object]]) -> list[Launch]:
+    """Resolve the launch log's worker records into :class:`Launch` objects."""
     launches: list[Launch] = []
     for order, rec in enumerate(launch_records):
         if rec.get("kind") != "worker":
@@ -383,6 +379,7 @@ def compute_report(
         slug = slug if isinstance(slug, str) and slug.strip() else None
         model = rec.get("model")
         launch_model = model if isinstance(model, str) and model.strip() else None
+        pane = rec.get("pane")
         harness, session_id, agy_db = _classify_session(rec.get("worker_session"))
         _, ts = analyze_sessions.normalize_timestamp(rec.get("ts"))
         launches.append(
@@ -394,10 +391,14 @@ def compute_report(
                 session_id=session_id,
                 launch_model=launch_model,
                 agy_db=agy_db,
+                pane=pane if isinstance(pane, str) and pane.strip() else None,
             )
         )
+    return launches
 
-    # Session ownership: earliest referencing launch owns the session.
+
+def session_owners(launches: list[Launch]) -> dict[str, Launch]:
+    """Canonical session id -> owning launch (the earliest one referencing it)."""
     owner: dict[str, Launch] = {}
     for launch in launches:
         if launch.session_id is None:
@@ -408,6 +409,18 @@ def compute_report(
             continue
         if launch.ts is not None and (existing.ts is None or launch.ts < existing.ts):
             owner[launch.session_id] = launch
+    return owner
+
+
+def compute_report(
+    launch_records: list[dict[str, object]],
+    items: dict[str, dict[str, object]],
+    done_ts: dict[str, str],
+    sendbacks: list[tuple[str, str]] | None = None,
+) -> list[dict[str, object]]:
+    """Pure aggregation: launch records + store data -> per-(model, harness) rows."""
+    launches = parse_launches(launch_records)
+    owner = session_owners(launches)
 
     # Session measurements, keyed by canonical session id.
     session_info: dict[str, SessionInfo] = {}

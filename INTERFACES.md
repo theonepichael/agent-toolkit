@@ -83,6 +83,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`to_tickets_runner.py`](#agentscriptstoticketsrunnerpy) | to_tickets_runner.py — create a linked batch of dev_status.py backlog items from a confirmed vertical-slice/tracer-bullet ticket breakdown. |
 | [`toolkit_checkout.py`](#agentscriptstoolkitcheckoutpy) | Locate the agent-toolkit source checkout. |
 | [`vitals_promotion.py`](#agentscriptsvitalspromotionpy) | vitals-promotion.py — mechanical vitals-promotion pass over grill session data. |
+| [`worker_invariant_audit.py`](#agentscriptsworkerinvariantauditpy) | worker_invariant_audit.py — read-only audit of real pi worker runs. |
 | [`worker_run_metrics.py`](#agentscriptsworkerrunmetricspy) | worker_run_metrics.py — read-only worker-run metrics report. |
 | [`worktree.py`](#agentscriptsworktreepy) | worktree.py — automated worktree creation and dependency bootstrapping. |
 | [`worktree_provenance.py`](#agentscriptsworktreeprovenancepy) | Per-worktree backlog provenance: one explicit marker, shared predicates. |
@@ -1964,6 +1965,38 @@ vitals-promotion.py — mechanical vitals-promotion pass over grill session data
   - `print_report(report: Report, apply: bool, quiet: bool = False) -> None`
 - Tested by: `test/test_migration_lock_adoption.py`, `test/test_vitals_promotion.py`
 
+### `agent-scripts/worker_invariant_audit.py`
+
+worker_invariant_audit.py — read-only audit of real pi worker runs.
+
+- Installed at: `~/.agent-toolkit/scripts/worker_invariant_audit.py` (all harnesses)
+- Entrypoint: not executable, `#!/usr/bin/env python3`
+- CLI (`argparse`): Read-only audit of pi worker runs against five worker invariants.
+  - `--since` — only sessions started on or after DATE (YYYY-MM-DD, UTC)
+  - `--json/-j` — emit the summary and findings as JSON
+  - `--quiet/-q`
+  - `--verbose/-v`
+- Depends on: `agent_toolkit_paths.py`, `analyze_sessions.py`, `cli_common.py`, `worker_run_metrics.py`
+- Public classes:
+  - `class ToolCall`
+  - `class WorkerSession`
+  - `class GitCall`
+  - `class Finding`
+  - `class CheckResult`
+- Public functions:
+  - `parse_session(path: Path, records: list[dict[str, object]]) -> WorkerSession | None` — A worker session from pi records, or None when it is not a worker run.
+  - `git_invocations(command: str, cwd: Path) -> list[GitCall]` — Every git invocation in a bash command, with its effective directory.
+  - `session_worktree(session: WorkerSession) -> Path | None` — The item worktree: the handoff line's, the dev_status start cwd, else the ``<checkout>-<slug>`` sibling convention.
+  - `check_handoff_never_lands(session: WorkerSession, scratch: tuple[Path, ...]) -> CheckResult` — Invariant 1: a --handoff run never pushes, merges, or moves main.
+  - `check_no_write_outside_worktree(session: WorkerSession, allowed: tuple[Path, ...], git: GitRunner, *, review_roots: tuple[Path, ...] = ()) -> CheckResult` — Invariant 2: write/edit paths stay under the worktree or allowed roots.
+  - `check_stops_at_commit_gate(session: WorkerSession, scratch: tuple[Path, ...]) -> CheckResult` — Invariant 4: the first commit follows a commit question or a user turn.
+  - `check_no_slug_in_commits(session: WorkerSession, git: GitRunner, scratch: tuple[Path, ...]) -> CheckResult` — Invariant 3: no commit message or added line contains the item slug.
+  - `check_scope_fence(session: WorkerSession, related_files: list[dict[str, object]], git: GitRunner, scratch: tuple[Path, ...]) -> CheckResult` — Invariant 5: changed paths vs related_files plus tests (extras = review).
+  - `discover_sessions(root: Path, since: datetime | None) -> list[WorkerSession]` — Every pi worker session under ``root`` started at or after ``since``.
+  - `audit(sessions: list[WorkerSession], items: dict[str, dict[str, object]], launches: dict[str, worker_run_metrics.Launch], git: GitRunner, *, allowed: tuple[Path, ...], scratch: tuple[Path, ...], review_roots: tuple[Path, ...] = ()) -> dict[str, CheckResult]` — Run all five checks over ``sessions``; one aggregate result per invariant.
+  - `build_parser() -> argparse.ArgumentParser`
+- Tested by: `test/test_worker_invariant_audit.py`
+
 ### `agent-scripts/worker_run_metrics.py`
 
 worker_run_metrics.py — read-only worker-run metrics report.
@@ -1980,6 +2013,8 @@ worker_run_metrics.py — read-only worker-run metrics report.
   - `class SessionInfo` — Measured data for one joined worker session.
   - `class Row` — Aggregate metrics for one (model, harness) group.
 - Public functions:
+  - `parse_launches(launch_records: list[dict[str, object]]) -> list[Launch]` — Resolve the launch log's worker records into :class:`Launch` objects.
+  - `session_owners(launches: list[Launch]) -> dict[str, Launch]` — Canonical session id -> owning launch (the earliest one referencing it).
   - `compute_report(launch_records: list[dict[str, object]], items: dict[str, dict[str, object]], done_ts: dict[str, str], sendbacks: list[tuple[str, str]] | None = None) -> list[dict[str, object]]` — Pure aggregation: launch records + store data -> per-(model, harness) rows.
   - `build_parser() -> argparse.ArgumentParser`
 - Tested by: `test/test_worker_run_metrics.py`

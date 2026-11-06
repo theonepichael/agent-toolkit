@@ -86,6 +86,7 @@ FROZEN_SCRIPT_DESTS = frozenset(
         "to_tickets_runner.py",
         "vitals_promotion.py",
         "toolkit_checkout.py",
+        "worker_invariant_audit.py",
         "worker_run_metrics.py",
         "worktree.py",
         "worktree_provenance.py",
@@ -142,7 +143,7 @@ def test_links_toml_srcs_live_in_agent_scripts() -> None:
         if isinstance(entry.get("src"), str)
         and str(entry.get("dest", "")).startswith(f"{MANAGED_DIR_DEST}/")
     ]
-    assert len(script_links) == 54, f"expected 54 script links, got {len(script_links)}"
+    assert len(script_links) == 55, f"expected 55 script links, got {len(script_links)}"
     bad = [
         entry["src"]
         for entry in script_links
