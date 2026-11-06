@@ -186,7 +186,7 @@ models, these are the contract:
 | :--- | :--- | :--- |
 | `SECOND_OPINION_AGY_MODEL` | Force the agy backend's model | Built-in default (`Gemini 3.8 Flash (High)`) |
 | `SECOND_OPINION_AGY_MODEL_POOL` | Comma-separated agy pool for `--model-index` rotation | agy falls back to the single override or its built-in default |
-| `SECOND_OPINION_PI_MODEL` / `_PI_MODEL_POOL` | Same contract for the pi backend | pi's own default for the `opencode-go` provider |
+| `SECOND_OPINION_PI_MODEL` / `_PI_MODEL_POOL` | Same contract for the pi backend | pi's configured default model |
 | `SECOND_OPINION_OPENCODE_MODEL` / `_OPENCODE_MODEL_POOL` | Same contract for the opencode backend | opencode's live config |
 | `SECOND_OPINION_COPILOT_MODEL` / `_COPILOT_MODEL_POOL` | Same contract for the copilot backend | copilot's implicit default routing |
 | `SECOND_OPINION_CODEX_MODEL` / `_CODEX_MODEL_POOL` | Same contract for the codex backend | Codex CLI's own default model |

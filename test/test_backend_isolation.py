@@ -244,6 +244,45 @@ def test_built_argv_contains_prompt_exactly_once(
     assert cmd.count("the prompt") == 1
 
 
+# ── pi --provider must always be paired with --model ────────────────────────
+
+
+@pytest.mark.parametrize("mode", ["text-only", "grounded"])
+def test_pi_never_emits_provider_without_model(
+    mode: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """pi's ``--provider`` flag requires ``--model`` (``pi --help``: "Provider
+    to search for --model (requires --model)"). A no-model call must omit both
+    flags so pi uses its configured default; a model call must carry the
+    four-element ``--provider opencode-go --model <id>`` slice. Regression:
+    ``--provider opencode-go`` baked into ``_base`` made every ``model=None`` pi
+    call exit 1 with 'Error: --provider requires --model' (89% of pi calls)."""
+    monkeypatch.setattr(llm_backends, "containment_available", lambda: True)
+
+    def build(model: str | None) -> list[str]:
+        kwargs: dict[str, object] = {}
+        if mode == "grounded":
+            kwargs["target_dir"] = Path("/tmp/x")
+        return llm_backends.build_isolated_command(
+            "pi", "p", model=model, mode=mode, **kwargs
+        )
+
+    # None and empty-string model: neither flag, in either mode.
+    for model in (None, ""):
+        cmd = build(model)
+        assert "--provider" not in cmd, (mode, model)
+        assert "--model" not in cmd, (mode, model)
+
+    # A truthy model: the four-element provider/model slice, contiguous.
+    cmd = build("glm-5.2")
+    assert "--provider" in cmd and "--model" in cmd, (mode, "glm-5.2")
+    i = cmd.index("--provider")
+    assert cmd[i : i + 4] == ["--provider", "opencode-go", "--model", "glm-5.2"], (
+        mode,
+        "glm-5.2",
+    )
+
+
 # ── eligibility reporting ─────────────────────────────────────────────────
 
 

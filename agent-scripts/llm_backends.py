@@ -139,7 +139,12 @@ BACKEND_ISOLATION: dict[str, dict[str, object]] = {
     # -nc/-np leave no instruction text in context. Skills and MCP servers
     # reach pi as tools, so --no-tools covers them too.
     "pi": {
-        "_base": ["pi", "-p", "--no-session", "--provider", "opencode-go"],
+        "_base": ["pi", "-p", "--no-session"],
+        # --provider requires --model in pi's CLI ("--provider requires
+        # --model"), so --provider is emitted only alongside --model by the
+        # builder, never baked into _base. A no-model call omits both and pi
+        # uses its configured default provider/model.
+        "_provider": "opencode-go",
         "tools_execution": ["--no-tools"],
         "tools_reach": NOT_APPLICABLE,
         "skills": ["--no-tools"],
@@ -547,8 +552,6 @@ def build_isolated_command(
             "pi",
             "-p",
             "--no-session",
-            "--provider",
-            "opencode-go",
             "--no-context-files",
             "--no-prompt-templates",
             "--no-extensions",
@@ -557,7 +560,7 @@ def build_isolated_command(
             "read,grep,find,ls",
         ]
         if model:
-            cmd += ["--model", model]
+            cmd += ["--provider", "opencode-go", "--model", model]
         cmd.append(prompt)
         if contained:
             cmd = _wrap_in_containment(
@@ -629,7 +632,18 @@ def build_isolated_command(
             if flag not in cmd:
                 cmd.append(flag)
     if model:
-        cmd += [str(spec.get("_model_flag", "--model")), model]
+        provider = spec.get("_provider")
+        if provider is not None:
+            # pi's --provider requires --model, so the two are emitted as a
+            # pair; other backends have no _provider and append --model alone.
+            cmd += [
+                "--provider",
+                str(provider),
+                str(spec.get("_model_flag", "--model")),
+                model,
+            ]
+        else:
+            cmd += [str(spec.get("_model_flag", "--model")), model]
     if not spec.get("_prompt_follows_base"):
         cmd.append(prompt)
     # Image argv insertion. pi's @file is a positional and must precede the
@@ -2352,11 +2366,15 @@ def run_pi(
     """Run Pi's headless mode and return its text output.
 
     Generic invocation for callers that just want a plain completion (e.g.
-    dev_status.py's recap prose). Always targets the ``opencode-go`` gateway
-    provider — the only provider confirmed authenticated on this machine
+    dev_status.py's recap prose). A truthy ``model`` is passed as
+    ``--provider opencode-go --model <model>`` — ``opencode-go`` being the
+    provider confirmed authenticated on this machine
     (``pi auth check --provider opencode-go --json`` -> ``ready``) and the
-    one every configured model pool entry resolves through; no alternative
-    provider is configured in ``~/.pi/agent/models.json`` on this machine.
+    one every configured model pool entry resolves through. A falsy ``model``
+    omits both flags, so pi uses its configured default provider and model
+    (read from ``~/.pi/agent/settings.json``; ``opencode-go`` and
+    ``deepseek-v4-pro`` on this machine as of 2026-11 — a dated example, not
+    a portable promise).
 
     The default text-only mode passes ``--no-tools``. Grounded mode exposes
     only Pi's ``read,grep,find,ls`` tools and disables context files, prompt
@@ -2365,17 +2383,17 @@ def run_pi(
     :func:`_raise_on_emitted_tool_call` check also rejects leaked tool-call
     markup in returned text; it is not the tool permission mechanism.
 
-    No retry on timeout (unlike :func:`run_opencode`): telemetry
-    (2026-08-31/09-01, ``~/.agent-toolkit/data/backend_calls.jsonl``) showed a 3/3
-    failure rate on realistic review prompts (>14KB) through this same
-    ``opencode-go`` gateway — a deterministic payload-size stall (~14-20KB
-    band), not opencode's intermittent 20-33% flake. A retry there has real
-    odds of succeeding on the second attempt; here it would only double the
-    wasted wall time (120s -> 240s) before falling through to the next
-    backend, with no expected gain in success rate. Small prompts (<1KB)
-    succeed in ~3s, so this only bites realistic-sized review prompts.
     Prompts over :data:`PI_MAX_PROMPT_BYTES` (14000 bytes) are refused
-    immediately to avoid waiting for deterministic timeouts.
+    immediately — an unconditional size policy applied before any model runs.
+    It exists because telemetry (2026-08-31/09-01,
+    ``~/.agent-toolkit/data/backend_calls.jsonl``) showed a 3/3 failure rate
+    on realistic review prompts (>14KB) through the ``opencode-go`` gateway:
+    a deterministic payload-size stall (~14-20KB band), not opencode's
+    intermittent 20-33% flake. Because that stall is deterministic, there is
+    no retry on timeout (unlike :func:`run_opencode`): a retry would only
+    double the wasted wall time (120s -> 240s) before falling through to the
+    next backend, with no expected gain. Small prompts (<1KB) succeed in ~3s,
+    so this only bites realistic-sized review prompts.
 
     Raises:
         BackendPayloadSizeError: If ``prompt`` exceeds :data:`PI_MAX_PROMPT_BYTES`.

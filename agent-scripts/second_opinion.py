@@ -129,7 +129,7 @@ Env vars
                                     over the pool; an explicit --model-index
                                     selects the pool regardless.
   SECOND_OPINION_PI_MODEL           force the Pi model (default: unset, Pi's
-                                    own default for the opencode-go provider)
+                                    configured default model)
   SECOND_OPINION_PI_MODEL_POOL      comma-separated Pi model pool for
                                     --model-index rotation (default: unset,
                                     no rotation). SECOND_OPINION_PI_MODEL, if
@@ -1650,8 +1650,8 @@ def run_pi(
     The model is resolved via :func:`_resolve_pooled_model`:
     ``SECOND_OPINION_PI_MODEL``, if set, wins outright; otherwise
     ``model_index`` picks an entry from ``SECOND_OPINION_PI_MODEL_POOL`` if
-    that's set; otherwise ``None`` (Pi's own default model choice for the
-    ``opencode-go`` provider — see :func:`llm_backends.run_pi`).
+    that's set; otherwise ``None`` (Pi's configured default model — see
+    :func:`llm_backends.run_pi`).
     """
     extra = _filter_runner_kwargs(
         llm_backends.run_pi, mode=mode, target_dir=target_dir, images=images
@@ -1676,7 +1676,7 @@ BACKEND_RUNNERS = {
 BACKEND_LABELS = {
     "codex": "Codex CLI",
     "agy": f"agy ({DEFAULT_AGY_MODEL})",
-    "pi": "pi (opencode-go gateway)",
+    "pi": "pi (configured default model)",
     "opencode": "opencode (adversary agent)",
     "copilot": "GitHub Copilot CLI",
 }

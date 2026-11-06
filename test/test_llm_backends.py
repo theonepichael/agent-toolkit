@@ -464,8 +464,6 @@ PI_ISOLATED = [
     "pi",
     "-p",
     "--no-session",
-    "--provider",
-    "opencode-go",
     "--no-tools",
     "--no-context-files",
     "--no-prompt-templates",
@@ -761,7 +759,8 @@ class RunPiTests(unittest.TestCase):
         ) as mock_run:
             llm_backends.run_pi("my prompt", model="kimi-k2.6", timeout=60)
         mock_run.assert_called_once_with(
-            PI_ISOLATED + ["--model", "kimi-k2.6", "my prompt"],
+            PI_ISOLATED
+            + ["--provider", "opencode-go", "--model", "kimi-k2.6", "my prompt"],
             60,
         )
 

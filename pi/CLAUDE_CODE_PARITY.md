@@ -68,8 +68,9 @@ install, not from search-engine summaries.
   convention Copilot/agy use (CLAUDE.md's harnesses-without-a-widget rule)
   is still the fallback, and still the only option in headless `-p`/JSON
   modes, where the tool refuses to run.
-- **Headless invocation**: `pi -p [--no-session] [--provider <name>]
-  [--model <pattern>] "<prompt>"` (`docs/usage.md`'s CLI Reference).
+- **Headless invocation**: `pi -p [--no-session] [--provider <name> --model
+  <pattern>] "<prompt>"` (`docs/usage.md`'s CLI Reference); `--provider`
+  requires `--model` — it is not independently optional.
   `--list-models [search]` checks whether a model id actually resolves
   before handing off to it (used by `backlog-item.md`'s model-handoff
   branch instead of guessing).
@@ -496,12 +497,15 @@ the installed directory is still undetected, tracked as its own item.
 "copilot"]` — `pi` sits right after `agy`, ahead of `opencode`/`copilot`,
 per explicit user preference during this port (not derived from any
 technical ranking). `run_pi()` invokes `pi -p --no-session --provider
-opencode-go --model <id> "<prompt>"` — `opencode-go` is hardcoded as the
-provider since it's the only one confirmed authenticated on this machine
-(`pi auth check --provider opencode-go --json` -> `ready`) and the one
-every configured model-pool entry resolves through. `SECOND_OPINION_PI_MODEL`
-/ `SECOND_OPINION_PI_MODEL_POOL` / `SECOND_OPINION_PI_TIMEOUT_SECONDS`
-follow the same contract as the other three backends.
+opencode-go --model <id> "<prompt>"` when a model is given, and
+`pi -p --no-session "<prompt>"` when it is not. `opencode-go` is the provider
+passed alongside a model since it's the only one confirmed authenticated on
+this machine (`pi auth check --provider opencode-go --json` -> `ready`) and
+the one every configured model-pool entry resolves through; a no-model call
+omits both flags so pi uses its configured default provider and model.
+`SECOND_OPINION_PI_MODEL` / `SECOND_OPINION_PI_MODEL_POOL` /
+`SECOND_OPINION_PI_TIMEOUT_SECONDS` follow the same contract as the other
+three backends.
 
 `run_pi()` uses `--no-tools` in its default text-only mode. Grounded reviews
 instead pass `--tools read,grep,find,ls`, with `--no-session`,
