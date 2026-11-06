@@ -7604,6 +7604,98 @@ class CitedByTestCase(BacklogFixture):
         out, err, code = self._run(str(Path(self.tmpdir) / "foreman" / "x.txt"))
         self.assertEqual(code, 2)
 
+class SendbackTestCase(BacklogFixture):
+    """Tests for the `sendback` subcommand (durable rework journal event)."""
+
+    def _journal_lines(self):
+        if not self.journal_file.exists():
+            return []
+        return [
+            json.loads(line)
+            for line in self.journal_file.read_text().splitlines()
+            if line.strip()
+        ]
+
+    def _run(self, **kwargs):
+        out, err = io.StringIO(), io.StringIO()
+        code = 0
+        with patch("sys.stdout", out), patch("sys.stderr", err):
+            try:
+                dev_status.cmd_sendback(_args(**kwargs))
+            except SystemExit as exc:
+                code = exc.code if isinstance(exc.code, int) else 1
+        return out.getvalue(), err.getvalue(), code
+
+    @pytest.mark.regression(
+        "sendback-journals-path-and-round",
+        "module 'dev_status_impl' has no attribute 'cmd_sendback'",
+    )
+    def test_sendback_in_progress_journals_path_and_round(self):
+        self.write_items([make_item("sb-item", status="in-progress")])
+        out, err, code = self._run(
+            id="sb-item", feedback="/f/sb-item-feedback-2.md", round=2
+        )
+        self.assertEqual(code, 0)
+        entries = self._journal_lines()
+        self.assertEqual(entries[-1]["cmd"], "sendback")
+        self.assertEqual(entries[-1]["kind"], "backlog")
+        self.assertEqual(entries[-1]["slug"], "sb-item")
+        self.assertEqual(entries[-1]["feedback"], "/f/sb-item-feedback-2.md")
+        self.assertEqual(entries[-1]["round"], 2)
+        item = self._item_by_id("sb-item")
+        self.assertEqual(item["status"], "in-progress")
+        self.assertNotIn("claimed_by", item)
+
+    def test_sendback_in_review_succeeds(self):
+        self.write_items([make_item("sb-review", status="in-review")])
+        out, err, code = self._run(
+            id="sb-review", feedback="/f/sb-review-feedback-1.md", round=1
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(self._journal_lines()[-1]["cmd"], "sendback")
+
+    def test_sendback_done_refused(self):
+        self.write_items([make_item("sb-done", status="done")])
+        out, err, code = self._run(id="sb-done", feedback="/f/x.md", round=1)
+        self.assertNotEqual(code, 0)
+        self.assertEqual(self._journal_lines(), [])
+
+    def test_sendback_open_refused(self):
+        # `open` is the stored status a blocked item carries (blocked/ready are
+        # derived, not stored) -- the allowlist is exactly {in-progress,
+        # in-review}.
+        self.write_items([make_item("sb-open", status="open")])
+        out, err, code = self._run(id="sb-open", feedback="/f/x.md", round=1)
+        self.assertNotEqual(code, 0)
+        self.assertEqual(self._journal_lines(), [])
+
+    def test_sendback_unknown_slug_refused(self):
+        self.write_items([make_item("sb-known", status="in-progress")])
+        out, err, code = self._run(id="sb-unknown", feedback="/f/x.md", round=1)
+        self.assertNotEqual(code, 0)
+        self.assertEqual(self._journal_lines(), [])
+
+    def test_sendback_empty_feedback_refused(self):
+        self.write_items([make_item("sb-empty", status="in-progress")])
+        out, err, code = self._run(id="sb-empty", feedback="", round=1)
+        self.assertNotEqual(code, 0)
+        self.assertEqual(self._journal_lines(), [])
+
+    def test_sendback_invalid_round_refused(self):
+        self.write_items([make_item("sb-round", status="in-progress")])
+        out, err, code = self._run(id="sb-round", feedback="/f/x.md", round=0)
+        self.assertNotEqual(code, 0)
+        self.assertEqual(self._journal_lines(), [])
+
+    def test_sendback_failed_append_refused(self):
+        self.write_items([make_item("sb-append", status="in-progress")])
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        # A directory where journal.jsonl should be forces the append to fail.
+        self.journal_file.mkdir(exist_ok=True)
+        out, err, code = self._run(id="sb-append", feedback="/f/x.md", round=1)
+        self.assertNotEqual(code, 0)
+
+
 class BackendHealthWarningTestCase(BacklogFixture):
     """Per-backend success-rate warning lines in the dashboard render.
 

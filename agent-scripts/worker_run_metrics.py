@@ -3,7 +3,8 @@
 
 Joins the launch ledger to worker sessions and the backlog store and prints,
 per model and harness, how worker runs actually behaved: items launched, items
-landed, send-back count (unmeasured until send-backs are recorded durably),
+landed, send-back count (counted from ``sendback`` journal events, rendered
+``unmeasured`` only when the journal is unreadable),
 median time and median spend to first write, and total spend per landed item.
 
 Spend units differ by harness and stay native — never converted or summed
@@ -192,6 +193,37 @@ def _latest_done_ts(path: Path) -> dict[str, str]:
     return out
 
 
+def _sendback_events(path: Path) -> list[tuple[str, str]] | None:
+    """Every ``sendback`` journal event as ``(slug, ts)``; ``None`` if unreadable.
+
+    Each send-back is an independent event, so all are returned in order
+    (unlike :func:`_latest_done_ts`, which keeps only the last match).
+    ``None`` -- not an empty list -- distinguishes an unreadable journal from
+    a readable one with no send-backs, so the report renders ``unmeasured``
+    for the former and ``0`` for the latter.
+    """
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    out: list[tuple[str, str]] = []
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("cmd") != "sendback":
+            continue
+        slug, ts = entry.get("slug"), entry.get("ts")
+        if isinstance(slug, str) and isinstance(ts, str):
+            out.append((slug, ts))
+    return out
+
+
 def _parse_ts(raw: object) -> datetime | None:
     if not isinstance(raw, str):
         return None
@@ -329,6 +361,7 @@ class Row:
     model: str
     launched: int = 0
     landed: int = 0
+    sent_back: int = 0
     unjoined: int = 0
     first_write_minutes: list[float] = field(default_factory=list)
     first_write_spend: list[float] = field(default_factory=list)
@@ -339,6 +372,7 @@ def compute_report(
     launch_records: list[dict[str, object]],
     items: dict[str, dict[str, object]],
     done_ts: dict[str, str],
+    sendbacks: list[tuple[str, str]] | None = None,
 ) -> list[dict[str, object]]:
     """Pure aggregation: launch records + store data -> per-(model, harness) rows."""
     launches: list[Launch] = []
@@ -483,6 +517,25 @@ def compute_report(
         row = row_for(landed.harness, launch_model_key(landed))
         row.landed += 1
 
+    # send-back credit: each event goes to the launch active when it was
+    # received (the most recent launch for the slug at-or-before the event).
+    # An event with no such launch is left unattributed, never credited to a
+    # future worker. ``sendbacks is None`` (unreadable journal) leaves the
+    # counts unknown.
+    if sendbacks is not None:
+        for slug, ts_str in sendbacks:
+            ts = _parse_ts(ts_str)
+            if ts is None:
+                continue  # invalid event timestamp -> unattributed
+            slug_launches = by_slug.get(slug)
+            if not slug_launches:
+                continue
+            eligible = [ln for ln in slug_launches if ln.ts is not None and ln.ts <= ts]
+            if not eligible:
+                continue
+            chosen = max(eligible, key=lambda ln: (ln.ts, -ln.order))
+            row_for(chosen.harness, launch_model_key(chosen)).sent_back += 1
+
     # assemble output rows
     out: list[dict[str, object]] = []
     for (harness, model), row in sorted(rows_by_group.items()):
@@ -520,7 +573,7 @@ def compute_report(
                 "model": model,
                 "launched": row.launched,
                 "landed": landed,
-                "sent_back": None,
+                "sent_back": None if sendbacks is None else row.sent_back,
                 "unjoined": row.unjoined,
                 "first_write": {
                     "median_minutes": median_minutes,
@@ -581,7 +634,7 @@ def _render_text(rows: list[dict[str, object]], *, quiet: bool, file: TextIO) ->
                 str(r["model"]),
                 str(r["launched"]),
                 str(r["landed"]),
-                "unmeasured",
+                "unmeasured" if r["sent_back"] is None else str(r["sent_back"]),
                 str(r["unjoined"]),
                 med_ttfw,
                 med_spend,
@@ -640,6 +693,7 @@ def main(argv: list[str] | None = None) -> int:
 
     items = _read_items(work / "items.json")
     done_ts = _latest_done_ts(work / "journal.jsonl")
+    sendbacks = _sendback_events(work / "journal.jsonl")
 
     if verbose:
         cli_common.vprint(
@@ -647,7 +701,7 @@ def main(argv: list[str] | None = None) -> int:
             verbose=verbose,
         )
 
-    rows = compute_report(launch_records, items, done_ts)
+    rows = compute_report(launch_records, items, done_ts, sendbacks)
 
     if args.json:
         print(json.dumps(rows, indent=2))

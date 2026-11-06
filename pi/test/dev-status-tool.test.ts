@@ -15,6 +15,7 @@ describe("assertNotNumericIdentity", () => {
       "block",
       "integration_merge",
       "pending_update",
+      "sendback",
     ] as Action[]) {
       expect(() => assertNotNumericIdentity(action, { action, slug: "17" })).toThrow(
         /slug must be a slug|secondarySlug must be a slug/,
@@ -225,6 +226,23 @@ describe("assertFields", () => {
       assertFields("cited_by", { action: "cited_by", paths: ["/a"], slug: "x" }),
     ).toThrow("does not accept: slug");
   });
+
+  test("sendback requires slug, feedback, and round", () => {
+    expect(() =>
+      assertFields("sendback", { action: "sendback", slug: "abc", feedback: "/f/x.md" }),
+    ).toThrow("requires: round");
+    expect(() => assertFields("sendback", { action: "sendback", slug: "abc", round: 2 })).toThrow(
+      "requires: feedback",
+    );
+    expect(() =>
+      assertFields("sendback", {
+        action: "sendback",
+        slug: "abc",
+        feedback: "/f/x.md",
+        round: 2,
+      }),
+    ).not.toThrow();
+  });
 });
 
 describe("buildArgv", () => {
@@ -249,6 +267,17 @@ describe("buildArgv", () => {
       "abc",
       "--force",
     ]);
+  });
+
+  test("sendback passes feedback and round as flags", () => {
+    expect(
+      buildArgv("sendback", {
+        action: "sendback",
+        slug: "abc",
+        feedback: "/f/x.md",
+        round: 2,
+      }),
+    ).toEqual(["sendback", "abc", "--feedback", "/f/x.md", "--round", "2"]);
   });
 
   test("flag-carrying actions", () => {

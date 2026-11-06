@@ -139,6 +139,10 @@
     "arg run command: \u2014 command to execute and record (everything after --; no shell) (nargs: *)",
     "arg run id: ",
     "arg runs id: ",
+    "arg sendback --feedback: \u2014 the feedback file path (required)",
+    "arg sendback --if-rev: \u2014 required when <id> is numeric; get the current value from render/list/show immediately before this call",
+    "arg sendback --round: \u2014 the send-back round number (an integer >= 1) (required)",
+    "arg sendback id: ",
     "arg show id: ",
     "arg slug-check --allow: \u2014 override exactly one finding with a recorded reason (repeatable; no blanket bypass)",
     "arg slug-check --repo: \u2014 git repository to scan (normalized to the worktree root) (required)",
@@ -198,6 +202,7 @@
     "handler review: Handle ``review``: submit (or re-submit) an item for review. Valid from ``in-progress`` (normal submission) or from ``in-review`` itself (re-pins the content hash after a drift refusal, clearing any stale feedback, without changing status).",
     "handler run: Handle ``run``: execute a command and record it as run evidence. Executes ``args.command`` via :func:`subprocess.run` \u2014 no shell, output inherited (visible live; a 30-minute suite must not look like a hung prompt) \u2014 then appends one truthful row (exit code, duration, timeout flag) to the ``runs.jsonl`` sidecar for ``gate-pass`` to cite. Lock scope: the item-existence check and the append each take :func:`backlog_lock` briefly; the subprocess itself runs **outside** the lock \u2014 holding it across a long test run would freeze every other harness session sharing the store. A numeric ``id`` is resolved against the full pending+backlog pool (matching ``render``'s own numbering) and then checked with :func:`require_kind` \u2014 resolving against the backlog pool alone would silently misnumber every position once any pending item exists, since pending items always come first in the dashboard's numbering. Like every other numeric-id command, a stale position is caught by :func:`enforce_rev_guard` rather than silently attributing this run's evidence to the wrong item.",
     "handler runs: Handle ``runs``: list an item's recorded run evidence (a snapshot read).",
+    "handler sendback: Handle ``sendback``: append a durable rework event without changing state. Records one ``sendback`` journal entry for an in-progress or in-review item -- the feedback file path and the round number -- so ``worker_run_metrics.py`` can count rework per model/harness instead of reporting it as unmeasured. The item's status, claim, and gate are untouched (no ``items.json`` write, no rev bump). A failed journal append is an error (non-zero exit), never a silent \"recorded\".",
     "handler show: Handle ``show``: print the full JSON record for one item. Reads items + pending + rev under :func:`backlog_lock` (same rationale as :func:`cmd_render`). The claim-liveness sweep runs under the same lock, before the rev is read \u2014 see :func:`_sweep_dead_claims`.",
     "handler slug-check: Handle ``slug-check``: refuse a staged diff that adds a backlog slug. The commit gate's mechanical guard. Scans the staged diff's added lines for the item's resolved slug and every other backlog-store id, printing ``<file>:<line>: <id>: <text>`` per finding. ``--allow <path>:<line>:<id> <reason>`` overrides exactly one finding present in this run's scan (recorded to the ``slug_overrides.jsonl`` sidecar fail-closed); there is no blanket bypass and no persistent allowlist. Exit codes are the gate contract: ``0`` clean or all findings overridden, ``1`` un-overridden findings remain (the commit is refused), ``2`` any error (store, git, parse, or record failure \u2014 never readable as clean). The staged snapshot's sha256 is printed last so the gate can tie its verdict to the exact staged state the scan examined.",
     "handler start: Handle ``start``: mark a backlog item in-progress.",
@@ -241,6 +246,7 @@
     "subcommand review: submit (or re-submit) an item for review",
     "subcommand run: execute a command and record it as run evidence for an item",
     "subcommand runs: list recorded run evidence for an item",
+    "subcommand sendback: record a durable send-back event (feedback path + round) without changing the item's status/claim/gate",
     "subcommand show: print full JSON for an item",
     "subcommand slug-check: refuse a staged diff that adds a backlog slug (commit-gate guard)",
     "subcommand start: mark item in-progress",
@@ -513,6 +519,13 @@
     "arg (top-level) --verbose/-v: ",
     "exit codes: 1",
     "module docstring: vitals-promotion.py \u2014 mechanical vitals-promotion pass over grill session data."
+  ],
+  "worker_run_metrics.py": [
+    "arg (top-level) --json/-j: \u2014 emit output as JSON (a list of row objects)",
+    "arg (top-level) --quiet/-q: ",
+    "arg (top-level) --verbose/-v: ",
+    "exit codes: ",
+    "module docstring: worker_run_metrics.py \u2014 read-only worker-run metrics report."
   ],
   "worktree.py": [
     "arg (top-level) --base: \u2014 Start point for a newly created branch (default: the item's integration_branch, else HEAD)",

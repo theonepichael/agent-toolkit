@@ -16,6 +16,7 @@ import test_bootstrap  # noqa: E402
 
 import analyze_sessions  # noqa: E402
 import worker_run_metrics  # noqa: E402
+from pytest_shim import pytest  # noqa: E402
 
 
 def _pb_varint(n: int) -> bytes:
@@ -155,7 +156,7 @@ class TestWorkerRunMetrics(unittest.TestCase):
             readable=True,
         )
         try:
-            rows = worker_run_metrics.compute_report(launches, items, {})
+            rows = worker_run_metrics.compute_report(launches, items, {}, [])
         finally:
             worker_run_metrics._pi_session_info = original
 
@@ -165,7 +166,7 @@ class TestWorkerRunMetrics(unittest.TestCase):
         self.assertEqual(row["model"], "deepseek-v4-pro")
         self.assertEqual(row["launched"], 1)
         self.assertEqual(row["landed"], 1)
-        self.assertIsNone(row["sent_back"])
+        self.assertEqual(row["sent_back"], 0)
         self.assertEqual(row["unjoined"], 0)
         self.assertEqual(row["first_write"]["median_minutes"], 5.0)
         self.assertEqual(row["first_write"]["median_spend"], 0.05)
@@ -176,14 +177,12 @@ class TestWorkerRunMetrics(unittest.TestCase):
         self.assertEqual(row["spend_per_landed"]["covered"], 1)
         self.assertEqual(row["spend_per_landed"]["of"], 1)
 
-    def test_sent_back_stays_unmeasured(self) -> None:
+    def test_unreadable_journal_renders_unmeasured(self) -> None:
         session = "/sandbox/.pi/agent/sessions/x/abc.jsonl"
         items = {"slug-b": {"id": "slug-b", "status": "done"}}
         done_ts = {"slug-b": "2026-01-01T00:10:00Z"}
-        # a reject journal event exists, but the report must not count it
         launches = [
-            self._launch("slug-b", ts="2026-01-01T00:00:00Z", worker_session=session),
-            self._launch("slug-b", ts="2026-01-01T00:05:00Z", worker_session=session),
+            self._launch("slug-b", ts="2026-01-01T00:00:00Z", worker_session=session)
         ]
         original = worker_run_metrics._pi_session_info
         worker_run_metrics._pi_session_info = lambda p: worker_run_metrics.SessionInfo(
@@ -197,11 +196,106 @@ class TestWorkerRunMetrics(unittest.TestCase):
             readable=True,
         )
         try:
-            rows = worker_run_metrics.compute_report(launches, items, done_ts)
+            rows = worker_run_metrics.compute_report(launches, items, done_ts, None)
         finally:
             worker_run_metrics._pi_session_info = original
         self.assertEqual(len(rows), 1)
-        self.assertIsNone(rows[0]["sent_back"])  # never a fabricated count
+        self.assertIsNone(rows[0]["sent_back"])  # unreadable journal -> unmeasured
+
+    @pytest.mark.regression(
+        "sendback-counted-per-receiving-model",
+        "compute_report() takes 3 positional arguments but 4 were given",
+    )
+    def test_sendback_counted_per_receiving_model(self) -> None:
+        session_a = "/sandbox/.pi/agent/sessions/x/a.jsonl"
+        session_b = "/sandbox/.pi/agent/sessions/x/b.jsonl"
+        items = {"slug-sb": {"id": "slug-sb", "status": "done"}}
+        done_ts = {"slug-sb": "2026-01-01T00:10:00Z"}
+        launches = [
+            self._launch("slug-sb", ts="2026-01-01T00:00:00Z", worker_session=session_a),
+            self._launch("slug-sb", ts="2026-01-01T00:08:00Z", worker_session=session_b),
+        ]
+        # model A receives the send-back at 00:05, before B's launch at 00:08.
+        sendbacks = [("slug-sb", "2026-01-01T00:05:00Z")]
+        info = {
+            session_a: worker_run_metrics.SessionInfo(
+                harness="pi", session_model="model-a", minutes_to_first_write=None,
+                spend_to_first_write=None, first_write_complete=True,
+                total_spend=None, total_spend_complete=True, readable=True,
+            ),
+            session_b: worker_run_metrics.SessionInfo(
+                harness="pi", session_model="model-b", minutes_to_first_write=None,
+                spend_to_first_write=None, first_write_complete=True,
+                total_spend=None, total_spend_complete=True, readable=True,
+            ),
+        }
+        original = worker_run_metrics._pi_session_info
+        worker_run_metrics._pi_session_info = lambda p: info[str(p)]
+        try:
+            rows = worker_run_metrics.compute_report(launches, items, done_ts, sendbacks)
+        finally:
+            worker_run_metrics._pi_session_info = original
+        by_model = {r["model"]: r for r in rows}
+        self.assertEqual(by_model["model-a"]["sent_back"], 1)
+        self.assertEqual(by_model["model-b"]["sent_back"], 0)
+
+    def test_sendback_unattributed_when_no_launch_at_or_before(self) -> None:
+        session = "/sandbox/.pi/agent/sessions/x/a.jsonl"
+        items = {"slug-u": {"id": "slug-u", "status": "done"}}
+        done_ts = {"slug-u": "2026-01-01T00:10:00Z"}
+        launches = [
+            self._launch("slug-u", ts="2026-01-01T00:05:00Z", worker_session=session)
+        ]
+        sendbacks = [("slug-u", "2026-01-01T00:00:00Z")]  # before every launch
+        original = worker_run_metrics._pi_session_info
+        worker_run_metrics._pi_session_info = lambda p: worker_run_metrics.SessionInfo(
+            harness="pi", session_model="m", minutes_to_first_write=None,
+            spend_to_first_write=None, first_write_complete=True,
+            total_spend=None, total_spend_complete=True, readable=True,
+        )
+        try:
+            rows = worker_run_metrics.compute_report(launches, items, done_ts, sendbacks)
+        finally:
+            worker_run_metrics._pi_session_info = original
+        self.assertEqual(rows[0]["sent_back"], 0)
+
+    def test_sendback_invalid_timestamp_unattributed(self) -> None:
+        session = "/sandbox/.pi/agent/sessions/x/a.jsonl"
+        items = {"slug-v": {"id": "slug-v", "status": "done"}}
+        done_ts = {"slug-v": "2026-01-01T00:10:00Z"}
+        launches = [
+            self._launch("slug-v", ts="2026-01-01T00:05:00Z", worker_session=session)
+        ]
+        sendbacks = [("slug-v", "bad timestamp")]
+        original = worker_run_metrics._pi_session_info
+        worker_run_metrics._pi_session_info = lambda p: worker_run_metrics.SessionInfo(
+            harness="pi", session_model="m", minutes_to_first_write=None,
+            spend_to_first_write=None, first_write_complete=True,
+            total_spend=None, total_spend_complete=True, readable=True,
+        )
+        try:
+            rows = worker_run_metrics.compute_report(launches, items, done_ts, sendbacks)
+        finally:
+            worker_run_metrics._pi_session_info = original
+        self.assertEqual(rows[0]["sent_back"], 0)
+
+    def test_sendback_events_only_counts_sendback_cmd(self) -> None:
+        journal = self.sandbox / ".agent-toolkit" / "data" / "backlog" / "journal.jsonl"
+        journal.parent.mkdir(parents=True, exist_ok=True)
+        lines = [
+            {"cmd": "reject", "kind": "backlog", "slug": "r", "ts": "2026-01-01T00:01:00Z"},
+            {"cmd": "sendback", "kind": "backlog", "slug": "s", "ts": "2026-01-01T00:02:00Z"},
+            {"cmd": "approve", "kind": "backlog", "slug": "s", "ts": "2026-01-01T00:03:00Z"},
+        ]
+        journal.write_text(
+            "\n".join(json.dumps(x) for x in lines) + "\nnot json\n"
+        )
+        events = worker_run_metrics._sendback_events(journal)
+        self.assertEqual(events, [("s", "2026-01-01T00:02:00Z")])
+
+    def test_sendback_events_unreadable_returns_none(self) -> None:
+        journal = self.sandbox / ".agent-toolkit" / "data" / "backlog" / "missing.jsonl"
+        self.assertIsNone(worker_run_metrics._sendback_events(journal))
 
     def test_unjoinable_launch_record(self) -> None:
         items = {"slug-c": {"id": "slug-c", "status": "open"}}

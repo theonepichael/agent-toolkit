@@ -28,6 +28,7 @@ const ACTIONS = [
   "review",
   "approve",
   "reject",
+  "sendback",
   "gate_set",
   "gate_pass",
   "acceptance_set",
@@ -92,7 +93,8 @@ export type Field =
   | "acceptance"
   | "commit"
   | "range"
-  | "allow";
+  | "allow"
+  | "round";
 
 interface ActionFields {
   readonly allowed: readonly Field[];
@@ -117,6 +119,7 @@ const ACTION_FIELDS: Record<Action, ActionFields> = {
   review: { allowed: ["slug"], required: ["slug"] },
   approve: { allowed: ["slug"], required: ["slug"] },
   reject: { allowed: ["slug", "feedback"], required: ["slug", "feedback"] },
+  sendback: { allowed: ["slug", "feedback", "round"], required: ["slug", "feedback", "round"] },
   gate_set: { allowed: ["slug", "patch"], required: ["slug", "patch"] },
   gate_pass: {
     allowed: ["slug", "patch", "verifier_token_file"],
@@ -185,6 +188,7 @@ const MUTATING_ACTIONS: ReadonlySet<Action> = new Set([
   "review",
   "approve",
   "reject",
+  "sendback",
   "gate_set",
   "gate_pass",
   "acceptance_set",
@@ -221,6 +225,7 @@ export interface DevStatusParams {
   command?: string[];
   paths?: string[];
   timeout?: number;
+  round?: number;
   cwd?: string;
   skipBootstrap?: boolean;
   repo?: string;
@@ -322,6 +327,15 @@ export function buildArgv(action: Action, params: DevStatusParams): string[] {
       return ["approve", params.slug!];
     case "reject":
       return ["reject", params.slug!, params.feedback!];
+    case "sendback":
+      return [
+        "sendback",
+        params.slug!,
+        "--feedback",
+        params.feedback!,
+        "--round",
+        String(params.round!),
+      ];
     case "gate_set":
       return ["gate-set", params.slug!, patchJson()];
     case "gate_pass":
@@ -452,7 +466,7 @@ export default function (pi: ExtensionAPI) {
     promptSnippet: "Read or mutate the personal backlog/pending store",
     promptGuidelines: [
       "Never invoke dev_status.py via bash, for any reason, including a plain read like listing pending items or checking status -- always use dev_status instead. This applies to every action, not just ones a slash command already told you to use dev_status for.",
-      "dev_status covers everything dev_status.py's CLI does: render, list, ready, show, add, update, validate, start, done, reopen, review, approve, reject, gate_set, gate_pass, acceptance_set, verifier_check, contract_touch, slug_check, cited_by, run, runs, backfill_gate, rename, remove, block, unblock, prune, recap, worktree, machine_id, integration_merge, pending_add, pending_update, pending_list, and the out_of_scope_* actions. If you're about to compose a `python3 ~/.agent-toolkit/scripts/dev_status.py ...` bash command for any of these, use dev_status with the matching action instead.",
+      "dev_status covers everything dev_status.py's CLI does: render, list, ready, show, add, update, validate, start, done, reopen, review, approve, reject, sendback, gate_set, gate_pass, acceptance_set, verifier_check, contract_touch, slug_check, cited_by, run, runs, backfill_gate, rename, remove, block, unblock, prune, recap, worktree, machine_id, integration_merge, pending_add, pending_update, pending_list, and the out_of_scope_* actions. If you're about to compose a `python3 ~/.agent-toolkit/scripts/dev_status.py ...` bash command for any of these, use dev_status with the matching action instead.",
       "verifier tokens are private: acceptance_set prints a token-file path (never the token); pass that path via verifier_token_file to gate_pass/verifier_check, never the file's contents. Keep the path out of item notes, feedback, and worker prompts.",
       "dev_status's patch field is a plain object, not a JSON string -- never hand-encode it.",
       'dev_status refuses a numeric slug on any mutating action -- call action: "show" first to resolve a numeric position to its real slug.',
@@ -628,6 +642,12 @@ export default function (pi: ExtensionAPI) {
       timeout: Type.Optional(
         Type.Number({
           description: "run: kill the command after this many seconds (default 1800).",
+        }),
+      ),
+      round: Type.Optional(
+        Type.Integer({
+          minimum: 1,
+          description: "sendback: the send-back round number (an integer >= 1).",
         }),
       ),
       cwd: Type.Optional(

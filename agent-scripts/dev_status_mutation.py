@@ -262,6 +262,17 @@ class RunResult:
     head: str | None = None
 
 
+@dataclass(frozen=True)
+class SendbackResult:
+    """Result shape for cmd_sendback: a journaled event with no item mutation."""
+
+    slug: str
+    status: str
+    feedback: str
+    round_num: int
+    rev: int
+
+
 # ── Typed Requests ────────────────────────────────────────────────────────────
 
 
@@ -2789,6 +2800,78 @@ def reject_item(
             items=items,
             pending_items=pending_items,
         )
+
+
+def sendback_item(
+    slug_or_id: str,
+    feedback_path: str,
+    round_num: int,
+    *,
+    if_rev: int | None = None,
+    verbose: bool = False,
+    items_path: Path | None = None,
+) -> SendbackResult:
+    """Append one durable ``sendback`` journal event for a rework feedback round.
+
+    The item's status, claim, and gate are untouched -- this is a journal
+    append only, no ``items.json`` write and no rev bump. Only an
+    ``in-progress`` or ``in-review`` item may be sent back; an unknown item or
+    any other status is refused. A failed append raises, so the caller never
+    reports a send-back it did not durably record.
+    """
+    clean_path = feedback_path.strip()
+    if not clean_path:
+        raise ValidationError("[sendback] --feedback is required and cannot be empty")
+    if isinstance(round_num, bool) or not isinstance(round_num, int) or round_num < 1:
+        raise ValidationError("[sendback] --round must be an integer >= 1")
+
+    paths = _storage_bundle(items_path)
+    with dev_status_storage.backlog_lock(paths["data_dir"], paths["lock_file"]):
+        items = dev_status_storage.load_items(paths["items_path"])
+        pending_items = dev_status_storage.load_pending(paths["pending_path"])
+        current_rev = dev_status_storage.load_rev(paths["meta_path"])
+        enforce_rev_guard(
+            "sendback", slug_or_id, if_rev, current_rev, items, pending_items
+        )
+
+        kind, slug = resolve_id(slug_or_id, items, pending_items)
+        require_kind("sendback", slug_or_id, kind, "backlog")
+
+        item = build_index(items).get(slug)
+        if item is None:
+            raise NotFoundError(f"[sendback] not found: {slug}")
+
+        status = item.get("status")
+        if status not in ("in-progress", "in-review"):
+            raise InvalidItemStateError(
+                f"[sendback] {slug} is '{status}', not in-progress or "
+                "in-review -- nothing to send back."
+            )
+
+        entry = dev_status_storage.journal_entry(
+            "sendback",
+            "backlog",
+            current_rev,
+            slug=slug,
+            summary=cast(str, item.get("summary", "")),
+            feedback=clean_path,
+            round=round_num,
+        )
+        appended = dev_status_storage.append_journal_event(
+            entry, journal_file=paths["journal_path"], verbose=verbose
+        )
+        if not appended:
+            raise BacklogMutationError(
+                f"[sendback] failed to append journal event for {slug}"
+            )
+
+    return SendbackResult(
+        slug=slug,
+        status=cast(str, status),
+        feedback=clean_path,
+        round_num=round_num,
+        rev=current_rev,
+    )
 
 
 def reopen_item(

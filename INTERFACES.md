@@ -340,6 +340,10 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
     - `--if-rev` — required when <id> is numeric; get the current value from render/list/show immediately before this call
   - `reject <slug|N> <feedback> [--if-rev <N>]` — reject an in-review item, sending it back to in-progress
     - `--if-rev` — required when <id> is numeric; get the current value from render/list/show immediately before this call
+  - `sendback <slug|N> --feedback <path> --round <n> [--if-rev <N>]` — record a durable send-back event (feedback path + round) without changing the item's status/claim/gate
+    - `--feedback` — the feedback file path (required)
+    - `--round` — the send-back round number (an integer >= 1) (required)
+    - `--if-rev` — required when <id> is numeric; get the current value from render/list/show immediately before this call
   - `gate-set <slug|N> '{"required": true, "criteria": ["..."]}' [--if-rev <N>]` — classify an item's judgment-verification gate
     - `--if-rev` — required when <id> is numeric; get the current value from render/list/show immediately before this call
   - `gate-pass <slug|N> ['{"coverage": {"1": "run:<run_id>" | "manual:<note>"}}'] [--verifier-token-file PATH] [--if-rev <N>]` — record that an item's gate criteria are satisfied
@@ -435,7 +439,7 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `confirm_resolution(cmd: str, arg: str | int, item: BacklogItem | PendingItem, summary_key: str = 'summary', *, quiet: bool = False) -> None` — Echo what a mutating command resolved to, so misresolution is visible.
   - `format_run_rows(runs: list[RunRecord]) -> list[str]` — One ``runs`` listing line per record, naming the commit and checkout.
   - `build_parser() -> argparse.ArgumentParser` — Build the full argument parser for every subcommand.
-- Subcommand handlers: `cmd_internal_regen`, `cmd_recap`, `cmd_worktree`, `cmd_integration_merge`, `cmd_render`, `cmd_ready`, `cmd_list`, `cmd_show`, `cmd_validate`, `cmd_add`, `cmd_update`, `cmd_start`, `cmd_done`, `cmd_reopen`, `cmd_review`, `cmd_approve`, `cmd_reject`, `cmd_gate_set`, `cmd_gate_pass`, `cmd_acceptance_set`, `cmd_verifier_check`, `cmd_contract_touch`, `cmd_slug_check`, `cmd_cited_by`, `cmd_run`, `cmd_machine_id`, `cmd_runs`, `cmd_backfill_gate`, `cmd_rename`, `cmd_block`, `cmd_unblock`, `cmd_out_of_scope_add`, `cmd_out_of_scope_link`, `cmd_out_of_scope_unlink`, `cmd_out_of_scope_remove`, `cmd_out_of_scope_list`, `cmd_out_of_scope_show`, `cmd_pending_add`, `cmd_pending_update`, `cmd_pending_list`, `cmd_remove`, `cmd_prune`
+- Subcommand handlers: `cmd_internal_regen`, `cmd_recap`, `cmd_worktree`, `cmd_integration_merge`, `cmd_render`, `cmd_ready`, `cmd_list`, `cmd_show`, `cmd_validate`, `cmd_add`, `cmd_update`, `cmd_start`, `cmd_done`, `cmd_reopen`, `cmd_review`, `cmd_approve`, `cmd_reject`, `cmd_sendback`, `cmd_gate_set`, `cmd_gate_pass`, `cmd_acceptance_set`, `cmd_verifier_check`, `cmd_contract_touch`, `cmd_slug_check`, `cmd_cited_by`, `cmd_run`, `cmd_machine_id`, `cmd_runs`, `cmd_backfill_gate`, `cmd_rename`, `cmd_block`, `cmd_unblock`, `cmd_out_of_scope_add`, `cmd_out_of_scope_link`, `cmd_out_of_scope_unlink`, `cmd_out_of_scope_remove`, `cmd_out_of_scope_list`, `cmd_out_of_scope_show`, `cmd_pending_add`, `cmd_pending_update`, `cmd_pending_list`, `cmd_remove`, `cmd_prune`
 - Tested by: `test/test_dev_status.py`, `test/test_dev_status_acceptance.py`, `test/test_dev_status_mutation.py`, `test/test_dev_status_storage.py`, `test/test_dev_status_validate.py`, `test/test_path_for_per_use.py`, `test/test_slug_check.py`, `test/test_sweep_dead_claims.py`, `test/test_to_tickets_runner.py`
 
 ### `agent-scripts/dev_status_formatting.py`
@@ -483,6 +487,7 @@ Typed mutation service and transaction manager for dev_status (Candidate 12).
 - Public classes:
   - `class MutationResult` — Carries post-mutation snapshot and metadata for the adapter to render.
   - `class RunResult` — Distinct result shape for cmd_run execution and evidence recording.
+  - `class SendbackResult` — Result shape for cmd_sendback: a journaled event with no item mutation.
   - `class NewItemRequest`
   - `class ItemUpdateRequest` — Content-field update; lifecycle fields are not requestable here.
   - `class GateSetRequest`
@@ -511,6 +516,7 @@ Typed mutation service and transaction manager for dev_status (Candidate 12).
   - `review_item(slug_or_id: str, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Submit (or re-submit) an item for review.
   - `approve_item(slug_or_id: str, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Accept an in-review item, marking it done.
   - `reject_item(slug_or_id: str, feedback: str, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Send an in-review item back to in-progress with feedback.
+  - `sendback_item(slug_or_id: str, feedback_path: str, round_num: int, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> SendbackResult` — Append one durable ``sendback`` journal event for a rework feedback round.
   - `reopen_item(slug_or_id: str, *, if_rev: int | None = None, force: bool = False, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Return an in-progress or done item to ``open``, releasing its claim.
   - `block_item(slug_or_id: str, blocker_slug_or_id: str, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Add a blocker to a backlog item.
   - `unblock_item(slug_or_id: str, blocker_slug_or_id: str, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Remove a blocker from a backlog item.
@@ -596,8 +602,8 @@ Backlog persistence, lock coordination, and journal primitives.
   - `load_out_of_scope_index(path: Path | None = None) -> dict[str, dict[str, object]]` — Load the out-of-scope concept index, or ``{}`` if it doesn't exist yet.
   - `save_out_of_scope_index(index: dict[str, dict[str, object]], path: Path | None = None) -> None` — Atomically persist the out-of-scope concept index.
   - `out_of_scope_md_path(slug: str, out_of_scope_dir: Path | None = None) -> Path` — Path to a concept's freeform-reason markdown file.
-  - `journal_entry(cmd: str, kind: str, rev: int, *, slug: str | None = None, summary: str | None = None, from_status: str | None = None, to_status: str | None = None, fields: list[str] | None = None, feedback: str | None = None, count: int | None = None, wait_seconds: float | None = None, detail: str | None = None, diagnostic: bool | None = None) -> dict[str, object]` — Build one journal entry: a fixed envelope plus structured optionals.
-  - `append_journal_event(entry: dict[str, object], *, journal_file: Path | None = None, data_dir: Path | None = None, verbose: bool = False) -> None` — Append one event to the journal, best-effort.
+  - `journal_entry(cmd: str, kind: str, rev: int, *, slug: str | None = None, summary: str | None = None, from_status: str | None = None, to_status: str | None = None, fields: list[str] | None = None, feedback: str | None = None, count: int | None = None, wait_seconds: float | None = None, detail: str | None = None, diagnostic: bool | None = None, round: int | None = None) -> dict[str, object]` — Build one journal entry: a fixed envelope plus structured optionals.
+  - `append_journal_event(entry: dict[str, object], *, journal_file: Path | None = None, data_dir: Path | None = None, verbose: bool = False) -> bool` — Append one event to the journal.
   - `parse_journal_ts(raw: object) -> datetime | None` — Parse a journal entry's ``ts`` field into an aware UTC ``datetime``.
   - `read_journal_entries(within_hours: float | None = None, *, journal_file: Path | None = None, verbose: bool = False) -> list[dict[str, object]]` — Read journal entries, optionally filtered to the last ``within_hours``.
   - `journal_last_entry_within(hours: float, *, journal_file: Path | None = None) -> bool` — Cheap pre-spawn check: does the journal's last entry fall within ``hours``?
@@ -1964,7 +1970,7 @@ worker_run_metrics.py — read-only worker-run metrics report.
   - `class SessionInfo` — Measured data for one joined worker session.
   - `class Row` — Aggregate metrics for one (model, harness) group.
 - Public functions:
-  - `compute_report(launch_records: list[dict[str, object]], items: dict[str, dict[str, object]], done_ts: dict[str, str]) -> list[dict[str, object]]` — Pure aggregation: launch records + store data -> per-(model, harness) rows.
+  - `compute_report(launch_records: list[dict[str, object]], items: dict[str, dict[str, object]], done_ts: dict[str, str], sendbacks: list[tuple[str, str]] | None = None) -> list[dict[str, object]]` — Pure aggregation: launch records + store data -> per-(model, harness) rows.
   - `build_parser() -> argparse.ArgumentParser`
 - Tested by: `test/test_worker_run_metrics.py`
 
@@ -2689,6 +2695,13 @@ named doc, not regenerating this file.
 | `opencode/command/grill-me.md` | OK |
 | `opencode/skills/grill-me/SKILL.md` | OK |
 | `pi/skills/grill-me/SKILL.md` | OK |
+
+### `worker_run_metrics.py`
+
+| Doc | Status |
+| --- | --- |
+| `claude/commands/foreman.md` | OK |
+| `copilot/skills/foreman/SKILL.md` | OK |
 
 ### `worktree.py`
 

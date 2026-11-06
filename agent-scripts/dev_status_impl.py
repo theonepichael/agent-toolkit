@@ -109,6 +109,7 @@ from dev_status_mutation import (
     resolve_id,
     review_item,
     run_item,
+    sendback_item,
     set_acceptance,
     set_gate,
     slug_check,
@@ -358,6 +359,7 @@ SUBCOMMANDS = (
     "review",
     "approve",
     "reject",
+    "sendback",
     "gate-set",
     "gate-pass",
     "acceptance-set",
@@ -1509,6 +1511,7 @@ def _journal_entry(
     wait_seconds: float | None = None,
     detail: str | None = None,
     diagnostic: bool | None = None,
+    round: int | None = None,
 ) -> dict[str, object]:
     """Build one journal entry: a fixed envelope plus structured optionals."""
     return dev_status_storage.journal_entry(
@@ -1525,6 +1528,7 @@ def _journal_entry(
         wait_seconds=wait_seconds,
         detail=detail,
         diagnostic=diagnostic,
+        round=round,
     )
 
 
@@ -3355,6 +3359,33 @@ def cmd_reject(args: argparse.Namespace) -> None:
     )
 
 
+def cmd_sendback(args: argparse.Namespace) -> None:
+    """Handle ``sendback``: append a durable rework event without changing state.
+
+    Records one ``sendback`` journal entry for an in-progress or in-review
+    item -- the feedback file path and the round number -- so
+    ``worker_run_metrics.py`` can count rework per model/harness instead of
+    reporting it as unmeasured. The item's status, claim, and gate are
+    untouched (no ``items.json`` write, no rev bump). A failed journal append
+    is an error (non-zero exit), never a silent "recorded".
+    """
+    try:
+        res = sendback_item(
+            args.id,
+            args.feedback,
+            args.round,
+            if_rev=args.if_rev,
+            verbose=getattr(args, "verbose", False),
+        )
+    except BacklogMutationError as exc:
+        _handle_mutation_error("sendback", exc)
+
+    cli_common.qprint(
+        f"[sendback] recorded {res.slug}: {res.feedback} (round {res.round_num})",
+        quiet=getattr(args, "quiet", False),
+    )
+
+
 def cmd_gate_set(args: argparse.Namespace) -> None:
     """Handle ``gate-set``: classify an item's judgment-step verification gate.
 
@@ -4461,6 +4492,7 @@ dispatch: dict[str, Callable[[argparse.Namespace], None]] = {
     "review": cmd_review,
     "approve": cmd_approve,
     "reject": cmd_reject,
+    "sendback": cmd_sendback,
     "gate-set": cmd_gate_set,
     "gate-pass": cmd_gate_pass,
     "acceptance-set": cmd_acceptance_set,
@@ -4712,6 +4744,28 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_id_arg(p)
     p.add_argument("feedback", metavar="<feedback>")
+    _add_if_rev_arg(p)
+
+    p = sub.add_parser(
+        "sendback",
+        help="record a durable send-back event (feedback path + round) without "
+        "changing the item's status/claim/gate",
+        parents=[verbosity_parent],
+    )
+    _add_id_arg(p)
+    p.add_argument(
+        "--feedback",
+        required=True,
+        metavar="<path>",
+        help="the feedback file path",
+    )
+    p.add_argument(
+        "--round",
+        required=True,
+        type=int,
+        metavar="<n>",
+        help="the send-back round number (an integer >= 1)",
+    )
     _add_if_rev_arg(p)
 
     p = sub.add_parser(

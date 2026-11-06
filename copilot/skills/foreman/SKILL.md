@@ -305,7 +305,17 @@ Otherwise ask the operator (step 7), or send the change back via step 5.
 ## 5. Send-back
 
 Write the feedback to a file outside any repo
-(`~/.agent-toolkit/data/foreman/<slug>-feedback-<n>.md`).
+(`~/.agent-toolkit/data/foreman/<slug>-feedback-<n>.md`), then record the send-back
+durably — this is what lets `worker_run_metrics.py` measure rework — before
+delivering the feedback:
+
+```bash
+python3 ~/.agent-toolkit/scripts/dev_status.py sendback <slug> --feedback ~/.agent-toolkit/data/foreman/<slug>-feedback-<n>.md --round <n>
+```
+
+A non-zero exit here means the send-back was **not** durably recorded: report it
+and stop — do not drive the worker. No feedback is ever delivered without a
+recorded send-back.
 
 Send-back depends on the worker's current state:
 

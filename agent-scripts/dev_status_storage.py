@@ -815,6 +815,7 @@ def journal_entry(
     wait_seconds: float | None = None,
     detail: str | None = None,
     diagnostic: bool | None = None,
+    round: int | None = None,
 ) -> dict[str, object]:
     """Build one journal entry: a fixed envelope plus structured optionals."""
     entry: dict[str, object] = {
@@ -844,6 +845,8 @@ def journal_entry(
         entry["detail"] = detail
     if diagnostic is not None:
         entry["diagnostic"] = diagnostic
+    if round is not None:
+        entry["round"] = round
     return entry
 
 
@@ -856,8 +859,15 @@ def append_journal_event(
     journal_file: Path | None = None,
     data_dir: Path | None = None,
     verbose: bool = False,
-) -> None:
-    """Append one event to the journal, best-effort."""
+) -> bool:
+    """Append one event to the journal.
+
+    Returns ``True`` when the line was written and ``False`` when the append
+    failed (an ``OSError``, reported to stderr when ``verbose``). The return
+    value lets a caller that needs a *durable* record (``sendback``) treat a
+    failed append as an error; callers that journal best-effort simply ignore
+    it.
+    """
     j_file = journal_file or _journal_file()
     d_dir = data_dir or _data_dir()
     line = json.dumps(entry, sort_keys=True)
@@ -871,6 +881,8 @@ def append_journal_event(
             verbose=verbose,
             file=sys.stderr,
         )
+        return False
+    return True
 
 
 def parse_journal_ts(raw: object) -> datetime | None:
