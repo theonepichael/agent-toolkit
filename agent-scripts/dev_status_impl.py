@@ -59,6 +59,7 @@ from typing import NoReturn, TextIO, cast
 
 import agent_toolkit_paths
 import cli_common
+import dev_status_commands
 import dev_status_formatting
 import dev_status_storage
 import llm_backends
@@ -338,50 +339,11 @@ IMMUTABLE_FIELDS = {"id", "created", "completed_at"}
 # excluded there; cmd_update names each refused field with its own pointer
 # message before the generic unknown-field check can fire.
 DEFAULT_CLAIM_TTL_SECONDS = 2 * 60 * 60  # 2 hours
-# Subcommand names blocked from use as item slugs. Match is exact: only a
-# slug equal to one of these bare verbs is refused — `remove-probe`,
-# `add-feature`, etc. are accepted. Argparse never confuses a hyphenated
-# slug with a subcommand (the subcommand is parsed from argv positionally),
-# and the bare-verb reservation exists purely for dashboard clarity (no
-# item literally named `remove`). Prefix-match refusal was considered and
-# rejected: it would forbid natural slugs like `update-deps` for no real
-# dispatch-safety gain (2026-07-25 decision).
-SUBCOMMANDS = (
-    "render",
-    "list",
-    "ready",
-    "show",
-    "add",
-    "update",
-    "start",
-    "done",
-    "reopen",
-    "review",
-    "approve",
-    "reject",
-    "sendback",
-    "gate-set",
-    "gate-pass",
-    "acceptance-set",
-    "verifier-check",
-    "contract-touch",
-    "slug-check",
-    "cited-by",
-    "run",
-    "runs",
-    "backfill-gate",
-    "rename",
-    "remove",
-    "block",
-    "unblock",
-    "validate",
-    "prune",
-    "recap",
-    "worktree",
-    "machine-id",
-    "integration-merge",
-)
-RESERVED_SLUGS = set(SUBCOMMANDS) | {"pending", "out-of-scope", "all", "help", "new"}
+# The canonical subcommand surface lives in dev_status_commands (single
+# source shared with dev_status_mutation's reserved-slug validation), so the
+# reserved list cannot drift from it. See dev_status_commands.SUBCOMMANDS for
+# the exact-match reservation rationale (2026-07-25 decision).
+SUBCOMMANDS = dev_status_commands.SUBCOMMANDS
 SLUG_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)+$")
 SLUG_MIN, SLUG_MAX = 3, 40
 

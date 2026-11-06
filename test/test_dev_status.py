@@ -3327,6 +3327,25 @@ class BacklogTestCase(BacklogFixture):
             dev_status.cmd_add(args)
         self.assertIn("reserved", err.getvalue())
 
+    @pytest.mark.regression(
+        "reserved-slug-covers-every-subcommand", "AssertionError: SystemExit not raised"
+    )
+    def test_41w_every_subcommand_name_is_reserved_slug(self):
+        # Every runtime subcommand name must be a reserved item slug. The
+        # reserved list used to be hand-maintained in dev_status_mutation.py
+        # next to the canonical SUBCOMMANDS and drifted, so `slug-check` and
+        # `integration-merge` were accepted as item ids. Iterating the runtime
+        # `dispatch` keys (not a hardcoded list) means a subcommand added later
+        # is covered without editing this test.
+        for name in sorted(dev_status.dispatch):
+            with self.subTest(name=name):
+                args = _args(json=json.dumps({"id": name, "summary": "x"}))
+                err = io.StringIO()
+                with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+                    dev_status.cmd_add(args)
+                self.assertEqual(cm.exception.code, 1)
+                self.assertIn("reserved", err.getvalue())
+
     # ── recap: journal, cache, dispatch, prompt/normalization, subcommand ───
 
     def _journal_lines(self):

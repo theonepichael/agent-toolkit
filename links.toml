@@ -157,6 +157,10 @@ src = "agent-scripts/dev_status_impl.py"
 dest = "~/.agent-toolkit/scripts/dev_status_impl.py"
 
 [[link]]
+src = "agent-scripts/dev_status_commands.py"
+dest = "~/.agent-toolkit/scripts/dev_status_commands.py"
+
+[[link]]
 src = "agent-scripts/dev_status_formatting.py"
 dest = "~/.agent-toolkit/scripts/dev_status_formatting.py"
 

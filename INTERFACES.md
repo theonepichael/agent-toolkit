@@ -40,6 +40,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`bundle_drift_check.py`](#agentscriptsbundledriftcheckpy) | SessionStart hook: flag when this repo has drifted from the last commit bundled over to a GitHub-blocked work machine. |
 | [`cli_common.py`](#agentscriptsclicommonpy) | Shared CLI helpers used across agent-toolkit scripts. |
 | [`dev_status.py`](#agentscriptsdevstatuspy) | dev_status.py v2 — slug IDs, structured dependency graph, pure render. |
+| [`dev_status_commands.py`](#agentscriptsdevstatuscommandspy) | Canonical dev_status subcommand names, shared by CLI dispatch and slug validation. |
 | [`dev_status_formatting.py`](#agentscriptsdevstatusformattingpy) | Pure text-formatting helpers shared by the backlog dashboard and recap. |
 | [`dev_status_mutation.py`](#agentscriptsdevstatusmutationpy) | Typed mutation service and transaction manager for dev_status (Candidate 12). |
 | [`dev_status_read.py`](#agentscriptsdevstatusreadpy) | Pure read-only facade over the dev_status backlog store. |
@@ -417,7 +418,7 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `out-of-scope show <concept-slug>` — print a rejected concept's full record
 - Environment: `DEVSTATUS_AGENT`, `DEVSTATUS_RECAP_AGY_MODEL`, `DEVSTATUS_RECAP_DEBOUNCE_SECONDS`, `DEVSTATUS_RECAP_DISABLE`, `DEVSTATUS_RECAP_TIMEOUT_SECONDS`
 - Explicit exit codes: `1`, `2`
-- Depends on: `agent_toolkit_paths.py`, `cli_common.py`, `dev_status_formatting.py`, `dev_status_mutation.py`, `dev_status_storage.py`, `dev_status_types.py`, `grill.py`, `llm_backends.py`, `migration_lock.py`, `to_tickets_runner.py`, `worktree.py`
+- Depends on: `agent_toolkit_paths.py`, `cli_common.py`, `dev_status_commands.py`, `dev_status_formatting.py`, `dev_status_mutation.py`, `dev_status_storage.py`, `dev_status_types.py`, `grill.py`, `llm_backends.py`, `migration_lock.py`, `to_tickets_runner.py`, `worktree.py`
 - Public functions:
   - `format_compact_confirmation(cmd: str, slug: str, status: str, rev: int, ref: str | int | None = None, detail: str = '') -> str` — Format a single-line structured confirmation for mutating commands under compact mode.
   - `machine_id() -> str` — Return this machine's stable short id, creating it on first use.
@@ -441,6 +442,15 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `build_parser() -> argparse.ArgumentParser` — Build the full argument parser for every subcommand.
 - Subcommand handlers: `cmd_internal_regen`, `cmd_recap`, `cmd_worktree`, `cmd_integration_merge`, `cmd_render`, `cmd_ready`, `cmd_list`, `cmd_show`, `cmd_validate`, `cmd_add`, `cmd_update`, `cmd_start`, `cmd_done`, `cmd_reopen`, `cmd_review`, `cmd_approve`, `cmd_reject`, `cmd_sendback`, `cmd_gate_set`, `cmd_gate_pass`, `cmd_acceptance_set`, `cmd_verifier_check`, `cmd_contract_touch`, `cmd_slug_check`, `cmd_cited_by`, `cmd_run`, `cmd_machine_id`, `cmd_runs`, `cmd_backfill_gate`, `cmd_rename`, `cmd_block`, `cmd_unblock`, `cmd_out_of_scope_add`, `cmd_out_of_scope_link`, `cmd_out_of_scope_unlink`, `cmd_out_of_scope_remove`, `cmd_out_of_scope_list`, `cmd_out_of_scope_show`, `cmd_pending_add`, `cmd_pending_update`, `cmd_pending_list`, `cmd_remove`, `cmd_prune`
 - Tested by: `test/test_dev_status.py`, `test/test_dev_status_acceptance.py`, `test/test_dev_status_mutation.py`, `test/test_dev_status_storage.py`, `test/test_dev_status_validate.py`, `test/test_path_for_per_use.py`, `test/test_slug_check.py`, `test/test_sweep_dead_claims.py`, `test/test_to_tickets_runner.py`
+
+### `agent-scripts/dev_status_commands.py`
+
+Canonical dev_status subcommand names, shared by CLI dispatch and slug validation.
+
+- Installed at: `~/.agent-toolkit/scripts/dev_status_commands.py` (all harnesses)
+- Entrypoint: not executable, `#!/usr/bin/env python3`
+- CLI: none (library module).
+- Tested by: nothing
 
 ### `agent-scripts/dev_status_formatting.py`
 
@@ -473,7 +483,7 @@ Typed mutation service and transaction manager for dev_status (Candidate 12).
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI: none (library module).
 - Environment: `AGY_SESSION`, `AI_AGENT`, `ANTHROPIC_CLI`, `ANTIGRAVITY`, `ANTIGRAVITY_AGENT`, `ANTIGRAVITY_CONVERSATION_ID`, `CLAUDE_CODE`, `COPILOT`, `DEVSTATUS_CLAIM_TTL_SECONDS`, `DEVSTATUS_HARNESS`, `DEVSTATUS_VERIFIER_TOKEN_FILE`, `GITHUB_COPILOT`, `OPENCODE`, `OPENCODE_GATEWAY`, `PI_CODING_AGENT`, `PI_SESSION`
-- Depends on: `dev_status_formatting.py`, `dev_status_storage.py`, `harness_spec.py`, `worktree_provenance.py`
+- Depends on: `dev_status_commands.py`, `dev_status_formatting.py`, `dev_status_storage.py`, `harness_spec.py`, `worktree_provenance.py`
 - Exceptions:
   - `class BacklogMutationError(Exception)` — Base class for all typed mutation refusals.
   - `class RevisionConflictError(BacklogMutationError)` — Refusal when --if-rev is missing or stale on numeric position mutations.

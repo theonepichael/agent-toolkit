@@ -46,6 +46,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Final, Protocol, cast
 
+import dev_status_commands
 import dev_status_formatting
 import dev_status_storage
 import harness_spec
@@ -118,39 +119,10 @@ PENDING_MUTABLE_FIELDS: frozenset[str] = frozenset(
     }
 )
 
-SUBCOMMANDS: tuple[str, ...] = (
-    "render",
-    "list",
-    "ready",
-    "show",
-    "add",
-    "update",
-    "start",
-    "done",
-    "reopen",
-    "review",
-    "approve",
-    "reject",
-    "gate-set",
-    "gate-pass",
-    "acceptance-set",
-    "verifier-check",
-    "contract-touch",
-    "cited-by",
-    "run",
-    "runs",
-    "backfill-gate",
-    "rename",
-    "remove",
-    "block",
-    "unblock",
-    "prune",
-    "recap",
-    "machine-id",
-)
-RESERVED_SLUGS: frozenset[str] = frozenset(
-    set(SUBCOMMANDS) | {"pending", "out-of-scope", "all", "help", "new"}
-)
+# Reserved item slugs are the canonical subcommand surface plus a few
+# dashboard/future-use names; the single source lives in dev_status_commands
+# so this list cannot drift from the CLI's SUBCOMMANDS (2026-11-06).
+RESERVED_SLUGS = dev_status_commands.RESERVED_SLUGS
 SLUG_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)+$")
 SLUG_MIN = 3
 SLUG_MAX = 40
