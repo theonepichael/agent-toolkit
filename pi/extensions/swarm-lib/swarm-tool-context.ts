@@ -1609,6 +1609,36 @@ export class SwarmToolContext {
               paneId: worker.paneId,
               detail: amendVerdictDetail(verdict, worker, heldMs),
             };
+            // A crash outranks the hold, exactly as it does on the terminal
+            // settle's release: the worker's own death certificate and the pane
+            // screen are both checked before this release reads as a clean
+            // finish. The probe taken in this branch carries the settle status;
+            // an abandoned probe is status-less (no proof of life), not idle, so
+            // its retained output is not trusted.
+            const sidecar = this.sidecarForRun(rt.runId, worker.slug);
+            if (sidecar) {
+              event.kind = "error";
+              event.detail = `${fatalSidecarDetail(sidecar)}${event.detail ? ` ${event.detail}` : ""}`;
+            }
+            const settleStatus = probe?.abandoned
+              ? undefined
+              : parseAgentStatus(probe?.stdout ?? "");
+            const screened = await this.screenFinishedForCrash(event, worker, settleStatus);
+            // Record the screen's conclusion in the draft so the ledger row says
+            // pane_sentinel rather than a bare herdr_status, as the terminal
+            // settle's release does -- the evidence that flipped the kind must be
+            // the evidence the outcome records. This branch only ever produces a
+            // terminal event (finished, or error after a sidecar/screen flip).
+            event.outcomeDraft = classifyOutcomeDraft(
+              event.kind === "error" ? "error" : "finished",
+              {
+                sidecar,
+                sidecarProbed: this.kind === "pi",
+                paneMatch: screened.match,
+                paneRead: screened.read,
+                ...(settleStatus !== undefined ? { herdrStatus: settleStatus } : {}),
+              },
+            );
           } else {
             rearm = "ack";
           }

@@ -1743,6 +1743,23 @@ ${capture}` } };
               paneId: worker.paneId,
               detail: amendVerdictDetail(verdict, worker, heldMs)
             };
+            const sidecar = this.sidecarForRun(rt.runId, worker.slug);
+            if (sidecar) {
+              event.kind = "error";
+              event.detail = `${fatalSidecarDetail(sidecar)}${event.detail ? ` ${event.detail}` : ""}`;
+            }
+            const settleStatus = probe?.abandoned ? void 0 : parseAgentStatus(probe?.stdout ?? "");
+            const screened = await this.screenFinishedForCrash(event, worker, settleStatus);
+            event.outcomeDraft = classifyOutcomeDraft(
+              event.kind === "error" ? "error" : "finished",
+              {
+                sidecar,
+                sidecarProbed: this.kind === "pi",
+                paneMatch: screened.match,
+                paneRead: screened.read,
+                ...settleStatus !== void 0 ? { herdrStatus: settleStatus } : {}
+              }
+            );
           } else {
             rearm = "ack";
           }

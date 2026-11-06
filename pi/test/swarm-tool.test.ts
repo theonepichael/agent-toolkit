@@ -5281,6 +5281,7 @@ describe("swarm_amend: the hold that keeps a correction from being torn down", (
     pendingAmend?: Partial<PendingAmend> | null;
     lifecycle?: "active" | "awaiting_relay";
     mode?: "concurrent" | "serial";
+    pane?: string;
   }) {
     const runId = "holdrun";
     const pending: PendingAmend | undefined =
@@ -5356,6 +5357,9 @@ describe("swarm_amend: the hold that keeps a correction from being torn down", (
       if (a === "agent" && b === "read") {
         return { code: 0, stdout: "Commit these changes?\n> Yes\n  No\n", stderr: "" };
       }
+      if (a === "pane" && b === "read") {
+        return { code: 0, stdout: opts.pane ?? "", stderr: "" };
+      }
       return { code: 0, stdout: "", stderr: "" };
     });
     registerSwarmTools(stub.pi as unknown as Parameters<typeof registerSwarmTools>[0]);
@@ -5383,7 +5387,14 @@ describe("swarm_amend: the hold that keeps a correction from being torn down", (
       ] as unknown as never[]),
     )) as {
       content: { text: string }[];
-      details: { events: { kind: string; detail?: string; checkIn?: number }[] };
+      details: {
+        events: {
+          kind: string;
+          detail?: string;
+          checkIn?: number;
+          outcome?: { processResult: string; evidence: string };
+        }[];
+      };
     };
 
   /** Lets the background re-arm chains settle between polls, as the other two-phase tests do. */
@@ -5501,6 +5512,47 @@ describe("swarm_amend: the hold that keeps a correction from being torn down", (
     const detail = res.details.events[0]?.detail ?? "";
     expect(detail).toContain("amend_unpicked");
     expect(detail).toContain("WITHOUT its correction landing");
+  });
+
+  test("an expired-hold release on the amend-ack path screens for the fatal-exit sentinel", async () => {
+    // The ack-watch settle releases on its OWN expiry branch -- checks crossing
+    // AMEND_ACK_MAX_CHECKS inside settleAmendAck -- not the terminal settle's
+    // amendHoldDecision (which the `checks: 3` tests above release through).
+    // Seeding checks: 1 keeps the terminal settle below the limit so it arms the
+    // ack watch; the ack timeout plus a `done` probe with the held sequence
+    // number then expires the hold inside settleAmendAck.
+    const { runId, poll, stub, waitArgs } = setupHold({
+      waits: [
+        { code: 0, stdout: envelopeWithSeq("idle", "holdrun-w1", 101), stderr: "" },
+        { code: 1, stdout: "", stderr: HERDR_TIMEOUT_STDERR },
+      ],
+      probe: { code: 0, stdout: envelopeWithSeq("done", "holdrun-w1", 101), stderr: "" },
+      pendingAmend: { checks: 1 },
+      pane: fatalExitPane(),
+    });
+
+    const first = await runPoll(poll, runId);
+    // The terminal settle holds rather than releasing: still below the limit.
+    expect(first.details.events.map((e) => e.kind)).toEqual(["still_working"]);
+    expect(closes(stub)).toHaveLength(0);
+    // The ack watch asks for the correction's turn, not a terminal settle.
+    expect(waitArgs().some((a) => a.includes("--until working"))).toBe(true);
+
+    await settle();
+
+    const second = await runPoll(poll, runId);
+    expect(second.details.events.map((e) => e.kind)).toEqual(["error"]);
+    // Asserted on the detail prefix, not just the kind: the hold expired with no
+    // new turn, but the pane carried the fatal-exit sentinel at a `done` settle,
+    // so the release must read as a crash rather than a clean finish.
+    expect(second.details.events[0]?.detail ?? "").toContain("fatal_error_exit");
+    // The ledger must record the pane evidence that flipped the kind, not a bare
+    // herdr_status: the release read as a crash because the pane carried the
+    // sentinel, and that is what the recorded outcome has to say.
+    expect(second.details.events[0]?.outcome).toMatchObject({
+      processResult: "unknown_crash",
+      evidence: "pane_sentinel",
+    });
   });
 
   test("a gate is never withheld for a hold -- blocked still reaches the relay", async () => {
