@@ -122,9 +122,18 @@ comment warns about) carries **no** `skills` key:
 
 ```json
 {
-  "lastChangelogVersion": "0.84.4"
+  "lastChangelogVersion": "0.84.4",
+  "retry": {
+    "maxRetries": 10
+  }
 }
 ```
+
+The `retry` key raises pi's agent-level retry budget from its default of 3,
+so workers survive transient 429 rate-limit windows instead of exiting once
+the retries are exhausted. Because the seed is copy-once, an existing install
+adopts it only via `install.py --reseed --harness=pi` or by hand-merging the
+`retry` key into `~/.pi/agent/settings.json`.
 
 All skills are found purely through Pi's default, always-on scan of
 `~/.pi/agent/skills/`, which `links.toml` (§ below) symlinks straight to
