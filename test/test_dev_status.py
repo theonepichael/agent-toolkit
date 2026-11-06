@@ -16,6 +16,7 @@ same day, in test_dev_status_formatting.py.
 
 import fcntl
 import functools
+import importlib.util
 import inspect
 import io
 import json
@@ -3371,6 +3372,36 @@ class BacklogTestCase(BacklogFixture):
                 }
             )
         )
+
+    # ── recap timeout default ────────────────────────────────────────────
+
+    @pytest.mark.regression("recap-timeout-default-120", "120.0 != 60.0")
+    def test_recap_timeout_default_is_120(self):
+        # RECAP_TIMEOUT_SECONDS is read once at import time, so pin the DEFAULT
+        # by loading dev_status_impl fresh with the override env var unset.
+        # exec_module is in-process (conftest blocks real subprocess.Popen).
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("DEVSTATUS_RECAP_TIMEOUT_SECONDS", None)
+            spec = importlib.util.spec_from_file_location(
+                "dev_status_impl_recap_timeout_default",
+                Path(dev_status.__file__).resolve(),
+            )
+            fresh = importlib.util.module_from_spec(spec)
+            assert spec.loader is not None
+            spec.loader.exec_module(fresh)
+            self.assertEqual(fresh.RECAP_TIMEOUT_SECONDS, 120.0)
+
+    def test_recap_timeout_env_override_still_wins(self):
+        # The constant stays an env read; an explicit override beats the default.
+        with patch.dict(os.environ, {"DEVSTATUS_RECAP_TIMEOUT_SECONDS": "90"}):
+            spec = importlib.util.spec_from_file_location(
+                "dev_status_impl_recap_timeout_override",
+                Path(dev_status.__file__).resolve(),
+            )
+            fresh = importlib.util.module_from_spec(spec)
+            assert spec.loader is not None
+            spec.loader.exec_module(fresh)
+            self.assertEqual(fresh.RECAP_TIMEOUT_SECONDS, 90.0)
 
     # ── journal appends per mutation path ──────────────────────────────────
 

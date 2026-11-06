@@ -2609,6 +2609,13 @@ def run_opencode(
     window) is not a stall and is left to run to its overall ``timeout``
     without a retry. A successful stall-retry is recorded in
     ``backend_calls.jsonl`` with ``fallback_reason="stall"``.
+
+    Worst-case wall time for a single call is therefore ~2 × ``timeout``: an
+    output stall is declared after ``stall_seconds`` of silence, which can
+    land near the end of the first budget (last byte arrives just inside the
+    ``timeout - stall_seconds`` window), and the one retry then gets a fresh
+    full ``timeout``. A full timeout itself never retries, so it costs at
+    most one ``timeout``.
     """
     check_prompt_size(prompt)
     kwargs: dict[str, object] = {}

@@ -233,7 +233,16 @@ RECAP_MAX_CHARS = 400
 # than this much of the budget (a 3-char recap from "Hi." + a long run-on is a
 # worse failure than a mid-sentence cut -- fall back to the hard cut instead).
 RECAP_MIN_KEEP = RECAP_MAX_CHARS // 2
-RECAP_TIMEOUT_SECONDS = float(os.environ.get("DEVSTATUS_RECAP_TIMEOUT_SECONDS", "60"))
+# Recap backend-call timeout, in seconds. Raised from 60 to 120
+# (2026-11-06): backend_calls.jsonl showed opencode recap calls timing out at
+# 60.0s (86 timeouts), with successful opencode recap calls running p50 ~41s /
+# p90 ~57s — 60s was cutting off the normal latency tail. 120 matches
+# second_opinion.py's BACKEND_TIMEOUT_SECONDS global. NOTE the opencode runner
+# retries once after a ~90s output stall, so a single opencode recap call's
+# worst-case wall time is ~2 × this value (stall near the end of the first
+# budget + a full fresh budget on the retry) — see
+# llm_backends.run_opencode's docstring.
+RECAP_TIMEOUT_SECONDS = float(os.environ.get("DEVSTATUS_RECAP_TIMEOUT_SECONDS", "120"))
 RECAP_AGY_MODEL = os.environ.get("DEVSTATUS_RECAP_AGY_MODEL", "Gemini 3.8 Flash (High)")
 # Trailing-edge debounce for background recap regeneration: a burst of board
 # mutations each spawns a detached ``_internal-regen`` child, but a child sleeps
@@ -1855,8 +1864,10 @@ def _run_recap_regen(
     actually saw). The cache's fingerprint is captured separately, in a
     fresh read taken right before the write below rather than reused from
     that same pre-call snapshot: this narrows the "board moved during
-    generation" race from the full, up-to-:data:`RECAP_TIMEOUT_SECONDS`-long
-    backend call down to the instant between that read and the write. Any
+    generation" race from the full backend call (up to
+    :data:`RECAP_TIMEOUT_SECONDS` per attempt, ~2× that for opencode whose
+    stall-retry re-runs the budget — see :func:`llm_backends.run_opencode`)
+    down to the instant between that read and the write. Any
     mutation landing in that narrow window (or after) is still caught: the
     fingerprint is re-checked against the live board on every display (see
     :func:`_recap_section_lines`) and every dispatch decision (see
@@ -1915,8 +1926,9 @@ def _run_recap_regen(
         text = _normalize_recap_text(raw)
         # Re-read the fingerprint post-call rather than reusing the
         # pre-call snapshot: narrows the mid-call mutation race (see
-        # docstring) from "anywhere during the up-to-RECAP_TIMEOUT_SECONDS
-        # backend call" down to "the instant between this read and the
+        # docstring) from "anywhere during the full backend call (up to
+        # RECAP_TIMEOUT_SECONDS per attempt, ~2× for opencode's stall-retry)"
+        # down to "the instant between this read and the
         # write below" -- the prompt itself still reflects the pre-call
         # board, which is correct (that's what the backend was actually
         # asked about).
