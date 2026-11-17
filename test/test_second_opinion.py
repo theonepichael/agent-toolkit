@@ -285,10 +285,6 @@ class RunAgyWrapperTests(unittest.TestCase):
 
     def test_03c_default_agy_model_value(self) -> None:
         self.assertEqual(second_opinion.DEFAULT_AGY_MODEL, "Gemini 3.8 Flash (High)")
-        self.assertEqual(
-            second_opinion._EXAMPLE_POOL_VALUES["agy"],
-            "gemini-4-hydrogen-high,gemini-4-argon-high",
-        )
 
 
 class RunCopilotWrapperTests(unittest.TestCase):

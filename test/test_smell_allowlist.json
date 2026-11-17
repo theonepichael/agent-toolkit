@@ -1003,10 +1003,6 @@
       "reason": "User-facing stderr warning; the truncation message wording is the output."
     },
     {
-      "fingerprint": "gemini-4-hydrogen-high,gemini-4-argon-high",
-      "reason": "Model-id list value (config constant _EXAMPLE_POOL_VALUES[\"agy\"]), not a user-facing message."
-    },
-    {
       "fingerprint": "no backend is eligible for grounded review",
       "reason": "User-facing error message; the wording is the output."
     }
