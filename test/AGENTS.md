@@ -69,10 +69,25 @@ A reviewer sends back a test that breaks one.
   contents, or a short stable token such as a key name or a dotted path.
   Don't assert a whole message sentence: any rewording breaks the test
   without changing behavior. A test of message wording itself is the
-  exception, and it says so in a comment.
+  exception. Its comment says what the wording protects — the
+  harness-specific fact, or the instruction an agent acts on — not just
+  that it is a wording test.
 - **Test behavior, not the implementation.** An assertion that restates
   the code (the same constant, the same formula, a mock that returns what
   it is then asserted to return) passes whatever the code does.
+
+`test_smell_ratchet.py` enforces the waiting and prose rules mechanically,
+and its allowlist freezes the hits that predate it. Clearing an entry means
+making the assertion structural, not hiding it from the detector. None of
+these count as a fix, because each passes the ratchet and leaves the test
+weaker:
+shortening a sentence below the detector's length, splitting it into
+fragment asserts, moving it into a variable or building it by
+concatenation, or swapping an exact check on formatted output or parsed
+data (`assertEqual`, `toBe`, `toEqual`) for looser `assertIn` or
+`toContain` checks. When the string is data — a path, a command line,
+JSON, a function's exact output — or its wording is the point, keep the
+entry, with a reason that says which.
 
 ## One directory, two styles — and they are not interchangeable
 
