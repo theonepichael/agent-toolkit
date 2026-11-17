@@ -305,6 +305,7 @@ class CapabilityFixtureTests(unittest.TestCase):
                 self.assertIn("worktree path to read", text, path)
                 self.assertIn("no review ran: nothing staged", text, path)
                 self.assertIn("status --porcelain", text, path)
+                # wording contract: rendered skill text
                 self.assertIn("keep one rendered copy per changed template", text, path)
                 own = harness.removesuffix("-prompt").removesuffix("-skill")
                 if harness in ("pi", "pi-prompt"):
@@ -353,6 +354,7 @@ class CapabilityFixtureTests(unittest.TestCase):
         self.assertIn("SessionStart hook", text)
         self.assertIn("CLAUDE.md's Backlog section", text)
         self.assertIn(
+            # wording contract: rendered skill text
             "do not copy the ASCII dashboard into the assistant response", text
         )
 
@@ -360,23 +362,28 @@ class CapabilityFixtureTests(unittest.TestCase):
         text = self._render("dashboard", "copilot")
         self.assertIn("allowed-tools: shell", text)
         self.assertIn("sessionStart hook", text)
+        # wording contract: rendered skill text
         self.assertIn("the shared instructions file's Backlog section", text)
 
     def test_dashboard_opencode(self) -> None:
         text = self._render("dashboard", "opencode")
         self.assertNotIn("\nname:", text.split("---", 2)[1])
         self.assertNotIn("SessionStart", text)
+        # wording contract: rendered skill text
         self.assertIn("the shared instructions file's Backlog section", text)
 
     def test_dashboard_agy(self) -> None:
         text = self._render("dashboard", "agy")
         self.assertIn("name: dashboard", text)
         self.assertNotIn("SessionStart", text)
+        # wording contract: rendered skill text
         self.assertIn("the shared instructions file's Backlog section", text)
         self.assertIn(
+            # wording contract: rendered skill text
             "Display stdout verbatim — do not narrate, do not reformat", text
         )
         self.assertNotIn(
+            # wording contract: rendered skill text
             "do not copy the ASCII dashboard into the assistant response", text
         )
 
@@ -385,6 +392,7 @@ class CapabilityFixtureTests(unittest.TestCase):
         self.assertIn("name: dashboard", text)
         self.assertIn('action: "render"', text)
         self.assertIn("dev_status` tool", text)
+        # wording contract: rendered skill text
         self.assertNotIn("the shared instructions file's Backlog section", text)
 
     # -- recap ------------------------------------------------------------
@@ -440,6 +448,7 @@ class CapabilityFixtureTests(unittest.TestCase):
         text = self._render("grill-me", "agy")
         self.assertNotIn("AskUserQuestion", text)
         self.assertNotIn("the `question` tool", text)
+        # wording contract: rendered skill text
         self.assertIn("agy has no `SessionStart`-equivalent hook event", text)
 
     def test_grill_me_pi(self) -> None:
@@ -458,7 +467,9 @@ class CapabilityFixtureTests(unittest.TestCase):
         self.assertIn("AskUserQuestion", text)
         self.assertIn("Cheaper Claude session", text)
         self.assertIn("opencode/GLM-5.2", text)
+        # wording contract: rendered skill text
         self.assertIn("If the item is already in-progress: STOP immediately", text)
+        # wording contract: rendered skill text
         self.assertIn("Never attempt a manual PID liveness check", text)
         self.assertNotIn("If not already in-progress:", text)
 
@@ -467,7 +478,9 @@ class CapabilityFixtureTests(unittest.TestCase):
         self.assertIn("Cheaper Copilot session", text)
         self.assertIn("A cheaper Copilot model, same machine", text)
         self.assertNotIn("AskUserQuestion", text)
+        # wording contract: rendered skill text
         self.assertIn("If the item is already in-progress: STOP immediately", text)
+        # wording contract: rendered skill text
         self.assertIn("Never attempt a manual PID liveness check", text)
         self.assertNotIn("If not already in-progress:", text)
 
@@ -476,7 +489,9 @@ class CapabilityFixtureTests(unittest.TestCase):
         self.assertIn("Fresh opencode session", text)
         self.assertIn("`question` tool", text)
         self.assertNotIn("AskUserQuestion", text)
+        # wording contract: rendered skill text
         self.assertIn("If the item is already in-progress: STOP immediately", text)
+        # wording contract: rendered skill text
         self.assertIn("Never attempt a manual PID liveness check", text)
         self.assertNotIn("If not already in-progress:", text)
 
@@ -485,7 +500,9 @@ class CapabilityFixtureTests(unittest.TestCase):
         self.assertIn("Cheaper agy session", text)
         self.assertIn("suspend-and-return", text)
         self.assertIn("has no structured multi-choice widget", text)
+        # wording contract: rendered skill text
         self.assertIn("If the item is already in-progress: STOP immediately", text)
+        # wording contract: rendered skill text
         self.assertIn("Never attempt a manual PID liveness check", text)
         self.assertNotIn("If not already in-progress:", text)
 
@@ -494,7 +511,9 @@ class CapabilityFixtureTests(unittest.TestCase):
         self.assertIn("Fresh Pi session", text)
         self.assertIn("`delegate` tool", text)
         self.assertIn("dev_status` tool", text)
+        # wording contract: rendered skill text
         self.assertIn("If the item is already in-progress: STOP immediately", text)
+        # wording contract: rendered skill text
         self.assertIn("Never attempt a manual PID liveness check", text)
         self.assertNotIn("If not already in-progress:", text)
 
@@ -508,6 +527,7 @@ class CapabilityFixtureTests(unittest.TestCase):
     def test_make_skill_copilot(self) -> None:
         text = self._render("make-skill", "copilot")
         self.assertIn("copilot/skills/<name>/SKILL.md", text)
+        # wording contract: rendered skill text
         self.assertIn("Copilot has no `AskUserQuestion`-style structured prompt", text)
         # Corrected, per copilot/CLAUDE_CODE_PARITY.md: typed-slash invocation
         # DOES exist -- the old hand-forked copy claimed it didn't.
@@ -521,6 +541,7 @@ class CapabilityFixtureTests(unittest.TestCase):
     def test_make_skill_agy(self) -> None:
         text = self._render("make-skill", "agy")
         self.assertIn("agy/skills/<skill>/references/<topic>.md", text)
+        # wording contract: rendered skill text
         self.assertIn("agy has no `AskUserQuestion`-style structured prompt", text)
         # Corrected, per agy/CLAUDE_CODE_PARITY.md: slash invocation is
         # confirmed live as of agy 1.1.12 -- the old copy called it unconfirmed.
@@ -557,6 +578,7 @@ class CapabilityFixtureTests(unittest.TestCase):
         self.assertIn("name: spec", text)
         self.assertIn("allowed-tools: shell", text)
         self.assertNotIn("AskUserQuestion", text)
+        # wording contract: rendered skill text
         self.assertIn("ask, in plain text with a recommendation", text)
         self.assertNotIn("copilot/skills/spec/SKILL.md", text)
 
@@ -564,6 +586,7 @@ class CapabilityFixtureTests(unittest.TestCase):
         text = self._render("spec", "agy")
         self.assertIn("name: spec", text)
         self.assertNotIn("AskUserQuestion", text)
+        # wording contract: rendered skill text
         self.assertIn("ask, in plain text with a recommendation", text)
         self.assertNotIn("agy/skills/spec/SKILL.md", text)
 
@@ -571,6 +594,7 @@ class CapabilityFixtureTests(unittest.TestCase):
         text = self._render("spec", "codex")
         self.assertIn("name: spec", text)
         self.assertNotIn("AskUserQuestion", text)
+        # wording contract: rendered skill text
         self.assertIn("ask, in plain text with a recommendation", text)
         self.assertNotIn("codex/skills/spec/SKILL.md", text)
         self.assertNotIn("sync_codex_skills", text)
@@ -580,6 +604,7 @@ class CapabilityFixtureTests(unittest.TestCase):
     def test_standup_claude(self) -> None:
         text = self._render("standup", "claude")
         self.assertIn("Bash(python3 ~/.agent-toolkit/scripts/standup.py:*)", text)
+        # wording contract: rendered skill text
         self.assertIn("CLAUDE.md's pending-item status-transition rule", text)
 
     def test_standup_copilot(self) -> None:
@@ -602,6 +627,7 @@ class CapabilityFixtureTests(unittest.TestCase):
 
     def test_standup_pi(self) -> None:
         text = self._render("standup", "pi")
+        # wording contract: rendered skill text
         self.assertIn("Call the `standup` tool with action `fetch`", text)
         self.assertIn("`dev_status` tool", text)
 

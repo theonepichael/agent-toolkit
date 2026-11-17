@@ -582,241 +582,241 @@
   "test/test_gen_hooks.py": [
     {
       "fingerprint": "-e ~/.agent-toolkit/scripts/sessionstart_checks.py",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Command-line flag and script path in a hook command (data, not prose)."
     }
   ],
   "test/test_gen_interfaces.py": [
     {
       "fingerprint": "DATA_DIR = agent_toolkit_paths.path_for('work-items')",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Rendered source-code line (extract_path_constants output; data, not prose)."
     },
     {
       "fingerprint": "DATA_DIR = agent_toolkit_paths.path_for('work-items')",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Rendered source-code line (extract_path_constants output; data, not prose)."
     },
     {
       "fingerprint": "f(a, *rest, model: str | None = None, **kw) -> str",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Rendered function signature (render_signature output; data, not prose)."
     },
     {
       "fingerprint": "f(prompt: str, *, timeout: float) -> str",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Rendered function signature (render_signature output; data, not prose)."
     }
   ],
   "test/test_gen_keybinds.py": [
     {
       "fingerprint": "::error title=opencode leader chords could not be checked::",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "GitHub Actions workflow annotation (machine-parsed exact format; data)."
     },
     {
       "fingerprint": "::error title=opencode leader chords drifted::",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "GitHub Actions workflow annotation (machine-parsed exact format; data)."
     },
     {
       "fingerprint": "agent-scripts/gen_keybinds.py --check --fetch-latest",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Command invocation (script path and flags; data, not prose)."
     }
   ],
   "test/test_gen_second_opinion.py": [
     {
       "fingerprint": "Action `probe` reports per-model availability",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Wording contract: Pi copy must name the `probe` tool action, not the script flag (see PiProbeWordingTests docstring)."
     },
     {
       "fingerprint": "pass the `backend` parameter deliberately",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Wording contract: Pi copy must name the `backend` tool parameter, not `--backend` (see PiProbeWordingTests docstring)."
     }
   ],
   "test/test_gen_shell_completion.py": [
     {
       "fingerprint": "# Regenerate with: python3 ~/.agent-toolkit/scripts/gen_shell_completion.py --harness mockcli",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Generated script header comment (machine-emitted; data, not prose)."
     },
     {
       "fingerprint": "'(--effort --reasoning-effort)'{--effort,--reasoning-effort}'=[Set effort]:level:(low high)'",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Generated zsh completion spec (format_option output; data, not prose)."
     },
     {
       "fingerprint": "'--add-dir=[Add directory]:dir:_files -/'",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Generated zsh completion spec (format_option output; data, not prose)."
     },
     {
       "fingerprint": "--allowedTools, --allowed-tools <tools...>",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "CLI help-text option definition (parser test fixture; data, not prose)."
     },
     {
       "fingerprint": "Comma or space-separated list of tool names to allow (e.g. \"Bash(git *) Edit\")",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "CLI help-text description (parser test fixture; data, not prose)."
     },
     {
       "fingerprint": "Install extension source and add to settings",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "CLI help-text command description (parser test fixture; data, not prose)."
     },
     {
       "fingerprint": "install:Install extension source and add to settings",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Generated zsh completion command spec (data, not prose)."
     }
   ],
   "test/test_gen_skills.py": [
     {
       "fingerprint": "Bash(python3 ~/.agent-toolkit/scripts/standup.py:*)",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Claude Code allowed-tools permission spec (command wildcard; data, not prose)."
     },
     {
       "fingerprint": "CLAUDE.md's pending-item status-transition rule",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Wording contract: asserts the claude standup copy names CLAUDE.md's pending-item rule (harness-specific rendered instruction text)."
     },
     {
       "fingerprint": "Call the `standup` tool with action `fetch`",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Wording contract: asserts the Pi standup copy names the native `standup` tool, not the script."
     },
     {
       "fingerprint": "Copilot has no `AskUserQuestion`-style structured prompt",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Wording contract: asserts the Copilot make-skill copy states its missing structured-choice tool."
     },
     {
       "fingerprint": "Display stdout verbatim — do not narrate, do not reformat",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Wording contract: asserts the agy dashboard copy's display instruction (rendered skill text)."
     },
     {
       "fingerprint": "If the item is already in-progress: STOP immediately",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Wording contract: asserts the backlog-item skill's step-2 STOP instruction (rendered text)."
     },
     {
       "fingerprint": "If the item is already in-progress: STOP immediately",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Wording contract: asserts the backlog-item skill's step-2 STOP instruction (rendered text)."
     },
     {
       "fingerprint": "If the item is already in-progress: STOP immediately",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Wording contract: asserts the backlog-item skill's step-2 STOP instruction (rendered text)."
     },
     {
       "fingerprint": "If the item is already in-progress: STOP immediately",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Wording contract: asserts the backlog-item skill's step-2 STOP instruction (rendered text)."
     },
     {
       "fingerprint": "If the item is already in-progress: STOP immediately",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Wording contract: asserts the backlog-item skill's step-2 STOP instruction (rendered text)."
     },
     {
       "fingerprint": "Never attempt a manual PID liveness check",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Wording contract: asserts the backlog-item skill's no-manual-PID-check instruction."
     },
     {
       "fingerprint": "Never attempt a manual PID liveness check",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Wording contract: asserts the backlog-item skill's no-manual-PID-check instruction."
     },
     {
       "fingerprint": "Never attempt a manual PID liveness check",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Wording contract: asserts the backlog-item skill's no-manual-PID-check instruction."
     },
     {
       "fingerprint": "Never attempt a manual PID liveness check",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Wording contract: asserts the backlog-item skill's no-manual-PID-check instruction."
     },
     {
       "fingerprint": "Never attempt a manual PID liveness check",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Wording contract: asserts the backlog-item skill's no-manual-PID-check instruction."
     },
     {
       "fingerprint": "agy has no `AskUserQuestion`-style structured prompt",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Wording contract: asserts the agy make-skill copy states its missing structured-choice tool."
     },
     {
       "fingerprint": "agy has no `SessionStart`-equivalent hook event",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Wording contract: asserts the agy grill-me copy's SessionStart-hook capability note."
     },
     {
       "fingerprint": "agy/skills/<skill>/references/<topic>.md",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Skill install path (data, not prose)."
     },
     {
       "fingerprint": "ask, in plain text with a recommendation",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Wording contract: asserts the spec skill's plain-text-ask instruction (rendered text)."
     },
     {
       "fingerprint": "ask, in plain text with a recommendation",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Wording contract: asserts the spec skill's plain-text-ask instruction (rendered text)."
     },
     {
       "fingerprint": "ask, in plain text with a recommendation",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Wording contract: asserts the spec skill's plain-text-ask instruction (rendered text)."
     },
     {
       "fingerprint": "do not copy the ASCII dashboard into the assistant response",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Wording contract: asserts the claude dashboard copy's display instruction, and its absence in agy."
     },
     {
       "fingerprint": "do not copy the ASCII dashboard into the assistant response",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Wording contract: asserts the claude dashboard copy's display instruction, and its absence in agy."
     },
     {
       "fingerprint": "generated by agent-scripts/gen_skills.py",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Generated-file marker (machine-emitted identifier; data, not prose)."
     },
     {
       "fingerprint": "generated by agent-scripts/gen_skills.py",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Generated-file marker (machine-emitted identifier; data, not prose)."
     },
     {
       "fingerprint": "keep one rendered copy per changed template",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Wording contract: asserts the review-diff skill's render-copy instruction (rendered text)."
     },
     {
       "fingerprint": "python3 ~/.agent-toolkit/scripts/dev_status.py pending update",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Command invocation (script path and args; data, not prose)."
     },
     {
       "fingerprint": "python3 ~/.agent-toolkit/scripts/dev_status.py pending update",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Command invocation (script path and args; data, not prose)."
     },
     {
       "fingerprint": "python3 ~/.agent-toolkit/scripts/dev_status.py pending update",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Command invocation (script path and args; data, not prose)."
     },
     {
       "fingerprint": "python3 ~/.agent-toolkit/scripts/dev_status.py pending update",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Command invocation (script path and args; data, not prose)."
     },
     {
       "fingerprint": "python3 ~/.agent-toolkit/scripts/grill.py",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Command invocation (script path; data, not prose)."
     },
     {
       "fingerprint": "python3 ~/.agent-toolkit/scripts/standup.py fetch",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Command invocation (script path and args; data, not prose)."
     },
     {
       "fingerprint": "python3 ~/.agent-toolkit/scripts/standup.py fetch",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Command invocation (script path and args; data, not prose)."
     },
     {
       "fingerprint": "python3 ~/.agent-toolkit/scripts/standup.py fetch",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Command invocation (script path and args; data, not prose)."
     },
     {
       "fingerprint": "python3 ~/.agent-toolkit/scripts/to_tickets_runner.py run",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Command invocation (script path and args; data, not prose)."
     },
     {
       "fingerprint": "restore of the item's original next_steps on return",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Wording contract (regression): asserts the suspend-and-return framing names restoring the original next_steps; documented by @pytest.mark.regression."
     },
     {
       "fingerprint": "the shared instructions file's Backlog section",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Wording contract: asserts non-Pi dashboard copies name the shared instructions file's Backlog section, and its absence in Pi."
     },
     {
       "fingerprint": "the shared instructions file's Backlog section",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Wording contract: asserts non-Pi dashboard copies name the shared instructions file's Backlog section, and its absence in Pi."
     },
     {
       "fingerprint": "the shared instructions file's Backlog section",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Wording contract: asserts non-Pi dashboard copies name the shared instructions file's Backlog section, and its absence in Pi."
     },
     {
       "fingerprint": "the shared instructions file's Backlog section",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Wording contract: asserts non-Pi dashboard copies name the shared instructions file's Backlog section, and its absence in Pi."
     }
   ],
   "test/test_herdr_delegate.py": [
