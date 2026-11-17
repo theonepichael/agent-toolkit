@@ -355,7 +355,7 @@ def test_legacy_toolkit_path_in_a_hand_authored_file_is_reported(tmp_path):
     rel = write(tmp_path, "skills/x/SKILL.md", "run ~/.claude/scripts/grill.py\n")
     problems = hand(tmp_path, [rel])
     assert len(problems) == 1
-    assert problems[0].startswith("skills/x/SKILL.md:1: .claude/scripts/grill.py")
+    assert problems[0].startswith(f"{rel}:1: .claude/scripts/grill.py")
 
 
 def test_ts_join_to_a_legacy_toolkit_path_is_reported(tmp_path):

@@ -50,6 +50,8 @@ class NotifyTestCase(unittest.TestCase):
         self.assertEqual(escaped, "Claude''s Task: don''t fail")
 
     def test_escape_xml(self) -> None:
+        # Deliberate wording test: the exact escaped output (each XML entity)
+        # is the behavior under test, not an incidental message.
         raw = 'Fish & Chips <"tasty">'
         escaped = notify._escape_xml(raw)
         self.assertEqual(escaped, "Fish &amp; Chips &lt;&quot;tasty&quot;&gt;")

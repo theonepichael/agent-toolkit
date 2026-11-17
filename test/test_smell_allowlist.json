@@ -310,24 +310,20 @@
   "test/test_analyze_sessions.py": [
     {
       "fingerprint": "(turn-level digest — no intra-turn context)",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "User-facing search-output label; the wording identifies the digest scope."
     }
   ],
   "test/test_architecture_overview_doc.py": [
     {
       "fingerprint": "./install.sh --profile=work --harness=claude",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Documented README command example; the exact command line in the doc is the subject."
     },
     {
       "fingerprint": "agent-toolkit ./install.sh --harness=claude",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Documented README Quick Start command example; the exact command line in the doc is the subject."
     }
   ],
   "test/test_check_toolkit_paths.py": [
-    {
-      "fingerprint": "skills/x/SKILL.md:1: .claude/scripts/grill.py",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
-    },
     {
       "fingerprint": "time.monotonic",
       "reason": "Performance regression guard - a generous wall-clock upper bound because speed is the behavior under test; the budget is named in the test's own comment."
@@ -690,159 +686,159 @@
   "test/test_herdr_delegate.py": [
     {
       "fingerprint": "/backlog-item --serial --prefix atk --items atk-a",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Exact prompt string returned by a prompt-builder function; the command line is the contract under test."
     },
     {
       "fingerprint": "/backlog-item --serial resume r1 --prefix atk",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Exact prompt string returned by a prompt-builder function; the command line is the contract under test."
     },
     {
       "fingerprint": "/backlog-item --swarm=3 --prefix atk --exclude atk-x",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Exact prompt string returned by a prompt-builder function; the command line is the contract under test."
     },
     {
       "fingerprint": "/backlog-item --swarm=3 --prefix atk --items atk-a atk-b",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Exact prompt string returned by a prompt-builder function; the command line is the contract under test."
     },
     {
       "fingerprint": "/backlog-item --swarm=3 --prefix atk --items atk-a atk-b",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Exact prompt string returned by a prompt-builder function; the command line is the contract under test."
     },
     {
       "fingerprint": "/backlog-item --swarm=3 resume r1 --prefix atk",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Exact prompt string returned by a prompt-builder function; the command line is the contract under test."
     },
     {
       "fingerprint": "/backlog-item --swarm=3 resume r1 --prefix atk",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Exact prompt string returned by a prompt-builder function; the command line is the contract under test."
     },
     {
       "fingerprint": "/backlog-item --swarm=3 resume r1 --prefix atk",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Exact prompt string returned by a prompt-builder function; the command line is the contract under test."
     },
     {
       "fingerprint": "Do you trust the contents of this project?",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "agy's workspace-trust prompt; the exact prompt wording is what trust_prompt_refusal detects and reports (wording is the contract)."
     },
     {
       "fingerprint": "Do you trust the contents of this project?",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "agy's workspace-trust prompt; the exact prompt wording is what trust_prompt_refusal detects and reports (wording is the contract)."
     }
   ],
   "test/test_herdr_remote_deploy.py": [
     {
       "fingerprint": "cat > ~/\\.config/herdr-bridge/config\\.toml <<EOF",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "README heredoc command line; the exact documented command is the subject."
     },
     {
       "fingerprint": "systemctl --user restart herdr-remote-bridge.service",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Command line in deploy.sh; the exact restart command is the subject."
     }
   ],
   "test/test_herdr_watch_answer.py": [
     {
       "fingerprint": "/backlog-item --auto atk-example --handoff",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Exact prompt string returned by a prompt-builder function; the command line is the contract under test."
     },
     {
       "fingerprint": "/backlog-item --auto atk-example --handoff",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Exact prompt string returned by a prompt-builder function; the command line is the contract under test."
     },
     {
       "fingerprint": "/backlog-item --auto atk-example --handoff",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Exact prompt string returned by a prompt-builder function; the command line is the contract under test."
     },
     {
       "fingerprint": "{\"agents\": {}, \"membership\": [], \"pending_gone\": []}",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Fixture data — the exact initial state file JSON content."
     }
   ],
   "test/test_install.py": [
     {
       "fingerprint": "'pi' CLI binary is not installed on PATH",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "User-facing missing-binary message; the binary name is data."
     },
     {
       "fingerprint": "--check-links must be used alone, apart from --harness and --profile",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "User-facing CLI usage error; the exact message is the argparse contract."
     },
     {
       "fingerprint": "VS Code settings — WSL detected but no Windows-side 'code' CLI found on PATH",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "User-facing skip reason reported by the VS Code seeder."
     },
     {
       "fingerprint": "a real file sits where a symlink to belongs",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "User-facing check-links message embedding the conflicting path; the path is data."
     },
     {
       "fingerprint": "halt: changed-state-then-failed downgrade",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Ledger outcome classification ('halt: ...' enum value); the specific halt vs a generic halt is the behavior under test."
     },
     {
       "fingerprint": "live opencode file ~/.config/opencode/opencode.jsonc",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "User-facing drift message embedding the diverged file path; the path is data."
     },
     {
       "fingerprint": "not found — already restored, or removed outside install.sh",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "User-facing rollback anomaly message; the wording distinguishes restored vs wiped."
     },
     {
       "fingerprint": "not found — already wiped, or removed outside install.sh",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "User-facing rollback anomaly message; the wording distinguishes wiped vs restored."
     },
     {
       "fingerprint": "package left installed (profile-independent): ripgrep",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "User-facing rollback summary line naming the package; the package name is data."
     },
     {
       "fingerprint": "✗ 'pi' CLI binary is not installed on PATH",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "User-facing missing-binary message (stderr form); the binary name is data."
     }
   ],
   "test/test_link_drift_check.py": [
     {
       "fingerprint": "links: broken-source (1); wrong-target (1) — run",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "check()'s exact formatted summary line (with the fix pointer); the function's output is the contract."
     }
   ],
   "test/test_link_inspect.py": [
     {
       "fingerprint": "/a — ~/managed is declared exclusive to this repo, but no links.toml entry produces it",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "render_findings' exact formatted bucket message; the function's output is the contract."
     },
     {
       "fingerprint": "/b — ~/managed is declared exclusive to this repo, but no links.toml entry produces it",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "render_findings' exact formatted bucket message; the function's output is the contract."
     },
     {
       "fingerprint": "</h/.claude/g.md> — points at /x, but links.toml says claude/g.md",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "render_findings' exact formatted bucket message; the function's output is the contract."
     },
     {
       "fingerprint": "</h/.claude/scripts> — declared exclusive, but unreadable (denied), so it could not be audited",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "render_findings' exact formatted bucket message; the function's output is the contract."
     }
   ],
   "test/test_llm_backends.py": [
     {
       "fingerprint": "bind_mount \"$SB_TARGET_DIR\" \"$STAGE/target\"",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Line of the generated grounded-wrapper shell script; the bind-mount command is the structure under test (also an ordering index)."
     },
     {
       "fingerprint": "bind_mount \"$STAGE/target\" \"$H/.so-workspace\"",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Line of the generated grounded-wrapper shell script; the bind-mount command is the structure under test."
     },
     {
       "fingerprint": "containment preflight failed: bind source=%s",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Line of the generated grounded-wrapper shell script (diagnostic format string); generated content."
     },
     {
       "fingerprint": "stalled after 0.2s with no output — killed (attempt 1 stalled; attempt 2 stalled)",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Wording test: the attempt-suffix wording is the subject (the test's comment says so)."
     },
     {
       "fingerprint": "timed out after 2s — killed (attempt 1 stalled; attempt 2 timed out)",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Wording test: the attempt-suffix wording is the subject (the test's comment says so)."
     },
     {
       "fingerprint": "time.monotonic",
@@ -946,83 +942,83 @@
   "test/test_notify.py": [
     {
       "fingerprint": "Fish &amp; Chips &lt;&quot;tasty&quot;&gt;",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Wording test: the exact escaped output is the behavior under test (the test's comment says so)."
     }
   ],
   "test/test_opencode_trust_wiring.py": [
     {
       "fingerprint": ".local/state/agent-toolkit/trust-sessions",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Source-code path token whose exact presence (and absence in other files) is the wiring contract under test."
     },
     {
       "fingerprint": ".local/state/agent-toolkit/trust-sessions",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Source-code path token whose exact presence (and absence in other files) is the wiring contract under test."
     },
     {
       "fingerprint": "input: { tool?: string; sessionID?: string }",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Source-code type-signature token whose exact presence is the wiring contract under test."
     },
     {
       "fingerprint": "permissionEvent.type !== \"permission.asked\"",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Source-code guard token whose exact presence is the wiring contract under test."
     }
   ],
   "test/test_question_tool_doc_drift.py": [
     {
       "fingerprint": "has no structured multi-choice prompt either",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Doc-drift check; the exact stale phrase's absence is the subject."
     },
     {
       "fingerprint": "must be written as plain conversational text",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Doc-drift check; the exact stale phrase's absence is the subject."
     },
     {
       "fingerprint": "no structured multi-choice widget for Pi",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Doc-drift check; the exact stale phrase's absence is the subject."
     },
     {
       "fingerprint": "only in a session where the tool is genuinely absent",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Doc-drift check; the exact required phrase's presence is the subject."
     }
   ],
   "test/test_refresh_guidance.py": [
     {
       "fingerprint": "heading not found in `guide.md`: 'Ghost Heading'",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "User-facing finding detail naming the doc and heading; both are data."
     }
   ],
   "test/test_rename_transition.py": [
     {
       "fingerprint": "OLD_TOOL_CODEX_MODEL -> NEW_TOOL_CODEX_MODEL",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "report_main's exact output line naming the legacy→new env-var mapping; the env-var names are the contract."
     }
   ],
   "test/test_second_opinion.py": [
     {
       "fingerprint": "[second_opinion] stripped inline review debris from plan",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "User-facing stderr notice; the message wording is the output."
     },
     {
       "fingerprint": "exceeds 8192 bytes; truncated to 8192 bytes",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "User-facing stderr warning; the truncation message wording is the output."
     },
     {
       "fingerprint": "gemini-4-hydrogen-high,gemini-4-argon-high",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Model-id list value (config constant _EXAMPLE_POOL_VALUES[\"agy\"]), not a user-facing message."
     },
     {
       "fingerprint": "no backend is eligible for grounded review",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "User-facing error message; the wording is the output."
     }
   ],
   "test/test_second_opinion_concurrency.py": [
     {
       "fingerprint": "another process wrote to this run's output file",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "User-facing cross-process collision message; the wording is the output."
     },
     {
       "fingerprint": "another second_opinion.py run is writing",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "User-facing cross-process collision message; the wording is the output."
     },
     {
       "fingerprint": "time.monotonic",
@@ -1050,11 +1046,11 @@
   "test/test_sessionstart_checks.py": [
     {
       "fingerprint": "[sessionstart] ~/.claude/scripts/retired_activity_zz.py is a broken link — its owning repo may have retired it; drop its CHECKS line in sessionstart_checks.py",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "User-facing sessionstart notice naming the retired script path; the path is data, the notice wording is the output."
     },
     {
       "fingerprint": "~/.claude/scripts/watchcommit_activity.py",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Filesystem path — the extracted script path (foreign_script's return) is the subject, not a message."
     }
   ],
   "test/test_slug_check.py": [
@@ -1066,19 +1062,19 @@
   "test/test_standup.py": [
     {
       "fingerprint": "work_backlog_prefixes not configured in config.json — backlog source skipped",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Structured skip-reason data value (a reason field); the string is stored data, not prose."
     }
   ],
   "test/test_uninstall_transactions.py": [
     {
       "fingerprint": "introduced as a dependency by this transaction",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Classification reason value (a structured reason field); the string distinguishes this from already-present."
     }
   ],
   "test/test_worktree.py": [
     {
       "fingerprint": "either a backlog item slug/id or --repo must be provided",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "User-facing CLI usage error; the exact message is the contract."
     }
   ]
 }

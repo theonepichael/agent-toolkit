@@ -2044,6 +2044,7 @@ class AgyTrustWiringTests(DelegateTests):
             )
             self.assertEqual(code, 1)
             self.assertIn("workspace-trust prompt", err)
+            # Wording test: agy's exact workspace-trust prompt is what the code detects.
             self.assertIn("Do you trust the contents of this project?", err)
 
     def test_probe_surfaces_trust_prompt_as_distinct_failure(self) -> None:
@@ -2080,6 +2081,7 @@ class AgyTrustWiringTests(DelegateTests):
             self.assertEqual(code, 1)
             self.assertIn("probe agy: FAIL", err)
             self.assertIn("workspace-trust prompt", err)
+            # Wording test: agy's exact workspace-trust prompt is what the code detects.
             self.assertIn("Do you trust the contents of this project?", err)
 
 
