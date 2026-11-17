@@ -272,7 +272,6 @@ describe("herdr argv builders", () => {
     const argv = buildAgentStartArgv("run1-w1", "w1:pB", undefined, { kind: "pi" });
     expect(argv).not.toContain("--");
     expect(argv).not.toContain("--model");
-    expect(argv).toEqual(buildAgentStartArgv("run1-w1", "w1:pB", undefined, { kind: "pi" }));
   });
 
   test("agent start: the model is one discrete argv element, never shell-interpolated", () => {

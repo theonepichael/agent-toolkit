@@ -281,10 +281,6 @@
       "reason": "Refused entry (parsed data; serial-safety refusal reason)."
     },
     {
-      "fingerprint": "run1-w1\", \"w1:pB\", undefined, { kind: \"pi",
-      "reason": "Constructed argv comparison (input identifiers: agent id, pane id, kind)."
-    },
-    {
       "fingerprint": "unknown_crash\", evidence: \"pane_sentinel",
       "reason": "classifyOutcomeDraft result (status enum identifiers)."
     },
