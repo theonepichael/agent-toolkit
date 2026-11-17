@@ -2074,7 +2074,10 @@ class CodexShadowHomeTests(unittest.TestCase):
             stale = root / "so-codex-home.stale"
             stale.mkdir()
             (stale / ".so-codex-shim").write_text("")
-            os.utime(stale, (time.time() - 100000, time.time() - 100000))
+            # Fixed epoch (1970) instead of `time.time() - 100000`: the sweep
+            # compares mtime against `time.time() - 24h`, so any pre-epoch-1970
+            # stamp is unambiguously stale without reading the wall clock.
+            os.utime(stale, (1.0, 1.0))
 
             fresh = root / "so-codex-home.fresh"
             fresh.mkdir()
@@ -2082,7 +2085,7 @@ class CodexShadowHomeTests(unittest.TestCase):
 
             nomarker = root / "so-codex-home.nomarker"
             nomarker.mkdir()
-            os.utime(nomarker, (time.time() - 100000, time.time() - 100000))
+            os.utime(nomarker, (1.0, 1.0))
 
             realdir = root / "real"
             realdir.mkdir()

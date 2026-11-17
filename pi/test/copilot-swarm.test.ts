@@ -435,7 +435,12 @@ describe("Copilot Swarm: SwarmToolContext Behavioral Tests", () => {
         if (args[0] === "agent" && args[1] === "start") {
           concurrentStarts++;
           maxConcurrentStarts = Math.max(maxConcurrentStarts, concurrentStarts);
-          await new Promise((r) => setTimeout(r, 30));
+          // Yield macrotasks so a parallel spawnInto keeps the other starts in
+          // flight before any one returns; a sequential spawnInto blocks here
+          // awaiting this start, so its next start never overlaps (max stays 1).
+          for (let i = 0; i < 10; i++) {
+            await new Promise((r) => setImmediate(r));
+          }
           concurrentStarts--;
           return { code: 0, stdout: JSON.stringify({ result: {} }), stderr: "" };
         }

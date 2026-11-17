@@ -16,7 +16,6 @@ import os
 import re
 import subprocess
 import sys
-import time
 import unittest
 from pathlib import Path
 
@@ -53,6 +52,7 @@ def rate_limit_payload(used_percentage: object, resets_at: object) -> dict:
 
 
 _NOW = 1_000_000.0
+_FUTURE_RESETS_AT = 4_102_444_800.0  # year 2100; a deterministic future anchor
 _ANSI_RE = re.compile(r"\033\[[0-9;]*m")
 
 
@@ -502,6 +502,9 @@ class ProcessTestCase(unittest.TestCase):
 
     @staticmethod
     def _five_hour_stdin() -> str:
+        # A fixed far-future resets_at (year 2100) so the countdown renders
+        # for a real `now` without the test reading the wall clock; the value
+        # is huge but stable within any single minute.
         return json.dumps(
             {
                 "model": {"display_name": "Opus"},
@@ -509,7 +512,7 @@ class ProcessTestCase(unittest.TestCase):
                 "rate_limits": {
                     "five_hour": {
                         "used_percentage": 23.0,
-                        "resets_at": time.time() + 86400,
+                        "resets_at": _FUTURE_RESETS_AT,
                     },
                 },
             }

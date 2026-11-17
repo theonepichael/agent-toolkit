@@ -20,6 +20,9 @@ import check_toolkit_paths as c  # noqa: E402
 
 @pytest.mark.allow_real_subprocess  # git ls-files on this checkout
 def test_real_repository_passes_both_checks():
+    # Performance regression guard: the two scans over the real repo complete
+    # in well under a second, so the generous 5s bound catches a slow-but-
+    # terminating scan without flaking under load.
     start = time.monotonic()
     _refs, problems = c.ownership(c.REPO)
     assert problems == []

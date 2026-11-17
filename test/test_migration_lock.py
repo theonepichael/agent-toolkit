@@ -291,22 +291,35 @@ def test_exclusive_while_another_thread_holds_shared_is_refused_immediately():
 
 
 @pytest.mark.allow_real_subprocess  # another process holds shared, so exclusive waits
-def test_shared_while_exclusive_is_waiting_is_refused_immediately(tmp_path):
+def test_shared_while_exclusive_is_waiting_is_refused_immediately(tmp_path, monkeypatch):
     holder = spawn_holder(tmp_path, "shared")
     waiting = threading.Event()
     done = threading.Event()
+    acquiring = threading.Event()
 
     def acquire_exclusive() -> None:
         waiting.set()
         with migration_lock.exclusive("migrator"):
             done.set()
 
+    # ``exclusive()`` sets ``_state.mode = "acquiring-exclusive"`` before opening
+    # the lock file and blocking on flock, so signal there and wait on the
+    # transition deterministically instead of polling with a sleep. The mode
+    # assertion below is load-bearing: ``shared()`` also refuses plain
+    # ``exclusive`` mode, so only the acquiring-exclusive transition proves the
+    # waiting path.
+    real_open = migration_lock._open_lock_file
+
+    def signal_open() -> int:
+        acquiring.set()
+        return real_open()
+
+    monkeypatch.setattr(migration_lock, "_open_lock_file", signal_open)
+
     t = threading.Thread(target=acquire_exclusive, daemon=True)
     t.start()
     waiting.wait(5)
-    deadline = time.monotonic() + 5
-    while migration_lock._state.mode != "acquiring-exclusive" and time.monotonic() < deadline:
-        time.sleep(0.01)
+    assert acquiring.wait(5), "exclusive acquisition never reached the lock file"
     assert migration_lock._state.mode == "acquiring-exclusive"
     try:
         with pytest.raises(migration_lock.LockModeError):

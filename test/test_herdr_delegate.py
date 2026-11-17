@@ -102,11 +102,15 @@ def write_state(
     path = state_dir / name
     path.write_text(body)
     if mtime_offset_s:
-        import time
-
-        stamp = time.time() + mtime_offset_s
+        # Fixed epoch anchor instead of `time.time()`: discovery sorts state
+        # files by st_mtime (newest first), so only the *relative* offset
+        # matters (-100s older than -5s older than a freshly-written file).
+        stamp = _FIXED_MTIME_EPOCH + mtime_offset_s
         os.utime(path, (stamp, stamp))
     return path
+
+
+_FIXED_MTIME_EPOCH = 1_000_000_000.0  # 2001-09-09; a stable past anchor
 
 
 def make_fake_herdr(

@@ -53,10 +53,6 @@
     {
       "fingerprint": "copilot/extensions/swarm/lib/swarm-herdr.js",
       "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "setTimeout",
-      "reason": "Frozen pre-existing setTimeout wait; to be fixed or justified in the allowlist workdown."
     }
   ],
   "pi/test/cwd.test.ts": [
@@ -139,28 +135,8 @@
       "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
     },
     {
-      "fingerprint": "anthropic/claude-sonnet-4-5 \u2014 context free",
+      "fingerprint": "anthropic/claude-sonnet-4-5 — context free",
       "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "setTimeout",
-      "reason": "Frozen pre-existing setTimeout wait; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "setTimeout",
-      "reason": "Frozen pre-existing setTimeout wait; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "setTimeout",
-      "reason": "Frozen pre-existing setTimeout wait; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "setTimeout",
-      "reason": "Frozen pre-existing setTimeout wait; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "setTimeout",
-      "reason": "Frozen pre-existing setTimeout wait; to be fixed or justified in the allowlist workdown."
     }
   ],
   "pi/test/pending-plan-surface.test.ts": [
@@ -309,40 +285,16 @@
       "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
     },
     {
-      "fingerprint": "setTimeout",
-      "reason": "Frozen pre-existing setTimeout wait; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "setTimeout",
-      "reason": "Frozen pre-existing setTimeout wait; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "setTimeout",
-      "reason": "Frozen pre-existing setTimeout wait; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "setTimeout",
-      "reason": "Frozen pre-existing setTimeout wait; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "setTimeout",
-      "reason": "Frozen pre-existing setTimeout wait; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "setTimeout",
-      "reason": "Frozen pre-existing setTimeout wait; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "setTimeout",
-      "reason": "Frozen pre-existing setTimeout wait; to be fixed or justified in the allowlist workdown."
-    },
-    {
       "fingerprint": "unknown_crash\", evidence: \"pane_sentinel",
       "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
     },
     {
       "fingerprint": "unknown_crash\", evidence: \"provider_wording",
       "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "setTimeout",
+      "reason": "Deliberate interleaving: the third (correction-watch) settle is delayed so the poll's re-arm chain observes the hold-then-turn-finish transition in a fixed order; no injected clock orders two concurrent async settles without a real yield, and the ordering (not the 40ms) is the subject."
     }
   ],
   "pi/test/vitals-promotion-tool.test.ts": [
@@ -361,7 +313,7 @@
   ],
   "test/test_analyze_sessions.py": [
     {
-      "fingerprint": "(turn-level digest \u2014 no intra-turn context)",
+      "fingerprint": "(turn-level digest — no intra-turn context)",
       "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
     }
   ],
@@ -382,25 +334,25 @@
     },
     {
       "fingerprint": "time.monotonic",
-      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+      "reason": "Performance regression guard - a generous wall-clock upper bound because speed is the behavior under test; the budget is named in the test's own comment."
     },
     {
       "fingerprint": "time.monotonic",
-      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+      "reason": "Performance regression guard - a generous wall-clock upper bound because speed is the behavior under test; the budget is named in the test's own comment."
     }
   ],
   "test/test_claim_liveness_live.py": [
     {
       "fingerprint": "time.monotonic",
-      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+      "reason": "Waits for a real harness subprocess to claim an item; its liveness is the subject."
     },
     {
       "fingerprint": "time.monotonic",
-      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+      "reason": "Waits for a real harness subprocess to claim an item; its liveness is the subject."
     },
     {
       "fingerprint": "time.sleep",
-      "reason": "Frozen pre-existing real sleep; to be fixed or justified in the allowlist workdown."
+      "reason": "Waits for a real harness subprocess to claim an item; its liveness is the subject."
     }
   ],
   "test/test_dev_status.py": [
@@ -585,7 +537,7 @@
       "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
     },
     {
-      "fingerprint": "[update] numeric id '1' requires --if-rev <N> to guard against a stale position \u2014 refusing (no write).",
+      "fingerprint": "[update] numeric id '1' requires --if-rev <N> to guard against a stale position — refusing (no write).",
       "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
     },
     {
@@ -608,31 +560,23 @@
   "test/test_fault_checkpoint.py": [
     {
       "fingerprint": "time.monotonic",
-      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+      "reason": "Polls /proc for a real OS process to exit; interval and deadline are real because the process exit is real."
     },
     {
       "fingerprint": "time.monotonic",
-      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "time.monotonic",
-      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "time.monotonic",
-      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "time.monotonic",
-      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "time.monotonic",
-      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+      "reason": "Polls /proc for a real OS process to exit; interval and deadline are real because the process exit is real."
     },
     {
       "fingerprint": "time.sleep",
-      "reason": "Frozen pre-existing real sleep; to be fixed or justified in the allowlist workdown."
+      "reason": "Polls /proc for a real OS process to exit; interval and deadline are real because the process exit is real."
+    },
+    {
+      "fingerprint": "time.monotonic",
+      "reason": "Asserts a real subprocess is killed promptly at the timeout, not left running its full sleep (OS process liveness)."
+    },
+    {
+      "fingerprint": "time.monotonic",
+      "reason": "Asserts a real subprocess is killed promptly at the timeout, not left running its full sleep (OS process liveness)."
     }
   ],
   "test/test_gen_hooks.py": [
@@ -731,7 +675,7 @@
       "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
     },
     {
-      "fingerprint": "Display stdout verbatim \u2014 do not narrate, do not reformat",
+      "fingerprint": "Display stdout verbatim — do not narrate, do not reformat",
       "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
     },
     {
@@ -875,16 +819,6 @@
       "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
     }
   ],
-  "test/test_grill.py": [
-    {
-      "fingerprint": "time.sleep",
-      "reason": "Frozen pre-existing real sleep; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "time.sleep",
-      "reason": "Frozen pre-existing real sleep; to be fixed or justified in the allowlist workdown."
-    }
-  ],
   "test/test_herdr_delegate.py": [
     {
       "fingerprint": "/backlog-item --serial --prefix atk --items atk-a",
@@ -925,10 +859,6 @@
     {
       "fingerprint": "Do you trust the contents of this project?",
       "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "time.time",
-      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
     }
   ],
   "test/test_herdr_remote_deploy.py": [
@@ -969,7 +899,7 @@
       "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
     },
     {
-      "fingerprint": "VS Code settings \u2014 WSL detected but no Windows-side 'code' CLI found on PATH",
+      "fingerprint": "VS Code settings — WSL detected but no Windows-side 'code' CLI found on PATH",
       "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
     },
     {
@@ -985,11 +915,11 @@
       "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
     },
     {
-      "fingerprint": "not found \u2014 already restored, or removed outside install.sh",
+      "fingerprint": "not found — already restored, or removed outside install.sh",
       "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
     },
     {
-      "fingerprint": "not found \u2014 already wiped, or removed outside install.sh",
+      "fingerprint": "not found — already wiped, or removed outside install.sh",
       "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
     },
     {
@@ -997,31 +927,31 @@
       "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
     },
     {
-      "fingerprint": "\u2717 'pi' CLI binary is not installed on PATH",
+      "fingerprint": "✗ 'pi' CLI binary is not installed on PATH",
       "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
     }
   ],
   "test/test_link_drift_check.py": [
     {
-      "fingerprint": "links: broken-source (1); wrong-target (1) \u2014 run",
+      "fingerprint": "links: broken-source (1); wrong-target (1) — run",
       "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
     }
   ],
   "test/test_link_inspect.py": [
     {
-      "fingerprint": "/a \u2014 ~/managed is declared exclusive to this repo, but no links.toml entry produces it",
+      "fingerprint": "/a — ~/managed is declared exclusive to this repo, but no links.toml entry produces it",
       "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
     },
     {
-      "fingerprint": "/b \u2014 ~/managed is declared exclusive to this repo, but no links.toml entry produces it",
+      "fingerprint": "/b — ~/managed is declared exclusive to this repo, but no links.toml entry produces it",
       "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
     },
     {
-      "fingerprint": "</h/.claude/g.md> \u2014 points at /x, but links.toml says claude/g.md",
+      "fingerprint": "</h/.claude/g.md> — points at /x, but links.toml says claude/g.md",
       "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
     },
     {
-      "fingerprint": "</h/.claude/scripts> \u2014 declared exclusive, but unreadable (denied), so it could not be audited",
+      "fingerprint": "</h/.claude/scripts> — declared exclusive, but unreadable (denied), so it could not be audited",
       "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
     }
   ],
@@ -1039,138 +969,110 @@
       "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
     },
     {
-      "fingerprint": "stalled after 0.2s with no output \u2014 killed (attempt 1 stalled; attempt 2 stalled)",
+      "fingerprint": "stalled after 0.2s with no output — killed (attempt 1 stalled; attempt 2 stalled)",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "timed out after 2s — killed (attempt 1 stalled; attempt 2 timed out)",
       "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
     },
     {
       "fingerprint": "time.monotonic",
-      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+      "reason": "Asserts a real subprocess is killed promptly at the timeout, not left running its full sleep (OS process liveness)."
     },
     {
       "fingerprint": "time.monotonic",
-      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+      "reason": "Asserts a real subprocess is killed promptly at the timeout, not left running its full sleep (OS process liveness)."
     },
     {
       "fingerprint": "time.monotonic",
-      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+      "reason": "Asserts a real subprocess is killed promptly at the timeout, not left running its full sleep (OS process liveness)."
     },
     {
       "fingerprint": "time.monotonic",
-      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+      "reason": "Asserts a real subprocess is killed promptly at the timeout, not left running its full sleep (OS process liveness)."
     },
     {
       "fingerprint": "time.monotonic",
-      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+      "reason": "Asserts a real subprocess is killed promptly at the timeout, not left running its full sleep (OS process liveness)."
     },
     {
       "fingerprint": "time.monotonic",
-      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+      "reason": "Asserts a real subprocess is killed promptly at the timeout, not left running its full sleep (OS process liveness)."
     },
     {
       "fingerprint": "time.monotonic",
-      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+      "reason": "Performance regression guard - a generous wall-clock upper bound because speed is the behavior under test; the budget is named in the test's own comment."
     },
     {
       "fingerprint": "time.monotonic",
-      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "time.time",
-      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "time.time",
-      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "time.time",
-      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "time.time",
-      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "timed out after 2s \u2014 killed (attempt 1 stalled; attempt 2 timed out)",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Performance regression guard - a generous wall-clock upper bound because speed is the behavior under test; the budget is named in the test's own comment."
     }
   ],
   "test/test_machine_id.py": [
     {
       "fingerprint": "time.sleep",
-      "reason": "Frozen pre-existing real sleep; to be fixed or justified in the allowlist workdown."
+      "reason": "Polls for a detached child process to exit; OS process liveness is the subject."
     }
   ],
   "test/test_migration_lock.py": [
     {
       "fingerprint": "time.monotonic",
-      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+      "reason": "Real flock contention between processes; the poll waits for a child process to take/release the kernel lock (not fakeable)."
     },
     {
       "fingerprint": "time.monotonic",
-      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+      "reason": "Real flock contention between processes; the poll waits for a child process to take/release the kernel lock (not fakeable)."
     },
     {
       "fingerprint": "time.monotonic",
-      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+      "reason": "Real flock contention between processes; the poll waits for a child process to take/release the kernel lock (not fakeable)."
     },
     {
       "fingerprint": "time.monotonic",
-      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+      "reason": "Real flock contention between processes; the poll waits for a child process to take/release the kernel lock (not fakeable)."
     },
     {
       "fingerprint": "time.monotonic",
-      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+      "reason": "Performance regression guard - a generous wall-clock upper bound because speed is the behavior under test; the budget is named in the test's own comment."
     },
     {
       "fingerprint": "time.monotonic",
-      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "time.monotonic",
-      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "time.monotonic",
-      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+      "reason": "Performance regression guard - a generous wall-clock upper bound because speed is the behavior under test; the budget is named in the test's own comment."
     },
     {
       "fingerprint": "time.sleep",
-      "reason": "Frozen pre-existing real sleep; to be fixed or justified in the allowlist workdown."
+      "reason": "Real flock contention between processes; the poll waits for a child process to take/release the kernel lock (not fakeable)."
     },
     {
       "fingerprint": "time.sleep",
-      "reason": "Frozen pre-existing real sleep; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "time.sleep",
-      "reason": "Frozen pre-existing real sleep; to be fixed or justified in the allowlist workdown."
+      "reason": "Real flock contention between processes; the poll waits for a child process to take/release the kernel lock (not fakeable)."
     }
   ],
   "test/test_migration_lock_adoption.py": [
     {
       "fingerprint": "time.monotonic",
-      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+      "reason": "Real flock contention between processes; the poll waits for a child process to take/release the kernel lock (not fakeable)."
     },
     {
       "fingerprint": "time.monotonic",
-      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+      "reason": "Real flock contention between processes; the poll waits for a child process to take/release the kernel lock (not fakeable)."
     },
     {
       "fingerprint": "time.monotonic",
-      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+      "reason": "Real flock contention between processes; the poll waits for a child process to take/release the kernel lock (not fakeable)."
     },
     {
       "fingerprint": "time.monotonic",
-      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+      "reason": "Real flock contention between processes; the poll waits for a child process to take/release the kernel lock (not fakeable)."
     },
     {
       "fingerprint": "time.sleep",
-      "reason": "Frozen pre-existing real sleep; to be fixed or justified in the allowlist workdown."
+      "reason": "Real flock contention between processes; the poll waits for a child process to take/release the kernel lock (not fakeable)."
     },
     {
       "fingerprint": "time.sleep",
-      "reason": "Frozen pre-existing real sleep; to be fixed or justified in the allowlist workdown."
+      "reason": "Real flock contention between processes; the poll waits for a child process to take/release the kernel lock (not fakeable)."
     }
   ],
   "test/test_notify.py": [
@@ -1243,14 +1145,6 @@
     {
       "fingerprint": "no backend is eligible for grounded review",
       "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "time.time",
-      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "time.time",
-      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
     }
   ],
   "test/test_second_opinion_concurrency.py": [
@@ -1264,30 +1158,30 @@
     },
     {
       "fingerprint": "time.monotonic",
-      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+      "reason": "Waits for a real backend child to reach the backend; its liveness is the subject."
     },
     {
       "fingerprint": "time.monotonic",
-      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+      "reason": "Waits for a real backend child to reach the backend; its liveness is the subject."
     },
     {
       "fingerprint": "time.sleep",
-      "reason": "Frozen pre-existing real sleep; to be fixed or justified in the allowlist workdown."
+      "reason": "Waits for a real backend child to reach the backend; its liveness is the subject."
     }
   ],
   "test/test_seed_hook_subset_guard.py": [
     {
       "fingerprint": "time.monotonic",
-      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+      "reason": "Performance regression guard - a generous wall-clock upper bound because speed is the behavior under test; the budget is named in the test's own comment."
     },
     {
       "fingerprint": "time.monotonic",
-      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+      "reason": "Performance regression guard - a generous wall-clock upper bound because speed is the behavior under test; the budget is named in the test's own comment."
     }
   ],
   "test/test_sessionstart_checks.py": [
     {
-      "fingerprint": "[sessionstart] ~/.claude/scripts/retired_activity_zz.py is a broken link \u2014 its owning repo may have retired it; drop its CHECKS line in sessionstart_checks.py",
+      "fingerprint": "[sessionstart] ~/.claude/scripts/retired_activity_zz.py is a broken link — its owning repo may have retired it; drop its CHECKS line in sessionstart_checks.py",
       "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
     },
     {
@@ -1303,14 +1197,8 @@
   ],
   "test/test_standup.py": [
     {
-      "fingerprint": "work_backlog_prefixes not configured in config.json \u2014 backlog source skipped",
+      "fingerprint": "work_backlog_prefixes not configured in config.json — backlog source skipped",
       "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
-    }
-  ],
-  "test/test_statusline.py": [
-    {
-      "fingerprint": "time.time",
-      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
     }
   ],
   "test/test_uninstall_transactions.py": [

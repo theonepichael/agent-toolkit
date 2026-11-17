@@ -3654,7 +3654,7 @@ describe("swarm_poll blocking wait", () => {
       // happens inside the poll call after its own awaits, so wait for the
       // registration rather than assuming a fixed number of microtasks.
       for (let i = 0; i < 200 && !settle.has(agent); i++) {
-        await new Promise((r) => setTimeout(r, 5));
+        await new Promise((r) => setImmediate(r));
       }
       if (!settle.has(agent)) throw new Error(`no wait ever armed for ${agent}`);
       settle.get(agent)!({
@@ -3686,14 +3686,12 @@ describe("swarm_poll blocking wait", () => {
     await Promise.resolve();
     controller.abort();
 
-    const res = await Promise.race([
-      pending,
-      new Promise<"hung">((r) => setTimeout(() => r("hung"), 2000)),
-    ]);
+    // Await the poll directly: if it hung instead of settling, the suite's
+    // 30s --test-timeout is the bounded-failure fallback.
+    const res = await pending;
 
-    expect(res).not.toBe("hung");
-    expect((res as { details: { events: unknown[] } }).details.events).toEqual([]);
-    expect((res as { content: { text: string }[] }).content[0]?.text).toContain("aborted");
+    expect(res.details.events).toEqual([]);
+    expect(res.content[0]?.text).toContain("aborted");
   });
 
   test("a poll already aborted before it waits returns rather than parking", async () => {
@@ -3701,12 +3699,9 @@ describe("swarm_poll blocking wait", () => {
     const controller = new AbortController();
     controller.abort();
 
-    const res = await Promise.race([
-      runPoll(poll, "prerun", controller.signal),
-      new Promise<"hung">((r) => setTimeout(() => r("hung"), 2000)),
-    ]);
+    const res = await runPoll(poll, "prerun", controller.signal);
 
-    expect(res).not.toBe("hung");
+    expect(res.details.events).toEqual([]);
   });
 
   // THE DRAIN RACE. Both polls wake on the first event; whichever loses the
@@ -3720,13 +3715,9 @@ describe("swarm_poll blocking wait", () => {
     await finish("racerun-w1", "idle");
     await finish("racerun-w2", "idle");
 
-    const results = await Promise.race([
-      Promise.all([first, second]),
-      new Promise<"hung">((r) => setTimeout(() => r("hung"), 3000)),
-    ]);
+    const results = await Promise.all([first, second]);
 
-    expect(results).not.toBe("hung");
-    const [a, b] = results as { details: { events: { kind: string }[] } }[];
+    const [a, b] = results;
     // Two events, two polls, one each -- and crucially neither poll reports
     // an empty list while the run still had an event coming.
     expect(a!.details.events.length + b!.details.events.length).toBe(2);
@@ -5339,6 +5330,12 @@ describe("swarm_amend: the hold that keeps a correction from being torn down", (
           const next = opts.waits[waitCall];
           waitCall += 1;
           if (waitCall === 3) {
+            // A deliberate interleaving, not a wait-for-something: the third
+            // (correction-watch) settle is delayed so the poll's re-arm chain
+            // observes the hold-then-turn-finish transition in a fixed order.
+            // No injected clock can order two concurrent async settles without
+            // a real yield, and the ordering (not the 40ms duration) is the
+            // subject under test.
             return new Promise((r) => setTimeout(() => r(next), 40));
           }
           return next;
@@ -5398,7 +5395,7 @@ describe("swarm_amend: the hold that keeps a correction from being torn down", (
     };
 
   /** Lets the background re-arm chains settle between polls, as the other two-phase tests do. */
-  const settle = () => new Promise((r) => setTimeout(r, 20));
+  const settle = () => new Promise((r) => setImmediate(r));
 
   const closes = (stub: { calls: { argv: string[] }[] }) =>
     stub.calls.filter((c) => c.argv[0] === "tab" && c.argv[1] === "close");
@@ -6183,7 +6180,7 @@ describe("phantom events and stale worker closeout cleanup", () => {
     );
 
     // Allow settleWait to reach herdr agent wait
-    await new Promise((r) => setTimeout(r, 20));
+    await new Promise((r) => setImmediate(r));
 
     // 2. Worker becomes stale in herdr, and swarm_spawn runs (which calls pruneStaleWorkers)
     agentListStatus = "idle";

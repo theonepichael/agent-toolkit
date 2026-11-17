@@ -7,8 +7,10 @@ import json
 import shutil
 import sys
 import tempfile
+import threading
 import unittest
 from collections.abc import Callable
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -473,9 +475,43 @@ class GrillTestCase(_GrillDataDirFixture, unittest.TestCase):
 
     # ── concurrency: locking prevents lost updates ──────────────────────────
 
-    def test_20_concurrent_mutators_of_same_session_serialize(self) -> None:
-        import threading
+    def _run_serialized_workers(self, worker_a, worker_b) -> None:
+        """Run two mutator workers under the real flock, proving serialization.
 
+        A ``Barrier(2)`` rendezvous sits *inside* the flock's critical section
+        (the wrapper's ``yield`` only runs after the real flock is acquired), so
+        it completes only when two threads are inside at once — which a working
+        flock makes impossible. With the flock removed, both enter together and
+        the barrier trips, failing the assertion.
+        """
+        real_flock = grill._flock
+        barrier = threading.Barrier(2)
+        together: list[bool] = []
+
+        @contextmanager
+        def tracked_flock(name, data_dir=None):
+            with real_flock(name, data_dir):
+                try:
+                    barrier.wait(timeout=2)
+                    together.append(True)
+                except threading.BrokenBarrierError:
+                    pass
+                yield
+
+        with patch.object(grill, "_flock", tracked_flock):
+            t1 = threading.Thread(target=worker_a)
+            t2 = threading.Thread(target=worker_b)
+            t1.start()
+            t2.start()
+            t1.join(timeout=10)
+            t2.join(timeout=10)
+            self.assertFalse(t1.is_alive(), "worker A hung")
+            self.assertFalse(t2.is_alive(), "worker B hung")
+        self.assertEqual(
+            together, [], "flock failed to serialize concurrent mutators"
+        )
+
+    def test_20_concurrent_mutators_of_same_session_serialize(self) -> None:
         slug = self.new_session()
         with patch("sys.stderr", io.StringIO()):
             grill.cmd_ask(
@@ -503,20 +539,7 @@ class GrillTestCase(_GrillDataDirFixture, unittest.TestCase):
                     )
                 )
 
-        with grill.session_lock(slug):
-            t1 = threading.Thread(target=decide_a)
-            t2 = threading.Thread(target=decide_b)
-            t1.start()
-            t2.start()
-            import time
-
-            time.sleep(0.1)
-            self.assertTrue(t1.is_alive())
-            self.assertTrue(t2.is_alive())
-        t1.join(timeout=5)
-        t2.join(timeout=5)
-        self.assertFalse(t1.is_alive())
-        self.assertFalse(t2.is_alive())
+        self._run_serialized_workers(decide_a, decide_b)
 
         decisions = {
             d["id"]: d["decision"] for d in grill.load_session(slug)["decisions"]
@@ -525,8 +548,6 @@ class GrillTestCase(_GrillDataDirFixture, unittest.TestCase):
         self.assertEqual(decisions["item-b"], "answer B")
 
     def test_20b_concurrent_new_with_same_topic_gets_distinct_slugs(self) -> None:
-        import threading
-
         results: dict[str, str] = {}
 
         def create(name: str) -> None:
@@ -535,18 +556,9 @@ class GrillTestCase(_GrillDataDirFixture, unittest.TestCase):
                 grill.cmd_new(ns(json=json.dumps({"topic": "Same topic"})))
             results[name] = out.getvalue().strip()
 
-        with grill._new_session_lock():
-            t1 = threading.Thread(target=create, args=("one",))
-            t2 = threading.Thread(target=create, args=("two",))
-            t1.start()
-            t2.start()
-            import time
-
-            time.sleep(0.1)
-            self.assertTrue(t1.is_alive())
-            self.assertTrue(t2.is_alive())
-        t1.join(timeout=5)
-        t2.join(timeout=5)
+        self._run_serialized_workers(
+            lambda: create("one"), lambda: create("two")
+        )
 
         self.assertNotEqual(results["one"], results["two"])
         self.assertEqual(len(grill.all_session_slugs()), 2)

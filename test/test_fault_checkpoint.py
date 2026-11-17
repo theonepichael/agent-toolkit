@@ -221,9 +221,16 @@ def test_wait_gone_trusts_the_first_gone_sample(monkeypatch):
 
 def test_wait_gone_gives_up_at_the_deadline(monkeypatch):
     monkeypatch.setattr(sys.modules[__name__], "_process_gone", lambda pid: False)
-    started = time.monotonic()
+    # A fake clock: ``sleep`` advances it, so the poll loop reaches the
+    # deadline deterministically instead of really waiting 0.2s (and a
+    # no-op sleep would freeze the clock and spin the loop forever).
+    clock = {"now": 0.0}
+    monkeypatch.setattr(time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(time, "sleep", lambda seconds: clock.__setitem__("now", clock["now"] + seconds))
     assert not _wait_gone(42, timeout=0.2, interval=0.01)
-    assert time.monotonic() - started >= 0.2
+    # The fake clock reached the deadline before giving up -- it polled, not
+    # returned early.
+    assert clock["now"] >= 0.2
 
 
 # ── fault_checkpoint.checkpoint ───────────────────────────────────────────────

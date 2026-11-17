@@ -478,6 +478,21 @@ function makeHarness() {
   return { commands, shortcuts, notifications, catalogue, applied, pi, makeCtx };
 }
 
+/**
+ * Yields to the event loop (macrotask) until a new notification is pushed, so
+ * a fire-and-forget save is awaited by its observable signal instead of a
+ * fixed-duration sleep. Bounded, so a broken save path fails fast rather than
+ * hanging; the subsequent assertions catch the absence of a notification.
+ */
+async function awaitSaveNotification(
+  notifications: { message: string; kind: string }[],
+): Promise<void> {
+  const before = notifications.length;
+  for (let i = 0; i < 1000 && notifications.length === before; i++) {
+    await new Promise((r) => setImmediate(r));
+  }
+}
+
 describe("command wiring", () => {
   test("/models and ctrl+shift+m are both registered", () => {
     const { commands, shortcuts, pi } = makeHarness();
@@ -710,21 +725,13 @@ describe("command wiring", () => {
       // form a plain session sends).
       getComponent()!.handleInput("\x13");
 
-      // The save is fire-and-forget (`void …then`): poll until the settings
-      // file lands rather than racing a fixed timeout.
-      const settingsPath = join(agentDir, "settings.json");
-      let settings: Record<string, unknown> | undefined;
-      for (let i = 0; i < 100 && !settings; i++) {
-        await new Promise((r) => setTimeout(r, 10));
-        try {
-          settings = JSON.parse(readFileSync(settingsPath, "utf-8"));
-        } catch {
-          /* not flushed yet */
-        }
-      }
-      expect(settings).toBeDefined();
-      expect(settings!.defaultProvider).toBe("anthropic");
-      expect(settings!.defaultModel).toBe("claude-opus");
+      // The save is fire-and-forget (`void …then`): await its observable
+      // signal (the notification) instead of racing a fixed timeout, then read
+      // the already-flushed file synchronously.
+      await awaitSaveNotification(notifications);
+      const settings = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8"));
+      expect(settings.defaultProvider).toBe("anthropic");
+      expect(settings.defaultModel).toBe("claude-opus");
       // First catalogue entry is highlighted by default.
       expect(
         notifications.some((n) => n.message === "Default model saved: anthropic/claude-opus"),
@@ -754,18 +761,10 @@ describe("command wiring", () => {
       await Promise.resolve();
       getComponent()!.handleInput("\x01");
 
-      let settings: Record<string, unknown> | undefined;
-      for (let i = 0; i < 100 && !settings; i++) {
-        await new Promise((r) => setTimeout(r, 10));
-        try {
-          settings = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8"));
-        } catch {
-          /* not flushed yet */
-        }
-      }
-      expect(settings).toBeDefined();
+      await awaitSaveNotification(notifications);
+      const settings = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8"));
       // Full coverage of the shown refs collapses the restriction to null.
-      expect(settings!.enabledModels).toBeUndefined();
+      expect(settings.enabledModels).toBeUndefined();
       expect(notifications.some((n) => n.message === "Enabled models saved (2 shown)")).toBe(true);
       void pending;
     } finally {
@@ -783,18 +782,19 @@ describe("in-overlay save feedback", () => {
   async function waitForSave(notifications: { message: string; kind: string }[]): Promise<void> {
     const before = notifications.length;
     for (let i = 0; i < 100 && notifications.length === before; i++) {
-      await new Promise((r) => setTimeout(r, 10));
+      await new Promise((r) => setImmediate(r));
     }
   }
 
   // The picker keeps the overlay open on save (done is never called), so
   // customPromise must still be pending after the save resolves.
   async function expectStillOpen(customPromise: Promise<unknown>): Promise<void> {
-    const stillOpen = await Promise.race([
-      customPromise.then(() => false),
-      new Promise<boolean>((r) => setTimeout(() => r(true), 20)),
-    ]);
-    expect(stillOpen).toBe(true);
+    let dismissed = false;
+    void customPromise.then(() => {
+      dismissed = true;
+    });
+    await new Promise((r) => setImmediate(r));
+    expect(dismissed).toBe(false);
   }
 
   test("Ctrl+S shows the confirmation in the overlay footer while still open", async () => {
@@ -937,10 +937,7 @@ describe("in-overlay save feedback: stable overlay height", () => {
 
       const baseline = getComponent()!.render(80);
       getComponent()!.handleInput("\x13");
-      const before = notifications.length;
-      for (let i = 0; i < 100 && notifications.length === before; i++) {
-        await new Promise((r) => setTimeout(r, 10));
-      }
+      await awaitSaveNotification(notifications);
 
       const withStatus = getComponent()!.render(80);
       expect(withStatus.some((l) => l.includes("✓"))).toBe(true);

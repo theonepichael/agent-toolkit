@@ -18,7 +18,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import time
 import unittest
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager, redirect_stderr
@@ -3208,10 +3207,12 @@ class RoundCapEnforcementTests(unittest.TestCase):
         key = "plan:" + str(plan.resolve())
         second_opinion._ensure_runs_dir()
         path = second_opinion._run_state_path(key)
+        now = 1_700_000_000.0
         path.write_text(
-            json.dumps({"key": key, "count": 3, "updated": time.time() - 7 * 3600})
+            json.dumps({"key": key, "count": 3, "updated": now - 7 * 3600})
         )
-        code, out = self._run(plan)
+        with patch.object(second_opinion.time, "time", return_value=now):
+            code, out = self._run(plan)
         self.assertEqual(code, 0)
         self.assertIn("critique", out)
         # The stale counter was reset to 0, then this review incremented it to 1.
@@ -3225,10 +3226,12 @@ class RoundCapEnforcementTests(unittest.TestCase):
         key = "plan:" + str(plan.resolve())
         second_opinion._ensure_runs_dir()
         path = second_opinion._run_state_path(key)
+        now = 1_700_000_000.0
         path.write_text(
-            json.dumps({"key": key, "count": 3, "updated": time.time() - 60})
+            json.dumps({"key": key, "count": 3, "updated": now - 60})
         )
-        code, msg = self._run(plan, expect_die=True)
+        with patch.object(second_opinion.time, "time", return_value=now):
+            code, msg = self._run(plan, expect_die=True)
         self.assertEqual(code, 1)
         self.assertIn("round cap (3)", msg)
 
