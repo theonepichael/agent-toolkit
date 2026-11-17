@@ -403,6 +403,14 @@ def test_every_file_touching_the_transition_carries_the_removal_tag():
             continue
         if rel in {"INTERFACES.md", "CHANGELOG.md"} or rel.startswith("docs/"):
             continue
+        # The test-smell ratchet allowlist keys test-file paths verbatim, so
+        # it mentions "rename_transition" only as the name of
+        # test/test_rename_transition.py, not as a functional reference to
+        # the transition. The ratchet itself backstops this file's rename:
+        # once dev_status is renamed, the frozen "dev_status" fingerprints
+        # go stale and fail the suite, forcing an update.
+        if rel == "test/test_smell_allowlist.json":
+            continue
         try:
             text = path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):

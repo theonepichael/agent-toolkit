@@ -1,0 +1,1328 @@
+{
+  "opencode/test/guard-rails.test.ts": [
+    {
+      "fingerprint": "--path\") + 1], \"/tmp/opencode/reports/x.py",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "opencode/test/trust-state.test.ts": [
+    {
+      "fingerprint": ".local/state/agent-toolkit/trust-sessions",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "pi/test/compaction-backlog-sync.test.ts": [
+    {
+      "fingerprint": "From compaction (threshold, 2026-08-31T12:00:00.000Z):\\ndid the thing",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "From compaction (threshold, 2026-08-31T12:00:00.000Z):\\ndid the thing",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "foo\", status: \"in-progress\", summary: \"Do the thing",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "foo\", status: \"in-progress\", summary: \"ok",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "pick up from step 3\\n\\n---\\nFrom compaction (threshold, 2026-08-31T12:00:00.000Z):\\ndid the thing",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "pi/test/copilot-swarm.test.ts": [
+    {
+      "fingerprint": "--resume=123e4567-e89b-12d3-a456-426614174000",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "COPILOT_SWARM_CAPTURE_FILE=/tmp/capture.json",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "Continue working on this backlog item where you left off.",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "agent\", \"start\", \"worker-1\", \"--kind\", \"copilot",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "copilot/extensions/swarm/lib/swarm-herdr.js",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "setTimeout",
+      "reason": "Frozen pre-existing setTimeout wait; to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "pi/test/cwd.test.ts": [
+    {
+      "fingerprint": "Current working directory: ${subDir}\\nDo work.",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "cd ${bashSingleQuote(subDir)} && npm test",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "pi/test/delegate-tool.test.ts": [
+    {
+      "fingerprint": "--output-format\", \"json\", \"--model\", \"gemini-3",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "run\", \"--format\", \"json\", \"-m\", \"opencode-go/glm-5.2",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "pi/test/dev-status-tool.test.ts": [
+    {
+      "fingerprint": "acceptance-set\", \"abc\", JSON.stringify(acceptance),",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "contract-touch\", \"abc\", \"--repo\", \"/repo",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "out-of-scope\", \"add\", \"s\", \"--reason-file",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "run\", \"abc\", \"--cwd\", \"/path/to/repo\", \"--",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "run\", \"abc\", \"--timeout\", \"60\", \"--\", \"pytest",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "sendback\", \"abc\", \"--feedback\", \"/f/x.md",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "start\", \"abc\", \"--force\", \"--allow-main\",",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "verifier-check\", \"abc\", \"--verifier-token-file",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "worktree\", \"abc\", \"--branch\", \"feat\", \"--skip-bootstrap",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "pi/test/grill-tool.test.ts": [
+    {
+      "fingerprint": "mark-pending-execution\", \"--backlog-slug",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "revise\", \"token-storage\", '{\"decision\":\"httpOnly cookie",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "pi/test/guard-rails.test.ts": [
+    {
+      "fingerprint": "Path \"/repo/.env\" is protected by guard-rails",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "pi/test/model-picker.test.ts": [
+    {
+      "fingerprint": "anthropic/claude-sonnet-4-5 200K context $3.00 / $15.00",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "anthropic/claude-sonnet-4-5 \u2014 context free",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "setTimeout",
+      "reason": "Frozen pre-existing setTimeout wait; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "setTimeout",
+      "reason": "Frozen pre-existing setTimeout wait; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "setTimeout",
+      "reason": "Frozen pre-existing setTimeout wait; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "setTimeout",
+      "reason": "Frozen pre-existing setTimeout wait; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "setTimeout",
+      "reason": "Frozen pre-existing setTimeout wait; to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "pi/test/pending-plan-surface.test.ts": [
+    {
+      "fingerprint": "/home/yanil/.claude/data/grill/2026-08-31-multi-harness-session-analysis-s-plan.md",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "/home/yanil/.claude/data/grill/2026-08-31-some-topic-plan.md",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "2026-08-31-multi-harness-session-analysis-s",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "2026-08-31-multi-harness-session-analysis-s",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "2026-08-31-multi-harness-session-analysis-s",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "pi/test/permission-gate.test.ts": [
+    {
+      "fingerprint": "python3 ~/.agent-toolkit/scripts/dev_status.py prune*",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "pi/test/question-tool.test.ts": [
+    {
+      "fingerprint": "[Merge] Merge to main?\\n User selected: \"Yes\"",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "header must be at most ${MAX_HEADER_LENGTH} characters",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "options must have between ${MIN_OPTIONS} and ${MAX_OPTIONS}",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "pi/test/second-opinion-tool.test.ts": [
+    {
+      "fingerprint": "SECOND_OPINION_AGY_MODEL=Gemini 3.7 Pro (High)",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "SECOND_OPINION_AGY_MODEL=Gemini 3.7 Pro (High)",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "SECOND_OPINION_AGY_MODEL=m1\", \"SECOND_OPINION_AGY_TIMEOUT_SECONDS=45",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "SECOND_OPINION_CODEX_TIMEOUT_SECONDS=120",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "SECOND_OPINION_OPENCODE_MODEL=opencode-go/glm-5.2",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "probe: 0 ok, 0 unavailable, 1 not installed",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "probe: 1 ok, 1 unavailable, 1 not installed",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "review\", \"--diff\", \"--diff-path\", \".\", \"--diff-path",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "review\", \"--diff\", \"--dir\", \"/workspace/project",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "review\", \"--diff\", \"--exclude-backend\",",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "review\", \"/tmp/p.md\", \"--model-index\", \"0",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "review\", \"/tmp/p.md\", \"--run-id\", \"loop-1",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "pi/test/swarm-tool.test.ts": [
+    {
+      "fingerprint": "--\", \"--model\", \"opencode-go/glm-5.3-flash",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "Merge to main and push and remove the worktree and delete the local branch afterwards",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "No active workers to poll (all tracked workers vanished or were cleared before settling):",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "OK\", \"Cancel\", \"Something else (type it)",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "PI_SWARM_CAPTURE_FILE=/state/swarm-r1-capture-my-slug.json",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "[outcome=fatal_error/fatal_sidecar backlog=failed]",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "[outcome=fatal_error/fatal_sidecar backlog=in-review]",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "agent_not_found: agent target w1 not found",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "backlog\", id: \"meta-thing\", summary: \"a thing worth doing",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "backlog\", id: \"meta-thing\", summary: \"a thing worth doing",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "candidate meta-a (selected earlier this wave)",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "meta-a\", reason: \"related_files resolve to multiple repositories",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "run1-w1\", \"w1:pB\", undefined, { kind: \"pi",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "setTimeout",
+      "reason": "Frozen pre-existing setTimeout wait; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "setTimeout",
+      "reason": "Frozen pre-existing setTimeout wait; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "setTimeout",
+      "reason": "Frozen pre-existing setTimeout wait; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "setTimeout",
+      "reason": "Frozen pre-existing setTimeout wait; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "setTimeout",
+      "reason": "Frozen pre-existing setTimeout wait; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "setTimeout",
+      "reason": "Frozen pre-existing setTimeout wait; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "setTimeout",
+      "reason": "Frozen pre-existing setTimeout wait; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "unknown_crash\", evidence: \"pane_sentinel",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "unknown_crash\", evidence: \"provider_wording",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "pi/test/vitals-promotion-tool.test.ts": [
+    {
+      "fingerprint": "--search\", \"vitals\", \"--backlog-slug\", \"proj-x",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "--search\", \"vitals\", \"--data-dir\", \"/tmp/grill",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "--search\", \"vitals\", \"--include-superseded",
+      "reason": "Frozen pre-existing 40+ character literal assertion (TypeScript); to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "test/test_analyze_sessions.py": [
+    {
+      "fingerprint": "(turn-level digest \u2014 no intra-turn context)",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "test/test_architecture_overview_doc.py": [
+    {
+      "fingerprint": "./install.sh --profile=work --harness=claude",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "agent-toolkit ./install.sh --harness=claude",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "test/test_check_toolkit_paths.py": [
+    {
+      "fingerprint": "skills/x/SKILL.md:1: .claude/scripts/grill.py",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "time.monotonic",
+      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "time.monotonic",
+      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "test/test_claim_liveness_live.py": [
+    {
+      "fingerprint": "time.monotonic",
+      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "time.monotonic",
+      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "time.sleep",
+      "reason": "Frozen pre-existing real sleep; to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "test/test_dev_status.py": [
+    {
+      "fingerprint": "[approve] slug=item-one status=done rev=",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "[block] slug=blocked-item status=open rev=",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "[gate-pass] slug=gated-item status=open rev=",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "[gate-set] slug=gated-item status=open rev=",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "[pending add] slug=wait-item status=waiting_for_reply rev=",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "[pending update] slug=wait-item status=reply_received rev=",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "[reject] slug=item-one status=in-progress rev=",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "[remove] slug=doomed-slug status=removed rev=",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "[review] slug=item-one status=in-review rev=",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "[start] slug=item-one status=in-progress rev=",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "[start] slug=item-one status=in-progress rev=",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "[start] slug=item-two status=in-progress rev=",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "[start] slug=my-slug status=in-progress rev=42 detail=\"Standard summary\"",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "[start] slug=my-slug status=in-progress rev=42 detail=\"Standard summary\"",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "[start] slug=my-slug status=in-progress rev=42 ref=\"3\" detail=\"Standard summary\"",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "[unblock] slug=blocked-item status=open rev=",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "blocking references unknown slug: ghost-slug",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "blocking references unknown slug: typo-slug",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "check the READY/IN PROGRESS items above for blocker relationships",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "check the READY/IN PROGRESS items above for blocker relationships",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "check the READY/IN PROGRESS items above for blocker relationships",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "detail=\"gate set (2 criteria, required=true)\"",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "test/test_dev_status_formatting.py": [
+    {
+      "fingerprint": "in progress: 1, ready: 2, blocked: 3, in review: 4, done (latest 5 max): 5, pending: 6",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "test/test_dev_status_mutation.py": [
+    {
+      "fingerprint": "[add] slug=my-feature status=open rev= detail=\"Test feature\"",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "[approve] slug=item-one status=done rev= detail=\"Summary of item-one\"",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "[block] slug=item-one status=open rev= detail=\"blocked by two-slug\"",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "[block] would create a cycle: item-one already depends on two-slug",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "[done] item-one has an unmet gate (1 criterion/criteria",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "[done] slug=item-one status=done rev= detail=\"Summary of item-one\"",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "[gate-pass] slug=item-one status=in-progress rev= detail=\"gate passed via manual\"",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "[gate-set] slug=item-one status=in-progress rev= detail=\"gate set (1 criteria, required=true)\"",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "[pending add] slug=wait-reply status=waiting_for_reply rev= detail=\"Waiting on reply\"",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "[pending update] cannot update field(s): created",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "[pending update] slug=wait-reply status=reply_received rev= detail=\"Waiting on reply\"",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "[reject] feedback is required and cannot be empty",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "[reject] slug=item-one status=in-progress rev= detail=\"Summary of item-one\"",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "[remove] slug=item-one status=removed rev= detail=\"Summary of item-one\"",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "[rename] slug=renamed-one status=open rev= ref=\"item-one\" detail=\"renamed from item-one\"",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "[reopen] slug=item-one status=open rev= detail=\"Summary of item-one\"",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "[review] slug=item-one status=in-review rev= detail=\"Summary of item-one\"",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "[start] slug=item-one status=in-progress rev= detail=\"Summary of item-one\"",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "[unblock] item-one is not blocked by two-slug",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "[unblock] slug=item-one status=open rev= detail=\"unblocked from two-slug\"",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "[update] cannot modify immutable field(s): id",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "[update] numeric id '1' requires --if-rev <N> to guard against a stale position \u2014 refusing (no write).",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "[update] slug=item-one status=in-progress rev= detail=\"updated context: Summary of item-one\"",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "[update] stale rev: --if-rev 99 given, current is 0",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "content changed since it was submitted for review",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "criteria' cannot be empty when required=true",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "test/test_fault_checkpoint.py": [
+    {
+      "fingerprint": "time.monotonic",
+      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "time.monotonic",
+      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "time.monotonic",
+      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "time.monotonic",
+      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "time.monotonic",
+      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "time.monotonic",
+      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "time.sleep",
+      "reason": "Frozen pre-existing real sleep; to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "test/test_gen_hooks.py": [
+    {
+      "fingerprint": "-e ~/.agent-toolkit/scripts/sessionstart_checks.py",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "test/test_gen_interfaces.py": [
+    {
+      "fingerprint": "DATA_DIR = agent_toolkit_paths.path_for('work-items')",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "DATA_DIR = agent_toolkit_paths.path_for('work-items')",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "f(a, *rest, model: str | None = None, **kw) -> str",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "f(prompt: str, *, timeout: float) -> str",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "test/test_gen_keybinds.py": [
+    {
+      "fingerprint": "::error title=opencode leader chords could not be checked::",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "::error title=opencode leader chords drifted::",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "agent-scripts/gen_keybinds.py --check --fetch-latest",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "test/test_gen_second_opinion.py": [
+    {
+      "fingerprint": "Action `probe` reports per-model availability",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "pass the `backend` parameter deliberately",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "test/test_gen_shell_completion.py": [
+    {
+      "fingerprint": "# Regenerate with: python3 ~/.agent-toolkit/scripts/gen_shell_completion.py --harness mockcli",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "'(--effort --reasoning-effort)'{--effort,--reasoning-effort}'=[Set effort]:level:(low high)'",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "'--add-dir=[Add directory]:dir:_files -/'",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "--allowedTools, --allowed-tools <tools...>",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "Comma or space-separated list of tool names to allow (e.g. \"Bash(git *) Edit\")",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "Install extension source and add to settings",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "install:Install extension source and add to settings",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "test/test_gen_skills.py": [
+    {
+      "fingerprint": "Bash(python3 ~/.agent-toolkit/scripts/standup.py:*)",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "CLAUDE.md's pending-item status-transition rule",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "Call the `standup` tool with action `fetch`",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "Copilot has no `AskUserQuestion`-style structured prompt",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "Display stdout verbatim \u2014 do not narrate, do not reformat",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "If the item is already in-progress: STOP immediately",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "If the item is already in-progress: STOP immediately",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "If the item is already in-progress: STOP immediately",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "If the item is already in-progress: STOP immediately",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "If the item is already in-progress: STOP immediately",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "Never attempt a manual PID liveness check",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "Never attempt a manual PID liveness check",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "Never attempt a manual PID liveness check",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "Never attempt a manual PID liveness check",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "Never attempt a manual PID liveness check",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "agy has no `AskUserQuestion`-style structured prompt",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "agy has no `SessionStart`-equivalent hook event",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "agy/skills/<skill>/references/<topic>.md",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "ask, in plain text with a recommendation",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "ask, in plain text with a recommendation",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "ask, in plain text with a recommendation",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "do not copy the ASCII dashboard into the assistant response",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "do not copy the ASCII dashboard into the assistant response",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "generated by agent-scripts/gen_skills.py",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "generated by agent-scripts/gen_skills.py",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "keep one rendered copy per changed template",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "python3 ~/.agent-toolkit/scripts/dev_status.py pending update",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "python3 ~/.agent-toolkit/scripts/dev_status.py pending update",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "python3 ~/.agent-toolkit/scripts/dev_status.py pending update",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "python3 ~/.agent-toolkit/scripts/dev_status.py pending update",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "python3 ~/.agent-toolkit/scripts/grill.py",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "python3 ~/.agent-toolkit/scripts/standup.py fetch",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "python3 ~/.agent-toolkit/scripts/standup.py fetch",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "python3 ~/.agent-toolkit/scripts/standup.py fetch",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "python3 ~/.agent-toolkit/scripts/to_tickets_runner.py run",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "restore of the item's original next_steps on return",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "the shared instructions file's Backlog section",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "the shared instructions file's Backlog section",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "the shared instructions file's Backlog section",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "the shared instructions file's Backlog section",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "test/test_grill.py": [
+    {
+      "fingerprint": "time.sleep",
+      "reason": "Frozen pre-existing real sleep; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "time.sleep",
+      "reason": "Frozen pre-existing real sleep; to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "test/test_herdr_delegate.py": [
+    {
+      "fingerprint": "/backlog-item --serial --prefix atk --items atk-a",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "/backlog-item --serial resume r1 --prefix atk",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "/backlog-item --swarm=3 --prefix atk --exclude atk-x",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "/backlog-item --swarm=3 --prefix atk --items atk-a atk-b",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "/backlog-item --swarm=3 --prefix atk --items atk-a atk-b",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "/backlog-item --swarm=3 resume r1 --prefix atk",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "/backlog-item --swarm=3 resume r1 --prefix atk",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "/backlog-item --swarm=3 resume r1 --prefix atk",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "Do you trust the contents of this project?",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "Do you trust the contents of this project?",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "time.time",
+      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "test/test_herdr_remote_deploy.py": [
+    {
+      "fingerprint": "cat > ~/\\.config/herdr-bridge/config\\.toml <<EOF",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "systemctl --user restart herdr-remote-bridge.service",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "test/test_herdr_watch_answer.py": [
+    {
+      "fingerprint": "/backlog-item --auto atk-example --handoff",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "/backlog-item --auto atk-example --handoff",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "/backlog-item --auto atk-example --handoff",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "{\"agents\": {}, \"membership\": [], \"pending_gone\": []}",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "test/test_install.py": [
+    {
+      "fingerprint": "'pi' CLI binary is not installed on PATH",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "--check-links must be used alone, apart from --harness and --profile",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "VS Code settings \u2014 WSL detected but no Windows-side 'code' CLI found on PATH",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "a real file sits where a symlink to belongs",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "halt: changed-state-then-failed downgrade",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "live opencode file ~/.config/opencode/opencode.jsonc",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "not found \u2014 already restored, or removed outside install.sh",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "not found \u2014 already wiped, or removed outside install.sh",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "package left installed (profile-independent): ripgrep",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "\u2717 'pi' CLI binary is not installed on PATH",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "test/test_link_drift_check.py": [
+    {
+      "fingerprint": "links: broken-source (1); wrong-target (1) \u2014 run",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "test/test_link_inspect.py": [
+    {
+      "fingerprint": "/a \u2014 ~/managed is declared exclusive to this repo, but no links.toml entry produces it",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "/b \u2014 ~/managed is declared exclusive to this repo, but no links.toml entry produces it",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "</h/.claude/g.md> \u2014 points at /x, but links.toml says claude/g.md",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "</h/.claude/scripts> \u2014 declared exclusive, but unreadable (denied), so it could not be audited",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "test/test_llm_backends.py": [
+    {
+      "fingerprint": "bind_mount \"$SB_TARGET_DIR\" \"$STAGE/target\"",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "bind_mount \"$STAGE/target\" \"$H/.so-workspace\"",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "containment preflight failed: bind source=%s",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "stalled after 0.2s with no output \u2014 killed (attempt 1 stalled; attempt 2 stalled)",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "time.monotonic",
+      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "time.monotonic",
+      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "time.monotonic",
+      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "time.monotonic",
+      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "time.monotonic",
+      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "time.monotonic",
+      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "time.monotonic",
+      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "time.monotonic",
+      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "time.time",
+      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "time.time",
+      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "time.time",
+      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "time.time",
+      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "timed out after 2s \u2014 killed (attempt 1 stalled; attempt 2 timed out)",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "test/test_machine_id.py": [
+    {
+      "fingerprint": "time.sleep",
+      "reason": "Frozen pre-existing real sleep; to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "test/test_migration_lock.py": [
+    {
+      "fingerprint": "time.monotonic",
+      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "time.monotonic",
+      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "time.monotonic",
+      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "time.monotonic",
+      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "time.monotonic",
+      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "time.monotonic",
+      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "time.monotonic",
+      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "time.monotonic",
+      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "time.sleep",
+      "reason": "Frozen pre-existing real sleep; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "time.sleep",
+      "reason": "Frozen pre-existing real sleep; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "time.sleep",
+      "reason": "Frozen pre-existing real sleep; to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "test/test_migration_lock_adoption.py": [
+    {
+      "fingerprint": "time.monotonic",
+      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "time.monotonic",
+      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "time.monotonic",
+      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "time.monotonic",
+      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "time.sleep",
+      "reason": "Frozen pre-existing real sleep; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "time.sleep",
+      "reason": "Frozen pre-existing real sleep; to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "test/test_notify.py": [
+    {
+      "fingerprint": "Fish &amp; Chips &lt;&quot;tasty&quot;&gt;",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "test/test_opencode_trust_wiring.py": [
+    {
+      "fingerprint": ".local/state/agent-toolkit/trust-sessions",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": ".local/state/agent-toolkit/trust-sessions",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "input: { tool?: string; sessionID?: string }",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "permissionEvent.type !== \"permission.asked\"",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "test/test_question_tool_doc_drift.py": [
+    {
+      "fingerprint": "has no structured multi-choice prompt either",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "must be written as plain conversational text",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "no structured multi-choice widget for Pi",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "only in a session where the tool is genuinely absent",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "test/test_refresh_guidance.py": [
+    {
+      "fingerprint": "heading not found in `guide.md`: 'Ghost Heading'",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "test/test_rename_transition.py": [
+    {
+      "fingerprint": "OLD_TOOL_CODEX_MODEL -> NEW_TOOL_CODEX_MODEL",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "test/test_second_opinion.py": [
+    {
+      "fingerprint": "[second_opinion] stripped inline review debris from plan",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "exceeds 8192 bytes; truncated to 8192 bytes",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "gemini-4-hydrogen-high,gemini-4-argon-high",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "no backend is eligible for grounded review",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "time.time",
+      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "time.time",
+      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "test/test_second_opinion_concurrency.py": [
+    {
+      "fingerprint": "another process wrote to this run's output file",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "another second_opinion.py run is writing",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "time.monotonic",
+      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "time.monotonic",
+      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "time.sleep",
+      "reason": "Frozen pre-existing real sleep; to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "test/test_seed_hook_subset_guard.py": [
+    {
+      "fingerprint": "time.monotonic",
+      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "time.monotonic",
+      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "test/test_sessionstart_checks.py": [
+    {
+      "fingerprint": "[sessionstart] ~/.claude/scripts/retired_activity_zz.py is a broken link \u2014 its owning repo may have retired it; drop its CHECKS line in sessionstart_checks.py",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    },
+    {
+      "fingerprint": "~/.claude/scripts/watchcommit_activity.py",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "test/test_slug_check.py": [
+    {
+      "fingerprint": "overridden: e.md:1:atk-echo reason=\"not a reference\"",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "test/test_standup.py": [
+    {
+      "fingerprint": "work_backlog_prefixes not configured in config.json \u2014 backlog source skipped",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "test/test_statusline.py": [
+    {
+      "fingerprint": "time.time",
+      "reason": "Frozen pre-existing wall-clock read; to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "test/test_uninstall_transactions.py": [
+    {
+      "fingerprint": "introduced as a dependency by this transaction",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    }
+  ],
+  "test/test_worktree.py": [
+    {
+      "fingerprint": "either a backlog item slug/id or --repo must be provided",
+      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+    }
+  ]
+}
