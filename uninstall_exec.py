@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
-"""depart_exec.py — --depart execution: preflight, phases, confirmation, cleanup.
+"""uninstall_exec.py — --uninstall execution: preflight, phases, confirmation, cleanup.
 
 Extracted interface-preserving from ``install.py`` (which keeps thin
 binding wrappers so its CLI, stdout/stderr, exit codes, and imported API
-are unchanged). This module owns the departure *execution* half — baseline
+are unchanged). This module owns the uninstall *execution* half — baseline
 capture, preflight classification reporting, the confirmation contract,
-the per-category execution phases, the departure-ledger retry loop, and
-state finalization. The pure data model stays in ``depart.py``;
+the per-category execution phases, the uninstall-ledger retry loop, and
+state finalization. The pure data model stays in ``uninstall_state.py``;
 install-proper keeps its own plumbing (command running, link-spec
 application, service/gitconfig capture) which is injected here via
 :class:`Deps` so the dependency direction stays one-way:
-``install -> depart_exec -> depart``. This module must never import
-``install`` — test/test_depart_exec_layering.py enforces that.
+``install -> uninstall_exec -> uninstall``. This module must never import
+``install`` — test/test_uninstall_exec_layering.py enforces that.
 
 Repo-maintenance entrypoint category, same as ``install.py`` /
-``depart.py``: no ``links.toml`` row, never installed to a harness config
+``uninstall_state.py``: no ``links.toml`` row, never installed to a harness config
 directory.
 
 Requires Python 3.12+.
@@ -32,11 +32,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "agent-scripts"))
 
 import cli_common  # noqa: E402 — sibling dir inserted above
 
-import depart  # noqa: E402 — sibling dir on path above
+import uninstall_state  # noqa: E402 — sibling dir on path above
 
 
-class DepartureOptionsLike(Protocol):
-    """The install options departure execution actually reads."""
+class UninstallOptionsLike(Protocol):
+    """The install options uninstall execution actually reads."""
 
     dry_run: bool
     quiet: bool
@@ -44,7 +44,7 @@ class DepartureOptionsLike(Protocol):
 
 
 class ManifestLike(Protocol):
-    """The install manifest surface departure execution actually reads."""
+    """The install manifest surface uninstall execution actually reads."""
 
     path: Path
 
@@ -68,15 +68,15 @@ class CommandResultLike(Protocol):
     ok: bool
 
 
-class DepartureContext(Protocol):
-    """Structural subset of install.Context used by departure execution."""
+class UninstallContext(Protocol):
+    """Structural subset of install.Context used by uninstall execution."""
 
     state_dir: Path
     home: Path
     profile_marker: Path
     is_linux: bool
-    departure_baseline: depart.Baseline | None
-    opts: DepartureOptionsLike
+    uninstall_baseline: uninstall_state.Baseline | None
+    opts: UninstallOptionsLike
     manifest: ManifestLike
 
     def has_harness(self, name: str) -> bool: ...
@@ -87,57 +87,57 @@ class Deps:
     """Execution dependencies injected from install.py (resolved at call time).
 
     Fields are bound from install.py's *current* module globals on every
-    departure entrypoint invocation, so test monkeypatching and the
+    uninstall entrypoint invocation, so test monkeypatching and the
     runtime-populated ``managed_services`` list behave exactly as they did
     when this code lived in install.py.
     """
 
     run_command: Callable[[Sequence[str] | str], CommandResultLike]
     have: Callable[[str], bool]
-    link_applies: Callable[[LinkSpecLike, DepartureContext], bool]
+    link_applies: Callable[[LinkSpecLike, UninstallContext], bool]
     expand_dest: Callable[[str, Path], Path]
     capture_live_service: Callable[
-        [DepartureContext, ManagedServiceLike], dict[str, object]
+        [UninstallContext, ManagedServiceLike], dict[str, object]
     ]
     capture_package_snapshot: Callable[[str], dict[str, str] | None]
     current_user: Callable[[], str]
     global_git_hooks_path: Callable[[], str | None]
     header: Callable[..., None]
-    managed_git_hooks_path: Callable[[DepartureContext], str]
+    managed_git_hooks_path: Callable[[UninstallContext], str]
     vscode_wsl_user_dir: Callable[[], Path | None]
     palette: object
     managed_services: list[ManagedServiceLike]
     GLOBAL_GIT_HOOKS_PATH_KEY: str
 
 
-# ── departure baseline capture ──────────────────────────────────────────────
+# ── uninstall baseline capture ──────────────────────────────────────────────
 
 
 def _is_state_dir_or_its_ancestor(
-    deps: Deps, path: Path, ctx: DepartureContext
+    deps: Deps, path: Path, ctx: UninstallContext
 ) -> bool:
     """Whether ``path`` is the state directory itself, or one of its own ancestors.
 
     The state directory holds this feature's own ``baseline.json``/
-    ``history.jsonl``/``departure.jsonl``/lock — its removal (and any of
+    ``history.jsonl``/``uninstall.jsonl``/lock — its removal (and any of
     its ancestors that become empty as a result) is entirely
-    ``_finalize_departure_state``'s job, run *after* the generic directory
+    ``_finalize_uninstall_state``'s job, run *after* the generic directory
     phase. Letting the generic phase track and act on these paths would
     make it try to rmdir them while they (or the state directory nested
     inside them) still hold files that haven't been cleared yet — an
-    unbreakable "not empty" that would permanently block a clean departure.
+    unbreakable "not empty" that would permanently block a clean uninstall.
     """
     return path == ctx.state_dir or path in ctx.state_dir.parents
 
 
-def _departure_owned_destinations(
-    deps: Deps, ctx: DepartureContext, specs: Sequence[LinkSpecLike]
+def _uninstall_owned_destinations(
+    deps: Deps, ctx: UninstallContext, specs: Sequence[LinkSpecLike]
 ) -> list[Path]:
     """Every links.toml/seed destination this run's options make applicable.
 
     These are the only categories whose ``file:``/``symlink:`` keys can ever
     need content restored (rc files are handled separately) — see
-    :func:`capture_departure_baseline`'s blob-writing rule.
+    :func:`capture_uninstall_baseline`'s blob-writing rule.
     """
     destinations: list[Path] = []
     for spec in specs:
@@ -162,28 +162,32 @@ def capture_destination_records(
     ``file:<dest>.bak``, and a ``directory:`` record for every ancestor up to
     ``home`` except ``state_dir`` and its own ancestors (see
     :func:`_is_state_dir_or_its_ancestor`). Shared by
-    :func:`capture_departure_baseline` and the toolkit-home migration, which
+    :func:`capture_uninstall_baseline` and the toolkit-home migration, which
     records the destinations it is about to create before creating them.
     """
     records: dict[str, dict[str, object]] = {}
     for dest in dests:
-        records[depart.file_key(dest)] = depart.capture_file(dest, blob_dir=blob_dir)
-        records[depart.symlink_key(dest)] = depart.capture_symlink(dest)
+        records[uninstall_state.file_key(dest)] = uninstall_state.capture_file(
+            dest, blob_dir=blob_dir
+        )
+        records[uninstall_state.symlink_key(dest)] = uninstall_state.capture_symlink(
+            dest
+        )
         bak = dest.with_name(dest.name + ".bak")
-        records[depart.file_key(bak)] = depart.capture_file(bak)
-        for ancestor in depart.ancestor_directories(dest, home):
+        records[uninstall_state.file_key(bak)] = uninstall_state.capture_file(bak)
+        for ancestor in uninstall_state.ancestor_directories(dest, home):
             if ancestor == state_dir or ancestor in state_dir.parents:
                 continue
-            key = depart.directory_key(ancestor)
+            key = uninstall_state.directory_key(ancestor)
             if key not in records:
-                records[key] = depart.capture_directory(ancestor)
+                records[key] = uninstall_state.capture_directory(ancestor)
     return records
 
 
-def capture_departure_baseline(
-    deps: Deps, ctx: DepartureContext, specs: Sequence[LinkSpecLike]
+def capture_uninstall_baseline(
+    deps: Deps, ctx: UninstallContext, specs: Sequence[LinkSpecLike]
 ) -> None:
-    """Capture this run's departure baseline layer before any install step runs.
+    """Capture this run's uninstall baseline layer before any install step runs.
 
     Linux/WSL and Fedora only (Implementation Sequence step 6 — this feature
     does not apply on macOS) and a no-op under ``--dry-run`` (step 1: a
@@ -196,39 +200,41 @@ def capture_departure_baseline(
         return
 
     state_dir = ctx.state_dir
-    baseline = depart.load_baseline(state_dir) or depart.Baseline()
+    baseline = uninstall_state.load_baseline(state_dir) or uninstall_state.Baseline()
     records: dict[str, dict[str, object]] = {}
     seen_dirs: set[Path] = set()
 
     def _track_ancestors(path: Path) -> None:
-        for ancestor in depart.ancestor_directories(path, ctx.home):
+        for ancestor in uninstall_state.ancestor_directories(path, ctx.home):
             if ancestor in seen_dirs or _is_state_dir_or_its_ancestor(
                 deps, ancestor, ctx
             ):
                 continue
             seen_dirs.add(ancestor)
-            records[depart.directory_key(ancestor)] = depart.capture_directory(ancestor)
+            records[uninstall_state.directory_key(ancestor)] = (
+                uninstall_state.capture_directory(ancestor)
+            )
 
-    for rc_name in depart.RC_FILENAMES:
+    for rc_name in uninstall_state.RC_FILENAMES:
         rc_path = ctx.home / rc_name
-        records[depart.file_key(rc_path)] = depart.capture_file(
+        records[uninstall_state.file_key(rc_path)] = uninstall_state.capture_file(
             rc_path, blob_dir=state_dir
         )
 
-    dests = _departure_owned_destinations(deps, ctx, specs)
+    dests = _uninstall_owned_destinations(deps, ctx, specs)
     for record_key, record in capture_destination_records(
         dests, home=ctx.home, state_dir=state_dir, blob_dir=state_dir
     ).items():
         records[record_key] = record
     for dest in dests:
-        seen_dirs.update(depart.ancestor_directories(dest, ctx.home))
+        seen_dirs.update(uninstall_state.ancestor_directories(dest, ctx.home))
 
     for path in (
         ctx.home / ".local" / "bin" / "uv",
         ctx.home / ".local" / "bin" / "oh-my-posh",
         ctx.home / ".vim" / "autoload" / "plug.vim",
     ):
-        records[depart.file_key(path)] = depart.capture_file(path)
+        records[uninstall_state.file_key(path)] = uninstall_state.capture_file(path)
         _track_ancestors(path)
 
     vscode_user_dir = deps.vscode_wsl_user_dir()
@@ -237,12 +243,12 @@ def capture_departure_baseline(
             path = vscode_user_dir / name
             bak = path.with_name(path.name + ".bak")
             for guarded_path in (path, bak):
-                record = depart.capture_file(guarded_path)
+                record = uninstall_state.capture_file(guarded_path)
                 record["needs_vscode_guard"] = True
-                records[depart.file_key(guarded_path)] = record
+                records[uninstall_state.file_key(guarded_path)] = record
 
-    records[depart.file_key(ctx.profile_marker)] = depart.capture_file(
-        ctx.profile_marker
+    records[uninstall_state.file_key(ctx.profile_marker)] = (
+        uninstall_state.capture_file(ctx.profile_marker)
     )
     _track_ancestors(ctx.profile_marker)
 
@@ -250,34 +256,40 @@ def capture_departure_baseline(
         ctx.home / ".local" / "bin" / "bat",
         ctx.home / ".local" / "bin" / "fd",
     ):
-        records[depart.symlink_key(path)] = depart.capture_symlink(path)
+        records[uninstall_state.symlink_key(path)] = uninstall_state.capture_symlink(
+            path
+        )
         _track_ancestors(path)
 
     font_dir = ctx.home / ".local" / "share" / "fonts" / "JetBrainsMonoNerdFont"
-    records[depart.directory_key(font_dir)] = depart.capture_tree_manifest(font_dir)
+    records[uninstall_state.directory_key(font_dir)] = (
+        uninstall_state.capture_tree_manifest(font_dir)
+    )
     _track_ancestors(font_dir)
 
     neovim_prefix = ctx.home / ".local" / "opt" / "neovim"
-    records[depart.directory_key(neovim_prefix)] = depart.capture_tree_manifest(
-        neovim_prefix
+    records[uninstall_state.directory_key(neovim_prefix)] = (
+        uninstall_state.capture_tree_manifest(neovim_prefix)
     )
     _track_ancestors(neovim_prefix)
 
-    for parts in depart.SHARED_NEOVIM_DIRS:
+    for parts in uninstall_state.SHARED_NEOVIM_DIRS:
         shared_dir = ctx.home.joinpath(*parts)
-        records[depart.directory_key(shared_dir)] = depart.capture_directory(shared_dir)
+        records[uninstall_state.directory_key(shared_dir)] = (
+            uninstall_state.capture_directory(shared_dir)
+        )
 
-    records[depart.runtime_key(ctx.home / ".nvm")] = depart.capture_runtime_nvm(
-        ctx.home
+    records[uninstall_state.runtime_key(ctx.home / ".nvm")] = (
+        uninstall_state.capture_runtime_nvm(ctx.home)
     )
 
     stamp = datetime.now().astimezone().isoformat(timespec="seconds")
     baseline.add_layer(stamp, records)
-    depart.save_baseline(state_dir, baseline)
-    ctx.departure_baseline = baseline
+    uninstall_state.save_baseline(state_dir, baseline)
+    ctx.uninstall_baseline = baseline
 
 
-def _departure_state_paths(deps: Deps, state_dir: Path) -> list[Path]:
+def _uninstall_state_paths(deps: Deps, state_dir: Path) -> list[Path]:
     """This feature's own state files, if present — never anything else.
 
     Snapshot naming is pinned (``baseline.json`` plus
@@ -289,23 +301,23 @@ def _departure_state_paths(deps: Deps, state_dir: Path) -> list[Path]:
     """
     if not state_dir.is_dir():
         return []
-    paths = [depart.baseline_path(state_dir)]
+    paths = [uninstall_state.baseline_path(state_dir)]
     paths.extend(sorted(state_dir.glob("baseline-snapshot-*.blob")))
-    paths.append(state_dir / "departure.lock")
-    paths.append(state_dir / "departure.jsonl")
+    paths.append(state_dir / "uninstall.lock")
+    paths.append(state_dir / "uninstall.jsonl")
     return paths
 
 
-def _delete_departure_state(deps: Deps, ctx: DepartureContext) -> None:
+def _delete_uninstall_state(deps: Deps, ctx: UninstallContext) -> None:
     """Delete this feature's own state files during a real (non-dry-run) rollback."""
-    for path in _departure_state_paths(deps, ctx.state_dir):
+    for path in _uninstall_state_paths(deps, ctx.state_dir):
         path.unlink(missing_ok=True)
 
 
-# ── departure preflight and CLI ─────────────────────────────────────────────
+# ── uninstall preflight and CLI ─────────────────────────────────────────────
 
 
-def _tree_manifest_directories(ctx: DepartureContext) -> set[Path]:
+def _tree_manifest_directories(ctx: UninstallContext) -> set[Path]:
     """Directories tracked as full tree manifests, not plain directory: keys."""
     return {
         ctx.home / ".local" / "share" / "fonts" / "JetBrainsMonoNerdFont",
@@ -314,14 +326,14 @@ def _tree_manifest_directories(ctx: DepartureContext) -> set[Path]:
 
 
 def _recapture_live_value(
-    deps: Deps, ctx: DepartureContext, key: str
+    deps: Deps, ctx: UninstallContext, key: str
 ) -> dict[str, object]:
     """Fresh, read-only live value for one *already-recorded* ownership key.
 
     Dispatches purely on the key itself — deliberately never re-derives
     "is this destination applicable" from links.toml + the current
-    invocation's ``--harness`` selection. ``--depart`` is standalone
-    (``parse_args`` rejects ``--harness`` alongside it), so at departure
+    invocation's ``--harness`` selection. ``--uninstall`` is standalone
+    (``parse_args`` rejects ``--harness`` alongside it), so at uninstall
     time ``ctx.opts.harnesses`` is always empty; re-deriving applicability
     from it would make every harness-gated links.toml entry (``~/.claude/
     CLAUDE.md``, its commands, the copy-once seed files, ...) silently
@@ -335,20 +347,20 @@ def _recapture_live_value(
     type_, path_str = key.split(":", 1)
     path = Path(path_str)
     if type_ == "file":
-        return depart.capture_file(path)
+        return uninstall_state.capture_file(path)
     if type_ == "symlink":
-        return depart.capture_symlink(path)
+        return uninstall_state.capture_symlink(path)
     if type_ == "directory":
         if path in _tree_manifest_directories(ctx):
-            return depart.capture_tree_manifest(path)
-        return depart.capture_directory(path)
+            return uninstall_state.capture_tree_manifest(path)
+        return uninstall_state.capture_directory(path)
     if type_ == "runtime":
-        return depart.capture_runtime_nvm(path.parent)
-    return {"state": depart.STATE_UNKNOWN}
+        return uninstall_state.capture_runtime_nvm(path.parent)
+    return {"state": uninstall_state.STATE_UNKNOWN}
 
 
-def _recapture_departure_live_state(
-    deps: Deps, ctx: DepartureContext, baseline: depart.Baseline
+def _recapture_uninstall_live_state(
+    deps: Deps, ctx: UninstallContext, baseline: uninstall_state.Baseline
 ) -> dict[str, dict[str, object]]:
     """Re-capture every tracked ownership key's *current* value, read-only.
 
@@ -360,26 +372,26 @@ def _recapture_departure_live_state(
     return {
         key: _recapture_live_value(deps, ctx, key)
         for key in baseline.all_keys()
-        if depart.key_type(key) not in ("service", "gitconfig")
+        if uninstall_state.key_type(key) not in ("service", "gitconfig")
     }
 
 
 def _apply_rc_file_reclassification(
     deps: Deps,
-    ctx: DepartureContext,
-    baseline: depart.Baseline,
-    report: dict[str, depart.Classification],
+    ctx: UninstallContext,
+    baseline: uninstall_state.Baseline,
+    report: dict[str, uninstall_state.Classification],
 ) -> None:
     """Override the generic result for each rc file with the append-aware rule."""
-    for rc_name in depart.RC_FILENAMES:
+    for rc_name in uninstall_state.RC_FILENAMES:
         rc_path = ctx.home / rc_name
-        key = depart.file_key(rc_path)
+        key = uninstall_state.file_key(rc_path)
         recorded = baseline.value_for(key)
-        if recorded is None or recorded.get("state") != depart.STATE_PRESENT:
+        if recorded is None or recorded.get("state") != uninstall_state.STATE_PRESENT:
             continue
         blob_digest = recorded.get("blob")
         baseline_content = (
-            depart.read_blob(ctx.state_dir, str(blob_digest))
+            uninstall_state.read_blob(ctx.state_dir, str(blob_digest))
             if isinstance(blob_digest, str)
             else None
         )
@@ -387,16 +399,18 @@ def _apply_rc_file_reclassification(
             live_content: bytes | None = rc_path.read_bytes()
         except OSError:
             live_content = None
-        override = depart.reclassify_rc_file(recorded, baseline_content, live_content)
+        override = uninstall_state.reclassify_rc_file(
+            recorded, baseline_content, live_content
+        )
         if override is not None:
             report[key] = override
 
 
 def _apply_symlink_pair_reclassification(
     deps: Deps,
-    baseline: depart.Baseline,
+    baseline: uninstall_state.Baseline,
     live: dict[str, dict[str, object]],
-    report: dict[str, depart.Classification],
+    report: dict[str, uninstall_state.Classification],
 ) -> None:
     """Override the generic per-key results for each backed-up-then-symlinked pair.
 
@@ -405,79 +419,83 @@ def _apply_symlink_pair_reclassification(
     :func:`_recapture_live_value`.
     """
     file_paths = {
-        Path(k.split(":", 1)[1]) for k in report if depart.key_type(k) == "file"
+        Path(k.split(":", 1)[1])
+        for k in report
+        if uninstall_state.key_type(k) == "file"
     }
     symlink_paths = {
-        Path(k.split(":", 1)[1]) for k in report if depart.key_type(k) == "symlink"
+        Path(k.split(":", 1)[1])
+        for k in report
+        if uninstall_state.key_type(k) == "symlink"
     }
     for path in file_paths & symlink_paths:
-        file_key = depart.file_key(path)
-        symlink_key = depart.symlink_key(path)
-        override = depart.reclassify_symlink_destination_pair(
+        file_key = uninstall_state.file_key(path)
+        symlink_key = uninstall_state.symlink_key(path)
+        override = uninstall_state.reclassify_symlink_destination_pair(
             baseline.value_for(file_key),
-            live.get(file_key, {"state": depart.STATE_UNKNOWN}),
+            live.get(file_key, {"state": uninstall_state.STATE_UNKNOWN}),
             baseline.value_for(symlink_key),
-            live.get(symlink_key, {"state": depart.STATE_UNKNOWN}),
+            live.get(symlink_key, {"state": uninstall_state.STATE_UNKNOWN}),
         )
         if override is not None:
             report[file_key], report[symlink_key] = override
 
 
 def build_preflight_report(
-    deps: Deps, ctx: DepartureContext
-) -> dict[str, depart.Classification] | None:
+    deps: Deps, ctx: UninstallContext
+) -> dict[str, uninstall_state.Classification] | None:
     """Classify every tracked ownership key, or None if there's no baseline."""
-    baseline = depart.load_baseline(ctx.state_dir)
+    baseline = uninstall_state.load_baseline(ctx.state_dir)
     if baseline is None:
         return None
-    live = _recapture_departure_live_state(deps, ctx, baseline)
-    report: dict[str, depart.Classification] = {}
+    live = _recapture_uninstall_live_state(deps, ctx, baseline)
+    report: dict[str, uninstall_state.Classification] = {}
     for key in sorted(baseline.all_keys()):
         # service:/gitconfig: keys use their own dedicated classifier (their
         # record shapes don't fit the tri-state present/absent model the
         # generic classifier expects — gitconfig's "owned" case in
         # particular needs to compare live against a *managed value*, which
         # classify_ownership_key has no parameter for).
-        if depart.key_type(key) in ("service", "gitconfig"):
+        if uninstall_state.key_type(key) in ("service", "gitconfig"):
             continue
         recorded = baseline.value_for(key)
-        live_value = live.get(key, {"state": depart.STATE_UNKNOWN})
-        report[key] = depart.classify_ownership_key(key, recorded, live_value)
+        live_value = live.get(key, {"state": uninstall_state.STATE_UNKNOWN})
+        report[key] = uninstall_state.classify_ownership_key(key, recorded, live_value)
 
     _apply_rc_file_reclassification(deps, ctx, baseline, report)
     _apply_symlink_pair_reclassification(deps, baseline, live, report)
 
     for service in deps.managed_services:
-        service_key = depart.service_key("systemd", service.name)
+        service_key = uninstall_state.service_key("systemd", service.name)
         if service_key in baseline.all_keys():
-            report[service_key] = depart.classify_service(
+            report[service_key] = uninstall_state.classify_service(
                 baseline.value_for(service_key), deps.capture_live_service(ctx, service)
             )
 
-    hooks_key = depart.gitconfig_key(deps.GLOBAL_GIT_HOOKS_PATH_KEY)
+    hooks_key = uninstall_state.gitconfig_key(deps.GLOBAL_GIT_HOOKS_PATH_KEY)
     if hooks_key in baseline.all_keys():
-        report[hooks_key] = depart.classify_gitconfig(
+        report[hooks_key] = uninstall_state.classify_gitconfig(
             baseline.value_for(hooks_key),
-            depart.build_gitconfig_record(deps.global_git_hooks_path()),
+            uninstall_state.build_gitconfig_record(deps.global_git_hooks_path()),
             deps.managed_git_hooks_path(ctx),
         )
     return report
 
 
 def build_package_preflight(
-    deps: Deps, ctx: DepartureContext
-) -> list[depart.PackageClassification] | None:
+    deps: Deps, ctx: UninstallContext
+) -> list[uninstall_state.PackageClassification] | None:
     """Classify every requested/introduced package, or None if there's no baseline."""
-    baseline = depart.load_baseline(ctx.state_dir)
+    baseline = uninstall_state.load_baseline(ctx.state_dir)
     if baseline is None:
         return None
-    return depart.classify_package_transactions(
+    return uninstall_state.classify_package_transactions(
         baseline, live_package_snapshots(deps, baseline)
     )
 
 
 def _vscode_guard_preflight_annotations(
-    deps: Deps, ctx: DepartureContext, report: dict[str, depart.Classification]
+    deps: Deps, ctx: UninstallContext, report: dict[str, uninstall_state.Classification]
 ) -> dict[str, str]:
     """Display-only: flag guarded VS Code keys headed for removal when
     Windows VS Code is running or its status couldn't be verified.
@@ -486,17 +504,17 @@ def _vscode_guard_preflight_annotations(
     in ``report`` and never gates anything. The real gate is
     ``execute_file_symlink_phase``'s own, independent, execution-time check
     (see its call site for the TOCTOU rationale): this probe only keeps
-    ``--depart --dry-run`` from printing a removal it already knows won't
+    ``--uninstall --dry-run`` from printing a removal it already knows won't
     happen, it does not replace that later check.
     """
-    baseline = depart.load_baseline(ctx.state_dir)
+    baseline = uninstall_state.load_baseline(ctx.state_dir)
     if baseline is None:
         return {}
     guarded_removals = [
         key
         for key, c in report.items()
-        if c.bucket == depart.BUCKET_OWNED
-        and c.action == depart.ACTION_REMOVE
+        if c.bucket == uninstall_state.BUCKET_OWNED
+        and c.action == uninstall_state.ACTION_REMOVE
         and (baseline.value_for(key) or {}).get("needs_vscode_guard")
     ]
     if not guarded_removals:
@@ -514,26 +532,29 @@ def _vscode_guard_preflight_annotations(
 
 def _print_preflight_report(
     deps: Deps,
-    report: dict[str, depart.Classification],
-    package_report: Sequence[depart.PackageClassification] = (),
+    report: dict[str, uninstall_state.Classification],
+    package_report: Sequence[uninstall_state.PackageClassification] = (),
     quiet: bool = False,
     guard_annotations: dict[str, str] | None = None,
 ) -> None:
-    """Print the full departure preflight, grouped by bucket."""
+    """Print the full uninstall preflight, grouped by bucket."""
     guard_annotations = guard_annotations or {}
-    deps.header("==> Departure preflight", quiet=quiet)
+    deps.header("==> Uninstall preflight", quiet=quiet)
     for bucket in (
-        depart.BUCKET_OWNED,
-        depart.BUCKET_DRIFTED,
-        depart.BUCKET_UNRESOLVED,
-        depart.BUCKET_PRESERVED,
+        uninstall_state.BUCKET_OWNED,
+        uninstall_state.BUCKET_DRIFTED,
+        uninstall_state.BUCKET_UNRESOLVED,
+        uninstall_state.BUCKET_PRESERVED,
     ):
         keys = sorted(k for k, c in report.items() if c.bucket == bucket)
         package_lines = [c for c in package_report if c.bucket == bucket]
         if not keys and not package_lines:
             continue
         print(deps.palette.header(f"  {bucket} ({len(keys) + len(package_lines)}):"))
-        warn = bucket in (depart.BUCKET_UNRESOLVED, depart.BUCKET_DRIFTED)
+        warn = bucket in (
+            uninstall_state.BUCKET_UNRESOLVED,
+            uninstall_state.BUCKET_DRIFTED,
+        )
         for key in keys:
             c = report[key]
             action = f" [{c.action}]" if c.action else ""
@@ -555,7 +576,7 @@ def _read_confirmation_token(
     """Read one line from stdin, stripping exactly one trailing LF/CRLF.
 
     Surrounding spaces/tabs are deliberately left in place — the caller
-    compares for an exact ``"DEPART"`` match, so ``" DEPART"`` or an EOF
+    compares for an exact ``"UNINSTALL"`` match, so ``" UNINSTALL"`` or an EOF
     (empty string) both correctly fail to match.
     """
     line = sys.stdin.readline()
@@ -572,7 +593,7 @@ def _restore_target_still_occupied(deps: Deps, dest: Path) -> bool:
 
 def _execute_restore(
     deps: Deps,
-    ctx: DepartureContext,
+    ctx: UninstallContext,
     dest: Path,
     recorded: dict[str, object],
     *,
@@ -591,7 +612,7 @@ def _execute_restore(
     digest = recorded.get("blob")
     if not isinstance(digest, str):
         return "unresolved: no blob recorded for restore"
-    content = depart.read_blob(ctx.state_dir, digest)
+    content = uninstall_state.read_blob(ctx.state_dir, digest)
     if content is None:
         return "unresolved: recorded blob is missing or unreadable"
     if expect_absent and _restore_target_still_occupied(deps, dest):
@@ -624,25 +645,27 @@ def _execute_remove_file(deps: Deps, path: Path) -> str:
     return "ok"
 
 
-def _maybe_consume_bak(deps: Deps, dest: Path, baseline: depart.Baseline) -> None:
+def _maybe_consume_bak(
+    deps: Deps, dest: Path, baseline: uninstall_state.Baseline
+) -> None:
     """Delete ``dest``'s ``.bak`` once a clean restore succeeds, if it's
-    provably departure-owned — never touch a ``.bak`` this feature can't
+    provably uninstall-owned — never touch a ``.bak`` this feature can't
     prove it created.
 
     Only ever called after :func:`_execute_restore` has already returned
     ``"ok"`` — its authoritative source is the content blob, so a
     qualifying ``.bak`` is now redundant leftover, not a second restore
-    source. See depart.reclassify_symlink_destination_pair's docstring and
+    source. See uninstall_state.reclassify_symlink_destination_pair's docstring and
     Implementation Sequence step 4's ``.bak`` provenance rule.
     """
     bak = dest.with_name(dest.name + ".bak")
-    file_recorded = baseline.value_for(depart.file_key(dest))
-    bak_recorded = baseline.value_for(depart.file_key(bak))
+    file_recorded = baseline.value_for(uninstall_state.file_key(dest))
+    bak_recorded = baseline.value_for(uninstall_state.file_key(bak))
     if not (
         file_recorded is not None
-        and file_recorded.get("state") == depart.STATE_PRESENT
+        and file_recorded.get("state") == uninstall_state.STATE_PRESENT
         and bak_recorded is not None
-        and bak_recorded.get("state") == depart.STATE_ABSENT
+        and bak_recorded.get("state") == uninstall_state.STATE_ABSENT
     ):
         return
     try:
@@ -678,10 +701,10 @@ def _execute_service_disable(deps: Deps, service: ManagedServiceLike) -> str:
     """Disable+stop one managed service's systemd --user unit.
 
     Unit-level only — linger is a separate, machine-wide concern handled by
-    :func:`_reconcile_linger` outside the departure ledger (see
+    :func:`_reconcile_linger` outside the uninstall ledger (see
     install-multi-service-depart-adopt-spec.md's Design decision: bundling
     linger into a single service's outcome breaks once more than one
-    service can be departed in the same run).
+    service can be uninstalled in the same run).
     """
     if not deps.have("systemctl"):
         return "unresolved: systemd --user unavailable"
@@ -693,7 +716,7 @@ def _execute_service_disable(deps: Deps, service: ManagedServiceLike) -> str:
 
 
 def _reconcile_linger(
-    deps: Deps, ctx: DepartureContext, baseline: depart.Baseline
+    deps: Deps, ctx: UninstallContext, baseline: uninstall_state.Baseline
 ) -> None:
     """Best-effort, not ledger-tracked: restore linger once nothing managed
     still needs it.
@@ -701,9 +724,9 @@ def _reconcile_linger(
     Runs unconditionally at the end of every :func:`execute_service_phase`
     call. Eligibility is recomputed from live state every call (not from
     "did this run's loop just disable something"), so a failed attempt
-    self-heals on a later ``--depart`` invocation with no persisted flag
+    self-heals on a later ``--uninstall`` invocation with no persisted flag
     needed. Never raises, never returns an outcome, never affects
-    ``do_depart``'s exit code — a failure here is advisory only, matching
+    ``do_uninstall``'s exit code — a failure here is advisory only, matching
     the existing install-time ``loginctl enable-linger`` failure precedent
     in :func:`_enable_service`.
     """
@@ -712,7 +735,11 @@ def _reconcile_linger(
     eligible_off = frozenset(
         service.unit
         for service in deps.managed_services
-        if (recorded := baseline.value_for(depart.service_key("systemd", service.name)))
+        if (
+            recorded := baseline.value_for(
+                uninstall_state.service_key("systemd", service.name)
+            )
+        )
         is not None
         and recorded.get("linger") is False
         and deps.capture_live_service(ctx, service).get("enabled") is False
@@ -745,24 +772,26 @@ def _reconcile_linger(
 
 def execute_service_phase(
     deps: Deps,
-    ctx: DepartureContext,
-    baseline: depart.Baseline,
-    ledger: depart.DepartureLedger,
+    ctx: UninstallContext,
+    baseline: uninstall_state.Baseline,
+    ledger: uninstall_state.UninstallLedger,
 ) -> None:
     """Disable+stop every owned managed service, then reconcile linger once."""
     for service in deps.managed_services:
-        key = depart.service_key("systemd", service.name)
+        key = uninstall_state.service_key("systemd", service.name)
         if key in ledger.completed_keys():
             continue
         recorded = baseline.value_for(key)
         if recorded is None:
             continue  # never captured (e.g. a work-profile install) — nothing to check
-        c = depart.classify_service(recorded, deps.capture_live_service(ctx, service))
-        if c.bucket != depart.BUCKET_OWNED:
+        c = uninstall_state.classify_service(
+            recorded, deps.capture_live_service(ctx, service)
+        )
+        if c.bucket != uninstall_state.BUCKET_OWNED:
             continue
         ledger.record(
             key,
-            c.action or depart.ACTION_DISABLE,
+            c.action or uninstall_state.ACTION_DISABLE,
             _execute_service_disable(deps, service),
         )
 
@@ -772,7 +801,7 @@ def execute_service_phase(
 def _execute_gitconfig_restore(deps: Deps, recorded: dict[str, object]) -> str:
     """Restore the global core.hooksPath value baseline recorded: unset if
     it was absent before the installer set it, otherwise set it back."""
-    if recorded.get("state") == depart.STATE_ABSENT:
+    if recorded.get("state") == uninstall_state.STATE_ABSENT:
         ok = deps.run_command(
             ["git", "config", "--global", "--unset", deps.GLOBAL_GIT_HOOKS_PATH_KEY]
         ).ok
@@ -789,25 +818,27 @@ def _execute_gitconfig_restore(deps: Deps, recorded: dict[str, object]) -> str:
 
 def execute_gitconfig_phase(
     deps: Deps,
-    ctx: DepartureContext,
-    baseline: depart.Baseline,
-    ledger: depart.DepartureLedger,
+    ctx: UninstallContext,
+    baseline: uninstall_state.Baseline,
+    ledger: uninstall_state.UninstallLedger,
 ) -> None:
     """Restore the pre-install global core.hooksPath value, if this
     installer owns the current value."""
-    key = depart.gitconfig_key(deps.GLOBAL_GIT_HOOKS_PATH_KEY)
+    key = uninstall_state.gitconfig_key(deps.GLOBAL_GIT_HOOKS_PATH_KEY)
     if key in ledger.completed_keys():
         return
     recorded = baseline.value_for(key)
     if recorded is None:
         return  # never captured (e.g. a work-profile install) — nothing to check
-    live = depart.build_gitconfig_record(deps.global_git_hooks_path())
-    c = depart.classify_gitconfig(recorded, live, deps.managed_git_hooks_path(ctx))
-    if c.bucket != depart.BUCKET_OWNED:
+    live = uninstall_state.build_gitconfig_record(deps.global_git_hooks_path())
+    c = uninstall_state.classify_gitconfig(
+        recorded, live, deps.managed_git_hooks_path(ctx)
+    )
+    if c.bucket != uninstall_state.BUCKET_OWNED:
         return
     ledger.record(
         key,
-        c.action or depart.ACTION_RESTORE,
+        c.action or uninstall_state.ACTION_RESTORE,
         _execute_gitconfig_restore(deps, recorded),
     )
 
@@ -817,10 +848,10 @@ _VSCODE_GUARD_UNRESOLVED_PREFIX = "unresolved [vscode-guard-blocked]:"
 
 def execute_file_symlink_phase(
     deps: Deps,
-    ctx: DepartureContext,
-    baseline: depart.Baseline,
-    report: dict[str, depart.Classification],
-    ledger: depart.DepartureLedger,
+    ctx: UninstallContext,
+    baseline: uninstall_state.Baseline,
+    report: dict[str, uninstall_state.Classification],
+    ledger: uninstall_state.UninstallLedger,
 ) -> None:
     """Execute every owned ``file:``/``symlink:`` action, in pinned order.
 
@@ -833,7 +864,7 @@ def execute_file_symlink_phase(
     at least once stays retryable across ``done``'s otherwise-permanent
     exclusion — without this, a guard-blocked key would never be retried
     even after VS Code closes, contradicting the guard's own "close it
-    first, then re-run --depart" message. Every other outcome (including a
+    first, then re-run --uninstall" message. Every other outcome (including a
     non-guard failure on the same guarded key) keeps the ledger's normal
     never-re-attempted contract.
     """
@@ -842,14 +873,17 @@ def execute_file_symlink_phase(
     owned = {
         key: c
         for key, c in report.items()
-        if c.bucket == depart.BUCKET_OWNED
-        and depart.key_type(key) in ("file", "symlink")
+        if c.bucket == uninstall_state.BUCKET_OWNED
+        and uninstall_state.key_type(key) in ("file", "symlink")
         and (key not in done or key in guard_retryable)
     }
 
     for key in sorted(owned):
         c = owned[key]
-        if depart.key_type(key) != "symlink" or c.action != depart.ACTION_REMOVE:
+        if (
+            uninstall_state.key_type(key) != "symlink"
+            or c.action != uninstall_state.ACTION_REMOVE
+        ):
             continue
         path = Path(key.partition(":")[2])
         ledger.record(key, c.action, _execute_remove_symlink(deps, path))
@@ -858,10 +892,10 @@ def execute_file_symlink_phase(
     vscode_checked = False
     for key in sorted(owned):
         c = owned[key]
-        if depart.key_type(key) != "file":
+        if uninstall_state.key_type(key) != "file":
             continue
         path = Path(key.partition(":")[2])
-        if c.action == depart.ACTION_REMOVE:
+        if c.action == uninstall_state.ACTION_REMOVE:
             recorded = baseline.value_for(key) or {}
             if recorded.get("needs_vscode_guard"):
                 if not vscode_checked:
@@ -875,17 +909,17 @@ def execute_file_symlink_phase(
                         c.action,
                         f"{_VSCODE_GUARD_UNRESOLVED_PREFIX} Windows VS Code "
                         "is running (or could not be verified) — close it "
-                        "first, then re-run --depart",
+                        "first, then re-run --uninstall",
                     )
                     continue
             ledger.record(key, c.action, _execute_remove_file(deps, path))
             continue
         recorded = baseline.value_for(key) or {}
-        paired_symlink = report.get(depart.symlink_key(path))
+        paired_symlink = report.get(uninstall_state.symlink_key(path))
         expect_absent = (
             paired_symlink is not None
-            and paired_symlink.bucket == depart.BUCKET_OWNED
-            and paired_symlink.action == depart.ACTION_REMOVE
+            and paired_symlink.bucket == uninstall_state.BUCKET_OWNED
+            and paired_symlink.action == uninstall_state.ACTION_REMOVE
         )
         outcome = _execute_restore(
             deps, ctx, path, recorded, expect_absent=expect_absent
@@ -895,7 +929,7 @@ def execute_file_symlink_phase(
         ledger.record(key, c.action or "restore", outcome)
 
 
-def _wholesale_removal_directories(deps: Deps, ctx: DepartureContext) -> set[Path]:
+def _wholesale_removal_directories(deps: Deps, ctx: UninstallContext) -> set[Path]:
     """Directories removed wholesale (bypassing the empty-only rule) when owned.
 
     The Neovim fallback prefix and Nerd Font directory (tree-manifest
@@ -907,7 +941,9 @@ def _wholesale_removal_directories(deps: Deps, ctx: DepartureContext) -> set[Pat
         ctx.home / ".local" / "share" / "fonts" / "JetBrainsMonoNerdFont",
         ctx.home / ".local" / "opt" / "neovim",
     }
-    wholesale.update(ctx.home.joinpath(*parts) for parts in depart.SHARED_NEOVIM_DIRS)
+    wholesale.update(
+        ctx.home.joinpath(*parts) for parts in uninstall_state.SHARED_NEOVIM_DIRS
+    )
     return wholesale
 
 
@@ -927,12 +963,12 @@ def _execute_remove_directory(deps: Deps, path: Path, *, wholesale: bool) -> str
 
 
 def _remove_tree_manifest_directory(
-    deps: Deps, baseline: depart.Baseline, path: Path
+    deps: Deps, baseline: uninstall_state.Baseline, path: Path
 ) -> str:
     """Remove a wholly installer-owned tree, but only if it is untouched.
 
     The Nerd Font directory and the pinned Neovim prefix are the two trees
-    departure deletes outright rather than emptying, so they are the two
+    uninstall deletes outright rather than emptying, so they are the two
     where a wholesale ``rmtree`` could destroy something the user added
     after installing. Gated on the post-install manifest: an exact match is
     the only proof that everything inside is the installer's own.
@@ -944,16 +980,16 @@ def _remove_tree_manifest_directory(
         return f"unresolved: {exc}"
 
     try:
-        verdict = depart.remove_manifest_tree(baseline, path)
+        verdict = uninstall_state.remove_manifest_tree(baseline, path)
     except OSError as exc:
         return f"unresolved: {exc}"
-    if verdict == depart.TREE_MODIFIED:
+    if verdict == uninstall_state.TREE_MODIFIED:
         return (
             "unresolved: tree changed since install — something was added or "
             "edited inside it, so it was left in place rather than removed "
             "wholesale; remove it by hand if you are sure"
         )
-    if verdict == depart.TREE_UNRECORDED:
+    if verdict == uninstall_state.TREE_UNRECORDED:
         return (
             "unresolved: no post-install manifest recorded for this tree, so "
             "it cannot be proven unmodified — left in place; remove it by "
@@ -964,10 +1000,10 @@ def _remove_tree_manifest_directory(
 
 def execute_directory_phase(
     deps: Deps,
-    ctx: DepartureContext,
-    baseline: depart.Baseline,
-    report: dict[str, depart.Classification],
-    ledger: depart.DepartureLedger,
+    ctx: UninstallContext,
+    baseline: uninstall_state.Baseline,
+    report: dict[str, uninstall_state.Classification],
+    ledger: uninstall_state.UninstallLedger,
 ) -> None:
     """Execute every owned ``directory:`` action, deepest-path-first.
 
@@ -980,9 +1016,9 @@ def execute_directory_phase(
     owned_dirs = [
         key
         for key, c in report.items()
-        if c.bucket == depart.BUCKET_OWNED
-        and depart.key_type(key) == "directory"
-        and c.action == depart.ACTION_REMOVE
+        if c.bucket == uninstall_state.BUCKET_OWNED
+        and uninstall_state.key_type(key) == "directory"
+        and c.action == uninstall_state.ACTION_REMOVE
         and key not in done
     ]
 
@@ -997,45 +1033,49 @@ def execute_directory_phase(
             outcome = _execute_remove_directory(
                 deps, path, wholesale=path in wholesale_dirs
             )
-        ledger.record(key, depart.ACTION_REMOVE, outcome)
+        ledger.record(key, uninstall_state.ACTION_REMOVE, outcome)
 
 
 def execute_runtime_phase(
     deps: Deps,
-    ctx: DepartureContext,
-    report: dict[str, depart.Classification],
-    ledger: depart.DepartureLedger,
+    ctx: UninstallContext,
+    report: dict[str, uninstall_state.Classification],
+    ledger: uninstall_state.UninstallLedger,
 ) -> None:
     """Remove the NVM root wholesale, if owned and not already done."""
-    key = depart.runtime_key(ctx.home / ".nvm")
+    key = uninstall_state.runtime_key(ctx.home / ".nvm")
     if key in ledger.completed_keys():
         return
     c = report.get(key)
-    if c is None or c.bucket != depart.BUCKET_OWNED or c.action != depart.ACTION_REMOVE:
+    if (
+        c is None
+        or c.bucket != uninstall_state.BUCKET_OWNED
+        or c.action != uninstall_state.ACTION_REMOVE
+    ):
         return
     outcome = _execute_remove_directory(deps, ctx.home / ".nvm", wholesale=True)
-    ledger.record(key, depart.ACTION_REMOVE, outcome)
+    ledger.record(key, uninstall_state.ACTION_REMOVE, outcome)
 
 
 _REMOVAL_COMMANDS: dict[str, Callable[[str], list[str]]] = {
-    "apt": depart.apt_remove_command,
-    "dnf": depart.dnf_remove_command,
-    "npm": depart.npm_uninstall_command,
-    "uv-tool": depart.uv_tool_uninstall_command,
+    "apt": uninstall_state.apt_remove_command,
+    "dnf": uninstall_state.dnf_remove_command,
+    "npm": uninstall_state.npm_uninstall_command,
+    "uv-tool": uninstall_state.uv_tool_uninstall_command,
 }
 _RDEPENDS_COMMANDS: dict[str, Callable[[str], list[str]]] = {
-    "apt": depart.apt_rdepends_command,
-    "dnf": depart.dnf_whatrequires_command,
+    "apt": uninstall_state.apt_rdepends_command,
+    "dnf": uninstall_state.dnf_whatrequires_command,
 }
 _DOWNGRADE_COMMANDS: dict[str, Callable[[str, str], list[str]]] = {
-    "apt": depart.apt_downgrade_command,
-    "dnf": depart.dnf_downgrade_command,
+    "apt": uninstall_state.apt_downgrade_command,
+    "dnf": uninstall_state.dnf_downgrade_command,
 }
 
 
 def live_package_snapshots(
     deps: Deps,
-    baseline: depart.Baseline,
+    baseline: uninstall_state.Baseline,
 ) -> dict[str, dict[str, str] | None]:
     """Fresh probe results for every manager appearing in recorded transactions."""
     managers = {t.get("manager") for t in baseline.transactions if t.get("manager")}
@@ -1061,14 +1101,14 @@ def _execute_dependency_removal(deps: Deps, manager: str, name: str) -> str:
     if probe_builder is None:
         return f"unresolved: no reverse-dependency probe for manager {manager!r}"
     result = deps.run_command(probe_builder(name), capture=True)
-    verdict = depart.classify_rdepends_result(result.ok, result.stdout)
+    verdict = uninstall_state.classify_rdepends_result(result.ok, result.stdout)
     if verdict != "removable":
         return f"unresolved: reverse-dependency probe {verdict}"
     return _execute_package_removal(deps, manager, name)
 
 
 def _execute_downgrade(
-    deps: Deps, baseline: depart.Baseline, manager: str, name: str
+    deps: Deps, baseline: uninstall_state.Baseline, manager: str, name: str
 ) -> str:
     """Try each downgrade candidate in order (earliest first, per the ladder).
 
@@ -1078,7 +1118,7 @@ def _execute_downgrade(
     the pre-attempt and target versions — state left genuinely uncertain
     mid-operation, per the plan's "changed-state-then-failed" rule.
     """
-    candidates = depart.downgrade_candidates(baseline, manager, name)
+    candidates = uninstall_state.downgrade_candidates(baseline, manager, name)
     builder = _DOWNGRADE_COMMANDS.get(manager)
     if not candidates or builder is None:
         return "unresolved: no recorded downgrade target for this package"
@@ -1100,9 +1140,9 @@ def _execute_downgrade(
 
 def execute_package_phase(
     deps: Deps,
-    ctx: DepartureContext,
-    baseline: depart.Baseline,
-    ledger: depart.DepartureLedger,
+    ctx: UninstallContext,
+    baseline: uninstall_state.Baseline,
+    ledger: uninstall_state.UninstallLedger,
 ) -> bool:
     """Remove/downgrade owned packages, reverse transactions order.
 
@@ -1113,21 +1153,21 @@ def execute_package_phase(
     """
     done = ledger.completed_keys()
     pending_managers = {
-        depart.transaction_from_dict(t).manager
+        uninstall_state.transaction_from_dict(t).manager
         for t in baseline.transactions
         if any(
-            depart.package_key(t.get("manager", ""), name) not in done
+            uninstall_state.package_key(t.get("manager", ""), name) not in done
             for name in (
-                *depart.transaction_from_dict(t).requested,
-                *depart.transaction_from_dict(t).introduced(),
+                *uninstall_state.transaction_from_dict(t).requested,
+                *uninstall_state.transaction_from_dict(t).introduced(),
             )
         )
     }
     snapshots = {m: deps.capture_package_snapshot(m) for m in pending_managers}
-    for c in depart.classify_package_transactions(baseline, snapshots):
-        if c.key in done or c.bucket != depart.BUCKET_OWNED:
+    for c in uninstall_state.classify_package_transactions(baseline, snapshots):
+        if c.key in done or c.bucket != uninstall_state.BUCKET_OWNED:
             continue
-        if c.action == depart.ACTION_DOWNGRADE:
+        if c.action == uninstall_state.ACTION_DOWNGRADE:
             outcome = _execute_downgrade(deps, baseline, c.manager, c.name)
             ledger.record(c.key, c.action, outcome)
             if outcome.startswith("halt:"):
@@ -1143,13 +1183,13 @@ def execute_package_phase(
     return True
 
 
-def execute_departure(
+def execute_uninstall(
     deps: Deps,
-    ctx: DepartureContext,
-    baseline: depart.Baseline,
-    report: dict[str, depart.Classification],
-) -> depart.DepartureLedger:
-    """Perform every safe ``owned`` action, retry-safe via the departure ledger.
+    ctx: UninstallContext,
+    baseline: uninstall_state.Baseline,
+    report: dict[str, uninstall_state.Classification],
+) -> uninstall_state.UninstallLedger:
+    """Perform every safe ``owned`` action, retry-safe via the uninstall ledger.
 
     Order: services stop/disable first, then the global git hooksPath
     restore, then file/symlink restore-or-remove, then directories
@@ -1157,7 +1197,9 @@ def execute_departure(
     runtime last. A changed-state-then-failed downgrade halts the package
     phase and skips the runtime phase too.
     """
-    ledger = depart.DepartureLedger(depart.departure_ledger_path(ctx.state_dir))
+    ledger = uninstall_state.UninstallLedger(
+        uninstall_state.uninstall_ledger_path(ctx.state_dir)
+    )
     execute_service_phase(deps, ctx, baseline, ledger)
     execute_gitconfig_phase(deps, ctx, baseline, ledger)
     execute_file_symlink_phase(deps, ctx, baseline, report, ledger)
@@ -1167,13 +1209,13 @@ def execute_departure(
     return ledger
 
 
-def _finalize_departure_state(deps: Deps, ctx: DepartureContext) -> None:
-    """After a fully successful departure: release the lock and delete state.
+def _finalize_uninstall_state(deps: Deps, ctx: UninstallContext) -> None:
+    """After a fully successful uninstall: release the lock and delete state.
 
     Deletes baseline snapshots, ``baseline.json``, ``history.jsonl``,
-    ``departure.jsonl``, the profile marker, and the state directory itself
+    ``uninstall.jsonl``, the profile marker, and the state directory itself
     if it's now empty. Only called when zero unresolved/drifted items
-    remain — a partial departure retains everything for a retry.
+    remain — a partial uninstall retains everything for a retry.
 
     Also makes a best-effort (non-ledger, never-blocking) sweep of the
     state directory's own now-possibly-empty ancestors — ``~/.local/state``
@@ -1181,8 +1223,8 @@ def _finalize_departure_state(deps: Deps, ctx: DepartureContext) -> None:
     touches them (see ``_is_state_dir_or_its_ancestor``) precisely because
     their emptiness could only ever be known *after* this cleanup runs.
     """
-    depart.release_departure_lock(ctx.state_dir)
-    for path in _departure_state_paths(deps, ctx.state_dir):
+    uninstall_state.release_uninstall_lock(ctx.state_dir)
+    for path in _uninstall_state_paths(deps, ctx.state_dir):
         path.unlink(missing_ok=True)
     ctx.manifest.path.unlink(missing_ok=True)
     ctx.profile_marker.unlink(missing_ok=True)
@@ -1200,25 +1242,25 @@ def _finalize_departure_state(deps: Deps, ctx: DepartureContext) -> None:
         ancestor = ancestor.parent
 
 
-def do_depart(deps: Deps, ctx: DepartureContext) -> int:
-    """Preview and execute a pristine-state departure.
+def do_uninstall(deps: Deps, ctx: UninstallContext) -> int:
+    """Preview and execute a pristine-state uninstall.
 
     Implements the zero-evidence refusal, the four-bucket preflight
     report, the confirmation/exit-code contract, retryable execution via
-    the departure ledger, and advisory-lock acquisition/release from
+    the uninstall ledger, and advisory-lock acquisition/release from
     Implementation Sequence steps 3 and 4. The classifier is deliberately
-    conservative (see ``depart.classify_ownership_key`` and its two named
+    conservative (see ``uninstall_state.classify_ownership_key`` and its two named
     reclassification overrides) — anything it can't classify with
     confidence lands in ``unresolved`` rather than being guessed at, so
     this only ever mutates what preflight already reported as ``owned``.
     Package removal and service/linger handling are not implemented yet
-    (see ``execute_departure``'s docstring).
+    (see ``execute_uninstall``'s docstring).
     """
-    baseline_file = depart.baseline_path(ctx.state_dir)
+    baseline_file = uninstall_state.baseline_path(ctx.state_dir)
     if not baseline_file.is_file():
         print(
             deps.palette.error(
-                f"no baseline at {baseline_file} — nothing to depart from"
+                f"no baseline at {baseline_file} — nothing to uninstall from"
             ),
             file=sys.stderr,
         )
@@ -1247,7 +1289,7 @@ def do_depart(deps: Deps, ctx: DepartureContext) -> int:
     if report is None:
         print(
             deps.palette.error(
-                f"no baseline at {baseline_file} — nothing to depart from"
+                f"no baseline at {baseline_file} — nothing to uninstall from"
             ),
             file=sys.stderr,
         )
@@ -1269,12 +1311,12 @@ def do_depart(deps: Deps, ctx: DepartureContext) -> int:
 
     if not ctx.opts.yes:
         print()
-        print("Type DEPART to proceed: ", end="", flush=True)
+        print("Type UNINSTALL to proceed: ", end="", flush=True)
         if (
             _read_confirmation_token(
                 deps,
             )
-            != "DEPART"
+            != "UNINSTALL"
         ):
             print(
                 deps.palette.error("confirmation not received — aborting"),
@@ -1282,32 +1324,34 @@ def do_depart(deps: Deps, ctx: DepartureContext) -> int:
             )
             return 2
 
-    acquired, stale = depart.acquire_departure_lock(ctx.state_dir)
+    acquired, stale = uninstall_state.acquire_uninstall_lock(ctx.state_dir)
     if not acquired:
         print(
-            deps.palette.error("another --depart is already running on this machine"),
+            deps.palette.error(
+                "another --uninstall is already running on this machine"
+            ),
             file=sys.stderr,
         )
         return 2
     if stale is not None:
         print(
             deps.palette.warn(
-                f"reclaimed a stale departure lock (was held by pid {stale.pid})"
+                f"reclaimed a stale uninstall lock (was held by pid {stale.pid})"
             )
         )
 
     try:
-        baseline = depart.load_baseline(ctx.state_dir)
+        baseline = uninstall_state.load_baseline(ctx.state_dir)
         if baseline is None:
             print(
                 deps.palette.error(
-                    f"no baseline at {baseline_file} — nothing to depart from"
+                    f"no baseline at {baseline_file} — nothing to uninstall from"
                 ),
                 file=sys.stderr,
             )
             return 2
 
-        ledger = execute_departure(deps, ctx, baseline, report)
+        ledger = execute_uninstall(deps, ctx, baseline, report)
         failed = [
             e
             for e in ledger.entries()
@@ -1316,25 +1360,27 @@ def do_depart(deps: Deps, ctx: DepartureContext) -> int:
         unresolved_keys = [
             key
             for key, c in report.items()
-            if c.bucket in (depart.BUCKET_UNRESOLVED, depart.BUCKET_DRIFTED)
+            if c.bucket
+            in (uninstall_state.BUCKET_UNRESOLVED, uninstall_state.BUCKET_DRIFTED)
         ] + [
             c.key
             for c in package_report
-            if c.bucket in (depart.BUCKET_UNRESOLVED, depart.BUCKET_DRIFTED)
+            if c.bucket
+            in (uninstall_state.BUCKET_UNRESOLVED, uninstall_state.BUCKET_DRIFTED)
         ]
 
         if not failed and not unresolved_keys:
-            _finalize_departure_state(deps, ctx)
+            _finalize_uninstall_state(deps, ctx)
             print(
                 deps.palette.header(
-                    "Departure complete — no installer footprint remains."
+                    "Uninstall complete — no installer footprint remains."
                 )
             )
             return 0
 
         # Preflight explains why something was never *attempted*; these are
         # the ones that were attempted and did not complete. Their reasons
-        # only ever reached departure.jsonl, so a run that deliberately
+        # only ever reached uninstall.jsonl, so a run that deliberately
         # preserved something — a tree the user added to, a package still
         # depended on — looked identical to an unexplained failure.
         if failed:
@@ -1345,11 +1391,11 @@ def do_depart(deps: Deps, ctx: DepartureContext) -> int:
 
         print(
             deps.palette.warn(
-                f"⚠ departure incomplete — {len(failed) + len(unresolved_keys)} "
+                f"⚠ uninstall incomplete — {len(failed) + len(unresolved_keys)} "
                 "item(s) remain unresolved (see the preflight report above); "
-                "re-run --depart to retry"
+                "re-run --uninstall to retry"
             )
         )
         return 1
     finally:
-        depart.release_departure_lock(ctx.state_dir)
+        uninstall_state.release_uninstall_lock(ctx.state_dir)

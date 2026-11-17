@@ -140,7 +140,7 @@ class DocSetConfig:
 
     fixed_docs: tuple[str, ...]
     script_dirs: tuple[str, ...]
-    root_entrypoints: tuple[str, ...] = ("install.py", "depart.py")
+    root_entrypoints: tuple[str, ...] = ("install.py", "uninstall_state.py")
     state_path: str = "refresh-guidance-state.json"
     cross_repo_scripts: bool = False
     """When True, script discovery also indexes `agent-scripts/*.py` under

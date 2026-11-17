@@ -374,5 +374,5 @@ This deletion is **irreversible** — inspect the journal first (and back it up
 if its history is wanted). Do **not** remove anything else under the state
 directory: `migration.lock` and `migration-observations.jsonl` belong to the
 still-live migration lock, `baseline.json` and `baseline-snapshot-*.blob` are
-the live `--depart` install baseline, and `history.jsonl` / `timing.jsonl` /
+the live `--uninstall` install baseline, and `history.jsonl` / `timing.jsonl` /
 `harness-discovery-*.json` / `trust-sessions/` are live state.

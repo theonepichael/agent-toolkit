@@ -85,8 +85,8 @@ HARNESS_DIRS = harness_spec.ALL_NAMES
 SCRIPTS_DIR = "agent-scripts"
 ROOT_ENTRYPOINTS = (
     "install.py",
-    "depart.py",
-    "depart_exec.py",
+    "uninstall_state.py",
+    "uninstall_exec.py",
 )
 OUTPUT_NAME = "INTERFACES.md"
 

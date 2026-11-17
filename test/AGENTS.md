@@ -82,7 +82,7 @@ they covered — two homes for tests was the actual complaint; the fix was
 consolidating the location, not the style below).
 
 - **Most of `test/`** — pytest. Covers the top-level tooling: the
-  installer, departure mode, lint gates, and the cross-harness guards.
+  installer, uninstall mode, lint gates, and the cross-harness guards.
 - **The former `agent-scripts/test_*.py` files** (`test_dev_status.py`,
   `test_grill.py`, `test_second_opinion.py`, and the rest covering
   `agent-scripts/` modules) — standard library `unittest`, still

@@ -2349,7 +2349,7 @@ install.py — agent-toolkit provisioner for macOS/Linux.
   - `--reseed`
   - `--adopt`
   - `--force-harness`
-  - `--depart`
+  - `--uninstall`
   - `--yes`
   - `--check-links`
   - `--report-legacy-env`
@@ -2383,22 +2383,22 @@ install.py — agent-toolkit provisioner for macOS/Linux.
   - `seed_pi_settings(ctx: Context) -> tuple[str, str]` — Seed ~/.pi/agent/settings.json, if Pi was selected.
   - `seed_opencode_config(ctx: Context) -> tuple[str, str]` — Seed ~/.config/opencode/opencode.jsonc, if opencode was selected.
   - `sync_codex_skills(ctx: Context) -> list[str]` — Copy each ``codex/skills/<name>/SKILL.md`` into ``~/.codex/skills/<name>/``.
-  - `capture_service_baseline(ctx: Context) -> None` — Capture every managed service's service/linger state, immediately before :func:`enable_managed_services` runs — capturing any later would record the post-install enabled state as baseline and departure would never disable anything.
+  - `capture_service_baseline(ctx: Context) -> None` — Capture every managed service's service/linger state, immediately before :func:`enable_managed_services` runs — capturing any later would record the post-install enabled state as baseline and uninstall would never disable anything.
   - `enable_managed_services(ctx: Context) -> None` — Enable and start every managed systemd --user unit (Linux, non-work).
-  - `capture_git_hooks_path_baseline(ctx: Context) -> None` — Capture the pre-existing global ``core.hooksPath``, immediately before :func:`install_global_git_hooks_path` runs -- capturing any later would record the origin repo's own already-set value as if it were the original, which would make departure "restore" that repo's own path instead of the true pre-install value.
+  - `capture_git_hooks_path_baseline(ctx: Context) -> None` — Capture the pre-existing global ``core.hooksPath``, immediately before :func:`install_global_git_hooks_path` runs -- capturing any later would record the origin repo's own already-set value as if it were the original, which would make uninstall "restore" that repo's own path instead of the true pre-install value.
   - `install_global_git_hooks_path(ctx: Context) -> None` — Point global ``core.hooksPath`` at ``githooks-global/``, so every repo without its own local override picks up the no-commit-on-main hook.
-  - `capture_departure_baseline(ctx: Context, specs: Sequence[LinkSpec]) -> None` — Thin shim — implementation in depart_exec.
-  - `build_preflight_report(ctx: Context) -> dict[str, depart.Classification] | None` — Thin shim — implementation in depart_exec.
-  - `build_package_preflight(ctx: Context) -> list[depart.PackageClassification] | None` — Thin shim — implementation in depart_exec.
-  - `execute_service_phase(ctx: Context, baseline: depart.Baseline, ledger: depart.DepartureLedger) -> None` — Thin shim — implementation in depart_exec.
-  - `execute_gitconfig_phase(ctx: Context, baseline: depart.Baseline, ledger: depart.DepartureLedger) -> None` — Thin shim — implementation in depart_exec.
-  - `execute_file_symlink_phase(ctx: Context, baseline: depart.Baseline, report: dict[str, depart.Classification], ledger: depart.DepartureLedger) -> None` — Thin shim — implementation in depart_exec.
-  - `execute_directory_phase(ctx: Context, baseline: depart.Baseline, report: dict[str, depart.Classification], ledger: depart.DepartureLedger) -> None` — Thin shim — implementation in depart_exec.
-  - `execute_runtime_phase(ctx: Context, report: dict[str, depart.Classification], ledger: depart.DepartureLedger) -> None` — Thin shim — implementation in depart_exec.
-  - `live_package_snapshots(baseline: depart.Baseline) -> dict[str, dict[str, str] | None]` — Thin shim — implementation in depart_exec.
-  - `execute_package_phase(ctx: Context, baseline: depart.Baseline, ledger: depart.DepartureLedger) -> bool` — Thin shim — implementation in depart_exec.
-  - `execute_departure(ctx: Context, baseline: depart.Baseline, report: dict[str, depart.Classification]) -> depart.DepartureLedger` — Thin shim — implementation in depart_exec.
-  - `do_depart(ctx: Context) -> int` — Thin shim — implementation in depart_exec.
+  - `capture_uninstall_baseline(ctx: Context, specs: Sequence[LinkSpec]) -> None` — Thin shim — implementation in uninstall_exec.
+  - `build_preflight_report(ctx: Context) -> dict[str, uninstall_state.Classification] | None` — Thin shim — implementation in uninstall_exec.
+  - `build_package_preflight(ctx: Context) -> list[uninstall_state.PackageClassification] | None` — Thin shim — implementation in uninstall_exec.
+  - `execute_service_phase(ctx: Context, baseline: uninstall_state.Baseline, ledger: uninstall_state.UninstallLedger) -> None` — Thin shim — implementation in uninstall_exec.
+  - `execute_gitconfig_phase(ctx: Context, baseline: uninstall_state.Baseline, ledger: uninstall_state.UninstallLedger) -> None` — Thin shim — implementation in uninstall_exec.
+  - `execute_file_symlink_phase(ctx: Context, baseline: uninstall_state.Baseline, report: dict[str, uninstall_state.Classification], ledger: uninstall_state.UninstallLedger) -> None` — Thin shim — implementation in uninstall_exec.
+  - `execute_directory_phase(ctx: Context, baseline: uninstall_state.Baseline, report: dict[str, uninstall_state.Classification], ledger: uninstall_state.UninstallLedger) -> None` — Thin shim — implementation in uninstall_exec.
+  - `execute_runtime_phase(ctx: Context, report: dict[str, uninstall_state.Classification], ledger: uninstall_state.UninstallLedger) -> None` — Thin shim — implementation in uninstall_exec.
+  - `live_package_snapshots(baseline: uninstall_state.Baseline) -> dict[str, dict[str, str] | None]` — Thin shim — implementation in uninstall_exec.
+  - `execute_package_phase(ctx: Context, baseline: uninstall_state.Baseline, ledger: uninstall_state.UninstallLedger) -> bool` — Thin shim — implementation in uninstall_exec.
+  - `execute_uninstall(ctx: Context, baseline: uninstall_state.Baseline, report: dict[str, uninstall_state.Classification]) -> uninstall_state.UninstallLedger` — Thin shim — implementation in uninstall_exec.
+  - `do_uninstall(ctx: Context) -> int` — Thin shim — implementation in uninstall_exec.
   - `write_profile_marker(ctx: Context) -> None` — Mark this machine as work-provisioned, so later plain runs are guarded.
   - `work_guard_blocks(ctx: Context) -> bool` — Return whether a plain personal run must be refused on this machine.
   - `do_rollback(ctx: Context) -> int` — Reverse every file mutation recorded across every past run.
@@ -2408,21 +2408,21 @@ install.py — agent-toolkit provisioner for macOS/Linux.
   - `run_install(ctx: Context, specs: Sequence[LinkSpec]) -> int` — Run every install step in order and return the process exit status.
 - Tested by: `test/test_dead_installers_stripped.py`, `test/test_harness_spec.py`, `test/test_install.py`, `test/test_link_inspect.py`, `test/test_orphan_moved_checkout.py`, `test/test_settings_seed.py`
 
-### `depart.py`
+### `uninstall_state.py`
 
-Pristine-state departure mode: baseline capture and ownership tracking.
+Pristine-state uninstall mode: baseline capture and ownership tracking.
 
 - Installed at: not symlinked by `links.toml`
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI: none (library module).
 - Public classes:
   - `class Layer` — One capture pass: a timestamp and the ownership-key records from it.
-  - `class Baseline` — The full departure baseline: immutable first layer, later supplements.
+  - `class Baseline` — The full uninstall baseline: immutable first layer, later supplements.
   - `class Transaction` — One package-manager operation's before/after state and provenance.
   - `class Classification`
-  - `class DepartureLedger` — Crash-safe, fsynced-per-entry record of completed departure actions.
+  - `class UninstallLedger` — Crash-safe, fsynced-per-entry record of completed uninstall actions.
   - `class LockInfo`
-  - `class PackageClassification` — One requested-or-introduced package's departure classification.
+  - `class PackageClassification` — One requested-or-introduced package's uninstall classification.
 - Public functions:
   - `file_key(path: Path) -> str`
   - `symlink_key(path: Path) -> str`
@@ -2445,7 +2445,7 @@ Pristine-state departure mode: baseline capture and ownership tracking.
   - `read_blob(state_dir: Path, digest: str) -> bytes | None` — Read a blob's content back, or None if it's missing/unreadable.
   - `record_installed_tree(baseline: Baseline, root: Path) -> None` — Snapshot ``root`` as the installer just produced it.
   - `installed_tree_verdict(baseline: Baseline, root: Path) -> str` — Classify a wholly installer-owned tree for safe wholesale removal.
-  - `remove_manifest_tree(baseline: Baseline, path: Path) -> str` — Remove ``path`` wholesale, but only if its :func:`installed_tree_verdict` is ``TREE_UNCHANGED`` — the departure-time policy: refuse unless provably unchanged, since refusing is departure's safe terminal outcome.
+  - `remove_manifest_tree(baseline: Baseline, path: Path) -> str` — Remove ``path`` wholesale, but only if its :func:`installed_tree_verdict` is ``TREE_UNCHANGED`` — the uninstall-time policy: refuse unless provably unchanged, since refusing is uninstall's safe terminal outcome.
   - `baseline_path(state_dir: Path) -> Path`
   - `baseline_to_dict(baseline: Baseline) -> dict[str, object]`
   - `baseline_from_dict(data: dict[str, object]) -> Baseline`
@@ -2473,54 +2473,54 @@ Pristine-state departure mode: baseline capture and ownership tracking.
   - `record_transaction(baseline: Baseline, *, manager: str, requested: list[str], before: dict[str, str], after: dict[str, str], captured_at: str, epoch: dict[str, str] | None = None) -> Transaction` — Build a :class:`Transaction`, append it to ``baseline``, and return it.
   - `earliest_recorded_version(baseline: Baseline, manager: str, name: str) -> str | None` — ``name``'s true pre-install version for ``manager``, if ever recorded.
   - `downgrade_candidates(baseline: Baseline, manager: str, name: str) -> list[str]` — Versions to try, in order, when downgrading an installer-upgraded package.
-  - `classify_ownership_key(key: str, recorded: dict[str, object] | None, live: dict[str, object]) -> Classification` — Classify one ownership key for the departure preflight report.
+  - `classify_ownership_key(key: str, recorded: dict[str, object] | None, live: dict[str, object]) -> Classification` — Classify one ownership key for the uninstall preflight report.
   - `reclassify_rc_file(recorded: dict[str, object] | None, baseline_content: bytes | None, live_content: bytes | None) -> Classification | None` — Override the generic classification for one rc file, if warranted.
   - `reclassify_symlink_destination_pair(file_recorded: dict[str, object] | None, file_live: dict[str, object], symlink_recorded: dict[str, object] | None, symlink_live: dict[str, object]) -> tuple[Classification, Classification] | None` — Jointly reclassify a destination's ``file:``/``symlink:`` key pair.
-  - `departure_ledger_path(state_dir: Path) -> Path`
-  - `departure_lock_path(state_dir: Path) -> Path`
+  - `uninstall_ledger_path(state_dir: Path) -> Path`
+  - `uninstall_lock_path(state_dir: Path) -> Path`
   - `parse_lock_text(text: str) -> LockInfo | None`
   - `read_lock(path: Path) -> LockInfo | None`
   - `process_start_time(pid: int) -> int | None` — Read a process's start-time field (field 22) from ``/proc/<pid>/stat``.
   - `is_lock_holder_alive(pid: int, recorded_start_time: int, *, start_time_fn: Callable[[int], int | None] = process_start_time) -> bool` — Whether the recorded lock holder is still running the same process.
-  - `acquire_departure_lock(state_dir: Path, *, pid: int | None = None, start_time_fn: Callable[[int], int | None] = process_start_time) -> tuple[bool, LockInfo | None]` — Try to acquire the departure advisory lock.
-  - `release_departure_lock(state_dir: Path, pid: int | None = None) -> None` — Release and unlink the lock, only if it's still recorded as ours.
-  - `classify_package_transactions(baseline: Baseline, live_snapshots: dict[str, dict[str, str] | None]) -> list[PackageClassification]` — Classify every requested/introduced package, in departure removal order.
+  - `acquire_uninstall_lock(state_dir: Path, *, pid: int | None = None, start_time_fn: Callable[[int], int | None] = process_start_time) -> tuple[bool, LockInfo | None]` — Try to acquire the uninstall advisory lock.
+  - `release_uninstall_lock(state_dir: Path, pid: int | None = None) -> None` — Release and unlink the lock, only if it's still recorded as ours.
+  - `classify_package_transactions(baseline: Baseline, live_snapshots: dict[str, dict[str, str] | None]) -> list[PackageClassification]` — Classify every requested/introduced package, in uninstall removal order.
   - `build_service_record(*, enabled: bool | None, active: bool | None, linger: bool | None) -> dict[str, object]` — Build a ``service:`` record from already-probed values.
   - `classify_service(recorded: dict[str, object] | None, live: dict[str, object]) -> Classification` — Classify the watchcommit service/linger key.
   - `build_gitconfig_record(value: str | None) -> dict[str, object]` — Build a ``gitconfig:`` record from an already-read global config value.
   - `classify_gitconfig(recorded: dict[str, object] | None, live: dict[str, object], managed_value: str) -> Classification` — Classify a single global git config key this installer manages.
-- Tested by: `test/test_depart.py`, `test/test_depart_transactions.py`, `test/test_install.py`
+- Tested by: `test/test_install.py`, `test/test_uninstall_state.py`, `test/test_uninstall_transactions.py`
 
-### `depart_exec.py`
+### `uninstall_exec.py`
 
-depart_exec.py — --depart execution: preflight, phases, confirmation, cleanup.
+uninstall_exec.py — --uninstall execution: preflight, phases, confirmation, cleanup.
 
 - Installed at: not symlinked by `links.toml`
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI: none (library module).
 - Public classes:
-  - `class DepartureOptionsLike(Protocol)` — The install options departure execution actually reads.
-  - `class ManifestLike(Protocol)` — The install manifest surface departure execution actually reads.
+  - `class UninstallOptionsLike(Protocol)` — The install options uninstall execution actually reads.
+  - `class ManifestLike(Protocol)` — The install manifest surface uninstall execution actually reads.
   - `class ManagedServiceLike(Protocol)` — Structural stand-in for install.ManagedService (name/unit only).
   - `class LinkSpecLike(Protocol)` — Structural stand-in for link_inspect.LinkSpec (dest only, here).
   - `class CommandResultLike(Protocol)` — Structural stand-in for install.CommandResult.
-  - `class DepartureContext(Protocol)` — Structural subset of install.Context used by departure execution.
+  - `class UninstallContext(Protocol)` — Structural subset of install.Context used by uninstall execution.
   - `class Deps` — Execution dependencies injected from install.py (resolved at call time).
 - Public functions:
   - `capture_destination_records(dests: Sequence[Path], *, home: Path, state_dir: Path, blob_dir: Path | None) -> dict[str, dict[str, object]]` — Baseline records for link destinations: each file, link, backup and parent.
-  - `capture_departure_baseline(deps: Deps, ctx: DepartureContext, specs: Sequence[LinkSpecLike]) -> None` — Capture this run's departure baseline layer before any install step runs.
-  - `build_preflight_report(deps: Deps, ctx: DepartureContext) -> dict[str, depart.Classification] | None` — Classify every tracked ownership key, or None if there's no baseline.
-  - `build_package_preflight(deps: Deps, ctx: DepartureContext) -> list[depart.PackageClassification] | None` — Classify every requested/introduced package, or None if there's no baseline.
-  - `execute_service_phase(deps: Deps, ctx: DepartureContext, baseline: depart.Baseline, ledger: depart.DepartureLedger) -> None` — Disable+stop every owned managed service, then reconcile linger once.
-  - `execute_gitconfig_phase(deps: Deps, ctx: DepartureContext, baseline: depart.Baseline, ledger: depart.DepartureLedger) -> None` — Restore the pre-install global core.hooksPath value, if this installer owns the current value.
-  - `execute_file_symlink_phase(deps: Deps, ctx: DepartureContext, baseline: depart.Baseline, report: dict[str, depart.Classification], ledger: depart.DepartureLedger) -> None` — Execute every owned ``file:``/``symlink:`` action, in pinned order.
-  - `execute_directory_phase(deps: Deps, ctx: DepartureContext, baseline: depart.Baseline, report: dict[str, depart.Classification], ledger: depart.DepartureLedger) -> None` — Execute every owned ``directory:`` action, deepest-path-first.
-  - `execute_runtime_phase(deps: Deps, ctx: DepartureContext, report: dict[str, depart.Classification], ledger: depart.DepartureLedger) -> None` — Remove the NVM root wholesale, if owned and not already done.
-  - `live_package_snapshots(deps: Deps, baseline: depart.Baseline) -> dict[str, dict[str, str] | None]` — Fresh probe results for every manager appearing in recorded transactions.
-  - `execute_package_phase(deps: Deps, ctx: DepartureContext, baseline: depart.Baseline, ledger: depart.DepartureLedger) -> bool` — Remove/downgrade owned packages, reverse transactions order.
-  - `execute_departure(deps: Deps, ctx: DepartureContext, baseline: depart.Baseline, report: dict[str, depart.Classification]) -> depart.DepartureLedger` — Perform every safe ``owned`` action, retry-safe via the departure ledger.
-  - `do_depart(deps: Deps, ctx: DepartureContext) -> int` — Preview and execute a pristine-state departure.
-- Tested by: `test/test_depart_exec_layering.py`, `test/test_install.py`
+  - `capture_uninstall_baseline(deps: Deps, ctx: UninstallContext, specs: Sequence[LinkSpecLike]) -> None` — Capture this run's uninstall baseline layer before any install step runs.
+  - `build_preflight_report(deps: Deps, ctx: UninstallContext) -> dict[str, uninstall_state.Classification] | None` — Classify every tracked ownership key, or None if there's no baseline.
+  - `build_package_preflight(deps: Deps, ctx: UninstallContext) -> list[uninstall_state.PackageClassification] | None` — Classify every requested/introduced package, or None if there's no baseline.
+  - `execute_service_phase(deps: Deps, ctx: UninstallContext, baseline: uninstall_state.Baseline, ledger: uninstall_state.UninstallLedger) -> None` — Disable+stop every owned managed service, then reconcile linger once.
+  - `execute_gitconfig_phase(deps: Deps, ctx: UninstallContext, baseline: uninstall_state.Baseline, ledger: uninstall_state.UninstallLedger) -> None` — Restore the pre-install global core.hooksPath value, if this installer owns the current value.
+  - `execute_file_symlink_phase(deps: Deps, ctx: UninstallContext, baseline: uninstall_state.Baseline, report: dict[str, uninstall_state.Classification], ledger: uninstall_state.UninstallLedger) -> None` — Execute every owned ``file:``/``symlink:`` action, in pinned order.
+  - `execute_directory_phase(deps: Deps, ctx: UninstallContext, baseline: uninstall_state.Baseline, report: dict[str, uninstall_state.Classification], ledger: uninstall_state.UninstallLedger) -> None` — Execute every owned ``directory:`` action, deepest-path-first.
+  - `execute_runtime_phase(deps: Deps, ctx: UninstallContext, report: dict[str, uninstall_state.Classification], ledger: uninstall_state.UninstallLedger) -> None` — Remove the NVM root wholesale, if owned and not already done.
+  - `live_package_snapshots(deps: Deps, baseline: uninstall_state.Baseline) -> dict[str, dict[str, str] | None]` — Fresh probe results for every manager appearing in recorded transactions.
+  - `execute_package_phase(deps: Deps, ctx: UninstallContext, baseline: uninstall_state.Baseline, ledger: uninstall_state.UninstallLedger) -> bool` — Remove/downgrade owned packages, reverse transactions order.
+  - `execute_uninstall(deps: Deps, ctx: UninstallContext, baseline: uninstall_state.Baseline, report: dict[str, uninstall_state.Classification]) -> uninstall_state.UninstallLedger` — Perform every safe ``owned`` action, retry-safe via the uninstall ledger.
+  - `do_uninstall(deps: Deps, ctx: UninstallContext) -> int` — Preview and execute a pristine-state uninstall.
+- Tested by: `test/test_install.py`, `test/test_uninstall_exec_layering.py`
 
 ---
 

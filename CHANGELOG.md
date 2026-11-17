@@ -14,6 +14,44 @@ the warning. Run `./install.sh --report-legacy-env` to see any still set.
 
 ## Unreleased
 
+## release-4 — 2026-11-17
+
+- **Clean-break rename 1 (`depart` → `uninstall`):** renamed `depart.py` →
+  `uninstall_state.py`, `depart_exec.py` → `uninstall_exec.py`, `--depart` →
+  `--uninstall` (no `--depart` CLI alias; `--depart` now exits 2), the
+  confirmation token `DEPART` → `UNINSTALL`, and the transient per-run state
+  paths `departure.jsonl` / `departure.lock` → `uninstall.jsonl` /
+  `uninstall.lock`, with matching updates across `install.py`,
+  `gen_interfaces.py`, `refresh_guidance.py`, `GLOSSARY.md`, `INTERFACES.md`,
+  docs, and tests. This release makes no behavior changes and upgrades no stored
+  data (`baseline.json` carries no `depart` strings, and zero `DEPART*`
+  environment variables exist).
+  - **Per-machine pre-install check:** before installing `release-4`, check
+    your local state directories (for example `~/.local/state/agent-toolkit/`
+    and any downstream overlay repo's state dir under `~/.local/state/`) for
+    `departure.jsonl` / `departure.lock`. If found, verify no live process holds
+    `departure.lock` and confirm whether `departure.jsonl` is stale residue
+    (rather than an in-flight `--depart` run to finish under the old release
+    first), show the files to the user, and delete them only after the user
+    confirms; never rename them into place.
+
+### release-4: `depart` -> `uninstall` checklist
+
+- [x] Defining source file renamed (`depart.py` → `uninstall_state.py`, `depart_exec.py` → `uninstall_exec.py`)
+- [x] Every Python import updated
+- [x] `links.toml` destination and manifest entry updated (N/A — repo-root entrypoints have no `links.toml` rows)
+- [x] `install.py` / `install.sh` references updated
+- [x] Workflow files regenerated, per harness, from templates — never hand-edited (N/A — installer-only, no harness workflow surface)
+- [x] Generator parameter tables updated (`gen_interfaces.py` `ROOT_ENTRYPOINTS`)
+- [x] `INTERFACES.md` regenerated
+- [x] `GLOSSARY.md` term added with its first-use definition
+- [x] `README.md` references updated (no `--depart` references in `README.md`)
+- [x] Tests and fixtures updated; drift checks pass
+- [x] Persisted field or value transform written, with a version bump (N/A — `baseline.json` holds no `depart` strings and `departure.jsonl` is transient per-run state handled by the pre-install check above)
+- [x] Environment variable fallback added with a deprecation warning (N/A — zero `DEPART*` environment variables exist)
+- [x] Manual-edit checklist emitted for external instruction files (`rename_transition.py checklist depart uninstall --release release-4`; scan result: the only hit was `~/.claude/CLAUDE.md:67` `"departs from the"`, which is ordinary English, so no edit is needed on this machine — the work machine and fedora get their own scan at rollout)
+- [x] No undocumented alias left behind, except the env-var fallback window
+
 - `docs/fork-machine-updates.md` can now be run by an agent on the
   fork-installed machine while the user oversees it: a rules section up
   front (stop after every step, no hand edits to toolkit data, exit 75 means

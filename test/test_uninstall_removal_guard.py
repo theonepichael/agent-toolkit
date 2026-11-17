@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 """Class guard: shutil.rmtree may only be called from a small, named set of
-functions in install.py/depart.py.
+functions in install.py/uninstall_state.py.
 
 Every shutil.rmtree call on a tree-manifest-tracked directory goes through
-depart.installed_tree_verdict first, either via depart.remove_manifest_tree
-(the departure-time policy: remove only on TREE_UNCHANGED) or directly —
+uninstall_state.installed_tree_verdict first, either via uninstall_state.remove_manifest_tree
+(the uninstall-time policy: remove only on TREE_UNCHANGED) or directly —
 a deliberate unguarded sweep like _wipe_neovim_dirs, whose scope is
 Neovim's own XDG data/state/cache dirs and never a vendor runtime tree
 (see that function's docstring for why). Every other legitimate rmtree
 call site is named explicitly in ALLOWED_RMTREE_FUNCTIONS below, with a
 reason. Adding a new function that calls shutil.rmtree without updating
 this allowlist fails the test here, forcing a deliberate choice (route
-through depart.remove_manifest_tree, or add a reasoned allowlist entry)
-instead of silently going unguarded — the incident class this guards
-against: ~/.claude/data/grill/meta-guard-tree-removal-needs-manifest-spec.md.
+through uninstall_state.remove_manifest_tree, or add a reasoned allowlist entry)
+instead of silently removing a user-modified tree without checking its
+manifest.
 """
 
 import ast
@@ -27,10 +27,10 @@ ALLOWED_RMTREE_FUNCTIONS = {
     "install.py": {
         "_wipe_neovim_dirs",  # deliberate unguarded XDG state/cache sweep, distinct from the vendor runtime tree
     },
-    "depart_exec.py": {
+    "uninstall_exec.py": {
         "_execute_remove_directory",  # generic executor for .nvm + shared neovim dirs, never manifest-tracked
     },
-    "depart.py": {
+    "uninstall_state.py": {
         "remove_manifest_tree",  # the blessed function itself
     },
 }
@@ -111,14 +111,14 @@ def _unallowed_rmtree_sites(filename: str) -> list[tuple[str, int]]:
     ]
 
 
-@pytest.mark.parametrize("filename", ["install.py", "depart.py"])
+@pytest.mark.parametrize("filename", ["install.py", "uninstall_state.py"])
 def test_rmtree_only_called_from_allowed_functions(filename: str) -> None:
     violations = _unallowed_rmtree_sites(filename)
     assert not violations, (
         "shutil.rmtree called outside the allowed-function list "
         f"{sorted(ALLOWED_RMTREE_FUNCTIONS[filename])!r} — either this is a "
         "new tree-manifest-tracked removal that must go through "
-        "depart.remove_manifest_tree instead of calling shutil.rmtree "
+        "uninstall_state.remove_manifest_tree instead of calling shutil.rmtree "
         "directly, or it's a new legitimate non-manifest wholesale removal "
         "that needs a reasoned entry added to ALLOWED_RMTREE_FUNCTIONS: "
         + ", ".join(f"{f}:{ln}" for f, ln in violations)

@@ -4,7 +4,7 @@
 # container for each. Mounts the repo read-only so nothing here can touch
 # the real machine or the checked-out working tree. Needs network access at
 # run time: section 15 installs an unrelated distro package to prove
-# --depart leaves it alone.
+# --uninstall leaves it alone.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"

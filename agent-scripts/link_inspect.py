@@ -1323,7 +1323,7 @@ def check_unmanaged_files(
     """Report foreign entries in directories ``links.toml`` owns exclusively.
 
     Nothing else catches these. ``--rollback`` only inspects what the history
-    recorded, ``--depart`` compares against an install-time baseline, and the
+    recorded, ``--uninstall`` compares against an install-time baseline, and the
     repo-to-links.toml parity tests check both directions of the mapping yet
     cannot see a file that exists only on the installed side.
 

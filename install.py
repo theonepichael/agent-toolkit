@@ -54,8 +54,8 @@ import harness_spec  # noqa: E402 — sibling dir inserted above
 import link_inspect  # noqa: E402 — sibling dir inserted above
 import settings_seed  # noqa: E402 — sibling dir inserted above
 
-import depart  # noqa: E402 — sibling dir on path above
-import depart_exec  # noqa: E402 — sibling dir on path above
+import uninstall_exec  # noqa: E402 — sibling dir on path above
+import uninstall_state  # noqa: E402 — sibling dir on path above
 
 # Re-exports from link_inspect (the extracted links.toml-audit module in
 # agent-scripts/): public names keep resolving through install for
@@ -110,14 +110,14 @@ dir_applies = link_inspect.dir_applies
 
 USAGE = """\
 usage: ./install.sh --harness=<claude,copilot,opencode,agy,pi,codex>[,...] [--profile=personal|work] [--rollback] [--wipe] [--force] [--dry-run] [--reseed | --adopt] [--quiet | --verbose]
-       ./install.sh --depart [--yes] [--dry-run] [--quiet | --verbose]
+       ./install.sh --uninstall [--yes] [--dry-run] [--quiet | --verbose]
        ./install.sh --check-links [--harness=...] [--profile=personal|work] [--quiet | --verbose]
        ./install.sh --report-legacy-env [--quiet | --verbose]
 
   --quiet, -q   suppress non-essential output
   --verbose, -v emit extra diagnostic messages to stderr
   --harness   required for an install run; not needed by the undo/audit
-              actions (--rollback, --depart, --check-links), though
+              actions (--rollback, --uninstall, --check-links), though
               --check-links accepts it to scope which entries apply.
               Comma-separated, at least one of:
               claude, copilot, opencode, agy, pi, codex. No default — every run must
@@ -178,8 +178,8 @@ usage: ./install.sh --harness=<claude,copilot,opencode,agy,pi,codex>[,...] [--pr
               Missing live files are left missing. Empty, unreadable, dirty,
               untracked, or unparseable opencode.jsonc files are skipped;
               live opencode allowlist bypasses are refused. Cannot be combined
-              with --reseed, --rollback, --depart, or --check-links.
-  --depart    remove or restore everything a past install run (future
+              with --reseed, --rollback, --uninstall, or --check-links.
+  --uninstall    remove or restore everything a past install run (future
               installs only — this reasons entirely from a baseline
               recorded at install time, not from history.jsonl) owns on
               this machine: files, symlinks, packages, runtimes, and
@@ -187,12 +187,12 @@ usage: ./install.sh --harness=<claude,copilot,opencode,agy,pi,codex>[,...] [--pr
               alongside it are --yes and --dry-run. Refuses with no baseline
               recorded (exit 2). Prints a full preflight report and, on a
               real (non-dry-run) run, requires typing the exact token
-              DEPART to proceed unless --yes is passed. This is
+              UNINSTALL to proceed unless --yes is passed. This is
               local-footprint cleanup, not forensic erasure — see README.md
               for the separate, genuinely destructive WSL unregister/
               recreate path for a guaranteed pristine reset.
-  --yes       skip --depart's interactive confirmation prompt. Only valid
-              alongside --depart.
+  --yes       skip --uninstall's interactive confirmation prompt. Only valid
+              alongside --uninstall.
   --check-links
               audit the live symlinks against links.toml and exit. Strictly
               read-only: nothing is created, removed, or repointed, so this
@@ -469,7 +469,7 @@ class Options:
     wipe: bool = False
     reseed: bool = False
     adopt: bool = False
-    depart: bool = False
+    uninstall: bool = False
     yes: bool = False
     check_links: bool = False
     # rename-transition: remove after the clean-break renames
@@ -492,9 +492,9 @@ class Context:
     reporter: Reporter
     system: str
     is_wsl: bool
-    # Set by capture_departure_baseline (Linux, non-dry-run only); departure
+    # Set by capture_uninstall_baseline (Linux, non-dry-run only); uninstall
     # records are saved by run_install after every step.
-    departure_baseline: depart.Baseline | None = None
+    uninstall_baseline: uninstall_state.Baseline | None = None
 
     @property
     def state_dir(self) -> Path:
@@ -639,7 +639,7 @@ def parse_args(argv: Sequence[str]) -> Options:
     parser.add_argument("--reseed", action="store_true")
     parser.add_argument("--adopt", action="store_true")
     parser.add_argument("--force-harness", dest="force_harness", action="store_true")
-    parser.add_argument("--depart", action="store_true")
+    parser.add_argument("--uninstall", action="store_true")
     parser.add_argument("--yes", action="store_true")
     parser.add_argument("--check-links", dest="check_links", action="store_true")
     # rename-transition: remove after the clean-break renames
@@ -696,13 +696,13 @@ def parse_args(argv: Sequence[str]) -> Options:
     if args.adopt and args.reseed:
         _fail("--adopt and --reseed cannot be used together")
 
-    # --depart is a standalone, undo-everything action, checked first (ahead
-    # of --rollback's own alone-check below) so `--rollback --depart` names
-    # the --depart conflict, not the rollback one. Written out literally
+    # --uninstall is a standalone, undo-everything action, checked first (ahead
+    # of --rollback's own alone-check below) so `--rollback --uninstall` names
+    # the --uninstall conflict, not the rollback one. Written out literally
     # rather than copied from --rollback's check — --wipe and --no-nvim-pin
-    # are deliberately included here for reasons specific to --depart that
+    # are deliberately included here for reasons specific to --uninstall that
     # don't apply to --rollback.
-    if args.depart and (
+    if args.uninstall and (
         args.rollback
         or args.wipe
         or harness_set
@@ -712,14 +712,14 @@ def parse_args(argv: Sequence[str]) -> Options:
         or args.adopt
         or args.check_links
     ):
-        _fail("--depart must be used alone, with no other flags")
+        _fail("--uninstall must be used alone, with no other flags")
 
-    # --check-links is a read-only audit, so unlike --depart/--rollback it
+    # --check-links is a read-only audit, so unlike --uninstall/--rollback it
     # tolerates the two flags that scope *which* links.toml entries it
     # considers (--harness, --profile). Everything else either mutates the
     # machine or previews a mutation, and would be silently ignored here.
     # Checked ahead of --rollback's own alone-check so
-    # `--rollback --check-links` names the audit flag, matching how --depart
+    # `--rollback --check-links` names the audit flag, matching how --uninstall
     # takes precedence above.
     if args.check_links and (
         args.rollback
@@ -743,15 +743,15 @@ def parse_args(argv: Sequence[str]) -> Options:
         or args.dry_run
         or args.reseed
         or args.adopt
-        or args.depart
+        or args.uninstall
         or args.yes
         or args.check_links
         or args.force_harness
     ):
         _fail("--report-legacy-env must be used alone")
 
-    if args.yes and not args.depart:
-        _fail("--yes can only be used with --depart")
+    if args.yes and not args.uninstall:
+        _fail("--yes can only be used with --uninstall")
 
     # --rollback is an undo-only action. Rejecting --profile/--force
     # alongside it (not just --harness) keeps them from being silently
@@ -782,7 +782,7 @@ def parse_args(argv: Sequence[str]) -> Options:
 
     if (
         not args.rollback
-        and not args.depart
+        and not args.uninstall
         and not args.check_links
         and not args.report_legacy_env
         and not harness_set
@@ -809,7 +809,7 @@ def parse_args(argv: Sequence[str]) -> Options:
         wipe=args.wipe,
         reseed=args.reseed,
         adopt=args.adopt,
-        depart=args.depart,
+        uninstall=args.uninstall,
         yes=args.yes,
         check_links=args.check_links,
         report_legacy_env=args.report_legacy_env,
@@ -887,7 +887,7 @@ def _header(message: str, *, quiet: bool = False) -> None:
         cli_common.qprint(PALETTE.header(message), quiet=quiet)
 
 
-# ── package inventory probes (departure support) ─────────────────────────────
+# ── package inventory probes (uninstall support) ─────────────────────────────
 
 
 def _capture_package_snapshot(manager: str) -> dict[str, str] | None:
@@ -897,14 +897,20 @@ def _capture_package_snapshot(manager: str) -> dict[str, str] | None:
     recording that transaction entirely rather than record a misleading
     empty snapshot, since nothing downstream can yet distinguish "empty"
     from "probe failed" for transaction data (that distinction matters for
-    departure-time removal decisions, which are not implemented yet — see
-    execute_departure's docstring).
+    uninstall-time removal decisions, which are not implemented yet — see
+    execute_uninstall's docstring).
     """
     probes: dict[str, tuple[list[str], Callable[[str], dict[str, str]]]] = {
-        "apt": (depart.dpkg_query_command(), depart.parse_dpkg_query),
-        "dnf": (depart.rpm_qa_command(), depart.parse_rpm_qa),
-        "npm": (depart.npm_ls_global_command(), depart.parse_npm_ls_global),
-        "uv-tool": (depart.uv_tool_list_command(), depart.parse_uv_tool_list),
+        "apt": (uninstall_state.dpkg_query_command(), uninstall_state.parse_dpkg_query),
+        "dnf": (uninstall_state.rpm_qa_command(), uninstall_state.parse_rpm_qa),
+        "npm": (
+            uninstall_state.npm_ls_global_command(),
+            uninstall_state.parse_npm_ls_global,
+        ),
+        "uv-tool": (
+            uninstall_state.uv_tool_list_command(),
+            uninstall_state.parse_uv_tool_list,
+        ),
     }
     command, parse = probes[manager]
     result = run_command(command, capture=True)
@@ -1420,10 +1426,10 @@ def sync_codex_skills(ctx: Context) -> list[str]:
 class ManagedService:
     """One systemd --user service this installer enables/disables/tracks.
 
-    ``name`` feeds ``depart.service_key("systemd", name)`` for baseline and
+    ``name`` feeds ``uninstall_state.service_key("systemd", name)`` for baseline and
     ledger lookups; ``unit`` is the literal systemctl unit name used in
     every systemctl-facing command. These are deliberately two different
-    strings, not one — see the depart preflight/execute call sites below.
+    strings, not one — see the uninstall preflight/execute call sites below.
     """
 
     name: str
@@ -1473,28 +1479,32 @@ def _capture_live_service(ctx: Context, service: ManagedService) -> dict[str, ob
         "active", ["systemctl", "--user", "is-active", service.unit]
     )
     linger = _probe_linger(_current_user())
-    return depart.build_service_record(enabled=enabled, active=active, linger=linger)
+    return uninstall_state.build_service_record(
+        enabled=enabled, active=active, linger=linger
+    )
 
 
 def capture_service_baseline(ctx: Context) -> None:
     """Capture every managed service's service/linger state, immediately
     before :func:`enable_managed_services` runs — capturing any later would
-    record the post-install enabled state as baseline and departure would
+    record the post-install enabled state as baseline and uninstall would
     never disable anything.
     """
     if (
         not ctx.is_linux
         or ctx.opts.dry_run
         or ctx.opts.profile == "work"
-        or ctx.departure_baseline is None
+        or ctx.uninstall_baseline is None
     ):
         return
     stamp = datetime.now().astimezone().isoformat(timespec="seconds")
     layer = {
-        depart.service_key("systemd", service.name): _capture_live_service(ctx, service)
+        uninstall_state.service_key("systemd", service.name): _capture_live_service(
+            ctx, service
+        )
         for service in MANAGED_SERVICES
     }
-    ctx.departure_baseline.add_layer(stamp, layer)
+    ctx.uninstall_baseline.add_layer(stamp, layer)
 
 
 def _enable_service(ctx: Context, service: ManagedService) -> None:
@@ -1565,22 +1575,22 @@ def capture_git_hooks_path_baseline(ctx: Context) -> None:
     """Capture the pre-existing global ``core.hooksPath``, immediately
     before :func:`install_global_git_hooks_path` runs -- capturing any later
     would record the origin repo's own already-set value as if it were the
-    original, which would make departure "restore" that repo's own path
+    original, which would make uninstall "restore" that repo's own path
     instead of the true pre-install value. ``Baseline.add_layer``'s own is-unrecorded rule
     already makes this capture-once by construction: a second install run
     finds the key already recorded in layer 1 and skips it, the same way
     :func:`capture_service_baseline` relies on for services -- a scalar
     config value needs no extra guard beyond that.
     """
-    if ctx.opts.dry_run or ctx.opts.profile == "work" or ctx.departure_baseline is None:
+    if ctx.opts.dry_run or ctx.opts.profile == "work" or ctx.uninstall_baseline is None:
         return
     stamp = datetime.now().astimezone().isoformat(timespec="seconds")
     layer = {
-        depart.gitconfig_key(GLOBAL_GIT_HOOKS_PATH_KEY): depart.build_gitconfig_record(
-            _global_git_hooks_path()
-        )
+        uninstall_state.gitconfig_key(
+            GLOBAL_GIT_HOOKS_PATH_KEY
+        ): uninstall_state.build_gitconfig_record(_global_git_hooks_path())
     }
-    ctx.departure_baseline.add_layer(stamp, layer)
+    ctx.uninstall_baseline.add_layer(stamp, layer)
 
 
 def install_global_git_hooks_path(ctx: Context) -> None:
@@ -1616,11 +1626,11 @@ def _current_user() -> str:
     return os.environ.get("USER") or os.environ.get("LOGNAME") or ""
 
 
-# ── departure execution (extracted to depart_exec.py) ────────────────────
+# ── uninstall execution (extracted to uninstall_exec.py) ────────────────────
 
-# The --depart execution machinery — baseline capture, preflight
+# The --uninstall execution machinery — baseline capture, preflight
 # reporting, the confirmation contract, the per-category phases, the
-# ledger retry loop, and state finalization — lives in depart_exec.py
+# ledger retry loop, and state finalization — lives in uninstall_exec.py
 # now. install.py keeps thin binding wrappers (exact pre-extraction
 # signatures) so its CLI, tests, and external callers are unchanged.
 # Dependencies are resolved at call time so test monkeypatching of
@@ -1628,9 +1638,9 @@ def _current_user() -> str:
 # of MANAGED_SERVICES keep working.
 
 
-def _departure_deps() -> depart_exec.Deps:
-    """Bundle install-provided dependencies for depart_exec, resolved live."""
-    return depart_exec.Deps(
+def _uninstall_deps() -> uninstall_exec.Deps:
+    """Bundle install-provided dependencies for uninstall_exec, resolved live."""
+    return uninstall_exec.Deps(
         run_command=run_command,
         have=have,
         link_applies=link_applies,
@@ -1648,115 +1658,129 @@ def _departure_deps() -> depart_exec.Deps:
     )
 
 
-def capture_departure_baseline(ctx: Context, specs: Sequence[LinkSpec]) -> None:
-    """Thin shim — implementation in depart_exec."""
-    depart_exec.capture_departure_baseline(_departure_deps(), ctx, specs)
+def capture_uninstall_baseline(ctx: Context, specs: Sequence[LinkSpec]) -> None:
+    """Thin shim — implementation in uninstall_exec."""
+    uninstall_exec.capture_uninstall_baseline(_uninstall_deps(), ctx, specs)
 
 
-def build_preflight_report(ctx: Context) -> dict[str, depart.Classification] | None:
-    """Thin shim — implementation in depart_exec."""
-    return depart_exec.build_preflight_report(_departure_deps(), ctx)
+def build_preflight_report(
+    ctx: Context,
+) -> dict[str, uninstall_state.Classification] | None:
+    """Thin shim — implementation in uninstall_exec."""
+    return uninstall_exec.build_preflight_report(_uninstall_deps(), ctx)
 
 
-def build_package_preflight(ctx: Context) -> list[depart.PackageClassification] | None:
-    """Thin shim — implementation in depart_exec."""
-    return depart_exec.build_package_preflight(_departure_deps(), ctx)
+def build_package_preflight(
+    ctx: Context,
+) -> list[uninstall_state.PackageClassification] | None:
+    """Thin shim — implementation in uninstall_exec."""
+    return uninstall_exec.build_package_preflight(_uninstall_deps(), ctx)
 
 
 def execute_service_phase(
-    ctx: Context, baseline: depart.Baseline, ledger: depart.DepartureLedger
+    ctx: Context,
+    baseline: uninstall_state.Baseline,
+    ledger: uninstall_state.UninstallLedger,
 ) -> None:
-    """Thin shim — implementation in depart_exec."""
-    depart_exec.execute_service_phase(_departure_deps(), ctx, baseline, ledger)
+    """Thin shim — implementation in uninstall_exec."""
+    uninstall_exec.execute_service_phase(_uninstall_deps(), ctx, baseline, ledger)
 
 
 def execute_gitconfig_phase(
-    ctx: Context, baseline: depart.Baseline, ledger: depart.DepartureLedger
+    ctx: Context,
+    baseline: uninstall_state.Baseline,
+    ledger: uninstall_state.UninstallLedger,
 ) -> None:
-    """Thin shim — implementation in depart_exec."""
-    depart_exec.execute_gitconfig_phase(_departure_deps(), ctx, baseline, ledger)
+    """Thin shim — implementation in uninstall_exec."""
+    uninstall_exec.execute_gitconfig_phase(_uninstall_deps(), ctx, baseline, ledger)
 
 
 def execute_file_symlink_phase(
     ctx: Context,
-    baseline: depart.Baseline,
-    report: dict[str, depart.Classification],
-    ledger: depart.DepartureLedger,
+    baseline: uninstall_state.Baseline,
+    report: dict[str, uninstall_state.Classification],
+    ledger: uninstall_state.UninstallLedger,
 ) -> None:
-    """Thin shim — implementation in depart_exec."""
-    depart_exec.execute_file_symlink_phase(
-        _departure_deps(), ctx, baseline, report, ledger
+    """Thin shim — implementation in uninstall_exec."""
+    uninstall_exec.execute_file_symlink_phase(
+        _uninstall_deps(), ctx, baseline, report, ledger
     )
 
 
 def execute_directory_phase(
     ctx: Context,
-    baseline: depart.Baseline,
-    report: dict[str, depart.Classification],
-    ledger: depart.DepartureLedger,
+    baseline: uninstall_state.Baseline,
+    report: dict[str, uninstall_state.Classification],
+    ledger: uninstall_state.UninstallLedger,
 ) -> None:
-    """Thin shim — implementation in depart_exec."""
-    depart_exec.execute_directory_phase(
-        _departure_deps(), ctx, baseline, report, ledger
+    """Thin shim — implementation in uninstall_exec."""
+    uninstall_exec.execute_directory_phase(
+        _uninstall_deps(), ctx, baseline, report, ledger
     )
 
 
 def execute_runtime_phase(
     ctx: Context,
-    report: dict[str, depart.Classification],
-    ledger: depart.DepartureLedger,
+    report: dict[str, uninstall_state.Classification],
+    ledger: uninstall_state.UninstallLedger,
 ) -> None:
-    """Thin shim — implementation in depart_exec."""
-    depart_exec.execute_runtime_phase(_departure_deps(), ctx, report, ledger)
+    """Thin shim — implementation in uninstall_exec."""
+    uninstall_exec.execute_runtime_phase(_uninstall_deps(), ctx, report, ledger)
 
 
 def live_package_snapshots(
-    baseline: depart.Baseline,
+    baseline: uninstall_state.Baseline,
 ) -> dict[str, dict[str, str] | None]:
-    """Thin shim — implementation in depart_exec."""
-    return depart_exec.live_package_snapshots(_departure_deps(), baseline)
+    """Thin shim — implementation in uninstall_exec."""
+    return uninstall_exec.live_package_snapshots(_uninstall_deps(), baseline)
 
 
 def execute_package_phase(
-    ctx: Context, baseline: depart.Baseline, ledger: depart.DepartureLedger
+    ctx: Context,
+    baseline: uninstall_state.Baseline,
+    ledger: uninstall_state.UninstallLedger,
 ) -> bool:
-    """Thin shim — implementation in depart_exec."""
-    return depart_exec.execute_package_phase(_departure_deps(), ctx, baseline, ledger)
+    """Thin shim — implementation in uninstall_exec."""
+    return uninstall_exec.execute_package_phase(
+        _uninstall_deps(), ctx, baseline, ledger
+    )
 
 
-def execute_departure(
-    ctx: Context, baseline: depart.Baseline, report: dict[str, depart.Classification]
-) -> depart.DepartureLedger:
-    """Thin shim — implementation in depart_exec."""
-    return depart_exec.execute_departure(_departure_deps(), ctx, baseline, report)
+def execute_uninstall(
+    ctx: Context,
+    baseline: uninstall_state.Baseline,
+    report: dict[str, uninstall_state.Classification],
+) -> uninstall_state.UninstallLedger:
+    """Thin shim — implementation in uninstall_exec."""
+    return uninstall_exec.execute_uninstall(_uninstall_deps(), ctx, baseline, report)
 
 
-def do_depart(ctx: Context) -> int:
-    """Thin shim — implementation in depart_exec."""
-    return depart_exec.do_depart(_departure_deps(), ctx)
+def do_uninstall(ctx: Context) -> int:
+    """Thin shim — implementation in uninstall_exec."""
+    return uninstall_exec.do_uninstall(_uninstall_deps(), ctx)
 
 
-def _departure_state_paths(state_dir: Path) -> list[Path]:
-    """Thin shim — implementation in depart_exec."""
-    return depart_exec._departure_state_paths(_departure_deps(), state_dir)
+def _uninstall_state_paths(state_dir: Path) -> list[Path]:
+    """Thin shim — implementation in uninstall_exec."""
+    return uninstall_exec._uninstall_state_paths(_uninstall_deps(), state_dir)
 
 
-def _delete_departure_state(ctx: Context) -> None:
-    """Thin shim — implementation in depart_exec."""
-    depart_exec._delete_departure_state(_departure_deps(), ctx)
+def _delete_uninstall_state(ctx: Context) -> None:
+    """Thin shim — implementation in uninstall_exec."""
+    uninstall_exec._delete_uninstall_state(_uninstall_deps(), ctx)
 
 
 def _execute_remove_file(path: Path) -> str:
-    """Thin shim — implementation in depart_exec."""
-    return depart_exec._execute_remove_file(_departure_deps(), path)
+    """Thin shim — implementation in uninstall_exec."""
+    return uninstall_exec._execute_remove_file(_uninstall_deps(), path)
 
 
 def _vscode_guard_preflight_annotations(
-    ctx: Context, report: dict[str, depart.Classification]
+    ctx: Context, report: dict[str, uninstall_state.Classification]
 ) -> dict[str, str]:
-    """Thin shim — implementation in depart_exec."""
-    return depart_exec._vscode_guard_preflight_annotations(
-        _departure_deps(), ctx, report
+    """Thin shim — implementation in uninstall_exec."""
+    return uninstall_exec._vscode_guard_preflight_annotations(
+        _uninstall_deps(), ctx, report
     )
 
 
@@ -1882,7 +1906,7 @@ def do_rollback(ctx: Context) -> int:
 
     if ctx.opts.dry_run:
         if ctx.opts.wipe:
-            excluded = {manifest.path, *_departure_state_paths(ctx.state_dir)}
+            excluded = {manifest.path, *_uninstall_state_paths(ctx.state_dir)}
             remaining = (
                 [p for p in ctx.state_dir.iterdir() if p not in excluded]
                 if ctx.state_dir.is_dir()
@@ -1899,7 +1923,7 @@ def do_rollback(ctx: Context) -> int:
         )
     else:
         manifest.path.unlink(missing_ok=True)
-        _delete_departure_state(ctx)
+        _delete_uninstall_state(ctx)
         if (
             ctx.opts.wipe
             and ctx.state_dir.is_dir()
@@ -2386,7 +2410,7 @@ def do_check_links(ctx: Context) -> int:
 
     Fills the gap between the two existing consistency checks: ``--rollback``
     only inspects what the history recorded and only asks whether the target
-    string still matches, while ``--depart`` compares against an install-time
+    string still matches, while ``--uninstall`` compares against an install-time
     baseline. Neither notices that a link's repo-side source was deleted or
     renamed, and a plain re-run does not either — ``symlink`` never checks
     ``src.exists()`` before creating the link, and stops visiting a
@@ -2606,7 +2630,7 @@ def run_install(ctx: Context, specs: Sequence[LinkSpec]) -> int:
         )
         return 2
 
-    capture_departure_baseline(ctx, specs)
+    capture_uninstall_baseline(ctx, specs)
     ctx.manifest.init_run(ctx.opts.profile, quiet=ctx.opts.quiet)
     if ctx.opts.dry_run:
         _header(
@@ -2633,15 +2657,15 @@ def run_install(ctx: Context, specs: Sequence[LinkSpec]) -> int:
 
     write_profile_marker(ctx)
 
-    if ctx.departure_baseline is not None:
-        depart.save_baseline(ctx.state_dir, ctx.departure_baseline)
+    if ctx.uninstall_baseline is not None:
+        uninstall_state.save_baseline(ctx.state_dir, ctx.uninstall_baseline)
 
     print_summary(ctx, settings_drift, opencode_drift, (), pi_settings_drift)
     return 1 if ctx.reporter.skipped else 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Parse arguments, then roll back, depart, audit links, or install.
+    """Parse arguments, then roll back, uninstall, audit links, or install.
 
     Returns:
         Process exit status: 0 clean, 1 something was skipped (or, under
@@ -2666,8 +2690,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if opts.rollback:
         return do_rollback(ctx)
 
-    if opts.depart:
-        return do_depart(ctx)
+    if opts.uninstall:
+        return do_uninstall(ctx)
 
     if opts.check_links:
         try:

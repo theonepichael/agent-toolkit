@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pristine-state departure mode: baseline capture and ownership tracking.
+"""Pristine-state uninstall mode: baseline capture and ownership tracking.
 
 Kept separate from ``install.py`` — see that file's module docstring for
 the full design rationale. This module owns only the data model and
@@ -310,7 +310,7 @@ class Layer:
 
 @dataclass
 class Baseline:
-    """The full departure baseline: immutable first layer, later supplements.
+    """The full uninstall baseline: immutable first layer, later supplements.
 
     A key's authoritative value is whichever layer first recorded it —
     layers are appended, never rewritten (see ``is_unrecorded`` and
@@ -381,13 +381,13 @@ def record_installed_tree(baseline: Baseline, root: Path) -> None:
 
     Called immediately after the installer creates a fully-owned tree (the
     Nerd Font directory, the pinned Neovim prefix). Without this snapshot
-    there is nothing to compare live state against at departure: the
+    there is nothing to compare live state against at uninstall: the
     baseline layer only holds the *pre-install* ``absent`` value, which
     proves the installer created the tree but says nothing about whether
     the user has since added or edited anything inside it.
 
     Re-recording on a later run is correct and intended — the tree the
-    installer most recently produced is the one departure should expect to
+    installer most recently produced is the one uninstall should expect to
     find, so this overwrites rather than preserving the first value.
     """
     baseline.installed_trees[str(root)] = capture_tree_manifest(root)
@@ -412,15 +412,15 @@ def installed_tree_verdict(baseline: Baseline, root: Path) -> str:
 
 def remove_manifest_tree(baseline: Baseline, path: Path) -> str:
     """Remove ``path`` wholesale, but only if its :func:`installed_tree_verdict`
-    is ``TREE_UNCHANGED`` — the departure-time policy: refuse unless
-    provably unchanged, since refusing is departure's safe terminal outcome.
-    Departure deliberately does not self-heal on ``TREE_UNRECORDED`` the way
+    is ``TREE_UNCHANGED`` — the uninstall-time policy: refuse unless
+    provably unchanged, since refusing is uninstall's safe terminal outcome.
+    Uninstall deliberately does not self-heal on ``TREE_UNRECORDED`` the way
     an install-time remediator for the same tree-manifest-tracked prefix
     would, so it calls :func:`installed_tree_verdict` directly instead of
     delegating. Together with the deliberate unguarded XDG sweep in
     install.py's neovim-dir wipe, this is one of the only
     ``shutil.rmtree`` sites for a     manifest-tracked directory; see
-    ``test_depart_removal_guard.py``'s file-wide ban on calling
+    ``test_uninstall_removal_guard.py``'s file-wide ban on calling
     ``shutil.rmtree`` anywhere else. Returns the
     verdict: ``TREE_UNCHANGED`` means the removal happened;
     ``TREE_MODIFIED``/``TREE_UNRECORDED`` mean nothing was touched and the
@@ -866,7 +866,7 @@ def _values_equal(a: dict[str, object], b: dict[str, object]) -> bool:
 def classify_ownership_key(
     key: str, recorded: dict[str, object] | None, live: dict[str, object]
 ) -> Classification:
-    """Classify one ownership key for the departure preflight report."""
+    """Classify one ownership key for the uninstall preflight report."""
     if recorded is None:
         return Classification(
             BUCKET_UNRESOLVED, None, "no baseline record for this key"
@@ -993,11 +993,11 @@ def reclassify_symlink_destination_pair(
     )
 
 
-# ── departure ledger ─────────────────────────────────────────────────────
+# ── uninstall ledger ─────────────────────────────────────────────────────
 
 
-def departure_ledger_path(state_dir: Path) -> Path:
-    return state_dir / "departure.jsonl"
+def uninstall_ledger_path(state_dir: Path) -> Path:
+    return state_dir / "uninstall.jsonl"
 
 
 def _fsync_dir(directory: Path) -> None:
@@ -1009,8 +1009,8 @@ def _fsync_dir(directory: Path) -> None:
 
 
 @dataclass
-class DepartureLedger:
-    """Crash-safe, fsynced-per-entry record of completed departure actions.
+class UninstallLedger:
+    """Crash-safe, fsynced-per-entry record of completed uninstall actions.
 
     Mirrors install.py's ``Manifest._append`` durability pattern: one JSON
     object per line, flushed and fsynced immediately after each action
@@ -1040,7 +1040,7 @@ class DepartureLedger:
         """Every ownership key already recorded complete, regardless of outcome.
 
         A ledger-complete artifact is never mutated again — later changes
-        surface as separate post-departure drift, not a re-attempt.
+        surface as separate post-uninstall drift, not a re-attempt.
         """
         return {str(e["key"]) for e in self.entries() if "key" in e}
 
@@ -1048,7 +1048,7 @@ class DepartureLedger:
         """Every key with at least one recorded outcome starting with ``prefix``.
 
         For a feature that wants a subset of its ledger-recorded keys to
-        stay retryable across depart attempts -- unlike this class's
+        stay retryable across uninstall attempts -- unlike this class's
         default, where every recorded key is done for good regardless of
         outcome -- record a distinguishing, wording-independent outcome
         prefix (not a fragment of the user-facing message, which can be
@@ -1079,8 +1079,8 @@ class DepartureLedger:
 # ── advisory lock ─────────────────────────────────────────────────────────
 
 
-def departure_lock_path(state_dir: Path) -> Path:
-    return state_dir / "departure.lock"
+def uninstall_lock_path(state_dir: Path) -> Path:
+    return state_dir / "uninstall.lock"
 
 
 @dataclass(frozen=True)
@@ -1149,13 +1149,13 @@ def is_lock_holder_alive(
     return current_start == recorded_start_time
 
 
-def acquire_departure_lock(
+def acquire_uninstall_lock(
     state_dir: Path,
     *,
     pid: int | None = None,
     start_time_fn: Callable[[int], int | None] = process_start_time,
 ) -> tuple[bool, LockInfo | None]:
-    """Try to acquire the departure advisory lock.
+    """Try to acquire the uninstall advisory lock.
 
     The lock's own content (recorded PID + start time) is the source of
     truth for staleness — an ``flock`` on the file only serializes the
@@ -1168,7 +1168,7 @@ def acquire_departure_lock(
         refusal — the second element is the stale holder's info if one was
         found and logged, purely for a caller's warning message.
     """
-    lock_path = departure_lock_path(state_dir)
+    lock_path = uninstall_lock_path(state_dir)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with open(lock_path, "a+") as handle:
         try:
@@ -1192,10 +1192,10 @@ def acquire_departure_lock(
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
-def release_departure_lock(state_dir: Path, pid: int | None = None) -> None:
+def release_uninstall_lock(state_dir: Path, pid: int | None = None) -> None:
     """Release and unlink the lock, only if it's still recorded as ours."""
     our_pid = pid if pid is not None else os.getpid()
-    lock_path = departure_lock_path(state_dir)
+    lock_path = uninstall_lock_path(state_dir)
     existing = read_lock(lock_path)
     if existing is not None and existing.pid == our_pid:
         lock_path.unlink(missing_ok=True)
@@ -1208,7 +1208,7 @@ ACTION_DOWNGRADE = "downgrade"
 
 @dataclass(frozen=True)
 class PackageClassification:
-    """One requested-or-introduced package's departure classification."""
+    """One requested-or-introduced package's uninstall classification."""
 
     key: str
     manager: str
@@ -1275,18 +1275,18 @@ def _classify_one_package(
 def classify_package_transactions(
     baseline: Baseline, live_snapshots: dict[str, dict[str, str] | None]
 ) -> list[PackageClassification]:
-    """Classify every requested/introduced package, in departure removal order.
+    """Classify every requested/introduced package, in uninstall removal order.
 
     Walks ``baseline.transactions`` in reverse (the plan's pinned removal
     order — never "reverse ledger/installation order", since the ledger
-    starts empty and ``history.jsonl`` is off-limits to ``--depart``) and
+    starts empty and ``history.jsonl`` is off-limits to ``--uninstall``) and
     yields one classification per distinct ``(manager, name)`` the first
     time it's encountered walking backwards — a package touched by more
     than one transaction across repeated installs is classified from its
     *most recent* transaction only.
 
     Args:
-        baseline: The departure baseline, with its recorded transactions.
+        baseline: The uninstall baseline, with its recorded transactions.
         live_snapshots: Fresh ``{manager: {name: version} | None}`` probe
             results — ``None`` for a manager whose probe failed.
     """

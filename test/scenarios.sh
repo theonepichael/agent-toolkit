@@ -6,7 +6,7 @@
 # opencode profile-specific
 # permission seeding, Pi's copy-once settings.json seeding (drift + --reseed
 # + rollback), argument-parsing edge cases (including the old
-# --work/--copilot flags being rejected outright), and --depart. Not meant
+# --work/--copilot flags being rejected outright), and --uninstall. Not meant
 # to run on a real machine.
 #
 # The pre-existing-file scenarios use ~/.agent-tools.zsh: it is the one
@@ -186,7 +186,7 @@ help_code=$?
 check "--help exits 0" bash -c "[[ $help_code -eq 0 ]]"
 check "--help prints usage" grep -q "^usage:" /tmp/help.out
 check "--help documents --wipe" grep -q -- "--wipe" /tmp/help.out
-check "--help documents --depart" grep -q -- "--depart" /tmp/help.out
+check "--help documents --uninstall" grep -q -- "--uninstall" /tmp/help.out
 check "--help documents --check-links" grep -q -- "--check-links" /tmp/help.out
 
 ./install.sh >/tmp/noharness.out 2>&1
@@ -498,92 +498,92 @@ check "wipe with nothing left reports the plain nothing-to-roll-back error" \
   grep -q "nothing to roll back" /tmp/wipe-truly-empty.out
 
 echo ""
-echo "=== 14. --depart with no baseline refuses cleanly ==="
+echo "=== 14. --uninstall with no baseline refuses cleanly ==="
 # The rollback in section 13 already deleted baseline.json along with
 # everything else, so this container has no baseline at all right now.
-./install.sh --depart --yes >/tmp/depart-nobaseline.out 2>&1
-depart_none_code=$?
-cat /tmp/depart-nobaseline.out
-check "depart with no baseline exits 2" bash -c "[[ $depart_none_code -eq 2 ]]"
-check "depart with no baseline names nothing-to-depart-from" \
-  grep -q "nothing to depart from" /tmp/depart-nobaseline.out
+./install.sh --uninstall --yes >/tmp/uninstall-nobaseline.out 2>&1
+uninstall_none_code=$?
+cat /tmp/uninstall-nobaseline.out
+check "uninstall with no baseline exits 2" bash -c "[[ $uninstall_none_code -eq 2 ]]"
+check "uninstall with no baseline names nothing-to-uninstall-from" \
+  grep -q "nothing to uninstall from" /tmp/uninstall-nobaseline.out
 
 echo ""
-echo "=== 15. --depart: install departs back to a clean baseline ==="
+echo "=== 15. --uninstall: install uninstalls back to a clean baseline ==="
 # agent-toolkit installs no packages and manages no systemd services
 # (MANAGED_SERVICES is empty), and nothing below edits a path that existed
 # at baseline, so every recorded key classifies as owned or preserved and
-# the departure completes in one pass: exit 0, and its own state
+# the uninstall completes in one pass: exit 0, and its own state
 # (baseline.json, history.jsonl) is deleted afterwards.
-./install.sh --harness=claude >/tmp/depart-install.out 2>&1
-depart_install_code=$?
-cat /tmp/depart-install.out
-check "install for departure test exits 0 or 1" \
-  bash -c "[[ $depart_install_code -eq 0 || $depart_install_code -eq 1 ]]"
+./install.sh --harness=claude >/tmp/uninstall-install.out 2>&1
+uninstall_install_code=$?
+cat /tmp/uninstall-install.out
+check "install for uninstall test exits 0 or 1" \
+  bash -c "[[ $uninstall_install_code -eq 0 || $uninstall_install_code -eq 1 ]]"
 check "baseline.json captured" bash -c '[[ -f "'"$STATE_DIR"'/baseline.json" ]]'
 
 # An artifact this installer never touched, planted after install — must
-# survive departure untouched (Completion Gate: "unrelated post-install
+# survive uninstall untouched (Completion Gate: "unrelated post-install
 # artifacts survive").
 echo "unrelated content" >~/my-own-notes.txt
 # An unrelated package, installed the same way a user would — must also
-# survive, since departure only ever acts on what its own transactions
+# survive, since uninstall only ever acts on what its own transactions
 # recorded. The Ubuntu image drops its apt lists at build time, so refresh
 # them first.
 if command -v apt-get >/dev/null 2>&1; then
   UNRELATED_PKG=sl
   # shellcheck disable=SC2024 # Redirect is to /tmp in the test container; parent shell owns the fd intentionally.
-  { sudo apt-get update -qq && sudo apt-get install -y -qq "$UNRELATED_PKG"; } >/tmp/depart-unrelated-pkg.out 2>&1
+  { sudo apt-get update -qq && sudo apt-get install -y -qq "$UNRELATED_PKG"; } >/tmp/uninstall-unrelated-pkg.out 2>&1
 else
   UNRELATED_PKG=cowsay
   # shellcheck disable=SC2024 # Redirect is to /tmp in the test container; parent shell owns the fd intentionally.
-  sudo dnf install -y -q "$UNRELATED_PKG" >/tmp/depart-unrelated-pkg.out 2>&1
+  sudo dnf install -y -q "$UNRELATED_PKG" >/tmp/uninstall-unrelated-pkg.out 2>&1
 fi
 if command -v dpkg-query >/dev/null 2>&1; then
-  check "unrelated package installed before departure" dpkg-query -W "$UNRELATED_PKG"
+  check "unrelated package installed before uninstall" dpkg-query -W "$UNRELATED_PKG"
 else
-  check "unrelated package installed before departure" rpm -q "$UNRELATED_PKG"
+  check "unrelated package installed before uninstall" rpm -q "$UNRELATED_PKG"
 fi
 
-./install.sh --depart --dry-run >/tmp/depart-dry.out 2>&1
-depart_dry_code=$?
-cat /tmp/depart-dry.out
-check "depart --dry-run exits 0" bash -c "[[ $depart_dry_code -eq 0 ]]"
-check "depart --dry-run preflight lists owned items" grep -q "owned" /tmp/depart-dry.out
-check "depart --dry-run changed nothing (agent-tools.zsh symlink still present)" \
+./install.sh --uninstall --dry-run >/tmp/uninstall-dry.out 2>&1
+uninstall_dry_code=$?
+cat /tmp/uninstall-dry.out
+check "uninstall --dry-run exits 0" bash -c "[[ $uninstall_dry_code -eq 0 ]]"
+check "uninstall --dry-run preflight lists owned items" grep -q "owned" /tmp/uninstall-dry.out
+check "uninstall --dry-run changed nothing (agent-tools.zsh symlink still present)" \
   bash -c '[[ -L ~/.agent-tools.zsh ]]'
 
-./install.sh --depart --yes >/tmp/depart-real.out 2>&1
-depart_real_code=$?
-cat /tmp/depart-real.out
-check "depart exits 0 (nothing left unresolved)" bash -c "[[ $depart_real_code -eq 0 ]]"
+./install.sh --uninstall --yes >/tmp/uninstall-real.out 2>&1
+uninstall_real_code=$?
+cat /tmp/uninstall-real.out
+check "uninstall exits 0 (nothing left unresolved)" bash -c "[[ $uninstall_real_code -eq 0 ]]"
 check "preflight reports no unresolved or drifted items" \
-  bash -c '! grep -Eq "^  (unresolved|drifted) \(" /tmp/depart-real.out'
-check "depart reports completion" \
-  grep -q "Departure complete — no installer footprint remains." /tmp/depart-real.out
-check "depart removed the agent-tools.zsh symlink" bash -c '[[ ! -e ~/.agent-tools.zsh ]]'
-check "depart removed the CLAUDE.md symlink" bash -c '[[ ! -e ~/.claude/CLAUDE.md ]]'
-check "depart removed the claude settings.json copy" bash -c '[[ ! -e ~/.claude/settings.json ]]'
-check "unrelated file survives departure" bash -c '[[ -f ~/my-own-notes.txt ]]'
+  bash -c '! grep -Eq "^  (unresolved|drifted) \(" /tmp/uninstall-real.out'
+check "uninstall reports completion" \
+  grep -q "Uninstall complete — no installer footprint remains." /tmp/uninstall-real.out
+check "uninstall removed the agent-tools.zsh symlink" bash -c '[[ ! -e ~/.agent-tools.zsh ]]'
+check "uninstall removed the CLAUDE.md symlink" bash -c '[[ ! -e ~/.claude/CLAUDE.md ]]'
+check "uninstall removed the claude settings.json copy" bash -c '[[ ! -e ~/.claude/settings.json ]]'
+check "unrelated file survives uninstall" bash -c '[[ -f ~/my-own-notes.txt ]]'
 if command -v dpkg-query >/dev/null 2>&1; then
-  check "unrelated package survives departure" dpkg-query -W "$UNRELATED_PKG"
+  check "unrelated package survives uninstall" dpkg-query -W "$UNRELATED_PKG"
 else
-  check "unrelated package survives departure" rpm -q "$UNRELATED_PKG"
+  check "unrelated package survives uninstall" rpm -q "$UNRELATED_PKG"
 fi
-check "baseline.json deleted (departure was complete)" \
+check "baseline.json deleted (uninstall was complete)" \
   bash -c '[[ ! -e "'"$STATE_DIR"'/baseline.json" ]]'
-check "history.jsonl deleted (departure was complete)" bash -c '[[ ! -e "'"$MANIFEST"'" ]]'
+check "history.jsonl deleted (uninstall was complete)" bash -c '[[ ! -e "'"$MANIFEST"'" ]]'
 
 echo ""
-echo "=== 15b. Retrying --depart after a complete departure refuses cleanly ==="
-# The completed departure consumed its own baseline, so a retry has nothing
+echo "=== 15b. Retrying --uninstall after a complete uninstall refuses cleanly ==="
+# The completed uninstall consumed its own baseline, so a retry has nothing
 # to act on and must say so rather than re-run anything.
-./install.sh --depart --yes >/tmp/depart-retry.out 2>&1
-depart_retry_code=$?
-cat /tmp/depart-retry.out
-check "depart retry exits 2 (no baseline left)" bash -c "[[ $depart_retry_code -eq 2 ]]"
-check "depart retry names nothing-to-depart-from" \
-  grep -q "nothing to depart from" /tmp/depart-retry.out
+./install.sh --uninstall --yes >/tmp/uninstall-retry.out 2>&1
+uninstall_retry_code=$?
+cat /tmp/uninstall-retry.out
+check "uninstall retry exits 2 (no baseline left)" bash -c "[[ $uninstall_retry_code -eq 2 ]]"
+check "uninstall retry names nothing-to-uninstall-from" \
+  grep -q "nothing to uninstall from" /tmp/uninstall-retry.out
 rm -f ~/my-own-notes.txt
 
 echo ""
