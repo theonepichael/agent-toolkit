@@ -28,6 +28,12 @@ the order below is enforced by when you run it, not by anything automatic.
 An agent on this machine can run the whole procedure while the user watches.
 If you are that agent, these rules apply to every step below:
 
+- **Read this document from the upstream mirror, not the fork.** Until the
+  merge in step 2, the fork's checkout holds the copy from its last merge,
+  which can be older than these instructions. Read
+  `<upstream mirror>/docs/fork-machine-updates.md` after the mirror has been
+  updated (the sync script without `--apply`). If you were pointed at the
+  fork's copy, say so and ask the user for the mirror's path.
 - **Stop after each numbered step and each check.** Show the user the
   command's real output, say what it means, and wait for a plain-text go
   before running the next one. Never batch several steps into one turn.
@@ -132,6 +138,21 @@ git -C "$FORK" diff --text "$LAST" pre-update-<release> > ~/fork-delta-before.di
 wc -l ~/fork-delta-before.txt    # the fork's own files; must not be 0
 ```
 
+**Every release this merge takes.** The fork may be more than one release
+behind, and a skipped release's per-machine steps still have to be done.
+List the releases between the fork's last upstream commit and the target:
+
+```bash
+git -C "$UP" tag --list 'release-*' --merged "$R" --no-merged "$LAST"
+```
+
+Read each listed release's section of `CHANGELOG.md` (from the mirror, at
+`$R`), oldest first. Write down every step it addresses to each machine: a
+check, a file to delete, a manual edit, a command to run. Note whether each
+belongs before the install (step 4) or after it (step 6); a step that doesn't
+say goes after. Show the user the list. Note also which of the releases are
+clean-break renames (`<old>` -> `<new>`) and which list a data upgrade.
+
 ## 2. Merge by hand
 
 ```bash
@@ -214,11 +235,15 @@ git diff --stat pre-update-<release> -- . ':!links.toml'
 Every fork-only file must still exist with its content, and every change
 listed should come from upstream. Then commit the merge.
 
-## 4. Rename releases: before installing
+## 4. Before installing
+
+**Per-machine steps.** Do each before-install step from step 1's list, in
+release order, exactly as its `CHANGELOG.md` section says. Show the user
+anything a step would delete before deleting it.
 
 <!-- rename-transition: remove after the clean-break renames -->
-Skip this step unless the release's `CHANGELOG.md` section is one of the
-clean-break renames (`<old>` -> `<new>`).
+The rest of this step applies only if a release you are taking is one of the
+clean-break renames. With several, do it once per rename, oldest first.
 
 **Fork-only references to the old name.** Upstream's rename sweep changed
 every file upstream owns. It can't see the fork's own files: a fork-only
@@ -269,10 +294,14 @@ previous release but whose `links.toml` row this release deleted — the
 orphan-cleanup step deletes the dangling symlink, so a removed script does not
 leave a stale link in `~/.agent-toolkit/scripts/`.
 
-## 6. Rename releases: after installing
+## 6. After installing
+
+**Per-machine steps.** Do each after-install step from step 1's list, in
+release order, exactly as its `CHANGELOG.md` section says.
 
 <!-- rename-transition: remove after the clean-break renames -->
-Skip this step unless step 4 applied.
+The rest of this step applies only if step 4's rename part did, once per
+rename.
 
 **Manual edits on this machine.** Some files no command edits: instruction
 files and settings that name the old tool, and the shell config that sets the
@@ -318,11 +347,13 @@ stopped:
 ```text
 Fork-machine rollout report
 release:            release-<n> (<old> -> <new>, or "not a rename release")
+releases taken:     <every release step 1 listed, oldest first>
 date:               <YYYY-MM-DD>
 upstream commit:    <$R>
 fork merge commit:  <the fork's merge commit sha>
 fork-delta check:   <clean | restored: what>
 links.toml check:   <clean | restored: what>
+per-machine steps:  <none | each as "release-<n>: step — done | skipped: why">
 fork-only old-name hits: <none | fixed: files>
 data upgrade:       <none | applied: store files>
 suite:              <passed | failures also on pre-update-<release>: names>

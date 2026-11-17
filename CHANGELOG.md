@@ -14,6 +14,14 @@ the warning. Run `./install.sh --report-legacy-env` to see any still set.
 
 ## Unreleased
 
+- `docs/fork-machine-updates.md` now has the fork-installed machine do the
+  per-machine steps of every release it takes, not only the target's: step 1
+  lists the releases between the fork's last upstream commit and the target
+  and collects each `CHANGELOG.md` section's per-machine steps, steps 4 and 6
+  do them before or after the install, and the rollout report records them.
+  An agent running it reads the doc from the upstream mirror, since the fork's
+  own copy predates the merge.
+
 ## release-4 — 2026-11-17
 
 - **Clean-break rename 1 (`depart` → `uninstall`):** renamed `depart.py` →
