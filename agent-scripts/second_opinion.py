@@ -629,7 +629,7 @@ def _resolve_pooled_model(
 # like, it doesn't recommend specific ids.
 _EXAMPLE_POOL_VALUES = {
     "codex": "gpt-5.6-luna,o3",
-    "agy": "Gemini 3.8 Flash (High),Gemini 4 Argon (High)",
+    "agy": "gemini-4-hydrogen-high,gemini-4-argon-high",
     "pi": "opencode-go/glm-5.2,opencode-go/glm-5.3-flash",
     "opencode": "opencode-go/glm-5.2,opencode-go/glm-5.3-flash",
     "copilot": "claude-sonnet-4.5,gpt-5",

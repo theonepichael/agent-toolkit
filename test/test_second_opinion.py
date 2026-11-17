@@ -288,7 +288,7 @@ class RunAgyWrapperTests(unittest.TestCase):
         self.assertEqual(second_opinion.DEFAULT_AGY_MODEL, "Gemini 3.8 Flash (High)")
         self.assertEqual(
             second_opinion._EXAMPLE_POOL_VALUES["agy"],
-            "Gemini 3.8 Flash (High),Gemini 4 Argon (High)",
+            "gemini-4-hydrogen-high,gemini-4-argon-high",
         )
 
 

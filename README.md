@@ -211,7 +211,7 @@ Example pool configuration (in `~/.zshrc`, or a sourced secrets file such
 as `~/.secrets`):
 
 ```zsh
-export SECOND_OPINION_AGY_MODEL_POOL="Gemini 3.8 Flash (High),Gemini 4 Argon (High)"
+export SECOND_OPINION_AGY_MODEL_POOL="gemini-4-hydrogen-high,gemini-4-argon-high"
 export SECOND_OPINION_PI_MODEL_POOL="opencode-go/glm-5.2,opencode-go/glm-5.3-flash"
 ```
 
