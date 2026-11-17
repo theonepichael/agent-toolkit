@@ -57,6 +57,8 @@ describe("assertQuestions", () => {
   test("option count must be between MIN_OPTIONS and MAX_OPTIONS", () => {
     // A single option is not a choice, and zero is nothing to pick from --
     // both mean the model should have just stated its plan instead of asking.
+    // Wording test: the error names the option-count bounds; that text is the
+    // user-facing contract for this validation failure.
     for (const n of [0, 1, MAX_OPTIONS + 1]) {
       expect(() => assertQuestions({ questions: [question({ options: options(n) })] })).toThrow(
         new RegExp(`options must have between ${MIN_OPTIONS} and ${MAX_OPTIONS}`),
@@ -80,6 +82,8 @@ describe("assertQuestions", () => {
       /questions\[0\]: header must not be empty/,
     );
     const long = "x".repeat(MAX_HEADER_LENGTH + 1);
+    // Wording test: the error names the header limit; that text is the
+    // user-facing contract for this validation failure.
     expect(() => assertQuestions({ questions: [question({ header: long })] })).toThrow(
       new RegExp(`header must be at most ${MAX_HEADER_LENGTH} characters`),
     );

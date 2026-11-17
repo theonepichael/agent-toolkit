@@ -2864,6 +2864,8 @@ describe("swarm_spawn worker bootstrap", () => {
 
     expect(res.details.spawned.map((w) => w.slug)).toEqual(["meta-a"]);
     expect(res.details.deferred.map((d) => d.slug)).toEqual(["meta-b"]);
+    // Wording test: the deferral reason names the earlier-selected candidate;
+    // the exact text is the user-facing explanation for the deferral.
     expect(res.details.deferred[0]?.reason).toContain(
       "candidate meta-a (selected earlier this wave)",
     );
@@ -4985,6 +4987,8 @@ describe("cold-load / between-polls reconciliation of dead workers", () => {
       ...(["c2", { runId, timeoutMs: 1000 }, undefined] as unknown as never[]),
     )) as { content: { text: string }[]; details: { events: unknown[] } };
 
+    // Wording test: this distinct message (workers vanished before settling) is
+    // the contract vs. the bare "No active workers to poll" message.
     expect(second.content[0].text).toContain(
       "No active workers to poll (all tracked workers vanished or were cleared before settling):",
     );
