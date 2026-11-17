@@ -78,6 +78,14 @@ class NormalizeToolTests(unittest.TestCase):
     def test_write_tools_are_not_bash_family(self) -> None:
         self.assertNotEqual(guard_rails.tool_family("Edit"), "bash")
 
+    def test_non_string_and_unrecognised_names_return_the_empty_family(self) -> None:
+        """The family is a string, always: callers compare it against the
+        family names, so a falsy non-string would be a type error they cannot
+        see."""
+        for name in (None, 123, False, ["edit"]):
+            self.assertEqual(guard_rails.tool_family(name), "", name)
+        self.assertEqual(guard_rails.tool_family("Read"), "")
+
 
 class PayloadParsingTests(unittest.TestCase):
     def test_claude_payload(self) -> None:
@@ -114,9 +122,25 @@ class PayloadParsingTests(unittest.TestCase):
         self.assertEqual(req.tool, "write")
         self.assertEqual(req.path, "/repo/a.py")
 
+    def test_copilot_toolargs_that_are_already_an_object_still_parse(self) -> None:
+        """The double encoding is what Copilot sends today, not a
+        requirement: an already-parsed argument object must survive too."""
+        req = guard_rails.parse_payload(
+            "copilot", {"toolName": "edit", "toolArgs": {"path": "/repo/a.py"}}
+        )
+        self.assertEqual(req, guard_rails.Request("write", "", "/repo/a.py"))
+
     def test_malformed_payload_yields_no_request_rather_than_raising(self) -> None:
         self.assertIsNone(guard_rails.parse_payload("claude", {"nonsense": True}))
         self.assertIsNone(guard_rails.parse_payload("agy", []))
+
+    def test_nonstring_path_yields_no_request(self) -> None:
+        """A non-string target path is as malformed as a non-string cwd."""
+        self.assertIsNone(
+            guard_rails.parse_payload(
+                "claude", {"tool_name": "Edit", "tool_input": {"file_path": 123}}
+            )
+        )
 
     @pytest.mark.regression(
         "guard-nonstring-native-fields",
@@ -163,12 +187,36 @@ class PayloadParsingTests(unittest.TestCase):
             {"toolCall": {"name": "run_command", "args": {"CommandLine": "ls"}}},
         )
         self.assertEqual(req.tool, "bash")
+        self.assertEqual(req.command, "ls")
         self.assertIsNone(
             guard_rails.parse_payload(
                 "copilot",
                 {"toolName": "bash", "toolArgs": json.dumps({"command": "ls"})},
             )
         )
+
+
+class AgyQuotedCwdTests(unittest.TestCase):
+    def test_surrounding_quotes_are_stripped_for_agy_only(self) -> None:
+        """agy's protojson transcript serialises args.Cwd with literal
+        surrounding quotes; that repair is agy's alone, not a general rewrite
+        of whatever cwd another harness reports."""
+        quoted = '"/repo"'
+        agy = guard_rails.parse_payload(
+            "agy",
+            {
+                "toolCall": {
+                    "name": "run_command",
+                    "args": {"CommandLine": "ls", "Cwd": quoted},
+                }
+            },
+        )
+        self.assertEqual(agy.cwd, "/repo")
+        claude = guard_rails.parse_payload(
+            "claude",
+            {"tool_name": "Bash", "tool_input": {"command": "ls"}, "cwd": quoted},
+        )
+        self.assertEqual(claude.cwd, quoted)
 
 
 class VerdictRenderingTests(unittest.TestCase):
@@ -200,10 +248,14 @@ class VerdictRenderingTests(unittest.TestCase):
     def test_copilot_deny_uses_the_exit_code_since_json_is_ignored(self) -> None:
         """Probed live 2026-09-01: Copilot honours exit 2 only. A JSON verdict
         on exit 0 was ignored and the write proceeded."""
-        _, code = guard_rails.render("copilot", guard_rails.Verdict("deny", "x"))
+        out, code = guard_rails.render("copilot", guard_rails.Verdict("deny", "x"))
         self.assertEqual(code, 2)
-        _, allow_code = guard_rails.render("copilot", guard_rails.Verdict("allow"))
+        self.assertEqual(json.loads(out), {"decision": "deny", "reason": "x"})
+        allow_out, allow_code = guard_rails.render(
+            "copilot", guard_rails.Verdict("allow")
+        )
         self.assertEqual(allow_code, 0)
+        self.assertEqual(json.loads(allow_out), {"decision": "allow"})
         _, warn_code = guard_rails.render("copilot", guard_rails.Verdict("warn", "y"))
         self.assertEqual(warn_code, 0, "a warn must never block")
 
@@ -240,6 +292,20 @@ class FailurePostureTests(unittest.TestCase):
                 guard_rails.Request("write", "/tmp", "/tmp/a.py"), lookup
             )
         self.assertEqual(verdict.decision, "allow")
+        self.assertEqual(lookup.in_progress_calls, 0)
+
+    def test_tool_outside_write_and_bash_allows_without_reading_the_backlog(
+        self,
+    ) -> None:
+        """Only write-family and bash-family calls are the guard's business;
+        anything else allows without a store read."""
+        lookup = FakeLookup(
+            items=[{"id": "slug", "related_files": [{"path": "/repo/a.py"}]}]
+        )
+        verdict = guard_rails.evaluate(
+            guard_rails.Request("read", "/repo", "/repo/a.py"), lookup
+        )
+        self.assertEqual(verdict, guard_rails.Verdict("allow"))
         self.assertEqual(lookup.in_progress_calls, 0)
 
     def test_worktree_pointing_nowhere_skips_the_session_walk(self) -> None:
@@ -300,6 +366,47 @@ class FailurePostureTests(unittest.TestCase):
                     )
         self.assertEqual(verdict.decision, "deny")
         self.assertIn("demo-slug", verdict.reason)
+
+    def test_worktree_behind_its_items_integration_branch_warns(self) -> None:
+        """R3 compares against the base the worktree's own item targets, and
+        the provenance marker identifies that item even when the branch is
+        named otherwise."""
+        info = guard_rails.RepoInfo(
+            toplevel="/wt",
+            common_dir="/repo/.git",
+            is_worktree=True,
+            is_bare=False,
+            branch="main",
+            marker_slug="demo-slug",
+        )
+        items = [
+            {
+                "id": "demo-slug",
+                "related_files": [],
+                "integration_branch": "release-1",
+            }
+        ]
+        claim = backlog_claim_lookup.ClaimInfo(
+            machine_id="machine",
+            owner_pid=os.getpid(),
+            pid=os.getpid(),
+        )
+        with mock.patch.object(guard_rails, "repo_info", return_value=info):
+            with mock.patch.object(
+                guard_rails, "_behind_ref", return_value=True
+            ) as behind:
+                with mock.patch.object(
+                    guard_rails,
+                    "_session_identity",
+                    return_value=("machine", os.getpid(), [os.getpid()]),
+                ):
+                    verdict = guard_rails.evaluate(
+                        guard_rails.Request("write", "/wt", "/wt/a.py"),
+                        FakeLookup(items=items, claims={"demo-slug": claim}),
+                    )
+        self.assertEqual(verdict.decision, "warn")
+        self.assertEqual(verdict.rule, "stale-worktree-base")
+        self.assertEqual(behind.call_args.args[1], "origin/release-1")
 
     def test_bare_repo_allows(self) -> None:
         info = guard_rails.RepoInfo(
@@ -416,6 +523,50 @@ class BusyMainCheckoutTests(unittest.TestCase):
         verdict, _ = self._evaluate(items, {})
         self.assertEqual(verdict.decision, "allow")
 
+    def test_feature_branch_main_checkout_with_an_item_in_progress_allows(
+        self,
+    ) -> None:
+        """The busy-checkout rule is about a *protected* branch: work in a
+        main checkout on a feature branch is not the live-install hazard, even
+        while an item is in progress there."""
+        feature = guard_rails.RepoInfo(
+            toplevel="/repo",
+            common_dir="/repo/.git",
+            is_worktree=False,
+            is_bare=False,
+            branch="feature",
+        )
+        items = [{"id": "slug", "related_files": [{"path": "/repo/x.py"}]}]
+        with mock.patch.object(guard_rails, "repo_info", return_value=feature):
+            with mock.patch.object(
+                guard_rails, "common_dir_of", return_value="/repo/.git"
+            ):
+                verdict = guard_rails.evaluate(
+                    guard_rails.Request("write", "/repo", "/repo/a.py"),
+                    FakeLookup(items=items),
+                )
+        self.assertEqual(verdict.decision, "allow")
+
+    def test_write_is_classified_by_its_path_not_the_session_cwd(self) -> None:
+        """`os.path.dirname(path) or cwd` is a fallback, not a merge: a
+        session cwd in an unrelated directory must not redirect the
+        busy-checkout check away from the file's own checkout."""
+        items = [{"id": "slug", "related_files": [{"path": "/repo/x.py"}]}]
+
+        def fake_repo_info(directory: str) -> guard_rails.RepoInfo | None:
+            return self.MAIN if directory == "/repo" else None
+
+        with mock.patch.object(guard_rails, "repo_info", side_effect=fake_repo_info):
+            with mock.patch.object(
+                guard_rails, "common_dir_of", return_value="/repo/.git"
+            ):
+                verdict = guard_rails.evaluate(
+                    guard_rails.Request("write", "/elsewhere", "/repo/a.py"),
+                    FakeLookup(items=items),
+                )
+        self.assertEqual(verdict.decision, "deny")
+        self.assertEqual(verdict.rule, "main-checkout-write")
+
 
 _MAIN_INFO = guard_rails.RepoInfo(
     toplevel="/repo",
@@ -529,12 +680,17 @@ class BashOverrideTests(unittest.TestCase):
             self.assertEqual(self._on_main(command).decision, "allow", command)
 
     def test_dollar_or_backtick_near_hookspath_denied(self) -> None:
-        self.assertEqual(
-            self._on_main('VAL=""; git config core.hooksPath $VAL').decision, "deny"
-        )
-        self.assertEqual(
-            self._on_main("git config core.hooksPath `echo x`").decision, "deny"
-        )
+        verdict = self._on_main('VAL=""; git config core.hooksPath $VAL')
+        self.assertEqual(verdict.decision, "deny")
+        self.assertEqual(verdict.rule, "hookspath-shell-substitution")
+        backtick = self._on_main("git config core.hooksPath `echo x`")
+        self.assertEqual(backtick.decision, "deny")
+        self.assertEqual(backtick.rule, "hookspath-shell-substitution")
+
+    def test_dollar_without_a_hookspath_reference_allowed(self) -> None:
+        """The hazard is a hooksPath value the static scan cannot see, not
+        every command line that expands a variable."""
+        self.assertEqual(self._on_main('echo "$HOME"').decision, "allow")
 
     def test_git_config_file_direct_write_denied_bare_reference_allowed(self) -> None:
         for command in (
@@ -563,14 +719,48 @@ class BashOverrideTests(unittest.TestCase):
         for command in ("ls -la", "git status", "git log --oneline -5"):
             self.assertEqual(self._on_main(command).decision, "allow", command)
 
+    def test_checkout_off_default_on_the_live_install_denied(self) -> None:
+        """Switching the live install checkout off its default branch would
+        swap the scripts every harness runs from this checkout."""
+        info = guard_rails.RepoInfo(
+            toplevel="/nonexistent-live-install",
+            common_dir="/nonexistent-live-install/.git",
+            is_worktree=False,
+            is_bare=False,
+            branch="main",
+        )
+        with mock.patch.object(guard_rails, "repo_info", return_value=info):
+            with mock.patch.object(
+                guard_rails, "is_live_install_source", return_value=True
+            ):
+                verdict = guard_rails.evaluate_bash_override(
+                    "git checkout release-1", "/nonexistent-live-install"
+                )
+        self.assertEqual(verdict.decision, "deny")
+        self.assertEqual(verdict.rule, "live-checkout-off-default")
+
+    def test_nested_shell_command_denial_is_propagated(self) -> None:
+        """A `bash -c` payload is scanned as a command in its own right, so a
+        denial inside it must reach the caller rather than dissolving into the
+        outer token scan's allow."""
+        verdict = self._on_main("bash -c 'git config --unset core.hooksPath'")
+        self.assertEqual(verdict.decision, "deny")
+        self.assertEqual(verdict.rule, "hookspath-mutation")
+
 
 class MainTests(unittest.TestCase):
     def _run(self, argv, stdin_text=""):
+        out, _err, code = self._run_capturing(argv, stdin_text)
+        return out, code
+
+    def _run_capturing(self, argv, stdin_text=""):
         out = io.StringIO()
+        err = io.StringIO()
         with mock.patch.object(sys, "stdin", io.StringIO(stdin_text)):
             with mock.patch.object(sys, "stdout", out):
-                code = guard_rails.main(argv)
-        return out.getvalue(), code
+                with mock.patch.object(sys, "stderr", err):
+                    code = guard_rails.main(argv)
+        return out.getvalue(), err.getvalue(), code
 
     def test_bash_calls_reach_evaluate_as_bash_family(self) -> None:
         """Bash calls are no longer ignored entirely -- they reach evaluate()
@@ -597,6 +787,97 @@ class MainTests(unittest.TestCase):
     def test_unparseable_stdin_allows_and_does_not_raise(self) -> None:
         _, code = self._run(["--harness", "claude"], "not json at all")
         self.assertEqual(code, 0)
+
+    def test_neutral_form_forwards_every_flag_into_the_request(self) -> None:
+        """pi and opencode pass the call as flags rather than a stdin payload:
+        each flag must reach evaluate() verbatim, the session cwd included,
+        since a blanked cwd changes which checkout a write is judged
+        against."""
+        with mock.patch.object(
+            guard_rails, "evaluate", return_value=guard_rails.Verdict("allow")
+        ) as ev:
+            _, code = self._run(
+                [
+                    "--harness",
+                    "pi",
+                    "--tool",
+                    "Write",
+                    "--cwd",
+                    "/wt",
+                    "--path",
+                    "/wt/a.py",
+                ]
+            )
+        self.assertEqual(code, 0)
+        req, _claims = ev.call_args.args
+        self.assertEqual(req, guard_rails.Request("write", "/wt", "/wt/a.py"))
+
+    def test_agy_destructive_bash_call_denied_before_evaluate(self) -> None:
+        """agy is the one harness with no layer that can ask a human, so its
+        bash calls get the sudo/rm -rf check -- and a denial there ends the
+        call without reaching the rule engine."""
+        payload = json.dumps(
+            {"toolCall": {"name": "run_command", "args": {"CommandLine": "sudo ls"}}}
+        )
+        with mock.patch.object(guard_rails, "evaluate") as ev:
+            out, code = self._run(["--harness", "agy"], payload)
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["decision"], "deny")
+        ev.assert_not_called()
+
+    def test_destructive_check_is_agy_only(self) -> None:
+        """Claude Code has a native permission flow and pi confirms in its own
+        guard; only agy's bash calls get the sudo/rm -rf denial."""
+        payload = json.dumps(
+            {
+                "cwd": "/repo",
+                "tool_name": "Bash",
+                "tool_input": {"command": "sudo ls"},
+            }
+        )
+        with mock.patch.object(
+            guard_rails, "evaluate", return_value=guard_rails.Verdict("allow")
+        ) as ev:
+            out, code = self._run(["--harness", "claude"], payload)
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            json.loads(out)["hookSpecificOutput"], {"hookEventName": "PreToolUse"}
+        )
+        ev.assert_called_once()
+
+    def test_guard_rails_off_skips_the_destructive_check(self) -> None:
+        """The escape hatch disables every rule, the agy destructive check
+        included."""
+        payload = json.dumps(
+            {"toolCall": {"name": "run_command", "args": {"CommandLine": "sudo ls"}}}
+        )
+        with mock.patch.dict(os.environ, {"GUARD_RAILS_OFF": "1"}):
+            out, code = self._run(["--harness", "agy"], payload)
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["decision"], "allow")
+
+    def test_copilot_denial_reason_reaches_stderr_only(self) -> None:
+        """Copilot surfaces neither stream today; the reason is emitted on the
+        chance a later release does, and no other harness gets it."""
+        verdict = guard_rails.Verdict("deny", "no", rule="no-verify")
+        copilot = json.dumps(
+            {"toolName": "edit", "toolArgs": json.dumps({"path": "/repo/a.py"})}
+        )
+        with mock.patch.object(guard_rails, "evaluate", return_value=verdict):
+            _, err, code = self._run_capturing(["--harness", "copilot"], copilot)
+        self.assertEqual(code, 2)
+        self.assertEqual(err, "no\n")
+        claude = json.dumps(
+            {
+                "cwd": "/repo",
+                "tool_name": "Edit",
+                "tool_input": {"file_path": "/repo/a.py"},
+            }
+        )
+        with mock.patch.object(guard_rails, "evaluate", return_value=verdict):
+            _, err, code = self._run_capturing(["--harness", "claude"], claude)
+        self.assertEqual(code, 0)
+        self.assertEqual(err, "")
 
 
 class AuditLogTests(unittest.TestCase):
@@ -751,6 +1032,45 @@ class AuditLogTests(unittest.TestCase):
         self.assertEqual(record["decision"], "deny")
         self.assertEqual(record["rule"], "no-verify")
 
+    def test_layout_error_neutral_form_audits_the_call_it_blocked(self) -> None:
+        """A blocking layout error in the neutral form still records what was
+        attempted -- the tool family and the target -- since the audit trail is
+        the only account of a call that never reached the rule engine."""
+        err = agent_toolkit_paths.LayoutError("bad pointer")
+        with mock.patch.object(backlog_claim_lookup, "layout_error", return_value=err):
+            _, write_code = self._run(
+                [
+                    "--harness",
+                    "pi",
+                    "--tool",
+                    "Write",
+                    "--cwd",
+                    "/wt",
+                    "--path",
+                    "/wt/a.py",
+                ]
+            )
+            _, bash_code = self._run(
+                [
+                    "--harness",
+                    "pi",
+                    "--tool",
+                    "Bash",
+                    "--cwd",
+                    "/wt",
+                    "--command",
+                    "ls",
+                ]
+            )
+        self.assertEqual((write_code, bash_code), (0, 0))
+        write_record, bash_record = self._records()
+        self.assertEqual(write_record["harness"], "pi")
+        self.assertEqual(write_record["tool"], "write")
+        self.assertEqual(write_record["target"], "/wt/a.py")
+        self.assertEqual(write_record["rule"], "layout-error")
+        self.assertEqual(bash_record["tool"], "bash")
+        self.assertEqual(bash_record["target"], "ls")
+
     def test_each_invocation_appends_exactly_one_line(self) -> None:
         payload = json.dumps(
             {
@@ -867,6 +1187,35 @@ class LayoutErrorTests(unittest.TestCase):
         parsed = json.loads(out)
         self.assertEqual(parsed["hookSpecificOutput"]["permissionDecision"], "deny")
         self.assertIn("bad pointer", parsed["hookSpecificOutput"]["permissionDecisionReason"])
+
+    def test_layout_error_reason_reaches_copilots_stderr_only(self) -> None:
+        """Copilot honours the exit code and surfaces neither stream today; the
+        reason is emitted on the chance a later release does. Claude's JSON
+        already carries its own copy, so it gets no stderr line."""
+        err = agent_toolkit_paths.LayoutError("bad pointer")
+        copilot = json.dumps(
+            {"toolName": "edit", "toolArgs": json.dumps({"path": "/repo/a.py"})}
+        )
+        with mock.patch.object(backlog_claim_lookup, "layout_error", return_value=err):
+            out, stderr, code = MainTests()._run_capturing(
+                ["--harness", "copilot"], copilot
+            )
+        self.assertEqual(code, 2)
+        self.assertEqual(stderr, "bad pointer\n")
+        self.assertEqual(json.loads(out)["decision"], "deny")
+        claude = json.dumps(
+            {
+                "cwd": "/repo",
+                "tool_name": "Edit",
+                "tool_input": {"file_path": "/repo/a.py"},
+            }
+        )
+        with mock.patch.object(backlog_claim_lookup, "layout_error", return_value=err):
+            _, stderr, code = MainTests()._run_capturing(
+                ["--harness", "claude"], claude
+            )
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr, "")
 
     def test_layout_error_bypassed_when_guard_rails_off(self) -> None:
         err = agent_toolkit_paths.LayoutError("bad pointer")
