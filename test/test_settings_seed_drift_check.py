@@ -97,6 +97,8 @@ class SettingsSeedDriftCheckTestCase(unittest.TestCase):
         self.claude_dir.mkdir(parents=True)
         self.opencode_dir = self.repo_root / "opencode"
         self.opencode_dir.mkdir(parents=True)
+        self.pi_dir = self.repo_root / "pi"
+        self.pi_dir.mkdir(parents=True)
         self.state_dir = self.home / ".local" / "state" / "agent-toolkit"
         self.state_dir.mkdir(parents=True)
 
@@ -159,6 +161,22 @@ class SettingsSeedDriftCheckTestCase(unittest.TestCase):
         oc_dir.mkdir(parents=True, exist_ok=True)
         (oc_dir / "opencode.jsonc").write_text(text)
 
+    def write_pi_seed(self, body: dict[str, object]) -> None:
+        (self.pi_dir / "settings.json").write_text(json.dumps(body, indent=2) + "\n")
+
+    def write_pi_seed_raw(self, text: str) -> None:
+        (self.pi_dir / "settings.json").write_text(text)
+
+    def write_live_pi(self, body: dict[str, object]) -> None:
+        pi_live_dir = self.home / ".pi" / "agent"
+        pi_live_dir.mkdir(parents=True, exist_ok=True)
+        (pi_live_dir / "settings.json").write_text(json.dumps(body, indent=2) + "\n")
+
+    def write_live_pi_raw(self, text: str) -> None:
+        pi_live_dir = self.home / ".pi" / "agent"
+        pi_live_dir.mkdir(parents=True, exist_ok=True)
+        (pi_live_dir / "settings.json").write_text(text)
+
     def mark_work(self) -> None:
         (self.state_dir / "profile").write_text("work\n")
 
@@ -175,11 +193,11 @@ class SettingsSeedDriftCheckTestCase(unittest.TestCase):
     def write_live_vscode(self, name: str, text: str) -> None:
         (self.vscode_user_dir() / name).write_text(text)
 
-    def run_check(self) -> tuple[str, int]:
+    def run_check(self, quiet: bool = False) -> tuple[str, int]:
         out = io.StringIO()
         err = io.StringIO()
         with patch("sys.stdout", out), patch("sys.stderr", err):
-            code = ssdc.cmd_check()
+            code = ssdc.cmd_check(quiet=quiet)
         return out.getvalue().strip(), code
 
     def run_fix(self) -> tuple[str, int]:
@@ -433,6 +451,97 @@ class SettingsSeedDriftCheckTestCase(unittest.TestCase):
         out, code = self.run_check()
         self.assertEqual(out, "")
         self.assertEqual(code, 0)
+
+    # ── pi settings drift: report missing seed keys, report-only ────────
+
+    @staticmethod
+    def _pi_seed() -> dict[str, object]:
+        return {"lastChangelogVersion": "0.84.4", "retry": {"maxRetries": 10}}
+
+    @pytest.mark.regression(
+        "pi-settings-drift-unchecked",
+        "AssertionError: 'retry.maxRetries' not found in ''",
+    )
+    def test_check_pi_reports_missing_seed_key(self) -> None:
+        # A new seed key (retry.maxRetries) that never reached the live file
+        # must be reported with its dotted path. Red before the change: the
+        # checker had no pi seed at all, so nothing was reported.
+        self.write_pi_seed(self._pi_seed())
+        self.write_live_pi({"lastChangelogVersion": "1.1.0"})
+        out, code = self.run_check()
+        self.assertIn("retry.maxRetries", out)
+        self.assertEqual(code, 0)
+
+    def test_check_pi_silent_when_all_seed_keys_plus_extras(self) -> None:
+        # A seed key missing from live is reported; the extra live keys
+        # (defaultProvider, theme) are pi-maintained and never named.
+        self.write_pi_seed(
+            {
+                "lastChangelogVersion": "0.84.4",
+                "retry": {"maxRetries": 10},
+                "newKey": 1,
+            }
+        )
+        self.write_live_pi(
+            {
+                "lastChangelogVersion": "1.1.0",
+                "retry": {"maxRetries": 10},
+                "defaultProvider": "opencode-go",
+                "theme": "dark",
+            }
+        )
+        out, code = self.run_check()
+        self.assertIn("newKey", out)
+        self.assertNotIn("defaultProvider", out)
+        self.assertNotIn("theme", out)
+        self.assertEqual(code, 0)
+
+    def test_check_pi_leaves_live_file_byte_identical(self) -> None:
+        # Report-only: the drift line is printed (the pi path ran) but the
+        # live file is left byte-identical.
+        self.write_pi_seed(self._pi_seed())
+        self.write_live_pi({"lastChangelogVersion": "1.1.0"})
+        live_path = self.home / ".pi" / "agent" / "settings.json"
+        before = live_path.read_bytes()
+        out, code = self.run_check()
+        self.assertIn("retry.maxRetries", out)
+        self.assertEqual(live_path.read_bytes(), before)
+        self.assertEqual(code, 0)
+
+    def test_check_pi_ignores_last_changelog_version(self) -> None:
+        # lastChangelogVersion is pi-maintained and ignored, but a seed key
+        # missing from live is still reported.
+        self.write_pi_seed(self._pi_seed())
+        self.write_live_pi({})
+        out, code = self.run_check()
+        self.assertIn("retry.maxRetries", out)
+        self.assertNotIn("lastChangelogVersion", out)
+        self.assertEqual(code, 0)
+
+    def test_check_pi_differing_value_on_present_key_is_silent(self) -> None:
+        # Presence is by path, not value: retry.maxRetries present with a
+        # different value is silent; a genuinely missing key is reported.
+        self.write_pi_seed(
+            {
+                "lastChangelogVersion": "0.84.4",
+                "retry": {"maxRetries": 10},
+                "newKey": 1,
+            }
+        )
+        self.write_live_pi(
+            {"lastChangelogVersion": "1.1.0", "retry": {"maxRetries": 5}}
+        )
+        out, code = self.run_check()
+        self.assertIn("newKey", out)
+        self.assertNotIn("retry.maxRetries", out)
+        self.assertEqual(code, 0)
+
+    def test_check_pi_loudfails_on_unparseable_live(self) -> None:
+        self.write_pi_seed(self._pi_seed())
+        self.write_live_pi_raw("{ not valid json ")
+        out, code = self.run_check()
+        self.assertNotEqual(code, 0)
+        self.assertIn("cannot parse", out)
 
     # ── cmd_fix: additive union for permissions.allow ──────────────────
 

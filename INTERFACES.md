@@ -76,7 +76,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`seed_hook_subset_guard.py`](#agentscriptsseedhooksubsetguardpy) | seed_hook_subset_guard.py — refuse a commit that drops a seed's SessionStart hook groups. |
 | [`sessionstart_checks.py`](#agentscriptssessionstartcheckspy) | sessionstart_checks.py — run the SessionStart context checks concurrently. |
 | [`settings_seed.py`](#agentscriptssettingsseedpy) | Copy-once settings seeding, adoption, reseed, and drift detection. |
-| [`settings_seed_drift_check.py`](#agentscriptssettingsseeddriftcheckpy) | SessionStart hook + CLI: detect (and optionally fix) drift between the live ``~/.claude/settings.json`` / ``~/.config/opencode/opencode.jsonc`` / (under WSL) the Windows-side VS Code ``settings.json`` and ``keybindings.json`` and their seeds in this repo. |
+| [`settings_seed_drift_check.py`](#agentscriptssettingsseeddriftcheckpy) | SessionStart hook + CLI: detect (and optionally fix) drift between the live ``~/.claude/settings.json`` / ``~/.config/opencode/opencode.jsonc`` / ``~/.pi/agent/settings.json`` / (under WSL) the Windows-side VS Code ``settings.json`` and ``keybindings.json`` and their seeds in this repo. |
 | [`standup.py`](#agentscriptsstanduppy) | standup.py — /standup skill CLI and read-only fetch service. |
 | [`standup_adapters.py`](#agentscriptsstandupadapterspy) | standup_adapters.py — provider-agnostic adapter interfaces for /standup. |
 | [`statusline.py`](#agentscriptsstatuslinepy) | Claude Code status line: render the model name and a color-coded context window usage bar with the used percentage, from the JSON session payload Claude Code pipes to this script on stdin. |
@@ -1774,7 +1774,7 @@ Copy-once settings seeding, adoption, reseed, and drift detection.
 
 ### `agent-scripts/settings_seed_drift_check.py`
 
-SessionStart hook + CLI: detect (and optionally fix) drift between the live ``~/.claude/settings.json`` / ``~/.config/opencode/opencode.jsonc`` / (under WSL) the Windows-side VS Code ``settings.json`` and ``keybindings.json`` and their seeds in this repo.
+SessionStart hook + CLI: detect (and optionally fix) drift between the live ``~/.claude/settings.json`` / ``~/.config/opencode/opencode.jsonc`` / ``~/.pi/agent/settings.json`` / (under WSL) the Windows-side VS Code ``settings.json`` and ``keybindings.json`` and their seeds in this repo.
 
 - Installed at: `~/.agent-toolkit/scripts/settings_seed_drift_check.py` (all harnesses)
 - Entrypoint: executable, `#!/usr/bin/env python3`
@@ -1799,8 +1799,10 @@ SessionStart hook + CLI: detect (and optionally fix) drift between the live ``~/
   - `settings_seed_path(root: Path | None = None) -> Path` — Return the seed settings.json path for this machine's profile, under ``root`` (default the ``REPO_ROOT`` module constant — resolved at call time, not bound at import, so callers that don't pass ``root`` still pick up a patched/overridden ``REPO_ROOT``).
   - `opencode_seed_path(root: Path | None = None) -> Path | None` — Return the opencode.jsonc seed path under ``root``, or None on a work machine.
   - `vscode_seed_path(name: str, root: Path | None = None) -> Path` — Return the seed path for a VS Code file (``settings.json`` or ``keybindings.json``) under ``root``.
+  - `pi_seed_path(root: Path | None = None) -> Path` — Return the pi settings.json seed path under ``root``.
   - `settings_drift(seed: Path, live: Path) -> list[str]` — Return the non-cosmetic settings.json keys that diverged, or [] if either file is missing.
   - `opencode_drift(seed: Path, live: Path) -> str` — Return a drift description for opencode.jsonc non-cosmetic keys, or "".
+  - `pi_settings_drift(seed: Path, live: Path) -> list[str]` — Return the dotted-path pi seed keys (such as ``retry.maxRetries``) missing from the live file, or [] if either file is missing.
   - `vscode_drift(seed: Path, live: Path) -> str` — Describe how a live VS Code settings.json/keybindings.json diverged from its seed, or "" if there's nothing to compare or nothing drifted.
 - Subcommand handlers: `cmd_check`, `cmd_fix`, `cmd_sync_to_seed`, `cmd_push_vscode`
 - Tested by: `test/test_install.py`, `test/test_settings_seed_drift_check.py`

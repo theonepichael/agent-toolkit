@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """SessionStart hook + CLI: detect (and optionally fix) drift between the
 live ``~/.claude/settings.json`` / ``~/.config/opencode/opencode.jsonc`` /
-(under WSL) the Windows-side VS Code ``settings.json`` and
-``keybindings.json`` and their seeds in this repo.
+``~/.pi/agent/settings.json`` / (under WSL) the Windows-side VS Code
+``settings.json`` and ``keybindings.json`` and their seeds in this repo.
 
 Why this exists
 ---------------
@@ -38,6 +38,12 @@ forcing a human to either silence it (add to cosmetics) or investigate.
                     bypass under ``permission.bash`` is surfaced verbatim
                     as a ``SECURITY:`` line, exactly as install.py prints
                     it.
+    pi settings.json report-only, no cosmetic split and no fix path: each
+                    seed key missing from the live file is reported by its
+                    dotted path (e.g. ``retry.maxRetries``); pi-maintained
+                    keys (``lastChangelogVersion``) are ignored, and extra
+                    or differing live keys are never reported. Missing or
+                    unparseable live file is handled like the other seeds.
     VS Code         no cosmetic split — every setting/keybinding is a
     settings.json / legitimate user edit, not a security-relevant key.
     keybindings.json Drift is a plain whole-file text comparison (not a
@@ -91,7 +97,9 @@ Subcommands
             certainly live approvals). Does NOT cover VS Code — VS Code
             drift is a whole-file text diff (see "What counts as drift"
             above), not a per-key JSON merge, so it isn't a fit for this
-            additive-merge model in either direction. See ``push-vscode``
+            additive-merge model in either direction. Also does NOT cover
+            pi — pi drift is report-only (``check`` flags a missing seed
+            key, nothing writes the live pi file). See ``push-vscode``
             below for the repo->live direction and ``sync-to-seed`` for
             live->repo:
 
@@ -141,6 +149,8 @@ Subcommands
             repo seed. For a live-first edit (e.g. testing a
             SessionStart hook fix immediately in
             ``~/.claude/settings.json``) that needs forwarding into git.
+            Does NOT cover pi — pi drift is report-only (nothing here
+            writes the pi seed either).
 
             * ``hooks``: wholesale-mirrored live->seed (same rationale as
               fix()'s seed->live direction — hooks aren't live-modified by
@@ -259,6 +269,11 @@ SETTINGS_COSMETIC_KEYS: frozenset[str] = frozenset(
     }
 )
 OPENCODE_COSMETIC_KEYS: frozenset[str] = frozenset({"$schema", "agent", "model"})
+
+# pi settings.json: keys pi itself maintains are ignored, never reported as
+# drift (pi rewrites them in place). Every other seed key is checked for
+# *absence* from the live file — report-only, see pi_settings_drift.
+PI_MAINTAINED_KEYS: frozenset[str] = frozenset({"lastChangelogVersion"})
 
 # opencode allowlist-bypass patterns stripped by the FIX path (see
 # _merge_opencode_permission). This is the hook's fix-strip policy, not a
@@ -439,7 +454,48 @@ def vscode_seed_path(name: str, root: Path | None = None) -> Path:
     return (root if root is not None else REPO_ROOT) / "vscode" / name
 
 
+def pi_seed_path(root: Path | None = None) -> Path:
+    """Return the pi settings.json seed path under ``root``.
+
+    No work/personal split like ``settings_seed_path`` — pi settings are not
+    profile-specific the way Claude Code's are.
+    """
+    return (root if root is not None else REPO_ROOT) / "pi" / "settings.json"
+
+
 # ── drift detection ──────────────────────────────────────────────────────────
+
+
+def _flatten_json(data: dict[str, object], prefix: str = "") -> list[str]:
+    """Return dotted paths to every scalar / empty-dict leaf of ``data``.
+
+    A non-dict value (scalar or list), or an *empty* dict, is a leaf at its
+    own path (``{"retry": {}}`` -> ``["retry"]``); a non-empty dict recurses
+    (``{"retry": {"maxRetries": 10}}`` -> ``["retry.maxRetries"]``).
+    """
+    paths: list[str] = []
+    for key, value in data.items():
+        path = f"{prefix}.{key}" if prefix else key
+        if isinstance(value, dict) and value:
+            paths.extend(_flatten_json(value, path))
+        else:
+            paths.append(path)
+    return paths
+
+
+def _nested_has(live: dict[str, object], path: str) -> bool:
+    """Return True if every dotted segment of ``path`` is present as a key
+    in ``live``. A scalar where a dict is needed stops the walk (False).
+
+    Presence is by path, not value — a present key with a different value
+    still counts as present (so it is never reported as missing/removable).
+    """
+    node: object = live
+    for segment in path.split("."):
+        if not isinstance(node, dict) or segment not in node:
+            return False
+        node = node[segment]
+    return True
 
 
 def _non_cosmetic_drift(
@@ -480,6 +536,26 @@ def opencode_drift(seed: Path, live: Path) -> str:
         )
     drifted = _non_cosmetic_drift(*pair, OPENCODE_COSMETIC_KEYS)
     return ", ".join(drifted)
+
+
+def pi_settings_drift(seed: Path, live: Path) -> list[str]:
+    """Return the dotted-path pi seed keys (such as ``retry.maxRetries``)
+    missing from the live file, or [] if either file is missing. Raise on a
+    parse failure.
+
+    Report-only: pi-maintained keys (``PI_MAINTAINED_KEYS``) are ignored,
+    and extra or differing live keys are never reported — only seed keys
+    *absent* from live are named.
+    """
+    pair = _load_json_pair(seed, live)
+    if pair is None:
+        return []
+    seed_data, live_data = pair
+    return sorted(
+        path
+        for path in _flatten_json(seed_data)
+        if path not in PI_MAINTAINED_KEYS and not _nested_has(live_data, path)
+    )
 
 
 def vscode_drift(seed: Path, live: Path) -> str:
@@ -545,6 +621,22 @@ def cmd_check(quiet: bool = False) -> int:
                     f"opencode.jsonc drifted from seed on: {oc_drifted} — "
                     "run `python3 ~/.agent-toolkit/scripts/settings_seed_drift_check.py fix`"
                 )
+
+    pi_seed = pi_seed_path()
+    pi_live = HOME / ".pi" / "agent" / "settings.json"
+    try:
+        pi_drifted = pi_settings_drift(pi_seed, pi_live)
+    except DriftCheckError as exc:
+        messages.append(
+            f"[settings_seed_drift_check] cannot check pi settings drift: {exc}"
+        )
+        exit_code = 1
+    else:
+        if pi_drifted:
+            messages.append(
+                f"pi settings drifted from seed (pi/settings.json) on: "
+                f"{', '.join(pi_drifted)} — missing from ~/.pi/agent/settings.json"
+            )
 
     vscode_user_dir = _vscode_wsl_user_dir()
     if vscode_user_dir is not None:
