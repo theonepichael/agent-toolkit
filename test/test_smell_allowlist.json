@@ -357,204 +357,76 @@
   ],
   "test/test_dev_status.py": [
     {
-      "fingerprint": "[approve] slug=item-one status=done rev=",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "[block] slug=blocked-item status=open rev=",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "[gate-pass] slug=gated-item status=open rev=",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "[gate-set] slug=gated-item status=open rev=",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "[pending add] slug=wait-item status=waiting_for_reply rev=",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "[pending update] slug=wait-item status=reply_received rev=",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "[reject] slug=item-one status=in-progress rev=",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "[remove] slug=doomed-slug status=removed rev=",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "[review] slug=item-one status=in-review rev=",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "[start] slug=item-one status=in-progress rev=",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "[start] slug=item-one status=in-progress rev=",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "[start] slug=item-two status=in-progress rev=",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "fingerprint": "[start] slug=my-slug status=in-progress rev=42 detail=\"Standard summary\"",
+      "reason": "Deliberate serialization-contract test of format_compact_confirmation: pins exact field order, quoting, and ref placement (test/AGENTS.md wording-test exception; see comment in test_format_compact_confirmation_unit)."
     },
     {
       "fingerprint": "[start] slug=my-slug status=in-progress rev=42 detail=\"Standard summary\"",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "[start] slug=my-slug status=in-progress rev=42 detail=\"Standard summary\"",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Deliberate serialization-contract test of format_compact_confirmation: pins exact field order, quoting, and ref placement (test/AGENTS.md wording-test exception; see comment in test_format_compact_confirmation_unit)."
     },
     {
       "fingerprint": "[start] slug=my-slug status=in-progress rev=42 ref=\"3\" detail=\"Standard summary\"",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "[unblock] slug=blocked-item status=open rev=",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "blocking references unknown slug: ghost-slug",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "blocking references unknown slug: typo-slug",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Deliberate serialization-contract test of format_compact_confirmation: pins exact field order, quoting, and ref placement (test/AGENTS.md wording-test exception; see comment in test_format_compact_confirmation_unit)."
     },
     {
       "fingerprint": "check the READY/IN PROGRESS items above for blocker relationships",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "User-facing diagnostic message whose wording is the contract (see the test's deliberate-wording comment)."
     },
     {
       "fingerprint": "check the READY/IN PROGRESS items above for blocker relationships",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "User-facing diagnostic message whose wording is the contract (see the test's deliberate-wording comment)."
     },
     {
       "fingerprint": "check the READY/IN PROGRESS items above for blocker relationships",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "detail=\"gate set (2 criteria, required=true)\"",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "User-facing diagnostic message whose wording is the contract (see the test's deliberate-wording comment)."
     }
   ],
   "test/test_dev_status_formatting.py": [
     {
       "fingerprint": "in progress: 1, ready: 2, blocked: 3, in review: 4, done (latest 5 max): 5, pending: 6",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Exact formatted output of bucket_summary(); the recap-prompt fact format is the contract (see the test's deliberate-format comment)."
     }
   ],
   "test/test_dev_status_mutation.py": [
     {
-      "fingerprint": "[add] slug=my-feature status=open rev= detail=\"Test feature\"",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "[approve] slug=item-one status=done rev= detail=\"Summary of item-one\"",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "[block] slug=item-one status=open rev= detail=\"blocked by two-slug\"",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
-    },
-    {
       "fingerprint": "[block] would create a cycle: item-one already depends on two-slug",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "User-facing diagnostic message whose wording is the contract (see the test's deliberate-wording comment)."
     },
     {
       "fingerprint": "[done] item-one has an unmet gate (1 criterion/criteria",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "[done] slug=item-one status=done rev= detail=\"Summary of item-one\"",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "[gate-pass] slug=item-one status=in-progress rev= detail=\"gate passed via manual\"",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "[gate-set] slug=item-one status=in-progress rev= detail=\"gate set (1 criteria, required=true)\"",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "[pending add] slug=wait-reply status=waiting_for_reply rev= detail=\"Waiting on reply\"",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "User-facing diagnostic message whose wording is the contract (see the test's deliberate-wording comment)."
     },
     {
       "fingerprint": "[pending update] cannot update field(s): created",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "[pending update] slug=wait-reply status=reply_received rev= detail=\"Waiting on reply\"",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "User-facing diagnostic message whose wording is the contract (see the test's deliberate-wording comment)."
     },
     {
       "fingerprint": "[reject] feedback is required and cannot be empty",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "[reject] slug=item-one status=in-progress rev= detail=\"Summary of item-one\"",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "[remove] slug=item-one status=removed rev= detail=\"Summary of item-one\"",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "[rename] slug=renamed-one status=open rev= ref=\"item-one\" detail=\"renamed from item-one\"",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "[reopen] slug=item-one status=open rev= detail=\"Summary of item-one\"",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "[review] slug=item-one status=in-review rev= detail=\"Summary of item-one\"",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "[start] slug=item-one status=in-progress rev= detail=\"Summary of item-one\"",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "User-facing diagnostic message whose wording is the contract (see the test's deliberate-wording comment)."
     },
     {
       "fingerprint": "[unblock] item-one is not blocked by two-slug",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "[unblock] slug=item-one status=open rev= detail=\"unblocked from two-slug\"",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "User-facing diagnostic message whose wording is the contract (see the test's deliberate-wording comment)."
     },
     {
       "fingerprint": "[update] cannot modify immutable field(s): id",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "User-facing diagnostic message whose wording is the contract (see the test's deliberate-wording comment)."
     },
     {
       "fingerprint": "[update] numeric id '1' requires --if-rev <N> to guard against a stale position — refusing (no write).",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
-    },
-    {
-      "fingerprint": "[update] slug=item-one status=in-progress rev= detail=\"updated context: Summary of item-one\"",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "User-facing diagnostic message whose wording is the contract (see the test's deliberate-wording comment)."
     },
     {
       "fingerprint": "[update] stale rev: --if-rev 99 given, current is 0",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "User-facing diagnostic message whose wording is the contract (see the test's deliberate-wording comment)."
     },
     {
       "fingerprint": "content changed since it was submitted for review",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "User-facing diagnostic message whose wording is the contract (see the test's deliberate-wording comment)."
     },
     {
       "fingerprint": "criteria' cannot be empty when required=true",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "User-facing diagnostic message whose wording is the contract (see the test's deliberate-wording comment)."
     }
   ],
   "test/test_fault_checkpoint.py": [
@@ -1192,7 +1064,7 @@
   "test/test_slug_check.py": [
     {
       "fingerprint": "overridden: e.md:1:atk-echo reason=\"not a reference\"",
-      "reason": "Frozen pre-existing 40+ character literal assertion; to be fixed or justified in the allowlist workdown."
+      "reason": "Structured override echo line (path:line:slug finding + reason); the test asserts the exact echo (see the test's deliberate-echo comment)."
     }
   ],
   "test/test_standup.py": [

@@ -271,6 +271,7 @@ class OverrideTestCase(SlugCheckFixture):
             "--allow", "e.md:1:atk-echo", "not a reference"
         )
         self.assertEqual(code, 0)
+        # Deliberate echo-format test: pins the exact override echo line.
         self.assertIn(
             'overridden: e.md:1:atk-echo reason="not a reference"', out
         )

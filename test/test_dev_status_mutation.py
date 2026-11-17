@@ -24,6 +24,7 @@ import fcntl
 import io
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -220,6 +221,34 @@ class MutationCliCharacterizationTestCase(MutationFixture):
         self.assertEqual(len(lines), 1, f"expected one compact line, got: {out!r}")
         return lines[0]
 
+    _COMPACT_RE = re.compile(
+        r"^\[(?P<cmd>[^\]]+)\] "
+        r"slug=(?P<slug>\S+) "
+        r"status=(?P<status>\S+) "
+        r"rev=(?P<rev>\d+)"
+        r"(?: ref=\"(?P<ref>[^\"]*)\")? "
+        r'detail="(?P<detail>(?:[^"]|\\")*)\"\Z'
+    )
+
+    def _parse_compact(self, line):
+        m = self._COMPACT_RE.fullmatch(line)
+        self.assertIsNotNone(m, f"unparseable compact line: {line!r}")
+        return m.groupdict()
+
+    def _assert_compact(self, line, cmd, slug, status, rev=None, ref=None, detail=None):
+        fields = self._parse_compact(line)
+        self.assertEqual(fields["cmd"], cmd)
+        self.assertEqual(fields["slug"], slug)
+        self.assertEqual(fields["status"], status)
+        if rev is not None:
+            self.assertEqual(fields["rev"], str(rev))
+        if ref is None:
+            self.assertIsNone(fields["ref"])
+        else:
+            self.assertEqual(fields["ref"], ref)
+        if detail is not None:
+            self.assertEqual(fields["detail"], detail)
+
     def test_add_compact_line(self):
         out, _ = self.run_cmd(
             dev_status.cmd_add,
@@ -227,10 +256,7 @@ class MutationCliCharacterizationTestCase(MutationFixture):
         )
         line = self._compact(out)
         rev = self.read_rev()
-        self.assertEqual(
-            line,
-            f'[add] slug=my-feature status=open rev={rev} detail="Test feature"',
-        )
+        self._assert_compact(line, "add", "my-feature", "open", rev, detail="Test feature")
         self.assertEqual(self._item_by_id("my-feature")["status"], "open")
 
     def test_add_missing_id_refuses_with_suggestion(self):
@@ -258,10 +284,13 @@ class MutationCliCharacterizationTestCase(MutationFixture):
         )
         line = self._compact(out)
         rev = self.read_rev()
-        self.assertEqual(
+        self._assert_compact(
             line,
-            f'[update] slug=item-one status=in-progress rev={rev} '
-            f'detail="updated context: Summary of item-one"',
+            "update",
+            "item-one",
+            "in-progress",
+            rev,
+            detail="updated context: Summary of item-one",
         )
 
     def test_update_numeric_without_if_rev_refuses(self):
@@ -271,6 +300,7 @@ class MutationCliCharacterizationTestCase(MutationFixture):
             _Args(id="1", patch='{"context": "x"}'),
         )
         self.assertEqual(code, 1)
+        # Deliberate wording test: asserts this exact diagnostic message.
         self.assertIn(
             "[update] numeric id '1' requires --if-rev <N> to guard against a "
             "stale position — refusing (no write).",
@@ -286,6 +316,7 @@ class MutationCliCharacterizationTestCase(MutationFixture):
             _Args(id="1", if_rev=99, patch='{"context": "x"}'),
         )
         self.assertEqual(code, 1)
+        # Deliberate wording test: asserts this exact diagnostic message.
         self.assertIn("[update] stale rev: --if-rev 99 given, current is 0", err)
         self.assertEqual(self.read_rev(), before)
 
@@ -296,6 +327,7 @@ class MutationCliCharacterizationTestCase(MutationFixture):
             _Args(id="item-one", patch='{"id": "other-slug"}'),
         )
         self.assertEqual(code, 1)
+        # Deliberate wording test: asserts this exact diagnostic message.
         self.assertEqual(
             err.strip(), "[update] cannot modify immutable field(s): id"
         )
@@ -314,10 +346,8 @@ class MutationCliCharacterizationTestCase(MutationFixture):
         out, _ = self.run_cmd(dev_status.cmd_start, _Args(id="item-one"))
         line = self._compact(out)
         rev = self.read_rev()
-        self.assertEqual(
-            line,
-            f'[start] slug=item-one status=in-progress rev={rev} '
-            f'detail="Summary of item-one"',
+        self._assert_compact(
+            line, "start", "item-one", "in-progress", rev, detail="Summary of item-one"
         )
         self.assertIn("claimed_by", self._item_by_id("item-one"))
 
@@ -326,10 +356,8 @@ class MutationCliCharacterizationTestCase(MutationFixture):
         out, _ = self.run_cmd(dev_status.cmd_reopen, _Args(id="item-one"))
         line = self._compact(out)
         rev = self.read_rev()
-        self.assertEqual(
-            line,
-            f'[reopen] slug=item-one status=open rev={rev} '
-            f'detail="Summary of item-one"',
+        self._assert_compact(
+            line, "reopen", "item-one", "open", rev, detail="Summary of item-one"
         )
 
     def test_start_numeric_ref_in_compact_line(self):
@@ -350,10 +378,8 @@ class MutationCliCharacterizationTestCase(MutationFixture):
         out, _ = self.run_cmd(dev_status.cmd_done, _Args(id="item-one"))
         line = self._compact(out)
         rev = self.read_rev()
-        self.assertEqual(
-            line,
-            f'[done] slug=item-one status=done rev={rev} '
-            f'detail="Summary of item-one"',
+        self._assert_compact(
+            line, "done", "item-one", "done", rev, detail="Summary of item-one"
         )
         self.assertEqual(self._item_by_id("item-one")["status"], "done")
 
@@ -370,6 +396,7 @@ class MutationCliCharacterizationTestCase(MutationFixture):
         before = self.read_rev()
         err, code = self.run_cmd_exits(dev_status.cmd_done, _Args(id="item-one"))
         self.assertEqual(code, 1)
+        # Deliberate wording test: asserts this exact diagnostic message.
         self.assertIn("[done] item-one has an unmet gate (1 criterion/criteria", err)
         # Refusal raises before bumping rev or writing items.
         self.assertEqual(self.read_rev(), before)
@@ -381,10 +408,8 @@ class MutationCliCharacterizationTestCase(MutationFixture):
         out, _ = self.run_cmd(dev_status.cmd_review, _Args(id="item-one"))
         line = self._compact(out)
         rev = self.read_rev()
-        self.assertEqual(
-            line,
-            f'[review] slug=item-one status=in-review rev={rev} '
-            f'detail="Summary of item-one"',
+        self._assert_compact(
+            line, "review", "item-one", "in-review", rev, detail="Summary of item-one"
         )
 
     def test_approve_compact_line_and_hash_drift(self):
@@ -393,10 +418,8 @@ class MutationCliCharacterizationTestCase(MutationFixture):
         out, _ = self.run_cmd(dev_status.cmd_approve, _Args(id="item-one"))
         line = self._compact(out)
         rev = self.read_rev()
-        self.assertEqual(
-            line,
-            f'[approve] slug=item-one status=done rev={rev} '
-            f'detail="Summary of item-one"',
+        self._assert_compact(
+            line, "approve", "item-one", "done", rev, detail="Summary of item-one"
         )
 
         # hash drift refusal: mutate content after review, approve must refuse
@@ -408,6 +431,7 @@ class MutationCliCharacterizationTestCase(MutationFixture):
         self.write_items(items)
         err, code = self.run_cmd_exits(dev_status.cmd_approve, _Args(id="item-two"))
         self.assertEqual(code, 1)
+        # Deliberate wording test: asserts this exact diagnostic message.
         self.assertIn("content changed since it was submitted for review", err)
 
     def test_reject_compact_line(self):
@@ -418,10 +442,8 @@ class MutationCliCharacterizationTestCase(MutationFixture):
         )
         line = self._compact(out)
         rev = self.read_rev()
-        self.assertEqual(
-            line,
-            f'[reject] slug=item-one status=in-progress rev={rev} '
-            f'detail="Summary of item-one"',
+        self._assert_compact(
+            line, "reject", "item-one", "in-progress", rev, detail="Summary of item-one"
         )
         self.assertEqual(self._item_by_id("item-one")["review_feedback"], "needs work")
 
@@ -431,6 +453,7 @@ class MutationCliCharacterizationTestCase(MutationFixture):
             dev_status.cmd_reject, _Args(id="item-one", feedback="   ")
         )
         self.assertEqual(code, 1)
+        # Deliberate wording test: asserts this exact diagnostic message.
         self.assertEqual(
             err.strip(), "[reject] feedback is required and cannot be empty"
         )
@@ -442,10 +465,8 @@ class MutationCliCharacterizationTestCase(MutationFixture):
         )
         line = self._compact(out)
         rev = self.read_rev()
-        self.assertEqual(
-            line,
-            f'[block] slug=item-one status=open rev={rev} '
-            f'detail="blocked by two-slug"',
+        self._assert_compact(
+            line, "block", "item-one", "open", rev, detail="blocked by two-slug"
         )
 
     def test_block_cycle_refuses(self):
@@ -459,6 +480,7 @@ class MutationCliCharacterizationTestCase(MutationFixture):
             dev_status.cmd_block, _Args(id="two-slug", blocker="item-one")
         )
         self.assertEqual(code, 1)
+        # Deliberate wording test: asserts this exact diagnostic message.
         self.assertEqual(
             err.strip(),
             "[block] would create a cycle: item-one already depends on two-slug",
@@ -476,10 +498,8 @@ class MutationCliCharacterizationTestCase(MutationFixture):
         )
         line = self._compact(out)
         rev = self.read_rev()
-        self.assertEqual(
-            line,
-            f'[unblock] slug=item-one status=open rev={rev} '
-            f'detail="unblocked from two-slug"',
+        self._assert_compact(
+            line, "unblock", "item-one", "open", rev, detail="unblocked from two-slug"
         )
 
     def test_unblock_missing_blocker_refuses(self):
@@ -488,6 +508,7 @@ class MutationCliCharacterizationTestCase(MutationFixture):
             dev_status.cmd_unblock, _Args(id="item-one", blocker="two-slug")
         )
         self.assertEqual(code, 1)
+        # Deliberate wording test: asserts this exact diagnostic message.
         self.assertEqual(err.strip(), "[unblock] item-one is not blocked by two-slug")
 
     def test_gate_set_compact_line(self):
@@ -498,10 +519,13 @@ class MutationCliCharacterizationTestCase(MutationFixture):
         )
         line = self._compact(out)
         rev = self.read_rev()
-        self.assertEqual(
+        self._assert_compact(
             line,
-            f'[gate-set] slug=item-one status=in-progress rev={rev} '
-            f'detail="gate set (1 criteria, required=true)"',
+            "gate-set",
+            "item-one",
+            "in-progress",
+            rev,
+            detail="gate set (1 criteria, required=true)",
         )
 
     def test_gate_set_empty_required_criteria_refuses(self):
@@ -511,6 +535,7 @@ class MutationCliCharacterizationTestCase(MutationFixture):
             _Args(id="item-one", json='{"required": true, "criteria": []}'),
         )
         self.assertEqual(code, 1)
+        # Deliberate wording test: asserts this exact diagnostic message.
         self.assertIn("criteria' cannot be empty when required=true", err)
 
     def test_gate_pass_compact_line_via_manual(self):
@@ -534,10 +559,13 @@ class MutationCliCharacterizationTestCase(MutationFixture):
         )
         line = self._compact(out)
         rev = self.read_rev()
-        self.assertEqual(
+        self._assert_compact(
             line,
-            f'[gate-pass] slug=item-one status=in-progress rev={rev} '
-            f'detail="gate passed via manual"',
+            "gate-pass",
+            "item-one",
+            "in-progress",
+            rev,
+            detail="gate passed via manual",
         )
 
     def test_gate_pass_bare_coverage_refuses(self):
@@ -568,10 +596,14 @@ class MutationCliCharacterizationTestCase(MutationFixture):
         )
         line = self._compact(out)
         rev = self.read_rev()
-        self.assertEqual(
+        self._assert_compact(
             line,
-            f'[rename] slug=renamed-one status=open rev={rev} '
-            f'ref="item-one" detail="renamed from item-one"',
+            "rename",
+            "renamed-one",
+            "open",
+            rev,
+            ref="item-one",
+            detail="renamed from item-one",
         )
         self.assertEqual(self._item_by_id("renamed-one")["context"], "see renamed-one later")
         self.assertEqual(self._item_by_id("two-slug")["blocked_by"], ["renamed-one"])
@@ -606,10 +638,8 @@ class MutationCliCharacterizationTestCase(MutationFixture):
         out, _ = self.run_cmd(dev_status.cmd_remove, _Args(id="item-one"))
         line = self._compact(out)
         rev = self.read_rev()
-        self.assertEqual(
-            line,
-            f'[remove] slug=item-one status=removed rev={rev} '
-            f'detail="Summary of item-one"',
+        self._assert_compact(
+            line, "remove", "item-one", "removed", rev, detail="Summary of item-one"
         )
         self.assertEqual([i["id"] for i in self.read_items()], ["two-slug"])
         self.assertEqual(self._item_by_id("two-slug")["blocked_by"], [])
@@ -673,10 +703,13 @@ class MutationCliCharacterizationTestCase(MutationFixture):
         )
         line = self._compact(out)
         rev = self.read_rev()
-        self.assertEqual(
+        self._assert_compact(
             line,
-            f'[pending add] slug=wait-reply status=waiting_for_reply rev={rev} '
-            f'detail="Waiting on reply"',
+            "pending add",
+            "wait-reply",
+            "waiting_for_reply",
+            rev,
+            detail="Waiting on reply",
         )
         self.assertEqual(self.read_pending()[0]["id"], "wait-reply")
 
@@ -729,10 +762,13 @@ class MutationCliCharacterizationTestCase(MutationFixture):
         )
         line = self._compact(out)
         rev = self.read_rev()
-        self.assertEqual(
+        self._assert_compact(
             line,
-            f'[pending update] slug=wait-reply status=reply_received rev={rev} '
-            f'detail="Waiting on reply"',
+            "pending update",
+            "wait-reply",
+            "reply_received",
+            rev,
+            detail="Waiting on reply",
         )
         self.assertEqual(self.read_pending()[0]["status"], "reply_received")
 
@@ -759,6 +795,7 @@ class MutationCliCharacterizationTestCase(MutationFixture):
             _Args(id="wait-reply", patch='{"created": "2026-02-02"}'),
         )
         self.assertEqual(code, 1)
+        # Deliberate wording test: asserts this exact diagnostic message.
         self.assertEqual(
             err.strip(), "[pending update] cannot update field(s): created"
         )

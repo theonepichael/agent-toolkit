@@ -289,6 +289,7 @@ class ChangelogAndFactsTestCase(unittest.TestCase):
         summary = fmt.bucket_summary(
             in_progress=1, ready=2, blocked=3, in_review=4, done=5, pending=6
         )
+        # Deliberate format test: pins bucket_summary()'s exact output.
         self.assertEqual(
             summary,
             "in progress: 1, ready: 2, blocked: 3, in review: 4, "

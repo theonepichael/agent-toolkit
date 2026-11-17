@@ -1827,7 +1827,8 @@ class BacklogTestCase(BacklogFixture):
                 )
             )
         self.assertEqual(cm.exception.code, 1)
-        self.assertIn("blocking references unknown slug: ghost-slug", err.getvalue())
+        self.assertIn("blocking", err.getvalue())
+        self.assertIn("ghost-slug", err.getvalue())
         self.assertEqual(dev_status.load_pending(), [])
 
     def test_54_pending_add_blocking_known_slug_accepted(self):
@@ -1846,6 +1847,7 @@ class BacklogTestCase(BacklogFixture):
         err = io.StringIO()
         with patch("sys.stderr", err):
             dev_status.cmd_add(_args(json='{"id": "new-item", "summary": "New item"}'))
+        # Deliberate wording test: asserts this exact reminder message.
         self.assertIn(
             "check the READY/IN PROGRESS items above for blocker relationships",
             err.getvalue(),
@@ -1856,6 +1858,7 @@ class BacklogTestCase(BacklogFixture):
         err = io.StringIO()
         with patch("sys.stderr", err):
             dev_status.cmd_add(_args(json='{"id": "new-item", "summary": "New item"}'))
+        # Deliberate wording test: asserts this exact reminder message.
         self.assertIn(
             "check the READY/IN PROGRESS items above for blocker relationships",
             err.getvalue(),
@@ -1893,6 +1896,7 @@ class BacklogTestCase(BacklogFixture):
                     json='{"id": "wait-y", "description": "waiting", "kind": "email"}'
                 )
             )
+        # Deliberate wording test: asserts this exact reminder message.
         self.assertIn(
             "check the READY/IN PROGRESS items above for blocker relationships",
             err.getvalue(),
@@ -2260,7 +2264,8 @@ class BacklogTestCase(BacklogFixture):
                 _args(id="pend-x", patch='{"blocking": ["typo-slug"]}')
             )
         self.assertEqual(cm.exception.code, 1)
-        self.assertIn("blocking references unknown slug: typo-slug", err.getvalue())
+        self.assertIn("blocking", err.getvalue())
+        self.assertIn("typo-slug", err.getvalue())
 
     # ── #11: unknown slug emits not-found, not wrong-kind
 
@@ -7314,7 +7319,40 @@ class OwnerPidSubprocessTestCase(unittest.TestCase):
 class CompactMutationOutputTestCase(BacklogFixture):
     """Verify single-line compact structured confirmations for mutating commands."""
 
+    _COMPACT_RE = re.compile(
+        r"^\[(?P<cmd>[^\]]+)\] "
+        r"slug=(?P<slug>\S+) "
+        r"status=(?P<status>\S+) "
+        r"rev=(?P<rev>\d+)"
+        r"(?: ref=\"(?P<ref>[^\"]*)\")? "
+        r'detail="(?P<detail>(?:[^"]|\\")*)\"\Z'
+    )
+
+    def _parse_compact(self, line):
+        m = self._COMPACT_RE.fullmatch(line)
+        self.assertIsNotNone(m, f"unparseable compact line: {line!r}")
+        return m.groupdict()
+
+    def _assert_compact(self, line, cmd, slug, status, rev=None, ref=None, detail=None):
+        fields = self._parse_compact(line)
+        self.assertEqual(fields["cmd"], cmd)
+        self.assertEqual(fields["slug"], slug)
+        self.assertEqual(fields["status"], status)
+        if rev is not None:
+            self.assertEqual(fields["rev"], str(rev))
+        if ref is None:
+            self.assertIsNone(fields["ref"])
+        else:
+            self.assertEqual(fields["ref"], ref)
+        if detail is not None:
+            self.assertEqual(fields["detail"], detail)
+
     def test_format_compact_confirmation_unit(self):
+        # Deliberate serialization-contract test: these three assertions pin the
+        # exact field order, quoting, and ref placement of
+        # format_compact_confirmation, whose output is parsed by tooling — the
+        # full literal is the subject, not incidental prose (test/AGENTS.md
+        # wording-test exception).
         line = dev_status.format_compact_confirmation(
             "start", "my-slug", "in-progress", 42, ref=None, detail="Standard summary"
         )
@@ -7374,8 +7412,7 @@ class CompactMutationOutputTestCase(BacklogFixture):
         ):
             dev_status.cmd_start(_args(id="item-one"))
         val = out.getvalue().strip()
-        self.assertTrue(val.startswith("[start] slug=item-one status=in-progress rev="))
-        self.assertNotIn('ref="', val)
+        self._assert_compact(val, "start", "item-one", "in-progress")
         self.assertNotIn("┌─", val)
 
         # Numeric ID includes ref="2"
@@ -7387,8 +7424,7 @@ class CompactMutationOutputTestCase(BacklogFixture):
         ):
             dev_status.cmd_start(_args(id="2", if_rev=cur_rev))
         val2 = out2.getvalue().strip()
-        self.assertTrue(val2.startswith("[start] slug=item-two status=in-progress rev="))
-        self.assertIn('ref="2"', val2)
+        self._assert_compact(val2, "start", "item-two", "in-progress", ref="2")
         self.assertNotIn("┌─", val2)
 
     def test_done_compact_output(self):
@@ -7400,7 +7436,7 @@ class CompactMutationOutputTestCase(BacklogFixture):
         ):
             dev_status.cmd_done(_args(id="item-one"))
         val = out.getvalue().strip()
-        self.assertTrue(val.startswith("[done] slug=item-one status=done rev="))
+        self._assert_compact(val, "done", "item-one", "done")
         self.assertNotIn("┌─", val)
 
     def test_review_approve_reject_compact_output(self):
@@ -7411,7 +7447,7 @@ class CompactMutationOutputTestCase(BacklogFixture):
             patch("sys.stdout", out_rev),
         ):
             dev_status.cmd_review(_args(id="item-one"))
-        self.assertTrue(out_rev.getvalue().strip().startswith("[review] slug=item-one status=in-review rev="))
+        self._assert_compact(out_rev.getvalue().strip(), "review", "item-one", "in-review")
         self.assertNotIn("┌─", out_rev.getvalue())
 
         # reject sends back to in-progress
@@ -7421,7 +7457,7 @@ class CompactMutationOutputTestCase(BacklogFixture):
             patch("sys.stdout", out_rej),
         ):
             dev_status.cmd_reject(_args(id="item-one", feedback="needs work"))
-        self.assertTrue(out_rej.getvalue().strip().startswith("[reject] slug=item-one status=in-progress rev="))
+        self._assert_compact(out_rej.getvalue().strip(), "reject", "item-one", "in-progress")
         self.assertNotIn("┌─", out_rej.getvalue())
 
         # review again, then approve
@@ -7432,7 +7468,7 @@ class CompactMutationOutputTestCase(BacklogFixture):
             patch("sys.stdout", out_app),
         ):
             dev_status.cmd_approve(_args(id="item-one"))
-        self.assertTrue(out_app.getvalue().strip().startswith("[approve] slug=item-one status=done rev="))
+        self._assert_compact(out_app.getvalue().strip(), "approve", "item-one", "done")
         self.assertNotIn("┌─", out_app.getvalue())
 
     def test_add_compact_output(self):
@@ -7443,8 +7479,7 @@ class CompactMutationOutputTestCase(BacklogFixture):
         ):
             dev_status.cmd_add(_args(json='{"id": "new-item", "summary": "Fresh summary"}'))
         val = out.getvalue().strip()
-        self.assertTrue(val.startswith("[add] slug=new-item status=open rev="))
-        self.assertIn('detail="Fresh summary"', val)
+        self._assert_compact(val, "add", "new-item", "open", detail="Fresh summary")
         self.assertNotIn("┌─", val)
 
     def test_pending_add_and_update_compact_output(self):
@@ -7457,8 +7492,9 @@ class CompactMutationOutputTestCase(BacklogFixture):
                 _args(json='{"id": "wait-item", "description": "Waiting on reply", "kind": "email"}')
             )
         val_add = out_add.getvalue().strip()
-        self.assertTrue(val_add.startswith("[pending add] slug=wait-item status=waiting_for_reply rev="))
-        self.assertIn('detail="Waiting on reply"', val_add)
+        self._assert_compact(
+            val_add, "pending add", "wait-item", "waiting_for_reply", detail="Waiting on reply"
+        )
         self.assertNotIn("┌─", val_add)
 
         out_up = io.StringIO()
@@ -7470,8 +7506,9 @@ class CompactMutationOutputTestCase(BacklogFixture):
                 _args(id="wait-item", patch='{"status": "reply_received"}')
             )
         val_up = out_up.getvalue().strip()
-        self.assertTrue(val_up.startswith("[pending update] slug=wait-item status=reply_received rev="))
-        self.assertIn('detail="Waiting on reply"', val_up)
+        self._assert_compact(
+            val_up, "pending update", "wait-item", "reply_received", detail="Waiting on reply"
+        )
         self.assertNotIn("┌─", val_up)
 
     def test_update_compact_output(self):
@@ -7483,8 +7520,9 @@ class CompactMutationOutputTestCase(BacklogFixture):
         ):
             dev_status.cmd_update(_args(id="item-one", patch='{"summary": "New summary"}'))
         val = out.getvalue().strip()
-        self.assertTrue(val.startswith("[update] slug=item-one status=open rev="))
-        self.assertIn('detail="updated summary: New summary"', val)
+        self._assert_compact(
+            val, "update", "item-one", "open", detail="updated summary: New summary"
+        )
         self.assertNotIn("┌─", val)
 
     def test_block_and_unblock_compact_output(self):
@@ -7496,8 +7534,9 @@ class CompactMutationOutputTestCase(BacklogFixture):
         ):
             dev_status.cmd_block(_args(id="blocked-item", blocker="blocker-item"))
         val_blk = out_blk.getvalue().strip()
-        self.assertTrue(val_blk.startswith("[block] slug=blocked-item status=open rev="))
-        self.assertIn('detail="blocked by blocker-item"', val_blk)
+        self._assert_compact(
+            val_blk, "block", "blocked-item", "open", detail="blocked by blocker-item"
+        )
         self.assertNotIn("┌─", val_blk)
 
         out_unblk = io.StringIO()
@@ -7507,8 +7546,9 @@ class CompactMutationOutputTestCase(BacklogFixture):
         ):
             dev_status.cmd_unblock(_args(id="blocked-item", blocker="blocker-item"))
         val_unblk = out_unblk.getvalue().strip()
-        self.assertTrue(val_unblk.startswith("[unblock] slug=blocked-item status=open rev="))
-        self.assertIn('detail="unblocked from blocker-item"', val_unblk)
+        self._assert_compact(
+            val_unblk, "unblock", "blocked-item", "open", detail="unblocked from blocker-item"
+        )
         self.assertNotIn("┌─", val_unblk)
 
     def test_gate_set_and_pass_compact_output(self):
@@ -7520,8 +7560,13 @@ class CompactMutationOutputTestCase(BacklogFixture):
         ):
             dev_status.cmd_gate_set(_args(id="gated-item", json='{"required": true, "criteria": ["Crit 1", "Crit 2"]}'))
         val_set = out_set.getvalue().strip()
-        self.assertTrue(val_set.startswith("[gate-set] slug=gated-item status=open rev="))
-        self.assertIn('detail="gate set (2 criteria, required=true)"', val_set)
+        self._assert_compact(
+            val_set,
+            "gate-set",
+            "gated-item",
+            "open",
+            detail="gate set (2 criteria, required=true)",
+        )
         self.assertNotIn("┌─", val_set)
 
         out_pass = io.StringIO()
@@ -7531,8 +7576,9 @@ class CompactMutationOutputTestCase(BacklogFixture):
         ):
             dev_status.cmd_gate_pass(_args(id="gated-item", json='{"coverage": {"1": "manual:ok", "2": "manual:ok"}}'))
         val_pass = out_pass.getvalue().strip()
-        self.assertTrue(val_pass.startswith("[gate-pass] slug=gated-item status=open rev="))
-        self.assertIn('detail="gate passed via manual"', val_pass)
+        self._assert_compact(
+            val_pass, "gate-pass", "gated-item", "open", detail="gate passed via manual"
+        )
         self.assertNotIn("┌─", val_pass)
 
     def test_rename_compact_output(self):
@@ -7544,9 +7590,9 @@ class CompactMutationOutputTestCase(BacklogFixture):
         ):
             dev_status.cmd_rename(_args(old_slug="old-slug", new_slug="new-slug"))
         val = out.getvalue().strip()
-        self.assertTrue(val.startswith("[rename] slug=new-slug status=open rev="))
-        self.assertIn('ref="old-slug"', val)
-        self.assertIn('detail="renamed from old-slug"', val)
+        self._assert_compact(
+            val, "rename", "new-slug", "open", ref="old-slug", detail="renamed from old-slug"
+        )
         self.assertNotIn("┌─", val)
 
     def test_remove_compact_output(self):
@@ -7558,8 +7604,7 @@ class CompactMutationOutputTestCase(BacklogFixture):
         ):
             dev_status.cmd_remove(_args(id="doomed-slug"))
         val = out.getvalue().strip()
-        self.assertTrue(val.startswith("[remove] slug=doomed-slug status=removed rev="))
-        self.assertIn('detail="Going away"', val)
+        self._assert_compact(val, "remove", "doomed-slug", "removed", detail="Going away")
         self.assertNotIn("┌─", val)
 
     def test_full_flag_overrides_env_var(self):
@@ -7581,7 +7626,7 @@ class CompactMutationOutputTestCase(BacklogFixture):
             with patch("sys.stdout", out):
                 dev_status.cmd_start(_args(id="item-one", compact=True))
         val = out.getvalue().strip()
-        self.assertTrue(val.startswith("[start] slug=item-one status=in-progress rev="))
+        self._assert_compact(val, "start", "item-one", "in-progress")
         self.assertNotIn("┌─", val)
 
     def test_interactive_run_without_env_var_retains_full_dashboard(self):
