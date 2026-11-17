@@ -49,6 +49,31 @@ exception, and each one should carry a comment saying why.
 Note the asymmetry: `allow_production_paths` also puts the **real** `HOME`
 back for that test. It is not just a write permit.
 
+## A test must be able to fail
+
+These apply to every test, here and under `pi/test/` and `opencode/test/`.
+A reviewer sends back a test that breaks one.
+
+- **It fails without the change.** Every new test is run red against the
+  pre-change code before it is kept, not only regression tests. A test
+  that passes either way checks nothing. The usual trap is a test that
+  asserts only silence (empty output, exit 0) or an unchanged file: old
+  code that never ran the new path passes it too. Give it a positive
+  control in the same run — something the new code *does* report or
+  change — or delete it.
+- **No real waiting.** No `time.sleep`, `asyncio.sleep` or `setTimeout`
+  to let something happen, and no assertion on real elapsed time
+  (`time.time`, `monotonic`, `perf_counter`). They are slow, and they
+  flake on a loaded machine. Inject a clock or a fake, and drive it.
+- **Assert structure, not prose.** Check exit codes, parsed fields, file
+  contents, or a short stable token such as a key name or a dotted path.
+  Don't assert a whole message sentence: any rewording breaks the test
+  without changing behavior. A test of message wording itself is the
+  exception, and it says so in a comment.
+- **Test behavior, not the implementation.** An assertion that restates
+  the code (the same constant, the same formula, a mock that returns what
+  it is then asserted to return) passes whatever the code does.
+
 ## One directory, two styles — and they are not interchangeable
 
 Every test in the repo lives here now (moved 2026-09-18 off of

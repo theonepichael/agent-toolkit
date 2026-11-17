@@ -4082,6 +4082,14 @@ class DiffReviewTests(unittest.TestCase):
         self.assertIn("+x = 1", prompt)
         self.assertNotIn("reviewing a plan", prompt)
 
+    def test_build_prompt_diff_asks_for_weak_tests(self) -> None:
+        # The diff reviewer looks for tests that cannot fail; a plan review
+        # has no tests to judge, so the item stays diff-only.
+        diff_prompt = second_opinion.build_prompt("+x = 1\n", None, diff=True)
+        plan_prompt = second_opinion.build_prompt("plan text\n", None)
+        self.assertIn("- weak tests:", diff_prompt)
+        self.assertNotIn("weak tests", plan_prompt)
+
     def test_build_prompt_diff_includes_simplifications_instruction(self) -> None:
         prompt = second_opinion.build_prompt("+x = 1\n", None, diff=True)
         self.assertIn('headed "Simplifications:"', prompt)

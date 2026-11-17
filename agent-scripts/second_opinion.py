@@ -986,6 +986,10 @@ Look for:
 - regressions: behavior that worked before this diff and now does not
 - missed callers or sites the change should also have updated
 - test gaps: changed behavior with no test that would catch it breaking
+- weak tests: a test this diff adds that would still pass without the
+  change (it asserts only silence or an unchanged file, or restates the
+  code), that sleeps or asserts real elapsed time, or that asserts a whole
+  prose message instead of structure or a stable token
 - doc drift: docs, help text or comments the change makes wrong
 
 Report numbered findings. Each finding gives: file:line, what breaks, a

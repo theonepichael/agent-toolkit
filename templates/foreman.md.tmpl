@@ -273,6 +273,12 @@ contract (its AGENTS.md / STYLE.md / acceptance criteria) and raw run outputs:
   the actual command output, not the worker's summary.
 - **Negative control present and non-circular** — a check that can only pass
   if the defect is real, not a tautology.
+- **Every new test can fail** — check each one the worker adds or keeps
+  against test/AGENTS.md's "A test must be able to fail": it fails on the
+  pre-change code (a silence-only or unchanged-file assertion needs a
+  positive control in the same run), never sleeps or asserts real elapsed
+  time, and asserts structure, not prose. Apply this to any test you name
+  as a keeper in send-back feedback, too.
 - **Numbers copied from real output** — counts, timings, and hashes come from
   the run's own stdout, not re-derived.
 - **No slugs in tracked files, no `/tmp` provenance** — a backlog slug must
