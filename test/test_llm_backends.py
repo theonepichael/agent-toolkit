@@ -10,6 +10,7 @@ mocks `_run_command`/`run_backend_command` instead, since real
 `agy`/`opencode`/`pi`/`copilot` binaries aren't available in CI.
 """
 
+import io
 import json
 import os
 import subprocess
@@ -18,7 +19,7 @@ import tempfile
 import time
 import unittest
 from collections.abc import Callable, Iterator
-from contextlib import AbstractContextManager, contextmanager
+from contextlib import AbstractContextManager, contextmanager, redirect_stderr
 from pathlib import Path
 from unittest.mock import patch
 
@@ -28,6 +29,7 @@ import test_bootstrap  # noqa: E402
 from pytest_shim import pytest
 import agent_toolkit_paths  # noqa: E402
 import llm_backends
+import migration_lock  # noqa: E402
 
 LayoutError = agent_toolkit_paths.LayoutError
 
@@ -214,6 +216,160 @@ class ContainmentPreflightTests(unittest.TestCase):
             preflight=True,
         )
         run.assert_called_once()
+
+
+class ContainmentAvailableTests(unittest.TestCase):
+    """`containment_available`'s probe branches.
+
+    The probe shells out to `unshare`, which conftest blocks and which depends
+    on the host kernel, so the branch tests supply the probe's result; the one
+    property that is about the child process itself — that its diagnostics are
+    captured, never inherited — is proven with a real child below.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        llm_backends.containment_available.cache_clear()
+        self.addCleanup(llm_backends.containment_available.cache_clear)
+
+    def _probe(
+        self, *, returncode: int = 0, raises: BaseException | None = None
+    ) -> AbstractContextManager[object]:
+        def fake_run(cmd: list[str], **kwargs: object) -> object:
+            if raises is not None:
+                raise raises
+            return subprocess.CompletedProcess(cmd, returncode, "", "")
+
+        return patch.object(llm_backends.subprocess, "run", side_effect=fake_run)
+
+    def _which(self, missing: str | None) -> AbstractContextManager[object]:
+        return patch.object(
+            llm_backends.shutil,
+            "which",
+            side_effect=lambda name: None if name == missing else f"/usr/bin/{name}",
+        )
+
+    def test_missing_unshare_is_unavailable_without_probing(self) -> None:
+        with self._which("unshare"), self._probe() as probe:
+            self.assertIs(llm_backends.containment_available(), False)
+        probe.assert_not_called()
+
+    def test_missing_mount_is_unavailable_without_probing(self) -> None:
+        with self._which("mount"), self._probe() as probe:
+            self.assertIs(llm_backends.containment_available(), False)
+        probe.assert_not_called()
+
+    def test_probe_start_failure_is_unavailable(self) -> None:
+        with self._which(None), self._probe(raises=OSError("unshare vanished")):
+            self.assertIs(llm_backends.containment_available(), False)
+
+    def test_probe_exit_code_decides(self) -> None:
+        with self._which(None), self._probe(returncode=0):
+            self.assertIs(llm_backends.containment_available(), True)
+        llm_backends.containment_available.cache_clear()
+        with self._which(None), self._probe(returncode=1):
+            self.assertIs(llm_backends.containment_available(), False)
+
+    @pytest.mark.allow_real_subprocess  # one real short-lived child stands in for
+    # `unshare`: the assertion is about what the *child* does with the inherited
+    # streams, which no in-process fake can exercise.
+    def test_probe_child_stderr_is_captured_not_leaked(self) -> None:
+        real_run = subprocess.run
+        leak = "unshare: unshare failed: Operation not permitted\n"
+
+        def probe_child(cmd: list[str], **kwargs: object) -> object:
+            return real_run(
+                [
+                    sys.executable,
+                    "-c",
+                    f"import sys; sys.stderr.write({leak!r}); sys.exit(1)",
+                ],
+                **kwargs,  # type: ignore[arg-type]
+            )
+
+        captured = tempfile.TemporaryFile()
+        self.addCleanup(captured.close)
+        saved = os.dup(2)
+        try:
+            os.dup2(captured.fileno(), 2)
+            with self._which(None), patch.object(
+                llm_backends.subprocess, "run", side_effect=probe_child
+            ) as probe:
+                available = llm_backends.containment_available()
+        finally:
+            os.dup2(saved, 2)
+            os.close(saved)
+
+        probe.assert_called_once()
+        self.assertIs(available, False)
+        captured.seek(0)
+        self.assertEqual(captured.read(), b"")
+
+    @pytest.mark.allow_real_subprocess  # one real short-lived child: its exit
+    # status is the probe result the function must read, not assume.
+    def test_probe_success_child_reports_available(self) -> None:
+        real_run = subprocess.run
+
+        def probe_child(cmd: list[str], **kwargs: object) -> object:
+            return real_run([sys.executable, "-c", "pass"], **kwargs)  # type: ignore[arg-type]
+
+        with self._which(None), patch.object(
+            llm_backends.subprocess, "run", side_effect=probe_child
+        ):
+            self.assertIs(llm_backends.containment_available(), True)
+
+
+class ContainmentWrapperContractTests(unittest.TestCase):
+    """The `SB_*` environment contract `_wrap_in_containment` hands its script."""
+
+    def test_default_wrapper_is_not_a_preflight(self) -> None:
+        cmd = llm_backends._wrap_in_containment(["pi"], {})
+        self.assertIn(f"SB_HOME={os.path.expanduser('~')}", cmd)
+        self.assertNotIn("SB_PREFLIGHT=1", cmd)
+        preflight = llm_backends._wrap_in_containment(["pi"], {}, preflight=True)
+        self.assertIn("SB_PREFLIGHT=1", preflight)
+
+    def test_exposure_lists_are_deduplicated_across_sources(self) -> None:
+        # One entry per kind: already in `expose_ro`, already in `expose`, an
+        # empty string, and a genuinely new path from each source. A duplicate
+        # or an empty entry would mount the same path twice or bind "".
+        contain = {"expose": ["in-expose"], "expose_ro": ["ro-dup"]}
+        with patch.object(
+            llm_backends,
+            "_backend_install_exposure",
+            return_value=("/resolved/pi", ["ro-new", "ro-dup", "in-expose", ""]),
+        ):
+            cmd = llm_backends._wrap_in_containment(
+                ["pi", "arg"],
+                contain,
+                backend="pi",
+                expose_ro_extra=["extra-new", "ro-dup", "in-expose", ""],
+            )
+        self.assertIn("SB_EXPOSE=in-expose", cmd)
+        self.assertIn("SB_EXPOSE_RO=ro-dup extra-new ro-new", cmd)
+
+    def test_resolved_backend_path_replaces_cmd0(self) -> None:
+        with patch.object(
+            llm_backends,
+            "_backend_install_exposure",
+            return_value=("/resolved/pi", []),
+        ):
+            cmd = llm_backends._wrap_in_containment(["pi", "arg"], {}, backend="pi")
+        self.assertEqual(cmd[-2:], ["/resolved/pi", "arg"])
+
+    def test_preflight_keeps_the_caller_argv_untouched(self) -> None:
+        # A preflight probes the wrapper itself; rewriting cmd[0] to the resolved
+        # backend path there would probe a different invocation than the one the
+        # real run uses.
+        with patch.object(
+            llm_backends,
+            "_backend_install_exposure",
+            return_value=("/resolved/pi", []),
+        ):
+            cmd = llm_backends._wrap_in_containment(
+                ["pi", "arg"], {}, backend="pi", preflight=True
+            )
+        self.assertEqual(cmd[-2:], ["pi", "arg"])
 
 
 class RunCommandRealSubprocessTests(unittest.TestCase):
@@ -898,6 +1054,30 @@ class RunOpencodeTests(_ContainmentStubbed):
             llm_backends.run_opencode("prompt", model=None, timeout=60)
         self.assertIn("not json at all", str(cm.exception))
 
+    def test_42b_grounded_forwards_mode_and_target(self) -> None:
+        # Grounded opencode builds its own argv (its own agent and the
+        # containment target bind) — not the text-only base; a silent drop of
+        # either would run the wrong agent against the wrong directory.
+        target = Path("/test/grounded-target")
+        stdout = '{"type": "text", "part": {"text": "ok"}}\n'
+        with patch.object(
+            llm_backends, "_run_command", return_value=(0, stdout, "")
+        ) as mock_run:
+            result = llm_backends.run_opencode(
+                "prompt", model=None, timeout=60, mode="grounded", target_dir=target
+            )
+        self.assertEqual(result, "ok")
+        argv = mock_run.call_args[0][0]
+        self.assertEqual(argv[argv.index("--agent") + 1], "grounded_adversary")
+        self.assertIn(f"SB_TARGET_DIR={target}", argv)
+
+    def test_42c_grounded_build_returns_the_opencode_grounded_argv(self) -> None:
+        cmd = llm_backends.build_isolated_command(
+            "opencode", "prompt", mode="grounded"
+        )
+        self.assertEqual(cmd[cmd.index("--agent") + 1], "grounded_adversary")
+        self.assertEqual(cmd[cmd.index("--format") + 1], "json")
+
     def test_44_tool_use_event_raises_backend_error(self) -> None:
         stdout = (
             json.dumps(
@@ -1179,6 +1359,55 @@ class LogBackendCallTests(_LogPathRedirected):
         self.assertEqual(record["fallback_reason"], "timeout")
         self.assertIsNone(record["error_snippet"])
 
+    def test_refused_telemetry_stays_quiet_when_the_observation_cannot_be_written(
+        self,
+    ) -> None:
+        # The migration lock refused the write. Recording that refusal is
+        # telemetry too: if the observation store is also unavailable, nothing
+        # may reach the caller's stderr — a backend call must not print because
+        # of its own logging.
+        stderr = io.StringIO()
+        with (
+            patch.object(
+                migration_lock,
+                "shared",
+                side_effect=migration_lock.MigrationLockBusy("lock held"),
+            ),
+            patch.object(
+                migration_lock, "observations_path", side_effect=OSError("no store")
+            ),
+            patch.object(
+                migration_lock, "observe", wraps=migration_lock.observe
+            ) as observe,
+            redirect_stderr(stderr),
+        ):
+            llm_backends._log_backend_call("agy", "m", "success", 0.1, 1)
+        self.assertEqual(observe.call_args.args[:2], ("backend-log", "refused-telemetry"))
+        self.assertEqual(stderr.getvalue(), "")
+
+    def test_would_block_observation_stays_quiet_and_still_logs(self) -> None:
+        # In observe-only lock mode a held lock is recorded and the append still
+        # proceeds; if the observation store is unavailable, that must stay
+        # silent too.
+        stderr = io.StringIO()
+        with (
+            patch.object(migration_lock, "ENFORCE", False),
+            patch.object(
+                migration_lock, "_open_lock_file", side_effect=BlockingIOError()
+            ),
+            patch.object(
+                migration_lock, "observations_path", side_effect=OSError("no store")
+            ),
+            patch.object(
+                migration_lock, "observe", wraps=migration_lock.observe
+            ) as observe,
+            redirect_stderr(stderr),
+        ):
+            llm_backends._log_backend_call("agy", "m", "success", 0.1, 1)
+        self.assertEqual(observe.call_args.args[:2], ("backend-log", "would-block"))
+        self.assertEqual(stderr.getvalue(), "")
+        self.assertEqual(len(_read_jsonl(self.log_path)), 1)
+
 
 class TrackBackendCallTests(_LogPathRedirected):
     def test_71_success_logs_success_outcome(self) -> None:
@@ -1397,6 +1626,23 @@ class FallbackReasonTests(_LogPathRedirected):
         self.assertIsNone(last["fallback_reason"])
 
 
+class RunWithFallbackNoCandidateTests(unittest.TestCase):
+    def test_no_candidates_error_names_each_backend_and_reason(self) -> None:
+        # A capability failure must say *why* each backend is ineligible; the
+        # "none installed" placeholder is only for a report with no reasons at
+        # all.
+        report = {"pi": {"eligible": False, "reason": "no-descriptor"}}
+        with patch.object(llm_backends, "eligibility_report", return_value=report):
+            with self.assertRaises(llm_backends.IsolationError) as cm:
+                llm_backends.run_with_fallback(lambda backend: "ok", backends=[])
+        self.assertIn("pi: no-descriptor", str(cm.exception))
+
+        with patch.object(llm_backends, "eligibility_report", return_value={}):
+            with self.assertRaises(llm_backends.IsolationError) as cm:
+                llm_backends.run_with_fallback(lambda backend: "ok", backends=[])
+        self.assertIn("none installed", str(cm.exception))
+
+
 class OpencodeToolUseEventsTests(unittest.TestCase):
     def test_46_filters_only_tool_use_events(self) -> None:
         events: list[dict[str, object]] = [
@@ -1570,6 +1816,74 @@ class CodexBackendTests(unittest.TestCase):
         ) as mock_run:
             result = llm_backends.run_codex("prompt", model=None, timeout=60)
         self.assertEqual(result, "critique content")
+
+    def test_run_codex_grounded_forwards_mode_and_target(self) -> None:
+        # Grounded codex runs read-only inside containment, with its target as
+        # the wrapper's bind source. Dropping either forward would silently run
+        # the text-only command, which reads outside --dir.
+        target = Path("/test/grounded-target")
+        stdout = (
+            '{"type":"item.completed","item":{"type":"agent_message",'
+            '"text":"ok"}}\n'
+        )
+        with patch.object(
+            llm_backends, "_run_command", return_value=(0, stdout, "")
+        ) as mock_run:
+            result = llm_backends.run_codex(
+                "prompt", model=None, timeout=60, mode="grounded", target_dir=target
+            )
+        self.assertEqual(result, "ok")
+        argv = mock_run.call_args[0][0]
+        self.assertEqual(argv[0], "unshare")
+        self.assertEqual(argv[argv.index("-s") + 1], "read-only")
+        self.assertIn(f"SB_TARGET_DIR={target}", argv)
+
+    def test_run_codex_forwards_images(self) -> None:
+        stdout = (
+            '{"type":"item.completed","item":{"type":"agent_message",'
+            '"text":"ok"}}\n'
+        )
+        with patch.object(
+            llm_backends, "_run_command", return_value=(0, stdout, "")
+        ) as mock_run:
+            llm_backends.run_codex(
+                "prompt", model=None, timeout=60, images=["/img/a.png"]
+            )
+        argv = mock_run.call_args[0][0]
+        self.assertEqual(argv[argv.index("-i") + 1], "/img/a.png")
+
+    def test_run_codex_skips_malformed_event_shapes(self) -> None:
+        # The event stream is external data: a JSON value that is not an object,
+        # an item.completed without an item, and an agent_message with no text
+        # are all skipped. The valid message comes first, so anything the parser
+        # wrongly appends for a malformed line would replace it (only the last
+        # message is returned).
+        stdout = "\n".join(
+            [
+                '{"type":"item.completed","item":{"type":"agent_message",'
+                '"text":"real message"}}',
+                '["not", "an", "object"]',
+                '{"type":"item.completed"}',
+                '{"type":"item.completed","item":{"type":"agent_message",'
+                '"text":null}}',
+            ]
+        ) + "\n"
+        with patch.object(llm_backends, "_run_command", return_value=(0, stdout, "")):
+            self.assertEqual(
+                llm_backends.run_codex("prompt", model=None, timeout=60),
+                "real message",
+            )
+
+    def test_run_codex_falls_back_to_raw_stdout_text(self) -> None:
+        # A codex build that prints plain text instead of the JSON event stream
+        # must still yield its critique rather than a failure.
+        with patch.object(
+            llm_backends, "_run_command", return_value=(0, "  plain critique  \n", "")
+        ):
+            self.assertEqual(
+                llm_backends.run_codex("prompt", model=None, timeout=60),
+                "plain critique",
+            )
 
     def test_codex_nonzero_exit_permission_denied_is_sanitized(self) -> None:
         # A codex run can exit nonzero while printing the vendor's
@@ -2101,6 +2415,80 @@ class CodexShadowHomeTests(unittest.TestCase):
             assert nomarker.exists()
             assert link.is_symlink()
 
+    def test_sweep_reports_zero_when_the_temp_root_cannot_be_listed(self) -> None:
+        # An unlistable temp root yields no candidates. Reporting that as None
+        # would hand callers a value they cannot count; the sweep's documented
+        # return is the number removed, zero included.
+        with patch.object(Path, "glob", side_effect=OSError("permission denied")):
+            self.assertEqual(llm_backends._sweep_stale_codex_homes(), 0)
+
+
+class RunCommandTimingOutcomeTests(unittest.TestCase):
+    """`_run_command` records each attempt's outcome in `cli_common`'s timing
+    log: `success`, `error`, `stall` and `timeout` are distinct labels, and
+    that stall/timeout telemetry is what the stall-detection work exists to
+    measure. Because the labels are read from the records the module persists,
+    each test also pins the process outcome they describe."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self._state = tempfile.TemporaryDirectory()
+        self.addCleanup(self._state.cleanup)
+        env = patch.dict(
+            os.environ,
+            {"AGENT_TOOLKIT_TIMING": "1", "XDG_STATE_HOME": self._state.name},
+        )
+        env.start()
+        self.addCleanup(env.stop)
+
+    def _attempt_outcomes(self) -> list[object]:
+        log = Path(self._state.name) / "agent-toolkit/timing.jsonl"
+        return [r["outcome"] for r in _read_jsonl(log) if r.get("name") == "backend_attempt"]
+
+    @pytest.mark.allow_real_subprocess  # two real short-lived python children;
+    # their exit codes are the outcomes under test.
+    def test_exit_code_selects_success_or_error(self) -> None:
+        rc, _out, _err = llm_backends._run_command(py("raise SystemExit(0)"), timeout=30)
+        self.assertEqual(rc, 0)
+        rc, _out, _err = llm_backends._run_command(py("raise SystemExit(3)"), timeout=30)
+        self.assertEqual(rc, 3)
+        self.assertEqual(self._attempt_outcomes(), ["success", "error"])
+
+    def test_stall_window_completion_records_success(self) -> None:
+        harness = _StallHarness(
+            [{"stdout": [(0.1, b"done\n")], "exit_at": 0.2, "returncode": 0}]
+        )
+        with _patched_harness(harness):
+            rc, out, _err = llm_backends._run_command(
+                ["opencode"], 10, retries=0, stall_seconds=0.2
+            )
+        self.assertEqual((rc, out), (0, "done\n"))
+        self.assertEqual(self._attempt_outcomes(), ["success"])
+
+    def test_silent_process_is_recorded_as_stall(self) -> None:
+        harness = _StallHarness(
+            [{"stdout": [(0.1, b"step\n")], "exit_at": float("inf")}]
+        )
+        with _patched_harness(harness):
+            with self.assertRaises(llm_backends.BackendTimeoutError) as cm:
+                llm_backends._run_command(
+                    ["opencode"], 10, retries=0, stall_seconds=0.2
+                )
+        self.assertTrue(cm.exception.stalled)
+        self.assertEqual(self._attempt_outcomes(), ["stall"])
+
+    def test_slow_process_is_recorded_as_timeout(self) -> None:
+        harness = _StallHarness(
+            [{"stdout": [(5.0, b"late\n")], "exit_at": float("inf")}]
+        )
+        with _patched_harness(harness):
+            with self.assertRaises(llm_backends.BackendTimeoutError) as cm:
+                llm_backends._run_command(
+                    ["opencode"], 2, retries=0, stall_seconds=10
+                )
+        self.assertFalse(cm.exception.stalled)
+        self.assertEqual(self._attempt_outcomes(), ["timeout"])
+
 
 class _StallStream:
     """A fake stdout/stderr: carries a fixed fileno for the select/os.read fakes."""
@@ -2523,6 +2911,15 @@ class ValidateImagesTests(unittest.TestCase):
         with self.assertRaises(llm_backends.ImageValidationError):
             llm_backends.validate_images([str(p)])
 
+    def test_suffixless_file_reports_missing_format(self) -> None:
+        # The rejection must name the offending file and say the format is
+        # absent, rather than reporting an empty suffix as the format.
+        p = _write_image(self.tmp, "image")
+        with self.assertRaises(llm_backends.ImageValidationError) as cm:
+            llm_backends.validate_images([str(p)])
+        self.assertIn(str(p), str(cm.exception))
+        self.assertIn("'(none)'", str(cm.exception))
+
     def test_count_limit(self) -> None:
         paths = [
             str(_write_image(self.tmp, f"a{i}.png"))
@@ -2557,6 +2954,38 @@ class StageImagesTests(unittest.TestCase):
         finally:
             staged.cleanup()
         self.assertFalse(staged.staging_dir.exists())
+
+    def test_cleanup_tolerates_an_already_removed_staging_dir(self) -> None:
+        # The runner owns the cleanup call and may repeat it; a second cleanup
+        # must be a no-op, not a FileNotFoundError on the caller's path.
+        staging = self.tmp / "so-images-already-gone"
+        staging.mkdir()
+        staged = llm_backends.StagedImages(paths=[], staging_dir=staging)
+        staged.cleanup()
+        self.assertFalse(staging.exists())
+        staged.cleanup()
+
+    def test_failed_copy_surfaces_the_copy_error_not_the_cleanup_error(
+        self,
+    ) -> None:
+        # Staging a batch fails halfway: the partial staging dir is cleaned up,
+        # and the caller must see the *copy* failure. A cleanup failure during
+        # that best-effort removal must not replace it.
+        sentinel = FileNotFoundError("source vanished")
+        cleanup_calls: list[str] = []
+
+        def failing_rmdir(path: str | int, *args: object, **kwargs: object) -> None:
+            cleanup_calls.append(str(path))
+            raise OSError("cleanup refused")
+
+        with (
+            patch.object(llm_backends.shutil, "copy2", side_effect=sentinel),
+            patch.object(llm_backends.shutil.os, "rmdir", side_effect=failing_rmdir),
+        ):
+            with self.assertRaises(FileNotFoundError) as cm:
+                llm_backends.stage_images([str(self.tmp / "sprite.png")])
+        self.assertIs(cm.exception, sentinel)
+        self.assertTrue(cleanup_calls)
 
 
 class ImageArgvBuildTests(_ContainmentStubbed):
