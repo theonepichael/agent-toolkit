@@ -5440,6 +5440,12 @@ class BacklogTestCase(BacklogFixture):
             self.assertIn("--path-format=absolute", argv)
             self.assertIn("--show-toplevel", argv)
             self.assertIn("--git-common-dir", argv)
+            # `check` is deliberately not pinned: check=False vs check=True is
+            # behaviourally equivalent here (a non-zero git exit returns None
+            # via the manual returncode check below, or raises
+            # CalledProcessError, which the SubprocessError handler maps to
+            # None just the same). Captured text stdout is exercised
+            # behaviourally by test_ws23.
 
     def test_ws9_serial_safety_ignores_only_mandated_grill_artifacts(self):
         item = make_item("atk-with-plan")
@@ -5679,6 +5685,127 @@ class BacklogTestCase(BacklogFixture):
         dev_status.cmd_update(_args(id="atk-opted", patch='{"no_worker": null}'))
         self.assertNotIn("no_worker", self._item_by_id("atk-opted"))
         self.assertNotIn("no_worker_reason", self._item_by_id("atk-opted"))
+
+    def test_ws16_serial_safety_empty_related_files(self):
+        # An empty related_files list hits the early-return branch ("must name
+        # at least one repository path"); the or->and mutant falls through to
+        # the "target repository path" branch instead.
+        item = make_item("atk-empty")
+        item["related_files"] = []
+        safe, reason = dev_status.serial_safety(item)
+        self.assertIs(safe, False)
+        self.assertIn("at least one repository path", reason or "")
+
+    def test_ws17_serial_safety_malformed_entry(self):
+        # A non-dict related_files entry is refused; the token marks the
+        # malformed-entry branch (the return-None mutant raises on unpack, the
+        # boolconst False->True mutant flips `safe`).
+        item = make_item("atk-malformed")
+        item["related_files"] = ["not-a-dict"]
+        safe, reason = dev_status.serial_safety(item)
+        self.assertIs(safe, False)
+        self.assertIn("malformed entry", reason or "")
+
+    def test_ws18_serial_safety_non_absolute_path(self):
+        # A relative path is refused as non-absolute; the or->and mutant falls
+        # through to the "cannot resolve" branch instead.
+        item = make_item("atk-rel")
+        item["related_files"] = [{"path": "relative/path.py", "note": "n"}]
+        safe, reason = dev_status.serial_safety(item)
+        self.assertIs(safe, False)
+        self.assertIn("non-empty absolute", reason or "")
+
+    def test_ws19_serial_safety_unresolvable_path(self):
+        # A path that resolves to no repo is refused.
+        item = make_item("atk-unresolved")
+        item["related_files"] = [{"path": "/unresolved/abs/path.py", "note": "n"}]
+        with patch.object(
+            dev_status, "_serial_repo_name_for_path", return_value=None
+        ):
+            safe, reason = dev_status.serial_safety(item)
+        self.assertIs(safe, False)
+        self.assertIn("cannot resolve", reason or "")
+
+    def test_ws20_serial_safety_prefix_repo_mismatch(self):
+        # atk- maps to agent-toolkit; a related file resolving to a different
+        # repo is refused with the mismatch reason.
+        item = make_item("atk-mismatch")
+        item["related_files"] = [{"path": "/repos/dotfiles/x.py", "note": "n"}]
+        with patch.object(
+            dev_status, "_serial_repo_name_for_path", return_value="dotfiles"
+        ):
+            safe, reason = dev_status.serial_safety(item)
+        self.assertIs(safe, False)
+        self.assertIn("maps to", reason or "")
+
+    def test_ws21_serial_repo_name_rejects_missing_worktree_root(self):
+        # Git naming a worktree root that does not exist is "cannot provide
+        # both roots unambiguously" -> fail closed (None); the strict=True ->
+        # strict=False mutant would accept it and return a repo name.
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            worktree = repo / "worktree"
+            common = repo / ".git"
+            worktree.mkdir(parents=True)
+            common.mkdir()
+            target = worktree / "future" / "new.py"
+            run = MagicMock(
+                returncode=0,
+                stdout=f"{worktree / 'future'}\n{common}\n",
+            )
+            with patch.object(dev_status.subprocess, "run", return_value=run):
+                self.assertIsNone(
+                    dev_status._serial_repo_name_for_path(str(target))
+                )
+
+    def test_ws22_serial_repo_name_tolerates_missing_common_dir(self):
+        # The common dir's parent name is still the repo name even when the
+        # common dir itself is absent on disk; the strict=False -> strict=True
+        # mutant would fail closed (None).
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            worktree = repo / "worktree"
+            common = repo / ".git"
+            worktree.mkdir(parents=True)
+            target = worktree / "a.py"
+            target.write_text("x")
+            run = MagicMock(
+                returncode=0,
+                stdout=f"{worktree}\n{common}\n",
+            )
+            with patch.object(dev_status.subprocess, "run", return_value=run):
+                self.assertEqual(
+                    dev_status._serial_repo_name_for_path(str(target)),
+                    "repo",
+                )
+
+
+class SerialRepoNameRealGitTests(unittest.TestCase):
+    """`_serial_repo_name_for_path` against a real `git` subprocess.
+
+    Lives outside BacklogFixture, which mocks ``subprocess.Popen`` for every
+    test; these need the real subprocess to observe that git output is
+    captured and text-decoded (a mock hides capture_output/text).
+    """
+
+    @pytest.mark.allow_real_subprocess  # runs `git rev-parse` in a throwaway temp repo
+    def test_parses_real_captured_git_output(self) -> None:
+        # The repo name must come from git's real captured, text-decoded
+        # stdout: without capture_output/text the function reads None or bytes
+        # and fails. Exercises the real subprocess path that the mock in
+        # test_ws8 only approximates.
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            repo.mkdir()
+            subprocess.run(
+                ["git", "init", "-q", str(repo)], check=True, capture_output=True
+            )
+            target = repo / "a.py"
+            target.write_text("x")
+            self.assertEqual(
+                dev_status._serial_repo_name_for_path(str(target)),
+                "repo",
+            )
 
 
 # Every env var _detect_harness consults, in its documented resolution order.
@@ -5983,6 +6110,17 @@ class ClaimMarkerAndWorktreeGuardTestCase(BacklogFixture):
         div_plural = dev_status._project_divider("meta", 5, width=76, color=False)
         self.assertTrue(div_plural.startswith("│  ─── meta (5 items) ───"))
         self.assertEqual(len(div_plural), 76)
+
+    def test_project_divider_default_color_matches_explicit_false(self) -> None:
+        # The default `color=False` must render identically to an explicit
+        # `color=False`: any caller omitting the argument (the documented
+        # default) gets the uncolored divider, so the two must be
+        # byte-identical.
+        default = dev_status._project_divider("iron-lb", 1, width=76)
+        explicit = dev_status._project_divider("iron-lb", 1, width=76, color=False)
+        self.assertEqual(default, explicit)
+        self.assertNotIn("\x1b[", default)
+        self.assertIn("iron-lb", default)
 
     def test_ready_sort_by_project_priority_created(self) -> None:
         # 4 items across 2 projects:
