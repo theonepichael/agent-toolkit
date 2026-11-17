@@ -1,6 +1,7 @@
 {
   "permissions": {
     "allow": [
+      "Bash(python3 ~/.agent-toolkit/scripts/herdr_delegate.py *)",
       "Bash(python3 ~/.agent-toolkit/scripts/dev_status.py *)",
       "Bash(python3 ~/.agent-toolkit/scripts/grill.py *)",
       "Bash(python3 ~/.agent-toolkit/scripts/second_opinion.py *)",

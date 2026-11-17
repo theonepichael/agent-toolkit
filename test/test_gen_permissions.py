@@ -85,7 +85,7 @@ class CompileTests(unittest.TestCase):
             self.assertEqual(
                 perms["allow"], [f"Bash({p})" for p in neutral[Tier.ALLOW]], rel
             )
-            self.assertEqual(len(perms["allow"]), 74)
+            self.assertEqual(len(perms["allow"]), 75)
             self.assertEqual(len(perms["ask"]), 18)
             self.assertEqual(len(perms["deny"]), 2)
             self.assertIn("Bash(git commit*)", perms["ask"])

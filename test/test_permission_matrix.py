@@ -142,9 +142,9 @@ class RulesForTests(unittest.TestCase):
         counts = {
             t: tuple(len(pm.rules_for(t)[tier]) for tier in Tier) for t in pm.TARGETS
         }
-        self.assertEqual(len(pm.shared_allow()), 93)
-        self.assertEqual(counts["claude"], (74, 9, 1))
-        self.assertEqual(counts["claude-work"], (74, 9, 1))
+        self.assertEqual(len(pm.shared_allow()), 94)
+        self.assertEqual(counts["claude"], (75, 9, 1))
+        self.assertEqual(counts["claude-work"], (75, 9, 1))
         self.assertEqual(counts["opencode"], (74, 9, 1))
         self.assertEqual(counts["pi"], (86, 9, 1))
 

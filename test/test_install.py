@@ -980,6 +980,7 @@ def test_opencode_bypass_drift_does_not_catch_unnamed_patterns():
 _APPROVED_BASH_PATTERNS = frozenset(
     {
         # shared workflow scripts
+        "python3 ~/.agent-toolkit/scripts/herdr_delegate.py *",
         "python3 ~/.agent-toolkit/scripts/dev_status.py *",
         "python3 ~/.agent-toolkit/scripts/grill.py *",
         "python3 ~/.agent-toolkit/scripts/second_opinion.py *",

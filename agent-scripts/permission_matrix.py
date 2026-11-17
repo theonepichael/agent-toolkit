@@ -135,6 +135,7 @@ _GIT_PLAIN: tuple[str, ...] = (
 RULES: tuple[Rule, ...] = (
     *_allow(
         "toolkit-scripts",
+        f"python3 {_SCRIPTS}/herdr_delegate.py *",
         f"python3 {_SCRIPTS}/dev_status.py *",
         f"python3 {_SCRIPTS}/grill.py *",
         f"python3 {_SCRIPTS}/second_opinion.py *",
@@ -253,7 +254,18 @@ _GLOB_DIR_REASON = (
     "allow `git -C r reset --hard logfile`."
 )
 
+_HERDR_DELEGATE_REASON = (
+    "herdr_delegate.py launches workers and types into other agents' panes; "
+    "only Claude Code, which runs the foreman, allows it without a prompt."
+)
+
 EXCEPTIONS: tuple[PatternException | TokenException, ...] = (
+    *(
+        PatternException(
+            t, f"python3 {_SCRIPTS}/herdr_delegate.py *", _HERDR_DELEGATE_REASON
+        )
+        for t in ("opencode", "pi")
+    ),
     *(
         PatternException("pi", p, _PI_NATIVE_TOOL_REASON)
         for p in (
