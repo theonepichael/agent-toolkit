@@ -23,6 +23,37 @@ two ways:
 Nothing reaches such a machine until someone runs the sync with `--apply`, so
 the order below is enforced by when you run it, not by anything automatic.
 
+## Running this with an agent
+
+An agent on this machine can run the whole procedure while the user watches.
+If you are that agent, these rules apply to every step below:
+
+- **Stop after each numbered step and each check.** Show the user the
+  command's real output, say what it means, and wait for a plain-text go
+  before running the next one. Never batch several steps into one turn.
+- **Stop on anything unexpected.** A check that prints something the step
+  doesn't predict, a non-zero exit, or a prompt you didn't expect goes to the
+  user as-is. Don't work around it, retry with different flags, or guess.
+- **Never resolve a conflict by taking one side wholesale:** no `-X theirs`,
+  `-X ours`, `-s ours`, `checkout --theirs` or `checkout --ours`, and no
+  `reset --hard`. A conflict inside a fork-only change goes to the user.
+- **Never edit or delete toolkit data by hand.** Store files under
+  `~/.agent-toolkit/data/` and the state directory (`~/.local/state/agent-toolkit/`)
+  change only through `install.sh` and the toolkit's own scripts.
+- **Exit code 75 from any toolkit script means stop.** The migration lock
+  refused the write and nothing was written; report it, don't retry in a loop.
+- **Don't roll back after a data upgrade.** Once step 5's install has run for
+  a release whose `CHANGELOG.md` section lists a data upgrade, the reset in
+  "Rolling back" is no longer safe. Stop and ask instead.
+- **Nothing is recorded on this machine.** It has no backlog sync, so the
+  personal machines learn about this rollout only from the report in step 7.
+  Write that report even if the rollout stopped partway.
+- **Placeholders are filled from the release.** `<release>` and `<n>` come
+  from the release you are taking (`CHANGELOG.md`). For a rename release, so
+  do `<old>`, `<new>` and the renamed environment variables. The machine's
+  harness list and profile come from the user. Confirm each with the user
+  before the first command that uses it.
+
 ## Why the fork needs hand-merges
 
 The fork's own changes are the one thing on this machine nothing else can
@@ -183,7 +214,43 @@ git diff --stat pre-update-<release> -- . ':!links.toml'
 Every fork-only file must still exist with its content, and every change
 listed should come from upstream. Then commit the merge.
 
-## 4. Install and test
+## 4. Rename releases: before installing
+
+<!-- rename-transition: remove after the clean-break renames -->
+Skip this step unless the release's `CHANGELOG.md` section is one of the
+clean-break renames (`<old>` -> `<new>`).
+
+**Fork-only references to the old name.** Upstream's rename sweep changed
+every file upstream owns. It can't see the fork's own files: a fork-only
+script that imports the old module, or a fork `links.toml` row that points
+at the old script name, breaks at install. Search every file the fork
+changes, for each spelling of the old name (`<old>` with underscores and
+with hyphens) and each old environment variable the release lists:
+
+```bash
+cd "$FORK"
+awk -F'\t' '$1 !~ /^D/ {print $NF}' ~/fork-delta-after.txt \
+  | xargs grep -n -F -e '<old with underscores>' -e '<old with hyphens>' -e '<OLD_ENV_VAR>'
+```
+
+Show the user every hit. Each one is a fork change to make by hand (rename
+it to the new name, as upstream did), then commit it to the fork. No hits
+(`grep` exits 1) is the expected result for a fork that doesn't touch the
+renamed tool.
+
+**Preview the data upgrade.** If the release lists a data upgrade, see what
+the install will rewrite before it runs:
+
+```bash
+./install.sh --dry-run --harness=<this machine's harnesses> --profile=<this machine's profile>
+```
+
+Among the `[dry-run]` lines, each `would apply <store> v<a>->v<b> to <file>`
+line is a store file the install will rewrite. Show them to the user. No such
+line means the install upgrades no data. After step 5's install, rolling back
+is no longer safe (see "Rolling back").
+
+## 5. Install and test
 
 ```bash
 cd "$FORK"
@@ -202,15 +269,72 @@ previous release but whose `links.toml` row this release deleted — the
 orphan-cleanup step deletes the dangling symlink, so a removed script does not
 leave a stale link in `~/.agent-toolkit/scripts/`.
 
-### If an agent is helping
+## 6. Rename releases: after installing
 
-An agent can run these steps. Rules for the agent:
+<!-- rename-transition: remove after the clean-break renames -->
+Skip this step unless step 4 applied.
 
-- Stop after each check and show the user its output before going on.
-- Never resolve a conflict by taking one side wholesale: no `-X theirs`,
-  `-X ours`, `-s ours`, `checkout --theirs` or `checkout --ours`, and no
-  `reset --hard`. A conflict inside a fork-only change goes to the user.
-- If a check prints something unexpected, stop. Don't work around it.
+**Manual edits on this machine.** Some files no command edits: instruction
+files and settings that name the old tool, and the shell config that sets the
+old environment variables. The checklist scans them for the old name and
+lists every hit:
+
+```bash
+python3 ~/.agent-toolkit/scripts/rename_transition.py checklist <old> <new> --release release-<n> \
+  --file ~/.claude/CLAUDE.md --file ~/.claude/settings.local.json \
+  --file <each other harness's instruction file on this machine> \
+  --file <the shell config files that export toolkit variables>
+```
+
+`--file` replaces the default list, so name every file to scan. Ignore the
+"Release checklist" section, which upstream already did. Work through
+"Manual edits outside the repository": show the user each `- [ ] <file>:<line>`
+hit, edit it to the new name, and re-run the checklist until every file reads
+`no occurrences` or `not present`. The two reminder lines at the end always
+print. The overlay one applies here too: a file composed from another source
+(an instruction file generated from an overlay) is edited at its source, then
+regenerated. The work-machine one means this machine, and this step is
+how it gets done.
+
+**Renamed environment variables.** Open a new shell so the edited config is
+loaded, then:
+
+```bash
+./install.sh --report-legacy-env
+```
+
+It must print `no legacy environment variables set` and exit 0. Any line it
+prints is an old name still set (`OLD -> NEW`): rename it where it is set,
+open a new shell, and run it again. The old names still work until the
+release named in their warning, but the next rename assumes they are gone.
+
+## 7. Report back
+
+The personal machines track this rollout, and the next release can't land
+until they know it finished. This machine can't tell them, so the user
+carries this report back. Write it at the end, or wherever the rollout
+stopped:
+
+```text
+Fork-machine rollout report
+release:            release-<n> (<old> -> <new>, or "not a rename release")
+date:               <YYYY-MM-DD>
+upstream commit:    <$R>
+fork merge commit:  <the fork's merge commit sha>
+fork-delta check:   <clean | restored: what>
+links.toml check:   <clean | restored: what>
+fork-only old-name hits: <none | fixed: files>
+data upgrade:       <none | applied: store files>
+suite:              <passed | failures also on pre-update-<release>: names>
+--check-links:      <passed | output>
+manual-edit checklist: <no occurrences | remaining: files>
+--report-legacy-env:   <clean | still set: names>
+harness sessions:   <each harness: dashboard ok | error>
+stopped at:         <completed | step and reason>
+```
+
+Fill every line from real output, not from memory. Leave a line as `not run`
+rather than guessing.
 
 ## Rolling back
 
@@ -226,7 +350,7 @@ Keep the `pre-update-<release>` tag until the next upstream merge.
 **Releases that upgrade stored data cannot be rolled back this way.**
 <!-- rename-transition: remove after the clean-break renames -->
 A rename release whose `CHANGELOG.md` section lists a data upgrade rewrites
-stores during step 4's install, and `--rollback` does not undo that. Once the
+stores during step 5's install, and `--rollback` does not undo that. Once the
 install has run, the old code's readers reject the new store version, so
 resetting to `pre-update-<release>` leaves a machine that cannot read its own
 data. Roll forward instead: fix the problem on top of the release and

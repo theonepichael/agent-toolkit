@@ -14,6 +14,15 @@ the warning. Run `./install.sh --report-legacy-env` to see any still set.
 
 ## Unreleased
 
+- `docs/fork-machine-updates.md` can now be run by an agent on the
+  fork-installed machine while the user oversees it: a rules section up
+  front (stop after every step, no hand edits to toolkit data, exit 75 means
+  stop, no rollback after a data upgrade), rename-release steps before and
+  after the install (fork-only references to the old name, a dry-run preview
+  of data upgrades, the manual-edit checklist run on that machine,
+  `--report-legacy-env`), and a fixed-format rollout report for the user to
+  carry back to the personal machines.
+
 - `land`'s commit gate now refuses a staged diff that adds any backlog-store
   id string to files that ship in git history (the no-slugs rule, enforced):
   run `dev_status.py slug-check --repo <worktree> [--slug <slug>]` before the
