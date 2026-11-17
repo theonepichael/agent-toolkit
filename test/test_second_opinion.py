@@ -20,7 +20,7 @@ import sys
 import tempfile
 import unittest
 from collections.abc import Callable, Iterator
-from contextlib import ExitStack, contextmanager, redirect_stderr
+from contextlib import ExitStack, contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -581,6 +581,25 @@ class BackendLabelTests(unittest.TestCase):
                 second_opinion.backend_label("copilot", model_index=0),
                 f"{second_opinion.BACKEND_LABELS['copilot']} (gpt-4.1)",
             )
+
+    def test_63_agy_label_takes_an_explicitly_passed_model(self) -> None:
+        # A caller that knows which model was attempted passes it straight
+        # through. None and the default both mean "agy's own default model",
+        # so neither replaces the bare label; only a non-default model does.
+        self.assertEqual(
+            second_opinion.backend_label("agy", model=None),
+            second_opinion.BACKEND_LABELS["agy"],
+        )
+        self.assertEqual(
+            second_opinion.backend_label(
+                "agy", model=second_opinion.DEFAULT_AGY_MODEL
+            ),
+            second_opinion.BACKEND_LABELS["agy"],
+        )
+        self.assertEqual(
+            second_opinion.backend_label("agy", model="Gemini 3.5 Flash (Medium)"),
+            "agy (Gemini 3.5 Flash (Medium))",
+        )
 
 
 class RunOpencodeTests(unittest.TestCase):
@@ -1426,6 +1445,76 @@ class CmdReviewTests(unittest.TestCase):
         self.assertEqual(captured["model"], "gpt-4")
 
 
+    def test_cmd_review_defaults_are_grounded_mode_and_no_verbose_notices(self) -> None:
+        # A Namespace without text_only/verbose must behave as the CLI's own
+        # defaults do: grounded mode reaches the runner, and the skipped
+        # candidate's notice stays uncollected (so cmd_review prints nothing
+        # to stderr). quiet=True keeps the absent-pool notice out of the way.
+        modes: list[str] = []
+
+        def runner(prompt: str, *, model_index=None, mode="not-dispatched") -> str:
+            modes.append(mode)
+            return "critique"
+
+        out, err = io.StringIO(), io.StringIO()
+        with (
+            patch(
+                "shutil.which",
+                side_effect=lambda b: "/usr/bin/pi" if b == "pi" else None,
+            ),
+            patch.dict(second_opinion.BACKEND_RUNNERS, {"pi": runner}),
+            patch("sys.stdout", out),
+            patch("sys.stderr", err),
+        ):
+            second_opinion.cmd_review(ns(plan="my plan", backend="agy,pi", quiet=True))
+        self.assertEqual(modes, ["grounded"])
+        self.assertIn("critique", out.getvalue())
+        self.assertEqual(err.getvalue(), "")
+
+    def test_round_cap_applies_when_allow_extra_round_is_no_attribute(self) -> None:
+        tmpdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmpdir, ignore_errors=True)
+        test_layouts.activate_sandbox_home(Path(tmpdir), self.addCleanup)
+        plan = Path(tmpdir) / "plan.md"
+        plan.write_text("my plan")
+        # No allow_extra_round attribute at all: argparse always sets it, so
+        # its absence must still mean "no extra rounds".
+        args = ns(plan=str(plan), backend="codex", run_id="no-allow-extra")
+
+        def run_once(err: io.StringIO) -> None:
+            with (
+                patch("shutil.which", return_value="/usr/bin/codex"),
+                patch.object(
+                    second_opinion,
+                    "BACKEND_RUNNERS",
+                    {"codex": lambda p, model_index=None: "critique"},
+                ),
+                redirect_stdout(io.StringIO()),
+                redirect_stderr(err),
+            ):
+                second_opinion.cmd_review(args)
+
+        for _ in range(second_opinion.MAX_ROUNDS):
+            run_once(io.StringIO())
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as cm:
+            run_once(err)
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("round cap", err.getvalue())
+
+    def test_prompt_only_sanitizes_plan_debris(self) -> None:
+        # --prompt-only prints the prompt review_plan would send, so it strips
+        # the same plan debris. The stripped token must be gone and the real
+        # content must still be there.
+        plan = "# Plan\n## Rejected Feedback\nOld note.\n## Step\nGo."
+        out = io.StringIO()
+        with patch("shutil.which", return_value=None), patch("sys.stdout", out):
+            second_opinion.cmd_review(ns(plan=plan, prompt_only=True))
+        printed = out.getvalue()
+        self.assertNotIn("Old note.", printed)
+        self.assertIn("Go.", printed)
+
+
 class ReviewPlanTests(unittest.TestCase):
     """Facade-level tests for review_plan(): the programmatic entry point.
 
@@ -1744,6 +1833,46 @@ class ReviewPlanTests(unittest.TestCase):
         self.assertEqual(len(set(prompts)), 1)
         self.assertEqual(prompts[0], second_opinion.build_prompt("my plan", None))
 
+    def test_default_call_keeps_notices_empty_on_a_skipped_candidate(self) -> None:
+        # A list-mode entry missing on PATH is skipped (the installed one
+        # answers), and with the default non-verbose call it produces no
+        # notice at all — that default is what keeps an automated caller's
+        # notice tuple empty.
+        with (
+            patch(
+                "shutil.which",
+                side_effect=lambda b: "/usr/bin/pi" if b == "pi" else None,
+            ),
+            patch.object(
+                second_opinion,
+                "BACKEND_RUNNERS",
+                {"pi": lambda p, model_index=None: "critique"},
+            ),
+        ):
+            result = second_opinion.review_plan(
+                second_opinion.ReviewRequest(plan_text="my plan", backend="agy,pi"),
+                quiet=True,
+            )
+        self.assertEqual(result.response_text, "critique")
+        self.assertEqual(result.backend_label, second_opinion.BACKEND_LABELS["pi"])
+        self.assertEqual(result.notices, ())
+
+    def test_every_candidate_ruled_out_by_size_is_flagged_as_such(self) -> None:
+        # The per-candidate exhaustion path (not the global CLI-limit path)
+        # must report a size rule-out, not a generic outage.
+        def runner(prompt: str, *, model_index=None) -> str:
+            raise llm_backends.BackendPayloadSizeError("pi payload too large")
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/pi"),
+            patch.object(second_opinion, "BACKEND_RUNNERS", {"pi": runner}),
+        ):
+            with self.assertRaises(second_opinion.AllBackendsFailedError) as cm:
+                second_opinion.review_plan(
+                    second_opinion.ReviewRequest(plan_text="my plan", backend="pi")
+                )
+        self.assertIs(cm.exception.size_rule_out, True)
+
 
 class DefaultFallbackNoticeTests(unittest.TestCase):
     """The absent-config contract (decided 2026-09-03): a review that falls
@@ -1823,10 +1952,12 @@ class DefaultFallbackNoticeTests(unittest.TestCase):
 
     def test_49g_absent_pool_config_helper_is_pure(self) -> None:
         env = {"SECOND_OPINION_PI_MODEL_POOL": "m1"}
-        self.assertFalse(second_opinion._absent_pool_config("pi", env))
-        self.assertTrue(second_opinion._absent_pool_config("pi", {}))
-        self.assertTrue(second_opinion._absent_pool_config("copilot", {}))
-        self.assertFalse(second_opinion._absent_pool_config("not-a-backend", {}))
+        # The contract is a real bool, not merely something falsy: callers may
+        # store or compare the value directly.
+        self.assertIs(second_opinion._absent_pool_config("pi", env), False)
+        self.assertIs(second_opinion._absent_pool_config("pi", {}), True)
+        self.assertIs(second_opinion._absent_pool_config("copilot", {}), True)
+        self.assertIs(second_opinion._absent_pool_config("not-a-backend", {}), False)
 
 
 class DieTests(unittest.TestCase):
@@ -1897,6 +2028,36 @@ class ModelIndexParsingTests(unittest.TestCase):
         parser = second_opinion.build_parser()
         args = parser.parse_args(["review", "plan.md"])
         self.assertIsNone(args.model_index)
+
+
+class ParserDefaultsTests(unittest.TestCase):
+    """The parser's declared boolean defaults and required flags are part of
+    the CLI contract: a boolean flag defaults off, and a required flag refuses
+    to parse without it."""
+
+    def test_boolean_flags_default_off(self) -> None:
+        parser = second_opinion.build_parser()
+        review = parser.parse_args(["review", "plan.md"])
+        self.assertIs(review.text_only, False)
+        self.assertIs(review.allow_extra_round, False)
+        panel = parser.parse_args(["panel", "plan.md", "--backends", "pi,agy"])
+        self.assertIs(panel.text_only, False)
+        self.assertIs(panel.allow_extra_round, False)
+        worker = parser.parse_args(
+            ["panel-worker", "--backend", "pi", "--prompt-file", "/tmp/p"]
+        )
+        self.assertIs(worker.text_only, False)
+
+    def test_required_flags_still_refuse_an_incomplete_invocation(self) -> None:
+        parser = second_opinion.build_parser()
+        for argv in (
+            ["panel", "plan.md"],
+            ["panel-worker", "--backend", "pi"],
+            ["panel-worker", "--prompt-file", "/tmp/p"],
+        ):
+            with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as cm:
+                parser.parse_args(argv)
+            self.assertEqual(cm.exception.code, 2)
 
 
 class ParsePositiveIntTests(unittest.TestCase):
@@ -2637,6 +2798,39 @@ class SanitizePlanTextTests(unittest.TestCase):
         self.assertIn("bytes saved", err.getvalue())
 
 
+    def test_95_strips_a_heading_after_a_closed_fence(self) -> None:
+        # A fence that closes must end the code block: a whitelisted heading
+        # after it is plan prose again, not documentation.
+        plan = (
+            "# Plan\n"
+            "```python\n"
+            "print('x')\n"
+            "```\n"
+            "## Critique History\n"
+            "Round 1 notes.\n"
+        )
+        sanitized, bytes_saved = second_opinion.sanitize_plan_text(plan)
+        self.assertIn("print('x')", sanitized)
+        self.assertNotIn("Round 1 notes.", sanitized)
+        self.assertGreater(bytes_saved, 0)
+
+    def test_96_preserves_a_numbered_line_that_is_not_a_heading(self) -> None:
+        # "#1 ..." is a numbered item, not a level-1 heading (set("#1") is not
+        # {"#"}), so its title must never be read as a process heading. The
+        # real heading in the same run is the positive control.
+        numbered = "#1 rejected feedback\n"
+        sanitized, bytes_saved = second_opinion.sanitize_plan_text(
+            "# Plan\n" + numbered
+        )
+        self.assertIn(numbered, sanitized)
+        self.assertEqual(bytes_saved, 0)
+        stripped, stripped_bytes = second_opinion.sanitize_plan_text(
+            "## Rejected Feedback\nOld.\n"
+        )
+        self.assertNotIn("Old.", stripped)
+        self.assertGreater(stripped_bytes, 0)
+
+
 class DataDirSelfEnsureTests(unittest.TestCase):
     """second_opinion.py shares grill.py's artifact directory.
 
@@ -2666,6 +2860,32 @@ class DataDirSelfEnsureTests(unittest.TestCase):
         second_opinion.ensure_data_dir()
         self.assertEqual(marker.read_text(), "focus")
 
+    def test_directory_created_while_waiting_for_the_lock_is_tolerated(self) -> None:
+        # Two processes can both see no directory and serialize on the
+        # migration lock; whichever wins creates it, and the other's mkdir
+        # must tolerate finding it there instead of failing.
+        events: list[str] = []
+        data_dir = self.data_dir
+
+        @contextmanager
+        def racing_shared(site: str) -> Iterator[None]:
+            events.append(f"enter:{site}")
+            data_dir.mkdir(parents=True, exist_ok=True)
+            yield
+            events.append("exit")
+
+        self.assertFalse(data_dir.exists())
+        with patch.object(second_opinion.migration_lock, "shared", racing_shared):
+            second_opinion.ensure_data_dir()
+        self.assertEqual(events, ["enter:decisions", "exit"])
+        self.assertTrue(data_dir.is_dir())
+        # Positive control: with no competing writer, the same call must do the
+        # creating itself — the fake lock above is what made it a no-op here.
+        shutil.rmtree(data_dir)
+        self.assertFalse(data_dir.exists())
+        second_opinion.ensure_data_dir()
+        self.assertTrue(data_dir.is_dir())
+
     def test_data_dir_matches_grills(self) -> None:
         """A second location would defeat the point — assert they are one dir."""
         sys.path.insert(0, str(Path(second_opinion.__file__).parent))
@@ -2683,6 +2903,117 @@ class DataDirSelfEnsureTests(unittest.TestCase):
         ):
             second_opinion.main()
         self.assertTrue(self.data_dir.is_dir())
+
+
+class OutputFileTamperTests(unittest.TestCase):
+    """The output-file tamper guard, driven through `cmd_review` with a real
+    regular file as stdout: a foreign write the tamper check *saw* is trimmed
+    away, and one that lands after the check is left alone."""
+
+    def _cmd_review(self, stream: object, runner: Callable[..., str]) -> str:
+        out_err = io.StringIO()
+        with (
+            patch("shutil.which", return_value="/usr/bin/codex"),
+            patch.dict(second_opinion.BACKEND_RUNNERS, {"codex": runner}),
+            patch("sys.stdout", stream),
+            patch("sys.stderr", out_err),
+        ):
+            second_opinion.cmd_review(
+                ns(plan="my plan", backend="codex", quiet=True)
+            )
+        return out_err.getvalue()
+
+    def test_tail_seen_before_the_check_is_trimmed(self) -> None:
+        tmpdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmpdir, ignore_errors=True)
+        path = Path(tmpdir) / "out.txt"
+
+        def runner(prompt: str, *, model_index=None) -> str:
+            # A foreign writer reaches the file before the tamper check.
+            with open(path, "a", encoding="utf-8") as foreign:
+                foreign.write("FOREIGN-TAIL" * 20)
+            return "critique"
+
+        with open(path, "w", encoding="utf-8") as out_file:
+            err = self._cmd_review(out_file, runner)
+        text = path.read_text(encoding="utf-8")
+        self.assertIn("critique", text)
+        self.assertNotIn("FOREIGN-TAIL", text)
+        self.assertIn("another process wrote", err)
+
+    def test_tail_written_after_the_check_survives(self) -> None:
+        tmpdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmpdir, ignore_errors=True)
+        path = Path(tmpdir) / "out.txt"
+
+        class PostCheckWriter:
+            """A regular-file stdout that flushes this run's bytes and only
+            then lets a separate append-mode descriptor write behind it."""
+
+            def __init__(self, target: Path) -> None:
+                self._path = target
+                self._file = open(target, "w", encoding="utf-8")
+
+            def fileno(self) -> int:
+                return self._file.fileno()
+
+            def write(self, text: str) -> int:
+                written = self._file.write(text)
+                self._file.flush()
+                with open(self._path, "a", encoding="utf-8") as foreign:
+                    foreign.write("FOREIGN-TAIL")
+                return written
+
+            def flush(self) -> None:
+                self._file.flush()
+
+        stream = PostCheckWriter(path)
+        self.addCleanup(stream._file.close)  # noqa: SLF001 — the test's own file
+        err = self._cmd_review(stream, lambda p, model_index=None: "critique")
+        text = path.read_text(encoding="utf-8")
+        self.assertIn("critique", text)
+        self.assertIn("FOREIGN-TAIL", text)
+        self.assertEqual(err, "")
+
+
+class EnsureRunsDirTests(unittest.TestCase):
+    """`_ensure_runs_dir` creates the runs directory when missing and hands
+    back the directory it created."""
+
+    def setUp(self) -> None:
+        self.tmpdir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
+        self.runs_dir = self.tmpdir / "nested" / "runs"
+        patcher = patch.object(second_opinion, "_runs_dir", lambda: self.runs_dir)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_creates_missing_parents_and_returns_the_directory(self) -> None:
+        returned = second_opinion._ensure_runs_dir()
+        self.assertEqual(returned, self.runs_dir)
+        self.assertTrue(self.runs_dir.is_dir())
+
+    def test_directory_created_by_another_process_is_tolerated(self) -> None:
+        # Simulate the interleaving the exist_ok guard exists for: another
+        # process creates the directory between this call's is_dir() check and
+        # its own mkdir, so that mkdir must tolerate finding it present.
+        real_mkdir = Path.mkdir
+        runs_dir = self.runs_dir
+        raced: list[bool] = []
+
+        def racing_mkdir(
+            path_self: Path, *args: object, **kwargs: object
+        ) -> None:
+            if path_self == runs_dir and not raced:
+                raced.append(not path_self.is_dir())
+                real_mkdir(path_self, parents=True, exist_ok=True)
+            return real_mkdir(path_self, *args, **kwargs)
+
+        with patch.object(Path, "mkdir", racing_mkdir):
+            returned = second_opinion._ensure_runs_dir()
+        self.assertEqual(raced, [True])
+        self.assertEqual(returned, runs_dir)
+        self.assertTrue(runs_dir.is_dir())
 
 
 class CritiqueNotesBindingTests(unittest.TestCase):
@@ -4215,6 +4546,32 @@ class DiffReviewTests(unittest.TestCase):
         self.assertEqual(
             out.getvalue(), second_opinion.build_prompt(diff_text, None, diff=True)
         )
+
+    @pytest.mark.allow_real_subprocess  # a real git in a throwaway repo, so the flags' effects (not the flags) are what is asserted
+    def test_read_staged_diff_reads_a_real_staged_diff(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            subprocess.run(
+                ["git", "init", "-q", str(repo)], check=True, capture_output=True
+            )
+            (repo / "a.txt").write_text("hello\n")
+            subprocess.run(
+                ["git", "-C", str(repo), "add", "a.txt"],
+                check=True,
+                capture_output=True,
+            )
+            text = second_opinion.read_staged_diff(repo)
+        self.assertIsInstance(text, str)
+        self.assertIn("+hello", text)
+
+    @pytest.mark.allow_real_subprocess  # a real git failing outside a repository
+    def test_read_staged_diff_real_git_failure_exits_one(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            err = io.StringIO()
+            with redirect_stderr(err), self.assertRaises(SystemExit) as cm:
+                second_opinion.read_staged_diff(Path(tmpdir))
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("git diff --cached failed", err.getvalue())
 
     def test_read_staged_diff_passes_pathspecs(self) -> None:
         with patch.object(
