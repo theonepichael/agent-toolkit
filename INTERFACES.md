@@ -1053,7 +1053,7 @@ Pre-tool guard shared by every harness: refuse a write into a repository's main 
   - `parse_payload(harness: str, payload: object) -> Request | None` — Normalize a harness's native hook payload.
   - `render(harness: str | None, verdict: Verdict) -> tuple[str, int]` — Shape a verdict into the harness's own reply.
   - `build_parser() -> argparse.ArgumentParser`
-- Tested by: `test/test_guard_rails.py`, `test/test_guard_rails_agy_bash.py`, `test/test_guard_rails_claim.py`, `test/test_guard_rails_fast_path.py`, `test/test_guard_rails_provenance.py`, `test/test_guard_rails_stale_base.py`, `test/test_guard_rails_topology.py`, `test/test_migration_lock_adoption.py`
+- Tested by: `test/test_guard_rails.py`, `test/test_guard_rails_agy_bash.py`, `test/test_guard_rails_claim.py`, `test/test_guard_rails_fast_path.py`, `test/test_guard_rails_git_layer.py`, `test/test_guard_rails_provenance.py`, `test/test_guard_rails_stale_base.py`, `test/test_guard_rails_topology.py`, `test/test_migration_lock_adoption.py`
 
 ### `agent-scripts/harness_discovery_check.py`
 
@@ -2077,7 +2077,7 @@ Per-worktree backlog provenance: one explicit marker, shared predicates.
   - `inspect_item_worktrees(*, related_files: object, slug: str, cwd: str | Path | None = None, target_branch: str | None = None) -> list[WorktreeInspection]` — Read-only committed-work facts for every target attributable to ``slug``: linked worktrees marked for the item (marker wins over the branch heuristic), the caller's current checkout when its branch equals the slug, and — only when no attributed worktree exists — each discovered repository's surviving slug branch.
   - `resolve_run_checkout(*, related_files: object, slug: str, in_progress_ids: set[str], target_branch: str | None, cwd: Path | None = None) -> RunCheckout` — The checkout a run for ``slug`` should execute in, or why none may.
   - `read_head(directory: Path) -> tuple[str | None, str | None]` — (HEAD sha, problem) for ``directory``; (None, None) outside any repo.
-- Tested by: `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_dev_status_run_cwd.py`, `test/test_guard_rails_claim.py`, `test/test_worktree.py`, `test/test_worktree_provenance.py`
+- Tested by: `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_dev_status_run_cwd.py`, `test/test_guard_rails_claim.py`, `test/test_guard_rails_git_layer.py`, `test/test_worktree.py`, `test/test_worktree_provenance.py`
 
 ---
 
