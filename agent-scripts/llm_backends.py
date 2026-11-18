@@ -1351,6 +1351,11 @@ _TOOL_CALL_LEAK_DOMINANCE_RATIO = 0.4
 
 _active_process: subprocess.Popen[str] | None = None
 
+# How long to wait for a killed backend process to actually die. SIGKILL is
+# delivered synchronously, so a healthy process never spends this budget; a
+# process stuck in the kernel must not block the caller past it.
+_KILL_GRACE_SECONDS = 2.0
+
 
 class BackendError(Exception):
     """A backend was invoked but failed (timeout or nonzero exit)."""
@@ -1754,13 +1759,28 @@ def _safe_get(obj: object, *keys: str) -> object | None:
 
 
 def _kill_active_process() -> None:
-    """Kill the currently-running backend subprocess's entire process group, if any."""
+    """Kill the currently-running backend subprocess's entire process group, if any.
+
+    The reap is bounded by :data:`_KILL_GRACE_SECONDS`: a process that SIGKILL
+    cannot take (uninterruptible sleep) must not block the caller forever.
+    Callers close its pipes with :func:`_close_streams` rather than reading
+    them.
+    """
     proc = _active_process
     if proc is None or proc.poll() is not None:
         return
     with suppress(ProcessLookupError):
         os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-    proc.wait()
+    with suppress(subprocess.TimeoutExpired):
+        proc.wait(timeout=_KILL_GRACE_SECONDS)
+
+
+def _close_streams(proc: subprocess.Popen[str]) -> None:
+    """Close a backend process's pipe handles without waiting on the process."""
+    for stream in (proc.stdout, proc.stderr):
+        if stream is not None:
+            with suppress(OSError):
+                stream.close()
 
 
 def _decode_buf(buf: bytearray) -> str:
@@ -1785,7 +1805,7 @@ def _read_with_stall(
       process).
 
     The caller owns reaping ``proc`` on the ``stalled``/``"timeout"`` outcomes;
-    this helper leaves the pipes open so a kill + drain can happen once. The
+    this helper leaves the pipes open so the caller kills and closes them. The
     fourth element is how much of the overall ``timeout`` budget remained at
     return — the caller spends it reaping an already-EOF process before
     trusting its exit code. Built
@@ -1881,7 +1901,10 @@ def _run_command(
         retries: Extra attempts after an initial *timeout*, before raising —
             each retry re-runs ``cmd`` from scratch (a fresh subprocess),
             waiting up to ``timeout`` again, so worst-case wall time is
-            ``timeout * (1 + retries)``. Only a *timeout* triggers a retry
+            ``(timeout + _KILL_GRACE_SECONDS) * (1 + retries)`` plus spawn
+            overhead: one grace window to reap each killed process. The attempt
+            count also has its own cap, so a wrong retry branch cannot extend
+            the loop. Only a *timeout* triggers a retry
             when ``stall_seconds`` is unset; a nonzero exit or a
             failed-to-start error still raises/returns on the first attempt
             (those aren't the observed opencode failure mode this exists for
@@ -1914,10 +1937,16 @@ def _run_command(
     global _active_process, _pending_fallback_reason
     attempt = 0
     attempt_outcomes: list[str] = []
+    # The attempt budget is the loop's own hard bound: it counts attempts made,
+    # so the loop terminates even if a retry branch below is wrong. `max(1, ...)`
+    # keeps a single attempt for any non-positive `retries`.
+    max_attempts = max(1, retries + 1)
+    attempts_made = 0
     # Sanitize environment: omit variables > 32KB to protect total ARG_MAX budget
     env = {k: v for k, v in os.environ.items() if len(k) + len(v) <= 32768}
-    while True:
-        with cli_common.timing_span("backend_attempt", attempt=attempt + 1) as timing:
+    while attempts_made < max_attempts:
+        attempts_made += 1
+        with cli_common.timing_span("backend_attempt", attempt=attempts_made) as timing:
             try:
                 proc = subprocess.Popen(
                     cmd,
@@ -1960,15 +1989,10 @@ def _run_command(
                             )
                             timing["exit_code"] = proc.returncode
                             return proc.returncode, stdout, stderr
-                    # stalled or timeout: the process must die and its pipes drain
+                    # stalled or timeout: the process must die and its pipes go
                     timing["outcome"] = "stall" if outcome == "stalled" else "timeout"
                     _kill_active_process()
-                    # `_kill_active_process` only reaps the process (`wait()`); the
-                    # stdout/stderr pipes opened by Popen(...) are still open at
-                    # this point. A second `communicate()` on the now-dead process
-                    # drains and closes them — without it, the fds leak until the
-                    # Popen object happens to get garbage-collected.
-                    proc.communicate()
+                    _close_streams(proc)
                     attempt_outcomes.append(outcome)
                     if outcome == "stalled" and attempt < retries:
                         # A stall is a recoverable liveness failure, unlike a
@@ -2012,7 +2036,7 @@ def _run_command(
                 # monitoring is configured.
                 timing["outcome"] = "timeout"
                 _kill_active_process()
-                proc.communicate()
+                _close_streams(proc)
                 if attempt < retries:
                     attempt += 1
                     continue
@@ -2025,6 +2049,15 @@ def _run_command(
             timing["outcome"] = "success" if proc.returncode == 0 else "error"
             timing["exit_code"] = proc.returncode
             return proc.returncode, stdout, stderr
+    # Unreachable while the retry conditions above stay correct: every attempt
+    # either returns or raises. `attempts_made` makes that a property of the
+    # loop rather than of those conditions, so reaching here means a retry
+    # branch ran past the cap; report the cap, never a fabricated result.
+    raise BackendTimeoutError(
+        f"retry loop hit its {max_attempts}-attempt cap in {timeout}s"
+        " without a terminal outcome",
+        stalled=bool(attempt_outcomes) and attempt_outcomes[-1] == "stalled",
+    )
 
 
 def run_backend_command(cmd: list[str], timeout: float) -> str:

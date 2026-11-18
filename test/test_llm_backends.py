@@ -2496,15 +2496,29 @@ class _StallStream:
     def __init__(self, harness: "_StallHarness", fd: int) -> None:
         self._harness = harness
         self._fd = fd
+        self.closed = False
 
     def fileno(self) -> int:
         return self._fd
+
+    def close(self) -> None:
+        if not self.closed:
+            self.closed = True
+            self._harness.closed_streams += 1
+            self._harness.events.append("close")
 
 
 class _FakeProc:
     """A subprocess stand-in: the Popen-ish surface `_run_command` and
     `_kill_active_process` actually touch (stdout/stderr filenos, pid, poll,
-    wait, communicate)."""
+    wait, communicate).
+
+    There is no real child here to block on, so a wait called without a
+    deadline is recorded as the hang it would be on a process that never dies:
+    both `wait` and `communicate` raise `AssertionError` when `timeout is None`.
+    Only `None` — the completion-reap path legitimately passes a `remaining`
+    budget that can be zero.
+    """
 
     def __init__(self, harness: "_StallHarness") -> None:
         self._harness = harness
@@ -2512,11 +2526,21 @@ class _FakeProc:
         self.returncode: int | None = None
         self.stdout = _StallStream(harness, harness.STDOUT_FD)
         self.stderr = _StallStream(harness, harness.STDERR_FD)
+        self.reap_deadlines: list[float] = []
 
     def poll(self) -> int | None:
         return self.returncode
 
     def wait(self, timeout: float | None = None) -> int:
+        if timeout is None:
+            raise AssertionError("reap without a deadline would block")
+        self.reap_deadlines.append(timeout)
+        if self._harness._reap_hangs:
+            # SIGKILL did not take: the process is still alive after the kill
+            # grace window, so `poll()` keeps returning None.
+            raise subprocess.TimeoutExpired(
+                self._harness.active.get("cmd", "fake"), timeout
+            )
         if self._harness._wait_raises:
             # Model a hung reaping attempt — but only once: in the real world
             # the caller SIGKILLs the process group after the wait timeout, and
@@ -2530,7 +2554,17 @@ class _FakeProc:
         return self.returncode
 
     def communicate(self, timeout: float | None = None) -> tuple[str, str]:
+        if timeout is None:
+            raise AssertionError("pipe read without a deadline would block")
+        if self._harness._never_finishes:
+            # The process outlives its deadline, so the read times out.
+            raise subprocess.TimeoutExpired(
+                self._harness.active.get("cmd", "fake"), timeout
+            )
         self.returncode = self._harness.active.get("returncode", 0)  # type: ignore[arg-type]
+        # A real communicate() closes both pipes when it completes.
+        for stream in (self.stdout, self.stderr):
+            stream.close()
         return "", ""
 
 
@@ -2550,12 +2584,22 @@ class _StallHarness:
     STDOUT_FD = 3
     STDERR_FD = 4
 
+    # A real monotonic clock advances between calls, and the stall poll loop
+    # relies on that to make progress. The fake has to model it: with a clock
+    # that only ever moves by the requested select() window, an accumulated
+    # float residual (`stall_seconds - elapsed` left at ~5e-17) never reaches
+    # zero, so "one more poll" spins forever instead of resolving. One
+    # microsecond per read is a realistic tick.
+    TICK = 1e-6
+
     def __init__(
         self,
         attempts: list[dict[str, object]],
         *,
         set_returncode_on_eof: bool = True,
         wait_raises: bool = False,
+        reap_hangs: bool = False,
+        never_finishes: bool = False,
     ) -> None:
         self._attempts = list(attempts)
         self._next = 0
@@ -2564,11 +2608,18 @@ class _StallHarness:
         self._current_proc: _FakeProc | None = None
         self._set_rc_on_eof = set_returncode_on_eof
         self._wait_raises = wait_raises
+        self._reap_hangs = reap_hangs
+        self._never_finishes = never_finishes
+        self.procs: list[_FakeProc] = []
+        self.events: list[str] = []
+        self.killpg_calls: list[int] = []
+        self.closed_streams = 0
         self._buf: dict[int, bytes] = {self.STDOUT_FD: b"", self.STDERR_FD: b""}
         self._idx: dict[int, int] = {self.STDOUT_FD: 0, self.STDERR_FD: 0}
 
     # ---- fakes wired into llm_backends ----
     def monotonic(self) -> float:
+        self.clock += self.TICK
         return self.clock
 
     def popen(self, *args: object, **kwargs: object) -> _FakeProc:
@@ -2579,7 +2630,12 @@ class _StallHarness:
         self._buf = {self.STDOUT_FD: b"", self.STDERR_FD: b""}
         self._idx = {self.STDOUT_FD: 0, self.STDERR_FD: 0}
         self._current_proc = _FakeProc(self)
+        self.procs.append(self._current_proc)
         return self._current_proc
+
+    def killpg(self, pgid: int, sig: int) -> None:
+        self.events.append("killpg")
+        self.killpg_calls.append(pgid)
 
     def _events(self, fd: int) -> list[tuple[float, bytes]]:
         key = "stdout" if fd == self.STDOUT_FD else "stderr"
@@ -2654,7 +2710,7 @@ def _patched_harness(harness: _StallHarness) -> Iterator[None]:
         patch.object(llm_backends.select, "select", harness.select),
         patch.object(llm_backends.time, "monotonic", harness.monotonic),
         patch.object(llm_backends.os, "read", harness.read),
-        patch.object(llm_backends.os, "killpg", lambda *a, **k: None),
+        patch.object(llm_backends.os, "killpg", harness.killpg),
         patch.object(llm_backends.os, "getpgid", lambda pid: pid),
     ):
         yield
@@ -2812,6 +2868,91 @@ class StallDetectionTests(unittest.TestCase):
             str(cm.exception),
         )
         self.assertEqual(harness._next, 2)
+
+
+class WaitBoundTests(unittest.TestCase):
+    """Every wait after a kill is bounded, and the retry loop is capped.
+
+    Fakes drive everything: no real child, no sleeping. `_FakeProc` records the
+    deadline each reap is given and refuses a wait with none, so a bound that
+    goes missing is observable without ever blocking a test run.
+    """
+
+    def test_stall_kills_the_process_group_before_closing_its_pipes(self) -> None:
+        # The kill has to come first: the routes that skip it (an inverted
+        # `proc is None` or `proc.poll() is not None` guard) leave the group
+        # alive and hand back pipes nothing will ever release. The handles must
+        # also be closed, so attempts cannot leak descriptors.
+        harness = _StallHarness(
+            [{"stdout": [(0.1, b"step_start\n")], "exit_at": float("inf")}]
+        )
+        with _patched_harness(harness):
+            with self.assertRaises(llm_backends.BackendTimeoutError):
+                llm_backends._run_command(
+                    ["opencode"], 10, retries=0, stall_seconds=0.2
+                )
+        self.assertEqual(harness.killpg_calls, [12345])
+        self.assertEqual(harness.events, ["killpg", "close", "close"])
+        self.assertIsNone(llm_backends._active_process)
+
+    def test_timeout_path_kills_and_closes_too(self) -> None:
+        # The `stall_seconds is None` path has its own kill; it must close the
+        # handles there as well, and the close must not replace the timeout it
+        # is reporting.
+        harness = _StallHarness([{}], never_finishes=True)
+        with _patched_harness(harness):
+            with self.assertRaises(llm_backends.BackendTimeoutError) as cm:
+                llm_backends._run_command(["agy"], 5, retries=0)
+        self.assertFalse(cm.exception.stalled)
+        self.assertEqual(harness.killpg_calls, [12345])
+        self.assertEqual(harness.events, ["killpg", "close", "close"])
+
+    @pytest.mark.regression(
+        "unbounded-reap-after-stall-kill",
+        "AssertionError: reap without a deadline would block",
+    )
+    def test_reap_after_a_surviving_kill_still_raises(self) -> None:
+        # SIGKILL delivered but the process is still alive: the reap must give
+        # up at its deadline and the call must still report the stall, instead
+        # of waiting for a process that may never die.
+        harness = _StallHarness(
+            [{"stdout": [(0.1, b"step_start\n")], "exit_at": float("inf")}],
+            reap_hangs=True,
+        )
+        with _patched_harness(harness):
+            with self.assertRaises(llm_backends.BackendTimeoutError) as cm:
+                llm_backends._run_command(
+                    ["opencode"], 10, retries=0, stall_seconds=0.2
+                )
+        self.assertTrue(cm.exception.stalled)
+        self.assertEqual(len(harness.procs[0].reap_deadlines), 1)
+        # A process that outlived its kill still gets its handles closed, so a
+        # retry cannot accumulate descriptors.
+        self.assertEqual(harness.events, ["killpg", "close", "close"])
+        self.assertIsNone(llm_backends._active_process)
+
+    def test_retry_budget_is_retries_plus_one_attempts(self) -> None:
+        # Driven by the always-timing-out fake: the spawn count, not only the
+        # message, pins the budget at retries + 1 attempts.
+        harness = _StallHarness([{}, {}, {}], never_finishes=True)
+        with _patched_harness(harness):
+            with self.assertRaises(llm_backends.BackendTimeoutError) as cm:
+                llm_backends._run_command(["agy"], 5, retries=2)
+        self.assertEqual(len(harness.procs), 3)
+        self.assertFalse(cm.exception.stalled)
+
+    def test_stall_retry_budget_is_the_hard_cap(self) -> None:
+        # Every attempt stalls: the run must stop at retries + 1 attempts, not
+        # keep spawning while the gateway stays silent.
+        stall = {"stdout": [(0.1, b"step_start\n")], "exit_at": float("inf")}
+        harness = _StallHarness([stall, stall, stall, stall])
+        with _patched_harness(harness):
+            with self.assertRaises(llm_backends.BackendTimeoutError) as cm:
+                llm_backends._run_command(
+                    ["opencode"], 10, retries=3, stall_seconds=0.2
+                )
+        self.assertEqual(len(harness.procs), 4)
+        self.assertTrue(cm.exception.stalled)
 
 
 class StallRetryTelemetryTests(_LogPathRedirected):
