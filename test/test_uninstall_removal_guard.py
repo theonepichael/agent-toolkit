@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Class guard: shutil.rmtree may only be called from a small, named set of
-functions in install.py/uninstall_state.py.
+functions across the allowlisted modules (install.py, uninstall_exec.py,
+uninstall_state.py).
 
 Every shutil.rmtree call on a tree-manifest-tracked directory goes through
 uninstall_state.installed_tree_verdict first, either via uninstall_state.remove_manifest_tree
@@ -111,7 +112,13 @@ def _unallowed_rmtree_sites(filename: str) -> list[tuple[str, int]]:
     ]
 
 
-@pytest.mark.parametrize("filename", ["install.py", "uninstall_state.py"])
+# The red string below was observed with a stray shutil.rmtree planted in
+# uninstall_exec.py, a file the pre-change parametrization never scanned.
+@pytest.mark.regression(
+    "removal-guard-skips-allowlisted-file",
+    "assert not [('uninstall_exec.py', 1406)]",
+)
+@pytest.mark.parametrize("filename", sorted(ALLOWED_RMTREE_FUNCTIONS))
 def test_rmtree_only_called_from_allowed_functions(filename: str) -> None:
     violations = _unallowed_rmtree_sites(filename)
     assert not violations, (
