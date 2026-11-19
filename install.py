@@ -109,7 +109,7 @@ audit_links = link_inspect.audit_links
 dir_applies = link_inspect.dir_applies
 
 USAGE = """\
-usage: ./install.sh --harness=<claude,copilot,opencode,agy,pi,codex>[,...] [--profile=personal|work] [--rollback] [--wipe] [--force] [--dry-run] [--reseed | --adopt] [--quiet | --verbose]
+usage: ./install.sh --harness=<claude,copilot,opencode,agy,pi,codex>[,...]|all [--profile=personal|work] [--rollback] [--wipe] [--force] [--dry-run] [--reseed | --adopt] [--quiet | --verbose]
        ./install.sh --uninstall [--yes] [--dry-run] [--quiet | --verbose]
        ./install.sh --check-links [--harness=...] [--profile=personal|work] [--quiet | --verbose]
        ./install.sh --report-legacy-env [--quiet | --verbose]
@@ -120,7 +120,10 @@ usage: ./install.sh --harness=<claude,copilot,opencode,agy,pi,codex>[,...] [--pr
               actions (--rollback, --uninstall, --check-links), though
               --check-links accepts it to scope which entries apply.
               Comma-separated, at least one of:
-              claude, copilot, opencode, agy, pi, codex. No default — every run must
+              claude, copilot, opencode, agy, pi, codex. Or all, alone: every
+              harness whose CLI is on PATH, skipping the rest with a note
+              (--force-harness keeps them; --profile=work leaves out
+              opencode). No default — every run must
               state its intent explicitly. Purely additive: omitting a harness
               you previously selected does NOT uninstall or clean it up,
               it just skips re-provisioning it this run. Removal is a
@@ -241,6 +244,7 @@ Examples:
   ./install.sh --profile=work --harness=copilot
   ./install.sh --harness=claude,opencode
   ./install.sh --harness=claude,agy
+  ./install.sh --harness=all            # every harness whose CLI is installed
   ./install.sh --dry-run --harness=claude
   ./install.sh --dry-run --rollback
   ./install.sh --rollback --wipe        # full rollback to a blank slate
@@ -479,6 +483,8 @@ class Options:
     quiet: bool = False
     verbose: bool = False
     force_harness: bool = False
+    # --harness=all: missing CLIs are skipped with a note, not refused.
+    harness_all: bool = False
 
 
 @dataclass
@@ -595,18 +601,42 @@ HARNESS_INSTALL_HINTS: dict[str, str] = {
 }
 
 
-def check_harness_binaries(ctx: Context) -> list[str]:
-    """Return error strings for requested harnesses whose binaries are not on PATH."""
-    if ctx.opts.force_harness:
-        return []
+def resolve_harness_binaries(opts: Options) -> tuple[Options, list[str], list[str]]:
+    """Check the selected harnesses' CLIs against PATH.
+
+    A harness named explicitly whose CLI is missing is an error, refusing the
+    run. Under ``--harness=all`` it is dropped instead, with a note, so one
+    uninstalled CLI never blocks the rest. ``--force-harness`` skips the PATH
+    check entirely.
+
+    Returns:
+        The options with the final harness tuple, refusal errors, and notes.
+    """
+    notes: list[str] = []
+    if opts.harness_all and opts.profile == "work":
+        notes.append("skipping opencode: excluded from the work profile")
+    if opts.force_harness:
+        return opts, [], notes
     errors: list[str] = []
-    for harness in ctx.opts.harnesses:
+    kept: list[str] = []
+    for harness in opts.harnesses:
         bin_name = HARNESS_BINARIES.get(harness)
-        if bin_name and not have(bin_name):
-            hint = HARNESS_INSTALL_HINTS.get(harness, "")
-            hint_str = f" (install with: {hint})" if hint else ""
+        if not bin_name or have(bin_name):
+            kept.append(harness)
+            continue
+        hint = HARNESS_INSTALL_HINTS.get(harness, "")
+        hint_str = f" (install with: {hint})" if hint else ""
+        if opts.harness_all:
+            notes.append(f"skipping {harness}: '{bin_name}' not on PATH{hint_str}")
+        else:
             errors.append(f"'{bin_name}' CLI binary is not installed on PATH{hint_str}")
-    return errors
+    if opts.harness_all and not kept:
+        errors.append("no harness CLI found on PATH for --harness=all")
+    return (
+        replace(opts, harnesses=tuple(kept) if opts.harness_all else opts.harnesses),
+        errors,
+        notes,
+    )
 
 
 def parse_args(argv: Sequence[str]) -> Options:
@@ -631,7 +661,16 @@ def parse_args(argv: Sequence[str]) -> Options:
     parser.add_argument("--profile", default=DEFAULT_PROFILE)
     # append, not store: --harness=claude --harness=copilot must accumulate
     # both, not silently drop the first on the second flag.
-    parser.add_argument("--harness", action="append", default=[])
+    parser.add_argument(
+        "--harness",
+        action="append",
+        default=[],
+        help=(
+            "comma-separated harnesses to provision (claude, copilot, opencode, "
+            "agy, pi, codex), or all: when installing, every harness whose CLI "
+            "is on PATH; with --check-links, every harness"
+        ),
+    )
     parser.add_argument("--rollback", action="store_true")
     parser.add_argument("--wipe", action="store_true")
     parser.add_argument("--force", action="store_true")
@@ -681,17 +720,30 @@ def parse_args(argv: Sequence[str]) -> Options:
         if not harness:
             _fail("--harness has an empty value — check for a stray comma")
 
+    # `all` stands alone: checked before the unknown-name loop so all,bogus
+    # names the mix, while all,all is still just all.
+    harness_all = "all" in harnesses
+    if harness_all and any(harness != "all" for harness in harnesses):
+        _fail("--harness=all cannot be combined with other harness names")
+
     for harness in harnesses:
-        if harness not in VALID_HARNESSES:
+        if harness != "all" and harness not in VALID_HARNESSES:
             _fail(
                 f"unknown harness: {harness} "
-                "(must be claude, copilot, opencode, agy, pi, and/or codex)"
+                "(must be claude, copilot, opencode, agy, pi, and/or codex, or all)"
             )
 
     # opencode never belongs on a work machine, full stop — not "tightened
-    # settings," excluded entirely, the same way watchcommit is.
+    # settings," excluded entirely, the same way watchcommit is. Naming it is
+    # refused; `all` just leaves it out.
     if args.profile == "work" and "opencode" in harnesses:
         _fail("--harness=opencode is not allowed with --profile=work")
+    if harness_all:
+        harnesses = [
+            harness
+            for harness in VALID_HARNESSES
+            if not (args.profile == "work" and harness == "opencode")
+        ]
 
     if args.adopt and args.reseed:
         _fail("--adopt and --reseed cannot be used together")
@@ -789,7 +841,7 @@ def parse_args(argv: Sequence[str]) -> Options:
     ):
         _fail(
             "no --harness specified — pass at least one of: "
-            "claude, copilot, opencode, agy, pi, codex",
+            "claude, copilot, opencode, agy, pi, codex, or all",
             show_usage=True,
         )
 
@@ -818,6 +870,7 @@ def parse_args(argv: Sequence[str]) -> Options:
         quiet=args.quiet,
         verbose=args.verbose,
         force_harness=args.force_harness,
+        harness_all=harness_all,
     )
 
 
@@ -2718,7 +2771,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 2
 
-    harness_errors = check_harness_binaries(ctx)
+    resolved_opts, harness_errors, harness_notes = resolve_harness_binaries(ctx.opts)
+    for note in harness_notes:
+        cli_common.qprint(
+            PALETTE.warn(f"⚠ {note}"), quiet=ctx.opts.quiet, file=sys.stderr
+        )
     if harness_errors:
         for err in harness_errors:
             print(PALETTE.error(f"✗ {err}"), file=sys.stderr)
@@ -2729,6 +2786,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
+    ctx = replace(ctx, opts=resolved_opts)
 
     try:
         specs = load_links(ctx.repo_root / "links.toml")
