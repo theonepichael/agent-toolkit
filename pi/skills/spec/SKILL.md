@@ -19,7 +19,7 @@ Fill in what you can from the task description (or $ARGUMENTS) and context alrea
 - **Constraints** — what to avoid: new deps, paid APIs, style rules.
 - **Evaluation criteria** — how correctness gets judged.
 - **Edge cases** — what could go wrong or fall through.
-- **Verification steps** — tests/checks that must pass before this counts as done.
+- **Verification steps** — tests/checks that must pass before this counts as done, and where the tests go: the highest-level test points available, existing ones before new, as few as possible.
 
 ## 2. Fill gaps — ask, don't guess
 
