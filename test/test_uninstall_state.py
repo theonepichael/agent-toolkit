@@ -1032,6 +1032,116 @@ def test_acquire_lock_when_the_file_is_replaced_before_its_flock(tmp_path):
     assert acquired_again is False
 
 
+@pytest.mark.regression(
+    "uninstall-lock-release-unlinks-a-concurrent-reclaim",
+    "AssertionError: the concurrent release deleted the reclaiming acquirer's lock",
+)
+def test_release_does_not_unlink_a_concurrent_reclaim(tmp_path, monkeypatch):
+    """A release's unlink must not delete a lock another acquirer just reclaimed.
+
+    The old release read the lock text and unlinked by path with no ``flock``,
+    so a stale-holder reclaim that completed between the read and the unlink
+    lost its record: the file named a lock the reclaimer believed it held, and
+    the next acquirer then created a fresh one. Injected, not timed: release's
+    read of the lock text is the hook point, and the hook does not let it
+    return until a shim on ``flock`` reports where the reclaimer is — either
+    it has finished its reclaim inside the window (the old unlocked release:
+    the race) or it is parked on the flock release still holds (the fixed
+    release, which serializes them). Neither signal within the bound fails
+    the test instead of silently skipping the attempted interleaving. The
+    unlink is also observed directly: it must happen while the flock is
+    still held, not after an early unlock.
+    """
+    lock_path = uninstall_state.uninstall_lock_path(tmp_path)
+    uninstall_state.acquire_uninstall_lock(
+        tmp_path, pid=1111, start_time_fn=lambda pid: 100
+    )
+
+    result: list[tuple[bool, object]] = []
+    reclaimer: list[threading.Thread] = []
+    settled = threading.Event()
+
+    def reclaim() -> None:
+        result.append(
+            uninstall_state.acquire_uninstall_lock(
+                tmp_path,
+                pid=2222,
+                start_time_fn=lambda pid: 200 if pid == 2222 else None,
+            )
+        )
+        settled.set()
+
+    class _FlockShim:
+        """Track outstanding LOCK_EX holders so the hook can read the race."""
+
+        LOCK_EX = fcntl.LOCK_EX
+        LOCK_UN = fcntl.LOCK_UN
+
+        def __init__(self) -> None:
+            self.holders: list[int] = []
+
+        def flock(self, fd: int, operation: int) -> None:
+            ident = threading.get_ident()
+            if operation == fcntl.LOCK_EX:
+                if self.holders and ident not in self.holders:
+                    # Another thread's LOCK_EX is outstanding: this acquirer
+                    # is parked on the flock release still holds — the fixed
+                    # release serializes the two instead of racing them.
+                    settled.set()
+                self.holders.append(ident)
+            try:
+                fcntl.flock(fd, operation)
+            finally:
+                if operation == fcntl.LOCK_UN and ident in self.holders:
+                    self.holders.remove(ident)
+
+    shim = _FlockShim()
+    unlinks: list[bool] = []  # each unlink of the lock path: flock held then?
+
+    original_unlink = Path.unlink
+
+    def unlink_observing_flock(self: Path, missing_ok: bool = False) -> None:
+        if self == lock_path:
+            unlinks.append(bool(shim.holders))
+        return original_unlink(self, missing_ok=missing_ok)
+
+    original_parse = uninstall_state.parse_lock_text
+    hook_started = threading.Event()
+
+    def parse_at_release_read(text: str) -> "uninstall_state.LockInfo | None":
+        parsed = original_parse(text)
+        if not hook_started.is_set():
+            # The first parse inside release is the read->unlink window: the
+            # reclaimer runs inside it, before the unlink can happen.
+            hook_started.set()
+            thread = threading.Thread(target=reclaim, daemon=True)
+            reclaimer.append(thread)
+            thread.start()
+            if not settled.wait(5):
+                raise AssertionError(
+                    "the reclaimer neither completed its reclaim nor parked on "
+                    "the held flock within the bound"
+                )
+        return parsed
+
+    monkeypatch.setattr(uninstall_state, "parse_lock_text", parse_at_release_read)
+    monkeypatch.setattr(uninstall_state, "fcntl", shim)
+    monkeypatch.setattr(Path, "unlink", unlink_observing_flock)
+    uninstall_state.release_uninstall_lock(tmp_path, pid=1111)
+    monkeypatch.undo()
+    if reclaimer:
+        reclaimer[0].join(10)
+        assert not reclaimer[0].is_alive()
+
+    assert [acquired for acquired, _ in result] == [True]
+    assert uninstall_state.read_lock(lock_path) == uninstall_state.LockInfo(
+        pid=2222, start_time=200
+    ), "the concurrent release deleted the reclaiming acquirer's lock"
+    assert unlinks == [True], (
+        "release dropped its flock before unlinking the lock"
+    )
+
+
 # ── service/linger (watchcommit) ─────────────────────────────────────────
 
 
