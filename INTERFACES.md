@@ -2647,7 +2647,13 @@ named doc, not regenerating this file.
 
 | Doc | Status |
 | --- | --- |
+| `agy/skills/make-skill/SKILL.md` | OK |
+| `claude/commands/make-skill.md` | OK |
 | `claude/commands/skill-drift-audit.md` | OK |
+| `codex/skills/make-skill/SKILL.md` | OK |
+| `copilot/skills/make-skill/SKILL.md` | OK |
+| `opencode/command/make-skill.md` | OK |
+| `pi/skills/make-skill/SKILL.md` | OK |
 
 ### `grill.py`
 
@@ -2810,7 +2816,7 @@ new one, `--check` catches it the same as any other stale content.
 | `/foreman` | `backlog-item`, `land`, `swarm` |
 | `/grill-me` | `second-opinion`, `spec` |
 | `/land` | `backlog-item`, `dashboard`, `review-diff` |
-| `/make-skill` | `grill-me` |
+| `/make-skill` | `draft-voice`, `grill-me`, `obe-triage` |
 | `/obe-triage` | — |
 | `/recap` | — |
 | `/refresh-guidance` | — |

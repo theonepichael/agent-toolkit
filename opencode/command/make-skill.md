@@ -10,18 +10,19 @@ Work through these steps in order. Don't draft the skill body before step 1 is d
 Ask (or infer and confirm): model-invoked, user-invoked, or both?
 
 - **Model-invoked** costs context in every session and can silently not fire; it buys hands-off convenience. **User-invoked** is reliable and cheap but the user must remember it exists.
-- The frontmatter `description` IS the model-invoke surface. Write it as: what the skill does + "use when" + the literal phrases the user actually says (steal them from real transcripts). For user-invoked-only skills, keep the description one terse line.
+- The frontmatter `description` IS the model-invoke surface. Write it as: what the skill does + "use when" + the literal phrases the user actually says (steal them from real transcripts), one per distinct case: synonyms for the same case cost context and add no reach. For user-invoked-only skills, keep the description one terse line.
 
 ## 2. Structure — steps, then reference
 
 - The body is a **procedure**: numbered/ordered steps in imperative voice, addressed to the agent.
 - Supporting material (schemas, long examples, lookup tables) does NOT go in the body. Put it in `~/.config/opencode/skills/ref/<skill>-<topic>.md` and point to it from the step that needs it: "Read `~/.config/opencode/skills/ref/...` when X."
+- End every step on a completion criterion the agent can check ("every changed file staged", not "understanding reached"). A vague one invites the agent to rush toward the steps it can see ahead; when that happens, sharpen the criterion before splitting the skill.
 - Keep the body under ~50 lines. If it branches into genuinely different workflows, split into separate skills instead of one branching monster — smaller skills also hide the end goal, which stops the agent from rushing past planning/questioning steps. (Splitting isn't the only way: grill-me gets the same effect inside one skill by forbidding plan-writing until every question is decided. Don't split a skill that demonstrably works.)
 
 ## 3. Steering — make it stick
 
 - Use dense, industry-standard terms that carry priors ("vertical slice", "copy-once", "idempotent") instead of paragraphs of description. Pick words that *name the behavior you want*: the agent repeats them in its thinking and output, and every repetition re-anchors it on that behavior — that echo loop is what step 4 listens for.
-- State the failure mode you're preventing as a direct instruction ("Pass the integer directly — do not look up the slug").
+- State the behavior you want, not the one you're banning: naming a forbidden action puts it in context and makes it more likely. A prohibition earns its place only as a guardrail you can't phrase positively, and then it follows the positive target ("Pass the integer directly — do not look up the slug").
 
 
 ## 4. Verify in a fresh session
@@ -29,6 +30,16 @@ Ask (or infer and confirm): model-invoked, user-invoked, or both?
 Probe with headless runs: `opencode -p '<a real trigger phrase>'` for model-invoke, `opencode -p '/<name> <args>'` for behavior. Check the output (and reasoning, if visible) repeats your leading words back. If the agent skips a step, that step needs splitting or stronger steering — not more prose.
 
 ## 5. Plumbing (house convention)
+
+A skill every harness should offer (the default — this repo keeps all six at parity) is generated, never hand-written:
+
+1. Write the body as `templates/<name>.md.tmpl`, with per-harness wording as placeholder tokens filled from a `<NAME>_PARAMS` table in `agent-scripts/gen_skills_params.py`.
+2. Register it in `agent-scripts/gen_skills.py` and add its `links.toml` rows. Copy an existing generated skill rather than working out each spot: `git grep -n obe-triage -- agent-scripts links.toml` lists every place one is wired. Add the rows it shows, plus one per reference file: Pi's native skills are linked as one `pi/skills` directory, and Codex's are copied by the installer.
+3. Run `python3 agent-scripts/gen_skills.py`, then `python3 agent-scripts/gen_skills.py --check`. Edit the template or params, never a generated copy.
+4. The installed skills still hold the old text until install runs. Before merging, probe the body by running the headless session from the worktree and telling it to "read <generated copy> and follow it". After merging, run `./install.sh --harness=<harnesses>` from the main checkout to link new rows and refresh Codex's copies, then rerun step 4's trigger probe: only the installed copy can show whether the description fires.
+5. Conventional commit, scope `skills`: `feat` for a new skill, `refactor`/`docs` for revisions.
+
+A skill only this harness should offer (like `draft-voice`) is hand-written:
 
 1. Create the repo file at the repo's `opencode/skills/<name>/SKILL.md` with frontmatter (`name`, `description`) and the skill body.
 2. Add a `[[link]]` entry (`src = "opencode/skills/<name>/SKILL.md"`, `dest = "~/.config/opencode/skills/<name>/SKILL.md"`, `harness = "opencode"`) in `links.toml` next to the existing ones.
@@ -39,5 +50,6 @@ Probe with headless runs: `opencode -p '<a real trigger phrase>'` for model-invo
 ## 6. Pruning (every revision, not just creation)
 
 - **Single source of truth**: never restate what the shared instructions file or another skill already says — point to it.
+- **Don't cache the repo**: `--help` output, config files, and the directory layout are already the source of truth, and a restatement of them goes stale. Write down what can't be looked up: an unwritten convention, the reason behind a choice, a gotcha.
 - **Remove sediment**: delete references to scripts, paths, or behaviors that no longer exist.
-- **Deletion test**: if a paragraph looks decorative, remove it and rerun the step-4 probe. Identical behavior → it was a no-op; keep it deleted.
+- **Deletion test**: if a paragraph looks decorative, remove it and rerun the step-4 probe. Identical behavior → it was a no-op; keep it deleted. Delete a failing sentence whole rather than trimming it, and fix a word too weak to beat the default ("be thorough") with a stronger word ("relentless"), not more sentences.

@@ -2295,7 +2295,7 @@ description: "Author or revise a Claude Code skill (slash command) using a trigg
 Ask (or infer and confirm): model-invoked, user-invoked, or both?
 
 - **Model-invoked** costs context in every session and can silently not fire; it buys hands-off convenience. **User-invoked** is reliable and cheap but the user must remember it exists.
-- The frontmatter `description` IS the model-invoke surface. Write it as: what the skill does + "use when" + the literal phrases the user actually says (steal them from real transcripts). For user-invoked-only skills, keep the description one terse line.""",
+- The frontmatter `description` IS the model-invoke surface. Write it as: what the skill does + "use when" + the literal phrases the user actually says (steal them from real transcripts), one per distinct case: synonyms for the same case cost context and add no reach. For user-invoked-only skills, keep the description one terse line.""",
         "STRUCTURE_REF_NOTE": (
             "- Supporting material (schemas, long examples, lookup tables) does "
             "NOT go in the body. Put it in "
@@ -2329,7 +2329,7 @@ model-decision path, a terse one-liner for a user-invoked-only skill, or
 both — the same trade-off Claude Code's model-invoked/user-invoked split
 names. The frontmatter `description` IS the model-invoke surface either
 way: write it as what the skill does + "use when" + the literal phrases the
-user actually says (steal them from real transcripts). A vague description
+user actually says (steal them from real transcripts), one per distinct case: synonyms for the same case cost context and add no reach. A vague description
 means the skill silently never fires on the model-decision path; that
 failure mode is invisible until you go looking for it, so err toward
 over-specifying trigger phrases.""",
@@ -2371,7 +2371,7 @@ description: "Author or revise an opencode skill (SKILL.md) using a trigger/stru
 Ask (or infer and confirm): model-invoked, user-invoked, or both?
 
 - **Model-invoked** costs context in every session and can silently not fire; it buys hands-off convenience. **User-invoked** is reliable and cheap but the user must remember it exists.
-- The frontmatter `description` IS the model-invoke surface. Write it as: what the skill does + "use when" + the literal phrases the user actually says (steal them from real transcripts). For user-invoked-only skills, keep the description one terse line.""",
+- The frontmatter `description` IS the model-invoke surface. Write it as: what the skill does + "use when" + the literal phrases the user actually says (steal them from real transcripts), one per distinct case: synonyms for the same case cost context and add no reach. For user-invoked-only skills, keep the description one terse line.""",
         "STRUCTURE_REF_NOTE": (
             "- Supporting material (schemas, long examples, lookup tables) does "
             "NOT go in the body. Put it in "
@@ -2404,7 +2404,7 @@ directly (`agy/CLAUDE_CODE_PARITY.md` §3, confirmed live) — model-decision
 activation still works too, so the frontmatter `description` remains the
 model-invoke trigger surface either way. Write it as: what the skill does +
 "use when" + the literal phrases the user actually says (steal them from
-real transcripts).""",
+real transcripts), one per distinct case: synonyms for the same case cost context and add no reach.""",
         "STRUCTURE_REF_NOTE": (
             "- Supporting material (schemas, long examples, lookup tables) does "
             "NOT go in the body. agy's own docs specify a `references/` "
@@ -2450,7 +2450,7 @@ own build-skills docs). Skills can be invoked explicitly (`$skill-name`, or
 `/skills`) and Codex also activates them implicitly when the task matches the
 `description` — so the frontmatter `description` is the trigger surface both
 ways. Write it as: what the skill does + "use when" + the literal phrases
-the user actually says (steal them from real transcripts). Keep it concise
+the user actually says (steal them from real transcripts), one per distinct case: synonyms for the same case cost context and add no reach. Keep it concise
 and discriminating: Codex caps the initial skill list at 2% of the context
 window (8,000 characters when unknown) and shortens or omits verbose
 descriptions first.""",
@@ -2476,7 +2476,7 @@ description: "Author or revise a skill Pi can use, using a trigger/structure/ste
 Ask (or infer and confirm): model-invoked, user-invoked, or both?
 
 - **Model-invoked** costs context in every session and can silently not fire; it buys hands-off convenience. **User-invoked** is reliable and cheap but the user must remember it exists.
-- The frontmatter `description` IS the model-invoke surface. Write it as: what the skill does + "use when" + the literal phrases the user actually says (steal them from real transcripts). For user-invoked-only skills, keep the description one terse line.""",
+- The frontmatter `description` IS the model-invoke surface. Write it as: what the skill does + "use when" + the literal phrases the user actually says (steal them from real transcripts), one per distinct case: synonyms for the same case cost context and add no reach. For user-invoked-only skills, keep the description one terse line.""",
         "STRUCTURE_REF_NOTE": (
             "- Supporting material (schemas, long examples, lookup tables) does "
             "NOT go in the body. Pi implements the Agent Skills standard, whose "
@@ -2516,7 +2516,7 @@ description: "Author or revise a skill Pi can use, using a trigger/structure/ste
 Ask (or infer and confirm): model-invoked, user-invoked, or both?
 
 - **Model-invoked** costs context in every session and can silently not fire; it buys hands-off convenience. **User-invoked** is reliable and cheap but the user must remember it exists.
-- The frontmatter `description` IS the model-invoke surface. Write it as: what the skill does + "use when" + the literal phrases the user actually says (steal them from real transcripts). For user-invoked-only skills, keep the description one terse line.""",
+- The frontmatter `description` IS the model-invoke surface. Write it as: what the skill does + "use when" + the literal phrases the user actually says (steal them from real transcripts), one per distinct case: synonyms for the same case cost context and add no reach. For user-invoked-only skills, keep the description one terse line.""",
         "STRUCTURE_REF_NOTE": (
             "- Supporting material (schemas, long examples, lookup tables) does "
             "NOT go in the body. Pi implements the Agent Skills standard, whose "

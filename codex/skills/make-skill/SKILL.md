@@ -15,7 +15,7 @@ own build-skills docs). Skills can be invoked explicitly (`$skill-name`, or
 `/skills`) and Codex also activates them implicitly when the task matches the
 `description` — so the frontmatter `description` is the trigger surface both
 ways. Write it as: what the skill does + "use when" + the literal phrases
-the user actually says (steal them from real transcripts). Keep it concise
+the user actually says (steal them from real transcripts), one per distinct case: synonyms for the same case cost context and add no reach. Keep it concise
 and discriminating: Codex caps the initial skill list at 2% of the context
 window (8,000 characters when unknown) and shortens or omits verbose
 descriptions first.
@@ -24,12 +24,13 @@ descriptions first.
 
 - The body is a **procedure**: numbered/ordered steps in imperative voice, addressed to the agent.
 - Supporting material (schemas, long examples, lookup tables) does NOT go in the body. Codex's own docs specify a `references/` subdirectory for this (not `ref/` — matches Codex's documented skill-folder convention, distinct from this repo's `claude`/`copilot` naming). Put it in the repo's `codex/skills/<skill>/references/<topic>.md` and point to it from the step that needs it. `install.py`'s `sync_codex_skills()` only copies each skill's `SKILL.md` today — extend it to also copy a `references/` tree before relying on one (step 5).
+- End every step on a completion criterion the agent can check ("every changed file staged", not "understanding reached"). A vague one invites the agent to rush toward the steps it can see ahead; when that happens, sharpen the criterion before splitting the skill.
 - Keep the body under ~50 lines. If it branches into genuinely different workflows, split into separate skills instead of one branching monster — smaller skills also hide the end goal, which stops the agent from rushing past planning/questioning steps. (Splitting isn't the only way: grill-me gets the same effect inside one skill by forbidding plan-writing until every question is decided. Don't split a skill that demonstrably works.)
 
 ## 3. Steering — make it stick
 
 - Use dense, industry-standard terms that carry priors ("vertical slice", "copy-once", "idempotent") instead of paragraphs of description. Pick words that *name the behavior you want*: the agent repeats them in its thinking and output, and every repetition re-anchors it on that behavior — that echo loop is what step 4 listens for.
-- State the failure mode you're preventing as a direct instruction ("Pass the integer directly — do not look up the slug").
+- State the behavior you want, not the one you're banning: naming a forbidden action puts it in context and makes it more likely. A prohibition earns its place only as a guardrail you can't phrase positively, and then it follows the positive target ("Pass the integer directly — do not look up the slug").
 - Codex has no `AskUserQuestion`-style structured prompt (verified against Codex CLI 0.153.4's docs and `--help` surface). Any step that needs a multi-choice decision from the user must be written as plain conversational text: state the question, give a recommendation, wait for a plain-text reply. Don't design a skill step around a UI widget Codex doesn't have.
 
 ## 4. Verify in a fresh session
@@ -37,6 +38,16 @@ descriptions first.
 Probe with `codex exec '<a real trigger phrase>'` (verified non-interactive mode: `codex exec [OPTIONS] [PROMPT]`). Check the output (and reasoning, if visible) repeats your leading words back. If the agent skips a step, that step needs splitting or stronger steering — not more prose.
 
 ## 5. Plumbing (house convention)
+
+A skill every harness should offer (the default — this repo keeps all six at parity) is generated, never hand-written:
+
+1. Write the body as `templates/<name>.md.tmpl`, with per-harness wording as placeholder tokens filled from a `<NAME>_PARAMS` table in `agent-scripts/gen_skills_params.py`.
+2. Register it in `agent-scripts/gen_skills.py` and add its `links.toml` rows. Copy an existing generated skill rather than working out each spot: `git grep -n obe-triage -- agent-scripts links.toml` lists every place one is wired. Add the rows it shows, plus one per reference file: Pi's native skills are linked as one `pi/skills` directory, and Codex's are copied by the installer.
+3. Run `python3 agent-scripts/gen_skills.py`, then `python3 agent-scripts/gen_skills.py --check`. Edit the template or params, never a generated copy.
+4. The installed skills still hold the old text until install runs. Before merging, probe the body by running the headless session from the worktree and telling it to "read <generated copy> and follow it". After merging, run `./install.sh --harness=<harnesses>` from the main checkout to link new rows and refresh Codex's copies, then rerun step 4's trigger probe: only the installed copy can show whether the description fires.
+5. Conventional commit, scope `skills`: `feat` for a new skill, `refactor`/`docs` for revisions.
+
+A skill only this harness should offer (like `draft-voice`) is hand-written:
 
 1. File lives at the repo's `codex/skills/<name>/SKILL.md` (same for any reference files, under the repo's `codex/skills/<name>/references/` — but see the note above, `sync_codex_skills()` doesn't copy those yet).
 2. Nothing to add to `links.toml`: unlike every other harness here, Codex's skills are NOT `[[link]]` symlink rows. Codex's skill scanner does not follow symlinks for USER-scope discovery — verified live via `codex debug prompt-input`'s skill-roots table and by swapping a symlink for a real file at the identical path (2026-09-08, atk-codex-skill-copy-fix). A new skill directory under `codex/skills/` is picked up automatically by `install.py`'s `sync_codex_skills()`, which globs that directory — no per-skill registration needed there either.
@@ -46,5 +57,6 @@ Probe with `codex exec '<a real trigger phrase>'` (verified non-interactive mode
 ## 6. Pruning (every revision, not just creation)
 
 - **Single source of truth**: never restate what the shared instructions file or another skill already says — point to it.
+- **Don't cache the repo**: `--help` output, config files, and the directory layout are already the source of truth, and a restatement of them goes stale. Write down what can't be looked up: an unwritten convention, the reason behind a choice, a gotcha.
 - **Remove sediment**: delete references to scripts, paths, or behaviors that no longer exist.
-- **Deletion test**: if a paragraph looks decorative, remove it and rerun the step-4 probe. Identical behavior → it was a no-op; keep it deleted.
+- **Deletion test**: if a paragraph looks decorative, remove it and rerun the step-4 probe. Identical behavior → it was a no-op; keep it deleted. Delete a failing sentence whole rather than trimming it, and fix a word too weak to beat the default ("be thorough") with a stronger word ("relentless"), not more sentences.
