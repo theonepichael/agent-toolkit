@@ -24,6 +24,16 @@ this repo.
 - **House style** (Python/shell/TypeScript conventions, type hints, CLI
   ergonomics, config/secrets, logging, testing tiers, formatting/linting) —
   `STYLE.md`.
+- **Skill changes**: Before drafting any new skill, or changing an existing
+  skill's trigger, required steps, or behavior, use `/make-skill`—for
+  generated and hand-written skills alike. This includes behavior changes in
+  templates, harness overrides, or parameters; plumbing-only edits and copy
+  edits that preserve behavior do not trigger the rubric. Find your harness's
+  `/make-skill` entry point in `INTERFACES.md`; if its invocation is unclear,
+  read the generated copy at the listed path. Complete pre-commit steps,
+  including the fresh-session body probe (use the source file for hand-written
+  skills), before the first commit containing the change; leave installed-copy
+  trigger probes until after merge, as prescribed.
 - **Terms used in more than one sense, or that sound related without being
   the same thing** (`acceptance` vs. `gate`, `contract`, `dispatch`,
   `handoff`, `prefix`, `seed` vs. `composed instructions`,
