@@ -31,7 +31,7 @@ import tempfile
 import threading
 import unittest
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -42,6 +42,7 @@ import test_layouts  # noqa: E402
 import agent_toolkit_paths  # noqa: E402
 import dev_status  # noqa: E402  (path insert above)
 import dev_status_mutation
+import dev_status_read
 import dev_status_storage
 import worktree_provenance
 
@@ -2023,6 +2024,389 @@ class CommittedWorkGuardTestCase(MutationFixture):
             dev_status_mutation.done_item("item-guard")
 
         self.assertLess(events.index("inspect"), events.index("lock-enter"))
+
+
+def make_obe_item(slug, *, superseded_by=None, at="2026-01-02", **kwargs):
+    """Build one stored-shape item closed as OBE."""
+    item = make_item(slug, status="obe", **kwargs)
+    item["obe"] = {"reason": f"{slug} is moot", "at": at, "by": "claude"}
+    if superseded_by is not None:
+        item["obe"]["superseded_by"] = superseded_by
+    return item
+
+
+class ObeItemTestCase(MutationFixture):
+    """`obe_item`: close an open item whose need went away."""
+
+    def test_closes_open_item_with_record_and_journal(self):
+        self.write_items([make_item("task-a")])
+        res = dev_status_mutation.obe_item("task-a", reason="  shipped upstream  ")
+        self.assertEqual((res.cmd, res.status), ("obe", "obe"))
+        stored = self._item_by_id("task-a")
+        self.assertEqual(stored["status"], "obe")
+        self.assertEqual(stored["obe"]["reason"], "shipped upstream")
+        self.assertEqual(stored["obe"]["at"], dev_status_mutation.today())
+        self.assertNotIn("superseded_by", stored["obe"])
+        self.assertNotIn("completed_at", stored)
+        self.assertEqual(self.read_rev(), 1)
+        entry = self.journal_lines()[-1]
+        self.assertEqual(
+            {k: entry[k] for k in ("cmd", "slug", "from_status", "to_status", "reason")},
+            {
+                "cmd": "obe",
+                "slug": "task-a",
+                "from_status": "open",
+                "to_status": "obe",
+                "reason": "shipped upstream",
+            },
+        )
+        self.assertEqual(entry["summary"], "Summary of task-a")
+
+    def test_stale_completed_at_is_not_carried_into_obe(self):
+        # A malformed open record with a leftover done stamp must not produce
+        # an OBE record that validate rejects (obe and completed_at together).
+        item = make_item("task-a")
+        item["completed_at"] = "2026-01-01"
+        self.write_items([item])
+        dev_status_mutation.obe_item("task-a", reason="moot")
+        stored = self._item_by_id("task-a")
+        self.assertNotIn("completed_at", stored)
+        self.assertEqual(dev_status._validate_item_lifecycle([stored]), [])
+
+    def test_superseded_by_is_stored_stripped(self):
+        self.write_items([make_item("task-a")])
+        dev_status_mutation.obe_item(
+            "task-a", reason="done elsewhere", superseded_by=" other-item "
+        )
+        self.assertEqual(
+            self._item_by_id("task-a")["obe"]["superseded_by"], "other-item"
+        )
+
+    def test_blank_reason_or_superseded_by_refused_without_write(self):
+        self.write_items([make_item("task-a")])
+        for kwargs in ({"reason": "  "}, {"reason": "ok", "superseded_by": " "}):
+            with self.subTest(**kwargs):
+                with self.assertRaises(dev_status_mutation.ValidationError):
+                    dev_status_mutation.obe_item("task-a", **kwargs)
+        self.assertEqual(self._item_by_id("task-a")["status"], "open")
+        self.assertEqual(self.read_rev(), 0)
+
+    def test_non_open_statuses_refused_with_pointer(self):
+        cases = {
+            "in-progress": "reopen",
+            "in-review": "reject",
+            "done": "reopen",
+            "obe": "already",
+            "bogus": "bogus",
+        }
+        for status, pointer in cases.items():
+            with self.subTest(status=status):
+                item = (
+                    make_obe_item("task-a")
+                    if status == "obe"
+                    else make_item("task-a", status=status)
+                )
+                self.write_items([item])
+                with self.assertRaises(
+                    dev_status_mutation.InvalidItemStateError
+                ) as ctx:
+                    dev_status_mutation.obe_item("task-a", reason="moot")
+                self.assertIn(pointer, str(ctx.exception))
+                self.assertEqual(self._item_by_id("task-a")["status"], status)
+
+    def test_open_dependents_refuse_until_each_is_resolved(self):
+        self.write_items(
+            [
+                make_item("task-a"),
+                make_item("dep-open", blocked_by=["task-a"]),
+                make_item("dep-wip", status="in-progress", blocked_by=["task-a"]),
+                make_item("dep-done", status="done", blocked_by=["task-a"]),
+            ]
+        )
+        with self.assertRaises(dev_status_mutation.InvalidItemStateError) as ctx:
+            dev_status_mutation.obe_item("task-a", reason="moot")
+        msg = str(ctx.exception)
+        self.assertIn("dep-open", msg)
+        self.assertIn("dep-wip", msg)
+        self.assertNotIn("dep-done", msg)
+        self.assertEqual(self._item_by_id("task-a")["status"], "open")
+
+        dev_status_mutation.unblock_item("dep-open", "task-a")
+        dev_status_mutation.unblock_item("dep-wip", "task-a")
+        res = dev_status_mutation.obe_item("task-a", reason="moot")
+        self.assertEqual(res.status, "obe")
+
+    def test_obe_blocker_counts_as_resolved(self):
+        # The one way an open item can still point at an OBE blocker: a done
+        # dependent (not refused by obe) that is later reopened. Its blocker's
+        # need is gone, so it is READY — on the dashboard and the read facade.
+        self.write_items(
+            [
+                make_item("task-a"),
+                make_item("dep-done", status="done", blocked_by=["task-a"]),
+            ]
+        )
+        dev_status_mutation.obe_item("task-a", reason="moot")
+        dev_status_mutation.reopen_item("dep-done")
+        items = self.read_items()
+        index = dev_status_mutation.build_index(items)
+        self.assertEqual(
+            dev_status_mutation.effective_blockers(index["dep-done"], index), []
+        )
+        ready = dev_status_read.BacklogSnapshot(tuple(items)).ready_items()
+        self.assertEqual([i["id"] for i in ready], ["dep-done"])
+
+    def test_new_dependencies_on_obe_item_refused(self):
+        self.write_items([make_obe_item("task-a"), make_item("task-b")])
+        with self.assertRaises(dev_status_mutation.ValidationError):
+            dev_status_mutation.block_item("task-b", "task-a")
+        with self.assertRaises(dev_status_mutation.ValidationError):
+            dev_status_mutation.add_item(
+                dev_status_mutation.NewItemRequest(
+                    id="task-c", summary="c", blocked_by=("task-a",)
+                )
+            )
+        with self.assertRaises(dev_status_mutation.ValidationError):
+            with dev_status_mutation.mutation_transaction() as tx:
+                tx.add_item(
+                    dev_status_mutation.NewItemRequest(
+                        id="task-d", summary="d", blocked_by=("task-a",)
+                    )
+                )
+        self.assertEqual(
+            sorted(i["id"] for i in self.read_items()), ["task-a", "task-b"]
+        )
+        self.assertEqual(self._item_by_id("task-b")["blocked_by"], [])
+
+    def test_live_foreign_claim_requires_force(self):
+        claim = _recent_claim()
+        claim["machine_id"] = dev_status.machine_id()
+        self.write_items([make_item("task-a", claimed_by=claim)])
+        with self.assertRaises(dev_status_mutation.ClaimCollisionError) as ctx:
+            dev_status_mutation.obe_item("task-a", reason="moot")
+        self.assertIn("release", str(ctx.exception))
+        self.assertEqual(self._item_by_id("task-a")["status"], "open")
+        dev_status_mutation.obe_item("task-a", reason="moot", force=True)
+        stored = self._item_by_id("task-a")
+        self.assertEqual(stored["status"], "obe")
+        self.assertNotIn("claimed_by", stored)
+
+    def test_unlanded_worktree_work_refused(self):
+        self.write_items(
+            [make_item("task-a", related_files=[{"path": "/repo/f.py", "note": ""}])]
+        )
+        dirty = [
+            worktree_provenance.WorktreeInspection(
+                target="/repo-wt", source="worktree", dirty=True, dirty_sample=" M f.py"
+            )
+        ]
+        with patch.object(
+            worktree_provenance, "inspect_item_worktrees", return_value=dirty
+        ):
+            with self.assertRaises(dev_status_mutation.InvalidItemStateError) as ctx:
+                dev_status_mutation.obe_item("task-a", reason="moot")
+        self.assertIn("/repo-wt", str(ctx.exception))
+        self.assertEqual(self._item_by_id("task-a")["status"], "open")
+
+    def test_numeric_id_requires_if_rev(self):
+        self.write_items([make_item("task-a")])
+        with self.assertRaises(dev_status_mutation.RevisionConflictError):
+            dev_status_mutation.obe_item("1", reason="moot")
+
+    def test_item_reopened_during_worktree_check_is_refused(self):
+        # The unlocked pre-pass skips the worktree inspection for a non-open
+        # item. If the item is reopened before the lock is taken, the locked
+        # section must not close it on that uninspected verdict.
+        self.write_items([make_item("task-a", status="in-progress")])
+        real_prepass = dev_status_mutation._prepass_committed_work
+
+        def prepass_then_reopen(cmd, slug_or_id, paths):
+            verdict = real_prepass(cmd, slug_or_id, paths)
+            self.write_items([make_item("task-a")])
+            return verdict
+
+        with patch.object(
+            dev_status_mutation, "_prepass_committed_work", prepass_then_reopen
+        ):
+            with self.assertRaises(dev_status_mutation.InvalidItemStateError):
+                dev_status_mutation.obe_item("task-a", reason="moot")
+        self.assertEqual(self._item_by_id("task-a")["status"], "open")
+
+    def test_reopen_clears_obe_record(self):
+        self.write_items([make_obe_item("task-a")])
+        dev_status_mutation.reopen_item("task-a")
+        stored = self._item_by_id("task-a")
+        self.assertEqual(stored["status"], "open")
+        self.assertNotIn("obe", stored)
+
+    def test_start_and_done_refuse_obe_item(self):
+        self.write_items([make_obe_item("task-a")])
+        for func in (dev_status_mutation.start_item, dev_status_mutation.done_item):
+            with self.subTest(func=func.__name__):
+                with self.assertRaises(
+                    dev_status_mutation.InvalidItemStateError
+                ) as ctx:
+                    func("task-a")
+                self.assertIn("reopen", str(ctx.exception))
+        stored = self._item_by_id("task-a")
+        self.assertEqual(stored["status"], "obe")
+        self.assertNotIn("completed_at", stored)
+
+    def test_rename_rewrites_obe_references(self):
+        item = make_obe_item("task-a", superseded_by="old-name")
+        item["obe"]["reason"] = "delivered by old-name"
+        self.write_items([make_item("old-name", status="done"), item])
+        dev_status_mutation.rename_item("old-name", "new-name")
+        obe = self._item_by_id("task-a")["obe"]
+        self.assertEqual(obe["superseded_by"], "new-name")
+        self.assertEqual(obe["reason"], "delivered by new-name")
+
+
+class ObeCliTestCase(MutationFixture):
+    """The `obe` command and the read/maintenance commands that see OBE items."""
+
+    def _list(self, status=None):
+        args = _Args(status=status, raw=False)
+        out = io.StringIO()
+        with patch("sys.stdout", out), patch("sys.stderr", io.StringIO()):
+            dev_status.cmd_list(args)
+        return out.getvalue()
+
+    def test_compact_confirmation_line(self):
+        self.write_items([make_item("task-a")])
+        out, _ = self.run_cmd(
+            dev_status.cmd_obe,
+            _Args(id="task-a", reason="moot", reason_file=None, superseded_by=None, force=False),
+        )
+        lines = [line for line in out.splitlines() if line.startswith("[")]
+        self.assertEqual(len(lines), 1, out)
+        self.assertTrue(lines[0].startswith("[obe] slug=task-a status=obe rev=1 "))
+
+    def test_reason_file_is_read(self):
+        reason_file = Path(self.tmpdir) / "reason.txt"
+        reason_file.write_text("it's superseded\n")
+        self.write_items([make_item("task-a")])
+        self.run_cmd(
+            dev_status.cmd_obe,
+            _Args(
+                id="task-a",
+                reason=None,
+                reason_file=str(reason_file),
+                superseded_by=None,
+                force=False,
+            ),
+        )
+        self.assertEqual(self._item_by_id("task-a")["obe"]["reason"], "it's superseded")
+
+    def test_empty_reason_file_exits_under_obe_label(self):
+        reason_file = Path(self.tmpdir) / "reason.txt"
+        reason_file.write_text("  \n")
+        self.write_items([make_item("task-a")])
+        err, code = self.run_cmd_exits(
+            dev_status.cmd_obe,
+            _Args(
+                id="task-a",
+                reason=None,
+                reason_file=str(reason_file),
+                superseded_by=None,
+                force=False,
+            ),
+        )
+        self.assertEqual(code, 1)
+        self.assertTrue(err.startswith("[obe] "), err)
+        self.assertEqual(self._item_by_id("task-a")["status"], "open")
+
+    def test_parser_requires_exactly_one_reason_form(self):
+        parser = dev_status.build_parser()
+        with patch("sys.stderr", io.StringIO()):
+            for argv in (
+                ["obe", "task-a"],
+                ["obe", "task-a", "--reason", "x", "--reason-file", "f"],
+            ):
+                with self.subTest(argv=argv), self.assertRaises(SystemExit):
+                    parser.parse_args(argv)
+        args = parser.parse_args(["obe", "task-a", "--reason", "x"])
+        self.assertEqual((args.reason, args.reason_file), ("x", None))
+        self.assertEqual(parser.parse_args(["list", "--status", "obe"]).status, "obe")
+
+    def test_update_refuses_obe_patch(self):
+        self.write_items([make_obe_item("task-a")])
+        err, code = self.run_cmd_exits(
+            dev_status.cmd_update, _Args(id="task-a", patch='{"obe": {}}')
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("'obe'", err)
+        self.assertIn("reason", self._item_by_id("task-a")["obe"])
+
+    def test_list_status_obe_shows_unnumbered_rows(self):
+        self.write_items([make_item("task-a"), make_obe_item("task-b")])
+        out = self._list(status="obe")
+        rows = [line for line in out.splitlines() if "task-b" in line]
+        self.assertEqual(len(rows), 1, out)
+        self.assertEqual(rows[0].split()[1], "-")
+        self.assertNotIn("task-a", out)
+
+    def test_obe_only_backlog_lists_without_crashing(self):
+        self.write_items([make_obe_item("task-b")])
+        self.assertEqual(self._list().strip(), "(no matching items)")
+        self.assertIn("task-b", self._list(status="obe"))
+
+    def test_prune_uses_obe_close_date(self):
+        old_date = (datetime.now(UTC) - timedelta(days=20)).date().isoformat()
+        self.write_items(
+            [
+                make_obe_item("obe-old", at=old_date, updated="2099-01-01"),
+                make_obe_item("obe-new", at=dev_status_mutation.today()),
+            ]
+        )
+        with patch("sys.stdout", io.StringIO()), patch("sys.stderr", io.StringIO()):
+            dev_status.cmd_prune(_Args(force=True))
+        self.assertEqual([i["id"] for i in self.read_items()], ["obe-new"])
+
+    def test_cited_by_treats_obe_as_closed(self):
+        cited = "/repo/plan.md"
+        files = [{"path": cited, "note": ""}]
+        for status, expected_exit in (("obe", None), ("open", 1)):
+            with self.subTest(status=status):
+                item = (
+                    make_obe_item("task-a", related_files=files)
+                    if status == "obe"
+                    else make_item("task-a", related_files=files)
+                )
+                self.write_items([item])
+                out = io.StringIO()
+                with patch("sys.stdout", out), patch("sys.stderr", io.StringIO()):
+                    if expected_exit is None:
+                        dev_status.cmd_cited_by(_Args(paths=[cited]))
+                    else:
+                        with self.assertRaises(SystemExit) as raised:
+                            dev_status.cmd_cited_by(_Args(paths=[cited]))
+                        self.assertEqual(raised.exception.code, expected_exit)
+                self.assertIn(f"task-a {status}", out.getvalue())
+
+    def test_validate_flags_broken_obe_records(self):
+        no_record = make_item("no-record", status="obe")
+        stray = make_item("stray-record")
+        stray["obe"] = {"reason": "x", "at": "2026-01-01", "by": "claude"}
+        blank = make_obe_item("blank-reason")
+        blank["obe"]["reason"] = " "
+        with_done_stamp = make_obe_item("with-stamp")
+        with_done_stamp["completed_at"] = "2026-01-01"
+        good = make_obe_item("good-one", superseded_by="x")
+        problems = dev_status._validate_item_lifecycle(
+            [no_record, stray, blank, with_done_stamp, good, make_item("x", status="nope")]
+        )
+        flagged = {p.split(":")[0] for p in problems}
+        self.assertEqual(
+            flagged,
+            {
+                "item no-record",
+                "item stray-record",
+                "item blank-reason",
+                "item with-stamp",
+                "item x",
+            },
+        )
 
 
 if __name__ == "__main__":

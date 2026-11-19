@@ -24,6 +24,7 @@ const ACTIONS = [
   "validate",
   "start",
   "done",
+  "obe",
   "reopen",
   "review",
   "approve",
@@ -75,7 +76,9 @@ export type Field =
   | "claimedBy"
   | "refresh"
   | "backend"
+  | "reason"
   | "reasonFile"
+  | "supersededBy"
   | "command"
   | "paths"
   | "timeout"
@@ -115,6 +118,10 @@ const ACTION_FIELDS: Record<Action, ActionFields> = {
     required: ["slug"],
   },
   done: { allowed: ["slug"], required: ["slug"] },
+  obe: {
+    allowed: ["slug", "reason", "reasonFile", "supersededBy", "force"],
+    required: ["slug"],
+  },
   reopen: { allowed: ["slug", "force"], required: ["slug"] },
   review: { allowed: ["slug"], required: ["slug"] },
   approve: { allowed: ["slug"], required: ["slug"] },
@@ -184,6 +191,7 @@ const MUTATING_ACTIONS: ReadonlySet<Action> = new Set([
   "update",
   "start",
   "done",
+  "obe",
   "reopen",
   "review",
   "approve",
@@ -221,7 +229,9 @@ export interface DevStatusParams {
   claimedBy?: string;
   refresh?: boolean;
   backend?: string;
+  reason?: string;
   reasonFile?: string;
+  supersededBy?: string;
   command?: string[];
   paths?: string[];
   timeout?: number;
@@ -286,6 +296,10 @@ export function assertFields(action: Action, params: DevStatusParams): void {
   if (action === "worktree" && !params.slug && !params.repo) {
     throw new Error('action "worktree" requires slug or repo');
   }
+
+  if (action === "obe" && (params.reason === undefined) === (params.reasonFile === undefined)) {
+    throw new Error('action "obe" requires exactly one of reason, reasonFile');
+  }
 }
 
 export function buildArgv(action: Action, params: DevStatusParams): string[] {
@@ -319,6 +333,15 @@ export function buildArgv(action: Action, params: DevStatusParams): string[] {
       ];
     case "done":
       return ["done", params.slug!];
+    case "obe":
+      return [
+        "obe",
+        params.slug!,
+        ...(params.reason !== undefined ? ["--reason", params.reason] : []),
+        ...(params.reasonFile !== undefined ? ["--reason-file", params.reasonFile] : []),
+        ...(params.supersededBy !== undefined ? ["--superseded-by", params.supersededBy] : []),
+        ...(params.force ? ["--force"] : []),
+      ];
     case "reopen":
       return ["reopen", params.slug!, ...(params.force ? ["--force"] : [])];
     case "review":
@@ -466,12 +489,13 @@ export default function (pi: ExtensionAPI) {
     promptSnippet: "Read or mutate the personal backlog/pending store",
     promptGuidelines: [
       "Never invoke dev_status.py via bash, for any reason, including a plain read like listing pending items or checking status -- always use dev_status instead. This applies to every action, not just ones a slash command already told you to use dev_status for.",
-      "dev_status covers everything dev_status.py's CLI does: render, list, ready, show, add, update, validate, start, done, reopen, review, approve, reject, sendback, gate_set, gate_pass, acceptance_set, verifier_check, contract_touch, slug_check, cited_by, run, runs, backfill_gate, rename, remove, block, unblock, prune, recap, worktree, machine_id, integration_merge, pending_add, pending_update, pending_list, and the out_of_scope_* actions. If you're about to compose a `python3 ~/.agent-toolkit/scripts/dev_status.py ...` bash command for any of these, use dev_status with the matching action instead.",
+      "dev_status covers everything dev_status.py's CLI does: render, list, ready, show, add, update, validate, start, done, obe, reopen, review, approve, reject, sendback, gate_set, gate_pass, acceptance_set, verifier_check, contract_touch, slug_check, cited_by, run, runs, backfill_gate, rename, remove, block, unblock, prune, recap, worktree, machine_id, integration_merge, pending_add, pending_update, pending_list, and the out_of_scope_* actions. If you're about to compose a `python3 ~/.agent-toolkit/scripts/dev_status.py ...` bash command for any of these, use dev_status with the matching action instead.",
       "verifier tokens are private: acceptance_set prints a token-file path (never the token); pass that path via verifier_token_file to gate_pass/verifier_check, never the file's contents. Keep the path out of item notes, feedback, and worker prompts.",
       "dev_status's patch field is a plain object, not a JSON string -- never hand-encode it.",
       'dev_status refuses a numeric slug on any mutating action -- call action: "show" first to resolve a numeric position to its real slug.',
       "start refuses to run from a main/master checkout (worktree guard) or when the item is actively claimed by another live session (claim collision) -- pass cwd to evaluate the guard and stamp the claim from a dedicated worktree, allowMain to bypass the guard, force to take over a live claim, or claimedBy to correct a wrong auto-detected harness name.",
-      "Lifecycle status moves go through the dedicated actions (start/review/approve/reject/done/reopen) -- the update action's patch refuses status and claimed_by; reopen (in-progress or done -> open) releases the claim and invalidates a passed gate, force to release a foreign live claim.",
+      "Lifecycle status moves go through the dedicated actions (start/review/approve/reject/done/obe/reopen) -- the update action's patch refuses status, claimed_by, and obe; reopen (in-progress, done, or obe -> open) releases the claim and invalidates a passed gate, force to release a foreign live claim.",
+      "obe closes an open item as overtaken by events: its need went away without this item doing the work (pass supersededBy when something else delivered it). It is not done (nothing shipped), not out_of_scope_add (a need deliberately declined), and not remove (an item that should never have existed). Propose it with concrete evidence and run it only after the user confirms that item; never use it to close an item whose work stalled or whose gate failed. It refuses while other open items still depend on the item -- OBE or unblock those first.",
       "machine_id prints this machine's id; with repair: true it creates a missing id file or backs up and replaces an invalid one (never a valid or unreadable one). Use it when start or another mutation fails naming the machine id file.",
       "worktree creates or reuses a git worktree and bootstraps project dependencies for a backlog item (by slug) or repository (by repo). Never create worktrees manually with git worktree add or bare bootstrap scripts.",
     ],
@@ -496,7 +520,7 @@ export default function (pi: ExtensionAPI) {
             "(id goes inside patch, e.g. patch.id -- never also pass slug for those two actions). Common keys: " +
             "summary, context, next_steps, priority, category, related_files (array of {path, note}), " +
             "blocked_by (array of slugs, add only); update refuses status/claimed_by/gate/blocked_by -- " +
-            "lifecycle moves use the start/review/approve/reject/done/reopen actions. gate_set " +
+            "lifecycle moves use the start/review/approve/reject/done/obe/reopen actions. gate_set " +
             "wants {required: boolean, criteria: string[]}; gate_pass " +
             'wants {coverage: {"<criterion#>": "run:<run_id>" or "manual:<note>"}}; pending_add ' +
             "wants {id, description, kind, source_ref?, context?, next_steps?}.",
@@ -517,7 +541,7 @@ export default function (pi: ExtensionAPI) {
         Type.Boolean({
           description:
             "prune: must be true -- confirms the destructive prune. start: take over " +
-            "an item actively claimed by another live session. reopen: release a claim " +
+            "an item actively claimed by another live session. reopen/obe: release a claim " +
             "another live session holds. worktree: pass --force to git worktree add.",
         }),
       ),
@@ -621,8 +645,19 @@ export default function (pi: ExtensionAPI) {
       ),
       refresh: Type.Optional(Type.Boolean({ description: "recap: bypass the freshness cache." })),
       backend: Type.Optional(Type.String({ description: "recap: force this backend." })),
+      reason: Type.Optional(Type.String({ description: "obe: why the item's need went away." })),
+      supersededBy: Type.Optional(
+        Type.String({
+          description:
+            "obe: what delivered the need instead -- an item slug, commit, PR URL, or release.",
+        }),
+      ),
       reasonFile: Type.Optional(
-        Type.String({ description: "out_of_scope_add: path to a file with the rejection reason." }),
+        Type.String({
+          description:
+            "out_of_scope_add: path to a file with the rejection reason. obe: path to a file " +
+            "with the reason (alternative to reason).",
+        }),
       ),
       command: Type.Optional(
         Type.Array(Type.String(), {
@@ -635,7 +670,8 @@ export default function (pi: ExtensionAPI) {
         Type.Array(Type.String(), {
           description:
             "cited_by: candidate path(s) to check for citations in related_files " +
-            "(files or directories; exit 0 no not-done citation, 1 at least one, " +
+            "(files or directories; exit 0 no citation by an open item -- done and obe " +
+            "items are closed --, 1 at least one, " +
             "2 could not complete).",
         }),
       ),
@@ -677,8 +713,8 @@ export default function (pi: ExtensionAPI) {
         { signal, ...(cwd ? { cwd } : {}) },
       );
 
-      // `cited-by`'s exit code is its result (0 none cited / 1 not-done
-      // cited / 2 could not complete), not an error: return the report --
+      // `cited-by`'s exit code is its result (0 none cited / 1 cited by a
+      // non-terminal item / 2 could not complete), not an error: return the report --
       // stdout names the candidates to keep -- rather than throwing, so a
       // caller can read which files to retain.
       if (result.code !== 0 && typed.action !== "cited_by") {

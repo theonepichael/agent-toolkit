@@ -1154,6 +1154,10 @@ class BacklogTestCase(BacklogFixture):
                 make_item("c-progress", status="in-progress"),
                 make_item("d-done", status="done"),
                 make_item("e-review", status="in-review"),
+                {
+                    **make_item("f-obe", status="obe"),
+                    "obe": {"reason": "moot", "at": "2026-01-02", "by": "claude"},
+                },
             ]
         )
         for value in sorted(dev_status.VALID_STATUSES):
@@ -1176,6 +1180,8 @@ class BacklogTestCase(BacklogFixture):
                 self.assertEqual(ids, {"c-progress"})
             elif value == "in-review":
                 self.assertEqual(ids, {"e-review"})
+            elif value == "obe":
+                self.assertEqual(ids, {"f-obe"})
 
     def test_20n_list_status_invalid_rejected(self):
         # argparse rejects unknown --status values with exit code 2.

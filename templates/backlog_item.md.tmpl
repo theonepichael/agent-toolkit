@@ -17,6 +17,12 @@ to inspect it; never paste a whole multi-file diff into context.
 ## 1. Resolve
 {{STEP1_BODY}}
 
+**An OBE item stops here, ahead of every skip this step describes.** If the
+record's status is `obe` (closed as overtaken by events), do not reopen,
+start, or resume it on your own: show the user its `obe.reason` (and
+`obe.superseded_by`, if set) and ask whether it is still needed. Only on a
+yes, `reopen` it and continue.
+
 ## 2. Start
 {{STEP2_BODY}}
 

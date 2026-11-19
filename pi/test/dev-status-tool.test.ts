@@ -100,6 +100,32 @@ describe("assertFields", () => {
     expect(() => assertFields("reopen", { action: "reopen" })).toThrow(/requires: slug/);
   });
 
+  test("obe requires slug and exactly one of reason, reasonFile", () => {
+    expect(() => assertFields("obe", { action: "obe", slug: "abc", reason: "moot" })).not.toThrow();
+    expect(() =>
+      assertFields("obe", {
+        action: "obe",
+        slug: "abc",
+        reasonFile: "/tmp/r",
+        supersededBy: "other-item",
+        force: true,
+      }),
+    ).not.toThrow();
+    expect(() => assertFields("obe", { action: "obe", slug: "abc" })).toThrow(
+      "exactly one of reason, reasonFile",
+    );
+    expect(() =>
+      assertFields("obe", { action: "obe", slug: "abc", reason: "x", reasonFile: "/tmp/r" }),
+    ).toThrow("exactly one of reason, reasonFile");
+    expect(() => assertFields("obe", { action: "obe", reason: "x" })).toThrow(/requires: slug/);
+  });
+
+  test("obe rejects a numeric slug", () => {
+    expect(() =>
+      assertNotNumericIdentity("obe", { action: "obe", slug: "3", reason: "x" }),
+    ).toThrow(/must be a slug/);
+  });
+
   test("worktree requires slug or repo and accepts optional flags", () => {
     expect(() => assertFields("worktree", { action: "worktree" })).toThrow(
       'action "worktree" requires slug or repo',
@@ -265,6 +291,32 @@ describe("buildArgv", () => {
     expect(buildArgv("reopen", { action: "reopen", slug: "abc", force: true })).toEqual([
       "reopen",
       "abc",
+      "--force",
+    ]);
+  });
+
+  test("obe passes the reason form it was given plus optional flags", () => {
+    expect(buildArgv("obe", { action: "obe", slug: "abc", reason: "moot" })).toEqual([
+      "obe",
+      "abc",
+      "--reason",
+      "moot",
+    ]);
+    expect(
+      buildArgv("obe", {
+        action: "obe",
+        slug: "abc",
+        reasonFile: "/tmp/r",
+        supersededBy: "other-item",
+        force: true,
+      }),
+    ).toEqual([
+      "obe",
+      "abc",
+      "--reason-file",
+      "/tmp/r",
+      "--superseded-by",
+      "other-item",
       "--force",
     ]);
   });

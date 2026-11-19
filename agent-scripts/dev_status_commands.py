@@ -31,6 +31,7 @@ SUBCOMMANDS: tuple[str, ...] = (
     "update",
     "start",
     "done",
+    "obe",
     "reopen",
     "review",
     "approve",

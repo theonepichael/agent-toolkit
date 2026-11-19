@@ -11,7 +11,7 @@ Errors are communicated exclusively via typed subclasses of
 ``BacklogMutationError``; the module contains zero ``print`` or ``sys.exit``
 calls.
 
-Lifecycle completion policy (review, approve, direct done): all three
+Lifecycle completion policy (review, approve, direct done, obe): all four
 refuse with ``InvalidItemStateError`` when the item's attributable local
 work is uncommitted or has not reached its merge target — the
 repository's local default branch, or the item's declared
@@ -49,6 +49,7 @@ from typing import Final, Protocol, cast
 import dev_status_commands
 import dev_status_formatting
 import dev_status_storage
+import dev_status_types
 import harness_spec
 import worktree_provenance
 
@@ -76,7 +77,7 @@ RenderOrder = tuple[
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-VALID_STATUSES: frozenset[str] = frozenset({"open", "in-progress", "in-review", "done"})
+VALID_STATUSES: frozenset[str] = dev_status_types.STATUSES
 VALID_PRIORITIES: frozenset[str] = frozenset({"high", "normal", "low"})
 VALID_PENDING_STATUSES: frozenset[str] = frozenset(
     {"waiting_for_reply", "reply_received", "resolved"}
@@ -474,7 +475,7 @@ def build_index(items: list[BacklogItem]) -> BacklogIndex:
 
 
 def effective_blockers(item: BacklogItem, index: BacklogIndex) -> list[str]:
-    """Return ``item``'s ``blocked_by`` slugs whose referent isn't done."""
+    """Return ``item``'s ``blocked_by`` slugs whose referent isn't terminal."""
     bb = item.get("blocked_by", [])
     if not isinstance(bb, list):
         sys.stderr.write(
@@ -484,10 +485,26 @@ def effective_blockers(item: BacklogItem, index: BacklogIndex) -> list[str]:
         return []
     result: list[str] = []
     for s in bb:
-        dep = index.get(s)
-        if dep is None or dep.get("status") != "done":
+        if not dev_status_types.blocker_resolved(index.get(s)):
             result.append(s)
     return result
+
+
+def _refuse_obe_blockers(
+    cmd: str, blockers: Sequence[str], index: BacklogIndex
+) -> None:
+    """Refuse making work wait on an item closed as overtaken by events.
+
+    An OBE item asserts its need is gone, so nothing new may depend on it;
+    ``reopen`` it first if that was wrong. Shared by every path that writes
+    ``blocked_by`` entries (``add``, the batch transaction's add, ``block``).
+    """
+    obe = [b for b in blockers if (dep := index.get(b)) and dep["status"] == "obe"]
+    if obe:
+        raise ValidationError(
+            f"[{cmd}] blocked_by names an OBE item: {', '.join(obe)} -- "
+            "'reopen' it first if it is still needed"
+        )
 
 
 def detect_cycle(start: str, new_dep: str, index: BacklogIndex) -> bool:
@@ -1036,6 +1053,10 @@ def _make_claim(
     }
 
 
+_CLAIM_RELEASING_COMMANDS: Final = frozenset({"reopen", "obe"})
+"""Commands that end a claim without minting a replacement (vs ``start``)."""
+
+
 def _check_claim_collision(
     item: BacklogItem,
     current_harness: str,
@@ -1053,14 +1074,15 @@ def _check_claim_collision(
     """Check claim collision, raising ClaimCollisionError or returning takeover notice.
 
     ``cmd`` selects the message vocabulary: ``start`` acquires a claim ("take
-    over"/"Taking over claim."), while ``reopen`` releases one and mints no
-    replacement ("release"/"Releasing claim.") — the semantics differ enough
+    over"/"Taking over claim."), while ``reopen`` and ``obe`` release one and
+    mint no replacement ("release"/"Releasing claim.") — the semantics differ enough
     that reusing start's wording verbatim would point users at the wrong
     command's ``--force`` and describe a takeover that does not happen.
     """
-    take_phrase = "release" if cmd == "reopen" else "take over"
-    notice_phrase = "Releasing" if cmd == "reopen" else "Taking over"
-    past_phrase = "released" if cmd == "reopen" else "took over"
+    releasing = cmd in _CLAIM_RELEASING_COMMANDS
+    take_phrase = "release" if releasing else "take over"
+    notice_phrase = "Releasing" if releasing else "Taking over"
+    past_phrase = "released" if releasing else "took over"
     claim = cast(dict[str, object], item.get("claimed_by"))
     if not isinstance(claim, dict):
         return None
@@ -1266,7 +1288,7 @@ def _prepass_committed_work(
     slug_or_id: str,
     paths: Mapping[str, Path | None],
 ) -> _PrepassVerdict | _PrepassReadFailure | None:
-    """Unlocked advisory pre-pass for review/approve/done: resolve the item
+    """Unlocked advisory pre-pass for review/approve/done/obe: resolve the item
     and run the read-only git inspection OUTSIDE the storage lock, so
     bounded subprocess calls never stall a concurrent session's mutation.
 
@@ -1289,7 +1311,7 @@ def _prepass_committed_work(
         if item is None:
             return None
         if cmd == "done":
-            if item.get("status") == "in-review":
+            if item.get("status") in ("in-review", "obe"):
                 return None
         elif cmd == "review":
             if item.get("status") not in ("in-progress", "in-review"):
@@ -1299,7 +1321,10 @@ def _prepass_committed_work(
                 return None
             if item.get("review_content_hash") != _content_hash(item):
                 return None
-        else:  # pragma: no cover — callers pass only the three commands
+        elif cmd == "obe":
+            if item.get("status") != "open":
+                return None
+        else:  # pragma: no cover — callers pass only the four commands
             return None
         if cmd in ("done", "approve") and _gate_block_message(cmd, item):
             return None
@@ -2090,6 +2115,7 @@ def add_item(
                 raise ValidationError(
                     f"[add] blocked_by references unknown slug: {dep}"
                 )
+        _refuse_obe_blockers("add", request.blocked_by, index)
 
         item: BacklogItem = {
             "id": slug,
@@ -2375,6 +2401,11 @@ def start_item(
                 "accept it or 'reject <id> <feedback>' to send it back to "
                 "in-progress."
             )
+        if item.get("status") == "obe":
+            raise InvalidItemStateError(
+                f"[start] {slug} is OBE (no longer needed) -- 'reopen' it first "
+                "if that call was wrong."
+            )
 
         mid = dev_status_storage.machine_id(paths["machine_id_file"], paths["data_dir"])
         notice = _check_claim_collision(
@@ -2479,6 +2510,11 @@ def done_item(
                 "complete it or 'reject <id> <feedback>' to send it back to "
                 "in-progress."
             )
+        if item.get("status") == "obe":
+            raise InvalidItemStateError(
+                f"[done] {slug} is OBE (no longer needed) -- 'reopen' it first "
+                "if work on it actually shipped."
+            )
 
         gate_msg = _gate_block_message("done", item)
         if gate_msg:
@@ -2525,6 +2561,156 @@ def done_item(
             item=item,
             items=items,
             pending_items=pending_items,
+        )
+
+
+_OBE_STATUS_REFUSALS: Final[Mapping[str, str]] = {
+    "in-progress": "it is in-progress -- 'reopen' it first",
+    "in-review": "it is in-review -- 'reject' it first",
+    "done": "it is done (shipped) -- 'reopen' it first if that was wrong",
+    "obe": "it is already OBE",
+}
+"""Why ``obe`` refuses each non-open status, with the command that moves it.
+
+Only an open item can be closed as OBE: it has no live work, review, or gate
+pass in flight, so skipping the delivered-work checks is safe."""
+
+
+def obe_item(
+    slug_or_id: str,
+    *,
+    reason: str,
+    superseded_by: str | None = None,
+    if_rev: int | None = None,
+    force: bool = False,
+    verbose: bool = False,
+    items_path: Path | None = None,
+) -> MutationResult:
+    """Close an open item as overtaken by events (its need went away).
+
+    Distinct from ``done`` (work this item delivered), an out-of-scope
+    record (a need deliberately declined), and ``remove`` (an item that
+    should never have existed). ``superseded_by`` names what delivered the
+    need instead; without it the need went away on its own.
+
+    Refuses unless the item is ``open``, and while any non-terminal item
+    still lists it in ``blocked_by``: each dependent must be OBE'd or
+    unblocked first, so closing a blocker never silently releases work into
+    READY -- neither now nor when ``prune`` later purges the closed item's
+    inbound references. The committed-work pre-pass runs (an open item may
+    be a reopened one with unlanded work in its worktree) and a live foreign
+    claim is refused unless ``force``, exactly as ``reopen`` handles it.
+    Gate and acceptance checks do not run: they verify delivered work, and
+    OBE asserts there is none to verify.
+    """
+    reason = reason.strip()
+    if not reason:
+        raise ValidationError("[obe] a non-empty reason is required")
+    superseded = superseded_by.strip() if superseded_by is not None else None
+    if superseded == "":
+        raise ValidationError("[obe] --superseded-by must not be empty")
+
+    paths = _storage_bundle(items_path)
+    pre_verdict = _prepass_committed_work("obe", slug_or_id, paths)
+    with dev_status_storage.backlog_lock(paths["data_dir"], paths["lock_file"]):
+        items = dev_status_storage.load_items(paths["items_path"])
+        pending_items = dev_status_storage.load_pending(paths["pending_path"])
+        current_rev = dev_status_storage.load_rev(paths["meta_path"])
+        enforce_rev_guard("obe", slug_or_id, if_rev, current_rev, items, pending_items)
+
+        kind, slug = resolve_id(slug_or_id, items, pending_items)
+        require_kind("obe", slug_or_id, kind, "backlog")
+
+        index = build_index(items)
+        item = index.get(slug)
+        if item is None:
+            raise NotFoundError(f"[obe] not found: {slug}")
+
+        status = item["status"]
+        if status != "open":
+            refusal = _OBE_STATUS_REFUSALS.get(status, f"its status is {status!r}")
+            raise InvalidItemStateError(f"[obe] {slug}: {refusal}.")
+
+        dependents = sorted(
+            other["id"]
+            for other in items
+            if slug in other.get("blocked_by", [])
+            and other["status"] not in dev_status_types.TERMINAL_STATUSES
+        )
+        if dependents:
+            raise InvalidItemStateError(
+                f"[obe] {slug} still blocks {', '.join(dependents)} -- OBE them "
+                "first, or 'unblock' them if they stand on their own."
+            )
+
+        mid = dev_status_storage.machine_id(paths["machine_id_file"], paths["data_dir"])
+        notice = _check_claim_collision(
+            item,
+            current_harness=_detect_harness(None),
+            current_machine=mid,
+            current_pid=os.getpid(),
+            current_owner_pid=_find_owner_pid()[0],
+            force=force,
+            cmd="obe",
+            current_rev=current_rev,
+            journal_path=paths["journal_path"],
+            verbose=verbose,
+        )
+
+        if pre_verdict is None:
+            # The pre-pass saw a non-open item and skipped the worktree
+            # inspection; it has been reopened since, so that inspection
+            # never ran for the item about to be closed.
+            raise InvalidItemStateError(
+                f"[obe] {slug}: refusing — the item changed while the "
+                "committed-work check ran — retry"
+            )
+        _raise_on_prepass("obe", slug, item, pre_verdict)
+
+        record: dev_status_types.ObeRecord = {
+            "reason": reason,
+            "at": today(),
+            "by": _detect_harness(None),
+        }
+        if superseded is not None:
+            record["superseded_by"] = superseded
+        _apply_status_transition(item, "obe", "completed_at", "done")
+        # Popped unconditionally, as reopen does: a malformed open record may
+        # carry a stale done stamp, and an OBE record must never sit beside one.
+        item.pop("completed_at", None)
+        item["status"] = "obe"
+        item["obe"] = record
+        item["updated"] = today()
+
+        new_rev = _bump_rev(paths["meta_path"])
+        _save_items(items, paths["items_path"])
+
+        _append_journal_event(
+            dev_status_storage.journal_entry(
+                "obe",
+                "backlog",
+                new_rev,
+                slug=slug,
+                summary=item["summary"],
+                from_status="open",
+                to_status="obe",
+                reason=reason,
+            ),
+            journal_file=paths["journal_path"],
+            verbose=verbose,
+        )
+
+        return MutationResult(
+            cmd="obe",
+            slug=slug,
+            status="obe",
+            rev=new_rev,
+            ref=slug_or_id,
+            detail=item["summary"],
+            item=item,
+            items=items,
+            pending_items=pending_items,
+            notices=(notice,) if notice else (),
         )
 
 
@@ -2854,7 +3040,7 @@ def reopen_item(
     verbose: bool = False,
     items_path: Path | None = None,
 ) -> MutationResult:
-    """Return an in-progress or done item to ``open``, releasing its claim.
+    """Return an in-progress, done, or obe item to ``open``, releasing its claim.
 
     The only sanctioned ``-> open`` edge. Unlike ``start``, ``reopen``
     deliberately has no worktree guard (it moves items *out* of work, and
@@ -2875,7 +3061,8 @@ def reopen_item(
     feedback survives ``reject`` the same way. ``completed_at`` is popped
     unconditionally -- not via ``_apply_status_transition``'s done-only
     branch -- to also repair a malformed in-progress record carrying a
-    stale stamp.
+    stale stamp. An ``obe`` record is popped the same way: it only exists
+    while the item is OBE.
     """
     paths = _storage_bundle(items_path)
     with dev_status_storage.backlog_lock(paths["data_dir"], paths["lock_file"]):
@@ -2925,6 +3112,7 @@ def reopen_item(
 
         item["status"] = "open"
         item.pop("completed_at", None)
+        item.pop("obe", None)
         item.pop("claimed_by", None)
         gate = item.get("gate")
         if isinstance(gate, dict):
@@ -2997,6 +3185,7 @@ def block_item(
         pending_ids = {p["id"] for p in pending_items}
         if blocker not in index and blocker not in pending_ids:
             raise NotFoundError(f"[block] blocker not found: {blocker}")
+        _refuse_obe_blockers("block", [blocker], index)
 
         if blocker in item.get("blocked_by", []):
             raise ValidationError(f"[block] {slug} already blocked by {blocker}")
@@ -4267,6 +4456,11 @@ def rename_item(
                 note = rf.get("note", "") if isinstance(rf, dict) else ""
                 if isinstance(note, str) and note:
                     rf["note"] = _rewrite_prose(note)
+            obe = item.get("obe")
+            if obe is not None:
+                obe["reason"] = _rewrite_prose(obe["reason"])
+                if obe.get("superseded_by") == old_slug:
+                    obe["superseded_by"] = new_slug
 
         for p in pending_items:
             p["blocking"] = [
@@ -4761,6 +4955,7 @@ class _BacklogTransactionImpl:
                 f"[add] slug '{slug}' already exists as a pending item — "
                 "remove or rename the pending item first"
             )
+        _refuse_obe_blockers("add", request.blocked_by, self._index)
 
         item: BacklogItem = {
             "id": slug,

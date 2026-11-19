@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import dev_status_storage
+import dev_status_types
 from backlog_claim_lookup import BacklogClaimLookup, ClaimInfo
 from dev_status_storage import BacklogItem
 
@@ -62,12 +63,12 @@ class BacklogSnapshot:
     def ready_items(self, query: BacklogQuery | None = None) -> list[BacklogItem]:
         """Return open items with no unresolved blockers in snapshot order.
 
-        A blocker is resolved exactly when it names an existing backlog item with
-        ``status == "done"``. Missing blockers and non-done blockers are
-        unresolved, so cyclic blockers naturally keep every cycle member out of
-        READY. ``query.status`` is an additional exact status filter; because
-        READY items are open by definition, any non-``open`` status yields an
-        empty result.
+        A blocker is resolved exactly when it names an existing backlog item in a
+        terminal status (``done`` or ``obe``). Missing blockers and non-terminal
+        blockers are unresolved, so cyclic blockers naturally keep every cycle
+        member out of READY. ``query.status`` is an additional exact status
+        filter; because READY items are open by definition, any non-``open``
+        status yields an empty result.
         """
         active_query = query or BacklogQuery()
         if active_query.status is not None and active_query.status != "open":
@@ -170,9 +171,10 @@ def _effective_blockers(item: BacklogItem, index: dict[str, BacklogItem]) -> lis
     """Return blockers that keep ``item`` out of READY.
 
     Mirrors ``dev_status_impl.effective_blockers`` for READY semantics:
-    existing DONE blockers are satisfied; missing and non-DONE blockers remain
-    unresolved. A malformed non-list ``blocked_by`` is treated as empty, matching
-    the dashboard helper's coercion without printing from this pure facade.
+    existing terminal (done or obe) blockers are satisfied; missing and
+    non-terminal blockers remain unresolved. A malformed non-list
+    ``blocked_by`` is treated as empty, matching the dashboard helper's
+    coercion without printing from this pure facade.
     """
     blocked_by = item.get("blocked_by", [])
     if not isinstance(blocked_by, list):
@@ -180,7 +182,6 @@ def _effective_blockers(item: BacklogItem, index: dict[str, BacklogItem]) -> lis
 
     result: list[str] = []
     for slug in blocked_by:
-        dep = index.get(slug)
-        if dep is None or dep.get("status") != "done":
+        if not dev_status_types.blocker_resolved(index.get(slug)):
             result.append(str(slug))
     return result

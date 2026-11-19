@@ -151,6 +151,7 @@ from dev_status import (  # noqa: E402
 from dev_status_impl import serial_safety  # noqa: E402
 from dev_status_mutation import validate_slug  # noqa: E402
 from dev_status_storage import BacklogItem  # noqa: E402
+from dev_status_types import TERMINAL_STATUSES  # noqa: E402
 from worktree import (  # noqa: E402
     WorktreeError,
     resolve_backlog_item,
@@ -2571,9 +2572,10 @@ def _close_snapshot(
         )
     if not force:
         status = item.get("status") if item else None
-        if status != "done":
+        if status not in TERMINAL_STATUSES:
             raise RefusedError(
-                f"item {item['id']!r} is {status!r}, not done -- land and approve it "  # type: ignore[index]
+                f"item {item['id']!r} is {status!r}, not closed -- "  # type: ignore[index]
+                "land and approve it (done), or close it as obe, "
                 "before closing its worker"
             )
         if info["status"] not in CLOSABLE_AGENT_STATUSES:
@@ -2604,7 +2606,9 @@ def _close_snapshot(
 
 
 def cmd_close(args: argparse.Namespace) -> None:
-    """Close a finished worker's tab: its item done, the agent idle or done.
+    """Close a finished worker's tab: its item closed, the agent idle or done.
+
+    Closed means done or obe.
 
     Everything is read twice and must agree before the one mutation, which
     closes exactly the tab the first read verified. herdr has no conditional
@@ -3503,7 +3507,10 @@ def main() -> None:
 
     close = sub.add_parser(
         "close",
-        help="close a finished worker's tab (its item done, the agent idle or done)",
+        help=(
+            "close a finished worker's tab (its item closed: done or obe; the agent "
+            "idle or done)"
+        ),
     )
     close.add_argument("agent", help="the worker's herdr agent name")
     close.add_argument(

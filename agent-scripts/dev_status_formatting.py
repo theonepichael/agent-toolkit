@@ -29,6 +29,9 @@ Other recent activity (last 48h, excluding completion transitions):
 {changelog}
 
 Current board: {buckets}
+
+A transition to "obe" (overtaken by events) means the item was closed as no \
+longer needed, not completed; its reason says why.
 """
 
 _RECAP_ABBREV_TOKENS = frozenset(
@@ -117,9 +120,9 @@ def render_changelog(
     ``summary``) are coalesced into a single line: the item's latest summary,
     its first→last status arrow (omitted when the status never changed), an
     edit count (the number of ``update`` events), the union of changed field
-    names, any ``reject`` feedback, and a compact list of other actions
-    (``block``, ``unblock``, ``gate-set``, ``gate-pass``, ``rename``, ``add``,
-    ``remove``) that touched the item. This collapses the ~400-line, ~50 KB
+    names, any ``reject`` feedback, any recorded ``obe`` reason, and a compact
+    list of other actions (``block``, ``unblock``, ``gate-set``, ``gate-pass``,
+    ``rename``, ``add``, ``remove``) that touched the item. This collapses the ~400-line, ~50 KB
     per-event changelog (E-02) into at most ``max_lines`` item lines so the
     recap prompt spends tokens on facts rather than repetition.
 
@@ -191,6 +194,7 @@ def _render_changelog_group(
     fields: list[str] = []
     other_actions: set[str] = set()
     feedbacks: list[str] = []
+    reasons: list[str] = []
     transitions: list[tuple[object, object]] = []
     for entry in evs:
         cmd = entry.get("cmd")
@@ -212,6 +216,9 @@ def _render_changelog_group(
         fb = entry.get("feedback")
         if fb:
             feedbacks.append(str(fb))
+        reason = entry.get("reason")
+        if reason:
+            reasons.append(str(reason))
 
     start_status = end_status = None
     if transitions:
@@ -237,11 +244,14 @@ def _render_changelog_group(
         body += f" (fields: {', '.join(fields)})"
     if other_actions:
         body += "; " + ", ".join(sorted(other_actions))
-    # Feedback is prose that matters to a recap; bound it so a long rejection
-    # can't defeat the line cap meant to keep the prompt small.
+    # Feedback and reasons are prose that matters to a recap; bound them so a
+    # long one can't defeat the line cap meant to keep the prompt small.
     if feedbacks:
         joined = "; ".join(ellipsize(fb, 200) for fb in feedbacks)
         body += f"; feedback: {joined}"
+    if reasons:
+        joined = "; ".join(ellipsize(r, 200) for r in reasons)
+        body += f"; reason: {joined}"
 
     # Board-wide events (no item identity) keep their count, as before.
     if str(key).startswith("__event__:"):

@@ -623,7 +623,7 @@ export function parseReadyItems(stdout: string): ReadyItem[] {
 export interface ShownItem {
   /**
    * `dev_status.py`'s status field: one of `VALID_STATUSES`
-   * (`"open"`/`"in-progress"`/`"in-review"`/`"done"`) in practice, but
+   * (`"open"`/`"in-progress"`/`"in-review"`/`"done"`/`"obe"`) in practice, but
    * `unknown` until checked -- the payload comes from JSON this module does
    * not control.
    */

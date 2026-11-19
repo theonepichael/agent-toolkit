@@ -79,6 +79,7 @@ SKILLS = (
     "refresh-guidance",
     "review-diff",
     "land",
+    "obe-triage",
 )
 HARNESSES = harness_spec.ALL_NAMES
 
@@ -124,6 +125,7 @@ SKILL_HARNESSES: dict[str, tuple[str, ...]] = {
     "refresh-guidance": HARNESSES + ("pi-prompt",),
     "review-diff": HARNESSES + ("pi-prompt", "opencode-skill"),
     "land": HARNESSES + ("pi-prompt", "opencode-skill"),
+    "obe-triage": HARNESSES + ("pi-prompt",),
 }
 
 TEMPLATE_PATHS: dict[str, str] = {
@@ -141,6 +143,7 @@ TEMPLATE_PATHS: dict[str, str] = {
     "refresh-guidance": "templates/refresh_guidance.md.tmpl",
     "review-diff": "templates/review_diff.md.tmpl",
     "land": "templates/land.md.tmpl",
+    "obe-triage": "templates/obe_triage.md.tmpl",
 }
 
 # Per-(skill, harness) template overrides. Pi has two output surfaces per
@@ -163,6 +166,7 @@ TEMPLATE_PATH_OVERRIDES: dict[tuple[str, str], str] = {
     ("standup", "pi"): "templates/standup_pi_native.md.tmpl",
     ("to-tickets", "pi"): "templates/to_tickets_pi_native.md.tmpl",
     ("review-diff", "pi"): "templates/review_diff_pi_native.md.tmpl",
+    ("obe-triage", "pi"): "templates/obe_triage_pi_native.md.tmpl",
     ("dashboard", "pi-prompt"): "templates/dashboard_pi_native.md.tmpl",
     ("recap", "pi-prompt"): "templates/recap_pi_native.md.tmpl",
     ("grill-me", "pi-prompt"): "templates/grill_me_pi_native.md.tmpl",
@@ -171,6 +175,7 @@ TEMPLATE_PATH_OVERRIDES: dict[tuple[str, str], str] = {
     ("standup", "pi-prompt"): "templates/standup_pi_native.md.tmpl",
     ("to-tickets", "pi-prompt"): "templates/to_tickets_pi_native.md.tmpl",
     ("review-diff", "pi-prompt"): "templates/review_diff_pi_native.md.tmpl",
+    ("obe-triage", "pi-prompt"): "templates/obe_triage_pi_native.md.tmpl",
 }
 
 

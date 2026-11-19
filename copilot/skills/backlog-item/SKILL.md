@@ -70,6 +70,12 @@ work there, not the root checkout. Do not assume `cd ../<repo-name>-<slug>`
 resolves correctly; a fresh Copilot session's ambient cwd is not guaranteed
 to be the repo root.
 
+**An OBE item stops here, ahead of every skip this step describes.** If the
+record's status is `obe` (closed as overtaken by events), do not reopen,
+start, or resume it on your own: show the user its `obe.reason` (and
+`obe.superseded_by`, if set) and ask whether it is still needed. Only on a
+yes, `reopen` it and continue.
+
 ## 2. Start
 If the item is already in-progress: STOP immediately — do not proceed to
 step 3 or touch any worktree. Report the existing claim details (`claimed_by`

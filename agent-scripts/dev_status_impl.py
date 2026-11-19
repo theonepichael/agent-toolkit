@@ -62,6 +62,7 @@ import cli_common
 import dev_status_commands
 import dev_status_formatting
 import dev_status_storage
+import dev_status_types
 import llm_backends
 import migration_lock
 from dev_status_mutation import (
@@ -100,6 +101,7 @@ from dev_status_mutation import (
     done_item,
     effective_blockers,
     is_worker_safe,
+    obe_item,
     pass_gate,
     prefix_of,
     reject_item,
@@ -264,7 +266,7 @@ RECAP_DEBOUNCE_SECONDS = float(
     os.environ.get("DEVSTATUS_RECAP_DEBOUNCE_SECONDS", "300")
 )
 
-VALID_STATUSES = {"open", "in-progress", "in-review", "done"}
+VALID_STATUSES = dev_status_types.STATUSES
 VALID_PRIORITIES = {"high", "normal", "low"}
 
 
@@ -472,6 +474,17 @@ def _age_days(updated_str: str) -> int | None:
     except (TypeError, ValueError):
         return None
     return (date.today() - d).days
+
+
+def _closed_stamp(item: BacklogItem) -> str:
+    """Return the date a terminal item closed, for retention decisions.
+
+    ``completed_at`` for a done item, ``obe.at`` for an OBE item, falling
+    back to ``updated`` when the stamp is missing (older records).
+    """
+    obe = item.get("obe")
+    stamp = obe["at"] if obe is not None else item.get("completed_at")
+    return stamp or item.get("updated", "")
 
 
 def _use_color(out: TextIO) -> bool:
@@ -2658,7 +2671,10 @@ def cmd_list(args: argparse.Namespace) -> None:
     ``render`` (:func:`_done_selection`) precisely because only those items
     appear in :func:`_unified_order` — an uncapped row would have no
     display number that any numeric-id command could resolve; older done
-    items remain reachable by slug. ``--raw`` preserves the historical
+    items remain reachable by slug. OBE items are on no dashboard bucket, so
+    like the dashboard an unfiltered list omits them; ``--status obe`` lists
+    them in an OBE section whose rows show ``-`` instead of a number (they
+    are reachable by slug only). ``--raw`` preserves the historical
     machine-readable TSV byte-for-byte.
 
     Reads items + pending + rev under :func:`backlog_lock` (same rationale
@@ -2706,23 +2722,26 @@ def cmd_list(args: argparse.Namespace) -> None:
     }
 
     in_progress, ready, blocked, in_review, _done_capped = _render_order(items)
+    obe = [i for i in items if i["status"] == "obe"] if args.status == "obe" else []
     sections: list[tuple[str, Sequence[BacklogItem]]] = [
         ("IN PROGRESS", in_progress),
         ("READY", ready),
         ("BLOCKED", blocked),
         ("IN REVIEW", in_review),
         ("DONE", _done_selection(items)),
+        ("OBE", obe),
     ]
 
-    built: list[tuple[str, list[tuple[int, str, str, str]]]] = []
+    built: list[tuple[str, list[tuple[str, str, str, str]]]] = []
     for title, bucket in sections:
         rows = []
         for item in bucket:
             if item["id"] not in matched_slugs:
                 continue
+            num = slug_to_num.get(item["id"])
             rows.append(
                 (
-                    slug_to_num[item["id"]],
+                    "-" if num is None else str(num),
                     _category_tag(cast(str, item.get("category", ""))),
                     cast(str, item.get("summary", "")),
                     item["id"],
@@ -2730,8 +2749,11 @@ def cmd_list(args: argparse.Namespace) -> None:
             )
         if rows:
             built.append((title, rows))
+    if not built:
+        print("(no matching items)")
+        return
 
-    num_w = len(str(max(n for _, rws in built for n, *_ in rws)))
+    num_w = max(len(n) for _, rws in built for n, *_ in rws)
     tag_w = max(len(tag) for _, rws in built for _, tag, _, _ in rws)
     sum_w = max(
         len(_ellipsize(summary, _LIST_SUMMARY_MAX))
@@ -2873,6 +2895,45 @@ def _validate_ticket_batches() -> list[str]:
     return problems
 
 
+def _validate_item_lifecycle(items: list[BacklogItem]) -> list[str]:
+    """Report items whose status or OBE record breaks the lifecycle invariants.
+
+    Every status must be one of :data:`dev_status_types.STATUSES`, and the
+    ``obe`` record must be present exactly while ``status == "obe"``, with
+    non-empty string ``reason``/``at``/``by``, an optional non-empty string
+    ``superseded_by``, and no ``completed_at`` beside it.
+    """
+    problems: list[str] = []
+    for item in items:
+        slug = item.get("id", "?")
+        status = item.get("status")
+        if status not in dev_status_types.STATUSES:
+            problems.append(f"item {slug}: unknown status {status!r}")
+        obe = item.get("obe")
+        if (obe is not None) != (status == "obe"):
+            problems.append(
+                f"item {slug}: 'obe' record must exist exactly when status is obe"
+            )
+        if obe is None:
+            continue
+        if not isinstance(obe, dict):
+            problems.append(f"item {slug}: 'obe' record is not an object")
+            continue
+        for key in ("reason", "at", "by"):
+            value = obe.get(key)
+            if not isinstance(value, str) or not value.strip():
+                problems.append(f"item {slug}: obe.{key} must be a non-empty string")
+        if "superseded_by" in obe:
+            value = obe["superseded_by"]
+            if not isinstance(value, str) or not value.strip():
+                problems.append(
+                    f"item {slug}: obe.superseded_by must be a non-empty string"
+                )
+        if "completed_at" in item:
+            problems.append(f"item {slug}: an OBE item must not carry completed_at")
+    return problems
+
+
 def _resolve_related_files(items: list[BacklogItem]) -> list[str]:
     """Resolve each item's ``related_files`` paths; report any that don't exist.
 
@@ -2904,7 +2965,8 @@ def cmd_validate(args: argparse.Namespace) -> None:
     """Read-only store validation used as the release-1 migration's post-commit check.
 
     Loads, parses, and schema-checks every toolkit store, renders the work
-    dashboard WITHOUT the dead-claim sweep, lists every grill decision
+    dashboard WITHOUT the dead-claim sweep, checks each item's lifecycle
+    invariants (status, OBE record), lists every grill decision
     session, validates every ticket batch, and resolves each item's
     ``related_files`` paths -- all as pure reads. It performs no write and
     takes no migration scope: it reads the stores directly (the ``load_*``
@@ -2933,6 +2995,7 @@ def cmd_validate(args: argparse.Namespace) -> None:
     # recap-regen child is spawned and no recap-cache write occurs.
     render(items, pending_items, rev=rev, dispatch=False)
 
+    problems.extend(_validate_item_lifecycle(items))
     problems.extend(_validate_out_of_scope_store())
     problems.extend(_validate_grill_sessions())
     problems.extend(_validate_ticket_batches())
@@ -3050,8 +3113,8 @@ def cmd_update(args: argparse.Namespace) -> None:
             "[update] cannot modify 'status' directly — lifecycle moves go "
             "through the command for the edge: 'start' (-> in-progress), "
             "'review' (-> in-review), 'approve'/'reject' (from in-review), "
-            "'done' (-> done), or 'reopen' (-> open). update's raw merge "
-            "bypasses the claim-collision, worktree, review-cycle, and gate "
+            "'done' (-> done), 'obe' (-> obe), or 'reopen' (-> open). "
+            "update's raw merge bypasses the claim-collision, worktree, review-cycle, and gate "
             "checks those commands enforce.",
             file=sys.stderr,
         )
@@ -3072,6 +3135,14 @@ def cmd_update(args: argparse.Namespace) -> None:
             "[update] cannot modify 'acceptance' directly — use "
             "'acceptance-set <id>' to set or replace it (frozen once work "
             "starts).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if "obe" in patch:
+        print(
+            "[update] cannot modify 'obe' directly — it is the record 'obe <id>' "
+            "writes when it closes an item and 'reopen' clears.",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -3228,8 +3299,43 @@ def cmd_done(args: argparse.Namespace) -> None:
     )
 
 
+def cmd_obe(args: argparse.Namespace) -> None:
+    """Handle ``obe``: close an open item as overtaken by events.
+
+    The item's need went away without this item doing the work -- something
+    else delivered it (``--superseded-by``), or the premise is gone. Unlike
+    ``done`` it is not counted as shipped work; unlike ``remove`` the record
+    and its reason are kept. Refuses non-open items and items that other
+    open work still depends on; see ``obe_item``.
+    """
+    reason = (
+        args.reason
+        if args.reason_file is None
+        else _read_reason_file("obe", args.reason_file)
+    )
+    try:
+        res = obe_item(
+            args.id,
+            reason=reason,
+            superseded_by=args.superseded_by,
+            if_rev=args.if_rev,
+            force=args.force,
+            verbose=getattr(args, "verbose", False),
+        )
+    except BacklogMutationError as exc:
+        _handle_mutation_error("obe", exc)
+
+    _render_mutation_result(
+        res,
+        announce=True,
+        id_arg=args.id,
+        quiet=getattr(args, "quiet", False),
+        compact=_is_compact(args),
+    )
+
+
 def cmd_reopen(args: argparse.Namespace) -> None:
-    """Handle ``reopen``: return an in-progress or done item to open.
+    """Handle ``reopen``: return an in-progress, done, or obe item to open.
 
     Deliberately no worktree guard: reopen moves items *out* of work, so it
     must stay usable to clean up after a session that died before creating a
@@ -3603,12 +3709,13 @@ def cmd_cited_by(args: argparse.Namespace) -> None:
     whose ``related_files`` cites that path (or a file beneath it, for a
     directory candidate), one ``<slug> <status>`` line per citation under the
     candidate's header, with a ``-> <path>`` suffix when a directory candidate
-    is cited via a descendant. Done items are reported too, because a caller
-    decides retention by *which* citations are not-done.
+    is cited via a descendant. Closed (done/obe) items are reported too,
+    because a caller decides retention by *which* citations are still open
+    work.
 
-    Exit codes: ``0`` no not-done item cites any candidate (safe to delete
-    all); ``1`` at least one not-done item does (stdout names the candidates
-    to keep); ``2`` the store cannot be loaded -- delete nothing. No machine
+    Exit codes: ``0`` no non-terminal item cites any candidate (safe to
+    delete all); ``1`` at least one non-terminal item does (stdout names the
+    candidates to keep); ``2`` the store cannot be loaded -- delete nothing. No machine
     id is required and nothing is written.
     """
     candidates = [str(p) for p in getattr(args, "paths", None) or []]
@@ -3628,7 +3735,7 @@ def cmd_cited_by(args: argparse.Namespace) -> None:
         print(f"[cited-by] {exc}; delete nothing.", file=sys.stderr)
         sys.exit(2)
 
-    not_done_cited = False
+    open_cited = False
     for candidate in candidates:
         rows: list[tuple[str, str, str]] = []
         for item in items:
@@ -3638,8 +3745,8 @@ def cmd_cited_by(args: argparse.Namespace) -> None:
                 cited = rf.get("path")
                 if isinstance(cited, str) and cited and _path_cites(candidate, cited):
                     rows.append((slug, status, cited))
-                    if status != "done":
-                        not_done_cited = True
+                    if status not in dev_status_types.TERMINAL_STATUSES:
+                        open_cited = True
         if rows:
             print(candidate)
             for slug, status, cited in rows:
@@ -3647,7 +3754,7 @@ def cmd_cited_by(args: argparse.Namespace) -> None:
                     print(f"  {slug} {status}")
                 else:
                     print(f"  {slug} {status} -> {cited}")
-    if not_done_cited:
+    if open_cited:
         sys.exit(1)
 
 
@@ -3939,29 +4046,27 @@ def cmd_unblock(args: argparse.Namespace) -> None:
     )
 
 
-def _read_reason_file(path_str: str) -> str:
+def _read_reason_file(cmd: str, path_str: str) -> str:
     """Read and validate a ``--reason-file`` argument's content.
 
-    Exits with status 1 after a distinct stderr message for each of:
-    missing path, a directory, an unreadable file, or empty/whitespace-only
-    content.
+    Exits with status 1 after a distinct ``[<cmd>]``-prefixed stderr message
+    for each of: missing path, a directory, an unreadable file, or
+    empty/whitespace-only content.
     """
     path = Path(path_str).expanduser()
     if not path.exists():
-        print(f"[out-of-scope] reason file not found: {path}", file=sys.stderr)
+        print(f"[{cmd}] reason file not found: {path}", file=sys.stderr)
         sys.exit(1)
     if not path.is_file():
-        print(
-            f"[out-of-scope] reason file is not a regular file: {path}", file=sys.stderr
-        )
+        print(f"[{cmd}] reason file is not a regular file: {path}", file=sys.stderr)
         sys.exit(1)
     try:
         text = path.read_text()
     except OSError as e:
-        print(f"[out-of-scope] reason file unreadable: {path} ({e})", file=sys.stderr)
+        print(f"[{cmd}] reason file unreadable: {path} ({e})", file=sys.stderr)
         sys.exit(1)
     if not text.strip():
-        print(f"[out-of-scope] reason file is empty: {path}", file=sys.stderr)
+        print(f"[{cmd}] reason file is empty: {path}", file=sys.stderr)
         sys.exit(1)
     return text
 
@@ -3974,7 +4079,7 @@ def cmd_out_of_scope_add(args: argparse.Namespace) -> None:
         print(err, file=sys.stderr)
         sys.exit(1)
 
-    reason = _read_reason_file(args.reason_file)
+    reason = _read_reason_file("out-of-scope", args.reason_file)
     related_items = list(args.related_item or [])
 
     with out_of_scope_lock():
@@ -4300,7 +4405,9 @@ def cmd_remove(args: argparse.Namespace) -> None:
 
 
 def cmd_prune(args: argparse.Namespace) -> None:
-    """Handle ``prune``: permanently remove done/resolved items older than 14 days.
+    """Handle ``prune``: permanently remove closed and resolved items past 14 days.
+
+    Closed means done or obe; see :func:`_closed_stamp` for the close date.
 
     Backs up each data file before any deletion occurs (see
     :func:`_backup_before_bulk_delete`), purges inbound ``blocked_by``/
@@ -4325,12 +4432,12 @@ def cmd_prune(args: argparse.Namespace) -> None:
         keep: list[BacklogItem] = []
         pruned_slugs: set[str] = set()
         for item in items:
-            if item.get("status") == "done":
-                age = _age_days(item.get("completed_at") or item.get("updated", ""))
+            if item.get("status") in dev_status_types.TERMINAL_STATUSES:
+                age = _age_days(_closed_stamp(item))
                 if age is None:
                     print(
                         f"[prune] skipping {item.get('id', '?')}: "
-                        "no valid completed_at/updated date",
+                        "no valid close date (completed_at/obe.at/updated)",
                         file=sys.stderr,
                     )
                 elif age >= cutoff_days:
@@ -4454,6 +4561,7 @@ dispatch: dict[str, Callable[[argparse.Namespace], None]] = {
     "update": cmd_update,
     "start": cmd_start,
     "done": cmd_done,
+    "obe": cmd_obe,
     "reopen": cmd_reopen,
     "review": cmd_review,
     "approve": cmd_approve,
@@ -4674,8 +4782,40 @@ def build_parser() -> argparse.ArgumentParser:
     _add_if_rev_arg(p)
 
     p = sub.add_parser(
+        "obe",
+        help=(
+            "close an open item as overtaken by events (its need went away "
+            "without this item doing the work)"
+        ),
+        parents=[verbosity_parent, compact_parent],
+    )
+    _add_id_arg(p)
+    reason = p.add_mutually_exclusive_group(required=True)
+    reason.add_argument("--reason", metavar="TEXT", help="why the need went away")
+    reason.add_argument(
+        "--reason-file",
+        dest="reason_file",
+        metavar="<path>",
+        help="read the reason from a file (use from shells: no quoting hazards)",
+    )
+    p.add_argument(
+        "--superseded-by",
+        dest="superseded_by",
+        metavar="REF",
+        default=None,
+        help="what delivered the need instead: an item slug, commit, PR, or release",
+    )
+    _add_if_rev_arg(p)
+    p.add_argument(
+        "--force",
+        "-f",
+        action="store_true",
+        help="take over a live foreign claim on the item (audited, as reopen does)",
+    )
+
+    p = sub.add_parser(
         "reopen",
-        help="return an in-progress or done item to open (releases claim)",
+        help="return an in-progress, done, or obe item to open (releases claim)",
         parents=[verbosity_parent, compact_parent],
     )
     _add_id_arg(p)
@@ -4978,7 +5118,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser(
         "prune",
-        help="permanently remove done/resolved items older than 14 days",
+        help="permanently remove closed (done/obe) and resolved items past 14 days",
         parents=[verbosity_parent],
     )
     p.add_argument(

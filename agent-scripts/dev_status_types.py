@@ -13,6 +13,15 @@ from typing import NotRequired, TypedDict
 # What this module does with toolkit data (checked by scripts/check_toolkit_paths.py).
 TOOLKIT_DATA = "none"
 
+STATUSES: frozenset[str] = frozenset(
+    {"open", "in-progress", "in-review", "done", "obe"}
+)
+"""Every backlog item status. ``obe`` (overtaken by events) closes an item
+whose need went away without this item doing the work."""
+
+TERMINAL_STATUSES: frozenset[str] = frozenset({"done", "obe"})
+"""Statuses that close an item: shipped (``done``) or no longer needed (``obe``)."""
+
 
 class Gate(TypedDict):
     """A judgment-step verification checkpoint on a backlog item.
@@ -120,6 +129,23 @@ class RunRecord(TypedDict):
     head: NotRequired[str | None]
 
 
+class ObeRecord(TypedDict):
+    """Why an item was closed as overtaken by events.
+
+    Present on a backlog item exactly while its ``status`` is ``"obe"``,
+    set by ``obe`` and cleared by ``reopen``. ``superseded_by`` names what
+    delivered the item's need (an item slug, commit SHA, PR URL, or upstream
+    release); its absence means the need went away on its own. ``at`` is a
+    date in the same ``YYYY-MM-DD`` form as ``completed_at``; ``by`` is the
+    harness that recorded it.
+    """
+
+    reason: str
+    superseded_by: NotRequired[str]
+    at: str
+    by: str
+
+
 class BacklogItem(TypedDict):
     """A single backlog item as stored in ``items.json`` (schema v2).
 
@@ -127,7 +153,8 @@ class BacklogItem(TypedDict):
     absence of ``priority`` is equivalent to ``"normal"`` (see
     :data:`_PRIORITY_RANK`), and ``completed_at`` only exists while
     ``status`` is ``"done"`` (stamped and cleared by
-    :func:`_apply_status_transition`). ``gate`` is likewise absent on any
+    :func:`_apply_status_transition`). ``obe`` likewise only exists while
+    ``status`` is ``"obe"`` (see :class:`ObeRecord`). ``gate`` is likewise absent on any
     item created before its introduction or never classified — absence is
     equivalent to an inert gate (see :func:`_gate_blocks`), the same
     absence-means-default convention ``priority`` already uses.
@@ -168,6 +195,7 @@ class BacklogItem(TypedDict):
     resource_tags: NotRequired[list[str]]
     acceptance: NotRequired[Acceptance]
     worked_by: NotRequired[list[dict[str, str]]]
+    obe: NotRequired[ObeRecord]
 
 
 class PendingItem(TypedDict):
@@ -192,3 +220,13 @@ class PendingItem(TypedDict):
 
 
 type BacklogIndex = dict[str, BacklogItem]
+
+
+def blocker_resolved(dep: BacklogItem | None) -> bool:
+    """Whether a ``blocked_by`` referent no longer holds its dependent back.
+
+    A blocker is resolved exactly when it names an existing backlog item in
+    a terminal status. A missing referent stays unresolved, so a dangling
+    slug never silently releases its dependent.
+    """
+    return dep is not None and dep.get("status") in TERMINAL_STATUSES

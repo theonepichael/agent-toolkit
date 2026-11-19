@@ -377,6 +377,10 @@
     {
       "fingerprint": "in progress: 1, ready: 2, blocked: 3, in review: 4, done (latest 5 max): 5, pending: 6",
       "reason": "Exact formatted output of bucket_summary(); the recap-prompt fact format is the contract (see the test's deliberate-format comment)."
+    },
+    {
+      "fingerprint": "[12:30] Port the widget — open→obe; reason: upstream shipped it",
+      "reason": "Exact formatted output of render_changelog(); the recap-prompt fact format is the contract (the reason must reach the recap model, named by summary not slug)."
     }
   ],
   "test/test_dev_status_mutation.py": [

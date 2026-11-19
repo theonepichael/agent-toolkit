@@ -811,6 +811,7 @@ def journal_entry(
     to_status: str | None = None,
     fields: list[str] | None = None,
     feedback: str | None = None,
+    reason: str | None = None,
     count: int | None = None,
     wait_seconds: float | None = None,
     detail: str | None = None,
@@ -837,6 +838,8 @@ def journal_entry(
         entry["fields"] = fields
     if feedback is not None:
         entry["feedback"] = feedback
+    if reason is not None:
+        entry["reason"] = reason
     if count is not None:
         entry["count"] = count
     if wait_seconds is not None:

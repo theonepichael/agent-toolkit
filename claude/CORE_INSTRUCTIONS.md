@@ -312,7 +312,7 @@ DEVSTATUS_AGENT=1 python3 ~/.agent-toolkit/scripts/dev_status.py approve <slug|N
 DEVSTATUS_AGENT=1 python3 ~/.agent-toolkit/scripts/dev_status.py reject <slug|N> "<feedback>"
 ```
 
-When passing a numeric position (not a slug) to `start`/`done`/`reopen`/
+When passing a numeric position (not a slug) to `start`/`done`/`obe`/`reopen`/
 `update`/`block`/`unblock`/`pending update`/`review`/`approve`/`reject`/`run`/
 `gate-set`/`gate-pass`/`remove`/`rename` (rename's numeric position is its
 `old_slug` argument), fetch the current rev first —
@@ -335,8 +335,32 @@ done. `done` alone now refuses on an in-review item — go through the review
 cycle (`approve` to complete, `reject <feedback>` to send back). Patching
 `status` directly is refused by `update` outright now (as is `claimed_by`):
 every lifecycle move goes through the command for its edge — `start`,
-`review`, `approve`, `reject`, `done`, or `reopen` (in-progress or done →
-open, releasing the claim and invalidating a passed gate).
+`review`, `approve`, `reject`, `done`, `obe`, or `reopen` (in-progress,
+done, or obe → open, releasing the claim and invalidating a passed gate).
+
+#### Overtaken by events (OBE)
+
+An open item whose need went away without the item doing the work —
+something else delivered it, or its premise is gone — is closed with `obe`,
+not pushed through `done` (which records shipped work) or deleted with
+`remove` (which loses the record). It differs from an out-of-scope record
+too: out-of-scope means the need still exists and was deliberately declined;
+OBE means the need itself is gone.
+
+```bash
+DEVSTATUS_AGENT=1 python3 ~/.agent-toolkit/scripts/dev_status.py obe <slug|N> --reason-file <path> [--superseded-by <ref>]
+```
+
+Pass `--superseded-by` (an item slug, commit, PR, or release) when something
+else delivered the need. Write the reason to a scratch file, per the Shell
+Command Safety section. `obe` only closes `open` items, and refuses while any
+open, in-progress, or in-review item still lists it in `blocked_by` — OBE
+those dependents first, or `unblock` the ones that stand on their own. Like
+out-of-scope records, propose OBE with concrete evidence (a commit, an item,
+a missing path, a removed dependency) and run it only once the user confirms
+that item. Never use it to close an item whose work stalled or whose gate
+failed: that item needs `reopen` or rework. `reopen` undoes a wrong close.
+To sweep the backlog for OBE candidates, use the `obe-triage` skill.
 
 If `approve`/`done` runs from the item's own slug-named worktree and that
 worktree's HEAD isn't confirmed merged into the default branch, both print an
@@ -367,7 +391,7 @@ gate-passes its own acceptance. Keep the token path private;
 `verifier-check <id> --verifier-token-file <path>` exits 0 only for the
 matching token.
 
-Under `DEVSTATUS_AGENT=1`, mutating commands (`start`, `done`, `reopen`,
+Under `DEVSTATUS_AGENT=1`, mutating commands (`start`, `done`, `obe`, `reopen`,
 `update`, `review`, `approve`, `reject`, `add`, `acceptance-set`, `pending *`,
 `block`, `unblock`, `gate-*`, `rename`, `remove`) emit a single structured
 confirmation line on stdout: `[<cmd>] slug=<slug> status=<status> rev=<rev>

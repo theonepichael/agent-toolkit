@@ -996,6 +996,17 @@ class CloseTests(unittest.TestCase):
         self.assertEqual(payload["item_status"], "done")
         self.assertFalse(payload["forced"])
 
+    def test_closes_an_obe_workers_tab(self) -> None:
+        fake = CloseFakeHerdr([_close_agent()], [_close_tab(self.SLUG)])
+        code, out, err = self.run_close(
+            ["close", self.SLUG, "--expect-pane", "w:p7"],
+            fake,
+            [{"id": self.SLUG, "status": "obe"}],
+        )
+        self.assertEqual(code, 0, err)
+        self.assertEqual(fake.closes(), [["tab", "close", "w:t7"]])
+        self.assertEqual(json.loads(out)["item_status"], "obe")
+
     def test_idle_agent_is_closable(self) -> None:
         fake = CloseFakeHerdr([_close_agent("idle")], [_close_tab(self.SLUG)])
         code, _, err = self.run_close(

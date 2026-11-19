@@ -214,6 +214,25 @@ class ChangelogAndFactsTestCase(unittest.TestCase):
         self.assertIn("1 edit", line)
         self.assertIn("feedback: needs a sharper intro", line)
 
+    def test_render_changelog_shows_obe_reason_by_summary(self):
+        entries = [
+            {
+                "cmd": "obe",
+                "slug": "atk-3",
+                "summary": "Port the widget",
+                "from_status": "open",
+                "to_status": "obe",
+                "reason": "upstream shipped it",
+                "ts": "x",
+            },
+        ]
+        # Exact recap-prompt fact: the reason must reach the recap model, and
+        # the item must be named by summary, never by slug.
+        self.assertEqual(
+            fmt.render_changelog(entries, self._parse),
+            "[12:30] Port the widget — open→obe; reason: upstream shipped it",
+        )
+
     def test_render_changelog_lists_other_actions(self):
         # block/unblock/gate-set/gate-pass carry neither a status transition
         # nor field edits — they must survive coalescing as an action list.

@@ -388,8 +388,8 @@ digest included; match exact names, never a `<slug>-*` glob (longer slugs
 share the prefix), and never a file of an item not done. Before deleting,
 collect the exact candidate names and run
 `python3 ~/.agent-toolkit/scripts/dev_status.py cited-by <candidates...>`: delete
-them all on exit 0; keep and mention any candidate a not-done item cites on
-exit 1; delete nothing and report on any other exit. A run-named watch-state file
+them all on exit 0; keep and mention any candidate an open (not done or obe)
+item cites on exit 1; delete nothing and report on any other exit. A run-named watch-state file
 and its `.lock` stay until every item it covers is done and its watcher has
 exited. Before deleting a watch-state file, confirm each worker's
 agent-to-session link is already recorded in
@@ -405,7 +405,7 @@ python3 ~/.agent-toolkit/scripts/herdr_delegate.py close <agent> --expect-pane <
 ```
 
 `<pane>` is the pane from the launch JSON. It refuses, closing nothing,
-unless the item is done, the agent is idle or done, and the tab holds only
+unless the item is closed (done or obe), the agent is idle or done, and the tab holds only
 that worker's pane. Never close at the FOREMAN-HANDOFF line: a send-back
 still needs the live worker. A classifier denial goes to the operator once
 (step 1); `--force` waives only the item and status checks and is the

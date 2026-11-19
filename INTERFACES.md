@@ -333,7 +333,13 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
     - `--claimed-by` — override claimed harness/session identifier
   - `done <slug|N> [--if-rev <N>]` — mark item done
     - `--if-rev` — required when <id> is numeric; get the current value from render/list/show immediately before this call
-  - `reopen <slug|N> [--if-rev <N>] [--force]` — return an in-progress or done item to open (releases claim)
+  - `obe <slug|N> [--reason TEXT] [--reason-file <path>] [--superseded-by REF] [--if-rev <N>] [--force]` — close an open item as overtaken by events (its need went away without this item doing the work)
+    - `--reason` — why the need went away
+    - `--reason-file` — read the reason from a file (use from shells: no quoting hazards)
+    - `--superseded-by` — what delivered the need instead: an item slug, commit, PR, or release
+    - `--if-rev` — required when <id> is numeric; get the current value from render/list/show immediately before this call
+    - `--force/-f` — take over a live foreign claim on the item (audited, as reopen does)
+  - `reopen <slug|N> [--if-rev <N>] [--force]` — return an in-progress, done, or obe item to open (releases claim)
     - `--if-rev` — required when <id> is numeric; get the current value from render/list/show immediately before this call
     - `--force/-f` — release the claim even while another session actively holds it
   - `review <slug|N> [--if-rev <N>]` — submit (or re-submit) an item for review
@@ -386,7 +392,7 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
     - `--if-rev` — required when <id> is numeric; get the current value from render/list/show immediately before this call
   - `unblock <slug|N> <blocker-slug> [--if-rev <N>]` — remove a blocker from an item
     - `--if-rev` — required when <id> is numeric; get the current value from render/list/show immediately before this call
-  - `prune --force` — permanently remove done/resolved items older than 14 days
+  - `prune --force` — permanently remove closed (done/obe) and resolved items past 14 days
     - `--force` — required to prevent accidental prune (required)
   - `recap [--refresh] [--backend <BACKEND>]` — print a friendly prose recap of recent activity
     - `--refresh` — bypass the freshness cache and regenerate the recap now
@@ -441,7 +447,7 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `confirm_resolution(cmd: str, arg: str | int, item: BacklogItem | PendingItem, summary_key: str = 'summary', *, quiet: bool = False) -> None` — Echo what a mutating command resolved to, so misresolution is visible.
   - `format_run_rows(runs: list[RunRecord]) -> list[str]` — One ``runs`` listing line per record, naming the commit and checkout.
   - `build_parser() -> argparse.ArgumentParser` — Build the full argument parser for every subcommand.
-- Subcommand handlers: `cmd_internal_regen`, `cmd_recap`, `cmd_worktree`, `cmd_integration_merge`, `cmd_render`, `cmd_ready`, `cmd_list`, `cmd_show`, `cmd_validate`, `cmd_add`, `cmd_update`, `cmd_start`, `cmd_done`, `cmd_reopen`, `cmd_review`, `cmd_approve`, `cmd_reject`, `cmd_sendback`, `cmd_gate_set`, `cmd_gate_pass`, `cmd_acceptance_set`, `cmd_verifier_check`, `cmd_contract_touch`, `cmd_slug_check`, `cmd_cited_by`, `cmd_run`, `cmd_machine_id`, `cmd_runs`, `cmd_backfill_gate`, `cmd_rename`, `cmd_block`, `cmd_unblock`, `cmd_out_of_scope_add`, `cmd_out_of_scope_link`, `cmd_out_of_scope_unlink`, `cmd_out_of_scope_remove`, `cmd_out_of_scope_list`, `cmd_out_of_scope_show`, `cmd_pending_add`, `cmd_pending_update`, `cmd_pending_list`, `cmd_remove`, `cmd_prune`
+- Subcommand handlers: `cmd_internal_regen`, `cmd_recap`, `cmd_worktree`, `cmd_integration_merge`, `cmd_render`, `cmd_ready`, `cmd_list`, `cmd_show`, `cmd_validate`, `cmd_add`, `cmd_update`, `cmd_start`, `cmd_done`, `cmd_obe`, `cmd_reopen`, `cmd_review`, `cmd_approve`, `cmd_reject`, `cmd_sendback`, `cmd_gate_set`, `cmd_gate_pass`, `cmd_acceptance_set`, `cmd_verifier_check`, `cmd_contract_touch`, `cmd_slug_check`, `cmd_cited_by`, `cmd_run`, `cmd_machine_id`, `cmd_runs`, `cmd_backfill_gate`, `cmd_rename`, `cmd_block`, `cmd_unblock`, `cmd_out_of_scope_add`, `cmd_out_of_scope_link`, `cmd_out_of_scope_unlink`, `cmd_out_of_scope_remove`, `cmd_out_of_scope_list`, `cmd_out_of_scope_show`, `cmd_pending_add`, `cmd_pending_update`, `cmd_pending_list`, `cmd_remove`, `cmd_prune`
 - Tested by: `test/test_dev_status.py`, `test/test_dev_status_acceptance.py`, `test/test_dev_status_mutation.py`, `test/test_dev_status_storage.py`, `test/test_dev_status_validate.py`, `test/test_path_for_per_use.py`, `test/test_slug_check.py`, `test/test_sweep_dead_claims.py`, `test/test_to_tickets_runner.py`
 
 ### `agent-scripts/dev_status_commands.py`
@@ -484,7 +490,7 @@ Typed mutation service and transaction manager for dev_status (Candidate 12).
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI: none (library module).
 - Environment: `AGY_SESSION`, `AI_AGENT`, `ANTHROPIC_CLI`, `ANTIGRAVITY`, `ANTIGRAVITY_AGENT`, `ANTIGRAVITY_CONVERSATION_ID`, `CLAUDE_CODE`, `COPILOT`, `DEVSTATUS_CLAIM_TTL_SECONDS`, `DEVSTATUS_HARNESS`, `DEVSTATUS_VERIFIER_TOKEN_FILE`, `GITHUB_COPILOT`, `OPENCODE`, `OPENCODE_GATEWAY`, `PI_CODING_AGENT`, `PI_SESSION`
-- Depends on: `dev_status_commands.py`, `dev_status_formatting.py`, `dev_status_storage.py`, `harness_spec.py`, `worktree_provenance.py`
+- Depends on: `dev_status_commands.py`, `dev_status_formatting.py`, `dev_status_storage.py`, `dev_status_types.py`, `harness_spec.py`, `worktree_provenance.py`
 - Exceptions:
   - `class BacklogMutationError(Exception)` — Base class for all typed mutation refusals.
   - `class RevisionConflictError(BacklogMutationError)` — Refusal when --if-rev is missing or stale on numeric position mutations.
@@ -513,7 +519,7 @@ Typed mutation service and transaction manager for dev_status (Candidate 12).
   - `today() -> str` — Return today's date as an ISO-8601 string (``YYYY-MM-DD``).
   - `validate_slug(slug: str, context: str = '') -> str | None` — Validate a candidate item slug.
   - `build_index(items: list[BacklogItem]) -> BacklogIndex` — Build a slug -> item lookup for ``items``.
-  - `effective_blockers(item: BacklogItem, index: BacklogIndex) -> list[str]` — Return ``item``'s ``blocked_by`` slugs whose referent isn't done.
+  - `effective_blockers(item: BacklogItem, index: BacklogIndex) -> list[str]` — Return ``item``'s ``blocked_by`` slugs whose referent isn't terminal.
   - `detect_cycle(start: str, new_dep: str, index: BacklogIndex) -> bool` — Check whether adding ``new_dep`` as a blocker of ``start`` would cycle.
   - `prefix_of(slug: str) -> str` — The slug's prefix, preferring the longest known one.
   - `is_worker_safe(prefix: str) -> bool` — Whether a swarm worker may be handed items under this prefix.
@@ -524,11 +530,12 @@ Typed mutation service and transaction manager for dev_status (Candidate 12).
   - `update_item(slug_or_id: str, request: ItemUpdateRequest, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Merge an update request into a backlog item.
   - `start_item(slug_or_id: str, *, if_rev: int | None = None, claimed_by: str | None = None, force: bool = False, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Mark a backlog item in-progress.
   - `done_item(slug_or_id: str, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Mark a backlog item done.
+  - `obe_item(slug_or_id: str, *, reason: str, superseded_by: str | None = None, if_rev: int | None = None, force: bool = False, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Close an open item as overtaken by events (its need went away).
   - `review_item(slug_or_id: str, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Submit (or re-submit) an item for review.
   - `approve_item(slug_or_id: str, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Accept an in-review item, marking it done.
   - `reject_item(slug_or_id: str, feedback: str, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Send an in-review item back to in-progress with feedback.
   - `sendback_item(slug_or_id: str, feedback_path: str, round_num: int, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> SendbackResult` — Append one durable ``sendback`` journal event for a rework feedback round.
-  - `reopen_item(slug_or_id: str, *, if_rev: int | None = None, force: bool = False, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Return an in-progress or done item to ``open``, releasing its claim.
+  - `reopen_item(slug_or_id: str, *, if_rev: int | None = None, force: bool = False, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Return an in-progress, done, or obe item to ``open``, releasing its claim.
   - `block_item(slug_or_id: str, blocker_slug_or_id: str, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Add a blocker to a backlog item.
   - `unblock_item(slug_or_id: str, blocker_slug_or_id: str, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Remove a blocker from a backlog item.
   - `set_gate(slug_or_id: str, request: GateSetRequest, *, if_rev: int | None = None, verbose: bool = False, items_path: Path | None = None) -> MutationResult` — Classify an item's judgment-step verification gate.
@@ -552,7 +559,7 @@ Pure read-only facade over the dev_status backlog store.
 - Installed at: `~/.agent-toolkit/scripts/dev_status_read.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI: none (library module).
-- Depends on: `backlog_claim_lookup.py`, `dev_status_storage.py`
+- Depends on: `backlog_claim_lookup.py`, `dev_status_storage.py`, `dev_status_types.py`
 - Public classes:
   - `class BacklogQuery` — Optional filters for facade item queries.
   - `class BacklogSnapshot` — In-memory read-only view over one backlog item snapshot.
@@ -563,7 +570,7 @@ Pure read-only facade over the dev_status backlog store.
   - `in_progress_items(*, items_path: Path | None = None) -> list[BacklogItem]` — Load a fresh snapshot and return its in-progress items.
   - `item_status(slug_or_id: str, *, items_path: Path | None = None) -> str | None` — Load a fresh snapshot and return one item's status.
   - `claim_info(slug_or_id: str, *, items_path: Path | None = None) -> ClaimInfo | None` — Load a fresh snapshot and return one item's claim info.
-- Tested by: `test/test_dev_status_read.py`
+- Tested by: `test/test_dev_status_mutation.py`, `test/test_dev_status_read.py`
 
 ### `agent-scripts/dev_status_storage.py`
 
@@ -613,7 +620,7 @@ Backlog persistence, lock coordination, and journal primitives.
   - `load_out_of_scope_index(path: Path | None = None) -> dict[str, dict[str, object]]` — Load the out-of-scope concept index, or ``{}`` if it doesn't exist yet.
   - `save_out_of_scope_index(index: dict[str, dict[str, object]], path: Path | None = None) -> None` — Atomically persist the out-of-scope concept index.
   - `out_of_scope_md_path(slug: str, out_of_scope_dir: Path | None = None) -> Path` — Path to a concept's freeform-reason markdown file.
-  - `journal_entry(cmd: str, kind: str, rev: int, *, slug: str | None = None, summary: str | None = None, from_status: str | None = None, to_status: str | None = None, fields: list[str] | None = None, feedback: str | None = None, count: int | None = None, wait_seconds: float | None = None, detail: str | None = None, diagnostic: bool | None = None, round: int | None = None) -> dict[str, object]` — Build one journal entry: a fixed envelope plus structured optionals.
+  - `journal_entry(cmd: str, kind: str, rev: int, *, slug: str | None = None, summary: str | None = None, from_status: str | None = None, to_status: str | None = None, fields: list[str] | None = None, feedback: str | None = None, reason: str | None = None, count: int | None = None, wait_seconds: float | None = None, detail: str | None = None, diagnostic: bool | None = None, round: int | None = None) -> dict[str, object]` — Build one journal entry: a fixed envelope plus structured optionals.
   - `append_journal_event(entry: dict[str, object], *, journal_file: Path | None = None, data_dir: Path | None = None, verbose: bool = False) -> bool` — Append one event to the journal, durably.
   - `parse_journal_ts(raw: object) -> datetime | None` — Parse a journal entry's ``ts`` field into an aware UTC ``datetime``.
   - `read_journal_entries(within_hours: float | None = None, *, journal_file: Path | None = None, verbose: bool = False) -> list[dict[str, object]]` — Read journal entries, optionally filtered to the last ``within_hours``.
@@ -639,8 +646,11 @@ Backlog data model — the on-disk shapes shared across the dev_status stack.
   - `class AcceptanceCriterion(TypedDict)` — One acceptance criterion plus the contract clauses it cites.
   - `class Acceptance(TypedDict)` — Contract-derived acceptance criteria locked against worker weakening.
   - `class RunRecord(TypedDict)` — One recorded command execution — a row of the ``runs.jsonl`` sidecar.
+  - `class ObeRecord(TypedDict)` — Why an item was closed as overtaken by events.
   - `class BacklogItem(TypedDict)` — A single backlog item as stored in ``items.json`` (schema v2).
   - `class PendingItem(TypedDict)` — A single waiting-on-someone-else item as stored in ``pending_items.json``.
+- Public functions:
+  - `blocker_resolved(dep: BacklogItem | None) -> bool` — Whether a ``blocked_by`` referent no longer holds its dependent back.
 - Tested by: nothing
 
 ### `agent-scripts/fault_checkpoint.py`
@@ -1164,7 +1174,7 @@ Launch supported agents in herdr tabs to work backlog items.
     - `--other` — select the free-text escape option
     - `--text` — free-text to send (only with --other)
     - `--settle-s` — seconds to wait for the highlight/editor to settle (default 5) (default: 5.0)
-  - `close <agent> --expect-pane <EXPECT_PANE> [--force]` — close a finished worker's tab (its item done, the agent idle or done)
+  - `close <agent> --expect-pane <EXPECT_PANE> [--force]` — close a finished worker's tab (its item closed: done or obe; the agent idle or done)
     - `agent` — the worker's herdr agent name
     - `--expect-pane` — the pane this worker runs in (required)
     - `--force` — operator override: skip the item-done and agent-status checks (never the pane, tab or exclusivity checks)
@@ -1186,7 +1196,7 @@ Launch supported agents in herdr tabs to work backlog items.
   - `COPILOT_PLUGIN_DIR = str(Path(__file__).resolve().parent.parent / 'copilot' / 'extensions' / 'swarm')`
   - `AGY_CONFIG_DIR = Path.home() / '.gemini' / 'antigravity-cli'`
 - Explicit exit codes: `1`, `2`
-- Depends on: `agent_toolkit_paths.py`, `agy_workspace_trust.py`, `analyze_sessions.py`, `backlog_claim_lookup.py`, `cli_common.py`, `dev_status.py`, `dev_status_impl.py`, `dev_status_mutation.py`, `dev_status_storage.py`, `herdr_picker.py`, `migration_lock.py`, `worktree.py`
+- Depends on: `agent_toolkit_paths.py`, `agy_workspace_trust.py`, `analyze_sessions.py`, `backlog_claim_lookup.py`, `cli_common.py`, `dev_status.py`, `dev_status_impl.py`, `dev_status_mutation.py`, `dev_status_storage.py`, `dev_status_types.py`, `herdr_picker.py`, `migration_lock.py`, `worktree.py`
 - Exceptions:
   - `class RefusedError(RuntimeError)` — A launch that must not proceed, with a reason fit to show the user.
   - `class AnswerOutcome(Exception)` — A needs_manual / submitted_unconfirmed outcome, carrying its exit code.
@@ -2100,6 +2110,7 @@ the workflow's template plus its generator's capability/parameter tables.
 | `/grill-me` | template | yes | yes | yes | yes | yes | yes |
 | `/land` | template | yes | yes | yes | yes | yes | yes |
 | `/make-skill` | template | yes | yes | yes | yes | yes | yes |
+| `/obe-triage` | template | yes | yes | yes | yes | yes | yes |
 | `/recap` | template | yes | yes | yes | yes | yes | yes |
 | `/refresh-guidance` | template | yes | yes | yes | yes | yes | yes |
 | `/review-diff` | template | yes | yes | yes | yes | yes | yes |
@@ -2142,6 +2153,10 @@ the workflow's template plus its generator's capability/parameter tables.
   - Generated from: `templates/make_skill.md.tmpl` by `gen_skills.py`
   - `claude/commands/{name}.md` is the rendered Claude Code port — edit the template or generator, then regenerate.
   - Installed at: `~/.claude/commands/make-skill.md` (claude)
+- **`/obe-triage`** — Sweep open backlog items for ones overtaken by events (OBE) -- something else delivered them or their premise is gone -- gather concrete evidence per item, and close the ones the user confirms with dev_status obe. Use when the user asks which backlog items are OBE, stale, obsolete, or no longer needed, or says 'obe triage' or 'sweep the backlog'.
+  - Generated from: `templates/obe_triage.md.tmpl` by `gen_skills.py`
+  - `claude/commands/{name}.md` is the rendered Claude Code port — edit the template or generator, then regenerate.
+  - Installed at: `~/.claude/commands/obe-triage.md` (claude)
 - **`/recap`** — prints a friendly prose recap of recent activity. use when the user says 'recap', 'what did we do', 'catch me up', 'summary of recent work', or any variant of requesting a recap.
   - Generated from: `templates/recap.md.tmpl` by `gen_skills.py`
   - `claude/commands/{name}.md` is the rendered Claude Code port — edit the template or generator, then regenerate.
@@ -2282,6 +2297,7 @@ are copy-once seeds for exactly that reason.
 | `pi/prompts/grill-me.md` | `~/.pi/agent/prompts/grill-me.md` (pi) |
 | `pi/prompts/land.md` | `~/.pi/agent/prompts/land.md` (pi) |
 | `pi/prompts/make-skill.md` | `~/.pi/agent/prompts/make-skill.md` (pi) |
+| `pi/prompts/obe-triage.md` | `~/.pi/agent/prompts/obe-triage.md` (pi) |
 | `pi/prompts/recap.md` | `~/.pi/agent/prompts/recap.md` (pi) |
 | `pi/prompts/refresh-guidance.md` | `~/.pi/agent/prompts/refresh-guidance.md` (pi) |
 | `pi/prompts/review-diff.md` | `~/.pi/agent/prompts/review-diff.md` (pi) |
@@ -2552,6 +2568,7 @@ named doc, not regenerating this file.
 | `agy/skills/backlog-item/SKILL.md` | OK |
 | `agy/skills/dashboard/SKILL.md` | OK |
 | `agy/skills/land/SKILL.md` | OK |
+| `agy/skills/obe-triage/SKILL.md` | OK |
 | `agy/skills/recap/SKILL.md` | OK |
 | `agy/skills/second-opinion/SKILL.md` | OK |
 | `agy/skills/standup/SKILL.md` | OK |
@@ -2560,6 +2577,7 @@ named doc, not regenerating this file.
 | `claude/commands/dashboard.md` | OK |
 | `claude/commands/foreman.md` | OK |
 | `claude/commands/land.md` | OK |
+| `claude/commands/obe-triage.md` | OK |
 | `claude/commands/recap.md` | OK |
 | `claude/commands/second-opinion.md` | OK |
 | `claude/commands/standup.md` | OK |
@@ -2568,6 +2586,7 @@ named doc, not regenerating this file.
 | `codex/skills/backlog-item/SKILL.md` | OK |
 | `codex/skills/dashboard/SKILL.md` | OK |
 | `codex/skills/land/SKILL.md` | OK |
+| `codex/skills/obe-triage/SKILL.md` | OK |
 | `codex/skills/recap/SKILL.md` | OK |
 | `codex/skills/second-opinion/SKILL.md` | OK |
 | `codex/skills/standup/SKILL.md` | OK |
@@ -2576,6 +2595,7 @@ named doc, not regenerating this file.
 | `copilot/skills/dashboard/SKILL.md` | OK |
 | `copilot/skills/foreman/SKILL.md` | OK |
 | `copilot/skills/land/SKILL.md` | OK |
+| `copilot/skills/obe-triage/SKILL.md` | OK |
 | `copilot/skills/recap/SKILL.md` | OK |
 | `copilot/skills/second-opinion/SKILL.md` | OK |
 | `copilot/skills/standup/SKILL.md` | OK |
@@ -2584,6 +2604,7 @@ named doc, not regenerating this file.
 | `opencode/command/backlog-item.md` | OK |
 | `opencode/command/dashboard.md` | OK |
 | `opencode/command/land.md` | OK |
+| `opencode/command/obe-triage.md` | OK |
 | `opencode/command/recap.md` | OK |
 | `opencode/command/second-opinion.md` | OK |
 | `opencode/command/standup.md` | OK |
@@ -2593,6 +2614,7 @@ named doc, not regenerating this file.
 | `pi/skills/backlog-item/SKILL.md` | OK |
 | `pi/skills/dashboard/SKILL.md` | OK |
 | `pi/skills/land/SKILL.md` | OK |
+| `pi/skills/obe-triage/SKILL.md` | OK |
 | `pi/skills/recap/SKILL.md` | OK |
 | `pi/skills/second-opinion/SKILL.md` | OK |
 | `pi/skills/standup/SKILL.md` | OK |
@@ -2778,6 +2800,7 @@ new one, `--check` catches it the same as any other stale content.
 | `/grill-me` | `second-opinion`, `spec` |
 | `/land` | `backlog-item`, `dashboard`, `review-diff` |
 | `/make-skill` | `grill-me` |
+| `/obe-triage` | — |
 | `/recap` | — |
 | `/refresh-guidance` | — |
 | `/review-diff` | `backlog-item`, `land` |

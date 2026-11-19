@@ -613,7 +613,11 @@ _LAND_DESCRIPTION = (
     "the user. Use when the user says 'land this', 'commit and merge', 'ship "
     "it', or when backlog-item delegates its landing step."
 )
-_ARG_HINTS = {"review-diff": "[worktree]", "land": "[worktree] [slug]"}
+_ARG_HINTS = {
+    "review-diff": "[worktree]",
+    "land": "[worktree] [slug]",
+    "obe-triage": "[prefix]",
+}
 # Where each harness's copy reads its invocation arguments from.
 _ARGS = {
     "claude": "`$ARGUMENTS`",
@@ -629,7 +633,7 @@ _ARGS = {
 
 
 def _frontmatter(harness: str, skill: str, description: str) -> str:
-    """Frontmatter for review-diff/land, in each harness's house shape."""
+    """Frontmatter for review-diff/land/obe-triage, in each harness's house shape."""
     lines = ["---"]
     if harness not in ("opencode", "pi-prompt"):
         # opencode's skill surface requires `name:`; its command surface
@@ -3593,6 +3597,22 @@ LAND_PARAMS["opencode-skill"] = {
     "ARGS": _ARGS["opencode-skill"],
 }
 
+_OBE_TRIAGE_DESCRIPTION = (
+    "Sweep open backlog items for ones overtaken by events (OBE) -- something "
+    "else delivered them or their premise is gone -- gather concrete evidence "
+    "per item, and close the ones the user confirms with dev_status obe. Use "
+    "when the user asks which backlog items are OBE, stale, obsolete, or no "
+    "longer needed, or says 'obe triage' or 'sweep the backlog'."
+)
+
+OBE_TRIAGE_PARAMS: dict[str, dict[str, str]] = {
+    harness: {
+        "FRONTMATTER": _frontmatter(harness, "obe-triage", _OBE_TRIAGE_DESCRIPTION),
+        "ARGS": _ARGS[harness],
+    }
+    for harness in ("claude", "copilot", "opencode", "agy", "pi", "pi-prompt", "codex")
+}
+
 SKILL_PARAMS: dict[str, dict[str, dict[str, str]]] = {
     "dashboard": DASHBOARD_PARAMS,
     "recap": RECAP_PARAMS,
@@ -3608,4 +3628,5 @@ SKILL_PARAMS: dict[str, dict[str, dict[str, str]]] = {
     "refresh-guidance": REFRESH_GUIDANCE_PARAMS,
     "review-diff": REVIEW_DIFF_PARAMS,
     "land": LAND_PARAMS,
+    "obe-triage": OBE_TRIAGE_PARAMS,
 }

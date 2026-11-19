@@ -1,0 +1,89 @@
+Sweep open backlog items for ones overtaken by events (OBE): their need went
+away without the item doing the work. Something else delivered it
+(**superseded**), or its premise is gone (**moot**). An optional prefix from
+{{ARGS}} scopes the sweep (e.g. `atk-`); with none, sweep every open item.
+
+OBE is not the only way out, so keep the exits straight while classifying:
+`done` means this item's work shipped; an out-of-scope record means the need
+still exists but the user chose not to meet it; `remove` means the item
+should never have existed. OBE means the need itself is gone.
+
+Every backlog read and write below goes through the `dev_status` tool, never
+`dev_status.py` through bash.
+
+## 1. Collect the open items
+
+Call `dev_status` with `action: "list", status: "open", raw: true`. Keep the
+rows whose slug starts with the prefix, if one was given. Then call
+`action: "show", slug: "<slug>"` for each one to read its `created` date,
+`context`, `next_steps`, `related_files`, and `blocked_by`. In-progress and
+in-review items are out of scope: they have a live session or a review in
+flight. If the user asks about one, say so.
+
+## 2. Gather evidence, strongest first
+
+For each item:
+
+- **Commits since it was created that touch its `related_files`**:
+  `git -C <repo> log --oneline --since=<created> -- <paths>`. Read the
+  relevant ones and judge whether they deliver what the item describes.
+- **A done item covering the same ground**: `dev_status` with
+  `action: "list", status: "done", raw: true`.
+- **`related_files` paths that no longer exist**, or code they point at that
+  was rewritten or removed.
+- **A premise that is gone**: a tool, harness, dependency, or upstream
+  behaviour the item relies on that has since been dropped or changed.
+
+## 3. Classify
+
+Give each item one verdict:
+
+- **superseded**: name the concrete reference (commit SHA, item slug, PR URL,
+  or release).
+- **moot**: name the concrete reason the need is gone.
+- **keep**: still needed.
+- **unsure**: some signal, but not enough.
+
+The evidence bar: propose OBE only with at least one concrete artifact (a
+commit SHA, an item slug, a missing path, a removed dependency). Age or
+inactivity alone never qualifies; at most it makes an item **unsure**.
+
+## 4. Pull in dependents
+
+`obe` refuses while any open, in-progress, or in-review item still lists the
+item in `blocked_by`, whatever its prefix. Step 1 read only the open items
+in scope, so read the rest now: `dev_status` with `action: "list", raw:
+true` (no `status`) gives every item's status; `show` each in-progress and
+in-review item, and each open item outside the prefix, for its `blocked_by`.
+For every item you propose, find its dependents among all of these,
+following chains transitively, and add them to the table, so the user
+decides about a blocker and everything behind it together. Mark in-progress
+and in-review dependents and any dependency cycle as such: for those,
+recommend `unblock`ing the edge, since `obe` only closes open items.
+
+## 5. Ask
+
+Show one table: slug, verdict, evidence, dependents. Lead with your
+recommendation, then ask which items to close and, for each kept dependent of
+a closing item, whether to `unblock` it, using the `question` tool. If the
+user's reason for an item is "I don't want it" rather than "it is no longer
+needed", offer an out-of-scope record instead: that is a different exit.
+
+Every edge the plan needs removed must be confirmed too: one edge in each
+dependency cycle among the items to close (otherwise none of them can close
+first), and the edge from each in-progress or in-review dependent. Never run
+`obe` or `unblock` on an item or edge the user has not confirmed.
+
+## 6. Apply, dependents first
+
+1. `unblock` each approved edge (this also breaks any cycle): `dev_status`
+   with `action: "unblock", slug: "<dependent>", secondarySlug: "<blocker>"`.
+2. OBE confirmed items leaves-first, so no item is closed while something
+   still depends on it: `dev_status` with `action: "obe", slug: "<slug>",
+   reason: "<reason>"`, plus `supersededBy: "<ref>"` for a superseded item.
+   Slugs only, never display numbers.
+3. If the user kept a dependent blocked and declined to unblock it, its
+   blocker stays open. Say which items were left open and why.
+
+Check each confirmation line's `slug` against the item you meant. To undo a
+wrong close, call `dev_status` with `action: "reopen"`.

@@ -60,6 +60,12 @@ takes the binding check above first). `next_steps` starts with "Resume
 backlog-item at step N" (a return pointer left by an earlier suspend, see
 step 5–6)? That step N is where to resume, not step 1's normal dispatch.
 
+**An OBE item stops here, ahead of every skip this step describes.** If the
+record's status is `obe` (closed as overtaken by events), do not reopen,
+start, or resume it on your own: show the user its `obe.reason` (and
+`obe.superseded_by`, if set) and ask whether it is still needed. Only on a
+yes, `reopen` it and continue.
+
 ## 2. Start
 If the item is already in-progress: STOP immediately — do not proceed to
 step 3 or touch any worktree. Report the existing claim details (`claimed_by`
