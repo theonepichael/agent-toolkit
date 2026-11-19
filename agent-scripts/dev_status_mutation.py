@@ -1448,6 +1448,7 @@ def _storage_bundle(items_path: Path | None) -> dict[str, Path | None]:
     if items_path is None:
         return {
             "items_path": None,
+            "archive_path": None,
             "pending_path": None,
             "meta_path": None,
             "lock_file": None,
@@ -1459,6 +1460,7 @@ def _storage_bundle(items_path: Path | None) -> dict[str, Path | None]:
     data_dir = items_path.parent
     return {
         "items_path": items_path,
+        "archive_path": data_dir / "items-archive.json",
         "pending_path": data_dir / "pending_items.json",
         "meta_path": data_dir / "_meta.json",
         "lock_file": data_dir / ".backlog.lock",
@@ -2103,6 +2105,10 @@ def add_item(
 
         if slug in index:
             raise DuplicateSlugError(f"[add] duplicate slug: {slug}")
+        if slug in dev_status_storage.archived_ids(paths.get("archive_path")):
+            raise DuplicateSlugError(
+                f"[add] duplicate slug: {slug} (exists in archive)"
+            )
         if any(p["id"] == slug for p in pending_items):
             raise DuplicateSlugError(
                 f"[add] slug '{slug}' already exists as a pending item — "
@@ -3073,11 +3079,25 @@ def reopen_item(
             "reopen", slug_or_id, if_rev, current_rev, items, pending_items
         )
 
-        kind, slug = resolve_id(slug_or_id, items, pending_items)
-        require_kind("reopen", slug_or_id, kind, "backlog")
+        remaining_archive: list[BacklogItem] | None = None
+        try:
+            kind, slug = resolve_id(slug_or_id, items, pending_items)
+            require_kind("reopen", slug_or_id, kind, "backlog")
+            index = build_index(items)
+            item = index.get(slug)
+        except NotFoundError:
+            archive_path = paths.get("archive_path")
+            archive_items = dev_status_storage.load_archive(archive_path)
+            archive_index = {a["id"]: a for a in archive_items}
+            if slug_or_id in archive_index:
+                kind = "backlog"
+                slug = slug_or_id
+                item = archive_index[slug]
+                remaining_archive = [a for a in archive_items if a["id"] != slug]
+                items.append(item)
+            else:
+                raise
 
-        index = build_index(items)
-        item = index.get(slug)
         if item is None:
             raise NotFoundError(f"[reopen] not found: {slug}")
 
@@ -3123,8 +3143,18 @@ def reopen_item(
             gate["set_at"] = datetime.now(UTC).isoformat()
         item["updated"] = today()
 
+        if remaining_archive is not None:
+            # Keep only refs to live records: an archived blocker is terminal
+            # (resolved), and a pruned one would otherwise block forever.
+            live_ids = {i["id"] for i in items} | {p["id"] for p in pending_items}
+            item["blocked_by"] = [s for s in item["blocked_by"] if s in live_ids]
+
         new_rev = _bump_rev(paths["meta_path"])
         _save_items(items, paths["items_path"])
+        if remaining_archive is not None:
+            dev_status_storage.save_archive(
+                remaining_archive, paths.get("archive_path")
+            )
 
         _append_journal_event(
             dev_status_storage.journal_entry(
@@ -4232,10 +4262,14 @@ def slug_check(
     paths = _storage_bundle(items_path)
     items = _load_universe(paths["items_path"])
     pending_items = _load_pending_safe(paths["pending_path"])
-
-    universe: set[str] = {str(i["id"]) for i in items}
+    archived = dev_status_storage.archived_ids(paths.get("archive_path"))
+    universe: set[str] = {str(i["id"]) for i in items} | archived
     resolved: str | None = None
-    if slug_or_id is not None:
+    if slug_or_id in archived:
+        # An archived item is out of the live store, so resolve_id cannot see
+        # it; its slug is still the one being checked for.
+        resolved = slug_or_id
+    elif slug_or_id is not None:
         kind, slug = resolve_id(slug_or_id, items, pending_items)
         require_kind("slug-check", slug_or_id, kind, "backlog")
         resolved = slug
@@ -4403,6 +4437,11 @@ def rename_item(
 
         if new_slug in index:
             raise DuplicateSlugError(f"[rename] collision: '{new_slug}' already exists")
+        archive_items = dev_status_storage.load_archive(paths.get("archive_path"))
+        if new_slug in {a["id"] for a in archive_items}:
+            raise DuplicateSlugError(
+                f"[rename] collision: '{new_slug}' already exists in archive"
+            )
         if new_slug in pending_index:
             raise DuplicateSlugError(
                 f"[rename] collision: '{new_slug}' already exists as a pending item"
@@ -4438,11 +4477,11 @@ def rename_item(
                 ]
             return cast(str, value)
 
-        renamed_item: BacklogItem | None = None
-        for item in items:
-            if item["id"] == old_slug:
-                item["id"] = new_slug
-                renamed_item = item
+        def _rewrite_backlog_refs(item: BacklogItem) -> None:
+            """Rewrite every reference to the old slug in one backlog record.
+
+            Shared by live and archived records so the two cannot drift.
+            """
             item["blocked_by"] = [
                 new_slug if s == old_slug else s for s in item.get("blocked_by", [])
             ]
@@ -4462,6 +4501,13 @@ def rename_item(
                 if obe.get("superseded_by") == old_slug:
                     obe["superseded_by"] = new_slug
 
+        renamed_item: BacklogItem | None = None
+        for item in items:
+            if item["id"] == old_slug:
+                item["id"] = new_slug
+                renamed_item = item
+            _rewrite_backlog_refs(item)
+
         for p in pending_items:
             p["blocking"] = [
                 new_slug if s == old_slug else s for s in p.get("blocking", [])
@@ -4477,9 +4523,21 @@ def rename_item(
                 if isinstance(note, str) and note:
                     rf["note"] = _rewrite_prose(note)
 
+        # Archive rows rewritten here get a fresh `updated`, so the rewrite
+        # wins a later sync merge (newer `updated` wins) over a stale replica.
+        archive_modified = False
+        for a_item in archive_items:
+            before = json.dumps(a_item, sort_keys=True)
+            _rewrite_backlog_refs(a_item)
+            if json.dumps(a_item, sort_keys=True) != before:
+                a_item["updated"] = today()
+                archive_modified = True
+
         new_rev = _bump_rev(paths["meta_path"])
         _save_items(items, paths["items_path"])
         _save_pending(pending_items, paths["pending_path"])
+        if archive_modified:
+            dev_status_storage.save_archive(archive_items, paths.get("archive_path"))
 
         old_token = _verifier_token_path_for(paths["data_dir"], old_slug)
         if old_token.exists():
@@ -4717,6 +4775,12 @@ def add_pending_item(
                 "remove or rename the backlog item first"
             )
 
+        if slug in dev_status_storage.archived_ids(paths.get("archive_path")):
+            raise DuplicateSlugError(
+                f"[pending add] slug '{slug}' already exists in archive — "
+                "reopen it instead of adding a new item"
+            )
+
         for dep in request.blocking:
             if dep not in index:
                 raise ValidationError(
@@ -4919,6 +4983,7 @@ class _BacklogTransactionImpl:
         self._index = index
         self._paths = paths
         self._verbose = verbose
+        self._archived_ids = dev_status_storage.archived_ids(paths.get("archive_path"))
 
     def index(self) -> BacklogIndex:
         return self._index
@@ -4950,6 +5015,10 @@ class _BacklogTransactionImpl:
 
         if slug in self._index:
             raise DuplicateSlugError(f"[add] duplicate slug: {slug}")
+        if slug in self._archived_ids:
+            raise DuplicateSlugError(
+                f"[add] duplicate slug: {slug} (exists in archive)"
+            )
         if any(p["id"] == slug for p in self._pending_items):
             raise DuplicateSlugError(
                 f"[add] slug '{slug}' already exists as a pending item — "

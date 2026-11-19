@@ -2409,5 +2409,457 @@ class ObeCliTestCase(MutationFixture):
         )
 
 
+class ArchiveItemTestCase(MutationFixture):
+    def setUp(self):
+        super().setUp()
+        self.archive_file = self.data_dir / "items-archive.json"
+
+    def write_archive(self, items):
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.archive_file.write_text(
+            json.dumps({"schema_version": 2, "items": items}, indent=2)
+        )
+
+    def read_archive(self):
+        return dev_status_storage.load_archive(self.archive_file)
+
+    def test_archive_moves_eligible_items_and_bumps_rev(self):
+        today_str = datetime.now(UTC).date().isoformat()
+        item1 = make_item("item-old-done", status="done")
+        item1["completed_at"] = "2020-01-01"
+        item2 = make_item("item-recent-done", status="done")
+        item2["completed_at"] = today_str
+        item3 = make_item("item-open", status="open")
+        self.write_items([item1, item2, item3])
+        initial_rev = dev_status_storage.load_rev(self.meta_file)
+
+        dev_status.cmd_archive(_Args(older_than=14, dry_run=False, quiet=True, compact=False))
+
+        # Check live store
+        surviving = self.read_items()
+        self.assertEqual([i["id"] for i in surviving], ["item-recent-done", "item-open"])
+
+        # Check archive store
+        archived = self.read_archive()
+        self.assertEqual([i["id"] for i in archived], ["item-old-done"])
+
+        # Check rev bump
+        new_rev = dev_status_storage.load_rev(self.meta_file)
+        self.assertEqual(new_rev, initial_rev + 1)
+
+        # Check journal entry
+        journal_lines = self.journal_file.read_text().strip().splitlines()
+        last_entry = json.loads(journal_lines[-1])
+        self.assertEqual(last_entry["cmd"], "archive")
+        self.assertEqual(last_entry["rev"], new_rev)
+
+    def test_archive_dry_run_leaves_files_untouched(self):
+        item1 = make_item("item-old-done", status="done")
+        item1["completed_at"] = "2020-01-01"
+        self.write_items([item1])
+        initial_rev = dev_status_storage.load_rev(self.meta_file)
+
+        dev_status.cmd_archive(_Args(older_than=14, dry_run=True, quiet=True, compact=False))
+
+        self.assertEqual([i["id"] for i in self.read_items()], ["item-old-done"])
+        self.assertFalse(self.archive_file.exists())
+        self.assertEqual(dev_status_storage.load_rev(self.meta_file), initial_rev)
+
+    def test_archive_reopen_restores_from_archive(self):
+        self.write_items([make_item("item-open", status="open")])
+        item_archived = make_item("item-archived", status="done")
+        item_archived["completed_at"] = "2020-01-01"
+        self.write_archive([item_archived])
+        initial_rev = dev_status_storage.load_rev(self.meta_file)
+
+        res = dev_status_mutation.reopen_item("item-archived")
+        self.assertEqual(res.slug, "item-archived")
+        self.assertEqual(res.status, "open")
+
+        # Item should be in live store now, not in archive
+        live = self.read_items()
+        self.assertIn("item-archived", [i["id"] for i in live])
+        archived = self.read_archive()
+        self.assertNotIn("item-archived", [i["id"] for i in archived])
+        self.assertEqual(dev_status_storage.load_rev(self.meta_file), initial_rev + 1)
+
+    def test_archive_add_rejects_duplicate_archived_slug(self):
+        self.write_items([])
+        self.write_archive([make_item("item-archived", status="done")])
+
+        req = dev_status_mutation.NewItemRequest(
+            id="item-archived",
+            summary="attempt duplicate",
+        )
+        with self.assertRaises(dev_status_mutation.DuplicateSlugError):
+            dev_status_mutation.add_item(req)
+
+    def test_show_finds_archived_item(self):
+        self.write_items([])
+        self.write_archive([make_item("item-archived", status="done", summary="Old archive item")])
+
+        out = io.StringIO()
+        err = io.StringIO()
+        with patch("sys.stdout", out), patch("sys.stderr", err):
+            dev_status.cmd_show(_Args(id="item-archived"))
+
+        self.assertIn("[archived]", err.getvalue())
+        data = json.loads(out.getvalue())
+        self.assertEqual(data["id"], "item-archived")
+        self.assertEqual(data["summary"], "Old archive item")
+
+    def test_archive_purges_inbound_blocked_by_refs_so_ready_work_remains_ready(self):
+        item_old = make_item("item-old-done", status="done")
+        item_old["completed_at"] = "2020-01-01"
+        item_dependent = make_item("item-dependent", status="open")
+        item_dependent["blocked_by"] = ["item-old-done"]
+        self.write_items([item_old, item_dependent])
+
+        dev_status.cmd_archive(_Args(older_than=14, dry_run=False, quiet=True, compact=False))
+
+        surviving = self.read_items()
+        self.assertEqual([i["id"] for i in surviving], ["item-dependent"])
+        # Blocker reference must be purged so effective_blockers doesn't treat missing item as unresolved
+        self.assertEqual(surviving[0].get("blocked_by"), [])
+        index = dev_status_mutation.build_index(surviving)
+        self.assertEqual(dev_status_mutation.effective_blockers(surviving[0], index), [])
+
+    def test_reopen_failure_does_not_delete_from_archive(self):
+        item_archived = make_item("item-archived", status="done")
+        item_archived["completed_at"] = "2020-01-01"
+        now_iso = datetime.now(UTC).isoformat()
+        # Foreign claim within TTL that will cause ClaimCollisionError without force=True
+        item_archived["claimed_by"] = {
+            "harness": "claude",
+            "machine_id": "other-machine",
+            "pid": 999999,
+            "owner_pid": 999998,
+            "claimed_at": now_iso,
+            "last_active": now_iso,
+        }
+        self.write_items([])
+        self.write_archive([item_archived])
+
+        with self.assertRaises(dev_status_mutation.ClaimCollisionError):
+            dev_status_mutation.reopen_item("item-archived", force=False)
+
+        # Archive must still hold the item
+        archived = self.read_archive()
+        self.assertEqual([i["id"] for i in archived], ["item-archived"])
+        # Live items must remain empty
+        self.assertEqual(self.read_items(), [])
+
+    def test_archive_bumps_rev_before_writing_stores(self):
+        item_old = make_item("item-old-done", status="done")
+        item_old["completed_at"] = "2020-01-01"
+        self.write_items([item_old])
+
+        call_order = []
+        orig_bump = dev_status_storage.bump_rev
+        orig_save_items = dev_status.save_items
+        orig_save_archive = dev_status.save_archive
+
+        def tracked_bump(*a, **kw):
+            call_order.append("bump_rev")
+            return orig_bump(*a, **kw)
+
+        def tracked_save_items(*a, **kw):
+            call_order.append("save_items")
+            return orig_save_items(*a, **kw)
+
+        def tracked_save_archive(*a, **kw):
+            call_order.append("save_archive")
+            return orig_save_archive(*a, **kw)
+
+        with (
+            patch.object(dev_status_storage, "bump_rev", side_effect=tracked_bump),
+            patch.object(dev_status, "save_items", side_effect=tracked_save_items),
+            patch.object(dev_status, "save_archive", side_effect=tracked_save_archive),
+        ):
+            dev_status.cmd_archive(_Args(older_than=14, dry_run=False, quiet=True, compact=False))
+
+        self.assertIn("bump_rev", call_order)
+        self.assertIn("save_items", call_order)
+        self.assertIn("save_archive", call_order)
+        self.assertLess(
+            call_order.index("bump_rev"),
+            call_order.index("save_items"),
+            "bump_rev must happen before save_items",
+        )
+        self.assertLess(
+            call_order.index("bump_rev"),
+            call_order.index("save_archive"),
+            "bump_rev must happen before save_archive",
+        )
+
+    def test_add_pending_item_rejects_duplicate_archived_slug(self):
+        self.write_items([])
+        self.write_archive([make_item("item-archived", status="done")])
+
+        req = dev_status_mutation.PendingAddRequest(
+            id="item-archived",
+            description="attempt pending duplicate",
+            kind="approval",
+        )
+        with self.assertRaises(dev_status_mutation.DuplicateSlugError):
+            dev_status_mutation.add_pending_item(req)
+
+    def test_reopen_item_strips_archived_blockers_so_item_is_not_blocked(self):
+        item_base = make_item("item-base", status="done")
+        item_base["completed_at"] = "2020-01-01"
+        item_child = make_item("item-child", status="done")
+        item_child["completed_at"] = "2020-01-01"
+        item_child["blocked_by"] = ["item-base"]
+
+        self.write_items([])
+        self.write_archive([item_base, item_child])
+
+        res = dev_status_mutation.reopen_item("item-child")
+        self.assertEqual(res.status, "open")
+
+        # Child is in live items
+        live = self.read_items()
+        child_live = [i for i in live if i["id"] == "item-child"][0]
+        # Satisfied archived blocker must be stripped so effective_blockers doesn't block child
+        self.assertEqual(child_live.get("blocked_by"), [])
+        index = dev_status_mutation.build_index(live)
+        self.assertEqual(dev_status_mutation.effective_blockers(child_live, index), [])
+
+    def test_rename_rewrites_archived_references(self):
+        item_child = make_item("item-child", status="done")
+        item_child["completed_at"] = "2020-01-01"
+        item_child["blocked_by"] = ["item-base"]
+        item_child["summary"] = "Waiting on item-base for completion"
+        self.write_archive([item_child])
+
+        item_base = make_item("item-base", status="open")
+        self.write_items([item_base])
+
+        dev_status_mutation.rename_item("item-base", "item-renamed")
+
+        # Archive item must have updated references
+        archived = self.read_archive()
+        child_archived = [a for a in archived if a["id"] == "item-child"][0]
+        self.assertEqual(child_archived["blocked_by"], ["item-renamed"])
+        self.assertIn("item-renamed", child_archived["summary"])
+
+
+
+class ArchiveClosedItemsTestCase(ArchiveItemTestCase):
+    """archive covers every closed item, is crash-repairable, and keeps readers whole."""
+
+    def _archive(self, **kwargs):
+        args = _Args(older_than=14, dry_run=False, quiet=True, compact=False)
+        args.__dict__.update(kwargs)
+        dev_status.cmd_archive(args)
+
+    def test_obe_items_archive_on_their_obe_date(self):
+        old_obe = make_obe_item("obe-old", at="2020-01-01", updated="2099-01-01")
+        new_obe = make_obe_item("obe-new", at=datetime.now(UTC).date().isoformat())
+        self.write_items([old_obe, new_obe])
+        self._archive()
+        self.assertEqual([i["id"] for i in self.read_archive()], ["obe-old"])
+        self.assertEqual([i["id"] for i in self.read_items()], ["obe-new"])
+
+    def test_older_than_rejects_bad_values_as_usage_errors(self):
+        parser = dev_status.build_parser()
+        with patch("sys.stderr", io.StringIO()):
+            for raw in ("0", "14x", "14ddd", "-3"):
+                with self.subTest(raw=raw), self.assertRaises(SystemExit) as raised:
+                    parser.parse_args(["archive", "--older-than", raw])
+                self.assertEqual(raised.exception.code, 2)
+        for raw in ("14", "14d"):
+            self.assertEqual(parser.parse_args(["archive", "--older-than", raw]).older_than, 14)
+        self.assertEqual(parser.parse_args(["archive"]).older_than, 14)
+
+    def test_dry_run_takes_no_lock_and_writes_nothing(self):
+        old = make_item("item-old-done", status="done")
+        old["completed_at"] = "2020-01-01"
+        self.write_items([old])
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            self._archive(dry_run=True)
+        self.assertIn("item-old-done", out.getvalue())
+        for path in (
+            self.lock_file,
+            self.machine_id_file,
+            self.journal_file,
+            self.archive_file,
+            self.pending_file,
+            self.meta_file,
+        ):
+            self.assertFalse(path.exists(), path)
+
+    def test_stale_archive_copy_of_live_item_is_dropped_with_nothing_new(self):
+        self.write_items([make_item("task-a")])
+        stale = make_item("task-a", status="done")
+        stale["completed_at"] = "2020-01-01"
+        kept = make_item("task-b", status="done")
+        kept["completed_at"] = "2020-01-01"
+        self.write_archive([stale, kept])
+        self._archive()
+        self.assertEqual([i["id"] for i in self.read_archive()], ["task-b"])
+        self.assertEqual(self.read_items()[0]["status"], "open")
+        self.assertEqual(self.read_rev(), 1)
+
+    def test_pending_store_untouched_when_no_blocking_ref_moves(self):
+        old = make_item("item-old-done", status="done")
+        old["completed_at"] = "2020-01-01"
+        self.write_items([old])
+        self._archive()
+        self.assertEqual([i["id"] for i in self.read_archive()], ["item-old-done"])
+        self.assertFalse(self.pending_file.exists())
+
+    def test_crash_at_pending_write_is_repaired_by_a_retry(self):
+        old = make_item("item-old-done", status="done")
+        old["completed_at"] = "2020-01-01"
+        self.write_items([old])
+        self.write_pending(
+            [
+                {
+                    "id": "pend-a",
+                    "created": "2026-01-01",
+                    "updated": "2026-01-01",
+                    "status": "waiting_for_reply",
+                    "description": "waiting",
+                    "kind": "email",
+                    "source_ref": {},
+                    "context": "",
+                    "next_steps": [],
+                    "blocking": ["item-old-done"],
+                    "outcome": None,
+                }
+            ]
+        )
+        # The pending write is the one the live-store write must not precede: a
+        # crash between them used to leave a dangling blocking ref no retry fixed.
+        with patch.object(dev_status, "save_pending", side_effect=RuntimeError("crash")):
+            with self.assertRaises(RuntimeError):
+                self._archive()
+        self._archive()
+        self.assertEqual(self.read_items(), [])
+        self.assertEqual([i["id"] for i in self.read_archive()], ["item-old-done"])
+        self.assertEqual(self.read_pending()[0]["blocking"], [])
+
+    def test_reopen_from_archive_keeps_only_refs_to_live_records(self):
+        self.write_items([make_item("live-x")])
+        self.write_pending(
+            [
+                {
+                    "id": "pend-y",
+                    "created": "2026-01-01",
+                    "updated": "2026-01-01",
+                    "status": "waiting_for_reply",
+                    "description": "waiting",
+                    "kind": "email",
+                    "source_ref": {},
+                    "context": "",
+                    "next_steps": [],
+                    "blocking": [],
+                    "outcome": None,
+                }
+            ]
+        )
+        archived = make_item(
+            "task-a",
+            status="done",
+            blocked_by=["live-x", "pend-y", "gone-z", "archived-w"],
+        )
+        other = make_item("archived-w", status="done")
+        self.write_archive([archived, other])
+        dev_status_mutation.reopen_item("task-a")
+        self.assertEqual(self._item_by_id("task-a")["blocked_by"], ["live-x", "pend-y"])
+
+    def test_rename_bumps_updated_on_rewritten_archive_rows(self):
+        self.write_items([make_item("old-name")])
+        row = make_item("task-a", status="done", blocked_by=["old-name"])
+        untouched = make_item("task-b", status="done")
+        self.write_archive([row, untouched])
+        dev_status_mutation.rename_item("old-name", "new-name")
+        by_id = {i["id"]: i for i in self.read_archive()}
+        self.assertEqual(by_id["task-a"]["blocked_by"], ["new-name"])
+        self.assertEqual(by_id["task-a"]["updated"], dev_status_mutation.today())
+        self.assertEqual(by_id["task-b"]["updated"], "2026-01-01")
+
+    def test_rename_rewrites_archived_obe_references(self):
+        self.write_items([make_item("old-name")])
+        row = make_obe_item("task-a", superseded_by="old-name")
+        row["obe"]["reason"] = "delivered by old-name"
+        self.write_archive([row])
+        dev_status_mutation.rename_item("old-name", "new-name")
+        obe = self.read_archive()[0]["obe"]
+        self.assertEqual(obe["superseded_by"], "new-name")
+        self.assertEqual(obe["reason"], "delivered by new-name")
+
+    def test_slug_check_accepts_an_explicit_archived_slug(self):
+        self.write_items([])
+        self.write_archive([make_item("task-a", status="done")])
+        with patch.object(dev_status_mutation, "_git_show_toplevel", return_value=None):
+            with self.assertRaises(dev_status_mutation.ValidationError) as ctx:
+                dev_status_mutation.slug_check("task-a", repo=self.tmpdir)
+        # Resolution passed; it failed later, on the (stubbed-out) repository.
+        self.assertIn("not a git repository", str(ctx.exception))
+
+    def test_prune_still_refreshes_the_recap(self):
+        self.write_items([make_item("task-a")])
+        with patch.object(dev_status, "_maybe_dispatch_recap_regen") as dispatch:
+            with patch("sys.stdout", io.StringIO()):
+                dev_status.cmd_prune(_Args(force=True))
+        dispatch.assert_called_once()
+
+    def test_cited_by_reports_archived_citations(self):
+        cited = "/repo/plan.md"
+        row = make_item("task-a", status="done", related_files=[{"path": cited, "note": ""}])
+        self.write_items([])
+        self.write_archive([row])
+        out = io.StringIO()
+        with patch("sys.stdout", out), patch("sys.stderr", io.StringIO()):
+            dev_status.cmd_cited_by(_Args(paths=[cited]))
+        self.assertIn("task-a done", out.getvalue())
+
+    def test_reader_never_misses_an_item_archived_between_its_two_reads(self):
+        # `archive` writes the archive store before it drops the item from the
+        # live store, so a lock-free reader that reads live first then archive
+        # always finds the item in at least one of them.
+        old = make_item("item-old-done", status="done")
+        old["completed_at"] = "2020-01-01"
+        self.write_items([old])
+        moved = []
+
+        def archive_once():
+            if not moved:
+                moved.append(True)
+                self.write_archive([old])
+                self.write_items([])
+
+        real_items = dev_status_storage.load_items
+        real_archive = dev_status_storage.load_archive
+
+        def items_then_archive_run(*a, **kw):
+            result = real_items(*a, **kw)
+            archive_once()
+            return result
+
+        def archive_then_archive_run(*a, **kw):
+            result = real_archive(*a, **kw)
+            archive_once()
+            return result
+
+        with (
+            patch.object(dev_status_storage, "load_items", items_then_archive_run),
+            patch.object(dev_status_storage, "load_archive", archive_then_archive_run),
+        ):
+            ids = [i["id"] for i in dev_status_storage.load_all_items()]
+        self.assertEqual(ids, ["item-old-done"])
+
+    def test_worker_tab_close_sees_archived_items(self):
+        import herdr_delegate
+
+        self.write_items([make_item("task-live")])
+        self.write_archive([make_item("task-archived", status="done")])
+        ids = {i["id"] for i in herdr_delegate.load_backlog_items()}
+        self.assertEqual(ids, {"task-live", "task-archived"})
+
+
 if __name__ == "__main__":
     test_bootstrap.run_unittest_main()

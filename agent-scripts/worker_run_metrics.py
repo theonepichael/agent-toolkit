@@ -30,6 +30,7 @@ Env vars: AGENT_TOOLKIT_HOME (toolkit root override; must be absolute).
 Files read:
   <toolkit-root>/data/launch_log.jsonl
   <toolkit-root>/data/backlog/items.json
+  <toolkit-root>/data/backlog/items-archive.json   (archived items; live wins)
   <toolkit-root>/data/backlog/journal.jsonl
   ~/.pi/agent/sessions/**/*.jsonl        (pi worker sessions)
   ~/.gemini/antigravity-cli/conversations/<id>.db   (agy worker sessions)
@@ -145,6 +146,18 @@ def _read_jsonl(path: Path) -> list[dict[str, object]]:
     except FileNotFoundError:
         return []
     return out
+
+
+def _read_backlog(work: Path) -> dict[str, dict[str, object]]:
+    """Archived and live backlog items as ``slug -> item``, live winning.
+
+    A launch's item may have been archived since it landed; reading only the
+    live store would count it as never landed. Live is read first: the
+    archive command writes the archive before it drops items from the live
+    store, so this order never misses an item that is mid-move.
+    """
+    live = _read_items(work / "items.json")
+    return {**_read_items(work / "items-archive.json"), **live}
 
 
 def _read_items(path: Path) -> dict[str, dict[str, object]]:
@@ -704,7 +717,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"worker_run_metrics: cannot read {launch_path}: {exc}", file=sys.stderr)
         return 1
 
-    items = _read_items(work / "items.json")
+    items = _read_backlog(work)
     done_ts = _latest_done_ts(work / "journal.jsonl")
     sendbacks = _sendback_events(work / "journal.jsonl")
 

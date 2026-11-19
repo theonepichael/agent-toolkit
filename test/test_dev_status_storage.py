@@ -140,6 +140,54 @@ class BacklogStorageExtractionTestCase(unittest.TestCase):
             ):
                 pass
 
+    def test_archive_storage_roundtrip_and_missing_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            archive_path = Path(tmp) / "items-archive.json"
+            # Missing archive returns empty list
+            self.assertEqual(dev_status_storage.load_archive(archive_path), [])
+
+            items = [
+                make_item("archived-1", summary="old done item 1"),
+                make_item("archived-2", summary="old done item 2"),
+            ]
+            dev_status_storage.save_archive(items, archive_path)
+            loaded = dev_status_storage.load_archive(archive_path)
+            self.assertEqual([i["id"] for i in loaded], ["archived-1", "archived-2"])
+
+            # Verify schema format and indent
+            content = archive_path.read_text()
+            data = json.loads(content)
+            self.assertEqual(data["schema_version"], 2)
+            self.assertEqual(len(data["items"]), 2)
+            self.assertIn("\n  ", content)  # indent=2 check
+
+    def test_load_all_items_merges_with_live_precedence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            items_path = Path(tmp) / "items.json"
+            archive_path = Path(tmp) / "items-archive.json"
+
+            live_items = [
+                make_item("item-1", summary="live version of item 1"),
+                make_item("item-live-only", summary="live only item"),
+            ]
+            archive_items = [
+                make_item("item-1", summary="archived stale version of item 1"),
+                make_item("item-archive-only", summary="archived only item"),
+            ]
+
+            dev_status_storage.save_items(live_items, items_path)
+            dev_status_storage.save_archive(archive_items, archive_path)
+
+            all_items = dev_status_storage.load_all_items(items_path, archive_path)
+            all_dict = {i["id"]: i["summary"] for i in all_items}
+
+            self.assertEqual(
+                set(all_dict.keys()), {"item-1", "item-live-only", "item-archive-only"}
+            )
+            # Invariant: live shadows archive on ID collision
+            self.assertEqual(all_dict["item-1"], "live version of item 1")
+
+
 
 class JournalCrashSafetyTestCase(unittest.TestCase):
     """Torn-tail tolerance and durable (flush + fsync) journal appends."""

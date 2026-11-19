@@ -683,6 +683,21 @@ def save_pending(pending_items: list[PendingItem]) -> None:
     dev_status_storage.save_pending(pending_items)
 
 
+def load_archive() -> list[BacklogItem]:
+    """Load all archived backlog items from :func:`dev_status_storage.archive_file`."""
+    return dev_status_storage.load_archive()
+
+
+def save_archive(items: list[BacklogItem]) -> None:
+    """Atomically persist ``items`` to :func:`dev_status_storage.archive_file`."""
+    dev_status_storage.save_archive(items)
+
+
+def load_all_items() -> list[BacklogItem]:
+    """Load all items across archive and live stores, with live items shadowing archive."""
+    return dev_status_storage.load_all_items()
+
+
 @contextmanager
 def backlog_lock(*, require_identity: bool = True) -> Iterator[None]:
     """Hold an exclusive lock over a mutating command's full read-modify-write cycle.
@@ -2793,20 +2808,31 @@ def cmd_show(args: argparse.Namespace) -> None:
             bump_rev()
             save_items(items)
         pending_items = load_pending()
+        archived = False
         try:
             kind, slug = resolve_id(args.id, items, pending_items)
+            index: dict[str, object] = (
+                cast(dict[str, object], {p["id"]: p for p in pending_items})
+                if kind == "pending"
+                else cast(dict[str, object], build_index(items))
+            )
+            item = index.get(slug)
         except BacklogMutationError as exc:
-            _handle_mutation_error("show", exc)
-        index: dict[str, object] = (
-            cast(dict[str, object], {p["id"]: p for p in pending_items})
-            if kind == "pending"
-            else cast(dict[str, object], build_index(items))
-        )
-        item = index.get(slug)
+            archive_items = load_archive()
+            archive_dict = {i["id"]: i for i in archive_items}
+            if args.id in archive_dict:
+                kind = "backlog"
+                slug = args.id
+                item = archive_dict[slug]
+                archived = True
+            else:
+                _handle_mutation_error("show", exc)
         if item is None:
             print(f"[show] not found: {slug}", file=sys.stderr)
             sys.exit(1)
         print(f"# rev={load_rev()}", file=sys.stderr)
+        if archived:
+            print("# [archived]", file=sys.stderr)
         for notice in notices:
             print(notice, file=sys.stderr)
         if kind == "backlog":
@@ -3710,8 +3736,8 @@ def cmd_cited_by(args: argparse.Namespace) -> None:
     directory candidate), one ``<slug> <status>`` line per citation under the
     candidate's header, with a ``-> <path>`` suffix when a directory candidate
     is cited via a descendant. Closed (done/obe) items are reported too,
-    because a caller decides retention by *which* citations are still open
-    work.
+    archived ones included, because a caller decides retention by *which*
+    citations are still open work.
 
     Exit codes: ``0`` no non-terminal item cites any candidate (safe to
     delete all); ``1`` at least one non-terminal item does (stdout names the
@@ -3727,7 +3753,7 @@ def cmd_cited_by(args: argparse.Namespace) -> None:
         sys.exit(2)
     try:
         with backlog_lock(require_identity=False):
-            items = load_items()
+            items = load_all_items()
     except SystemExit:
         print("[cited-by] store unreadable; delete nothing.", file=sys.stderr)
         sys.exit(2)
@@ -4516,6 +4542,116 @@ def cmd_prune(args: argparse.Namespace) -> None:
     _maybe_dispatch_recap_regen()
 
 
+def _older_than_days(raw: str) -> int:
+    """argparse type for ``archive --older-than``: whole days, ``N`` or ``Nd``, N >= 1."""
+    match = re.fullmatch(r"(\d+)d?", raw)
+    if match is None or int(match.group(1)) < 1:
+        raise argparse.ArgumentTypeError(
+            f"expected whole days >= 1, e.g. 14 or 14d (got {raw!r})"
+        )
+    return int(match.group(1))
+
+
+def _archive_selection(items: list[BacklogItem], cutoff_days: int) -> list[BacklogItem]:
+    """Closed items whose close date is at least ``cutoff_days`` old.
+
+    The same rule and boundary ``prune`` uses: terminal status, aged by
+    :func:`_closed_stamp`.
+    """
+    selected: list[BacklogItem] = []
+    for item in items:
+        if item["status"] in dev_status_types.TERMINAL_STATUSES:
+            age = _age_days(_closed_stamp(item))
+            if age is not None and age >= cutoff_days:
+                selected.append(item)
+    return selected
+
+
+def cmd_archive(args: argparse.Namespace) -> None:
+    """Handle ``archive``: move long-closed items from items.json to items-archive.json.
+
+    Closed means done or obe, aged by its close date (see
+    :func:`_archive_selection`). The archive is kept forever; live items
+    always shadow it, and an archive copy of a live (reopened) item is
+    dropped on every run, even one with nothing new to move.
+
+    ``--dry-run`` is a pure read: no lock, no machine id, no journal. A real
+    run writes, under :func:`backlog_lock`, rev -> archive -> pending (only
+    when a ``blocking`` entry was purged) -> items, then one journal event.
+    The live store is written last, so a crash at any point leaves each
+    moved item still live and a retry redoes the move and the purge; an
+    item is never in neither store. Inbound ``blocked_by``/``blocking`` refs
+    to moved items are purged, as :func:`cmd_prune` does, because a missing
+    blocker never resolves.
+    """
+    cutoff_days = args.older_than
+    if args.dry_run:
+        selected = _archive_selection(load_items(), cutoff_days)
+        print(
+            f"[archive] dry-run: {len(selected)} item(s) meet the {cutoff_days}d cutoff"
+        )
+        for item in selected:
+            print(f"  - {item['id']}: {item.get('summary', '')}")
+        return
+
+    with backlog_lock():
+        items = load_items()
+        archive_items = load_archive()
+        pending_items = load_pending()
+
+        selected = _archive_selection(items, cutoff_days)
+        moved = {item["id"] for item in selected}
+        keep = [item for item in items if item["id"] not in moved]
+        live_ids = {item["id"] for item in keep}
+        merged = {item["id"]: item for item in archive_items}
+        merged.update((item["id"], item) for item in selected)
+        new_archive = [item for item in merged.values() if item["id"] not in live_ids]
+        pending_changed = any(
+            slug in moved for p in pending_items for slug in p.get("blocking", [])
+        )
+        if not moved and len(new_archive) == len(archive_items):
+            cli_common.qprint(
+                f"[archive] nothing to do: 0 items meet the {cutoff_days}d cutoff",
+                quiet=getattr(args, "quiet", False),
+            )
+            return
+
+        _purge_inbound_refs(moved, keep, pending_items)
+        new_rev = dev_status_storage.bump_rev()
+        save_archive(new_archive)
+        if pending_changed:
+            save_pending(pending_items)
+        if moved:
+            save_items(keep)
+        append_journal_event(
+            _journal_entry(
+                "archive",
+                "backlog",
+                new_rev,
+                count=len(moved),
+                detail=f"cutoff={cutoff_days}d",
+            ),
+            verbose=getattr(args, "verbose", False),
+        )
+
+    if _is_compact(args):
+        print(
+            format_compact_confirmation(
+                cmd="archive",
+                slug=f"{len(moved)}-items",
+                status="archived",
+                rev=new_rev,
+                detail=f"archived {len(moved)} items older than {cutoff_days}d",
+            )
+        )
+    else:
+        cli_common.qprint(
+            f"[archive] moved {len(moved)} item(s) to items-archive.json (rev {new_rev})",
+            quiet=getattr(args, "quiet", False),
+        )
+    _maybe_dispatch_recap_regen()
+
+
 # ── main ──────────────────────────────────────────────────────────────────────
 
 
@@ -4583,6 +4719,7 @@ dispatch: dict[str, Callable[[argparse.Namespace], None]] = {
     "unblock": cmd_unblock,
     "validate": cmd_validate,
     "prune": cmd_prune,
+    "archive": cmd_archive,
     "recap": cmd_recap,
     "worktree": cmd_worktree,
     "machine-id": cmd_machine_id,
@@ -5126,6 +5263,24 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         required=True,
         help="required to prevent accidental prune",
+    )
+
+    p = sub.add_parser(
+        "archive",
+        help="move closed (done/obe) items past the cutoff to items-archive.json",
+        parents=[verbosity_parent, compact_parent],
+    )
+    p.add_argument(
+        "--older-than",
+        type=_older_than_days,
+        default="14d",
+        metavar="<days>",
+        help="close-date age threshold in whole days, N or Nd, at least 1 (default: 14d)",
+    )
+    p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="preview items to archive without moving them",
     )
 
     p = sub.add_parser(

@@ -57,6 +57,10 @@ def items_file() -> Path:
     return data_dir() / "items.json"
 
 
+def archive_file() -> Path:
+    return data_dir() / "items-archive.json"
+
+
 def pending_file() -> Path:
     return data_dir() / "pending_items.json"
 
@@ -136,6 +140,7 @@ def out_of_scope_lock_file() -> Path:
 # accessor, which would shadow it.
 _data_dir = data_dir
 _items_file = items_file
+_archive_file = archive_file
 _pending_file = pending_file
 _meta_file = meta_file
 _lock_file = lock_file
@@ -156,6 +161,7 @@ _out_of_scope_lock_file = out_of_scope_lock_file
 COMPAT_PATH_ATTRS: dict[str, Callable[[], Path]] = {
     "DATA_DIR": data_dir,
     "ITEMS_FILE": items_file,
+    "ARCHIVE_FILE": archive_file,
     "PENDING_FILE": pending_file,
     "META_FILE": meta_file,
     "LOCK_FILE": lock_file,
@@ -529,6 +535,58 @@ def save_items(items: list[BacklogItem], path: Path | None = None) -> None:
     target = path or _items_file()
     payload = json.dumps({"schema_version": 2, "items": items}, indent=2)
     atomic_write_json(target, payload, ".items_tmp_")
+
+
+def load_archive(path: Path | None = None) -> list[BacklogItem]:
+    """Load all archived backlog items from ``path`` (defaults to :func:`archive_file`)."""
+    target = path or _archive_file()
+    if not target.exists():
+        return []
+    try:
+        data = json.loads(target.read_text())
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as e:
+        print(
+            f"archive file corrupted at {target}; restore from backup. ({e})",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if not isinstance(data, dict) or data.get("schema_version") != 2:
+        print(
+            f"archive file at {target} is not schema_version 2; "
+            "check file or run migration.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return cast(list[BacklogItem], data.get("items", []))
+
+
+def save_archive(items: list[BacklogItem], path: Path | None = None) -> None:
+    """Atomically persist ``items`` to ``path`` (defaults to :func:`archive_file`)."""
+    target = path or _archive_file()
+    payload = json.dumps({"schema_version": 2, "items": items}, indent=2)
+    atomic_write_json(target, payload, ".archive_tmp_")
+
+
+def archived_ids(path: Path | None = None) -> set[str]:
+    """Return the slugs held in the archive store, which no new item may reuse."""
+    return {item["id"] for item in load_archive(path)}
+
+
+def load_all_items(
+    items_path: Path | None = None, archive_path: Path | None = None
+) -> list[BacklogItem]:
+    """Load all items across archive and live stores, with live items shadowing archive.
+
+    Reads live first, then archive: ``archive`` writes the archive before it
+    drops items from the live store, so a lock-free read in this order never
+    misses an item that is mid-move.
+    """
+    live_items = load_items(items_path)
+    archive_items = load_archive(archive_path)
+    merged: dict[str, BacklogItem] = {item["id"]: item for item in archive_items}
+    for item in live_items:
+        merged[item["id"]] = item
+    return list(merged.values())
 
 
 def load_pending(path: Path | None = None) -> list[PendingItem]:

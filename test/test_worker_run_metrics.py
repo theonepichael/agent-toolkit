@@ -7,6 +7,7 @@ import io
 import json
 import sqlite3
 import sys
+import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -130,6 +131,26 @@ class TestWorkerRunMetrics(unittest.TestCase):
         return buf.getvalue()
 
     # ── pure aggregation tests ────────────────────────────────────────────
+
+    def test_read_backlog_includes_archived_items_live_overriding(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            (work / "items.json").write_text(
+                json.dumps({"schema_version": 2, "items": [{"id": "a", "status": "open"}]})
+            )
+            (work / "items-archive.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "items": [
+                            {"id": "a", "status": "done"},
+                            {"id": "b", "status": "done"},
+                        ],
+                    }
+                )
+            )
+            items = worker_run_metrics._read_backlog(work)
+        self.assertEqual({k: v["status"] for k, v in items.items()}, {"a": "open", "b": "done"})
 
     def test_landed_pi_item(self) -> None:
         session = "/sandbox/.pi/agent/sessions/x/abc.jsonl"

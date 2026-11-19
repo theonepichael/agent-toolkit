@@ -764,6 +764,7 @@ class BacklogTestCase(BacklogFixture):
             {
                 "cmd_backfill_gate",
                 "cmd_prune",
+                "cmd_archive",
                 # Read paths with one conditional write: the claim-liveness
                 # sweep saves (bump-then-save) only when it actually reverts
                 # a dead claim; nothing is written when every claim is alive.

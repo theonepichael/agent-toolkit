@@ -394,6 +394,9 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
     - `--if-rev` — required when <id> is numeric; get the current value from render/list/show immediately before this call
   - `prune --force` — permanently remove closed (done/obe) and resolved items past 14 days
     - `--force` — required to prevent accidental prune (required)
+  - `archive [--older-than <days>] [--dry-run]` — move closed (done/obe) items past the cutoff to items-archive.json
+    - `--older-than` — close-date age threshold in whole days, N or Nd, at least 1 (default: 14d) (default: 14d)
+    - `--dry-run` — preview items to archive without moving them
   - `recap [--refresh] [--backend <BACKEND>]` — print a friendly prose recap of recent activity
     - `--refresh` — bypass the freshness cache and regenerate the recap now
     - `--backend` — force this backend instead of priority-order fallback (choices computed at runtime)
@@ -433,6 +436,9 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `save_items(items: list[BacklogItem]) -> None` — Atomically persist ``items`` to :func:`dev_status_storage.items_file`.
   - `load_pending() -> list[PendingItem]` — Load all pending items from :func:`dev_status_storage.pending_file`.
   - `save_pending(pending_items: list[PendingItem]) -> None` — Atomically persist ``pending_items`` to :func:`dev_status_storage.pending_file`.
+  - `load_archive() -> list[BacklogItem]` — Load all archived backlog items from :func:`dev_status_storage.archive_file`.
+  - `save_archive(items: list[BacklogItem]) -> None` — Atomically persist ``items`` to :func:`dev_status_storage.archive_file`.
+  - `load_all_items() -> list[BacklogItem]` — Load all items across archive and live stores, with live items shadowing archive.
   - `backlog_lock(*, require_identity: bool = True) -> Iterator[None]` — Hold an exclusive lock over a mutating command's full read-modify-write cycle.
   - `out_of_scope_lock() -> Iterator[None]` — Hold an exclusive lock over an out-of-scope command's read-modify-write cycle.
   - `load_rev() -> int` — Read the current revision counter.
@@ -447,7 +453,7 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `confirm_resolution(cmd: str, arg: str | int, item: BacklogItem | PendingItem, summary_key: str = 'summary', *, quiet: bool = False) -> None` — Echo what a mutating command resolved to, so misresolution is visible.
   - `format_run_rows(runs: list[RunRecord]) -> list[str]` — One ``runs`` listing line per record, naming the commit and checkout.
   - `build_parser() -> argparse.ArgumentParser` — Build the full argument parser for every subcommand.
-- Subcommand handlers: `cmd_internal_regen`, `cmd_recap`, `cmd_worktree`, `cmd_integration_merge`, `cmd_render`, `cmd_ready`, `cmd_list`, `cmd_show`, `cmd_validate`, `cmd_add`, `cmd_update`, `cmd_start`, `cmd_done`, `cmd_obe`, `cmd_reopen`, `cmd_review`, `cmd_approve`, `cmd_reject`, `cmd_sendback`, `cmd_gate_set`, `cmd_gate_pass`, `cmd_acceptance_set`, `cmd_verifier_check`, `cmd_contract_touch`, `cmd_slug_check`, `cmd_cited_by`, `cmd_run`, `cmd_machine_id`, `cmd_runs`, `cmd_backfill_gate`, `cmd_rename`, `cmd_block`, `cmd_unblock`, `cmd_out_of_scope_add`, `cmd_out_of_scope_link`, `cmd_out_of_scope_unlink`, `cmd_out_of_scope_remove`, `cmd_out_of_scope_list`, `cmd_out_of_scope_show`, `cmd_pending_add`, `cmd_pending_update`, `cmd_pending_list`, `cmd_remove`, `cmd_prune`
+- Subcommand handlers: `cmd_internal_regen`, `cmd_recap`, `cmd_worktree`, `cmd_integration_merge`, `cmd_render`, `cmd_ready`, `cmd_list`, `cmd_show`, `cmd_validate`, `cmd_add`, `cmd_update`, `cmd_start`, `cmd_done`, `cmd_obe`, `cmd_reopen`, `cmd_review`, `cmd_approve`, `cmd_reject`, `cmd_sendback`, `cmd_gate_set`, `cmd_gate_pass`, `cmd_acceptance_set`, `cmd_verifier_check`, `cmd_contract_touch`, `cmd_slug_check`, `cmd_cited_by`, `cmd_run`, `cmd_machine_id`, `cmd_runs`, `cmd_backfill_gate`, `cmd_rename`, `cmd_block`, `cmd_unblock`, `cmd_out_of_scope_add`, `cmd_out_of_scope_link`, `cmd_out_of_scope_unlink`, `cmd_out_of_scope_remove`, `cmd_out_of_scope_list`, `cmd_out_of_scope_show`, `cmd_pending_add`, `cmd_pending_update`, `cmd_pending_list`, `cmd_remove`, `cmd_prune`, `cmd_archive`
 - Tested by: `test/test_dev_status.py`, `test/test_dev_status_acceptance.py`, `test/test_dev_status_mutation.py`, `test/test_dev_status_storage.py`, `test/test_dev_status_validate.py`, `test/test_path_for_per_use.py`, `test/test_slug_check.py`, `test/test_sweep_dead_claims.py`, `test/test_to_tickets_runner.py`
 
 ### `agent-scripts/dev_status_commands.py`
@@ -589,6 +595,7 @@ Backlog persistence, lock coordination, and journal primitives.
 - Public functions:
   - `data_dir() -> Path` — The backlog store directory for the current layout.
   - `items_file() -> Path`
+  - `archive_file() -> Path`
   - `pending_file() -> Path`
   - `meta_file() -> Path`
   - `lock_file() -> Path`
@@ -611,6 +618,10 @@ Backlog persistence, lock coordination, and journal primitives.
   - `backup_before_bulk_delete(path: Path) -> None` — Snapshot a data file before a filter-based bulk deletion.
   - `load_items(path: Path | None = None) -> list[BacklogItem]` — Load all backlog items from ``path`` (defaults to :func:`items_file`).
   - `save_items(items: list[BacklogItem], path: Path | None = None) -> None` — Atomically persist ``items`` to ``path`` (defaults to :func:`items_file`).
+  - `load_archive(path: Path | None = None) -> list[BacklogItem]` — Load all archived backlog items from ``path`` (defaults to :func:`archive_file`).
+  - `save_archive(items: list[BacklogItem], path: Path | None = None) -> None` — Atomically persist ``items`` to ``path`` (defaults to :func:`archive_file`).
+  - `archived_ids(path: Path | None = None) -> set[str]` — Return the slugs held in the archive store, which no new item may reuse.
+  - `load_all_items(items_path: Path | None = None, archive_path: Path | None = None) -> list[BacklogItem]` — Load all items across archive and live stores, with live items shadowing archive.
   - `load_pending(path: Path | None = None) -> list[PendingItem]` — Load all pending items from ``path`` (defaults to :func:`pending_file`).
   - `save_pending(pending_items: list[PendingItem], path: Path | None = None) -> None` — Atomically persist ``pending_items`` to ``path`` (defaults to :func:`pending_file`).
   - `load_rev(meta_file: Path | None = None) -> int` — Read the current revision counter.
@@ -1236,7 +1247,7 @@ Launch supported agents in herdr tabs to work backlog items.
   - `build_pane_send_text_argv(pane: str, text: str) -> list[str]` — `herdr pane send-text` argv.
   - `parse_agent_get(listing: dict[str, object]) -> dict[str, str] | None` — Status, pane and tab out of a `herdr agent get` envelope; None if malformed.
   - `validate_answer_text(text: str) -> None` — Refuse --text outside the accepted contract (printable ASCII, single spaces, no leading/trailing space, at most 120 chars, not blank).
-  - `load_backlog_items() -> list[dict[str, object]]` — Every backlog item, read fresh from the store (the test seam for `close`).
+  - `load_backlog_items() -> list[dict[str, object]]` — Every backlog item, archived ones included, read fresh from the store.
   - `parse_tab_get(listing: dict[str, object]) -> dict[str, object] | None` — Label and pane count out of a `herdr tab get` envelope; None if malformed.
   - `wait_agent_deregistered(name: str, *, retry_advice: str = 'Retry `restart` (it relaunches once the name frees)') -> None` — Poll until no live agent carries ``name``, bounded; refuse if it persists.
   - `resolve_worker_cwd(slug: str) -> str` — The item's repository main checkout, as a worker tab's starting cwd.
@@ -1254,7 +1265,7 @@ Launch supported agents in herdr tabs to work backlog items.
   - `prune_agy_trust_entries() -> None` — Best-effort prune of vanished agy trusted-workspace entries.
   - `confirm_prompt_receipt(*, pane: str, tab: str, name: str, prompt: str, timeout_s: float = AGY_PROMPT_TIMEOUT_S, poll_interval_s: float = AGY_PROMPT_POLL_INTERVAL_S, max_resends: int = 1) -> None` — Poll pane for the echoed prompt line; resend if absent, fail loudly if still missing.
 - Subcommand handlers: `cmd_watch`, `cmd_answer`, `cmd_close`, `cmd_plan`, `cmd_launch`, `cmd_restart`, `cmd_probe`
-- Tested by: `test/test_herdr_delegate.py`, `test/test_herdr_watch_answer.py`, `test/test_migration_lock_adoption.py`
+- Tested by: `test/test_dev_status_mutation.py`, `test/test_herdr_delegate.py`, `test/test_herdr_watch_answer.py`, `test/test_migration_lock_adoption.py`
 
 ### `agent-scripts/herdr_picker.py`
 

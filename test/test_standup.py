@@ -235,5 +235,27 @@ class ParserVerbosityTests(unittest.TestCase):
             self.assertTrue(mock_cmd.call_args.args[0].quiet)
 
 
+
+class BacklogArchiveTests(unittest.TestCase):
+    def test_recent_done_includes_archived_items_live_overriding(self) -> None:
+        today = date.today().isoformat()
+        with tempfile.TemporaryDirectory() as tmp:
+            backlog = Path(tmp) / "items.json"
+            live = {"id": "work-a", "status": "in-progress", "updated": today}
+            backlog.write_text(json.dumps({"schema_version": 2, "items": [live]}))
+            archived = [
+                {"id": "work-b", "status": "done", "updated": today},
+                {"id": "work-a", "status": "done", "updated": today},
+            ]
+            (Path(tmp) / "items-archive.json").write_text(
+                json.dumps({"schema_version": 2, "items": archived})
+            )
+            in_progress, recent_done, _, _ = standup.backlog_items(
+                ["work-"], 30, backlog_file=backlog
+            )
+        self.assertEqual([i["id"] for i in in_progress], ["work-a"])
+        self.assertEqual([i["id"] for i in recent_done], ["work-b"])
+
+
 if __name__ == "__main__":
     test_bootstrap.run_unittest_main(verbosity=1)

@@ -2508,10 +2508,14 @@ CLOSABLE_AGENT_STATUSES = frozenset({"idle", "done"})
 
 
 def load_backlog_items() -> list[dict[str, object]]:
-    """Every backlog item, read fresh from the store (the test seam for `close`)."""
+    """Every backlog item, archived ones included, read fresh from the store.
+
+    The test seam for `close`: a worker's item may have been archived by the
+    time its tab is closed, so live and archived items both count (live wins).
+    """
     import dev_status_storage
 
-    return [dict(item) for item in dev_status_storage.load_items()]
+    return [dict(item) for item in dev_status_storage.load_all_items()]
 
 
 def _items_for_agent(agent: str) -> list[dict[str, object]]:

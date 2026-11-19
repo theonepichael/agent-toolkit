@@ -321,6 +321,16 @@ describe("buildArgv", () => {
     ]);
   });
 
+  test("archive passes its optional cutoff and dry-run flags", () => {
+    expect(buildArgv("archive", { action: "archive" })).toEqual(["archive"]);
+    expect(buildArgv("archive", { action: "archive", older_than: "30d", dry_run: true })).toEqual([
+      "archive",
+      "--older-than",
+      "30d",
+      "--dry-run",
+    ]);
+  });
+
   test("sendback passes feedback and round as flags", () => {
     expect(
       buildArgv("sendback", {

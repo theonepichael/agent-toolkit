@@ -252,6 +252,30 @@ def git_commits(
 # ── local sources: backlog ───────────────────────────────────────────────
 
 
+def _backlog_records(backlog_file: Path) -> list[dict[str, object]]:
+    """Live items plus archived ones from the sibling ``items-archive.json``.
+
+    A recent-done window longer than the archive cutoff would otherwise miss
+    items already moved out of the live store. Live records win on id, and
+    are read first: the archive command writes the archive before it drops
+    items from the live store, so this order never misses one mid-move.
+    """
+
+    def records(path: Path) -> list[dict[str, object]]:
+        if not path.exists():
+            return []
+        items = json.loads(path.read_text()).get("items", [])
+        return [item for item in items if isinstance(item, dict)]
+
+    live = records(backlog_file)
+    by_id = {
+        str(item.get("id", "")): item
+        for item in records(backlog_file.with_name("items-archive.json"))
+    }
+    by_id.update((str(item.get("id", "")), item) for item in live)
+    return list(by_id.values())
+
+
 def backlog_items(
     prefixes: list[str], recent_done_days: int, backlog_file: Path | None = None
 ) -> tuple[
@@ -282,15 +306,12 @@ def backlog_items(
             [SkippedSource("backlog", f"{backlog_file} not found")],
         )
 
-    data = json.loads(backlog_file.read_text())
     cutoff = datetime.now() - timedelta(days=recent_done_days)
 
     in_progress: list[dict[str, object]] = []
     recent_done: list[dict[str, object]] = []
     in_review: list[dict[str, object]] = []
-    for item in data.get("items", []):
-        if not isinstance(item, dict):
-            continue
+    for item in _backlog_records(backlog_file):
         item_id = str(item.get("id", ""))
         if not any(item_id.startswith(p) for p in prefixes):
             continue

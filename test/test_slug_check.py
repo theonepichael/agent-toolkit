@@ -94,6 +94,15 @@ class SlugCheckFixture(unittest.TestCase):
             )
         )
 
+    def write_archive(self, *slugs):
+        archive_file = self.data_dir / "items-archive.json"
+        archive_file.write_text(
+            json.dumps(
+                {"schema_version": 2, "items": [{"id": s, "status": "done"} for s in slugs]},
+                indent=2,
+            )
+        )
+
     def stage(self, relpath: str, text: str) -> None:
         target = self.repo / relpath
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -162,6 +171,14 @@ class LeakRefusalTestCase(SlugCheckFixture):
         code, out, _ = self.slug_check()
         self.assertEqual(code, 1)
         self.assertIn("notes.md:1: atk-beta", out)
+
+    def test_archived_slug_matched(self):
+        self.write_items("atk-live")
+        self.write_archive("atk-archived")
+        self.stage("notes.md", "about atk-archived\n")
+        code, out, _ = self.slug_check()
+        self.assertEqual(code, 1)
+        self.assertIn("notes.md:1: atk-archived", out)
 
     def test_numeric_slug_resolves_and_never_matches_digits(self):
         self.write_items("atk-one")

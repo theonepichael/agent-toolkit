@@ -53,6 +53,7 @@ SUBCOMMANDS: tuple[str, ...] = (
     "unblock",
     "validate",
     "prune",
+    "archive",
     "recap",
     "worktree",
     "machine-id",
