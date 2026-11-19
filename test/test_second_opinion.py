@@ -5172,6 +5172,15 @@ class BackendRotationCmdReviewTests(unittest.TestCase):
         # And a round still rotates off the normalized history.
         self.assertEqual(self._served(self._run()[0]), "codex")
 
+    def test_recording_onto_malformed_history_writes_a_clean_list(self) -> None:
+        second_opinion._ensure_runs_dir()
+        path = second_opinion._run_state_path("run:rot-1")
+        path.write_text(
+            json.dumps({"key": "run:rot-1", "count": 1, "served": [None, "agy", ["x"]]})
+        )
+        second_opinion._record_successful_review("run:rot-1", "codex")
+        self.assertEqual(self._state()["served"], ["agy", "codex"])
+
     def test_plan_key_ttl_reset_clears_history(self) -> None:
         key = "plan:" + str(self.plan.resolve())
         second_opinion._ensure_runs_dir()

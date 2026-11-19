@@ -1451,8 +1451,7 @@ def rotation_history_for(key: str) -> tuple[str, ...]:
     path = _run_state_path(key)
     if not path.is_file():
         return ()
-    served = _load_state_for_key(path, key)["served"]
-    return tuple(served) if isinstance(served, list) else ()
+    return tuple(_load_state_for_key(path, key)["served"])
 
 
 def _refuse_if_cap_reached(key: str) -> None:
@@ -1491,7 +1490,7 @@ def _record_successful_review(
         state = dict(state)
         state["updated"] = time.time()
     if backend is not None:
-        state["served"] = [*_normalize_served(state.get("served")), backend]
+        state["served"] = [*state["served"], backend]
     state["key"] = key
     _save_run_state(path, state)
     _prune_stale_runs(_runs_dir())
@@ -2177,7 +2176,7 @@ def review_plan(
         )
     rotating = request.rotation_history is not None and not request.backend
     if rotating:
-        candidates = rotation_order(candidates, request.rotation_history or ())
+        candidates = rotation_order(candidates, request.rotation_history)
     # One reason per backend the loop moves past, for the rotation fallback
     # report; `failures` also holds pool-model skips inside a backend that
     # went on to serve, so it is not reused verbatim.
