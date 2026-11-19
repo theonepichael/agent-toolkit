@@ -617,6 +617,7 @@ _ARG_HINTS = {
     "review-diff": "[worktree]",
     "land": "[worktree] [slug]",
     "obe-triage": "[prefix]",
+    "retro": "[session or topic]",
     "shunt-artifacts": "[worktree] [--handoff]",
 }
 # Where each harness's copy reads its invocation arguments from.
@@ -3626,6 +3627,19 @@ OBE_TRIAGE_PARAMS: dict[str, dict[str, str]] = {
     for harness in ("claude", "copilot", "opencode", "agy", "pi", "pi-prompt", "codex")
 }
 
+_RETRO_DESCRIPTION = (
+    "Run a retrospective on a coding session and offer environment fixes "
+    "(pointers, checks, steering, tools) as backlog items."
+)
+
+RETRO_PARAMS: dict[str, dict[str, str]] = {
+    harness: {
+        "FRONTMATTER": _frontmatter(harness, "retro", _RETRO_DESCRIPTION),
+        "ARGS": _ARGS[harness],
+    }
+    for harness in ("claude", "copilot", "opencode", "agy", "pi", "pi-prompt", "codex")
+}
+
 _SHUNT_ARTIFACTS_DESCRIPTION = (
     "Shunt a ticket worktree's untracked files out of the repo: move personal "
     "artifacts (runbooks, demo decks, screenshots) to a per-ticket folder, "
@@ -3670,5 +3684,6 @@ SKILL_PARAMS: dict[str, dict[str, dict[str, str]]] = {
     "review-diff": REVIEW_DIFF_PARAMS,
     "land": LAND_PARAMS,
     "obe-triage": OBE_TRIAGE_PARAMS,
+    "retro": RETRO_PARAMS,
     "shunt-artifacts": SHUNT_ARTIFACTS_PARAMS,
 }

@@ -2171,6 +2171,7 @@ the workflow's template plus its generator's capability/parameter tables.
 | `/obe-triage` | template | yes | yes | yes | yes | yes | yes |
 | `/recap` | template | yes | yes | yes | yes | yes | yes |
 | `/refresh-guidance` | template | yes | yes | yes | yes | yes | yes |
+| `/retro` | template | yes | yes | yes | yes | yes | yes |
 | `/review-diff` | template | yes | yes | yes | yes | yes | yes |
 | `/second-opinion` | template | yes | yes | yes | yes | yes | yes |
 | `/shunt-artifacts` | template | yes | yes | yes | yes | yes | yes |
@@ -2224,6 +2225,10 @@ the workflow's template plus its generator's capability/parameter tables.
   - Generated from: `templates/refresh_guidance.md.tmpl` by `gen_skills.py`
   - `claude/commands/{name}.md` is the rendered Claude Code port — edit the template or generator, then regenerate.
   - Installed at: `~/.claude/commands/refresh-guidance.md` (claude)
+- **`/retro`** — Run a retrospective on a coding session and offer environment fixes (pointers, checks, steering, tools) as backlog items.
+  - Generated from: `templates/retro.md.tmpl` by `gen_skills.py`
+  - `claude/commands/{name}.md` is the rendered Claude Code port — edit the template or generator, then regenerate.
+  - Installed at: `~/.claude/commands/retro.md` (claude)
 - **`/review-diff`** — Review the staged git diff for bugs before committing: a non-Claude, grounded reviewer (second_opinion.py review --diff), then triage each finding fix or reject-with-reason, record simplifications report-only, fix, re-verify, max 2 rounds, and print a triage table for the commit gate; falls back to a fresh same-model subagent when no backend is available. Use when the user says 'review the diff', 'review my changes', 'review before commit', or when backlog-item delegates its review step.
   - Generated from: `templates/review_diff.md.tmpl` by `gen_skills.py`
   - `claude/commands/{name}.md` is the rendered Claude Code port — edit the template or generator, then regenerate.
@@ -2363,6 +2368,7 @@ are copy-once seeds for exactly that reason.
 | `pi/prompts/obe-triage.md` | `~/.pi/agent/prompts/obe-triage.md` (pi) |
 | `pi/prompts/recap.md` | `~/.pi/agent/prompts/recap.md` (pi) |
 | `pi/prompts/refresh-guidance.md` | `~/.pi/agent/prompts/refresh-guidance.md` (pi) |
+| `pi/prompts/retro.md` | `~/.pi/agent/prompts/retro.md` (pi) |
 | `pi/prompts/review-diff.md` | `~/.pi/agent/prompts/review-diff.md` (pi) |
 | `pi/prompts/second-opinion.md` | `~/.pi/agent/prompts/second-opinion.md` (pi) |
 | `pi/prompts/shunt-artifacts.md` | `~/.pi/agent/prompts/shunt-artifacts.md` (pi) |
@@ -2619,11 +2625,17 @@ named doc, not regenerating this file.
 | Doc | Status |
 | --- | --- |
 | `agy/skills/analyze-sessions/SKILL.md` | OK |
+| `agy/skills/retro/SKILL.md` | OK |
 | `claude/commands/analyze-sessions.md` | OK |
+| `claude/commands/retro.md` | OK |
 | `codex/skills/analyze-sessions/SKILL.md` | OK |
+| `codex/skills/retro/SKILL.md` | OK |
 | `copilot/skills/analyze-sessions/SKILL.md` | OK |
+| `copilot/skills/retro/SKILL.md` | OK |
 | `opencode/command/analyze-sessions.md` | OK |
+| `opencode/command/retro.md` | OK |
 | `pi/skills/analyze-sessions/SKILL.md` | OK |
+| `pi/skills/retro/SKILL.md` | OK |
 
 ### `dev_status.py`
 
@@ -2892,6 +2904,7 @@ new one, `--check` catches it the same as any other stale content.
 | `/obe-triage` | — |
 | `/recap` | — |
 | `/refresh-guidance` | — |
+| `/retro` | — |
 | `/review-diff` | `backlog-item`, `land`, `spec` |
 | `/second-opinion` | `backlog-item`, `review-diff` |
 | `/shunt-artifacts` | `foreman`, `land`, `review-diff` |

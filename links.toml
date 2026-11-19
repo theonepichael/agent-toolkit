@@ -106,6 +106,11 @@ dest = "~/.claude/commands/obe-triage.md"
 harness = "claude"
 
 [[link]]
+src = "claude/commands/retro.md"
+dest = "~/.claude/commands/retro.md"
+harness = "claude"
+
+[[link]]
 src = "claude/commands/shunt-artifacts.md"
 dest = "~/.claude/commands/shunt-artifacts.md"
 harness = "claude"
@@ -500,6 +505,11 @@ dest = "~/.copilot/skills/obe-triage/SKILL.md"
 harness = "copilot"
 
 [[link]]
+src = "copilot/skills/retro/SKILL.md"
+dest = "~/.copilot/skills/retro/SKILL.md"
+harness = "copilot"
+
+[[link]]
 src = "copilot/skills/shunt-artifacts/SKILL.md"
 dest = "~/.copilot/skills/shunt-artifacts/SKILL.md"
 harness = "copilot"
@@ -619,6 +629,11 @@ harness = "opencode"
 [[link]]
 src = "opencode/command/obe-triage.md"
 dest = "~/.config/opencode/commands/obe-triage.md"
+harness = "opencode"
+
+[[link]]
+src = "opencode/command/retro.md"
+dest = "~/.config/opencode/commands/retro.md"
 harness = "opencode"
 
 [[link]]
@@ -749,6 +764,11 @@ dest = "~/.gemini/antigravity-cli/skills/obe-triage/SKILL.md"
 harness = "agy"
 
 [[link]]
+src = "agy/skills/retro/SKILL.md"
+dest = "~/.gemini/antigravity-cli/skills/retro/SKILL.md"
+harness = "agy"
+
+[[link]]
 src = "agy/skills/shunt-artifacts/SKILL.md"
 dest = "~/.gemini/antigravity-cli/skills/shunt-artifacts/SKILL.md"
 harness = "agy"
@@ -863,6 +883,11 @@ harness = "pi"
 [[link]]
 src = "pi/prompts/obe-triage.md"
 dest = "~/.pi/agent/prompts/obe-triage.md"
+harness = "pi"
+
+[[link]]
+src = "pi/prompts/retro.md"
+dest = "~/.pi/agent/prompts/retro.md"
 harness = "pi"
 
 [[link]]

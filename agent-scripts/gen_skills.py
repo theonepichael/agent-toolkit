@@ -80,6 +80,7 @@ SKILLS = (
     "review-diff",
     "land",
     "obe-triage",
+    "retro",
     "shunt-artifacts",
 )
 HARNESSES = harness_spec.ALL_NAMES
@@ -127,6 +128,7 @@ SKILL_HARNESSES: dict[str, tuple[str, ...]] = {
     "review-diff": HARNESSES + ("pi-prompt", "opencode-skill"),
     "land": HARNESSES + ("pi-prompt", "opencode-skill"),
     "obe-triage": HARNESSES + ("pi-prompt",),
+    "retro": HARNESSES + ("pi-prompt",),
     "shunt-artifacts": HARNESSES + ("pi-prompt", "opencode-skill"),
 }
 
@@ -146,6 +148,7 @@ TEMPLATE_PATHS: dict[str, str] = {
     "review-diff": "templates/review_diff.md.tmpl",
     "land": "templates/land.md.tmpl",
     "obe-triage": "templates/obe_triage.md.tmpl",
+    "retro": "templates/retro.md.tmpl",
     "shunt-artifacts": "templates/shunt_artifacts.md.tmpl",
 }
 
