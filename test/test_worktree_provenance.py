@@ -326,6 +326,41 @@ class TestInspectItemWorktrees:
         assert out[0].source == "branch"
         assert out[0].head_ancestor_of_default is False
 
+    def test_unrelated_marked_worktree_keeps_the_branch_fallback(
+        self, tmp_path
+    ) -> None:
+        # Another item's live worktree in the same repo, on its own branch,
+        # must not hide this item's unmerged slug branch once this item's
+        # worktree is gone — approve closed an unmerged item exactly so.
+        repo, wt = self._unmerged_wt(tmp_path, "slug-k")
+        _git("worktree", "remove", str(wt), cwd=repo)
+        other = tmp_path / "proj-other-wt"
+        _git("worktree", "add", "-q", str(other), "-b", "other-item", cwd=repo)
+        assert wp.write_marker(other, "other-item") is True
+        out = wp.inspect_item_worktrees(
+            related_files=[str(repo / "tracked.txt")], slug="slug-k", cwd=tmp_path
+        )
+        assert len(out) == 1
+        assert out[0].source == "branch"
+        assert out[0].head_ancestor_of_default is False
+
+    def test_detached_unrelated_marked_worktree_keeps_the_fallback(
+        self, tmp_path
+    ) -> None:
+        # A detached checkout has no branch at all, so its foreign marker
+        # cannot be deciding the slug branch either.
+        repo, wt = self._unmerged_wt(tmp_path, "slug-l")
+        _git("worktree", "remove", str(wt), cwd=repo)
+        other = tmp_path / "proj-other-detached-wt"
+        _git("worktree", "add", "-q", "--detach", str(other), cwd=repo)
+        assert wp.write_marker(other, "other-item") is True
+        out = wp.inspect_item_worktrees(
+            related_files=[str(repo / "tracked.txt")], slug="slug-l", cwd=tmp_path
+        )
+        assert len(out) == 1
+        assert out[0].source == "branch"
+        assert out[0].head_ancestor_of_default is False
+
     def test_removed_worktree_merged_slug_branch_allows(self, tmp_path) -> None:
         repo, wt = self._merged_wt(tmp_path, "slug-j")
         _git("worktree", "remove", str(wt), cwd=repo)

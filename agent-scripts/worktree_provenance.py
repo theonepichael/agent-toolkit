@@ -569,9 +569,10 @@ def _invalid_marker(wt: Path, prov: WorktreeProvenance) -> bool:
 class _OneWorktree:
     """_inspect_one_worktree's result: the inspection (None when the
     worktree is not attributable to the slug) plus whether a readable
-    foreign marker decided attribution in this worktree — the caller uses
-    that to skip the branch fallback, which would otherwise re-attribute
-    what the marker excluded."""
+    foreign marker excluded a worktree on the slug branch itself — the
+    caller uses that to skip the branch fallback, which would otherwise
+    re-attribute what the marker excluded. A foreign marker on any other
+    branch leaves it False."""
 
     inspection: WorktreeInspection | None = None
     foreign_marker: bool = False
@@ -618,7 +619,11 @@ def _inspect_one_worktree(
     marker = read_marker(prov.git_dir)
     corrupt = _invalid_marker(wt, prov)
     if marker is not None and marker != slug:
-        return _OneWorktree(None, foreign_marker=True)  # another item's marker wins
+        # Another item's marker wins: the worktree is excluded. It decides
+        # the slug branch only when it sits on it — any other item's live
+        # worktree says nothing about this slug's surviving branch, so it
+        # must not switch off that branch's fallback check.
+        return _OneWorktree(None, foreign_marker=porcelain_branch == slug)
     branch_attributed = (
         (prov.is_linked_worktree or allow_main)
         and bool(porcelain_branch)
@@ -747,8 +752,9 @@ def inspect_item_worktrees(
                 if insp.problem is None:
                     repo_attributed = True
         # A surviving slug branch is inspected only when this repo has no
-        # attributed worktree — and never when a foreign marker decided a
-        # worktree here, or the marker-wins rule would be meaningless.
+        # attributed worktree — and never when another item's marker sits
+        # on a worktree of the slug branch itself, or the marker-wins rule
+        # would be meaningless. Other items' worktrees never veto it.
         if not repo_attributed and not foreign_marker:
             fallback = _inspect_branch_fallback(anchor, slug, target_branch)
             if fallback is not None:
