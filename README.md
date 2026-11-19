@@ -326,3 +326,8 @@ agent scheduling are not measured by these records. Once the log grows past
 20 MiB, the next record first moves it to `timing.jsonl.1` (one old
 generation is kept; the previous `.1` is replaced). Remove or archive both
 files when finished. New log files are created with mode 0600.
+
+## Credits
+
+Several skills adapt [Matt Pocock's skills](https://github.com/mattpocock/skills)
+(MIT). `CREDITS.md` lists which, with his license.
