@@ -3598,11 +3598,10 @@ LAND_PARAMS["opencode-skill"] = {
 }
 
 _OBE_TRIAGE_DESCRIPTION = (
-    "Sweep open backlog items for ones overtaken by events (OBE) -- something "
-    "else delivered them or their premise is gone -- gather concrete evidence "
-    "per item, and close the ones the user confirms with dev_status obe. Use "
-    "when the user asks which backlog items are OBE, stale, obsolete, or no "
-    "longer needed, or says 'obe triage' or 'sweep the backlog'."
+    "Find open backlog items overtaken by events (OBE) -- delivered elsewhere "
+    "or no longer needed -- and close the ones the user confirms. Use when the "
+    "user asks 'which of these are OBE', 'what's been overtaken by events', or "
+    "says 'obe triage'."
 )
 
 OBE_TRIAGE_PARAMS: dict[str, dict[str, str]] = {

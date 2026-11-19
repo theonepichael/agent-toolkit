@@ -2153,7 +2153,7 @@ the workflow's template plus its generator's capability/parameter tables.
   - Generated from: `templates/make_skill.md.tmpl` by `gen_skills.py`
   - `claude/commands/{name}.md` is the rendered Claude Code port — edit the template or generator, then regenerate.
   - Installed at: `~/.claude/commands/make-skill.md` (claude)
-- **`/obe-triage`** — Sweep open backlog items for ones overtaken by events (OBE) -- something else delivered them or their premise is gone -- gather concrete evidence per item, and close the ones the user confirms with dev_status obe. Use when the user asks which backlog items are OBE, stale, obsolete, or no longer needed, or says 'obe triage' or 'sweep the backlog'.
+- **`/obe-triage`** — Find open backlog items overtaken by events (OBE) -- delivered elsewhere or no longer needed -- and close the ones the user confirms. Use when the user asks 'which of these are OBE', 'what's been overtaken by events', or says 'obe triage'.
   - Generated from: `templates/obe_triage.md.tmpl` by `gen_skills.py`
   - `claude/commands/{name}.md` is the rendered Claude Code port — edit the template or generator, then regenerate.
   - Installed at: `~/.claude/commands/obe-triage.md` (claude)
