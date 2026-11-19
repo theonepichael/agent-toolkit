@@ -16,9 +16,9 @@ empty. Empty means there is nothing to review: the reviewer line is
 "no review ran: nothing staged"; go to step 5 (a caller like `backlog-item`
 still continues to `land`). `git -C <worktree> diff --stat` must be empty — the
 reviewer reads files from disk, so an unstaged edit would make it review code
-that is not what gets committed. `git -C <worktree> status --porcelain` shows
-no untracked file (`??`) that belongs to this change — stage it, or confirm it
-is unrelated.
+that is not what gets committed. Stage any untracked file
+(`??` in `git -C <worktree> status --porcelain`) that belongs to this change.
+Leave the rest without asking: `land` shunts them before its commit gate.
 
 ## 2. Review
 Run one cross-model review round. Use one `--run-id` for the whole loop

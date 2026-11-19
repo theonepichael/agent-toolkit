@@ -617,6 +617,7 @@ _ARG_HINTS = {
     "review-diff": "[worktree]",
     "land": "[worktree] [slug]",
     "obe-triage": "[prefix]",
+    "shunt-artifacts": "[worktree] [--handoff]",
 }
 # Where each harness's copy reads its invocation arguments from.
 _ARGS = {
@@ -633,7 +634,7 @@ _ARGS = {
 
 
 def _frontmatter(harness: str, skill: str, description: str) -> str:
-    """Frontmatter for review-diff/land/obe-triage, in each harness's house shape."""
+    """Frontmatter for the generic-frontmatter skills, in each harness's house shape."""
     lines = ["---"]
     if harness not in ("opencode", "pi-prompt"):
         # opencode's skill surface requires `name:`; its command surface
@@ -2186,8 +2187,9 @@ nothing it does will ever report `blocked`.""",
 In a `--handoff` run (the invoking backlog-item was `/backlog-item --auto
 <slug> --handoff`), commit exactly as below (conventional format), then stop:
 print the single line
-`FOREMAN-HANDOFF slug=<slug> branch=<branch> commit=<sha> worktree=<path>`
-whose `<sha>` is the commit you just made, and do **not** merge, push, or
+`FOREMAN-HANDOFF slug=<slug> branch=<branch> commit=<sha> worktree=<path> untracked=<n>`
+whose `<sha>` is the commit you just made and `<n>` the count `shunt-artifacts`
+reported in step 1, and do **not** merge, push, or
 clean up the worktree — the foreman lands. Never run Close below in a handoff
 run.
 
@@ -2255,6 +2257,17 @@ each mutating call to read the current rev for `--if-rev` (CLAUDE.md's
 Backlog section).""",
     },
 }
+_SHUNT_HOW = {
+    "claude": _DELEGATE_HOW["claude"].format(skill="shunt-artifacts"),
+    "copilot": _DELEGATE_HOW["copilot"].format(skill="shunt-artifacts"),
+    "opencode": _DELEGATE_HOW["opencode"].format(skill="shunt-artifacts"),
+    "agy": "the shunt-artifacts skill (follow it, then return here)",
+    "codex": "the shunt-artifacts skill (follow it, then return here)",
+    "pi": "`/skill:shunt-artifacts`",
+}
+for _harness, _how in _SHUNT_HOW.items():
+    LAND_PARAMS[_harness]["SHUNT_HOW"] = _how
+
 LAND_PARAMS["pi-prompt"] = {
     **LAND_PARAMS["pi"],
     "FRONTMATTER": _land_frontmatter("pi-prompt"),
@@ -3612,6 +3625,34 @@ OBE_TRIAGE_PARAMS: dict[str, dict[str, str]] = {
     for harness in ("claude", "copilot", "opencode", "agy", "pi", "pi-prompt", "codex")
 }
 
+_SHUNT_ARTIFACTS_DESCRIPTION = (
+    "Shunt a ticket worktree's untracked files out of the repo: move personal "
+    "artifacts (runbooks, demo decks, screenshots) to a per-ticket folder, "
+    "stage forgotten code, leave junk in place, each after the user confirms "
+    "its label. Never deletes. Use when the user says 'shunt my artifacts', "
+    "'file away my runbook', 'move my notes out of the worktree', 'what is "
+    "untracked here', or when land delegates its untracked-files step."
+)
+
+SHUNT_ARTIFACTS_PARAMS: dict[str, dict[str, str]] = {
+    harness: {
+        "FRONTMATTER": _frontmatter(
+            harness, "shunt-artifacts", _SHUNT_ARTIFACTS_DESCRIPTION
+        ),
+        "ARGS": _ARGS[harness],
+    }
+    for harness in (
+        "claude",
+        "copilot",
+        "opencode",
+        "opencode-skill",
+        "agy",
+        "pi",
+        "pi-prompt",
+        "codex",
+    )
+}
+
 SKILL_PARAMS: dict[str, dict[str, dict[str, str]]] = {
     "dashboard": DASHBOARD_PARAMS,
     "recap": RECAP_PARAMS,
@@ -3628,4 +3669,5 @@ SKILL_PARAMS: dict[str, dict[str, dict[str, str]]] = {
     "review-diff": REVIEW_DIFF_PARAMS,
     "land": LAND_PARAMS,
     "obe-triage": OBE_TRIAGE_PARAMS,
+    "shunt-artifacts": SHUNT_ARTIFACTS_PARAMS,
 }

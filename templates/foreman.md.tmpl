@@ -346,8 +346,13 @@ commit step, then stops **before** the merge/push/cleanup gate and prints a
 single line:
 
 ```
-FOREMAN-HANDOFF slug=<slug> branch=<branch> commit=<sha> worktree=<path>
+FOREMAN-HANDOFF slug=<slug> branch=<branch> commit=<sha> worktree=<path> untracked=<n>
 ```
+
+When the handoff line's `untracked=<n>` is above 0, run the `shunt-artifacts`
+skill on the worktree first, telling it code is a send-back: the worker
+only counted them. A file the operator wants committed goes back to the
+worker, never staged into the verified commit here.
 
 The foreman lands, never re-entering `land`: rebase onto the **merge target**
 (the default branch, or the item's declared `integration_branch` when one is

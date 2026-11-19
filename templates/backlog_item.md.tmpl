@@ -133,8 +133,10 @@ It makes the worker stop for the foreman: run `land` through its commit step
 and never run Close. The worker's last line must be exactly:
 
 ```
-FOREMAN-HANDOFF slug=<slug> branch=<branch> commit=<sha> worktree=<path>
+FOREMAN-HANDOFF slug=<slug> branch=<branch> commit=<sha> worktree=<path> untracked=<n>
 ```
+
+`<n>` is the untracked-file count `land`'s `shunt-artifacts` step reported.
 
 Leave the branch unmerged for the foreman to land (rebase, merge, push,
 close). Without `--handoff`, behaviour is unchanged.

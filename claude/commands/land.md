@@ -14,6 +14,14 @@ commit in that worktree (`git -C <worktree> ...`), never in whatever
 checkout you happen to be in.
 
 ## 1. Gate: commit
+**Untracked files first.** Before anything else in this gate, delegate to
+the `shunt-artifacts` skill (Skill tool) with the worktree path, adding `--handoff` in a handoff run
+(there it only counts them, for the `untracked=<n>` field of the
+`FOREMAN-HANDOFF` line). Untracked files left behind block `git worktree
+remove` and `dev_status.py` `review`/`approve`; that skill stages forgotten
+code and moves personal artifacts out, each on the user's confirmation.
+Nothing untracked → it returns silently.
+
 **Slug-guard callout.** Before requesting commit approval, run
 `python3 ~/.agent-toolkit/scripts/dev_status.py slug-check --repo <worktree> --slug <slug>`
 (omit `--slug` on an ad-hoc commit with no backlog item) — the no-slugs

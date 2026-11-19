@@ -105,6 +105,11 @@ src = "claude/commands/obe-triage.md"
 dest = "~/.claude/commands/obe-triage.md"
 harness = "claude"
 
+[[link]]
+src = "claude/commands/shunt-artifacts.md"
+dest = "~/.claude/commands/shunt-artifacts.md"
+harness = "claude"
+
 # Generated from templates/swarm.md.tmpl (gen_skills.py SWARM_PARAMS). The
 # toolkit's own generated copy superseded the origin repo's hand-authored original --
 # the swarm/herdr source-of-truth verdict leaves this repo as sole author.
@@ -365,6 +370,10 @@ dest = "~/.agent-toolkit/scripts/worktree.py"
 src = "agent-scripts/worktree_provenance.py"
 dest = "~/.agent-toolkit/scripts/worktree_provenance.py"
 
+[[link]]
+src = "agent-scripts/ticket_artifacts.py"
+dest = "~/.agent-toolkit/scripts/ticket_artifacts.py"
+
 # ── GitHub Copilot CLI wiring ────────────────────────────────────────────
 
 [[link]]
@@ -491,6 +500,11 @@ dest = "~/.copilot/skills/obe-triage/SKILL.md"
 harness = "copilot"
 
 [[link]]
+src = "copilot/skills/shunt-artifacts/SKILL.md"
+dest = "~/.copilot/skills/shunt-artifacts/SKILL.md"
+harness = "copilot"
+
+[[link]]
 src = "copilot/skills/foreman/SKILL.md"
 dest = "~/.copilot/skills/foreman/SKILL.md"
 harness = "copilot"
@@ -578,6 +592,11 @@ dest = "~/.config/opencode/skills/land/SKILL.md"
 harness = "opencode"
 
 [[link]]
+src = "opencode/skills/shunt-artifacts/SKILL.md"
+dest = "~/.config/opencode/skills/shunt-artifacts/SKILL.md"
+harness = "opencode"
+
+[[link]]
 src = "opencode/command/analyze-sessions.md"
 dest = "~/.config/opencode/commands/analyze-sessions.md"
 harness = "opencode"
@@ -600,6 +619,11 @@ harness = "opencode"
 [[link]]
 src = "opencode/command/obe-triage.md"
 dest = "~/.config/opencode/commands/obe-triage.md"
+harness = "opencode"
+
+[[link]]
+src = "opencode/command/shunt-artifacts.md"
+dest = "~/.config/opencode/commands/shunt-artifacts.md"
 harness = "opencode"
 
 [[link]]
@@ -725,6 +749,11 @@ dest = "~/.gemini/antigravity-cli/skills/obe-triage/SKILL.md"
 harness = "agy"
 
 [[link]]
+src = "agy/skills/shunt-artifacts/SKILL.md"
+dest = "~/.gemini/antigravity-cli/skills/shunt-artifacts/SKILL.md"
+harness = "agy"
+
+[[link]]
 src = "agy/hooks.json"
 dest = "~/.gemini/config/hooks.json"
 harness = "agy"
@@ -834,6 +863,11 @@ harness = "pi"
 [[link]]
 src = "pi/prompts/obe-triage.md"
 dest = "~/.pi/agent/prompts/obe-triage.md"
+harness = "pi"
+
+[[link]]
+src = "pi/prompts/shunt-artifacts.md"
+dest = "~/.pi/agent/prompts/shunt-artifacts.md"
 harness = "pi"
 
 [[link]]

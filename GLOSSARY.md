@@ -25,6 +25,20 @@ verifier token — a 0600 file whose *path* (never its content) is passed to
 `gate-pass --verifier-token-file` — so a non-worker session holds the verifier
 role.
 
+## `artifact`
+
+Three unrelated things:
+
+- **Grill artifact** — a plan, spec or critique file `grill.py` writes
+  under `~/.agent-toolkit/data/grill/`, cited from a backlog item's
+  `related_files`.
+- **claude.ai Artifact** — a page published from Claude Code.
+- **Ticket artifact** — a personal, never-committed file (runbook, demo
+  deck, screenshot) left untracked in a ticket worktree.
+  `ticket_artifacts.py` moves these to a per-ticket folder outside the repo;
+  the `shunt-artifacts` skill drives it, and `land` delegates to that skill
+  before its commit gate.
+
 ## `contract`
 
 Three unrelated things are called a contract here:
@@ -63,7 +77,8 @@ Three distinct steps carry this name:
 
 - **Foreman handoff** — `herdr_delegate.py launch --handoff` (pi or agy,
   single `--slug` only): the worker stops after its commit gate and prints a
-  `FOREMAN-HANDOFF slug=... branch=... commit=... worktree=...` line, and
+  `FOREMAN-HANDOFF slug=... branch=... commit=... worktree=... untracked=...`
+  line, and
   the foreman session does the merge, push and close.
 - **backlog-item step 7, "Handoff"** — the decision of *who implements* a
   settled plan: this session, a fresh cheaper session, or an external

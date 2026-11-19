@@ -15,6 +15,7 @@ out-of-scope         ``backlog-out-of-scope/``
 decisions            ``grill/``
 ticket-batches       ``to-tickets/``
 standups             ``standup/``
+ticket-artifacts     ``artifacts/``
 guard-rail-log       ``guard_rails_audit.jsonl``
 backend-log          ``backend_calls.jsonl``
 launch-log           ``launch_log.jsonl``
@@ -54,6 +55,7 @@ DOMAINS: tuple[str, ...] = (
     "decisions",
     "ticket-batches",
     "standups",
+    "ticket-artifacts",
     "guard-rail-log",
     "backend-log",
     "launch-log",
@@ -68,6 +70,7 @@ DOMAIN_SEGMENTS: dict[str, str] = {
     "decisions": "grill",
     "ticket-batches": "to-tickets",
     "standups": "standup",
+    "ticket-artifacts": "artifacts",
     "guard-rail-log": "guard_rails_audit.jsonl",
     "backend-log": "backend_calls.jsonl",
     "launch-log": "launch_log.jsonl",

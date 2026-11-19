@@ -13,6 +13,14 @@ commit in that worktree (`git -C <worktree> ...`), never in whatever
 checkout you happen to be in.
 
 ## 1. Gate: commit
+**Untracked files first.** Before anything else in this gate, delegate to
+`/skill:shunt-artifacts` with the worktree path, adding `--handoff` in a handoff run
+(there it only counts them, for the `untracked=<n>` field of the
+`FOREMAN-HANDOFF` line). Untracked files left behind block `git worktree
+remove` and `dev_status.py` `review`/`approve`; that skill stages forgotten
+code and moves personal artifacts out, each on the user's confirmation.
+Nothing untracked → it returns silently.
+
 **Slug-guard callout.** Before requesting commit approval, run
 `python3 ~/.agent-toolkit/scripts/dev_status.py slug-check --repo <worktree> --slug <slug>`
 (omit `--slug` on an ad-hoc commit with no backlog item) — the no-slugs
@@ -80,8 +88,9 @@ the recovery `rm -rf` below.
 In a `--handoff` run (the invoking backlog-item was `/backlog-item --auto
 <slug> --handoff`), commit exactly as below (conventional format), then stop:
 print the single line
-`FOREMAN-HANDOFF slug=<slug> branch=<branch> commit=<sha> worktree=<path>`
-whose `<sha>` is the commit you just made, and do **not** merge, push, or
+`FOREMAN-HANDOFF slug=<slug> branch=<branch> commit=<sha> worktree=<path> untracked=<n>`
+whose `<sha>` is the commit you just made and `<n>` the count `shunt-artifacts`
+reported in step 1, and do **not** merge, push, or
 clean up the worktree — the foreman lands. Never run Close below in a handoff
 run.
 

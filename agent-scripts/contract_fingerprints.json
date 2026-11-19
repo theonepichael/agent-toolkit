@@ -514,6 +514,24 @@
     "handler fetch: ",
     "subcommand fetch: gather all sources as JSON"
   ],
+  "ticket_artifacts.py": [
+    "arg (top-level) --quiet/-q: ",
+    "arg (top-level) --verbose/-v: ",
+    "arg move --description: \u2014 folder description for a new <KEY>-<description> folder (kebab-cased)",
+    "arg move --key: \u2014 ticket key to use instead of the branch or backlog marker",
+    "arg move --root: ",
+    "arg move --worktree: \u2014 worktree to inspect (default: cwd) (default: .)",
+    "arg move files: \u2014 untracked file paths, relative to the worktree root (nargs: +)",
+    "arg scan --description: \u2014 folder description for a new <KEY>-<description> folder (kebab-cased)",
+    "arg scan --key: \u2014 ticket key to use instead of the branch or backlog marker",
+    "arg scan --root: ",
+    "arg scan --worktree: \u2014 worktree to inspect (default: cwd) (default: .)",
+    "exit codes: ",
+    "handler move: ",
+    "handler scan: ",
+    "subcommand move: move the named untracked files into the destination",
+    "subcommand scan: list untracked files with proposed labels and the destination"
+  ],
   "to_tickets_runner.py": [
     "arg run batch_file: \u2014 path to the batch JSON file",
     "exit codes: 1, 3",

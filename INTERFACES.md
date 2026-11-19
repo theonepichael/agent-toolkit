@@ -80,6 +80,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`standup.py`](#agentscriptsstanduppy) | standup.py — /standup skill CLI and read-only fetch service. |
 | [`standup_adapters.py`](#agentscriptsstandupadapterspy) | standup_adapters.py — provider-agnostic adapter interfaces for /standup. |
 | [`statusline.py`](#agentscriptsstatuslinepy) | Claude Code status line: render the model name and a color-coded context window usage bar with the used percentage, from the JSON session payload Claude Code pipes to this script on stdin. |
+| [`ticket_artifacts.py`](#agentscriptsticketartifactspy) | ticket_artifacts.py — find and file away untracked files in a ticket worktree. |
 | [`to_tickets_runner.py`](#agentscriptstoticketsrunnerpy) | to_tickets_runner.py — create a linked batch of dev_status.py backlog items from a confirmed vertical-slice/tracer-bullet ticket breakdown. |
 | [`toolkit_checkout.py`](#agentscriptstoolkitcheckoutpy) | Locate the agent-toolkit source checkout. |
 | [`vitals_promotion.py`](#agentscriptsvitalspromotionpy) | vitals-promotion.py — mechanical vitals-promotion pass over grill session data. |
@@ -105,7 +106,7 @@ Single source of truth for toolkit data paths.
 - Public functions:
   - `path_for(domain: str) -> Path` — Resolve ``domain`` using :data:`DEFAULT_RESOLVER`.
   - `toolkit_root() -> Path` — Return ``$AGENT_TOOLKIT_HOME``, or ``<home>/.agent-toolkit``.
-- Tested by: `test/test_agent_toolkit_paths.py`, `test/test_dev_status.py`, `test/test_dev_status_acceptance.py`, `test/test_dev_status_mutation.py`, `test/test_gen_interfaces.py`, `test/test_grill.py`, `test/test_guard_rails.py`, `test/test_guard_rails_topology.py`, `test/test_install.py`, `test/test_llm_backends.py`, `test/test_machine_id.py`, `test/test_migration_lock_adoption.py`, `test/test_second_opinion.py`, `test/test_slug_check.py`, `test/test_to_tickets_runner.py`
+- Tested by: `test/test_agent_toolkit_paths.py`, `test/test_dev_status.py`, `test/test_dev_status_acceptance.py`, `test/test_dev_status_mutation.py`, `test/test_gen_interfaces.py`, `test/test_grill.py`, `test/test_guard_rails.py`, `test/test_guard_rails_topology.py`, `test/test_install.py`, `test/test_llm_backends.py`, `test/test_machine_id.py`, `test/test_migration_lock_adoption.py`, `test/test_second_opinion.py`, `test/test_slug_check.py`, `test/test_ticket_artifacts.py`, `test/test_to_tickets_runner.py`
 
 ### `agent-scripts/agy_workspace_trust.py`
 
@@ -1902,6 +1903,49 @@ Claude Code status line: render the model name and a color-coded context window 
 - Explicit exit codes: `0`
 - Tested by: `test/test_statusline.py`
 
+### `agent-scripts/ticket_artifacts.py`
+
+ticket_artifacts.py — find and file away untracked files in a ticket worktree.
+
+- Installed at: `~/.agent-toolkit/scripts/ticket_artifacts.py` (all harnesses)
+- Entrypoint: executable, `#!/usr/bin/env python3`
+- CLI (`argparse`): Find untracked files in a ticket worktree and move the ones you name into a per-ticket folder outside the repo.
+  - `--quiet/-q`
+  - `--verbose/-v`
+- Subcommands:
+  - `scan [--worktree <WORKTREE>] [--root <ROOT>] [--key <KEY>] [--description <DESCRIPTION>]` — list untracked files with proposed labels and the destination
+    - `--worktree` — worktree to inspect (default: cwd) (default: .)
+    - `--key` — ticket key to use instead of the branch or backlog marker
+    - `--description` — folder description for a new <KEY>-<description> folder (kebab-cased)
+  - `move [--worktree <WORKTREE>] [--root <ROOT>] [--key <KEY>] [--description <DESCRIPTION>] <files>` — move the named untracked files into the destination
+    - `--worktree` — worktree to inspect (default: cwd) (default: .)
+    - `--key` — ticket key to use instead of the branch or backlog marker
+    - `--description` — folder description for a new <KEY>-<description> folder (kebab-cased)
+    - `files` — untracked file paths, relative to the worktree root (nargs: +)
+- Depends on: `agent_toolkit_paths.py`, `cli_common.py`, `worktree_provenance.py`
+- Exceptions:
+  - `class SetupError(Exception)` — A usage or environment problem that stops the command (exit 2).
+- Public classes:
+  - `class Config`
+  - `class Plan` — Everything ``scan`` reports and ``move`` acts on.
+- Public functions:
+  - `config_path() -> Path`
+  - `load_config(path: Path) -> Config` — Read the config file; a missing file means all defaults.
+  - `resolve_root(flag: str | None, config: Config) -> Path | None` — --root > TICKET_ARTIFACTS_ROOT > config ``root`` > unset.
+  - `worktree_root(path: Path) -> Path`
+  - `current_branch(worktree: Path) -> str | None`
+  - `untracked_files(worktree: Path) -> list[str]` — Every untracked, non-ignored file, relative to the worktree root.
+  - `classify(path: str, config: Config) -> str` — ``code`` before ``artifact``; everything else is ``unknown``.
+  - `kebab(text: str) -> str`
+  - `resolve_key(worktree: Path, branch: str | None, key_flag: str | None, config: Config) -> tuple[str | None, str, str | None]` — (key, key_source, description from the branch).
+  - `resolve_destination(root: Path, key: str, key_source: str, description: str | None) -> tuple[Path | None, str | None]` — (destination, error).
+  - `build_plan(args: argparse.Namespace) -> Plan`
+  - `place_exclusive(source: Path, target: Path) -> None` — Move ``source`` to ``target`` without ever replacing ``target``.
+  - `move_one(worktree: Path, destination: Path, rel: str) -> dict[str, str]`
+  - `build_parser() -> argparse.ArgumentParser`
+- Subcommand handlers: `cmd_scan`, `cmd_move`
+- Tested by: `test/test_ticket_artifacts.py`
+
 ### `agent-scripts/to_tickets_runner.py`
 
 to_tickets_runner.py — create a linked batch of dev_status.py backlog items from a confirmed vertical-slice/tracer-bullet ticket breakdown.
@@ -2098,7 +2142,7 @@ Per-worktree backlog provenance: one explicit marker, shared predicates.
   - `inspect_item_worktrees(*, related_files: object, slug: str, cwd: str | Path | None = None, target_branch: str | None = None) -> list[WorktreeInspection]` — Read-only committed-work facts for every target attributable to ``slug``: linked worktrees marked for the item (marker wins over the branch heuristic), the caller's current checkout when its branch equals the slug, and — only when no attributed worktree exists — each discovered repository's surviving slug branch.
   - `resolve_run_checkout(*, related_files: object, slug: str, in_progress_ids: set[str], target_branch: str | None, cwd: Path | None = None) -> RunCheckout` — The checkout a run for ``slug`` should execute in, or why none may.
   - `read_head(directory: Path) -> tuple[str | None, str | None]` — (HEAD sha, problem) for ``directory``; (None, None) outside any repo.
-- Tested by: `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_dev_status_run_cwd.py`, `test/test_guard_rails_claim.py`, `test/test_guard_rails_git_layer.py`, `test/test_worktree.py`, `test/test_worktree_provenance.py`
+- Tested by: `test/test_dev_status.py`, `test/test_dev_status_mutation.py`, `test/test_dev_status_run_cwd.py`, `test/test_guard_rails_claim.py`, `test/test_guard_rails_git_layer.py`, `test/test_ticket_artifacts.py`, `test/test_worktree.py`, `test/test_worktree_provenance.py`
 
 ---
 
@@ -2126,6 +2170,7 @@ the workflow's template plus its generator's capability/parameter tables.
 | `/refresh-guidance` | template | yes | yes | yes | yes | yes | yes |
 | `/review-diff` | template | yes | yes | yes | yes | yes | yes |
 | `/second-opinion` | template | yes | yes | yes | yes | yes | yes |
+| `/shunt-artifacts` | template | yes | yes | yes | yes | yes | yes |
 | `/skill-drift-audit` | hand-authored | yes | — | — | — | — | — |
 | `/skill-map` | hand-authored | yes | — | — | — | — | — |
 | `/spec` | template | yes | yes | yes | yes | yes | yes |
@@ -2184,6 +2229,10 @@ the workflow's template plus its generator's capability/parameter tables.
   - Generated from: `templates/second_opinion.md.tmpl` by `gen_second_opinion.py`
   - `claude/commands/{name}.md` is the rendered Claude Code port — edit the template or generator, then regenerate.
   - Installed at: `~/.claude/commands/second-opinion.md` (claude)
+- **`/shunt-artifacts`** — Shunt a ticket worktree's untracked files out of the repo: move personal artifacts (runbooks, demo decks, screenshots) to a per-ticket folder, stage forgotten code, leave junk in place, each after the user confirms its label. Never deletes. Use when the user says 'shunt my artifacts', 'file away my runbook', 'move my notes out of the worktree', 'what is untracked here', or when land delegates its untracked-files step.
+  - Generated from: `templates/shunt_artifacts.md.tmpl` by `gen_skills.py`
+  - `claude/commands/{name}.md` is the rendered Claude Code port — edit the template or generator, then regenerate.
+  - Installed at: `~/.claude/commands/shunt-artifacts.md` (claude)
 - **`/skill-drift-audit`** — Audit agent-toolkit's skill docs against the current behavior of the scripts they invoke — stale wording the scripts now contradict, and new script functionality the skills don't use yet — for everything changed since the last audit. Use when the user says 'audit the skills', 'skill drift', 'are the skills stale', 'check the skills against the scripts', or asks after a batch of script changes whether any skills need updating.
   - Source: `claude/commands/skill-drift-audit.md` (hand-authored)
   - Installed at: `~/.claude/commands/skill-drift-audit.md` (claude)
@@ -2313,6 +2362,7 @@ are copy-once seeds for exactly that reason.
 | `pi/prompts/refresh-guidance.md` | `~/.pi/agent/prompts/refresh-guidance.md` (pi) |
 | `pi/prompts/review-diff.md` | `~/.pi/agent/prompts/review-diff.md` (pi) |
 | `pi/prompts/second-opinion.md` | `~/.pi/agent/prompts/second-opinion.md` (pi) |
+| `pi/prompts/shunt-artifacts.md` | `~/.pi/agent/prompts/shunt-artifacts.md` (pi) |
 | `pi/prompts/spec.md` | `~/.pi/agent/prompts/spec.md` (pi) |
 | `pi/prompts/standup.md` | `~/.pi/agent/prompts/standup.md` (pi) |
 | `pi/prompts/to-tickets.md` | `~/.pi/agent/prompts/to-tickets.md` (pi) |
@@ -2582,6 +2632,7 @@ named doc, not regenerating this file.
 | `agy/skills/obe-triage/SKILL.md` | OK |
 | `agy/skills/recap/SKILL.md` | OK |
 | `agy/skills/second-opinion/SKILL.md` | OK |
+| `agy/skills/shunt-artifacts/SKILL.md` | OK |
 | `agy/skills/standup/SKILL.md` | OK |
 | `agy/skills/to-tickets/SKILL.md` | OK |
 | `claude/commands/backlog-item.md` | OK |
@@ -2591,6 +2642,7 @@ named doc, not regenerating this file.
 | `claude/commands/obe-triage.md` | OK |
 | `claude/commands/recap.md` | OK |
 | `claude/commands/second-opinion.md` | OK |
+| `claude/commands/shunt-artifacts.md` | OK |
 | `claude/commands/standup.md` | OK |
 | `claude/commands/swarm.md` | OK |
 | `claude/commands/to-tickets.md` | OK |
@@ -2600,6 +2652,7 @@ named doc, not regenerating this file.
 | `codex/skills/obe-triage/SKILL.md` | OK |
 | `codex/skills/recap/SKILL.md` | OK |
 | `codex/skills/second-opinion/SKILL.md` | OK |
+| `codex/skills/shunt-artifacts/SKILL.md` | OK |
 | `codex/skills/standup/SKILL.md` | OK |
 | `codex/skills/to-tickets/SKILL.md` | OK |
 | `copilot/skills/backlog-item/SKILL.md` | OK |
@@ -2609,6 +2662,7 @@ named doc, not regenerating this file.
 | `copilot/skills/obe-triage/SKILL.md` | OK |
 | `copilot/skills/recap/SKILL.md` | OK |
 | `copilot/skills/second-opinion/SKILL.md` | OK |
+| `copilot/skills/shunt-artifacts/SKILL.md` | OK |
 | `copilot/skills/standup/SKILL.md` | OK |
 | `copilot/skills/swarm/SKILL.md` | OK |
 | `copilot/skills/to-tickets/SKILL.md` | OK |
@@ -2618,16 +2672,19 @@ named doc, not regenerating this file.
 | `opencode/command/obe-triage.md` | OK |
 | `opencode/command/recap.md` | OK |
 | `opencode/command/second-opinion.md` | OK |
+| `opencode/command/shunt-artifacts.md` | OK |
 | `opencode/command/standup.md` | OK |
 | `opencode/command/to-tickets.md` | OK |
 | `opencode/skills/land/SKILL.md` | OK |
 | `opencode/skills/second-opinion/SKILL.md` | OK |
+| `opencode/skills/shunt-artifacts/SKILL.md` | OK |
 | `pi/skills/backlog-item/SKILL.md` | OK |
 | `pi/skills/dashboard/SKILL.md` | OK |
 | `pi/skills/land/SKILL.md` | OK |
 | `pi/skills/obe-triage/SKILL.md` | OK |
 | `pi/skills/recap/SKILL.md` | OK |
 | `pi/skills/second-opinion/SKILL.md` | OK |
+| `pi/skills/shunt-artifacts/SKILL.md` | OK |
 | `pi/skills/standup/SKILL.md` | OK |
 
 ### `gen_interfaces.py`
@@ -2760,6 +2817,18 @@ named doc, not regenerating this file.
 | `opencode/command/standup.md` | OK |
 | `pi/skills/standup/SKILL.md` | OK |
 
+### `ticket_artifacts.py`
+
+| Doc | Status |
+| --- | --- |
+| `agy/skills/shunt-artifacts/SKILL.md` | OK |
+| `claude/commands/shunt-artifacts.md` | OK |
+| `codex/skills/shunt-artifacts/SKILL.md` | OK |
+| `copilot/skills/shunt-artifacts/SKILL.md` | OK |
+| `opencode/command/shunt-artifacts.md` | OK |
+| `opencode/skills/shunt-artifacts/SKILL.md` | OK |
+| `pi/skills/shunt-artifacts/SKILL.md` | OK |
+
 ### `to_tickets_runner.py`
 
 | Doc | Status |
@@ -2810,18 +2879,19 @@ new one, `--check` catches it the same as any other stale content.
 | Skill | Mentions |
 | --- | --- |
 | `/analyze-sessions` | `backlog-item` |
-| `/backlog-item` | `dashboard`, `foreman`, `grill-me`, `land`, `review-diff`, `second-opinion`, `spec` |
+| `/backlog-item` | `dashboard`, `foreman`, `grill-me`, `land`, `review-diff`, `second-opinion`, `shunt-artifacts`, `spec` |
 | `/dashboard` | `recap` |
 | `/draft-voice` | — |
-| `/foreman` | `backlog-item`, `land`, `swarm` |
+| `/foreman` | `backlog-item`, `land`, `shunt-artifacts`, `swarm` |
 | `/grill-me` | `second-opinion`, `spec` |
-| `/land` | `backlog-item`, `dashboard`, `review-diff` |
+| `/land` | `backlog-item`, `dashboard`, `review-diff`, `shunt-artifacts` |
 | `/make-skill` | `draft-voice`, `grill-me`, `obe-triage` |
 | `/obe-triage` | — |
 | `/recap` | — |
 | `/refresh-guidance` | — |
 | `/review-diff` | `backlog-item`, `land` |
 | `/second-opinion` | `backlog-item` |
+| `/shunt-artifacts` | `foreman`, `land`, `review-diff` |
 | `/skill-drift-audit` | `land` |
 | `/skill-map` | — |
 | `/spec` | `backlog-item`, `grill-me`, `second-opinion` |
