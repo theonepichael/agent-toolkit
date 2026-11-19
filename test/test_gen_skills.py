@@ -135,6 +135,25 @@ class CapabilityFixtureTests(unittest.TestCase):
             self.assertNotIn("integration-merge", text, path)
             self.assertNotIn("step 12", text, path)
 
+    def test_backlog_item_step8_carries_test_rules_everywhere(self) -> None:
+        # The Pi copies render from their own template, so a rule dropped
+        # there would pass the render-drift check unnoticed.
+        rendered = gs.render_all(REPO_ROOT, SKILL_PARAMS)
+        for (skill, harness), path in gs.OUTPUT_PATHS.items():
+            if skill != "backlog-item":
+                continue
+            text = rendered[path]
+            step8 = text.split("## 8. Red, green", 1)[1].split("## 9. Verify", 1)[0]
+            for rule in (
+                "what it catches and misses",
+                "never recomputed the way the code computes them",
+                "diff it against an untouched copy",
+                "fails on the assertion you meant",
+            ):
+                self.assertIn(rule, step8, path)
+            step7 = text.split("## 7. Handoff", 1)[1].split("## 8. Red, green", 1)[0]
+            self.assertIn("append step 8's three rules", step7, path)
+
     @pytest.mark.regression(
         "backlog-item-claims-spec-skill-missing",
         "AssertionError: 'no `spec` skill' unexpectedly found in '---\\nname: backlog-item\\n",

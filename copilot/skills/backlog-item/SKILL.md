@@ -250,12 +250,18 @@ conversation:
   explicitly which, and whether to keep the child's partial diff as a
   starting point or wipe it first — don't pick automatically.
 
+An external executor never sees step 8: whichever handoff prompt you send, append step 8's three rules (test points first, no tautological tests, prove a forced red) word for word.
+
 ## 8. Red, green
 Work inside the worktree resolved in step 1 — `cd` there (or use `git -C`)
 for every shell command in this step and the next three; do not run
 TDD/test/diff/merge commands against the root checkout. TDD in the
 worktree: a failing test that proves the gap the plan names, then the
 minimal implementation.
+
+- **Test points first.** Before writing a test, name where each one goes (a public seam, never internals) and what it catches and misses. Name any the plan didn't when you report the diff.
+- **No tautological tests.** Expected values come from an independent source (a literal, a worked example, the spec), never recomputed the way the code computes them.
+- **Prove a forced red.** If you made a test fail by changing code or a fixture, diff it against an untouched copy before trusting the failure, and check it fails on the assertion you meant, not in setup: an edit that silently changed nothing, or broke the fixture, still passes for red.
 
 ## 9. Verify
 Stage every intended deliverable, without staging unrelated worktree changes,

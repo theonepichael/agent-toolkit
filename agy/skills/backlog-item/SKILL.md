@@ -228,8 +228,14 @@ was accepted):
 For a work-related item, only the first two options are on the table —
 don't offer the cheaper-model branch at all.
 
+An external executor never sees step 8: whichever handoff prompt you send, append step 8's three rules (test points first, no tautological tests, prove a forced red) word for word.
+
 ## 8. Red, green
 TDD in the worktree: a failing test that proves the gap the plan names, then the minimal implementation.
+
+- **Test points first.** Before writing a test, name where each one goes (a public seam, never internals) and what it catches and misses. Name any the plan didn't when you report the diff.
+- **No tautological tests.** Expected values come from an independent source (a literal, a worked example, the spec), never recomputed the way the code computes them.
+- **Prove a forced red.** If you made a test fail by changing code or a fixture, diff it against an untouched copy before trusting the failure, and check it fails on the assertion you meant, not in setup: an edit that silently changed nothing, or broke the fixture, still passes for red.
 
 ## 9. Verify
 Stage every intended deliverable, without staging unrelated worktree changes,
