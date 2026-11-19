@@ -1679,21 +1679,21 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
     - `--mode` — contract view to report: text-only (default) or grounded (checks the per-mode read-reach override, so a containment-dependent backend reports as unavailable for grounded mode when containment is unavailable) (choices: text-only, grounded; default: text-only)
   - `probe [--backend NAME[,NAME...]]` — probe each backend's model pool and report per-model availability as JSON
     - `--backend` — probe only these backend(s) (comma-separated list allowed) instead of every installed backend in priority order; an entry not installed is reported as not_installed, not an error
-  - `review [<plan-file-or-text>] [--diff] [--image PATH] [--backend NAME[,NAME...]] [--dir <DIR>] [--text-only] [--spec FILE] [--focus-file <FOCUS_FILE>] [--model-index N] [--exclude-backend NAME] [--diff-path PATHSPEC] [--prompt-only] [--run-id ID] [--allow-extra-round]` — get one critique from the priority-selected backend
+  - `review [<plan-file-or-text>] [--diff] [--image PATH] [--backend NAME[,NAME...]] [--dir <DIR>] [--text-only] [--spec FILE] [--focus-file <FOCUS_FILE>] [--model-index N] [--exclude-backend NAME] [--diff-path PATHSPEC] [--prompt-only] [--run-id ID] [--allow-extra-round]` — get one critique from the priority-selected (per-run rotated) backend
     - `plan` (nargs: ?)
     - `--diff` — review the staged diff (git diff --cached in --dir) for bugs instead of critiquing a plan; do not also pass a plan (default: False)
     - `--image` — attach an image file to the review (repeatable), sending the images plus the rubric to a vision-capable backend; the review then runs text-only, and is mutually exclusive with --diff. Images are size/count/format limited, and a backend without a headless image flag (agy) is skipped or fails explicitly, never a silent text-only fallback
-    - `--backend` — force backend(s) in order, first success wins (comma-separated list allowed) instead of priority-order fallback; a single name keeps the strict one-backend-only contract, while a list skips an entry that is not installed with a notice
+    - `--backend` — force backend(s) in order, first success wins (comma-separated list allowed) instead of priority-order fallback; a single name keeps the strict one-backend-only contract, while a list skips an entry that is not installed with a notice. Turns backend rotation off: every round uses the named backend(s)
     - `--dir` — root directory of the codebase to inspect in grounded review (defaults to current working directory)
     - `--text-only` — disable codebase exploration and run ungrounded text-only critique (default: False)
     - `--spec` — with --diff, the spec the change implements: the reviewer adds a separate Spec: section of missing, unrequested, or wrongly implemented requirements, each quoting the spec line
     - `--focus-file` — path to a file of plan-specific risk hints, appended to the critique prompt as areas to scrutinize (supplements, not replaces, the generic adversarial mandate)
-    - `--model-index` — 0-based index into the backend model pool (SECOND_OPINION_{CODEX,AGY,PI,OPENCODE,COPILOT}_MODEL_POOL) for this call -- round 1 of a rotation is index 0, round 2 is index 1, etc. Supported for codex/agy/pi/opencode/copilot; an explicit index selects the pool even when a single-model override is set, and is a hard error if the pool is unset/empty or the index is out of range (was previously a silent no-op/fallback).
+    - `--model-index` — 0-based index into the selected backend's model pool (SECOND_OPINION_{CODEX,AGY,PI,OPENCODE,COPILOT}_MODEL_POOL) for this call, for manually pinning one pool entry. Turns backend rotation off (a pool-skip can still advance within the backend). An explicit index selects the pool even when a single-model override is set, and is a hard error if the pool is unset/empty or the index is out of range. Usually paired with --backend.
     - `--exclude-backend` — skip this backend in priority-order selection (repeatable) — e.g. the harness that wrote the change, so the review really comes from another model; cannot be combined with --backend
     - `--diff-path` — with --diff, limit the staged diff to this git pathspec (repeatable; ':!<glob>' excludes) — for splitting a diff too large for one review
     - `--prompt-only` — print the prompt this review would send and exit, calling no backend and spending no round (for a caller's own reviewer) (default: False)
-    - `--run-id` — stable id for one iterative critique session; the per-round cap is enforced by counting reviews per run-id (or per plan file when omitted). The second-opinion skill passes one for the whole loop.
-    - `--allow-extra-round` — permit review calls beyond the per-run cap (for a user who deliberately wants another round) (default: False)
+    - `--run-id` — stable id for one iterative critique session; the per-round cap is enforced by counting reviews per run-id (or per plan file when omitted), and the same key's history rotates priority-order selection so each round prefers the backend that served least recently. The second-opinion skill passes one for the whole loop.
+    - `--allow-extra-round` — permit review calls beyond the per-run cap (for a user who deliberately wants another round); an extra round still records which backend served, so rotation continues (default: False)
   - `panel [<plan-file-or-text>] --backends NAME[,NAME...] [--transcript PATH] [--dir <DIR>] [--text-only] [--focus-file <FOCUS_FILE>] [--run-id ID] [--allow-extra-round]` — run a multi-model panel discussion (round 1 parallel, one cross-round, synthesis)
     - `plan` (nargs: ?)
     - `--backends` (required)
@@ -1735,12 +1735,14 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
   - `round_count_for(state: dict[str, object]) -> int` — The number of reviews already recorded for a run's state dict.
   - `would_exceed_cap(count: int) -> bool` — True when ``count`` already reaches the cap (the call must be refused).
   - `record_review(state: dict[str, object]) -> dict[str, object]` — Return a copy of ``state`` with the review count incremented and the ``updated`` timestamp refreshed.
+  - `rotation_history_for(key: str) -> tuple[str, ...]` — The backends that served ``key``'s earlier rounds, oldest first.
   - `run_codex(prompt: str, *, model_index: int | None = None, mode: str | None = None, target_dir: Path | None = None, images: list[str] | None = None) -> str` — Run the ``codex`` backend and return its critique text.
   - `run_agy(prompt: str, *, model_index: int | None = None, mode: str | None = None, target_dir: Path | None = None) -> str` — Run the ``agy`` backend and return its critique text.
   - `run_opencode(prompt: str, *, model_index: int | None = None, mode: str | None = None, target_dir: Path | None = None, images: list[str] | None = None) -> str` — Run the ``opencode`` backend's adversary agent and return its critique text.
   - `run_copilot(prompt: str, *, model_index: int | None = None, mode: str | None = None, target_dir: Path | None = None, images: list[str] | None = None) -> str` — Run the ``copilot`` backend and return its critique text.
   - `run_pi(prompt: str, *, model_index: int | None = None, mode: str | None = None, target_dir: Path | None = None, images: list[str] | None = None) -> str` — Run the ``pi`` backend and return its critique text.
   - `backend_label(backend: str, *, model_index: int | None = None, model: object = _UNSET) -> str` — Return ``backend``'s display label, appending the resolved model if any.
+  - `rotation_order(candidates: list[str], history: Sequence[str]) -> list[str]` — Order ``candidates`` so the least-recently-served backend goes first.
   - `review_plan(request: ReviewRequest, *, verbose: bool = False, quiet: bool = False) -> ReviewResult` — Run one adversarial review of ``request.plan_text`` and return the result.
   - `run_panel(plan_text: str, backends: list[str], *, focus_hints: str | None, transcript_path: Path, target_dir: Path, text_only: bool) -> tuple[str, list[str]]` — Run the panel and return ``(summary_text, failure_lines)``.
   - `build_parser() -> argparse.ArgumentParser` — Build the full argument parser for every subcommand.
@@ -2891,7 +2893,7 @@ new one, `--check` catches it the same as any other stale content.
 | `/recap` | — |
 | `/refresh-guidance` | — |
 | `/review-diff` | `backlog-item`, `land`, `spec` |
-| `/second-opinion` | `backlog-item` |
+| `/second-opinion` | `backlog-item`, `review-diff` |
 | `/shunt-artifacts` | `foreman`, `land`, `review-diff` |
 | `/skill-drift-audit` | `land` |
 | `/skill-map` | — |

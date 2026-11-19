@@ -25,7 +25,10 @@ Call the `second_opinion` tool with `action: "review"`, `diff: true`,
 Never invoke `second_opinion.py` via bash — all review calls go through the
 native `second_opinion` tool.
 
-The reviewer is the label it prints (`Second opinion via <label>:`).
+The reviewer is the label it prints (`Second opinion via <label>:`). Rounds
+sharing a runId rotate across backends: round 2 prefers a different
+backend (model family) than round 1, and an excluded backend never
+rotates in.
 
 Read its output straight from the tool result.
 
@@ -35,7 +38,9 @@ drop hand-written code: first leave out generated copies whose source
 but keep one rendered copy per changed template, so the rendering itself is
 read. Still too large? Review path groups with one call each (`diffPaths:
 ["<paths>"]`, `runId: "<run-id>-<group>"`). Every staged file lands in some
-group.
+group. Rotation is scoped to each group's id, so every group's first round
+starts at the top of the priority order; a group's next round must reuse
+that group's id to rotate.
 
 It throws or fails (no backend installed, or every backend failed)? Fall back:
 call the `second_opinion` tool with `action: "review"`, `diff: true`,

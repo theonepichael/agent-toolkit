@@ -270,8 +270,8 @@ export function buildArgv(action: Action, params: SecondOpinionParams): string[]
         ...(params.focusFile ? ["--focus-file", params.focusFile] : []),
         ...(params.runId ? ["--run-id", params.runId] : []),
         ...(params.images ? params.images.flatMap((p) => ["--image", p]) : []),
-        // Compared against undefined, not truthiness: index 0 is round 1 of
-        // the rotation, and dropping it would silently fall back to the
+        // Compared against undefined, not truthiness: index 0 is a real pool
+        // entry, and dropping it would silently fall back to the
         // single-model override instead of the pool.
         ...(params.modelIndex !== undefined ? ["--model-index", String(params.modelIndex)] : []),
       ];
@@ -368,7 +368,8 @@ export default function (pi: ExtensionAPI) {
       "The script enforces a per-run cap (3 rounds by default): pass a stable `runId` for the whole loop (or rely on the plan-file path) and the 4th `review` call for that run is refused with a finalize-and-stop message. For diff reviews (`diff: true`), always pass a stable `runId` across iterative review rounds so round counting is enforced.",
       "Always pass planFile as a path when critiquing a plan. Never inline plan text -- write the plan to a file first.",
       "For diff review, pass `diff: true` (omit planFile); limit the staged diff with `diffPaths` (array of pathspecs); skip a backend in priority-order fallback with `excludeBackend` (e.g. 'pi' to prevent self-review); pass `promptOnly: true` for the fallback prompt without calling a backend.",
-      "modelIndex is 0-based: round 1 is 0, round 2 is 1. If a call fails with a pool configuration error naming --model-index, retry that same round once with modelIndex omitted. That is the valid fallback, not a skipped round.",
+      "Rounds rotate across backends on their own: with the same `runId` every round, each `review` prefers the eligible backend that served least recently, so when each preferred backend answers, a three-round loop gets three model families. A failure can fall back to a backend that already served: compare the `Second opinion via` headers before calling convergence. Passing `backend` or `modelIndex` turns rotation off, so leave both unset in the loop unless the user named a backend or model. A preferred backend that fails is skipped forward with a stderr notice and, while it stays eligible, is tried first again next round. `excludeBackend` filters before rotation.",
+      "modelIndex is a 0-based manual pin into one backend's model pool, usually paired with `backend`. It is a hard error if that pool is unset or the index is out of range.",
       "To pin a model for the critique, pass `model` together with `backend` (Pi sets SECOND_OPINION_<BACKEND>_MODEL for you) — never set that env var directly. To raise the timeout on a slow critique, pass `timeoutSeconds` (clamped to 600); do not hand-set SECOND_OPINION_TIMEOUT_SECONDS.",
     ],
     parameters: Type.Object({
@@ -400,7 +401,7 @@ export default function (pi: ExtensionAPI) {
       excludeBackend: Type.Optional(
         Type.String({
           description:
-            "review: skip these backend(s) (comma-separated, e.g. 'pi') in priority-order selection; cannot be combined with backend.",
+            "review: skip these backend(s) (comma-separated, e.g. 'pi') in priority-order selection; an excluded backend never rotates in. Cannot be combined with backend.",
         }),
       ),
       promptOnly: Type.Optional(
@@ -412,7 +413,7 @@ export default function (pi: ExtensionAPI) {
       backend: Type.Optional(
         Type.String({
           description:
-            "review: force this backend instead of priority-order fallback. Use action detect to see what is available. " +
+            "review: force this backend instead of priority-order fallback; turns backend rotation off, so every round uses it. Use action detect to see what is available. " +
             "probe: probe only these backend(s) (comma-separated) instead of every installed backend.",
         }),
       ),
@@ -438,7 +439,7 @@ export default function (pi: ExtensionAPI) {
         Type.Integer({
           minimum: 0,
           description:
-            "review: 0-based index into the backend's model pool for this call. Round 1 is 0, round 2 is 1. A hard error if the pool is unset/empty or the index is out of range.",
+            "review: 0-based index into the selected backend's model pool for this call, a manual pin usually paired with backend. Turns backend rotation off. A hard error if the pool is unset/empty or the index is out of range.",
         }),
       ),
       model: Type.Optional(
@@ -463,9 +464,9 @@ export default function (pi: ExtensionAPI) {
         Type.String({
           description:
             "review: stable id for one iterative critique session. Scopes the " +
-            "script's per-run round cap to this loop (the second-opinion skill " +
-            "passes one for the whole loop). When omitted, the script keys the " +
-            "cap by the resolved plan-file path instead.",
+            "script's per-run round cap and its backend rotation to this loop " +
+            "(the second-opinion skill passes one for the whole loop). When " +
+            "omitted, the script keys both by the resolved plan-file path instead.",
         }),
       ),
       images: Type.Optional(
@@ -523,12 +524,15 @@ export default function (pi: ExtensionAPI) {
       if (probeCounts !== null) {
         // The summary is a separate block so the first one stays the
         // script's JSON verbatim. Counts, not a healthy flag: a report with
-        // zero ok entries exits 0 yet tested nothing.
+        // zero ok entries exits 0 yet tested nothing. Stderr (the shared
+        // model-family warning) gets a third block of its own, so it never
+        // lands inside the JSON block.
         const summary = `probe: ${probeCounts.ok} ok, ${probeCounts.unavailable} unavailable, ${probeCounts.notInstalled} not installed`;
         return {
           content: [
-            { type: "text", text },
+            { type: "text", text: result.stdout },
             { type: "text", text: summary },
+            ...(result.stderr.trim() ? [{ type: "text" as const, text: result.stderr }] : []),
           ],
           details: {
             stdout: result.stdout,

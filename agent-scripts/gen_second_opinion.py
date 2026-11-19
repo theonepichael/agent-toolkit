@@ -147,7 +147,6 @@ class HarnessParams:
     io_entrypoint: str
     usage_block: str
     review_call: str
-    review_call_retry: str
     grill_plan_lookup: str
 
 
@@ -216,7 +215,7 @@ second_opinion.py review <plan-file-or-text> \\
     [--focus-file <path>] \\
     [--model-index N] \\
     --run-id <run_id>                            # one critique from the
-                                                  # priority-selected backend,
+                                                  # least-recently-served backend,
                                                   # optionally scoped with
                                                   # plan-specific risk hints; the
                                                   # round cap counts per run-id
@@ -231,12 +230,7 @@ second_opinion.py check-notes <artifact>        # current, stale, unbound,
         review_call="""\
     critique = second_opinion.py review <current_plan> \\
                    [--focus-file <focus-hints-path>] \\
-                   --model-index <round - 1> --run-id <run_id>   # one call\
-""",
-        # the same call without the index, for the no-pool retry, 2026-08-30
-        review_call_retry="""\
-        critique = second_opinion.py review <current_plan> \\
-                       [--focus-file <focus-hints-path>] --run-id <run_id>   # retry, no index —\
+                   --run-id <run_id>   # one call; rotates backends per run-id\
 """,
         # every harness but Pi still reaches grill.py through bash, so the
         # plan-path lookup stays a CLI invocation, 2026-08-30
@@ -300,7 +294,7 @@ second_opinion.py review <plan-file-or-text> \\
     [--focus-file <path>] \\
     [--model-index N] \\
     --run-id <run_id>                            # one critique from the
-                                                  # priority-selected backend,
+                                                  # least-recently-served backend,
                                                   # optionally scoped with
                                                   # plan-specific risk hints; the
                                                   # round cap counts per run-id
@@ -315,12 +309,7 @@ second_opinion.py check-notes <artifact>        # current, stale, unbound,
         review_call="""\
     critique = second_opinion.py review <current_plan> \\
                    [--focus-file <focus-hints-path>] \\
-                   --model-index <round - 1> --run-id <run_id>   # one call\
-""",
-        # the same call without the index, for the no-pool retry, 2026-08-30
-        review_call_retry="""\
-        critique = second_opinion.py review <current_plan> \\
-                       [--focus-file <focus-hints-path>] --run-id <run_id>   # retry, no index —\
+                   --run-id <run_id>   # one call; rotates backends per run-id\
 """,
         # every harness but Pi still reaches grill.py through bash, so the
         # plan-path lookup stays a CLI invocation, 2026-08-30
@@ -384,7 +373,7 @@ second_opinion.py review <plan-file-or-text> \\
     [--focus-file <path>] \\
     [--model-index N] \\
     --run-id <run_id>                            # one critique from the
-                                                  # priority-selected backend,
+                                                  # least-recently-served backend,
                                                   # optionally scoped with
                                                   # plan-specific risk hints; the
                                                   # round cap counts per run-id
@@ -399,12 +388,7 @@ second_opinion.py check-notes <artifact>        # current, stale, unbound,
         review_call="""\
     critique = second_opinion.py review <current_plan> \\
                    [--focus-file <focus-hints-path>] \\
-                   --model-index <round - 1> --run-id <run_id>   # one call\
-""",
-        # the same call without the index, for the no-pool retry, 2026-08-30
-        review_call_retry="""\
-        critique = second_opinion.py review <current_plan> \\
-                       [--focus-file <focus-hints-path>] --run-id <run_id>   # retry, no index —\
+                   --run-id <run_id>   # one call; rotates backends per run-id\
 """,
         # every harness but Pi still reaches grill.py through bash, so the
         # plan-path lookup stays a CLI invocation, 2026-08-30
@@ -476,7 +460,7 @@ second_opinion.py review <plan-file-or-text> \\
     [--focus-file <path>] \\
     [--model-index N] \\
     --run-id <run_id>                            # one critique from the
-                                                  # priority-selected backend,
+                                                  # least-recently-served backend,
                                                   # optionally scoped with
                                                   # plan-specific risk hints; the
                                                   # round cap counts per run-id
@@ -491,12 +475,7 @@ second_opinion.py check-notes <artifact>        # current, stale, unbound,
         review_call="""\
     critique = second_opinion.py review <current_plan> \\
                    [--focus-file <focus-hints-path>] \\
-                   --model-index <round - 1> --run-id <run_id>   # one call\
-""",
-        # the same call without the index, for the no-pool retry, 2026-08-30
-        review_call_retry="""\
-        critique = second_opinion.py review <current_plan> \\
-                       [--focus-file <focus-hints-path>] --run-id <run_id>   # retry, no index —\
+                   --run-id <run_id>   # one call; rotates backends per run-id\
 """,
         # every harness but Pi still reaches grill.py through bash, so the
         # plan-path lookup stays a CLI invocation, 2026-08-30
@@ -562,7 +541,7 @@ second_opinion.py review <plan-file-or-text> \\
     [--focus-file <path>] \\
     [--model-index N] \\
     --run-id <run_id>                            # one critique from the
-                                                  # priority-selected backend,
+                                                  # least-recently-served backend,
                                                   # optionally scoped with
                                                   # plan-specific risk hints; the
                                                   # round cap counts per run-id
@@ -577,12 +556,7 @@ second_opinion.py check-notes <artifact>        # current, stale, unbound,
         review_call="""\
     critique = second_opinion.py review <current_plan> \\
                    [--focus-file <focus-hints-path>] \\
-                   --model-index <round - 1> --run-id <run_id>   # one call\
-""",
-        # the same call without the index, for the no-pool retry, 2026-08-30
-        review_call_retry="""\
-        critique = second_opinion.py review <current_plan> \\
-                       [--focus-file <focus-hints-path>] --run-id <run_id>   # retry, no index —\
+                   --run-id <run_id>   # one call; rotates backends per run-id\
 """,
         # every harness but Pi still reaches grill.py through bash, so the
         # plan-path lookup stays a CLI invocation, 2026-08-30
@@ -668,13 +642,7 @@ argument-hint: [plan file or text]
     critique = second_opinion review
                    planFile = <current_plan>
                    [focusFile = <focus-hints-path>]
-                   modelIndex = <round - 1> runId = <run_id>   # one call\
-""",
-        # the same call without the index, for the no-pool retry, 2026-08-30
-        review_call_retry="""\
-        critique = second_opinion review
-                       planFile = <current_plan>
-                       [focusFile = <focus-hints-path>] runId = <run_id>   # retry, no index —\
+                   runId = <run_id>   # one call; rotates backends per runId\
 """,
         # Pi reaches grill.py only through its native grill tool
         # (pi/extensions/grill-tool.ts); grill.py is off permission-gate.ts's
@@ -760,13 +728,7 @@ description: "Send a plan to a non-Claude model for adversarial critique, then i
     critique = second_opinion review
                    planFile = <current_plan>
                    [focusFile = <focus-hints-path>]
-                   modelIndex = <round - 1> runId = <run_id>   # one call\
-""",
-        # the same call without the index, for the no-pool retry, 2026-09-01
-        review_call_retry="""\
-        critique = second_opinion review
-                       planFile = <current_plan>
-                       [focusFile = <focus-hints-path>] runId = <run_id>   # retry, no index —\
+                   runId = <run_id>   # one call; rotates backends per runId\
 """,
         # Pi reaches grill.py only through its native grill tool
         # (pi/extensions/grill-tool.ts); grill.py is off permission-gate.ts's
@@ -835,7 +797,7 @@ second_opinion.py review <plan-file-or-text> \\
     [--focus-file <path>] \\
     [--model-index N] \\
     --run-id <run_id>                            # one critique from the
-                                                  # priority-selected backend,
+                                                  # least-recently-served backend,
                                                   # optionally scoped with
                                                   # plan-specific risk hints; the
                                                   # round cap counts per run-id
@@ -850,12 +812,7 @@ second_opinion.py check-notes <artifact>        # current, stale, unbound,
         review_call="""\
     critique = second_opinion.py review <current_plan> \\
                    [--focus-file <focus-hints-path>] \\
-                   --model-index <round - 1> --run-id <run_id>   # one call\
-""",
-        # the same call without the index, for the no-pool retry, 2026-09-11
-        review_call_retry="""\
-        critique = second_opinion.py review <current_plan> \\
-                       [--focus-file <focus-hints-path>] --run-id <run_id>   # retry, no index —\
+                   --run-id <run_id>   # one call; rotates backends per run-id\
 """,
         # every harness but Pi still reaches grill.py through bash, so the
         # plan-path lookup stays a CLI invocation, 2026-09-11
@@ -908,7 +865,6 @@ def substitutions(params: HarnessParams) -> dict[str, str]:
         "IO_ENTRYPOINT": params.io_entrypoint,
         "USAGE_BLOCK": params.usage_block,
         "REVIEW_CALL": params.review_call,
-        "REVIEW_CALL_RETRY": params.review_call_retry,
         "GRILL_PLAN_LOOKUP": params.grill_plan_lookup,
         # Only Pi routes backend I/O through its native `second_opinion` tool
         # (io_entrypoint == "the `second_opinion` tool"); every other harness
@@ -1014,11 +970,6 @@ def substitutions(params: HarnessParams) -> dict[str, str]:
             "was disturbed; neither is a backend failure — rerun the same round "
             "with a per-call file."
         ),
-        # The same note split across two fenced pseudocode comment lines.
-        "QUIET_NOTE_OPEN": "(always shown"
-        if is_native_tool(params)
-        else "(suppressed by",
-        "QUIET_NOTE_CLOSE": "by the tool)" if is_native_tool(params) else "--quiet)",
     }
 
 

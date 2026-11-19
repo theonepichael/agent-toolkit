@@ -34,7 +34,10 @@ Subcommands
            into one file splice the critiques together
   probe   run one trivial text-only health request per pool model and print a
            per-model availability report as JSON (exit 1 when any probed model
-           is unavailable; tests must mock the runners, never probe for real)
+           is unavailable; tests must mock the runners, never probe for real).
+           Also warns on stderr (not the JSON, not the exit code; suppressed
+           by --quiet) when two backends' configured models share a family
+           token, which would make backend rotation repeat a family
   panel <plan-file-or-text>
            multi-model panel discussion: round 1 sends the brief to N chosen
            backends in parallel, round 2 (the single cross-round) gives each
@@ -73,9 +76,13 @@ Flags
                    is an error (exit 1), never a silent pass.
                    The round cap applies only with --run-id (a diff has no
                    stable file path to key on).
+  --backend NAME[,NAME...]  (review only) force backend(s) in order, first
+                   success wins; turns backend rotation off (see Backend
+                   rotation below).
   --exclude-backend NAME  (review only) skip NAME in priority-order backend
                    selection; repeatable. Used so a review of a change never
-                   comes from the harness that wrote it. Excluding every
+                   comes from the harness that wrote it. Applied before
+                   rotation, so an excluded backend never rotates in. Excluding every
                    installed backend is the usual "no backend available"
                    error (exit 1). An unknown NAME, or combining it with
                    --backend, is an error.
@@ -102,9 +109,11 @@ Flags
                    running its own reviewer, e.g. a same-model subagent when
                    no backend is available.
   --text-only      (review only) disable codebase exploration and run ungrounded text-only critique
-  --model-index N  (review only) 0-based index into the backend model pool
-                   (SECOND_OPINION_<BACKEND>_MODEL_POOL) for this call, e.g.
-                   round 1 of a rotation is index 0, round 2 is index 1.
+  --model-index N  (review only) 0-based index into the selected backend's
+                   model pool (SECOND_OPINION_<BACKEND>_MODEL_POOL) for this
+                   call — a manual pin of one pool entry, usually with
+                   --backend. Turns backend rotation off; a pool-skip can
+                   still advance to a later entry of the same backend.
                    Supported for codex, agy, pi, opencode, and copilot. An explicit
                    index selects the pool even when a single-model override
                    is set, and is a hard error if the selected backend has no
@@ -115,32 +124,36 @@ Env vars
   AGENT_TOOLKIT_TIMING=1           opt-in timing JSONL under $XDG_STATE_HOME/agent-toolkit
                                     (default ~/.local/state); no prompts or argv
   SECOND_OPINION_CODEX_MODEL        force the Codex CLI model (default: unset)
-  SECOND_OPINION_CODEX_MODEL_POOL   comma-separated Codex model pool for
-                                    --model-index rotation (default: unset,
-                                    no rotation). SECOND_OPINION_CODEX_MODEL, if
+  SECOND_OPINION_CODEX_MODEL_POOL   comma-separated Codex model pool
+                                    (default: unset). An unindexed review
+                                    starts at its first entry and pool-skips
+                                    forward; --model-index picks one. SECOND_OPINION_CODEX_MODEL, if
                                     set without --model-index, wins outright
                                     over the pool; an explicit --model-index
                                     selects the pool regardless.
   SECOND_OPINION_AGY_MODEL          force the agy model (default "Gemini 3.8 Flash (High)")
-  SECOND_OPINION_AGY_MODEL_POOL     comma-separated agy model pool for
-                                    --model-index rotation (default: unset,
-                                    no rotation). SECOND_OPINION_AGY_MODEL, if
+  SECOND_OPINION_AGY_MODEL_POOL     comma-separated agy model pool
+                                    (default: unset). An unindexed review
+                                    starts at its first entry and pool-skips
+                                    forward; --model-index picks one. SECOND_OPINION_AGY_MODEL, if
                                     set without --model-index, wins outright
                                     over the pool; an explicit --model-index
                                     selects the pool regardless.
   SECOND_OPINION_PI_MODEL           force the Pi model (default: unset, Pi's
                                     configured default model)
-  SECOND_OPINION_PI_MODEL_POOL      comma-separated Pi model pool for
-                                    --model-index rotation (default: unset,
-                                    no rotation). SECOND_OPINION_PI_MODEL, if
+  SECOND_OPINION_PI_MODEL_POOL      comma-separated Pi model pool
+                                    (default: unset). An unindexed review
+                                    starts at its first entry and pool-skips
+                                    forward; --model-index picks one. SECOND_OPINION_PI_MODEL, if
                                     set without --model-index, wins outright
                                     over the pool; an explicit --model-index
                                     selects the pool regardless.
   SECOND_OPINION_COPILOT_MODEL      force the Copilot model (default: unset)
   SECOND_OPINION_OPENCODE_MODEL     force the opencode adversary-agent model (default: live config)
-  SECOND_OPINION_OPENCODE_MODEL_POOL  comma-separated opencode model pool for
-                                      --model-index rotation (default: unset,
-                                      no rotation). SECOND_OPINION_OPENCODE_MODEL,
+  SECOND_OPINION_OPENCODE_MODEL_POOL  comma-separated opencode model pool
+                                      (default: unset). An unindexed review
+                                      starts at its first entry and pool-skips
+                                      forward; --model-index picks one. SECOND_OPINION_OPENCODE_MODEL,
                                       if set without --model-index, wins
                                       outright over the pool; an explicit
                                       --model-index selects the pool
@@ -185,11 +198,26 @@ as an ``outcome="skipped"`` record, and the surviving attempt's record names
 ``fallback_reason="pool_skip"``. A single-model override stays strict: the
 caller named the model, so there is no silent replacement.
 
+Backend rotation: a keyed review (--run-id, or the plan-file path) with
+  neither --backend nor --model-index rotates priority-order selection
+  across backends. The run's state file records which backend served each
+  successful round, and the next round tries the eligible candidates
+  least-recently-served first (never-served first, priority order breaking
+  ties) — so a three-round loop gets three backends, i.e. three model
+  families as long as the pools share none (``probe`` warns when two
+  backends' models share a family token). A failed preferred backend skips
+  forward through the normal fallback, a stderr notice names what was
+  passed over and why (suppressed by --quiet), and — while the eligible
+  set is unchanged — that backend is tried first again next round. Nothing
+  guarantees distinct backends when backends fail: a round can fall back to
+  one that already served. Unkeyed inline reviews do not rotate. The policy
+  is the pure function rotation_order().
+
 Files read: <plan-file-or-text> (if a path), --focus-file; with --diff, the
   staged diff via `git diff --cached` in --dir, and --spec if given.
 Files written: <data-dir>/second-opinion-runs/<sha256>.json — a per-run
   critique counter used to enforce the round cap (see Round-cap enforcement
-  below).
+  below), plus the ``served`` backend history that drives backend rotation.
 
 Round-cap enforcement (added 2026-09-24, after a worker ignored the documented cap and ran 31 critique rounds on one spec): ``review`` refuses
   once a run has already had ``MAX_ROUNDS`` critiques. The counter is keyed by
@@ -231,7 +259,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import FrameType
@@ -293,6 +321,12 @@ class ReviewRequest:
     fallback over all installed backends. Direct callers get the same
     comma-split validation as the CLI — the same helper runs inside
     :func:`review_plan`, so both entrances share one contract.
+
+    ``rotation_history`` (backends that served this run's earlier rounds,
+    oldest first) turns on backend rotation for priority-order selection:
+    candidates are reordered by :func:`rotation_order`. ``None`` means no
+    rotation; it is ignored when ``backend`` is set and is an error together
+    with ``model_index`` (an index pins the selection).
     """
 
     plan_text: str
@@ -305,6 +339,7 @@ class ReviewRequest:
     exclude_backends: tuple[str, ...] = ()
     images: tuple[str, ...] = ()
     spec_text: str | None = None
+    rotation_history: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -314,13 +349,16 @@ class ReviewResult:
     ``bytes_saved`` counts UTF-8 bytes removed from the plan by
     :func:`sanitize_plan_text` (focus-file truncation is not counted).
     ``notices`` holds the stderr-bound diagnostic lines in emission order;
-    the CLI layer prints them, the facade never does.
+    the CLI layer prints them, the facade never does. ``backend`` is the bare
+    name of the backend that served (what rotation history records);
+    :func:`review_plan` always sets it.
     """
 
     backend_label: str
     response_text: str
     bytes_saved: int
     notices: tuple[str, ...] = ()
+    backend: str | None = None
 
 
 class ReviewError(Exception):
@@ -812,7 +850,9 @@ def _probe_attempts(
     override probes that one model (``config="single"``); neither probes the
     backend's own default (``config="default"``, model ``None``). A pool
     takes precedence over a single override — the pool is what needs health
-    checking, and its entries are what rotation would select.
+    checking. Note an unindexed review does the opposite (the override wins
+    and the pool is never consulted), so with both set this probes models a
+    rotated review would not use.
 
     Pure: reads ``env`` when given (a plain dict in tests) and ``os.environ``
     otherwise.
@@ -872,9 +912,8 @@ def _pool_choice_notice(backend: str, model_index: int | None) -> str | None:
     Pure. A manual/exploratory-CLI and --verbose-debugging convenience, not a
     safety net against a caller forgetting --model-index: callers only surface
     it under verbose mode, so a non-verbose automated caller never sees it.
-    Automated multi-round callers are documented to always pass
-    --model-index every round regardless of pool state (see SKILL.md /
-    second-opinion.md) rather than relying on this to catch a missed flag.
+    Automated multi-round callers no longer pass --model-index at all: they
+    rotate across backends by run key (see :func:`rotation_order`).
     """
     if backend not in _POOL_ENV_VARS:
         return None
@@ -1329,8 +1368,22 @@ def _load_run_state(path: Path, key: str) -> dict[str, object]:
             data.setdefault("key", key)
             data.setdefault("count", 0)
             data.setdefault("updated", 0.0)
+            data["served"] = _normalize_served(data.get("served"))
             return data
-    return {"key": key, "count": 0, "updated": 0.0}
+    return {"key": key, "count": 0, "updated": 0.0, "served": []}
+
+
+def _normalize_served(raw: object) -> list[str]:
+    """The ``served`` rotation history as a clean list of backend names.
+
+    Normalized at the load boundary: anything but a list (a legacy file with
+    no history, ``null``, a string) is an empty history, and only string
+    entries naming a known backend survive — the ``isinstance`` check runs
+    first, so a nested value can never reach the membership test.
+    """
+    if not isinstance(raw, list):
+        return []
+    return [b for b in raw if isinstance(b, str) and b in BACKEND_PRIORITY]
 
 
 def _save_run_state(path: Path, state: dict[str, object]) -> None:
@@ -1385,7 +1438,21 @@ def _load_state_for_key(path: Path, key: str) -> dict[str, object]:
         last = float(state.get("updated", 0.0))
         if last > 0.0 and (time.time() - last) > _PATH_KEY_TTL_SECONDS:
             state["count"] = 0
+            state["served"] = []
     return state
+
+
+def rotation_history_for(key: str) -> tuple[str, ...]:
+    """The backends that served ``key``'s earlier rounds, oldest first.
+
+    Read-only: never creates the runs directory, so an unkeyed or first
+    round costs nothing.
+    """
+    path = _run_state_path(key)
+    if not path.is_file():
+        return ()
+    served = _load_state_for_key(path, key)["served"]
+    return tuple(served) if isinstance(served, list) else ()
 
 
 def _refuse_if_cap_reached(key: str) -> None:
@@ -1402,14 +1469,29 @@ def _refuse_if_cap_reached(key: str) -> None:
         die(_ROUND_CAP_MESSAGE)
 
 
-def _record_successful_review(key: str) -> None:
-    """Increment and persist ``key``'s counter after a critique was produced.
+def _record_successful_review(
+    key: str, backend: str | None = None, *, count: bool = True
+) -> None:
+    """Persist ``key``'s state after a critique was produced.
 
     Only successful reviews consume a round — a failed review (backend outage)
     does not, so a flaky backend can be retried without the override.
+    ``backend``, when given, is appended to the run's ``served`` rotation
+    history (a panel passes none: it is not a rotated loop). ``count=False``
+    (an ``--allow-extra-round`` call) records the history and refreshes
+    ``updated`` without consuming a round. Creates the runs directory itself:
+    an extra-round call never ran :func:`_refuse_if_cap_reached`.
     """
+    _ensure_runs_dir()
     path = _run_state_path(key)
-    state = record_review(_load_state_for_key(path, key))
+    state = _load_state_for_key(path, key)
+    if count:
+        state = record_review(state)
+    else:
+        state = dict(state)
+        state["updated"] = time.time()
+    if backend is not None:
+        state["served"] = [*_normalize_served(state.get("served")), backend]
     state["key"] = key
     _save_run_state(path, state)
     _prune_stale_runs(_runs_dir())
@@ -1797,6 +1879,54 @@ def _probe_one_model(
     return detail, round(time.monotonic() - start, 2)
 
 
+_FAMILY_TOKEN_RE = re.compile(r"[a-z]+")
+
+
+def _family_token(model: str) -> str | None:
+    """A model id's family guess: the leading letters after any ``provider/``.
+
+    A heuristic for a warning only, never for selection — there is
+    deliberately no model-to-family table, which would rot with every
+    release. ``opencode-go/kimi-k2.7-code`` -> ``kimi``, ``Gemini 3.8 Flash``
+    -> ``gemini``; ``None`` when the id does not start with a letter.
+    """
+    match = _FAMILY_TOKEN_RE.match(model.rsplit("/", 1)[-1].strip().lower())
+    return match.group(0) if match else None
+
+
+def _shared_family_warnings(env: Mapping[str, str] | None = None) -> list[str]:
+    """One line per family token that two or more backends' models share.
+
+    Rotation treats each backend as one model family, which only holds while
+    the pools share none. Per backend, the checked set is what an unindexed
+    (rotated) review can use: its single override when set — the pool is then
+    never consulted — else its whole pool (pool-skip can fall forward to any
+    entry), else a known built-in default (only agy has one). A backend left
+    at an unknown vendor default is invisible here. Pure: reads ``env`` when
+    given (tests) and ``os.environ`` otherwise.
+    """
+    families: dict[str, list[str]] = {}
+    for backend, (pool_var, single_var) in _POOL_ENV_VARS.items():
+        single = _env_stripped(single_var, env)
+        models = [single] if single else _parse_pool(pool_var, env)
+        if not models and backend == "agy":
+            models = [DEFAULT_AGY_MODEL]
+        tokens: dict[str, list[str]] = {}
+        for model in models:
+            token = _family_token(model)
+            if token is not None:
+                tokens.setdefault(token, []).append(model)
+        for token, named in tokens.items():
+            families.setdefault(token, []).append(f"{backend} ({', '.join(named)})")
+    return [
+        f"model family {token!r} appears in more than one backend: "
+        + "; ".join(users)
+        + " — rotation treats each backend as one family, so keep pools disjoint"
+        for token, users in families.items()
+        if len(users) > 1
+    ]
+
+
 def cmd_probe(args: argparse.Namespace) -> None:
     """Handle ``probe``: per-pool-model availability report as JSON.
 
@@ -1841,8 +1971,28 @@ def cmd_probe(args: argparse.Namespace) -> None:
                 healthy = False
             probes.append(entry)
     print(json.dumps({"probes": probes}, indent=2))
+    if not getattr(args, "quiet", False):
+        for warning in _shared_family_warnings():
+            print(f"[second_opinion] warning: {warning}", file=sys.stderr)
     if not healthy:
         sys.exit(1)
+
+
+def rotation_order(candidates: list[str], history: Sequence[str]) -> list[str]:
+    """Order ``candidates`` so the least-recently-served backend goes first.
+
+    The backend-rotation policy, and the only place it lives: never-served
+    candidates first in their incoming (priority) order, then served ones by
+    the position of their most recent appearance in ``history``, oldest
+    first. A backend stands in for its model family, so a multi-round loop
+    gets a different family each round while the pools share none. Pure:
+    the result holds exactly ``candidates``' elements, and history names
+    outside them are ignored. Keying on history rather than the round number
+    means a preferred backend that failed is preferred again next round
+    instead of the one that stood in for it.
+    """
+    last_served = {name: pos for pos, name in enumerate(history)}
+    return sorted(candidates, key=lambda b: last_served.get(b, -1))
 
 
 def _run_backend_once(
@@ -1909,6 +2059,11 @@ def review_plan(
             diagnostics on ``notices``.
     """
     images = request.images
+    if request.rotation_history is not None and request.model_index is not None:
+        raise ReviewError(
+            "backend rotation and --model-index are mutually exclusive: an "
+            "index pins the pool entry, so it opts out of rotation"
+        )
     if images and request.diff:
         raise ReviewError(
             "images and --diff are mutually exclusive: image review is "
@@ -2020,6 +2175,13 @@ def review_plan(
             f"[second_opinion] {b} not eligible for {mode} review "
             f"({report.get(b, {}).get('reason', 'unknown')}) — skipped"
         )
+    rotating = request.rotation_history is not None and not request.backend
+    if rotating:
+        candidates = rotation_order(candidates, request.rotation_history or ())
+    # One reason per backend the loop moves past, for the rotation fallback
+    # report; `failures` also holds pool-model skips inside a backend that
+    # went on to serve, so it is not reused verbatim.
+    passed_over: list[str] = []
 
     # A diff is code, not a plan: its context lines can look like the
     # review-debris headings sanitize_plan_text strips, so leave it whole.
@@ -2078,6 +2240,7 @@ def review_plan(
                     f"skipped: {exc}"
                 )
             failures.append(f"{backend}: {exc}")
+            passed_over.append(f"{backend}: {exc}")
             continue
 
         if request.backend and len(candidates) > 1 and not shutil.which(backend):
@@ -2095,7 +2258,15 @@ def review_plan(
             continue
 
         attempts = list(_attempts_for(backend, request.model_index))
+        if not attempts:
+            # Every pool model already quarantined in this process: name the
+            # backend instead of passing over it silently.
+            reason = f"{backend}: every pool model quarantined"
+            failures.append(reason)
+            passed_over.append(reason)
+            continue
         attempt_pos = 0
+        last_skip: BackendError | None = None
         while attempt_pos < len(attempts):
             model_index, model = attempts[attempt_pos]
             attempt_pos += 1
@@ -2218,6 +2389,7 @@ def review_plan(
                         )
                     failures.append(f"{backend}: {exc} (skipped to next pool model)")
                     _log_pool_skip(backend, model, exc, prompt_bytes)
+                    last_skip = exc
                     continue
                 if isinstance(exc, llm_backends.BackendPayloadSizeError):
                     size_rule_outs.append(exc)
@@ -2229,17 +2401,29 @@ def review_plan(
                         f"failed: {exc}{hint}"
                     )
                 failures.append(f"{backend}: {exc}{hint}")
+                passed_over.append(f"{backend}: {exc}{hint}")
                 break
             # A skip parked fallback_reason for the next attempt; on success
             # that attempt consumed it (real runners) or never got it (mocks)
             # — reset so a parked value can never leak past this candidate.
             llm_backends._pending_fallback_reason = None
+            if rotating and backend != candidates[0] and not quiet:
+                notices.append(
+                    f"[second_opinion] rotation preferred {candidates[0]}; "
+                    f"served by {backend} after: " + "; ".join(passed_over)
+                )
             return ReviewResult(
                 backend_label=backend_label(backend, model=model),
                 response_text=critique,
                 bytes_saved=bytes_saved,
                 notices=tuple(notices),
+                backend=backend,
             )
+        else:
+            # Every attempt was a pool-skip: the loop ran out without a
+            # `break`, so the last skip is this backend's reason.
+            if last_skip is not None:
+                passed_over.append(f"{backend}: {last_skip}")
         # The candidate's attempts ended (break or exhausted) with no further
         # call this chain: drop any parked skip reason before the next
         # candidate's first attempt inherits it as its own fallback cause.
@@ -2359,7 +2543,8 @@ def _trim_foreign_tail(fd: int) -> None:
 
 
 def cmd_review(args: argparse.Namespace) -> None:
-    """Handle ``review``: get one critique from the priority-selected backend.
+    """Handle ``review``: get one critique from the priority-selected backend,
+    rotated per run key (see :func:`rotation_order`).
 
     Thin argv adapter over :func:`review_plan`: resolves the plan and focus
     file, builds a :class:`ReviewRequest`, prints the facade's collected
@@ -2452,26 +2637,36 @@ def cmd_review(args: argparse.Namespace) -> None:
             end="",
         )
         return
-    request = ReviewRequest(
-        plan_text=plan_text,
-        focus_hints=focus_hints,
-        backend=(
-            ",".join(args.backend) if isinstance(args.backend, list) else args.backend
-        ),
-        model_index=getattr(args, "model_index", None),
-        text_only=getattr(args, "text_only", False),
-        target_dir=getattr(args, "dir", None),
-        diff=diff,
-        exclude_backends=exclude,
-        images=images,
-        spec_text=spec_text,
-    )
     # Round-cap enforcement: the (MAX_ROUNDS+1)-th *successful* review for this
     # run is refused. Keyed by --run-id or the resolved plan-file path; the
     # --allow-extra-round flag lifts it. Failed reviews (backend outage) do not
     # consume a round, so a flaky backend can be retried without the override.
     key = _compute_round_key(args)
     allow_extra = getattr(args, "allow_extra_round", False)
+    model_index = getattr(args, "model_index", None)
+    # Backend rotation: the same run key carries which backends served earlier
+    # rounds. Only priority-order selection rotates — --backend names the
+    # backend and --model-index pins a pool entry, so either opts out.
+    rotation_history = (
+        rotation_history_for(key)
+        if key is not None and not args.backend and model_index is None
+        else None
+    )
+    request = ReviewRequest(
+        plan_text=plan_text,
+        focus_hints=focus_hints,
+        backend=(
+            ",".join(args.backend) if isinstance(args.backend, list) else args.backend
+        ),
+        model_index=model_index,
+        text_only=getattr(args, "text_only", False),
+        target_dir=getattr(args, "dir", None),
+        diff=diff,
+        exclude_backends=exclude,
+        images=images,
+        spec_text=spec_text,
+        rotation_history=rotation_history,
+    )
     if key is not None and not allow_extra:
         _refuse_if_cap_reached(key)
     verbose = getattr(args, "verbose", False)
@@ -2488,8 +2683,18 @@ def cmd_review(args: argparse.Namespace) -> None:
     # unless another process disturbed this run's output file: the warning
     # tells the caller to rerun the round, so it must not spend one.
     tampered = _warn_if_output_tampered(output_lock)
-    if key is not None and not allow_extra and not tampered:
-        _record_successful_review(key)
+    if key is not None and not tampered:
+        try:
+            _record_successful_review(key, result.backend, count=not allow_extra)
+        except OSError as exc:
+            # The critique already came back: losing it to a state-write
+            # failure would cost a real backend call. Say what was not
+            # recorded and still print it.
+            print(
+                f"[second_opinion] warning: could not record this round "
+                f"({exc}); the round cap and backend rotation did not see it",
+                file=sys.stderr,
+            )
     for notice in result.notices:
         print(notice, file=sys.stderr)
     print(f"Second opinion via {result.backend_label}:")
@@ -3084,7 +3289,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser(
         "review",
-        help="get one critique from the priority-selected backend",
+        help="get one critique from the priority-selected (per-run rotated) backend",
         parents=[verbosity_parent],
     )
     p.add_argument("plan", metavar="<plan-file-or-text>", nargs="?", default=None)
@@ -3115,7 +3320,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="force backend(s) in order, first success wins "
         "(comma-separated list allowed) instead of priority-order fallback; "
         "a single name keeps the strict one-backend-only contract, while a "
-        "list skips an entry that is not installed with a notice",
+        "list skips an entry that is not installed with a notice. Turns "
+        "backend rotation off: every round uses the named backend(s)",
     )
     p.add_argument(
         "--dir",
@@ -3150,13 +3356,13 @@ def build_parser() -> argparse.ArgumentParser:
         type=_non_negative_int,
         default=None,
         metavar="N",
-        help="0-based index into the backend model pool "
-        "(SECOND_OPINION_{CODEX,AGY,PI,OPENCODE,COPILOT}_MODEL_POOL) for this call "
-        "-- round 1 of a rotation is index 0, round 2 is index 1, etc. "
-        "Supported for codex/agy/pi/opencode/copilot; an explicit index selects the "
-        "pool even when a single-model override is set, and is a hard error "
-        "if the pool is unset/empty or the index is out of range (was "
-        "previously a silent no-op/fallback).",
+        help="0-based index into the selected backend's model pool "
+        "(SECOND_OPINION_{CODEX,AGY,PI,OPENCODE,COPILOT}_MODEL_POOL) for this "
+        "call, for manually pinning one pool entry. Turns backend rotation "
+        "off (a pool-skip can still advance within the backend). An explicit "
+        "index selects the pool even when a single-model override is set, "
+        "and is a hard error if the pool is unset/empty or the index is out "
+        "of range. Usually paired with --backend.",
     )
     p.add_argument(
         "--exclude-backend",
@@ -3188,15 +3394,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="ID",
         help="stable id for one iterative critique session; the per-round cap is "
-        "enforced by counting reviews per run-id (or per plan file when omitted). "
-        "The second-opinion skill passes one for the whole loop.",
+        "enforced by counting reviews per run-id (or per plan file when omitted), "
+        "and the same key's history rotates priority-order selection so each "
+        "round prefers the backend that served least recently. The "
+        "second-opinion skill passes one for the whole loop.",
     )
     p.add_argument(
         "--allow-extra-round",
         action="store_true",
         default=False,
         help="permit review calls beyond the per-run cap (for a user who "
-        "deliberately wants another round)",
+        "deliberately wants another round); an extra round still records "
+        "which backend served, so rotation continues",
     )
 
     p = sub.add_parser(

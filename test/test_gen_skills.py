@@ -326,6 +326,12 @@ class CapabilityFixtureTests(unittest.TestCase):
                 self.assertIn("status --porcelain", text, path)
                 # wording contract: rendered skill text
                 self.assertIn("keep one rendered copy per changed template", text, path)
+                # rounds sharing a run id rotate backends, scoped per group
+                self.assertIn("rotate across backends", text, path)
+                self.assertIn("reuse\nthat group's id to rotate", text, path)
+                call = text.split("## 2. Review", 1)[1].split("The reviewer is", 1)[0]
+                for opt_out in ("--backend", "--model-index", "modelIndex"):
+                    self.assertNotIn(opt_out, call, path)
                 own = harness.removesuffix("-prompt").removesuffix("-skill")
                 if harness in ("pi", "pi-prompt"):
                     self.assertIn('action: "review"', text, path)

@@ -185,14 +185,24 @@ models, these are the contract:
 | Variable | Purpose | Unset behavior |
 | :--- | :--- | :--- |
 | `SECOND_OPINION_AGY_MODEL` | Force the agy backend's model | Built-in default (`Gemini 3.8 Flash (High)`) |
-| `SECOND_OPINION_AGY_MODEL_POOL` | Comma-separated agy pool for `--model-index` rotation | agy falls back to the single override or its built-in default |
+| `SECOND_OPINION_AGY_MODEL_POOL` | Comma-separated agy model pool. A review without `--model-index` uses the single override when set, else starts at the pool's first entry and pool-skips forward; `--model-index` selects one entry (a pool-skip can still advance past it) | agy falls back to the single override or its built-in default |
 | `SECOND_OPINION_PI_MODEL` / `_PI_MODEL_POOL` | Same contract for the pi backend | pi's configured default model |
 | `SECOND_OPINION_OPENCODE_MODEL` / `_OPENCODE_MODEL_POOL` | Same contract for the opencode backend | opencode's live config |
 | `SECOND_OPINION_COPILOT_MODEL` / `_COPILOT_MODEL_POOL` | Same contract for the copilot backend | copilot's implicit default routing |
 | `SECOND_OPINION_CODEX_MODEL` / `_CODEX_MODEL_POOL` | Same contract for the codex backend | Codex CLI's own default model |
 | `SECOND_OPINION_TIMEOUT_SECONDS` (+ per-backend `_<BACKEND>_TIMEOUT_SECONDS`) | Per-call timeout budget in whole seconds, capped at 600 | Global 120. Without a per-backend override, opencode waits at least 450, codex 180, and agy/copilot grounded reviews 600 (the larger of that and the global wins); a positive per-backend override replaces this and may go lower |
 
-Two things worth knowing before you copy someone else's pool values:
+Three things worth knowing before you copy someone else's pool values:
+
+- **Keep the pools in different model families.** A multi-round critique
+  rotates across *backends*, each round preferring the one that served least
+  recently, and treats each backend as one model family. Two backends whose
+  pools share a family (e.g. a `kimi-…` model in both the Pi and opencode
+  pools) can therefore hand two rounds to the same family. `second_opinion.py
+  probe` warns on stderr when two backends' models share a family token
+  (the leading letters of the model id, after any provider prefix). It cannot see a
+  backend left at an unknown vendor default, so set a pool or a single
+  override for each backend you use.
 
 - **Copilot's `--model` flag requires a GitHub Copilot Pro or Enterprise
   plan.** On a free tier, every pooled model id is rejected with `Model X

@@ -35,7 +35,6 @@ FIXTURE_PARAMS = gso.HarnessParams(
     io_entrypoint="the fixture entrypoint",
     usage_block="```\nfixture usage   block\n```",
     review_call="fixture review call",
-    review_call_retry="fixture retry call",
     grill_plan_lookup="the fixture plan lookup",
 )
 
@@ -107,7 +106,6 @@ class RenderBodyTests(unittest.TestCase):
             io_entrypoint="entry",
             usage_block="```\nusage\n```",
             review_call="call",
-            review_call_retry="retry",
             grill_plan_lookup="lookup",
         )
         rendered = gso.render_body("never {{BACKENDS_NEVER}} directly.\n", params)
@@ -205,8 +203,6 @@ class PiToolParameterWordingTests(unittest.TestCase):
     # receives verbatim through the tool, and a sentence about the flag's
     # own history.
     LITERAL_ALLOWLIST = (
-        "`--model-index ... requires ... POOL ...`",
-        '"--model-index ... requires ... POOL ..."',
         "the `--model-index` hard-error ship",
         "with `--allow-extra-round` themselves, from a shell outside Pi",
     )
@@ -230,9 +226,11 @@ class PiToolParameterWordingTests(unittest.TestCase):
             "retry with `textOnly = true`",
             "pass `focusFile = <that path>` to `review`",
             "Skip `focusFile` entirely",
-            "`modelIndex` is a 0-based index",
-            "without `modelIndex` the single override",
-            "use `backend = <configured-backend>` to target",
+            "passes the same `runId`",
+            "`backend` names the backend for that call and `modelIndex` pins "
+            "a pool entry, so either one turns rotation off",
+            "a review without `modelIndex` uses the single-model override",
+            "pair it with `backend = <configured-backend>`",
             "target the backend with `backend = <name>`",
             "run `second_opinion.py review` with `--allow-extra-round` "
             "themselves, from a shell outside Pi",
@@ -244,11 +242,14 @@ class PiToolParameterWordingTests(unittest.TestCase):
                 with self.subTest(relpath=relpath, phrase=phrase):
                     self.assertIn(phrase, text)
 
-    def test_pi_pseudocode_quiet_comment(self) -> None:
+    def test_pi_rotation_notice_has_no_quiet_flag(self) -> None:
+        # The rotation fallback notice is documented with the tool's own
+        # quiet wording, never the CLI's --quiet.
         for relpath in self.PI_COPIES:
-            text = (REPO_ROOT / relpath).read_text()
-            self.assertIn("# (always shown\n", text)
-            self.assertIn("# by the tool) naming\n", text)
+            notice = self.flat(relpath).split("naming what it passed over", 1)[0]
+            self.assertTrue(
+                notice.endswith("so it always reaches you) "), (relpath, notice[-80:])
+            )
 
     def test_no_copy_keeps_an_unresolved_marker(self) -> None:
         for relpath in gso.HARNESS_TABLE:

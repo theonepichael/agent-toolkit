@@ -4965,3 +4965,465 @@ class ImageReviewFacadeTests(unittest.TestCase):
         self.assertEqual(result.response_text, "copilot critique")
         self.assertEqual(calls, ["copilot"])
 
+
+
+class RotationOrderTests(unittest.TestCase):
+    """`rotation_order`: the pure backend-rotation policy.
+
+    Never-served candidates first in their incoming (priority) order, then the
+    served ones ordered by their most recent appearance in history, oldest
+    first. Same elements as the input, always.
+    """
+
+    def test_empty_history_keeps_priority_order(self) -> None:
+        self.assertEqual(
+            second_opinion.rotation_order(["codex", "agy", "pi"], ()),
+            ["codex", "agy", "pi"],
+        )
+
+    def test_served_backends_move_behind_unserved_ones(self) -> None:
+        self.assertEqual(
+            second_opinion.rotation_order(["codex", "agy", "pi"], ["codex"]),
+            ["agy", "pi", "codex"],
+        )
+
+    def test_all_served_least_recent_first(self) -> None:
+        self.assertEqual(
+            second_opinion.rotation_order(
+                ["codex", "agy", "pi"], ["codex", "agy", "pi", "codex"]
+            ),
+            ["agy", "pi", "codex"],
+        )
+
+    def test_history_names_outside_candidates_are_ignored(self) -> None:
+        self.assertEqual(
+            second_opinion.rotation_order(["agy", "pi"], ["codex", "agy"]),
+            ["pi", "agy"],
+        )
+
+    def test_single_candidate(self) -> None:
+        self.assertEqual(second_opinion.rotation_order(["agy"], ["agy"]), ["agy"])
+
+
+class BackendRotationCmdReviewTests(unittest.TestCase):
+    """A shared run key rotates priority-order selection across backends.
+
+    Each round prefers the eligible backend that served least recently, so a
+    three-round loop gets three backends (model families) instead of three
+    entries from one backend's pool. --backend and --model-index opt out.
+    """
+
+    BACKENDS = ["codex", "agy", "opencode"]
+    ENV = {
+        "SECOND_OPINION_CODEX_MODEL": "gpt-x",
+        "SECOND_OPINION_AGY_MODEL": "gemini-x",
+        "SECOND_OPINION_OPENCODE_MODEL": "glm-x",
+    }
+
+    def setUp(self) -> None:
+        self.tmpdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmpdir)
+        test_layouts.activate_sandbox_home(Path(self.tmpdir), self.addCleanup)
+        self.addCleanup(second_opinion._UNFIT_MODELS.clear)
+        self.addCleanup(setattr, llm_backends, "_pending_fallback_reason", None)
+        self.broken: set[str] = set()
+        self.plan = Path(self.tmpdir) / "plan.md"
+        self.plan.write_text("my plan")
+
+    def _runner(self, name: str) -> Callable[..., str]:
+        def run(prompt: str, model_index: int | None = None) -> str:
+            if name in self.broken:
+                raise second_opinion.BackendError(f"{name} broke")
+            return f"{name} critique"
+
+        return run
+
+    def _run(
+        self, *, expect_die: bool = False, env: dict[str, str] | None = None, **kw: object
+    ) -> tuple[str, str]:
+        kw.setdefault("plan", str(self.plan))
+        kw.setdefault("run_id", "rot-1")
+        kw.setdefault("allow_extra_round", False)
+        args = ns(**kw)
+        out, err = io.StringIO(), io.StringIO()
+        with ExitStack() as stack:
+            stack.enter_context(patch.dict(os.environ, env or self.ENV))
+            stack.enter_context(
+                patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}")
+            )
+            stack.enter_context(
+                patch.object(
+                    second_opinion, "available_backends", return_value=self.BACKENDS
+                )
+            )
+            stack.enter_context(
+                patch.object(
+                    second_opinion,
+                    "BACKEND_RUNNERS",
+                    {b: self._runner(b) for b in self.BACKENDS},
+                )
+            )
+            stack.enter_context(patch("sys.stdout", out))
+            stack.enter_context(patch("sys.stderr", err))
+            if expect_die:
+                with self.assertRaises(SystemExit):
+                    second_opinion.cmd_review(args)
+            else:
+                second_opinion.cmd_review(args)
+        return out.getvalue(), err.getvalue()
+
+    @staticmethod
+    def _served(out: str) -> str:
+        return out.split(" critique", 1)[0].rsplit("\n", 1)[-1]
+
+    def _state(self, key: str = "run:rot-1") -> dict[str, object]:
+        path = second_opinion._run_state_path(key)
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def test_three_rounds_use_three_backends(self) -> None:
+        served = [self._served(self._run()[0]) for _ in range(3)]
+        self.assertEqual(served, ["codex", "agy", "opencode"])
+        self.assertEqual(self._state()["served"], ["codex", "agy", "opencode"])
+        self.assertEqual(self._state()["count"], 3)
+
+    def test_failed_preferred_backend_is_preferred_again_next_round(self) -> None:
+        self.broken = {"codex"}
+        self.assertEqual(self._served(self._run()[0]), "agy")
+        self.broken = set()
+        self.assertEqual(self._served(self._run()[0]), "codex")
+
+    def test_fallback_is_reported_without_verbose(self) -> None:
+        self.broken = {"codex"}
+        _out, err = self._run(verbose=False, quiet=False)
+        notice = [ln for ln in err.splitlines() if "rotation preferred" in ln]
+        self.assertEqual(len(notice), 1)
+        self.assertTrue(notice[0].startswith("[second_opinion] "))
+        self.assertIn("preferred codex;", notice[0])
+        self.assertIn("served by agy", notice[0])
+        self.assertIn("codex: codex broke", notice[0])
+
+    def test_fallback_report_is_silenced_by_quiet(self) -> None:
+        self.broken = {"codex"}
+        out, err = self._run(verbose=False, quiet=True)
+        self.assertEqual(self._served(out), "agy")
+        self.assertNotIn("rotation preferred", err)
+
+    def test_explicit_backend_does_not_rotate(self) -> None:
+        served = [self._served(self._run(backend="codex")[0]) for _ in range(3)]
+        self.assertEqual(served, ["codex", "codex", "codex"])
+
+    def test_model_index_does_not_rotate(self) -> None:
+        env = {**self.ENV, "SECOND_OPINION_CODEX_MODEL_POOL": "gpt-a,gpt-b"}
+        served = [
+            self._served(self._run(model_index=0, env=env)[0]) for _ in range(2)
+        ]
+        self.assertEqual(served, ["codex", "codex"])
+
+    def test_unkeyed_inline_review_does_not_rotate(self) -> None:
+        served = [
+            self._served(self._run(plan="inline plan text", run_id=None)[0])
+            for _ in range(2)
+        ]
+        self.assertEqual(served, ["codex", "codex"])
+
+    def test_excluded_backend_never_rotates_in(self) -> None:
+        served = [
+            self._served(self._run(exclude_backend=["agy"])[0]) for _ in range(3)
+        ]
+        self.assertEqual(served, ["codex", "opencode", "codex"])
+
+    def test_failed_round_records_nothing(self) -> None:
+        self._run()
+        self.broken = set(self.BACKENDS)
+        self._run(expect_die=True)
+        self.assertEqual(self._state()["served"], ["codex"])
+        self.assertEqual(self._state()["count"], 1)
+
+    def test_tampered_round_records_nothing(self) -> None:
+        self._run()
+        with patch.object(second_opinion, "_warn_if_output_tampered", return_value=True):
+            self._run()
+        self.assertEqual(self._state()["served"], ["codex"])
+        self.assertEqual(self._state()["count"], 1)
+
+    def test_fresh_allow_extra_round_records_history_not_count(self) -> None:
+        runs_dir = second_opinion._runs_dir()
+        self.assertFalse(runs_dir.exists())
+        out, _err = self._run(allow_extra_round=True)
+        self.assertEqual(self._served(out), "codex")
+        self.assertEqual(self._state()["served"], ["codex"])
+        self.assertEqual(self._state()["count"], 0)
+        self.assertEqual(self._served(self._run(allow_extra_round=True)[0]), "agy")
+
+    def test_malformed_served_is_normalized(self) -> None:
+        second_opinion._ensure_runs_dir()
+        path = second_opinion._run_state_path("run:rot-1")
+        path.write_text(
+            json.dumps(
+                {"key": "run:rot-1", "count": 1, "updated": 0.0,
+                 "served": [["codex"], {"a": 1}, None, "bogus", "codex"]}
+            )
+        )
+        state = second_opinion._load_run_state(path, "run:rot-1")
+        self.assertEqual(state["served"], ["codex"])
+        self.assertEqual(state["count"], 1)
+        path.write_text(json.dumps({"key": "run:rot-1", "count": 2, "served": "codex"}))
+        self.assertEqual(second_opinion._load_run_state(path, "run:rot-1")["served"], [])
+        # And a round still rotates off the normalized history.
+        self.assertEqual(self._served(self._run()[0]), "codex")
+
+    def test_plan_key_ttl_reset_clears_history(self) -> None:
+        key = "plan:" + str(self.plan.resolve())
+        second_opinion._ensure_runs_dir()
+        path = second_opinion._run_state_path(key)
+        path.write_text(
+            json.dumps({"key": key, "count": 2, "updated": 1.0, "served": ["codex"]})
+        )
+        state = second_opinion._load_state_for_key(path, key)
+        self.assertEqual(state["count"], 0)
+        self.assertEqual(state["served"], [])
+
+    def test_unwritable_history_still_prints_the_critique(self) -> None:
+        # A critique that already came back must reach the caller even when
+        # the run state cannot be written; the failure is a stderr warning.
+        with patch.object(
+            second_opinion, "_save_run_state", side_effect=OSError("read-only")
+        ):
+            out, err = self._run(allow_extra_round=True)
+        self.assertEqual(self._served(out), "codex")
+        self.assertIn("read-only", err)
+
+    def test_plan_path_key_rotates_without_run_id(self) -> None:
+        served = [self._served(self._run(run_id=None)[0]) for _ in range(2)]
+        self.assertEqual(served, ["codex", "agy"])
+
+    def test_panel_style_recorder_call_still_counts(self) -> None:
+        second_opinion._record_successful_review("run:panel")
+        state = self._state("run:panel")
+        self.assertEqual(state["count"], 1)
+        self.assertEqual(state.get("served", []), [])
+
+
+class BackendRotationFacadeTests(unittest.TestCase):
+    """review_plan's side of rotation: ordering, reasons, and the opt-outs."""
+
+    def setUp(self) -> None:
+        self.addCleanup(second_opinion._UNFIT_MODELS.clear)
+        self.addCleanup(setattr, llm_backends, "_pending_fallback_reason", None)
+
+    def _review(
+        self,
+        runners: dict[str, Callable[..., str]],
+        env: dict[str, str],
+        **kw: object,
+    ) -> second_opinion.ReviewResult:
+        with (
+            patch.dict(os.environ, env),
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(
+                second_opinion, "available_backends", return_value=list(runners)
+            ),
+            patch.object(second_opinion, "BACKEND_RUNNERS", runners),
+        ):
+            return second_opinion.review_plan(
+                second_opinion.ReviewRequest(plan_text="my plan", **kw)  # type: ignore[arg-type]
+            )
+
+    def test_result_names_the_bare_backend(self) -> None:
+        result = self._review(
+            {"agy": lambda p, model_index=None: "c"},
+            {"SECOND_OPINION_AGY_MODEL": "gemini-x"},
+        )
+        self.assertEqual(result.backend, "agy")
+
+    def test_history_reorders_candidates(self) -> None:
+        result = self._review(
+            {
+                "codex": lambda p, model_index=None: "codex c",
+                "agy": lambda p, model_index=None: "agy c",
+            },
+            {"SECOND_OPINION_AGY_MODEL": "gemini-x", "SECOND_OPINION_CODEX_MODEL": "g"},
+            rotation_history=("codex",),
+        )
+        self.assertEqual(result.backend, "agy")
+
+    def test_explicit_backend_list_ignores_history(self) -> None:
+        result = self._review(
+            {
+                "codex": lambda p, model_index=None: "codex c",
+                "agy": lambda p, model_index=None: "agy c",
+            },
+            {"SECOND_OPINION_AGY_MODEL": "gemini-x", "SECOND_OPINION_CODEX_MODEL": "g"},
+            backend="codex,agy",
+            rotation_history=("codex",),
+        )
+        self.assertEqual(result.backend, "codex")
+
+    def test_quarantined_preferred_backend_is_a_fallback_reason(self) -> None:
+        second_opinion._UNFIT_MODELS.update({("opencode", "m-a"), ("opencode", "m-b")})
+        result = self._review(
+            {
+                "opencode": lambda p, model_index=None: "never",
+                "agy": lambda p, model_index=None: "agy c",
+            },
+            {
+                "SECOND_OPINION_OPENCODE_MODEL_POOL": "m-a,m-b",
+                "SECOND_OPINION_AGY_MODEL": "gemini-x",
+            },
+            rotation_history=(),
+        )
+        self.assertEqual(result.backend, "agy")
+        notice = [n for n in result.notices if "rotation preferred" in n]
+        self.assertEqual(len(notice), 1)
+        self.assertIn("opencode: every pool model quarantined", notice[0])
+
+    def test_rotation_with_model_index_is_a_request_error(self) -> None:
+        with self.assertRaises(second_opinion.ReviewError):
+            self._review(
+                {"agy": lambda p, model_index=None: "c"},
+                {"SECOND_OPINION_AGY_MODEL_POOL": "a,b"},
+                rotation_history=(),
+                model_index=0,
+            )
+
+    def test_pool_exhausted_by_skips_is_the_fallback_reason(self) -> None:
+        def tool_hungry(p: str, model_index: int | None = None) -> str:
+            raise llm_backends.BackendToolUseError("used tools instead of text")
+
+        result = self._review(
+            {"opencode": tool_hungry, "agy": lambda p, model_index=None: "agy c"},
+            {
+                "SECOND_OPINION_OPENCODE_MODEL_POOL": "m-a,m-b",
+                "SECOND_OPINION_AGY_MODEL": "gemini-x",
+            },
+            rotation_history=(),
+        )
+        self.assertEqual(result.backend, "agy")
+        notice = [n for n in result.notices if "rotation preferred" in n]
+        self.assertEqual(len(notice), 1)
+        self.assertIn("preferred opencode;", notice[0])
+        self.assertIn("served by agy", notice[0])
+        self.assertIn("opencode: used tools instead of text", notice[0])
+
+    def test_pi_size_skip_is_a_fallback_reason(self) -> None:
+        big = "x" * (llm_backends.PI_MAX_PROMPT_BYTES + 10)
+        with (
+            patch.dict(os.environ, {"SECOND_OPINION_AGY_MODEL": "gemini-x"}),
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(second_opinion, "available_backends", return_value=["pi", "agy"]),
+            patch.object(
+                second_opinion,
+                "BACKEND_RUNNERS",
+                {
+                    "pi": lambda p, model_index=None: "pi c",
+                    "agy": lambda p, model_index=None: "agy c",
+                },
+            ),
+        ):
+            result = second_opinion.review_plan(
+                second_opinion.ReviewRequest(plan_text=big, rotation_history=())
+            )
+        self.assertEqual(result.backend, "agy")
+        notice = [n for n in result.notices if "rotation preferred" in n]
+        self.assertEqual(len(notice), 1)
+        self.assertIn("preferred pi;", notice[0])
+        self.assertIn("served by agy", notice[0])
+        self.assertIn("pi: prompt size", notice[0])
+
+    def test_fully_quarantined_pool_is_named_in_failures(self) -> None:
+        second_opinion._UNFIT_MODELS.update({("opencode", "m-a"), ("opencode", "m-b")})
+        with self.assertRaises(second_opinion.AllBackendsFailedError) as cm:
+            self._review(
+                {"opencode": lambda p, model_index=None: "never"},
+                {"SECOND_OPINION_OPENCODE_MODEL_POOL": "m-a,m-b"},
+            )
+        self.assertTrue(
+            any("opencode" in f and "quarantined" in f for f in cm.exception.failures)
+        )
+
+
+class SharedFamilyWarningTests(unittest.TestCase):
+    """probe's no-shared-family check over the models a rotated review uses."""
+
+    def test_family_token(self) -> None:
+        cases = {
+            "opencode-go/kimi-k2.7-code": "kimi",
+            "gpt-5.6-luna": "gpt",
+            "Gemini 3.8 Flash (High)": "gemini",
+            "qwen3.8-flash": "qwen",
+            "o3": "o",
+            "3x-model": None,
+        }
+        for model, token in cases.items():
+            self.assertEqual(second_opinion._family_token(model), token, model)
+
+    def test_shared_pool_family_warns(self) -> None:
+        env = {
+            "SECOND_OPINION_PI_MODEL_POOL": "glm-5.3-flash,kimi-k2.7-code",
+            "SECOND_OPINION_OPENCODE_MODEL_POOL": "opencode-go/qwen3.8,opencode-go/kimi-k2.7-code",
+            "SECOND_OPINION_AGY_MODEL": "gemini-x",
+        }
+        warnings = second_opinion._shared_family_warnings(env)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("kimi", warnings[0])
+        self.assertIn("pi", warnings[0])
+        self.assertIn("opencode", warnings[0])
+
+    def test_disjoint_pools_are_quiet(self) -> None:
+        env = {
+            "SECOND_OPINION_PI_MODEL_POOL": "glm-5.3-flash,glm-5.2",
+            "SECOND_OPINION_OPENCODE_MODEL_POOL": "opencode-go/qwen3.8",
+            "SECOND_OPINION_AGY_MODEL": "gemini-x",
+        }
+        self.assertEqual(second_opinion._shared_family_warnings(env), [])
+
+    def test_single_override_hides_its_pool(self) -> None:
+        env = {
+            "SECOND_OPINION_PI_MODEL": "glm-5.2",
+            "SECOND_OPINION_PI_MODEL_POOL": "kimi-k2.7-code",
+            "SECOND_OPINION_OPENCODE_MODEL_POOL": "opencode-go/kimi-k2.7-code",
+            "SECOND_OPINION_AGY_MODEL": "gemini-x",
+        }
+        self.assertEqual(second_opinion._shared_family_warnings(env), [])
+
+    def test_agy_builtin_default_counts(self) -> None:
+        env = {"SECOND_OPINION_COPILOT_MODEL_POOL": "gemini-3-pro"}
+        warnings = second_opinion._shared_family_warnings(env)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("gemini", warnings[0])
+
+    def _probe(self, quiet: bool) -> tuple[str, str]:
+        env = {
+            "SECOND_OPINION_PI_MODEL_POOL": "kimi-a",
+            "SECOND_OPINION_OPENCODE_MODEL_POOL": "opencode-go/kimi-b",
+        }
+        out, err = io.StringIO(), io.StringIO()
+        with (
+            patch.dict(os.environ, env),
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(
+                second_opinion,
+                "BACKEND_RUNNERS",
+                {"opencode": lambda p, model_index=None, mode=None: "ok"},
+            ),
+            patch("sys.stdout", out),
+            patch("sys.stderr", err),
+        ):
+            second_opinion.cmd_probe(
+                argparse.Namespace(
+                    cmd="probe", backend=["opencode"], quiet=quiet, verbose=False
+                )
+            )
+        return out.getvalue(), err.getvalue()
+
+    def test_probe_prints_warning_on_stderr_only(self) -> None:
+        out, err = self._probe(quiet=False)
+        self.assertIn("[second_opinion] warning:", err)
+        self.assertIn("kimi", err)
+        self.assertNotIn("warning", out)
+        json.loads(out)
+
+    def test_probe_warning_silenced_by_quiet(self) -> None:
+        out, err = self._probe(quiet=True)
+        self.assertEqual(len(json.loads(out)["probes"]), 1)
+        self.assertNotIn("warning", err)

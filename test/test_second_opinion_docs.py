@@ -19,10 +19,12 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # Every copy must carry all of these markers. Keep in sync with
 # claude/commands/second-opinion.md (the canonical copy).
 REQUIRED_MARKERS = (
-    # the no-pool safety-net description
-    "don't assume a pool is configured",
-    # the POOL-config-error retry inside the loop
-    "retry, no index",
+    # rounds sharing a run id rotate across backends (model families)
+    "Rounds rotate across backends on their own",
+    # naming a backend or pinning a pool index opts out of that rotation
+    "either one turns rotation off",
+    # pools must not share a model family, checked by probe
+    "the pools must not share a family",
     # the caller-check rule for tooling-script changes
     "Caller check for tooling changes",
     # the backlog-recording step
@@ -61,14 +63,33 @@ DEFAULT_BIND_NOTES_MARKERS = ("second_opinion.py bind-notes <plan path>",)
 # form is genuinely per-harness: five copies show runnable commands naming
 # the CLI flags, while pi's name the tool's parameters instead, because pi
 # calls the native second_opinion tool rather than shelling out. Both forms
-# must still expose the model-index knob in both places — these are the
-# markers for it. Everything else in REQUIRED_MARKERS is identical across
+# keep the model-index knob in the usage block (a manual pin), while the
+# loop's per-round call passes only the run id, which drives backend
+# rotation — these are the markers for it. Everything else in REQUIRED_MARKERS is identical across
 # every copy and stays there.
 MODEL_INDEX_MARKERS = {
-    "pi/prompts/second-opinion.md": ("modelIndex", "modelIndex = <round - 1>"),
-    "pi/skills/second-opinion/SKILL.md": ("modelIndex", "modelIndex = <round - 1>"),
+    "pi/prompts/second-opinion.md": (
+        "modelIndex",
+        "runId = <run_id> # one call; rotates backends per runId",
+    ),
+    "pi/skills/second-opinion/SKILL.md": (
+        "modelIndex",
+        "runId = <run_id> # one call; rotates backends per runId",
+    ),
 }
-DEFAULT_MODEL_INDEX_MARKERS = ("[--model-index N]", "--model-index <round - 1>")
+DEFAULT_MODEL_INDEX_MARKERS = (
+    "[--model-index N]",
+    "--run-id <run_id> # one call; rotates backends per run-id",
+)
+
+# The loop used to pass a per-round pool index, which kept every round on one
+# backend (one model family) and needed a no-pool retry branch. Both are gone:
+# a copy still carrying either would undo backend rotation.
+FORBIDDEN_MARKERS = (
+    "--model-index <round - 1>",
+    "modelIndex = <round - 1>",
+    "retry, no index",
+)
 
 # Resolving the target plan reaches for a grill session's `plan_path`. Five
 # copies say so as a `grill.py show` CLI invocation; pi's names its native
@@ -158,3 +179,24 @@ def test_second_opinion_copy_carries_contract(rel_path: str) -> None:
     assert not missing, (
         f"{rel_path} is missing second-opinion contract markers: {missing}"
     )
+
+
+@pytest.mark.parametrize("rel_path", COPIES)
+def test_second_opinion_copy_drops_per_round_index(rel_path: str) -> None:
+    flat_text = " ".join((REPO_ROOT / rel_path).read_text(encoding="utf-8").split())
+    present = [m for m in FORBIDDEN_MARKERS if m in flat_text]
+    assert not present, f"{rel_path} still pins rounds to one backend: {present}"
+
+
+# Flags that opt a review out of backend rotation; the loop's own per-round
+# call must carry none of them, in either the CLI or the Pi tool form.
+ROTATION_OPT_OUTS = ("--backend", "--model-index", "backend =", "modelIndex =")
+
+
+@pytest.mark.parametrize("rel_path", COPIES)
+def test_loop_review_call_keeps_rotation_on(rel_path: str) -> None:
+    text = (REPO_ROOT / rel_path).read_text(encoding="utf-8")
+    loop = text.split("\nloop:\n", 1)[1].split('show "Round N critique"', 1)[0]
+    call = loop[loop.index("critique = ") :]
+    present = [flag for flag in ROTATION_OPT_OUTS if flag in call]
+    assert not present, f"{rel_path}'s loop call opts out of rotation: {present}"

@@ -31,7 +31,10 @@ python3 ~/.agent-toolkit/scripts/second_opinion.py review --diff --dir <worktree
 
 Given a spec, add `--spec <spec path>`.
 
-The reviewer is the label it prints (`Second opinion via <label>:`).
+The reviewer is the label it prints (`Second opinion via <label>:`). Rounds
+sharing a run-id rotate across backends: round 2 prefers a different
+backend (model family) than round 1, and an excluded backend never
+rotates in.
 
 Read its output straight from the command. If you save it to a file, give
 every call its own file (`mktemp`), never a fixed name like `rd1.txt`:
@@ -44,7 +47,9 @@ drop hand-written code: first leave out generated copies whose source
 (template, params) is in the review — `--diff-path . --diff-path ':!<glob>'` —
 but keep one rendered copy per changed template, so the rendering itself is
 read. Still too large? Review path groups with one call each (`--diff-path
-<paths>`, run-id `<run-id>-<group>`). Every staged file lands in some group.
+<paths>`, run-id `<run-id>-<group>`). Every staged file lands in some group. Rotation is scoped to each group's id, so every group's first round
+starts at the top of the priority order; a group's next round must reuse
+that group's id to rotate.
 
 Refused because "another second_opinion.py run is writing the same output
 file", or its output warns "another process wrote to this run's output file"?

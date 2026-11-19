@@ -739,6 +739,17 @@ describe("probe execute", () => {
     });
   });
 
+  test("stderr warnings get their own block after the summary, never inside the JSON", async () => {
+    const stdout = report([ok]);
+    const stderr = "[second_opinion] warning: model family 'kimi' appears in more than one backend";
+    const { run } = setup({ code: 0, stdout, stderr });
+    const result = await run({});
+    expect(result.content).toHaveLength(3);
+    expect(result.content[0]).toEqual({ type: "text", text: stdout });
+    expect(result.content[1].text).toMatch(/^probe: 1 ok, /);
+    expect(result.content[2]).toEqual({ type: "text", text: stderr });
+  });
+
   test("exit 0 still carries counts, including a report that tested nothing", async () => {
     const { run } = setup({ code: 0, stdout: report([missing]), stderr: "" });
     const result = await run({});

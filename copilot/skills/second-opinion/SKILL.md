@@ -15,18 +15,18 @@ reports each backend's presence AND whether it currently meets the isolation
 contract (with the reason when it does not), `review` returns one critique, and
 `probe` runs one trivial, cheap, text-only request per model in the selected
 backend's pool (or its single override / default model) and reports per-model
-availability as JSON — use it to check a pool's health before committing to a
-multi-round rotation, and remember it calls the real models once each, so pass
-`--backend` deliberately. It is single-round: one call, one critique. The
-multi-round loop and plan revision are your job, not the script's. By default,
-reviews are grounded in the target codebase (`--dir` or current working
-directory) with read-only tools enabled; use `--text-only` to opt out. A fourth
-subcommand, `panel`, runs a multi-model panel discussion — one brief to N
-chosen backends in parallel (round 1), then one anonymised cross-round in which
-a designated backend synthesizes an agreed/disputed/open summary from the
-round-1 positions while the rest cross-examine, every reply appended to a
-transcript file as it lands — a separate workflow from this single-round
-critique loop.
+availability as JSON — use it to check the pools' health (and their family
+overlap, warned on stderr) before a multi-round loop, and remember it calls the
+real models once each, so pass `--backend` deliberately. It is single-round:
+one call, one critique. The multi-round loop and plan revision are your job,
+not the script's. By default, reviews are grounded in the target codebase
+(`--dir` or current working directory) with read-only tools enabled; use
+`--text-only` to opt out. A fourth subcommand, `panel`, runs a multi-model
+panel discussion — one brief to N chosen backends in parallel (round 1), then
+one anonymised cross-round in which a designated backend synthesizes an
+agreed/disputed/open summary from the round-1 positions while the rest
+cross-examine, every reply appended to a transcript file as it lands — a
+separate workflow from this single-round critique loop.
 
 ```
 second_opinion.py detect --mode grounded        # which backends can run a
@@ -41,7 +41,7 @@ second_opinion.py review <plan-file-or-text> \
     [--focus-file <path>] \
     [--model-index N] \
     --run-id <run_id>                            # one critique from the
-                                                  # priority-selected backend,
+                                                  # least-recently-served backend,
                                                   # optionally scoped with
                                                   # plan-specific risk hints; the
                                                   # round cap counts per run-id
@@ -51,47 +51,57 @@ second_opinion.py check-notes <artifact>        # current, stale, unbound,
                                                   # missing or no-artifact
 ```
 
-`--model-index` is a 0-based index into a per-machine model pool
+Rounds rotate across backends on their own. Every `review` call in the loop
+below passes the same `--run-id`, and the script remembers which backend served
+each successful round of that run: the next round prefers the eligible backend
+that served least recently (never-served first, the priority order breaking
+ties). When each round's preferred backend answers, a three-round loop on a
+machine with three eligible backends gets three backends — three model families
+while the pools share none — so same-family blind spots can't fake convergence.
+A failure can make a round fall back to a backend that already served: compare
+the `Second opinion via ...` headers before calling convergence, and treat
+agreement between two rounds from the same backend as weak evidence. Rotation
+only covers priority-order selection: `--backend` names the backend for that
+call and `--model-index` pins a pool entry, so either one turns rotation off —
+don't pass them in the loop unless the user asked for that backend or model.
+Backend exclusion (review-diff's self-exclusion) and the isolation-eligibility
+check run first, so a backend that is excluded or ineligible never rotates in.
+A preferred backend that fails is skipped forward to the next candidate, the
+script prints a one-line stderr notice (suppressed by `--quiet`) naming what it
+passed over and why, and while it stays eligible that backend is tried first
+again next round; read the `Second opinion via ...` header to see who answered.
+
+Inside one backend, the model comes from a per-machine pool
 (`SECOND_OPINION_CODEX_MODEL_POOL` / `_AGY_MODEL_POOL` / `_PI_MODEL_POOL` /
 `_OPENCODE_MODEL_POOL` / `_COPILOT_MODEL_POOL`, set by the user, not this
-skill) — round 1 of the loop below is index 0, round 2 is index 1, etc. All
-five backends share the same indexed-pool contract. Copilot-specific tier note:
-copilot's `--model` flag requires a GitHub Copilot Pro or Enterprise plan, so
+skill): a review without `--model-index` uses the single-model override
+(`SECOND_OPINION_<BACKEND>_MODEL`) when set, else the pool's first entry.
+Because rotation treats each backend as one family, the pools must not share a
+family — `probe` prints a stderr warning when two backends' models share a
+family token (e.g. `kimi-…` in both the Pi and opencode pools); relay it, and
+leave fixing the pools to the user. Copilot-specific tier note: copilot's
+`--model` flag requires a GitHub Copilot Pro or Enterprise plan, so
 `_COPILOT_MODEL_POOL` only works on an account with that entitlement — on a
 free tier, leave it unset so copilot uses its default model; a set pool there
 fails with an entitlement error naming the variable, not a bad-id error. An
-explicit index selects the pool entry for that call even when a single-model
-override (`SECOND_OPINION_<BACKEND>_MODEL`) is also set; without
-`--model-index` the single override (or the backend default) applies. An
-explicit index is a hard error if the selected backend's pool is unset/empty or
-the index is out of range — it no longer silently falls back. Because of that,
-don't assume a pool is configured: pass `--model-index` every round as before,
-but if that call exits nonzero with a `--model-index ... requires ... POOL ...`
-configuration error (not a backend-failure message), retry that same round's
-call once, identical except omitting `--model-index` — this is the safe,
-always-valid fallback (single-model override or backend default), not a skipped
-round. See the loop below for exactly where this retry sits. If only some
-backends are pool-configured, automatic selection stops on the first priority
-candidate with a pool config error; use `--backend <configured-backend>` to
-target a working one, or `--backend <name>,<name>,...` (comma-separated, tried
-in order, first success wins) to make the script itself fall through at runtime
-— a list skips an entry that is not installed with a one-line notice and never
-touches the priority order; a single name keeps the strict one-backend-only
-contract (that call fails outright with no fallback). A model whose run
-answered with a tool-use transcript instead of a critique — or whose access the
-gateway refuses outright ("Model access is disabled") — is skipped to the next
-pool model instead of failing the round (even a pinned `--model-index` rotates
-forward) and quarantined for the process — later requests in the same process
-skip it, while a fresh CLI invocation starts clean — so do not pin
-`--model-index` across rounds on a machine whose pool is known to contain a
-tool-hungry or access-disabled model; let the rotation skip instead, and repair
-the pool with `probe`'s report. On a machine with no pool at all for the
-dispatched backend, the script itself prints a one-line stderr notice
-(suppressed by `--quiet`) naming the absent pool variable, where to set it, and
-a realistic example — the run still proceeds with the backend's default model,
-so nothing to act on unless you want pool rotation. See the toolkit README's
-"What you supply vs. what the toolkit creates" section for the full config
-contract.
+explicit `--model-index` is a hard error if the selected backend's pool is
+unset/empty or the index is out of range, so pair it with `--backend
+<configured-backend>`. `--backend <name>,<name>,...` (comma-separated, tried in
+order, first success wins) makes the script itself fall through at runtime — a
+list skips an entry that is not installed with a one-line notice; a single name
+keeps the strict one-backend-only contract (that call fails outright with no
+fallback). A model whose run answered with a tool-use transcript instead of a
+critique — or whose access the gateway refuses outright ("Model access is
+disabled") — is skipped to the next pool model of the same backend instead of
+failing the round (even a pinned `--model-index` moves forward) and quarantined
+for the process — later requests in the same process skip it, while a fresh CLI
+invocation starts clean; repair such a pool with `probe`'s report. On a machine
+with no pool at all for the dispatched backend, the script itself prints a
+one-line stderr notice (suppressed by `--quiet`) naming the absent pool
+variable, where to set it, and a realistic example — the run still proceeds
+with the backend's default model, so nothing to act on unless you want a pool.
+See the toolkit README's "What you supply vs. what the toolkit creates" section
+for the full config contract.
 
 Pinning a model the user names: when the user asks for a specific backend and
 model for the critique, target the backend with `--backend <name>` and set its
@@ -99,9 +109,11 @@ single-model override (`SECOND_OPINION_<BACKEND>_MODEL`, the model's id or
 display name as that backend lists it — confirm it exists first, e.g. `agy
 models`) for every round, and omit `--model-index` — an explicit index selects
 the pool over the override, so passing it would silently replace the model the
-user asked for. Where the call goes through a shell, prefix it with the
-variable; where it goes through a native tool with no model parameter, ask the
-user to set the variable in the environment the harness was launched from.
+user asked for. Naming the backend turns rotation off, so every round of that
+loop stays on the user's model — intended, since they chose it. Where the call
+goes through a shell, prefix it with the variable; where it goes through a
+native tool with no model parameter, ask the user to set the variable in the
+environment the harness was launched from.
 
 Image review: for art-heavy work (sprites, mockups, screenshots), pass `--image
 <path>` (repeatable) to `review` to send image files plus a rubric (the
@@ -182,25 +194,7 @@ loop:
                   (see above), or skip if nothing specific stands out
     critique = second_opinion.py review <current_plan> \
                    [--focus-file <focus-hints-path>] \
-                   --model-index <round - 1> --run-id <run_id>   # one call
-    if that call exited nonzero with a "--model-index ... requires
-       ... POOL ..." configuration error (not a backend-failure message):
-        critique = second_opinion.py review <current_plan> \
-                       [--focus-file <focus-hints-path>] --run-id <run_id>   # retry, no index —
-                                                            # no pool configured
-                                                            # for this backend,
-                                                            # not an error to
-                                                            # surface to the
-                                                            # user — the script
-                                                            # itself prints a
-                                                            # stderr notice
-                                                            # (suppressed by
-                                                            # --quiet) naming
-                                                            # the pool var and
-                                                            # an example; the
-                                                            # run still falls
-                                                            # back to the
-                                                            # default model
+                   --run-id <run_id>   # one call; rotates backends per run-id
     show "Round N critique" + critique in chat
 
     if round > 1 and critique raises nothing substantively

@@ -388,11 +388,14 @@ recorded here.
   matching `grill.py`'s own `EVIDENCE_REQUIRED`.
 - **`second-opinion-tool.ts`** — `detect`, `review`, `probe`, `bind-notes`
   and `check-notes`. `probe` exits 1 when a model is unavailable; the tool
-  returns that report (plus an ok/unavailable/not-installed count line)
+  returns that report (plus an ok/unavailable/not-installed count line,
+  and probe's stderr family-overlap warning as a third block of its own)
   instead of raising, and still raises on any other nonzero exit. `modelIndex` is
-  compared against `undefined`, not truthiness: index 0 is round 1 of the
-  rotation, and a truthiness test would silently drop it and fall back to
-  the single-model override instead of the pool. The multi-round loop,
+  compared against `undefined`, not truthiness: index 0 is a real pool
+  entry, and a truthiness test would silently drop it and fall back to
+  the single-model override instead of the pool. Rounds rotate across
+  backends by `runId` in the script itself, so the loop passes neither
+  `modelIndex` nor `backend`. The multi-round loop,
   plan revision and convergence judgment stay in the prompt template; the
   script is single-round by design and the tool does not model them.
 - **`standup-tool.ts`** — `fetch` only. The tool validates `date`'s shape
