@@ -186,7 +186,7 @@ as an ``outcome="skipped"`` record, and the surviving attempt's record names
 caller named the model, so there is no silent replacement.
 
 Files read: <plan-file-or-text> (if a path), --focus-file; with --diff, the
-  staged diff via `git diff --cached` in --dir.
+  staged diff via `git diff --cached` in --dir, and --spec if given.
 Files written: <data-dir>/second-opinion-runs/<sha256>.json — a per-run
   critique counter used to enforce the round cap (see Round-cap enforcement
   below).
@@ -211,7 +211,8 @@ toolkit creates" section for the full supplied-vs-created contract.
 
 Exit codes: 0 success; 1 any failure (no backend available, all backends failed,
 bad --focus-file, unknown subcommand, --diff with an empty staged diff or a
-plan argument, neither a plan nor --diff).
+plan argument, neither a plan nor --diff, --spec without --diff or naming a
+missing, unreadable or blank file).
 
 Requires Python 3.12+.
 """
@@ -303,6 +304,7 @@ class ReviewRequest:
     diff: bool = False
     exclude_backends: tuple[str, ...] = ()
     images: tuple[str, ...] = ()
+    spec_text: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1005,11 +1007,25 @@ not. Look especially for code that only handles side effects of the diff's
 own approach. Give file:line, what would replace it, and which contract or
 invariant the code serves, if any. These are suggestions, not defects. If
 there are none, write "Simplifications: none."
-{focus_section}
+{spec_section}{focus_section}
 If you find no defects, answer "No findings." on the first line, then give the Simplifications section. Skip preamble.
 
 ---
 {plan_text}
+"""
+
+DIFF_SPEC_SECTION = """
+Then add a section headed "Spec:". Check the diff against the spec below,
+which says what this change was asked to do. Report numbered findings of
+three kinds: a requirement that is missing or partial; behavior the diff
+adds that the spec has not asked for; a requirement that looks implemented
+but is implemented wrongly. Quote the spec line each finding rests on, or,
+for unrequested behavior, the diff hunk that adds it. Keep these
+apart from the bug findings above, and do not rank one list against the
+other. If the diff meets the spec, write "Spec: no findings."
+
+Spec:
+{spec}
 """
 
 DIFF_FOCUS_SECTION = """
@@ -1026,6 +1042,7 @@ def build_prompt(
     grounded: bool = True,
     diff: bool = False,
     images: tuple[str, ...] = (),
+    spec_text: str | None = None,
 ) -> str:
     """Build the critique prompt, optionally inserting plan-specific focus hints.
 
@@ -1040,6 +1057,8 @@ def build_prompt(
             plan-critique prompt.
         images: When non-empty, use the image-review prompt (the images are
             attached out-of-band by the backend; ``plan_text`` is the rubric).
+        spec_text: With ``diff``, the spec the change implements; adds a
+            separate "Spec:" conformance section. ``None``/blank omits it.
 
     Returns:
         The fully-formatted critique prompt.
@@ -1053,6 +1072,11 @@ def build_prompt(
     if diff:
         return DIFF_REVIEW_PROMPT.format(
             tools_section=DIFF_TOOLS_GROUNDED if grounded else DIFF_TOOLS_TEXT_ONLY,
+            spec_section=(
+                DIFF_SPEC_SECTION.format(spec=spec_text.strip())
+                if spec_text and spec_text.strip()
+                else ""
+            ),
             focus_section=DIFF_FOCUS_SECTION.format(hints=hints) if hints else "",
             plan_text=plan_text,
         )
@@ -2013,6 +2037,7 @@ def review_plan(
         grounded=(mode == "grounded"),
         diff=request.diff,
         images=resolved_images,
+        spec_text=request.spec_text,
     )
     prompt_bytes = len(prompt.encode("utf-8"))
     failures: list[str] = []
@@ -2366,12 +2391,26 @@ def cmd_review(args: argparse.Namespace) -> None:
     diff_paths = getattr(args, "diff_path", None)
     if diff_paths and not diff:
         die("--diff-path only applies with --diff")
+    spec_arg = getattr(args, "spec", None)
+    if spec_arg is not None and not diff:
+        die("--spec only applies with --diff")
     with cli_common.timing_span("prepare"):
         if diff:
             target = getattr(args, "dir", None)
             plan_text = read_staged_diff((target or Path.cwd()).resolve(), diff_paths)
         else:
             plan_text = resolve_plan_text(plan_arg)
+        spec_text = None
+        if spec_arg is not None:
+            spec_path = Path(spec_arg).expanduser()
+            if not spec_path.is_file():
+                die(f"--spec not found: {spec_path}")
+            try:
+                spec_text = spec_path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError) as exc:
+                die(f"--spec unreadable: {spec_path}: {exc}")
+            if not spec_text.strip():
+                die(f"--spec is empty: {spec_path}")
         focus_hints = None
         if args.focus_file:
             focus_path = Path(args.focus_file).expanduser()
@@ -2408,6 +2447,7 @@ def cmd_review(args: argparse.Namespace) -> None:
                 grounded=not getattr(args, "text_only", False),
                 diff=diff,
                 images=images,
+                spec_text=spec_text,
             ),
             end="",
         )
@@ -2424,6 +2464,7 @@ def cmd_review(args: argparse.Namespace) -> None:
         diff=diff,
         exclude_backends=exclude,
         images=images,
+        spec_text=spec_text,
     )
     # Round-cap enforcement: the (MAX_ROUNDS+1)-th *successful* review for this
     # run is refused. Keyed by --run-id or the resolved plan-file path; the
@@ -3088,6 +3129,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help="disable codebase exploration and run ungrounded text-only critique",
+    )
+    p.add_argument(
+        "--spec",
+        default=None,
+        metavar="FILE",
+        help="with --diff, the spec the change implements: the reviewer adds "
+        "a separate Spec: section of missing, unrequested, or wrongly "
+        "implemented requirements, each quoting the spec line",
     )
     p.add_argument(
         "--focus-file",

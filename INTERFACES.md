@@ -1679,13 +1679,14 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
     - `--mode` — contract view to report: text-only (default) or grounded (checks the per-mode read-reach override, so a containment-dependent backend reports as unavailable for grounded mode when containment is unavailable) (choices: text-only, grounded; default: text-only)
   - `probe [--backend NAME[,NAME...]]` — probe each backend's model pool and report per-model availability as JSON
     - `--backend` — probe only these backend(s) (comma-separated list allowed) instead of every installed backend in priority order; an entry not installed is reported as not_installed, not an error
-  - `review [<plan-file-or-text>] [--diff] [--image PATH] [--backend NAME[,NAME...]] [--dir <DIR>] [--text-only] [--focus-file <FOCUS_FILE>] [--model-index N] [--exclude-backend NAME] [--diff-path PATHSPEC] [--prompt-only] [--run-id ID] [--allow-extra-round]` — get one critique from the priority-selected backend
+  - `review [<plan-file-or-text>] [--diff] [--image PATH] [--backend NAME[,NAME...]] [--dir <DIR>] [--text-only] [--spec FILE] [--focus-file <FOCUS_FILE>] [--model-index N] [--exclude-backend NAME] [--diff-path PATHSPEC] [--prompt-only] [--run-id ID] [--allow-extra-round]` — get one critique from the priority-selected backend
     - `plan` (nargs: ?)
     - `--diff` — review the staged diff (git diff --cached in --dir) for bugs instead of critiquing a plan; do not also pass a plan (default: False)
     - `--image` — attach an image file to the review (repeatable), sending the images plus the rubric to a vision-capable backend; the review then runs text-only, and is mutually exclusive with --diff. Images are size/count/format limited, and a backend without a headless image flag (agy) is skipped or fails explicitly, never a silent text-only fallback
     - `--backend` — force backend(s) in order, first success wins (comma-separated list allowed) instead of priority-order fallback; a single name keeps the strict one-backend-only contract, while a list skips an entry that is not installed with a notice
     - `--dir` — root directory of the codebase to inspect in grounded review (defaults to current working directory)
     - `--text-only` — disable codebase exploration and run ungrounded text-only critique (default: False)
+    - `--spec` — with --diff, the spec the change implements: the reviewer adds a separate Spec: section of missing, unrequested, or wrongly implemented requirements, each quoting the spec line
     - `--focus-file` — path to a file of plan-specific risk hints, appended to the critique prompt as areas to scrutinize (supplements, not replaces, the generic adversarial mandate)
     - `--model-index` — 0-based index into the backend model pool (SECOND_OPINION_{CODEX,AGY,PI,OPENCODE,COPILOT}_MODEL_POOL) for this call -- round 1 of a rotation is index 0, round 2 is index 1, etc. Supported for codex/agy/pi/opencode/copilot; an explicit index selects the pool even when a single-model override is set, and is a hard error if the pool is unset/empty or the index is out of range (was previously a silent no-op/fallback).
     - `--exclude-backend` — skip this backend in priority-order selection (repeatable) — e.g. the harness that wrote the change, so the review really comes from another model; cannot be combined with --backend
@@ -1726,7 +1727,7 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
   - `class ReviewRequest` — One review request for :func:`review_plan`.
   - `class ReviewResult` — A successful critique: the backend used, its response, and diagnostics.
 - Public functions:
-  - `build_prompt(plan_text: str, focus_hints: str | None, *, grounded: bool = True, diff: bool = False, images: tuple[str, ...] = ()) -> str` — Build the critique prompt, optionally inserting plan-specific focus hints.
+  - `build_prompt(plan_text: str, focus_hints: str | None, *, grounded: bool = True, diff: bool = False, images: tuple[str, ...] = (), spec_text: str | None = None) -> str` — Build the critique prompt, optionally inserting plan-specific focus hints.
   - `die(msg: str) -> NoReturn` — Print an error to stderr, prefixed for this script, and exit with status 1.
   - `sanitize_plan_text(plan_text: str) -> tuple[str, int]` — Strip ephemeral review debris headers/sections from a plan.
   - `read_staged_diff(target_dir: Path, pathspecs: list[str] | None = None) -> str` — Return the staged diff (``git diff --cached``) of the repo at ``target_dir``.
@@ -2884,12 +2885,12 @@ new one, `--check` catches it the same as any other stale content.
 | `/draft-voice` | — |
 | `/foreman` | `backlog-item`, `land`, `shunt-artifacts`, `swarm` |
 | `/grill-me` | `second-opinion`, `spec` |
-| `/land` | `backlog-item`, `dashboard`, `review-diff`, `shunt-artifacts` |
+| `/land` | `backlog-item`, `dashboard`, `review-diff`, `shunt-artifacts`, `spec` |
 | `/make-skill` | `draft-voice`, `grill-me`, `obe-triage` |
 | `/obe-triage` | — |
 | `/recap` | — |
 | `/refresh-guidance` | — |
-| `/review-diff` | `backlog-item`, `land` |
+| `/review-diff` | `backlog-item`, `land`, `spec` |
 | `/second-opinion` | `backlog-item` |
 | `/shunt-artifacts` | `foreman`, `land`, `review-diff` |
 | `/skill-drift-audit` | `land` |

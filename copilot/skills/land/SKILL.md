@@ -49,8 +49,8 @@ first. No exceptions for being mid-pipeline, and no exception for code an
 external executor wrote (the shared instructions file). The proposed commit is the staged tree: review
 `git status` and `git diff --cached` (`--stat` first when it runs past ~50
 lines), not only an unstaged `git diff`, before
-requesting approval. Show the `review-diff` report (reviewer line and triage
-table) with the diff. `review-diff` did not run on this staged tree? Say so
+requesting approval. Show the `review-diff` report (its reviewer, spec and rounds lines, and
+triage table) with the diff. `review-diff` did not run on this staged tree? Say so
 plainly at the gate — "review-diff did not run" — and do not run it
 silently from here.
 

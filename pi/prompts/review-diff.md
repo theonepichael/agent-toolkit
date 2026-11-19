@@ -6,7 +6,9 @@ argument-hint: "[worktree]"
 
 Review the staged diff for bugs before it is committed. The input is a
 worktree path — from `$ARGUMENTS`, or from the skill that delegated here; none
-given means the current directory. The reviewer only reads; you triage and fix.
+given means the current directory. A caller may also give the spec the
+change implements; the reviewer then also checks the diff against it. The
+reviewer only reads; you triage and fix.
 
 ## 1. Stage
 Stage every intended change in the worktree, and nothing unrelated. Then
@@ -24,7 +26,8 @@ Run one cross-model review round. Use one `runId` for the whole loop
 (e.g. `review-diff-<branch>-<unix-time>`):
 
 Call the `second_opinion` tool with `action: "review"`, `diff: true`,
-`dir: "<worktree>"`, `runId: "<run-id>"`, and `excludeBackend: "pi"`.
+`dir: "<worktree>"`, `runId: "<run-id>"`, and `excludeBackend: "pi"`, plus
+`spec: "<spec path>"` when given a spec.
 Never invoke `second_opinion.py` via bash — all review calls go through the
 native `second_opinion` tool.
 
@@ -43,7 +46,7 @@ group.
 It throws or fails (no backend installed, or every backend failed)? Fall back:
 call the `second_opinion` tool with `action: "review"`, `diff: true`,
 `promptOnly: true`, `dir: "<worktree>"`, and `excludeBackend: "pi"` (keeping any
-`diffPaths`, omitting `runId`) to obtain the critique prompt. Hand that prompt
+`diffPaths` and `spec`, omitting `runId`) to obtain the critique prompt. Hand that prompt
 text verbatim to a fresh same-model subagent via the `delegate` tool (harness `pi`). Tell it the
 worktree path to read from, and to read only, never edit files. The reviewer is
 then "same-model subagent (fallback: <why>)". That fails too? The reviewer
@@ -63,7 +66,12 @@ reason to name what the code serves (a contract or invariant, or
 "nothing") and why the smaller change still serves it. If unsure, use
 **keep**. When a **fix** finding exists only because of this diff's own
 approach, fix it as usual, and add "approach-alt: <the smaller approach
-that would avoid it>" to that row's reason. No **fix** rows → go to step 5.
+that would avoid it>" to that row's reason. Findings under the reviewer's
+"Spec:" go in the same table, the Finding cell starting with `spec:`; fix
+the code, or reject with the reason (the spec itself may be what is wrong).
+Reviewed in groups? Each group saw only part of the change, so check every
+spec finding against the whole staged diff before deciding it.
+No **fix** rows → go to step 5.
 
 ## 4. Fix and re-review
 Max 2 review rounds in total. On round 2 there is no round 3: after fixing, go
@@ -82,6 +90,7 @@ Print this block. It is the output contract: the caller's commit gate
 
 ```
 Reviewer: <label | same-model subagent (fallback: why) | no review ran: why>
+Spec: <spec path | none given>
 Rounds: <n>
 
 | # | Finding (file:line) | Severity | Decision | Reason or fix |

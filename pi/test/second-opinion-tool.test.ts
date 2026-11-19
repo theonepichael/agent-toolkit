@@ -76,6 +76,24 @@ describe("assertFields", () => {
     ).not.toThrow();
   });
 
+  test("review accepts spec with diff: true", () => {
+    expect(() =>
+      assertFields("review", { action: "review", diff: true, spec: "/tmp/spec.md" }),
+    ).not.toThrow();
+  });
+
+  test("spec requires diff: true", () => {
+    expect(() =>
+      assertFields("review", { action: "review", planFile: "/tmp/p.md", spec: "/tmp/spec.md" }),
+    ).toThrow(/spec only applies with diff: true/);
+  });
+
+  test("spec must not be empty", () => {
+    expect(() => assertFields("review", { action: "review", diff: true, spec: "  " })).toThrow(
+      /spec must not be empty/,
+    );
+  });
+
   test("diffPaths requires diff: true", () => {
     expect(() =>
       assertFields("review", { action: "review", planFile: "/tmp/p.md", diffPaths: ["src/"] }),
@@ -324,6 +342,15 @@ describe("buildArgv", () => {
         excludeBackend: "pi, codex",
       }),
     ).toEqual(["review", "--diff", "--exclude-backend", "pi", "--exclude-backend", "codex"]);
+  });
+
+  test("review with spec emits --spec", () => {
+    expect(buildArgv("review", { action: "review", diff: true, spec: "/tmp/spec.md" })).toEqual([
+      "review",
+      "--diff",
+      "--spec",
+      "/tmp/spec.md",
+    ]);
   });
 
   test("review with diffPaths emits repeatable --diff-path", () => {

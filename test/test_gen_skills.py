@@ -365,6 +365,23 @@ class CapabilityFixtureTests(unittest.TestCase):
         # both templates render the same step-4 rule, so no harness copy diverges
         self.assertEqual(len(set(step4_bodies)), 1)
 
+    def test_review_diff_carries_the_spec_through_every_path(self) -> None:
+        # A spec dropped from the fallback would leave a backend outage with a
+        # bug-only review while the report still names the spec as checked.
+        rendered = gs.render_all(REPO_ROOT, SKILL_PARAMS)
+        for (skill, _harness), path in gs.OUTPUT_PATHS.items():
+            if skill != "review-diff":
+                continue
+            text = rendered[path]
+            review = text.split("## 2. Review", 1)[1].split("## 3. Triage", 1)[0]
+            fallback = review.split("Fall back:", 1)[1]
+            self.assertRegex(review.split("Fall back:", 1)[0], r"`--spec |`spec: ", path)
+            self.assertRegex(fallback, r"`--spec`|`spec`", path)
+            triage = text.split("## 3. Triage", 1)[1].split("## 4.", 1)[0]
+            self.assertIn("`spec:`", triage, path)
+            self.assertIn("against the whole staged diff", triage, path)
+            self.assertIn("Spec: <spec path | none given>", text, path)
+
     # -- dashboard --------------------------------------------------------
 
     def test_dashboard_claude(self) -> None:

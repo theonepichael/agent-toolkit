@@ -271,12 +271,13 @@ checks. Show each check's result lines from its log (pass/fail counts, any
 failure's message), not the full stream — "should work" is not verification (CLAUDE.md).
 
 ## 10. Review
-Load `/skill:review-diff` with this item's worktree path — every item, no
+Load `/skill:review-diff` with this item's worktree path and its spec (the
+`-spec.md` path in `related_files`, when there is one) — every item, no
 ask, `--auto` included. It reviews step 9's staged tree with a non-Claude
 reviewer (same-model subagent fallback), triages each finding fix or
 reject-with-reason, records simplifications report-only, fixes and
-re-verifies, max 2 rounds. Keep the reviewer
-line and triage table it prints: step 11's commit gate shows them. Don't
+re-verifies, max 2 rounds. Keep the report it
+prints (reviewer, spec and rounds lines, triage table): step 11's commit gate shows it. Don't
 commit here.
 
 ## 11. Land

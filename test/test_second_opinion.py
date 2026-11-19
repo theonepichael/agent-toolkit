@@ -4448,6 +4448,129 @@ class DiffReviewTests(unittest.TestCase):
         self.assertIn("- the lock", prompt)
         self.assertNotIn("plan's author", prompt)
 
+    def test_build_prompt_diff_spec_adds_a_separate_spec_section(self) -> None:
+        prompt = second_opinion.build_prompt(
+            "+x\n", None, diff=True, spec_text="Export writes CSV.\n"
+        )
+        self.assertIn('headed "Spec:"', prompt)
+        self.assertIn("Export writes CSV.", prompt)
+        self.assertIn("missing or partial", prompt)
+        self.assertIn("not asked for", prompt)
+        self.assertIn("implemented wrongly", prompt)
+        self.assertIn('"Spec: no findings."', prompt)
+        # The diff stays last, after the spec, as the material under review.
+        self.assertLess(prompt.index("Export writes CSV."), prompt.index("+x\n"))
+
+    def test_build_prompt_diff_without_spec_has_no_spec_section(self) -> None:
+        prompt = second_opinion.build_prompt("+x\n", None, diff=True)
+        self.assertNotIn('headed "Spec:"', prompt)
+
+    def test_cmd_review_spec_reaches_the_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            spec = Path(tmpdir) / "spec.md"
+            spec.write_text("Export writes CSV.\n", encoding="utf-8")
+            args = second_opinion.build_parser().parse_args(
+                ["review", "--diff", "--spec", str(spec), "--prompt-only"]
+            )
+            with (
+                patch.object(second_opinion, "read_staged_diff", return_value="+x\n"),
+                patch("sys.stdout", io.StringIO()) as out,
+            ):
+                second_opinion.cmd_review(args)
+        self.assertEqual(
+            out.getvalue(),
+            second_opinion.build_prompt(
+                "+x\n", None, diff=True, spec_text="Export writes CSV.\n"
+            ),
+        )
+
+    def test_cmd_review_spec_without_diff_is_an_error(self) -> None:
+        args = second_opinion.build_parser().parse_args(
+            ["review", "plan text", "--spec", "spec.md"]
+        )
+        with (
+            redirect_stderr(io.StringIO()) as err,
+            self.assertRaises(SystemExit) as cm,
+        ):
+            second_opinion.cmd_review(args)
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("--spec only applies with --diff", err.getvalue())
+
+    def _spec_error(self, content: bytes) -> str:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            spec = Path(tmpdir) / "spec.md"
+            spec.write_bytes(content)
+            args = second_opinion.build_parser().parse_args(
+                ["review", "--diff", "--spec", str(spec), "--prompt-only"]
+            )
+            with (
+                patch.object(second_opinion, "read_staged_diff", return_value="+x\n"),
+                patch("sys.stdout", io.StringIO()),
+                redirect_stderr(io.StringIO()) as err,
+                self.assertRaises(SystemExit) as cm,
+            ):
+                second_opinion.cmd_review(args)
+        self.assertEqual(cm.exception.code, 1)
+        return err.getvalue()
+
+    def test_cmd_review_blank_spec_file_is_an_error(self) -> None:
+        # A blank spec would otherwise drop the Spec: section silently while
+        # the report still names the spec path as checked.
+        self.assertIn("--spec is empty", self._spec_error(b"  \n\n"))
+
+    def test_cmd_review_empty_spec_argument_is_an_error(self) -> None:
+        args = second_opinion.build_parser().parse_args(
+            ["review", "--diff", "--spec", "", "--prompt-only"]
+        )
+        with (
+            patch.object(second_opinion, "read_staged_diff", return_value="+x\n"),
+            patch("sys.stdout", io.StringIO()),
+            redirect_stderr(io.StringIO()) as err,
+            self.assertRaises(SystemExit) as cm,
+        ):
+            second_opinion.cmd_review(args)
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("--spec not found", err.getvalue())
+
+    def test_cmd_review_undecodable_spec_file_is_an_error(self) -> None:
+        self.assertIn("--spec unreadable", self._spec_error(b"\xff\xfe bad"))
+
+    def test_cmd_review_spec_reaches_the_backend_prompt(self) -> None:
+        captured: dict[str, str] = {}
+
+        def fake_runner(prompt: str, **_kwargs: object) -> str:
+            captured["prompt"] = prompt
+            return "No findings."
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            spec = Path(tmpdir) / "spec.md"
+            spec.write_text("Export writes CSV.\n", encoding="utf-8")
+            args = second_opinion.build_parser().parse_args(
+                ["review", "--diff", "--spec", str(spec), "--backend", "codex"]
+            )
+            with (
+                patch("shutil.which", return_value="/usr/bin/codex"),
+                patch.dict(second_opinion.BACKEND_RUNNERS, {"codex": fake_runner}),
+                patch.object(second_opinion, "read_staged_diff", return_value="+x\n"),
+                patch("sys.stdout", io.StringIO()),
+            ):
+                second_opinion.cmd_review(args)
+        self.assertIn('headed "Spec:"', captured["prompt"])
+        self.assertIn("Export writes CSV.", captured["prompt"])
+
+    def test_cmd_review_missing_spec_file_is_an_error(self) -> None:
+        args = second_opinion.build_parser().parse_args(
+            ["review", "--diff", "--spec", "/nonexistent/spec.md"]
+        )
+        with (
+            patch.object(second_opinion, "read_staged_diff", return_value="+x\n"),
+            redirect_stderr(io.StringIO()) as err,
+            self.assertRaises(SystemExit) as cm,
+        ):
+            second_opinion.cmd_review(args)
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("--spec not found", err.getvalue())
+
     def test_read_staged_diff_runs_git_in_dir(self) -> None:
         calls: list[list[str]] = []
 

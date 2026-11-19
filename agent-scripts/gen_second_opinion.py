@@ -123,6 +123,7 @@ PI_TOOL_PARAMS = {
     "--model-index": "modelIndex",
     "--diff": "diff",
     "--prompt-only": "promptOnly",
+    "--spec": "spec",
 }
 # Flags that take no argument; the tool exposes them as booleans.
 PI_BOOLEAN_FLAGS = frozenset({"--text-only", "--diff", "--prompt-only"})

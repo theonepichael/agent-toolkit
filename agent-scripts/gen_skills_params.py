@@ -678,13 +678,14 @@ def _review_step(harness: str) -> str:
     """backlog-item step 10: delegate to review-diff."""
     how = _DELEGATE_HOW[harness].format(skill="review-diff")
     return (
-        f"Delegate to {how} with this item's worktree path — every item, no "
+        f"Delegate to {how} with this item's worktree path and its spec (the "
+        "`-spec.md` path in `related_files`, when there is one) — every item, no "
         "ask, `--auto` included. It reviews step 9's staged tree with a "
         "non-Claude reviewer (same-model subagent fallback), triages each "
         "finding fix or reject-with-reason, records simplifications report-only, "
         "fixes and re-verifies, max 2 rounds. "
-        "Keep the reviewer line and triage table it prints: step 11's commit "
-        "gate shows them. Don't commit here."
+        "Keep the report it prints (reviewer, spec and rounds lines, triage "
+        "table): step 11's commit gate shows it. Don't commit here."
     )
 
 

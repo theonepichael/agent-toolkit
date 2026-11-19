@@ -22,6 +22,7 @@ export type Field =
   | "planFile"
   | "diff"
   | "diffPaths"
+  | "spec"
   | "excludeBackend"
   | "promptOnly"
   | "backend"
@@ -47,6 +48,7 @@ const ACTION_FIELDS: Record<Action, ActionFields> = {
       "planFile",
       "diff",
       "diffPaths",
+      "spec",
       "excludeBackend",
       "promptOnly",
       "backend",
@@ -73,6 +75,7 @@ export interface SecondOpinionParams {
   planFile?: string;
   diff?: boolean;
   diffPaths?: string[];
+  spec?: string;
   excludeBackend?: string;
   promptOnly?: boolean;
   backend?: string;
@@ -135,6 +138,13 @@ export function assertFields(action: Action, params: SecondOpinionParams): void 
       if (params.diffPaths !== undefined) {
         throw new Error("diffPaths only applies with diff: true");
       }
+      if (params.spec !== undefined) {
+        throw new Error("spec only applies with diff: true");
+      }
+    }
+
+    if (params.spec !== undefined && params.spec.trim() === "") {
+      throw new Error("spec must not be empty");
     }
 
     if (params.diffPaths !== undefined) {
@@ -256,6 +266,7 @@ export function buildArgv(action: Action, params: SecondOpinionParams): string[]
         ...(params.textOnly ? ["--text-only"] : []),
         ...(params.promptOnly ? ["--prompt-only"] : []),
         ...(params.diffPaths ? params.diffPaths.flatMap((p) => ["--diff-path", p]) : []),
+        ...(params.spec ? ["--spec", params.spec] : []),
         ...(params.focusFile ? ["--focus-file", params.focusFile] : []),
         ...(params.runId ? ["--run-id", params.runId] : []),
         ...(params.images ? params.images.flatMap((p) => ["--image", p]) : []),
@@ -378,6 +389,12 @@ export default function (pi: ExtensionAPI) {
         Type.Array(Type.String(), {
           description:
             "review: with diff: true, limit the staged diff to these git pathspecs (e.g. ['.', ':!tests/']).",
+        }),
+      ),
+      spec: Type.Optional(
+        Type.String({
+          description:
+            "review: with diff: true, path to the spec the change implements. The reviewer adds a separate Spec: section of missing, unrequested, or wrongly implemented requirements, each quoting the spec line.",
         }),
       ),
       excludeBackend: Type.Optional(
