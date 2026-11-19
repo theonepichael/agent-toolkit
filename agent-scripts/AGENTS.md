@@ -85,11 +85,13 @@ several files. Before touching it, know which one owns what:
   `in_progress_items`, `claim_info`) for callers that only need to look, not
   mutate.
 - **`dev_status_types.py`** — the on-disk schema: `Gate`, `RunRecord`,
-  `BacklogItem`, `PendingItem`, `BacklogIndex`. Single source — nothing
-  else defines these. (Collapsed 2026-09-11 from two independent copies,
-  one in `dev_status_impl.py` and one in `dev_status_storage.py`, that had
-  drifted apart in nothing but docstring completeness so far — don't
-  reintroduce a second copy.)
+  `BacklogItem`, `ObeRecord`, `PendingItem`, `BacklogIndex`, plus the status
+  vocabulary (`STATUSES`, `TERMINAL_STATUSES`) and `blocker_resolved`, the
+  one READY rule both the dashboard and `dev_status_read` use. Single source
+  — nothing else defines these. (Collapsed 2026-09-11 from two independent
+  copies, one in `dev_status_impl.py` and one in `dev_status_storage.py`,
+  that had drifted apart in nothing but docstring completeness so far —
+  don't reintroduce a second copy.)
 - **`backlog_claim_lookup.py`** — a narrow `Protocol` + local implementation
   for claim-ownership checks, for callers that don't want the full
   `dev_status_read` surface.

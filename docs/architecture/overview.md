@@ -107,7 +107,7 @@ flowchart TD
     GateLand --> Close[12. Review & Approve in dev_status]
 ```
 
-- **Resolution & Claim**: Loads the record via `dev_status.py show <slug>`. Prevents conflicting concurrent execution by inspecting and claiming ownership.
+- **Resolution & Claim**: Loads the record via `dev_status.py show <slug>`. An item closed as OBE (overtaken by events) stops here until the user confirms it is still needed. Prevents conflicting concurrent execution by inspecting and claiming ownership.
 - **Worktree Isolation**: Allocates a fresh worktree (`../<repo>-<slug>`) and bootstraps local dependencies (`bootstrap-worktree.sh`).
 - **Spec & Gate Classification**: Tasks involving design choices or requirement interpretation trigger gate criteria (`gate-set`) and require an adversarial critique pass (`second_opinion.py`).
 - **Explicit Approval Gates**: Commits and repository merges require mandatory, separate user approval pauses.
