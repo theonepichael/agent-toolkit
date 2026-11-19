@@ -19,6 +19,7 @@ import os
 import subprocess
 import sys
 import threading
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -225,6 +226,15 @@ def parse_error(argv, capsys):
         (["--rollback", "--uninstall"], "--uninstall must be used alone"),
         (["--yes"], "--yes can only be used with --uninstall"),
         (["--yes", "--harness=claude"], "--yes can only be used with --uninstall"),
+        (["--harness=all,claude"], "--harness=all cannot be combined"),
+        (["--harness=all", "--harness=claude"], "--harness=all cannot be combined"),
+        # The mix is reported ahead of the unknown name.
+        (["--harness=all,bogus"], "--harness=all cannot be combined"),
+        (["--harness=all,"], "empty value"),
+        (["--harness=ALL"], "unknown harness: ALL"),
+        (["--rollback", "--harness=all"], "must be used alone"),
+        (["--uninstall", "--harness=all"], "--uninstall must be used alone"),
+        (["--report-legacy-env", "--harness=all"], "--report-legacy-env must be used alone"),
     ],
 )
 def test_argument_errors_exit_2(argv, expected, capsys):
@@ -255,6 +265,33 @@ def test_repeated_harness_flags_accumulate():
 def test_comma_separated_harnesses():
     opts = install.parse_args(["--harness=claude,opencode,agy"])
     assert opts.harnesses == ("claude", "opencode", "agy")
+
+
+def test_harness_all_selects_every_harness_in_order():
+    opts = install.parse_args(["--harness=all"])
+    assert opts.harnesses == ("claude", "copilot", "opencode", "agy", "pi", "codex")
+    assert opts.harness_all is True
+
+
+def test_named_harnesses_are_not_harness_all():
+    assert install.parse_args(["--harness=claude"]).harness_all is False
+
+
+def test_repeated_harness_all_collapses():
+    opts = install.parse_args(["--harness=all,all", "--harness=all"])
+    assert opts.harnesses == ("claude", "copilot", "opencode", "agy", "pi", "codex")
+
+
+def test_harness_all_under_work_profile_leaves_out_opencode():
+    opts = install.parse_args(["--profile=work", "--harness=all"])
+    assert opts.harnesses == ("claude", "copilot", "agy", "pi", "codex")
+
+
+def test_error_messages_name_all(capsys):
+    _, err = parse_error(["--harness=bogus"], capsys)
+    assert "or all" in err
+    _, err = parse_error([], capsys)
+    assert "or all" in err
 
 
 def test_uninstall_alone_parses():
@@ -5245,20 +5282,174 @@ def test_check_links_dir_true_cross_checkout_uses_relative_path(
     assert f"note: 1 link(s) point into {dir_repo}" in out
 
 
-def test_check_harness_binaries_reports_missing(home, monkeypatch):
+def _opts(harnesses, *, harness_all=False, force_harness=False, profile="personal"):
+    return install.Options(
+        harnesses=tuple(harnesses),
+        harness_all=harness_all,
+        force_harness=force_harness,
+        profile=profile,
+    )
+
+
+def test_resolve_harness_binaries_reports_missing_named(monkeypatch):
     monkeypatch.setattr(install, "have", lambda cmd: cmd == "claude")
-    ctx = make_ctx(home, harnesses=("claude", "pi"), force_harness=False)
-    errors = install.check_harness_binaries(ctx)
+    opts, errors, notes = install.resolve_harness_binaries(_opts(("claude", "pi")))
     assert len(errors) == 1
     assert "'pi' CLI binary is not installed on PATH" in errors[0]
     assert "npm install -g @mariozechner/pi-cli" in errors[0]
+    assert notes == []
+    assert opts.harnesses == ("claude", "pi")
 
 
-def test_check_harness_binaries_bypassed_with_force_harness(home, monkeypatch):
+def test_resolve_harness_binaries_bypassed_with_force_harness(monkeypatch):
     monkeypatch.setattr(install, "have", lambda cmd: False)
-    ctx = make_ctx(home, harnesses=("pi",), force_harness=True)
-    errors = install.check_harness_binaries(ctx)
+    opts, errors, notes = install.resolve_harness_binaries(
+        _opts(("pi",), force_harness=True)
+    )
+    assert (opts.harnesses, errors, notes) == (("pi",), [], [])
+
+
+def test_resolve_harness_binaries_skips_missing_under_all(monkeypatch):
+    monkeypatch.setattr(install, "have", lambda cmd: cmd != "pi")
+    opts, errors, notes = install.resolve_harness_binaries(
+        _opts(("claude", "pi", "codex"), harness_all=True)
+    )
+    assert opts.harnesses == ("claude", "codex")
+    assert opts.harness_all is True
     assert errors == []
+    assert len(notes) == 1
+    assert "skipping pi: 'pi' not on PATH" in notes[0]
+    assert "npm install -g @mariozechner/pi-cli" in notes[0]
+
+
+def test_resolve_harness_binaries_all_with_force_keeps_everything(monkeypatch):
+    monkeypatch.setattr(install, "have", lambda cmd: False)
+    opts, errors, notes = install.resolve_harness_binaries(
+        _opts(("claude", "pi"), harness_all=True, force_harness=True)
+    )
+    assert (opts.harnesses, errors, notes) == (("claude", "pi"), [], [])
+
+
+def test_resolve_harness_binaries_all_with_nothing_left_refuses(monkeypatch):
+    monkeypatch.setattr(install, "have", lambda cmd: False)
+    opts, errors, _ = install.resolve_harness_binaries(
+        _opts(("claude", "pi"), harness_all=True)
+    )
+    assert opts.harnesses == ()
+    assert len(errors) == 1
+    assert "--harness=all" in errors[0]
+
+
+@pytest.mark.parametrize("force_harness", [False, True])
+def test_resolve_harness_binaries_notes_work_opencode_exclusion(
+    monkeypatch, force_harness
+):
+    monkeypatch.setattr(install, "have", lambda cmd: True)
+    _, errors, notes = install.resolve_harness_binaries(
+        _opts(("claude",), harness_all=True, force_harness=force_harness, profile="work")
+    )
+    assert errors == []
+    assert any("opencode" in note and "work profile" in note for note in notes)
+
+
+def _main_ctx(home, monkeypatch, repo_root=REPO_ROOT):
+    """Point main's build_context at the sandbox home, keeping parsed opts."""
+    monkeypatch.setattr(
+        install,
+        "build_context",
+        lambda opts: replace(
+            make_ctx(home, repo_root=repo_root, dry_run=opts.dry_run), opts=opts
+        ),
+    )
+
+
+def test_main_harness_all_skips_missing_cli_and_installs_the_rest(
+    home, monkeypatch, offline_install, capsys
+):
+    """A real install through main: the harness without a CLI gets no links."""
+    _main_ctx(home, monkeypatch)
+    monkeypatch.setattr(install, "have", lambda cmd: cmd == "claude")
+
+    status = install.main(["--harness=all"])
+
+    err = capsys.readouterr().err
+    assert status == 0, err
+    assert "skipping pi: 'pi' not on PATH" in err
+    assert (home / ".claude" / "CLAUDE.md").is_symlink()
+    assert not (home / ".pi").exists()
+    assert not (home / ".copilot").exists()
+
+
+def test_main_harness_all_dry_run_previews_only_installed_harnesses(
+    home, monkeypatch, offline_install, capsys
+):
+    _main_ctx(home, monkeypatch)
+    monkeypatch.setattr(install, "have", lambda cmd: cmd == "claude")
+
+    status = install.main(["--harness=all", "--dry-run"])
+
+    captured = capsys.readouterr()
+    assert status == 0, captured.err
+    assert "skipping pi: 'pi' not on PATH" in captured.err
+    assert "/.claude/CLAUDE.md" in captured.out
+    assert "/.pi/" not in captured.out
+    assert not (home / ".claude").exists()
+    assert not (home / ".local" / "state").exists()
+
+
+def test_main_work_guard_wins_over_harness_all_path_check(home, monkeypatch, capsys):
+    """A work-marked machine refuses a personal run before any CLI is checked."""
+    _main_ctx(home, monkeypatch)
+    marker = make_ctx(home).profile_marker
+    marker.parent.mkdir(parents=True)
+    marker.write_text("work\n")
+    monkeypatch.setattr(install, "have", lambda cmd: False)
+
+    assert install.main(["--harness=all"]) == 2
+    err = capsys.readouterr().err
+    assert "provisioned as WORK" in err
+    assert "skipping" not in err
+
+
+def test_main_harness_all_quiet_hides_skip_notes(home, monkeypatch, capsys):
+    _main_ctx(home, monkeypatch)
+    monkeypatch.setattr(install, "have", lambda cmd: cmd == "claude")
+    monkeypatch.setattr(install, "run_install", lambda ctx, specs: 0)
+
+    assert install.main(["--harness=all", "--dry-run", "-q"]) == 0
+    assert "skipping" not in capsys.readouterr().err
+
+
+def test_main_harness_all_with_no_cli_exits_2(home, monkeypatch, capsys):
+    _main_ctx(home, monkeypatch)
+    monkeypatch.setattr(install, "have", lambda cmd: False)
+    monkeypatch.setattr(
+        install, "run_install", lambda *a, **k: pytest.fail("nothing to install")
+    )
+
+    assert install.main(["--harness=all", "--dry-run"]) == 2
+    err = capsys.readouterr().err
+    # The refusal names --force-harness exactly once, not once per message.
+    assert err.count("--force-harness") == 1
+
+
+def test_main_check_links_harness_all_ignores_path(
+    home, fake_repo, monkeypatch, capsys
+):
+    """The audit never narrows by PATH: a copilot defect is still reported."""
+    wiring = check_links_ctx(home, fake_repo)
+    wire_check_links(wiring, ("copilot/instructions.md", "~/.copilot/instructions.md"))
+    (fake_repo / "copilot" / "instructions.md").unlink()
+    _main_ctx(home, monkeypatch, repo_root=fake_repo)
+    monkeypatch.setattr(install, "have", lambda cmd: cmd != "copilot")
+    capsys.readouterr()
+
+    code = install.main(["--check-links", "--harness=all"])
+
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "~/.copilot/instructions.md" in captured.out
+    assert "skipping" not in captured.err
 
 
 def test_main_fails_loudly_when_harness_binary_missing(home, monkeypatch, capsys):

@@ -117,6 +117,10 @@ rerun.
 # Provision specific harnesses only:
 ./install.sh --harness=claude,pi
 
+# Provision every harness whose CLI is installed (re-run after a new skill
+# lands, so its links appear):
+./install.sh --harness=all
+
 # Work profile (skips personal sync endpoints; opencode is refused outright):
 ./install.sh --profile=work --harness=claude
 

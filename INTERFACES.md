@@ -2427,7 +2427,7 @@ install.py — agent-toolkit provisioner for macOS/Linux.
   - `--quiet/-q`
   - `--verbose/-v`
   - `--profile`
-  - `--harness`
+  - `--harness` — comma-separated harnesses to provision (claude, copilot, opencode, agy, pi, codex), or all: when installing, every harness whose CLI is on PATH; with --check-links, every harness
   - `--rollback`
   - `--wipe`
   - `--force`
@@ -2455,7 +2455,7 @@ install.py — agent-toolkit provisioner for macOS/Linux.
   - `class ManagedService` — One systemd --user service this installer enables/disables/tracks.
 - Public functions:
   - `build_context(opts: Options, repo_root: Path | None = None) -> Context` — Assemble a :class:`Context` for a real run on this machine.
-  - `check_harness_binaries(ctx: Context) -> list[str]` — Return error strings for requested harnesses whose binaries are not on PATH.
+  - `resolve_harness_binaries(opts: Options) -> tuple[Options, list[str], list[str]]` — Check the selected harnesses' CLIs against PATH.
   - `parse_args(argv: Sequence[str]) -> Options` — Parse and validate the command line.
   - `run_command(cmd: Sequence[str] | str, *, shell: bool = False, capture: bool = False) -> CommandResult` — Run an external command, returning success rather than raising.
   - `have(executable: str) -> bool` — Return whether ``executable`` is on PATH.

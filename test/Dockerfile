@@ -7,7 +7,7 @@ RUN apt-get update -qq && apt-get install -y -qq \
     && rm -rf /var/lib/apt/lists/*
 
 # Harness CLI stubs. install.py refuses --harness=<name> unless that
-# harness's CLI is on PATH (check_harness_binaries: a PATH lookup only, the
+# harness's CLI is on PATH (resolve_harness_binaries: a PATH lookup only, the
 # binary is never executed), so the scenarios need one per harness they
 # select. Stubs keep the build offline and deterministic; a real npm install
 # would add network and version drift for no extra coverage. agy and codex
