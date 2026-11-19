@@ -20,6 +20,7 @@ directory.
 Requires Python 3.12+.
 """
 
+import contextlib
 import shutil
 import sys
 from collections.abc import Callable, Sequence
@@ -309,9 +310,19 @@ def _uninstall_state_paths(deps: Deps, state_dir: Path) -> list[Path]:
 
 
 def _delete_uninstall_state(deps: Deps, ctx: UninstallContext) -> None:
-    """Delete this feature's own state files during a real (non-dry-run) rollback."""
+    """Delete this feature's own state files during a real (non-dry-run) rollback.
+
+    The lock file is not unlinked by path: a live run's lock is not this
+    sweep's to remove, so it goes through
+    :func:`uninstall_state.clear_stale_uninstall_lock`, which removes the file
+    only when the recorded holder is dead.
+    """
+    lock_path = uninstall_state.uninstall_lock_path(ctx.state_dir)
     for path in _uninstall_state_paths(deps, ctx.state_dir):
+        if path == lock_path:
+            continue
         path.unlink(missing_ok=True)
+    uninstall_state.clear_stale_uninstall_lock(ctx.state_dir)
 
 
 # ── uninstall preflight and CLI ─────────────────────────────────────────────
@@ -1217,19 +1228,31 @@ def _finalize_uninstall_state(deps: Deps, ctx: UninstallContext) -> None:
     if it's now empty. Only called when zero unresolved/drifted items
     remain — a partial uninstall retains everything for a retry.
 
+    The lock is held for the whole of that sweep and released last: releasing
+    first would let a second run take the lock and load a baseline this call
+    is in the middle of deleting. The lock file itself is never unlinked here
+    — ``release_uninstall_lock`` owns it, and it removes it only while
+    holding the lock — so a lock a second run takes after that point survives.
+
     Also makes a best-effort (non-ledger, never-blocking) sweep of the
     state directory's own now-possibly-empty ancestors — ``~/.local/state``
     and ``~/.local`` — since the generic directory phase deliberately never
     touches them (see ``_is_state_dir_or_its_ancestor``) precisely because
     their emptiness could only ever be known *after* this cleanup runs.
     """
-    uninstall_state.release_uninstall_lock(ctx.state_dir)
+    lock_path = uninstall_state.uninstall_lock_path(ctx.state_dir)
     for path in _uninstall_state_paths(deps, ctx.state_dir):
+        if path == lock_path:
+            continue
         path.unlink(missing_ok=True)
     ctx.manifest.path.unlink(missing_ok=True)
     ctx.profile_marker.unlink(missing_ok=True)
+    uninstall_state.release_uninstall_lock(ctx.state_dir)
     if ctx.state_dir.is_dir() and not any(ctx.state_dir.iterdir()):
-        ctx.state_dir.rmdir()
+        # A second run can take the lock between the check and this call; the
+        # directory is then legitimately in use again.
+        with contextlib.suppress(OSError):
+            ctx.state_dir.rmdir()
 
     ancestor = ctx.state_dir.parent
     while ancestor != ctx.home and ctx.home in ancestor.parents:

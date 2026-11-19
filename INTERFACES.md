@@ -2484,6 +2484,7 @@ Pristine-state uninstall mode: baseline capture and ownership tracking.
   - `is_lock_holder_alive(pid: int, recorded_start_time: int, *, start_time_fn: Callable[[int], int | None] = process_start_time) -> bool` — Whether the recorded lock holder is still running the same process.
   - `acquire_uninstall_lock(state_dir: Path, *, pid: int | None = None, start_time_fn: Callable[[int], int | None] = process_start_time) -> tuple[bool, LockInfo | None]` — Try to acquire the uninstall advisory lock.
   - `release_uninstall_lock(state_dir: Path, pid: int | None = None) -> None` — Release and unlink the lock, only if it's still recorded as ours.
+  - `clear_stale_uninstall_lock(state_dir: Path, *, start_time_fn: Callable[[int], int | None] = process_start_time) -> bool` — Remove the lock file if its recorded holder is no longer alive.
   - `classify_package_transactions(baseline: Baseline, live_snapshots: dict[str, dict[str, str] | None]) -> list[PackageClassification]` — Classify every requested/introduced package, in uninstall removal order.
   - `build_service_record(*, enabled: bool | None, active: bool | None, linger: bool | None) -> dict[str, object]` — Build a ``service:`` record from already-probed values.
   - `classify_service(recorded: dict[str, object] | None, live: dict[str, object]) -> Classification` — Classify the watchcommit service/linger key.

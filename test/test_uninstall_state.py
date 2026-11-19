@@ -7,10 +7,14 @@ No subprocesses, no real HOME — everything runs against a throwaway
 Requires Python 3.12+.
 """
 
+import fcntl
 import json
 import os
 import sys
+import threading
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
@@ -839,6 +843,193 @@ def test_process_start_time_missing_pid_returns_none(tmp_path):
 
 def test_process_start_time_reads_own_pid():
     assert uninstall_state.process_start_time(os.getpid()) is not None
+
+
+def _acquire_lock_across_a_concurrent_unlink(tmp_path, *, replace_after_unlink):
+    """Run one acquirer through its open->flock window while the file is unlinked.
+
+    Deterministic interleaving, no sleeps: the holder holds the flock while
+    the acquirer enters ``flock``; the holder then unlinks the lock path
+    (optionally replacing it with a fresh file, as a later acquirer would),
+    and only then unlocks.
+    """
+    lock_path = uninstall_state.uninstall_lock_path(tmp_path)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+
+    holder_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
+    os.write(holder_fd, json.dumps({"pid": 1111, "start_time": 100}).encode())
+    os.fsync(holder_fd)
+    fcntl.flock(holder_fd, fcntl.LOCK_EX)
+
+    in_flock = threading.Event()
+    result: list[tuple[bool, object]] = []
+
+    class _FlockShim:
+        """Announce the acquirer's first LOCK_EX; leave flock's semantics alone."""
+
+        LOCK_EX = fcntl.LOCK_EX
+        LOCK_UN = fcntl.LOCK_UN
+
+        def __init__(self) -> None:
+            self.announced = False
+
+        def flock(self, fd: int, operation: int) -> None:
+            if operation == fcntl.LOCK_EX and not self.announced:
+                self.announced = True
+                in_flock.set()
+            fcntl.flock(fd, operation)
+
+    def acquirer() -> None:
+        result.append(
+            uninstall_state.acquire_uninstall_lock(
+                tmp_path,
+                pid=2222,
+                start_time_fn=lambda pid: 200 if pid == 2222 else None,
+            )
+        )
+
+    original_fcntl = uninstall_state.fcntl
+    uninstall_state.fcntl = _FlockShim()
+    try:
+        thread = threading.Thread(target=acquirer, daemon=True)
+        thread.start()
+        assert in_flock.wait(10), "acquirer never reached flock"
+        assert result == [], "acquirer finished before the file was unlinked"
+        lock_path.unlink()
+        if replace_after_unlink:
+            lock_path.write_text(json.dumps({"pid": 4444, "start_time": 400}))
+        fcntl.flock(holder_fd, fcntl.LOCK_UN)
+        thread.join(10)
+        assert not thread.is_alive()
+    finally:
+        uninstall_state.fcntl = original_fcntl
+        os.close(holder_fd)
+
+    return lock_path, result
+
+
+@pytest.mark.regression(
+    "uninstall-lock-unlinked-between-open-and-flock",
+    "AssertionError: the acquirer's record is not on the lock file, so nobody can see it",
+)
+def test_acquire_lock_when_the_file_is_unlinked_before_its_flock(tmp_path):
+    lock_path, result = _acquire_lock_across_a_concurrent_unlink(
+        tmp_path, replace_after_unlink=False
+    )
+
+    assert [acquired for acquired, _ in result] == [True]
+    assert uninstall_state.read_lock(lock_path) == uninstall_state.LockInfo(
+        pid=2222, start_time=200
+    ), "the acquirer's record is not on the lock file, so nobody can see it"
+
+    def live(pid: int) -> int | None:
+        return {2222: 200, 3333: 300}.get(pid)
+
+    acquired_again, _ = uninstall_state.acquire_uninstall_lock(
+        tmp_path, pid=3333, start_time_fn=live
+    )
+    assert acquired_again is False
+
+
+def _run_within_bound(call) -> tuple[bool, list[BaseException]]:
+    """Run ``call`` in a thread; report whether it returned within the bound.
+
+    A bounded join, not a sleep: it exists so a retry loop that never returns
+    fails the test instead of hanging the suite.
+    """
+    raised: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            call()
+        except BaseException as err:  # the caller asserts on the exception type
+            raised.append(err)
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    thread.join(5)
+    return not thread.is_alive(), raised
+
+
+@pytest.mark.regression(
+    "uninstall-lock-acquire-spins-on-an-uncreatable-path",
+    "AssertionError: acquire_uninstall_lock never returned for a lock path it cannot create",
+)
+def test_acquire_lock_gives_up_on_a_path_it_cannot_create(tmp_path):
+    """A lock path that can never be created must fail, not retry forever.
+
+    A dangling symlink into a missing directory makes ``os.open(..., O_CREAT)``
+    raise ``ENOENT`` on every attempt. The retry exists for a file a concurrent
+    release removed, so retrying that forever is a hang.
+    """
+    lock_path = uninstall_state.uninstall_lock_path(tmp_path)
+    lock_path.symlink_to(tmp_path / "missing-dir" / "uninstall.lock")
+
+    finished, raised = _run_within_bound(
+        lambda: uninstall_state.acquire_uninstall_lock(
+            tmp_path, pid=2222, start_time_fn=lambda pid: 200
+        )
+    )
+
+    assert finished, (
+        "acquire_uninstall_lock never returned for a lock path it cannot create"
+    )
+    assert [type(err) for err in raised] == [FileNotFoundError]
+
+
+@pytest.mark.regression(
+    "uninstall-lock-acquire-spins-when-the-file-keeps-changing",
+    "AssertionError: acquire_uninstall_lock spun past the retry bound",
+)
+def test_acquire_lock_gives_up_when_the_lock_keeps_being_replaced(tmp_path, monkeypatch):
+    """A path another process keeps replacing must give up, not spin.
+
+    Injected, not timed: the descriptor re-check is made to fail every time,
+    which is what a path replaced on every attempt looks like.
+    """
+    attempts: list[int] = []
+    monkeypatch.setattr(
+        uninstall_state,
+        "_lock_descriptor_is_current",
+        lambda lock_path, fd: attempts.append(fd) or False,
+    )
+    results: list[tuple[bool, object]] = []
+
+    finished, raised = _run_within_bound(
+        lambda: results.append(
+            uninstall_state.acquire_uninstall_lock(
+                tmp_path, pid=2222, start_time_fn=lambda pid: 200
+            )
+        )
+    )
+
+    assert finished, "acquire_uninstall_lock spun past the retry bound"
+    assert raised == []
+    assert results == [(False, None)]
+    assert len(attempts) == uninstall_state._LOCK_MAX_ATTEMPTS
+
+
+@pytest.mark.regression(
+    "uninstall-lock-replaced-between-open-and-flock",
+    "AssertionError: the acquirer left its record on the replaced file's predecessor",
+)
+def test_acquire_lock_when_the_file_is_replaced_before_its_flock(tmp_path):
+    lock_path, result = _acquire_lock_across_a_concurrent_unlink(
+        tmp_path, replace_after_unlink=True
+    )
+
+    assert [acquired for acquired, _ in result] == [True]
+    assert uninstall_state.read_lock(lock_path) == uninstall_state.LockInfo(
+        pid=2222, start_time=200
+    ), "the acquirer left its record on the replaced file's predecessor"
+
+    def live(pid: int) -> int | None:
+        return {2222: 200, 3333: 300}.get(pid)
+
+    acquired_again, _ = uninstall_state.acquire_uninstall_lock(
+        tmp_path, pid=3333, start_time_fn=live
+    )
+    assert acquired_again is False
 
 
 # ── service/linger (watchcommit) ─────────────────────────────────────────

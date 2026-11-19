@@ -23,9 +23,11 @@ import hashlib
 import json
 import os
 import shutil
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TextIO
 
 STATE_PRESENT = "present"
 STATE_ABSENT = "absent"
@@ -1149,6 +1151,75 @@ def is_lock_holder_alive(
     return current_start == recorded_start_time
 
 
+_LOCK_MAX_ATTEMPTS = 5
+"""How many times the lock protocol may re-open the file within one call.
+
+Bounded on purpose. The retry exists for a file a concurrent release replaced
+under us, but a path that can never be created (a dangling symlink into a
+missing directory, for instance) would otherwise be retried forever, and the
+two cases are indistinguishable from inside the loop.
+"""
+
+
+def _lock_descriptor_is_current(lock_path: Path, fd: int) -> bool:
+    """Whether ``fd`` still refers to the file at ``lock_path``.
+
+    ``open`` resolves the path once, and a concurrent release can unlink (or
+    replace) that file while this process waits for its ``flock``. ``flock``
+    on such a descriptor is granted on an inode that no longer has a name, so
+    the record written through it is invisible to the next acquirer, which
+    creates a fresh file and locks that instead. Comparing
+    ``(st_dev, st_ino)`` against the path is what tells the two apart.
+    """
+    try:
+        path_stat = lock_path.stat()
+    except FileNotFoundError:
+        return False
+    fd_stat = os.fstat(fd)
+    return (fd_stat.st_dev, fd_stat.st_ino) == (path_stat.st_dev, path_stat.st_ino)
+
+
+@contextmanager
+def _locked_lock_file(lock_path: Path, *, create: bool) -> Iterator[TextIO | None]:
+    """Yield the lock file's handle with its ``flock`` held, or ``None``.
+
+    One place owns the open → flock → re-check protocol that all three lock
+    functions need: the descriptor is opened *before* the ``flock``, so the
+    file it lands on is re-checked against the path afterwards and the attempt
+    repeated when the path now names a different file (or none).
+
+    ``None`` means there is nothing to act on: the file does not exist and
+    ``create`` is false, or every attempt lost that race. With ``create`` set,
+    the last attempt's ``FileNotFoundError`` propagates instead of being
+    retried — a path that cannot be created will never become creatable.
+    """
+    for attempt in range(1, _LOCK_MAX_ATTEMPTS + 1):
+        if create:
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+        flags = os.O_RDWR | (os.O_CREAT if create else 0)
+        try:
+            fd = os.open(lock_path, flags, 0o666)
+        except FileNotFoundError:
+            if not create:
+                # No lock file at all: nothing to release or clear.
+                yield None
+                return
+            if attempt == _LOCK_MAX_ATTEMPTS:
+                raise
+            # A finished uninstall can remove the state directory between the
+            # mkdir above and this open; recreate it and try again.
+            continue
+        with os.fdopen(fd, "r+") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                if _lock_descriptor_is_current(lock_path, handle.fileno()):
+                    yield handle
+                    return
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    yield None
+
+
 def acquire_uninstall_lock(
     state_dir: Path,
     *,
@@ -1161,7 +1232,8 @@ def acquire_uninstall_lock(
     truth for staleness — an ``flock`` on the file only serializes the
     read-check-write sequence below between concurrent acquirers, so a
     genuinely live holder (recorded moments earlier by a concurrent
-    process) is still seen and refused correctly.
+    process) is still seen and refused correctly. :func:`_locked_lock_file`
+    owns the open/flock/re-check protocol and its retry bound.
 
     Returns:
         ``(True, None)`` on success. ``(False, stale_info_or_None)`` on
@@ -1169,36 +1241,74 @@ def acquire_uninstall_lock(
         found and logged, purely for a caller's warning message.
     """
     lock_path = uninstall_lock_path(state_dir)
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(lock_path, "a+") as handle:
-        try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-            handle.seek(0)
-            existing = parse_lock_text(handle.read())
-            if existing is not None and is_lock_holder_alive(
-                existing.pid, existing.start_time, start_time_fn=start_time_fn
-            ):
-                return False, None
+    with _locked_lock_file(lock_path, create=True) as handle:
+        if handle is None:
+            # Every attempt lost the file to a concurrent release; refuse
+            # rather than run without the lock.
+            return False, None
 
-            our_pid = pid if pid is not None else os.getpid()
-            our_start = start_time_fn(our_pid) or 0
-            handle.seek(0)
-            handle.truncate()
-            handle.write(json.dumps({"pid": our_pid, "start_time": our_start}))
-            handle.flush()
-            os.fsync(handle.fileno())
-            return True, existing
-        finally:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        handle.seek(0)
+        existing = parse_lock_text(handle.read())
+        if existing is not None and is_lock_holder_alive(
+            existing.pid, existing.start_time, start_time_fn=start_time_fn
+        ):
+            return False, None
+
+        our_pid = pid if pid is not None else os.getpid()
+        our_start = start_time_fn(our_pid) or 0
+        handle.seek(0)
+        handle.truncate()
+        handle.write(json.dumps({"pid": our_pid, "start_time": our_start}))
+        handle.flush()
+        os.fsync(handle.fileno())
+        return True, existing
 
 
 def release_uninstall_lock(state_dir: Path, pid: int | None = None) -> None:
-    """Release and unlink the lock, only if it's still recorded as ours."""
+    """Release and unlink the lock, only if it's still recorded as ours.
+
+    Read and unlink happen under the same ``flock`` an acquirer takes (see
+    :func:`_locked_lock_file`). Without it a release can unlink the file
+    between another process's inode re-check and its record write, deleting a
+    lock that process is about to believe it holds — and the next acquirer
+    then creates a fresh file and takes a second lock.
+    """
     our_pid = pid if pid is not None else os.getpid()
     lock_path = uninstall_lock_path(state_dir)
-    existing = read_lock(lock_path)
-    if existing is not None and existing.pid == our_pid:
+    with _locked_lock_file(lock_path, create=False) as handle:
+        if handle is None:
+            return
+        existing = parse_lock_text(handle.read())
+        if existing is not None and existing.pid == our_pid:
+            lock_path.unlink(missing_ok=True)
+
+
+def clear_stale_uninstall_lock(
+    state_dir: Path,
+    *,
+    start_time_fn: Callable[[int], int | None] = process_start_time,
+) -> bool:
+    """Remove the lock file if its recorded holder is no longer alive.
+
+    This is the only way a caller that does not hold the lock may remove it
+    (rollback's state sweep, for instance). Reading under the same ``flock``
+    an acquirer takes means a live run's lock is never deleted, and a lock
+    left behind by a run that died is still cleaned up.
+
+    Returns:
+        Whether a lock file was removed.
+    """
+    lock_path = uninstall_lock_path(state_dir)
+    with _locked_lock_file(lock_path, create=False) as handle:
+        if handle is None:
+            return False
+        existing = parse_lock_text(handle.read())
+        if existing is not None and is_lock_holder_alive(
+            existing.pid, existing.start_time, start_time_fn=start_time_fn
+        ):
+            return False
         lock_path.unlink(missing_ok=True)
+        return True
 
 
 # ── package classification (Implementation Sequence step 4) ─────────────

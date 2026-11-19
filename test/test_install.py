@@ -3158,8 +3158,101 @@ def test_uninstall_second_lock_acquisition_refuses_while_first_is_live(
         uninstall_state.release_uninstall_lock(ctx.state_dir, pid=os.getpid())
 
 
-# ── package removal execution ───────────────────────────────────────────────
+@pytest.mark.regression(
+    "uninstall-finalize-releases-the-lock-before-deleting-state",
+    "AssertionError: a second run could take the lock while the first was still deleting its state",
+)
+def test_finalize_state_holds_the_lock_while_it_deletes_state(
+    home, links, offline_install, monkeypatch
+):
+    """Finalizing one run must keep the lock until its state sweep is done.
 
+    ``do_uninstall`` releases the lock and ``_finalize_uninstall_state`` then
+    sweeps the state directory. Releasing first let a second run take the
+    lock and load a baseline the first run was in the middle of deleting; the
+    sweep also unlinked the lock path directly, deleting that new run's file.
+    The probe below is a second run asking for the lock *during* the sweep.
+    """
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.run_install(ctx, links)
+    assert ctx.state_dir.is_dir()
+    lock_path = uninstall_state.uninstall_lock_path(ctx.state_dir)
+    baseline_path = uninstall_state.baseline_path(ctx.state_dir)
+    assert baseline_path.exists()
+
+    acquired, _ = uninstall_state.acquire_uninstall_lock(
+        ctx.state_dir, start_time_fn=uninstall_state.process_start_time
+    )
+    assert acquired is True
+
+    probes: list[bool] = []
+    real_paths = uninstall_exec._uninstall_state_paths
+
+    def probing_paths(deps, state_dir):
+        # What a second `--uninstall` would experience at this instant.
+        acquired_second, _ = uninstall_state.acquire_uninstall_lock(
+            state_dir, start_time_fn=uninstall_state.process_start_time
+        )
+        probes.append(acquired_second)
+        return real_paths(deps, state_dir)
+
+    try:
+        monkeypatch.setattr(uninstall_exec, "_uninstall_state_paths", probing_paths)
+        uninstall_exec._finalize_uninstall_state(install._uninstall_deps(), ctx)
+    finally:
+        if lock_path.exists():
+            uninstall_state.release_uninstall_lock(ctx.state_dir)
+
+    assert probes == [False], (
+        "a second run could take the lock while the first was still deleting its state"
+    )
+    assert not baseline_path.exists()
+    assert not lock_path.exists()
+
+
+@pytest.mark.regression(
+    "rollback-deletes-a-live-uninstall-lock",
+    "AssertionError: the rollback state sweep deleted a live uninstall lock",
+)
+def test_delete_uninstall_state_leaves_a_live_lock(home, links, offline_install):
+    """Rollback may clear a dead run's lock, never a live run's."""
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.run_install(ctx, links)
+    assert ctx.state_dir.is_dir()
+    lock_path = uninstall_state.uninstall_lock_path(ctx.state_dir)
+    baseline_path = uninstall_state.baseline_path(ctx.state_dir)
+
+    acquired, _ = uninstall_state.acquire_uninstall_lock(
+        ctx.state_dir, start_time_fn=uninstall_state.process_start_time
+    )
+    assert acquired is True
+    try:
+        uninstall_exec._delete_uninstall_state(install._uninstall_deps(), ctx)
+        assert not baseline_path.exists()  # the sweep did run
+        assert uninstall_state.read_lock(lock_path) is not None, (
+            "the rollback state sweep deleted a live uninstall lock"
+        )
+    finally:
+        uninstall_state.release_uninstall_lock(ctx.state_dir)
+
+
+def test_delete_uninstall_state_clears_a_dead_runs_lock(home, links, offline_install):
+    """The sweep still cleans up a lock left behind by a dead run."""
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.run_install(ctx, links)
+    lock_path = uninstall_state.uninstall_lock_path(ctx.state_dir)
+
+    acquired, _ = uninstall_state.acquire_uninstall_lock(
+        ctx.state_dir, pid=90210, start_time_fn=lambda pid: 100
+    )
+    assert acquired is True
+
+    uninstall_exec._delete_uninstall_state(install._uninstall_deps(), ctx)
+
+    assert uninstall_state.read_lock(lock_path) is None
+
+
+# ── package removal execution ───────────────────────────────────────────────
 
 def _package_baseline(*transactions):
     baseline = uninstall_state.Baseline()
