@@ -1245,11 +1245,17 @@ def _pid_exists(pid: int) -> bool:
 
     ``os.kill(pid, 0)`` sends no signal. Only ``ProcessLookupError`` proves
     absence; any other ``OSError`` — ``PermissionError`` included, which means
-    it exists but isn't ours — reads as present.
+    it exists but isn't ours — reads as present. A pid past the range the
+    syscall accepts raises ``OverflowError`` before reaching the kernel and
+    cannot name a process, so it proves absence too.
     """
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
+        return False
+    except OverflowError:
+        # A pid past the range the syscall accepts names no process: the
+        # conversion fails before the kernel is asked.
         return False
     except OSError:
         return True
@@ -1260,16 +1266,21 @@ def process_start_time(pid: int) -> int | None:
     """Read a process's start-time field (field 22) from ``/proc/<pid>/stat``.
 
     None means the process exists but its start time can't be read: no ``/proc``
-    on this platform (macOS), or an entry ``hidepid`` hides. A definitively
-    absent pid raises ``ProcessLookupError``, and an entry that exists but can't
-    be read raises ``PermissionError``.
+    on this platform (macOS), an entry ``hidepid`` hides, or a record that isn't
+    valid UTF-8. A process name is arbitrary bytes, and a record we cannot
+    decode answers "unknown" rather than raising — the field parse below cannot
+    tell which field a bad byte shifted, so no field of it is trustworthy. A
+    definitively absent pid raises ``ProcessLookupError``, and an entry that
+    exists but can't be read raises ``PermissionError``.
     """
     try:
-        text = Path(f"/proc/{pid}/stat").read_text()
+        text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="strict")
     except FileNotFoundError:
         if _pid_exists(pid):
             return None
         raise ProcessLookupError(pid) from None
+    except UnicodeDecodeError:
+        return None
     # Field 2 (comm) may itself contain spaces/parens; split after the last
     # ')' so the remaining whitespace-separated fields count correctly.
     _, _, rest = text.rpartition(")")

@@ -977,6 +977,107 @@ def test_process_start_time_gone_pid_raises_process_lookup_error(
         uninstall_state.process_start_time(1234)
 
 
+_PROC_STAT_START_TIME = 4242
+"""Field 22 of the fake records below, so a parsed value is unmistakable."""
+
+
+def _proc_stat_record(comm: bytes) -> bytes:
+    """A complete ``/proc/<pid>/stat`` record whose start time is known.
+
+    All 52 fields are present, so this is the same shape the kernel writes and
+    a field-22 value read out of it is unambiguous.
+    """
+    tail = [b"S"] + [b"0"] * 18 + [str(_PROC_STAT_START_TIME).encode()] + [b"0"] * 30
+    return b" ".join([b"1234", b"(" + comm + b")", *tail])
+
+
+def _fake_proc_stat(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, pid: int, raw: bytes
+) -> Path:
+    """Serve ``raw`` bytes as ``/proc/<pid>/stat``, without touching the host's.
+
+    Unlike :func:`_hide_proc_stat` this hands the real decoder a file on disk,
+    so a test can prove what ``Path.read_text`` does with undecodable bytes.
+    Only that one path is redirected; the caller's encoding/errors reach the
+    real read. The returned file can be rewritten between assertions.
+    """
+    stat_file = tmp_path / "stat"
+    stat_file.write_bytes(raw)
+    original_read_text = Path.read_text
+    target = f"/proc/{pid}/stat"
+
+    def read_text(self: Path, *args: object, **kwargs: object) -> str:
+        if str(self) == target:
+            return original_read_text(stat_file, *args, **kwargs)  # type: ignore[arg-type]
+        return original_read_text(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    return stat_file
+
+
+@pytest.mark.regression(
+    "non-utf8-proc-comm-is-unknown",
+    "UnicodeDecodeError: 'utf-8' codec can't decode byte 0xff in position 8: invalid start byte",
+)
+def test_process_start_time_non_utf8_comm_is_unknown(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A record that cannot be decoded answers "unknown", not an exception.
+
+    A process name is arbitrary bytes, so it can hold a byte that is not valid
+    UTF-8. The clean-comm control in the same run proves this fixture and read
+    path reach the parser at all, so the bad-comm verdict cannot come from a
+    setup that never got that far.
+    """
+    stat_file = _fake_proc_stat(monkeypatch, tmp_path, 1234, _proc_stat_record(b"python"))
+    assert uninstall_state.process_start_time(1234) == _PROC_STAT_START_TIME
+
+    stat_file.write_bytes(_proc_stat_record(b"na\xffme"))
+    assert uninstall_state.process_start_time(1234) is None
+    # A recorded time that cannot match the record's own: a lossy retry that
+    # recovered 4242 from the bad record would read as a reused pid (stale)
+    # instead of the required alive.
+    assert uninstall_state.is_lock_holder_alive(1234, _PROC_STAT_START_TIME + 1) is True
+
+
+_OUT_OF_RANGE_PID = 2**40
+
+
+@pytest.mark.regression(
+    "out-of-range-lock-pid-crashes-liveness-probe",
+    "OverflowError: Python int too large to convert to C int",
+)
+def test_is_lock_holder_alive_out_of_range_pid_is_stale(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pid past the kernel's range names no process, so its lock is stale."""
+    _hide_proc_stat(monkeypatch)
+    calls: list[tuple[int, int]] = []
+
+    def fake_kill(pid: int, sig: int) -> None:
+        calls.append((pid, sig))
+        if pid == _OUT_OF_RANGE_PID:
+            raise OverflowError("Python int too large to convert to C int")
+
+    monkeypatch.setattr(uninstall_state.os, "kill", fake_kill)
+
+    assert uninstall_state._pid_exists(_OUT_OF_RANGE_PID) is False
+    assert calls == [(_OUT_OF_RANGE_PID, 0)], (
+        "the probe must send no signal (signal 0) for the out-of-range pid"
+    )
+
+    calls.clear()
+    assert uninstall_state.is_lock_holder_alive(_OUT_OF_RANGE_PID, 100) is False
+    assert calls == [(_OUT_OF_RANGE_PID, 0)], (
+        "the liveness check must reach the kill probe for the out-of-range pid"
+    )
+
+    # The live control: same missing /proc entry, but a pid the kernel accepts,
+    # so the unknown start time reads alive instead of stale.
+    assert uninstall_state.process_start_time(4321) is None
+    assert uninstall_state.is_lock_holder_alive(4321, 100) is True
+
+
 @pytest.mark.parametrize(
     ("side_effect", "expected"),
     [
