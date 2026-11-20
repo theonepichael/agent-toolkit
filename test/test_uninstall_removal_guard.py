@@ -15,6 +15,11 @@ this allowlist fails the test here, forcing a deliberate choice (route
 through uninstall_state.remove_manifest_tree, or add a reasoned allowlist entry)
 instead of silently removing a user-modified tree without checking its
 manifest.
+
+The allowlist is an obligation list as well as a permission list: an entry
+whose function stops calling shutil.rmtree fails
+test_detector_sees_allowlisted_functions_in_real_files, so a stale entry is
+removed rather than left matching nothing.
 """
 
 import ast
@@ -94,8 +99,18 @@ class _RmtreeScopeVisitor(ast.NodeVisitor):
         return False
 
 
-def _rmtree_sites(filename: str) -> list[tuple[str, int]]:
-    tree = ast.parse((REPO_ROOT / filename).read_text(), filename=filename)
+def _rmtree_sites(
+    filename: str, source: str | None = None
+) -> list[tuple[str, int]]:
+    """Every shutil.rmtree call site in one module, as (scope, lineno).
+
+    `source` overrides reading `filename` from disk, so a test can hand the
+    scanner a literal instead of planting a file; `None` is the only value
+    treated as "read the real file", so an empty injected source stays empty
+    rather than silently falling back to disk.
+    """
+    text = (REPO_ROOT / filename).read_text() if source is None else source
+    tree = ast.parse(text, filename=filename)
     imports = _ShutilImportResolver()
     imports.visit(tree)
     scoped = _RmtreeScopeVisitor(imports.shutil_aliases, imports.rmtree_names)
@@ -103,11 +118,13 @@ def _rmtree_sites(filename: str) -> list[tuple[str, int]]:
     return scoped.sites
 
 
-def _unallowed_rmtree_sites(filename: str) -> list[tuple[str, int]]:
+def _unallowed_rmtree_sites(
+    filename: str, source: str | None = None
+) -> list[tuple[str, int]]:
     allowed = ALLOWED_RMTREE_FUNCTIONS[filename]
     return [
         (filename, lineno)
-        for scope, lineno in _rmtree_sites(filename)
+        for scope, lineno in _rmtree_sites(filename, source)
         if scope not in allowed
     ]
 
@@ -130,6 +147,46 @@ def test_rmtree_only_called_from_allowed_functions(filename: str) -> None:
         "that needs a reasoned entry added to ALLOWED_RMTREE_FUNCTIONS: "
         + ", ".join(f"{f}:{ln}" for f, ln in violations)
     )
+
+
+@pytest.mark.regression(
+    "removal-guard-silently-misses-forbidden-rmtree",
+    "assert [] == [('_execute_remove_directory', 4), ('_sweep_runtime_tree', 7)]",
+)
+def test_detector_reports_forbidden_rmtree_in_injected_source() -> None:
+    # Red string below was captured with _rmtree_sites stubbed to return []
+    # (the negative control); against the pre-change HEAD the call raises
+    # TypeError for the extra argument instead, so the AssertionError is the
+    # evidence that matters.
+    source = (
+        "import shutil\n"
+        "\n"
+        "def _execute_remove_directory(path):\n"
+        "    shutil.rmtree(path)\n"
+        "\n"
+        "def _sweep_runtime_tree(path):\n"
+        "    shutil.rmtree(path)\n"
+    )
+    # Both calls are attributed to distinct scopes before filtering, so
+    # "line 4 removed by the allowlist" cannot be confused with "line 4 never
+    # seen at all".
+    assert _rmtree_sites("uninstall_exec.py", source) == [
+        ("_execute_remove_directory", 4),
+        ("_sweep_runtime_tree", 7),
+    ]
+    # The allowlist drops the allowed scope and keeps the forbidden one.
+    assert _unallowed_rmtree_sites("uninstall_exec.py", source=source) == [
+        ("uninstall_exec.py", 7)
+    ]
+    # An empty injected source must not fall back to the real file: the real
+    # uninstall_exec.py does contain a call, so a falsy check would leak it in.
+    assert _rmtree_sites("uninstall_exec.py", "") == []
+
+
+@pytest.mark.parametrize("filename", sorted(ALLOWED_RMTREE_FUNCTIONS))
+def test_detector_sees_allowlisted_functions_in_real_files(filename: str) -> None:
+    scopes = {scope for scope, _ in _rmtree_sites(filename)}
+    assert ALLOWED_RMTREE_FUNCTIONS[filename] <= scopes
 
 
 def test_allowed_functions_still_exist() -> None:
