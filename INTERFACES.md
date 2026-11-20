@@ -57,6 +57,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`gen_skills_params.py`](#agentscriptsgenskillsparamspy) | gen_skills_params.py — per-(skill, harness) content tables for gen_skills.py. |
 | [`grill.py`](#agentscriptsgrillpy) | grill.py — grill-me session state CLI. All session mutations go through here. |
 | [`guard_rails.py`](#agentscriptsguardrailspy) | Pre-tool guard shared by every harness: refuse a write into a repository's main checkout while a backlog item for that repository is in progress (except a write under a repo-declared, gitignored provenance root -- see ``.guard-rails.json`` and the module's ``_declared_provenance_roots``), warn when the current worktree's base has fallen behind ``origin/main`` (or ``origin/<integration_branch>`` for an item that declares one), (Bash, Claude Code and agy) deny the git-native ways to defeat the no-commit-on-main git hook (``githooks/pre-commit`` / ``githooks-global/pre-commit``), and require an active backlog-item claim before a write that points at an in-progress item. |
+| [`guard_rails_report.py`](#agentscriptsguardrailsreportpy) | guard_rails_report.py — read-only report over the guard-rails audit log. |
 | [`harness_discovery_check.py`](#agentscriptsharnessdiscoverycheckpy) | SessionStart hook + CLI: detect when a harness's instruction-file discovery behavior changes, without pinning harness versions in the repo. |
 | [`harness_spec.py`](#agentscriptsharnessspecpy) | Declarative harness specification registry. |
 | [`herdr_delegate.py`](#agentscriptsherdrdelegatepy) | Launch supported agents in herdr tabs to work backlog items. |
@@ -106,7 +107,7 @@ Single source of truth for toolkit data paths.
 - Public functions:
   - `path_for(domain: str) -> Path` — Resolve ``domain`` using :data:`DEFAULT_RESOLVER`.
   - `toolkit_root() -> Path` — Return ``$AGENT_TOOLKIT_HOME``, or ``<home>/.agent-toolkit``.
-- Tested by: `test/test_agent_toolkit_paths.py`, `test/test_dev_status.py`, `test/test_dev_status_acceptance.py`, `test/test_dev_status_mutation.py`, `test/test_gen_interfaces.py`, `test/test_grill.py`, `test/test_guard_rails.py`, `test/test_guard_rails_topology.py`, `test/test_install.py`, `test/test_llm_backends.py`, `test/test_machine_id.py`, `test/test_migration_lock_adoption.py`, `test/test_second_opinion.py`, `test/test_slug_check.py`, `test/test_ticket_artifacts.py`, `test/test_to_tickets_runner.py`
+- Tested by: `test/test_agent_toolkit_paths.py`, `test/test_dev_status.py`, `test/test_dev_status_acceptance.py`, `test/test_dev_status_mutation.py`, `test/test_gen_interfaces.py`, `test/test_grill.py`, `test/test_guard_rails.py`, `test/test_guard_rails_report.py`, `test/test_guard_rails_topology.py`, `test/test_install.py`, `test/test_llm_backends.py`, `test/test_machine_id.py`, `test/test_migration_lock_adoption.py`, `test/test_second_opinion.py`, `test/test_slug_check.py`, `test/test_ticket_artifacts.py`, `test/test_to_tickets_runner.py`
 
 ### `agent-scripts/agy_workspace_trust.py`
 
@@ -1080,6 +1081,26 @@ Pre-tool guard shared by every harness: refuse a write into a repository's main 
   - `render(harness: str | None, verdict: Verdict) -> tuple[str, int]` — Shape a verdict into the harness's own reply.
   - `build_parser() -> argparse.ArgumentParser`
 - Tested by: `test/test_guard_rails.py`, `test/test_guard_rails_agy_bash.py`, `test/test_guard_rails_claim.py`, `test/test_guard_rails_fast_path.py`, `test/test_guard_rails_git_layer.py`, `test/test_guard_rails_provenance.py`, `test/test_guard_rails_stale_base.py`, `test/test_guard_rails_topology.py`, `test/test_migration_lock_adoption.py`
+
+### `agent-scripts/guard_rails_report.py`
+
+guard_rails_report.py — read-only report over the guard-rails audit log.
+
+- Installed at: `~/.agent-toolkit/scripts/guard_rails_report.py` (all harnesses)
+- Entrypoint: not executable, `#!/usr/bin/env python3`
+- CLI (`argparse`): read-only report over the guard-rails audit log
+  - `--json/-j` — emit JSON
+  - `--limit` — rows per text section (default: 10)
+  - `--threshold` — candidate denials (default: 3)
+  - `--max-lines` — newest N lines (default: 50000)
+  - `--quiet/-q`
+  - `--verbose/-v`
+- Depends on: `agent_toolkit_paths.py`, `cli_common.py`
+- Public functions:
+  - `build_report(path: Path, *, threshold: int, max_lines: int) -> dict[str, object]` — Aggregate the audit log's newest ``max_lines`` lines into one report.
+  - `render_text(report: dict[str, object], *, limit: int, threshold: int) -> str` — Render ``report`` as the human-readable text form.
+  - `build_parser() -> argparse.ArgumentParser`
+- Tested by: `test/test_guard_rails_report.py`
 
 ### `agent-scripts/harness_discovery_check.py`
 

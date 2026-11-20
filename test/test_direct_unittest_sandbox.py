@@ -451,6 +451,7 @@ CONTRACT_TEST_FILES = [
     "test_gen_skills.py",
     "test_grill.py",
     "test_guard_rails.py",
+    "test_guard_rails_report.py",
     "test_harness_discovery_check.py",
     "test_harness_feature_coverage.py",
     "test_harness_spec.py",

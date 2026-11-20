@@ -364,6 +364,10 @@ src = "agent-scripts/guard_rails.py"
 dest = "~/.agent-toolkit/scripts/guard_rails.py"
 
 [[link]]
+src = "agent-scripts/guard_rails_report.py"
+dest = "~/.agent-toolkit/scripts/guard_rails_report.py"
+
+[[link]]
 src = "agent-scripts/statusline.py"
 dest = "~/.agent-toolkit/scripts/statusline.py"
 
