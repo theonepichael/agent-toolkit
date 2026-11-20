@@ -181,5 +181,6 @@
   },
   "skipDangerousModePermissionPrompt": true,
   "theme": "light-daltonized",
-  "agentPushNotifEnabled": true
+  "agentPushNotifEnabled": true,
+  "autoCompactEnabled": true
 }

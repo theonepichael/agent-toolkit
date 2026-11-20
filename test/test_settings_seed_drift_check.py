@@ -46,6 +46,7 @@ EXPECTED_SETTINGS_NONCOSMETIC = frozenset(
         "permissions",
         "hooks",
         "skipDangerousModePermissionPrompt",
+        "autoCompactEnabled",
     }
 )
 EXPECTED_OPENCODE_COSMETIC = frozenset({"$schema", "agent"})
