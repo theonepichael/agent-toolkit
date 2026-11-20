@@ -2554,11 +2554,13 @@ Pristine-state uninstall mode: baseline capture and ownership tracking.
   - `dnf_remove_command(package: str) -> list[str]` — Pinned dnf removal command — never ``autoremove``.
   - `npm_uninstall_command(package: str) -> list[str]`
   - `uv_tool_uninstall_command(name: str) -> list[str]`
-  - `apt_downgrade_command(package: str, version: str) -> list[str]`
+  - `apt_downgrade_command(package: str, version: str) -> list[str]` — Pinned apt downgrade command.
   - `dnf_downgrade_command(package: str, version: str) -> list[str]`
   - `apt_rdepends_command(package: str) -> list[str]`
   - `dnf_whatrequires_command(package: str) -> list[str]`
-  - `classify_rdepends_result(ok: bool, stdout: str) -> str` — Classify a reverse-dependency probe's outcome for removal eligibility.
+  - `parse_apt_rdepends(stdout: str) -> list[str] | None` — Reverse-dependency names from ``apt-cache rdepends`` output.
+  - `parse_package_name_lines(stdout: str) -> list[str] | None` — Reverse-dependency names from a header-free probe (``dnf repoquery``).
+  - `classify_rdepends_result(ok: bool, stdout: str, manager: str) -> str` — Classify a reverse-dependency probe's outcome for removal eligibility.
   - `transaction_to_dict(txn: Transaction) -> dict[str, object]`
   - `transaction_from_dict(data: dict[str, object]) -> Transaction`
   - `record_transaction(baseline: Baseline, *, manager: str, requested: list[str], before: dict[str, str], after: dict[str, str], captured_at: str, epoch: dict[str, str] | None = None) -> Transaction` — Build a :class:`Transaction`, append it to ``baseline``, and return it.

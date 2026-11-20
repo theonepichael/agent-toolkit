@@ -23,7 +23,7 @@ import hashlib
 import json
 import os
 import shutil
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -163,6 +163,24 @@ def ancestor_directories(path: Path, home: Path) -> list[Path]:
     return ancestors
 
 
+def _raise_walk_error(error: OSError) -> None:
+    """Make ``os.walk`` report a traversal failure instead of dropping it.
+
+    Without an ``onerror`` handler ``os.walk`` silently ignores a directory
+    it cannot open or iterate, so a manifest captured that way looks
+    complete while a whole subtree is missing from it — and an unreadable
+    root looks like an empty, present tree. Raising here routes the failure
+    into :func:`capture_tree_manifest`'s ``OSError`` handler, which records
+    ``unknown``.
+
+    One case stays outside this: ``os.walk``'s own post-yield symlink
+    re-check, where a directory replaced by a symlink between the two
+    passes is skipped without raising. Closing that would mean replacing
+    ``os.walk`` outright.
+    """
+    raise error
+
+
 def capture_tree_manifest(root: Path) -> dict[str, object]:
     """Full recursive manifest for a small, fully installer-controlled tree.
 
@@ -171,7 +189,10 @@ def capture_tree_manifest(root: Path) -> dict[str, object]:
     the Neovim fallback prefix and the Nerd Font directory, per
     Implementation Sequence step 1's tree-manifest exception. Anything
     changed anywhere in the tree is meant to make the whole thing
-    divergent, so this must not silently skip entries it can't read.
+    divergent, so this must not silently skip entries it can't read: a
+    directory that cannot be opened or iterated records ``unknown``
+    (``onerror`` raises, below) rather than an incomplete ``present``
+    manifest.
     """
     try:
         if root.is_symlink() or not root.is_dir():
@@ -181,7 +202,9 @@ def capture_tree_manifest(root: Path) -> dict[str, object]:
 
     entries: dict[str, object] = {}
     try:
-        for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        for dirpath, dirnames, filenames in os.walk(
+            root, followlinks=False, onerror=_raise_walk_error
+        ):
             rel_dir = Path(dirpath).relative_to(root)
             for name in dirnames:
                 child = Path(dirpath) / name
@@ -624,7 +647,21 @@ def uv_tool_uninstall_command(name: str) -> list[str]:
 
 
 def apt_downgrade_command(package: str, version: str) -> list[str]:
-    return ["sudo", "apt-get", "install", "-y", f"{package}={version}"]
+    """Pinned apt downgrade command.
+
+    ``--allow-downgrades`` is required: apt-get(8) says the flag is what
+    lets apt "continue without prompting if it is doing downgrades", and
+    the pinned ``-y`` cannot answer that prompt. It sits after ``-y`` so
+    the argv prefix stays ``sudo apt-get install -y``.
+    """
+    return [
+        "sudo",
+        "apt-get",
+        "install",
+        "-y",
+        "--allow-downgrades",
+        f"{package}={version}",
+    ]
 
 
 def dnf_downgrade_command(package: str, version: str) -> list[str]:
@@ -639,20 +676,98 @@ def dnf_whatrequires_command(package: str) -> list[str]:
     return ["dnf", "repoquery", "--whatrequires", "--installed", package]
 
 
-def classify_rdepends_result(ok: bool, stdout: str) -> str:
-    """Classify a reverse-dependency probe's outcome for removal eligibility.
+def parse_apt_rdepends(stdout: str) -> list[str] | None:
+    """Reverse-dependency names from ``apt-cache rdepends`` output.
+
+    apt always prints its own shape — an unindented package-name line, then
+    an unindented ``Reverse Depends:`` line — even when nothing depends on
+    the package, so raw stdout is never empty and cannot itself be the
+    "no reverse dependencies" evidence. Dependent lines are indented (one
+    leading space for an OR-alternative such as ``| pkg``, two for a plain
+    entry, and a version constraint can follow the name), so indentation —
+    not the name's contents — is what separates them from a heading.
 
     Returns:
-        ``"removable"`` only when the probe succeeded and returned an
-        explicitly empty result. ``"in-use"`` when the probe succeeded but
-        named at least one installed reverse dependency. ``"unknown"`` for
-        any failed/unavailable probe — never treated as proof of
-        removability, exactly like an ``unknown`` baseline record blocks
-        removal.
+        The dependent entries, or ``None`` when the output is not in apt's
+        recognized shape (blank, a marker with no heading line, a dependent
+        before any marker, a dangling heading name, or an unexpected
+        unindented line). Callers must treat ``None`` as unproven, never as
+        an empty result.
+
+    Repeated heading blocks (multi-hash output) are accepted. The marker is
+    matched as the literal English ``Reverse Depends:``; under a non-C
+    locale apt translates it, which yields ``None``/unproven rather than a
+    wrong ``removable``.
+    """
+    dependents: list[str] = []
+    pending_heading: str | None = None
+    saw_marker = False
+    for line in stdout.splitlines():
+        if not line.strip():
+            # apt never puts a blank line inside a heading block, so one here
+            # means this is not the output we know how to read.
+            if pending_heading is not None:
+                return None
+            continue
+        if line[:1].isspace():
+            # A dependent entry is only valid after a complete heading block.
+            if pending_heading is not None or not saw_marker:
+                return None
+            dependents.append(line.strip())
+            continue
+        if pending_heading is None:
+            # A package name never contains whitespace; a heading line that
+            # does is not apt's package heading.
+            if len(line.split()) != 1:
+                return None
+            pending_heading = line.strip()
+            continue
+        if line.strip() != "Reverse Depends:":
+            return None
+        pending_heading = None
+        saw_marker = True
+    if pending_heading is not None or not saw_marker:
+        return None
+    return dependents
+
+
+def parse_package_name_lines(stdout: str) -> list[str] | None:
+    """Reverse-dependency names from a header-free probe (``dnf repoquery``)."""
+    return [line.strip() for line in stdout.splitlines() if line.strip()]
+
+
+RDEPENDS_PARSERS: dict[str, Callable[[str], list[str] | None]] = {
+    "apt": parse_apt_rdepends,
+    "dnf": parse_package_name_lines,
+}
+
+
+def classify_rdepends_result(ok: bool, stdout: str, manager: str) -> str:
+    """Classify a reverse-dependency probe's outcome for removal eligibility.
+
+    Args:
+        ok: Whether the probe command itself succeeded.
+        stdout: The probe's captured stdout, in ``manager``'s own format.
+        manager: Which package manager produced it, selecting the parser
+            that knows that format (see :data:`RDEPENDS_PARSERS`).
+
+    Returns:
+        ``"removable"`` only when the probe succeeded and its output parses
+        as an explicitly empty dependent list. ``"in-use"`` when it parses
+        and names at least one installed reverse dependency. ``"unknown"``
+        for a failed probe, an unrecognized output shape, or a manager with
+        no known format — never treated as proof of removability, exactly
+        like an ``unknown`` baseline record blocks removal.
     """
     if not ok:
         return "unknown"
-    return "removable" if not stdout.strip() else "in-use"
+    parser = RDEPENDS_PARSERS.get(manager)
+    if parser is None:
+        return "unknown"
+    dependents = parser(stdout)
+    if dependents is None:
+        return "unknown"
+    return "removable" if not dependents else "in-use"
 
 
 # ── package transactions ────────────────────────────────────────────────
@@ -1328,14 +1443,43 @@ class PackageClassification:
     reason: str
 
 
+def _package_history(baseline: Baseline, manager: str, name: str) -> list[Transaction]:
+    """Every ``manager`` transaction that recorded ``name`` in a snapshot.
+
+    A transaction that only *requested* the package while recording it in
+    neither ``before`` nor ``after`` contributes no evidence about the
+    package's state, so it is left out. Order is baseline order.
+    """
+    return [
+        txn
+        for txn in _manager_transactions(baseline, manager)
+        if name in txn.before or name in txn.after
+    ]
+
+
 def _classify_one_package(
-    txn: Transaction, name: str, snapshot: dict[str, str] | None, *, requested: bool
+    history: Sequence[Transaction],
+    manager: str,
+    name: str,
+    snapshot: dict[str, str] | None,
+    *,
+    requested: bool,
 ) -> PackageClassification:
-    key = package_key(txn.manager, name)
+    """Classify one package from its whole recorded history.
+
+    ``history`` is every transaction of ``manager`` that recorded the
+    package's state, in baseline order (see :func:`_package_history`) —
+    never one transaction, because no single one carries both facts that
+    decide ownership: whether the package pre-existed the installer, and
+    whether anything ever changed it. A later reinstall transaction's own
+    ``before``/``after`` pair is a no-op by construction and must never be
+    read as "already installed before installation".
+    """
+    key = package_key(manager, name)
     if snapshot is None:
         return PackageClassification(
             key,
-            txn.manager,
+            manager,
             name,
             BUCKET_UNRESOLVED,
             None,
@@ -1343,30 +1487,40 @@ def _classify_one_package(
         )
     if name not in snapshot:
         return PackageClassification(
-            key, txn.manager, name, BUCKET_PRESERVED, None, "already absent"
+            key, manager, name, BUCKET_PRESERVED, None, "already absent"
         )
     if not requested:
         return PackageClassification(
             key,
-            txn.manager,
+            manager,
             name,
             BUCKET_OWNED,
             ACTION_REMOVE,
             "introduced as a dependency by this transaction",
         )
-    if name in txn.before:
-        if txn.before[name] == txn.after.get(name):
-            return PackageClassification(
-                key,
-                txn.manager,
-                name,
-                BUCKET_PRESERVED,
-                None,
-                "already installed, unchanged by this transaction",
-            )
+    if not history:
         return PackageClassification(
             key,
-            txn.manager,
+            manager,
+            name,
+            BUCKET_PRESERVED,
+            None,
+            "no transaction recorded this package's state",
+        )
+    first = history[0]
+    if name not in first.before:
+        return PackageClassification(
+            key,
+            manager,
+            name,
+            BUCKET_OWNED,
+            ACTION_REMOVE,
+            "installed fresh by this transaction",
+        )
+    if any(txn.before.get(name) != txn.after.get(name) for txn in history):
+        return PackageClassification(
+            key,
+            manager,
             name,
             BUCKET_OWNED,
             ACTION_DOWNGRADE,
@@ -1374,11 +1528,34 @@ def _classify_one_package(
         )
     return PackageClassification(
         key,
-        txn.manager,
+        manager,
         name,
-        BUCKET_OWNED,
-        ACTION_REMOVE,
-        "installed fresh by this transaction",
+        BUCKET_PRESERVED,
+        None,
+        "already installed, unchanged by this transaction",
+    )
+
+
+def _classify_package(
+    baseline: Baseline, manager: str, name: str, snapshot: dict[str, str] | None
+) -> PackageClassification:
+    """Classify one package from that manager's whole recorded history for it.
+
+    Whether the installer *asked* for the package or merely pulled it in as
+    a dependency is read by asking whether any transaction in its history
+    lists it as ``introduced()`` — not from whichever transaction the
+    removal-order walk happens to visit, and never by negating
+    ``requested`` against a transaction's snapshots (those are
+    whole-manager, so an unrelated package present in the snapshot would
+    otherwise read as a dependency). A later transaction that re-requests
+    an already-installed dependency must not turn its removal into an
+    unprobed ``apt-get remove``, since ``_execute_dependency_removal`` is
+    selected by that reason string.
+    """
+    history = _package_history(baseline, manager, name)
+    introduced = any(name in txn.introduced() for txn in history)
+    return _classify_one_package(
+        history, manager, name, snapshot, requested=not introduced
     )
 
 
@@ -1391,9 +1568,10 @@ def classify_package_transactions(
     order — never "reverse ledger/installation order", since the ledger
     starts empty and ``history.jsonl`` is off-limits to ``--uninstall``) and
     yields one classification per distinct ``(manager, name)`` the first
-    time it's encountered walking backwards — a package touched by more
-    than one transaction across repeated installs is classified from its
-    *most recent* transaction only.
+    time it's encountered walking backwards. The verdict for a package
+    named by more than one transaction across repeated installs comes from
+    its whole history (see :func:`_classify_one_package`); the reverse walk
+    only fixes the order of the results.
 
     Args:
         baseline: The uninstall baseline, with its recorded transactions.
@@ -1410,13 +1588,13 @@ def classify_package_transactions(
             if key in seen:
                 continue
             seen.add(key)
-            results.append(_classify_one_package(txn, name, snapshot, requested=True))
+            results.append(_classify_package(baseline, txn.manager, name, snapshot))
         for name in txn.introduced():
             key = package_key(txn.manager, name)
             if key in seen:
                 continue
             seen.add(key)
-            results.append(_classify_one_package(txn, name, snapshot, requested=False))
+            results.append(_classify_package(baseline, txn.manager, name, snapshot))
     return results
 
 

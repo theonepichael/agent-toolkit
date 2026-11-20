@@ -1112,7 +1112,9 @@ def _execute_dependency_removal(deps: Deps, manager: str, name: str) -> str:
     if probe_builder is None:
         return f"unresolved: no reverse-dependency probe for manager {manager!r}"
     result = deps.run_command(probe_builder(name), capture=True)
-    verdict = uninstall_state.classify_rdepends_result(result.ok, result.stdout)
+    verdict = uninstall_state.classify_rdepends_result(
+        result.ok, result.stdout, manager
+    )
     if verdict != "removable":
         return f"unresolved: reverse-dependency probe {verdict}"
     return _execute_package_removal(deps, manager, name)

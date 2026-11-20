@@ -10,6 +10,8 @@ Requires Python 3.12+.
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
@@ -47,12 +49,17 @@ def test_npm_and_uv_tool_removal_commands():
     ]
 
 
+@pytest.mark.regression(
+    "apt-downgrade-command-missing-allow-downgrades",
+    "At index 4 diff: 'eza=1.2.3-1' != '--allow-downgrades'",
+)
 def test_downgrade_commands():
     assert uninstall_state.apt_downgrade_command("eza", "1.2.3-1") == [
         "sudo",
         "apt-get",
         "install",
         "-y",
+        "--allow-downgrades",
         "eza=1.2.3-1",
     ]
     assert uninstall_state.dnf_downgrade_command("eza", "1.2.3-1") == [
@@ -130,21 +137,78 @@ def test_parse_uv_tool_list_empty():
 # ── rdepends classification ──────────────────────────────────────────────
 
 
+def test_parse_apt_rdepends_reads_the_header_apt_always_prints():
+    """apt prints `<pkg>` + `Reverse Depends:` even with zero dependents."""
+    assert uninstall_state.parse_apt_rdepends("sl\nReverse Depends:\n") == []
+    assert uninstall_state.parse_apt_rdepends(
+        "bash\nReverse Depends:\n  shfmt\n"
+    ) == ["shfmt"]
+
+
+def test_parse_apt_rdepends_counts_alternatives_and_versioned_rows():
+    """One-space `| pkg` alternatives and version constraints are dependents."""
+    assert uninstall_state.parse_apt_rdepends(
+        "libgit2\nReverse Depends:\n |libgit2-dev\n  git (>= 1:2.0)\n"
+    ) == ["|libgit2-dev", "git (>= 1:2.0)"]
+
+
+def test_parse_apt_rdepends_rejects_unrecognized_output():
+    """Only apt's documented shape may be read as an empty result."""
+    for unrecognized in (
+        "",
+        "   \n",
+        "Reverse Depends:\n",  # marker with no package heading
+        "  other-pkg\n",  # dependent line before any marker
+        "sl\nReverse Depends:\nother-pkg\n",  # dangling heading name
+        "sl\nother-pkg\n",  # no marker at all
+        "not a package name\nReverse Depends:\n",  # heading is not a name
+        "sl\n\nReverse Depends:\n",  # blank line inside a heading block
+    ):
+        assert uninstall_state.parse_apt_rdepends(unrecognized) is None
+
+
+def test_parse_apt_rdepends_accepts_a_second_heading_block():
+    """Multi-architecture output repeats the heading block."""
+    assert uninstall_state.parse_apt_rdepends(
+        "libgit2:amd64\nReverse Depends:\n  git\nlibgit2:i386\nReverse Depends:\n"
+    ) == ["git"]
+
+
 def test_classify_rdepends_removable_on_success_empty_output():
-    assert uninstall_state.classify_rdepends_result(True, "") == "removable"
-    assert uninstall_state.classify_rdepends_result(True, "   \n") == "removable"
+    """dnf's probe prints bare names, so an empty result really is empty."""
+    assert uninstall_state.classify_rdepends_result(True, "", "dnf") == "removable"
+    assert uninstall_state.classify_rdepends_result(True, "  \n", "dnf") == "removable"
 
 
-def test_classify_rdepends_in_use_on_nonempty_output():
+def test_classify_rdepends_in_use_on_a_named_dependent():
     assert (
-        uninstall_state.classify_rdepends_result(True, "Reverse Depends:\n  other-pkg")
+        uninstall_state.classify_rdepends_result(
+            True, "bash\nReverse Depends:\n  shfmt\n", "apt"
+        )
         == "in-use"
+    )
+    assert uninstall_state.classify_rdepends_result(True, "other-pkg\n", "dnf") == (
+        "in-use"
     )
 
 
 def test_classify_rdepends_unknown_on_failure_even_if_output_empty():
     """A failed probe must never be treated as proof of removability."""
-    assert uninstall_state.classify_rdepends_result(False, "") == "unknown"
+    # Recognized, header-only output — so it is the ``ok`` guard that makes
+    # this unproven, not the shape.
+    assert (
+        uninstall_state.classify_rdepends_result(
+            False, "sl\nReverse Depends:\n", "apt"
+        )
+        == "unknown"
+    )
+    assert uninstall_state.classify_rdepends_result(False, "", "dnf") == "unknown"
+
+
+def test_classify_rdepends_unknown_for_an_unrecognized_or_unknown_manager():
+    """Unprovable output is never removability, whichever manager asked."""
+    assert uninstall_state.classify_rdepends_result(True, "", "apt") == "unknown"
+    assert uninstall_state.classify_rdepends_result(True, "x\n", "pip") == "unknown"
 
 
 # ── Transaction: introduced dependencies ─────────────────────────────────
@@ -560,7 +624,7 @@ def test_classify_walks_transactions_in_reverse_order():
 
 
 def test_classify_deduplicates_a_package_touched_by_multiple_transactions():
-    """Classified from its most-recently-touched transaction only."""
+    """One verdict per package, from its whole recorded history."""
     baseline = _baseline_with(
         {
             "manager": "apt",
@@ -582,6 +646,200 @@ def test_classify_deduplicates_a_package_touched_by_multiple_transactions():
         baseline, {"apt": {"neovim": "0.11.0-1"}}
     )
     assert len(results) == 1
-    # Most recent transaction's `before` (0.10.0-1) was already installed,
-    # so this is still classified as an upgrade — downgrade, not remove.
+    # The package pre-existed the installer's first transaction (0.9.0-1 in
+    # its `before`), so it can never be removed — and a later transaction
+    # changed its version, so it is restored, not left alone.
     assert results[0].action == "downgrade"
+
+
+@pytest.mark.regression(
+    "repeat-install-keeps-package-ownership",
+    "AssertionError: assert 'preserved' == 'owned'",
+)
+def test_classify_keeps_ownership_through_a_later_noop_reinstall_transaction():
+    """A second install run records a no-op transaction; ownership must survive."""
+    baseline = _baseline_with(
+        {
+            "manager": "apt",
+            "requested": ["eza"],
+            "before": {},
+            "after": {"eza": "0.18.0-1"},
+            "captured_at": "t1",
+            "epoch": {},
+        },
+        {
+            "manager": "apt",
+            "requested": ["eza"],
+            "before": {"eza": "0.18.0-1"},
+            "after": {"eza": "0.18.0-1"},
+            "captured_at": "t2",
+        },
+    )
+    results = uninstall_state.classify_package_transactions(
+        baseline, {"apt": {"eza": "0.18.0-1"}}
+    )
+    assert len(results) == 1
+    assert results[0].bucket == "owned"
+    assert results[0].action == "remove"
+
+
+def test_classify_removes_a_fresh_install_that_a_later_run_upgraded():
+    """No pre-install version exists, so restoring one is never an option."""
+    baseline = _baseline_with(
+        {
+            "manager": "apt",
+            "requested": ["eza"],
+            "before": {},
+            "after": {"eza": "0.18.0-1"},
+            "captured_at": "t1",
+            "epoch": {},
+        },
+        {
+            "manager": "apt",
+            "requested": ["eza"],
+            "before": {"eza": "0.18.0-1"},
+            "after": {"eza": "0.19.0-1"},
+            "captured_at": "t2",
+        },
+    )
+    results = uninstall_state.classify_package_transactions(
+        baseline, {"apt": {"eza": "0.19.0-1"}}
+    )
+    assert results[0].bucket == "owned"
+    assert results[0].action == "remove"
+
+
+def test_classify_keeps_the_dependency_probe_for_a_later_explicit_request():
+    """A no-op re-request must not turn a dependency into an unprobed removal."""
+    baseline = _baseline_with(
+        {
+            "manager": "apt",
+            "requested": ["eza"],
+            "before": {},
+            "after": {"eza": "0.18.0-1", "libgit2": "1.7-1"},
+            "captured_at": "t1",
+            "epoch": {},
+        },
+        {
+            "manager": "apt",
+            "requested": ["libgit2"],
+            "before": {"eza": "0.18.0-1", "libgit2": "1.7-1"},
+            "after": {"eza": "0.18.0-1", "libgit2": "1.7-1"},
+            "captured_at": "t2",
+        },
+    )
+    results = uninstall_state.classify_package_transactions(
+        baseline, {"apt": {"eza": "0.18.0-1", "libgit2": "1.7-1"}}
+    )
+    by_name = {c.name: c for c in results}
+    assert by_name["libgit2"].bucket == "owned"
+    assert by_name["libgit2"].action == "remove"
+    # Which removal path that action takes (probe-gated vs direct) is asserted
+    # behaviourally in test_install.py's package-phase tests.
+
+
+def test_classify_does_not_treat_an_unrelated_snapshot_package_as_a_dependency():
+    """Whole-manager snapshots list every package; only ``requested`` decides."""
+    baseline = _baseline_with(
+        {
+            "manager": "apt",
+            "requested": ["eza"],
+            "before": {"tmux": "3.4-1"},
+            "after": {"tmux": "3.4-1", "eza": "0.18.0-1"},
+            "captured_at": "t1",
+            "epoch": {"tmux": "3.4-1"},
+        },
+        {
+            "manager": "apt",
+            "requested": ["tmux"],
+            "before": {"tmux": "3.4-1", "eza": "0.18.0-1"},
+            "after": {"tmux": "3.4-1", "eza": "0.18.0-1"},
+            "captured_at": "t2",
+        },
+    )
+    results = uninstall_state.classify_package_transactions(
+        baseline, {"apt": {"tmux": "3.4-1", "eza": "0.18.0-1"}}
+    )
+    by_name = {c.name: c for c in results}
+    assert by_name["tmux"].bucket == "preserved"
+    assert by_name["tmux"].action is None
+    assert by_name["eza"].bucket == "owned"
+    assert by_name["eza"].action == "remove"
+
+
+def test_classify_does_not_claim_a_package_no_transaction_recorded():
+    """Nothing in the history proves the installer put it there."""
+    baseline = _baseline_with(
+        {
+            "manager": "apt",
+            "requested": ["eza"],
+            "before": {},
+            "after": {},
+            "captured_at": "t1",
+            "epoch": {},
+        }
+    )
+    results = uninstall_state.classify_package_transactions(
+        baseline, {"apt": {"eza": "0.18.0-1"}}
+    )
+    assert results[0].bucket == "preserved"
+    assert results[0].action is None
+
+
+def test_classify_pre_existing_package_upgraded_after_a_noop_is_downgraded():
+    """A no-op first transaction must not hide a later installer upgrade."""
+    baseline = _baseline_with(
+        {
+            "manager": "apt",
+            "requested": ["neovim"],
+            "before": {"neovim": "0.9.0-1"},
+            "after": {"neovim": "0.9.0-1"},
+            "captured_at": "t1",
+            "epoch": {"neovim": "0.9.0-1"},
+        },
+        {
+            "manager": "apt",
+            "requested": ["neovim"],
+            "before": {"neovim": "0.9.0-1"},
+            "after": {"neovim": "0.10.0-1"},
+            "captured_at": "t2",
+        },
+        {
+            "manager": "apt",
+            "requested": ["neovim"],
+            "before": {"neovim": "0.10.0-1"},
+            "after": {"neovim": "0.10.0-1"},
+            "captured_at": "t3",
+        },
+    )
+    results = uninstall_state.classify_package_transactions(
+        baseline, {"apt": {"neovim": "0.10.0-1"}}
+    )
+    assert results[0].bucket == "owned"
+    assert results[0].action == "downgrade"
+
+
+def test_classify_does_not_claim_a_package_a_transaction_never_recorded():
+    """A requested-but-unrecorded package proves nothing; the user installed it."""
+    baseline = _baseline_with(
+        {
+            "manager": "apt",
+            "requested": ["eza"],
+            "before": {},
+            "after": {},
+            "captured_at": "t1",
+            "epoch": {},
+        },
+        {
+            "manager": "apt",
+            "requested": ["eza"],
+            "before": {"eza": "0.18.0-1"},
+            "after": {"eza": "0.18.0-1"},
+            "captured_at": "t2",
+        },
+    )
+    results = uninstall_state.classify_package_transactions(
+        baseline, {"apt": {"eza": "0.18.0-1"}}
+    )
+    assert results[0].bucket == "preserved"
+    assert results[0].action is None

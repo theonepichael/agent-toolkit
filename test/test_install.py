@@ -3580,9 +3580,14 @@ def test_execute_package_phase_never_touches_already_absent_package(home, monkey
     assert ledger.entries() == []
 
 
-def test_execute_package_phase_removes_introduced_dependency_when_probe_empty(
+@pytest.mark.regression(
+    "apt-rdepends-header-read-as-a-dependency",
+    "AssertionError: assert 'unresolved: ... probe in-use' == 'ok'",
+)
+def test_execute_package_phase_removes_introduced_dependency_when_nothing_depends_on_it(
     home, monkeypatch
 ):
+    """apt always prints `<pkg>` + `Reverse Depends:`; no rows means no dependents."""
     baseline = _package_baseline(
         {
             "manager": "apt",
@@ -3601,7 +3606,7 @@ def test_execute_package_phase_removes_introduced_dependency_when_probe_empty(
         if cmd[0] == "dpkg-query":
             return install.CommandResult(True, "eza\t0.18.0-1\nlibgit2\t1.7-1\n")
         if cmd[:3] == ["apt-cache", "rdepends", "--installed"]:
-            return install.CommandResult(True, "")  # nothing depends on it
+            return install.CommandResult(True, "libgit2\nReverse Depends:\n")
         if cmd[0] == "sudo":
             return install.CommandResult(True)
         raise AssertionError(f"unexpected command: {cmd!r}")
@@ -3615,6 +3620,51 @@ def test_execute_package_phase_removes_introduced_dependency_when_probe_empty(
     )
     assert libgit2_entry["outcome"] == "ok"
     assert ["apt-cache", "rdepends", "--installed", "libgit2"] in calls
+    # An ``ok`` outcome has to mean the removal itself was issued, not just
+    # that the probe came back empty.
+    assert ["sudo", "apt-get", "remove", "-y", "libgit2"] in calls
+
+
+def test_execute_package_phase_keeps_the_dependency_probe_for_a_rerequest(
+    home, monkeypatch
+):
+    """A later no-op request must not turn a dependency into an unprobed remove."""
+    baseline = _package_baseline(
+        {
+            "manager": "apt",
+            "requested": ["eza"],
+            "before": {},
+            "after": {"eza": "0.18.0-1", "libgit2": "1.7-1"},
+            "captured_at": "t1",
+            "epoch": {},
+        },
+        {
+            "manager": "apt",
+            "requested": ["libgit2"],
+            "before": {"eza": "0.18.0-1", "libgit2": "1.7-1"},
+            "after": {"eza": "0.18.0-1", "libgit2": "1.7-1"},
+            "captured_at": "t2",
+        },
+    )
+    ledger = uninstall_state.UninstallLedger(uninstall_state.uninstall_ledger_path(home / "state"))
+    calls = []
+
+    def run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[0] == "dpkg-query":
+            return install.CommandResult(True, "eza\t0.18.0-1\nlibgit2\t1.7-1\n")
+        if cmd[:3] == ["apt-cache", "rdepends", "--installed"]:
+            return install.CommandResult(True, "libgit2\nReverse Depends:\n")
+        if cmd[0] == "sudo":
+            return install.CommandResult(True)
+        raise AssertionError(f"unexpected command: {cmd!r}")
+
+    monkeypatch.setattr(install, "run_command", run)
+    install.execute_package_phase(make_ctx(home), baseline, ledger)
+
+    # The probe is what distinguishes the dependency path from a direct removal.
+    assert ["apt-cache", "rdepends", "--installed", "libgit2"] in calls
+    assert ["sudo", "apt-get", "remove", "-y", "libgit2"] in calls
 
 
 def test_execute_package_phase_blocks_introduced_dependency_when_still_needed(
@@ -3636,7 +3686,9 @@ def test_execute_package_phase_blocks_introduced_dependency_when_still_needed(
         if cmd[0] == "dpkg-query":
             return install.CommandResult(True, "eza\t0.18.0-1\nlibgit2\t1.7-1\n")
         if cmd[:3] == ["apt-cache", "rdepends", "--installed"]:
-            return install.CommandResult(True, "Reverse Depends:\n  other-pkg")
+            return install.CommandResult(
+                True, "libgit2\nReverse Depends:\n  other-pkg\n"
+            )
         if cmd == ["sudo", "apt-get", "remove", "-y", "eza"]:
             return install.CommandResult(True)
         raise AssertionError(f"unexpected command: {cmd!r}")
@@ -3648,6 +3700,9 @@ def test_execute_package_phase_blocks_introduced_dependency_when_still_needed(
         e for e in ledger.entries() if e["key"] == "package:apt/libgit2"
     )
     assert libgit2_entry["outcome"].startswith("unresolved")
+    # Not merely unproven: a named dependent was read as one, so the probe's
+    # own verdict is what blocked the removal.
+    assert "in-use" in libgit2_entry["outcome"]
 
 
 def test_execute_package_phase_blocks_dependency_removal_on_failed_probe(
@@ -3669,7 +3724,9 @@ def test_execute_package_phase_blocks_dependency_removal_on_failed_probe(
         if cmd[0] == "dpkg-query":
             return install.CommandResult(True, "eza\t0.18.0-1\nlibgit2\t1.7-1\n")
         if cmd[:3] == ["apt-cache", "rdepends", "--installed"]:
-            return install.CommandResult(False, "")  # probe unavailable/failed
+            # A recognized (header-only) answer from a probe that still failed:
+            # the ``ok`` guard, not the shape, is what makes this unproven.
+            return install.CommandResult(False, "libgit2\nReverse Depends:\n")
         if cmd == ["sudo", "apt-get", "remove", "-y", "eza"]:
             return install.CommandResult(True)
         raise AssertionError(f"unexpected command: {cmd!r}")

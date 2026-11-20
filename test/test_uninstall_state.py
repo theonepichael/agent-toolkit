@@ -1200,3 +1200,84 @@ def test_classify_service_unexpected_change_is_drifted():
     live = uninstall_state.build_service_record(enabled=False, active=False, linger=True)
     c = uninstall_state.classify_service(recorded, live)
     assert c.bucket == "drifted"
+
+
+# ── tree scan failures (a manifest must never look complete when it isn't) ──
+
+
+def _deny_scan(monkeypatch: pytest.MonkeyPatch, denied: set[str]) -> None:
+    """Make ``os.scandir`` refuse exactly these paths, delegate everything else.
+
+    ``os.walk`` reaches this through the module-level ``os`` name, and it
+    passes a ``str`` path to ``scandir`` (never an int fd here), but the
+    wrapper normalizes both kinds of argument anyway so it can never raise
+    from its own bookkeeping and turn into a false failure.
+    """
+    real_scandir = os.scandir
+
+    def fake_scandir(path: object = ".", *args: object, **kwargs: object):
+        if not isinstance(path, int) and os.fspath(path) in denied:  # type: ignore[arg-type]
+            raise PermissionError(13, "Permission denied", os.fspath(path))  # type: ignore[arg-type]
+        return real_scandir(path, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(os, "scandir", fake_scandir)
+
+
+@pytest.mark.regression(
+    "tree-manifest-unreadable-root-is-unknown",
+    "AssertionError: assert 'present' == 'unknown'",
+)
+def test_tree_manifest_unreadable_root_is_unknown(tmp_path, monkeypatch):
+    """An unreadable root must not capture as a present, empty tree."""
+    root = tmp_path / "tree"
+    root.mkdir()
+    (root / "f").write_bytes(b"x")
+    readable = tmp_path / "readable"
+    readable.mkdir()
+    (readable / "g").write_bytes(b"y")
+
+    _deny_scan(monkeypatch, {str(root)})
+    assert uninstall_state.capture_tree_manifest(root)["state"] == "unknown"
+    # Positive control: the same capture still reports a readable tree.
+    readable_manifest = uninstall_state.capture_tree_manifest(readable)
+    assert readable_manifest["state"] == "present"
+    assert "file:g" in readable_manifest["entries"]
+
+
+@pytest.mark.regression(
+    "tree-manifest-unreadable-subtree-is-unknown",
+    "AssertionError: assert 'present' == 'unknown'",
+)
+def test_tree_manifest_unreadable_subtree_is_unknown(tmp_path, monkeypatch):
+    """A subtree that cannot be listed must not just vanish from the manifest."""
+    root = tmp_path / "tree"
+    (root / "sub").mkdir(parents=True)
+    (root / "sub" / "f").write_bytes(b"x")
+    (root / "g").write_bytes(b"y")
+    readable = tmp_path / "readable"
+    readable.mkdir()
+    (readable / "g").write_bytes(b"y")
+
+    _deny_scan(monkeypatch, {str(root / "sub")})
+    assert uninstall_state.capture_tree_manifest(root)["state"] == "unknown"
+    # Positive control: an identically shaped readable tree still captures.
+    assert uninstall_state.capture_tree_manifest(readable)["state"] == "present"
+
+
+@pytest.mark.regression(
+    "tree-verdict-never-unchanged-for-an-unreadable-tree",
+    "AssertionError: assert 'unchanged' == 'modified'",
+)
+def test_verdict_never_unchanged_when_the_tree_cannot_be_scanned(
+    tmp_path, monkeypatch
+):
+    """Two captures that read nothing must never prove the tree is untouched."""
+    root = _installed_tree(tmp_path)
+
+    _deny_scan(monkeypatch, {str(root)})
+    baseline = uninstall_state.Baseline()
+    uninstall_state.record_installed_tree(baseline, root)
+    assert (
+        uninstall_state.installed_tree_verdict(baseline, root)
+        == uninstall_state.TREE_MODIFIED
+    )
