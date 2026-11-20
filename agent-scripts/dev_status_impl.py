@@ -14,7 +14,12 @@ Flags
 
 Environment: AGENT_TOOLKIT_TIMING=1 enables operational timing JSONL under
 $XDG_STATE_HOME/agent-toolkit/timing.jsonl (default ~/.local/state).
-Normal output and exit codes are unchanged; no prompts or argv are recorded.
+Enabling it changes no exit code and records no prompts or argv. It does
+change normal output in one way: ``render`` reads a bounded tail of that
+log, read-only, and prints extra second-opinion backend-health warnings from
+it (latency regressions, review-only failures and fallback-chain cost) -- see
+``_backend_health_warnings``. Turning timing off stops new evidence
+accumulating; records already on disk keep being read until they age out.
 
 Machine identity: every journalled mutation and claim is attributed to this
 machine's id in ``<work-items>/_machine_id``. New ids are 8 lowercase hex
@@ -44,8 +49,10 @@ import argparse
 import fcntl
 import hashlib
 import json
+import math
 import os
 import re
+import stat
 import subprocess
 import sys
 import textwrap
@@ -1173,38 +1180,97 @@ def _in_progress_suffix(item: dict[str, object], color: bool) -> str:
     return res
 
 
-# ── second-opinion backend health ──────────────────────────────────────────
+# ── second-opinion backend health ────────────────────────────────
 #
-# The render surfaces, per backend, a warning when a backend's success rate
-# over its last _HEALTH_WINDOW logged attempts in backend_calls.jsonl falls
-# below _HEALTH_FAILURE_RATE. Read-only over the telemetry log; no new data,
-# no daemon, no stored state. The read is a bounded tail (never the whole
-# file), and the helper never raises — a missing/unreadable/malformed log
-# degrades to "no warning", never a render crash.
+# Two read-only evidence sources feed one alert path:
+#
+# * backend_calls.jsonl -- one row per attempt, with no caller field. The
+#   global facet warns when a backend's success rate over its last
+#   _HEALTH_WINDOW attempts falls below _HEALTH_FAILURE_RATE.
+# * timing.jsonl ($XDG_STATE_HOME/agent-toolkit/timing.jsonl, written by
+#   cli_common.timing_span) -- per-candidate "backend" spans joined by
+#   trace_id to their "command" span, which names the caller. The review
+#   facet scopes every sample to second_opinion's own "review" command, so
+#   fast recap calls can no longer dilute a review failure, and adds a p90
+#   wall-time comparison against that backend's own earlier attempts.
+#
+# Both reads are bounded tails, and neither source can raise into the render:
+# a missing, unreadable, non-regular or malformed log degrades to "no warning
+# from that source". No new data, no daemon, no stored state.
 
 _HEALTH_TAIL_BYTES = 256 * 1024
 _HEALTH_WINDOW = 20
 _HEALTH_FAILURE_RATE = 0.5
 
+# Review-scoped evidence. One sample is one "backend" span -- a single
+# candidate-model call attempt -- so a review that skipped through its pool
+# contributes several, which is why the line says "review attempts", never
+# "reviews".
+_HEALTH_TIMING_TAIL_BYTES = 4 * 1024 * 1024
+_HEALTH_REVIEW_WINDOW = 10
+_HEALTH_REVIEW_MIN = 5
+_HEALTH_LATENCY_FLOOR_SECONDS = 120.0
+_HEALTH_LATENCY_FACTOR = 2.0
 
-def _read_backend_log_tail(path: Path) -> bytes:
-    """Read at most the last :data:`_HEALTH_TAIL_BYTES` of ``path``.
+# Only these records carry what the review facet reads; everything else in the
+# log is skipped before ``json.loads``. Both spacings are accepted so a compact
+# writer cannot silently disable the facet.
+_HEALTH_TIMING_MARKERS: tuple[bytes, ...] = tuple(
+    marker
+    for _span_name in (b"backend", b"command")
+    for marker in (b'"name": "%s"' % _span_name, b'"name":"%s"' % _span_name)
+)
 
-    Bounded (``read(n)``, never to EOF) so an appended log cannot make the
-    render path grow without bound. A read that starts mid-record drops the
-    partial first line.
+
+def _read_log_tail(path: Path, max_bytes: int) -> bytes:
+    """Read at most the last ``max_bytes`` of ``path``, never the whole file.
+
+    Opens non-blocking and requires a regular file first: a FIFO or device
+    left at a log path must not block a render that only wanted telemetry. A
+    read that starts mid-record drops the partial first line, and a window too
+    small to hold one full line yields nothing rather than a fragment.
     """
-    with path.open("rb") as fh:
-        fh.seek(0, os.SEEK_END)
-        size = fh.tell()
-        offset = max(0, size - _HEALTH_TAIL_BYTES)
-        fh.seek(offset)
-        data = fh.read(_HEALTH_TAIL_BYTES)
-    if offset > 0:
-        nl = data.find(b"\n")
-        if nl != -1:
-            data = data[nl + 1 :]
-    return data
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return b""
+        size = os.lseek(fd, 0, os.SEEK_END)
+        offset = max(0, size - max_bytes)
+        os.lseek(fd, offset, os.SEEK_SET)
+        chunks: list[bytes] = []
+        remaining = max_bytes
+        while remaining > 0:
+            chunk = os.read(fd, remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        data = b"".join(chunks)
+    finally:
+        os.close(fd)
+    if offset == 0:
+        return data
+    newline = data.find(b"\n")
+    return data[newline + 1 :] if newline != -1 else b""
+
+
+def _finite_duration(value: object) -> float | None:
+    """``value`` as a finite, non-negative float, or ``None`` when unusable."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        duration = float(value)
+    except OverflowError:  # a huge JSON integer
+        return None
+    if not math.isfinite(duration) or duration < 0.0:
+        return None
+    return duration
+
+
+def _p90(values: list[float]) -> float:
+    """Nearest-rank 90th percentile (the ``ceil(0.9n)``-th smallest value)."""
+    ordered = sorted(values)
+    return ordered[max(0, math.ceil(0.9 * len(ordered)) - 1)]
 
 
 def _clean_snippet(text: str) -> str:
@@ -1221,28 +1287,143 @@ def _top_error_snippet(window: list[tuple[str, str | None]]) -> str | None:
     return _ellipsize(top, 50)
 
 
-def _backend_health_warnings(color: bool) -> list[str]:
-    """Per-backend success-rate warning lines from ``backend_calls.jsonl``.
+def _review_attempts() -> dict[str, list[tuple[float, bool]]]:
+    """Per-backend second_opinion review attempts, oldest first.
 
-    Read-only; never raises, never writes. Returns one short line per backend
-    whose success rate over its last :data:`_HEALTH_WINDOW` attempts is below
-    :data:`_HEALTH_FAILURE_RATE`, naming the rate, the ``(successes/attempts)``
-    count, and its most common error snippet; empty when every backend is
-    healthy or the log is missing/unreadable. ``"skipped"`` records are
-    excluded — they are decision markers, not call attempts.
+    One entry per ``backend`` span inside a trace whose ``command`` span is
+    second_opinion's ``review`` command, as ``(wall_seconds, succeeded)``.
+    Spans are appended when they finish, so file order is completion order;
+    the span's own timestamp restores attempt order. Read-only and never
+    raising -- an unusable log yields nothing.
     """
     try:
-        path = agent_toolkit_paths.path_for("backend-log")
-        raw = _read_backend_log_tail(path)
+        raw = _read_log_tail(cli_common.timing_log_path(), _HEALTH_TIMING_TAIL_BYTES)
     except Exception:  # noqa: BLE001 — health check must never raise
-        return []
+        return {}
+    if not raw:
+        return {}
 
-    attempts: dict[str, list[tuple[str, str | None]]] = {}
-    for line in raw.decode("utf-8", errors="replace").splitlines():
-        if not line.strip():
+    commands: dict[str, tuple[str, str]] = {}
+    rows: dict[str, list[tuple[str, float, bool, str]]] = {}
+    for line in raw.splitlines():
+        if not any(marker in line for marker in _HEALTH_TIMING_MARKERS):
             continue
         try:
             record = json.loads(line)
+        except Exception:  # noqa: BLE001 — per-line parse boundary
+            continue
+        if not isinstance(record, dict):
+            continue
+        trace = record.get("trace_id")
+        if not isinstance(trace, str):
+            continue
+        if record.get("name") == "command":
+            script = record.get("script")
+            command = record.get("command")
+            if isinstance(script, str) and isinstance(command, str):
+                commands[trace] = (script, command)
+            continue
+        backend = record.get("backend")
+        duration = _finite_duration(record.get("duration_seconds"))
+        started = record.get("started_at")
+        if not isinstance(backend, str) or duration is None:
+            continue
+        if not isinstance(started, str):
+            continue
+        label = _clean_snippet(backend)
+        if not label:
+            continue
+        rows.setdefault(trace, []).append(
+            (label, duration, record.get("outcome") == "success", started)
+        )
+
+    samples: dict[str, list[tuple[str, float, bool]]] = {}
+    for trace, spans in rows.items():
+        if commands.get(trace) != ("second_opinion", "review"):
+            continue
+        for label, duration, succeeded, started in spans:
+            samples.setdefault(label, []).append((started, duration, succeeded))
+    return {
+        backend: [
+            (duration, succeeded) for _started, duration, succeeded in sorted(spans)
+        ]
+        for backend, spans in samples.items()
+    }
+
+
+def _review_health_lines(color: bool) -> list[str]:
+    """Review-scoped warning lines: failure rate, then p90 latency drift.
+
+    Scoped to second_opinion's own ``review`` command, which is what stops
+    fast recap successes from diluting a review failure. Two independent
+    signals per backend, either of which may fire on its own; never raises.
+    """
+    try:
+        attempts = _review_attempts()
+    except Exception:  # noqa: BLE001 — health check must never raise
+        return []
+
+    lines: list[str] = []
+    for backend, samples in attempts.items():
+        window = samples[-_HEALTH_REVIEW_WINDOW:]
+        if len(window) < _HEALTH_REVIEW_MIN:
+            continue
+        successes = sum(1 for _duration, ok in window if ok)
+        if successes / len(window) < _HEALTH_FAILURE_RATE:
+            percent = round(successes / len(window) * 100)
+            lines.append(
+                f"{_colorize('⚠️ ', _COLORS['warn'], color)}"
+                f"second-opinion: {backend} {percent}% success "
+                f"({successes}/{len(window)} review attempts)"
+            )
+        if len(samples) < 2 * _HEALTH_REVIEW_WINDOW:
+            continue
+        recent = _p90([duration for duration, _ok in samples[-_HEALTH_REVIEW_WINDOW:]])
+        baseline = _p90(
+            [
+                duration
+                for duration, _ok in samples[
+                    -2 * _HEALTH_REVIEW_WINDOW : -_HEALTH_REVIEW_WINDOW
+                ]
+            ]
+        )
+        if recent >= max(
+            _HEALTH_LATENCY_FLOOR_SECONDS, _HEALTH_LATENCY_FACTOR * baseline
+        ):
+            lines.append(
+                f"{_colorize('⚠️ ', _COLORS['warn'], color)}"
+                f"second-opinion: {backend} p90 {recent:.0f}s vs "
+                f"{baseline:.0f}s baseline (last {_HEALTH_REVIEW_WINDOW} attempts)"
+            )
+    return lines
+
+
+def _backend_health_warnings(color: bool) -> list[str]:
+    """Backend-health warning lines for the dashboard render.
+
+    Read-only; never raises, never writes. Two sources behind one alert path:
+    ``backend_calls.jsonl`` (the global per-backend success rate, unchanged)
+    and ``timing.jsonl`` (second_opinion's own review attempts -- failure rate
+    and p90 latency against that backend's earlier attempts). Each source
+    degrades on its own, so the global lines still print when the timing log is
+    missing, unreadable or unusable. ``"skipped"`` records in the call log are
+    decision markers, not call attempts, and are dropped; labels are cleaned
+    before they can reach a printed line.
+    """
+    lines = _review_health_lines(color)
+
+    try:
+        path = agent_toolkit_paths.path_for("backend-log")
+        raw = _read_log_tail(path, _HEALTH_TAIL_BYTES)
+    except Exception:  # noqa: BLE001 — health check must never raise
+        return lines
+
+    attempts: dict[str, list[tuple[str, str | None]]] = {}
+    for entry in raw.decode("utf-8", errors="replace").splitlines():
+        if not entry.strip():
+            continue
+        try:
+            record = json.loads(entry)
         except Exception:  # noqa: BLE001 — per-line parse boundary
             continue
         if not isinstance(record, dict):
@@ -1253,6 +1434,9 @@ def _backend_health_warnings(color: bool) -> list[str]:
             continue
         if outcome not in ("success", "timeout", "error"):
             continue
+        backend = _clean_snippet(backend)
+        if not backend:
+            continue
         snippet = record.get("error_snippet")
         if isinstance(snippet, str) and snippet:
             snippet = _clean_snippet(snippet) or None
@@ -1260,7 +1444,6 @@ def _backend_health_warnings(color: bool) -> list[str]:
             snippet = None
         attempts.setdefault(backend, []).append((outcome, snippet))
 
-    lines: list[str] = []
     for backend, records in attempts.items():
         window = records[-_HEALTH_WINDOW:]
         total = len(window)

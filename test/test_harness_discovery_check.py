@@ -6,8 +6,10 @@ background probe launch, its lock and recursion guard) and the ``probe``
 tier (random-token fixture, confirmation runs, record writing).
 
 No real harness binaries are invoked — the subprocess layer is fully
-mocked, and every test redirects ``XDG_STATE_HOME`` to a temp dir (the test
-bootstrap redirects ``HOME`` but not ``XDG_STATE_HOME``).
+mocked. Every test that needs a state dir redirects ``XDG_STATE_HOME`` to a
+temp dir: ``test_bootstrap`` now pops any inherited value along with
+``HOME``, so an unredirected read would land in the sandbox rather than on
+real state, but pinning it here keeps each test's own paths explicit.
 """
 
 import fcntl

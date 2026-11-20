@@ -3,6 +3,7 @@
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -80,6 +81,42 @@ def test_os_open_write_blocked_without_marker(tmp_path):
 
 def test_agent_toolkit_home_is_cleared_by_sandbox():
     assert "AGENT_TOOLKIT_HOME" not in os.environ
+
+
+@pytest.mark.allow_real_subprocess
+@pytest.mark.regression(
+    "sandbox-scrubs-inherited-state-paths",
+    "AssertionError: '/somewhere/real 1' != 'None None'",
+)
+def test_sandbox_scrubs_inherited_state_paths(tmp_path):
+    """The sandbox must drop inherited state paths, not just HOME.
+
+    An inherited XDG_STATE_HOME or AGENT_TOOLKIT_TIMING would let a render's
+    bounded timing.jsonl read (and any state write) land on the developer's
+    real ~/.local/state. Spawned with both set, because the ambient
+    environment may legitimately carry neither -- an in-process "is absent"
+    assertion would then pass against the unfixed code too.
+    """
+    probe = tmp_path / "probe.py"
+    probe.write_text(
+        "import os, sys\n"
+        "import test_bootstrap\n"
+        "print(os.environ.get('XDG_STATE_HOME'), os.environ.get('AGENT_TOOLKIT_TIMING'))\n"
+    )
+    env = dict(
+        os.environ,
+        XDG_STATE_HOME="/somewhere/real",
+        AGENT_TOOLKIT_TIMING="1",
+        PYTHONPATH=str(Path(__file__).resolve().parent.parent / "agent-scripts"),
+    )
+    result = subprocess.run(
+        [sys.executable, str(probe)],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=True,
+    )
+    assert result.stdout.strip() == "None None"
 
 
 def test_tmp_path_writes_allowed_without_marker(tmp_path):

@@ -511,6 +511,11 @@ def install_sandbox_home() -> Path:
     sandbox = Path(tempfile.mkdtemp(prefix="agent-toolkit-test-home-"))
     os.environ["HOME"] = str(sandbox)
     os.environ.pop("AGENT_TOOLKIT_HOME", None)
+    # Both would point state writes and reads (e.g. render's bounded
+    # timing.jsonl read) outside the sandbox, at the developer's real
+    # ~/.local/state. Tests that need either set it explicitly.
+    os.environ.pop("XDG_STATE_HOME", None)
+    os.environ.pop("AGENT_TOOLKIT_TIMING", None)
     scrub_git_config_env()
     atexit.register(shutil.rmtree, str(sandbox), ignore_errors=True)
     _SANDBOX_HOME = sandbox

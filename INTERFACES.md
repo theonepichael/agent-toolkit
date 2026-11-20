@@ -307,7 +307,7 @@ Shared CLI helpers used across agent-toolkit scripts.
   - `state_dir() -> Path` — The XDG state base directory: $XDG_STATE_HOME, default ~/.local/state.
   - `timing_log_path() -> Path` — The timing log path: $XDG_STATE_HOME/agent-toolkit/timing.jsonl.
   - `timing_span(name: str, **fields: str | int) -> Iterator[dict[str, object]]` — Opt-in nested timings; callers must supply only fixed operational labels.
-- Tested by: `test/test_cli_common.py`, `test/test_harness_discovery_check.py`, `test/test_llm_backends.py`, `test/test_migration_lock_adoption.py`, `test/test_second_opinion.py`, `test/test_settings_seed.py`, `test/test_timing.py`
+- Tested by: `test/test_cli_common.py`, `test/test_dev_status.py`, `test/test_harness_discovery_check.py`, `test/test_llm_backends.py`, `test/test_migration_lock_adoption.py`, `test/test_second_opinion.py`, `test/test_settings_seed.py`, `test/test_timing.py`
 
 ### `agent-scripts/dev_status.py`
 

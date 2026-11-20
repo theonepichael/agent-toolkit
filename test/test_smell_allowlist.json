@@ -371,6 +371,10 @@
     {
       "fingerprint": "check the READY/IN PROGRESS items above for blocker relationships",
       "reason": "User-facing diagnostic message whose wording is the contract (see the test's deliberate-wording comment)."
+    },
+    {
+      "fingerprint": "second-opinion: opencode p90 340s vs 72s baseline",
+      "reason": "The warning line is the helper's entire return value, and the two numbers are the data under test: 340s is a nearest-rank p90 over ten known samples and 72s the baseline one, so max/mean or an append-order window would produce different digits."
     }
   ],
   "test/test_dev_status_formatting.py": [

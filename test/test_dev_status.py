@@ -29,6 +29,7 @@ import tempfile
 import threading
 import time
 import unittest
+import uuid
 from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -39,6 +40,7 @@ import test_bootstrap  # noqa: E402
 from pytest_shim import pytest
 import test_layouts  # noqa: E402
 import agent_toolkit_paths  # noqa: E402
+import cli_common  # noqa: E402
 import dev_status
 import dev_status_mutation
 import dev_status_storage
@@ -7945,7 +7947,9 @@ class BackendHealthWarningTestCase(BacklogFixture):
     def _log_path(self) -> Path:
         return agent_toolkit_paths.path_for("backend-log")
 
-    def _append(self, backend: str, outcome: str, snippet: str | None = None) -> None:
+    def _append(
+        self, backend: str, outcome: str, snippet: str | None = None
+    ) -> None:
         path = self._log_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         record = {
@@ -7963,6 +7967,186 @@ class BackendHealthWarningTestCase(BacklogFixture):
 
     def _warnings(self) -> list[str]:
         return dev_status._backend_health_warnings(False)
+
+    # -- timing.jsonl fixtures -------------------------------------------------
+    #
+    # The review facet reads the same bounded tail the writer appends to. Spans
+    # are written child-first, matching the writer's append-at-completion
+    # order, and each attempt gets its own start time so ordering can be
+    # checked against timestamps rather than file position.
+
+    def _timing_path(self) -> Path:
+        return cli_common.timing_log_path()
+
+    def _append_span(self, record: dict[str, object]) -> None:
+        path = self._timing_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a") as fh:
+            fh.write(json.dumps(record) + "\n")
+
+    def _review(
+        self,
+        attempts: list[tuple[str, float, bool]],
+        *,
+        started: datetime,
+        label: tuple[str, str] = ("second_opinion", "review"),
+    ) -> None:
+        trace = uuid.uuid4().hex
+        command_span = uuid.uuid4().hex
+        moment = started
+        for backend, duration, ok in attempts:
+            self._append_span(
+                {
+                    "name": "backend",
+                    "backend": backend,
+                    "candidate": 1,
+                    "trace_id": trace,
+                    "span_id": uuid.uuid4().hex,
+                    "parent_id": command_span,
+                    "outcome": "success" if ok else "error",
+                    "duration_seconds": duration,
+                    "started_at": moment.isoformat(),
+                }
+            )
+            moment += timedelta(seconds=duration)
+        self._append_span(
+            {
+                "name": "command",
+                "script": label[0],
+                "command": label[1],
+                "trace_id": trace,
+                "span_id": command_span,
+                "parent_id": None,
+                "outcome": "success",
+                "duration_seconds": sum(duration for _backend, duration, _ok in attempts),
+                "started_at": started.isoformat(),
+            }
+        )
+
+    # -- review-scoped signals (timing.jsonl) ----------------------------------
+
+    def test_review_failures_not_masked_by_fast_recap_successes(self):
+        # The 2026-11-19 shape: the global window looks healthy (fast recap
+        # successes outnumber the review timeouts), and opencode's slow
+        # attempts never reach backend_calls.jsonl at all.
+        for _ in range(18):
+            self._append("pi", "success")
+        for _ in range(2):
+            self._append("pi", "timeout", "timed out after 120s")
+
+        now = datetime.now(UTC)
+        self._review([("pi", 120.0, False)] * 5, started=now - timedelta(minutes=40))
+        for duration, ok in (
+            (300.0, True),
+            (330.0, True),
+            (450.0, False),
+            (450.0, False),
+            (450.0, False),
+        ):
+            self._review([("opencode", duration, ok)], started=now - timedelta(minutes=8))
+
+        warnings = self._warnings()
+        self.assertTrue(
+            any(
+                "second-opinion: pi 0% success (0/5 review attempts)" in w
+                for w in warnings
+            )
+        )
+        self.assertTrue(
+            any(
+                "second-opinion: opencode 40% success (2/5 review attempts)" in w
+                for w in warnings
+            )
+        )
+        # Pre-change code could only ever print the global window's wording,
+        # and that window is healthy here.
+        self.assertFalse(any(" calls)" in w for w in warnings))
+
+    def test_slow_but_successful_backend_p90_regression_warned(self):
+        now = datetime.now(UTC)
+        base = now - timedelta(hours=3)
+        baseline = [55.0, 58.0, 60.0, 62.0, 64.0, 66.0, 68.0, 70.0, 72.0, 74.0]
+        recent = [300.0, 305.0, 310.0, 315.0, 320.0, 325.0, 330.0, 335.0, 340.0, 345.0]
+        # Recent attempts are written first, and in reverse, so append order is
+        # the reverse of start order: trusting file order would see the 55-74 s
+        # group as the recent one and say nothing.
+        for index in range(len(recent) - 1, -1, -1):
+            self._review(
+                [("opencode", recent[index], True)],
+                started=now - timedelta(minutes=10 - index),
+            )
+        for index, duration in enumerate(baseline):
+            self._review(
+                [("opencode", duration, True)], started=base + timedelta(minutes=index)
+            )
+
+        warnings = self._warnings()
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("second-opinion: opencode p90 340s vs 72s baseline", warnings[0])
+
+    def test_recap_and_non_review_spans_ignored(self):
+        now = datetime.now(UTC)
+        for index in range(5):
+            self._review(
+                [("pi", 120.0, False)],
+                started=now - timedelta(minutes=10 - index),
+                label=("dev_status", "_internal-regen"),
+            )
+        self.assertEqual(self._warnings(), [])
+
+        # Positive control: identical spans, labelled as a review.
+        for index in range(5):
+            self._review(
+                [("pi", 120.0, False)],
+                started=now - timedelta(minutes=4) + timedelta(seconds=index),
+            )
+        warnings = self._warnings()
+        self.assertTrue(any("second-opinion: pi " in w for w in warnings))
+        self.assertFalse(any("dev_status" in w for w in warnings))
+
+    def test_healthy_logs_print_nothing(self):
+        # Positive control for the two tests above: healthy evidence on both
+        # sources stays silent, so they cannot pass on "always warns".
+        for _ in range(20):
+            self._append("codex", "success")
+        now = datetime.now(UTC)
+        for index in range(10):
+            self._review(
+                [("codex", 20.0, True)], started=now - timedelta(minutes=10 - index)
+            )
+        self.assertEqual(self._warnings(), [])
+
+    def test_health_warning_writes_nothing(self):
+        for _ in range(20):
+            self._append("pi", "error", "boom")
+        now = datetime.now(UTC)
+        for index in range(5):
+            self._review(
+                [("pi", 120.0, False)],
+                started=now - timedelta(minutes=40) + timedelta(seconds=index),
+            )
+
+        state_dir = self._timing_path().parent
+        data_dir = self._log_path().parent
+
+        def snapshot(directory: Path) -> dict[str, tuple[int, int]]:
+            return {
+                entry.name: (entry.stat().st_size, entry.stat().st_mtime_ns)
+                for entry in directory.iterdir()
+            }
+
+        # A review-scoped line appears, and nothing is written.
+        before = (snapshot(state_dir), snapshot(data_dir))
+        warnings = self._warnings()
+        self.assertTrue(any("review attempts" in w for w in warnings))
+        self.assertEqual((snapshot(state_dir), snapshot(data_dir)), before)
+
+        # A malformed timing log changes nothing about that either.
+        self._timing_path().write_text("{ not json\n")
+        before = (snapshot(state_dir), snapshot(data_dir))
+        self.assertTrue(self._warnings())
+        self.assertEqual((snapshot(state_dir), snapshot(data_dir)), before)
+
 
     def test_failing_backend_warned_with_rate_count_and_top_snippet(self):
         # pi: 2 success + 18 error (12 dominant snippet) -> 10% success, warned
@@ -8029,7 +8213,6 @@ class BackendHealthWarningTestCase(BacklogFixture):
         dev_status.render([], [], out=out, err=err)
         self.assertIn("second-opinion", out.getvalue())
         self.assertNotIn("second-opinion", err.getvalue())
-
 
 
 class _FixedDate(date):

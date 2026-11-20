@@ -332,7 +332,11 @@ subcommand; second-opinion backend records identify the backend and candidate
 order; subprocess attempt records include attempt number and exit code when
 available. Timeout attempts remain visible even when a retry succeeds. Records
 exclude arguments, prompts, outputs, item contents, and exception messages.
-Timing is opt-in, best-effort, and does not change normal stdout or exit codes.
+Timing is opt-in and best-effort: it never changes an exit code. One output
+path does read it -- `dev_status.py render` takes a bounded, read-only tail of
+this log and prints extra second-opinion backend-health warnings from it: a
+review failure rate (so fast recap calls cannot mask review failures) and a
+p90 wall-time regression against that backend's own earlier attempts.
 
 The script span measures `main()`, including argument parsing, but excludes
 Python startup and imports. Command, preparation, backend, and attempt spans
