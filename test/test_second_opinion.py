@@ -20,7 +20,13 @@ import sys
 import tempfile
 import unittest
 from collections.abc import Callable, Iterator
-from contextlib import ExitStack, contextmanager, redirect_stderr, redirect_stdout
+from contextlib import (
+    AbstractContextManager,
+    ExitStack,
+    contextmanager,
+    redirect_stderr,
+    redirect_stdout,
+)
 from pathlib import Path
 from unittest.mock import patch
 
@@ -901,6 +907,139 @@ class RunOpencodeTests(unittest.TestCase):
         msg = str(cm.exception)
         self.assertNotIn("--dangerously-skip-permissions", msg)
         self.assertIn("auto-denied", msg)
+
+
+class RunOpencodeCallLoggingTests(unittest.TestCase):
+    """`second_opinion.run_opencode`'s `backend_calls.jsonl` telemetry.
+
+    Regression: `run_opencode` builds its own command (the `adversary` agent
+    plus image staging), so it never goes through `llm_backends.run_opencode`
+    and therefore never entered `llm_backends._track_backend_call` — the only
+    writer of `backend_calls.jsonl`. opencode latency and timeouts in
+    second-opinion runs were invisible in the call log while every other
+    backend's attempts were recorded.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        # dir=~ keeps the redirected log inside the sandboxed HOME the
+        # repo-root conftest installs, so no test can reach the real store.
+        tmp = tempfile.TemporaryDirectory(dir=os.path.expanduser("~"))
+        self.addCleanup(tmp.cleanup)
+        self.log_path = Path(tmp.name) / "backend_calls.jsonl"
+        patcher = patch.object(
+            llm_backends, "_backend_call_log_path", lambda: self.log_path
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        # _track_backend_call consumes and resets this module-level slot, but a
+        # pre-fix run never enters it at all — so a value parked here by one
+        # test would leak into the next. Reset it either way.
+        reset = patch.object(llm_backends, "_pending_fallback_reason", None)
+        reset.start()
+        self.addCleanup(reset.stop)
+
+    def _rows(self) -> list[dict[str, object]]:
+        if not self.log_path.exists():
+            raise AssertionError("no backend_calls.jsonl row was written")
+        return [
+            json.loads(line)
+            for line in self.log_path.read_text().splitlines()
+            if line.strip()
+        ]
+
+    _TEXT_EVENT = json.dumps({"type": "text", "part": {"text": "critique"}})
+
+    def _run_command_returning(
+        self, stdout: str, park: str | None = None
+    ) -> AbstractContextManager[object]:
+        if park is None:
+            return patch.object(
+                second_opinion, "_run_command", return_value=(0, stdout, "")
+            )
+
+        def fake(*_args: object, **_kwargs: object) -> tuple[int, str, str]:
+            llm_backends._pending_fallback_reason = park
+            return (0, stdout, "")
+
+        return patch.object(second_opinion, "_run_command", side_effect=fake)
+
+    def _run_command_raising(
+        self, exc: BaseException
+    ) -> AbstractContextManager[object]:
+        def fake(*_args: object, **_kwargs: object) -> tuple[int, str, str]:
+            raise exc
+
+        return patch.object(second_opinion, "_run_command", side_effect=fake)
+
+    @pytest.mark.regression(
+        "second-opinion-opencode-call-not-logged",
+        "AssertionError: no backend_calls.jsonl row was written",
+    )
+    def test_success_logs_one_row_carrying_the_resolved_model(self) -> None:
+        with (
+            patch.dict(
+                os.environ, {"SECOND_OPINION_OPENCODE_MODEL": "opencode-go/probe"}
+            ),
+            self._run_command_returning(self._TEXT_EVENT),
+        ):
+            self.assertEqual(second_opinion.run_opencode("prompt é"), "critique")
+        rows = self._rows()
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row["backend"], "opencode")
+        self.assertEqual(row["outcome"], "success")
+        self.assertEqual(row["model"], "opencode-go/probe")
+        self.assertEqual(row["prompt_bytes"], len("prompt é".encode()))
+        self.assertIsNone(row["error_snippet"])
+        self.assertIsNone(row["fallback_reason"])
+        self.assertGreaterEqual(row["wall_seconds"], 0)
+
+    @pytest.mark.regression(
+        "second-opinion-opencode-call-not-logged",
+        "AssertionError: no backend_calls.jsonl row was written",
+    )
+    def test_timeout_logs_timeout_row_and_still_raises(self) -> None:
+        with (
+            self._run_command_raising(
+                llm_backends.BackendTimeoutError("timed out after 450s — killed")
+            ),
+            self.assertRaises(llm_backends.BackendTimeoutError),
+        ):
+            second_opinion.run_opencode("a prompt")
+        rows = self._rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["outcome"], "timeout")
+        self.assertIn("timed out after 450s", rows[0]["error_snippet"])
+
+    @pytest.mark.regression(
+        "second-opinion-opencode-call-not-logged",
+        "AssertionError: no backend_calls.jsonl row was written",
+    )
+    def test_error_event_logs_error_row_and_still_raises(self) -> None:
+        stdout = json.dumps(
+            {"type": "error", "error": {"data": {"message": "agent crashed"}}}
+        )
+        with (
+            self._run_command_returning(stdout),
+            self.assertRaises(second_opinion.BackendError),
+        ):
+            second_opinion.run_opencode("a prompt")
+        rows = self._rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["outcome"], "error")
+        self.assertIn("agent crashed", rows[0]["error_snippet"])
+
+    def test_stall_retry_that_succeeds_records_fallback_reason_stall(self) -> None:
+        # Verifies *consumption* of the parked reason — the stall itself is
+        # parked by llm_backends._run_command's streamer, which this fake
+        # replaces (see StallRetryTelemetryTests in test_llm_backends.py).
+        with self._run_command_returning(self._TEXT_EVENT, park="stall"):
+            second_opinion.run_opencode("a prompt")
+        rows = self._rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["fallback_reason"], "stall")
+        self.assertIsNone(llm_backends._pending_fallback_reason)
 
 
 class CmdDetectTests(unittest.TestCase):

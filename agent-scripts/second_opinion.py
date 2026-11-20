@@ -1652,9 +1652,11 @@ def run_opencode(
     (``_run_command`` is passed ``stall_seconds=90``). A silent gateway stall
     produces no output, so the only useful action is a fast kill + retry, not
     waiting the whole ``timeout``; the 2026-09 efficiency analysis measured
-    production-length retries (450s cap) succeeding 0 of 6. A successful
-    stall-retry is recorded in ``backend_calls.jsonl`` with
-    ``fallback_reason="stall"``.
+    production-length retries (450s cap) succeeding 0 of 6.
+
+    Each invocation logs one ``backend_calls.jsonl`` row via
+    :func:`llm_backends._track_backend_call`, like the other runners — one row
+    covers both attempts after a stall.
 
     opencode is always OS-contained, so ``images`` are staged into a unique
     read-only dir exposed via ``SB_EXPOSE_RO`` and removed after the run (see
@@ -1683,34 +1685,36 @@ def run_opencode(
         cmd = llm_backends.build_isolated_command(
             "opencode", prompt, model=model, **extra
         )
-        _, stdout, stderr = _run_command(
-            cmd,
-            timeout=_resolve_timeout(
-                "SECOND_OPINION_OPENCODE_TIMEOUT_SECONDS",
-                default=max(BACKEND_TIMEOUT_SECONDS, _OPENCODE_TIMEOUT_SECONDS),
-            ),
-            retries=1,
-            # Stall, don't blind-retry: stream the child's stdout and kill it
-            # the moment no byte arrives for ~90s (a silent gateway stall), then
-            # retry once. The 2026-09 efficiency analysis measured
-            # production-length retries (450s cap) succeeding 0 of 6 — waiting
-            # the full timeout only fails slower. A slow-but-progressing run is
-            # left to the overall timeout without a retry.
-            stall_seconds=90,
-        )
-        events = _opencode_json_events(stdout)
-        allowed = {"read", "grep", "glob"} if mode == "grounded" else None
-        _raise_on_tool_use(events, context="adversary agent", allowed_tools=allowed)
-        chunks = _opencode_text_chunks(events)
-        if chunks:
-            return _finalize_text_response(chunks, context="adversary agent")
-        for e in events:
-            if e.get("type") == "error":
-                message = _safe_get(e, "error", "data", "message")
-                raise BackendError(
-                    f"adversary agent error: {message or e.get('error')}"
-                )
-        raise _backend_failure("no text output", stderr=stderr, stdout=stdout)
+        # Builds its own command, so it enters the shared logging path here.
+        with llm_backends._track_backend_call("opencode", model, prompt):
+            _, stdout, stderr = _run_command(
+                cmd,
+                timeout=_resolve_timeout(
+                    "SECOND_OPINION_OPENCODE_TIMEOUT_SECONDS",
+                    default=max(BACKEND_TIMEOUT_SECONDS, _OPENCODE_TIMEOUT_SECONDS),
+                ),
+                retries=1,
+                # Stall, don't blind-retry: stream the child's stdout and kill it
+                # the moment no byte arrives for ~90s (a silent gateway stall), then
+                # retry once. The 2026-09 efficiency analysis measured
+                # production-length retries (450s cap) succeeding 0 of 6 — waiting
+                # the full timeout only fails slower. A slow-but-progressing run is
+                # left to the overall timeout without a retry.
+                stall_seconds=90,
+            )
+            events = _opencode_json_events(stdout)
+            allowed = {"read", "grep", "glob"} if mode == "grounded" else None
+            _raise_on_tool_use(events, context="adversary agent", allowed_tools=allowed)
+            chunks = _opencode_text_chunks(events)
+            if chunks:
+                return _finalize_text_response(chunks, context="adversary agent")
+            for e in events:
+                if e.get("type") == "error":
+                    message = _safe_get(e, "error", "data", "message")
+                    raise BackendError(
+                        f"adversary agent error: {message or e.get('error')}"
+                    )
+            raise _backend_failure("no text output", stderr=stderr, stdout=stdout)
     finally:
         if staged is not None:
             staged.cleanup()

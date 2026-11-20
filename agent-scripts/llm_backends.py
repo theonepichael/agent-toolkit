@@ -2231,6 +2231,7 @@ def _track_backend_call(backend: str, model: str | None, prompt: str) -> Iterato
     its traceback still propagate via ``raise``), it only guarantees that
     every failure mode — including one this module doesn't raise today —
     gets one logged "error" record instead of silently escaping uncounted.
+    ``SystemExit``/``KeyboardInterrupt`` are logged as ``error``, then re-raised.
 
     A failure's ``str(exc)`` is logged as the record's redacted, head+tail
     ``error_snippet`` (see :func:`cli_common.redacted_excerpt`): every
@@ -2252,6 +2253,13 @@ def _track_backend_call(backend: str, model: str | None, prompt: str) -> Iterato
     except BackendTimeoutError as exc:
         outcome = "timeout"
         error_snippet = str(exc)
+        raise
+    except (SystemExit, KeyboardInterrupt) as exc:
+        # An interrupted call produced no result, so it is a failure, not the
+        # success `outcome` still holds. Re-raised unchanged: the process must
+        # still exit on the interrupt.
+        outcome = "error"
+        error_snippet = f"interrupted: {exc!r}"
         raise
     except Exception as exc:
         outcome = "error"
@@ -2688,8 +2696,9 @@ def run_opencode(
     production-length retries (450s cap) succeeding 0 of 6, costing 2,107s.
     A *slow-but-progressing* run (bytes keep arriving inside each stall
     window) is not a stall and is left to run to its overall ``timeout``
-    without a retry. A successful stall-retry is recorded in
-    ``backend_calls.jsonl`` with ``fallback_reason="stall"``.
+    without a retry. An attempt that follows a stall is recorded in
+    ``backend_calls.jsonl`` with ``fallback_reason="stall"`` — the reason names
+    why this call followed a killed attempt, not that the retry then succeeded.
 
     Worst-case wall time for a single call is therefore ~2 × ``timeout``: an
     output stall is declared after ``stall_seconds`` of silence, which can

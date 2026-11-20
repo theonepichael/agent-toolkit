@@ -1481,6 +1481,25 @@ class TrackBackendCallTests(_LogPathRedirected):
         self.assertIn("[REDACTED]", record["error_snippet"])
         self.assertNotIn("abc123def456ghi789", record["error_snippet"])
 
+    @pytest.mark.regression(
+        "interrupted-backend-call-logged-as-success",
+        "AssertionError: 'success' != 'error'",
+    )
+    def test_interrupt_logs_error_not_success_and_reraises(self) -> None:
+        # A SIGTERM/SIGINT handler kills the child and exits via sys.exit, so
+        # SystemExit unwinds through the context manager. It bypasses the
+        # `except Exception` below, and the `finally` then wrote whatever
+        # `outcome` still held -- "success" -- putting a killed call into the
+        # success latency series.
+        with (
+            self.assertRaises(SystemExit),
+            llm_backends._track_backend_call("opencode", "m", "p"),
+        ):
+            raise SystemExit(143)
+        record = _read_jsonl(self.log_path)[0]
+        self.assertEqual(record["outcome"], "error")
+        self.assertIn("interrupted", record["error_snippet"])
+
 
 class RunFunctionsLoggingTests(_ContainmentStubbed, _LogPathRedirected):
     """Integration: each run_* function's actual logging wiring, not just
