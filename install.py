@@ -1925,110 +1925,157 @@ def do_rollback(ctx: Context) -> int:
     swept too — even when no manifest exists at all, e.g. a second
     ``--wipe`` run after the first already consumed it.
 
+    Mutually exclusive with ``--uninstall`` (exit 2 while one is live): that
+    run's baseline and manifest are what this walk reverts and reads, so the
+    lock is taken before the ``--wipe`` sweep and before the manifest read.
+    A dry run mutates nothing and takes no lock.
+
     Returns:
         Exit status — 1 if any step was skipped, 2 if refused, else 0.
     """
     skips = Reporter()
     swept = False
 
-    if ctx.opts.wipe:
-        swept = _wipe_managed_services(ctx, skips) or swept
-        swept = _wipe_neovim_dirs(ctx, skips) or swept
+    locked = False
+    created = False
+    stale = None
+    lockable = not ctx.opts.dry_run
 
-    manifest = ctx.manifest
-    if not manifest.path.is_file():
-        if swept:
-            cli_common.qprint(
-                PALETTE.header(
-                    "Wipe swept untracked state — no recorded history to reverse."
-                ),
-                quiet=ctx.opts.quiet,
+    try:
+        if lockable:
+            # Ownership is decided by an atomic mkdir rather than a pre-check,
+            # so the directory is only ever removed by the run that created it.
+            try:
+                ctx.state_dir.mkdir(parents=True)
+            except FileExistsError:
+                pass
+            else:
+                created = True
+        if lockable:
+            locked, stale = uninstall_state.acquire_uninstall_lock(ctx.state_dir)
+            if not locked:
+                print(
+                    PALETTE.error(
+                        "another --uninstall or --rollback is already running — "
+                        "refusing --rollback while it holds the lock"
+                    ),
+                    file=sys.stderr,
+                )
+                return 2
+
+        if stale is not None:
+            print(
+                PALETTE.warn(
+                    f"reclaimed a stale uninstall lock (was held by pid {stale.pid})"
+                )
+            )
+
+        if ctx.opts.wipe:
+            swept = _wipe_managed_services(ctx, skips) or swept
+            swept = _wipe_neovim_dirs(ctx, skips) or swept
+
+        manifest = ctx.manifest
+        if not manifest.path.is_file():
+            if swept:
+                cli_common.qprint(
+                    PALETTE.header(
+                        "Wipe swept untracked state — no recorded history to reverse."
+                    ),
+                    quiet=ctx.opts.quiet,
+                )
+                return _report_skips_and_exit(skips)
+            print(
+                PALETTE.error(f"no manifest at {manifest.path} — nothing to roll back"),
+                file=sys.stderr,
+            )
+            return 1
+
+        entries = manifest.entries()
+        run_count = sum(1 for entry in entries if entry.get("kind") == "run")
+        verb = "Would roll back" if ctx.opts.dry_run else "Rolling back"
+        header_msg = f"==> {verb} {run_count} recorded run(s) from {manifest.path}"
+        if ctx.opts.wipe:
+            header_msg += (
+                " — wipe mode: original configs discarded, not restored; "
+                "untracked Neovim/managed-service state swept"
+            )
+        _header(header_msg, quiet=ctx.opts.quiet)
+
+        # Which backup paths this pass has already restored (or, under --wipe,
+        # deleted). An older duplicate file-backed-up entry for the same path
+        # (recorded across an earlier backup/rollback/reinstall cycle) is then
+        # recognized as already handled rather than misreported as a missing
+        # backup.
+        restored: set[Path] = set()
+        # Which dest paths a file-backed-up entry has already restored (non-wipe
+        # path only), processed newest-to-oldest in this same pass. Lets a plain
+        # file-copied entry for the same dest — e.g. the original bootstrap copy
+        # that predates any --reseed of it — recognize its target was already
+        # correctly restored by a later (already-processed) entry, instead of
+        # unconditionally deleting it a second time.
+        restored_dests: set[Path] = set()
+
+        for entry in reversed(entries):
+            match entry.get("kind"):
+                case "symlink-created":
+                    _rollback_symlink(ctx, entry, skips)
+                case "file-copied":
+                    _rollback_copy(ctx, entry, restored_dests)
+                case "file-backed-up":
+                    _rollback_backup(ctx, entry, skips, restored, restored_dests)
+                case "package-installed":
+                    cli_common.qprint(
+                        f"  package left installed (profile-independent): "
+                        f"{entry.get('name', '')}",
+                        quiet=ctx.opts.quiet,
+                    )
+                case "run":
+                    cli_common.qprint(
+                        f"  (run was: {entry.get('timestamp', '')}, "
+                        f"profile: {entry.get('profile', '')})",
+                        quiet=ctx.opts.quiet,
+                    )
+
+        if ctx.opts.dry_run:
+            if ctx.opts.wipe:
+                excluded = {manifest.path, *_uninstall_state_paths(ctx.state_dir)}
+                remaining = (
+                    [p for p in ctx.state_dir.iterdir() if p not in excluded]
+                    if ctx.state_dir.is_dir()
+                    else []
+                )
+                if not remaining:
+                    _preview(
+                        f"would remove empty state directory {ctx.state_dir}",
+                        quiet=ctx.opts.quiet,
+                    )
+            print(
+                "Dry run complete — nothing was changed. "
+                "Re-run without --dry-run to roll back for real."
             )
             return _report_skips_and_exit(skips)
-        print(
-            PALETTE.error(f"no manifest at {manifest.path} — nothing to roll back"),
-            file=sys.stderr,
-        )
-        return 1
 
-    entries = manifest.entries()
-    run_count = sum(1 for entry in entries if entry.get("kind") == "run")
-    verb = "Would roll back" if ctx.opts.dry_run else "Rolling back"
-    header_msg = f"==> {verb} {run_count} recorded run(s) from {manifest.path}"
-    if ctx.opts.wipe:
-        header_msg += (
-            " — wipe mode: original configs discarded, not restored; "
-            "untracked Neovim/managed-service state swept"
-        )
-    _header(header_msg, quiet=ctx.opts.quiet)
-
-    # Which backup paths this pass has already restored (or, under --wipe,
-    # deleted). An older duplicate file-backed-up entry for the same path
-    # (recorded across an earlier backup/rollback/reinstall cycle) is then
-    # recognized as already handled rather than misreported as a missing
-    # backup.
-    restored: set[Path] = set()
-    # Which dest paths a file-backed-up entry has already restored (non-wipe
-    # path only), processed newest-to-oldest in this same pass. Lets a plain
-    # file-copied entry for the same dest — e.g. the original bootstrap copy
-    # that predates any --reseed of it — recognize its target was already
-    # correctly restored by a later (already-processed) entry, instead of
-    # unconditionally deleting it a second time.
-    restored_dests: set[Path] = set()
-
-    for entry in reversed(entries):
-        match entry.get("kind"):
-            case "symlink-created":
-                _rollback_symlink(ctx, entry, skips)
-            case "file-copied":
-                _rollback_copy(ctx, entry, restored_dests)
-            case "file-backed-up":
-                _rollback_backup(ctx, entry, skips, restored, restored_dests)
-            case "package-installed":
-                cli_common.qprint(
-                    f"  package left installed (profile-independent): "
-                    f"{entry.get('name', '')}",
-                    quiet=ctx.opts.quiet,
-                )
-            case "run":
-                cli_common.qprint(
-                    f"  (run was: {entry.get('timestamp', '')}, "
-                    f"profile: {entry.get('profile', '')})",
-                    quiet=ctx.opts.quiet,
-                )
-
-    if ctx.opts.dry_run:
-        if ctx.opts.wipe:
-            excluded = {manifest.path, *_uninstall_state_paths(ctx.state_dir)}
-            remaining = (
-                [p for p in ctx.state_dir.iterdir() if p not in excluded]
-                if ctx.state_dir.is_dir()
-                else []
-            )
-            if not remaining:
-                _preview(
-                    f"would remove empty state directory {ctx.state_dir}",
-                    quiet=ctx.opts.quiet,
-                )
-        print(
-            "Dry run complete — nothing was changed. "
-            "Re-run without --dry-run to roll back for real."
-        )
-    else:
         manifest.path.unlink(missing_ok=True)
         _delete_uninstall_state(ctx)
-        if (
-            ctx.opts.wipe
-            and ctx.state_dir.is_dir()
-            and not any(ctx.state_dir.iterdir())
-        ):
+    finally:
+        if locked:
+            uninstall_state.release_uninstall_lock(ctx.state_dir)
+        if created:
+            with contextlib.suppress(OSError):
+                ctx.state_dir.rmdir()
+
+    if ctx.opts.wipe:
+        # rmdir itself refuses a non-empty (or already removed) directory, so
+        # this needs no emptiness pre-check — and a concurrent run taking the
+        # lock again between our release and here must not raise.
+        with contextlib.suppress(OSError):
             ctx.state_dir.rmdir()
-        msg = (
-            "Rollback complete — configuration wiped to a blank slate."
-            if ctx.opts.wipe
-            else "Rollback complete. Re-run ./install.sh with the intended profile."
-        )
-        print(PALETTE.header(msg))
+    msg = (
+        "Rollback complete — configuration wiped to a blank slate."
+        if ctx.opts.wipe
+        else "Rollback complete. Re-run ./install.sh with the intended profile."
+    )
+    print(PALETTE.header(msg))
 
     return _report_skips_and_exit(skips)
 

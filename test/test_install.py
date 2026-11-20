@@ -2391,6 +2391,9 @@ def test_wipe_no_manifest_and_nothing_to_sweep_still_errors(home, monkeypatch, c
 
     assert code == 1
     assert "nothing to roll back" in err
+    # The lock had to create the state directory to take it; the refused sweep
+    # must not leave it behind.
+    assert not (home / ".local" / "state" / STATE_DIR_NAME).exists()
 
 
 def test_wipe_no_manifest_dry_run_and_nothing_to_sweep_still_errors(
@@ -2436,6 +2439,291 @@ def test_plain_rollback_leaves_state_dir_even_if_empty(home, links, offline_inst
     assert install.do_rollback(make_ctx(home)) == 0
 
     assert state_dir.is_dir()
+
+
+# ── rollback × uninstall mutual exclusion ────────────────────────────────────
+
+
+def _hold_uninstall_lock(ctx):
+    """Record this process as the live holder of ``ctx``'s uninstall lock.
+
+    A recorded start time of 0 means "unknown", which
+    ``uninstall_state.is_lock_holder_alive`` deliberately treats as alive for a
+    live pid — so this needs no real process probe and behaves the same on
+    Linux and macOS.
+    """
+    lock_path = uninstall_state.uninstall_lock_path(ctx.state_dir)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.write_text(json.dumps({"pid": os.getpid(), "start_time": 0}))
+    return lock_path
+
+
+@pytest.mark.regression(
+    "rollback-uninstall-mutual-exclusion-manifest-read",
+    "AssertionError: do_rollback rolled back under a live uninstall lock",
+)
+def test_rollback_refuses_while_an_uninstall_holds_the_lock(
+    home, links, offline_install, monkeypatch, capsys
+):
+    """A live ``--uninstall`` owns the baseline and manifest this walk uses."""
+    install.run_install(make_ctx(home, harnesses=("claude",)), links)
+    ctx = make_ctx(home)
+    _hold_uninstall_lock(ctx)
+
+    reads = []
+    real_entries = install.Manifest.entries
+
+    def _reading_entries(self):
+        reads.append(self.path)
+        return real_entries(self)
+
+    monkeypatch.setattr(install.Manifest, "entries", _reading_entries)
+    code = install.do_rollback(ctx)
+    err = capsys.readouterr().err
+
+    # The refusal has to name the command the user asked for; that wording is
+    # the whole point of it here, so it is asserted rather than left to prose.
+    assert code == 2, "do_rollback rolled back under a live uninstall lock"
+    assert reads == [], "the manifest was read under a live uninstall lock"
+    assert (home / ".claude" / "CLAUDE.md").is_symlink()
+    assert ctx.manifest.path.is_file()
+    assert "--rollback" in err
+
+
+@pytest.mark.regression(
+    "rollback-uninstall-mutual-exclusion-wipe-ordering",
+    "AssertionError: do_rollback swept under a live uninstall lock",
+)
+def test_wipe_rollback_refuses_before_sweeping_while_an_uninstall_holds_the_lock(
+    home, links, offline_install, monkeypatch, capsys
+):
+    """The ``--wipe`` sweep is the destructive half, so it is excluded first.
+
+    ``install.MANAGED_SERVICES`` is empty today, so "no systemctl call
+    happened" proves nothing — the sweep functions themselves are wrapped.
+    """
+    install.run_install(make_ctx(home, harnesses=("claude",)), links)
+    nvim_dir = home / ".local" / "share" / "nvim"
+    nvim_dir.mkdir(parents=True)
+    (nvim_dir / "sentinel").write_text("x\n")
+    ctx = make_ctx(home, wipe=True)
+    _hold_uninstall_lock(ctx)
+
+    swept = []
+    real_services = install._wipe_managed_services
+    real_nvim = install._wipe_neovim_dirs
+
+    def _services(c, skips):
+        swept.append("services")
+        return real_services(c, skips)
+
+    def _nvim(c, skips):
+        swept.append("nvim")
+        return real_nvim(c, skips)
+
+    monkeypatch.setattr(install, "_wipe_managed_services", _services)
+    monkeypatch.setattr(install, "_wipe_neovim_dirs", _nvim)
+    code = install.do_rollback(ctx)
+    capsys.readouterr()
+
+    assert code == 2, "do_rollback swept under a live uninstall lock"
+    assert swept == []
+    assert nvim_dir.is_dir()
+
+
+@pytest.mark.regression(
+    "rollback-uninstall-mutual-exclusion-lock-not-held",
+    "AssertionError: a second run could take the lock during a rollback",
+)
+def test_rollback_holds_the_lock_through_the_walk(
+    home, links, offline_install, monkeypatch
+):
+    """Probe the lock from inside the walk — what a second run would do.
+
+    Every probe is recorded: against pre-change code the first one *takes* the
+    lock, and checking only the last would then pass for the wrong reason.
+    """
+    install.run_install(make_ctx(home, harnesses=("claude",)), links)
+    ctx = make_ctx(home)
+    assert (home / ".claude" / "CLAUDE.md").is_symlink()
+
+    probes = []
+    real_rollback_symlink = install._rollback_symlink
+
+    def _probing(c, entry, skips):
+        probes.append(uninstall_state.acquire_uninstall_lock(c.state_dir))
+        if probes[-1][0]:
+            # Pre-change code: give the lock back so later probes are not
+            # refused by this one's own record rather than by the walk.
+            uninstall_state.release_uninstall_lock(c.state_dir)
+        return real_rollback_symlink(c, entry, skips)
+
+    monkeypatch.setattr(install, "_rollback_symlink", _probing)
+    assert install.do_rollback(ctx) == 0
+
+    assert probes and all(probe == (False, None) for probe in probes), (
+        "a second run could take the lock during a rollback"
+    )
+    assert not uninstall_state.uninstall_lock_path(ctx.state_dir).exists()
+
+
+def test_rollback_leaves_no_lock_behind(home, links, offline_install):
+    """Positive control: an unexcluded rollback runs and tidies its lock up."""
+    install.run_install(make_ctx(home, harnesses=("claude",)), links)
+    ctx = make_ctx(home)
+    lock_path = uninstall_state.uninstall_lock_path(ctx.state_dir)
+
+    assert install.do_rollback(ctx) == 0
+
+    assert not lock_path.exists()
+    assert ctx.state_dir.is_dir()
+    acquired, _ = uninstall_state.acquire_uninstall_lock(ctx.state_dir)
+    try:
+        assert acquired is True
+    finally:
+        uninstall_state.release_uninstall_lock(ctx.state_dir)
+
+
+def test_rollback_dry_run_under_a_live_uninstall_lock(
+    home, links, offline_install, capsys
+):
+    """A dry run neither takes nor is blocked by the lock, and changes nothing."""
+    install.run_install(make_ctx(home, harnesses=("claude",)), links)
+    ctx = make_ctx(home, dry_run=True)
+    lock_path = _hold_uninstall_lock(ctx)
+
+    assert install.do_rollback(ctx) == 0
+    capsys.readouterr()
+
+    assert lock_path.exists()
+    assert uninstall_state.read_lock(lock_path) == uninstall_state.LockInfo(
+        pid=os.getpid(), start_time=0
+    )
+    assert (home / ".claude" / "CLAUDE.md").is_symlink()
+
+
+@pytest.mark.regression(
+    "rollback-uninstall-mutual-exclusion-unlocked-walk",
+    "AssertionError: a rollback with no state directory walked without the lock",
+)
+def test_rollback_locks_even_with_no_state_directory(home, monkeypatch):
+    """A pre-check would let the manifest appear between it and the walk.
+
+    An install can write `history.jsonl` (on a path that did not exist a
+    moment ago) and an uninstall can take the lock in that window; the lock is
+    therefore taken for every real run, and a directory created only to hold it
+    is removed again afterwards.
+    """
+    calls = []
+    real_acquire = uninstall_state.acquire_uninstall_lock
+
+    def _recording(state_dir, **kwargs):
+        calls.append(state_dir)
+        return real_acquire(state_dir, **kwargs)
+
+    monkeypatch.setattr(uninstall_state, "acquire_uninstall_lock", _recording)
+    ctx = make_ctx(home)
+    assert not ctx.state_dir.exists()
+
+    assert install.do_rollback(ctx) == 1
+
+    assert calls == [ctx.state_dir], (
+        "a rollback with no state directory walked without the lock"
+    )
+    assert not ctx.state_dir.exists()
+
+
+def test_wipe_rollback_removes_a_state_dir_it_had_to_create(home, monkeypatch):
+    """A ``--wipe`` lock needs a directory, so it must not leave one behind."""
+    nvim_dir = home / ".local" / "share" / "nvim"
+    nvim_dir.mkdir(parents=True)
+    (nvim_dir / "sentinel").write_text("x\n")
+    _disable_systemctl(monkeypatch)
+    state_dir = home / ".local" / "state" / STATE_DIR_NAME
+    assert not state_dir.exists()
+
+    calls = []
+    real_acquire = uninstall_state.acquire_uninstall_lock
+
+    def _recording(state_dir_path, **kwargs):
+        calls.append(state_dir_path)
+        return real_acquire(state_dir_path, **kwargs)
+
+    monkeypatch.setattr(uninstall_state, "acquire_uninstall_lock", _recording)
+
+    assert install.do_rollback(make_ctx(home, wipe=True)) == 0
+
+    assert calls == [state_dir], "--wipe swept without taking the lock"
+    assert not nvim_dir.exists()
+    assert not state_dir.exists()
+
+
+def test_wipe_dry_run_creates_no_state_dir(home, monkeypatch):
+    """A dry run mutates nothing, so it writes no lock and no directory."""
+    nvim_dir = home / ".local" / "share" / "nvim"
+    nvim_dir.mkdir(parents=True)
+    (nvim_dir / "sentinel").write_text("x\n")
+    _disable_systemctl(monkeypatch)
+    state_dir = home / ".local" / "state" / STATE_DIR_NAME
+
+    calls = []
+    real_acquire = uninstall_state.acquire_uninstall_lock
+
+    def _recording(state_dir_path, **kwargs):
+        calls.append(state_dir_path)
+        return real_acquire(state_dir_path, **kwargs)
+
+    monkeypatch.setattr(uninstall_state, "acquire_uninstall_lock", _recording)
+
+    assert install.do_rollback(make_ctx(home, wipe=True, dry_run=True)) == 0
+
+    assert calls == []
+    assert nvim_dir.is_dir()
+    assert not state_dir.exists()
+
+
+def test_wipe_no_manifest_releases_the_lock_it_took(home, monkeypatch):
+    """The swept-nothing early return must not leave a live record behind."""
+    nvim_dir = home / ".local" / "share" / "nvim"
+    nvim_dir.mkdir(parents=True)
+    _disable_systemctl(monkeypatch)
+    ctx = make_ctx(home, wipe=True)
+    ctx.state_dir.mkdir(parents=True)
+
+    assert install.do_rollback(ctx) == 0
+
+    acquired, _ = uninstall_state.acquire_uninstall_lock(ctx.state_dir)
+    try:
+        assert acquired is True, "the early return left a live lock record behind"
+    finally:
+        uninstall_state.release_uninstall_lock(ctx.state_dir)
+
+
+def test_rollback_reclaims_a_stale_uninstall_lock(
+    home, links, offline_install, monkeypatch, capsys
+):
+    """A dead holder's lock is reclaimed, as a second ``--uninstall`` would."""
+    install.run_install(make_ctx(home, harnesses=("claude",)), links)
+    ctx = make_ctx(home)
+    lock_path = uninstall_state.uninstall_lock_path(ctx.state_dir)
+    lock_path.write_text(json.dumps({"pid": 1234, "start_time": 100}))
+    # Controlled probe, same shape as test_delete_uninstall_state_clears_a_dead_
+    # runs_lock: pin both halves so the verdict never depends on whether this
+    # host happens to have a pid 1234 (or on its /proc entry being readable).
+    real_read_text = Path.read_text
+
+    def read_text_without_proc(self, *args, **kwargs):
+        if str(self).startswith("/proc/"):
+            raise FileNotFoundError(2, "No such file or directory", str(self))
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text_without_proc)
+    monkeypatch.setattr(uninstall_state, "_pid_exists", lambda pid: pid != 1234)
+
+    assert install.do_rollback(ctx) == 0
+
+    assert "reclaimed a stale uninstall lock" in capsys.readouterr().out
+    assert not lock_path.exists()
 
 
 def test_history_survives_a_malformed_line(home):
@@ -3406,7 +3694,7 @@ def test_uninstall_retry_skips_already_ledger_completed_actions(
 
 
 def test_uninstall_second_lock_acquisition_refuses_while_first_is_live(
-    home, links, offline_install, monkeypatch
+    home, links, offline_install, monkeypatch, capsys
 ):
     ctx = make_ctx(home, harnesses=("claude",))
     install.run_install(ctx, links)
@@ -3417,7 +3705,12 @@ def test_uninstall_second_lock_acquisition_refuses_while_first_is_live(
     assert acquired is True
     try:
         code = install.do_uninstall(make_ctx(home, yes=True))
+        err = capsys.readouterr().err
         assert code == 2
+        # A rollback can now hold this lock too, so the refusal must name
+        # both operations — that is the wording this asserts.
+        assert "--uninstall" in err
+        assert "--rollback" in err
     finally:
         uninstall_state.release_uninstall_lock(ctx.state_dir, pid=os.getpid())
 

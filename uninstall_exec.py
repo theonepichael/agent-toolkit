@@ -1353,7 +1353,7 @@ def do_uninstall(deps: Deps, ctx: UninstallContext) -> int:
     if not acquired:
         print(
             deps.palette.error(
-                "another --uninstall is already running on this machine"
+                "another --uninstall or --rollback is already running on this machine"
             ),
             file=sys.stderr,
         )
