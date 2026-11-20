@@ -98,7 +98,8 @@ ls ~/.pi/agent/state/swarm-*-capture-*.json 2>/dev/null
 3. Relay every remaining offer to the operator, one per offer, using the
    protocol its `kind` names (`backlog` → `dev_status.py add`, `pending` →
    `dev_status.py pending add`, `out-of-scope` → `dev_status.py out-of-scope
-   add`), asking before each and never adding silently.
+   add`), asking before each and never adding silently. Each offer carries
+   your own verdict, built per step 6's relay rule.
 4. Delete the file only after every offer in it has been relayed or dropped as
    already taken — the same read-relay-delete discipline as step 6's per-slug
    digest files, so a crash mid-relay re-offers rather than losing the offer.
@@ -442,7 +443,10 @@ the rebase introduces — is caught. Then record `dev_status.py run` evidence,
 `gate-pass <slug> '{"coverage": {...}}' --verifier-token-file <path>` (pass
 the token-file path, never the token value), `review`, and `approve`. Read the
 worker's digest offers from
-`~/.agent-toolkit/data/foreman/<slug>-digest.json` and relay them to the operator.
+`~/.agent-toolkit/data/foreman/<slug>-digest.json` and relay them to the operator,
+each with your own verdict from the offer protocol's four checks: re-check
+the worker's evidence (dates, counts, the code path) yourself, so the verdict
+is independently grounded rather than the worker's summary repeated.
 After `approve` marks the item done,
 delete the item's own files under `~/.agent-toolkit/data/foreman/` — its exact
 `<slug>-<purpose>` files and `<slug>/` subdirectory, `.lock` siblings and the
