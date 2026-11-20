@@ -30,6 +30,7 @@ import test_bootstrap  # noqa: E402
 from pytest_shim import pytest
 import test_layouts  # noqa: E402
 import agent_toolkit_paths  # noqa: E402
+import cli_common
 import llm_backends  # noqa: E402
 import second_opinion
 
@@ -4207,6 +4208,16 @@ class CmdProbeTests(unittest.TestCase):
     def setUp(self) -> None:
         self.addCleanup(second_opinion._UNFIT_MODELS.clear)
         self.addCleanup(setattr, llm_backends, "_pending_fallback_reason", None)
+        # `probe` now also reads each backend's `--version`. Fake the
+        # subprocess here rather than per test: under pytest a real Popen hits
+        # the sandbox guard (a RuntimeError, not a clean skip), and under a
+        # direct unittest run it would execute /usr/bin/<backend> for real.
+        self.version_proc = subprocess.CompletedProcess(
+            [], 0, stdout="1.0.0\n", stderr=""
+        )
+        version = patch("subprocess.run", return_value=self.version_proc)
+        version.start()
+        self.addCleanup(version.stop)
 
     @staticmethod
     def _args(backend: list[str] | None) -> argparse.Namespace:
@@ -4368,6 +4379,10 @@ class CmdProbeTests(unittest.TestCase):
         self.assertEqual([e["backend"] for e in entries], ["agy"])
 
     def test_probe_detail_is_redacted(self) -> None:
+        # End to end against the real patterns: a secret-shaped value in a
+        # backend's error must not reach the report. `sk-SECRET` would not
+        # match (`sk-` needs 16+ chars), so the fixture uses a real shape.
+        secret = "sk-" + "a1b2c3d4e5f6g7h8"
         out = io.StringIO()
         with (
             patch.dict(os.environ, self.ENV),
@@ -4378,22 +4393,168 @@ class CmdProbeTests(unittest.TestCase):
                 {
                     "opencode": lambda p, model_index=None, mode=None: (
                         (_ for _ in ()).throw(
-                            llm_backends.BackendError("sk-SECRET leaked")
+                            llm_backends.BackendError(f"auth failed with {secret}")
                         )
                     )
                 },
             ),
+            patch("sys.stdout", out),
+            self.assertRaises(SystemExit),
+        ):
+            second_opinion.cmd_probe(self._args(["opencode"]))
+        detail = json.loads(out.getvalue())["probes"][0]["detail"]
+        self.assertNotIn("a1b2c3d4e5f6g7h8", detail)
+        self.assertIn("[REDACTED]", detail)
+
+    def _probe_entry(self, out: io.StringIO) -> dict:
+        return json.loads(out.getvalue())["probes"][0]
+
+    def test_probe_reports_the_backend_cli_version(self) -> None:
+        out = io.StringIO()
+        self.version_proc.stdout = "codex-cli 0.162.1\n"
+        with (
+            patch.dict(os.environ, self.ENV),
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
             patch.object(
-                second_opinion.cli_common,
-                "redact_secrets",
-                side_effect=lambda text, max_length: "REDACTED",
+                second_opinion, "BACKEND_RUNNERS", {"opencode": self._runner([])}
             ),
             patch("sys.stdout", out),
             self.assertRaises(SystemExit),
         ):
             second_opinion.cmd_probe(self._args(["opencode"]))
         entries = json.loads(out.getvalue())["probes"]
-        self.assertEqual(entries[0]["detail"], "REDACTED")
+        self.assertEqual([e["status"] for e in entries], ["ok", "unavailable"])
+        self.assertEqual([e["cli_version"] for e in entries], ["0.162.1", "0.162.1"])
+
+    def test_probe_unreadable_version_is_null_and_warned_not_failed(self) -> None:
+        # A CLI too old / too broken to print a version must not be reported
+        # as an unavailable *model*: the probe result is about the model.
+        out, err = io.StringIO(), io.StringIO()
+        self.version_proc.returncode = 3
+        self.version_proc.stdout = ""
+        self.version_proc.stderr = "unknown option --version"
+        with (
+            patch.dict(os.environ, self.ENV),
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(
+                second_opinion,
+                "BACKEND_RUNNERS",
+                {"opencode": lambda p, model_index=None, mode=None: "ok"},
+            ),
+            patch("sys.stdout", out),
+            patch("sys.stderr", err),
+        ):
+            second_opinion.cmd_probe(self._args(["opencode"]))
+        entry = self._probe_entry(out)
+        self.assertIsNone(entry["cli_version"])
+        self.assertEqual(entry["status"], "ok")
+        self.assertIn("unknown option --version", err.getvalue())
+
+    def test_probe_empty_version_output_is_null_and_warned(self) -> None:
+        out, err = io.StringIO(), io.StringIO()
+        self.version_proc.stdout = "\n"
+        with (
+            patch.dict(os.environ, self.ENV),
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(
+                second_opinion,
+                "BACKEND_RUNNERS",
+                {"opencode": lambda p, model_index=None, mode=None: "ok"},
+            ),
+            patch("sys.stdout", out),
+            patch("sys.stderr", err),
+        ):
+            second_opinion.cmd_probe(self._args(["opencode"]))
+        self.assertIsNone(self._probe_entry(out)["cli_version"])
+        self.assertEqual(len(err.getvalue().strip().splitlines()), 1)
+
+    def test_probe_reads_the_version_once_per_distinct_backend(self) -> None:
+        out = io.StringIO()
+        with (
+            patch.dict(os.environ, self.ENV),
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(
+                second_opinion,
+                "BACKEND_RUNNERS",
+                {"opencode": lambda p, model_index=None, mode=None: "ok"},
+            ),
+            patch("sys.stdout", out),
+        ):
+            with patch("subprocess.run", return_value=self.version_proc) as run:
+                second_opinion.cmd_probe(self._args(["opencode", "opencode"]))
+        version_calls = [c for c in run.call_args_list if c.args[0][-1] == "--version"]
+        self.assertEqual(len(version_calls), 1)
+
+    def test_probe_resolves_each_distinct_binary_once(self) -> None:
+        out = io.StringIO()
+        with (
+            patch.dict(os.environ, self.ENV),
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}") as which,
+            patch.object(
+                second_opinion,
+                "BACKEND_RUNNERS",
+                {"opencode": lambda p, model_index=None, mode=None: "ok"},
+            ),
+            patch("sys.stdout", out),
+        ):
+            second_opinion.cmd_probe(self._args(["opencode", "opencode"]))
+        self.assertEqual(which.call_count, 1)
+
+    def test_probe_detail_of_an_already_bounded_failure_is_not_recut(self) -> None:
+        # A backend failure arrives from `_backend_failure` already masked and
+        # excerpted; re-excerpting it would insert a second marker and drop
+        # the exit-code prefix the reader needs.
+        stderr = "".join(f"[codex] chunk {i}\n" for i in range(200)) + "fatal: 0.162.1"
+        exc = llm_backends._backend_failure("codex exited 1", stderr=stderr)
+        out = io.StringIO()
+
+        def boom(prompt: str, *, model_index=None, mode=None) -> str:
+            raise exc
+
+        with (
+            patch.dict(os.environ, self.ENV),
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(second_opinion, "BACKEND_RUNNERS", {"opencode": boom}),
+            patch("sys.stdout", out),
+            self.assertRaises(SystemExit),
+        ):
+            second_opinion.cmd_probe(self._args(["opencode"]))
+        detail = json.loads(out.getvalue())["probes"][0]["detail"]
+        # Byte-for-byte: a second excerpt would drop the head window and add
+        # a second marker, which the looser assertions below would not catch.
+        self.assertEqual(detail, str(exc))
+        self.assertIn("codex exited 1", detail)
+        self.assertIn("0.162.1", detail)
+        self.assertEqual(detail.count(cli_common.EXCERPT_MARKER), 1)
+
+    @pytest.mark.regression(
+        "probe-detail-keeps-backend-output-tail",
+        "AssertionError: '0.162.1' not found in '[codex] reading project doc "
+        "chunk 0\\n[codex] reading project doc chunk 1",
+    )
+    def test_probe_detail_keeps_the_output_tail(self) -> None:
+        preamble = "".join(
+            f"[codex] reading project doc chunk {i}\n" for i in range(40)
+        )
+        fatal = "error: this Codex CLI build is 0.162.1, upgrade to >=0.170"
+        out = io.StringIO()
+
+        def boom(prompt: str, *, model_index=None, mode=None) -> str:
+            raise llm_backends.BackendError(preamble + fatal)
+
+        with (
+            patch.dict(os.environ, self.ENV),
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(second_opinion, "BACKEND_RUNNERS", {"opencode": boom}),
+            patch("sys.stdout", out),
+            self.assertRaises(SystemExit),
+        ):
+            second_opinion.cmd_probe(self._args(["opencode"]))
+        detail = json.loads(out.getvalue())["probes"][0]["detail"]
+        self.assertIn("0.162.1", detail)
+        # Exactly one excerpt: re-excerpting an already-bounded message would
+        # insert a second marker and drop the first head window.
+        self.assertEqual(detail.count(cli_common.EXCERPT_MARKER), 1)
 
 
 class DiffReviewTests(unittest.TestCase):
@@ -5351,8 +5512,52 @@ class BackendRotationFacadeTests(unittest.TestCase):
         )
 
 
+class PoolSkipClassificationTests(unittest.TestCase):
+    """A pool-skip marker must classify from the full backend output, not from
+    whatever the message excerpt happened to keep."""
+
+    @pytest.mark.regression(
+        "opencode-access-disabled-classified-beyond-stdout-head",
+        "AssertionError: False is not true",
+    )
+    def test_marker_past_the_stdout_cut_still_skips(self) -> None:
+        vendor = "Model access is disabled for this model id"
+        exc = llm_backends._backend_failure(
+            "opencode exited 1",
+            stderr="",
+            stdout=("event line\n" * 60) + vendor,
+        )
+        self.assertTrue(second_opinion._pool_skip_condition("opencode", exc))
+        # Positive control: the same marker with no excerpting involved.
+        short = llm_backends._backend_failure(
+            "opencode exited 1", stderr="", stdout=vendor
+        )
+        self.assertTrue(second_opinion._pool_skip_condition("opencode", short))
+
+    def test_marker_in_the_omitted_middle_of_stderr_still_skips(self) -> None:
+        # The excerpt drops the middle; classification must not consult it.
+        stderr = (
+            "[opencode] starting\n" * 100
+            + "Model access is disabled\n"
+            + "[opencode] trailing chatter\n" * 100
+        )
+        exc = llm_backends._backend_failure("opencode exited 1", stderr=stderr)
+        self.assertNotIn("Model access is disabled", str(exc))
+        self.assertTrue(second_opinion._pool_skip_condition("opencode", exc))
+
+
 class SharedFamilyWarningTests(unittest.TestCase):
     """probe's no-shared-family check over the models a rotated review uses."""
+
+    def setUp(self) -> None:
+        # `probe` also reads each backend's `--version`; fake the subprocess so
+        # no test here can reach a real Popen (the sandbox guard aborts those).
+        version = patch(
+            "subprocess.run",
+            return_value=subprocess.CompletedProcess([], 0, stdout="1.0.0\n", stderr=""),
+        )
+        version.start()
+        self.addCleanup(version.stop)
 
     def test_family_token(self) -> None:
         cases = {

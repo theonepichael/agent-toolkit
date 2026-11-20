@@ -25,6 +25,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))
 import test_bootstrap  # noqa: E402
+import cli_common
 import harness_discovery_check as hdc
 from pytest_shim import pytest
 
@@ -693,6 +694,34 @@ class VersionExtractionTestCase(unittest.TestCase):
 
     def test_unparseable_returns_raw(self) -> None:
         self.assertEqual(hdc._extract_version("claude", "nightly"), "nightly")
+
+
+class RunVersionDelegationTestCase(unittest.TestCase):
+    """``run_version`` now delegates to :func:`cli_common.binary_version` (one
+    source of truth for the six vendor ``--version`` formats, shared with
+    ``second_opinion.py probe``) while keeping its own contract: a named
+    ``HarnessCheckError`` on a failed lookup, and the raw empty version —
+    never an error — when a harness's ``--version`` prints nothing."""
+
+    def test_delegates_to_the_shared_lookup(self) -> None:
+        with patch.object(cli_common, "binary_version", return_value="9.9.9"):
+            self.assertEqual(
+                hdc.run_version("claude", Path("/usr/bin/claude")), "9.9.9"
+            )
+
+    def test_real_lookup_path_through_a_faked_cli(self) -> None:
+        # Exercises the delegation's actual subprocess call (not a mocked
+        # binary_version): an empty banner is recorded, a nonzero exit is an
+        # error naming the harness.
+        empty = subprocess.CompletedProcess([], 0, stdout="\n", stderr="")
+        with patch("subprocess.run", return_value=empty) as run:
+            self.assertEqual(hdc.run_version("pi", Path("/usr/bin/pi")), "")
+        self.assertEqual(run.call_args.args[0], ["/usr/bin/pi", "--version"])
+        failed = subprocess.CompletedProcess([], 2, stdout="", stderr="boom")
+        with patch("subprocess.run", return_value=failed):
+            with self.assertRaises(hdc.HarnessCheckError) as cm:
+                hdc.run_version("pi", Path("/usr/bin/pi"))
+        self.assertIn("pi:", str(cm.exception))
 
 
 class ResolveBinaryTestCase(unittest.TestCase):

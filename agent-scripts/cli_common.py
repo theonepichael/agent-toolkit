@@ -15,10 +15,11 @@ import json
 import logging
 import os
 import re
+import subprocess
 import sys
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from datetime import UTC, datetime
@@ -326,6 +327,14 @@ _REDACT_PATTERNS: tuple[re.Pattern[str], ...] = (
 )
 
 
+def _mask_secrets(text: str) -> str:
+    """Mask every secret-shaped substring in ``text`` (no truncation)."""
+    masked = text
+    for pattern in _REDACT_PATTERNS:
+        masked = pattern.sub("[REDACTED]", masked)
+    return masked
+
+
 def redact_secrets(text: str, *, max_length: int = 200) -> str:
     """Mask secret-shaped substrings, then truncate to max_length.
 
@@ -334,10 +343,132 @@ def redact_secrets(text: str, *, max_length: int = 200) -> str:
     redaction always runs before the final truncation, so a secret
     straddling the truncation boundary is masked, not partially leaked.
     """
-    clamped = text[: max_length + 200]
-    for pattern in _REDACT_PATTERNS:
-        clamped = pattern.sub("[REDACTED]", clamped)
-    return clamped[:max_length]
+    return _mask_secrets(text[: max_length + 200])[:max_length]
+
+
+# Marker separating the two kept ends of an excerpt. Exported so tests assert
+# structure through the constant instead of hardcoding the phrase.
+EXCERPT_MARKER = "\n... (middle omitted) ...\n"
+
+# Total display budget for a backend's diagnostic detail, and the part of it
+# reserved for the leading window. Both ends are kept: a vendor writes verbose
+# progress at the head and its fatal line at the tail (codex does exactly
+# this), and keeping a head window lets a reader still see how the run started.
+DEFAULT_EXCERPT_MAX_CHARS = 1200
+_EXCERPT_HEAD_CHARS = 250
+
+
+def redacted_excerpt(
+    text: str,
+    *,
+    max_chars: int = DEFAULT_EXCERPT_MAX_CHARS,
+    head_chars: int = _EXCERPT_HEAD_CHARS,
+) -> str:
+    """Mask secrets, then bound ``text`` to ``max_chars`` keeping both ends.
+
+    Masking runs over the **whole** text before any cut, so no secret can
+    straddle a boundary and survive in part. Masking only the retained
+    windows would not be safe: :data:`_REDACT_PATTERNS` includes unbounded
+    shapes (``Bearer ...``, ``token=...``), so a long secret crossing a cut
+    would leave unanchored characters that no pattern matches. These are
+    cold failure paths, not a hot log line, so the full pass is affordable.
+
+    A bisected ``[REDACTED]`` token at a cut boundary is cosmetic; no secret
+    characters survive, which is what the guarantee covers. Text that fits
+    the budget comes back masked and otherwise unchanged, with no marker.
+    The marker counts against ``max_chars``, so the result is never longer
+    than the input; a budget too small to hold the marker plus one character
+    on each side (``max_chars <= len(EXCERPT_MARKER) + 2``) returns a plain
+    masked head slice, and the head window is capped at half the remaining
+    budget so the tail — where a backend's fatal line lives — always keeps at
+    least half of it.
+    """
+    masked = _mask_secrets(text)
+    if len(masked) <= max_chars:
+        return masked
+    budget = max_chars - len(EXCERPT_MARKER)
+    if budget < 3:
+        return masked[:max_chars]
+    # Neither end may swallow the whole budget: on a tight cap the head takes
+    # at most half, so the tail (where the fatal line lives) always survives.
+    head = max(1, min(head_chars, budget // 2))
+    return masked[:head] + EXCERPT_MARKER + masked[-(budget - head) :]
+
+
+class VersionLookupError(RuntimeError):
+    """A backend binary's ``--version`` could not be read."""
+
+
+_VERSION_TIMEOUT_SECONDS = 10.0
+
+
+def extract_version(first_line: str) -> str:
+    """Extract a ``X.Y.Z`` version string from the first line of
+    ``--version`` output.
+
+    Each harness has its own format; this function knows the common ones.
+    Returns the raw first line if no semver-like pattern is found — the
+    caller treats a mismatch-class note as the degradation path.
+    """
+    line = first_line.strip()
+    # codex: "codex-cli 0.162.1"
+    # claude: "2.1.252 (Claude Code)"
+    # opencode: "1.18.32", or a dev build "0.0.0-dev-202609250015" (the
+    #   prerelease suffix is kept: truncating it misnames the binary)
+    # pi: "0.84.4"
+    # copilot: "GitHub Copilot CLI 1.0.80."
+    # agy: "1.1.22"
+    m = re.search(r"(\d+(?:\.\d+)+(?:-[0-9A-Za-z.-]*[0-9A-Za-z])?)", line)
+    return m.group(1) if m else line
+
+
+def binary_version(
+    binary: str,
+    *,
+    timeout: float = _VERSION_TIMEOUT_SECONDS,
+    run_command: Callable[..., subprocess.CompletedProcess[str]] | None = None,
+) -> str:
+    """Run ``<binary> --version`` and return the extracted version string.
+
+    Resolves :func:`subprocess.run` at **call time** when ``run_command`` is
+    omitted, so a test can patch it. ``errors="replace"`` keeps an undecodable
+    banner from escaping as a ``UnicodeDecodeError``.
+
+    An empty version is *not* an error here: the discovery check records it as
+    the version it measured. Callers that need to report a missing version
+    (``probe``) treat the empty string themselves.
+
+    Raises:
+        VersionLookupError: on a nonzero exit, a timeout, an OSError, or output
+            that could not be decoded (a corrupt banner must not be published
+            as a version).
+    """
+    runner = run_command if run_command is not None else subprocess.run
+    try:
+        result = runner(
+            [binary, "--version"],
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=timeout,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise VersionLookupError(f"--version failed: {exc}") from exc
+    if result.returncode != 0:
+        detail = (result.stderr or "").strip() or (result.stdout or "").strip()
+        raise VersionLookupError(
+            f"--version exited {result.returncode}: {redacted_excerpt(detail, max_chars=200)}"
+        )
+    stdout = result.stdout or ""
+    if "\ufffd" in stdout:
+        # `errors="replace"` keeps a bad banner from raising a
+        # UnicodeDecodeError, but its replacement characters must not be
+        # reported as a version — the extracted digits would hide the damage.
+        raise VersionLookupError("--version output was not decodable")
+    first = stdout.splitlines()[0] if stdout else ""
+    # Masked, not truncated: an unrecognized banner falls back to its raw first
+    # line, which must never publish a credential the vendor printed.
+    return _mask_secrets(extract_version(first))
 
 
 def state_dir() -> Path:

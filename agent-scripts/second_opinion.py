@@ -35,6 +35,8 @@ Subcommands
   probe   run one trivial text-only health request per pool model and print a
            per-model availability report as JSON (exit 1 when any probed model
            is unavailable; tests must mock the runners, never probe for real).
+           Each probed entry carries the installed CLI's own version, so an
+           outdated binary cannot pass for a model outage.
            Also warns on stderr (not the JSON, not the exit code; suppressed
            by --quiet) when two backends' configured models share a family
            token, which would make backend rotation repeat a family
@@ -433,7 +435,9 @@ def _pool_skip_condition(backend: str, exc: BaseException) -> bool:
     """
     if isinstance(exc, llm_backends.BackendToolUseError):
         return True
-    return backend == "opencode" and _OPENCODE_MODEL_ACCESS_DISABLED_MARKER in str(exc)
+    return backend == "opencode" and _OPENCODE_MODEL_ACCESS_DISABLED_MARKER in (
+        llm_backends.classification_text(exc)
+    )
 
 
 def _log_pool_skip(
@@ -1860,8 +1864,14 @@ def _probe_one_model(
     """Run one probe request for ``(backend, model_index)``; return (detail, latency).
 
     ``detail`` is ``None`` on success, else the redacted error text of the
-    failure (or "empty output" for a silent-but-successful call). Never
-    raises: every probe outcome is a report entry, not a failure.
+    failure (or "empty output" for a silent-but-successful call). The text is
+    bounded by :func:`cli_common.redacted_excerpt`, which keeps a head **and
+    the tail** — a backend's failing line comes last, and this report is what
+    a caller reads to diagnose a pool. A message that already came through
+    :func:`llm_backends._backend_failure` is used as-is: it is already masked
+    and bounded, and re-excerpting it would insert a second marker and drop
+    the first head window. Never raises: every probe outcome is a report
+    entry, not a failure.
     """
     start = time.monotonic()
     detail: str | None = None
@@ -1874,8 +1884,39 @@ def _probe_one_model(
         if not text.strip():
             detail = "empty output (probe prompt, no usable text)"
     except llm_backends.BackendError as exc:
-        detail = cli_common.redact_secrets(str(exc), max_length=500)
+        detail = _bounded_detail(exc)
     return detail, round(time.monotonic() - start, 2)
+
+
+def _bounded_detail(exc: BaseException) -> str:
+    """``exc``'s text, masked and bounded — without a second excerpt.
+
+    A :class:`llm_backends` backend failure already carries a masked,
+    head+tail-bounded message (``_backend_failure`` did that). Anything else
+    (a gateway payload embedded inline, a staged-image failure) is still raw,
+    so it is masked and excerpted here.
+    """
+    if getattr(exc, "detail", None) is not None:
+        return str(exc)
+    return cli_common.redacted_excerpt(str(exc))
+
+
+def _cli_version(binary: str) -> tuple[str | None, str | None]:
+    """``(version, reason)`` for an installed backend binary.
+
+    ``reason`` is ``None`` on success. A binary too old or too broken to print
+    a readable version is reported, never raised: the probe result is about the
+    *model*, so a version failure must not flip a row to unavailable. Takes the
+    PATH-resolved binary rather than looking it up again — ``cmd_probe``
+    already resolved it once.
+    """
+    try:
+        version = cli_common.binary_version(binary)
+    except cli_common.VersionLookupError as exc:
+        return None, str(exc)
+    if not version.strip():
+        return None, "--version printed nothing"
+    return version, None
 
 
 _FAMILY_TOKEN_RE = re.compile(r"[a-z]+")
@@ -1932,16 +1973,21 @@ def cmd_probe(args: argparse.Namespace) -> None:
     Probes every entry of each requested backend's model pool (or its single
     override / default model when no pool is configured) with one trivial,
     cheap, text-only request each, and prints ``{"probes": [...]}`` where
-    each entry carries ``backend``, ``config`` ("pool"/"single"/"default"),
-    ``pool_var``, ``index``, ``model``, ``status`` ("ok"/"unavailable"),
-    redacted ``detail`` on failure, and ``latency_seconds``. A backend not on
-    PATH yields a ``{"backend", "status": "not_installed"}`` entry and
-    probes nothing. Exit 1 when any probed model is unavailable (a
-    ``not_installed`` entry does not affect the exit code); exit 0 when every
-    probed model answered. Probe never rotates, never quarantines, and never
-    mutates configuration — it reports; the pool itself is the user's to
-    edit. Probe calls are logged to backend_calls.jsonl like any other
-    backend call.
+    each probed entry carries ``backend``, ``config`` ("pool"/"single"/
+    "default"), ``pool_var``, ``index``, ``model``, ``status``
+    ("ok"/"unavailable"), redacted ``detail`` on failure, ``latency_seconds``,
+    and ``cli_version`` —
+    the installed CLI's own version, read once per distinct backend from
+    ``--version``
+    (``null`` when it cannot be read, which also prints a one-line stderr
+    warning unless ``--quiet``; it never changes a row's ``status`` or the
+    exit code). A backend not on PATH yields a ``{"backend", "status":
+    "not_installed"}`` entry and probes nothing. Exit 1 when any probed model
+    is unavailable (a ``not_installed`` entry does not affect the exit code);
+    exit 0 when every probed model answered. Probe never rotates, never
+    quarantines, and never mutates configuration — it reports; the pool itself
+    is the user's to edit. Probe calls are logged to backend_calls.jsonl like
+    any other backend call.
     """
     if args.backend:
         backends = list(args.backend)
@@ -1949,8 +1995,29 @@ def cmd_probe(args: argparse.Namespace) -> None:
         backends = [b for b in available_backends() if b in BACKEND_RUNNERS]
     probes: list[dict[str, object]] = []
     healthy = True
+    # One PATH lookup and one `--version` read per distinct backend: a
+    # repeated name in `--backend a,a` must not repeat either. `found` holds
+    # `(binary, version)` so an absent binary and a failed version lookup stay
+    # distinguishable.
+    found: dict[str, tuple[str | None, str | None]] = {}
     for backend in backends:
-        if not shutil.which(backend):
+        if backend not in found:
+            binary = shutil.which(backend)
+            version, reason = _cli_version(binary) if binary else (None, None)
+            found[backend] = (binary, version if reason is None else None)
+            if binary and reason is not None and not getattr(args, "quiet", False):
+                # One line, whatever the diagnostic's own shape: a vendor
+                # banner carrying newlines must not break the report's tidy
+                # stderr.
+                flat = " ".join(reason.split())
+                print(
+                    f"[second_opinion] warning: cannot read {backend}'s CLI "
+                    f"version ({flat}) — an outdated CLI can look like a "
+                    f"model outage",
+                    file=sys.stderr,
+                )
+        binary, version = found[backend]
+        if not binary:
             probes.append({"backend": backend, "status": "not_installed"})
             continue
         config, pool_var, attempts = _probe_attempts(backend)
@@ -1965,6 +2032,7 @@ def cmd_probe(args: argparse.Namespace) -> None:
                 "status": "ok" if detail is None else "unavailable",
                 "detail": detail,
                 "latency_seconds": latency,
+                "cli_version": version,
             }
             if detail is not None:
                 healthy = False
@@ -3273,7 +3341,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser(
         "probe",
-        help="probe each backend's model pool and report per-model availability as JSON",
+        help=(
+            "probe each backend's model pool and report per-model availability "
+            "and the installed CLI version as JSON"
+        ),
         parents=[verbosity_parent],
     )
     p.add_argument(

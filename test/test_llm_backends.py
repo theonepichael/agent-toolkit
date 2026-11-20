@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts")
 import test_bootstrap  # noqa: E402
 from pytest_shim import pytest
 import agent_toolkit_paths  # noqa: E402
+import cli_common
 import llm_backends
 import migration_lock  # noqa: E402
 
@@ -1345,11 +1346,22 @@ class LogBackendCallTests(_LogPathRedirected):
         self.assertNotIn("abc123def456ghi", snippet)
         self.assertIn("exited 1", snippet)
 
-    def test_81_error_snippet_truncated_to_500(self) -> None:
+    def test_81_error_snippet_keeps_both_ends_within_budget(self) -> None:
+        # The snippet is what a post-mortem reads: the failing line lives at
+        # the end of a backend's output, so a head-only cut dropped it.
         llm_backends._log_backend_call(
-            "agy", "m", "error", 0.1, 1, error_snippet="x" * 5000
+            "agy",
+            "m",
+            "error",
+            0.1,
+            1,
+            error_snippet="HEADTAG " + ("x" * 5000) + " TAILTAG",
         )
-        self.assertEqual(len(_read_jsonl(self.log_path)[0]["error_snippet"]), 500)
+        snippet = _read_jsonl(self.log_path)[0]["error_snippet"]
+        self.assertLessEqual(len(snippet), llm_backends._LOG_SNIPPET_MAX_CHARS)
+        self.assertIn("HEADTAG", snippet)
+        self.assertIn("TAILTAG", snippet)
+        self.assertIn(cli_common.EXCERPT_MARKER, snippet)
 
     def test_82_fallback_reason_passed_through_verbatim(self) -> None:
         llm_backends._log_backend_call(
@@ -3171,6 +3183,113 @@ class ImageArgvBuildTests(_ContainmentStubbed):
                 "codex", "rubric", mode="grounded", images=["a.png"]
             )
 
+
+
+class BackendErrorDetailTests(unittest.TestCase):
+    """A backend failure message keeps the *tail* of a verbose backend's output.
+
+    Regression, 2026-11-19: an outdated codex CLI wrote progress chatter to
+    stderr and its real error last; the reported message held only the
+    chatter, so the cause was invisible and a session shelled out to the
+    backend directly to find it.
+    """
+
+    PREAMBLE = "".join(f"[codex] reading project doc chunk {i}\n" for i in range(40))
+    FATAL = (
+        "error: unexpected argument '--no-session' found; "
+        "this Codex CLI build is 0.162.1, upgrade to >=0.170\n"
+    )
+    # Trailing chatter after the fatal line: the fatal token must then be
+    # reachable only with the default budget, so restoring a small head/tail
+    # limit (`limit=200`) fails this test instead of passing by luck.
+    TRAILER = "[codex] flushing\n" * 40
+
+    @pytest.mark.regression(
+        "backend-error-message-keeps-output-tail",
+        "AssertionError: '0.162.1' not found in 'no text output from codex: "
+        "[codex] reading project doc chunk 0",
+    )
+    def test_backend_failure_limit_keeps_the_tail(self) -> None:
+        exc = llm_backends._backend_failure(
+            "no text output from codex",
+            stderr=self.PREAMBLE + self.FATAL,
+            limit=cli_common.DEFAULT_EXCERPT_MAX_CHARS,
+        )
+        msg = str(exc)
+        self.assertIn("0.162.1", msg)
+        self.assertIn(cli_common.EXCERPT_MARKER, msg)
+        self.assertLessEqual(len(msg), cli_common.DEFAULT_EXCERPT_MAX_CHARS + 50)
+
+    def test_backend_failure_honours_an_explicit_small_limit(self) -> None:
+        # `limit` is a total budget, and it still keeps the tail: this is the
+        # shape codex used to pass (200 characters, head only).
+        exc = llm_backends._backend_failure(
+            "exited 1", stderr=self.PREAMBLE + self.FATAL, limit=200
+        )
+        msg = str(exc)
+        self.assertLessEqual(len(msg), 200 + len("exited 1: "))
+        self.assertIn("0.162.1", msg)
+        self.assertIn(cli_common.EXCERPT_MARKER, msg)
+
+    @pytest.mark.regression(
+        "backend-error-message-keeps-output-tail",
+        "AssertionError: '0.162.1' not found in 'no text output from codex: "
+        "[codex] reading project doc chunk 0",
+    )
+    def test_run_codex_no_text_output_reports_the_fatal_line(self) -> None:
+        with patch.object(
+            llm_backends,
+            "_run_command",
+            return_value=(0, "  \n", self.PREAMBLE + self.FATAL + self.TRAILER),
+        ):
+            with self.assertRaises(llm_backends.BackendError) as cm:
+                llm_backends.run_codex("prompt", model=None, timeout=60)
+        msg = str(cm.exception)
+        self.assertIn("0.162.1", msg)
+        # The unexcerpted text stays available to the classifiers, which must
+        # never depend on what the user is shown.
+        self.assertIn("chunk 39", cm.exception.detail)
+        self.assertIn("0.162.1", llm_backends.classification_text(cm.exception))
+
+    @pytest.mark.regression(
+        "permission-denial-classified-beyond-stdout-head",
+        "AssertionError: BackendError('exited 0: progress line\\nprogress "
+        "line\\nprogress line\\nprogress line\\nprogress line\\nprogress "
+        "line\\nprogress line\\nprogress line\\nprogress line\\nprogress "
+        "line\\nprogress line\\nprogress line\\nprogress line\\nprogress "
+        "line\\nprog') is not an instance of "
+        "<class 'llm_backends.BackendToolPermissionDeniedError'>",
+    )
+    def test_permission_hint_past_the_stdout_cut_still_classifies(self) -> None:
+        vendor = (
+            "a tool required the command permission; re-run with "
+            "--dangerously-skip-permissions"
+        )
+        long_stdout = ("progress line\n" * 60) + vendor + ("\ntrailing line" * 200)
+        exc = llm_backends._backend_failure("exited 0", stderr="", stdout=long_stdout)
+        self.assertIsInstance(exc, llm_backends.BackendToolPermissionDeniedError)
+        # Positive control: the same text short enough to need no excerpt.
+        short = llm_backends._backend_failure("exited 0", stderr="", stdout=vendor)
+        self.assertIsInstance(short, llm_backends.BackendToolPermissionDeniedError)
+
+    @pytest.mark.regression(
+        "copilot-policy-marker-classified-beyond-stdout-head",
+        "AssertionError: BackendModelPolicyError not raised",
+    )
+    def test_copilot_policy_marker_past_the_stdout_cut_still_classifies(
+        self,
+    ) -> None:
+        vendor = 'Error: Model "opencode-go/hy3" from --model flag is not available.'
+        long_stdout = ("progress line\n" * 60) + vendor + ("\ntrailing line" * 200)
+        exc = llm_backends._backend_failure("exited 1", stderr="", stdout=long_stdout)
+        # The marker sits in the omitted middle: only the unexcerpted detail
+        # can classify this, so a revert to str(exc) fails here.
+        self.assertNotIn("from --model flag is not available", str(exc))
+        with (
+            patch.object(llm_backends, "run_backend_command", side_effect=exc),
+            self.assertRaises(llm_backends.BackendModelPolicyError),
+        ):
+            llm_backends.run_copilot("prompt", model="opencode-go/hy3", timeout=60)
 
 
 def _run_unittest() -> None:

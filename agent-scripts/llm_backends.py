@@ -1477,16 +1477,53 @@ def _backend_failure(
     :class:`BackendToolPermissionDeniedError` with the dangerous
     ``--dangerously-skip-permissions`` hint stripped and replaced by
     :data:`_PERMISSION_DENIED_CAUSE`; otherwise a plain ``BackendError`` whose
-    message is ``f"{prefix}: {detail}"`` (detail = stderr, or stdout[:200] when
+    message is ``f"{prefix}: {detail}"`` (detail = stderr, or stdout when
     stderr is blank, or "(no output)"). Routing all raise sites through this
     means no path can leak the dangerous hint into a user-facing error.
-    ``limit`` caps the detail shown in the plain message (codex writes verbose
-    progress to stderr); detection always sees the full text.
+
+    The detail is bounded by :func:`cli_common.redacted_excerpt`, which keeps
+    a short **head and the tail** and masks secrets before cutting: a backend
+    writes verbose progress first and its fatal line last (codex does exactly
+    this), so a head-only slice hides the cause. ``limit`` is the total display
+    budget (default :data:`cli_common.DEFAULT_EXCERPT_MAX_CHARS`); the prefix
+    stays outside it, and the full pre-excerpt text is attached to the raised
+    exception as ``.detail`` for the classifiers that match vendor markers —
+    classification must never depend on what the user is shown (read it via
+    :func:`classification_text`).
     """
-    detail = stderr.strip() or stdout.strip()[:200] or "(no output)"
+    detail = stderr.strip() or stdout.strip() or "(no output)"
     if _is_auto_denied_permission_output(detail):
-        return BackendToolPermissionDeniedError(f"{prefix}: {_PERMISSION_DENIED_CAUSE}")
-    return BackendError(f"{prefix}: {detail if limit is None else detail[:limit]}")
+        exc = BackendToolPermissionDeniedError(f"{prefix}: {_PERMISSION_DENIED_CAUSE}")
+    else:
+        budget = limit or cli_common.DEFAULT_EXCERPT_MAX_CHARS
+        exc = BackendError(
+            f"{prefix}: {cli_common.redacted_excerpt(detail, max_chars=budget)}"
+        )
+    exc.detail = detail
+    return exc
+
+
+def classification_text(exc: BaseException) -> str:
+    """The text a marker classifier should match a backend failure against.
+
+    :func:`_backend_failure` attaches the full, unexcerpted output as
+    ``.detail``; the raised message keeps only a head+tail excerpt, so matching
+    against ``str(exc)`` would silently miss a marker the excerpt dropped and
+    change routing (a copilot entitlement rejection read as a generic failure,
+    an access-disabled pool entry no longer skipped). Exceptions built
+    elsewhere (tests, other call sites) have no ``.detail`` and fall back to
+    their message.
+
+    A :class:`BackendToolPermissionDeniedError` deliberately does **not**
+    expose ``.detail``: a permission denial is already the decided diagnosis,
+    and its message carries the neutral cause with the vendor's dangerous flag
+    stripped. Letting a marker in the raw output override that would re-route
+    (or re-diagnose) a denial as a model-policy/skip condition.
+    """
+    if isinstance(exc, BackendToolPermissionDeniedError):
+        return str(exc)
+    detail = getattr(exc, "detail", None)
+    return detail if isinstance(detail, str) and detail else str(exc)
 
 
 # Fallback-chain telemetry handoff. When run_with_fallback moves to the
@@ -1511,6 +1548,13 @@ _pending_fallback_reason: str | None = None
 # keyed on this text.
 _COPILOT_MODEL_POLICY_MARKER = "from --model flag is not available"
 
+
+# Budget for the redacted error excerpt written to backend_calls.jsonl. Set
+# above every in-memory display budget (:data:`cli_common.DEFAULT_EXCERPT_MAX_CHARS`
+# plus a backend prefix) so an already-bounded exception message lands in the
+# log whole — re-cutting it would drop the head window ``_backend_failure``
+# deliberately kept and insert a second elision marker.
+_LOG_SNIPPET_MAX_CHARS = 4000
 
 PI_MAX_PROMPT_BYTES = 14000
 GLOBAL_MAX_PROMPT_BYTES = 100_000
@@ -2126,10 +2170,12 @@ def _log_backend_call(
     contract, so a failure here (bad data, disk full, permissions) must
     never surface as a call failure.
 
-    ``error_snippet`` carries the failing attempt's exception text,
-    redacted through :func:`cli_common.redact_secrets` (the record ships to
+    ``error_snippet`` carries the failing attempt's exception text, kept by
+    :func:`cli_common.redacted_excerpt` — masked first (the record ships to
     disk, so sanitization is not optional and truncation alone would never
-    count) and ``None`` on success. ``outcome`` is ``"success"``,
+    count), then bounded to a head+tail excerpt, because this file is what a
+    post-mortem reads and a head-only slice drops the failing line.
+    ``None`` on success. ``outcome`` is ``"success"``,
     ``"timeout"``, ``"error"`` — or ``"skipped"``: second_opinion.py's
     skip-to-next-model record, which marks the *decision* to move to the
     next pool model (the failed attempt's own ``error`` record precedes it;
@@ -2149,7 +2195,7 @@ def _log_backend_call(
         "wall_seconds": round(wall_seconds, 2),
         "prompt_bytes": prompt_bytes,
         "error_snippet": (
-            cli_common.redact_secrets(error_snippet, max_length=500)
+            cli_common.redacted_excerpt(error_snippet, max_chars=_LOG_SNIPPET_MAX_CHARS)
             if error_snippet
             else None
         ),
@@ -2186,10 +2232,12 @@ def _track_backend_call(backend: str, model: str | None, prompt: str) -> Iterato
     every failure mode — including one this module doesn't raise today —
     gets one logged "error" record instead of silently escaping uncounted.
 
-    A failure's ``str(exc)`` is logged as the record's redacted
-    ``error_snippet``: every BackendError this module raises already embeds
-    the relevant subprocess detail in its own message, so the exception text
-    captures the full failure surface. A non-None ``fallback_reason`` —
+    A failure's ``str(exc)`` is logged as the record's redacted, head+tail
+    ``error_snippet`` (see :func:`cli_common.redacted_excerpt`): every
+    BackendError this module raises embeds the relevant subprocess detail in
+    its own message, and the DB file is read back by post-mortems, so the
+    snippet keeps the failing line at the end rather than cutting it away.
+    A non-None ``fallback_reason`` —
     parked by :func:`run_with_fallback` when the prior candidate failed, or
     by :func:`_run_command` when it internally retries after a stall — is
     consumed here so it lands on exactly one record, this attempt's.
@@ -2294,7 +2342,7 @@ def run_codex(
         if stripped:
             return stripped
         raise _backend_failure(
-            "no text output from codex", stderr=stderr, stdout=stdout, limit=200
+            "no text output from codex", stderr=stderr, stdout=stdout
         )
 
 
@@ -2370,7 +2418,7 @@ def run_copilot(
         try:
             return run_backend_command(cmd, timeout)
         except BackendError as exc:
-            if _COPILOT_MODEL_POLICY_MARKER in str(exc):
+            if _COPILOT_MODEL_POLICY_MARKER in classification_text(exc):
                 raise BackendModelPolicyError(
                     "copilot cannot select a model: the --model flag requires "
                     "a GitHub Copilot Pro or Enterprise plan, so no model id "

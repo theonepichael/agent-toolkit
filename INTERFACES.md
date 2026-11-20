@@ -288,6 +288,7 @@ Shared CLI helpers used across agent-toolkit scripts.
 - Depends on: `migration_lock.py`
 - Exceptions:
   - `class JsonlWriteError(Exception)` — Raised by append_jsonl(..., on_error="raise") when the write fails.
+  - `class VersionLookupError(RuntimeError)` — A backend binary's ``--version`` could not be read.
 - Public classes:
   - `class Palette` — ANSI colorizer that no-ops when color isn't appropriate.
 - Public functions:
@@ -299,10 +300,13 @@ Shared CLI helpers used across agent-toolkit scripts.
   - `get_logger(name: str, *, verbose: bool = False, quiet: bool = False) -> logging.Logger` — Return a stderr-only diagnostic logger, a structured complement to vprint.
   - `append_jsonl(path: Path, record: dict[str, object], *, on_error: OnError = 'log', mode: int = 438, max_bytes: int | None = None) -> None` — Append one JSON record to ``path`` as a single JSONL line, opt-in failure reporting.
   - `redact_secrets(text: str, *, max_length: int = 200) -> str` — Mask secret-shaped substrings, then truncate to max_length.
+  - `redacted_excerpt(text: str, *, max_chars: int = DEFAULT_EXCERPT_MAX_CHARS, head_chars: int = _EXCERPT_HEAD_CHARS) -> str` — Mask secrets, then bound ``text`` to ``max_chars`` keeping both ends.
+  - `extract_version(first_line: str) -> str` — Extract a ``X.Y.Z`` version string from the first line of ``--version`` output.
+  - `binary_version(binary: str, *, timeout: float = _VERSION_TIMEOUT_SECONDS, run_command: Callable[..., subprocess.CompletedProcess[str]] | None = None) -> str` — Run ``<binary> --version`` and return the extracted version string.
   - `state_dir() -> Path` — The XDG state base directory: $XDG_STATE_HOME, default ~/.local/state.
   - `timing_log_path() -> Path` — The timing log path: $XDG_STATE_HOME/agent-toolkit/timing.jsonl.
   - `timing_span(name: str, **fields: str | int) -> Iterator[dict[str, object]]` — Opt-in nested timings; callers must supply only fixed operational labels.
-- Tested by: `test/test_cli_common.py`, `test/test_migration_lock_adoption.py`, `test/test_settings_seed.py`, `test/test_timing.py`
+- Tested by: `test/test_cli_common.py`, `test/test_harness_discovery_check.py`, `test/test_llm_backends.py`, `test/test_migration_lock_adoption.py`, `test/test_second_opinion.py`, `test/test_settings_seed.py`, `test/test_timing.py`
 
 ### `agent-scripts/dev_status.py`
 
@@ -1101,7 +1105,7 @@ SessionStart hook + CLI: detect when a harness's instruction-file discovery beha
   - `class HarnessCheckError(Exception)` — Raised when a harness check can't proceed (subprocess failure, not a missing binary).
 - Public functions:
   - `resolve_binary(name: str) -> Path | None` — Resolve a harness binary via ``shutil.which`` then ``Path.resolve()``.
-  - `run_version(name: str, binary: Path, run_command: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run) -> str` — Run ``<binary> --version`` and return the extracted version string.
+  - `run_version(name: str, binary: Path, run_command: Callable[..., subprocess.CompletedProcess[str]] | None = None) -> str` — Run ``<binary> --version`` and return the extracted version string.
   - `probe_schema() -> str` — Hash of everything a recorded verdict depends on besides the binary: each harness's expected tokens, the fixture's token labels and layout, and :data:`PROBE_LOGIC_VERSION`.
   - `read_record(name: str) -> dict[str, object] | None` — The record for ``name``, or ``None`` when absent, unreadable or not a JSON object (a corrupt record is treated as missing and re-probed).
   - `write_record(name: str, record: dict[str, object]) -> bool` — Atomically replace ``name``'s record (temp file + rename).
@@ -1380,6 +1384,7 @@ llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, open
   - `daemon_listening(backend: str) -> bool` — Whether a daemon belonging to ``backend`` currently holds a listening socket.
   - `build_isolated_command(backend: str, prompt: str, *, model: str | None = None, mode: str = 'text-only', target_dir: Path | None = None, images: list[str] | None = None, expose_ro_extra: list[str] | None = None) -> list[str]` — Build the only command any caller may run for ``backend``.
   - `eligibility_report(mode: str = 'text-only', target_dir: Path | None = None) -> dict[str, dict[str, object]]` — Per-backend presence and contract eligibility, with a reason when not.
+  - `classification_text(exc: BaseException) -> str` — The text a marker classifier should match a backend failure against.
   - `image_capable_backends() -> list[str]` — Backends in priority order that accept headless image input.
   - `validate_images(paths: list[str]) -> None` — Validate image paths before any backend runs.
   - `stage_images(paths: list[str]) -> StagedImages` — Copy ``paths`` into a unique HOME-relative staging dir for containment.
@@ -1677,7 +1682,7 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
 - Subcommands:
   - `detect [--mode {text-only,grounded}]` — list available backends as JSON
     - `--mode` — contract view to report: text-only (default) or grounded (checks the per-mode read-reach override, so a containment-dependent backend reports as unavailable for grounded mode when containment is unavailable) (choices: text-only, grounded; default: text-only)
-  - `probe [--backend NAME[,NAME...]]` — probe each backend's model pool and report per-model availability as JSON
+  - `probe [--backend NAME[,NAME...]]` — probe each backend's model pool and report per-model availability and the installed CLI version as JSON
     - `--backend` — probe only these backend(s) (comma-separated list allowed) instead of every installed backend in priority order; an entry not installed is reported as not_installed, not an error
   - `review [<plan-file-or-text>] [--diff] [--image PATH] [--backend NAME[,NAME...]] [--dir <DIR>] [--text-only] [--spec FILE] [--focus-file <FOCUS_FILE>] [--model-index N] [--exclude-backend NAME] [--diff-path PATHSPEC] [--prompt-only] [--run-id ID] [--allow-extra-round]` — get one critique from the priority-selected (per-run rotated) backend
     - `plan` (nargs: ?)

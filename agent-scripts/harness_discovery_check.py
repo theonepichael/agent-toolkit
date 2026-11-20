@@ -93,7 +93,6 @@ import fcntl
 import hashlib
 import json
 import os
-import re
 import secrets
 import shutil
 import subprocess
@@ -230,45 +229,33 @@ def _extract_version(name: str, first_line: str) -> str:
     """Extract a ``X.Y.Z`` version string from the first line of
     ``--version`` output.
 
-    Each harness has its own format; this function knows the common ones.
-    Returns the raw first line if no semver-like pattern is found — the
-    caller treats a mismatch-class note as the degradation path.
+    Thin alias for :func:`cli_common.extract_version`, kept because this
+    module's tests and callers name the private helper; the vendor-format
+    table itself lives in ``cli_common`` so ``second_opinion.py``'s ``probe``
+    reports versions the same way this check does.
     """
-    line = first_line.strip()
-    # claude: "2.1.252 (Claude Code)"
-    # opencode: "1.18.32", or a dev build "0.0.0-dev-202609250015" (the
-    #   prerelease suffix is kept: truncating it misnames the binary)
-    # pi: "0.84.4"
-    # copilot: "GitHub Copilot CLI 1.0.80."
-    # agy: "1.1.22"
-    m = re.search(r"(\d+(?:\.\d+)+(?:-[0-9A-Za-z.-]*[0-9A-Za-z])?)", line)
-    return m.group(1) if m else line
+    return cli_common.extract_version(first_line)
 
 
 def run_version(
     name: str,
     binary: Path,
-    run_command: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    run_command: Callable[..., subprocess.CompletedProcess[str]] | None = None,
 ) -> str:
     """Run ``<binary> --version`` and return the extracted version string.
 
-    Raise :class:`HarnessCheckError` on a nonzero exit or timeout.
+    Raises :class:`HarnessCheckError` (naming ``name``) on a nonzero exit,
+    timeout, or OSError — the exception this module's callers already handle.
+    An empty ``--version`` output is *not* an error here: it is recorded as the
+    version this machine measured (an empty string), so a harness whose banner
+    changed shape still gets a probe attempt. ``run_command`` is forwarded to
+    :func:`cli_common.binary_version`, which resolves ``subprocess.run`` at
+    call time when it is ``None``.
     """
     try:
-        result = run_command(
-            [str(binary), "--version"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise HarnessCheckError(f"{name}: --version failed: {exc}") from exc
-    if result.returncode != 0:
-        raise HarnessCheckError(
-            f"{name}: --version exited {result.returncode}: {result.stderr.strip() or result.stdout.strip()}"
-        )
-    first = (result.stdout or "").splitlines()[0] if result.stdout else ""
-    return _extract_version(name, first)
+        return cli_common.binary_version(str(binary), run_command=run_command)
+    except cli_common.VersionLookupError as exc:
+        raise HarnessCheckError(f"{name}: {exc}") from exc
 
 
 # ── binary identity ──────────────────────────────────────────────────────────

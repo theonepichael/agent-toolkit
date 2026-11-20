@@ -132,7 +132,14 @@ def pinned_version(package_json: Path) -> str:
 
 
 def opencode_version(binary: Path) -> str:
-    """The binary's reported version; raises unless it ran and printed one."""
+    """The binary's reported version; raises unless it ran and printed one.
+
+    Deliberately its own runner, unlike the shared
+    :func:`cli_common.binary_version` that ``probe`` and the harness discovery
+    check use: this one needs a full-line match (an opencode whose banner is
+    not a bare version is a refusal, not a degradation), so folding it into
+    the shared lookup would loosen that check.
+    """
     try:
         result = subprocess.run(
             [str(binary), "--version"],

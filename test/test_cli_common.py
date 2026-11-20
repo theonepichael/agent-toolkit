@@ -522,6 +522,93 @@ class RedactSecretsTests(unittest.TestCase):
         self.assertEqual(len(cli_common.redact_secrets(text, max_length=50)), 50)
 
 
+class RedactedExcerptTests(unittest.TestCase):
+    """Tests for redacted_excerpt: mask the whole text, then keep both ends."""
+
+    def test_short_text_unchanged_and_long_text_keeps_both_ends(self) -> None:
+        # Both halves in one test: an excerpt that only ever returned its
+        # input unchanged would pass the first half alone.
+        self.assertEqual(cli_common.redacted_excerpt("short and fine", max_chars=200), "short and fine")
+        text = "HEADTOKEN " + ("m" * 400) + " MIDDLETOKEN " + ("t" * 400) + " TAILTOKEN"
+        result = cli_common.redacted_excerpt(text, max_chars=200)
+        self.assertLessEqual(len(result), 200)
+        self.assertIn("HEADTOKEN", result)
+        self.assertIn("TAILTOKEN", result)
+        self.assertNotIn("MIDDLETOKEN", result)
+        self.assertIn(cli_common.EXCERPT_MARKER, result)
+
+    def test_secret_spanning_the_head_cut_is_masked(self) -> None:
+        # The bearer value begins inside the retained head and continues past
+        # the cut: masking must run on the whole text, not on the kept slice.
+        text = ("Bearer abcdefghij" + "h" * 60) + ("z" * 2000)
+        result = cli_common.redacted_excerpt(text, max_chars=300, head_chars=40)
+        self.assertNotIn("abcdefghij", result)
+        self.assertIn("[REDACTED]", result)
+
+    def test_secret_spanning_the_tail_cut_is_masked(self) -> None:
+        # Unanchored once cut: only whole-text masking can catch this.
+        text = ("y" * 2000) + " token=" + ("q" * 400)
+        result = cli_common.redacted_excerpt(text, max_chars=300)
+        self.assertNotIn("q" * 30, result)
+
+    def test_budget_counts_the_marker(self) -> None:
+        text = "A" * 100 + "B" * 1000
+        for budget in (60, 120, cli_common.DEFAULT_EXCERPT_MAX_CHARS):
+            self.assertLessEqual(
+                len(cli_common.redacted_excerpt(text, max_chars=budget)), budget
+            )
+
+    def test_marker_larger_than_budget_never_expands(self) -> None:
+        text = "C" * 5000
+        result = cli_common.redacted_excerpt(text, max_chars=5)
+        self.assertLessEqual(len(result), 5)
+        self.assertNotIn(cli_common.EXCERPT_MARKER, result)
+
+
+class BinaryVersionTests(unittest.TestCase):
+    """Tests for extract_version / binary_version against a faked CLI."""
+
+    def test_extract_version_across_vendor_formats(self) -> None:
+        cases = {
+            "codex-cli 0.162.1": "0.162.1",
+            "0.84.4": "0.84.4",
+            "GitHub Copilot CLI 1.0.80.": "1.0.80",
+            "0.0.0-dev-202609250015": "0.0.0-dev-202609250015",
+            "no digits here": "no digits here",
+        }
+        for line, expected in cases.items():
+            self.assertEqual(cli_common.extract_version(line), expected)
+
+    def test_binary_version_returns_extracted_version(self) -> None:
+        proc = subprocess.CompletedProcess([], 0, stdout="codex-cli 0.162.1\n", stderr="")
+        with patch("subprocess.run", return_value=proc):
+            self.assertEqual(cli_common.binary_version("/usr/bin/codex"), "0.162.1")
+
+    def test_binary_version_empty_output_returns_empty_string(self) -> None:
+        proc = subprocess.CompletedProcess([], 0, stdout="\n", stderr="")
+        with patch("subprocess.run", return_value=proc):
+            self.assertEqual(cli_common.binary_version("/usr/bin/codex"), "")
+
+    def test_binary_version_nonzero_exit_raises(self) -> None:
+        proc = subprocess.CompletedProcess([], 3, stdout="", stderr="boom")
+        with patch("subprocess.run", return_value=proc):
+            with self.assertRaises(cli_common.VersionLookupError) as cm:
+                cli_common.binary_version("/usr/bin/codex")
+        self.assertIn("3", str(cm.exception))
+        self.assertIn("boom", str(cm.exception))
+
+    def test_binary_version_oserror_raises(self) -> None:
+        with patch("subprocess.run", side_effect=OSError("no such file")):
+            with self.assertRaises(cli_common.VersionLookupError):
+                cli_common.binary_version("/usr/bin/nope")
+
+    def test_binary_version_tolerates_missing_stderr(self) -> None:
+        proc = subprocess.CompletedProcess([], 1, stdout="", stderr=None)
+        with patch("subprocess.run", return_value=proc):
+            with self.assertRaises(cli_common.VersionLookupError):
+                cli_common.binary_version("/usr/bin/codex")
+
+
 class AppendJsonlConcurrencyIntegrationTests(unittest.TestCase):
     """Real multi-process concurrency: no existing test covers this."""
 

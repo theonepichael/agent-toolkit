@@ -13,18 +13,20 @@ reports each backend's presence AND whether it currently meets the isolation
 contract (with the reason when it does not), `review` returns one critique, and
 `probe` runs one trivial, cheap, text-only request per model in the selected
 backend's pool (or its single override / default model) and reports per-model
-availability as JSON — use it to check the pools' health (and their family
-overlap, warned on stderr) before a multi-round loop, and remember it calls the
-real models once each, so pass the `backend` parameter deliberately. It is
-single-round: one call, one critique. The multi-round loop and plan revision
-are your job, not the script's. By default, reviews are grounded in the target
-codebase (`dir` or current working directory) with read-only tools enabled; use
-`textOnly = true` to opt out. A fourth subcommand, `panel`, runs a multi-model
-panel discussion — one brief to N chosen backends in parallel (round 1), then
-one anonymised cross-round in which a designated backend synthesizes an
-agreed/disputed/open summary from the round-1 positions while the rest
-cross-examine, every reply appended to a transcript file as it lands — a
-separate workflow from this single-round critique loop.
+availability as JSON — each probed entry also carries the installed CLI's own
+version (`cli_version`), so an outdated binary that fails every request is not
+mistaken for a model outage — use it to check the pools' health (and their
+family overlap, warned on stderr) before a multi-round loop, and remember it
+calls the real models once each, so pass the `backend` parameter deliberately.
+It is single-round: one call, one critique. The multi-round loop and plan
+revision are your job, not the script's. By default, reviews are grounded in
+the target codebase (`dir` or current working directory) with read-only tools
+enabled; use `textOnly = true` to opt out. A fourth subcommand, `panel`, runs a
+multi-model panel discussion — one brief to N chosen backends in parallel
+(round 1), then one anonymised cross-round in which a designated backend
+synthesizes an agreed/disputed/open summary from the round-1 positions while
+the rest cross-examine, every reply appended to a transcript file as it lands —
+a separate workflow from this single-round critique loop.
 
 Call the `second_opinion` tool. Action `detect` with `mode` `grounded` lists
 which backends can run a grounded review as JSON (plain `detect` reports the
