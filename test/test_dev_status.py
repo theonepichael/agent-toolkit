@@ -2358,7 +2358,7 @@ class BacklogTestCase(BacklogFixture):
         # stdout renders the dashboard with the pending item's description; stderr
         # gets the item-map line naming pend-x. Both prove the in-memory
         # pending_items from the locked mutation was used (no unlocked re-read).
-        self.assertIn("w (waiting", out.getvalue())
+        self.assertIn("w (created", out.getvalue())
         self.assertIn("pend-x", err.getvalue())
 
     # ── #16: prune prints the item-map/rev line (via render) after pruning
@@ -8029,6 +8029,161 @@ class BackendHealthWarningTestCase(BacklogFixture):
         dev_status.render([], [], out=out, err=err)
         self.assertIn("second-opinion", out.getvalue())
         self.assertNotIn("second-opinion", err.getvalue())
+
+
+
+class _FixedDate(date):
+    """``date`` whose ``today`` is pinned, for the pending-suffix render tests.
+
+    ``_age_days`` calls ``date.today()`` on the module-level ``date`` name, so
+    patching that name with this subclass freezes every age the dashboard
+    computes without touching ``fromisoformat``.
+    """
+
+    @classmethod
+    def today(cls):
+        return cls(2026, 11, 20)
+
+
+class PendingSuffixTestCase(BacklogFixture):
+    """The pending line's age suffix: ``due`` > ``sent_at`` > ``created``."""
+
+    def _pending(self, **extra):
+        item = {
+            "id": "pend-x",
+            "created": "2026-09-01",
+            "updated": "2026-09-01",
+            "status": "waiting_for_reply",
+            "description": "ask",
+            "kind": "email",
+            "source_ref": {},
+            "context": "",
+            "next_steps": [],
+            "blocking": [],
+            "outcome": None,
+        }
+        item.update(extra)
+        return item
+
+    def _line(self, **extra):
+        out = io.StringIO()
+        with patch.object(dev_status, "date", _FixedDate):
+            dev_status.render(
+                [], [self._pending(**extra)], out=out, err=io.StringIO(), rev=1
+            )
+        return next(ln for ln in out.getvalue().splitlines() if "ask" in ln)
+
+    def test_sent_at_drives_the_waiting_age(self):
+        self.assertIn("ask (waiting 3d)", self._line(sent_at="2026-11-17"))
+
+    def test_no_send_date_reads_as_created_not_waiting(self):
+        line = self._line()
+        self.assertIn("ask (created 80d ago)", line)
+        self.assertNotIn("waiting", line)
+
+    def test_due_in_future(self):
+        self.assertIn(
+            "ask (due in 14d)", self._line(due="2026-12-04", sent_at="2026-11-17")
+        )
+
+    def test_due_today(self):
+        self.assertIn("ask (due today)", self._line(due="2026-11-20"))
+
+    def test_due_past_is_overdue(self):
+        self.assertIn("ask (overdue 5d)", self._line(due="2026-11-15"))
+
+    def test_reply_received_with_sent_at_says_sent(self):
+        line = self._line(status="reply_received", sent_at="2026-11-17")
+        self.assertIn("ask reply received (sent 3d ago)", line)
+        self.assertNotIn("waiting", line)
+
+    def test_reply_received_with_due_keeps_due_text(self):
+        line = self._line(
+            status="reply_received", due="2026-12-04", sent_at="2026-11-17"
+        )
+        self.assertIn("ask reply received (due in 14d)", line)
+
+    def test_invalid_sent_at_omits_suffix_without_fall_through(self):
+        line = self._line(sent_at="not-a-date")
+        self.assertNotIn("(", line.split("ask", 1)[1])
+
+    def test_invalid_due_omits_suffix_without_fall_through(self):
+        line = self._line(
+            status="reply_received", due="not-a-date", sent_at="2026-11-17"
+        )
+        self.assertIn("reply received", line)
+        self.assertNotIn("(", line.split("reply received", 1)[1])
+
+    def test_null_due_counts_as_unset(self):
+        self.assertIn(
+            "ask (waiting 3d)", self._line(due=None, sent_at="2026-11-17")
+        )
+
+
+class PendingDateFieldsCliTestCase(BacklogFixture):
+    """``pending add``/``pending update`` admit ``sent_at``/``due`` raw."""
+
+    def _add(self, payload):
+        dev_status.cmd_pending_add(_args(json=json.dumps(payload)))
+
+    def _base(self, **extra):
+        payload = {"id": "pend-x", "description": "ask", "kind": "email"}
+        payload.update(extra)
+        return payload
+
+    def _refused(self, fn):
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+            fn()
+        self.assertEqual(cm.exception.code, 1)
+        return err.getvalue()
+
+    def test_add_stores_both_fields(self):
+        self._add(self._base(sent_at="2026-11-17", due="2026-12-04"))
+        item = dev_status.load_pending()[0]
+        self.assertEqual(item["sent_at"], "2026-11-17")
+        self.assertEqual(item["due"], "2026-12-04")
+
+    def test_add_without_fields_stores_neither_key(self):
+        self._add(self._base(sent_at=None))
+        item = dev_status.load_pending()[0]
+        self.assertNotIn("sent_at", item)
+        self.assertNotIn("due", item)
+
+    def test_add_refuses_malformed_and_non_string_dates(self):
+        for bad in ("20261120", 20261120):
+            with self.subTest(bad=bad):
+                msg = self._refused(lambda: self._add(self._base(sent_at=bad)))
+                self.assertIn("sent_at", msg)
+                self.assertEqual(dev_status.load_pending(), [])
+
+    def test_update_sets_and_null_clears(self):
+        self._add(self._base())
+        dev_status.cmd_pending_update(
+            _args(id="pend-x", patch='{"sent_at": "2026-11-17", "due": "2026-12-04"}')
+        )
+        item = dev_status.load_pending()[0]
+        self.assertEqual((item["sent_at"], item["due"]), ("2026-11-17", "2026-12-04"))
+        dev_status.cmd_pending_update(_args(id="pend-x", patch='{"due": null}'))
+        item = dev_status.load_pending()[0]
+        self.assertNotIn("due", item)
+        self.assertEqual(item["sent_at"], "2026-11-17")
+        dev_status.cmd_pending_update(_args(id="pend-x", patch='{"sent_at": null}'))
+        self.assertNotIn("sent_at", dev_status.load_pending()[0])
+
+    def test_update_refuses_malformed_and_non_string_dates(self):
+        self._add(self._base())
+        for field in ("sent_at", "due"):
+            for bad in ('"2026-W47-5"', "20261120"):
+                with self.subTest(field=field, bad=bad):
+                    patch_json = '{"' + field + '": ' + bad + "}"
+                    msg = self._refused(
+                        lambda: dev_status.cmd_pending_update(
+                            _args(id="pend-x", patch=patch_json)
+                        )
+                    )
+                    self.assertIn(field, msg)
+                    self.assertNotIn(field, dev_status.load_pending()[0])
 
 
 if __name__ == "__main__":

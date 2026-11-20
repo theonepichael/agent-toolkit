@@ -419,7 +419,7 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
     - `--repo` — Path to git repository
     - `--branch` — Source branch to merge (default: item slug)
   - `pending` — manage pending (waiting-on-reply) items
-  - `pending add '{"id", "description", "kind", ["source_ref"], ["context"], ["next_steps"], ["blocking"]}'` — track a new pending item
+  - `pending add '{"id", "description", "kind", ["source_ref"], ["context"], ["next_steps"], ["blocking"], ["sent_at"], ["due"]}'` — track a new pending item
   - `pending update <slug|N> '{"status": "reply_received", ...}' [--if-rev <N>]` — merge a JSON patch into an existing pending item
     - `--if-rev` — required when <id> is numeric; get the current value from render/list/show immediately before this call
   - `pending list` — list pending items as JSON lines

@@ -539,7 +539,9 @@ export default function (pi: ExtensionAPI) {
             "lifecycle moves use the start/review/approve/reject/done/obe/reopen actions. gate_set " +
             "wants {required: boolean, criteria: string[]}; gate_pass " +
             'wants {coverage: {"<criterion#>": "run:<run_id>" or "manual:<note>"}}; pending_add ' +
-            "wants {id, description, kind, source_ref?, context?, next_steps?}.",
+            "wants {id, description, kind, source_ref?, context?, next_steps?, sent_at?, due?}; " +
+            "sent_at (when the ask went out) and due (date to act by) are YYYY-MM-DD, " +
+            "and pending_update accepts both, with null clearing either.",
         }),
       ),
       feedback: Type.Optional(Type.String({ description: "reject: rejection feedback text." })),

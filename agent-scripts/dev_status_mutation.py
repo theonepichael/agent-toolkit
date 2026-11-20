@@ -117,8 +117,13 @@ PENDING_MUTABLE_FIELDS: frozenset[str] = frozenset(
         "blocking",
         "source_ref",
         "outcome",
+        "sent_at",
+        "due",
     }
 )
+"""Fields a ``pending update`` patch may merge; the CLI imports this set."""
+
+_ISO_DAY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 
 # Reserved item slugs are the canonical subcommand surface plus a few
 # dashboard/future-use names; the single source lives in dev_status_commands
@@ -318,6 +323,8 @@ class PendingAddRequest:
     context: str = ""
     next_steps: tuple[str, ...] = ()
     blocking: tuple[str, ...] = ()
+    sent_at: str | None = None
+    due: str | None = None
 
 
 @dataclass(frozen=True)
@@ -329,6 +336,8 @@ class PendingUpdateRequest:
     source_ref: Mapping[str, object] | _Unset | None = UNSET
     next_steps: tuple[str, ...] | _Unset = UNSET
     blocking: tuple[str, ...] | _Unset = UNSET
+    sent_at: str | _Unset | None = UNSET
+    due: str | _Unset | None = UNSET
 
 
 # ── Error Hierarchy ───────────────────────────────────────────────────────────
@@ -449,6 +458,31 @@ def _append_journal_event(
 def today() -> str:
     """Return today's date as an ISO-8601 string (``YYYY-MM-DD``)."""
     return date.today().isoformat()
+
+
+def _validate_pending_dates(
+    cmd: str, values: Mapping[str, object], *, allow_unset: bool
+) -> None:
+    """Refuse any set ``sent_at``/``due`` that isn't an exact ``YYYY-MM-DD``.
+
+    ``None`` (unset on add, clear on update) always passes; ``UNSET`` ("leave
+    unchanged") passes only on update, where there is something to leave. The
+    regex runs before ``date.fromisoformat`` because the latter also accepts
+    ``20261120`` and ISO week dates, which the store must never hold.
+    """
+    for name, value in values.items():
+        if value is None or (allow_unset and value is UNSET):
+            continue
+        ok = isinstance(value, str) and _ISO_DAY.fullmatch(value) is not None
+        if ok:
+            try:
+                date.fromisoformat(cast(str, value))
+            except ValueError:
+                ok = False
+        if not ok:
+            raise ValidationError(
+                f"[{cmd}] invalid {name} {value!r} — expected a YYYY-MM-DD date"
+            )
 
 
 def validate_slug(slug: str, context: str = "") -> str | None:
@@ -4760,6 +4794,8 @@ def add_pending_item(
             f"[pending add] invalid kind '{request.kind}' — one of: "
             f"{', '.join(sorted(VALID_PENDING_KINDS))}"
         )
+    dates = {"sent_at": request.sent_at, "due": request.due}
+    _validate_pending_dates("pending add", dates, allow_unset=False)
 
     paths = _storage_bundle(items_path)
     with dev_status_storage.backlog_lock(paths["data_dir"], paths["lock_file"]):
@@ -4800,6 +4836,9 @@ def add_pending_item(
             "blocking": list(request.blocking),
             "outcome": None,
         }
+        for name, value in dates.items():
+            if value is not None:
+                cast(dict[str, object], item)[name] = value
 
         pending_items.append(item)
         new_rev = _bump_rev(paths["meta_path"])
@@ -4861,6 +4900,8 @@ def update_pending_item(
             f"[pending update] field(s) cannot be null: {', '.join(sorted(nulled))} — "
             "omit the field to leave it unchanged"
         )
+    dates = {"sent_at": request.sent_at, "due": request.due}
+    _validate_pending_dates("pending update", dates, allow_unset=True)
 
     paths = _storage_bundle(items_path)
     with dev_status_storage.backlog_lock(paths["data_dir"], paths["lock_file"]):
@@ -4913,6 +4954,14 @@ def update_pending_item(
         if request.blocking is not UNSET and request.blocking is not None:
             item["blocking"] = list(request.blocking)
             fields.append("blocking")
+        for name, value in dates.items():
+            if value is UNSET:
+                continue
+            if value is None:
+                cast(dict[str, object], item).pop(name, None)
+            else:
+                cast(dict[str, object], item)[name] = value
+            fields.append(name)
         if request.status is not UNSET and request.status is not None:
             fields.append("status")
             _apply_status_transition(
