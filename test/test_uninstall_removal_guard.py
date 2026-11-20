@@ -62,20 +62,117 @@ class _ShutilImportResolver(ast.NodeVisitor):
                     self.rmtree_names.add(alias.asname or "rmtree")
 
 
+def _parameters(args: ast.arguments) -> list[ast.arg]:
+    """Every parameter of a function, whatever its kind."""
+    return [
+        *args.posonlyargs,
+        *args.args,
+        *args.kwonlyargs,
+        *([args.vararg] if args.vararg else []),
+        *([args.kwarg] if args.kwarg else []),
+    ]
+
+
+def _simple_assignments(statements: list[ast.stmt]) -> list[tuple[str, ast.expr]]:
+    """Every simple `name = <expr>` in one scope, nested scopes excluded.
+
+    Multi-target assignments count for every target (`a = b = shutil.rmtree`),
+    and an annotation without a value is not an assignment.
+    """
+    pairs: list[tuple[str, ast.expr]] = []
+    pending: list[ast.AST] = list(statements)
+    while pending:
+        node = pending.pop()
+        if isinstance(
+            node, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda | ast.ClassDef
+        ):
+            continue
+        if isinstance(node, ast.Assign):
+            pairs.extend(
+                (target.id, node.value)
+                for target in node.targets
+                if isinstance(target, ast.Name)
+            )
+        elif (
+            isinstance(node, ast.AnnAssign)
+            and node.value is not None
+            and isinstance(node.target, ast.Name)
+        ):
+            pairs.append((node.target.id, node.value))
+        pending.extend(ast.iter_child_nodes(node))
+    return pairs
+
+
 class _RmtreeScopeVisitor(ast.NodeVisitor):
     """Attributes every shutil.rmtree call to its nearest enclosing function
     (or "<module>"), single-pass — correct for nested function defs, unlike
-    two nested ast.walk() calls over the same tree."""
+    two nested ast.walk() calls over the same tree.
+
+    A callee is resolved through what the scopes around it *bind*, not just
+    through the import statements: a simple `r = shutil.rmtree` assignment
+    makes `r` a removal (resolved flow-insensitively to a fixed point, so a
+    chain and an assignment in either branch both count), while a parameter or
+    local that shadows an imported `rmtree` name is not one. That is all the
+    binding knowledge there is, so dynamic re-entry
+    (`getattr(shutil, "rmtree")`), non-`Name` targets, and rebinding across
+    scopes stay invisible, and an ambiguous case is reported rather than
+    cleared. A parameter shadows the whole `def`, its header expressions
+    included.
+    """
 
     def __init__(self, shutil_aliases: set[str], rmtree_names: set[str]) -> None:
         self._shutil_aliases = shutil_aliases
         self._rmtree_names = rmtree_names
         self._scope_stack: list[str] = ["<module>"]
+        # One record per scope: its parameter names, the names it assigns an
+        # rmtree reference to, and the names it assigns anything else.
+        self._scopes: list[dict[str, set[str]]] = [_scope_record()]
         self.sites: list[tuple[str, int]] = []  # (enclosing function name, lineno)
+
+    def _resolves_to_rmtree(self, name: str) -> bool:
+        for scope in reversed(self._scopes):
+            if name in scope["rmtree"]:
+                return True
+            if name in scope["parameters"] or name in scope["other"]:
+                return False
+        return name in self._rmtree_names
+
+    def _is_rmtree_reference(self, value: ast.expr) -> bool:
+        if isinstance(value, ast.Name):
+            return self._resolves_to_rmtree(value.id)
+        return (
+            isinstance(value, ast.Attribute)
+            and value.attr == "rmtree"
+            and isinstance(value.value, ast.Name)
+            and value.value.id in self._shutil_aliases
+        )
+
+    def _classify(self, record: dict[str, set[str]], statements: list[ast.stmt]) -> None:
+        pairs = _simple_assignments(statements)
+        record["other"].update(name for name, _ in pairs)
+        changed = True
+        while changed:
+            changed = False
+            for name, value in pairs:
+                if name in record["rmtree"] or not self._is_rmtree_reference(value):
+                    continue
+                record["rmtree"].add(name)
+                record["other"].discard(name)
+                changed = True
+
+    def visit_Module(self, node: ast.Module) -> None:
+        self._classify(self._scopes[0], node.body)
+        self.generic_visit(node)
 
     def _visit_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
         self._scope_stack.append(node.name)
+        record = _scope_record({param.arg for param in _parameters(node.args)})
+        self._scopes.append(record)
+        # Classify before visiting so the call sites below see the aliases this
+        # scope assigns, wherever in the body they appear.
+        self._classify(record, node.body)
         self.generic_visit(node)
+        self._scopes.pop()
         self._scope_stack.pop()
 
     visit_FunctionDef = _visit_function
@@ -89,7 +186,7 @@ class _RmtreeScopeVisitor(ast.NodeVisitor):
     def _is_rmtree_call(self, node: ast.Call) -> bool:
         func = node.func
         if isinstance(func, ast.Name):
-            return func.id in self._rmtree_names
+            return self._resolves_to_rmtree(func.id)
         if isinstance(func, ast.Attribute):
             return (
                 func.attr == "rmtree"
@@ -97,6 +194,10 @@ class _RmtreeScopeVisitor(ast.NodeVisitor):
                 and func.value.id in self._shutil_aliases
             )
         return False
+
+
+def _scope_record(parameters: set[str] | None = None) -> dict[str, set[str]]:
+    return {"parameters": parameters or set(), "rmtree": set(), "other": set()}
 
 
 def _rmtree_sites(
@@ -281,3 +382,132 @@ def test_allowed_functions_still_exist() -> None:
         assert not missing, (
             f"{filename}: allowlisted function(s) no longer exist: {missing}"
         )
+
+
+# The block below pins the scanner's binding awareness. Import-only resolution
+# has two blind spots pointing in opposite directions: an alias created by
+# assignment (`r = shutil.rmtree`) is invisible, so a forbidden removal escapes
+# the guard, while a parameter or local that shadows an imported name is still
+# reported.
+@pytest.mark.regression(
+    "removal-guard-misses-module-alias-rebind",
+    "assert [] == [('_sweep_runtime_tree', 5)]",
+)
+def test_detector_resolves_rmtree_rebound_from_module_alias() -> None:
+    source = (
+        "import shutil\n"
+        "\n"
+        "def _sweep_runtime_tree(path):\n"
+        "    r = shutil.rmtree\n"
+        "    r(path)\n"
+    )
+    assert _rmtree_sites("uninstall_exec.py", source) == [
+        ("_sweep_runtime_tree", 5),
+    ]
+    assert _unallowed_rmtree_sites("uninstall_exec.py", source=source) == [
+        ("uninstall_exec.py", 5)
+    ]
+
+
+@pytest.mark.regression(
+    "removal-guard-misses-imported-alias-rebind",
+    "assert [] == [('_sweep_runtime_tree', 5)]",
+)
+def test_detector_resolves_rmtree_rebound_from_imported_alias() -> None:
+    source = (
+        "from shutil import rmtree as rm\n"
+        "\n"
+        "def _sweep_runtime_tree(path):\n"
+        "    r = rm\n"
+        "    r(path)\n"
+    )
+    assert _rmtree_sites("uninstall_exec.py", source) == [
+        ("_sweep_runtime_tree", 5),
+    ]
+
+
+@pytest.mark.regression(
+    "removal-guard-misses-rebind-chain",
+    "assert [] == [('_sweep_runtime_tree', 6)]",
+)
+def test_detector_resolves_rebound_name_chain() -> None:
+    source = (
+        "import shutil\n"
+        "\n"
+        "def _sweep_runtime_tree(path):\n"
+        "    a = shutil.rmtree\n"
+        "    b = a\n"
+        "    b(path)\n"
+    )
+    assert _rmtree_sites("uninstall_exec.py", source) == [
+        ("_sweep_runtime_tree", 6),
+    ]
+
+
+@pytest.mark.regression(
+    "removal-guard-false-positive-shadowed-rmtree-parameter",
+    "assert [('_execute_remove_directory', 5), ('_sweep_runtime_tree', 8)] "
+    "== [('_sweep_runtime_tree', 8)]",
+)
+def test_detector_ignores_parameter_shadowing_imported_rmtree() -> None:
+    # The call in `_sweep_runtime_tree` is a positive control: the scan must
+    # still see a real removal after dropping the shadowed one, so this is not
+    # an assertion of silence.
+    source = (
+        "from shutil import rmtree\n"
+        "import shutil\n"
+        "\n"
+        "def _execute_remove_directory(rmtree, path):\n"
+        "    rmtree(path)\n"
+        "\n"
+        "def _sweep_runtime_tree(path):\n"
+        "    shutil.rmtree(path)\n"
+    )
+    assert _rmtree_sites("uninstall_exec.py", source) == [
+        ("_sweep_runtime_tree", 8),
+    ]
+    assert _unallowed_rmtree_sites("uninstall_exec.py", source=source) == [
+        ("uninstall_exec.py", 8)
+    ]
+
+
+@pytest.mark.regression(
+    "removal-guard-false-positive-rebound-imported-rmtree",
+    "assert [('_execute_remove_directory', 6), ('_sweep_runtime_tree', 9)] "
+    "== [('_sweep_runtime_tree', 9)]",
+)
+def test_detector_ignores_local_rebinding_an_imported_rmtree_name() -> None:
+    source = (
+        "from shutil import rmtree\n"
+        "import shutil\n"
+        "\n"
+        "def _execute_remove_directory(path):\n"
+        "    rmtree = object()\n"
+        "    rmtree(path)\n"
+        "\n"
+        "def _sweep_runtime_tree(path):\n"
+        "    shutil.rmtree(path)\n"
+    )
+    assert _rmtree_sites("uninstall_exec.py", source) == [
+        ("_sweep_runtime_tree", 9),
+    ]
+
+
+@pytest.mark.regression(
+    "removal-guard-misses-branch-only-rebind",
+    "assert [] == [('_sweep_runtime_tree', 6)]",
+)
+def test_detector_reports_a_rebind_that_only_one_branch_assigns() -> None:
+    # Flow-insensitive, so a name assigned rmtree in one branch is still a
+    # removal after the join — the fail-closed direction.
+    source = (
+        "import shutil\n"
+        "\n"
+        "def _sweep_runtime_tree(path, cond):\n"
+        "    if cond:\n"
+        "        r = shutil.rmtree\n"
+        "    r(path)\n"
+    )
+    assert _rmtree_sites("uninstall_exec.py", source) == [
+        ("_sweep_runtime_tree", 6),
+    ]
