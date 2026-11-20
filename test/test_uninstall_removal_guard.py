@@ -183,6 +183,83 @@ def test_detector_reports_forbidden_rmtree_in_injected_source() -> None:
     assert _rmtree_sites("uninstall_exec.py", "") == []
 
 
+# The three tests below pin the three import forms _ShutilImportResolver's
+# visitors claim to handle: an aliased module import (visit_Import's
+# `asname or "shutil"`), an aliased function import, and an unaliased function
+# import (visit_ImportFrom's `asname or "rmtree"`). All three are otherwise
+# unexercised — every allowlisted file uses plain `import shutil` with
+# qualified calls — so without them a mutation of any one branch leaves the
+# whole suite green. Their red strings were captured by mutating the branch
+# each one covers; see each test's comment for which mutation, since this
+# change adds tests and touches no resolver code.
+@pytest.mark.regression(
+    "removal-guard-misses-aliased-shutil-module",
+    "assert [] == [('_sweep_runtime_tree', 4)]",
+)
+def test_detector_resolves_aliased_shutil_module_import() -> None:
+    # Red captured with visit_Import's entry mutated to add only "shutil" (no
+    # `asname or`), so `sh` never lands in shutil_aliases and the attribute
+    # call on it is invisible to the scope visitor.
+    source = (
+        "import shutil as sh\n"
+        "\n"
+        "def _sweep_runtime_tree(path):\n"
+        "    sh.rmtree(path)\n"
+    )
+    assert _rmtree_sites("uninstall_exec.py", source) == [
+        ("_sweep_runtime_tree", 4),
+    ]
+    # _sweep_runtime_tree is not allowlisted for uninstall_exec.py, so the
+    # alias-resolved site must survive into the violation list.
+    assert _unallowed_rmtree_sites("uninstall_exec.py", source=source) == [
+        ("uninstall_exec.py", 4)
+    ]
+
+
+@pytest.mark.regression(
+    "removal-guard-misses-aliased-rmtree-import",
+    "assert [] == [('_sweep_runtime_tree', 4)]",
+)
+def test_detector_resolves_aliased_rmtree_function_import() -> None:
+    # Red captured with visit_ImportFrom's entry mutated to add only "rmtree"
+    # (no `asname or`), so `rm` never lands in rmtree_names and the bare call
+    # is invisible to the scope visitor.
+    source = (
+        "from shutil import rmtree as rm\n"
+        "\n"
+        "def _sweep_runtime_tree(path):\n"
+        "    rm(path)\n"
+    )
+    assert _rmtree_sites("uninstall_exec.py", source) == [
+        ("_sweep_runtime_tree", 4),
+    ]
+    assert _unallowed_rmtree_sites("uninstall_exec.py", source=source) == [
+        ("uninstall_exec.py", 4)
+    ]
+
+
+@pytest.mark.regression(
+    "removal-guard-misses-unaliased-rmtree-import",
+    "assert [] == [('_sweep_runtime_tree', 4)]",
+)
+def test_detector_resolves_unaliased_rmtree_function_import() -> None:
+    # Red captured with visit_ImportFrom's entry narrowed to
+    # `if alias.asname:` — the `or "rmtree"` fallback dropped — which is the
+    # only thing making an unaliased `from shutil import rmtree` resolve.
+    source = (
+        "from shutil import rmtree\n"
+        "\n"
+        "def _sweep_runtime_tree(path):\n"
+        "    rmtree(path)\n"
+    )
+    assert _rmtree_sites("uninstall_exec.py", source) == [
+        ("_sweep_runtime_tree", 4),
+    ]
+    assert _unallowed_rmtree_sites("uninstall_exec.py", source=source) == [
+        ("uninstall_exec.py", 4)
+    ]
+
+
 @pytest.mark.parametrize("filename", sorted(ALLOWED_RMTREE_FUNCTIONS))
 def test_detector_sees_allowlisted_functions_in_real_files(filename: str) -> None:
     scopes = {scope for scope, _ in _rmtree_sites(filename)}
