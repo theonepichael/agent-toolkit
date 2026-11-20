@@ -62,8 +62,10 @@ diff is the blind spot this skill exists to remove.
 ## 3. Triage
 Read the cited lines, then decide each finding: **fix**, or **reject** with a
 one-line reason grounded in the code ("already handled at file:line", "this
-input cannot reach here"). A real issue outside this change is a reject that
-also gets a backlog offer ({{INSTRUCTIONS_REF}} proactive-capture rule).
+input cannot reach here"). Fix only what breaks this change or the item's
+acceptance criteria. A real issue outside that, including extra hardening of
+code this diff adds against inputs the item never names, is a reject
+(reason `out of scope: <what>`) that also gets a backlog offer ({{INSTRUCTIONS_REF}} proactive-capture rule).
 Add each item under the reviewer's "Simplifications:" to the table with
 severity **simplify** and decision **would-apply** or **keep**, plus a
 one-line reason. Do not make these changes. **would-apply** needs the

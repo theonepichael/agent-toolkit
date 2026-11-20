@@ -210,6 +210,13 @@ clause. If step 5 left the gate unset (all steps mechanical, no
 acceptance), skip this step; a critique adds nothing to a rote
 transformation.
 
+**Scope each finding.** A critique finding is in scope only if, left as is, it
+breaks one of the item's acceptance criteria or the change itself; revise the
+plan for those. Record every other finding (extra hardening, rare-input
+handling, an adjacent bug) as `deferred: out of scope` in the critique notes
+and offer it as a follow-up backlog item. The plan stays the smallest change
+that meets the item.
+
 ## 7. Handoff
 Decide who implements the plan — ask if it isn't already obvious from the
 conversation. This is a judgment call over enumerable options, so ask with
