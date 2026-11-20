@@ -2861,5 +2861,71 @@ class ArchiveClosedItemsTestCase(ArchiveItemTestCase):
         self.assertEqual(ids, {"task-live", "task-archived"})
 
 
+
+class PendingDateFieldsMutationTestCase(MutationFixture):
+    """``sent_at``/``due`` through the library seam: set, clear, refuse."""
+
+    def _add(self, **extra):
+        return dev_status_mutation.add_pending_item(
+            dev_status_mutation.PendingAddRequest(
+                id="pend-x", description="ask", kind="email", **extra
+            )
+        )
+
+    def _update(self, **fields):
+        return dev_status_mutation.update_pending_item(
+            "pend-x", dev_status_mutation.PendingUpdateRequest(**fields)
+        )
+
+    def test_add_with_both_fields(self):
+        self._add(sent_at="2026-11-17", due="2026-12-04")
+        item = self.read_pending()[0]
+        self.assertEqual((item["sent_at"], item["due"]), ("2026-11-17", "2026-12-04"))
+
+    def test_null_clear_deletes_key_and_journals_field(self):
+        self._add(sent_at="2026-11-17")
+        self._update(sent_at=None)
+        self.assertNotIn("sent_at", self.read_pending()[0])
+        self.assertEqual(self.journal_lines()[-1]["fields"], ["sent_at"])
+
+    def test_clearing_absent_key_is_an_ordinary_update(self):
+        self._add()
+        rev = self.read_rev()
+        self._update(due=None)
+        self.assertNotIn("due", self.read_pending()[0])
+        self.assertEqual(self.read_rev(), rev + 1)
+        self.assertEqual(self.journal_lines()[-1]["fields"], ["due"])
+
+    def test_each_malformed_form_refused_on_add(self):
+        for bad in ("20261120", "2026-W47-5", "2026-11-20\n", "2026-02-30", 20261120):
+            with self.subTest(bad=bad):
+                with self.assertRaises(dev_status_mutation.ValidationError):
+                    self._add(due=bad)
+                self.assertEqual(self.read_pending(), [])
+
+    def test_update_set_stores_and_journals_both_fields(self):
+        self._add()
+        self._update(sent_at="2026-11-17", due="2026-12-04")
+        item = self.read_pending()[0]
+        self.assertEqual((item["sent_at"], item["due"]), ("2026-11-17", "2026-12-04"))
+        self.assertEqual(self.journal_lines()[-1]["fields"], ["due", "sent_at"])
+
+    def test_add_refuses_unset_sentinel_before_any_write(self):
+        # UNSET means "leave unchanged" on update; add has nothing to leave,
+        # so it must be refused up front, not crash mid-write after the rev bump.
+        rev = self.read_rev()
+        with self.assertRaises(dev_status_mutation.ValidationError):
+            self._add(sent_at=dev_status_mutation.UNSET)
+        self.assertEqual((self.read_pending(), self.read_rev()), ([], rev))
+
+    def test_mixed_patch_with_bad_date_writes_nothing(self):
+        self._add()
+        before = (self.read_pending(), self.read_rev(), len(self.journal_lines()))
+        with self.assertRaises(dev_status_mutation.ValidationError):
+            self._update(context="new context", sent_at="2026-11-17", due="nope")
+        after = (self.read_pending(), self.read_rev(), len(self.journal_lines()))
+        self.assertEqual(before, after)
+
+
 if __name__ == "__main__":
     test_bootstrap.run_unittest_main()

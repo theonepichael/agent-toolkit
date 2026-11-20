@@ -497,8 +497,15 @@ approval), offer explicitly — never add silently: "want me to track this as
 a pending item?"
 
 ```bash
-python3 ~/.agent-toolkit/scripts/dev_status.py pending add '{"id": "<slug>", "description": "<what you are waiting on>", "kind": "<email|chat|approval>", "source_ref": {...}, "context": "<why>", "next_steps": ["..."]}'
+python3 ~/.agent-toolkit/scripts/dev_status.py pending add '{"id": "<slug>", "description": "<what you are waiting on>", "kind": "<email|chat|approval>", "source_ref": {...}, "context": "<why>", "next_steps": ["..."], "sent_at": "<YYYY-MM-DD, optional>", "due": "<YYYY-MM-DD, optional>"}'
 ```
+
+The dashboard counts the wait from `sent_at`, so record it: pass it on
+`pending add` when the ask has already gone out, otherwise patch it in with
+`pending update` right after the send (`{"sent_at": "<YYYY-MM-DD>"}`). Set
+`due` when the item has a date to act by; the dashboard then counts down to
+it instead. An item with neither shows only its creation age, not a wait.
+`null` on `pending update` clears either field.
 
 Status moves one step at a time — `waiting_for_reply` → `reply_received` →
 `resolved` — never jump straight to `resolved`. A reply arriving means it

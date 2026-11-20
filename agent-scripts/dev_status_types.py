@@ -202,7 +202,9 @@ class PendingItem(TypedDict):
     """A single waiting-on-someone-else item as stored in ``pending_items.json``.
 
     ``resolved_at`` is absent unless ``status`` is ``"resolved"`` (stamped
-    and cleared by :func:`_apply_status_transition`).
+    and cleared by :func:`_apply_status_transition`). ``sent_at`` (when the
+    ask went out) and ``due`` (the date to act by) are optional
+    ``YYYY-MM-DD`` dates, absent when unset.
     """
 
     id: str
@@ -217,6 +219,8 @@ class PendingItem(TypedDict):
     blocking: list[str]
     outcome: str | None
     resolved_at: NotRequired[str]
+    sent_at: NotRequired[str]
+    due: NotRequired[str]
 
 
 type BacklogIndex = dict[str, BacklogItem]

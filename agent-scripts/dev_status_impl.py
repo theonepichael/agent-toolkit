@@ -68,6 +68,7 @@ import migration_lock
 from dev_status_mutation import (
     BACKLOG_MUTABLE_FIELDS,
     KNOWN_PROJECT_PREFIXES,
+    PENDING_MUTABLE_FIELDS,
     REPO_PREFIXES,
     UNSET,
     AcceptanceSetRequest,
@@ -92,6 +93,7 @@ from dev_status_mutation import (
     _render_order,
     _run_state,
     _unified_order,
+    _Unset,
     add_item,
     add_pending_item,
     approve_item,
@@ -328,15 +330,9 @@ _PRIORITY_RANK = {"high": 0, "normal": 1, "low": 2}
 
 VALID_PENDING_STATUSES = {"waiting_for_reply", "reply_received", "resolved"}
 VALID_PENDING_KINDS = {"email", "chat", "approval"}
-PENDING_MUTABLE_FIELDS = {
-    "status",
-    "description",
-    "context",
-    "next_steps",
-    "blocking",
-    "outcome",
-    "source_ref",
-}
+# PENDING_MUTABLE_FIELDS is imported from dev_status_mutation, like
+# BACKLOG_MUTABLE_FIELDS below, so the CLI can't refuse a field the library
+# accepts.
 IMMUTABLE_FIELDS = {"id", "created", "completed_at"}
 # BACKLOG_MUTABLE_FIELDS is imported from dev_status_mutation -- the single
 # definition that drives cmd_update's unknown-field admission, replacing the
@@ -1119,13 +1115,38 @@ def _out_of_scope_check_reminder(
 
 
 def _pending_suffix(item: dict[str, object], color: bool) -> str:
-    """Render a pending item's line suffix: reply marker and waiting-age."""
-    marker = ""
-    if item.get("status") == "reply_received":
-        marker = " " + _colorize("reply received", _COLORS["pending"], color)
-    age = _age_days(cast(str, item.get("created", "")))
-    since = f" (waiting {age}d)" if age is not None else ""
-    return marker + since
+    """Render a pending item's line suffix: reply marker, then one date note.
+
+    ``due`` wins over ``sent_at``, which wins over ``created``: a due date
+    counts down, a send date is the real wait (or, once a reply is in, just
+    its age), and an item with neither only knows when it was created -- not
+    when the ask went out -- so it never claims a wait. A present field with
+    an invalid date drops the note rather than falling through.
+    """
+    replied = item.get("status") == "reply_received"
+    marker = (
+        " " + _colorize("reply received", _COLORS["pending"], color) if replied else ""
+    )
+    due, sent_at = item.get("due"), item.get("sent_at")
+    note = None
+    if due is not None:
+        age = _age_days(cast(str, due))
+        if age is not None:
+            if age < 0:
+                note = f"due in {-age}d"
+            elif age == 0:
+                note = "due today"
+            else:
+                note = f"overdue {age}d"
+    elif sent_at is not None:
+        age = _age_days(cast(str, sent_at))
+        if age is not None:
+            note = f"sent {age}d ago" if replied else f"waiting {age}d"
+    else:
+        age = _age_days(cast(str, item.get("created", "")))
+        if age is not None:
+            note = f"created {age}d ago"
+    return marker + (f" ({note})" if note else "")
 
 
 def _gate_suffix(item: dict[str, object], color: bool) -> str:
@@ -4274,6 +4295,10 @@ def cmd_pending_add(args: argparse.Namespace) -> None:
         context=_str_field(patch, "context"),
         next_steps=tuple(str(s) for s in _list_field(patch, "next_steps")),
         blocking=tuple(str(dep) for dep in _list_field(patch, "blocking")),
+        # Raw, not _str_field: the library refuses a non-string date rather
+        # than storing its coerced text.
+        sent_at=cast(str | None, patch.get("sent_at")),
+        due=cast(str | None, patch.get("due")),
     )
     try:
         res = add_pending_item(req, verbose=getattr(args, "verbose", False))
@@ -4351,6 +4376,8 @@ def cmd_pending_update(args: argparse.Namespace) -> None:
             if "blocking" in patch
             else UNSET
         ),
+        sent_at=cast(str | _Unset | None, patch.get("sent_at", UNSET)),
+        due=cast(str | _Unset | None, patch.get("due", UNSET)),
     )
     try:
         res = update_pending_item(
@@ -5391,7 +5418,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "json",
         metavar='\'{"id", "description", "kind", ["source_ref"], ["context"], '
-        '["next_steps"], ["blocking"]}\'',
+        '["next_steps"], ["blocking"], ["sent_at"], ["due"]}\'',
     )
 
     p = pending_sub.add_parser(
