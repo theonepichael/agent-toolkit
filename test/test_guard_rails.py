@@ -321,7 +321,7 @@ class FailurePostureTests(unittest.TestCase):
         )
         with mock.patch.object(guard_rails, "repo_info", return_value=info):
             with mock.patch.object(
-                guard_rails, "_behind_ref", return_value=False
+                guard_rails, "_behind_base", return_value=None
             ):
                 with mock.patch.object(guard_rails, "_session_identity") as session:
                     verdict = guard_rails.evaluate(
@@ -344,7 +344,7 @@ class FailurePostureTests(unittest.TestCase):
         )
         with mock.patch.object(guard_rails, "repo_info", return_value=info):
             with mock.patch.object(
-                guard_rails, "_behind_ref", return_value=True
+                guard_rails, "_behind_base", return_value=("deadbeef", 1.0)
             ):
                 with mock.patch.object(
                     guard_rails,
@@ -393,7 +393,7 @@ class FailurePostureTests(unittest.TestCase):
         )
         with mock.patch.object(guard_rails, "repo_info", return_value=info):
             with mock.patch.object(
-                guard_rails, "_behind_ref", return_value=True
+                guard_rails, "_behind_base", return_value=("deadbeef", 1.0)
             ) as behind:
                 with mock.patch.object(
                     guard_rails,

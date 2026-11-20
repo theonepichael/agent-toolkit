@@ -104,6 +104,14 @@ audit trail at ``~/.agent-toolkit/data/guard_rails_audit.jsonl`` (fields: ``ts``
 write happens strictly after the verdict is on stdout and can never alter
 or suppress it.
 
+The stale-base warning is deduped: the guard remembers, per worktree, the
+upstream commit it last warned about in ``guard_rails_stale_base.json`` under
+the state directory (``$XDG_STATE_HOME/agent-toolkit``), so repeated writes
+into one behind worktree stop repeating it. A suppressed repeat is delivered
+as ``allow`` with rule ``stale-worktree-base-repeat``; a worktree whose base
+moves warns again. Every state read and write is best-effort and fails open
+toward warning.
+
 Set ``GUARD_RAILS_OFF=1`` in the environment the harness is launched from to
 disable every rule. It is intentionally not reachable from an agent's own
 shell: hooks are spawned by the host process, so a tool call's ``export``
@@ -887,22 +895,66 @@ def _stale_base_ref(
     return f"origin/{branch}" if isinstance(branch, str) and branch else "origin/main"
 
 
-def _behind_ref(directory: str, ref: str) -> bool:
-    """Whether this worktree's HEAD is behind the already-fetched ``ref``.
-    A missing ref is never stale. Never fetches -- a guard must not need
-    the network."""
-    if git("-C", directory, "rev-parse", "--verify", "--quiet", ref) is None:
-        return False
+def _behind_base(directory: str, ref: str) -> str | None:
+    """The commit ``ref`` resolves to when this worktree's HEAD is behind it,
+    else ``None``. One lookup feeds both the comparison and the warn cursor's
+    key, so a ref that moves between two lookups cannot record a commit newer
+    than the one compared. A missing ref is never stale. Never fetches -- a
+    guard must not need the network."""
+    base = git("-C", directory, "rev-parse", "--verify", "--quiet", ref)
+    if not base:
+        return None
     counts = git(
-        "-C", directory, "rev-list", "--left-right", "--count", f"{ref}...HEAD"
+        "-C", directory, "rev-list", "--left-right", "--count", f"{base}...HEAD"
     )
     if not counts:
-        return False
+        return None
     try:
         behind = int(counts.split()[0])
     except (ValueError, IndexError):
-        return False
-    return behind > 0
+        return None
+    return base if behind > 0 else None
+
+
+def _stale_base_state_path() -> Path:
+    """The R3 warn cursor: runtime state, not migrated toolkit data (the same
+    reasoning as ``cli_common.timing_log_path``)."""
+    return cli_common.state_dir() / "agent-toolkit/guard_rails_stale_base.json"
+
+
+def _load_stale_base_state() -> dict[str, str]:
+    """The warn cursor: worktree path -> the base commit last warned about.
+
+    Every failure reads as an empty cursor, which keeps the warning rather
+    than silencing it -- a missing WARNING is the defect this could cause; a
+    duplicate one is not."""
+    try:
+        loaded = json.loads(_stale_base_state_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError, RecursionError):
+        return {}
+    if not isinstance(loaded, dict):
+        return {}
+    return {
+        worktree: base
+        for worktree, base in loaded.items()
+        if isinstance(worktree, str) and isinstance(base, str)
+    }
+
+
+def _remember_stale_base(worktree: str, base: str) -> None:
+    """Record that ``worktree`` was warned about ``base``, best-effort: any
+    failure is ignored and costs at most one duplicate warning, and a lost
+    update between two concurrent guard processes costs the same."""
+    path = _stale_base_state_path()
+    try:
+        state = _load_stale_base_state()
+        state[worktree] = base
+        for gone in [key for key in state if not os.path.isdir(key)]:
+            del state[gone]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(state), encoding="utf-8")
+    except OSError:
+        return
 
 
 def _shell_tokens(command: str) -> list[str]:
@@ -1618,7 +1670,11 @@ def evaluate(req: Request, claims: BacklogClaimLookup) -> Verdict:
         # R3: only a worktree can be behind its own base.
         in_progress_ids = {str(item.get("id") or "") for item in items}
         base_ref = _stale_base_ref(info, items, in_progress_ids, claims)
-        if _behind_ref(directory, base_ref):
+        base = _behind_base(directory, base_ref)
+        if base is not None:
+            if _load_stale_base_state().get(info.toplevel) == base:
+                return Verdict("allow", rule="stale-worktree-base-repeat")
+            _remember_stale_base(info.toplevel, base)
             return Verdict(
                 "warn",
                 f"This worktree's base is behind {base_ref}. Pull before "

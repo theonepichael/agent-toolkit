@@ -208,3 +208,142 @@ class TestStaleBaseEndToEnd:
         verdict = self._evaluate(wt, FakeLookup([_item("rel-item")]))
         assert verdict.decision == "warn"
         assert "origin/main" in verdict.reason
+
+
+# ── the warn cursor: once per worktree per base commit ─────────────────────
+
+GUARD_SCRIPT = Path(__file__).resolve().parent.parent / "agent-scripts/guard_rails.py"
+
+
+def _behind_worktree(tmp_path: Path) -> tuple[Path, Path]:
+    """A repo whose ``origin/main`` is one commit ahead of a linked worktree."""
+    repo = tmp_path / "repo2"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.name", "T")
+    _git(repo, "config", "user.email", "t@example.com")
+    _git(repo, "config", "gc.auto", "0")
+    _git(repo, "config", "maintenance.auto", "false")
+    base = _commit(repo, "base")
+    _git(repo, "worktree", "add", "-q", "-b", "item", str(tmp_path / "wt"), base)
+    head = _commit(repo, "next")
+    _git(repo, "update-ref", "refs/remotes/origin/main", head)
+    return repo, tmp_path / "wt"
+
+
+def _advance_upstream(repo: Path) -> str:
+    """Move ``origin/main`` on by one commit; return the new base sha."""
+    head = _commit(repo, f"more-{len(list(repo.iterdir()))}")
+    _git(repo, "update-ref", "refs/remotes/origin/main", head)
+    return head
+
+
+def _run_guard(worktree: Path) -> dict[str, object]:
+    """One real guard process for a write inside ``worktree``."""
+    out = subprocess.run(
+        [
+            sys.executable,
+            str(GUARD_SCRIPT),
+            "--harness",
+            "pi",
+            "--tool",
+            "write",
+            "--cwd",
+            str(worktree),
+            "--path",
+            str(worktree / "x.py"),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return json.loads(out.stdout)
+
+
+@pytest.fixture
+def state_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Point ``XDG_STATE_HOME`` at this test's directory; return the cursor."""
+    state = tmp_path / "xdg-state"
+    state.mkdir()
+    monkeypatch.setenv("XDG_STATE_HOME", str(state))
+    return state / "agent-toolkit" / "guard_rails_stale_base.json"
+
+
+class TestStaleBaseWarnCursor:
+    @pytest.mark.allow_real_subprocess  # spawns the guard CLI against a tmp git repo
+    @pytest.mark.regression(
+        "stale-base-warn-repeats-on-every-write",
+        "AssertionError: assert ['warn', 'warn', 'warn'] == ['warn', 'allow', 'allow']",
+    )
+    def test_repeated_writes_warn_once(
+        self, tmp_path: Path, state_home: Path
+    ) -> None:
+        _repo, wt = _behind_worktree(tmp_path)
+        decisions = [_run_guard(wt)["decision"] for _ in range(3)]
+        assert decisions == ["warn", "allow", "allow"]
+
+    @pytest.mark.allow_real_subprocess  # spawns the guard CLI against a tmp git repo
+    def test_warns_again_when_the_base_moves(
+        self, tmp_path: Path, state_home: Path
+    ) -> None:
+        repo, wt = _behind_worktree(tmp_path)
+        first = _run_guard(wt)
+        assert first["decision"] == "warn"
+        assert "origin/main" in str(first["reason"])
+        assert _run_guard(wt)["decision"] == "allow"
+
+        _advance_upstream(repo)
+
+        moved = _run_guard(wt)
+        assert moved["decision"] == "warn"
+        assert "origin/main" in str(moved["reason"])
+        assert _run_guard(wt)["decision"] == "allow"
+
+    @pytest.mark.allow_real_subprocess  # spawns the guard CLI against a tmp git repo
+    def test_audit_records_each_call(
+        self, tmp_path: Path, state_home: Path
+    ) -> None:
+        _repo, wt = _behind_worktree(tmp_path)
+        _run_guard(wt)
+        _run_guard(wt)
+
+        import agent_toolkit_paths
+
+        log = agent_toolkit_paths.path_for("guard-rail-log")
+        records = [json.loads(line) for line in log.read_text().splitlines()]
+        mine = [
+            record
+            for record in records
+            if record.get("target") == str(wt / "x.py")
+        ]
+        assert [record["rule"] for record in mine] == [
+            "stale-worktree-base",
+            "stale-worktree-base-repeat",
+        ]
+        assert [record["decision"] for record in mine] == ["allow", "allow"]
+
+    @pytest.mark.allow_real_subprocess  # spawns the guard CLI against a tmp git repo
+    def test_corrupt_state_warns_then_rewrites(
+        self, tmp_path: Path, state_home: Path
+    ) -> None:
+        repo, wt = _behind_worktree(tmp_path)
+        path = state_home
+        path.parent.mkdir(parents=True)
+        path.write_text("{not json")
+
+        assert _run_guard(wt)["decision"] == "warn"
+
+        expected = _git(repo, "rev-parse", "origin/main")
+        assert json.loads(path.read_text())[str(wt)] == expected
+        assert _run_guard(wt)["decision"] == "allow"
+
+    @pytest.mark.allow_real_subprocess  # spawns the guard CLI against a tmp git repo
+    def test_state_lands_in_the_sandboxed_state_dir(
+        self, tmp_path: Path, state_home: Path
+    ) -> None:
+        _repo, wt = _behind_worktree(tmp_path)
+        _run_guard(wt)
+
+        assert state_home.is_file()
+        json.loads(state_home.read_text())  # a complete, parseable cursor
+

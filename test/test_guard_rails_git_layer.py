@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Direct-call tests for guard_rails' git integration layer.
 
-``git``, ``repo_info``, ``common_dir_of``, ``_behind_ref`` and
+``git``, ``repo_info``, ``common_dir_of``, ``_behind_base`` and
 ``_session_identity`` were only ever reached through a mocked
 ``guard_rails.git`` (``test_guard_rails.py``) or end to end through
 ``evaluate()``, so every branch in them stayed alive under mutation. These
@@ -175,15 +175,15 @@ class TestCommonDirFallback:
         assert info.common_dir == expected
 
 
-class TestBehindRef:
+class TestBehindBase:
     def test_a_worktree_at_the_ref_is_not_behind(
         self, main_checkout: Path, worktree: Path
     ) -> None:
         base = _git("rev-parse", "HEAD", cwd=main_checkout)
         _git("update-ref", "refs/remotes/origin/main", base, cwd=main_checkout)
-        assert guard_rails._behind_ref(str(worktree), "origin/main") is False
+        assert guard_rails._behind_base(str(worktree), "origin/main") is None
 
-    def test_a_worktree_behind_the_ref_is_reported(
+    def test_a_worktree_behind_the_ref_returns_that_commit(
         self, main_checkout: Path, worktree: Path
     ) -> None:
         base = _git("rev-parse", "HEAD", cwd=main_checkout)
@@ -191,10 +191,10 @@ class TestBehindRef:
         _git("commit", "-q", "--allow-empty", "-m", "next", cwd=main_checkout)
         ahead = _git("rev-parse", "main", cwd=main_checkout)
         _git("update-ref", "refs/remotes/origin/main", ahead, cwd=main_checkout)
-        assert guard_rails._behind_ref(str(worktree), "origin/main") is True
+        assert guard_rails._behind_base(str(worktree), "origin/main") == ahead
 
     def test_a_missing_ref_is_never_stale(self, worktree: Path) -> None:
-        assert guard_rails._behind_ref(str(worktree), "origin/absent") is False
+        assert guard_rails._behind_base(str(worktree), "origin/absent") is None
 
     def test_an_unborn_head_that_cannot_be_compared_is_not_stale(
         self, main_checkout: Path, worktree: Path
@@ -210,7 +210,7 @@ class TestBehindRef:
             )
             is not None
         )
-        assert guard_rails._behind_ref(str(worktree), "origin/main") is False
+        assert guard_rails._behind_base(str(worktree), "origin/main") is None
 
 
 class TestSessionIdentity:
