@@ -176,6 +176,9 @@ and offer it as a follow-up backlog item. The plan stays the smallest change
 that meets the item.
 
 ## 7. Handoff
+**Under `--auto`, skip the question:** implement in this session, now. Only a
+live run decides between executors.
+
 Decide who implements the plan — ask if it isn't already obvious from the
 conversation:
 - **Same session, now.** Trivial/small item → go to step 8 immediately.

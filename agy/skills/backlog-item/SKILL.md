@@ -198,6 +198,9 @@ and offer it as a follow-up backlog item. The plan stays the smallest change
 that meets the item.
 
 ## 7. Handoff
+**Under `--auto`, skip the question:** implement in this session, now. Only a
+live run decides between executors.
+
 Decide who implements the plan — ask if it isn't already obvious from the
 conversation, in plain conversational text with a stated recommendation (agy
 has no structured multi-choice widget — state the options, recommend one,
