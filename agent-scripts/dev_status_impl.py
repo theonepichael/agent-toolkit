@@ -60,7 +60,7 @@ import time
 from collections import Counter
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import NoReturn, TextIO, cast
 
@@ -1192,7 +1192,11 @@ def _in_progress_suffix(item: dict[str, object], color: bool) -> str:
 #   trace_id to their "command" span, which names the caller. The review
 #   facet scopes every sample to second_opinion's own "review" command, so
 #   fast recap calls can no longer dilute a review failure, and adds a p90
-#   wall-time comparison against that backend's own earlier attempts.
+#   wall-time comparison against that backend's own earlier attempts. Both
+#   review signals read only attempts from the last
+#   _HEALTH_REVIEW_MAX_AGE_SECONDS: a backend demoted to last in rotation can
+#   go days without a new attempt, and evidence that old says nothing about
+#   present health.
 #
 # Both reads are bounded tails, and neither source can raise into the render:
 # a missing, unreadable, non-regular or malformed log degrades to "no warning
@@ -1209,6 +1213,12 @@ _HEALTH_FAILURE_RATE = 0.5
 _HEALTH_TIMING_TAIL_BYTES = 4 * 1024 * 1024
 _HEALTH_REVIEW_WINDOW = 10
 _HEALTH_REVIEW_MIN = 5
+# How long a review attempt counts as evidence. A backend demoted to last in
+# rotation can go days without a new attempt, so without an age bound its
+# all-failure window never rolls over and a recovered backend keeps warning.
+# It bounds both review signals, so the p90 comparison needs 20 attempts inside
+# this window -- a backend reviewed less than ~20 times a day loses that signal.
+_HEALTH_REVIEW_MAX_AGE_SECONDS = 24 * 60 * 60
 _HEALTH_LATENCY_FLOOR_SECONDS = 120.0
 _HEALTH_LATENCY_FACTOR = 2.0
 
@@ -1287,14 +1297,40 @@ def _top_error_snippet(window: list[tuple[str, str | None]]) -> str | None:
     return _ellipsize(top, 50)
 
 
-def _review_attempts() -> dict[str, list[tuple[float, bool]]]:
+def _health_now() -> datetime:
+    """Current time for the review evidence window; patched in tests."""
+    return datetime.now(UTC)
+
+
+def _fresh_review_start(started: object, since: datetime) -> datetime | None:
+    """``started`` as an aware datetime when it is at or after ``since``.
+
+    ``None`` for anything unusable -- a missing, malformed or nonsensical
+    timestamp is no evidence either way, and it must not reach
+    ``_review_health_lines``'s outer guard, which would blank every backend's
+    lines. Parse and comparison share one guard because an aware comparison
+    can raise ``OverflowError`` on a timestamp near ``datetime.min``/``max``
+    with a non-zero offset.
+    """
+    try:
+        parsed = dev_status_storage.parse_journal_ts(started)
+        fresh = parsed is not None and parsed >= since
+    except Exception:  # noqa: BLE001 — an unusable timestamp is no evidence
+        return None
+    return parsed if fresh else None
+
+
+def _review_attempts(since: datetime) -> dict[str, list[tuple[float, bool]]]:
     """Per-backend second_opinion review attempts, oldest first.
 
     One entry per ``backend`` span inside a trace whose ``command`` span is
-    second_opinion's ``review`` command, as ``(wall_seconds, succeeded)``.
-    Spans are appended when they finish, so file order is completion order;
-    the span's own timestamp restores attempt order. Read-only and never
-    raising -- an unusable log yields nothing.
+    second_opinion's ``review`` command, as ``(wall_seconds, succeeded)``, and
+    only for spans that started at or after ``since`` -- older attempts are not
+    evidence of present health. Spans are appended when they finish, so file
+    order is completion order; ordering by the parsed start instant (never the
+    raw text, whose lexicographic order stops matching chronology as soon as
+    two records carry different UTC offsets) restores attempt order.
+    Read-only and never raising -- an unusable log yields nothing.
     """
     try:
         raw = _read_log_tail(cli_common.timing_log_path(), _HEALTH_TIMING_TAIL_BYTES)
@@ -1337,12 +1373,15 @@ def _review_attempts() -> dict[str, list[tuple[float, bool]]]:
             (label, duration, record.get("outcome") == "success", started)
         )
 
-    samples: dict[str, list[tuple[str, float, bool]]] = {}
+    samples: dict[str, list[tuple[datetime, float, bool]]] = {}
     for trace, spans in rows.items():
         if commands.get(trace) != ("second_opinion", "review"):
             continue
         for label, duration, succeeded, started in spans:
-            samples.setdefault(label, []).append((started, duration, succeeded))
+            fresh = _fresh_review_start(started, since)
+            if fresh is None:
+                continue
+            samples.setdefault(label, []).append((fresh, duration, succeeded))
     return {
         backend: [
             (duration, succeeded) for _started, duration, succeeded in sorted(spans)
@@ -1355,11 +1394,14 @@ def _review_health_lines(color: bool) -> list[str]:
     """Review-scoped warning lines: failure rate, then p90 latency drift.
 
     Scoped to second_opinion's own ``review`` command, which is what stops
-    fast recap successes from diluting a review failure. Two independent
-    signals per backend, either of which may fire on its own; never raises.
+    fast recap successes from diluting a review failure. Only attempts inside
+    ``_HEALTH_REVIEW_MAX_AGE_SECONDS`` count, so a backend whose failures are
+    all stale reports nothing. Two independent signals per backend, either of
+    which may fire on its own; never raises.
     """
     try:
-        attempts = _review_attempts()
+        since = _health_now() - timedelta(seconds=_HEALTH_REVIEW_MAX_AGE_SECONDS)
+        attempts = _review_attempts(since)
     except Exception:  # noqa: BLE001 — health check must never raise
         return []
 

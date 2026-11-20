@@ -336,7 +336,11 @@ Timing is opt-in and best-effort: it never changes an exit code. One output
 path does read it -- `dev_status.py render` takes a bounded, read-only tail of
 this log and prints extra second-opinion backend-health warnings from it: a
 review failure rate (so fast recap calls cannot mask review failures) and a
-p90 wall-time regression against that backend's own earlier attempts.
+p90 wall-time regression against that backend's own earlier attempts. Both
+review signals count only attempts from the last 24 hours, so a backend whose
+failures are all older than that reports nothing -- and because the p90
+comparison needs twenty attempts inside that window, a backend reviewed less
+than about twenty times a day gets the failure-rate signal only.
 
 The script span measures `main()`, including argument parsing, but excludes
 Python startup and imports. Command, preparation, backend, and attempt spans

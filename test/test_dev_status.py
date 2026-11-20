@@ -8062,6 +8062,116 @@ class BackendHealthWarningTestCase(BacklogFixture):
         # and that window is healthy here.
         self.assertFalse(any(" calls)" in w for w in warnings))
 
+    @pytest.mark.regression(
+        "health-warning-stale-evidence",
+        "AssertionError: Lists differ: [] != ['⚠️ second-opinion: pi 0% success "
+        "(0/5 review attempts)']",
+    )
+    def test_stale_review_failures_stop_warning(self):
+        # A backend demoted to last in rotation can go days without a new
+        # review attempt, so its all-failure window never rolls over on its
+        # own and the warning outlives the incident it described. Old attempts
+        # are not evidence of present health.
+        written = datetime(2026, 3, 1, 12, 0, tzinfo=UTC) - timedelta(minutes=40)
+        for index in range(5):
+            self._review(
+                [("pi", 120.0, False)],
+                started=written + timedelta(seconds=index),
+            )
+
+        def read_at(moment: datetime) -> list[str]:
+            with patch.object(
+                dev_status, "_health_now", create=True, return_value=moment
+            ):
+                return self._warnings()
+
+        # Positive control: the same attempts, read while they are 40 minutes
+        # old, still warn.
+        fresh = read_at(written + timedelta(minutes=40))
+        self.assertTrue(
+            any("pi" in w and "(0/5 review attempts)" in w for w in fresh)
+        )
+
+        # Two days on, every attempt behind that warning is older than the
+        # freshness window, so the backend's stale failures say nothing.
+        stale = read_at(written + timedelta(days=2, minutes=40))
+        self.assertEqual([], [w for w in stale if "pi" in w])
+
+        # An unusable timestamp drops only its own sample: a span with an
+        # extreme offset must not blank the backend's real evidence (a count of
+        # 6 here would mean the bad span was counted as an attempt).
+        trace, command_span = uuid.uuid4().hex, uuid.uuid4().hex
+        self._append_span(
+            {
+                "name": "backend",
+                "backend": "pi",
+                "trace_id": trace,
+                "parent_id": command_span,
+                "outcome": "error",
+                "duration_seconds": 120.0,
+                "started_at": "0001-01-01T00:00:00+23:59",
+            }
+        )
+        self._append_span(
+            {
+                "name": "command",
+                "script": "second_opinion",
+                "command": "review",
+                "trace_id": trace,
+                "parent_id": None,
+                "outcome": "success",
+                "duration_seconds": 120.0,
+                "started_at": (written + timedelta(minutes=39)).isoformat(),
+            }
+        )
+        degraded = read_at(written + timedelta(minutes=40))
+        self.assertTrue(
+            any("pi" in w and "(0/5 review attempts)" in w for w in degraded)
+        )
+
+    @pytest.mark.regression(
+        "health-latency-baseline-expires",
+        "AssertionError: Lists differ: ['⚠️ second-opinion: opencode p90 300s vs "
+        "60s baseline (last 10 attempts)'] != []",
+    )
+    def test_stale_latency_baseline_stops_warning(self):
+        # The p90 drift signal compares the last ten attempts against the ten
+        # before them. If the baseline group is stale evidence, the comparison
+        # is measuring today's backend against an incident from last week --
+        # so expired attempts must leave both windows, not just the rate one.
+        written = datetime(2026, 3, 1, 12, 0, tzinfo=UTC)
+        old = written - timedelta(hours=25)
+        for index in range(10):
+            self._review(
+                [("opencode", 60.0, True)],
+                started=old + timedelta(seconds=index),
+            )
+        for index in range(10):
+            self._review(
+                [("opencode", 300.0, True)],
+                started=written - timedelta(hours=1, seconds=-index),
+            )
+
+        def read_at(moment: datetime) -> list[str]:
+            with patch.object(
+                dev_status, "_health_now", create=True, return_value=moment
+            ):
+                return self._warnings()
+
+        # Positive control: with the clock far enough back that both groups
+        # are fresh, the drift between them is still reported -- so the
+        # silence below is the stale baseline expiring, not the whole facet
+        # (recent window included) being filtered away.
+        both_fresh = read_at(old + timedelta(minutes=30))
+        self.assertTrue(
+            any(
+                "opencode" in w and "p90 300s vs 60s baseline" in w
+                for w in both_fresh
+            )
+        )
+
+        self.assertEqual(read_at(written), [])
+
     def test_slow_but_successful_backend_p90_regression_warned(self):
         now = datetime.now(UTC)
         base = now - timedelta(hours=3)
