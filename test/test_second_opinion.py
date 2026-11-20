@@ -3666,6 +3666,35 @@ class RoundCapEnforcementTests(unittest.TestCase):
         self.assertNotIn("run:old", remaining)
         self.assertIn("run:new", remaining)
 
+    @pytest.mark.regression(
+        "second-opinion-prune-skips-past-malformed-entry",
+        "AttributeError: 'list' object has no attribute 'get'",
+    )
+    def test_malformed_entry_does_not_stop_pruning_of_later_entries(self) -> None:
+        # A malformed entry must be skipped, not bail out of the loop: bailing
+        # keeps the critique flowing but leaves every later stale file behind.
+        # iterdir() order is filesystem-dependent, so pin it and put the
+        # malformed entry first -- otherwise a bail-out passes by luck whenever
+        # the stale entry happens to be visited first. Both skip arms are
+        # covered: the non-object guard (a list) and the TypeError arm (a
+        # non-numeric ``updated``), which stand as separate decisions.
+        for content in ("[]", json.dumps({"updated": None})):
+            with self.subTest(content=content):
+                second_opinion._ensure_runs_dir()
+                malformed = self.runs_dir / "malformed.json"
+                malformed.write_text(content, encoding="utf-8")
+                stale = self.runs_dir / "stale.json"
+                stale.write_text(
+                    json.dumps({"key": "run:stale", "count": 1, "updated": 0.0}),
+                    encoding="utf-8",
+                )
+                with patch.object(
+                    Path, "iterdir", lambda _path: iter([malformed, stale])
+                ):
+                    second_opinion._prune_stale_runs(self.runs_dir)
+                self.assertFalse(stale.exists())
+                self.assertTrue(malformed.exists())
+
     def test_path_key_counter_resets_after_six_hours_idle(self) -> None:
         # A plan-path key (no --run-id) must not leak the cap across sessions: a
         # critique of the same file much later is a fresh run. Seed a counter at
@@ -5552,6 +5581,38 @@ class BackendRotationCmdReviewTests(unittest.TestCase):
             out, err = self._run(allow_extra_round=True)
         self.assertEqual(self._served(out), "codex")
         self.assertIn("read-only", err)
+
+    @pytest.mark.regression(
+        "second-opinion-prune-non-object-stray-file-loses-critique",
+        "AttributeError: 'list' object has no attribute 'get'",
+    )
+    def test_non_object_stray_state_file_still_returns_the_critique(self) -> None:
+        # A stray run file holding a JSON list made the prune pass raise
+        # AttributeError on data.get, after the backend had already answered.
+        second_opinion._ensure_runs_dir()
+        (second_opinion._runs_dir() / "stray.json").write_text(
+            "[]", encoding="utf-8"
+        )
+        out, _err = self._run()
+        self.assertEqual(self._served(out), "codex")
+        self.assertIn("codex critique", out)
+
+    @pytest.mark.regression(
+        "second-opinion-prune-non-numeric-updated-loses-critique",
+        "TypeError: float() argument must be a string or a real number, not 'NoneType'",
+    )
+    def test_non_numeric_updated_in_stray_file_still_returns_the_critique(
+        self,
+    ) -> None:
+        # null is not numeric, so float(data["updated"]) raised TypeError in the
+        # prune pass -- same lost-critique symptom, one shape over.
+        second_opinion._ensure_runs_dir()
+        (second_opinion._runs_dir() / "stray.json").write_text(
+            json.dumps({"updated": None}), encoding="utf-8"
+        )
+        out, _err = self._run()
+        self.assertEqual(self._served(out), "codex")
+        self.assertIn("codex critique", out)
 
     def test_plan_path_key_rotates_without_run_id(self) -> None:
         served = [self._served(self._run(run_id=None)[0]) for _ in range(2)]

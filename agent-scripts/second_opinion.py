@@ -1441,9 +1441,15 @@ def _prune_stale_runs(runs_dir: Path) -> None:
                 continue
             try:
                 data = json.loads(entry.read_text(encoding="utf-8"))
+                # A stray file that is not one run's state object is left in
+                # place, never deleted: garbage persisting is the same choice
+                # the JSONDecodeError arm makes, and a malformed entry must not
+                # stop the walk before the stale entries after it.
+                if not isinstance(data, dict):
+                    continue
                 if float(data.get("updated", 0.0)) < cutoff:
                     entry.unlink()
-            except (json.JSONDecodeError, OSError, ValueError):
+            except (json.JSONDecodeError, OSError, ValueError, TypeError):
                 continue
     except OSError:
         return
