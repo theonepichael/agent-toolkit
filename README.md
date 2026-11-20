@@ -333,7 +333,11 @@ agent scheduling are not measured by these records. Once the log grows past
 generation is kept; the previous `.1` is replaced). Remove or archive both
 files when finished. New log files are created with mode 0600.
 
+## License
+
+Released under the [MIT License](LICENSE).
+
 ## Credits
 
 Several skills adapt [Matt Pocock's skills](https://github.com/mattpocock/skills)
-(MIT). `CREDITS.md` lists which, with his license.
+(MIT). [CREDITS.md](CREDITS.md) lists which, with his license.
