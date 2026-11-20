@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+# Re-run the installer after a merge that changes what it links or copies.
+#
+# New skills land as per-file links.toml rows, Codex skills are copied (not
+# linked) by install.py, and a `dir = true` row is expanded into one link per
+# file, so all of these stay invisible to the harnesses until the installer
+# runs again. This hook notices such a merge into main and either runs
+# `./install.sh --harness=all` (a checkout that opted in with
+# `git config --local agent-toolkit.postMergeInstall true`) or prints a
+# one-line reminder to.
+#
+# It acts only in the primary checkout on main: an install from a linked
+# worktree would repoint every link at the worktree, and one from another
+# branch would install that branch's files. It never runs the installer
+# while the trigger paths have uncommitted or untracked changes, since the
+# installer reads the working tree. It always exits 0: git ignores
+# post-merge's status, and a failure here must never look like a failed
+# merge.
+#
+# Not covered, because git runs other hooks for them: a pull that actually
+# rebases, and a conflicted or --no-commit merge finished with `git commit`
+# or `git merge --continue`. Run `./install.sh --harness=all` by hand after
+# those.
+#
+# The run is bounded at 60 seconds only where a `timeout` command exists.
+set -uo pipefail
+unset CDPATH
+
+# $1 is 1 for a squash merge, which leaves HEAD (and so the install) as is.
+[ "${1:-0}" = "1" ] && exit 0
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+cd "$repo_root" || exit 0
+git rev-parse -q --verify ORIG_HEAD >/dev/null || exit 0
+
+abs_dir() {
+  # `cd ""` succeeds in place, so an empty answer must fail explicitly.
+  [ -n "$1" ] && (cd "$1" 2>/dev/null && pwd -P)
+}
+git_dir="$(abs_dir "$(git rev-parse --git-dir)")"
+common_dir="$(abs_dir "$(git rev-parse --git-common-dir)")"
+if [ -z "$git_dir" ] || [ "$git_dir" != "$common_dir" ]; then
+  exit 0
+fi
+[ "$(git symbolic-ref --short -q HEAD)" = "main" ] || exit 0
+
+# Files whose content the installer links or copies one by one.
+CHANGED_PATHS=(links.toml ':(glob)codex/skills/*/SKILL.md')
+# The src of every `dir = true` row in links.toml: adding or removing a file
+# under one changes the set of links. test_post_merge_hook.py fails when a
+# dir row is missing here.
+DIR_LINK_ROOTS=(pi/skills pi/extensions/swarm-lib)
+
+git diff --quiet ORIG_HEAD HEAD -- "${CHANGED_PATHS[@]}" 2>/dev/null
+content_status=$?
+git diff --quiet --no-renames --diff-filter=ADT ORIG_HEAD HEAD -- "${DIR_LINK_ROOTS[@]}" 2>/dev/null
+tree_status=$?
+if [ "$content_status" -gt 1 ] || [ "$tree_status" -gt 1 ]; then
+  echo "agent-toolkit: could not check whether this merge changed installed files"
+  exit 0
+fi
+[ "$content_status" -eq 1 ] || [ "$tree_status" -eq 1 ] || exit 0
+
+remind() {
+  echo "agent-toolkit: this merge changed installed files$1; run ./install.sh --harness=all (add --profile=work on a work machine)"
+}
+
+if [ "$(git config --local --bool agent-toolkit.postMergeInstall 2>/dev/null)" != "true" ]; then
+  remind ""
+  exit 0
+fi
+
+# Untracked files count whatever status.showUntrackedFiles says, and a failed
+# status counts as dirty: the installer would deploy whatever is on disk.
+if ! dirty="$(git status --porcelain --untracked-files=all -- "${CHANGED_PATHS[@]}" "${DIR_LINK_ROOTS[@]}" 2>/dev/null)" ||
+  [ -n "$dirty" ]; then
+  remind " and they have uncommitted changes, so it did not run the installer"
+  exit 0
+fi
+
+log="$common_dir/post-merge-install.log"
+if ! : 2>/dev/null >"$log"; then
+  remind " but it could not write $log, so it did not run the installer"
+  exit 0
+fi
+(
+  # The wrapper's marker lets the installer overwrite settings another
+  # installer owns; this run must never carry it.
+  unset AGENT_TOOLKIT_INSTALL_WRAPPER
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 60 ./install.sh --harness=all
+  else
+    ./install.sh --harness=all
+  fi
+) </dev/null >"$log" 2>&1
+status=$?
+
+case "$status" in
+  0) summary="ran install.sh --harness=all" ;;
+  1) summary="ran install.sh --harness=all with skips" ;;
+  124) summary="install.sh --harness=all timed out after 60s" ;;
+  *) summary="install.sh --harness=all failed (exit $status)" ;;
+esac
+echo "agent-toolkit: $summary; log: $log"
+exit 0

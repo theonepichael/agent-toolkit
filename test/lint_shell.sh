@@ -8,6 +8,7 @@ REPO="$(cd "$HERE/.." && pwd)"
 
 files=(
   "$REPO/install.sh"
+  "$REPO/githooks/post-merge"
   "$REPO/scripts/bootstrap-worktree.sh"
   "$REPO/test/run.sh"
   "$REPO/test/scenarios.sh"

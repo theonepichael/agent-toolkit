@@ -14,6 +14,20 @@ the warning. Run `./install.sh --report-legacy-env` to see any still set.
 
 ## Unreleased
 
+- `./install.sh --harness=all` provisions every harness whose CLI is on PATH,
+  noting each one it skips; `--force-harness` keeps all six, and
+  `--profile=work` leaves out opencode. `all` cannot be mixed with harness
+  names.
+- An `install.py` run outside a personal-overlay checkout's wrapper, on a
+  machine that has one, no longer repoints the global git hooks path or
+  records uninstall baselines for the overlay-owned links, and reports those
+  deferrals as notes instead of skips, so a clean run exits 0.
+- New `githooks/post-merge`: after a merge into `main` that changes what the
+  installer links or copies, it reminds you to run
+  `./install.sh --harness=all`, or runs it itself in a clone opted in with
+  `git config --local agent-toolkit.postMergeInstall true`. Per machine: the
+  hook only fires in a clone whose `core.hooksPath` is `githooks`.
+
 - `docs/fork-machine-updates.md` now has the fork-installed machine do the
   per-machine steps of every release it takes, not only the target's: step 1
   lists the releases between the fork's last upstream commit and the target

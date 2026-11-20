@@ -56,6 +56,22 @@ a seed SessionStart-subset guard, and the generated-doc checks), but git reads t
 git config core.hooksPath githooks
 ```
 
+It also ships `githooks/post-merge`. After a merge into `main` in the
+primary checkout that changes what the installer links or copies
+(`links.toml`, a Codex `SKILL.md`, or files added to or removed from a
+directory link), it prints a reminder to run `./install.sh --harness=all`.
+To have it run the installer itself instead, opt this clone in:
+
+```bash
+git config --local agent-toolkit.postMergeInstall true
+```
+
+It then runs the installer (bounded at 60 seconds where a `timeout` command
+exists), logs its output to a
+`post-merge-install.log` file inside the clone's git directory, and prints
+one summary line. It skips the
+run, and only reminds, while those paths have uncommitted changes.
+
 `install.sh` also points git's *global* `core.hooksPath` at
 `githooks-global/pre-commit` (personal profile only; on a machine that
 also carries a personal-overlay checkout, only when run through that
