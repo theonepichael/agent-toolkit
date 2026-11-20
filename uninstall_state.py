@@ -1161,6 +1161,24 @@ class UninstallLedger:
         """
         return {str(e["key"]) for e in self.entries() if "key" in e}
 
+    def latest_entries(self) -> list[dict[str, object]]:
+        """One entry per key: the outcome that actually stands for it.
+
+        The ledger is append-only, so a key that a guarded outcome left
+        retryable and a later run re-attempted (see
+        :func:`execute_file_symlink_phase` in ``uninstall_exec``) accumulates
+        entries — one or more stale blocks, then each later attempt, however
+        many runs it takes. Anything answering "did this key's action fail?"
+        must read each key's newest entry, not every entry ever recorded.
+        Every other key can only have one: :meth:`completed_keys` keeps it from
+        being re-attempted.
+        """
+        latest: dict[str, dict[str, object]] = {}
+        for entry in self.entries():
+            if "key" in entry:
+                latest[str(entry["key"])] = entry
+        return list(latest.values())
+
     def keys_with_outcome_prefix(self, prefix: str) -> set[str]:
         """Every key with at least one recorded outcome starting with ``prefix``.
 

@@ -6296,3 +6296,271 @@ def test_data_transforms_skipped_when_links_point_into_another_checkout(
     install.run_data_transforms(ctx)
     assert _json.loads(store.read_text()) == [1, 2]
     assert any("another checkout" in s for s in ctx.reporter.skipped)
+
+# ── uninstall completion after a guard-blocked key is retried ──────────────
+
+
+@pytest.mark.regression(
+    "uninstall-incomplete-after-guard-retry",
+    "AssertionError: second run after a successful guard retry did not complete",
+)
+def test_uninstall_reaches_completion_after_a_guard_blocked_key_is_retried(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A guard block is retryable, so a successful retry must complete the run.
+
+    Run 1 records the guard block (exit 1, by design). Run 2 re-attempts the
+    key and removes it -- nothing is left unresolved, so the run must exit 0
+    and finalize the state rather than keep counting the superseded guard
+    entry as a failure.
+    """
+    guarded = home / "settings.json"
+    guarded.write_text("x")
+    ctx = make_ctx(home, yes=True)
+    baseline = uninstall_state.Baseline()
+    baseline.add_layer(
+        "2024-01-01T00:00:00+00:00",
+        {
+            uninstall_state.file_key(guarded): {
+                "state": "absent",
+                "needs_vscode_guard": True,
+            }
+        },
+    )
+    uninstall_state.save_baseline(ctx.state_dir, baseline)
+
+    running = {"value": True}
+    monkeypatch.setattr(
+        settings_seed_drift_check,
+        "_vscode_process_running",
+        lambda: running["value"],
+    )
+
+    # Two blocks, so the completion sweep has to pick the newest entry rather
+    # than merely tolerating a single stale one.
+    assert install.do_uninstall(make_ctx(home, yes=True)) == 1
+    assert install.do_uninstall(make_ctx(home, yes=True)) == 1
+    assert guarded.exists()
+
+    running["value"] = False
+    second = install.do_uninstall(make_ctx(home, yes=True))
+
+    assert not guarded.exists()
+    assert second == 0, "second run after a successful guard retry did not complete"
+    assert not uninstall_state.baseline_path(ctx.state_dir).exists()
+
+
+# ── rc restore: live-content revalidation at execution time ────────────────
+
+
+def _rc_restore_baseline_and_report(
+    ctx: install.Context, paths: list[Path], baseline_bytes: bytes
+) -> tuple[uninstall_state.Baseline, dict[str, uninstall_state.Classification]]:
+    """A baseline + preflight report whose rc-file keys are owned/restore.
+
+    Mirrors what ``build_preflight_report`` produces for an rc file the
+    installer appended to: recorded baseline content, plus the append-only
+    reclassification's owned/restore verdict.
+    """
+    blob = uninstall_state.write_blob(ctx.state_dir, baseline_bytes)
+    baseline = uninstall_state.Baseline()
+    baseline.add_layer(
+        "2024-01-01T00:00:00+00:00",
+        {
+            uninstall_state.file_key(path): {"state": "present", "blob": blob}
+            for path in paths
+        },
+    )
+    report = {
+        uninstall_state.file_key(path): uninstall_state.Classification(
+            uninstall_state.BUCKET_OWNED,
+            uninstall_state.ACTION_RESTORE,
+            "appended to since baseline — restore original content",
+        )
+        for path in paths
+    }
+    return baseline, report
+
+
+def _ledger_for(ctx: install.Context) -> uninstall_state.UninstallLedger:
+    return uninstall_state.UninstallLedger(
+        uninstall_state.uninstall_ledger_path(ctx.state_dir)
+    )
+
+
+@pytest.mark.regression(
+    "rc-restore-overwrites-post-preflight-edit",
+    "AssertionError: an rc edit made after preflight was overwritten",
+)
+def test_execute_file_symlink_phase_refuses_a_restore_once_the_rc_file_is_no_longer_a_pure_append(
+    home: Path,
+) -> None:
+    """The owned/restore verdict is about preflight-time bytes, not execution-time.
+
+    The interactive confirmation sits between the two, so an edit landing in
+    that window must not be silently overwritten with the baseline blob. The
+    control in the same run proves the guard did not merely disable restores:
+    a file that is still a pure append is restored, as before.
+    """
+    ctx = make_ctx(home)
+    baseline_bytes = b"export A=1\n"
+    block = b"# installer block\n"
+    appended = home / ".zshrc"
+    appended.write_bytes(baseline_bytes + block)
+    edited = home / ".bashrc"
+    edited.write_bytes(baseline_bytes + block)
+    baseline, report = _rc_restore_baseline_and_report(
+        ctx, [appended, edited], baseline_bytes
+    )
+
+    appended.write_bytes(baseline_bytes + block + b"# my own line\n")
+    edited.write_bytes(b"# my own edit\n" + baseline_bytes + block)
+
+    ledger = _ledger_for(ctx)
+    install.execute_file_symlink_phase(ctx, baseline, report, ledger)
+    outcomes = {e["key"]: e["outcome"] for e in ledger.entries()}
+
+    # Control: still a pure append -> restored to the recorded baseline.
+    assert appended.read_bytes() == baseline_bytes
+    assert outcomes[uninstall_state.file_key(appended)] == "ok"
+    # No longer a pure append -> left exactly as the user left it.
+    assert edited.read_bytes() == b"# my own edit\n" + baseline_bytes + block, (
+        "an rc edit made after preflight was overwritten"
+    )
+    assert outcomes[uninstall_state.file_key(edited)].startswith("unresolved")
+
+
+@pytest.mark.regression(
+    "rc-restore-recreates-deleted-file",
+    "AssertionError: an rc file deleted after preflight was recreated",
+)
+def test_execute_file_symlink_phase_does_not_recreate_an_rc_file_deleted_after_preflight(
+    home: Path,
+) -> None:
+    """A file deleted in the confirmation window is not resurrected from the blob."""
+    ctx = make_ctx(home)
+    baseline_bytes = b"export A=1\n"
+    rc = home / ".zshrc"
+    rc.write_bytes(baseline_bytes + b"# installer block\n")
+    baseline, report = _rc_restore_baseline_and_report(ctx, [rc], baseline_bytes)
+
+    rc.unlink()
+
+    ledger = _ledger_for(ctx)
+    install.execute_file_symlink_phase(ctx, baseline, report, ledger)
+    outcomes = {e["key"]: e["outcome"] for e in ledger.entries()}
+
+    assert not rc.exists(), "an rc file deleted after preflight was recreated"
+    assert outcomes[uninstall_state.file_key(rc)].startswith("unresolved")
+
+
+@pytest.mark.regression(
+    "rc-restore-writes-through-replacement-symlink",
+    "AssertionError: the replacement symlink's target was overwritten",
+)
+def test_execute_file_symlink_phase_does_not_restore_through_a_replacement_symlink(
+    home: Path,
+) -> None:
+    """A path swapped for a symlink must not cause the link target to be written."""
+    ctx = make_ctx(home)
+    baseline_bytes = b"export A=1\n"
+    block = b"# installer block\n"
+    rc = home / ".zshrc"
+    rc.write_bytes(baseline_bytes + block)
+    baseline, report = _rc_restore_baseline_and_report(ctx, [rc], baseline_bytes)
+
+    target = home / "elsewhere.txt"
+    target_content = baseline_bytes + b"# someone else's file\n"
+    target.write_bytes(target_content)
+    rc.unlink()
+    rc.symlink_to(target)
+
+    ledger = _ledger_for(ctx)
+    install.execute_file_symlink_phase(ctx, baseline, report, ledger)
+    outcomes = {e["key"]: e["outcome"] for e in ledger.entries()}
+
+    assert target.read_bytes() == target_content, (
+        "the replacement symlink's target was overwritten"
+    )
+    assert outcomes[uninstall_state.file_key(rc)].startswith("unresolved")
+
+
+@pytest.mark.regression(
+    "rc-restore-not-retryable-after-refusal",
+    "AssertionError: the refused restore overwrote the file",
+)
+def test_execute_file_symlink_phase_retries_a_revalidation_blocked_restore(
+    home: Path,
+) -> None:
+    """A refused restore stays retryable, so the CLI's retry advice is true.
+
+    A permanent refusal would leave the user with a re-run that silently skips
+    the file while still reporting it as unresolved.
+    """
+    ctx = make_ctx(home)
+    baseline_bytes = b"export A=1\n"
+    block = b"# installer block\n"
+    rc = home / ".zshrc"
+    rc.write_bytes(baseline_bytes + block)
+    baseline, report = _rc_restore_baseline_and_report(ctx, [rc], baseline_bytes)
+    ledger = _ledger_for(ctx)
+
+    edited = b"# my own edit\n" + baseline_bytes + block
+    rc.write_bytes(edited)
+    install.execute_file_symlink_phase(ctx, baseline, report, ledger)
+    assert rc.read_bytes() == edited, "the refused restore overwrote the file"
+    # The refusal really was recorded -- otherwise a skipped restore would
+    # look the same as a refused one, and the supersession below would prove
+    # nothing.
+    assert len(ledger.entries()) == 1
+    assert ledger.entries()[0]["outcome"].startswith("unresolved")
+
+    rc.write_bytes(baseline_bytes + block)  # the user reverts the edit
+    install.execute_file_symlink_phase(ctx, baseline, report, ledger)
+
+    assert rc.read_bytes() == baseline_bytes
+    assert [e["outcome"] for e in ledger.entries()][-1] == "ok"
+    assert len(ledger.entries()) == 2  # the retry superseded, never rewrote
+
+
+@pytest.mark.regression(
+    "deferred-guard-block-keeps-uninstall-incomplete",
+    "AssertionError: a deferral whose key needs nothing anymore still blocks completion",
+)
+def test_uninstall_completes_once_a_deferred_key_needs_nothing(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A deferral is not a permanent failure: the user finishing by hand counts.
+
+    Run 1 is blocked by the VS Code guard, leaving a retryable ledger entry.
+    The user then removes the file themselves, so preflight reports it
+    preserved and there is nothing left to attempt — the superseded deferral
+    must not keep reporting the run incomplete.
+    """
+    guarded = home / "settings.json"
+    guarded.write_text("x")
+    ctx = make_ctx(home, yes=True)
+    baseline = uninstall_state.Baseline()
+    baseline.add_layer(
+        "2024-01-01T00:00:00+00:00",
+        {
+            uninstall_state.file_key(guarded): {
+                "state": "absent",
+                "needs_vscode_guard": True,
+            }
+        },
+    )
+    uninstall_state.save_baseline(ctx.state_dir, baseline)
+
+    monkeypatch.setattr(
+        settings_seed_drift_check, "_vscode_process_running", lambda: True
+    )
+    assert install.do_uninstall(make_ctx(home, yes=True)) == 1
+
+    guarded.unlink()  # the user does by hand what the guard deferred
+
+    code = install.do_uninstall(make_ctx(home, yes=True))
+
+    assert code == 0, (
+        "a deferral whose key needs nothing anymore still blocks completion"
+    )

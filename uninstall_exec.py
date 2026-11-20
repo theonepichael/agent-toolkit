@@ -618,7 +618,12 @@ def _execute_restore(
     claimed the path and the restore aborts rather than overwriting it.
     For a plain in-place restore (an appended-to rc file), ``dest`` is
     expected to already exist and gets overwritten with the recorded
-    content directly.
+    content directly — but only after re-reading it and confirming it is
+    still what the preflight report classified. That rules out the stale
+    premise (an edit inside the recorded content, a file that went away, a
+    path swapped for a symlink); an extra line *appended* while the
+    confirmation prompt was up still is a pure append and is discarded, as
+    the preflight report's own wording says it will be.
     """
     digest = recorded.get("blob")
     if not isinstance(digest, str):
@@ -628,6 +633,33 @@ def _execute_restore(
         return "unresolved: recorded blob is missing or unreadable"
     if expect_absent and _restore_target_still_occupied(deps, dest):
         return "unresolved: destination still occupied after symlink removal"
+    if not expect_absent:
+        # An in-place restore exists only for the rc-file append rule
+        # (uninstall_state.reclassify_rc_file): owned/restore is a claim about
+        # this file's bytes at *preflight* time, and the interactive
+        # confirmation sits between then and this write. Re-check the same
+        # premise here, so a change that breaks it is left in place instead of
+        # silently discarded — the execution-time revalidation
+        # execute_gitconfig_phase already does for its own live value.
+        if dest.is_symlink():
+            return (
+                f"{_RESTORE_REVALIDATION_UNRESOLVED_PREFIX} path is now a "
+                "symlink — writing it would land on whatever it points at, "
+                "so it was left in place"
+            )
+        try:
+            live = dest.read_bytes()
+        except OSError as exc:
+            return (
+                f"{_RESTORE_REVALIDATION_UNRESOLVED_PREFIX} could not read it "
+                f"({exc}) — left in place rather than recreated"
+            )
+        if not live.startswith(content):
+            return (
+                f"{_RESTORE_REVALIDATION_UNRESOLVED_PREFIX} changed since "
+                "preflight and is no longer a pure append of the recorded "
+                "content — left in place"
+            )
     try:
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(content)
@@ -855,6 +887,11 @@ def execute_gitconfig_phase(
 
 
 _VSCODE_GUARD_UNRESOLVED_PREFIX = "unresolved [vscode-guard-blocked]:"
+_RESTORE_REVALIDATION_UNRESOLVED_PREFIX = "unresolved [restore-revalidation-blocked]:"
+_RETRYABLE_UNRESOLVED_PREFIXES = (
+    _VSCODE_GUARD_UNRESOLVED_PREFIX,
+    _RESTORE_REVALIDATION_UNRESOLVED_PREFIX,
+)
 
 
 def execute_file_symlink_phase(
@@ -871,22 +908,28 @@ def execute_file_symlink_phase(
     so a paired restore never finds its own soon-to-be-removed symlink
     still occupying the path.
 
-    A key whose ledger history shows it was blocked by the VS Code guard
-    at least once stays retryable across ``done``'s otherwise-permanent
-    exclusion — without this, a guard-blocked key would never be retried
-    even after VS Code closes, contradicting the guard's own "close it
-    first, then re-run --uninstall" message. Every other outcome (including a
+    A key whose ledger history shows it was blocked by the VS Code guard (or
+    by ``_execute_restore``'s pre-write revalidation) at least once stays
+    retryable across ``done``'s otherwise-permanent exclusion — without this, a
+    guard-blocked key would never be retried even after VS Code closes,
+    contradicting the guard's own "close it first, then re-run --uninstall"
+    message, and a revalidation-blocked restore would be skipped forever while
+    the run still told the user to re-run. Every other outcome (including a
     non-guard failure on the same guarded key) keeps the ledger's normal
     never-re-attempted contract.
     """
     done = ledger.completed_keys()
-    guard_retryable = ledger.keys_with_outcome_prefix(_VSCODE_GUARD_UNRESOLVED_PREFIX)
+    retryable = {
+        key
+        for prefix in _RETRYABLE_UNRESOLVED_PREFIXES
+        for key in ledger.keys_with_outcome_prefix(prefix)
+    }
     owned = {
         key: c
         for key, c in report.items()
         if c.bucket == uninstall_state.BUCKET_OWNED
         and uninstall_state.key_type(key) in ("file", "symlink")
-        and (key not in done or key in guard_retryable)
+        and (key not in done or key in retryable)
     }
 
     for key in sorted(owned):
@@ -1267,6 +1310,27 @@ def _finalize_uninstall_state(deps: Deps, ctx: UninstallContext) -> None:
         ancestor = ancestor.parent
 
 
+def _counts_as_failed(entry: dict[str, object], owned_keys: set[str]) -> bool:
+    """Whether one ledger entry still leaves its key's action unresolved.
+
+    A retryable block (the VS Code guard, or :func:`_execute_restore`'s
+    pre-write revalidation) is a *deferral*, not a failure: the key is
+    re-attempted on the next run. So it only counts while this run's preflight
+    still wants that key acted on. Once preflight classifies the key any other
+    way, its current state is what answers the question — ``unresolved`` /
+    ``drifted`` through the run's own ``unresolved_keys``, and ``preserved``
+    meaning the user got the artifact to where the uninstall wanted it. Without
+    this split, a deferral the user finishes by hand would keep every later run
+    at exit 1 with a reason the report itself contradicts.
+    """
+    outcome = str(entry.get("outcome", ""))
+    if not outcome.startswith(("unresolved", "halt")):
+        return False
+    if outcome.startswith(_RETRYABLE_UNRESOLVED_PREFIXES):
+        return str(entry.get("key", "")) in owned_keys
+    return True
+
+
 def do_uninstall(deps: Deps, ctx: UninstallContext) -> int:
     """Preview and execute a pristine-state uninstall.
 
@@ -1377,10 +1441,14 @@ def do_uninstall(deps: Deps, ctx: UninstallContext) -> int:
             return 2
 
         ledger = execute_uninstall(deps, ctx, baseline, report)
+        # Latest entry per key, not every entry: a key a retryable block left
+        # deferred can carry a stale outcome that a later run superseded, and
+        # counting that would report a completed uninstall as incomplete.
+        owned_keys = {
+            key for key, c in report.items() if c.bucket == uninstall_state.BUCKET_OWNED
+        }
         failed = [
-            e
-            for e in ledger.entries()
-            if str(e.get("outcome", "")).startswith(("unresolved", "halt"))
+            e for e in ledger.latest_entries() if _counts_as_failed(e, owned_keys)
         ]
         unresolved_keys = [
             key

@@ -755,6 +755,39 @@ def test_ledger_clear_removes_the_file(tmp_path):
     assert not ledger.path.exists()
 
 
+def test_ledger_latest_entries_keeps_the_newest_entry_per_key(tmp_path):
+    """Last-wins per key, across repeated blocks and interleaved keys.
+
+    A retried key can end up with several entries (block, block, then the
+    attempt that superseded them), and the ledger is append-only, so the only
+    entry that still describes a key's state is its newest one.
+    """
+    ledger = uninstall_state.UninstallLedger(uninstall_state.uninstall_ledger_path(tmp_path))
+    for key, outcome in (
+        ("file:/a", "unresolved [vscode-guard-blocked]: busy"),
+        ("file:/b", "unresolved: could not remove file"),
+        ("file:/a", "unresolved [vscode-guard-blocked]: busy"),
+        ("file:/a", "ok"),
+        ("file:/b", "ok"),
+    ):
+        ledger.record(key, "remove", outcome)
+
+    latest = {str(e["key"]): e["outcome"] for e in ledger.latest_entries()}
+
+    assert latest == {"file:/a": "ok", "file:/b": "ok"}
+
+
+def test_ledger_latest_entries_skips_entries_without_a_key(tmp_path):
+    path = uninstall_state.uninstall_ledger_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        '{"key": "file:/a", "action": "remove", "outcome": "ok"}\n'
+        '{"action": "remove", "outcome": "ok"}\n'
+    )
+    ledger = uninstall_state.UninstallLedger(path)
+    assert [e["key"] for e in ledger.latest_entries()] == ["file:/a"]
+
+
 def test_ledger_ignores_unparseable_trailing_line(tmp_path):
     path = uninstall_state.uninstall_ledger_path(tmp_path)
     path.parent.mkdir(parents=True, exist_ok=True)
