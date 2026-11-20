@@ -438,6 +438,17 @@ foreman run that was not given that delegation must stop and ask.
 
 ## 8. Handoff and resume
 
+When a foreman run ends or hands off, first report how its workers performed:
+
+```bash
+python3 ~/.agent-toolkit/scripts/worker_run_metrics.py
+```
+
+Show the operator its per-model rows (launched, landed, send-backs, spend per
+landed item, in each harness's native unit — see step 3's spend rule), then
+recommend which worker model to launch next run and why. Done when those rows
+are in front of the operator and copied into the handoff file below.
+
 When ending or handing off a foreman session, save run state to a fixed path
 under the foreman data directory: `~/.agent-toolkit/data/foreman/<run>-handoff.md`.
 Required contents:
@@ -446,6 +457,7 @@ Required contents:
   and current state.
 - **Watch command**: the exact `herdr_delegate.py watch` command line and state file.
 - **Not-for-workers list**: backlog items not eligible for worker launch.
+- **Worker metrics**: the `worker_run_metrics.py` rows reported above.
 
 Resume the run in a new session with:
 
