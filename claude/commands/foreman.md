@@ -305,6 +305,42 @@ python3 ~/.agent-toolkit/scripts/herdr_delegate.py answer <agent> --expect-pane 
 AgY has no commit picker, so approve an agy worker's commit with
 `herdr agent prompt <agent>` followed by the approval text.
 
+Exit codes from `answer`: 0 answered; 2 a herdr-level refusal — re-read the pane
+before retrying, since a pane read can fail after input already went out; 3
+needs_manual with nothing sent (safe to retry); 4 needs_manual *after*
+navigation or text went out — inspect the pane before doing anything else; 5
+submitted but the picker persisted; 6 `picker_not_in_view` — an unanswered
+`question` call is open in the worker's session, but no picker parses from the
+visible pane (the option lines can be on screen with the frame, rule line and
+footer scrolled off). Exit 3 on a worker herdr calls `blocked` means no picker
+parsed from the pane — re-read it before concluding nothing is pending; a
+permission prompt is not a question picker either.
+
+**Unsticking a `picker_not_in_view` (exit 6).** Do not retry `answer` — it will
+keep seeing the same blind pane. Cancel the question and deliver the decision
+as prompt text instead:
+
+```bash
+herdr agent send-keys <pane> esc
+```
+
+Re-read the pane after each `esc`: repeat only while it still shows this
+picker's own options or its free-text editor (a first `esc` leaves edit mode
+for the selection list) and herdr still reports the worker `blocked`/`working`.
+If what is on screen is clipped beyond recognition, or is a different prompt,
+stop and escalate to the operator (step 7) rather than sending another `esc`
+whose target you cannot identify. Once herdr reports the worker `idle`/`done`,
+send the decision itself:
+
+```bash
+herdr agent prompt <agent> "Commit the staged work; the diff was reviewed and approved."
+```
+
+The text is the action you just approved (here: commit the staged tree), not a
+pointer to it. If the escaped worker asks the question again, answer that
+through the same path — do not start a second unstick from a pane you have not
+re-read.
+
 Otherwise ask the operator (step 7), or send the change back via step 5.
 
 ## 5. Send-back
@@ -335,7 +371,11 @@ Send-back depends on the worker's current state:
   single spaces). Exit code handling: 0 ok; 3 means needs_manual with nothing
   sent (safe to retry); 4 means needs_manual *after* navigation or text was
   sent — inspect the pane before acting; 5 means submitted but the picker
-  persisted (unconfirmed) — it can also mean a multi-question picker advanced.
+  persisted (unconfirmed) — it can also mean a multi-question picker advanced;
+  6 means `picker_not_in_view` — the worker has an unanswered `question` call
+  while no picker parses from the visible pane, so run step 4's unstick (esc
+  until idle/done, then `herdr agent prompt` with the feedback pointer) instead
+  of retrying `answer`.
 
 - **Finished or idle worker** (parked at the interactive prompt after printing
   `FOREMAN-HANDOFF` or completing without an active picker, including AgY workers):
@@ -354,6 +394,23 @@ single line:
 ```
 FOREMAN-HANDOFF slug=<slug> branch=<branch> commit=<sha> worktree=<path> untracked=<n>
 ```
+
+Read that line with `handoff`, never a bare pane read: when a worker's view is
+not at its latest output (herdr shows "Jump to latest message · Ctrl+End") the
+line is simply not in the pane snapshot, while the worker's pi session log
+still has it.
+
+```bash
+python3 ~/.agent-toolkit/scripts/herdr_delegate.py handoff <agent> --expect-pane <pane>
+```
+
+It prints `{"line": ..., "source": "session"|"pane"}` and exits 3 with
+`needs_manual` when neither the session nor the pane has the line — that is an
+escalation to the operator (step 7), never a guess at the commit. Before
+landing, check the returned `slug=`, `branch=` and `commit=` against the item
+you dispatched and the diff you reviewed: a send-back can leave an earlier,
+stale handoff line in the same session, so the last line is not automatically
+this landing's line.
 
 When the handoff line's `untracked=<n>` is above 0, run the `shunt-artifacts`
 skill on the worktree first, telling it code is a send-back: the worker

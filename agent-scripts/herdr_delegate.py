@@ -63,6 +63,15 @@ ledger the first time it observes the worker's session (keyed by pane, never
 the truncated agent name; see ``_record_worker_session``), so the foreman no
 longer copies agent-to-session links by hand.
 
+``handoff`` answers "what did this worker hand off?" from the worker's pi
+session log rather than the pane alone: a pane whose view is not at its latest
+output (herdr's "Jump to latest message") hides the ``FOREMAN-HANDOFF`` line
+entirely, while the session JSONL has it. ``answer`` uses the same log to tell
+an unanswered ``question`` call (exit 6, ``picker_not_in_view``) apart from a
+worker that is simply not showing a picker (exit 3). Both resolve the session
+file from the live agent metadata first and the launch ledger second, and both
+treat ``--expect-pane`` as an identity check, not a lookup.
+
 For a ``launch --slug`` with no ``--cwd``, the worker tab starts in the item's
 repository main checkout, resolved from the item's ``related_files`` the same
 way ``prepare_worker_worktree`` resolves it -- never the caller's
@@ -94,6 +103,7 @@ Usage:
     herdr_delegate.py answer <agent> --expect-pane <pane>
                              (--option <label> | --index <n> | --other --text <text>)
                              [--settle-s <n>]
+    herdr_delegate.py handoff <agent> --expect-pane <pane>
     herdr_delegate.py restart --swarm <N> --prefix <prefix> [--run-id <runId>]
                               [--model <model>] [--kind {pi,copilot}]
     herdr_delegate.py restart --serial --prefix <prefix> [--run-id <runId>]
@@ -2145,6 +2155,150 @@ def cmd_watch(args: argparse.Namespace) -> None:
         raise SystemExit(2) from exc
 
 
+# ── worker session log ────────────────────────────────
+#
+# Both `handoff` and `answer` need the worker's pi session file for facts the
+# pane's visible snapshot can hide. Resolution and parsing live here so the two
+# subcommands cannot drift apart.
+
+HANDOFF_LINE_PREFIX = "FOREMAN-HANDOFF slug="
+"""The exact prefix a worker's landing handoff line starts with."""
+
+
+def _readable_file(raw: str) -> Path | None:
+    """``raw`` as an existing regular file, or None when it is not one."""
+    if not raw:
+        return None
+    path = Path(raw)
+    return path if path.is_file() else None
+
+
+def _ledger_session_file(pane: str) -> Path | None:
+    """The newest launch-log record's session file for ``pane``; else None.
+
+    Read-only: the first matching row, scanning back from the end, that carries
+    a ``worker_session`` wins, and a row without one is skipped.
+    ``_update_launch_record_session`` stays the only writer.
+    """
+    try:
+        text = launch_log_file().read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for line in reversed(text.splitlines()):
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(record, dict) or record.get("pane") != pane:
+            continue
+        session = record.get("worker_session")
+        if not isinstance(session, str) or not session.strip():
+            continue
+        return _readable_file(session)
+    return None
+
+
+def worker_session_file(info: dict[str, str], pane: str) -> Path | None:
+    """The worker's pi session file, from live agent metadata then the ledger."""
+    live = _readable_file(info.get("session_path") or "")
+    if live is not None:
+        return live
+    return _ledger_session_file(pane)
+
+
+def _iter_session_messages(path: Path) -> Iterator[dict[str, object]]:
+    """Yield each pi session message body, skipping bad lines and records."""
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    record = json.loads(stripped)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(record, dict) or record.get("type") != "message":
+                    continue
+                body = record.get("message")
+                if isinstance(body, dict):
+                    yield body
+    except OSError:
+        return
+
+
+def _last_handoff_line(text: str) -> str | None:
+    """The last line of ``text`` that starts with the handoff prefix."""
+    found: str | None = None
+    for line in text.splitlines():
+        if line.rstrip().startswith(HANDOFF_LINE_PREFIX):
+            found = line.rstrip()
+    return found
+
+
+def _session_handoff_line(path: Path) -> str | None:
+    """The worker's last handoff line from its pi session log; else None.
+
+    Assistant ``text`` blocks only. The worker's own prompt (system/user
+    messages), a ``compaction`` record echoing it, thinking blocks and tool-call
+    arguments all carry the literal template line and must never be read as a
+    handoff.
+    """
+    found: str | None = None
+    for body in _iter_session_messages(path):
+        if body.get("role") != "assistant":
+            continue
+        content = body.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "text":
+                continue
+            text = block.get("text")
+            if isinstance(text, str):
+                line = _last_handoff_line(text)
+                if line is not None:
+                    found = line
+    return found
+
+
+def _has_open_question_call(path: Path) -> bool:
+    """True when the session's last assistant message holds an unanswered question call.
+
+    The last assistant message overall is authoritative: a later turn with no
+    ``question`` call means the question is behind us. Only that message's call
+    ids are matched, and any matching ``toolResult`` anywhere in the file closes
+    one — a submitted answer, a cancel (``details.cancelled``) and an error
+    alike.
+    """
+    last_assistant: dict[str, object] | None = None
+    answered: set[str] = set()
+    for body in _iter_session_messages(path):
+        role = body.get("role")
+        if role == "assistant":
+            last_assistant = body
+        elif role == "toolResult":
+            call_id = body.get("toolCallId")
+            if isinstance(call_id, str):
+                answered.add(call_id)
+    if last_assistant is None:
+        return False
+    content = last_assistant.get("content")
+    if not isinstance(content, list):
+        return False
+    call_ids = [
+        block["id"]
+        for block in content
+        if isinstance(block, dict)
+        and block.get("type") == "toolCall"
+        and block.get("name") == "question"
+        and isinstance(block.get("id"), str)
+    ]
+    return any(call_id not in answered for call_id in call_ids)
+
+
 # ── foreman `answer` ────────────────────────────────────────────────────────
 
 ANSWER_TEXT_MAX = 120
@@ -2167,10 +2321,11 @@ def build_pane_send_text_argv(pane: str, text: str) -> list[str]:
 
 
 def parse_agent_get(listing: dict[str, object]) -> dict[str, str] | None:
-    """Status, pane and tab out of a `herdr agent get` envelope; None if malformed.
+    """Status, pane, tab and pi session path out of a `herdr agent get` envelope.
 
-    ``tab`` is additive: a missing or non-string ``tab_id`` reads as ``""`` and
-    never makes the parse fail, so `answer`'s status/pane checks are unchanged.
+    ``tab`` and ``session_path`` are additive: a missing or non-string value
+    reads as ``""`` and never makes the parse fail, so `answer`'s status/pane
+    checks are unchanged.
     """
     result = listing.get("result")
     agent = result.get("agent") if isinstance(result, dict) else None
@@ -2185,6 +2340,7 @@ def parse_agent_get(listing: dict[str, object]) -> dict[str, str] | None:
         "status": status,
         "pane": pane if isinstance(pane, str) else "",
         "tab": tab if isinstance(tab, str) else "",
+        "session_path": _pi_session_path(agent.get("agent_session")) or "",
     }
 
 
@@ -2361,6 +2517,15 @@ def _run_answer(args: argparse.Namespace) -> None:
         return
 
     if not picker.options:
+        session = worker_session_file(info, pane)
+        if session is not None and _has_open_question_call(session):
+            _answer_outcome(
+                6,
+                "picker_not_in_view",
+                "none",
+                "an unanswered question call is open in the worker's session, but "
+                "no picker parses from the visible pane",
+            )
         _answer_outcome(
             3, "needs_manual", "none", "no question-tool picker in the visible pane"
         )
@@ -2489,7 +2654,13 @@ def _finish_answer(pane: str, input_sent: str, settle_s: float) -> None:
 
 
 def cmd_answer(args: argparse.Namespace) -> None:
-    """Drive a live worker's question-tool picker by option, or free text via --other."""
+    """Drive a live worker's question-tool picker by option, or free text via --other.
+
+    Exit codes: 0 ok, 2 refused (herdr-level), 3 needs_manual with nothing sent,
+    4 needs_manual after navigation or text was sent, 5 submitted but the picker
+    persisted, 6 ``picker_not_in_view`` -- an unanswered question call is open in
+    the worker's session while no picker parses from its visible pane.
+    """
     try:
         _run_answer(args)
     except AnswerOutcome as oc:
@@ -2502,6 +2673,53 @@ def cmd_answer(args: argparse.Namespace) -> None:
     except RefusedError as exc:
         print(f"[herdr_delegate] {exc}", file=sys.stderr)
         raise SystemExit(2) from exc
+
+
+def cmd_handoff(args: argparse.Namespace) -> None:
+    """Print a worker's last FOREMAN-HANDOFF line from its pi session, else its pane.
+
+    Exit 0 with the line, 2 on a herdr-level refusal, 3 with ``needs_manual``
+    when neither the session log nor the visible pane has one.
+    """
+    try:
+        _run_handoff(args)
+    except RefusedError as exc:
+        print(f"[herdr_delegate] {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+
+
+def _run_handoff(args: argparse.Namespace) -> None:
+    """Resolve the worker's session, read the handoff line, fall back to the pane."""
+    require_herdr_env(os.environ)
+    agent = args.agent
+    pane = args.expect_pane
+
+    info = parse_agent_get(herdr(build_agent_get_argv(agent)))
+    if info is None:
+        raise RefusedError(f"agent get for {agent!r} returned no recognizable status")
+    if info["pane"] != pane:
+        _answer_outcome(
+            3, "needs_manual", "none", f"pane is {info['pane']!r}, expected {pane!r}"
+        )
+
+    session = worker_session_file(info, pane)
+    if session is not None:
+        line = _session_handoff_line(session)
+        if line is not None:
+            print(json.dumps({"line": line, "source": "session"}))
+            return
+
+    line = _last_handoff_line(read_pane_text(pane, source="visible"))
+    if line is not None:
+        print(json.dumps({"line": line, "source": "pane"}))
+        return
+
+    reason = (
+        "no handoff line in the worker's session log or its visible pane"
+        if session is not None
+        else "no worker session log, and no handoff line in the visible pane"
+    )
+    _answer_outcome(3, "needs_manual", "none", reason)
 
 
 CLOSABLE_AGENT_STATUSES = frozenset({"idle", "done"})
@@ -3508,6 +3726,16 @@ def main() -> None:
         help="seconds to wait for the highlight/editor to settle (default 5)",
     )
     answer.set_defaults(func=cmd_answer)
+
+    handoff = sub.add_parser(
+        "handoff",
+        help="print a worker's last FOREMAN-HANDOFF line (its pi session, else its pane)",
+    )
+    handoff.add_argument("agent", help="the worker's herdr agent name")
+    handoff.add_argument(
+        "--expect-pane", required=True, help="the pane this worker runs in"
+    )
+    handoff.set_defaults(func=cmd_handoff)
 
     close = sub.add_parser(
         "close",

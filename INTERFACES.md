@@ -1211,6 +1211,9 @@ Launch supported agents in herdr tabs to work backlog items.
     - `--other` — select the free-text escape option
     - `--text` — free-text to send (only with --other)
     - `--settle-s` — seconds to wait for the highlight/editor to settle (default 5) (default: 5.0)
+  - `handoff <agent> --expect-pane <EXPECT_PANE>` — print a worker's last FOREMAN-HANDOFF line (its pi session, else its pane)
+    - `agent` — the worker's herdr agent name
+    - `--expect-pane` — the pane this worker runs in (required)
   - `close <agent> --expect-pane <EXPECT_PANE> [--force]` — close a finished worker's tab (its item closed: done or obe; the agent idle or done)
     - `agent` — the worker's herdr agent name
     - `--expect-pane` — the pane this worker runs in (required)
@@ -1268,10 +1271,11 @@ Launch supported agents in herdr tabs to work backlog items.
   - `parse_agent_names(listing: dict[str, object]) -> list[str]` — Agent names out of a `herdr agent list` envelope; [] on anything unexpected.
   - `parse_agent_status(listing: dict[str, object], name: str) -> str | None` — Agent status for ``name`` out of a `herdr agent list` envelope; None if absent.
   - `parse_agent_listing_strict(listing: dict[str, object]) -> list[dict[str, object]]` — Agent records out of `herdr agent list`, strict; refuse a malformed envelope.
+  - `worker_session_file(info: dict[str, str], pane: str) -> Path | None` — The worker's pi session file, from live agent metadata then the ledger.
   - `build_agent_get_argv(name: str) -> list[str]` — `herdr agent get` argv; the single-agent payload nests under result.agent.
   - `build_pane_send_keys_argv(pane: str, keys: list[str]) -> list[str]` — `herdr pane send-keys` argv, one key per trailing element.
   - `build_pane_send_text_argv(pane: str, text: str) -> list[str]` — `herdr pane send-text` argv.
-  - `parse_agent_get(listing: dict[str, object]) -> dict[str, str] | None` — Status, pane and tab out of a `herdr agent get` envelope; None if malformed.
+  - `parse_agent_get(listing: dict[str, object]) -> dict[str, str] | None` — Status, pane, tab and pi session path out of a `herdr agent get` envelope.
   - `validate_answer_text(text: str) -> None` — Refuse --text outside the accepted contract (printable ASCII, single spaces, no leading/trailing space, at most 120 chars, not blank).
   - `load_backlog_items() -> list[dict[str, object]]` — Every backlog item, archived ones included, read fresh from the store.
   - `parse_tab_get(listing: dict[str, object]) -> dict[str, object] | None` — Label and pane count out of a `herdr tab get` envelope; None if malformed.
@@ -1290,7 +1294,7 @@ Launch supported agents in herdr tabs to work backlog items.
   - `trust_agy_dir(dir_path: str) -> None` — Ensure agy's trustedWorkspaces lists ``dir_path`` before an agy launch.
   - `prune_agy_trust_entries() -> None` — Best-effort prune of vanished agy trusted-workspace entries.
   - `confirm_prompt_receipt(*, pane: str, tab: str, name: str, prompt: str, timeout_s: float = AGY_PROMPT_TIMEOUT_S, poll_interval_s: float = AGY_PROMPT_POLL_INTERVAL_S, max_resends: int = 1) -> None` — Poll pane for the echoed prompt line; resend if absent, fail loudly if still missing.
-- Subcommand handlers: `cmd_watch`, `cmd_answer`, `cmd_close`, `cmd_plan`, `cmd_launch`, `cmd_restart`, `cmd_probe`
+- Subcommand handlers: `cmd_watch`, `cmd_answer`, `cmd_handoff`, `cmd_close`, `cmd_plan`, `cmd_launch`, `cmd_restart`, `cmd_probe`
 - Tested by: `test/test_dev_status_mutation.py`, `test/test_herdr_delegate.py`, `test/test_herdr_watch_answer.py`, `test/test_migration_lock_adoption.py`
 
 ### `agent-scripts/herdr_picker.py`

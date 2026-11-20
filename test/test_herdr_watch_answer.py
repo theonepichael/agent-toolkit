@@ -746,6 +746,179 @@ class AnswerTests(unittest.TestCase):
         self.assertEqual(json.loads(out)["input_sent"], "navigation")
 
 
+class AnswerPickerNotInViewTests(unittest.TestCase):
+    """`answer` tells an in-session pending question apart from "no picker".
+
+    The 2026-11-20 incident: the worker was `blocked` on a commit picker while
+    the visible pane held the option lines but not the picker frame, so `answer`
+    reported exit 3 ("no picker") on a worker that was in fact waiting on an
+    unanswered question. The session log says which case it is.
+    """
+
+    def setUp(self) -> None:
+        self.dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        path = herdr_delegate.launch_log_file()
+        if path.exists():
+            path.unlink()
+        self.addCleanup(lambda: path.unlink(missing_ok=True))
+
+    def session_file(
+        self, *records: dict[str, object], name: str = "session.jsonl"
+    ) -> Path:
+        path = self.dir / name
+        _write_session(path, *records)
+        return path
+
+    def fake_herdr(
+        self, *, session: object | None, pane_text: str = "no picker here"
+    ) -> tuple[Callable[[list[str]], dict[str, object]], list[list[str]]]:
+        calls: list[list[str]] = []
+
+        def fake(argv: list[str]) -> dict[str, object]:
+            calls.append(list(argv))
+            if argv[0] == "agent" and argv[1] == "get":
+                agent: dict[str, object] = {
+                    "agent_status": "blocked",
+                    "pane_id": "w:p1",
+                }
+                if session is not None:
+                    agent["agent_session"] = session
+                return {"result": {"agent": agent}}
+            if argv[0] == "pane" and argv[1] == "read":
+                return {"result": {"text": pane_text}}
+            return {"result": {}}
+
+        return fake, calls
+
+    def run_answer(self, fake: Callable) -> tuple[int, str]:
+        with (
+            mock.patch.object(herdr_delegate, "herdr", fake),
+            mock.patch.object(herdr_delegate.time, "sleep", lambda _s: None),
+            mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
+        ):
+            sys.argv = [
+                "herdr_delegate.py",
+                "answer",
+                "atk-w1",
+                "--expect-pane",
+                "w:p1",
+                "--option",
+                "Stop here",
+                "--settle-s",
+                "0",
+            ]
+            out, err = io.StringIO(), io.StringIO()
+            try:
+                with redirect_stdout(out), redirect_stderr(err):
+                    herdr_delegate.main()
+            except SystemExit as e:
+                return int(e.code or 0), out.getvalue()
+            return 0, out.getvalue()
+
+    def sends(self, calls: list[list[str]]) -> list[list[str]]:
+        return [c for c in calls if c[0] == "pane" and c[1] in ("send-keys", "send-text")]
+    @pytest.mark.regression(
+        "answer-picker-not-in-view-exit-6",
+        "AssertionError: 3 != 6",
+    )
+    def test_reports_picker_not_in_view_when_a_question_call_is_open(self) -> None:
+        session = self.session_file(
+            _message("user", _text_block("go")),
+            _message("assistant", _question_call("question_7_abc")),
+        )
+        fake, calls = self.fake_herdr(session=_pi_session(session))
+        code, out = self.run_answer(fake)
+        self.assertEqual(code, 6)
+        payload = json.loads(out)
+        self.assertEqual(payload["result"], "picker_not_in_view")
+        self.assertEqual(payload["input_sent"], "none")
+        self.assertEqual(self.sends(calls), [])
+
+    @pytest.mark.regression(
+        "answer-closed-question-keeps-exit-3",
+        "AssertionError: 3 != 6",
+    )
+    def test_only_an_open_last_assistant_question_exits_6(self) -> None:
+        # Positive control first (this fixture exits 6 while the call is open),
+        # then each closed case must fall back to exit 3, so the new gate can
+        # only fire on a genuinely open question in the LAST assistant message.
+        call_id = "question_7_abc"
+        open_session = self.session_file(
+            _message("assistant", _question_call(call_id)), name="open.jsonl"
+        )
+        fake, _calls = self.fake_herdr(session=_pi_session(open_session))
+        code, _out = self.run_answer(fake)
+        self.assertEqual(code, 6)
+
+        answered = _message(
+            "toolResult",
+            _text_block('User selected: "Yes, commit"'),
+            toolCallId=call_id,
+            toolName="question",
+            details={"cancelled": False},
+        )
+        cases: dict[str, tuple[list[dict[str, object]], int]] = {
+            "answered": (
+                [_message("assistant", _question_call(call_id)), answered],
+                3,
+            ),
+            "cancelled": (
+                [
+                    _message("assistant", _question_call(call_id)),
+                    _message(
+                        "toolResult",
+                        _text_block("User cancelled the question"),
+                        toolCallId=call_id,
+                        toolName="question",
+                        details={"cancelled": True},
+                    ),
+                ],
+                3,
+            ),
+            "no question call at all": ([_message("assistant", _text_block("all done"))], 3),
+            # The last assistant message is authoritative even when an
+            # earlier call was never answered: a worker that took a further
+            # turn is past the question.
+            "open call followed by a later turn": (
+                [
+                    _message("assistant", _question_call(call_id)),
+                    _message("assistant", _text_block("re-reading the diff")),
+                ],
+                3,
+            ),
+            # One unanswered call in the picker message keeps it open, even
+            # though the other call was answered.
+            "one of two calls unanswered": (
+                [
+                    _message(
+                        "assistant",
+                        _question_call("question_7_aaa"),
+                        _question_call("question_7_bbb"),
+                    ),
+                    _message(
+                        "toolResult",
+                        _text_block("User selected: yes"),
+                        toolCallId="question_7_aaa",
+                        toolName="question",
+                        details={"cancelled": False},
+                    ),
+                ],
+                6,
+            ),
+        }
+        for name, (records, expected) in cases.items():
+            with self.subTest(case=name):
+                session = self.session_file(
+                    *records, name=f"{name.replace(' ', '-')}.jsonl"
+                )
+                fake, calls = self.fake_herdr(session=_pi_session(session))
+                code, out = self.run_answer(fake)
+                self.assertEqual(code, expected, name)
+                self.assertEqual(json.loads(out)["input_sent"], "none")
+                self.assertEqual(self.sends(calls), [], name)
+
+
 class HerdrEmptyStdoutTests(unittest.TestCase):
     """The real herdr() treats empty stdout + exit 0 on pane send-* as success."""
 
@@ -895,6 +1068,246 @@ class HandoffTests(unittest.TestCase):
             herdr_delegate.worker_prompt("atk-example"),
             "/backlog-item --auto atk-example",
         )
+
+
+HANDOFF_LINE = (
+    "FOREMAN-HANDOFF slug=atk-example branch=atk-example commit=abc123 "
+    "worktree=/tmp/wt untracked=0"
+)
+# What the worker's own prompt contains verbatim, so a prompt echoed into any
+# record is a decoy a naive reader would match.
+HANDOFF_TEMPLATE_LINE = (
+    "FOREMAN-HANDOFF slug=<slug> branch=<branch> commit=<sha> "
+    "worktree=<path> untracked=<n>"
+)
+
+
+def _message(
+    role: str, *blocks: dict[str, object], **extra: object
+) -> dict[str, object]:
+    body: dict[str, object] = {"role": role, "content": list(blocks)}
+    body.update(extra)
+    return {"type": "message", "id": "msg-1", "message": body}
+
+
+def _text_block(text: str) -> dict[str, object]:
+    return {"type": "text", "text": text}
+
+
+def _question_call(call_id: str = "question_7_abc") -> dict[str, object]:
+    """A pi `question` tool call, shaped like a real session JSONL record."""
+    return {
+        "type": "toolCall",
+        "id": call_id,
+        "name": "question",
+        "arguments": {
+            "questions": [
+                {
+                    "header": "Commit",
+                    "question": "Commit the staged work?",
+                    "options": [{"label": "Yes, commit", "description": "d"}],
+                }
+            ]
+        },
+    }
+
+
+def _pi_session(value: Path) -> dict[str, object]:
+    return {"agent": "pi", "kind": "path", "value": str(value)}
+
+
+def _write_session(path: Path, *records: dict[str, object]) -> None:
+    path.write_text(
+        "\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8"
+    )
+
+
+class HandoffSubcommandFakeHerdr:
+    """Fake herdr for `handoff`: one scripted `agent get` and a pane read."""
+
+    def __init__(
+        self,
+        *,
+        pane: str = "w:p1",
+        session: object | None = None,
+        status: str = "idle",
+        pane_text: str = "",
+    ) -> None:
+        self.pane = pane
+        self.session = session
+        self.status = status
+        self.pane_text = pane_text
+        self.calls: list[list[str]] = []
+
+    def __call__(self, argv: list[str]) -> dict[str, object]:
+        self.calls.append(list(argv))
+        if argv[0] == "agent" and argv[1] == "get":
+            agent: dict[str, object] = {
+                "agent_status": self.status,
+                "pane_id": self.pane,
+            }
+            if self.session is not None:
+                agent["agent_session"] = self.session
+            return {"result": {"agent": agent}}
+        if argv[0] == "pane" and argv[1] == "read":
+            return {"result": {"text": self.pane_text}}
+        raise AssertionError(f"unexpected herdr call: {argv!r}")
+
+
+class HandoffSubcommandTests(unittest.TestCase):
+    """`handoff` reads a worker's FOREMAN-HANDOFF line from its pi session log.
+
+    The pane's visible snapshot can sit above the line (the 2026-11-20
+    incident), so the session log is the primary source and the pane read is
+    the fallback.
+    """
+
+    def setUp(self) -> None:
+        self.dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        self._drop_launch_log()
+
+    def _drop_launch_log(self) -> None:
+        path = herdr_delegate.launch_log_file()
+        if path.exists():
+            path.unlink()
+        self.addCleanup(lambda: path.unlink(missing_ok=True))
+
+    def session_file(
+        self, *records: dict[str, object], name: str = "session.jsonl"
+    ) -> Path:
+        path = self.dir / name
+        _write_session(path, *records)
+        return path
+
+    def run_handoff(
+        self, argv: list[str], fake: Callable
+    ) -> tuple[int, str, str]:
+        with (
+            mock.patch.object(herdr_delegate, "herdr", fake),
+            mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
+        ):
+            sys.argv = ["herdr_delegate.py", *argv]
+            out, err = io.StringIO(), io.StringIO()
+            try:
+                with redirect_stdout(out), redirect_stderr(err):
+                    herdr_delegate.main()
+            except SystemExit as e:
+                return int(e.code or 0), out.getvalue(), err.getvalue()
+            return 0, out.getvalue(), err.getvalue()
+
+    def _argv(self, *extra: str) -> list[str]:
+        return ["handoff", "atk-w1", "--expect-pane", "w:p1", *extra]
+    @pytest.mark.regression(
+        "handoff-reads-session-when-pane-is-blind",
+        "AssertionError: 2 != 0",
+    )
+    def test_reads_the_line_from_the_session_when_the_pane_is_blind(self) -> None:
+        session = self.session_file(
+            _message("user", _text_block("go")),
+            _message("assistant", _text_block(HANDOFF_LINE)),
+        )
+        fake = HandoffSubcommandFakeHerdr(
+            session=_pi_session(session), pane_text="Jump to latest message"
+        )
+        code, out, err = self.run_handoff(self._argv(), fake)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(
+            json.loads(out), {"line": HANDOFF_LINE, "source": "session"}
+        )
+    @pytest.mark.regression(
+        "handoff-falls-back-to-the-pane",
+        "AssertionError: 2 != 0",
+    )
+    def test_falls_back_to_the_pane_when_the_session_has_no_line(self) -> None:
+        session = self.session_file(_message("assistant", _text_block("done")))
+        fake = HandoffSubcommandFakeHerdr(
+            session=_pi_session(session), pane_text=f"\n{HANDOFF_LINE}\n"
+        )
+        code, out, err = self.run_handoff(self._argv(), fake)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out), {"line": HANDOFF_LINE, "source": "pane"})
+    @pytest.mark.regression(
+        "handoff-exits-3-when-neither-source-has-it",
+        "AssertionError: 2 != 3",
+    )
+    def test_exits_3_when_neither_source_has_the_line(self) -> None:
+        session = self.session_file(_message("assistant", _text_block("done")))
+        fake = HandoffSubcommandFakeHerdr(
+            session=_pi_session(session), pane_text="all quiet"
+        )
+        code, out, err = self.run_handoff(self._argv(), fake)
+        self.assertEqual(code, 3, err)
+        payload = json.loads(out)
+        self.assertEqual(payload["result"], "needs_manual")
+        self.assertEqual(payload["input_sent"], "none")
+    @pytest.mark.regression(
+        "handoff-ignores-prompt-echo-decoys",
+        "AssertionError: 2 != 0",
+    )
+    def test_ignores_prompt_echoes_and_thinking_blocks(self) -> None:
+        session = self.session_file(
+            {
+                "type": "session",
+                "id": "s-1",
+                "cwd": "/tmp",
+            },
+            _message("system", _text_block(HANDOFF_TEMPLATE_LINE)),
+            _message("user", _text_block(HANDOFF_TEMPLATE_LINE)),
+            _message("assistant", _text_block(f"done\n{HANDOFF_LINE}\n")),
+            # Decoys AFTER the real line: a reader that simply took the last
+            # line of the raw file would return one of these instead, so this
+            # is what makes the role/record/block filters load-bearing.
+            _message(
+                "assistant",
+                {"type": "thinking", "thinking": HANDOFF_TEMPLATE_LINE},
+            ),
+            {
+                "type": "compaction",
+                "id": "c-1",
+                "summary": HANDOFF_TEMPLATE_LINE,
+            },
+            _message("user", _text_block(HANDOFF_TEMPLATE_LINE)),
+        )
+        fake = HandoffSubcommandFakeHerdr(session=_pi_session(session))
+        code, out, err = self.run_handoff(self._argv(), fake)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(
+            json.loads(out), {"line": HANDOFF_LINE, "source": "session"}
+        )
+
+    @pytest.mark.regression(
+        "handoff-uses-the-launch-ledger-fallback",
+        "AssertionError: 2 != 0",
+    )
+    def test_uses_the_launch_ledger_when_agent_get_has_no_session(self) -> None:
+        session = self.session_file(_message("assistant", _text_block(HANDOFF_LINE)))
+        herdr_delegate._append_launch_record(
+            kind="worker",
+            slug="atk-example",
+            model=None,
+            agent="atk-w1",
+            pane="w:p1",
+            tab="w:t1",
+            worker_session=str(session),
+        )
+        fake = HandoffSubcommandFakeHerdr(pane_text="")
+        code, out, err = self.run_handoff(self._argv(), fake)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(
+            json.loads(out), {"line": HANDOFF_LINE, "source": "session"}
+        )
+    @pytest.mark.regression(
+        "handoff-refuses-a-pane-mismatch",
+        "AssertionError: 2 != 3",
+    )
+    def test_refuses_a_pane_mismatch(self) -> None:
+        session = self.session_file(_message("assistant", _text_block(HANDOFF_LINE)))
+        fake = HandoffSubcommandFakeHerdr(pane="w:p9", session=_pi_session(session))
+        code, out, _ = self.run_handoff(self._argv(), fake)
+        self.assertEqual(code, 3)
+        self.assertIn("pane", json.loads(out)["reason"])
+        self.assertFalse([c for c in fake.calls if c[0] == "pane"])
 
 
 class CloseFakeHerdr:
@@ -1157,7 +1570,36 @@ class CloseTests(unittest.TestCase):
         parsed = herdr_delegate.parse_agent_get(
             {"result": {"agent": {"agent_status": "blocked", "pane_id": "w:p1"}}}
         )
-        self.assertEqual(parsed, {"status": "blocked", "pane": "w:p1", "tab": ""})
+        self.assertEqual(
+            parsed,
+            {"status": "blocked", "pane": "w:p1", "tab": "", "session_path": ""},
+        )
+
+    def test_parse_agent_get_carries_the_pi_session_path(self) -> None:
+        parsed = herdr_delegate.parse_agent_get(
+            {
+                "result": {
+                    "agent": {
+                        "agent_status": "idle",
+                        "pane_id": "w:p1",
+                        "agent_session": {
+                            "agent": "pi",
+                            "kind": "path",
+                            "value": "/sessions/pi-1.jsonl",
+                        },
+                    }
+                }
+            }
+        )
+        self.assertEqual(
+            parsed,
+            {
+                "status": "idle",
+                "pane": "w:p1",
+                "tab": "",
+                "session_path": "/sessions/pi-1.jsonl",
+            },
+        )
 
 
 # A fixed "now": 2026-10-15 15:00 local; UTC keeps the day boundary simple.
