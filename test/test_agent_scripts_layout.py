@@ -74,7 +74,7 @@ FROZEN_SCRIPT_DESTS = frozenset(
         "outlook_calendar.py",
         "outlook_email.py",
         "permission_matrix.py",
-        "refresh_guidance.py",
+        "guidance_audit.py",
         "rename_transition.py",  # rename-transition: remove after the clean-break renames
         "second_opinion.py",
         "sessionstart_checks.py",

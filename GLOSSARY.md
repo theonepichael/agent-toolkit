@@ -154,3 +154,13 @@ snapshot (`~/.local/state/agent-toolkit/baseline.json`), using an uninstall
 ledger and lock in that state directory for crash-safe retry and single-process
 locking. Distinct from `--rollback` (which reverses install-history edits across
 past install runs rather than restoring to the pre-install baseline).
+
+## `guidance audit` (`/guidance-audit`, `guidance_audit.py`)
+
+The manual, periodic audit of a repo's hand-authored, agent-facing docs,
+formerly named `refresh_guidance`. It reports mechanically broken citations
+(dead file paths, dead command or flag references) and which `##` sections
+have gone longest without a human-confirmed review. A repo opts in with its
+own guidance-audit.toml at its root, and review dates persist in
+guidance-audit-state.json there. Distinct from `/review-diff`, which reviews
+a staged code change, not the docs.

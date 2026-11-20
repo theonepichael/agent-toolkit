@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for refresh_guidance.py. Run with: python3 test_refresh_guidance.py"""
+"""Tests for guidance_audit.py. Run with: python3 test_guidance_audit.py"""
 
 import contextlib
 import io
@@ -16,7 +16,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))
 import test_bootstrap  # noqa: E402
 from pytest_shim import pytest
-import refresh_guidance as rg
+import guidance_audit as rg
 
 pytestmark = (
     pytest.mark.allow_real_subprocess
@@ -426,7 +426,7 @@ class CrossRepoScriptsTestCase(unittest.TestCase):
 
     def test_main_threads_the_flag_to_mark_reviewed(self) -> None:
         argv = [
-            "refresh_guidance.py",
+            "guidance_audit.py",
             "mark-reviewed",
             "--repo-root",
             str(self.repo),
@@ -779,7 +779,7 @@ class MarkReviewedServiceTestCase(unittest.TestCase):
 
 
 class ExternalDocSetConfigTestCase(unittest.TestCase):
-    """Covers loading <repo_root>/refresh-guidance.toml into a DocSetConfig
+    """Covers loading <repo_root>/guidance-audit.toml into a DocSetConfig
     — the mechanism that lets a calling repo (any future
     third repo) supply its own doc-set config without agent-toolkit
     hardcoding that repo's internal layout."""
@@ -878,12 +878,23 @@ class DocSetResolutionTestCase(unittest.TestCase):
         )
         with self.assertRaises(rg.ConfigError) as ctx:
             rg.resolve_doc_set(self.repo, "agent-toolkit")
-        self.assertIn("refresh-guidance.toml", str(ctx.exception))
+        self.assertIn("guidance-audit.toml", str(ctx.exception))
 
     def test_no_external_file_and_no_doc_set_name_errors(self) -> None:
         with self.assertRaises(rg.ConfigError) as ctx:
             rg.resolve_doc_set(self.repo, None)
         self.assertIn("no doc-set specified", str(ctx.exception))
+
+    def test_discovers_only_the_guidance_audit_config_filename(self) -> None:
+        body = 'fixed_docs = ["README.md"]\nscript_dirs = ["scripts"]\n'
+        (self.repo / "refresh-guidance.toml").write_text(body)
+        with self.assertRaises(rg.ConfigError) as ctx:
+            rg.resolve_doc_set(self.repo, None)
+        self.assertIn("guidance-audit.toml", str(ctx.exception))
+        (self.repo / "guidance-audit.toml").write_text(body)
+        doc_set, _label = rg.resolve_doc_set(self.repo, None)
+        self.assertEqual(doc_set.fixed_docs, ("README.md",))
+        self.assertEqual(doc_set.state_path, "guidance-audit-state.json")
 
     def test_no_external_file_explicit_known_name_resolves(self) -> None:
         doc_set, label = rg.resolve_doc_set(self.repo, "agent-toolkit")
@@ -977,7 +988,7 @@ class ProgressiveDisclosureTestCase(unittest.TestCase):
         self.tmpdir = tempfile.mkdtemp()
         self.repo = Path(self.tmpdir)
         _init_repo(self.repo)
-        (self.repo / "refresh-guidance.toml").write_text(
+        (self.repo / "guidance-audit.toml").write_text(
             'fixed_docs = ["README.md"]\nscript_dirs = ["scripts"]\n'
         )
         (self.repo / "README.md").write_text("# Readme\n")

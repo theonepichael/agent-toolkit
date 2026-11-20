@@ -53,7 +53,7 @@ function listing is an AST naming convention, not a stability guarantee.
 | `notify.py` | Cross-platform notification dispatcher | Not a target | Small, single-purpose side-effect adapter. Keep whole-operation invocation. |
 | `statusline.py` | stdin payload to one status-line string | Not a target | Purposefully narrow; a pure rendering function is sufficient. |
 | `bundle_drift_check.py`, `harness_discovery_check.py`, `sessionstart_checks.py`, `link_drift_check.py`, `settings_seed_drift_check.py`, `seed_hook_subset_guard.py` | Hook/check entrypoints | Mostly not targets | Whole-workflow/hook contracts are safer than granular model-directed operations. Reuse their pure inspection functions only. |
-| `refresh_guidance.py` | Document discovery, claim analysis, git history, persisted review state, CLI reporting | Low-risk extraction | Discovery and finding construction can become a read-only audit service; state marking remains an explicit effect. |
+| `guidance_audit.py` | Document discovery, claim analysis, git history, persisted review state, CLI reporting | Low-risk extraction | Discovery and finding construction can become a read-only audit service; state marking remains an explicit effect. |
 | `gen_interfaces.py`, `gen_second_opinion.py`, `gen_shell_completion.py`, `gen_skills.py`, `gen_skills_params.py` | Repository generation tooling | Out of runtime target | These are maintenance tools, not model-runtime APIs. Their internal modularity should be audited separately if needed. |
 
 ## Observed architecture
@@ -700,7 +700,7 @@ before candidate 7's read API exists.
   not let this module re-add its own direct grill-session-file reader once
   candidate 7's `all_sessions()` exists, even as a "temporary" shortcut.
 
-#### 11. `refresh_guidance` audit service
+#### 11. `guidance_audit` audit service
 
 - **Why wave 2:** discovery (`discover_agents_md`, `discover_scripts`,
   `discover_undocumented_dirs`) and finding construction
@@ -1036,7 +1036,7 @@ before candidate 7's read API exists.
    candidate ships, so the typed-error/CLI-adapter convention is proven
    once at smaller scale first. Candidate 8 (`vitals_promotion` service)
    specifically requires candidate 7's `all_sessions()` and must wait for
-   it. Candidate 11 (`refresh_guidance` audit service) has no hard
+   it. Candidate 11 (`guidance_audit` audit service) has no hard
    dependency and can proceed whenever design time is available.
 3. **Wave 3, last:** candidate 12 (`dev_status` mutation service) should
    not start until wave 1 and at least the `grill`/`guard_rails` work has
@@ -1078,7 +1078,7 @@ candidate:
   stay a `TypedDict(total=False)` mirroring the target record's fields,
   which keeps the shape statically checked without forcing a
   present/absent sentinel onto every optional field of a full dataclass. A
-  persisted on-disk state blob passed through unchanged (`refresh_guidance`'s
+  persisted on-disk state blob passed through unchanged (`guidance_audit`'s
   review-state dict, which already mirrors its JSON file 1:1) is a second,
   narrower exception; a genuinely free-form payload with neither
   justification is not.
@@ -1198,7 +1198,7 @@ is 5,526 lines with 155 module-level function/async-function definitions
 nodes); `analyze_sessions.py` is 1,248 lines; `grill.py` is 1,235 lines;
 `llm_backends.py` is 1,198 lines; and `settings_seed_drift_check.py` is
 1,575 lines. Additional line counts gathered for this portfolio's wave
-assignments: `second_opinion.py` 1,034; `refresh_guidance.py` 1,393;
+assignments: `second_opinion.py` 1,034; `guidance_audit.py` 1,393;
 `harness_discovery_check.py` 751; `guard_rails.py` 876; `herdr_delegate.py`
 856; `link_inspect.py` 925; `settings_seed.py` 628; `vitals_promotion.py`
 490; `outlook_email.py` 469; `notify.py` 442; `standup.py` 309;

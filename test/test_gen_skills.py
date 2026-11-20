@@ -767,37 +767,41 @@ class CapabilityFixtureTests(unittest.TestCase):
         self.assertIn("name: analyze-sessions", text)
         self.assertIn("analyze_sessions.py", text)
 
-    # -- refresh-guidance ---------------------------------------------------
+    # -- guidance-audit ---------------------------------------------------
 
-    def test_refresh_guidance_claude(self) -> None:
-        text = self._render("refresh-guidance", "claude")
-        self.assertIn("name: refresh-guidance", text)
-        self.assertIn("refresh_guidance.py", text)
+    def test_guidance_audit_claude(self) -> None:
+        text = self._render("guidance-audit", "claude")
+        self.assertIn("name: guidance-audit", text)
+        self.assertIn("guidance_audit.py", text)
         self.assertIn("allowed-tools: [Read,", text)
+        allowed = next(
+            line for line in text.splitlines() if line.startswith("allowed-tools:")
+        )
+        self.assertIn("/guidance_audit.py:*)", allowed)
 
-    def test_refresh_guidance_copilot(self) -> None:
-        text = self._render("refresh-guidance", "copilot")
+    def test_guidance_audit_copilot(self) -> None:
+        text = self._render("guidance-audit", "copilot")
         self.assertIn("allowed-tools: shell", text)
-        self.assertIn("refresh_guidance.py", text)
+        self.assertIn("guidance_audit.py", text)
 
-    def test_refresh_guidance_opencode(self) -> None:
-        text = self._render("refresh-guidance", "opencode")
-        self.assertIn("refresh_guidance.py", text)
+    def test_guidance_audit_opencode(self) -> None:
+        text = self._render("guidance-audit", "opencode")
+        self.assertIn("guidance_audit.py", text)
 
-    def test_refresh_guidance_agy(self) -> None:
-        text = self._render("refresh-guidance", "agy")
-        self.assertIn("name: refresh-guidance", text)
-        self.assertIn("refresh_guidance.py", text)
+    def test_guidance_audit_agy(self) -> None:
+        text = self._render("guidance-audit", "agy")
+        self.assertIn("name: guidance-audit", text)
+        self.assertIn("guidance_audit.py", text)
 
-    def test_refresh_guidance_pi(self) -> None:
-        text = self._render("refresh-guidance", "pi")
-        self.assertIn("name: refresh-guidance", text)
-        self.assertIn("refresh_guidance.py", text)
+    def test_guidance_audit_pi(self) -> None:
+        text = self._render("guidance-audit", "pi")
+        self.assertIn("name: guidance-audit", text)
+        self.assertIn("guidance_audit.py", text)
 
-    def test_refresh_guidance_codex(self) -> None:
-        text = self._render("refresh-guidance", "codex")
-        self.assertIn("name: refresh-guidance", text)
-        self.assertIn("refresh_guidance.py", text)
+    def test_guidance_audit_codex(self) -> None:
+        text = self._render("guidance-audit", "codex")
+        self.assertIn("name: guidance-audit", text)
+        self.assertIn("guidance_audit.py", text)
 
 
 class LandSlugGuardTests(unittest.TestCase):

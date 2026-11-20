@@ -989,7 +989,7 @@
       "reason": "Doc-drift check; the exact required phrase's presence is the subject."
     }
   ],
-  "test/test_refresh_guidance.py": [
+  "test/test_guidance_audit.py": [
     {
       "fingerprint": "heading not found in `guide.md`: 'Ghost Heading'",
       "reason": "User-facing finding detail naming the doc and heading; both are data."

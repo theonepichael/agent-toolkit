@@ -3510,63 +3510,63 @@ description: "{_ANALYZE_SESSIONS_DESCRIPTION}"
     },
 }
 
-_REFRESH_GUIDANCE_DESCRIPTION = (
+_GUIDANCE_AUDIT_DESCRIPTION = (
     "Audit this repo's hand-authored, agent-facing docs (AGENTS.md, README.md, "
     "STYLE.md, CHANGELOG.md, etc.) for mechanically-broken citations — dead file "
     "paths, dead command/flag references — and surface which `##` sections haven't "
     "had a human-confirmed review in a while. Use when the user says 'refresh guidance', "
-    "'audit the docs', 'check the docs for staleness', 'run refresh-guidance', or asks "
+    "'audit the docs', 'check the docs for staleness', 'run guidance-audit', or asks "
     "which doc sections need review."
 )
 
-REFRESH_GUIDANCE_PARAMS: dict[str, dict[str, str]] = {
+GUIDANCE_AUDIT_PARAMS: dict[str, dict[str, str]] = {
     "claude": {
         "FRONTMATTER": f"""\
 ---
-name: refresh-guidance
-description: "{_REFRESH_GUIDANCE_DESCRIPTION}"
-allowed-tools: [Read, "Bash(python3 {{{{TOOLKIT_SCRIPTS}}}}/refresh_guidance.py:*)", "Bash(git rev-parse:*)"]
+name: guidance-audit
+description: "{_GUIDANCE_AUDIT_DESCRIPTION}"
+allowed-tools: [Read, "Bash(python3 {{{{TOOLKIT_SCRIPTS}}}}/guidance_audit.py:*)", "Bash(git rev-parse:*)"]
 ---""",
     },
     "copilot": {
         "FRONTMATTER": f"""\
 ---
-name: refresh-guidance
-description: "{_REFRESH_GUIDANCE_DESCRIPTION}"
+name: guidance-audit
+description: "{_GUIDANCE_AUDIT_DESCRIPTION}"
 allowed-tools: shell
 ---""",
     },
     "opencode": {
         "FRONTMATTER": f"""\
 ---
-description: "{_REFRESH_GUIDANCE_DESCRIPTION}"
+description: "{_GUIDANCE_AUDIT_DESCRIPTION}"
 ---""",
     },
     "agy": {
         "FRONTMATTER": f"""\
 ---
-name: refresh-guidance
-description: "{_REFRESH_GUIDANCE_DESCRIPTION}"
+name: guidance-audit
+description: "{_GUIDANCE_AUDIT_DESCRIPTION}"
 ---""",
     },
     "pi": {
         "FRONTMATTER": f"""\
 ---
-name: refresh-guidance
-description: "{_REFRESH_GUIDANCE_DESCRIPTION}"
+name: guidance-audit
+description: "{_GUIDANCE_AUDIT_DESCRIPTION}"
 ---""",
     },
     "pi-prompt": {
         "FRONTMATTER": f"""\
 ---
-description: "{_REFRESH_GUIDANCE_DESCRIPTION}"
+description: "{_GUIDANCE_AUDIT_DESCRIPTION}"
 ---""",
     },
     "codex": {
         "FRONTMATTER": f"""\
 ---
-name: refresh-guidance
-description: "{_REFRESH_GUIDANCE_DESCRIPTION}"
+name: guidance-audit
+description: "{_GUIDANCE_AUDIT_DESCRIPTION}"
 ---""",
     },
 }
@@ -3696,7 +3696,7 @@ SKILL_PARAMS: dict[str, dict[str, dict[str, str]]] = {
     "swarm": SWARM_PARAMS,
     "foreman": FOREMAN_PARAMS,
     "analyze-sessions": ANALYZE_SESSIONS_PARAMS,
-    "refresh-guidance": REFRESH_GUIDANCE_PARAMS,
+    "guidance-audit": GUIDANCE_AUDIT_PARAMS,
     "review-diff": REVIEW_DIFF_PARAMS,
     "land": LAND_PARAMS,
     "obe-triage": OBE_TRIAGE_PARAMS,

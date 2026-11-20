@@ -58,6 +58,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`grill.py`](#agentscriptsgrillpy) | grill.py — grill-me session state CLI. All session mutations go through here. |
 | [`guard_rails.py`](#agentscriptsguardrailspy) | Pre-tool guard shared by every harness: refuse a write into a repository's main checkout while a backlog item for that repository is in progress (except a write under a repo-declared, gitignored provenance root -- see ``.guard-rails.json`` and the module's ``_declared_provenance_roots``), warn when the current worktree's base has fallen behind ``origin/main`` (or ``origin/<integration_branch>`` for an item that declares one), (Bash, Claude Code and agy) deny the git-native ways to defeat the no-commit-on-main git hook (``githooks/pre-commit`` / ``githooks-global/pre-commit``), and require an active backlog-item claim before a write that points at an in-progress item. |
 | [`guard_rails_report.py`](#agentscriptsguardrailsreportpy) | guard_rails_report.py — read-only report over the guard-rails audit log. |
+| [`guidance_audit.py`](#agentscriptsguidanceauditpy) | guidance_audit.py — audit-by-inspection for hand-authored, agent-facing docs. |
 | [`harness_discovery_check.py`](#agentscriptsharnessdiscoverycheckpy) | SessionStart hook + CLI: detect when a harness's instruction-file discovery behavior changes, without pinning harness versions in the repo. |
 | [`harness_spec.py`](#agentscriptsharnessspecpy) | Declarative harness specification registry. |
 | [`herdr_delegate.py`](#agentscriptsherdrdelegatepy) | Launch supported agents in herdr tabs to work backlog items. |
@@ -71,7 +72,6 @@ House style for these interfaces is in `STYLE.md`.
 | [`outlook_calendar.py`](#agentscriptsoutlookcalendarpy) | outlook_calendar.py — CLI tool and agent interface for Windows Outlook Calendar via PowerShell COM. |
 | [`outlook_email.py`](#agentscriptsoutlookemailpy) | outlook_email.py — CLI tool and agent interface for Windows Outlook via PowerShell COM. |
 | [`permission_matrix.py`](#agentscriptspermissionmatrixpy) | Declarative bash-permission matrix shared by every harness's global seed. |
-| [`refresh_guidance.py`](#agentscriptsrefreshguidancepy) | refresh_guidance.py — audit-by-inspection for hand-authored, agent-facing docs. |
 | [`rename_transition.py`](#agentscriptsrenametransitionpy) | Temporary machinery for the clean-break renames: env fallbacks and store transforms. |
 | [`second_opinion.py`](#agentscriptssecondopinionpy) | second_opinion.py — one-shot adversarial critique of a plan from a non-Claude backend. Single-round by design: the multi-round loop, plan revision, and convergence judgment all require LLM reasoning and live in prose instructions, not here. |
 | [`seed_hook_subset_guard.py`](#agentscriptsseedhooksubsetguardpy) | seed_hook_subset_guard.py — refuse a commit that drops a seed's SessionStart hook groups. |
@@ -1102,6 +1102,69 @@ guard_rails_report.py — read-only report over the guard-rails audit log.
   - `build_parser() -> argparse.ArgumentParser`
 - Tested by: `test/test_guard_rails_report.py`
 
+### `agent-scripts/guidance_audit.py`
+
+guidance_audit.py — audit-by-inspection for hand-authored, agent-facing docs.
+
+- Installed at: `~/.agent-toolkit/scripts/guidance_audit.py` (all harnesses)
+- Entrypoint: not executable, `#!/usr/bin/env python3`
+- CLI (`argparse`): Audit hand-authored, agent-facing docs for mechanically-checkable stale references and per-section human-review staleness.
+  - `--quiet/-q`
+  - `--verbose/-v`
+- Subcommands:
+  - `check [--repo-root <REPO_ROOT>] [--doc-set <DOC_SET>] [--agent-toolkit-root <AGENT_TOOLKIT_ROOT>]` — scan the configured doc-set and print a findings + staleness report (default)
+    - `--repo-root` — repo root to scan (default: this checkout)
+    - `--doc-set` — which built-in doc-set config to use. No default -- either pass this, or let <repo-root>/guidance-audit.toml be auto-discovered (never both). (choices computed at runtime)
+    - `--agent-toolkit-root` — agent-toolkit checkout used to resolve cross-repo script citations for doc-sets with cross_repo_scripts set (default: this script's own checkout, else $AGENT_TOOLKIT_PATH, else ~/Workspace/agent-toolkit/agent-toolkit, else ~/Workspace/agent-toolkit)
+  - `mark-reviewed [--repo-root <REPO_ROOT>] [--doc-set <DOC_SET>] [--agent-toolkit-root <AGENT_TOOLKIT_ROOT>] <doc> <heading> [--commit <COMMIT>] [--date <DATE>]` — record human sign-off that one doc's `## <heading>` section is current
+    - `--repo-root` — repo root to scan (default: this checkout)
+    - `--doc-set` — which built-in doc-set config to use. No default -- either pass this, or let <repo-root>/guidance-audit.toml be auto-discovered (never both). (choices computed at runtime)
+    - `--agent-toolkit-root` — agent-toolkit checkout used to resolve cross-repo script citations for doc-sets with cross_repo_scripts set (default: this script's own checkout, else $AGENT_TOOLKIT_PATH, else ~/Workspace/agent-toolkit/agent-toolkit, else ~/Workspace/agent-toolkit)
+    - `doc` — repo-relative doc path, e.g. AGENTS.md
+    - `heading` — exact `## <heading>` text
+    - `--commit` — commit sha to record (default: current HEAD)
+    - `--date` — YYYY-MM-DD to record (default: today)
+  - `scaffold [--repo-root <REPO_ROOT>] [--doc-set <DOC_SET>] [--agent-toolkit-root <AGENT_TOOLKIT_ROOT>] <directory> [--force]` — scaffold a rubric-compliant AGENTS.md and paired CLAUDE.md symlink in a directory
+    - `--repo-root` — repo root to scan (default: this checkout)
+    - `--doc-set` — which built-in doc-set config to use. No default -- either pass this, or let <repo-root>/guidance-audit.toml be auto-discovered (never both). (choices computed at runtime)
+    - `--agent-toolkit-root` — agent-toolkit checkout used to resolve cross-repo script citations for doc-sets with cross_repo_scripts set (default: this script's own checkout, else $AGENT_TOOLKIT_PATH, else ~/Workspace/agent-toolkit/agent-toolkit, else ~/Workspace/agent-toolkit)
+    - `directory` — repo-relative directory path to scaffold
+    - `--force/-f` — overwrite existing AGENTS.md or CLAUDE.md
+- Filesystem constants:
+  - `DEFAULT_REPO_ROOT = Path(__file__).resolve().parents[1]`
+- Explicit exit codes: `2`
+- Depends on: `cli_common.py`, `gen_interfaces.py`, `toolkit_checkout.py`
+- Exceptions:
+  - `class ConfigError(Exception)` — A guidance-audit.toml or --doc-set resolution problem.
+- Public classes:
+  - `class DocSetConfig` — What to scan for one repo: fixed docs, plus where its scripts live.
+  - `class UndocumentedDir`
+  - `class Section` — One `##` heading's line range.
+  - `class Claim`
+  - `class Finding`
+  - `class SectionStatus`
+  - `class CheckResult`
+- Public functions:
+  - `load_external_doc_set(repo_root: Path) -> DocSetConfig | None` — Load `<repo_root>/guidance-audit.toml` into a `DocSetConfig`, or `None` if the file doesn't exist.
+  - `resolve_doc_set(repo_root: Path, doc_set_name: str | None) -> tuple[DocSetConfig, str]` — Resolve the doc-set to use for `repo_root`, given the (possibly absent) `--doc-set` value.
+  - `discover_agents_md(repo_root: Path) -> list[str]` — Return every tracked `AGENTS.md`'s repo-relative path, sorted.
+  - `discover_undocumented_dirs(repo_root: Path, threshold: int = UNDOCUMENTED_DIR_THRESHOLD) -> list[UndocumentedDir]` — Flag a top-level directory that looks complex enough to warrant its own `AGENTS.md` but doesn't have one -- the inverse signal from the rest of this module: not "this existing doc is stale" but "no one has written a doc for this yet." Purely a suggestion for a human to weigh; never creates anything.
+  - `discover_basename_index(repo_root: Path, agent_toolkit_root: Path | None = None) -> dict[str, list[str]]` — Map every tracked file's basename to its repo-relative path(s).
+  - `discovered_docs(repo_root: Path, doc_set: DocSetConfig) -> list[str]` — Union of the doc-set's fixed docs (only those present) and every auto-discovered `AGENTS.md` -- a fixed doc absent from this repo (e.g.
+  - `discover_scripts(repo_root: Path, doc_set: DocSetConfig, agent_toolkit_root: Path | None = None) -> dict[str, Path]` — Map every script basename under the doc-set's script directories (plus its root entrypoints) to its path -- the universe of scripts a command citation can legitimately name.
+  - `classify_span(text: str, known_scripts: set[str]) -> tuple[str, str, list[str], str | None, str | None] | None` — Classify one code-span's text as a path or command claim, or None if it isn't claim-shaped at all (a bare flag, an env var name, a glob pattern, a generic shell command with no known script in it, ...).
+  - `parse_document(doc_relpath: str, text: str, known_scripts: set[str]) -> tuple[list[Section], list[Claim]]` — One pass over a doc's lines: track `##` headings and fenced-code state together, so a `## `-looking line inside a fenced example is never mistaken for a real section boundary.
+  - `check_path_claim(claim: Claim, repo_root: Path, basename_index: dict[str, list[str]], agent_toolkit_root: Path | None = None) -> str | None` — Verify a path claim's file/dir exists, and -- when it carries a `#fragment` -- that a matching `##` heading exists in the target doc.
+  - `check_command_claim(claim: Claim, scripts: dict[str, Path], cli_cache: dict[Path, gen_interfaces.CliSpec | None], repo_root: Path, basename_index: dict[str, list[str]]) -> str | None` — Verify a command claim's script exists and its cited flags/subcommands are real, by reusing `gen_interfaces`'s own argparse extraction and invocation validator -- the same machinery it uses to keep INTERFACES.md honest, rather than a second implementation of argparse introspection.
+  - `git_blame_range(repo_root: Path, doc: str, start_line: int, end_line: int) -> tuple[str | None, str | None]` — Last commit (short sha, date) that touched a section's line range, via `git log -L` -- the secondary staleness signal for a section with no review-state entry yet.
+  - `load_state(repo_root: Path, doc_set: DocSetConfig) -> dict[str, dict[str, str]]`
+  - `run_check(repo_root: Path, doc_set_name: str | None, agent_toolkit_root: Path | None = None) -> CheckResult` — Check the doc-set's claims and section review ages.
+  - `render_report(result: CheckResult, doc_set_label: str) -> str`
+  - `mark_reviewed(repo_root: Path, doc_set: DocSetConfig, doc: str, heading: str, result: CheckResult, *, commit: str | None = None, date: str | None = None, reviewed_by: str = 'human-confirmed') -> None` — Record human sign-off that one doc's ``## <heading>`` section is current — the sole supported state-writer in this module.
+  - `build_parser() -> argparse.ArgumentParser`
+- Subcommand handlers: `cmd_check`, `cmd_mark_reviewed`, `cmd_scaffold`
+- Tested by: `test/test_guidance_audit.py`
+
 ### `agent-scripts/harness_discovery_check.py`
 
 SessionStart hook + CLI: detect when a harness's instruction-file discovery behavior changes, without pinning harness versions in the repo.
@@ -1597,69 +1660,6 @@ Declarative bash-permission matrix shared by every harness's global seed.
   - `rules_for(target: str, rules: tuple[Rule, ...] = RULES, exceptions: tuple[PatternException | TokenException, ...] = EXCEPTIONS) -> dict[Tier, tuple[str, ...]]` — Neutral patterns per tier for ``target``, in matrix order, exceptions applied.
   - `shared_allow(rules: tuple[Rule, ...] = RULES) -> frozenset[str]` — Every ALLOW pattern in the matrix, before any exception.
 - Tested by: `test/test_gen_permissions.py`, `test/test_install.py`, `test/test_permission_matrix.py`
-
-### `agent-scripts/refresh_guidance.py`
-
-refresh_guidance.py — audit-by-inspection for hand-authored, agent-facing docs.
-
-- Installed at: `~/.agent-toolkit/scripts/refresh_guidance.py` (all harnesses)
-- Entrypoint: not executable, `#!/usr/bin/env python3`
-- CLI (`argparse`): Audit hand-authored, agent-facing docs for mechanically-checkable stale references and per-section human-review staleness.
-  - `--quiet/-q`
-  - `--verbose/-v`
-- Subcommands:
-  - `check [--repo-root <REPO_ROOT>] [--doc-set <DOC_SET>] [--agent-toolkit-root <AGENT_TOOLKIT_ROOT>]` — scan the configured doc-set and print a findings + staleness report (default)
-    - `--repo-root` — repo root to scan (default: this checkout)
-    - `--doc-set` — which built-in doc-set config to use. No default -- either pass this, or let <repo-root>/refresh-guidance.toml be auto-discovered (never both). (choices computed at runtime)
-    - `--agent-toolkit-root` — agent-toolkit checkout used to resolve cross-repo script citations for doc-sets with cross_repo_scripts set (default: this script's own checkout, else $AGENT_TOOLKIT_PATH, else ~/Workspace/agent-toolkit/agent-toolkit, else ~/Workspace/agent-toolkit)
-  - `mark-reviewed [--repo-root <REPO_ROOT>] [--doc-set <DOC_SET>] [--agent-toolkit-root <AGENT_TOOLKIT_ROOT>] <doc> <heading> [--commit <COMMIT>] [--date <DATE>]` — record human sign-off that one doc's `## <heading>` section is current
-    - `--repo-root` — repo root to scan (default: this checkout)
-    - `--doc-set` — which built-in doc-set config to use. No default -- either pass this, or let <repo-root>/refresh-guidance.toml be auto-discovered (never both). (choices computed at runtime)
-    - `--agent-toolkit-root` — agent-toolkit checkout used to resolve cross-repo script citations for doc-sets with cross_repo_scripts set (default: this script's own checkout, else $AGENT_TOOLKIT_PATH, else ~/Workspace/agent-toolkit/agent-toolkit, else ~/Workspace/agent-toolkit)
-    - `doc` — repo-relative doc path, e.g. AGENTS.md
-    - `heading` — exact `## <heading>` text
-    - `--commit` — commit sha to record (default: current HEAD)
-    - `--date` — YYYY-MM-DD to record (default: today)
-  - `scaffold [--repo-root <REPO_ROOT>] [--doc-set <DOC_SET>] [--agent-toolkit-root <AGENT_TOOLKIT_ROOT>] <directory> [--force]` — scaffold a rubric-compliant AGENTS.md and paired CLAUDE.md symlink in a directory
-    - `--repo-root` — repo root to scan (default: this checkout)
-    - `--doc-set` — which built-in doc-set config to use. No default -- either pass this, or let <repo-root>/refresh-guidance.toml be auto-discovered (never both). (choices computed at runtime)
-    - `--agent-toolkit-root` — agent-toolkit checkout used to resolve cross-repo script citations for doc-sets with cross_repo_scripts set (default: this script's own checkout, else $AGENT_TOOLKIT_PATH, else ~/Workspace/agent-toolkit/agent-toolkit, else ~/Workspace/agent-toolkit)
-    - `directory` — repo-relative directory path to scaffold
-    - `--force/-f` — overwrite existing AGENTS.md or CLAUDE.md
-- Filesystem constants:
-  - `DEFAULT_REPO_ROOT = Path(__file__).resolve().parents[1]`
-- Explicit exit codes: `2`
-- Depends on: `cli_common.py`, `gen_interfaces.py`, `toolkit_checkout.py`
-- Exceptions:
-  - `class ConfigError(Exception)` — A refresh-guidance.toml or --doc-set resolution problem.
-- Public classes:
-  - `class DocSetConfig` — What to scan for one repo: fixed docs, plus where its scripts live.
-  - `class UndocumentedDir`
-  - `class Section` — One `##` heading's line range.
-  - `class Claim`
-  - `class Finding`
-  - `class SectionStatus`
-  - `class CheckResult`
-- Public functions:
-  - `load_external_doc_set(repo_root: Path) -> DocSetConfig | None` — Load `<repo_root>/refresh-guidance.toml` into a `DocSetConfig`, or `None` if the file doesn't exist.
-  - `resolve_doc_set(repo_root: Path, doc_set_name: str | None) -> tuple[DocSetConfig, str]` — Resolve the doc-set to use for `repo_root`, given the (possibly absent) `--doc-set` value.
-  - `discover_agents_md(repo_root: Path) -> list[str]` — Return every tracked `AGENTS.md`'s repo-relative path, sorted.
-  - `discover_undocumented_dirs(repo_root: Path, threshold: int = UNDOCUMENTED_DIR_THRESHOLD) -> list[UndocumentedDir]` — Flag a top-level directory that looks complex enough to warrant its own `AGENTS.md` but doesn't have one -- the inverse signal from the rest of this module: not "this existing doc is stale" but "no one has written a doc for this yet." Purely a suggestion for a human to weigh; never creates anything.
-  - `discover_basename_index(repo_root: Path, agent_toolkit_root: Path | None = None) -> dict[str, list[str]]` — Map every tracked file's basename to its repo-relative path(s).
-  - `discovered_docs(repo_root: Path, doc_set: DocSetConfig) -> list[str]` — Union of the doc-set's fixed docs (only those present) and every auto-discovered `AGENTS.md` -- a fixed doc absent from this repo (e.g.
-  - `discover_scripts(repo_root: Path, doc_set: DocSetConfig, agent_toolkit_root: Path | None = None) -> dict[str, Path]` — Map every script basename under the doc-set's script directories (plus its root entrypoints) to its path -- the universe of scripts a command citation can legitimately name.
-  - `classify_span(text: str, known_scripts: set[str]) -> tuple[str, str, list[str], str | None, str | None] | None` — Classify one code-span's text as a path or command claim, or None if it isn't claim-shaped at all (a bare flag, an env var name, a glob pattern, a generic shell command with no known script in it, ...).
-  - `parse_document(doc_relpath: str, text: str, known_scripts: set[str]) -> tuple[list[Section], list[Claim]]` — One pass over a doc's lines: track `##` headings and fenced-code state together, so a `## `-looking line inside a fenced example is never mistaken for a real section boundary.
-  - `check_path_claim(claim: Claim, repo_root: Path, basename_index: dict[str, list[str]], agent_toolkit_root: Path | None = None) -> str | None` — Verify a path claim's file/dir exists, and -- when it carries a `#fragment` -- that a matching `##` heading exists in the target doc.
-  - `check_command_claim(claim: Claim, scripts: dict[str, Path], cli_cache: dict[Path, gen_interfaces.CliSpec | None], repo_root: Path, basename_index: dict[str, list[str]]) -> str | None` — Verify a command claim's script exists and its cited flags/subcommands are real, by reusing `gen_interfaces`'s own argparse extraction and invocation validator -- the same machinery it uses to keep INTERFACES.md honest, rather than a second implementation of argparse introspection.
-  - `git_blame_range(repo_root: Path, doc: str, start_line: int, end_line: int) -> tuple[str | None, str | None]` — Last commit (short sha, date) that touched a section's line range, via `git log -L` -- the secondary staleness signal for a section with no review-state entry yet.
-  - `load_state(repo_root: Path, doc_set: DocSetConfig) -> dict[str, dict[str, str]]`
-  - `run_check(repo_root: Path, doc_set_name: str | None, agent_toolkit_root: Path | None = None) -> CheckResult` — Check the doc-set's claims and section review ages.
-  - `render_report(result: CheckResult, doc_set_label: str) -> str`
-  - `mark_reviewed(repo_root: Path, doc_set: DocSetConfig, doc: str, heading: str, result: CheckResult, *, commit: str | None = None, date: str | None = None, reviewed_by: str = 'human-confirmed') -> None` — Record human sign-off that one doc's ``## <heading>`` section is current — the sole supported state-writer in this module.
-  - `build_parser() -> argparse.ArgumentParser`
-- Subcommand handlers: `cmd_check`, `cmd_mark_reviewed`, `cmd_scaffold`
-- Tested by: `test/test_refresh_guidance.py`
 
 ### `agent-scripts/rename_transition.py`
 
@@ -2196,11 +2196,11 @@ the workflow's template plus its generator's capability/parameter tables.
 | `/draft-voice` | hand-authored | yes | — | — | — | — | — |
 | `/foreman` | template | yes | yes | — | — | — | — |
 | `/grill-me` | template | yes | yes | yes | yes | yes | yes |
+| `/guidance-audit` | template | yes | yes | yes | yes | yes | yes |
 | `/land` | template | yes | yes | yes | yes | yes | yes |
 | `/make-skill` | template | yes | yes | yes | yes | yes | yes |
 | `/obe-triage` | template | yes | yes | yes | yes | yes | yes |
 | `/recap` | template | yes | yes | yes | yes | yes | yes |
-| `/refresh-guidance` | template | yes | yes | yes | yes | yes | yes |
 | `/retro` | template | yes | yes | yes | yes | yes | yes |
 | `/review-diff` | template | yes | yes | yes | yes | yes | yes |
 | `/second-opinion` | template | yes | yes | yes | yes | yes | yes |
@@ -2235,6 +2235,10 @@ the workflow's template plus its generator's capability/parameter tables.
   - Generated from: `templates/grill_me.md.tmpl` by `gen_skills.py`
   - `claude/commands/{name}.md` is the rendered Claude Code port — edit the template or generator, then regenerate.
   - Installed at: `~/.claude/commands/grill-me.md` (claude)
+- **`/guidance-audit`** — Audit this repo's hand-authored, agent-facing docs (AGENTS.md, README.md, STYLE.md, CHANGELOG.md, etc.) for mechanically-broken citations — dead file paths, dead command/flag references — and surface which `##` sections haven't had a human-confirmed review in a while. Use when the user says 'refresh guidance', 'audit the docs', 'check the docs for staleness', 'run guidance-audit', or asks which doc sections need review.
+  - Generated from: `templates/guidance_audit.md.tmpl` by `gen_skills.py`
+  - `claude/commands/{name}.md` is the rendered Claude Code port — edit the template or generator, then regenerate.
+  - Installed at: `~/.claude/commands/guidance-audit.md` (claude)
 - **`/land`** — Land finished work from a worktree: the commit approval gate (showing the review-diff triage table), the merge/push/cleanup gate, and, given a backlog slug, the dev_status review/approve close. Every gate stops for the user. Use when the user says 'land this', 'commit and merge', 'ship it', or when backlog-item delegates its landing step.
   - Generated from: `templates/land.md.tmpl` by `gen_skills.py`
   - `claude/commands/{name}.md` is the rendered Claude Code port — edit the template or generator, then regenerate.
@@ -2251,10 +2255,6 @@ the workflow's template plus its generator's capability/parameter tables.
   - Generated from: `templates/recap.md.tmpl` by `gen_skills.py`
   - `claude/commands/{name}.md` is the rendered Claude Code port — edit the template or generator, then regenerate.
   - Installed at: `~/.claude/commands/recap.md` (claude)
-- **`/refresh-guidance`** — Audit this repo's hand-authored, agent-facing docs (AGENTS.md, README.md, STYLE.md, CHANGELOG.md, etc.) for mechanically-broken citations — dead file paths, dead command/flag references — and surface which `##` sections haven't had a human-confirmed review in a while. Use when the user says 'refresh guidance', 'audit the docs', 'check the docs for staleness', 'run refresh-guidance', or asks which doc sections need review.
-  - Generated from: `templates/refresh_guidance.md.tmpl` by `gen_skills.py`
-  - `claude/commands/{name}.md` is the rendered Claude Code port — edit the template or generator, then regenerate.
-  - Installed at: `~/.claude/commands/refresh-guidance.md` (claude)
 - **`/retro`** — Run a retrospective on a coding session and offer environment fixes (pointers, checks, steering, tools) as backlog items.
   - Generated from: `templates/retro.md.tmpl` by `gen_skills.py`
   - `claude/commands/{name}.md` is the rendered Claude Code port — edit the template or generator, then regenerate.
@@ -2393,11 +2393,11 @@ are copy-once seeds for exactly that reason.
 | `pi/prompts/backlog-item.md` | `~/.pi/agent/prompts/backlog-item.md` (pi) |
 | `pi/prompts/dashboard.md` | `~/.pi/agent/prompts/dashboard.md` (pi) |
 | `pi/prompts/grill-me.md` | `~/.pi/agent/prompts/grill-me.md` (pi) |
+| `pi/prompts/guidance-audit.md` | `~/.pi/agent/prompts/guidance-audit.md` (pi) |
 | `pi/prompts/land.md` | `~/.pi/agent/prompts/land.md` (pi) |
 | `pi/prompts/make-skill.md` | `~/.pi/agent/prompts/make-skill.md` (pi) |
 | `pi/prompts/obe-triage.md` | `~/.pi/agent/prompts/obe-triage.md` (pi) |
 | `pi/prompts/recap.md` | `~/.pi/agent/prompts/recap.md` (pi) |
-| `pi/prompts/refresh-guidance.md` | `~/.pi/agent/prompts/refresh-guidance.md` (pi) |
 | `pi/prompts/retro.md` | `~/.pi/agent/prompts/retro.md` (pi) |
 | `pi/prompts/review-diff.md` | `~/.pi/agent/prompts/review-diff.md` (pi) |
 | `pi/prompts/second-opinion.md` | `~/.pi/agent/prompts/second-opinion.md` (pi) |
@@ -2798,6 +2798,17 @@ named doc, not regenerating this file.
 | `claude/commands/foreman.md` | OK |
 | `copilot/skills/foreman/SKILL.md` | OK |
 
+### `guidance_audit.py`
+
+| Doc | Status |
+| --- | --- |
+| `agy/skills/guidance-audit/SKILL.md` | OK |
+| `claude/commands/guidance-audit.md` | OK |
+| `codex/skills/guidance-audit/SKILL.md` | OK |
+| `copilot/skills/guidance-audit/SKILL.md` | OK |
+| `opencode/command/guidance-audit.md` | OK |
+| `pi/skills/guidance-audit/SKILL.md` | OK |
+
 ### `herdr_delegate.py`
 
 | Doc | Status |
@@ -2808,17 +2819,6 @@ named doc, not regenerating this file.
 | `copilot/skills/foreman/SKILL.md` | OK |
 | `copilot/skills/swarm/SKILL.md` | OK |
 | `pi/skills/backlog-item/SKILL.md` | OK |
-
-### `refresh_guidance.py`
-
-| Doc | Status |
-| --- | --- |
-| `agy/skills/refresh-guidance/SKILL.md` | OK |
-| `claude/commands/refresh-guidance.md` | OK |
-| `codex/skills/refresh-guidance/SKILL.md` | OK |
-| `copilot/skills/refresh-guidance/SKILL.md` | OK |
-| `opencode/command/refresh-guidance.md` | OK |
-| `pi/skills/refresh-guidance/SKILL.md` | OK |
 
 ### `second_opinion.py`
 
@@ -2931,11 +2931,11 @@ new one, `--check` catches it the same as any other stale content.
 | `/draft-voice` | — |
 | `/foreman` | `backlog-item`, `land`, `shunt-artifacts`, `swarm` |
 | `/grill-me` | `second-opinion`, `spec` |
+| `/guidance-audit` | — |
 | `/land` | `backlog-item`, `dashboard`, `review-diff`, `shunt-artifacts`, `spec` |
 | `/make-skill` | `draft-voice`, `grill-me`, `obe-triage` |
 | `/obe-triage` | — |
 | `/recap` | — |
-| `/refresh-guidance` | — |
 | `/retro` | — |
 | `/review-diff` | `backlog-item`, `land`, `spec` |
 | `/second-opinion` | `backlog-item`, `review-diff` |

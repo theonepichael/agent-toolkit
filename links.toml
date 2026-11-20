@@ -86,8 +86,8 @@ dest = "~/.claude/commands/analyze-sessions.md"
 harness = "claude"
 
 [[link]]
-src = "claude/commands/refresh-guidance.md"
-dest = "~/.claude/commands/refresh-guidance.md"
+src = "claude/commands/guidance-audit.md"
+dest = "~/.claude/commands/guidance-audit.md"
 harness = "claude"
 
 [[link]]
@@ -336,8 +336,8 @@ src = "agent-scripts/rename_transition.py"
 dest = "~/.agent-toolkit/scripts/rename_transition.py"
 
 [[link]]
-src = "agent-scripts/refresh_guidance.py"
-dest = "~/.agent-toolkit/scripts/refresh_guidance.py"
+src = "agent-scripts/guidance_audit.py"
+dest = "~/.agent-toolkit/scripts/guidance_audit.py"
 
 [[link]]
 src = "agent-scripts/vitals_promotion.py"
@@ -489,8 +489,8 @@ dest = "~/.copilot/skills/analyze-sessions/SKILL.md"
 harness = "copilot"
 
 [[link]]
-src = "copilot/skills/refresh-guidance/SKILL.md"
-dest = "~/.copilot/skills/refresh-guidance/SKILL.md"
+src = "copilot/skills/guidance-audit/SKILL.md"
+dest = "~/.copilot/skills/guidance-audit/SKILL.md"
 harness = "copilot"
 
 [[link]]
@@ -616,8 +616,8 @@ dest = "~/.config/opencode/commands/analyze-sessions.md"
 harness = "opencode"
 
 [[link]]
-src = "opencode/command/refresh-guidance.md"
-dest = "~/.config/opencode/commands/refresh-guidance.md"
+src = "opencode/command/guidance-audit.md"
+dest = "~/.config/opencode/commands/guidance-audit.md"
 harness = "opencode"
 
 [[link]]
@@ -748,8 +748,8 @@ dest = "~/.gemini/antigravity-cli/skills/analyze-sessions/SKILL.md"
 harness = "agy"
 
 [[link]]
-src = "agy/skills/refresh-guidance/SKILL.md"
-dest = "~/.gemini/antigravity-cli/skills/refresh-guidance/SKILL.md"
+src = "agy/skills/guidance-audit/SKILL.md"
+dest = "~/.gemini/antigravity-cli/skills/guidance-audit/SKILL.md"
 harness = "agy"
 
 [[link]]
@@ -870,8 +870,8 @@ dest = "~/.pi/agent/prompts/analyze-sessions.md"
 harness = "pi"
 
 [[link]]
-src = "pi/prompts/refresh-guidance.md"
-dest = "~/.pi/agent/prompts/refresh-guidance.md"
+src = "pi/prompts/guidance-audit.md"
+dest = "~/.pi/agent/prompts/guidance-audit.md"
 harness = "pi"
 
 [[link]]

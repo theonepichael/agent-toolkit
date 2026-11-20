@@ -463,7 +463,7 @@ CONTRACT_TEST_FILES = [
     "test_notify.py",
     "test_outlook_calendar.py",
     "test_outlook_email.py",
-    "test_refresh_guidance.py",
+    "test_guidance_audit.py",
     "test_second_opinion.py",
     "test_sessionstart_checks.py",
     "test_settings_seed_drift_check.py",

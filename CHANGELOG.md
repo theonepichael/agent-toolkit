@@ -14,6 +14,64 @@ the warning. Run `./install.sh --report-legacy-env` to see any still set.
 
 ## Unreleased
 
+## release-5 — 2026-11-20
+
+- **Clean-break rename 2 (`refresh_guidance` → `guidance_audit`):** renamed
+  `agent-scripts/refresh_guidance.py` → `guidance_audit.py`, the
+  `/refresh-guidance` skill → `/guidance-audit` in all six harnesses
+  (regenerated from `templates/guidance_audit.md.tmpl`), the auto-discovered
+  doc-set config `refresh-guidance.toml` → `guidance-audit.toml`, and the
+  default review-state file `refresh-guidance-state.json` →
+  `guidance-audit-state.json`, with matching updates across `links.toml`,
+  `gen_skills.py`, `INTERFACES.md`, `GLOSSARY.md`, docs, and tests. There is no
+  alias and no old-filename fallback: a repo that still carries only
+  `refresh-guidance.toml` gets the existing loud "no doc-set specified" error,
+  which names the new file. Saying "refresh guidance" still triggers the skill.
+  This release makes no behavior changes, upgrades no stored data, and
+  renames no environment variables (none exist).
+  - **Per-machine order:** pull agent-toolkit and any downstream overlay repo
+    that carries a `refresh-guidance.toml` (rename it there in the same
+    rollout), then run the installer once. Run the audit only after both pulls.
+  - **Per-machine post-install check, before `./install.sh --check-links`:**
+    1. Rename any `refresh-guidance.toml` or `refresh-guidance-state.json` left
+       at a repo root to `guidance-audit.toml` / `guidance-audit-state.json`.
+    2. Delete `~/.codex/skills/refresh-guidance/`. Codex skills are copied,
+       not linked, so orphan cleanup never removes them.
+    3. Confirm that none of the old destinations survive, dangling links
+       included: `~/.agent-toolkit/scripts/refresh_guidance.py`,
+       `~/.claude/commands/refresh-guidance.md`,
+       `~/.copilot/skills/refresh-guidance/`,
+       `~/.config/opencode/commands/refresh-guidance.md`,
+       `~/.gemini/antigravity-cli/skills/refresh-guidance/`,
+       `~/.pi/agent/prompts/refresh-guidance.md` and
+       `~/.pi/agent/skills/refresh-guidance/`. Orphan cleanup misses a link it
+       has no creation record for, and a nested skill link whose repo
+       directory is gone when the checkout has moved. Remove a confirmed
+       leftover by hand. A surviving scripts link otherwise fails
+       `--check-links` as `unmanaged`.
+    4. Run `rename_transition.py checklist` for both spellings
+       (`refresh_guidance guidance_audit` and `refresh-guidance guidance-audit`,
+       `--release release-5`), since each run matches one literal spelling.
+
+### release-5: `refresh_guidance` -> `guidance_audit` checklist
+
+- [x] Defining source file renamed (`refresh_guidance.py` → `guidance_audit.py`)
+- [x] Every Python import updated
+- [x] `links.toml` destination and manifest entry updated (six rows; Pi's skill rides the unchanged `pi/skills` directory row)
+- [x] `install.py` / `install.sh` references updated (N/A — neither names the auditor)
+- [x] Workflow files regenerated, per harness, from templates — never hand-edited (old copies removed; `gen_skills.py` does not delete retired outputs)
+- [x] Generator parameter tables updated (`gen_skills_params.py` `GUIDANCE_AUDIT_PARAMS`, including the Claude `allowed-tools` pattern; `gen_skills.py` registrations; contract fingerprints)
+- [x] `INTERFACES.md` regenerated
+- [x] `GLOSSARY.md` term added with its first-use definition
+- [x] `README.md` references updated
+- [x] Tests and fixtures updated; drift checks pass
+- [x] Persisted field or value transform written, with a version bump (N/A — the only persisted file is the per-repo review-state file, renamed by hand per the post-install check; none existed on the machines checked)
+- [x] Environment variable fallback added with a deprecation warning (N/A — zero `REFRESH_GUIDANCE*` environment variables exist)
+- [x] Manual-edit checklist emitted for external instruction files (`rename_transition.py checklist` for both spellings; each machine runs its own scan at rollout, per the post-install check above)
+- [x] No undocumented alias left behind, except the env-var fallback window
+
+### Other changes in release-5
+
 - `./install.sh --harness=all` provisions every harness whose CLI is on PATH,
   noting each one it skips; `--force-harness` keeps all six, and
   `--profile=work` leaves out opencode. `all` cannot be mixed with harness

@@ -58,7 +58,7 @@ tracked files with `.py`, `.ts`, or `.sh` code) warrants its own local
   and formatting practices.
 
 ### Tier 3: Task-Specific Instructions
-Task-oriented workflows (e.g. `/backlog-item`, `/refresh-guidance`, `/standup`)
+Task-oriented workflows (e.g. `/backlog-item`, `/guidance-audit`, `/standup`)
 live in task skill definitions (e.g. `claude/commands/`, `opencode/skills/`,
 `pi/prompts/`) and are invoked only when needed, keeping them out of the agent's
 permanent prompt budget.
@@ -108,7 +108,7 @@ To guarantee identical guidance across all harnesses without file drift:
 
 ## 4. Standard Directory Template
 
-When creating a new directory `AGENTS.md` (via `refresh_guidance.py scaffold <dir>`
+When creating a new directory `AGENTS.md` (via `guidance_audit.py scaffold <dir>`
 or manually), adhere to this standard layout:
 
 ```markdown
@@ -133,7 +133,7 @@ or manually), adhere to this standard layout:
 
 ## 5. Evaluation & Audit Rules
 
-`refresh_guidance.py check` mechanically audits documentation against this
+`guidance_audit.py check` mechanically audits documentation against this
 rubric:
 
 1. **Root File**: `AGENTS.md` must exist at the repository root. Missing root

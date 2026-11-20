@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""refresh_guidance.py — audit-by-inspection for hand-authored, agent-facing docs.
+"""guidance_audit.py — audit-by-inspection for hand-authored, agent-facing docs.
 
 Scans a repo's hand-authored prose documentation (every ``AGENTS.md``, plus a
 per-repo fixed list such as ``README.md``/``STYLE.md``) for three things: (1)
@@ -27,22 +27,22 @@ This is a shared engine, not a per-repo copy: which docs and script
 directories to scan is config (a ``DocSetConfig``), so the same checking
 logic runs against any repo. ``DOC_SETS`` holds only agent-toolkit's own,
 self-describing entry — every other repo supplies its
-own config by placing a ``refresh-guidance.toml`` at its own repo root,
+own config by placing a ``guidance-audit.toml`` at its own repo root,
 auto-discovered by ``--repo-root`` (see ``load_external_doc_set``); this
 module carries no hardcoded knowledge of any other repo's internal layout.
 ``MIGRATION.md`` is deliberately never in a doc-set's fixed list: it is
 transient, self-obsoleting migration prose, not evergreen guidance.
 
 Usage:
-    refresh_guidance.py check --repo-root <path> [--doc-set agent-toolkit]
+    guidance_audit.py check --repo-root <path> [--doc-set agent-toolkit]
         scan and print a findings + staleness report (default subcommand)
-    refresh_guidance.py mark-reviewed <doc> <heading> --repo-root <path> [--doc-set agent-toolkit]
+    guidance_audit.py mark-reviewed <doc> <heading> --repo-root <path> [--doc-set agent-toolkit]
         record human sign-off that one doc's `## <heading>` section is current
-    refresh_guidance.py scaffold <directory> --repo-root <path> [--force]
+    guidance_audit.py scaffold <directory> --repo-root <path> [--force]
         scaffold rubric-compliant AGENTS.md and paired CLAUDE.md symlink
 
 Flags: --repo-root <path> (default: this checkout), --doc-set
-{agent-toolkit} (no default — required unless <repo-root>/refresh-guidance.toml
+{agent-toolkit} (no default — required unless <repo-root>/guidance-audit.toml
 exists, in which case that file is used instead and --doc-set must be
 omitted), --commit <sha> and --date <YYYY-MM-DD> (mark-reviewed only;
 default to current HEAD / today), --force/-f (scaffold only),
@@ -52,13 +52,13 @@ Files read: every doc named by the active doc-set's config, every script
 under its configured script directories (parsed with `ast`, never imported
 or executed — these tools mutate live state, so auditing them must not run
 them), its sidecar state file if present, and
-`<repo-root>/refresh-guidance.toml` if present.
+`<repo-root>/guidance-audit.toml` if present.
 Files written: the active doc-set's sidecar state file
-(`refresh-guidance-state.json` at the repo root, by default) by
+(`guidance-audit-state.json` at the repo root, by default) by
 `mark-reviewed`, and `<directory>/AGENTS.md` with its sibling `CLAUDE.md`
 symlink by `scaffold`.
 Exit codes: 0 success; 2 bad usage (no doc-set resolvable, a malformed
-`refresh-guidance.toml`, `--doc-set` conflicting with one, missing repo
+`guidance-audit.toml`, `--doc-set` conflicting with one, missing repo
 root, for `mark-reviewed` a doc/heading pair that doesn't exist, or for
 `scaffold` a conflict or path traversal).
 
@@ -141,7 +141,7 @@ class DocSetConfig:
     fixed_docs: tuple[str, ...]
     script_dirs: tuple[str, ...]
     root_entrypoints: tuple[str, ...] = ("install.py", "uninstall_state.py")
-    state_path: str = "refresh-guidance-state.json"
+    state_path: str = "guidance-audit-state.json"
     cross_repo_scripts: bool = False
     """When True, script discovery also indexes `agent-scripts/*.py` under
     the resolved agent-toolkit root (``--agent-toolkit-root``, else
@@ -203,12 +203,12 @@ DOC_SETS: dict[str, DocSetConfig] = {
 }
 """The only built-in doc-set: agent-toolkit describing itself. Any other
 repo supplies its own config via an external
-`refresh-guidance.toml` at its own repo root (see
+`guidance-audit.toml` at its own repo root (see
 :func:`load_external_doc_set`) -- agent-toolkit's shared source carries no
 hardcoded knowledge of any other repo's internal layout."""
 
 
-EXTERNAL_CONFIG_FILENAME = "refresh-guidance.toml"
+EXTERNAL_CONFIG_FILENAME = "guidance-audit.toml"
 
 _DOC_SET_FIELD_KINDS: dict[str, str] = {
     "fixed_docs": "list_str",
@@ -222,7 +222,7 @@ _REQUIRED_DOC_SET_KEYS = frozenset({"fixed_docs", "script_dirs"})
 
 
 class ConfigError(Exception):
-    """A refresh-guidance.toml or --doc-set resolution problem. Raised by
+    """A guidance-audit.toml or --doc-set resolution problem. Raised by
     :func:`load_external_doc_set`/:func:`resolve_doc_set`, never by a
     direct `sys.exit` -- only the CLI command functions translate this
     into an exit code, so a direct caller (a test, a future script) can
@@ -231,7 +231,7 @@ class ConfigError(Exception):
 
 
 def load_external_doc_set(repo_root: Path) -> DocSetConfig | None:
-    """Load `<repo_root>/refresh-guidance.toml` into a `DocSetConfig`, or
+    """Load `<repo_root>/guidance-audit.toml` into a `DocSetConfig`, or
     `None` if the file doesn't exist. Validates every key before
     constructing anything: required keys present, no unrecognized keys,
     every value matching its field's expected shape (a `tuple[str, ...]`
@@ -1083,7 +1083,7 @@ def run_check(
 
 
 def render_report(result: CheckResult, doc_set_label: str) -> str:
-    lines: list[str] = [f"refresh-guidance report — doc-set: {doc_set_label}", ""]
+    lines: list[str] = [f"guidance-audit report — doc-set: {doc_set_label}", ""]
 
     lines.append(f"Findings ({len(result.findings)}):")
     if not result.findings:
@@ -1126,7 +1126,7 @@ def render_report(result: CheckResult, doc_set_label: str) -> str:
 def _exit_unresolved_checkout(
     exc: toolkit_checkout.CheckoutNotFoundError,
 ) -> NoReturn:
-    print(f"refresh_guidance: {exc} -- or pass --agent-toolkit-root", file=sys.stderr)
+    print(f"guidance_audit: {exc} -- or pass --agent-toolkit-root", file=sys.stderr)
     sys.exit(2)
 
 
@@ -1137,12 +1137,12 @@ def cmd_check(
     quiet: bool = False,
 ) -> None:
     if not repo_root.is_dir():
-        print(f"refresh_guidance: no such repo root {repo_root}", file=sys.stderr)
+        print(f"guidance_audit: no such repo root {repo_root}", file=sys.stderr)
         sys.exit(2)
     try:
         doc_set, label = resolve_doc_set(repo_root, doc_set_name)
     except ConfigError as exc:
-        print(f"refresh_guidance: {exc}", file=sys.stderr)
+        print(f"guidance_audit: {exc}", file=sys.stderr)
         sys.exit(2)
     try:
         result = run_check(repo_root, doc_set_name, agent_toolkit_root)
@@ -1216,13 +1216,11 @@ def cmd_mark_reviewed(
     try:
         doc_set, _label = resolve_doc_set(repo_root, doc_set_name)
     except ConfigError as exc:
-        print(f"refresh_guidance: {exc}", file=sys.stderr)
+        print(f"guidance_audit: {exc}", file=sys.stderr)
         sys.exit(2)
     full_path = repo_root / doc
     if not full_path.is_file():
-        print(
-            f"refresh_guidance: no such doc {doc!r} under {repo_root}", file=sys.stderr
-        )
+        print(f"guidance_audit: no such doc {doc!r} under {repo_root}", file=sys.stderr)
         sys.exit(2)
 
     text = full_path.read_text(encoding="utf-8", errors="replace")
@@ -1230,7 +1228,7 @@ def cmd_mark_reviewed(
     known_headings = {section.heading for section in sections if section.heading}
     if heading not in known_headings:
         print(
-            f"refresh_guidance: no '## {heading}' heading found in {doc}",
+            f"guidance_audit: no '## {heading}' heading found in {doc}",
             file=sys.stderr,
         )
         sys.exit(2)
@@ -1258,12 +1256,12 @@ def cmd_mark_reviewed(
         # rejection as the pre-check — never a traceback, never the
         # service's internal "CheckResult" wording.
         print(
-            f"refresh_guidance: no '## {heading}' heading found in {doc}",
+            f"guidance_audit: no '## {heading}' heading found in {doc}",
             file=sys.stderr,
         )
         sys.exit(2)
     cli_common.qprint(
-        f"refresh_guidance: marked {f'{doc}#{heading}'!r} reviewed at "
+        f"guidance_audit: marked {f'{doc}#{heading}'!r} reviewed at "
         f"{resolved_commit} ({resolved_date})",
         quiet=quiet,
     )
@@ -1280,7 +1278,7 @@ def cmd_scaffold(
     """
     if not directory or directory.strip() in (".", "./", "/"):
         print(
-            "refresh_guidance scaffold: cannot scaffold root repository",
+            "guidance_audit scaffold: cannot scaffold root repository",
             file=sys.stderr,
         )
         sys.exit(2)
@@ -1288,7 +1286,7 @@ def cmd_scaffold(
     dir_path = Path(directory)
     if dir_path.is_absolute() or (dir_path.parts and dir_path.parts[0] == ".."):
         print(
-            f"refresh_guidance scaffold: path outside repo root: {directory!r}",
+            f"guidance_audit scaffold: path outside repo root: {directory!r}",
             file=sys.stderr,
         )
         sys.exit(2)
@@ -1298,14 +1296,14 @@ def cmd_scaffold(
         target_dir.relative_to(repo_root.resolve())
     except ValueError:
         print(
-            f"refresh_guidance scaffold: path outside repo root: {directory!r}",
+            f"guidance_audit scaffold: path outside repo root: {directory!r}",
             file=sys.stderr,
         )
         sys.exit(2)
 
     if target_dir == repo_root.resolve():
         print(
-            "refresh_guidance scaffold: cannot scaffold root repository",
+            "guidance_audit scaffold: cannot scaffold root repository",
             file=sys.stderr,
         )
         sys.exit(2)
@@ -1318,12 +1316,12 @@ def cmd_scaffold(
         if agents_path.exists() and (claude_path.exists() or claude_path.is_symlink()):
             if claude_path.is_symlink() and os.readlink(claude_path) == "AGENTS.md":
                 cli_common.qprint(
-                    f"refresh_guidance scaffold: {directory} already has compliant AGENTS.md and CLAUDE.md",
+                    f"guidance_audit scaffold: {directory} already has compliant AGENTS.md and CLAUDE.md",
                     quiet=quiet,
                 )
                 return
             print(
-                f"refresh_guidance scaffold: {claude_path} already exists (pass --force to overwrite)",
+                f"guidance_audit scaffold: {claude_path} already exists (pass --force to overwrite)",
                 file=sys.stderr,
             )
             sys.exit(2)
@@ -1331,7 +1329,7 @@ def cmd_scaffold(
             claude_path.exists() or claude_path.is_symlink()
         ):
             print(
-                f"refresh_guidance scaffold: {claude_path} already exists (pass --force to overwrite)",
+                f"guidance_audit scaffold: {claude_path} already exists (pass --force to overwrite)",
                 file=sys.stderr,
             )
             sys.exit(2)
@@ -1342,7 +1340,7 @@ def cmd_scaffold(
         ):
             os.symlink("AGENTS.md", claude_path)
             cli_common.qprint(
-                f"refresh_guidance scaffold: created missing symlink {claude_path} -> AGENTS.md",
+                f"guidance_audit scaffold: created missing symlink {claude_path} -> AGENTS.md",
                 quiet=quiet,
             )
             return
@@ -1356,7 +1354,7 @@ def cmd_scaffold(
         os.symlink("AGENTS.md", claude_path)
 
     cli_common.qprint(
-        f"refresh_guidance scaffold: scaffolded {agents_path} and {claude_path}",
+        f"guidance_audit scaffold: scaffolded {agents_path} and {claude_path}",
         quiet=quiet,
     )
 
@@ -1387,7 +1385,7 @@ def _add_doc_set_args(parser: argparse.ArgumentParser) -> None:
         choices=sorted(DOC_SETS),
         default=None,
         help="which built-in doc-set config to use. No default -- either "
-        "pass this, or let <repo-root>/refresh-guidance.toml be "
+        "pass this, or let <repo-root>/guidance-audit.toml be "
         "auto-discovered (never both).",
     )
     parser.add_argument(
