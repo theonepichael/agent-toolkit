@@ -50,7 +50,6 @@ ALLOWLIST: dict[str, tuple[str, ...]] = {
         "dotfiles/scripts/install-with-agent-toolkit.sh",  # the wrapper run instruction
         "dotfiles' own installer",  # docstring: what the wrapper re-runs
         '(ctx.home / "dotfiles")',  # the checkout-detection literal itself
-        '"dotfiles is present and composes',  # the user-facing skip message
     ),
     "agent-scripts/link_inspect.py": (
         "the dotfiles repo checkout it",  # is_repo_checkout contract docstring
@@ -87,7 +86,6 @@ ALLOWLIST: dict[str, tuple[str, ...]] = {
     # ── tests directly exercising allowlisted functional behavior ──
     "test/test_install.py": (
         'home / "dotfiles"',  # compose-guard checkout simulations
-        '"dotfiles" in capsys',  # asserts the functional skip message
         'assert "dotfiles" not in str(ctx.manifest.path)',  # state-dir scoping
         "~/.local/state/dotfiles",  # the origin repo's real state dir (collision bug)
         '/ "state" / "dotfiles"',  # same, as a pathlib literal

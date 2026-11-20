@@ -57,7 +57,9 @@ git config core.hooksPath githooks
 ```
 
 `install.sh` also points git's *global* `core.hooksPath` at
-`githooks-global/pre-commit` (personal profile only), which runs the same
+`githooks-global/pre-commit` (personal profile only; on a machine that
+also carries a personal-overlay checkout, only when run through that
+checkout's wrapper, which owns the setting there), which runs the same
 no-commit-on-main guard plus a `dev_status.py slug-check` scan: any staged
 added line containing a backlog-store slug refuses the commit, so a direct
 `git commit` made outside `land` is still checked. The hook never prompts,

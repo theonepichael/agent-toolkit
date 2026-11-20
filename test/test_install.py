@@ -615,9 +615,28 @@ def test_install_symlinks_skips_core_instructions_when_dotfiles_present_unwrappe
     install.install_symlinks(ctx, links)
 
     assert not dest.exists()
-    assert ctx.reporter.skipped
-    assert "install-with-agent-toolkit.sh" in ctx.reporter.skipped[0]
-    assert "dotfiles" in capsys.readouterr().out.lower()
+    # Deferring to the overlay owner is expected, not a failure: no skip, so
+    # a clean unwrapped run exits 0 and exit 1 still means something failed.
+    assert not ctx.reporter.skipped
+    out = capsys.readouterr().out
+    assert "install-with-agent-toolkit.sh" in out
+    assert str(dest) in out
+
+
+def test_install_symlinks_notes_each_deferred_destination_once(
+    home, monkeypatch, capsys
+):
+    """links.toml declares some overlay rows twice; one note per destination."""
+    monkeypatch.delenv("AGENT_TOOLKIT_INSTALL_WRAPPER", raising=False)
+    (home / "dotfiles").mkdir()
+    ctx = make_ctx(home)
+    src = REPO_ROOT / "claude" / "CORE_INSTRUCTIONS.md"
+    dest = home / ".pi" / "agent" / "AGENTS.md"
+    row = (src, dest, "claude/CORE_INSTRUCTIONS.md", True)
+
+    install.install_symlinks(ctx, [row, row])
+
+    assert capsys.readouterr().out.count(str(dest)) == 1
 
 
 def test_install_symlinks_claims_core_instructions_via_wrapper_marker(
@@ -670,6 +689,214 @@ def test_install_symlinks_unaffected_for_other_destinations(home, monkeypatch):
 
     assert dest.is_symlink()
     assert not ctx.reporter.skipped
+
+
+def _record_git(monkeypatch, current=None):
+    """Stub the git subprocess: record every call, report ``current`` as set."""
+    calls = []
+
+    def fake_run(cmd, *, shell=False, capture=False):
+        calls.append(list(cmd))
+        if "--get" in cmd:
+            return install.CommandResult(current is not None, current or "")
+        return install.CommandResult(True, "")
+
+    monkeypatch.setattr(install, "run_command", fake_run)
+    return calls
+
+
+def _writes(calls):
+    return [c for c in calls if "--get" not in c]
+
+
+HOOKS_KEY = uninstall_state.gitconfig_key(install.GLOBAL_GIT_HOOKS_PATH_KEY)
+
+
+def test_hooks_path_left_alone_when_dotfiles_present_unwrapped(
+    home, monkeypatch, capsys
+):
+    """An unwrapped run must not repoint the overlay owner's global hooks path."""
+    monkeypatch.delenv("AGENT_TOOLKIT_INSTALL_WRAPPER", raising=False)
+    (home / "dotfiles").mkdir()
+    calls = _record_git(monkeypatch, current="/elsewhere/githooks-global")
+    ctx = make_ctx(home)
+    ctx.uninstall_baseline = uninstall_state.Baseline()
+
+    install.capture_git_hooks_path_baseline(ctx)
+    install.install_global_git_hooks_path(ctx)
+
+    assert _writes(calls) == []
+    assert ctx.uninstall_baseline.value_for(HOOKS_KEY) is None
+    assert not ctx.reporter.skipped
+    assert "install-with-agent-toolkit.sh" in capsys.readouterr().out
+
+
+def test_hooks_path_note_hidden_by_quiet(home, monkeypatch, capsys):
+    monkeypatch.delenv("AGENT_TOOLKIT_INSTALL_WRAPPER", raising=False)
+    (home / "dotfiles").mkdir()
+    calls = _record_git(monkeypatch)
+    ctx = make_ctx(home)
+    ctx = replace(ctx, opts=replace(ctx.opts, quiet=True))
+
+    install.install_global_git_hooks_path(ctx)
+
+    assert _writes(calls) == []
+    assert capsys.readouterr().out == ""
+
+
+def test_overlay_note_hidden_by_quiet(home, monkeypatch, capsys):
+    monkeypatch.delenv("AGENT_TOOLKIT_INSTALL_WRAPPER", raising=False)
+    (home / "dotfiles").mkdir()
+    ctx = make_ctx(home)
+    ctx = replace(ctx, opts=replace(ctx.opts, quiet=True))
+    src = REPO_ROOT / "claude" / "CORE_INSTRUCTIONS.md"
+    dest = home / ".claude" / "CLAUDE.md"
+
+    install.install_symlinks(ctx, [(src, dest, "claude/CORE_INSTRUCTIONS.md", True)])
+
+    assert not dest.exists()
+    assert str(dest) not in capsys.readouterr().out
+
+
+def test_hooks_path_work_profile_prints_no_deferral_note(home, monkeypatch, capsys):
+    """Work never manages the global hooks path, so there is nothing to defer."""
+    monkeypatch.delenv("AGENT_TOOLKIT_INSTALL_WRAPPER", raising=False)
+    (home / "dotfiles").mkdir()
+    calls = _record_git(monkeypatch)
+    ctx = make_ctx(home, profile="work")
+
+    install.install_global_git_hooks_path(ctx)
+
+    assert calls == []
+    assert "install-with-agent-toolkit.sh" not in capsys.readouterr().out
+
+
+def test_hooks_path_dry_run_previews_nothing_when_deferred(home, monkeypatch, capsys):
+    monkeypatch.delenv("AGENT_TOOLKIT_INSTALL_WRAPPER", raising=False)
+    (home / "dotfiles").mkdir()
+    _record_git(monkeypatch)
+    ctx = make_ctx(home, dry_run=True)
+
+    install.install_global_git_hooks_path(ctx)
+
+    out = capsys.readouterr().out
+    assert "would set global git" not in out
+    assert "install-with-agent-toolkit.sh" in out
+
+
+@pytest.mark.parametrize("setup", ["wrapped", "no_checkout", "checkout_is_a_file"])
+def test_hooks_path_still_set_when_not_deferring(home, monkeypatch, setup):
+    if setup == "wrapped":
+        monkeypatch.setenv("AGENT_TOOLKIT_INSTALL_WRAPPER", "1")
+        (home / "dotfiles").mkdir()
+    else:
+        monkeypatch.delenv("AGENT_TOOLKIT_INSTALL_WRAPPER", raising=False)
+        if setup == "checkout_is_a_file":
+            (home / "dotfiles").write_text("")
+    calls = _record_git(monkeypatch)
+    ctx = make_ctx(home)
+    ctx.uninstall_baseline = uninstall_state.Baseline()
+
+    install.capture_git_hooks_path_baseline(ctx)
+    install.install_global_git_hooks_path(ctx)
+
+    target = str(REPO_ROOT / "githooks-global")
+    expected = ["git", "config", "--global", install.GLOBAL_GIT_HOOKS_PATH_KEY, target]
+    assert expected in calls
+    assert ctx.uninstall_baseline.value_for(HOOKS_KEY) is not None
+
+
+def test_hooks_path_baseline_order_across_deferred_and_wrapped_runs(
+    home, monkeypatch
+):
+    """Deferred then wrapped: the wrapped run captures. Wrapped then
+    deferred: the earlier record survives."""
+    (home / "dotfiles").mkdir()
+    _record_git(monkeypatch)
+    ctx = make_ctx(home)
+    ctx.uninstall_baseline = uninstall_state.Baseline()
+
+    monkeypatch.delenv("AGENT_TOOLKIT_INSTALL_WRAPPER", raising=False)
+    install.capture_git_hooks_path_baseline(ctx)
+    assert ctx.uninstall_baseline.value_for(HOOKS_KEY) is None
+
+    monkeypatch.setenv("AGENT_TOOLKIT_INSTALL_WRAPPER", "1")
+    install.capture_git_hooks_path_baseline(ctx)
+    recorded = ctx.uninstall_baseline.value_for(HOOKS_KEY)
+    assert recorded is not None
+
+    monkeypatch.delenv("AGENT_TOOLKIT_INSTALL_WRAPPER", raising=False)
+    install.capture_git_hooks_path_baseline(ctx)
+    assert ctx.uninstall_baseline.value_for(HOOKS_KEY) == recorded
+
+
+def test_uninstall_baseline_omits_deferred_overlay_destinations(
+    home, links, monkeypatch
+):
+    """Recording an "absent" baseline for a destination the overlay owner
+    links later would make --uninstall treat that link as owned and delete
+    it."""
+    monkeypatch.delenv("AGENT_TOOLKIT_INSTALL_WRAPPER", raising=False)
+    (home / "dotfiles").mkdir()
+    ctx = make_ctx(home, harnesses=install.VALID_HARNESSES)
+
+    install.capture_uninstall_baseline(ctx, links)
+
+    baseline = uninstall_state.load_baseline(ctx.state_dir)
+    for overlay in (
+        home / ".claude" / "CLAUDE.md",
+        home / ".codex" / "AGENTS.md",
+        home / ".copilot" / "copilot-instructions.md",
+        home / ".gemini" / "GEMINI.md",
+        home / ".pi" / "agent" / "AGENTS.md",
+    ):
+        assert baseline.value_for(uninstall_state.symlink_key(overlay)) is None
+        assert baseline.value_for(uninstall_state.file_key(overlay)) is None
+    other = home / ".claude" / "settings.json"
+    assert baseline.value_for(uninstall_state.file_key(other)) is not None
+
+
+def test_uninstall_baseline_keeps_overlay_destinations_when_wrapped(
+    home, links, monkeypatch
+):
+    monkeypatch.setenv("AGENT_TOOLKIT_INSTALL_WRAPPER", "1")
+    (home / "dotfiles").mkdir()
+    ctx = make_ctx(home, harnesses=("claude",))
+
+    install.capture_uninstall_baseline(ctx, links)
+
+    baseline = uninstall_state.load_baseline(ctx.state_dir)
+    overlay = home / ".claude" / "CLAUDE.md"
+    assert baseline.value_for(uninstall_state.symlink_key(overlay)) is not None
+
+
+def test_full_unwrapped_run_on_overlay_machine_exits_0(home, links, monkeypatch):
+    """No offline_install: the real hooks functions run, under the autouse
+    subprocess block, and must not reach git at all."""
+    monkeypatch.delenv("AGENT_TOOLKIT_INSTALL_WRAPPER", raising=False)
+    (home / "dotfiles").mkdir()
+    ctx = make_ctx(home, harnesses=("claude",))
+
+    assert install.run_install(ctx, links) == 0
+
+    assert not (home / ".claude" / "CLAUDE.md").exists()
+    baseline = uninstall_state.load_baseline(ctx.state_dir)
+    assert baseline is None or baseline.value_for(HOOKS_KEY) is None
+
+
+def test_full_unwrapped_run_with_a_real_skip_exits_1(home, links, monkeypatch):
+    monkeypatch.delenv("AGENT_TOOLKIT_INSTALL_WRAPPER", raising=False)
+    (home / "dotfiles").mkdir()
+    ctx = make_ctx(home, harnesses=("claude",))
+    real_seed = install.seed_claude_settings
+
+    def failing_seed(ctx):
+        ctx.reporter.skip("claude settings seed", "forced for the test")
+        return real_seed(ctx)
+
+    monkeypatch.setattr(install, "seed_claude_settings", failing_seed)
+
+    assert install.run_install(ctx, links) == 1
 
 
 def test_symlink_repoints_directory_symlink_without_nesting(home, tmp_path):

@@ -1189,6 +1189,23 @@ def _vscode_wsl_user_dir() -> Path | None:
 _PERSONAL_OVERLAY_SRC_REL = link_inspect.PERSONAL_OVERLAY_SRC_REL
 
 
+def _overlay_owner_unwrapped(ctx: Context) -> bool:
+    """True when this run is outside the wrapper on a personal-overlay machine.
+
+    On such a machine the personal-overlay installer owns the settings both
+    installers write: the composed ``CORE_INSTRUCTIONS.md`` destinations and
+    the global git hooks path. Its wrapper,
+    dotfiles/scripts/install-with-agent-toolkit.sh, sets
+    ``AGENT_TOOLKIT_INSTALL_WRAPPER=1`` and reasserts them right after this
+    installer; a direct, unwrapped run has nothing to reassert them, so it
+    leaves them alone. Checks ``ctx.home`` rather than ``Path.home()`` so
+    tests never touch the real machine.
+    """
+    if os.environ.get("AGENT_TOOLKIT_INSTALL_WRAPPER") == "1":
+        return False
+    return (ctx.home / "dotfiles").is_dir()
+
+
 def _personal_overlay_unwrapped(ctx: Context, rel: str) -> bool:
     """True if installing ``rel`` here would clobber dotfiles' composed file.
 
@@ -1204,18 +1221,10 @@ def _personal_overlay_unwrapped(ctx: Context, rel: str) -> bool:
     the user's personal-policy content from every harness on this machine).
 
     Every other shared destination is unaffected by this check — agent-
-    toolkit keeps claiming those directly and unconditionally.
-
-    Checks ``ctx.home`` rather than ``Path.home()`` — Context always carries
-    its home explicitly so tests never touch the real machine; calling
-    ``Path.home()`` here would silently break that for every test exercising
-    this destination.
+    toolkit keeps claiming those directly and unconditionally. See
+    :func:`_overlay_owner_unwrapped` for the shared predicate.
     """
-    if rel != _PERSONAL_OVERLAY_SRC_REL:
-        return False
-    if os.environ.get("AGENT_TOOLKIT_INSTALL_WRAPPER") == "1":
-        return False
-    return (ctx.home / "dotfiles").is_dir()
+    return rel == _PERSONAL_OVERLAY_SRC_REL and _overlay_owner_unwrapped(ctx)
 
 
 def install_symlinks(
@@ -1231,17 +1240,24 @@ def install_symlinks(
     """
     _header("==> Symlinking repo files...", quiet=ctx.opts.quiet)
 
+    # Deferring to the overlay owner is expected, not a failure, so it is a
+    # note and never a skip: a skip would make every unwrapped run exit 1 and hide a
+    # real one. links.toml lists some of these destinations twice.
+    deferred: set[Path] = set()
     for src, dest, rel, applicable in links:
         if not applicable:
             continue
         if _personal_overlay_unwrapped(ctx, rel):
-            ctx.reporter.skip(
-                f"symlink {dest}",
-                "dotfiles is present and composes this file with a personal "
-                "overlay -- run dotfiles/scripts/install-with-agent-toolkit.sh "
-                "instead of install.py directly, or set "
-                "AGENT_TOOLKIT_INSTALL_WRAPPER=1 to override",
-            )
+            if dest not in deferred:
+                deferred.add(dest)
+                cli_common.qprint(
+                    PALETTE.dim(
+                        f"  note: left {dest} to the personal-overlay "
+                        "installer -- run "
+                        "dotfiles/scripts/install-with-agent-toolkit.sh to link it"
+                    ),
+                    quiet=ctx.opts.quiet,
+                )
             continue
         symlink(ctx, src, dest)
 
@@ -1637,6 +1653,10 @@ def capture_git_hooks_path_baseline(ctx: Context) -> None:
     """
     if ctx.opts.dry_run or ctx.opts.profile == "work" or ctx.uninstall_baseline is None:
         return
+    # Nothing is written on a deferred run (see install_global_git_hooks_path),
+    # so there is no pre-install value to record either.
+    if _overlay_owner_unwrapped(ctx):
+        return
     stamp = datetime.now().astimezone().isoformat(timespec="seconds")
     layer = {
         uninstall_state.gitconfig_key(
@@ -1658,6 +1678,19 @@ def install_global_git_hooks_path(ctx: Context) -> None:
     directly) keeps running regardless of whether this global install ran.
     """
     if ctx.opts.profile == "work":
+        return
+    # Unwrapped on a personal-overlay machine, the global hooks path belongs
+    # to the overlay installer; writing it here would leave it repointed
+    # until the next wrapped run (see _overlay_owner_unwrapped).
+    if _overlay_owner_unwrapped(ctx):
+        cli_common.qprint(
+            PALETTE.dim(
+                f"  note: left global {GLOBAL_GIT_HOOKS_PATH_KEY} to the "
+                "personal-overlay installer -- run "
+                "dotfiles/scripts/install-with-agent-toolkit.sh to manage it"
+            ),
+            quiet=ctx.opts.quiet,
+        )
         return
     target = _managed_git_hooks_path(ctx)
     if ctx.opts.dry_run:
@@ -1712,8 +1745,15 @@ def _uninstall_deps() -> uninstall_exec.Deps:
 
 
 def capture_uninstall_baseline(ctx: Context, specs: Sequence[LinkSpec]) -> None:
-    """Thin shim — implementation in uninstall_exec."""
-    uninstall_exec.capture_uninstall_baseline(_uninstall_deps(), ctx, specs)
+    """Thin shim — implementation in uninstall_exec.
+
+    Rows this run defers (:func:`_personal_overlay_unwrapped`) are dropped
+    first: recording an "absent" baseline for a destination another
+    installer links later would make ``--uninstall`` treat that link as
+    owned and remove it.
+    """
+    kept = [spec for spec in specs if not _personal_overlay_unwrapped(ctx, spec.src)]
+    uninstall_exec.capture_uninstall_baseline(_uninstall_deps(), ctx, kept)
 
 
 def build_preflight_report(
