@@ -5304,7 +5304,15 @@ class RotationOrderTests(unittest.TestCase):
     def test_single_candidate(self) -> None:
         self.assertEqual(second_opinion.rotation_order(["agy"], ["agy"]), ["agy"])
 
-
+    def test_failed_backends_sort_behind_every_unfailed_candidate(self) -> None:
+        # Failed beats never-served: the point of the rule is that a known-bad
+        # backend never fronts a round again inside the run.
+        self.assertEqual(
+            second_opinion.rotation_order(
+                ["pi", "opencode", "copilot"], (), ["opencode"]
+            ),
+            ["pi", "copilot", "opencode"],
+        )
 class BackendRotationCmdReviewTests(unittest.TestCase):
     """A shared run key rotates priority-order selection across backends.
 
@@ -5327,11 +5335,13 @@ class BackendRotationCmdReviewTests(unittest.TestCase):
         self.addCleanup(second_opinion._UNFIT_MODELS.clear)
         self.addCleanup(setattr, llm_backends, "_pending_fallback_reason", None)
         self.broken: set[str] = set()
+        self.attempts: list[str] = []
         self.plan = Path(self.tmpdir) / "plan.md"
         self.plan.write_text("my plan")
 
     def _runner(self, name: str) -> Callable[..., str]:
         def run(prompt: str, model_index: int | None = None) -> str:
+            self.attempts.append(name)
             if name in self.broken:
                 raise second_opinion.BackendError(f"{name} broke")
             return f"{name} critique"
@@ -5355,6 +5365,11 @@ class BackendRotationCmdReviewTests(unittest.TestCase):
                 patch.object(
                     second_opinion, "available_backends", return_value=self.BACKENDS
                 )
+            )
+            # Every candidate is patched in below, so host containment state
+            # must not filter one out before rotation runs.
+            stack.enter_context(
+                patch.object(llm_backends, "eligibility_report", return_value={})
             )
             stack.enter_context(
                 patch.object(
@@ -5385,12 +5400,28 @@ class BackendRotationCmdReviewTests(unittest.TestCase):
         self.assertEqual(served, ["codex", "agy", "opencode"])
         self.assertEqual(self._state()["served"], ["codex", "agy", "opencode"])
         self.assertEqual(self._state()["count"], 3)
-
-    def test_failed_preferred_backend_is_preferred_again_next_round(self) -> None:
-        self.broken = {"codex"}
-        self.assertEqual(self._served(self._run()[0]), "agy")
+    @pytest.mark.regression(
+        "second-opinion-rotation-demotes-failed-backend",
+        "AssertionError: Lists differ: ['pi'] != ['copilot']",
+    )
+    def test_failed_backend_is_demoted_in_a_later_round(self) -> None:
+        # The 2026-11-19 shape: pi times out, opencode stalls, copilot answers
+        # ~90s later -- and every later round re-paid both before copilot.
+        self.BACKENDS = ["pi", "opencode", "copilot"]
+        self.ENV = {
+            "SECOND_OPINION_PI_MODEL": "pi-x",
+            "SECOND_OPINION_OPENCODE_MODEL": "glm-x",
+            "SECOND_OPINION_COPILOT_MODEL": "gpt-x",
+        }
+        self.broken = {"pi", "opencode"}
+        self.assertEqual(self._served(self._run()[0]), "copilot")
+        self.assertEqual(self.attempts, ["pi", "opencode", "copilot"])
         self.broken = set()
-        self.assertEqual(self._served(self._run()[0]), "codex")
+        self.attempts.clear()
+        out, _err = self._run()
+        self.assertEqual(self.attempts, ["copilot"])
+        self.assertEqual(self._served(out), "copilot")
+        self.assertEqual(self._state()["failed"], ["pi", "opencode"])
 
     def test_fallback_is_reported_without_verbose(self) -> None:
         self.broken = {"codex"}
@@ -5492,6 +5523,26 @@ class BackendRotationCmdReviewTests(unittest.TestCase):
         self.assertEqual(state["count"], 0)
         self.assertEqual(state["served"], [])
 
+    def test_plan_key_ttl_reset_clears_failed_history(self) -> None:
+        # A fresh critique of the same plan file must not inherit demotions
+        # from the expired run.
+        key = "plan:" + str(self.plan.resolve())
+        second_opinion._ensure_runs_dir()
+        path = second_opinion._run_state_path(key)
+        path.write_text(
+            json.dumps(
+                {"key": key, "count": 2, "updated": 1.0, "failed": ["pi"]}
+            )
+        )
+        state = second_opinion._load_state_for_key(path, key)
+        self.assertEqual(state["failed"], [])
+    def test_failed_history_does_not_change_a_pinned_call(self) -> None:
+        # --backend turns rotation off, so a demoted backend named explicitly
+        # is still tried first.
+        second_opinion._record_failed_round("run:rot-1", ["codex"])
+        out, _err = self._run(backend="codex,agy")
+        self.assertEqual(self._served(out), "codex")
+        self.assertEqual(self.attempts, ["codex"])
     def test_unwritable_history_still_prints_the_critique(self) -> None:
         # A critique that already came back must reach the caller even when
         # the run state cannot be written; the failure is a stderr warning.
@@ -5532,6 +5583,7 @@ class BackendRotationFacadeTests(unittest.TestCase):
             patch.object(
                 second_opinion, "available_backends", return_value=list(runners)
             ),
+            patch.object(llm_backends, "eligibility_report", return_value={}),
             patch.object(second_opinion, "BACKEND_RUNNERS", runners),
         ):
             return second_opinion.review_plan(
@@ -5555,7 +5607,6 @@ class BackendRotationFacadeTests(unittest.TestCase):
             rotation_history=("codex",),
         )
         self.assertEqual(result.backend, "agy")
-
     def test_explicit_backend_list_ignores_history(self) -> None:
         result = self._review(
             {
@@ -5649,8 +5700,27 @@ class BackendRotationFacadeTests(unittest.TestCase):
         self.assertTrue(
             any("opencode" in f and "quarantined" in f for f in cm.exception.failures)
         )
-
-
+    def test_pi_size_rule_out_is_not_a_failed_backend(self) -> None:
+        big = "x" * (llm_backends.PI_MAX_PROMPT_BYTES + 10)
+        with (
+            patch.dict(os.environ, {"SECOND_OPINION_AGY_MODEL": "gemini-x"}),
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(second_opinion, "available_backends", return_value=["pi", "agy"]),
+            patch.object(llm_backends, "eligibility_report", return_value={}),
+            patch.object(
+                second_opinion,
+                "BACKEND_RUNNERS",
+                {
+                    "pi": lambda p, model_index=None: "pi c",
+                    "agy": lambda p, model_index=None: "agy c",
+                },
+            ),
+        ):
+            result = second_opinion.review_plan(
+                second_opinion.ReviewRequest(plan_text=big, rotation_history=())
+            )
+        self.assertEqual(result.backend, "agy")
+        self.assertEqual(result.failed_backends, ())
 class PoolSkipClassificationTests(unittest.TestCase):
     """A pool-skip marker must classify from the full backend output, not from
     whatever the message excerpt happened to keep."""

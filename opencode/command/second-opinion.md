@@ -40,8 +40,9 @@ second_opinion.py review <plan-file-or-text> \
     [--text-only] \
     [--focus-file <path>] \
     [--model-index N] \
-    --run-id <run_id>                            # one critique from the
-                                                  # least-recently-served backend,
+    --run-id <run_id>                            # one critique, rotating across
+                                                  # backends (least-recently-served
+                                                  # first, failed ones last),
                                                   # optionally scoped with
                                                   # plan-specific risk hints; the
                                                   # round cap counts per run-id
@@ -53,23 +54,26 @@ second_opinion.py check-notes <artifact>        # current, stale, unbound,
 
 Rounds rotate across backends on their own. Every `review` call in the loop
 below passes the same `--run-id`, and the script remembers which backend served
-each successful round of that run: the next round prefers the eligible backend
-that served least recently (never-served first, the priority order breaking
-ties). When each round's preferred backend answers, a three-round loop on a
-machine with three eligible backends gets three backends — three model families
-while the pools share none — so same-family blind spots can't fake convergence.
-A failure can make a round fall back to a backend that already served: compare
-the `Second opinion via ...` headers before calling convergence, and treat
-agreement between two rounds from the same backend as weak evidence. Rotation
-only covers priority-order selection: `--backend` names the backend for that
-call and `--model-index` pins a pool entry, so either one turns rotation off —
-don't pass them in the loop unless the user asked for that backend or model.
-Backend exclusion (review-diff's self-exclusion) and the isolation-eligibility
-check run first, so a backend that is excluded or ineligible never rotates in.
-A preferred backend that fails is skipped forward to the next candidate, the
-script prints a one-line stderr notice (suppressed by `--quiet`) naming what it
-passed over and why, and while it stays eligible that backend is tried first
-again next round; read the `Second opinion via ...` header to see who answered.
+each round of that run and which one failed to produce a critique: the next
+round prefers the eligible backend that served least recently (never-served
+first, the priority order breaking ties) and sorts any backend that failed
+earlier in the run last. When each round's preferred backend answers, a
+three-round loop on a machine with three eligible backends gets three backends
+— three model families while the pools share none — so same-family blind spots
+can't fake convergence. A failure can make a round fall back to a backend that
+already served: compare the `Second opinion via ...` headers before calling
+convergence, and treat agreement between two rounds from the same backend as
+weak evidence. Rotation only covers priority-order selection: `--backend` names
+the backend for that call and `--model-index` pins a pool entry, so either one
+turns rotation off — don't pass them in the loop unless the user asked for that
+backend or model. Backend exclusion (review-diff's self-exclusion) and the
+isolation-eligibility check run first, so a backend that is excluded or
+ineligible never rotates in. A preferred backend that fails is skipped forward
+to the next candidate, the script prints a one-line stderr notice (suppressed
+by `--quiet`) naming what it passed over and why, and that backend sorts last
+for the rest of the run (only a real dispatch failure demotes; a payload-size
+rule-out or a not-installed entry is just skipped); read the `Second opinion
+via ...` header to see who answered.
 
 Inside one backend, the model comes from a per-machine pool
 (`SECOND_OPINION_CODEX_MODEL_POOL` / `_AGY_MODEL_POOL` / `_PI_MODEL_POOL` /

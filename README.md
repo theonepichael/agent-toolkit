@@ -218,7 +218,8 @@ Three things worth knowing before you copy someone else's pool values:
 
 - **Keep the pools in different model families.** A multi-round critique
   rotates across *backends*, each round preferring the one that served least
-  recently, and treats each backend as one model family. Two backends whose
+  recently and ordering last any backend that failed earlier in the run, and
+  treats each backend as one model family. Two backends whose
   pools share a family (e.g. a `kimi-…` model in both the Pi and opencode
   pools) can therefore hand two rounds to the same family. `second_opinion.py
   probe` warns on stderr when two backends' models share a family token

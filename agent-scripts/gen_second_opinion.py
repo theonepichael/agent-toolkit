@@ -214,8 +214,9 @@ second_opinion.py review <plan-file-or-text> \\
     [--text-only] \\
     [--focus-file <path>] \\
     [--model-index N] \\
-    --run-id <run_id>                            # one critique from the
-                                                  # least-recently-served backend,
+    --run-id <run_id>                            # one critique, rotating across
+                                                  # backends (least-recently-served
+                                                  # first, failed ones last),
                                                   # optionally scoped with
                                                   # plan-specific risk hints; the
                                                   # round cap counts per run-id
@@ -293,8 +294,9 @@ second_opinion.py review <plan-file-or-text> \\
     [--text-only] \\
     [--focus-file <path>] \\
     [--model-index N] \\
-    --run-id <run_id>                            # one critique from the
-                                                  # least-recently-served backend,
+    --run-id <run_id>                            # one critique, rotating across
+                                                  # backends (least-recently-served
+                                                  # first, failed ones last),
                                                   # optionally scoped with
                                                   # plan-specific risk hints; the
                                                   # round cap counts per run-id
@@ -372,8 +374,9 @@ second_opinion.py review <plan-file-or-text> \\
     [--text-only] \\
     [--focus-file <path>] \\
     [--model-index N] \\
-    --run-id <run_id>                            # one critique from the
-                                                  # least-recently-served backend,
+    --run-id <run_id>                            # one critique, rotating across
+                                                  # backends (least-recently-served
+                                                  # first, failed ones last),
                                                   # optionally scoped with
                                                   # plan-specific risk hints; the
                                                   # round cap counts per run-id
@@ -459,8 +462,9 @@ second_opinion.py review <plan-file-or-text> \\
     [--text-only] \\
     [--focus-file <path>] \\
     [--model-index N] \\
-    --run-id <run_id>                            # one critique from the
-                                                  # least-recently-served backend,
+    --run-id <run_id>                            # one critique, rotating across
+                                                  # backends (least-recently-served
+                                                  # first, failed ones last),
                                                   # optionally scoped with
                                                   # plan-specific risk hints; the
                                                   # round cap counts per run-id
@@ -540,8 +544,9 @@ second_opinion.py review <plan-file-or-text> \\
     [--text-only] \\
     [--focus-file <path>] \\
     [--model-index N] \\
-    --run-id <run_id>                            # one critique from the
-                                                  # least-recently-served backend,
+    --run-id <run_id>                            # one critique, rotating across
+                                                  # backends (least-recently-served
+                                                  # first, failed ones last),
                                                   # optionally scoped with
                                                   # plan-specific risk hints; the
                                                   # round cap counts per run-id
@@ -796,8 +801,9 @@ second_opinion.py review <plan-file-or-text> \\
     [--text-only] \\
     [--focus-file <path>] \\
     [--model-index N] \\
-    --run-id <run_id>                            # one critique from the
-                                                  # least-recently-served backend,
+    --run-id <run_id>                            # one critique, rotating across
+                                                  # backends (least-recently-served
+                                                  # first, failed ones last),
                                                   # optionally scoped with
                                                   # plan-specific risk hints; the
                                                   # round cap counts per run-id

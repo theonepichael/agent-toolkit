@@ -1718,8 +1718,8 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
     - `--exclude-backend` — skip this backend in priority-order selection (repeatable) — e.g. the harness that wrote the change, so the review really comes from another model; cannot be combined with --backend
     - `--diff-path` — with --diff, limit the staged diff to this git pathspec (repeatable; ':!<glob>' excludes) — for splitting a diff too large for one review
     - `--prompt-only` — print the prompt this review would send and exit, calling no backend and spending no round (for a caller's own reviewer) (default: False)
-    - `--run-id` — stable id for one iterative critique session; the per-round cap is enforced by counting reviews per run-id (or per plan file when omitted), and the same key's history rotates priority-order selection so each round prefers the backend that served least recently. The second-opinion skill passes one for the whole loop.
-    - `--allow-extra-round` — permit review calls beyond the per-run cap (for a user who deliberately wants another round); an extra round still records which backend served, so rotation continues (default: False)
+    - `--run-id` — stable id for one iterative critique session; the per-round cap is enforced by counting reviews per run-id (or per plan file when omitted), and the same key's history rotates priority-order selection so each round prefers the backend that served least recently and demotes one that failed earlier in the run. The second-opinion skill passes one for the whole loop.
+    - `--allow-extra-round` — permit review calls beyond the per-run cap (for a user who deliberately wants another round); an extra round still records which backend served and which failed, so rotation continues (default: False)
   - `panel [<plan-file-or-text>] --backends NAME[,NAME...] [--transcript PATH] [--dir <DIR>] [--text-only] [--focus-file <FOCUS_FILE>] [--run-id ID] [--allow-extra-round]` — run a multi-model panel discussion (round 1 parallel, one cross-round, synthesis)
     - `plan` (nargs: ?)
     - `--backends` (required)
@@ -1768,7 +1768,7 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
   - `run_copilot(prompt: str, *, model_index: int | None = None, mode: str | None = None, target_dir: Path | None = None, images: list[str] | None = None) -> str` — Run the ``copilot`` backend and return its critique text.
   - `run_pi(prompt: str, *, model_index: int | None = None, mode: str | None = None, target_dir: Path | None = None, images: list[str] | None = None) -> str` — Run the ``pi`` backend and return its critique text.
   - `backend_label(backend: str, *, model_index: int | None = None, model: object = _UNSET) -> str` — Return ``backend``'s display label, appending the resolved model if any.
-  - `rotation_order(candidates: list[str], history: Sequence[str]) -> list[str]` — Order ``candidates`` so the least-recently-served backend goes first.
+  - `rotation_order(candidates: list[str], history: Sequence[str], failed: Sequence[str] = ()) -> list[str]` — Order ``candidates`` so the next round tries the healthiest backend first.
   - `review_plan(request: ReviewRequest, *, verbose: bool = False, quiet: bool = False) -> ReviewResult` — Run one adversarial review of ``request.plan_text`` and return the result.
   - `run_panel(plan_text: str, backends: list[str], *, focus_hints: str | None, transcript_path: Path, target_dir: Path, text_only: bool) -> tuple[str, list[str]]` — Run the panel and return ``(summary_text, failure_lines)``.
   - `build_parser() -> argparse.ArgumentParser` — Build the full argument parser for every subcommand.

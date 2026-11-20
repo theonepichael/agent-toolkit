@@ -202,24 +202,22 @@ caller named the model, so there is no silent replacement.
 
 Backend rotation: a keyed review (--run-id, or the plan-file path) with
   neither --backend nor --model-index rotates priority-order selection
-  across backends. The run's state file records which backend served each
-  successful round, and the next round tries the eligible candidates
-  least-recently-served first (never-served first, priority order breaking
-  ties) — so a three-round loop gets three backends, i.e. three model
-  families as long as the pools share none (``probe`` warns when two
-  backends' models share a family token). A failed preferred backend skips
-  forward through the normal fallback, a stderr notice names what was
-  passed over and why (suppressed by --quiet), and — while the eligible
-  set is unchanged — that backend is tried first again next round. Nothing
-  guarantees distinct backends when backends fail: a round can fall back to
-  one that already served. Unkeyed inline reviews do not rotate. The policy
-  is the pure function rotation_order().
+  across backends. The run's state file records which backend served and
+  which failed each round (cleared with the run when a plan-path key
+  expires): the next round sorts failed backends last, then
+  least-recently-served first, never-served first with priority order
+  breaking ties. Only a real dispatch counts as a failure — a timeout, an
+  error, an empty or tool-use answer — so a payload-size rule-out, an
+  all-quarantined pool, or a missing install is re-checked cheaply instead
+  of demoted. A failed preferred backend still skips forward through the
+  normal fallback with a stderr notice naming what it was passed over for
+  (suppressed by --quiet), and the policy is the pure function
+  rotation_order().
 
-Files read: <plan-file-or-text> (if a path), --focus-file; with --diff, the
-  staged diff via `git diff --cached` in --dir, and --spec if given.
 Files written: <data-dir>/second-opinion-runs/<sha256>.json — a per-run
   critique counter used to enforce the round cap (see Round-cap enforcement
-  below), plus the ``served`` backend history that drives backend rotation.
+  below), plus the ``served`` and ``failed`` backend histories that drive
+  backend rotation.
 
 Round-cap enforcement (added 2026-09-24, after a worker ignored the documented cap and ran 31 critique rounds on one spec): ``review`` refuses
   once a run has already had ``MAX_ROUNDS`` critiques. The counter is keyed by
@@ -328,7 +326,8 @@ class ReviewRequest:
     oldest first) turns on backend rotation for priority-order selection:
     candidates are reordered by :func:`rotation_order`. ``None`` means no
     rotation; it is ignored when ``backend`` is set and is an error together
-    with ``model_index`` (an index pins the selection).
+    with ``model_index`` (an index pins the selection). ``rotation_failed`` is
+    the demotion history used beside it, and is ignored without it.
     """
 
     plan_text: str
@@ -342,6 +341,7 @@ class ReviewRequest:
     images: tuple[str, ...] = ()
     spec_text: str | None = None
     rotation_history: tuple[str, ...] | None = None
+    rotation_failed: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -353,7 +353,8 @@ class ReviewResult:
     ``notices`` holds the stderr-bound diagnostic lines in emission order;
     the CLI layer prints them, the facade never does. ``backend`` is the bare
     name of the backend that served (what rotation history records);
-    :func:`review_plan` always sets it.
+    :func:`review_plan` always sets it. ``failed_backends`` names the candidates
+    this round dispatched and moved past, in pass-over order.
     """
 
     backend_label: str
@@ -361,6 +362,7 @@ class ReviewResult:
     bytes_saved: int
     notices: tuple[str, ...] = ()
     backend: str | None = None
+    failed_backends: tuple[str, ...] = ()
 
 
 class ReviewError(Exception):
@@ -484,6 +486,7 @@ class AllBackendsFailedError(BackendError):
         size_rule_out: bool = False,
         prompt_bytes: int = 0,
         notices: tuple[str, ...] = (),
+        failed_backends: tuple[str, ...] = (),
     ) -> None:
         super().__init__(message)
         self.failures = tuple(failures)
@@ -491,6 +494,7 @@ class AllBackendsFailedError(BackendError):
         self.size_rule_out = size_rule_out
         self.prompt_bytes = prompt_bytes
         self.notices = tuple(notices)
+        self.failed_backends = tuple(failed_backends)
 
 
 _MAX_BACKEND_TIMEOUT_SECONDS = 600  # hard ceiling on every timeout, default or
@@ -1361,6 +1365,22 @@ def _run_state_path(key: str) -> Path:
     return _runs_dir() / f"{digest}.json"
 
 
+@dataclass(frozen=True)
+class _RotationState:
+    """One run's rotation history: who served, and who failed.
+
+    ``served`` drives the least-recently-served ordering and keeps every
+    appearance, repeats included — a backend's *last* position is its recency.
+    ``failed`` holds the backends that produced no critique in an earlier round
+    of this same run, first-seen order and deduplicated, and demotes them behind
+    every candidate that has not failed. Both are empty for a run that recorded
+    nothing yet.
+    """
+
+    served: tuple[str, ...] = ()
+    failed: tuple[str, ...] = ()
+
+
 def _load_run_state(path: Path, key: str) -> dict[str, object]:
     """Load one run's state from disk, or a fresh zeroed state when absent or corrupt."""
     if path.is_file():
@@ -1372,13 +1392,14 @@ def _load_run_state(path: Path, key: str) -> dict[str, object]:
             data.setdefault("key", key)
             data.setdefault("count", 0)
             data.setdefault("updated", 0.0)
-            data["served"] = _normalize_served(data.get("served"))
+            data["served"] = _normalize_backends(data.get("served"))
+            data["failed"] = _normalize_backends(data.get("failed"))
             return data
-    return {"key": key, "count": 0, "updated": 0.0, "served": []}
+    return {"key": key, "count": 0, "updated": 0.0, "served": [], "failed": []}
 
 
-def _normalize_served(raw: object) -> list[str]:
-    """The ``served`` rotation history as a clean list of backend names.
+def _normalize_backends(raw: object) -> list[str]:
+    """A rotation history (``served`` or ``failed``) as clean backend names.
 
     Normalized at the load boundary: anything but a list (a legacy file with
     no history, ``null``, a string) is an empty history, and only string
@@ -1433,9 +1454,9 @@ def _load_state_for_key(path: Path, key: str) -> dict[str, object]:
 
     A plan-file-path key (used only when --run-id is omitted) must not leak the
     cap across days: a separate critique of the same plan file much later is a
-    fresh run, so its counter starts at zero once the prior one is older than
-    _PATH_KEY_TTL_SECONDS. Run-id keys keep their full 7-day lifetime and are
-    never reset here.
+    fresh run, so its counter and both rotation histories start empty once the
+    prior one is older than _PATH_KEY_TTL_SECONDS. Run-id keys keep their full
+    7-day lifetime and are never reset here.
     """
     state = _load_run_state(path, key)
     if key.startswith("plan:"):
@@ -1443,19 +1464,36 @@ def _load_state_for_key(path: Path, key: str) -> dict[str, object]:
         if last > 0.0 and (time.time() - last) > _PATH_KEY_TTL_SECONDS:
             state["count"] = 0
             state["served"] = []
+            state["failed"] = []
     return state
+
+
+def _rotation_state_for(key: str) -> _RotationState:
+    """``key``'s rotation history — served and failed — oldest first.
+
+    Read-only: never creates the runs directory, so an unkeyed or first round
+    costs nothing.
+    """
+    path = _run_state_path(key)
+    if not path.is_file():
+        return _RotationState()
+    state = _load_state_for_key(path, key)
+    # The load boundary already normalized both histories for a present file and
+    # `_load_run_state` zeroed them for a fresh one, so no second pass here.
+    return _RotationState(
+        served=tuple(state["served"]),
+        failed=tuple(state["failed"]),
+    )
 
 
 def rotation_history_for(key: str) -> tuple[str, ...]:
     """The backends that served ``key``'s earlier rounds, oldest first.
 
-    Read-only: never creates the runs directory, so an unkeyed or first
-    round costs nothing.
+    The served-only view of :func:`_rotation_state_for`, kept as its own entry
+    because it is an interface-inventory name: a caller importing it keeps
+    working unchanged. Read-only, same as the combined accessor.
     """
-    path = _run_state_path(key)
-    if not path.is_file():
-        return ()
-    return tuple(_load_state_for_key(path, key)["served"])
+    return _rotation_state_for(key).served
 
 
 def _refuse_if_cap_reached(key: str) -> None:
@@ -1472,18 +1510,22 @@ def _refuse_if_cap_reached(key: str) -> None:
         die(_ROUND_CAP_MESSAGE)
 
 
-def _record_successful_review(
-    key: str, backend: str | None = None, *, count: bool = True
+def _write_round_state(
+    key: str,
+    *,
+    backend: str | None,
+    count: bool,
+    failed: Sequence[str],
 ) -> None:
-    """Persist ``key``'s state after a critique was produced.
+    """Serialize one round's outcome into ``key``'s state file.
 
-    Only successful reviews consume a round — a failed review (backend outage)
-    does not, so a flaky backend can be retried without the override.
-    ``backend``, when given, is appended to the run's ``served`` rotation
-    history (a panel passes none: it is not a rotated loop). ``count=False``
-    (an ``--allow-extra-round`` call) records the history and refreshes
-    ``updated`` without consuming a round. Creates the runs directory itself:
-    an extra-round call never ran :func:`_refuse_if_cap_reached`.
+    The single writer behind :func:`_record_successful_review` and
+    :func:`_record_failed_round`: the round counter, the ``served`` history and
+    the ``failed`` demotion history are merged here and nowhere else. ``failed``
+    merges in first-seen order without duplicates — only membership matters to
+    the ordering rule, so a long ``--allow-extra-round`` run must not grow the
+    list forever. Creates the runs directory itself: an extra-round or
+    no-critique call never ran :func:`_refuse_if_cap_reached`.
     """
     _ensure_runs_dir()
     path = _run_state_path(key)
@@ -1495,9 +1537,66 @@ def _record_successful_review(
         state["updated"] = time.time()
     if backend is not None:
         state["served"] = [*state["served"], backend]
+    state["failed"] = list(dict.fromkeys([*state["failed"], *failed]))
     state["key"] = key
     _save_run_state(path, state)
     _prune_stale_runs(_runs_dir())
+
+
+def _record_successful_review(
+    key: str,
+    backend: str | None = None,
+    *,
+    count: bool = True,
+    failed: Sequence[str] = (),
+) -> None:
+    """Persist ``key``'s state after a critique was produced.
+
+    Only successful reviews consume a round — a failed review (backend outage)
+    does not, so a flaky backend can be retried without the override.
+    ``backend``, when given, is appended to the run's ``served`` rotation
+    history (a panel passes none: it is not a rotated loop). ``failed`` is the
+    round's failed-backend history, which rides along on this same write (see
+    :func:`_record_failed_round` for the rounds that produced no critique).
+    ``count=False`` (an ``--allow-extra-round`` call) records the histories and
+    refreshes ``updated`` without consuming a round. This is not the tampered-
+    output path: that one records failures only, through
+    :func:`_record_failed_round`, because the round it just ran is meant to be
+    re-run rather than counted.
+    """
+    _write_round_state(key, backend=backend, count=count, failed=failed)
+
+
+def _record_failed_round(key: str, failed: Sequence[str]) -> None:
+    """Persist demotion history after a round that produced no critique.
+
+    A round in which every candidate failed spent no round and has no serving
+    backend to record — but it still learned which backends could not answer,
+    and the skill's one retry of such a round should not re-pay them. The same
+    holds for a tampered-output round, whose critique cannot be trusted and
+    whose re-run would otherwise front the same failed backends again.
+    """
+    _write_round_state(key, backend=None, count=False, failed=failed)
+
+
+def _record_failures_best_effort(key: str | None, failed: Sequence[str]) -> None:
+    """Record a round's failed backends, warning (never dying) on a write error.
+
+    Same contract as the critique path's own state write: a state-file failure
+    must never cost the caller the round it just ran, so it is reported as a
+    warning naming what was not recorded. An unkeyed review has no history to
+    update and a round with no dispatch failures has nothing to say.
+    """
+    if key is None or not failed:
+        return
+    try:
+        _record_failed_round(key, failed)
+    except OSError as exc:
+        print(
+            f"[second_opinion] warning: could not record this round's failed "
+            f"backends ({exc}); a later round may front them again",
+            file=sys.stderr,
+        )
 
 
 def _kill_active_process() -> None:
@@ -2049,21 +2148,22 @@ def cmd_probe(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
-def rotation_order(candidates: list[str], history: Sequence[str]) -> list[str]:
-    """Order ``candidates`` so the least-recently-served backend goes first.
+def rotation_order(
+    candidates: list[str], history: Sequence[str], failed: Sequence[str] = ()
+) -> list[str]:
+    """Order ``candidates`` so the next round tries the healthiest backend first.
 
-    The backend-rotation policy, and the only place it lives: never-served
-    candidates first in their incoming (priority) order, then served ones by
-    the position of their most recent appearance in ``history``, oldest
-    first. A backend stands in for its model family, so a multi-round loop
-    gets a different family each round while the pools share none. Pure:
-    the result holds exactly ``candidates``' elements, and history names
-    outside them are ignored. Keying on history rather than the round number
-    means a preferred backend that failed is preferred again next round
-    instead of the one that stood in for it.
+    Candidates that failed earlier in this run go last; of the rest,
+    never-served ones come first in their incoming (priority) order, then
+    served ones by their most recent appearance in ``history``, oldest first.
+    Pure, so the result holds exactly ``candidates``' elements and names
+    outside them are ignored. Demotion is what keeps a run from re-paying a
+    known-bad backend's timeout every round: history alone would still prefer
+    it, because it is "never served".
     """
+    failed_set = set(failed)
     last_served = {name: pos for pos, name in enumerate(history)}
-    return sorted(candidates, key=lambda b: last_served.get(b, -1))
+    return sorted(candidates, key=lambda b: (b in failed_set, last_served.get(b, -1)))
 
 
 def _run_backend_once(
@@ -2248,11 +2348,20 @@ def review_plan(
         )
     rotating = request.rotation_history is not None and not request.backend
     if rotating:
-        candidates = rotation_order(candidates, request.rotation_history)
+        candidates = rotation_order(
+            candidates, request.rotation_history, request.rotation_failed
+        )
     # One reason per backend the loop moves past, for the rotation fallback
     # report; `failures` also holds pool-model skips inside a backend that
     # went on to serve, so it is not reused verbatim.
     passed_over: list[str] = []
+    # The backends a *dispatch* was attempted against and none answered, in
+    # pass-over order — what the run's demotion history records. Candidates
+    # skipped before any subprocess ran (payload-size rule-outs, an
+    # all-quarantined pool, a missing install) are deliberately absent: they
+    # cost nothing to re-check, and each is a fact about this prompt or this
+    # process that a later round can outgrow.
+    failed_backends: list[str] = []
 
     # A diff is code, not a plan: its context lines can look like the
     # review-debris headings sanitize_plan_text strips, so leave it whole.
@@ -2462,7 +2571,12 @@ def review_plan(
                     _log_pool_skip(backend, model, exc, prompt_bytes)
                     last_skip = exc
                     continue
-                if isinstance(exc, llm_backends.BackendPayloadSizeError):
+                # A size rule-out is a fact about this prompt, not a backend
+                # that has gone bad: it is reported and counted as a rule-out,
+                # and deliberately left undemoted so a slimmed plan still
+                # reaches that backend first next round.
+                ruled_out = isinstance(exc, llm_backends.BackendPayloadSizeError)
+                if ruled_out:
                     size_rule_outs.append(exc)
                 caught.append(exc)
                 if verbose:
@@ -2473,6 +2587,8 @@ def review_plan(
                     )
                 failures.append(f"{backend}: {exc}{hint}")
                 passed_over.append(f"{backend}: {exc}{hint}")
+                if not ruled_out:
+                    failed_backends.append(backend)
                 break
             # A skip parked fallback_reason for the next attempt; on success
             # that attempt consumed it (real runners) or never got it (mocks)
@@ -2489,12 +2605,15 @@ def review_plan(
                 bytes_saved=bytes_saved,
                 notices=tuple(notices),
                 backend=backend,
+                failed_backends=tuple(failed_backends),
             )
         else:
             # Every attempt was a pool-skip: the loop ran out without a
             # `break`, so the last skip is this backend's reason.
             if last_skip is not None:
                 passed_over.append(f"{backend}: {last_skip}")
+                # Every pool entry was dispatched and none produced a critique.
+                failed_backends.append(backend)
         # The candidate's attempts ended (break or exhausted) with no further
         # call this chain: drop any parked skip reason before the next
         # candidate's first attempt inherits it as its own fallback cause.
@@ -2517,6 +2636,7 @@ def review_plan(
         size_rule_out=False,
         prompt_bytes=prompt_bytes,
         notices=tuple(notices),
+        failed_backends=tuple(failed_backends),
     )
 
 
@@ -2718,8 +2838,8 @@ def cmd_review(args: argparse.Namespace) -> None:
     # Backend rotation: the same run key carries which backends served earlier
     # rounds. Only priority-order selection rotates — --backend names the
     # backend and --model-index pins a pool entry, so either opts out.
-    rotation_history = (
-        rotation_history_for(key)
+    rotation_state = (
+        _rotation_state_for(key)
         if key is not None and not args.backend and model_index is None
         else None
     )
@@ -2736,7 +2856,8 @@ def cmd_review(args: argparse.Namespace) -> None:
         exclude_backends=exclude,
         images=images,
         spec_text=spec_text,
-        rotation_history=rotation_history,
+        rotation_history=rotation_state.served if rotation_state else None,
+        rotation_failed=rotation_state.failed if rotation_state else (),
     )
     if key is not None and not allow_extra:
         _refuse_if_cap_reached(key)
@@ -2747,16 +2868,29 @@ def cmd_review(args: argparse.Namespace) -> None:
     except AllBackendsFailedError as exc:
         for notice in exc.notices:
             print(notice, file=sys.stderr)
+        # Every candidate failed, so no round is consumed and no backend is
+        # recorded as serving — but the retry should not re-pay the backends
+        # that were actually dispatched and could not answer.
+        _record_failures_best_effort(key, exc.failed_backends)
         die(str(exc))
     except ReviewError as exc:
         die(str(exc))
     # Record a successful review against the cap now that one was produced —
     # unless another process disturbed this run's output file: the warning
-    # tells the caller to rerun the round, so it must not spend one.
+    # tells the caller to rerun the round, so it must not spend one. A
+    # disturbed round still records its failed backends: the re-run would
+    # otherwise front exactly the same ones again.
     tampered = _warn_if_output_tampered(output_lock)
-    if key is not None and not tampered:
+    if key is not None and tampered:
+        _record_failures_best_effort(key, result.failed_backends)
+    elif key is not None:
         try:
-            _record_successful_review(key, result.backend, count=not allow_extra)
+            _record_successful_review(
+                key,
+                result.backend,
+                count=not allow_extra,
+                failed=result.failed_backends,
+            )
         except OSError as exc:
             # The critique already came back: losing it to a state-write
             # failure would cost a real backend call. Say what was not
@@ -3470,7 +3604,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="stable id for one iterative critique session; the per-round cap is "
         "enforced by counting reviews per run-id (or per plan file when omitted), "
         "and the same key's history rotates priority-order selection so each "
-        "round prefers the backend that served least recently. The "
+        "round prefers the backend that served least recently and demotes one "
+        "that failed earlier in the run. The "
         "second-opinion skill passes one for the whole loop.",
     )
     p.add_argument(
@@ -3479,7 +3614,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=False,
         help="permit review calls beyond the per-run cap (for a user who "
         "deliberately wants another round); an extra round still records "
-        "which backend served, so rotation continues",
+        "which backend served and which failed, so rotation continues",
     )
 
     p = sub.add_parser(
