@@ -153,6 +153,34 @@ belongs before the install (step 4) or after it (step 6); a step that doesn't
 say goes after. Show the user the list. Note also which of the releases are
 clean-break renames (`<old>` -> `<new>`) and which list a data upgrade.
 
+**Fork impact preview.** Upstream changes only the files it owns, so the
+fork's own code can break on any release, not just a rename: a fork-only
+script that imports a module whose functions changed, or calls a script that
+was renamed or deleted. List every upstream file this merge modifies, renames
+or deletes, then search the fork's own lines for each one's file name (and,
+for a Python file, its module name):
+
+```bash
+git -C "$FORK" diff --name-status -M "$LAST" "$R" \
+  | awk -F'\t' '$1 !~ /^A/ {print $2}' > ~/upstream-touched.txt
+awk -F/ '{print $NF; s = $NF; if (sub(/\.py$/, "", s)) print s}' ~/upstream-touched.txt \
+  | sort -u > ~/upstream-terms.txt
+awk '/^\+\+\+ b\//{f=substr($0,7);next} /^\+\+\+ /{next}
+     /^\+/{print f": "substr($0,2)}' ~/fork-delta-before.diff \
+  | grep -F -w -f ~/upstream-terms.txt
+```
+
+Each hit is a fork line that names an upstream file this merge changes. Read
+upstream's change to that file (`git -C "$UP" diff "$LAST" "$R" -- <path>`,
+using the path from `~/upstream-touched.txt`) and decide whether the fork line
+still works after it. Most hits are harmless (the file changed, but not the
+part the fork uses). Show the user every hit with that verdict before the
+merge; a fork line that needs changing is changed by hand after step 3, then
+committed to the fork. No hits (`grep` exits 1) means no fork line names a
+changed upstream file. A rename release still gets step 4's old-name search,
+which also covers environment variables and hyphenated spellings that this
+check can't see.
+
 ## 2. Merge by hand
 
 ```bash
@@ -354,6 +382,7 @@ fork merge commit:  <the fork's merge commit sha>
 fork-delta check:   <clean | restored: what>
 links.toml check:   <clean | restored: what>
 per-machine steps:  <none | each as "release-<n>: step — done | skipped: why">
+fork impact preview: <none | each hit as "file — harmless | fixed: what">
 fork-only old-name hits: <none | fixed: files>
 data upgrade:       <none | applied: store files>
 suite:              <passed | failures also on pre-update-<release>: names>

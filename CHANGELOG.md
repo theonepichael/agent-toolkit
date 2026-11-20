@@ -21,6 +21,11 @@ the warning. Run `./install.sh --report-legacy-env` to see any still set.
   do them before or after the install, and the rollout report records them.
   An agent running it reads the doc from the upstream mirror, since the fork's
   own copy predates the merge.
+- `docs/fork-machine-updates.md` step 1 adds a fork impact preview for every
+  release: it lists the upstream files the merge modifies, renames or
+  deletes and flags each fork-only line that names one, so a fork script
+  that depends on a changed upstream module is caught before the merge, not
+  only on a rename release. The rollout report gains a matching line.
 
 ## release-4 — 2026-11-17
 
