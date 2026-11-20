@@ -1222,17 +1222,36 @@ def read_lock(path: Path) -> LockInfo | None:
     return parse_lock_text(text)
 
 
+def _pid_exists(pid: int) -> bool:
+    """Whether a process with ``pid`` exists on this machine.
+
+    ``os.kill(pid, 0)`` sends no signal. Only ``ProcessLookupError`` proves
+    absence; any other ``OSError`` — ``PermissionError`` included, which means
+    it exists but isn't ours — reads as present.
+    """
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
 def process_start_time(pid: int) -> int | None:
     """Read a process's start-time field (field 22) from ``/proc/<pid>/stat``.
 
-    Returns None if the process doesn't exist. Raises ``PermissionError``
-    if ``/proc/<pid>/stat`` exists but can't be read — callers must not
-    treat that as "dead"; see :func:`is_lock_holder_alive`.
+    None means the process exists but its start time can't be read: no ``/proc``
+    on this platform (macOS), or an entry ``hidepid`` hides. A definitively
+    absent pid raises ``ProcessLookupError``, and an entry that exists but can't
+    be read raises ``PermissionError``.
     """
     try:
         text = Path(f"/proc/{pid}/stat").read_text()
     except FileNotFoundError:
-        return None
+        if _pid_exists(pid):
+            return None
+        raise ProcessLookupError(pid) from None
     # Field 2 (comm) may itself contain spaces/parens; split after the last
     # ')' so the remaining whitespace-separated fields count correctly.
     _, _, rest = text.rpartition(")")
@@ -1251,18 +1270,19 @@ def is_lock_holder_alive(
 ) -> bool:
     """Whether the recorded lock holder is still running the same process.
 
-    A ``PermissionError`` while probing ``/proc`` is treated as alive — it
-    can't be disproven, so the safe assumption is that it's still there. A
-    live PID whose start time no longer matches the recorded one is a
-    *different* process that reused the PID after a crash — stale, not
-    alive; this is what makes that window detectable at all.
+    Fails closed: ``None`` (start time unreadable) and ``PermissionError`` read
+    as alive; ``ProcessLookupError`` reads as stale; a mismatched start time
+    reads as a reused pid. A recorded ``0`` says the holder couldn't read its own
+    start time, so it stays alive until its pid is gone.
     """
     try:
         current_start = start_time_fn(pid)
+    except ProcessLookupError:
+        return False
     except PermissionError:
         return True
-    if current_start is None:
-        return False
+    if current_start is None or recorded_start_time == 0:
+        return True
     return current_start == recorded_start_time
 
 
@@ -1370,10 +1390,16 @@ def acquire_uninstall_lock(
             return False, None
 
         our_pid = pid if pid is not None else os.getpid()
-        our_start = start_time_fn(our_pid) or 0
+        try:
+            our_start = start_time_fn(our_pid)
+        except (ProcessLookupError, PermissionError):
+            # An explicit ``pid=`` may name a process that is gone or that this
+            # process may not inspect. Either way its start time is unknown,
+            # which 0 records (see :func:`is_lock_holder_alive`).
+            our_start = None
         handle.seek(0)
         handle.truncate()
-        handle.write(json.dumps({"pid": our_pid, "start_time": our_start}))
+        handle.write(json.dumps({"pid": our_pid, "start_time": our_start or 0}))
         handle.flush()
         os.fsync(handle.fileno())
         return True, existing

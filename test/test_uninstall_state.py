@@ -779,6 +779,16 @@ def test_acquire_lock_succeeds_when_no_lock_exists(tmp_path):
     )
 
 
+def _gone(pid: int) -> int | None:
+    """Injected start-time probe for a pid that is definitively absent.
+
+    ``None`` means "this process exists but its start time can't be read", so a
+    dead holder has to be reported the way ``process_start_time`` reports it:
+    by raising.
+    """
+    raise ProcessLookupError(pid)
+
+
 def test_acquire_lock_refuses_when_holder_is_alive(tmp_path):
     uninstall_state.acquire_uninstall_lock(tmp_path, pid=1234, start_time_fn=lambda pid: 100)
 
@@ -791,11 +801,70 @@ def test_acquire_lock_refuses_when_holder_is_alive(tmp_path):
     assert acquired is False
 
 
-def test_acquire_lock_reclaims_when_holder_pid_is_dead(tmp_path):
-    uninstall_state.acquire_uninstall_lock(tmp_path, pid=1234, start_time_fn=lambda pid: 100)
+@pytest.mark.regression(
+    "uninstall-lock-fails-open-on-unknown-start-time",
+    "AssertionError: an unknown start time read as dead, so a live holder's lock was reclaimed",
+)
+def test_is_lock_holder_alive_unknown_start_time_is_alive() -> None:
+    """An unreadable start time must not read as "the holder is dead".
+
+    ``process_start_time`` returns None on a platform without /proc (macOS), so
+    a live holder used to be reclaimed and a second ``--uninstall`` ran
+    alongside it.
+    """
+    assert (
+        uninstall_state.is_lock_holder_alive(1234, 100, start_time_fn=lambda pid: None)
+        is True
+    ), "an unknown start time read as dead, so a live holder's lock was reclaimed"
+
+
+@pytest.mark.regression(
+    "uninstall-lock-reclaims-a-maybe-live-holder",
+    "AssertionError: the second run took the lock while a holder whose start time could not be read still held it",
+)
+def test_acquire_lock_refuses_when_holder_start_time_is_unknown(
+    tmp_path: Path,
+) -> None:
+    uninstall_state.acquire_uninstall_lock(
+        tmp_path, pid=1234, start_time_fn=lambda pid: 100
+    )
+
+    acquired, stale = uninstall_state.acquire_uninstall_lock(
+        tmp_path, pid=5678, start_time_fn=lambda pid: None
+    )
+
+    assert (acquired, stale) == (False, None), (
+        "the second run took the lock while a holder whose start time could "
+        "not be read still held it"
+    )
+    assert uninstall_state.read_lock(uninstall_state.uninstall_lock_path(tmp_path)) == uninstall_state.LockInfo(
+        pid=1234, start_time=100
+    )
+
+
+@pytest.mark.regression(
+    "uninstall-lock-evicts-a-zero-start-time-holder",
+    "AssertionError: a holder that recorded no start time was evicted as if its pid had been reused",
+)
+def test_is_lock_holder_alive_ignores_reuse_when_recorded_start_time_is_unknown() -> None:
+    """A recorded ``0`` proves nothing about reuse, so it must not evict."""
+    assert (
+        uninstall_state.is_lock_holder_alive(1234, 0, start_time_fn=lambda pid: 555)
+        is True
+    ), "a holder that recorded no start time was evicted as if its pid had been reused"
+
+
+def test_is_lock_holder_alive_process_gone_is_stale() -> None:
+    assert uninstall_state.is_lock_holder_alive(1234, 100, start_time_fn=_gone) is False
+
+
+def test_acquire_lock_reclaims_when_holder_pid_is_dead(tmp_path: Path) -> None:
+    uninstall_state.acquire_uninstall_lock(
+        tmp_path, pid=1234, start_time_fn=lambda pid: 100
+    )
 
     def start_time_fn(pid):
-        return None if pid == 1234 else 200  # dead
+        return 200 if pid != 1234 else _gone(pid)
 
     acquired, stale = uninstall_state.acquire_uninstall_lock(
         tmp_path, pid=5678, start_time_fn=start_time_fn
@@ -837,12 +906,109 @@ def test_release_lock_only_when_it_is_ours(tmp_path):
     assert uninstall_state.read_lock(uninstall_state.uninstall_lock_path(tmp_path)) is None
 
 
-def test_process_start_time_missing_pid_returns_none(tmp_path):
-    assert uninstall_state.process_start_time(999999999) is None
+def _hide_proc_stat(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make every ``/proc/...`` read look absent, without touching the host's.
+
+    Stands in for a platform with no ``/proc`` at all (macOS), and for a pid
+    whose entry ``hidepid`` hides: only paths under ``/proc/`` raise, every
+    other read delegates to the real one.
+    """
+    original_read_text = Path.read_text
+
+    def read_text(self: Path, *args: object, **kwargs: object) -> str:
+        if str(self).startswith("/proc/"):
+            raise FileNotFoundError(2, "No such file or directory", str(self))
+        return original_read_text(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "read_text", read_text)
 
 
-def test_process_start_time_reads_own_pid():
-    assert uninstall_state.process_start_time(os.getpid()) is not None
+def test_process_start_time_hidden_live_pid_is_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A live pid whose start time can't be read is unknown, not gone."""
+    _hide_proc_stat(monkeypatch)
+    monkeypatch.setattr(uninstall_state, "_pid_exists", lambda pid: True)
+
+    assert uninstall_state.process_start_time(1234) is None
+
+
+def test_process_start_time_gone_pid_raises_process_lookup_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pid that isn't there is reported as absent, not as unknown."""
+    _hide_proc_stat(monkeypatch)
+    monkeypatch.setattr(uninstall_state, "_pid_exists", lambda pid: False)
+
+    with pytest.raises(ProcessLookupError):
+        uninstall_state.process_start_time(1234)
+
+
+@pytest.mark.parametrize(
+    ("side_effect", "expected"),
+    [
+        (None, True),
+        (ProcessLookupError(1234), False),
+        (PermissionError(1, "Operation not permitted"), True),
+    ],
+    ids=["alive", "gone", "not-ours"],
+)
+def test_pid_exists_classifies_os_kill_outcomes(
+    monkeypatch: pytest.MonkeyPatch, side_effect: BaseException | None, expected: bool
+) -> None:
+    calls: list[tuple[int, int]] = []
+
+    def fake_kill(pid: int, sig: int) -> None:
+        calls.append((pid, sig))
+        if side_effect is not None:
+            raise side_effect
+
+    monkeypatch.setattr(uninstall_state.os, "kill", fake_kill)
+
+    assert uninstall_state._pid_exists(1234) is expected
+    assert calls == [(1234, 0)], "the probe must send no signal (signal 0)"
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [ProcessLookupError(90210), PermissionError(1, "Operation not permitted")],
+    ids=["gone", "not-ours"],
+)
+def test_acquire_lock_records_unknown_start_time_when_the_self_probe_raises(
+    tmp_path: Path, exc: OSError
+) -> None:
+    """An explicit ``pid=`` this process can't probe must not abort acquisition."""
+
+    def probe(pid: int) -> int | None:
+        raise exc
+
+    acquired, stale = uninstall_state.acquire_uninstall_lock(
+        tmp_path, pid=90210, start_time_fn=probe
+    )
+
+    assert (acquired, stale) == (True, None)
+    assert uninstall_state.read_lock(uninstall_state.uninstall_lock_path(tmp_path)) == uninstall_state.LockInfo(
+        pid=90210, start_time=0
+    )
+
+
+def test_acquire_lock_reclaims_a_zero_start_time_holder_once_its_pid_is_gone(
+    tmp_path: Path,
+) -> None:
+    """A holder that recorded no start time is still reclaimable when it's gone."""
+    uninstall_state.acquire_uninstall_lock(
+        tmp_path, pid=1234, start_time_fn=lambda pid: None
+    )  # records start_time 0: its own probe could not read one
+    assert uninstall_state.read_lock(
+        uninstall_state.uninstall_lock_path(tmp_path)
+    ) == uninstall_state.LockInfo(pid=1234, start_time=0)
+
+    acquired, stale = uninstall_state.acquire_uninstall_lock(
+        tmp_path, pid=5678, start_time_fn=_gone
+    )
+
+    assert acquired is True
+    assert stale == uninstall_state.LockInfo(pid=1234, start_time=0)
 
 
 def _acquire_lock_across_a_concurrent_unlink(tmp_path, *, replace_after_unlink):
@@ -884,7 +1050,7 @@ def _acquire_lock_across_a_concurrent_unlink(tmp_path, *, replace_after_unlink):
             uninstall_state.acquire_uninstall_lock(
                 tmp_path,
                 pid=2222,
-                start_time_fn=lambda pid: 200 if pid == 2222 else None,
+                start_time_fn=lambda pid: 200 if pid == 2222 else _gone(pid),
             )
         )
 
@@ -923,7 +1089,10 @@ def test_acquire_lock_when_the_file_is_unlinked_before_its_flock(tmp_path):
     ), "the acquirer's record is not on the lock file, so nobody can see it"
 
     def live(pid: int) -> int | None:
-        return {2222: 200, 3333: 300}.get(pid)
+        starts = {2222: 200, 3333: 300}
+        if pid not in starts:
+            return _gone(pid)  # anything else is a pid that no longer exists
+        return starts[pid]
 
     acquired_again, _ = uninstall_state.acquire_uninstall_lock(
         tmp_path, pid=3333, start_time_fn=live
@@ -1024,7 +1193,10 @@ def test_acquire_lock_when_the_file_is_replaced_before_its_flock(tmp_path):
     ), "the acquirer left its record on the replaced file's predecessor"
 
     def live(pid: int) -> int | None:
-        return {2222: 200, 3333: 300}.get(pid)
+        starts = {2222: 200, 3333: 300}
+        if pid not in starts:
+            return _gone(pid)  # anything else is a pid that no longer exists
+        return starts[pid]
 
     acquired_again, _ = uninstall_state.acquire_uninstall_lock(
         tmp_path, pid=3333, start_time_fn=live
@@ -1066,7 +1238,7 @@ def test_release_does_not_unlink_a_concurrent_reclaim(tmp_path, monkeypatch):
             uninstall_state.acquire_uninstall_lock(
                 tmp_path,
                 pid=2222,
-                start_time_fn=lambda pid: 200 if pid == 2222 else None,
+                start_time_fn=lambda pid: 200 if pid == 2222 else _gone(pid),
             )
         )
         settled.set()

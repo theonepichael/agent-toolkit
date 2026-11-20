@@ -3500,7 +3500,9 @@ def test_delete_uninstall_state_leaves_a_live_lock(home, links, offline_install)
         uninstall_state.release_uninstall_lock(ctx.state_dir)
 
 
-def test_delete_uninstall_state_clears_a_dead_runs_lock(home, links, offline_install):
+def test_delete_uninstall_state_clears_a_dead_runs_lock(
+    home, links, offline_install, monkeypatch
+):
     """The sweep still cleans up a lock left behind by a dead run."""
     ctx = make_ctx(home, harnesses=("claude",))
     install.run_install(ctx, links)
@@ -3510,6 +3512,19 @@ def test_delete_uninstall_state_clears_a_dead_runs_lock(home, links, offline_ins
         ctx.state_dir, pid=90210, start_time_fn=lambda pid: 100
     )
     assert acquired is True
+
+    # The sweep probes the recorded pid for real, and an unknown start time is
+    # only stale when the process is proven gone — pin both halves instead of
+    # depending on whether this host happens to have a pid 90210.
+    real_read_text = Path.read_text
+
+    def read_text_without_proc(self: Path, *args: object, **kwargs: object) -> str:
+        if str(self).startswith("/proc/"):
+            raise FileNotFoundError(2, "No such file or directory", str(self))
+        return real_read_text(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "read_text", read_text_without_proc)
+    monkeypatch.setattr(uninstall_state, "_pid_exists", lambda pid: False)
 
     uninstall_exec._delete_uninstall_state(install._uninstall_deps(), ctx)
 
