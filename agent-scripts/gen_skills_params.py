@@ -2935,7 +2935,7 @@ request not yet approved) but isn't already in `pending_items_open`,
 propose adding it:
 
 ```
-python3 {{TOOLKIT_SCRIPTS}}/dev_status.py pending add '{"id", "description", "kind", "source_ref": {...}, "context", "next_steps": [...]}'
+python3 {{TOOLKIT_SCRIPTS}}/dev_status.py pending add '{"id", "description", "kind", "source_ref": {...}, "context", "next_steps": [...], "sent_at", "due"}'
 ```
 
 `<id>` can be the pending item's slug — `dev_status.py`'s cross-section
@@ -2944,8 +2944,11 @@ items change, so prefer the slug here since `standup.py`'s `fetch` output
 already gives you it directly.
 
 `kind` is one of `email`, `chat`, `approval`. `source_ref` is a structured
-object appropriate to the kind (e.g. `{"to", "subject", "sent_date"}` for
-email) — not a free-text string.""",
+object appropriate to the kind (e.g. `{"to", "subject"}` for email) — not a
+free-text string. A standup-found ask has usually already gone out: pass
+its send date as top-level `sent_at` (`YYYY-MM-DD`), never inside
+`source_ref` — the dashboard counts the wait from `sent_at`. Add `due` when
+the ask has a date to act by.""",
         "EDIT_ROOT": edit_root("agent-scripts/standup_adapters.py"),
     },
     "pi": {
@@ -2982,7 +2985,8 @@ For anything in the fetched data that looks like a new item worth tracking
 across days (an email/chat message still awaiting a reply, an access
 request not yet approved) but isn't already in `pending_items_open`,
 propose adding it: `action: "pending_add", patch: {"id", "description",
-"kind", "source_ref": {...}, "context", "next_steps": [...]}`.
+"kind", "source_ref": {...}, "context", "next_steps": [...], "sent_at",
+"due"}`.
 
 `<id>` must be the pending item's real slug — `standup.py`'s `fetch` output
 already gives you it directly. The `dev_status` tool refuses a numeric
@@ -2995,8 +2999,11 @@ If the `dev_status` tool is genuinely unavailable, fall back to bash —
 `pending add '{...}'`, same JSON shapes as above.
 
 `kind` is one of `email`, `chat`, `approval`. `source_ref` is a structured
-object appropriate to the kind (e.g. `{"to", "subject", "sent_date"}` for
-email) — not a free-text string.""",
+object appropriate to the kind (e.g. `{"to", "subject"}` for email) — not a
+free-text string. A standup-found ask has usually already gone out: pass
+its send date as top-level `sent_at` (`YYYY-MM-DD`), never inside
+`source_ref` — the dashboard counts the wait from `sent_at`. Add `due` when
+the ask has a date to act by.""",
         "EDIT_ROOT": edit_root("agent-scripts/standup_adapters.py"),
     },
     "pi-prompt": {
@@ -3048,7 +3055,7 @@ request not yet approved) but isn't already in `pending_items_open`,
 propose adding it:
 
 ```
-python3 {{TOOLKIT_SCRIPTS}}/dev_status.py pending add '{"id", "description", "kind", "source_ref": {...}, "context", "next_steps": [...]}'
+python3 {{TOOLKIT_SCRIPTS}}/dev_status.py pending add '{"id", "description", "kind", "source_ref": {...}, "context", "next_steps": [...], "sent_at", "due"}'
 ```
 
 `<id>` can be the pending item's slug — `dev_status.py`'s cross-section
@@ -3057,8 +3064,11 @@ items change, so prefer the slug here since `standup.py`'s `fetch` output
 already gives you it directly.
 
 `kind` is one of `email`, `chat`, `approval`. `source_ref` is a structured
-object appropriate to the kind (e.g. `{"to", "subject", "sent_date"}` for
-email) — not a free-text string.""",
+object appropriate to the kind (e.g. `{"to", "subject"}` for email) — not a
+free-text string. A standup-found ask has usually already gone out: pass
+its send date as top-level `sent_at` (`YYYY-MM-DD`), never inside
+`source_ref` — the dashboard counts the wait from `sent_at`. Add `due` when
+the ask has a date to act by.""",
         "EDIT_ROOT": edit_root("agent-scripts/standup_adapters.py"),
     },
     "agy": {
@@ -3103,7 +3113,7 @@ request not yet approved) but isn't already in `pending_items_open`,
 propose adding it:
 
 ```
-python3 {{TOOLKIT_SCRIPTS}}/dev_status.py pending add '{"id", "description", "kind", "source_ref": {...}, "context", "next_steps": [...]}'
+python3 {{TOOLKIT_SCRIPTS}}/dev_status.py pending add '{"id", "description", "kind", "source_ref": {...}, "context", "next_steps": [...], "sent_at", "due"}'
 ```
 
 `<id>` can be the pending item's slug — `dev_status.py`'s cross-section
@@ -3112,8 +3122,11 @@ items change, so prefer the slug here since `standup.py`'s `fetch` output
 already gives you it directly.
 
 `kind` is one of `email`, `chat`, `approval`. `source_ref` is a structured
-object appropriate to the kind (e.g. `{"to", "subject", "sent_date"}` for
-email) — not a free-text string.""",
+object appropriate to the kind (e.g. `{"to", "subject"}` for email) — not a
+free-text string. A standup-found ask has usually already gone out: pass
+its send date as top-level `sent_at` (`YYYY-MM-DD`), never inside
+`source_ref` — the dashboard counts the wait from `sent_at`. Add `due` when
+the ask has a date to act by.""",
         "EDIT_ROOT": edit_root("agent-scripts/standup_adapters.py"),
     },
     "codex": {
@@ -3158,7 +3171,7 @@ request not yet approved) but isn't already in `pending_items_open`,
 propose adding it:
 
 ```
-python3 {{TOOLKIT_SCRIPTS}}/dev_status.py pending add '{"id", "description", "kind", "source_ref": {...}, "context", "next_steps": [...]}'
+python3 {{TOOLKIT_SCRIPTS}}/dev_status.py pending add '{"id", "description", "kind", "source_ref": {...}, "context", "next_steps": [...], "sent_at", "due"}'
 ```
 
 `<id>` can be the pending item's slug — `dev_status.py`'s cross-section
@@ -3167,8 +3180,11 @@ items change, so prefer the slug here since `standup.py`'s `fetch` output
 already gives you it directly.
 
 `kind` is one of `email`, `chat`, `approval`. `source_ref` is a structured
-object appropriate to the kind (e.g. `{"to", "subject", "sent_date"}` for
-email) — not a free-text string.""",
+object appropriate to the kind (e.g. `{"to", "subject"}` for email) — not a
+free-text string. A standup-found ask has usually already gone out: pass
+its send date as top-level `sent_at` (`YYYY-MM-DD`), never inside
+`source_ref` — the dashboard counts the wait from `sent_at`. Add `due` when
+the ask has a date to act by.""",
         "EDIT_ROOT": edit_root("agent-scripts/standup_adapters.py"),
     },
 }
