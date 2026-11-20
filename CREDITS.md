@@ -1,5 +1,9 @@
 # Credits
 
+This repository is released under the [MIT License](LICENSE). This file records
+third-party attributions and upstream license notices retained under their
+original terms.
+
 ## Matt Pocock's skills
 
 Several skills here derive from, or adapt ideas from,
@@ -22,7 +26,7 @@ is this repo's, not his.
 - `retro` — from his `retro` (environment fixes, mechanical problems get a
   check rather than prose).
 
-### License
+### Upstream license
 
 ```text
 MIT License
