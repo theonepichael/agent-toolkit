@@ -381,7 +381,7 @@ environment variable:
   `kind` mirrors the shared instructions file protocol each entry would otherwise have
   been offered under: `backlog` for a backlog `add`, `pending` for a
   pending-item `add`, `out-of-scope` for a rejected concept; `id` is the
-  slug (or concept slug); `summary` is the one-line offer text. Write the
+  slug (or concept slug); `summary` is the one-line offer text, verdict included. Write the
   file only when there is at least one entry — an absent file already
   means "nothing to offer" downstream. Do NOT also ask the entries in
   plain text: the orchestrator reads this file when the worker settles

@@ -256,9 +256,15 @@ before you send, not after. Several findings in one turn can share a single offe
 none get dropped silently. (This closes the gap between noticing something and acting on
 it — it can't make you notice something you never put into words in the first place.)
 
-Protocol: draft the full add JSON yourself, then offer it as one line —
-``Add to backlog? `<prefix>-<slug>` — <summary>`` — and run the add only on confirmation.
-At most one offer per distinct item; if declined, don't re-offer it.
+Protocol: draft the full add JSON yourself, then offer it as one line with
+your verdict — ``Add to backlog? `<prefix>-<slug>` — <summary>. Verdict: <add |
+out of scope | drop> — <reason>`` — and run the add only on confirmation. Build
+the verdict from four checks: **recurring or one-off** (has it actually
+happened, how often, and is it still happening? check dates, not all-time
+totals), **likelihood** (a real path, or only a constructed input),
+**impact**, and **rough fix cost**. The verdict informs the decision; it
+never replaces the offer, so offer even what you would drop. At most one
+offer per distinct item; if declined, don't re-offer it.
 
 #### Proactive capture: rejected ideas
 
