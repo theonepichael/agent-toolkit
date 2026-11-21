@@ -45,7 +45,7 @@ function listing is an AST naming convention, not a stability guarantee.
 | `to_tickets_runner.py` + `dev_status` | Batch schema/order/resume logic invoking the backlog module | Needs design first | Batch validation and dependency ordering are good pure seams, but creation currently depends on `dev_status`'s module alias and command-shaped API. Stabilize backlog creation first. |
 | `vitals_promotion.py` + `grill` data | Read/classify/promote/search workflow | Low-risk extraction | `matches_query`, `classify_decision`, `search_vitals`, and report generation already separate useful concerns. Add result objects and depend on grill's formalized session-read API instead of reading its on-disk JSON directly. |
 | `guard_rails.py` (+ a few `dev_status_impl` pid/machine-identity helpers) | Guard evaluator with git, process, filesystem, and backlog-claim checks | Needs design first | `evaluate()` is a promising decision boundary, but it currently duplicates its own backlog-item read logic (`load_in_progress()`) instead of reusing `dev_status_storage`'s. Replace that duplicated read with a narrow read-only claim lookup protocol; its separate, narrower `dev_status_impl` import for pid/machine-identity helpers is a legitimate coupling to keep. |
-| `herdr_delegate.py` + `dev_status` | Swarm launch/resume orchestration over backlog selection | Needs design first | Command construction and state parsing are separable, but readiness/serial safety are coupled to the broad backlog module. Re-express readiness against a narrow read-only claim-lookup protocol, satisfied by a local adapter rather than a shared facade dependency. |
+| `herdr_queue_runner.py` + `dev_status` | Swarm launch/resume orchestration over backlog selection | Needs design first | Command construction and state parsing are separable, but readiness/serial safety are coupled to the broad backlog module. Re-express readiness against a narrow read-only claim-lookup protocol, satisfied by a local adapter rather than a shared facade dependency. |
 | `settings_seed.py` + `settings_seed_drift_check.py` | Extracted seed library plus a drift/fix/sync CLI | Already suitable / low-risk | This is the clearest existing precedent: pure drift helpers and injected subprocess access sit below orchestration. Finish de-duplication by making drift-check consume its shared helpers. |
 | `link_inspect.py` + `link_drift_check.py` | Inspection library plus SessionStart/CLI wrapper | Already suitable | Clean library/adapter split. Keep its findings as immutable result records if a consumer API is wanted. |
 | `outlook_email.py`, `outlook_calendar.py`, `standup_adapters.py` | Platform adapters and protocol translation | Already suitable | Their direct-provider methods are the correct component boundary; callers should depend on the adapter protocols, not PowerShell details. |
@@ -520,7 +520,7 @@ domain errors) that later waves reuse.
   `LocalClaimLookup`), which candidate 10 also imports — this is a real
   same-wave ordering dependency (10 after 9), named explicitly rather than
   described as "no dependency," per the Recommended execution order
-  section below. Neither `guard_rails` nor `herdr_delegate` owns the
+  section below. Neither `guard_rails` nor `herdr_queue_runner` owns the
   module or imports the other, avoiding the accidental coupling a
   "whichever lands first" placement would create. Candidate 6 depends on
   this module once it lands (see its entry), not the reverse.
@@ -530,7 +530,7 @@ domain errors) that later waves reuse.
   read-only operations it wraps today, so swapping in candidate 6 later is
   a drop-in replacement, not a redesign.
 
-#### 10. `herdr_delegate` / swarm queue facade
+#### 10. `herdr_queue_runner` / swarm queue facade
 
 - **Why wave 1:** command construction (`build_tab_argv`,
   `build_agent_start_argv`, prompt builders) and state parsing
@@ -558,12 +558,12 @@ domain errors) that later waves reuse.
 - **CLI adapter story:** `cmd_launch`/`cmd_restart` call `select_ready()`
   and `build_launch_plan()`, then perform the actual tab spawn exactly as
   today.
-- **Tests:** existing `test_herdr_delegate.py` fixtures apply; add tests
+- **Tests:** existing `test_herdr_queue_runner.py` fixtures apply; add tests
   for `select_ready` against a fake `BacklogClaimLookup`.
 - **Dependencies:** none within this portfolio. Imports the one shared
   `BacklogClaimLookup` protocol and local adapter from a small dedicated
   module (e.g. `backlog_claim_lookup.py`) that candidate 9 also imports —
-  neither `guard_rails` nor `herdr_delegate` defines it or imports the
+  neither `guard_rails` nor `herdr_queue_runner` defines it or imports the
   other; a swarm-orchestration CLI depending on a pre-commit guard script,
   or vice versa, is exactly the kind of accidental coupling this portfolio
   exists to avoid. There is exactly one local implementation, not two, and
@@ -1020,7 +1020,7 @@ before candidate 7's read API exists.
    `analyze_sessions.query_sessions`, `second_opinion.review_plan`,
    `settings_seed`/drift-check consolidation, `link_inspect`/
    `link_drift_check` result API, `dev_status` read-only query facade,
-   `guard_rails` evaluator facade, `herdr_delegate`/swarm queue facade).
+   `guard_rails` evaluator facade, `herdr_queue_runner`/swarm queue facade).
    This wave has one real ordering constraint, not "any order" for all
    eight: candidate 9 defines the shared `backlog_claim_lookup.py` module,
    and both candidate 6 and candidate 10 depend on it (6 to implement its
@@ -1096,7 +1096,7 @@ candidate:
 - **Subprocess/network boundaries stay centralized.** Any service that needs
   to run a subprocess or call a network-backed provider delegates to the
   existing centralized boundary for that concern — `llm_backends` for LLM
-  backend calls, `herdr_delegate`'s command builders plus its own explicit
+  backend calls, `herdr_queue_runner`'s command builders plus its own explicit
   spawn call for herdr, `standup_adapters`/`outlook_*` for external data
   sources. A new service must not open a second, parallel subprocess path.
 - **Lock/transaction handling is preserved, not reimplemented.** Any service
@@ -1199,7 +1199,7 @@ nodes); `analyze_sessions.py` is 1,248 lines; `grill.py` is 1,235 lines;
 `llm_backends.py` is 1,198 lines; and `settings_seed_drift_check.py` is
 1,575 lines. Additional line counts gathered for this portfolio's wave
 assignments: `second_opinion.py` 1,034; `guidance_audit.py` 1,393;
-`harness_discovery_check.py` 751; `guard_rails.py` 876; `herdr_delegate.py`
+`harness_discovery_check.py` 751; `guard_rails.py` 876; `herdr_queue_runner.py`
 856; `link_inspect.py` 925; `settings_seed.py` 628; `vitals_promotion.py`
 490; `outlook_email.py` 469; `notify.py` 442; `standup.py` 309;
 `outlook_calendar.py` 308; `link_drift_check.py` 335; `to_tickets_runner.py`

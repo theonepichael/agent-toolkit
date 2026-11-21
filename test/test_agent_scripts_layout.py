@@ -64,7 +64,7 @@ FROZEN_SCRIPT_DESTS = frozenset(
         "backlog_claim_lookup.py",
         "harness_discovery_check.py",
         "harness_spec.py",
-        "herdr_delegate.py",
+        "herdr_queue_runner.py",
         "herdr_picker.py",
         "link_drift_check.py",
         "link_inspect.py",

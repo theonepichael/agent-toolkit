@@ -5,7 +5,7 @@
 `agent-scripts/herdr_picker.py` is the Python twin of
 `pi/extensions/swarm-lib/swarm-picker.ts`. It parses `question-tool.ts`'s
 rendered option picker (both selection mode and the free-text edit mode) and
-matches/navigates it, so that `herdr_delegate.py answer` — the foreman's
+matches/navigates it, so that `herdr_queue_runner.py answer` — the foreman's
 supported way to drive a live worker's picker — and the Python test suite share
 one implementation with the pi swarm's blocked-relay. It is pure: no module
 state, no I/O, no herdr calls. Its input is plain, ANSI-stripped pane text; its
@@ -40,7 +40,7 @@ the Python suite only.
 ## Non-goals
 
 - It does not touch herdr, the live pane, or any worker state; `answer`/`watch`
-  in `herdr_delegate.py` own that.
+  in `herdr_queue_runner.py` own that.
 - It does not re-implement `question-tool.ts`'s renderer; it parses its output.
 - It does not answer non-picker prompts (guard-rails confirmations etc.);
   `parse_picker` refusing them is correct and stays.

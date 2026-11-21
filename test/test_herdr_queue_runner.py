@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Tests for herdr_delegate.py. Run with: python3 test_herdr_delegate.py
+"""Tests for herdr_queue_runner.py. Run with: python3 test_herdr_queue_runner.py
 
 The script's source of truth is this repo (the origin repo's copy was retired in the
-cutover; the live ~/.claude/scripts symlink points here). Everything is
+cutover; the live ~/.agent-toolkit/scripts symlink points here). Everything is
 tested in process: herdr is faked at the module's herdr() boundary, and
 worktree setup subprocesses are mocked. Nothing here reaches the real herdr
 socket or mutates a real worktree, so the conftest sandbox needs no marking.
@@ -32,7 +32,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))
 import test_bootstrap  # noqa: E402
-import herdr_delegate
+import herdr_queue_runner
 from pytest_shim import pytest  # noqa: E402
 
 
@@ -122,7 +122,7 @@ def make_fake_herdr(
     prompt_error: str | None = None,
     close_error: str | None = None,
 ) -> tuple[Callable[[list[str]], dict[str, object]], list[list[str]]]:
-    """Replace herdr_delegate.herdr with a scripted fake.
+    """Replace herdr_queue_runner.herdr with a scripted fake.
 
     Returns (fake, argvs): ``fake`` answers ``tab create`` with a fresh
     ``w:t<n>``/``w:p<n>`` pair each call (so a caller retrying gets a
@@ -158,14 +158,14 @@ def make_fake_herdr(
                 entry = start_script.pop(0)
                 if entry is not None:
                     message, code = entry
-                    raise herdr_delegate.RefusedError(message, code=code)
+                    raise herdr_queue_runner.RefusedError(message, code=code)
             elif start_error:
-                raise herdr_delegate.RefusedError(start_error, code=start_code)
+                raise herdr_queue_runner.RefusedError(start_error, code=start_code)
             return {"result": {"type": "ok"}}
         if argv[0] == "agent" and argv[1] == "prompt" and prompt_error:
-            raise herdr_delegate.RefusedError(prompt_error)
+            raise herdr_queue_runner.RefusedError(prompt_error)
         if argv[0] == "tab" and argv[1] == "close" and close_error:
-            raise herdr_delegate.RefusedError(close_error)
+            raise herdr_queue_runner.RefusedError(close_error)
         if argv[0] == "agent" and argv[1] == "list":
             if agent_list_steps:
                 return {"result": {"agents": agent_list_steps.pop(0)}}
@@ -185,16 +185,16 @@ def make_fake_herdr(
 def run_launch(fake: Callable[[list[str]], dict[str, object]]) -> int:
     """Run ``launch --slug atk-example`` with herdr faked; return exit code."""
     with (
-        mock.patch.object(herdr_delegate, "herdr", fake),
-        mock.patch.object(herdr_delegate.time, "sleep", lambda _s: None),
+        mock.patch.object(herdr_queue_runner, "herdr", fake),
+        mock.patch.object(herdr_queue_runner.time, "sleep", lambda _s: None),
         mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
     ):
         argv = ["launch", "--slug", "atk-example", "--cwd", "/tmp"]
-        sys.argv = ["herdr_delegate.py", *argv]
+        sys.argv = ["herdr_queue_runner.py", *argv]
         out, err = io.StringIO(), io.StringIO()
         try:
             with redirect_stdout(out), redirect_stderr(err):
-                herdr_delegate.main()
+                herdr_queue_runner.main()
         except SystemExit as e:
             return int(e.code or 0)
         return 0
@@ -244,12 +244,12 @@ class RefusedErrorCodeTests(unittest.TestCase):
     """The optional ``code`` attribute must never change message/str behavior."""
 
     def test_code_defaults_to_none(self) -> None:
-        exc = herdr_delegate.RefusedError("boom")
+        exc = herdr_queue_runner.RefusedError("boom")
         self.assertIsNone(exc.code)
         self.assertEqual(str(exc), "boom")
 
     def test_code_is_stored_without_altering_str(self) -> None:
-        exc = herdr_delegate.RefusedError("boom", code="timeout")
+        exc = herdr_queue_runner.RefusedError("boom", code="timeout")
         self.assertEqual(exc.code, "timeout")
         self.assertEqual(str(exc), "boom")
         self.assertEqual(exc.args, ("boom",))
@@ -260,34 +260,34 @@ class ParseHerdrErrorCodeTests(unittest.TestCase):
 
     def test_extracts_code_from_envelope(self) -> None:
         stderr = json.dumps({"error": {"code": "timeout", "message": "x"}, "id": "y"})
-        self.assertEqual(herdr_delegate._parse_herdr_error_code(stderr), "timeout")
+        self.assertEqual(herdr_queue_runner._parse_herdr_error_code(stderr), "timeout")
 
     def test_empty_string_returns_none(self) -> None:
-        self.assertIsNone(herdr_delegate._parse_herdr_error_code(""))
+        self.assertIsNone(herdr_queue_runner._parse_herdr_error_code(""))
 
     def test_non_json_returns_none(self) -> None:
-        self.assertIsNone(herdr_delegate._parse_herdr_error_code("not json at all"))
+        self.assertIsNone(herdr_queue_runner._parse_herdr_error_code("not json at all"))
 
     def test_json_without_error_key_returns_none(self) -> None:
         self.assertIsNone(
-            herdr_delegate._parse_herdr_error_code(json.dumps({"ok": True}))
+            herdr_queue_runner._parse_herdr_error_code(json.dumps({"ok": True}))
         )
 
     def test_error_not_a_dict_returns_none(self) -> None:
         self.assertIsNone(
-            herdr_delegate._parse_herdr_error_code(json.dumps({"error": "boom"}))
+            herdr_queue_runner._parse_herdr_error_code(json.dumps({"error": "boom"}))
         )
 
     def test_code_not_a_string_returns_none(self) -> None:
         self.assertIsNone(
-            herdr_delegate._parse_herdr_error_code(json.dumps({"error": {"code": 5}}))
+            herdr_queue_runner._parse_herdr_error_code(json.dumps({"error": {"code": 5}}))
         )
 
 
 class HerdrSubprocessTests(unittest.TestCase):
     """``herdr()`` itself, at the real subprocess boundary -- the only way to
     exercise its JSON-error-code parsing, since every other test in this file
-    fakes ``herdr_delegate.herdr`` wholesale and never reaches this code."""
+    fakes ``herdr_queue_runner.herdr`` wholesale and never reaches this code."""
 
     def _completed(self, *, stderr: str) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(
@@ -303,13 +303,13 @@ class HerdrSubprocessTests(unittest.TestCase):
         )
         with (
             mock.patch.object(
-                herdr_delegate.subprocess,
+                herdr_queue_runner.subprocess,
                 "run",
                 return_value=self._completed(stderr=stderr),
             ),
-            self.assertRaises(herdr_delegate.RefusedError) as ctx,
+            self.assertRaises(herdr_queue_runner.RefusedError) as ctx,
         ):
-            herdr_delegate.herdr(["agent", "start", "x"])
+            herdr_queue_runner.herdr(["agent", "start", "x"])
         self.assertEqual(ctx.exception.code, "timeout")
 
     def test_nonzero_exit_with_unrecognized_json_warns_on_stderr(self) -> None:
@@ -317,14 +317,14 @@ class HerdrSubprocessTests(unittest.TestCase):
         err = io.StringIO()
         with (
             mock.patch.object(
-                herdr_delegate.subprocess,
+                herdr_queue_runner.subprocess,
                 "run",
                 return_value=self._completed(stderr=stderr),
             ),
             redirect_stderr(err),
-            self.assertRaises(herdr_delegate.RefusedError) as ctx,
+            self.assertRaises(herdr_queue_runner.RefusedError) as ctx,
         ):
-            herdr_delegate.herdr(["agent", "start", "x"])
+            herdr_queue_runner.herdr(["agent", "start", "x"])
         self.assertIsNone(ctx.exception.code)
         self.assertIn("no recognized 'code' field", err.getvalue())
 
@@ -332,14 +332,14 @@ class HerdrSubprocessTests(unittest.TestCase):
         err = io.StringIO()
         with (
             mock.patch.object(
-                herdr_delegate.subprocess,
+                herdr_queue_runner.subprocess,
                 "run",
                 return_value=self._completed(stderr="boom, not json"),
             ),
             redirect_stderr(err),
-            self.assertRaises(herdr_delegate.RefusedError) as ctx,
+            self.assertRaises(herdr_queue_runner.RefusedError) as ctx,
         ):
-            herdr_delegate.herdr(["agent", "start", "x"])
+            herdr_queue_runner.herdr(["agent", "start", "x"])
         self.assertIsNone(ctx.exception.code)
         self.assertEqual(err.getvalue(), "")
 
@@ -378,7 +378,7 @@ class AgentStartRetryTests(unittest.TestCase):
         )
         code = run_launch(fake)
         self.assertEqual(code, 1)
-        attempts = herdr_delegate.AGENT_START_TIMEOUT_RETRIES + 1
+        attempts = herdr_queue_runner.AGENT_START_TIMEOUT_RETRIES + 1
         self.assertEqual(len(_named(argvs, "agent", "start")), attempts)
         self.assertEqual(len(_named(argvs, "tab", "create")), attempts)
         self.assertEqual(len(_named(argvs, "tab", "close")), attempts)
@@ -386,7 +386,7 @@ class AgentStartRetryTests(unittest.TestCase):
     def test_exhaustion_message_names_attempts_and_herdr_status(self) -> None:
         fake, _ = make_fake_herdr(start_error_script=[("timed out", "timeout")] * 10)
         _, err = self._run_main_capturing(fake, expect_exit=True)
-        attempts = herdr_delegate.AGENT_START_TIMEOUT_RETRIES + 1
+        attempts = herdr_queue_runner.AGENT_START_TIMEOUT_RETRIES + 1
         self.assertIn(f"{attempts} attempt", err)
         self.assertIn("herdr status", err)
 
@@ -431,7 +431,7 @@ class AgentStartRetryTests(unittest.TestCase):
     def test_tab_create_failure_propagates_unretried(self) -> None:
         def fake(argv: list[str]) -> dict[str, object]:
             if argv[0] == "tab" and argv[1] == "create":
-                raise herdr_delegate.RefusedError("boom: cannot create tab")
+                raise herdr_queue_runner.RefusedError("boom: cannot create tab")
             return {"result": {"type": "ok"}}
 
         code = run_launch(fake)
@@ -448,19 +448,19 @@ class AgentStartRetryTests(unittest.TestCase):
         self, fake: Callable[[list[str]], dict[str, object]], *, expect_exit: bool
     ) -> tuple[str, str]:
         with (
-            mock.patch.object(herdr_delegate, "herdr", fake),
-            mock.patch.object(herdr_delegate.time, "sleep", lambda _s: None),
+            mock.patch.object(herdr_queue_runner, "herdr", fake),
+            mock.patch.object(herdr_queue_runner.time, "sleep", lambda _s: None),
             mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
         ):
             argv = ["launch", "--slug", "atk-example", "--cwd", "/tmp"]
-            sys.argv = ["herdr_delegate.py", *argv]
+            sys.argv = ["herdr_queue_runner.py", *argv]
             out, err = io.StringIO(), io.StringIO()
             with redirect_stdout(out), redirect_stderr(err):
                 if expect_exit:
                     with self.assertRaises(SystemExit):
-                        herdr_delegate.main()
+                        herdr_queue_runner.main()
                 else:
-                    herdr_delegate.main()
+                    herdr_queue_runner.main()
             return out.getvalue(), err.getvalue()
 
 
@@ -481,11 +481,11 @@ class DelegateTests(unittest.TestCase):
 
     def run_main(self, argv: list[str]) -> tuple[int, str, str]:
         """Run main() with the given argv, returning (exit_code, stdout, stderr)."""
-        sys.argv = ["herdr_delegate.py", *argv]
+        sys.argv = ["herdr_queue_runner.py", *argv]
         out, err = io.StringIO(), io.StringIO()
         try:
             with redirect_stdout(out), redirect_stderr(err):
-                herdr_delegate.main()
+                herdr_queue_runner.main()
         except SystemExit as e:
             return int(e.code or 0), out.getvalue(), err.getvalue()
         return 0, out.getvalue(), err.getvalue()
@@ -493,7 +493,7 @@ class DelegateTests(unittest.TestCase):
     def mock_agy_trust(self) -> None:
         """Patch ensure/remove/prune_trusted so agy launch/probe tests never touch settings.json."""
         for name in ("prune_trusted", "ensure_trusted", "remove_trusted"):
-            patcher = mock.patch.object(herdr_delegate.agy_workspace_trust, name)
+            patcher = mock.patch.object(herdr_queue_runner.agy_workspace_trust, name)
             patcher.start()
             self.addCleanup(patcher.stop)
 
@@ -563,49 +563,49 @@ class SmokeTests(DelegateTests):
 class PromptContractTests(unittest.TestCase):
     def test_worker_prompt(self) -> None:
         self.assertEqual(
-            herdr_delegate.worker_prompt("atk-example"),
+            herdr_queue_runner.worker_prompt("atk-example"),
             "/backlog-item --auto atk-example",
         )
 
     def test_orchestrator_prompt(self) -> None:
         self.assertEqual(
-            herdr_delegate.orchestrator_prompt(3, "atk"),
+            herdr_queue_runner.orchestrator_prompt(3, "atk"),
             "/backlog-item --swarm=3 --prefix atk",
         )
 
     def test_orchestrator_resume_prompt(self) -> None:
         self.assertEqual(
-            herdr_delegate.orchestrator_resume_prompt(3, "r1", "atk"),
+            herdr_queue_runner.orchestrator_resume_prompt(3, "r1", "atk"),
             "/backlog-item --swarm=3 resume r1 --prefix atk",
         )
 
     def test_serial_orchestrator_prompt(self) -> None:
         self.assertEqual(
-            herdr_delegate.serial_orchestrator_prompt("atk-"),
+            herdr_queue_runner.serial_orchestrator_prompt("atk-"),
             "/backlog-item --serial --prefix atk",
         )
 
     def test_serial_orchestrator_resume_prompt(self) -> None:
         self.assertEqual(
-            herdr_delegate.serial_orchestrator_resume_prompt("r1", "atk-"),
+            herdr_queue_runner.serial_orchestrator_resume_prompt("r1", "atk-"),
             "/backlog-item --serial resume r1 --prefix atk",
         )
 
     def test_orchestrator_prompt_with_items(self) -> None:
         self.assertEqual(
-            herdr_delegate.orchestrator_prompt(3, "atk", items=["atk-a", "atk-b"]),
+            herdr_queue_runner.orchestrator_prompt(3, "atk", items=["atk-a", "atk-b"]),
             "/backlog-item --swarm=3 --prefix atk --items atk-a atk-b",
         )
 
     def test_orchestrator_prompt_with_exclude(self) -> None:
         self.assertEqual(
-            herdr_delegate.orchestrator_prompt(3, "atk", exclude=["atk-x"]),
+            herdr_queue_runner.orchestrator_prompt(3, "atk", exclude=["atk-x"]),
             "/backlog-item --swarm=3 --prefix atk --exclude atk-x",
         )
 
     def test_serial_orchestrator_prompt_with_items(self) -> None:
         self.assertEqual(
-            herdr_delegate.serial_orchestrator_prompt("atk", items=["atk-a"]),
+            herdr_queue_runner.serial_orchestrator_prompt("atk", items=["atk-a"]),
             "/backlog-item --serial --prefix atk --items atk-a",
         )
 
@@ -614,10 +614,10 @@ class PromptContractTests(unittest.TestCase):
 class LaunchTests(DelegateTests):
     def setUp(self) -> None:
         self.fake = FakeHerdr()
-        patcher = mock.patch.object(herdr_delegate, "herdr", self.fake)
+        patcher = mock.patch.object(herdr_queue_runner, "herdr", self.fake)
         patcher.start()
         self.addCleanup(patcher.stop)
-        sleep_patcher = mock.patch.object(herdr_delegate.time, "sleep", lambda _s: None)
+        sleep_patcher = mock.patch.object(herdr_queue_runner.time, "sleep", lambda _s: None)
         sleep_patcher.start()
         self.addCleanup(sleep_patcher.stop)
 
@@ -656,7 +656,7 @@ class LaunchTests(DelegateTests):
 
     def test_launch_slug_refuses_no_worker_item(self) -> None:
         with mock.patch.object(
-            herdr_delegate,
+            herdr_queue_runner,
             "resolve_backlog_item",
             return_value={
                 "id": "atk-opted",
@@ -676,9 +676,9 @@ class LaunchTests(DelegateTests):
             "related_files": [{"path": str(expect_cwd / "f.py")}],
         }
         with (
-            mock.patch.object(herdr_delegate, "resolve_backlog_item", return_value=item),
+            mock.patch.object(herdr_queue_runner, "resolve_backlog_item", return_value=item),
             mock.patch.object(
-                herdr_delegate,
+                herdr_queue_runner,
                 "resolve_item_repos",
                 return_value={expect_cwd},
                 create=True,
@@ -709,7 +709,7 @@ class LaunchTests(DelegateTests):
 
     def test_launch_slug_without_cwd_refuses_when_item_missing(self) -> None:
         with mock.patch.object(
-            herdr_delegate, "resolve_backlog_item", return_value=None
+            herdr_queue_runner, "resolve_backlog_item", return_value=None
         ):
             code, _, err = self.run_main(["launch", "--slug", "atk-example"])
         self.assertEqual(code, 1)
@@ -719,9 +719,9 @@ class LaunchTests(DelegateTests):
     def test_launch_slug_without_cwd_refuses_when_no_repo(self) -> None:
         item = {"id": "atk-example", "related_files": []}
         with (
-            mock.patch.object(herdr_delegate, "resolve_backlog_item", return_value=item),
+            mock.patch.object(herdr_queue_runner, "resolve_backlog_item", return_value=item),
             mock.patch.object(
-                herdr_delegate, "resolve_item_repos", return_value=set(), create=True
+                herdr_queue_runner, "resolve_item_repos", return_value=set(), create=True
             ),
         ):
             code, _, err = self.run_main(["launch", "--slug", "atk-example"])
@@ -735,9 +735,9 @@ class LaunchTests(DelegateTests):
             "related_files": [{"path": "/a/f.py"}, {"path": "/b/g.py"}],
         }
         with (
-            mock.patch.object(herdr_delegate, "resolve_backlog_item", return_value=item),
+            mock.patch.object(herdr_queue_runner, "resolve_backlog_item", return_value=item),
             mock.patch.object(
-                herdr_delegate,
+                herdr_queue_runner,
                 "resolve_item_repos",
                 return_value={Path("/repo-a"), Path("/repo-b")},
                 create=True,
@@ -751,10 +751,10 @@ class LaunchTests(DelegateTests):
     def test_launch_slug_with_explicit_cwd_skips_repo_discovery(self) -> None:
         item = {"id": "atk-example", "related_files": []}
         with mock.patch.object(
-            herdr_delegate, "resolve_backlog_item", return_value=item
+            herdr_queue_runner, "resolve_backlog_item", return_value=item
         ):
             with mock.patch.object(
-                herdr_delegate,
+                herdr_queue_runner,
                 "resolve_item_repos",
                 return_value=set(),
                 create=True,
@@ -818,10 +818,10 @@ class RestartTests(DelegateTests):
 
     def setUp(self) -> None:
         self.fake = FakeHerdr()
-        patcher = mock.patch.object(herdr_delegate, "herdr", self.fake)
+        patcher = mock.patch.object(herdr_queue_runner, "herdr", self.fake)
         patcher.start()
         self.addCleanup(patcher.stop)
-        sleep_patcher = mock.patch.object(herdr_delegate.time, "sleep", lambda _s: None)
+        sleep_patcher = mock.patch.object(herdr_queue_runner.time, "sleep", lambda _s: None)
         sleep_patcher.start()
         self.addCleanup(sleep_patcher.stop)
         self.state_dir = Path(tempfile.mkdtemp(prefix="swarm-state-"))
@@ -1125,10 +1125,10 @@ class LaunchLogTests(DelegateTests):
 
     def setUp(self) -> None:
         self.fake = FakeHerdr()
-        patcher = mock.patch.object(herdr_delegate, "herdr", self.fake)
+        patcher = mock.patch.object(herdr_queue_runner, "herdr", self.fake)
         patcher.start()
         self.addCleanup(patcher.stop)
-        sleep_patcher = mock.patch.object(herdr_delegate.time, "sleep", lambda _s: None)
+        sleep_patcher = mock.patch.object(herdr_queue_runner.time, "sleep", lambda _s: None)
         sleep_patcher.start()
         self.addCleanup(sleep_patcher.stop)
         env_patcher = mock.patch.dict(
@@ -1137,13 +1137,13 @@ class LaunchLogTests(DelegateTests):
         )
         env_patcher.start()
         self.addCleanup(env_patcher.stop)
-        path = herdr_delegate.launch_log_file()
+        path = herdr_queue_runner.launch_log_file()
         if path.exists():
             path.unlink()
         self.addCleanup(lambda: path.unlink(missing_ok=True))
 
     def _log_lines(self) -> list[str]:
-        path = herdr_delegate.launch_log_file()
+        path = herdr_queue_runner.launch_log_file()
         if not path.exists():
             return []
         return [line for line in path.read_text().splitlines() if line.strip()]
@@ -1163,7 +1163,7 @@ class LaunchLogTests(DelegateTests):
         self.assertEqual(record["launcher_session"], "launcher-42")
         self.assertEqual(record["pane"], "w9:pN")
         self.assertEqual(record["tab"], "w9:tN")
-        self.assertEqual(record["agent"], herdr_delegate.agent_name_for("atk-foo"))
+        self.assertEqual(record["agent"], herdr_queue_runner.agent_name_for("atk-foo"))
         self.assertIsNone(record["worker_session"])
         self.assertTrue(record["ts"])
         # Identifiers and timestamps only — never prompt or message content.
@@ -1189,7 +1189,7 @@ class LaunchLogTests(DelegateTests):
 
     def test_launch_log_write_failure_never_fails_the_launch(self) -> None:
         with mock.patch.object(
-            herdr_delegate.cli_common,
+            herdr_queue_runner.cli_common,
             "append_jsonl",
             side_effect=RuntimeError("disk on fire"),
         ):
@@ -1198,7 +1198,7 @@ class LaunchLogTests(DelegateTests):
             )
         self.assertEqual(code, 0)
         summary = json.loads(out)
-        self.assertEqual(summary["agent"], herdr_delegate.agent_name_for("atk-foo"))
+        self.assertEqual(summary["agent"], herdr_queue_runner.agent_name_for("atk-foo"))
         self.assertEqual(self._log_lines(), [])
 
 
@@ -1206,16 +1206,16 @@ class CopilotKindTests(DelegateTests):
     """Specific unit tests covering `--kind copilot` behavior."""
 
     def test_build_tab_argv_copilot_omits_unattended_env(self) -> None:
-        pi_argv = herdr_delegate.build_tab_argv(cwd="/tmp", label="foo", kind="pi")
+        pi_argv = herdr_queue_runner.build_tab_argv(cwd="/tmp", label="foo", kind="pi")
         self.assertIn("PI_AGENT_UNATTENDED=1", pi_argv)
 
-        copilot_argv = herdr_delegate.build_tab_argv(cwd="/tmp", label="foo", kind="copilot")
+        copilot_argv = herdr_queue_runner.build_tab_argv(cwd="/tmp", label="foo", kind="copilot")
         self.assertNotIn("PI_AGENT_UNATTENDED=1", copilot_argv)
         self.assertIn("--label", copilot_argv)
         self.assertIn("--no-focus", copilot_argv)
 
     def test_build_agent_start_argv_copilot_flags(self) -> None:
-        argv = herdr_delegate.build_agent_start_argv(
+        argv = herdr_queue_runner.build_agent_start_argv(
             name="copilot-worker",
             pane="w:p1",
             model="gpt-5",
@@ -1240,12 +1240,12 @@ class CopilotKindTests(DelegateTests):
         self.assertEqual(passthrough[passthrough.index("--model") + 1], "gpt-5")
 
     def test_build_agent_start_argv_pi_byte_identical_before(self) -> None:
-        argv_pi_nomodel = herdr_delegate.build_agent_start_argv(
+        argv_pi_nomodel = herdr_queue_runner.build_agent_start_argv(
             name="pi-worker", pane="w:p1", model=None, kind="pi"
         )
         self.assertEqual(argv_pi_nomodel, ["agent", "start", "pi-worker", "--kind", "pi", "--pane", "w:p1"])
 
-        argv_pi_model = herdr_delegate.build_agent_start_argv(
+        argv_pi_model = herdr_queue_runner.build_agent_start_argv(
             name="pi-worker", pane="w:p1", model="claude-3-7-sonnet", kind="pi"
         )
         self.assertEqual(
@@ -1255,18 +1255,18 @@ class CopilotKindTests(DelegateTests):
 
     def test_swarm_state_dir_copilot(self) -> None:
         with mock.patch.dict(os.environ, {"COPILOT_SWARM_STATE_DIR": "/custom/copilot/state"}):
-            self.assertEqual(herdr_delegate.swarm_state_dir("copilot"), Path("/custom/copilot/state"))
+            self.assertEqual(herdr_queue_runner.swarm_state_dir("copilot"), Path("/custom/copilot/state"))
         with mock.patch.dict(os.environ, {}, clear=True):
             self.assertEqual(
-                herdr_delegate.swarm_state_dir("copilot"),
+                herdr_queue_runner.swarm_state_dir("copilot"),
                 Path.home() / ".copilot" / "state",
             )
 
     def test_launch_copilot_passes_plugin_dir_and_flags(self) -> None:
         fake = FakeHerdr()
         with (
-            mock.patch.object(herdr_delegate, "herdr", fake),
-            mock.patch.object(herdr_delegate.time, "sleep", lambda _s: None),
+            mock.patch.object(herdr_queue_runner, "herdr", fake),
+            mock.patch.object(herdr_queue_runner.time, "sleep", lambda _s: None),
             mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
         ):
             code, out, _ = self.run_main([
@@ -1291,7 +1291,7 @@ class CopilotKindTests(DelegateTests):
             passthrough = start[sep + 1 :]
             self.assertIn("--allow-all-tools", passthrough)
             self.assertIn("--plugin-dir", passthrough)
-            self.assertEqual(passthrough[passthrough.index("--plugin-dir") + 1], herdr_delegate.COPILOT_PLUGIN_DIR)
+            self.assertEqual(passthrough[passthrough.index("--plugin-dir") + 1], herdr_queue_runner.COPILOT_PLUGIN_DIR)
             self.assertIn("--model", passthrough)
             self.assertEqual(passthrough[passthrough.index("--model") + 1], "gpt-5")
 
@@ -1311,8 +1311,8 @@ class CopilotKindTests(DelegateTests):
     def test_launch_pi_omits_session_id(self) -> None:
         fake = FakeHerdr()
         with (
-            mock.patch.object(herdr_delegate, "herdr", fake),
-            mock.patch.object(herdr_delegate.time, "sleep", lambda _s: None),
+            mock.patch.object(herdr_queue_runner, "herdr", fake),
+            mock.patch.object(herdr_queue_runner.time, "sleep", lambda _s: None),
             mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
         ):
             code, out, _ = self.run_main([
@@ -1337,8 +1337,8 @@ class CopilotKindTests(DelegateTests):
             json.dumps({"runId": "c1", "prefix": "atk", "workers": []}),
         )
         with (
-            mock.patch.object(herdr_delegate, "herdr", fake),
-            mock.patch.object(herdr_delegate.time, "sleep", lambda _s: None),
+            mock.patch.object(herdr_queue_runner, "herdr", fake),
+            mock.patch.object(herdr_queue_runner.time, "sleep", lambda _s: None),
             mock.patch.dict(os.environ, {"HERDR_ENV": "1", "COPILOT_SWARM_STATE_DIR": str(state_dir)}),
         ):
             code, out, _ = self.run_main([
@@ -1377,7 +1377,7 @@ class NewWorkerKindTests(DelegateTests):
         self.mock_agy_trust()
 
     def test_new_kind_start_argv_and_prompt(self) -> None:
-        agy = herdr_delegate.build_agent_start_argv(
+        agy = herdr_queue_runner.build_agent_start_argv(
             name="agy-worker", pane="w:p1", model="gemini-test", kind="agy"
         )
         self.assertEqual(
@@ -1386,11 +1386,11 @@ class NewWorkerKindTests(DelegateTests):
              "--", "--mode", "accept-edits", "--model", "gemini-test"],
         )
         self.assertEqual(
-            herdr_delegate.worker_prompt("iron-lb-example", kind="agy"),
+            herdr_queue_runner.worker_prompt("iron-lb-example", kind="agy"),
             "/backlog-item --auto iron-lb-example",
         )
 
-        codex = herdr_delegate.build_agent_start_argv(
+        codex = herdr_queue_runner.build_agent_start_argv(
             name="codex-worker", pane="w:p1", model="gpt-test", kind="codex",
             writable_roots=["/tmp/toolkit data", "/tmp/uv-cache"],
         )
@@ -1402,14 +1402,14 @@ class NewWorkerKindTests(DelegateTests):
              "--add-dir", "/tmp/uv-cache", "--model", "gpt-test"],
         )
         self.assertEqual(
-            herdr_delegate.worker_prompt("iron-lb-example", kind="codex"),
+            herdr_queue_runner.worker_prompt("iron-lb-example", kind="codex"),
             "$backlog-item --auto iron-lb-example",
         )
 
     def test_new_kinds_reject_queues_before_herdr(self) -> None:
         fake = FakeHerdr()
         with (
-            mock.patch.object(herdr_delegate, "herdr", fake),
+            mock.patch.object(herdr_queue_runner, "herdr", fake),
             mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
         ):
             for kind in ("agy", "codex"):
@@ -1424,12 +1424,12 @@ class NewWorkerKindTests(DelegateTests):
         for kind in ("agy", "codex"):
             fake = FakeHerdr()
             with (
-                mock.patch.object(herdr_delegate, "herdr", fake),
+                mock.patch.object(herdr_queue_runner, "herdr", fake),
                 mock.patch.object(
-                    herdr_delegate, "prepare_worker_worktree", return_value="/tmp/item worktree"
+                    herdr_queue_runner, "prepare_worker_worktree", return_value="/tmp/item worktree"
                 ) as prepare,
                 mock.patch.object(
-                    herdr_delegate, "codex_writable_roots", return_value=["/tmp/data"]
+                    herdr_queue_runner, "codex_writable_roots", return_value=["/tmp/data"]
                 ) as roots,
                 mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
             ):
@@ -1447,31 +1447,31 @@ class NewWorkerKindTests(DelegateTests):
                 self.assertEqual(start[start.index("--kind") + 1], kind)
                 self.assertEqual(
                     fake.named("agent", "prompt")[0][3],
-                    herdr_delegate.worker_prompt("iron-lb-example", kind),
+                    herdr_queue_runner.worker_prompt("iron-lb-example", kind),
                 )
                 self.assertEqual(json.loads(out)["tab"], "w9:tN")
 
     def test_preparation_refuses_unknown_item_before_mutation(self) -> None:
         with (
-            mock.patch.object(herdr_delegate, "resolve_backlog_item", return_value=None),
-            mock.patch.object(herdr_delegate.subprocess, "run") as run,
+            mock.patch.object(herdr_queue_runner, "resolve_backlog_item", return_value=None),
+            mock.patch.object(herdr_queue_runner.subprocess, "run") as run,
         ):
-            with self.assertRaises(herdr_delegate.RefusedError):
-                herdr_delegate.prepare_worker_worktree("unknown-example")
+            with self.assertRaises(herdr_queue_runner.RefusedError):
+                herdr_queue_runner.prepare_worker_worktree("unknown-example")
             run.assert_not_called()
 
     def test_preparation_refuses_unsafe_item_before_mutation(self) -> None:
         with (
             mock.patch.object(
-                herdr_delegate, "resolve_backlog_item", return_value={"id": "iron-lb-example"}
+                herdr_queue_runner, "resolve_backlog_item", return_value={"id": "iron-lb-example"}
             ),
             mock.patch.object(
-                herdr_delegate, "serial_safety", return_value=(False, "multiple repos")
+                herdr_queue_runner, "serial_safety", return_value=(False, "multiple repos")
             ),
-            mock.patch.object(herdr_delegate.subprocess, "run") as run,
+            mock.patch.object(herdr_queue_runner.subprocess, "run") as run,
         ):
-            with self.assertRaisesRegex(herdr_delegate.RefusedError, "multiple repos"):
-                herdr_delegate.prepare_worker_worktree("iron-lb-example")
+            with self.assertRaisesRegex(herdr_queue_runner.RefusedError, "multiple repos"):
+                herdr_queue_runner.prepare_worker_worktree("iron-lb-example")
             run.assert_not_called()
 
     def test_preparation_bootstraps_exact_validated_worktree(self) -> None:
@@ -1483,14 +1483,14 @@ class NewWorkerKindTests(DelegateTests):
         )
         with (
             mock.patch.object(
-                herdr_delegate, "resolve_backlog_item", return_value={"id": "iron-lb-example"}
+                herdr_queue_runner, "resolve_backlog_item", return_value={"id": "iron-lb-example"}
             ),
-            mock.patch.object(herdr_delegate, "serial_safety", return_value=(True, None)),
-            mock.patch.object(herdr_delegate, "resolve_worktree_config", return_value=config),
-            mock.patch.object(herdr_delegate.subprocess, "run", return_value=result) as run,
+            mock.patch.object(herdr_queue_runner, "serial_safety", return_value=(True, None)),
+            mock.patch.object(herdr_queue_runner, "resolve_worktree_config", return_value=config),
+            mock.patch.object(herdr_queue_runner.subprocess, "run", return_value=result) as run,
         ):
             self.assertEqual(
-                herdr_delegate.prepare_worker_worktree("iron-lb-example"),
+                herdr_queue_runner.prepare_worker_worktree("iron-lb-example"),
                 str(worktree),
             )
             args, kwargs = run.call_args
@@ -1503,37 +1503,37 @@ class NewWorkerKindTests(DelegateTests):
         )
         with (
             mock.patch.object(
-                herdr_delegate, "resolve_backlog_item", return_value={"id": "iron-lb-example"}
+                herdr_queue_runner, "resolve_backlog_item", return_value={"id": "iron-lb-example"}
             ),
-            mock.patch.object(herdr_delegate, "serial_safety", return_value=(True, None)),
-            mock.patch.object(herdr_delegate, "resolve_worktree_config", return_value=config),
-            mock.patch.object(herdr_delegate.subprocess, "run", return_value=mismatched),
+            mock.patch.object(herdr_queue_runner, "serial_safety", return_value=(True, None)),
+            mock.patch.object(herdr_queue_runner, "resolve_worktree_config", return_value=config),
+            mock.patch.object(herdr_queue_runner.subprocess, "run", return_value=mismatched),
         ):
-            with self.assertRaisesRegex(herdr_delegate.RefusedError, "expected"):
-                herdr_delegate.prepare_worker_worktree("iron-lb-example")
+            with self.assertRaisesRegex(herdr_queue_runner.RefusedError, "expected"):
+                herdr_queue_runner.prepare_worker_worktree("iron-lb-example")
 
     def test_codex_roots_follow_runtime_paths(self) -> None:
         cache = subprocess.CompletedProcess(
             args=[], returncode=0, stdout="/tmp/custom uv cache\n", stderr=""
         )
         with (
-            mock.patch.object(herdr_delegate.subprocess, "run", return_value=cache),
+            mock.patch.object(herdr_queue_runner.subprocess, "run", return_value=cache),
             mock.patch.object(
-                herdr_delegate.agent_toolkit_paths, "path_for",
+                herdr_queue_runner.agent_toolkit_paths, "path_for",
                 return_value=Path("/tmp/toolkit/data/backlog"),
             ),
             mock.patch.object(
-                herdr_delegate.cli_common, "state_dir", return_value=Path("/tmp/xdg-state")
+                herdr_queue_runner.cli_common, "state_dir", return_value=Path("/tmp/xdg-state")
             ),
         ):
             self.assertEqual(
-                herdr_delegate.codex_writable_roots(),
+                herdr_queue_runner.codex_writable_roots(),
                 ["/tmp/toolkit/data", "/tmp/xdg-state/agent-toolkit", "/tmp/custom uv cache"],
             )
 
     def test_explicit_cwd_rejected_for_new_kinds(self) -> None:
         fake = FakeHerdr()
-        with mock.patch.object(herdr_delegate, "herdr", fake):
+        with mock.patch.object(herdr_queue_runner, "herdr", fake):
             code, _, err = self.run_main(
                 ["launch", "--slug", "iron-lb-example", "--kind", "codex",
                  "--cwd", "/tmp/other-repo"]
@@ -1576,7 +1576,7 @@ class QueueFacadeTests(unittest.TestCase):
             {"id": "atk-one", "status": "open"},
             {"id": "iron-lb-two", "status": "open"},
         ])
-        items = herdr_delegate.select_ready(None, fake)
+        items = herdr_queue_runner.select_ready(None, fake)
         self.assertEqual([i["id"] for i in items], ["atk-one", "iron-lb-two"])
 
     def test_select_ready_prefix_scoped(self) -> None:
@@ -1585,12 +1585,12 @@ class QueueFacadeTests(unittest.TestCase):
             {"id": "iron-lb-two", "status": "open"},
             {"id": "atk-three", "status": "open"},
         ])
-        items = herdr_delegate.select_ready("atk", fake)
+        items = herdr_queue_runner.select_ready("atk", fake)
         self.assertEqual([i["id"] for i in items], ["atk-one", "atk-three"])
 
     def test_select_ready_empty(self) -> None:
         fake = FakeClaimsLookup([])
-        items = herdr_delegate.select_ready("iron-lb", fake)
+        items = herdr_queue_runner.select_ready("iron-lb", fake)
         self.assertEqual(items, [])
 
     def test_ready_slugs_with_claims(self) -> None:
@@ -1598,7 +1598,7 @@ class QueueFacadeTests(unittest.TestCase):
             {"id": "atk-one", "status": "open"},
             {"id": "atk-two", "status": "open"},
         ])
-        slugs = herdr_delegate.ready_slugs(fake)
+        slugs = herdr_queue_runner.ready_slugs(fake)
         self.assertEqual(slugs, ["atk-one", "atk-two"])
 
     def test_build_launch_plan_pi(self) -> None:
@@ -1606,7 +1606,7 @@ class QueueFacadeTests(unittest.TestCase):
             {"id": "atk-one", "status": "open"},
             {"id": "atk-two", "status": "open"},
         ]
-        plan = herdr_delegate.build_launch_plan(items, kind="pi", cwd="/workspace")
+        plan = herdr_queue_runner.build_launch_plan(items, kind="pi", cwd="/workspace")
         self.assertEqual(len(plan), 2)
         self.assertEqual(
             plan[0],
@@ -1639,7 +1639,7 @@ class QueueFacadeTests(unittest.TestCase):
 
     def test_build_launch_plan_copilot(self) -> None:
         items = [{"id": "iron-lb-one", "status": "open"}]
-        plan = herdr_delegate.build_launch_plan(
+        plan = herdr_queue_runner.build_launch_plan(
             items, kind="copilot", cwd="/custom/dir"
         )
         self.assertEqual(len(plan), 1)
@@ -1668,11 +1668,11 @@ class AgyPromptReceiptTests(DelegateTests):
     def test_agy_prompt_receipt_immediate(self) -> None:
         fake = FakeHerdr()
         with (
-            mock.patch.object(herdr_delegate, "herdr", fake),
+            mock.patch.object(herdr_queue_runner, "herdr", fake),
             mock.patch.object(
-                herdr_delegate, "prepare_worker_worktree", return_value="/tmp/item"
+                herdr_queue_runner, "prepare_worker_worktree", return_value="/tmp/item"
             ),
-            mock.patch.object(herdr_delegate.time, "sleep", lambda _s: None),
+            mock.patch.object(herdr_queue_runner.time, "sleep", lambda _s: None),
             mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
         ):
             code, out, err = self.run_main(
@@ -1694,12 +1694,12 @@ class AgyPromptReceiptTests(DelegateTests):
             clock[0] += 10.0
 
         with (
-            mock.patch.object(herdr_delegate, "herdr", fake),
+            mock.patch.object(herdr_queue_runner, "herdr", fake),
             mock.patch.object(
-                herdr_delegate, "prepare_worker_worktree", return_value="/tmp/item"
+                herdr_queue_runner, "prepare_worker_worktree", return_value="/tmp/item"
             ),
-            mock.patch.object(herdr_delegate.time, "monotonic", lambda: clock[0]),
-            mock.patch.object(herdr_delegate.time, "sleep", sleep),
+            mock.patch.object(herdr_queue_runner.time, "monotonic", lambda: clock[0]),
+            mock.patch.object(herdr_queue_runner.time, "sleep", sleep),
             mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
         ):
             code, out, err = self.run_main(
@@ -1722,12 +1722,12 @@ class AgyPromptReceiptTests(DelegateTests):
             clock[0] += 10.0
 
         with (
-            mock.patch.object(herdr_delegate, "herdr", fake),
+            mock.patch.object(herdr_queue_runner, "herdr", fake),
             mock.patch.object(
-                herdr_delegate, "prepare_worker_worktree", return_value="/tmp/item"
+                herdr_queue_runner, "prepare_worker_worktree", return_value="/tmp/item"
             ),
-            mock.patch.object(herdr_delegate.time, "monotonic", lambda: clock[0]),
-            mock.patch.object(herdr_delegate.time, "sleep", sleep),
+            mock.patch.object(herdr_queue_runner.time, "monotonic", lambda: clock[0]),
+            mock.patch.object(herdr_queue_runner.time, "sleep", sleep),
             mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
         ):
             code, out, err = self.run_main(
@@ -1750,12 +1750,12 @@ class AgyPromptReceiptTests(DelegateTests):
             clock[0] += 10.0
 
         with (
-            mock.patch.object(herdr_delegate, "herdr", fake),
+            mock.patch.object(herdr_queue_runner, "herdr", fake),
             mock.patch.object(
-                herdr_delegate, "prepare_worker_worktree", return_value="/tmp/item"
+                herdr_queue_runner, "prepare_worker_worktree", return_value="/tmp/item"
             ),
-            mock.patch.object(herdr_delegate.time, "monotonic", lambda: clock[0]),
-            mock.patch.object(herdr_delegate.time, "sleep", sleep),
+            mock.patch.object(herdr_queue_runner.time, "monotonic", lambda: clock[0]),
+            mock.patch.object(herdr_queue_runner.time, "sleep", sleep),
             mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
         ):
             code, out, err = self.run_main(
@@ -1777,8 +1777,8 @@ class ProbeSubcommandTests(DelegateTests):
     def test_probe_default_cwd_is_temp_dir_and_removed(self) -> None:
         fake = FakeHerdr()
         with (
-            mock.patch.object(herdr_delegate, "herdr", fake),
-            mock.patch.object(herdr_delegate.time, "sleep", lambda _s: None),
+            mock.patch.object(herdr_queue_runner, "herdr", fake),
+            mock.patch.object(herdr_queue_runner.time, "sleep", lambda _s: None),
             mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
         ):
             code, out, err = self.run_main(["probe", "--kind", "pi"])
@@ -1794,7 +1794,7 @@ class ProbeSubcommandTests(DelegateTests):
         fake = FakeHerdr()
         repo_dir = str(Path(__file__).resolve().parent)
         with (
-            mock.patch.object(herdr_delegate, "herdr", fake),
+            mock.patch.object(herdr_queue_runner, "herdr", fake),
             mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
         ):
             code, out, err = self.run_main(
@@ -1809,11 +1809,11 @@ class ProbeSubcommandTests(DelegateTests):
         for kind in ("pi", "copilot", "agy", "codex"):
             fake = FakeHerdr()
             with (
-                mock.patch.object(herdr_delegate, "herdr", fake),
+                mock.patch.object(herdr_queue_runner, "herdr", fake),
                 mock.patch.object(
-                    herdr_delegate, "codex_writable_roots", return_value=["/tmp/data"]
+                    herdr_queue_runner, "codex_writable_roots", return_value=["/tmp/data"]
                 ),
-                mock.patch.object(herdr_delegate.time, "sleep", lambda _s: None),
+                mock.patch.object(herdr_queue_runner.time, "sleep", lambda _s: None),
                 mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
             ):
                 code, out, err = self.run_main(["probe", "--kind", kind])
@@ -1838,9 +1838,9 @@ class ProbeSubcommandTests(DelegateTests):
             clock[0] += 10.0
 
         with (
-            mock.patch.object(herdr_delegate, "herdr", fake),
-            mock.patch.object(herdr_delegate.time, "monotonic", lambda: clock[0]),
-            mock.patch.object(herdr_delegate.time, "sleep", sleep),
+            mock.patch.object(herdr_queue_runner, "herdr", fake),
+            mock.patch.object(herdr_queue_runner.time, "monotonic", lambda: clock[0]),
+            mock.patch.object(herdr_queue_runner.time, "sleep", sleep),
             mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
         ):
             code, out, err = self.run_main(["probe", "--kind", "agy"])
@@ -1857,15 +1857,15 @@ class AgyTrustWiringTests(DelegateTests):
     def test_launch_agy_trusts_resolved_worktree(self) -> None:
         fake = FakeHerdr()
         with (
-            mock.patch.object(herdr_delegate, "herdr", fake),
+            mock.patch.object(herdr_queue_runner, "herdr", fake),
             mock.patch.object(
-                herdr_delegate, "prepare_worker_worktree", return_value="/tmp/item worktree"
+                herdr_queue_runner, "prepare_worker_worktree", return_value="/tmp/item worktree"
             ),
-            mock.patch.object(herdr_delegate.agy_workspace_trust, "prune_trusted"),
+            mock.patch.object(herdr_queue_runner.agy_workspace_trust, "prune_trusted"),
             mock.patch.object(
-                herdr_delegate.agy_workspace_trust, "ensure_trusted"
+                herdr_queue_runner.agy_workspace_trust, "ensure_trusted"
             ) as ensure,
-            mock.patch.object(herdr_delegate.time, "sleep", lambda _s: None),
+            mock.patch.object(herdr_queue_runner.time, "sleep", lambda _s: None),
             mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
         ):
             code, _, _ = self.run_main(
@@ -1877,15 +1877,15 @@ class AgyTrustWiringTests(DelegateTests):
     def test_probe_agy_trusts_then_removes_scratch_dir(self) -> None:
         fake = FakeHerdr()
         with (
-            mock.patch.object(herdr_delegate, "herdr", fake),
-            mock.patch.object(herdr_delegate.agy_workspace_trust, "prune_trusted"),
+            mock.patch.object(herdr_queue_runner, "herdr", fake),
+            mock.patch.object(herdr_queue_runner.agy_workspace_trust, "prune_trusted"),
             mock.patch.object(
-                herdr_delegate.agy_workspace_trust, "ensure_trusted"
+                herdr_queue_runner.agy_workspace_trust, "ensure_trusted"
             ) as ensure,
             mock.patch.object(
-                herdr_delegate.agy_workspace_trust, "remove_trusted"
+                herdr_queue_runner.agy_workspace_trust, "remove_trusted"
             ) as remove,
-            mock.patch.object(herdr_delegate.time, "sleep", lambda _s: None),
+            mock.patch.object(herdr_queue_runner.time, "sleep", lambda _s: None),
             mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
         ):
             code, out, _ = self.run_main(["probe", "--kind", "agy"])
@@ -1898,15 +1898,15 @@ class AgyTrustWiringTests(DelegateTests):
     def test_launch_agy_trust_failure_is_a_refusal(self) -> None:
         fake = FakeHerdr()
         with (
-            mock.patch.object(herdr_delegate, "herdr", fake),
+            mock.patch.object(herdr_queue_runner, "herdr", fake),
             mock.patch.object(
-                herdr_delegate, "prepare_worker_worktree", return_value="/tmp/item worktree"
+                herdr_queue_runner, "prepare_worker_worktree", return_value="/tmp/item worktree"
             ),
-            mock.patch.object(herdr_delegate.agy_workspace_trust, "prune_trusted"),
+            mock.patch.object(herdr_queue_runner.agy_workspace_trust, "prune_trusted"),
             mock.patch.object(
-                herdr_delegate.agy_workspace_trust,
+                herdr_queue_runner.agy_workspace_trust,
                 "ensure_trusted",
-                side_effect=herdr_delegate.agy_workspace_trust.TrustSettingsError(
+                side_effect=herdr_queue_runner.agy_workspace_trust.TrustSettingsError(
                     "bad shape"
                 ),
             ),
@@ -1916,7 +1916,7 @@ class AgyTrustWiringTests(DelegateTests):
                 ["launch", "--slug", "iron-lb-example", "--kind", "agy"]
             )
             self.assertEqual(code, 1)
-            self.assertIn("[herdr_delegate]", err)
+            self.assertIn("[herdr_queue_runner]", err)
             self.assertIn("bad shape", err)
             # Refused before any herdr call
             self.assertEqual(fake.calls, [])
@@ -1924,17 +1924,17 @@ class AgyTrustWiringTests(DelegateTests):
     def test_probe_cleanup_failure_warns_without_masking_pass(self) -> None:
         fake = FakeHerdr()
         with (
-            mock.patch.object(herdr_delegate, "herdr", fake),
-            mock.patch.object(herdr_delegate.agy_workspace_trust, "prune_trusted"),
-            mock.patch.object(herdr_delegate.agy_workspace_trust, "ensure_trusted"),
+            mock.patch.object(herdr_queue_runner, "herdr", fake),
+            mock.patch.object(herdr_queue_runner.agy_workspace_trust, "prune_trusted"),
+            mock.patch.object(herdr_queue_runner.agy_workspace_trust, "ensure_trusted"),
             mock.patch.object(
-                herdr_delegate.agy_workspace_trust,
+                herdr_queue_runner.agy_workspace_trust,
                 "remove_trusted",
-                side_effect=herdr_delegate.agy_workspace_trust.TrustSettingsError(
+                side_effect=herdr_queue_runner.agy_workspace_trust.TrustSettingsError(
                     "disk gone"
                 ),
             ),
-            mock.patch.object(herdr_delegate.time, "sleep", lambda _s: None),
+            mock.patch.object(herdr_queue_runner.time, "sleep", lambda _s: None),
             mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
         ):
             code, out, err = self.run_main(["probe", "--kind", "agy"])
@@ -1957,18 +1957,18 @@ class AgyTrustWiringTests(DelegateTests):
                 encoding="utf-8",
             )
             with (
-                mock.patch.object(herdr_delegate, "herdr", fake),
+                mock.patch.object(herdr_queue_runner, "herdr", fake),
                 mock.patch.object(
-                    herdr_delegate,
+                    herdr_queue_runner,
                     "prepare_worker_worktree",
                     return_value="/tmp/item worktree",
                 ),
                 mock.patch.object(
-                    herdr_delegate.agy_workspace_trust,
+                    herdr_queue_runner.agy_workspace_trust,
                     "settings_path",
                     return_value=settings,
                 ),
-                mock.patch.object(herdr_delegate.time, "sleep", lambda _s: None),
+                mock.patch.object(herdr_queue_runner.time, "sleep", lambda _s: None),
                 mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
             ):
                 code, _, _ = self.run_main(
@@ -1985,16 +1985,16 @@ class AgyTrustWiringTests(DelegateTests):
         """A TrustSettingsError during probe surfaces as a clean FAIL, never a traceback."""
         fake = FakeHerdr()
         with (
-            mock.patch.object(herdr_delegate, "herdr", fake),
-            mock.patch.object(herdr_delegate.agy_workspace_trust, "prune_trusted"),
+            mock.patch.object(herdr_queue_runner, "herdr", fake),
+            mock.patch.object(herdr_queue_runner.agy_workspace_trust, "prune_trusted"),
             mock.patch.object(
-                herdr_delegate.agy_workspace_trust,
+                herdr_queue_runner.agy_workspace_trust,
                 "ensure_trusted",
-                side_effect=herdr_delegate.agy_workspace_trust.TrustSettingsError(
+                side_effect=herdr_queue_runner.agy_workspace_trust.TrustSettingsError(
                     "bad shape"
                 ),
             ),
-            mock.patch.object(herdr_delegate.agy_workspace_trust, "remove_trusted"),
+            mock.patch.object(herdr_queue_runner.agy_workspace_trust, "remove_trusted"),
             mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
         ):
             code, out, err = self.run_main(["probe", "--kind", "agy"])
@@ -2017,7 +2017,7 @@ class AgyTrustWiringTests(DelegateTests):
                     }
                 }
             if argv[0] == "agent" and argv[1] == "start":
-                raise herdr_delegate.RefusedError(
+                raise herdr_queue_runner.RefusedError(
                     "blocked during startup", code="agent_not_ready"
                 )
             if argv[0] == "pane" and argv[1] == "read":
@@ -2029,14 +2029,14 @@ class AgyTrustWiringTests(DelegateTests):
             return {"result": {}}
 
         with (
-            mock.patch.object(herdr_delegate, "herdr", side_effect=fake),
+            mock.patch.object(herdr_queue_runner, "herdr", side_effect=fake),
             mock.patch.object(
-                herdr_delegate,
+                herdr_queue_runner,
                 "prepare_worker_worktree",
                 return_value="/tmp/item worktree",
             ),
-            mock.patch.object(herdr_delegate.agy_workspace_trust, "prune_trusted"),
-            mock.patch.object(herdr_delegate.agy_workspace_trust, "ensure_trusted"),
+            mock.patch.object(herdr_queue_runner.agy_workspace_trust, "prune_trusted"),
+            mock.patch.object(herdr_queue_runner.agy_workspace_trust, "ensure_trusted"),
             mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
         ):
             code, _, err = self.run_main(
@@ -2059,7 +2059,7 @@ class AgyTrustWiringTests(DelegateTests):
                     }
                 }
             if argv[0] == "agent" and argv[1] == "start":
-                raise herdr_delegate.RefusedError(
+                raise herdr_queue_runner.RefusedError(
                     "blocked during startup", code="agent_not_ready"
                 )
             if argv[0] == "pane" and argv[1] == "read":
@@ -2071,10 +2071,10 @@ class AgyTrustWiringTests(DelegateTests):
             return {"result": {}}
 
         with (
-            mock.patch.object(herdr_delegate, "herdr", side_effect=fake),
-            mock.patch.object(herdr_delegate.agy_workspace_trust, "prune_trusted"),
-            mock.patch.object(herdr_delegate.agy_workspace_trust, "ensure_trusted"),
-            mock.patch.object(herdr_delegate.agy_workspace_trust, "remove_trusted"),
+            mock.patch.object(herdr_queue_runner, "herdr", side_effect=fake),
+            mock.patch.object(herdr_queue_runner.agy_workspace_trust, "prune_trusted"),
+            mock.patch.object(herdr_queue_runner.agy_workspace_trust, "ensure_trusted"),
+            mock.patch.object(herdr_queue_runner.agy_workspace_trust, "remove_trusted"),
             mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
         ):
             code, _, err = self.run_main(["probe", "--kind", "agy"])
@@ -2089,42 +2089,42 @@ class TrustPromptRefusalTests(unittest.TestCase):
     """agent_not_ready + the trust dialog surfaces as a distinct refusal."""
 
     def test_non_agent_not_ready_passes_through(self) -> None:
-        exc = herdr_delegate.RefusedError("blocked", code="timeout")
-        out = herdr_delegate.trust_prompt_refusal(pane="p", kind="agy", exc=exc)
+        exc = herdr_queue_runner.RefusedError("blocked", code="timeout")
+        out = herdr_queue_runner.trust_prompt_refusal(pane="p", kind="agy", exc=exc)
         self.assertIs(out, exc)
 
     def test_non_agy_passes_through(self) -> None:
-        exc = herdr_delegate.RefusedError("blocked", code="agent_not_ready")
-        out = herdr_delegate.trust_prompt_refusal(pane="p", kind="pi", exc=exc)
+        exc = herdr_queue_runner.RefusedError("blocked", code="agent_not_ready")
+        out = herdr_queue_runner.trust_prompt_refusal(pane="p", kind="pi", exc=exc)
         self.assertIs(out, exc)
 
     def test_trust_prompt_upgraded(self) -> None:
-        exc = herdr_delegate.RefusedError("blocked", code="agent_not_ready")
+        exc = herdr_queue_runner.RefusedError("blocked", code="agent_not_ready")
         with mock.patch.object(
-            herdr_delegate,
+            herdr_queue_runner,
             "read_pane_text",
             return_value="Do you trust the contents of this project? (y/n)",
         ):
-            out = herdr_delegate.trust_prompt_refusal(pane="p", kind="agy", exc=exc)
+            out = herdr_queue_runner.trust_prompt_refusal(pane="p", kind="agy", exc=exc)
         self.assertIn("workspace-trust prompt", str(out))
         self.assertEqual(out.code, "agent_not_ready")
 
     def test_pane_without_prompt_passes_through(self) -> None:
-        exc = herdr_delegate.RefusedError("blocked", code="agent_not_ready")
+        exc = herdr_queue_runner.RefusedError("blocked", code="agent_not_ready")
         with mock.patch.object(
-            herdr_delegate, "read_pane_text", return_value="some other startup error"
+            herdr_queue_runner, "read_pane_text", return_value="some other startup error"
         ):
-            out = herdr_delegate.trust_prompt_refusal(pane="p", kind="agy", exc=exc)
+            out = herdr_queue_runner.trust_prompt_refusal(pane="p", kind="agy", exc=exc)
         self.assertIs(out, exc)
 
     def test_pane_read_failure_falls_through(self) -> None:
-        exc = herdr_delegate.RefusedError("blocked", code="agent_not_ready")
+        exc = herdr_queue_runner.RefusedError("blocked", code="agent_not_ready")
         with mock.patch.object(
-            herdr_delegate,
+            herdr_queue_runner,
             "read_pane_text",
-            side_effect=herdr_delegate.RefusedError("pane read failed"),
+            side_effect=herdr_queue_runner.RefusedError("pane read failed"),
         ):
-            out = herdr_delegate.trust_prompt_refusal(pane="p", kind="agy", exc=exc)
+            out = herdr_queue_runner.trust_prompt_refusal(pane="p", kind="agy", exc=exc)
         self.assertIs(out, exc)
 
 
@@ -2136,23 +2136,23 @@ class AgyLoginCheckTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, True)
 
     def test_missing_token_file_raises_refusal(self) -> None:
-        with self.assertRaises(herdr_delegate.RefusedError) as ctx:
-            herdr_delegate.check_agy_login(config_dir=self.tmp)
+        with self.assertRaises(herdr_queue_runner.RefusedError) as ctx:
+            herdr_queue_runner.check_agy_login(config_dir=self.tmp)
         self.assertIn("agy is not logged in", str(ctx.exception))
         self.assertIn("antigravity-oauth-token missing", str(ctx.exception))
 
     def test_empty_token_file_raises_refusal(self) -> None:
         token_file = self.tmp / "antigravity-oauth-token"
         token_file.write_text("{}", encoding="utf-8")
-        with self.assertRaises(herdr_delegate.RefusedError) as ctx:
-            herdr_delegate.check_agy_login(config_dir=self.tmp)
+        with self.assertRaises(herdr_queue_runner.RefusedError) as ctx:
+            herdr_queue_runner.check_agy_login(config_dir=self.tmp)
         self.assertIn("empty or invalid", str(ctx.exception))
 
     def test_malformed_json_token_file_raises_refusal(self) -> None:
         token_file = self.tmp / "antigravity-oauth-token"
         token_file.write_text("not json", encoding="utf-8")
-        with self.assertRaises(herdr_delegate.RefusedError) as ctx:
-            herdr_delegate.check_agy_login(config_dir=self.tmp)
+        with self.assertRaises(herdr_queue_runner.RefusedError) as ctx:
+            herdr_queue_runner.check_agy_login(config_dir=self.tmp)
         self.assertIn("cannot read agy token file", str(ctx.exception))
 
     def test_cli_log_unresolved_not_logged_in_raises_refusal(self) -> None:
@@ -2160,8 +2160,8 @@ class AgyLoginCheckTests(unittest.TestCase):
         token_file.write_text(json.dumps({"token": "xyz"}), encoding="utf-8")
         log_file = self.tmp / "cli.log"
         log_file.write_text("Error: You are not logged into Antigravity\n", encoding="utf-8")
-        with self.assertRaises(herdr_delegate.RefusedError) as ctx:
-            herdr_delegate.check_agy_login(config_dir=self.tmp)
+        with self.assertRaises(herdr_queue_runner.RefusedError) as ctx:
+            herdr_queue_runner.check_agy_login(config_dir=self.tmp)
         self.assertIn("authentication failure", str(ctx.exception))
 
     def test_cli_log_resolved_after_not_logged_in_passes(self) -> None:
@@ -2173,12 +2173,12 @@ class AgyLoginCheckTests(unittest.TestCase):
             "OAuth authenticated successfully\n",
             encoding="utf-8",
         )
-        herdr_delegate.check_agy_login(config_dir=self.tmp)
+        herdr_queue_runner.check_agy_login(config_dir=self.tmp)
 
     def test_valid_token_and_no_errors_passes(self) -> None:
         token_file = self.tmp / "antigravity-oauth-token"
         token_file.write_text(json.dumps({"token": "xyz"}), encoding="utf-8")
-        herdr_delegate.check_agy_login(config_dir=self.tmp)
+        herdr_queue_runner.check_agy_login(config_dir=self.tmp)
 
 
 if __name__ == "__main__":

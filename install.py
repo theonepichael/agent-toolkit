@@ -557,7 +557,7 @@ def build_context(opts: Options, repo_root: Path | None = None) -> Context:
     # own stale orphans and deletes them -- reproduced directly: a fresh
     # machine with the origin repo installed, then agent-toolkit installed
     # on top, loses the origin repo's personal-only scripts (dev_status_sync.py,
-    # watchcommit_activity.py, herdr_delegate.py,
+    # watchcommit_activity.py, herdr_queue_runner.py,
     # opencode_skills_sync_activity.py) with no warning under --quiet.
     # Giving agent-toolkit its own state directory makes this permanently
     # impossible, not just during a one-time cutover.

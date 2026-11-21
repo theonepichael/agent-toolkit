@@ -691,7 +691,7 @@
       "reason": "Wording contract: asserts non-Pi dashboard copies name the shared instructions file's Backlog section, and its absence in Pi."
     }
   ],
-  "test/test_herdr_delegate.py": [
+  "test/test_herdr_queue_runner.py": [
     {
       "fingerprint": "/backlog-item --serial --prefix atk --items atk-a",
       "reason": "Exact prompt string returned by a prompt-builder function; the command line is the contract under test."

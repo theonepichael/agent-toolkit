@@ -391,7 +391,7 @@
     "subcommand mark-reviewed: record human sign-off that one doc's `## <heading>` section is current",
     "subcommand scaffold: scaffold a rubric-compliant AGENTS.md and paired CLAUDE.md symlink in a directory"
   ],
-  "herdr_delegate.py": [
+  "herdr_queue_runner.py": [
     "arg answer --expect-pane: \u2014 the pane this worker is parked in (required)",
     "arg answer --index: \u2014 select by 1-based option index",
     "arg answer --option: \u2014 match an option by label",

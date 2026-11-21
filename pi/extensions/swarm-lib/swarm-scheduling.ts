@@ -483,7 +483,7 @@ export interface SwarmState {
    * The slug prefix this run was scoped to, stamped when a fresh state is
    * initialized and carried through every save.
    *
-   * herdr_delegate.py's `restart` mode discovers the runId to resume by
+   * herdr_queue_runner.py's `restart` mode discovers the runId to resume by
    * matching this field exactly against the prefix it was invoked with.
    * Legacy files written before the field existed fall back to matching
    * worker/`attempted` slugs -- a substring-prefix collision could fool the

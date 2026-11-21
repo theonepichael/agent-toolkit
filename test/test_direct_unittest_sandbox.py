@@ -455,7 +455,7 @@ CONTRACT_TEST_FILES = [
     "test_harness_discovery_check.py",
     "test_harness_feature_coverage.py",
     "test_harness_spec.py",
-    "test_herdr_delegate.py",
+    "test_herdr_queue_runner.py",
     "test_hooks_config.py",
     "test_link_drift_check.py",
     "test_link_inspect.py",

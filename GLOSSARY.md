@@ -61,11 +61,11 @@ Three unrelated things are called a contract here:
 Three distinct senses share this word — know which one a given doc means:
 
 - **Argparse routing.** Inside a script like `grill.py`, `second_opinion.py`,
-  or `herdr_delegate.py`, "parse arguments and dispatch" just means routing
+  or `herdr_queue_runner.py`, "parse arguments and dispatch" just means routing
   to the subcommand handler. Generic, not a domain concept.
 - **Cross-harness dispatch.** In README.md ("a review whose dispatched
   backend..."), dispatch means picking which harness/backend a request
-  runs against — the `second_opinion.py`/`herdr_delegate.py` sense.
+  runs against — the `second_opinion.py`/`herdr_queue_runner.py` sense.
 - **Swarm fan-out.** Related to but not synonymous with the swarm skill's
   fan-out (one orchestrator spreading a queue across N workers) — a swarm
   worker is one thing a dispatch can send work to, not the definition of
@@ -75,7 +75,7 @@ Three distinct senses share this word — know which one a given doc means:
 
 Three distinct steps carry this name:
 
-- **Foreman handoff** — `herdr_delegate.py launch --handoff` (pi or agy,
+- **Foreman handoff** — `herdr_queue_runner.py launch --handoff` (pi or agy,
   single `--slug` only): the worker stops after its commit gate and prints a
   `FOREMAN-HANDOFF slug=... branch=... commit=... worktree=... untracked=...`
   line, and
@@ -164,3 +164,15 @@ have gone longest without a human-confirmed review. A repo opts in with its
 own guidance-audit.toml at its root, and review dates persist in
 guidance-audit-state.json there. Distinct from `/review-diff`, which reviews
 a staged code change, not the docs.
+
+## `herdr queue runner` (`herdr_queue_runner.py`)
+
+The launcher that starts agent workers in herdr tabs. It plans the READY
+queue, launches a pi or copilot queue orchestrator (`--swarm`, `--serial`) or
+a single-item worker (`--slug`, any supported harness), relaunches a live
+orchestrator (`restart`), and backs `/foreman` with `watch`, `answer`,
+`handoff` and `close`. `herdr` is the external terminal multiplexer it
+drives; `HERDR_*` environment variables belong to that product and keep their
+names. Distinct
+from **dispatch** (any hand-off to an external executor) and from Pi's own
+`swarm_spawn` fan-out, which runs inside the orchestrator it launches.

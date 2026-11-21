@@ -10,7 +10,7 @@ dicts. This module is the one place that read lives now:
   `dev_status_impl._make_claim()`'s claim dict (`harness`, `pid_namespace`,
   `ancestors` and friends stay in the store, out of the protocol).
 - `BacklogClaimLookup` — the read-only protocol `guard_rails.evaluate()`
-  depends on. Candidate 10 (`herdr_delegate`'s queue facade) reuses this
+  depends on. Candidate 10 (`herdr_queue_runner`'s queue facade) reuses this
   module rather than the adapter, so the three-method shape is fixed here
   even though `evaluate()` only calls two of them.
 - `LocalClaimLookup` — the adapter `main()` constructs. It captures one

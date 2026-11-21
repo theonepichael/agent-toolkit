@@ -3,7 +3,7 @@
 
 Pure parsing and navigation for ``question-tool.ts``'s rendered option picker
 -- the same surface the swarm's blocked-relay reads off a worker pane, ported
-to Python so ``herdr_delegate.py answer`` (the foreman's supported way to drive
+to Python so ``herdr_queue_runner.py answer`` (the foreman's supported way to drive
 a live worker's picker) and the Python test suite share one implementation.
 No module state, no I/O. The fixtures live under ``test/fixtures/picker/`` next
 to the TS suite's; both suites iterate the same files and must agree.

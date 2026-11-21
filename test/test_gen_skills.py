@@ -721,7 +721,7 @@ class CapabilityFixtureTests(unittest.TestCase):
         text = self._render("swarm", "claude")
         self.assertIn("name: swarm", text)
         self.assertIn("HERDR_ENV=1", text)
-        self.assertIn("herdr_delegate.py", text)
+        self.assertIn("herdr_queue_runner.py", text)
         # claude keeps the widget-based ask mechanism, verbatim from the
         # hand-authored copy this output replaces.
         self.assertIn("AskUserQuestion", text)
@@ -730,7 +730,7 @@ class CapabilityFixtureTests(unittest.TestCase):
         text = self._render("swarm", "copilot")
         self.assertIn("allowed-tools: shell", text)
         self.assertIn("HERDR_ENV=1", text)
-        self.assertIn("herdr_delegate.py", text)
+        self.assertIn("herdr_queue_runner.py", text)
         # copilot has no structured-choice widget: the ask is a plain-text
         # numbered list, recommendation first.
         self.assertIn("ask in plain text", text)
@@ -847,7 +847,7 @@ class ForemanSendBackTests(unittest.TestCase):
             seen += 1
             text = " ".join(rendered[path].split())
             self.assertIn("**Blocked worker**", text, path)
-            self.assertIn("herdr_delegate.py answer <agent>", text, path)
+            self.assertIn("herdr_queue_runner.py answer <agent>", text, path)
             self.assertIn("**Finished or idle worker**", text, path)
             self.assertIn('herdr agent prompt <agent> "', text, path)
         self.assertGreater(seen, 0)

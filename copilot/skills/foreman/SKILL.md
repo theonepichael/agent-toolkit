@@ -9,7 +9,7 @@ The foreman is a **manual-scheduling mode, said honestly**: one interactive
 session replaces the pi orchestrator's spawn/poll/relay loop with its own
 judgment, launching single-item workers, reviewing their work, sending it
 back, and landing it itself. It uses the toolkit's supported surfaces
-(`herdr_delegate.py watch` / `answer`, `dev_status.py`) instead of ad hoc
+(`herdr_queue_runner.py watch` / `answer`, `dev_status.py`) instead of ad hoc
 scripts and raw `send-keys`. When you want the hands-off scheduler instead,
 use `/swarm` — the two are deliberately separate, and this skill points at
 `/swarm` rather than re-deriving its decisions.
@@ -118,7 +118,7 @@ enforces a worker-safe prefix (`check_launchable`). `serial_safe`-only items
 go to `/swarm --serial`, never to the foreman. Launch one item per worker:
 
 ```bash
-python3 ~/.agent-toolkit/scripts/herdr_delegate.py launch --slug <slug> --kind {pi,agy} [--model <model>] [--handoff]
+python3 ~/.agent-toolkit/scripts/herdr_queue_runner.py launch --slug <slug> --kind {pi,agy} [--model <model>] [--handoff]
 ```
 
 - **Set acceptance before launch** — before `launch --handoff`, set the
@@ -159,7 +159,7 @@ python3 ~/.agent-toolkit/scripts/herdr_delegate.py launch --slug <slug> --kind {
 Do not poll by hand. Run this in the background and let the settle wake you:
 
 ```bash
-python3 ~/.agent-toolkit/scripts/herdr_delegate.py watch <agent>... [--prefix <prefix>] --state <state-file> --timeout-s <n> [--grace-s 60] [--poll-s 15] [--strict] [--cost-cap-agent <usd>] [--cost-cap-total <usd>] [--cost-cap-watched <usd>] [--call-cap-agent <calls>] [--call-cap-total <calls>] [--elapsed-cap-agent <seconds>] [--elapsed-cap-total <seconds>] [--planning-note-usd <usd>] [--ack-cost <token>]...
+python3 ~/.agent-toolkit/scripts/herdr_queue_runner.py watch <agent>... [--prefix <prefix>] --state <state-file> --timeout-s <n> [--grace-s 60] [--poll-s 15] [--strict] [--cost-cap-agent <usd>] [--cost-cap-total <usd>] [--cost-cap-watched <usd>] [--call-cap-agent <calls>] [--call-cap-total <calls>] [--elapsed-cap-agent <seconds>] [--elapsed-cap-total <seconds>] [--planning-note-usd <usd>] [--ack-cost <token>]...
 ```
 
 It is **level-triggered** with explicit acknowledgement: it reports an agent
@@ -301,7 +301,7 @@ worker's worktree against the repo contract and the minimal-code bar. When
 commit authority is delegated (step 7), approve by answering `--index 1`:
 
 ```bash
-python3 ~/.agent-toolkit/scripts/herdr_delegate.py answer <agent> --expect-pane <pane> --index 1
+python3 ~/.agent-toolkit/scripts/herdr_queue_runner.py answer <agent> --expect-pane <pane> --index 1
 ```
 
 AgY has no commit picker, so approve an agy worker's commit with
@@ -366,7 +366,7 @@ Send-back depends on the worker's current state:
   picker to the free-text entry using `answer`:
 
   ```bash
-  python3 ~/.agent-toolkit/scripts/herdr_delegate.py answer <agent> --expect-pane <pane> --other --text "Foreman review: read <path> and act on it"
+  python3 ~/.agent-toolkit/scripts/herdr_queue_runner.py answer <agent> --expect-pane <pane> --other --text "Foreman review: read <path> and act on it"
   ```
 
   `--text` is a short pointer, not the payload (≤120 chars, printable ASCII,
@@ -403,7 +403,7 @@ line is simply not in the pane snapshot, while the worker's pi session log
 still has it.
 
 ```bash
-python3 ~/.agent-toolkit/scripts/herdr_delegate.py handoff <agent> --expect-pane <pane>
+python3 ~/.agent-toolkit/scripts/herdr_queue_runner.py handoff <agent> --expect-pane <pane>
 ```
 
 It prints `{"line": ..., "source": "session"|"pane"}` and exits 3 with
@@ -460,7 +460,7 @@ item cites on exit 1; delete nothing and report on any other exit. A run-named w
 and its `.lock` stay until every item it covers is done and its watcher has
 exited. Before deleting a watch-state file, confirm each worker's
 agent-to-session link is already recorded in
-`~/.agent-toolkit/data/launch_log.jsonl` — `herdr_delegate watch` backfills every
+`~/.agent-toolkit/data/launch_log.jsonl` — `herdr_queue_runner watch` backfills every
 worker's session id there on first sight, keyed by pane, not the truncated
 agent name; keep the file if a link is unrecoverable (the worker's most
 recent launch-log entry for its pane is missing, still null, or carries a
@@ -468,7 +468,7 @@ different session id than the watch state). Last,
 close the worker's tab — every time, unprompted:
 
 ```bash
-python3 ~/.agent-toolkit/scripts/herdr_delegate.py close <agent> --expect-pane <pane>
+python3 ~/.agent-toolkit/scripts/herdr_queue_runner.py close <agent> --expect-pane <pane>
 ```
 
 `<pane>` is the pane from the launch JSON. It refuses, closing nothing,
@@ -516,7 +516,7 @@ Required contents:
 - **Operator decisions and caps**: delegated authorities, active spend/call caps.
 - **Open items**: each in-flight item's slug, worker agent name, pane, worktree,
   and current state.
-- **Watch command**: the exact `herdr_delegate.py watch` command line and state file.
+- **Watch command**: the exact `herdr_queue_runner.py watch` command line and state file.
 - **Not-for-workers list**: backlog items not eligible for worker launch.
 - **Worker metrics**: the `worker_run_metrics.py` rows reported above.
 
@@ -533,7 +533,7 @@ before acting.
 
 The foreman is a **mode, not a second scheduler**. It does not re-implement
 the pi orchestrator's decisions in prose: eligibility comes from
-`dev_status.py ready`, launch from `herdr_delegate.py launch --slug`, and the
+`dev_status.py ready`, launch from `herdr_queue_runner.py launch --slug`, and the
 hands-off run from `/swarm`. `swarm_spawn`/`swarm_poll`/`swarm_resolve_blocked`
 (`pi/extensions/swarm-tool.ts`) keep owning spawn, poll, blocked-relay and
 amend for pi; the foreman drives a worker's picker with `answer` instead. See

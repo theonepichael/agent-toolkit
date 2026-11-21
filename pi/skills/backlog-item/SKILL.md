@@ -15,11 +15,11 @@ single-item target; `--swarm <slug>` is a usage error, ask the user whether
 they meant `--auto <slug>`. If `--serial` was given, skip to that same
 section in serial mode; it also requires a prefix and never takes a target.
 A `--prefix <prefix>` tail (sent by
-`herdr_delegate.py launch`) or a `resume <runId> --prefix <prefix>` tail (sent
-by `herdr_delegate.py restart`) carries that run's queue scope and/or resume
+`herdr_queue_runner.py launch`) or a `resume <runId> --prefix <prefix>` tail (sent
+by `herdr_queue_runner.py restart`) carries that run's queue scope and/or resume
 directive without changing the selected mode — see that section's step 1.
 A `--items <slug...>` or `--exclude <slug...>` tail (sent by
-`herdr_delegate.py launch --items`/`--exclude`) is an explicit-slug scope or a
+`herdr_queue_runner.py launch --items`/`--exclude`) is an explicit-slug scope or a
 prefix-queue filter respectively; pass them through to `swarm_spawn` on the
 first spawn of the run — its persisted state carries the scope for every later
 spawn and for a resume.
@@ -458,7 +458,7 @@ concurrency-cap accounting.
    overlap) or failed to spawn.
 
    **Resume.** If the invocation carried `resume <runId> --prefix <prefix>`
-   (sent by `herdr_delegate.py restart`, which closed and relaunched this
+   (sent by `herdr_queue_runner.py restart`, which closed and relaunched this
    orchestrator), do not pick a fresh runId: call `swarm_spawn` and
    `swarm_poll` with that exact runId, prefix, and mode. `getOrInitState` loads the
    persisted state for that runId, reconciles it against herdr's live agent

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for herdr_delegate.py's foreman `watch` and `answer` subcommands and
+"""Tests for herdr_queue_runner.py's foreman `watch` and `answer` subcommands and
 the `launch --handoff` flag.
 
 Everything runs in process: herdr is faked at the module's herdr() boundary and
@@ -27,7 +27,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent-scripts"))
 import test_bootstrap  # noqa: E402
-import herdr_delegate  # noqa: E402
+import herdr_queue_runner  # noqa: E402
 from pytest_shim import pytest  # noqa: E402
 
 
@@ -66,15 +66,15 @@ def _agent(name: str, status: str, seq: int) -> dict[str, object]:
 class WatchTests(unittest.TestCase):
     def run_watch(self, argv: list[str], fake: Callable) -> tuple[int, str, str]:
         with (
-            mock.patch.object(herdr_delegate, "herdr", fake),
-            mock.patch.object(herdr_delegate.time, "sleep", lambda _s: None),
+            mock.patch.object(herdr_queue_runner, "herdr", fake),
+            mock.patch.object(herdr_queue_runner.time, "sleep", lambda _s: None),
             mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
         ):
-            sys.argv = ["herdr_delegate.py", *argv]
+            sys.argv = ["herdr_queue_runner.py", *argv]
             out, err = io.StringIO(), io.StringIO()
             try:
                 with redirect_stdout(out), redirect_stderr(err):
-                    herdr_delegate.main()
+                    herdr_queue_runner.main()
             except SystemExit as e:
                 return int(e.code or 0), out.getvalue(), err.getvalue()
             return 0, out.getvalue(), err.getvalue()
@@ -132,7 +132,7 @@ class WatchTests(unittest.TestCase):
 
     def test_second_concurrent_watcher_exits_2(self) -> None:
         state = Path(tempfile.mkdtemp()) / "watch.json"
-        with herdr_delegate._watch_lock(state):
+        with herdr_queue_runner._watch_lock(state):
             code, _, err = self.run_watch(
                 ["watch", "atk-w1", "--state", str(state), "--timeout-s", "1"],
                 WatchFakeHerdr([[]]),
@@ -402,7 +402,7 @@ class WatchTests(unittest.TestCase):
         state.write_text(json.dumps(good))
         # A stray temp file (as an interrupted write would leave) must not be read.
         state.with_name("watch.json.tmp").write_text("{corrupt")
-        herdr_delegate._load_watch_state(state)  # reads the real file, not the tmp
+        herdr_queue_runner._load_watch_state(state)  # reads the real file, not the tmp
         self.assertEqual(json.loads(state.read_text()), good)
 
     def test_prefix_matched_late_arrival_is_surfaced(self) -> None:
@@ -491,7 +491,7 @@ class AnswerFakeHerdr:
         elif key == "enter":
             if self.edit_mode:
                 self.cleared = True
-            elif self.options[self.selected - 1] == herdr_delegate.herdr_picker.OTHER_OPTION_LABEL:
+            elif self.options[self.selected - 1] == herdr_queue_runner.herdr_picker.OTHER_OPTION_LABEL:
                 self.edit_mode = True
             else:
                 self.cleared = True
@@ -534,15 +534,15 @@ class AnswerTests(unittest.TestCase):
 
     def run_answer(self, argv: list[str], fake: Callable) -> tuple[int, str, str]:
         with (
-            mock.patch.object(herdr_delegate, "herdr", fake),
-            mock.patch.object(herdr_delegate.time, "sleep", lambda _s: None),
+            mock.patch.object(herdr_queue_runner, "herdr", fake),
+            mock.patch.object(herdr_queue_runner.time, "sleep", lambda _s: None),
             mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
         ):
-            sys.argv = ["herdr_delegate.py", *argv]
+            sys.argv = ["herdr_queue_runner.py", *argv]
             out, err = io.StringIO(), io.StringIO()
             try:
                 with redirect_stdout(out), redirect_stderr(err):
-                    herdr_delegate.main()
+                    herdr_queue_runner.main()
             except SystemExit as e:
                 return int(e.code or 0), out.getvalue(), err.getvalue()
             return 0, out.getvalue(), err.getvalue()
@@ -733,7 +733,7 @@ class AnswerTests(unittest.TestCase):
                 )
                 return {"result": {"text": text}}
             if argv[0] == "pane" and argv[1] == "send-keys" and "enter" in argv:
-                raise herdr_delegate.RefusedError("send-keys refused")
+                raise herdr_queue_runner.RefusedError("send-keys refused")
             if argv[0] == "pane" and argv[1] == "send-keys":
                 return {"result": {}}
             return {"result": {}}
@@ -758,7 +758,7 @@ class AnswerPickerNotInViewTests(unittest.TestCase):
     def setUp(self) -> None:
         self.dir = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.dir, True)
-        path = herdr_delegate.launch_log_file()
+        path = herdr_queue_runner.launch_log_file()
         if path.exists():
             path.unlink()
         self.addCleanup(lambda: path.unlink(missing_ok=True))
@@ -793,12 +793,12 @@ class AnswerPickerNotInViewTests(unittest.TestCase):
 
     def run_answer(self, fake: Callable) -> tuple[int, str]:
         with (
-            mock.patch.object(herdr_delegate, "herdr", fake),
-            mock.patch.object(herdr_delegate.time, "sleep", lambda _s: None),
+            mock.patch.object(herdr_queue_runner, "herdr", fake),
+            mock.patch.object(herdr_queue_runner.time, "sleep", lambda _s: None),
             mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
         ):
             sys.argv = [
-                "herdr_delegate.py",
+                "herdr_queue_runner.py",
                 "answer",
                 "atk-w1",
                 "--expect-pane",
@@ -811,7 +811,7 @@ class AnswerPickerNotInViewTests(unittest.TestCase):
             out, err = io.StringIO(), io.StringIO()
             try:
                 with redirect_stdout(out), redirect_stderr(err):
-                    herdr_delegate.main()
+                    herdr_queue_runner.main()
             except SystemExit as e:
                 return int(e.code or 0), out.getvalue()
             return 0, out.getvalue()
@@ -929,8 +929,8 @@ class HerdrEmptyStdoutTests(unittest.TestCase):
             stdout="",
             stderr="",
         )
-        with mock.patch.object(herdr_delegate.subprocess, "run", return_value=completed):
-            result = herdr_delegate.herdr(["pane", "send-keys", "w:p1", "down"])
+        with mock.patch.object(herdr_queue_runner.subprocess, "run", return_value=completed):
+            result = herdr_queue_runner.herdr(["pane", "send-keys", "w:p1", "down"])
         self.assertEqual(result, {"result": {}})
 
     def test_pane_send_text_empty_stdout_is_success(self) -> None:
@@ -940,18 +940,18 @@ class HerdrEmptyStdoutTests(unittest.TestCase):
             stdout="",
             stderr="",
         )
-        with mock.patch.object(herdr_delegate.subprocess, "run", return_value=completed):
-            result = herdr_delegate.herdr(["pane", "send-text", "w:p1", "x"])
+        with mock.patch.object(herdr_queue_runner.subprocess, "run", return_value=completed):
+            result = herdr_queue_runner.herdr(["pane", "send-text", "w:p1", "x"])
         self.assertEqual(result, {"result": {}})
 
 
 class HandoffTests(unittest.TestCase):
     def run_main(self, argv: list[str]) -> tuple[int, str, str]:
-        sys.argv = ["herdr_delegate.py", *argv]
+        sys.argv = ["herdr_queue_runner.py", *argv]
         out, err = io.StringIO(), io.StringIO()
         try:
             with redirect_stdout(out), redirect_stderr(err):
-                herdr_delegate.main()
+                herdr_queue_runner.main()
         except SystemExit as e:
             return int(e.code or 0), out.getvalue(), err.getvalue()
         return 0, out.getvalue(), err.getvalue()
@@ -990,8 +990,8 @@ class HandoffTests(unittest.TestCase):
             return {"result": {}}
 
         with (
-            mock.patch.object(herdr_delegate, "herdr", fake_launch),
-            mock.patch.object(herdr_delegate.time, "sleep", lambda _s: None),
+            mock.patch.object(herdr_queue_runner, "herdr", fake_launch),
+            mock.patch.object(herdr_queue_runner.time, "sleep", lambda _s: None),
             mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
         ):
             code, out, _ = self.run_main(
@@ -1035,13 +1035,13 @@ class HandoffTests(unittest.TestCase):
         )
 
         with (
-            mock.patch.object(herdr_delegate, "herdr", fake_launch),
+            mock.patch.object(herdr_queue_runner, "herdr", fake_launch),
             mock.patch.object(
-                herdr_delegate, "prepare_worker_worktree", return_value="/tmp/item"
+                herdr_queue_runner, "prepare_worker_worktree", return_value="/tmp/item"
             ),
-            mock.patch.object(herdr_delegate.agy_workspace_trust, "prune_trusted"),
-            mock.patch.object(herdr_delegate.agy_workspace_trust, "ensure_trusted"),
-            mock.patch.object(herdr_delegate.time, "sleep", lambda _s: None),
+            mock.patch.object(herdr_queue_runner.agy_workspace_trust, "prune_trusted"),
+            mock.patch.object(herdr_queue_runner.agy_workspace_trust, "ensure_trusted"),
+            mock.patch.object(herdr_queue_runner.time, "sleep", lambda _s: None),
             mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
         ):
             code, out, _ = self.run_main(
@@ -1056,16 +1056,16 @@ class HandoffTests(unittest.TestCase):
         self.assertEqual(prompt[3], "/backlog-item --auto atk-example --handoff")
 
     def test_handoff_without_flag_omits_capture_env(self) -> None:
-        argv = herdr_delegate.build_tab_argv(cwd="/tmp", label="x", kind="pi")
+        argv = herdr_queue_runner.build_tab_argv(cwd="/tmp", label="x", kind="pi")
         self.assertNotIn("PI_SWARM_CAPTURE_FILE", " ".join(argv))
 
     def test_worker_prompt_handoff(self) -> None:
         self.assertEqual(
-            herdr_delegate.worker_prompt("atk-example", handoff=True),
+            herdr_queue_runner.worker_prompt("atk-example", handoff=True),
             "/backlog-item --auto atk-example --handoff",
         )
         self.assertEqual(
-            herdr_delegate.worker_prompt("atk-example"),
+            herdr_queue_runner.worker_prompt("atk-example"),
             "/backlog-item --auto atk-example",
         )
 
@@ -1168,7 +1168,7 @@ class HandoffSubcommandTests(unittest.TestCase):
         self._drop_launch_log()
 
     def _drop_launch_log(self) -> None:
-        path = herdr_delegate.launch_log_file()
+        path = herdr_queue_runner.launch_log_file()
         if path.exists():
             path.unlink()
         self.addCleanup(lambda: path.unlink(missing_ok=True))
@@ -1184,14 +1184,14 @@ class HandoffSubcommandTests(unittest.TestCase):
         self, argv: list[str], fake: Callable
     ) -> tuple[int, str, str]:
         with (
-            mock.patch.object(herdr_delegate, "herdr", fake),
+            mock.patch.object(herdr_queue_runner, "herdr", fake),
             mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
         ):
-            sys.argv = ["herdr_delegate.py", *argv]
+            sys.argv = ["herdr_queue_runner.py", *argv]
             out, err = io.StringIO(), io.StringIO()
             try:
                 with redirect_stdout(out), redirect_stderr(err):
-                    herdr_delegate.main()
+                    herdr_queue_runner.main()
             except SystemExit as e:
                 return int(e.code or 0), out.getvalue(), err.getvalue()
             return 0, out.getvalue(), err.getvalue()
@@ -1282,7 +1282,7 @@ class HandoffSubcommandTests(unittest.TestCase):
     )
     def test_uses_the_launch_ledger_when_agent_get_has_no_session(self) -> None:
         session = self.session_file(_message("assistant", _text_block(HANDOFF_LINE)))
-        herdr_delegate._append_launch_record(
+        herdr_queue_runner._append_launch_record(
             kind="worker",
             slug="atk-example",
             model=None,
@@ -1332,14 +1332,14 @@ class CloseFakeHerdr:
         if argv[:2] == ["agent", "get"]:
             agent = self._next(self.agents)
             if agent is None:
-                raise herdr_delegate.RefusedError(
+                raise herdr_queue_runner.RefusedError(
                     "herdr agent get failed: agent_not_found", code="agent_not_found"
                 )
             return {"result": {"agent": agent}}
         if argv[:2] == ["tab", "get"]:
             tab = self._next(self.tabs)
             if tab is None:
-                raise herdr_delegate.RefusedError(
+                raise herdr_queue_runner.RefusedError(
                     "herdr tab get failed: tab_not_found", code="tab_not_found"
                 )
             return {"result": {"tab": tab}, "type": "tab_info"}
@@ -1380,15 +1380,15 @@ class CloseTests(unittest.TestCase):
             return reads.pop(0) if len(reads) > 1 else reads[0]  # type: ignore[return-value]
 
         with (
-            mock.patch.object(herdr_delegate, "herdr", fake),
-            mock.patch.object(herdr_delegate, "load_backlog_items", load),
+            mock.patch.object(herdr_queue_runner, "herdr", fake),
+            mock.patch.object(herdr_queue_runner, "load_backlog_items", load),
             mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
         ):
-            sys.argv = ["herdr_delegate.py", *argv]
+            sys.argv = ["herdr_queue_runner.py", *argv]
             out, err = io.StringIO(), io.StringIO()
             try:
                 with redirect_stdout(out), redirect_stderr(err):
-                    herdr_delegate.main()
+                    herdr_queue_runner.main()
             except SystemExit as e:
                 return int(e.code or 0), out.getvalue(), err.getvalue()
             return 0, out.getvalue(), err.getvalue()
@@ -1430,7 +1430,7 @@ class CloseTests(unittest.TestCase):
 
     def test_long_slug_matches_truncated_agent_name_and_full_label(self) -> None:
         slug = "atk-a-really-long-backlog-item-slug-past-32-chars"
-        agent = herdr_delegate.agent_name_for(slug)
+        agent = herdr_queue_runner.agent_name_for(slug)
         self.assertNotEqual(agent, slug)
         fake = CloseFakeHerdr([_close_agent()], [_close_tab(slug)])
         code, out, err = self.run_close(
@@ -1483,8 +1483,8 @@ class CloseTests(unittest.TestCase):
         self.assert_refused(fake, [{"id": "mvc2-something-else", "status": "done"}])
         a = "atk-a-really-long-backlog-item-slug-AAA"
         b = "atk-a-really-long-backlog-item-slug-BBB"
-        agent = herdr_delegate.agent_name_for(a)
-        self.assertEqual(agent, herdr_delegate.agent_name_for(b))
+        agent = herdr_queue_runner.agent_name_for(a)
+        self.assertEqual(agent, herdr_queue_runner.agent_name_for(b))
         fake = CloseFakeHerdr([_close_agent()], [_close_tab(a)])
         self.assert_refused(
             fake,
@@ -1567,7 +1567,7 @@ class CloseTests(unittest.TestCase):
         )
 
     def test_parse_agent_get_without_tab_id_still_parses_for_answer(self) -> None:
-        parsed = herdr_delegate.parse_agent_get(
+        parsed = herdr_queue_runner.parse_agent_get(
             {"result": {"agent": {"agent_status": "blocked", "pane_id": "w:p1"}}}
         )
         self.assertEqual(
@@ -1576,7 +1576,7 @@ class CloseTests(unittest.TestCase):
         )
 
     def test_parse_agent_get_carries_the_pi_session_path(self) -> None:
-        parsed = herdr_delegate.parse_agent_get(
+        parsed = herdr_queue_runner.parse_agent_get(
             {
                 "result": {
                     "agent": {
@@ -1654,16 +1654,16 @@ class WatchCostTests(unittest.TestCase):
     ) -> tuple[int, dict[str, object], str]:
         fake = WatchFakeHerdr([agents])
         with (
-            mock.patch.object(herdr_delegate, "herdr", fake),
-            mock.patch.object(herdr_delegate.time, "sleep", lambda _s: None),
+            mock.patch.object(herdr_queue_runner, "herdr", fake),
+            mock.patch.object(herdr_queue_runner.time, "sleep", lambda _s: None),
             mock.patch.object(
-                herdr_delegate.time, "time", lambda: self.now.timestamp()
+                herdr_queue_runner.time, "time", lambda: self.now.timestamp()
             ),
-            mock.patch.object(herdr_delegate, "_watch_now", lambda: self.now),
+            mock.patch.object(herdr_queue_runner, "_watch_now", lambda: self.now),
             mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
         ):
             sys.argv = [
-                "herdr_delegate.py",
+                "herdr_queue_runner.py",
                 "watch",
                 *argv,
                 "--state",
@@ -1675,7 +1675,7 @@ class WatchCostTests(unittest.TestCase):
             code = 0
             try:
                 with redirect_stdout(out), redirect_stderr(err):
-                    herdr_delegate.main()
+                    herdr_queue_runner.main()
             except SystemExit as e:
                 code = int(e.code or 0)
         text = out.getvalue()
@@ -1910,10 +1910,10 @@ class WatchCostTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"TZ": "America/New_York"}):
             time.tzset()
             try:
-                spring = herdr_delegate._local_midnight(
+                spring = herdr_queue_runner._local_midnight(
                     datetime(2026, 3, 8, 12, 0, tzinfo=UTC).astimezone()
                 )
-                fall = herdr_delegate._local_midnight(
+                fall = herdr_queue_runner._local_midnight(
                     datetime(2026, 11, 1, 18, 0, tzinfo=UTC).astimezone()
                 )
             finally:
@@ -2133,7 +2133,7 @@ class WatchCostTests(unittest.TestCase):
         self.run_watch(["atk-w1", "--cost-cap-agent", "4", "--ack-cost", token], agents)
         saved = json.loads(self.state.read_text())
         self.assertIn("agent:atk-w1", saved["cost_acks"])
-        loaded = herdr_delegate._load_watch_state(self.state)
+        loaded = herdr_queue_runner._load_watch_state(self.state)
         self.assertEqual(loaded["cost_acks"], saved["cost_acks"])
         # The ack persists across runs.
         self.assertEqual(self.run_watch(["atk-w1", "--cost-cap-agent", "4"], agents)[0], 124)
@@ -2229,16 +2229,16 @@ class WatchAgyCallsTests(unittest.TestCase):
     ) -> tuple[int, dict[str, object], str]:
         fake = WatchFakeHerdr([agents])
         with (
-            mock.patch.object(herdr_delegate, "herdr", fake),
-            mock.patch.object(herdr_delegate.time, "sleep", lambda _s: None),
+            mock.patch.object(herdr_queue_runner, "herdr", fake),
+            mock.patch.object(herdr_queue_runner.time, "sleep", lambda _s: None),
             mock.patch.object(
-                herdr_delegate.time, "time", lambda: self.now.timestamp()
+                herdr_queue_runner.time, "time", lambda: self.now.timestamp()
             ),
-            mock.patch.object(herdr_delegate, "_watch_now", lambda: self.now),
+            mock.patch.object(herdr_queue_runner, "_watch_now", lambda: self.now),
             mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
         ):
             sys.argv = [
-                "herdr_delegate.py",
+                "herdr_queue_runner.py",
                 "watch",
                 *argv,
                 "--state",
@@ -2250,7 +2250,7 @@ class WatchAgyCallsTests(unittest.TestCase):
             code = 0
             try:
                 with redirect_stdout(out), redirect_stderr(err):
-                    herdr_delegate.main()
+                    herdr_queue_runner.main()
             except SystemExit as e:
                 code = int(e.code or 0)
         text = out.getvalue()
@@ -2423,16 +2423,16 @@ class WatchPlanningTests(unittest.TestCase):
     ) -> tuple[int, dict[str, object], str]:
         fake = WatchFakeHerdr([agents])
         with (
-            mock.patch.object(herdr_delegate, "herdr", fake),
-            mock.patch.object(herdr_delegate.time, "sleep", lambda _s: None),
+            mock.patch.object(herdr_queue_runner, "herdr", fake),
+            mock.patch.object(herdr_queue_runner.time, "sleep", lambda _s: None),
             mock.patch.object(
-                herdr_delegate.time, "time", lambda: self.now.timestamp()
+                herdr_queue_runner.time, "time", lambda: self.now.timestamp()
             ),
-            mock.patch.object(herdr_delegate, "_watch_now", lambda: self.now),
+            mock.patch.object(herdr_queue_runner, "_watch_now", lambda: self.now),
             mock.patch.dict(os.environ, {"HERDR_ENV": "1"}),
         ):
             sys.argv = [
-                "herdr_delegate.py",
+                "herdr_queue_runner.py",
                 "watch",
                 *argv,
                 "--state",
@@ -2444,7 +2444,7 @@ class WatchPlanningTests(unittest.TestCase):
             code = 0
             try:
                 with redirect_stdout(out), redirect_stderr(err):
-                    herdr_delegate.main()
+                    herdr_queue_runner.main()
             except SystemExit as e:
                 code = int(e.code or 0)
         text = out.getvalue()
@@ -2648,13 +2648,13 @@ class LaunchLogBackfillWatchTests(WatchTests):
 
     def setUp(self) -> None:
         super().setUp()
-        path = herdr_delegate.launch_log_file()
+        path = herdr_queue_runner.launch_log_file()
         if path.exists():
             path.unlink()
         self.addCleanup(lambda: path.unlink(missing_ok=True))
 
     def _seed_launch(self, pane: str, worker_session: str | None = None) -> None:
-        herdr_delegate._append_launch_record(
+        herdr_queue_runner._append_launch_record(
             kind="worker",
             slug="atk-x",
             model=None,
@@ -2665,7 +2665,7 @@ class LaunchLogBackfillWatchTests(WatchTests):
         )
 
     def _records(self) -> list[dict[str, object]]:
-        path = herdr_delegate.launch_log_file()
+        path = herdr_queue_runner.launch_log_file()
         if not path.exists():
             return []
         return [
@@ -2682,7 +2682,7 @@ class LaunchLogBackfillWatchTests(WatchTests):
 
     def test_worker_session_id_pi_path(self) -> None:
         self.assertEqual(
-            herdr_delegate._worker_session_id(
+            herdr_queue_runner._worker_session_id(
                 {"agent": "pi", "kind": "path", "value": "/sessions/pi-1.jsonl"}
             ),
             "/sessions/pi-1.jsonl",
@@ -2690,21 +2690,21 @@ class LaunchLogBackfillWatchTests(WatchTests):
 
     def test_worker_session_id_agy_value(self) -> None:
         self.assertEqual(
-            herdr_delegate._worker_session_id(
+            herdr_queue_runner._worker_session_id(
                 {"agent": "agy", "source": "herdr:antigravity_cli", "value": "conv-9"}
             ),
             "conv-9",
         )
 
     def test_worker_session_id_rejects_empty_and_unknown(self) -> None:
-        self.assertEqual(herdr_delegate._worker_session_id("conv-2"), "conv-2")
-        self.assertIsNone(herdr_delegate._worker_session_id(""))
-        self.assertIsNone(herdr_delegate._worker_session_id("   "))
+        self.assertEqual(herdr_queue_runner._worker_session_id("conv-2"), "conv-2")
+        self.assertIsNone(herdr_queue_runner._worker_session_id(""))
+        self.assertIsNone(herdr_queue_runner._worker_session_id("   "))
         self.assertIsNone(
-            herdr_delegate._worker_session_id({"agent": "other", "value": "x"})
+            herdr_queue_runner._worker_session_id({"agent": "other", "value": "x"})
         )
         self.assertIsNone(
-            herdr_delegate._worker_session_id(
+            herdr_queue_runner._worker_session_id(
                 {"agent": "pi", "kind": "path", "value": ""}
             )
         )
@@ -2760,7 +2760,7 @@ class LaunchLogBackfillWatchTests(WatchTests):
     def test_record_worker_session_updates_most_recent_null_only(self) -> None:
         self._seed_launch("w1:p1", worker_session="old-session")
         self._seed_launch("w1:p1")
-        recorded = herdr_delegate._record_worker_session(
+        recorded = herdr_queue_runner._record_worker_session(
             pane="w1:p1",
             session={"agent": "pi", "kind": "path", "value": "/sessions/new.jsonl"},
         )
@@ -2772,7 +2772,7 @@ class LaunchLogBackfillWatchTests(WatchTests):
 
     def test_record_worker_session_returns_false_without_matching_record(self) -> None:
         self._seed_launch("w1:p9")  # a different pane
-        recorded = herdr_delegate._record_worker_session(
+        recorded = herdr_queue_runner._record_worker_session(
             pane="w1:p1",
             session={"agent": "pi", "kind": "path", "value": "/sessions/new.jsonl"},
         )
@@ -2784,7 +2784,7 @@ class LaunchLogBackfillWatchTests(WatchTests):
     )
     def test_record_worker_session_does_not_claim_different_session(self) -> None:
         self._seed_launch("w1:p1", worker_session="old-session")
-        recorded = herdr_delegate._record_worker_session(
+        recorded = herdr_queue_runner._record_worker_session(
             pane="w1:p1",
             session={"agent": "pi", "kind": "path", "value": "/sessions/new.jsonl"},
         )

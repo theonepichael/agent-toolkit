@@ -1110,7 +1110,7 @@ a crash/restart, crash recovery, and concurrency-cap accounting.
    repeat it.
 
    **Resume.** If the invocation carried `resume <runId> --prefix <prefix>`
-   (sent by `herdr_delegate.py restart`, which closed and relaunched this
+   (sent by `herdr_queue_runner.py restart`, which closed and relaunched this
    orchestrator), do not pick a fresh runId: call `swarm_spawn` and
    `swarm_poll` with that exact runId, prefix, and mode. State persistence loads the
    persisted state for that runId, reconciles it against herdr's live agent

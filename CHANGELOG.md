@@ -14,6 +14,73 @@ the warning. Run `./install.sh --report-legacy-env` to see any still set.
 
 ## Unreleased
 
+## release-6 — 2026-11-20
+
+- **Clean-break rename 3 (`herdr_delegate` → `herdr_queue_runner`):** renamed
+  `agent-scripts/herdr_delegate.py` → `herdr_queue_runner.py` (its `[...]`
+  stderr prefix now reads `[herdr_queue_runner]`), with matching updates
+  across the `/swarm` and `/foreman` skills (Claude Code, Copilot), the Pi and
+  Copilot `/backlog-item` copies (regenerated from their templates), the
+  Claude permission seeds (`claude/settings.json`, `settings.work.json`, via
+  `permission_matrix.py`), `links.toml`, `INTERFACES.md`, `GLOSSARY.md`, docs,
+  and tests. Skill names and triggers are unchanged. There is no alias. The
+  external product name `herdr` and every `HERDR_*` environment variable keep
+  their names. This release makes no behavior changes, upgrades no stored
+  data (launch-ledger records, swarm state files and worker prompts never
+  embed the script path), and renames no environment variables (none exist).
+  - **Roll out between runs.** A live `/swarm`, `/foreman` or Pi
+    `/backlog-item` session still holds the old path.
+  - **Per-machine steps, in this order:**
+    1. Run the installer: the overlay wrapper where one exists, otherwise
+       `./install.sh --harness=... --profile=<profile>`.
+    2. **Before `--check-links`** (this goes ahead of the post-install step
+       order in `docs/fork-machine-updates.md`, where `--check-links`
+       immediately follows the install): confirm that
+       `~/.agent-toolkit/scripts/herdr_delegate.py` is gone, dangling links
+       included. Orphan cleanup misses a link it has no creation record for,
+       and a survivor fails `--check-links` as `unmanaged`. Before removing a
+       leftover, check its target, because the installer deliberately keeps a
+       link that another owner repointed.
+    3. Close every Claude Code session, since a running session rewrites
+       `settings.json` and clobbers the edit. Then, in
+       `~/.claude/settings.json` (a copy-once seed that install never
+       rewrites), replace
+       `Bash(python3 ~/.agent-toolkit/scripts/herdr_delegate.py *)` with
+       `Bash(python3 ~/.agent-toolkit/scripts/herdr_queue_runner.py *)`. Do
+       not use `settings_seed_drift_check.py fix` for this: it only adds
+       entries and leaves the old one behind. The alternative,
+       `./install.sh --harness=claude --profile=<profile> --reseed`, replaces
+       the whole drifted file. Verify with
+       `python3 ~/.agent-toolkit/scripts/gen_permissions.py --audit-live`.
+    4. Run `./install.sh --check-links` with the same `--harness` and
+       `--profile` values.
+    5. List saved foreman handoffs that still name the old script
+       (`grep -l herdr_delegate ~/.agent-toolkit/data/foreman/*.md`). Replace
+       the name in each before resuming from it. Then start fresh Claude Code,
+       Copilot and Pi sessions.
+    6. Run `python3 ~/.agent-toolkit/scripts/rename_transition.py checklist
+       herdr_delegate herdr_queue_runner
+       --release release-6`, then once more with
+       `--file ~/.claude/settings.json`. `--file` replaces the default scan
+       list, which leaves out `settings.json`.
+
+### release-6: `herdr_delegate` -> `herdr_queue_runner` checklist
+
+- [x] Defining source file renamed (`herdr_delegate.py` → `herdr_queue_runner.py`)
+- [x] Every Python import updated
+- [x] `links.toml` destination and manifest entry updated (one row)
+- [x] `install.py` / `install.sh` references updated (one `install.py` comment; `install.sh` names nothing)
+- [x] Workflow files regenerated, per harness, from templates — never hand-edited (`swarm.md.tmpl`, `foreman.md.tmpl`, `backlog_item_pi_native.md.tmpl`; no skill file is renamed, so no retired copies)
+- [x] Generator parameter tables updated (`gen_skills_params.py`; `permission_matrix.py`, compiled by `gen_permissions.py`; contract fingerprints, carried over unchanged under the new key)
+- [x] `INTERFACES.md` regenerated
+- [x] `GLOSSARY.md` term added with its first-use definition
+- [x] `README.md` references updated
+- [x] Tests and fixtures updated; drift checks pass
+- [x] Persisted field or value transform written, with a version bump (N/A — no store holds the name as a value)
+- [x] Environment variable fallback added with a deprecation warning (N/A — zero `HERDR_DELEGATE*` variables exist; `HERDR_*` names the external product and is not renamed)
+- [x] Manual-edit checklist emitted for external instruction files (`rename_transition.py checklist herdr_delegate herdr_queue_runner --release release-6`, scan result on the release machine: `~/.claude/CLAUDE.md` and `settings.local.json` have no occurrences; the `--file ~/.claude/settings.json` scan finds the one seed allow pattern that step 3 replaces. The other machines run their own scans at rollout, per step 6)
+- [x] No undocumented alias left behind, except the env-var fallback window
+
 ## release-5 — 2026-11-20
 
 - **Clean-break rename 2 (`refresh_guidance` → `guidance_audit`):** renamed

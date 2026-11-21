@@ -61,8 +61,8 @@ House style for these interfaces is in `STYLE.md`.
 | [`guidance_audit.py`](#agentscriptsguidanceauditpy) | guidance_audit.py — audit-by-inspection for hand-authored, agent-facing docs. |
 | [`harness_discovery_check.py`](#agentscriptsharnessdiscoverycheckpy) | SessionStart hook + CLI: detect when a harness's instruction-file discovery behavior changes, without pinning harness versions in the repo. |
 | [`harness_spec.py`](#agentscriptsharnessspecpy) | Declarative harness specification registry. |
-| [`herdr_delegate.py`](#agentscriptsherdrdelegatepy) | Launch supported agents in herdr tabs to work backlog items. |
 | [`herdr_picker.py`](#agentscriptsherdrpickerpy) | Behavioral twin of ``pi/extensions/swarm-lib/swarm-picker.ts``. |
+| [`herdr_queue_runner.py`](#agentscriptsherdrqueuerunnerpy) | Launch supported agents in herdr tabs to work backlog items. |
 | [`link_drift_check.py`](#agentscriptslinkdriftcheckpy) | SessionStart hook + CLI: flag when a managed symlink on this machine no longer points where links.toml says it should. |
 | [`link_inspect.py`](#agentscriptslinkinspectpy) | link_inspect.py — link inspection, path classification, drift finding, and the self-contained audit assembly for install.py's ``--check-links`` audit and link_drift_check.py's SessionStart hook. |
 | [`llm_backends.py`](#agentscriptsllmbackendspy) | llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, opencode, pi, copilot). Extracted from second_opinion.py so dev_status.py's recap generation can reuse the same process-lifecycle handling (timeouts, process-group kills, opencode JSON-event parsing) with its own timeout and model choices, without duplicating it. |
@@ -1225,11 +1225,29 @@ Declarative harness specification registry.
   - `assert_feature_coverage(repo_root: Path | None = None) -> None` — Validate that all active harnesses have declared valid implementations for all required features.
 - Tested by: `test/test_agent_toolkit_paths.py`, `test/test_check_toolkit_paths.py`, `test/test_gen_hooks.py`, `test/test_gen_keybinds.py`, `test/test_harness_discovery_check.py`, `test/test_harness_feature_coverage.py`, `test/test_harness_spec.py`, `test/test_permission_matrix.py`, `test/test_sessionstart_checks.py`
 
-### `agent-scripts/herdr_delegate.py`
+### `agent-scripts/herdr_picker.py`
+
+Behavioral twin of ``pi/extensions/swarm-lib/swarm-picker.ts``.
+
+- Installed at: `~/.agent-toolkit/scripts/herdr_picker.py` (all harnesses)
+- Entrypoint: not executable, `#!/usr/bin/env python3`
+- CLI: none (library module).
+- Public classes:
+  - `class RenderedOption` — One option line: its 1-based index and its reassembled label.
+  - `class ParsedPicker` — A selection-mode picker: options and the currently highlighted index.
+  - `class EditMode` — An edit-mode picker: options, the OTHER option's index, editor text.
+- Public functions:
+  - `parse_picker(content: str) -> ParsedPicker` — Parse question-tool.ts's rendered picker (plain text, no ANSI).
+  - `match_option(answer: str, options: Sequence[RenderedOption]) -> RenderedOption | None` — Match a free-text answer to a listed option.
+  - `navigation_keys(from_index: int, to_index: int) -> list[str]` — Arrow-key presses to move from one option to another (no trailing enter).
+  - `parse_edit_mode(content: str) -> EditMode | None` — Parse question-tool.ts's edit-mode picker (free-text entry).
+- Tested by: `test/test_herdr_picker.py`
+
+### `agent-scripts/herdr_queue_runner.py`
 
 Launch supported agents in herdr tabs to work backlog items.
 
-- Installed at: `~/.agent-toolkit/scripts/herdr_delegate.py` (all harnesses)
+- Installed at: `~/.agent-toolkit/scripts/herdr_queue_runner.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): Launch supported agents in herdr tabs to work backlog items.
 - Subcommands:
@@ -1323,7 +1341,7 @@ Launch supported agents in herdr tabs to work backlog items.
   - `orchestrator_resume_prompt(concurrency: int, run_id: str, prefix: str, kind: str = 'pi') -> str` — One orchestrator, resuming an interrupted run.
   - `serial_orchestrator_prompt(prefix: str, items: list[str] | None = None, exclude: list[str] | None = None) -> str` — One orchestrator running the shared scheduler with a single worker.
   - `serial_orchestrator_resume_prompt(run_id: str, prefix: str) -> str` — Resume one serial orchestrator without changing its run identity.
-  - `validate_run_id(run_id: str) -> str` — Refuse a runId the delegate cannot safely pass through.
+  - `validate_run_id(run_id: str) -> str` — Refuse a runId the queue runner cannot safely pass through.
   - `swarm_state_dir(kind: str = 'pi') -> Path` — Where swarm state is persisted for kind (same override, same default).
   - `state_matches_prefix(state: object, prefix: str, mode: str = 'concurrent') -> bool` — Whether one parsed state file belongs to a run scoped to ``prefix``.
   - `discover_run_id(prefix: str, kind: str = 'pi', mode: str = 'concurrent') -> str` — The runId of the newest state file belonging to ``prefix``.
@@ -1358,25 +1376,7 @@ Launch supported agents in herdr tabs to work backlog items.
   - `prune_agy_trust_entries() -> None` — Best-effort prune of vanished agy trusted-workspace entries.
   - `confirm_prompt_receipt(*, pane: str, tab: str, name: str, prompt: str, timeout_s: float = AGY_PROMPT_TIMEOUT_S, poll_interval_s: float = AGY_PROMPT_POLL_INTERVAL_S, max_resends: int = 1) -> None` — Poll pane for the echoed prompt line; resend if absent, fail loudly if still missing.
 - Subcommand handlers: `cmd_watch`, `cmd_answer`, `cmd_handoff`, `cmd_close`, `cmd_plan`, `cmd_launch`, `cmd_restart`, `cmd_probe`
-- Tested by: `test/test_dev_status_mutation.py`, `test/test_herdr_delegate.py`, `test/test_herdr_watch_answer.py`, `test/test_migration_lock_adoption.py`
-
-### `agent-scripts/herdr_picker.py`
-
-Behavioral twin of ``pi/extensions/swarm-lib/swarm-picker.ts``.
-
-- Installed at: `~/.agent-toolkit/scripts/herdr_picker.py` (all harnesses)
-- Entrypoint: not executable, `#!/usr/bin/env python3`
-- CLI: none (library module).
-- Public classes:
-  - `class RenderedOption` — One option line: its 1-based index and its reassembled label.
-  - `class ParsedPicker` — A selection-mode picker: options and the currently highlighted index.
-  - `class EditMode` — An edit-mode picker: options, the OTHER option's index, editor text.
-- Public functions:
-  - `parse_picker(content: str) -> ParsedPicker` — Parse question-tool.ts's rendered picker (plain text, no ANSI).
-  - `match_option(answer: str, options: Sequence[RenderedOption]) -> RenderedOption | None` — Match a free-text answer to a listed option.
-  - `navigation_keys(from_index: int, to_index: int) -> list[str]` — Arrow-key presses to move from one option to another (no trailing enter).
-  - `parse_edit_mode(content: str) -> EditMode | None` — Parse question-tool.ts's edit-mode picker (free-text entry).
-- Tested by: `test/test_herdr_picker.py`
+- Tested by: `test/test_dev_status_mutation.py`, `test/test_herdr_queue_runner.py`, `test/test_herdr_watch_answer.py`, `test/test_migration_lock_adoption.py`
 
 ### `agent-scripts/link_drift_check.py`
 
@@ -2809,7 +2809,7 @@ named doc, not regenerating this file.
 | `opencode/command/guidance-audit.md` | OK |
 | `pi/skills/guidance-audit/SKILL.md` | OK |
 
-### `herdr_delegate.py`
+### `herdr_queue_runner.py`
 
 | Doc | Status |
 | --- | --- |

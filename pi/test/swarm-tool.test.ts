@@ -2159,7 +2159,7 @@ describe("swarm_spawn worker bootstrap", () => {
     expect(shapes).toEqual(["0/2", "2/0"]);
   });
 
-  // herdr_delegate.py's restart mode discovers the runId to resume by
+  // herdr_queue_runner.py's restart mode discovers the runId to resume by
   // matching this field exactly, so a scoped run must stamp it on the state
   // it persists. (Items-only runs have no prefix and omit the field.)
   test("a scoped run persists its prefix for restart discovery", async () => {

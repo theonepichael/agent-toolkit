@@ -209,8 +209,8 @@ src = "agent-scripts/seed_hook_subset_guard.py"
 dest = "~/.agent-toolkit/scripts/seed_hook_subset_guard.py"
 
 [[link]]
-src = "agent-scripts/herdr_delegate.py"
-dest = "~/.agent-toolkit/scripts/herdr_delegate.py"
+src = "agent-scripts/herdr_queue_runner.py"
+dest = "~/.agent-toolkit/scripts/herdr_queue_runner.py"
 
 [[link]]
 src = "agent-scripts/herdr_picker.py"

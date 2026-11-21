@@ -113,7 +113,7 @@ flowchart TD
 - **Explicit Approval Gates**: Commits and repository merges require mandatory, separate user approval pauses.
 
 The Pi and Copilot queue runners wrap this same lifecycle rather than replacing
-it. `herdr_delegate.py` starts one orchestrator, while the shared TypeScript
+it. `herdr_queue_runner.py` starts one orchestrator, while the shared TypeScript
 scheduler re-reads `dev_status.py ready --prefix` after each terminal worker.
 Concurrent mode admits only `worker_safe` items up to its configured cap;
 serial mode admits only `serial_safe` items, holds exactly one worker or relay

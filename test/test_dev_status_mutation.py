@@ -2853,11 +2853,11 @@ class ArchiveClosedItemsTestCase(ArchiveItemTestCase):
         self.assertEqual(ids, ["item-old-done"])
 
     def test_worker_tab_close_sees_archived_items(self):
-        import herdr_delegate
+        import herdr_queue_runner
 
         self.write_items([make_item("task-live")])
         self.write_archive([make_item("task-archived", status="done")])
-        ids = {i["id"] for i in herdr_delegate.load_backlog_items()}
+        ids = {i["id"] for i in herdr_queue_runner.load_backlog_items()}
         self.assertEqual(ids, {"task-live", "task-archived"})
 
 

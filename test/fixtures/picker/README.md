@@ -41,5 +41,5 @@ The verdict is **not a parser bug**: against the fully-rendered commit picker
 (`numbered-plan.txt`) the same parser returns the three options and `selectedIndex
 1`. The failure was the caller reading the pane exactly once and giving up on
 an empty result. The supported fix is not a parser change but bounded polling
-in `herdr_delegate.py answer`: it re-reads the pane until the picker identity
+in `herdr_queue_runner.py answer`: it re-reads the pane until the picker identity
 appears (or `--settle-s` gives up), instead of trusting the first read.

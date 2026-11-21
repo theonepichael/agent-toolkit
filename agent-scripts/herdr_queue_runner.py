@@ -17,9 +17,9 @@ doing this by hand:
 * An item whose prefix names the harness repo never goes to a worker, because a
   worker cannot safely edit the code it is running.
 
-That last one is a prefix lookup rather than a per-item classifier: since
-``meta-backlog-prefix-repo-alignment``, a prefix names the repo an item
-targets, so the safety fact travels in the slug. ``NEVER_SWARMABLE`` derives
+That last one is a prefix lookup rather than a per-item classifier: a
+backlog prefix names the repo an item targets, so the safety fact travels in
+the slug. ``NEVER_SWARMABLE`` derives
 from ``dev_status`` rather than repeating it, so the two cannot drift.
 
 Refusing here is a convenience for the human watching, not a guarantee --
@@ -82,14 +82,14 @@ wins; if the item's repository cannot be resolved to exactly one repository,
 launch refuses rather than falling back to the caller's cwd.
 
 Usage:
-    herdr_delegate.py plan
-    herdr_delegate.py launch --slug <slug> [--model <model>]
+    herdr_queue_runner.py plan
+    herdr_queue_runner.py launch --slug <slug> [--model <model>]
                              [--kind {pi,copilot,agy,codex}] [--handoff]
-    herdr_delegate.py launch --swarm <N> --prefix <prefix> [--model <model>]
+    herdr_queue_runner.py launch --swarm <N> --prefix <prefix> [--model <model>]
                              [--kind {pi,copilot}]
-    herdr_delegate.py launch --serial --prefix <prefix> [--model <model>]
+    herdr_queue_runner.py launch --serial --prefix <prefix> [--model <model>]
                              [--kind {pi,copilot}]
-    herdr_delegate.py watch <agent>... [--prefix <prefix>] --state <file>
+    herdr_queue_runner.py watch <agent>... [--prefix <prefix>] --state <file>
                              [--ack <name>=<seq>]... [--ack-gone <name>]...
                              [--grace-s <n>] [--timeout-s <n>] [--poll-s <n>]
                              [--strict]
@@ -100,15 +100,15 @@ Usage:
                              [--elapsed-cap-agent <seconds>] [--elapsed-cap-total <seconds>]
                              [--planning-note-usd <usd>]
                              [--ack-cost <token>]...
-    herdr_delegate.py answer <agent> --expect-pane <pane>
+    herdr_queue_runner.py answer <agent> --expect-pane <pane>
                              (--option <label> | --index <n> | --other --text <text>)
                              [--settle-s <n>]
-    herdr_delegate.py handoff <agent> --expect-pane <pane>
-    herdr_delegate.py restart --swarm <N> --prefix <prefix> [--run-id <runId>]
+    herdr_queue_runner.py handoff <agent> --expect-pane <pane>
+    herdr_queue_runner.py restart --swarm <N> --prefix <prefix> [--run-id <runId>]
                               [--model <model>] [--kind {pi,copilot}]
-    herdr_delegate.py restart --serial --prefix <prefix> [--run-id <runId>]
+    herdr_queue_runner.py restart --serial --prefix <prefix> [--run-id <runId>]
                               [--model <model>] [--kind {pi,copilot}]
-    herdr_delegate.py probe --kind {pi,copilot,agy,codex} [--model <model>]
+    herdr_queue_runner.py probe --kind {pi,copilot,agy,codex} [--model <model>]
                             [--cwd <cwd>]
 """
 
@@ -663,7 +663,7 @@ RUN_ID_MAX_LEN = 64
 
 
 def validate_run_id(run_id: str) -> str:
-    """Refuse a runId the delegate cannot safely pass through.
+    """Refuse a runId the queue runner cannot safely pass through.
 
     swarm-tool.ts's ``statePath`` joins the runId into a state filename
     unsanitized, so a crafted value is stopped here rather than trusted
@@ -2151,7 +2151,7 @@ def cmd_watch(args: argparse.Namespace) -> None:
     try:
         _cmd_watch(args)
     except RefusedError as exc:
-        print(f"[herdr_delegate] {exc}", file=sys.stderr)
+        print(f"[herdr_queue_runner] {exc}", file=sys.stderr)
         raise SystemExit(2) from exc
 
 
@@ -2671,7 +2671,7 @@ def cmd_answer(args: argparse.Namespace) -> None:
         )
         raise SystemExit(oc.code) from oc
     except RefusedError as exc:
-        print(f"[herdr_delegate] {exc}", file=sys.stderr)
+        print(f"[herdr_queue_runner] {exc}", file=sys.stderr)
         raise SystemExit(2) from exc
 
 
@@ -2684,7 +2684,7 @@ def cmd_handoff(args: argparse.Namespace) -> None:
     try:
         _run_handoff(args)
     except RefusedError as exc:
-        print(f"[herdr_delegate] {exc}", file=sys.stderr)
+        print(f"[herdr_queue_runner] {exc}", file=sys.stderr)
         raise SystemExit(2) from exc
 
 
@@ -3050,7 +3050,7 @@ def spawn_in_new_tab(
                     ) from refusal
                 raise refusal
             print(
-                f"[herdr_delegate] agent start timed out on attempt "
+                f"[herdr_queue_runner] agent start timed out on attempt "
                 f"{attempt + 1}; retrying after backoff",
                 file=sys.stderr,
             )
@@ -3133,7 +3133,7 @@ def herdr(argv: list[str]) -> dict[str, object]:
             # drifted. Purely descriptive: this function has no notion of
             # what, if anything, a caller would have retried.
             print(
-                f"[herdr_delegate] herdr {argv[0]} {argv[1]} returned a JSON "
+                f"[herdr_queue_runner] herdr {argv[0]} {argv[1]} returned a JSON "
                 f"error with no recognized 'code' field: {result.stderr.strip()}",
                 file=sys.stderr,
             )
@@ -3241,7 +3241,7 @@ def trust_agy_dir(dir_path: str) -> None:
     """Ensure agy's trustedWorkspaces lists ``dir_path`` before an agy launch.
 
     Translates the trust module's own error into a :class:`RefusedError` so it
-    surfaces as the usual ``[herdr_delegate] ...`` refusal (``main`` only catches
+    surfaces as the usual ``[herdr_queue_runner] ...`` refusal (``main`` only catches
     ``RefusedError``), not a traceback.
     """
     try:
@@ -3261,7 +3261,7 @@ def prune_agy_trust_entries() -> None:
         agy_workspace_trust.prune_trusted()
     except agy_workspace_trust.TrustSettingsError as exc:
         print(
-            f"[herdr_delegate] warning: cannot prune agy trusted workspaces: {exc}",
+            f"[herdr_queue_runner] warning: cannot prune agy trusted workspaces: {exc}",
             file=sys.stderr,
         )
 
@@ -3526,7 +3526,7 @@ def cmd_probe(args: argparse.Namespace) -> None:
                     agy_workspace_trust.remove_trusted(scratch_dir)
                 except Exception as exc:
                     print(
-                        f"[herdr_delegate] warning: failed to untrust probe dir "
+                        f"[herdr_queue_runner] warning: failed to untrust probe dir "
                         f"{scratch_dir}: {exc}",
                         file=sys.stderr,
                     )
@@ -3861,7 +3861,7 @@ def main() -> None:
     try:
         args.func(args)
     except RefusedError as exc:
-        print(f"[herdr_delegate] {exc}", file=sys.stderr)
+        print(f"[herdr_queue_runner] {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
 
 

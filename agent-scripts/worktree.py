@@ -178,7 +178,7 @@ def resolve_item_repos(item: Mapping[str, object]) -> set[Path]:
 
     The per-path resolution is :func:`find_repo_for_path`, the same primitive
     :func:`resolve_worktree_config` uses. Extracted so a caller that must NOT
-    fall back to the current working directory (``herdr_delegate``'s launch)
+    fall back to the current working directory (``herdr_queue_runner``'s launch)
     can apply this resolution with a stricter policy -- refuse on a non-single
     result -- instead of inheriting ``resolve_worktree_config``'s zero-repo
     fallback to ``Path.cwd()``, which is correct for interactive
