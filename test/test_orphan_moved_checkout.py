@@ -128,11 +128,94 @@ def test_final_component_symlink_escaping_is_not_ours(tmp_path):
     assert _orphans([_record(dest, old_src)]) == []
 
 
-def test_missing_parent_is_not_ours(tmp_path):
+def test_missing_parent_dirs_are_still_ours(tmp_path):
     toolkit = _toolkit(tmp_path / "toolkit")
     dest = tmp_path / "link.py"
     dest.symlink_to(toolkit / "gone-dir" / "sub" / "gone.py")
     old_src = tmp_path / "old" / "gone-dir" / "sub" / "gone.py"
+    assert _orphans([_record(dest, old_src)]) == [dest]
+
+
+def test_missing_parent_outside_any_checkout_is_not_ours(tmp_path):
+    (tmp_path / "loose").mkdir()
+    dest = tmp_path / "link.py"
+    dest.symlink_to(tmp_path / "loose" / "gone-dir" / "sub" / "gone.py")
+    old_src = tmp_path / "old" / "gone-dir" / "sub" / "gone.py"
+    assert _orphans([_record(dest, old_src)]) == []
+
+
+def test_escaping_symlink_then_dotdot_into_missing_dirs_is_not_ours(tmp_path):
+    # escape/.. leads into outside/, not back into the toolkit: collapsing
+    # the ".." before resolving the symlink would judge toolkit/a/b/x.py.
+    toolkit = _toolkit(tmp_path / "toolkit")
+    (tmp_path / "outside" / "sub").mkdir(parents=True)
+    (toolkit / "escape").symlink_to(tmp_path / "outside" / "sub")
+    dest = tmp_path / "link.py"
+    dest.symlink_to(toolkit / "escape" / ".." / "a" / "b" / "x.py")
+    old_src = tmp_path / "old" / "a" / "b" / "x.py"
+    assert _orphans([_record(dest, old_src)]) == []
+
+
+def test_missing_dotdot_component_fails_closed(tmp_path):
+    toolkit = _toolkit(tmp_path / "toolkit")
+    dest = tmp_path / "link.py"
+    dest.symlink_to(toolkit / "gone" / ".." / "a" / "x.py")
+    old_src = tmp_path / "old" / "a" / "x.py"
+    assert _orphans([_record(dest, old_src)]) == []
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory modes")
+def test_unreadable_directory_in_the_path_fails_closed(tmp_path):
+    toolkit = _toolkit(tmp_path / "toolkit")
+    locked = toolkit / "locked"
+    locked.mkdir()
+    dest = tmp_path / "link.py"
+    dest.symlink_to(locked / "sub" / "x.py")
+    old_src = tmp_path / "old" / "locked" / "sub" / "x.py"
+    locked.chmod(0)
+    try:
+        assert _orphans([_record(dest, old_src)]) == []
+    finally:
+        locked.chmod(0o755)
+
+
+def test_probe_error_on_the_target_itself_fails_closed(tmp_path, monkeypatch):
+    # The first probe of the dangling target hits EACCES; a later probe of
+    # the same path seeing ENOENT must not turn that error into ownership.
+    toolkit = _toolkit(tmp_path / "toolkit")
+    target = toolkit / "gone-dir" / "sub" / "gone.py"
+    dest = tmp_path / "link.py"
+    dest.symlink_to(target)
+    old_src = tmp_path / "old" / "gone-dir" / "sub" / "gone.py"
+    real = os.lstat
+    calls = {"n": 0}
+
+    def flaky(path, *a, **k):
+        if Path(path) == target:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise PermissionError("denied")
+        return real(path, *a, **k)
+
+    monkeypatch.setattr(link_inspect.os, "lstat", flaky)
+    assert _orphans([_record(dest, old_src)]) == []
+
+
+def test_regular_file_as_existing_prefix_is_not_ours(tmp_path):
+    toolkit = _toolkit(tmp_path / "toolkit")
+    (toolkit / "file").write_text("")
+    dest = tmp_path / "link.py"
+    dest.symlink_to(toolkit / "file" / "sub" / "x.py")
+    old_src = tmp_path / "old" / "file" / "sub" / "x.py"
+    assert _orphans([_record(dest, old_src)]) == []
+
+
+def test_dangling_symlink_as_existing_prefix_is_not_ours(tmp_path):
+    toolkit = _toolkit(tmp_path / "toolkit")
+    (toolkit / "broken").symlink_to(tmp_path / "nowhere")
+    dest = tmp_path / "link.py"
+    dest.symlink_to(toolkit / "broken" / "sub" / "x.py")
+    old_src = tmp_path / "old" / "broken" / "sub" / "x.py"
     assert _orphans([_record(dest, old_src)]) == []
 
 
@@ -217,6 +300,46 @@ def test_plain_install_cleanup_removes_the_moved_checkout_orphan(moved):
         is_wsl=False,
     )
     ctx.manifest.record_symlink(dest, old_src)
+    assert install.do_check_links(ctx) == 1
+    install._cleanup_orphaned_links(ctx, [])
+    assert not dest.is_symlink()
+    assert install.do_check_links(ctx) == 0
+
+
+@pytest.mark.regression(
+    "orphan-cleanup-misses-moved-checkout-links-into-deleted-dirs",
+    "assert [] == [",
+)
+def test_cleanup_removes_a_moved_checkout_link_into_a_deleted_dir(tmp_path):
+    # A renamed nested skill: git rm deleted copilot/skills/old-name/ in the
+    # repo, and the history recorded the link under the pre-move checkout.
+    container = tmp_path / "Workspace" / "agent-toolkit"
+    nested = _toolkit(container / "agent-toolkit")
+    (nested / "copilot" / "skills").mkdir(parents=True)
+    home = tmp_path / "home"
+    dest = home / ".copilot" / "skills" / "old-name" / "SKILL.md"
+    dest.parent.mkdir(parents=True)
+    dest.symlink_to(nested / "copilot" / "skills" / "old-name" / "SKILL.md")
+    old_src = container / "copilot" / "skills" / "old-name" / "SKILL.md"
+    ctx = install.Context(
+        repo_root=nested,
+        home=home,
+        opts=install.Options(harnesses=("claude",)),
+        manifest=install.Manifest(
+            home / ".local" / "state" / "agent-toolkit" / "history.jsonl",
+            dry_run=False,
+        ),
+        reporter=install.Reporter(),
+        system="Linux",
+        is_wsl=False,
+    )
+    ctx.manifest.record_symlink(dest, old_src)
+    findings = link_inspect.check_orphaned_links(
+        [], manifest_entries=ctx.manifest.entries()
+    )
+    assert [(f.kind, f.path) for f in findings] == [
+        (link_inspect.CHECK_BUCKET_ORPHANED, dest)
+    ]
     assert install.do_check_links(ctx) == 1
     install._cleanup_orphaned_links(ctx, [])
     assert not dest.is_symlink()

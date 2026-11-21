@@ -177,14 +177,32 @@ def _resolved_live_target(live: Path) -> Path | None:
 
     An existing target resolves in full, so a final-component symlink is
     judged on where it really points. A dangling target (the usual orphan:
-    its source was deleted) resolves through its parent, which must exist.
+    its source was deleted) resolves through its longest existing prefix,
+    which covers a renamed nested skill whose whole directory ``git rm``
+    removed. The prefix is found on the raw path, so a symlink is resolved
+    before any ``..`` after it; only a missing entry steps up, and any other
+    ``OSError`` (unreadable or non-directory component) propagates. None
+    when a missing component is ``..`` or the prefix is not a directory.
     """
-    if os.path.lexists(live):
+    existing = live
+    missing: list[str] = []
+    while True:
+        try:
+            os.lstat(existing)
+            break
+        except FileNotFoundError:
+            if existing == existing.parent:
+                return None
+            missing.append(existing.name)
+            existing = existing.parent
+    if not missing:
         return Path(os.path.realpath(live, strict=True))
-    parent = live.parent
-    if not parent.is_dir():
+    if ".." in missing:
         return None
-    return Path(os.path.realpath(parent, strict=True)) / live.name
+    prefix = Path(os.path.realpath(existing, strict=True))
+    if not prefix.is_dir():
+        return None
+    return prefix.joinpath(*reversed(missing))
 
 
 def _resolved_lexical(path: Path) -> Path:
