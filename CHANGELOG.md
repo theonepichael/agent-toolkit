@@ -14,7 +14,7 @@ the warning. Run `./install.sh --report-legacy-env` to see any still set.
 
 ## Unreleased
 
-## release-6 — 2026-11-20
+## release-6 — 2026-11-23
 
 - **Clean-break rename 3 (`herdr_delegate` → `herdr_queue_runner`):** renamed
   `agent-scripts/herdr_delegate.py` → `herdr_queue_runner.py` (its `[...]`
